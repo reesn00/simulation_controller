@@ -1,0 +1,53 @@
+model:
+  model_type: OPENAI        # OPENAI | ANTHROPIC
+  model_name: MiniMax-M3
+  api_key: ""
+  base_url: ""
+  temperature: 0.7
+
+agent_endpoint:
+  base_url: "http://localhost:8088"   # QwenPaw 后端地址（含端口，不含 /api）
+  execution_agent_id: ""               # 执行阶段 agent ID（X-Agent-Id），留空使用默认 agent
+  validation_agent_id: ""              # 验证阶段 agent ID（X-Agent-Id），留空使用默认 agent
+  auth_token: ""                       # Bearer token，未启用鉴权时留空
+  user_id: "useramulation"
+  timeout: 30.0                        # 单次 HTTP 请求超时（秒）
+  task_timeout: 120.0                  # 服务端任务看门狗超时（秒）
+  poll_interval: 1.0                   # 轮询间隔（秒）
+  max_poll_time: 180.0                 # 最长等待任务完成（秒）
+  max_retries: 2                       # 提交任务重试次数
+
+max_guide_rounds: 3
+output_dir: output
+tasks_file: tasks.yaml
+scenarios_file: scenarios.yaml
+
+validation:
+  semantic_judge_enabled: true
+  judge_timeout_seconds: 60
+
+tools:
+  startup_policy: warn
+  providers:
+    - name: playwright
+      type: playwright_mcp
+      enabled: false
+      required: false
+      priority: 100
+      capabilities:
+        - browser.navigate
+        - browser.snapshot
+        - browser.inspect_links
+        - browser.inspect_media
+        - browser.detect_barrier
+    - name: camoufox
+      type: camoufox
+      enabled: false
+      required: false
+      priority: 50
+      capabilities:
+        - browser.navigate
+        - browser.snapshot
+        - browser.inspect_links
+        - browser.inspect_media
+        - browser.detect_barrier

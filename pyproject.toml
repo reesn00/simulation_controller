@@ -1,0 +1,65 @@
+[project]
+name = "useramulation"
+version = "0.2.0"
+description = "用户模拟与数据蒸馏工具：通过 CAMEL-AI 模拟真实用户，与目标 AI Agent 进行多轮对话，产出蒸馏数据集"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "useramulation" },
+]
+
+dependencies = [
+    "camel-ai>=0.2.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+useramulation = "simulate_serve.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["simulate_serve"]
+exclude = [
+    "simulate_serve/config/config copy.yaml",
+    "simulate_serve/**/__pycache__/**",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"simulate_serve/config/config.yaml" = "simulate_serve/config/config.yaml"
+"simulate_serve/config/tasks.yaml" = "simulate_serve/config/tasks.yaml"
+"simulate_serve/config/scenarios.yaml" = "simulate_serve/config/scenarios.yaml"
+"tool_runtime/playwright/package.json" = "simulate_serve/tool_runtime/playwright/package.json"
+"tool_runtime/playwright/package-lock.json" = "simulate_serve/tool_runtime/playwright/package-lock.json"
+
+[dependency-groups]
+dev = [
+    "build>=1.2",
+    "hatchling>=1.25",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "pytest-socket>=0.7",
+]
+
+[project.optional-dependencies]
+browser-camoufox = [
+    "cloverlabs-camoufox==0.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --allow-hosts=127.0.0.1,::1 --basetemp=.pytest-tmp"
+asyncio_mode = "auto"
+markers = [
+    "characterization: legacy behavior characterization",
+    "contract: boundary contract tests",
+    "functional: offline end-to-end functional tests",
+    "known_gap: accepted defect pending its planned phase",
+    "package: package build and installation tests",
+    "browser_smoke: optional local browser smoke tests",
+]
