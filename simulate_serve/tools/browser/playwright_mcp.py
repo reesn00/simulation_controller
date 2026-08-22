@@ -14,7 +14,7 @@ from simulate_serve.domain.evidence import EvidenceConfidence
 from simulate_serve.tools.descriptor import ToolDescriptor
 from simulate_serve.tools.registry import ProviderProbeError, ProviderSchemaError
 
-from .models import BarrierObservation, BrowserInspectionRequest, BrowserInspectionResult, PageObservation
+from .models import BarrierObservation, BrowserInspectionRequest, BrowserInspectionResult, PageObservation, detect_barriers
 from .policy import validate_public_url
 
 
@@ -126,13 +126,7 @@ class PlaywrightMCPProvider:
                 },
             )
             progressed = self._playback_progressed(probe)
-        barriers = BarrierObservation(
-            login=bool(re.search(r"登录|注册|sign\s*in|log\s*in", lower)),
-            membership=bool(re.search(r"会员|vip|subscription", lower)),
-            paywall=bool(re.search(r"付费|购买|paywall|purchase", lower)),
-            captcha=bool(re.search(r"验证码|captcha", lower)),
-            region_restricted=bool(re.search(r"地区限制|not available in your region", lower)),
-        )
+        barriers = detect_barriers(lower)
         return BrowserInspectionResult(
             provider=self.descriptor.name,
             evidence_id=f"ev_{uuid.uuid4().hex}",

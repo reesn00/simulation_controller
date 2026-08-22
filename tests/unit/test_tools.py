@@ -8,7 +8,7 @@ from simulate_serve.config import ToolProviderConfig, ToolsConfig
 from simulate_serve.domain.evidence import EvidenceConfidence
 from simulate_serve.domain.validation import Verdict
 from simulate_serve.tools.browser.models import BrowserInspectionRequest, BrowserInspectionResult
-from simulate_serve.tools.browser.models import PageObservation
+from simulate_serve.tools.browser.models import BarrierObservation, PageObservation, detect_barriers
 from simulate_serve.tools.browser.policy import UrlPolicyError, sanitize_audit_url, validate_public_url
 from simulate_serve.tools.browser.playwright_mcp import PlaywrightMCPProvider
 from simulate_serve.tools.browser.provider_selector import BrowserProviderSelector
@@ -286,3 +286,244 @@ def test_excluded_platform_validator_checks_later_recommendations(source_ref) ->
 
     assert result.verdict is Verdict.FAIL
     assert result.reason_code == "SOURCE_EXCLUDED"
+
+
+# ── detect_barriers 共享函数测试 ──
+
+def test_detect_barriers_defaults_all_false_for_empty_text() -> None:
+    barriers = detect_barriers("")
+    assert not barriers.login
+    assert not barriers.membership
+    assert not barriers.paywall
+    assert not barriers.captcha
+    assert not barriers.region_restricted
+    assert not barriers.blocked
+
+
+def test_detect_barriers_login_keywords() -> None:
+    assert detect_barriers("请登录后查看").login
+    assert detect_barriers("sign in to continue").login
+    assert detect_barriers("log in required").login
+    assert detect_barriers("注册账号").login
+
+
+def test_detect_barriers_membership_keywords() -> None:
+    assert detect_barriers("会员专享").membership
+    assert detect_barriers("vip exclusive").membership
+
+
+def test_detect_barriers_paywall_keywords() -> None:
+    assert detect_barriers("付费观看").paywall
+    assert detect_barriers("purchase now").paywall
+
+
+def test_detect_barriers_captcha_keywords() -> None:
+    assert detect_barriers("请输入验证码").captcha
+    assert detect_barriers("verify captcha").captcha
+
+
+def test_detect_barriers_region_restricted_keywords() -> None:
+    assert detect_barriers("该内容有地区限制").region_restricted
+    assert detect_barriers("not available in your region").region_restricted
+
+
+def test_detect_barriers_blocked_when_any_detected() -> None:
+    assert detect_barriers("请登录").blocked
+    assert not detect_barriers("hello world").blocked
+
+
+# ── BrowserUseProvider 单元测试 ──
+
+def test_browser_use_provider_factory_registered() -> None:
+    from simulate_serve.tools.factories import create_default_registry
+
+    registry = create_default_registry()
+    assert "browser_use" in registry._factories
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    factory = registry._factories["browser_use"]
+    descriptor = ToolDescriptor(name="bu", provider_type="browser_use")
+    provider = factory(descriptor)
+    assert isinstance(provider, BrowserUseProvider)
+    assert provider.descriptor.name == "bu"
+
+
+def test_browser_use_provider_implements_protocol() -> None:
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    provider = BrowserUseProvider(ToolDescriptor(name="bu", provider_type="browser_use"))
+    assert hasattr(provider, "descriptor")
+    assert hasattr(provider, "tools")
+    assert callable(provider.start)
+    assert callable(provider.inspect_url)
+    assert callable(provider.close)
+
+
+def test_build_task_contains_only_read_operations() -> None:
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    task = BrowserUseProvider._build_task(
+        BrowserInspectionRequest(url="https://example.com/page", criterion_id="test")
+    )
+    assert "https://example.com/page" in task
+    assert "final_url" in task
+    assert "title" in task
+    assert "text_summary" in task
+    assert "Do NOT click" in task
+    # 验证没有正向的交互指令（排除否定句中的出现）
+    forbidden_commands = ["\nclick ", "\ntype ", "\nsubmit ", "\nfill ", "\ndownload "]
+    lower_task = task.casefold()
+    for word in forbidden_commands:
+        assert word not in lower_task, f"task contains forbidden command: {word}"
+
+
+def test_failure_result_error_code_mapping() -> None:
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    result_bot = BrowserUseProvider._failure_result("access denied for bot detection")
+    assert result_bot.error_code == "bot_blocked"
+    assert result_bot.retryable is False
+
+    result_crash = BrowserUseProvider._failure_result("renderer crash detected")
+    assert result_crash.error_code == "renderer_crash"
+    assert result_crash.retryable is True
+
+    result_incompat = BrowserUseProvider._failure_result("unsupported browser version")
+    assert result_incompat.error_code == "browser_incompatible"
+    assert result_incompat.retryable is False
+
+    result_unknown = BrowserUseProvider._failure_result("unknown error occurred")
+    assert result_unknown.error_code == "tool_error"
+    assert result_unknown.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_browser_use_provider_start_fails_without_dependency() -> None:
+    from simulate_serve.tools.factories import create_default_registry
+
+    registry = create_default_registry()
+    report = await registry.start(
+        ToolsConfig(
+            providers=[
+                ToolProviderConfig(
+                    name="bu",
+                    type="browser_use",
+                    enabled=True,
+                    required=False,
+                    capabilities=["browser.navigate"],
+                )
+            ]
+        )
+    )
+    assert report.tools[0].status is ToolStatus.DEPENDENCY_MISSING
+    assert "browser-use" in report.tools[0].reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_browser_use_provider_missing_model_config_fails() -> None:
+    from simulate_serve.config import ModelConfig
+    from simulate_serve.tools.factories import create_default_registry
+
+    registry = create_default_registry()
+    report = await registry.start(
+        ToolsConfig(
+            providers=[
+                ToolProviderConfig(
+                    name="bu",
+                    type="browser_use",
+                    enabled=True,
+                    required=False,
+                    capabilities=["browser.navigate"],
+                )
+            ]
+        )
+    )
+    assert report.tools[0].status is ToolStatus.DEPENDENCY_MISSING
+    assert "browser-use is not installed" in report.tools[0].reason.lower()
+
+    registry2 = create_default_registry(ModelConfig(model_name="gpt-4o-mini", api_key="", base_url=""))
+    report2 = await registry2.start(
+        ToolsConfig(
+            providers=[
+                ToolProviderConfig(
+                    name="bu",
+                    type="browser_use",
+                    enabled=True,
+                    required=False,
+                    capabilities=["browser.navigate"],
+                )
+            ]
+        )
+    )
+    assert report2.tools[0].status is ToolStatus.DEPENDENCY_MISSING
+
+
+def test_resolve_llm_config_explicit_overrides_global() -> None:
+    from simulate_serve.config import ModelConfig
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    provider = BrowserUseProvider(
+        ToolDescriptor(
+            name="bu",
+            provider_type="browser_use",
+            model=ModelConfig(model_name="gpt-4o-mini", api_key="global-key", base_url="https://global"),
+            config={"llm_model": "gpt-4o", "llm_api_key": "explicit-key"},
+        )
+    )
+    model, key, url = provider._resolve_llm_config()
+    assert model == "gpt-4o"
+    assert key == "explicit-key"
+    assert url == "https://global"
+
+
+def test_resolve_llm_config_global_inheritance() -> None:
+    from simulate_serve.config import ModelConfig
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    provider = BrowserUseProvider(
+        ToolDescriptor(
+            name="bu",
+            provider_type="browser_use",
+            model=ModelConfig(model_name="gpt-4o-mini", api_key="global-key", base_url="https://global"),
+            config={},
+        )
+    )
+    model, key, url = provider._resolve_llm_config()
+    assert model == "gpt-4o-mini"
+    assert key == "global-key"
+    assert url == "https://global"
+
+
+def test_resolve_llm_config_anthropic_not_supported() -> None:
+    from simulate_serve.config import ModelConfig
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    provider = BrowserUseProvider(
+        ToolDescriptor(
+            name="bu",
+            provider_type="browser_use",
+            model=ModelConfig(model_type="ANTHROPIC", model_name="claude", api_key="k"),
+            config={},
+        )
+    )
+    with pytest.raises(ConnectionError, match="ANTHROPIC"):
+        provider._resolve_llm_config()
+
+
+def test_resolve_llm_config_all_missing_raises() -> None:
+    from simulate_serve.tools.browser.browser_use import BrowserUseProvider
+
+    provider = BrowserUseProvider(ToolDescriptor(name="bu", provider_type="browser_use", config={}))
+    with pytest.raises(ConnectionError, match="llm_model"):
+        provider._resolve_llm_config()
+
+
+def test_registry_injects_model_into_descriptor() -> None:
+    from simulate_serve.config import ModelConfig
+    from simulate_serve.tools.factories import create_default_registry
+
+    registry = create_default_registry(ModelConfig(model_name="gpt-4o-mini", api_key="k"))
+    descriptor = registry._descriptor(ToolProviderConfig(name="bu", type="browser_use", enabled=True))
+    assert descriptor.model is not None
+    assert descriptor.model.model_name == "gpt-4o-mini"
+    assert descriptor.model.api_key == "k"

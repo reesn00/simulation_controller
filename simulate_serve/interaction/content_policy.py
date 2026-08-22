@@ -28,6 +28,14 @@ INTERNAL_BLOCK_TYPES = frozenset(
         "tool_call",
         "tool_result",
         "tool_use",
+        "data",
+        "plugin_call",
+        "plugin_call_output",
+        "function_call",
+        "function_call_output",
+        "mcp_tool_call",
+        "mcp_tool_call_output",
+        "progress",
     }
 )
 

@@ -50,6 +50,10 @@ dev = [
 browser-camoufox = [
     "cloverlabs-camoufox==0.6.0",
 ]
+browser_use = [
+    "browser-use>=0.1.0; python_version >= '3.11'",
+    "langchain-openai>=0.1.0; python_version >= '3.11'",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -50,28 +50,43 @@ class AsyncQwenPawExecutor:
         agent_id = self.config.execution_agent_id
         remote_task_id, returned_session = await self._submit(message, agent_id, session_id)
         try:
-            result = await self._poll(remote_task_id, agent_id)
+            data = await self._poll(remote_task_id, agent_id)
         except ExecutorPortError as exc:
             exc.remote_task_id = exc.remote_task_id or remote_task_id
             exc.remote_session_id = exc.remote_session_id or returned_session or session_id or ""
             exc.agent_id = exc.agent_id or agent_id
             raise
+        result = data.get("result") or {}
         final_session = returned_session or str(result.get("session_id") or session_id or "")
         if not final_session:
             raise ExecutorError("Executor did not return a session_id", stage="poll")
+        response_metadata: dict[str, Any] = {"status": result.get("status", "finished")}
+        if data.get("started_at") is not None:
+            response_metadata["started_at"] = data["started_at"]
+        if result.get("created_at") is not None:
+            response_metadata["created_at"] = result["created_at"]
+        if result.get("completed_at") is not None:
+            response_metadata["completed_at"] = result["completed_at"]
         return ExecutorResponse(
             text=self._extract_text(result),
             session_id=final_session,
             remote_task_id=remote_task_id,
             agent_id=agent_id,
-            metadata={"status": result.get("status", "finished")},
+            metadata=response_metadata,
         )
 
     async def _submit(self, message: str, agent_id: str, session_id: str | None) -> tuple[str, str]:
         body: dict[str, Any] = {
-            "input": [{"role": "user", "content": [{"type": "text", "text": message}]}],
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "text", "text": message}],
+                }
+            ],
             "user_id": self.config.user_id,
             "timeout": self.config.task_timeout,
+            "metadata": {"source": "useramulation"},
         }
         if session_id is not None:
             body["session_id"] = session_id
@@ -124,7 +139,7 @@ class AsyncQwenPawExecutor:
                 if result.get("status") in {"failed", "cancelled"}:
                     error = result.get("error") or {}
                     raise ExecutorError(str(error.get("message") or "Remote execution failed"), stage="poll")
-                return result
+                return data
             await asyncio.sleep(self.config.poll_interval)
         raise ExecutorError(f"Remote task {task_id} timed out", stage="poll", retryable=True)
 
@@ -152,6 +167,9 @@ class AsyncQwenPawExecutor:
                         continue
                     if block_type == "text":
                         parts.append(str(block.get("text") or ""))
+                        continue
+                    if block_type == "refusal":
+                        parts.append(str(block.get("refusal") or ""))
                         continue
                     for item in block.get("content") or []:
                         if (

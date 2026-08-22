@@ -3,6 +3,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from simulate_serve.config import ModelConfig
+
 
 class ToolStatus(str, Enum):
     DISABLED = "disabled"
@@ -28,6 +30,7 @@ class ToolDescriptor(BaseModel):
     startup_timeout_seconds: float = 20
     call_timeout_seconds: float = 30
     max_concurrency: int = 1
+    model: ModelConfig | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
 

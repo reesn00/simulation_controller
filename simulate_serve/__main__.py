@@ -62,7 +62,7 @@ def _log_config(config: AppConfig) -> None:
 
 
 async def _check_tools(config: AppConfig) -> int:
-    registry = create_default_registry()
+    registry = create_default_registry(config.model)
     try:
         report = await registry.start(config.tools)
         print(report.render())
@@ -78,7 +78,7 @@ async def _check_readiness(config: AppConfig) -> int:
         config_dir=config.config_dir,
         max_guide_rounds=config.max_guide_rounds,
     )
-    registry = create_default_registry()
+    registry = create_default_registry(config.model)
     try:
         await registry.start(config.tools)
         judge_available = (

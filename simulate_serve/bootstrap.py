@@ -87,7 +87,7 @@ async def build_application(config: AppConfig) -> ApplicationServices:
     )
     repository = JsonRunRepository(config.output_dir)
     repository.mark_interrupted()
-    registry = create_default_registry()
+    registry = create_default_registry(config.model)
     await registry.start(config.tools)
 
     actor: InteractionActor

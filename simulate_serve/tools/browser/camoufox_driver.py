@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import uuid
 from typing import Any
 
@@ -10,7 +9,7 @@ from simulate_serve.domain.evidence import EvidenceConfidence
 from simulate_serve.tools.descriptor import ToolDescriptor
 from simulate_serve.tools.registry import ProviderProbeError
 
-from .models import BarrierObservation, BrowserInspectionRequest, BrowserInspectionResult, PageObservation
+from .models import BarrierObservation, BrowserInspectionRequest, BrowserInspectionResult, PageObservation, detect_barriers
 from .policy import validate_public_url
 
 
@@ -62,13 +61,7 @@ class CamoufoxProvider:
                 final_url = page.url
                 await validate_public_url(final_url)
                 lower = body.casefold()
-                barriers = BarrierObservation(
-                    login=bool(re.search(r"登录|注册|sign\s*in|log\s*in", lower)),
-                    membership=bool(re.search(r"会员|vip|subscription", lower)),
-                    paywall=bool(re.search(r"付费|购买|paywall|purchase", lower)),
-                    captcha=bool(re.search(r"验证码|captcha", lower)),
-                    region_restricted=bool(re.search(r"地区限制|not available in your region", lower)),
-                )
+                barriers = detect_barriers(lower)
                 status = response.status if response else None
                 return BrowserInspectionResult(
                     provider=self.descriptor.name,

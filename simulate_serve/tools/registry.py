@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from simulate_serve.config import ToolProviderConfig, ToolsConfig
+from simulate_serve.config import ModelConfig, ToolProviderConfig, ToolsConfig
 
 from .descriptor import ToolDescriptor, ToolHealth, ToolReadinessReport, ToolStatus
 
@@ -41,10 +41,11 @@ class ProviderProbeError(RuntimeError):
 class ToolRegistry:
     """The single lifecycle owner for configured tool providers."""
 
-    def __init__(self, factories: dict[str, ProviderFactory] | None = None):
+    def __init__(self, factories: dict[str, ProviderFactory] | None = None, model: ModelConfig | None = None):
         self._factories: dict[str, ProviderFactory] = dict(factories or {})
         self._providers: dict[str, ToolProvider] = {}
         self._health: dict[str, ToolHealth] = {}
+        self._model = model
 
     def register_factory(self, provider_type: str, factory: ProviderFactory) -> None:
         if provider_type in self._factories:
@@ -138,8 +139,7 @@ class ToolRegistry:
                 logger.warning("Tool provider %s failed to close: %s", name, exc)
         self._providers.clear()
 
-    @staticmethod
-    def _descriptor(config: ToolProviderConfig) -> ToolDescriptor:
+    def _descriptor(self, config: ToolProviderConfig) -> ToolDescriptor:
         return ToolDescriptor(
             name=config.name,
             provider_type=config.type,
@@ -151,6 +151,7 @@ class ToolRegistry:
             startup_timeout_seconds=config.startup_timeout_seconds,
             call_timeout_seconds=config.call_timeout_seconds,
             max_concurrency=config.max_concurrency,
+            model=self._model,
             config=config.config,
         )
 
