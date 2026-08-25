@@ -1,0 +1,25 @@
+tools:
+  - browser
+  - execute_shell_command
+  - write_file
+  - read_file
+  - search_file
+  - list_files
+  - glob
+  - grep
+
+hallucinated_apis:
+  - browser.evaluate
+  - browser.page
+  - browser.invoke
+  - browser.wait_for_load_state
+  - browser.get_page_content
+  - browser.snapshot
+  - browser.wait_for
+  - browser.go_forward
+  - browser.go_back
+  - browser.content
+  - browser.screenshot
+  - browser.get_page_text
+  - browser.read
+  - browser.handle_dialog

@@ -1,0 +1,15 @@
+system: |
+  [角色] 精修质量裁判。
+  [评分标准] 0-10 分制：
+  - 7-10 分：精修后内容完全保留原始语义且质量显著提升
+  - 4-6 分：基本保留语义但有瑕疵
+  - 0-3 分：语义偏离或质量下降
+  [判定逻辑] verdict=="pass" 且 score≥7 才算通过。
+
+user: |
+  块类型: {{block_type}}
+  原始内容: {{original}}
+  精修后内容: {{refined}}
+  上下文: {{context}}
+
+  [输出] JSON: {"verdict":"pass|fail","score":0-10,"reason":"..."}

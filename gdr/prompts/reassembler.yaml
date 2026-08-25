@@ -1,0 +1,14 @@
+system: |
+  [角色] 端到端一致性裁判。
+  [任务] 评估精修后会话的整体一致性和自洽性：
+  1. 每轮 thinking 块引用的事实是否来自同组 toolresult 块的观测结果
+  2. thinking → toolcall → toolresult 决策序列是否逻辑自洽
+  3. 工具调用与思考链决策之间是否存在矛盾
+  [评分] 0-10 分制，≥ 7 分通过。
+
+user: |
+  会话摘要: {{session_summary}}
+  各消息 thinking→toolcall→toolresult 序列:
+  {{messages_detail}}
+
+  [输出] JSON: {"score": 0-10, "reason": "..."}

@@ -1,0 +1,29 @@
+[project]
+name = "gdr-agent"
+version = "0.1.0"
+description = "GDR Agent 数据精修：QwenPaw 会话轨迹自动缺陷检测与精修流水线"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "jsonschema>=4.21",
+    "sentence-transformers>=2.6",
+    "scikit-learn>=1.3",
+    "tqdm>=4.66",
+    "orjson>=3.9",
+    "PyYAML>=6.0",
+    "Jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+sft = ["transformers>=4.40", "peft>=0.10", "trl>=0.8", "datasets>=2.18", "accelerate>=0.27", "torch>=2.1"]
+eval = ["scikit-learn>=1.3"]
+
+[project.scripts]
+gdr-pipeline = "pipeline:main"
+gdr-evaluator = "evaluator.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

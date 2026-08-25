@@ -56,3 +56,4 @@ dist/
 # Other
 .wheel-test/
 tool_runtime/playwright/node_modules/
+etl/pawsession/origindata/useramulation_*

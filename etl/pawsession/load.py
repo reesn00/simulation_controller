@@ -19,6 +19,18 @@ from extract import SessionRecord
 from transform import SFTSample, to_jsonl_dict
 
 
+_ABNORMAL_TERMINATORS = (0x2028, 0x2029, 0x0085)
+
+
+def _sanitize(text: str) -> str:
+    if not text:
+        return text
+    sanitized = text
+    for code in _ABNORMAL_TERMINATORS:
+        sanitized = sanitized.replace(chr(code), " ")
+    return sanitized
+
+
 @dataclass
 class LoadResult:
     output_dir: Path
@@ -104,16 +116,16 @@ def load(
         for record, sample in pairs:
             obj = to_jsonl_dict(sample)
             samples_json.append(obj)
-            f.write(json.dumps(obj, ensure_ascii=False))
+            f.write(_sanitize(json.dumps(obj, ensure_ascii=False)))
             f.write("\n")
 
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(samples_json, f, ensure_ascii=False, indent=2)
+        f.write(_sanitize(json.dumps(samples_json, ensure_ascii=False, indent=2)))
 
     for record, sample in pairs:
         apath = audit_dir / f"{record.session_id or Path(record.source_file).stem}.json"
         with open(apath, "w", encoding="utf-8") as f:
-            json.dump(_audit_dict(record, sample), f, ensure_ascii=False, indent=2)
+            f.write(_sanitize(json.dumps(_audit_dict(record, sample), ensure_ascii=False, indent=2)))
 
     total_stats = {
         "sample_count": len(pairs),
@@ -127,7 +139,7 @@ def load(
         "sessions": [s.stats for _, s in pairs],
     }
     with open(stats_path, "w", encoding="utf-8") as f:
-        json.dump(total_stats, f, ensure_ascii=False, indent=2)
+        f.write(_sanitize(json.dumps(total_stats, ensure_ascii=False, indent=2)))
 
     return LoadResult(
         output_dir=output_dir,

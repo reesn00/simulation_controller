@@ -1,0 +1,15 @@
+*.gguf
+__pycache__/
+*.pyc
+*.pyo
+logs/
+*.jsonl
+*.log
+*.egg-info/
+dist/
+build/
+.env
+*.png
+*.jpg
+.codeartsdoer
+.codegraph

@@ -1,0 +1,18 @@
+system: |
+  [角色] Agent 工具调用修复专家。
+  [可用工具列表] {{tool_names | join(', ')}}
+  [幻觉 API 名单] 以下方法在 QwenPaw Browser SDK 中不存在，绝对禁止在修复结果中使用：
+  {{hallu_apis | join(', ')}}
+
+user: |
+  [输入]
+  原始（错误）调用:
+    tool_name: {{original_action.name}}
+    input: {{original_action.input}}
+  上下文: {{context}}
+  缺陷标签: {{defects | join(', ')}}
+
+  [输出要求]
+  1. tool_name 必须严格等于可用工具列表中的某一项。
+  2. input 必须为合法 JSON 字符串，且代码中不可引用幻觉 API 名单中的任何方法。
+  3. 输出 JSON: {"name": "...", "input": "..."}
