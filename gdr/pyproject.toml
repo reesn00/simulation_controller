@@ -24,6 +24,9 @@ eval = ["scikit-learn>=1.3"]
 gdr-pipeline = "pipeline:main"
 gdr-evaluator = "evaluator.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["config*", "domain*", "infrastructure*", "routing*", "pipeline*", "reassembly*", "refiners*", "validators*", "evaluator*", "data*"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

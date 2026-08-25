@@ -149,6 +149,186 @@ def _prune_context_switch_blocks(
     return pruned_blocks, pruned_records
 
 
+def _fold_msg_failed_toolresults(blocks: list) -> tuple[list, set[str]]:
+    """单条消息: 折叠同一工具的失败尝试。
+
+    规则:
+      - toolcall 与其后紧跟的同 id toolresult 构成一次尝试对 (name, state)。
+      - 按 name 连续分组 (被其他 name 打断即开新组)。
+      - 组内存在 success 时: 删除组内全部 state=error 的 (toolcall, toolresult),
+        保留所有 success 尝试 (含更早的成功, 如环境自检等有效信息)。
+      - 组内全为 error 时: 保守保留整组 (无成功结果可保, 不做删除)。
+    返回 (新 blocks, 被删除的 block id 集合)。
+    """
+    pairs: list[tuple[str, str, int, int | None]] = []
+    i = 0
+    n = len(blocks)
+    while i < n:
+        b = blocks[i]
+        if isinstance(b, dict):
+            t = b.get("type", "")
+            bid = b.get("id", "")
+            name = b.get("name", "")
+        else:
+            t = getattr(b, "type", "")
+            bid = getattr(b, "id", "")
+            name = getattr(b, "name", "")
+        if t != "toolcall":
+            i += 1
+            continue
+
+        tr_idx: int | None = None
+        state: str | None = None
+        for k in range(i + 1, n):
+            nb = blocks[k]
+            if isinstance(nb, dict):
+                nt = nb.get("type", "")
+                nbid = nb.get("id", "")
+                nstate = nb.get("state", "")
+            else:
+                nt = getattr(nb, "type", "")
+                nbid = getattr(nb, "id", "")
+                nstate = getattr(nb, "state", "")
+            if nt == "toolcall":
+                break
+            if nt == "toolresult" and nbid == bid:
+                tr_idx = k
+                state = nstate
+                break
+        pairs.append((name, state or "", i, tr_idx))
+        i += 1
+
+    groups: list[list[tuple[str, str, int, int | None]]] = []
+    for p in pairs:
+        if groups and p[0] == groups[-1][-1][0]:
+            groups[-1].append(p)
+        else:
+            groups.append([p])
+
+    ids_to_remove: set[str] = set()
+    for g in groups:
+        success_count = sum(1 for p in g if p[1] == "success")
+        if success_count == 0:
+            log.info(
+                "keep all-failed tool group name=%s tries=%d (no success to retain)",
+                g[0][0], len(g),
+            )
+            continue
+        removed_in_group = 0
+        for _, state, tc_idx, tr_idx in g:
+            if state != "error":
+                continue
+            b = blocks[tc_idx]
+            bid = b.get("id", "") if isinstance(b, dict) else getattr(b, "id", "")
+            ids_to_remove.add(bid)
+            removed_in_group += 1
+            if tr_idx is not None:
+                nb = blocks[tr_idx]
+                nbid = nb.get("id", "") if isinstance(nb, dict) else getattr(nb, "id", "")
+                ids_to_remove.add(nbid)
+                removed_in_group += 1
+        if removed_in_group:
+            log.info(
+                "folded %d failed %s try block(s), kept %d success(es)",
+                removed_in_group, g[0][0], success_count,
+            )
+
+    if not ids_to_remove:
+        return blocks, set()
+
+    pruned = [b for idx, b in enumerate(blocks)
+              if (b.get("id", "") if isinstance(b, dict) else getattr(b, "id", "")) not in ids_to_remove]
+    return pruned, ids_to_remove
+
+
+def fold_failed_toolresults(session: Session, cfg) -> int:
+    """会话级折叠: 对所有 assistant 消息删除失败/过时的工具尝试,
+    保留同一工具组内最后一次成功的 (toolcall, toolresult)。
+
+    返回删除的块总数; 并将被删块 id 记录到 metadata, 便于审计。
+    """
+    total_removed = 0
+    removed_ids: set[str] = set()
+    for msg in session.messages:
+        if msg.role != "assistant":
+            continue
+        new_blocks, ids = _fold_msg_failed_toolresults(msg.blocks)
+        if ids:
+            msg.blocks = new_blocks
+            total_removed += len(ids)
+            removed_ids.update(ids)
+
+    if total_removed:
+        session.metadata.setdefault("folded_failed_toolresults", []).extend(sorted(removed_ids))
+    return total_removed
+
+
+def _fold_msg_consecutive_thinking(blocks: list) -> tuple[list, set[str]]:
+    """单条消息: 折叠连续出现的 thinking 块。
+
+    规则: 相邻的 thinking (中间无其他块) 构成一个连续组,
+    组内只保留最后一条 thinking, 删除更早的 thinking。
+    删除后同一位置不会残留连续 thinking。
+    返回 (新 blocks, 被删除的 block id 集合)。
+    """
+    ids_to_remove: set[str] = set()
+    run_start: int | None = None
+    consecutive_ready = False
+    for i, b in enumerate(blocks):
+        t = b.get("type", "") if isinstance(b, dict) else getattr(b, "type", "")
+        if t == "thinking":
+            if run_start is None:
+                run_start = i
+            else:
+                consecutive_ready = True
+        else:
+            if consecutive_ready and run_start is not None:
+                for k in range(run_start, i - 1):
+                    kb = blocks[k]
+                    kid = kb.get("id", "") if isinstance(kb, dict) else getattr(kb, "id", "")
+                    ids_to_remove.add(kid)
+            run_start = None
+            consecutive_ready = False
+
+    if consecutive_ready and run_start is not None:
+        for k in range(run_start, len(blocks) - 1):
+            kb = blocks[k]
+            kid = kb.get("id", "") if isinstance(kb, dict) else getattr(kb, "id", "")
+            ids_to_remove.add(kid)
+
+    if not ids_to_remove:
+        return blocks, set()
+
+    pruned = [
+        b for b in blocks
+        if (b.get("id", "") if isinstance(b, dict) else getattr(b, "id", "")) not in ids_to_remove
+    ]
+    log.info("folded %d consecutive thinking block(s), kept last per run", len(ids_to_remove))
+    return pruned, ids_to_remove
+
+
+def fold_repeated_thinking(session: Session, cfg) -> int:
+    """会话级折叠: 对所有 assistant 消息删除连续 thinking 中更早的块,
+    每组只保留最后一条 thinking。
+
+    返回删除的块总数; 并将被删块 id 记录到 metadata, 便于审计。
+    """
+    total_removed = 0
+    removed_ids: set[str] = set()
+    for msg in session.messages:
+        if msg.role != "assistant":
+            continue
+        new_blocks, ids = _fold_msg_consecutive_thinking(msg.blocks)
+        if ids:
+            msg.blocks = new_blocks
+            total_removed += len(ids)
+            removed_ids.update(ids)
+
+    if total_removed:
+        session.metadata.setdefault("folded_repeated_thinking", []).extend(sorted(removed_ids))
+    return total_removed
+
+
 def reassemble(
     session: Session,
     refine_records: list[BlockRefineRecord],

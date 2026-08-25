@@ -17,7 +17,7 @@ from domain import (
 from routing import Router
 from refiners import thought_refactor, tool_fixer, obs_denoiser
 from validators import validate_block
-from reassembly import reassemble
+from reassembly import reassemble, fold_failed_toolresults, fold_repeated_thinking
 from context_understanding import build_context_for_session
 from policy import decide_policy, policy_reason, RefinementPolicy
 
@@ -31,6 +31,17 @@ def process_one(
     try:
         router = Router()
         defects_index, health_scores = router.tag(session, tool_names, hallu_apis, cfg)
+
+        # === 会话级折叠: 删除同一工具组内失败/过时的 toolresult,
+        #     保留最后一次成功的 (toolcall, toolresult)。健康与不健康消息均生效。===
+        folded = fold_failed_toolresults(session, cfg)
+        if folded:
+            log.info("folded %d failed toolresult block(s)", folded)
+
+        # === 会话级折叠: 连续 thinking 只保留最后一条, 消除重复思考。===
+        folded_thinking = fold_repeated_thinking(session, cfg)
+        if folded_thinking:
+            log.info("folded %d consecutive thinking block(s)", folded_thinking)
 
         # === 上下文理解 + 决策层 (P0) ===
         unhealthy_msg_indices = {h.msg_idx for h in health_scores if not h.is_healthy}
