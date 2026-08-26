@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest.mock import patch, MagicMock
 
 import pytest
-from context_understanding import build_context_for_session
+from core.context_understanding import build_context_for_session
 from domain import Session, Message
 from routing import Router
 from routing import router as router_module

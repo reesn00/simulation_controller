@@ -1,7 +1,7 @@
 import json
 import logging
 from domain import Session, BlockRefineRecord, MessageHealth, DefectTag
-from policy import RefinementPolicy
+from core.policy import RefinementPolicy
 
 log = logging.getLogger(__name__)
 
@@ -150,14 +150,15 @@ def _prune_context_switch_blocks(
 
 
 def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]:
-    """单条消息: 折叠同一工具的失败尝试。
+    """单条消息: 折叠同一工具的失败/中间重试, 保留最后一次成功。
 
     规则:
       - toolcall 与其后紧跟的同 id toolresult 构成一次尝试对 (name, state)。
       - 按 name 连续分组 (被其他 name 打断即开新组)。
-      - 组内存在 success 时: 删除组内全部 state=error 的 (toolcall, toolresult),
-        保留所有 success 尝试 (含更早的成功, 如环境自检等有效信息)。
+      - 组内最后一次 success 保留 (其余全部标记删除, 包括中间 success 和所有 error)。
       - 组内全为 error 时: 保守保留整组 (无成功结果可保, 不做删除)。
+      - 若 cu 提供, 仅当 block 被 active window 中 thinking/text 引用时, 才豁免删除
+        (受 fold_protect_active_text_only 控制; 关闭后回退到任意 referenced_by)。
     返回 (新 blocks, 被删除的 block id 集合)。
     """
     pairs: list[tuple[str, str, int, int | None]] = []
@@ -207,28 +208,42 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
 
     ids_to_remove: set[str] = set()
     cu_enabled = getattr(cu.cfg if cu else None, "fold_use_cu", False) if cu else False
+    protect_active_only = (
+        getattr(cu.cfg, "fold_protect_active_text_only", True) if cu else True
+    )
 
-    def _is_referenced(bid: str) -> bool:
+    def _is_protected(bid: str) -> bool:
         if not cu_enabled or cu is None:
             return False
         view = cu.get_view(bid)
-        return bool(view and view.referenced_by)
+        if view is None:
+            return False
+        if protect_active_only:
+            return bool(view.referenced_by_active_text)
+        return bool(view.referenced_by)
 
     for g in groups:
-        success_count = sum(1 for p in g if p[1] == "success")
-        if success_count == 0:
+        # 找最后一次 success 索引
+        last_success_idx = -1
+        for i, p in enumerate(g):
+            if p[1] == "success":
+                last_success_idx = i
+
+        if last_success_idx == -1:
             log.info(
                 "keep all-failed tool group name=%s tries=%d (no success to retain)",
                 g[0][0], len(g),
             )
             continue
+
         removed_in_group = 0
-        for _, state, tc_idx, tr_idx in g:
-            if state != "error":
-                continue
+        for i, p in enumerate(g):
+            if i == last_success_idx:
+                continue  # 保留最后一次成功
+            _, state, tc_idx, tr_idx = p
             b = blocks[tc_idx]
             bid = b.get("id", "") if isinstance(b, dict) else getattr(b, "id", "")
-            if _is_referenced(bid):
+            if _is_protected(bid):
                 log.debug("fold_failed_toolresults keeps referenced toolcall %s", bid)
                 continue
             ids_to_remove.add(bid)
@@ -236,7 +251,7 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
             if tr_idx is not None:
                 nb = blocks[tr_idx]
                 nbid = nb.get("id", "") if isinstance(nb, dict) else getattr(nb, "id", "")
-                if _is_referenced(nbid):
+                if _is_protected(nbid):
                     log.debug("fold_failed_toolresults keeps referenced toolresult %s", nbid)
                     # 回退删除 tc，因为 result 被引用意味着 tc 也应保留
                     ids_to_remove.discard(bid)
@@ -246,8 +261,9 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
                 removed_in_group += 1
         if removed_in_group:
             log.info(
-                "folded %d failed %s try block(s), kept %d success(es)",
-                removed_in_group, g[0][0], success_count,
+                "folded %d %s try block(s) (errors + earlier successes), "
+                "kept last success in group of %d",
+                removed_in_group, g[0][0], len(g),
             )
 
     if not ids_to_remove:
@@ -499,7 +515,7 @@ def reassemble(
             session_summary=session.summary,
             messages_detail=messages_detail,
         )
-        client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout_s=cfg.l3_timeout_s)
+        client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout=cfg.l3_timeout_s)
         text, meta = client.generate(
             prompt, max_tokens=256, temperature=0.0, timeout_s=cfg.l3_timeout_s,
         )

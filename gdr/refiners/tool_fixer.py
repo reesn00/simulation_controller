@@ -46,7 +46,7 @@ def refine(
     last_error = None
     for attempt in range(cfg.max_retries_9b):
         try:
-            client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout_s=cfg.llm_timeout_s)
+            client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
             text, meta = client.generate(prompt, grammar_json_schema=OUTPUT_SCHEMA, max_tokens=512)
             result = json.loads(text)
             name = result.get("name", "")
@@ -69,7 +69,7 @@ def refine(
 
     try:
         log.warning("escalation to 32B for block %s", block.id)
-        client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout_s=cfg.llm_timeout_s)
+        client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout=cfg.llm_timeout_s)
         text, meta = client.generate(prompt, grammar_json_schema=OUTPUT_SCHEMA, max_tokens=512)
         result = json.loads(text)
         name = result.get("name", "")

@@ -69,7 +69,7 @@ class LlamaCppProbeRunner:
         if model.endswith(".gguf") or "/" in model or "\\" in model:
             from pathlib import Path
             model = Path(model).stem or cfg.main_model
-        self.client = LlamaCppClient.get(model, cfg=cfg, timeout_s=cfg.llm_timeout_s)
+        self.client = LlamaCppClient.get(model, cfg=cfg, timeout=cfg.llm_timeout_s)
         self.cfg = cfg
 
     def run(self, instruction: str) -> str:

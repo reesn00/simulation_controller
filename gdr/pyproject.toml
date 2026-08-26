@@ -25,7 +25,7 @@ gdr-pipeline = "pipeline:main"
 gdr-evaluator = "evaluator.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["config*", "domain*", "infrastructure*", "routing*", "pipeline*", "reassembly*", "refiners*", "validators*", "evaluator*", "data*"]
+include = ["config*", "core*", "domain*", "infrastructure*", "routing*", "pipeline*", "reassembly*", "refiners*", "validators*", "evaluator*", "data*"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

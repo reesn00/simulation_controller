@@ -37,7 +37,7 @@ def check(original_block, refined_content: dict, cfg) -> dict:
     )
 
     try:
-        client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout_s=cfg.l3_timeout_s)
+        client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout=cfg.l3_timeout_s)
         text, meta = client.generate(prompt, max_tokens=512, temperature=0.0)
         result = json.loads(text)
         verdict = result.get("verdict", "fail")

@@ -1,11 +1,14 @@
 from pathlib import Path
 from typing import Optional
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource, YamlConfigSettingsSource
 from pydantic import model_validator
 import logging
 import yaml
 
 log = logging.getLogger(__name__)
+
+# 主 yaml 配置文件的绝对路径 (基于本文件位置定位, 不依赖 CWD)
+YAML_FILE = Path(__file__).resolve().parent / "gdr.yaml"
 
 
 class Settings(BaseSettings):
@@ -45,6 +48,9 @@ class Settings(BaseSettings):
     cu_prompt_archive_strategy: str = "referenced"
     # 折叠失败 toolresult / 重复 thinking 时是否使用 CU 保护被引用 block
     fold_use_cu: bool = True
+    # fold 失败重试时, 引用保护是否只看 active window 中 thinking/text 类型
+    # (默认 True)。设为 False 时退回旧行为, 任何 referenced_by 都算保护。
+    fold_protect_active_text_only: bool = True
 
     max_retries_9b: int = 2
 
@@ -106,6 +112,7 @@ class Settings(BaseSettings):
     batch_input_dir: Optional[Path] = None
     batch_output_dir: Optional[Path] = None
     workers: int = 1           # 1 = 单进程顺序; >1 = multiprocessing.Pool
+    max_files: Optional[int] = None  # 限制本次处理的输入文件数 (None = 全部)
     session_timeout_s: int = 180  # 单条 session 处理超时
 
     # === 严格性 ===
@@ -136,10 +143,32 @@ class Settings(BaseSettings):
             )
         return self
 
-    model_config = {
-        "env_prefix": "GDR_",
-        "extra": "ignore",
-    }
+    # 主配置源: gdr/config/gdr.yaml; 环境变量 (GDR_*) 与 .env 有更高优先级的覆盖权
+    # 注意: 类体内带下划线前缀的属性会被 pydantic 视为私有属性 (ModelPrivateAttr),
+    #       所以 yaml 路径必须以模块级常量存在, 不能放进类体。
+    model_config = SettingsConfigDict(
+        env_prefix="GDR_",   # 进程环境变量 (GDR_*) 临时覆盖 yaml
+        extra="ignore",      # 未知 env 键静默忽略 (如旧的 GDR_MAX_RETRIES)
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # 优先级: init(kwargs) > env(GDR_*) > yaml > secrets > 字段默认值
+        return (
+            init_settings,
+            env_settings,
+            YamlConfigSettingsSource(
+                settings_cls, yaml_file=YAML_FILE, yaml_file_encoding="utf-8",
+            ),
+            file_secret_settings,
+        )
 
 
 def load_tools(tools_config_path: Path) -> tuple[list[str], set[str]]:

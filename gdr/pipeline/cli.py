@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--batch-input-dir", type=Path, help="批量输入目录 (扫描 *.json)")
     parser.add_argument("--batch-output-dir", type=Path, help="批量输出目录")
     parser.add_argument("--workers", type=int, help="并行 worker 数 (1=顺序)")
+    parser.add_argument("--max-files", type=int, help="限制处理的输入文件数量 (默认全部)")
     parser.add_argument("--tools-config", type=Path, help="tools.yaml 路径")
     parser.add_argument("--log-dir", type=Path, help="日志目录")
     args = parser.parse_args()
@@ -34,6 +35,8 @@ def main():
         cfg.batch_output_dir = args.batch_input_dir / "refine_data"
     if args.workers is not None:
         cfg.workers = args.workers
+    if args.max_files is not None:
+        cfg.max_files = args.max_files
     if args.tools_config:
         cfg.tools_config_path = args.tools_config
     if args.log_dir:

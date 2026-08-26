@@ -19,8 +19,8 @@ from routing.health import light_health_score_for_session
 from refiners import thought_refactor, tool_fixer, obs_denoiser
 from validators import validate_block
 from reassembly import reassemble, fold_failed_toolresults, fold_repeated_thinking
-from context_understanding import build_context_for_session
-from policy import decide_policy, policy_reason, RefinementPolicy
+from core.context_understanding import build_context_for_session
+from core.policy import decide_policy, policy_reason, RefinementPolicy
 
 log = logging.getLogger(__name__)
 
@@ -403,10 +403,14 @@ def _aggregate(results: Iterable[dict]) -> dict:
 
 
 def _discover_inputs(cfg: Settings) -> list[Path]:
-    """根据 cfg 决定输入文件列表。"""
+    """根据 cfg 决定输入文件列表, 支持 max_files 截断。"""
     if cfg.batch_input_dir:
-        return sorted(p for p in cfg.batch_input_dir.glob("*.json") if p.is_file())
-    return [cfg.input_path]
+        inputs = sorted(p for p in cfg.batch_input_dir.glob("*.json") if p.is_file())
+    else:
+        inputs = [cfg.input_path]
+    if cfg.max_files is not None:
+        inputs = inputs[: cfg.max_files]
+    return inputs
 
 
 def _resolve_output(cfg: Settings, input_path: Path) -> Path:

@@ -18,7 +18,7 @@ _NOISE_PATTERN = re.compile(
 
 # 改进1: 从 toolresult 中提取事实实体（数值、价格、平台名等）
 _FACT_VALUE_PATTERN = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:元|块|月|天|小时|年)",
+    r"(\d+(?:\.\d+)?)\s*(元|块|月|天|小时|年)",
 )
 _FACT_PLATFORM_PATTERN = re.compile(
     r"(爱奇艺|优酷|腾讯视频|B站|bilibili|1905电影网|芒果TV|搜狐视频|百度视频|"
@@ -320,7 +320,7 @@ class Router:
                 )
                 try:
                     from infrastructure import LlamaCppClient
-                    llm = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout_s=cfg.llm_timeout_s)
+                    llm = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
                     prompt = self._build_llm_review_prompt(block_type, content, context_text)
                     text, _ = llm.generate(
                         prompt,

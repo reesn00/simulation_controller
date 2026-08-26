@@ -52,6 +52,7 @@ htmlcov/
 # Project outputs
 output/
 dist/
+gdr/origindata/
 
 # Other
 .wheel-test/

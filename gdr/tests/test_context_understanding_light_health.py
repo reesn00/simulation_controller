@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from context_understanding import build_context_for_session
+from core.context_understanding import build_context_for_session
 from routing.health import light_health_score_for_session
 
 

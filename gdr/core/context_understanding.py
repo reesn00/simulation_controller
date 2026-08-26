@@ -137,6 +137,10 @@ class BlockContextView:
 
     referenced_by: list[str] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
+    # 仅记录 active window 中 type ∈ {thinking, text} 的 block 对本 block 的引用。
+    # fold 失败重试时, 仅用此字段判断"被引用 → 豁免删除", 避免 entity co-reference
+    # 把所有失败重试都标成 referenced 导致 fold 失效。
+    referenced_by_active_text: list[str] = field(default_factory=list)
 
     relevance_to_active: float = 0.0
     is_redundant_in_window: bool = False
@@ -614,6 +618,20 @@ class ContextUnderstanding:
             # 是否被 active window 引用
             active_ids = {b.get("id", "") for snap in snapshots for b in snap.blocks}
             view.is_referenced_in_active = any(ref in active_ids for ref in view.referenced_by)
+            # 仅 active window 内**其它 message** 的 thinking/text 类型对本 block 的引用。
+            # fold 失败重试用这个判断"被引用", 避免 entity 共指把同一 message 内
+            # 所有失败重试都标成 referenced 而失效 (同 message 内的 thinking 只是
+            # 决策上下文, 不构成对失败调用的实质依赖)。
+            active_text_ids_other_msg = {
+                b.get("id", "")
+                for snap in snapshots
+                if snap.msg_idx != view.msg_idx
+                for b in snap.blocks
+                if b.get("type") in ("thinking", "text")
+            }
+            view.referenced_by_active_text = sorted(
+                set(view.referenced_by) & active_text_ids_other_msg
+            )
 
     def _annotate_block_views(self) -> None:
         for bid, view in self._block_index.items():

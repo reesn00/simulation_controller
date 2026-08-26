@@ -41,7 +41,7 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
     last_error = None
     for attempt in range(cfg.max_retries_9b):
         try:
-            client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout_s=cfg.llm_timeout_s)
+            client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
             text, meta = client.generate(prompt, max_tokens=600)
             result = json.loads(text)
             refined = result.get("refined_thought", "")
@@ -63,7 +63,7 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
 
     try:
         log.warning("escalation to 32B for block %s", block.id)
-        client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout_s=cfg.llm_timeout_s)
+        client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout=cfg.llm_timeout_s)
         text, meta = client.generate(prompt, max_tokens=600)
         result = json.loads(text)
         refined = result.get("refined_thought", "")

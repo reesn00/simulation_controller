@@ -20,7 +20,7 @@ import logging
 from enum import StrEnum
 from typing import Iterable
 
-from context_understanding import BlockContextView
+from core.context_understanding import BlockContextView
 from domain import DefectTag
 
 log = logging.getLogger(__name__)
