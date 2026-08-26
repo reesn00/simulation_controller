@@ -9,7 +9,6 @@ logs/
 dist/
 build/
 .env
-config/gdr.yaml
 *.png
 *.jpg
 .codeartsdoer

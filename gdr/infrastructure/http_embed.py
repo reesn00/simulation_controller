@@ -80,6 +80,7 @@ class HttpEmbedder(Embedder):
         timeout: float = 30.0,
         max_batch: int = 32,
         max_retries: int = 3,
+        expected_dim: Optional[int] = None,
     ):
         self.base_url = base_url.rstrip("/")
         # llama.cpp's /v1/embeddings lives at <base>/embeddings; OpenAI path is /v1/embeddings.
@@ -93,6 +94,7 @@ class HttpEmbedder(Embedder):
         self.timeout = timeout
         self.max_batch = max_batch
         self.max_retries = max_retries
+        self._expected_dim = expected_dim  # 若设置, 首响维度不符立即报错
 
         self._dim: Optional[int] = None
         self._dim_lock = threading.Lock()
@@ -111,13 +113,14 @@ class HttpEmbedder(Embedder):
             raise RuntimeError(
                 "Embedding endpoint not configured. Set 'embedding_endpoint_url' "
                 "(e.g. http://127.0.0.1:8086/v1) and 'embedding_endpoint_model' "
-                "(e.g. v5-nano-retrieval) in gdr.yaml or GDR_* env vars."
+                "(e.g. v5-nano-retrieval) in gdr_config.yaml or GDR_* env vars."
             )
         return cls(
             base_url=url,
             model=model,
             timeout=float(getattr(cfg, "embedding_timeout_s", 30)),
             max_batch=int(getattr(cfg, "embedding_max_batch", 32)),
+            expected_dim=getattr(cfg, "embedding_expected_dim", None),
         )
 
     # ---- health -----------------------------------------------------------
@@ -162,13 +165,20 @@ class HttpEmbedder(Embedder):
         raise RuntimeError(f"embedding endpoint unreachable after {self.max_retries} retries: {last_exc}")
 
     def _lock_dim(self, vec: list[float]) -> int:
+        actual = len(vec)
         if self._dim is None:
             with self._dim_lock:
                 if self._dim is None:
-                    self._dim = len(vec)
-        if len(vec) != self._dim:
+                    if self._expected_dim is not None and actual != self._expected_dim:
+                        raise RuntimeError(
+                            f"embedding dim mismatch on first response: "
+                            f"got {actual}, expected {self._expected_dim} "
+                            f"(check cfg.embedding_expected_dim vs endpoint model)"
+                        )
+                    self._dim = actual
+        if actual != self._dim:
             raise RuntimeError(
-                f"embedding dim mismatch: got {len(vec)}, expected {self._dim}"
+                f"embedding dim mismatch: got {actual}, expected {self._dim}"
             )
         return self._dim
 

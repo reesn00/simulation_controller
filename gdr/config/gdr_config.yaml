@@ -1,0 +1,145 @@
+# GDR pipeline 统一配置文件
+# 字段名与 gdr/config/settings.py 中 Settings 字段一一对应;
+# 由 Settings.model_config 的 yaml_file 自动加载。
+#
+# 注意: 本文件包含 llm_api_key 敏感凭据, 已被 gdr/.gitignore 忽略, 禁止提交。
+# 优先级 (高 → 低): CLI 参数 > 进程环境变量 (GDR_*) > 本文件 > 字段默认值
+# 原 gdr/.env 已删除; 全部配置 (含 api key) 收纳于本文件, 环境变量仅作临时覆盖。
+
+# === 对账表 (原 .env 键 ↔ 本文件键) ===
+#   GDR_LLM_BASE_URL             -> llm_base_url
+#   GDR_LLM_API_KEY              -> llm_api_key
+#   GDR_MAIN_MODEL               -> main_model
+#   GDR_TOOL_MODEL               -> tool_model
+#   GDR_JUDGE_MODEL              -> judge_model
+#   GDR_EMBEDDING_ENDPOINT_URL   -> embedding_endpoint_url
+#   GDR_EMBEDDING_ENDPOINT_MODEL -> embedding_endpoint_model
+#   GDR_ENABLE_L1                -> enable_l1
+#   GDR_ENABLE_L2                -> enable_l2
+#   GDR_ENABLE_L3                -> enable_l3
+#   GDR_ENABLE_LLM_LAYER         -> enable_llm_layer
+#   GDR_ENABLE_TEXT_FACT_CHECK   -> enable_text_fact_check
+#   GDR_MAX_RETRIES              -> max_retries_9b     (注: 原 .env 键与字段不同名, 从未生效, 本文件按字段名对齐)
+#   GDR_LLM_TIMEOUT_S            -> llm_timeout_s
+#   GDR_L3_TIMEOUT_S             -> l3_timeout_s
+#   GDR_TOOLS_CONFIG_PATH        -> tools_config_path
+#   GDR_INPUT_PATH               -> input_path
+#   GDR_OUTPUT_PATH              -> output_path
+#   GDR_LOG_DIR                  -> log_dir
+
+# === HTTP OpenAI-compatible LLM endpoint (env: GDR_LLM_BASE_URL) ===
+llm_base_url: http://100.64.0.129/v1
+llm_api_key: bgw_Y_-cBJcZtPzcnhq6BkE8wYX4bqjmZ8edyPHi5BSxSTM    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
+
+# Model names registered at the endpoint
+main_model: MiniMax-M2.7         # env: GDR_MAIN_MODEL
+tool_model: MiniMax-M2.7         # env: GDR_TOOL_MODEL
+judge_model: MiniMax-M2.7        # env: GDR_JUDGE_MODEL
+
+# === 嵌入端点 (OpenAI-compatible /v1/embeddings) ===
+# v5-small-retrieval: 由外部 llama.cpp server 提供 (例: --port 8086 -m .../v5-small-retrieval-Q6_K.gguf -a v5-small-retrieval -ngl 999 --embedding -lm none -np 1 -c 18000)
+embedding_endpoint_url: http://127.0.0.1:8086/v1        # env: GDR_EMBEDDING_ENDPOINT_URL
+embedding_endpoint_model: v5-small-retrieval           # env: GDR_EMBEDDING_ENDPOINT_MODEL
+embedding_expected_dim: 1024                           # 端点首响维度不匹配则启动失败
+embedding_timeout_s: 30.0
+embedding_max_batch: 32
+
+# 仅用于 prompts / context 尺寸估算, 不用于加载 GGUF 文件
+n_ctx: 8192
+n_gpu_layers: -1
+
+# === 验证开关 ===
+enable_l1: true
+enable_l2: true
+enable_l3: true
+enable_llm_layer: true
+enable_text_fact_check: true
+
+# === LLM 投票层 - 3 次请求各自的上下文策略 ===
+llm_vote_context_strategies: ["none", "±1", "pre2_post1"]
+llm_vote_max_context_chars: 4000
+llm_vote_use_cu: true
+cu_prompt_max_chars: 4000
+cu_prompt_archive_strategy: referenced
+fold_use_cu: true
+fold_protect_active_text_only: true   # fold 失败重试保护只看 active window 的 thinking/text 引用, 避免 entity 共指把所有失败重试放行
+
+# === 重试 ===
+max_retries_9b: 2               # 原 .env GDR_MAX_RETRIES=2
+
+# === IO 路径 ===
+tools_config_path: ./config/tools.yaml
+input_path: origindata/0c175024ed9c4bde8e77f7b9dd125f08.json   # env: GDR_INPUT_PATH
+output_path: refine_data/output.json                            # env: GDR_OUTPUT_PATH
+log_dir: ./logs                                                 # env: GDR_LOG_DIR
+
+# === 超时 (秒) ===
+llm_timeout_s: 120
+l3_timeout_s: 60
+
+# === 阈值 ===
+max_compression_ratio: 0.50
+thought_min_len: 20
+thought_max_len: 500
+thought_max_len_l1: 2000
+context_switch_threshold: 3
+repetitive_call_threshold: 3
+message_health_min_ratio: 0.3
+max_failures_before_success: 8
+
+# === 上下文理解 - 近期窗口 ===
+context_active_window_size: 4
+context_relevance_threshold: 0.6
+context_redundancy_threshold: 0.85
+enable_context_understanding: true
+
+# === 上下文理解 - 分级压缩 ===
+context_max_archive_chars: 80000
+context_max_t0_entries: 200
+context_compression_strategy: hybrid
+context_max_llm_compressions: 3
+
+# === Tier 阈值 (重要性分数 -> 级别) ===
+context_tier0_threshold: 0.7
+context_tier1_threshold: 0.5
+context_tier2_threshold: 0.3
+context_tier3_threshold: 0.1
+
+# === 重要性评分子项权重 ===
+context_importance_w_error: 0.30
+context_importance_w_transit: 0.25
+context_importance_w_refs: 0.20
+context_importance_w_finality: 0.15
+context_importance_w_novelty: 0.10
+
+# === 决策层 ===
+enable_policy_layer: true
+policy_defer_on_exhausted: true
+policy_prune_with_pair_enabled: false
+policy_min_redundancy_for_prune: 1
+
+# === 批量 + 并行 ===
+batch_input_dir: null            # 可用 CLI --batch-input-dir 覆盖
+batch_output_dir: null
+workers: 1                       # 1 = 单进程顺序; >1 = multiprocessing.Pool
+max_files: null                  # 限制本次处理的输入文件数 (null = 全部)
+session_timeout_s: 180
+
+# === 严格性 ===
+strict_consistency: true
+
+# === 评估器 (utility eval) ===
+evaluator_output_dir: ./evaluator_output
+probe_base_model_name: Qwen/Qwen3.5-9B-Instruct
+probe_train_data_dir: ./data/sft_pairs
+probe_lora_r: 16
+probe_lora_alpha: 32
+probe_epochs: 3
+probe_batch_size: 4
+probe_learning_rate: 0.0002
+
+eval_set_path: ./data/eval_set.jsonl
+eval_held_out_size: 200
+retention_threshold: 0.97
+removal_threshold: 0.50
+max_feedback_iterations: 3

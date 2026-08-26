@@ -8,7 +8,7 @@ import yaml
 log = logging.getLogger(__name__)
 
 # 主 yaml 配置文件的绝对路径 (基于本文件位置定位, 不依赖 CWD)
-YAML_FILE = Path(__file__).resolve().parent / "gdr.yaml"
+YAML_FILE = Path(__file__).resolve().parent / "gdr_config.yaml"
 
 
 class Settings(BaseSettings):
@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # Llama.cpp server with --embedding: e.g. http://127.0.0.1:8086/v1
     embedding_endpoint_url: str = "http://127.0.0.1:8086/v1"
     embedding_endpoint_model: str = "v5-nano-retrieval"
+    embedding_expected_dim: Optional[int] = None  # None=不校验; 设了则首次响应维度不符立即报错
     embedding_timeout_s: float = 30.0
     embedding_max_batch: int = 32
 
@@ -148,7 +149,7 @@ class Settings(BaseSettings):
             )
         return self
 
-    # 主配置源: gdr/config/gdr.yaml; 环境变量 (GDR_*) 与 .env 有更高优先级的覆盖权
+    # 主配置源: gdr/config/gdr_config.yaml; 环境变量 (GDR_*) 与 .env 有更高优先级的覆盖权
     # 注意: 类体内带下划线前缀的属性会被 pydantic 视为私有属性 (ModelPrivateAttr),
     #       所以 yaml 路径必须以模块级常量存在, 不能放进类体。
     model_config = SettingsConfigDict(

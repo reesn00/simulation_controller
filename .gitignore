@@ -53,6 +53,7 @@ htmlcov/
 output/
 dist/
 gdr/origindata/
+gdr/refine_data
 
 # Other
 .wheel-test/
