@@ -144,22 +144,28 @@ def _make_gold_str(sample: dict) -> str:
     return json.dumps(sample.get("output", {}), ensure_ascii=False, sort_keys=True)
 
 
-def _compute_task_completion_proxy(eval_set: list[dict], runner: ProbeRunner) -> float:
-    """嵌入相似度均值 (sentence-transformers, BGE-M3)。"""
+def _compute_task_completion_proxy(eval_set: list[dict], runner: ProbeRunner, cfg) -> float:
+    """嵌入相似度均值 (HTTP embedding endpoint, OpenAI-compatible)."""
+    from infrastructure.http_embed import get_embedder
     try:
-        from sentence_transformers import SentenceTransformer
-        from sklearn.metrics.pairwise import cosine_similarity
-    except ImportError:
-        log.warning("sentence-transformers not available, task_completion_proxy=0")
+        embedder = get_embedder(cfg)
+    except Exception as e:
+        log.warning("embedding endpoint unavailable, task_completion_proxy=0: %s", e)
         return 0.0
-    model = SentenceTransformer("BAAI/bge-m3")
-    sims = []
+
+    sims: list[float] = []
     for s in eval_set:
         gold = _make_gold_str(s)
         instr = _make_instruction(s)
-        out = runner.run(instr)
-        emb = model.encode([gold, out], normalize_embeddings=True)
-        sims.append(float(cosine_similarity([emb[0]], [emb[1]])[0][0]))
+        try:
+            out = runner.run(instr)
+            emb = embedder.embed_batch([gold, out])
+        except Exception as e:
+            log.warning("task_completion_proxy embed failed: %s", e)
+            continue
+        if len(emb) < 2 or not emb[0] or not emb[1]:
+            continue
+        sims.append(embedder.cosine(emb[0], emb[1]))
     return sum(sims) / max(len(sims), 1)
 
 
@@ -233,9 +239,9 @@ def _compute_debug_leak_suppression(eval_set: list[dict], runner: ProbeRunner) -
     return clean / len(pairs)
 
 
-def _aggregate_retention(eval_set: list[dict], runner: ProbeRunner) -> RetentionMetrics:
+def _aggregate_retention(eval_set: list[dict], runner: ProbeRunner, cfg) -> RetentionMetrics:
     m = RetentionMetrics(
-        task_completion_proxy=_compute_task_completion_proxy(eval_set, runner),
+        task_completion_proxy=_compute_task_completion_proxy(eval_set, runner, cfg),
         tool_selection_accuracy=_compute_tool_selection_accuracy(eval_set, runner),
         thought_fact_consistency=_compute_thought_fact_consistency(eval_set, runner),
     )
@@ -272,10 +278,10 @@ def run_dual_eval(
     """
     log.info("running dual evaluation on %d samples", len(eval_set))
 
-    retention = _aggregate_retention(eval_set, runner_refined)
+    retention = _aggregate_retention(eval_set, runner_refined, cfg)
     removal = _aggregate_removal(eval_set, runner_refined)
 
-    retention_orig = _aggregate_retention(eval_set, runner_original)
+    retention_orig = _aggregate_retention(eval_set, runner_original, cfg)
     removal_orig = _aggregate_removal(eval_set, runner_original)
 
     retention_ratio = retention.overall / max(retention_orig.overall, 1e-6)

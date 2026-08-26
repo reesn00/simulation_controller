@@ -63,7 +63,8 @@ pip install ".[sft]"
 | `GDR_MAIN_MODEL` | `Qwen3.5-9B-Instruct` | 主力模型名 |
 | `GDR_TOOL_MODEL` | `Qwen3.5-32B-Instruct` | 升级模型名 |
 | `GDR_JUDGE_MODEL` | `Qwen3.5-32B-Instruct` | L3 裁判模型名 |
-| `GDR_EMBEDDING_MODEL_NAME` | `BAAI/bge-m3` | 嵌入模型 |
+| `GDR_EMBEDDING_ENDPOINT_URL` | `http://127.0.0.1:8086/v1` | OpenAI 兼容嵌入端点 (llama.cpp `--embedding`) |
+| `GDR_EMBEDDING_ENDPOINT_MODEL` | `v5-nano-retrieval` | 端点上注册的嵌入模型名 |
 | `GDR_ENABLE_L1` / `GDR_ENABLE_L2` / `GDR_ENABLE_L3` | `true` | 验证层开关 |
 | `GDR_INPUT_PATH` | `./data/input.json` | 输入 QwenPaw JSON |
 | `GDR_OUTPUT_PATH` | `./refine_data/output.json` | 输出精修 JSON |

@@ -21,7 +21,12 @@ class Settings(BaseSettings):
     tool_model: str = "Qwen3.5-32B-Instruct"
     judge_model: str = "Qwen3.5-32B-Instruct"
 
-    embedding_model_name: str = "BAAI/bge-m3"
+    # === Embedding endpoint (OpenAI-compatible /v1/embeddings) ===
+    # Llama.cpp server with --embedding: e.g. http://127.0.0.1:8086/v1
+    embedding_endpoint_url: str = "http://127.0.0.1:8086/v1"
+    embedding_endpoint_model: str = "v5-nano-retrieval"
+    embedding_timeout_s: float = 30.0
+    embedding_max_batch: int = 32
 
     # Kept for backwards compatibility in prompts / context sizing; not used to load GGUF files.
     n_ctx: int = 8192

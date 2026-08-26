@@ -204,7 +204,7 @@ Surrounding 拼接格式：`[前 N \| type#id] \n content`，按策略名查 `_V
 
 ### L2 嵌入语义（[l2_semantic.py](../validators/l2_semantic.py)）
 
-- BGE-M3（`BAAI/bge-m3`）计算 `cosine_similarity(orig, refined)`。
+- HTTP 嵌入端点（默认 `http://127.0.0.1:8086/v1`，模型 `v5-nano-retrieval`，768 维；调用方为 `infrastructure.http_embed.HttpEmbedder`，调 `/v1/embeddings`）计算 `cosine_similarity(orig, refined)`。已下线 BGE-M3 本地权重方案。
 - 阈值：thinking 0.85 / toolcall 0.90 / toolresult 0.80。
 - **fail-close**：sentence-transformers 缺失时不默认通过，而是降级到 L3。
 
