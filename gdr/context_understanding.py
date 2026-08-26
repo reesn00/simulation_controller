@@ -271,8 +271,22 @@ class ContextUnderstanding:
 
     # === 公开 API ===
 
-    def build(self, session, unhealthy_msg_indices: set[int] | None = None) -> None:
+    def build(
+        self, session,
+        unhealthy_msg_indices: set[int] | None = None,
+        light_health: dict[int, float] | None = None,
+    ) -> None:
+        """构建上下文理解。
+
+        Args:
+            session: 待理解的 session。
+            unhealthy_msg_indices: 不健康消息索引集合（旧参数，兼容）。
+            light_health: msg_idx -> health_score 的轻量映射；
+                当提供时，用于初始化 MessageSnapshot.is_healthy，
+                未提供则回退到 unhealthy_msg_indices。
+        """
         self._unhealthy_msg_indices = unhealthy_msg_indices or set()
+        self._light_health = light_health or {}
         self._index_blocks(session)
         self._build_reference_graph()
         self._score_all_importance()
@@ -286,6 +300,33 @@ class ContextUnderstanding:
 
     def render_archive(self, max_chars: int | None = None) -> str:
         return self._archive.render(max_chars or self.max_archive_chars)
+
+    def render_archive_for_block(
+        self, block_id: str,
+        max_chars: int | None = None,
+        strategy: str | None = None,
+    ) -> str:
+        """为指定 block 渲染用于 Router LLM prompt 的 archive 子集。
+
+        Args:
+            block_id: 目标 block id。
+            max_chars: 字符预算；默认使用 cfg.cu_prompt_max_chars 或 archive 上限。
+            strategy: 子集策略；"referenced" 只保留 referenced_by/depends_on 相关条目；
+                其他则返回完整 archive 渲染。
+        """
+        max_chars = max_chars or getattr(self.cfg, "cu_prompt_max_chars", self.max_archive_chars)
+        strategy = strategy or getattr(self.cfg, "cu_prompt_archive_strategy", "full")
+
+        view = self._block_index.get(block_id)
+        if strategy == "referenced" and view is not None:
+            related = set(view.referenced_by) | set(view.depends_on) | {block_id}
+            subset = TieredArchive()
+            for entry in self._archive.full + self._archive.detailed + self._archive.compact + self._archive.pointers:
+                if entry.block_id in related:
+                    subset.add(entry)
+            rendered = subset.render(max_chars)
+            return rendered if rendered else self._archive.render(max_chars)
+        return self._archive.render(max_chars)
 
     def stats(self) -> dict:
         return {
@@ -465,7 +506,7 @@ class ContextUnderstanding:
     def _build_tiered_archive(self, session) -> None:
         active_msg_indices = set()
         assistant_indices = [i for i, m in enumerate(session.messages) if m.role == "assistant"]
-        if assistant_indices:
+        if assistant_indices and self.active_window_size > 0:
             active_msg_indices = set(assistant_indices[-self.active_window_size:])
 
         for msg_idx, msg in enumerate(session.messages):
@@ -522,12 +563,22 @@ class ContextUnderstanding:
 
     def _extract_active_window(self, session) -> None:
         assistant_indices = [i for i, m in enumerate(session.messages) if m.role == "assistant"]
-        active_indices = assistant_indices[-self.active_window_size:] if assistant_indices else []
+        active_indices = (
+            assistant_indices[-self.active_window_size:]
+            if assistant_indices and self.active_window_size > 0
+            else []
+        )
 
         snapshots: list[MessageSnapshot] = []
         for idx in active_indices:
             msg = session.messages[idx]
-            is_healthy = idx not in self._unhealthy_msg_indices
+            # 优先使用轻量健康分；未提供则回退旧 unhealthy_msg_indices
+            if self._light_health:
+                is_healthy = self._light_health.get(idx, 1.0) >= getattr(
+                    self.cfg, "message_health_min_ratio", 0.3
+                )
+            else:
+                is_healthy = idx not in self._unhealthy_msg_indices
             blocks_simple = []
             for b in msg.blocks:
                 bt = _get_attr(b, "type", "")
@@ -637,10 +688,18 @@ class ContextUnderstanding:
 
 # === 便捷入口 ===
 
-def build_context_for_session(session, cfg, unhealthy_msg_indices: set[int] | None = None) -> ContextUnderstanding:
+def build_context_for_session(
+    session, cfg,
+    unhealthy_msg_indices: set[int] | None = None,
+    light_health: dict[int, float] | None = None,
+) -> ContextUnderstanding:
     """便捷工厂: 直接 build 完整上下文。"""
     if not getattr(cfg, "enable_context_understanding", True):
         return None  # 由调用方 fallback 到旧 ±2 上下文
     cu = ContextUnderstanding(cfg)
-    cu.build(session, unhealthy_msg_indices=unhealthy_msg_indices)
+    cu.build(
+        session,
+        unhealthy_msg_indices=unhealthy_msg_indices,
+        light_health=light_health,
+    )
     return cu

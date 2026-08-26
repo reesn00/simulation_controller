@@ -149,7 +149,7 @@ def _prune_context_switch_blocks(
     return pruned_blocks, pruned_records
 
 
-def _fold_msg_failed_toolresults(blocks: list) -> tuple[list, set[str]]:
+def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]:
     """单条消息: 折叠同一工具的失败尝试。
 
     规则:
@@ -206,6 +206,14 @@ def _fold_msg_failed_toolresults(blocks: list) -> tuple[list, set[str]]:
             groups.append([p])
 
     ids_to_remove: set[str] = set()
+    cu_enabled = getattr(cu.cfg if cu else None, "fold_use_cu", False) if cu else False
+
+    def _is_referenced(bid: str) -> bool:
+        if not cu_enabled or cu is None:
+            return False
+        view = cu.get_view(bid)
+        return bool(view and view.referenced_by)
+
     for g in groups:
         success_count = sum(1 for p in g if p[1] == "success")
         if success_count == 0:
@@ -220,11 +228,20 @@ def _fold_msg_failed_toolresults(blocks: list) -> tuple[list, set[str]]:
                 continue
             b = blocks[tc_idx]
             bid = b.get("id", "") if isinstance(b, dict) else getattr(b, "id", "")
+            if _is_referenced(bid):
+                log.debug("fold_failed_toolresults keeps referenced toolcall %s", bid)
+                continue
             ids_to_remove.add(bid)
             removed_in_group += 1
             if tr_idx is not None:
                 nb = blocks[tr_idx]
                 nbid = nb.get("id", "") if isinstance(nb, dict) else getattr(nb, "id", "")
+                if _is_referenced(nbid):
+                    log.debug("fold_failed_toolresults keeps referenced toolresult %s", nbid)
+                    # 回退删除 tc，因为 result 被引用意味着 tc 也应保留
+                    ids_to_remove.discard(bid)
+                    removed_in_group -= 1
+                    continue
                 ids_to_remove.add(nbid)
                 removed_in_group += 1
         if removed_in_group:
@@ -241,9 +258,12 @@ def _fold_msg_failed_toolresults(blocks: list) -> tuple[list, set[str]]:
     return pruned, ids_to_remove
 
 
-def fold_failed_toolresults(session: Session, cfg) -> int:
+def fold_failed_toolresults(session: Session, cfg, cu=None) -> int:
     """会话级折叠: 对所有 assistant 消息删除失败/过时的工具尝试,
     保留同一工具组内最后一次成功的 (toolcall, toolresult)。
+
+    Args:
+        cu: 可选的 ContextUnderstanding；启用 fold_use_cu 时会保护被引用的 block。
 
     返回删除的块总数; 并将被删块 id 记录到 metadata, 便于审计。
     """
@@ -252,7 +272,7 @@ def fold_failed_toolresults(session: Session, cfg) -> int:
     for msg in session.messages:
         if msg.role != "assistant":
             continue
-        new_blocks, ids = _fold_msg_failed_toolresults(msg.blocks)
+        new_blocks, ids = _fold_msg_failed_toolresults(msg.blocks, cu=cu)
         if ids:
             msg.blocks = new_blocks
             total_removed += len(ids)
@@ -263,7 +283,7 @@ def fold_failed_toolresults(session: Session, cfg) -> int:
     return total_removed
 
 
-def _fold_msg_consecutive_thinking(blocks: list) -> tuple[list, set[str]]:
+def _fold_msg_consecutive_thinking(blocks: list, cu=None) -> tuple[list, set[str]]:
     """单条消息: 折叠连续出现的 thinking 块。
 
     规则: 相邻的 thinking (中间无其他块) 构成一个连续组,
@@ -271,6 +291,14 @@ def _fold_msg_consecutive_thinking(blocks: list) -> tuple[list, set[str]]:
     删除后同一位置不会残留连续 thinking。
     返回 (新 blocks, 被删除的 block id 集合)。
     """
+    cu_enabled = getattr(cu.cfg if cu else None, "fold_use_cu", False) if cu else False
+
+    def _is_referenced(bid: str) -> bool:
+        if not cu_enabled or cu is None:
+            return False
+        view = cu.get_view(bid)
+        return bool(view and view.referenced_by)
+
     ids_to_remove: set[str] = set()
     run_start: int | None = None
     consecutive_ready = False
@@ -286,7 +314,10 @@ def _fold_msg_consecutive_thinking(blocks: list) -> tuple[list, set[str]]:
                 for k in range(run_start, i - 1):
                     kb = blocks[k]
                     kid = kb.get("id", "") if isinstance(kb, dict) else getattr(kb, "id", "")
-                    ids_to_remove.add(kid)
+                    if not _is_referenced(kid):
+                        ids_to_remove.add(kid)
+                    else:
+                        log.debug("fold_repeated_thinking keeps referenced thinking %s", kid)
             run_start = None
             consecutive_ready = False
 
@@ -294,7 +325,10 @@ def _fold_msg_consecutive_thinking(blocks: list) -> tuple[list, set[str]]:
         for k in range(run_start, len(blocks) - 1):
             kb = blocks[k]
             kid = kb.get("id", "") if isinstance(kb, dict) else getattr(kb, "id", "")
-            ids_to_remove.add(kid)
+            if not _is_referenced(kid):
+                ids_to_remove.add(kid)
+            else:
+                log.debug("fold_repeated_thinking keeps referenced thinking %s", kid)
 
     if not ids_to_remove:
         return blocks, set()
@@ -307,9 +341,12 @@ def _fold_msg_consecutive_thinking(blocks: list) -> tuple[list, set[str]]:
     return pruned, ids_to_remove
 
 
-def fold_repeated_thinking(session: Session, cfg) -> int:
+def fold_repeated_thinking(session: Session, cfg, cu=None) -> int:
     """会话级折叠: 对所有 assistant 消息删除连续 thinking 中更早的块,
     每组只保留最后一条 thinking。
+
+    Args:
+        cu: 可选的 ContextUnderstanding；启用 fold_use_cu 时会保护被引用的 block。
 
     返回删除的块总数; 并将被删块 id 记录到 metadata, 便于审计。
     """
@@ -318,7 +355,7 @@ def fold_repeated_thinking(session: Session, cfg) -> int:
     for msg in session.messages:
         if msg.role != "assistant":
             continue
-        new_blocks, ids = _fold_msg_consecutive_thinking(msg.blocks)
+        new_blocks, ids = _fold_msg_consecutive_thinking(msg.blocks, cu=cu)
         if ids:
             msg.blocks = new_blocks
             total_removed += len(ids)

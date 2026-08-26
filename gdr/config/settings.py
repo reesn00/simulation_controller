@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # LLM 投票每次请求最大字符预算 (含 surrounding), 超过会被截断
     llm_vote_max_context_chars: int = 4000
 
+    # 是否使用 ContextUnderstanding 替代旧的 ±N surrounding context 注入 LLM 投票 prompt
+    llm_vote_use_cu: bool = True
+    # CU 注入 prompt 的最大字符预算
+    cu_prompt_max_chars: int = 4000
+    # CU archive 子集策略: "full" 使用完整 archive; "referenced" 仅使用 referenced_by/depends_on 相关条目
+    cu_prompt_archive_strategy: str = "referenced"
+    # 折叠失败 toolresult / 重复 thinking 时是否使用 CU 保护被引用 block
+    fold_use_cu: bool = True
+
     max_retries_9b: int = 2
 
     tools_config_path: Path = Path("./config/tools.yaml")

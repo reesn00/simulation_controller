@@ -15,6 +15,7 @@ from domain import (
     ThinkingBlock, ToolcallBlock, ToolresultBlock, TextBlock,
 )
 from routing import Router
+from routing.health import light_health_score_for_session
 from refiners import thought_refactor, tool_fixer, obs_denoiser
 from validators import validate_block
 from reassembly import reassemble, fold_failed_toolresults, fold_repeated_thinking
@@ -29,31 +30,37 @@ def process_one(
 ) -> Session | None:
     t0 = time.perf_counter()
     try:
-        router = Router()
-        defects_index, health_scores = router.tag(session, tool_names, hallu_apis, cfg)
+        # === 0. 轻量健康分 (零 LLM) ===
+        light_health = light_health_score_for_session(session, cfg)
 
-        # === 会话级折叠: 删除同一工具组内失败/过时的 toolresult,
-        #     保留最后一次成功的 (toolcall, toolresult)。健康与不健康消息均生效。===
-        folded = fold_failed_toolresults(session, cfg)
-        if folded:
-            log.info("folded %d failed toolresult block(s)", folded)
-
-        # === 会话级折叠: 连续 thinking 只保留最后一条, 消除重复思考。===
-        folded_thinking = fold_repeated_thinking(session, cfg)
-        if folded_thinking:
-            log.info("folded %d consecutive thinking block(s)", folded_thinking)
-
-        # === 上下文理解 + 决策层 (P0) ===
-        unhealthy_msg_indices = {h.msg_idx for h in health_scores if not h.is_healthy}
+        # === 1. 上下文理解 (基于轻量健康初始化 CU) ===
         context_understanding = None
         if getattr(cfg, "enable_context_understanding", True):
             try:
                 context_understanding = build_context_for_session(
-                    session, cfg, unhealthy_msg_indices=unhealthy_msg_indices,
+                    session, cfg, light_health=light_health,
                 )
             except Exception as e:
                 log.warning("ContextUnderstanding.build failed, falling back: %s", e)
                 context_understanding = None
+
+        # === 2. 在 Router 之前先做会话级折叠, 并让 CU 保护被引用 block ===
+        folded = fold_failed_toolresults(session, cfg, cu=context_understanding)
+        if folded:
+            log.info("folded %d failed toolresult block(s)", folded)
+
+        folded_thinking = fold_repeated_thinking(session, cfg, cu=context_understanding)
+        if folded_thinking:
+            log.info("folded %d consecutive thinking block(s)", folded_thinking)
+
+        # === 3. Router.tag 使用 CU 作为 LLM 评审上下文 ===
+        router = Router()
+        defects_index, health_scores = router.tag(
+            session, tool_names, hallu_apis, cfg,
+            context_understanding=context_understanding,
+        )
+
+        unhealthy_msg_indices = {h.msg_idx for h in health_scores if not h.is_healthy}
 
         policy_decisions: list[dict] = []
         prune_block_ids: set[str] = set()

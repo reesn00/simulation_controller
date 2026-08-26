@@ -276,6 +276,7 @@ class Router:
 
     def _llm_layer(
         self, blocks_info: list[dict], session, cfg,
+        context_understanding=None,
     ) -> dict[str, list[DefectTag]]:
         """鲁棒化的 3 票投票, 每次投票使用不同的上下文窗口策略。
 
@@ -312,14 +313,15 @@ class Router:
             votes: list[bool] = []
             parse_errors = 0
             for vote_idx, strategy in enumerate(strategies):
-                surrounding = self._build_surrounding_context(
-                    session, msg_idx, block_idx, strategy,
-                    max_chars=cfg.llm_vote_max_context_chars,
+                context_text = self._build_review_context(
+                    session, msg_idx, block_idx, block_id, strategy,
+                    context_understanding=context_understanding,
+                    cfg=cfg,
                 )
                 try:
                     from infrastructure import LlamaCppClient
                     llm = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout_s=cfg.llm_timeout_s)
-                    prompt = self._build_llm_review_prompt(block_type, content, surrounding)
+                    prompt = self._build_llm_review_prompt(block_type, content, context_text)
                     text, _ = llm.generate(
                         prompt,
                         max_tokens=256,
@@ -359,6 +361,39 @@ class Router:
                         result.setdefault(block_id, []).append(DefectTag.OBS_NOISE)
 
         return result
+
+    def _build_review_context(
+        self,
+        session, msg_idx, block_idx, block_id: str, strategy: str,
+        context_understanding=None, cfg=None,
+    ) -> str:
+        """组装 Router LLM 评审所需的上下文。
+
+        当 ``cfg.llm_vote_use_cu=True`` 且 ``context_understanding`` 可用时,
+        使用 CU archive/view 作为注入上下文; 否则回退到旧 ±N surrounding。
+        """
+        cfg = cfg or self.cfg if hasattr(self, "cfg") else None
+        if cfg is None:
+            return self._build_surrounding_context(
+                session, msg_idx, block_idx, strategy, max_chars=4000,
+            )
+
+        if getattr(cfg, "llm_vote_use_cu", False) and context_understanding is not None:
+            try:
+                cu_text = context_understanding.render_archive_for_block(
+                    block_id,
+                    max_chars=cfg.cu_prompt_max_chars,
+                    strategy=cfg.cu_prompt_archive_strategy,
+                )
+                if cu_text:
+                    return cu_text
+            except Exception as e:
+                log.warning("CU prompt rendering failed for block %s: %s", block_id, e)
+
+        return self._build_surrounding_context(
+            session, msg_idx, block_idx, strategy,
+            max_chars=cfg.llm_vote_max_context_chars,
+        )
 
     @staticmethod
     def _build_surrounding_context(
@@ -414,7 +449,7 @@ class Router:
             joined = joined[:max_chars] + "\n...(truncated)"
         return joined
 
-    def _build_llm_review_prompt(self, block_type: str, content: str, surrounding: str = "") -> str:
+    def _build_llm_review_prompt(self, block_type: str, content: str, context_text: str = "") -> str:
         if block_type == "thinking":
             role = "[角色] 思考链质量判断专家。"
             task = "判断推理链是否存在逻辑断裂"
@@ -427,7 +462,7 @@ class Router:
         else:
             return f"判断是否存在缺陷: {content}"
 
-        ctx_part = f"[相邻上下文]\n{surrounding}\n" if surrounding else ""
+        ctx_part = f"[会话上下文]\n{context_text}\n" if context_text else ""
         return (
             f"{role}\n"
             f"{ctx_part}"
@@ -438,6 +473,7 @@ class Router:
     def tag(
         self, session: Session,
         tool_names: list[str], hallu_apis: set[str], cfg,
+        *, context_understanding=None,
     ) -> tuple[dict[str, list[DefectTag]], list[MessageHealth]]:
         defects_index: dict[str, list[DefectTag]] = {}
         health_scores: list[MessageHealth] = []
@@ -542,7 +578,10 @@ class Router:
                 })
 
         if candidate_blocks:
-            llm_tags = self._llm_layer(candidate_blocks, session, cfg)
+            llm_tags = self._llm_layer(
+                candidate_blocks, session, cfg,
+                context_understanding=context_understanding,
+            )
             for bid, tags in llm_tags.items():
                 for tag in tags:
                     if tag not in defects_index.get(bid, []):
