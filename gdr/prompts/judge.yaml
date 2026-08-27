@@ -7,9 +7,9 @@ system: |
   [判定逻辑] verdict=="pass" 且 score≥7 才算通过。
 
 user: |
-  块类型: {{block_type}}
-  原始内容: {{original}}
-  精修后内容: {{refined}}
-  上下文: {{context}}
+  块类型: "{{block_type}}"
+  原始内容: "{{original}}"
+  精修后内容: "{{refined}}"
+  上下文: "{{context}}"
 
   [输出] JSON: {"verdict":"pass|fail","score":0-10,"reason":"..."}

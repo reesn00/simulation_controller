@@ -16,14 +16,148 @@ P0 范围 (零 LLM 调用):
 """
 from __future__ import annotations
 
+import copy
+import json
 import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Literal
+from typing import Any, Literal
 
 log = logging.getLogger(__name__)
+
+
+# === 全局状态（增量状态追踪核心） ===
+
+@dataclass
+class GlobalState:
+    """增量状态追踪的结构化状态对象。全文摘要是 = state_snapshots[-1]。
+
+    字段语义见 docs/incremental-state-tracking-plan.md §3.1。
+    """
+    task_goal: str = ""
+    current_step: str = ""
+    key_entities: dict[str, Any] = field(default_factory=dict)
+    completed_actions: list[str] = field(default_factory=list)
+    archived_actions: list[str] = field(default_factory=list)
+    open_issues: list[str] = field(default_factory=list)
+    last_error: str | None = None
+    critical_constraints: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "task_goal": self.task_goal,
+            "current_step": self.current_step,
+            "key_entities": dict(self.key_entities),
+            "completed_actions": list(self.completed_actions),
+            "archived_actions": list(self.archived_actions),
+            "open_issues": list(self.open_issues),
+            "last_error": self.last_error,
+            "critical_constraints": list(self.critical_constraints),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GlobalState":
+        return cls(
+            task_goal=data.get("task_goal", "") or "",
+            current_step=data.get("current_step", "") or "",
+            key_entities=dict(data.get("key_entities", {}) or {}),
+            completed_actions=list(data.get("completed_actions", []) or []),
+            archived_actions=list(data.get("archived_actions", []) or []),
+            open_issues=list(data.get("open_issues", []) or []),
+            last_error=data.get("last_error"),
+            critical_constraints=list(data.get("critical_constraints", []) or []),
+        )
+
+    def render(self) -> str:
+        """将状态对象渲染为可注入 prompt 的纯文本。"""
+        lines = ["## 当前全局状态 (GlobalState)"]
+        if self.task_goal:
+            lines.append(f"- task_goal: {self.task_goal}")
+        if self.current_step:
+            lines.append(f"- current_step: {self.current_step}")
+        if self.key_entities:
+            ent_str = ", ".join(f"{k}={v}" for k, v in self.key_entities.items())
+            lines.append(f"- key_entities: {ent_str}")
+        if self.completed_actions:
+            lines.append(f"- completed_actions: {', '.join(self.completed_actions)}")
+        if self.open_issues:
+            lines.append(f"- open_issues: {', '.join(self.open_issues)}")
+        if self.last_error:
+            lines.append(f"- last_error: {self.last_error}")
+        if self.critical_constraints:
+            lines.append(f"- critical_constraints: {', '.join(self.critical_constraints)}")
+        return "\n".join(lines)
+
+
+GLOBAL_STATE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "task_goal": {"type": "string"},
+        "current_step": {"type": "string"},
+        "key_entities": {"type": "object"},
+        "completed_actions": {"type": "array", "items": {"type": "string"}},
+        "archived_actions": {"type": "array", "items": {"type": "string"}},
+        "open_issues": {"type": "array", "items": {"type": "string"}},
+        "last_error": {"type": ["string", "null"]},
+        "critical_constraints": {"type": "array", "items": {"type": "string"}},
+    },
+    "additionalProperties": False,
+}
+
+
+def _try_parse_state_dict(text: str) -> dict | None:
+    """解析 LLM 输出的状态 JSON。优先从代码块中抽取，其次全文解析。"""
+    if not text:
+        return None
+    # 抽取 ```json ... ``` 代码块
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        candidate = m.group(1)
+    else:
+        # 抽取首个 { ... } 段
+        m2 = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m2:
+            return None
+        candidate = m2.group(0)
+    try:
+        return json.loads(candidate)
+    except Exception:
+        # 尝试 json_repair 容错
+        try:
+            import json_repair  # type: ignore
+            repaired = json_repair.repair_json(candidate)
+            return json.loads(repaired) if isinstance(repaired, str) else None
+        except Exception:
+            return None
+
+
+def _validate_state_dict(data: dict | None) -> dict | None:
+    """校验状态 dict 是否符合 schema。返回校验后的 dict 或 None。"""
+    if not isinstance(data, dict):
+        return None
+    try:
+        import jsonschema  # type: ignore
+        jsonschema.validate(instance=data, schema=GLOBAL_STATE_SCHEMA)
+    except Exception as e:
+        log.debug("state dict schema validation failed: %s", e)
+        return None
+    return data
+
+
+_DEFAULT_STATE_TRACKER_PROMPT = """[角色] 你是一个 Agent 轨迹状态追踪器。
+[任务] 根据新的对话片段, 仅更新状态 JSON 中发生变化的字段。未提及的字段保持原值。如果新片段包含关键实体、约束或错误, 必须提取并写入对应字段。
+[当前状态]
+{current_state}
+[新对话片段]
+{chunk}
+[输出要求]
+- 输出完整的状态 JSON (不是 diff, 避免合并错误)
+- 未变化的字段保留原值
+- 关键实体 (订单号、用户名、文件路径等) 必须保留
+- 输出纯 JSON, 不要加任何解释
+"""
 
 
 _NOISE_PATTERN = re.compile(
@@ -273,6 +407,13 @@ class ContextUnderstanding:
         self._llm_compression_count: int = 0
         self._unhealthy_msg_indices: set[int] = set()
 
+        # === 增量状态追踪（新增：方案 §3） ===
+        self._chunks: list[list[str]] = []              # chunk_idx -> [block_id, ...]
+        self._block_to_chunk: dict[str, int] = {}       # block_id -> chunk_idx
+        self._state_snapshots: dict[int, GlobalState] = {}
+        self._latest_state: GlobalState = GlobalState()
+        self._state_tracking_calls: int = 0             # 用于 context_max_state_llm_calls 限额
+
     # === 公开 API ===
 
     def build(
@@ -298,12 +439,32 @@ class ContextUnderstanding:
         self._build_tiered_archive(session)
         self._evict_until_under_budget()
         self._annotate_block_views()
+        # === 增量状态追踪阶段（方案 §3） ===
+        if getattr(self.cfg, "context_state_tracker_enabled", True):
+            self._chunkify(session)
+            self._track_state(session)
 
     def get_view(self, block_id: str) -> BlockContextView | None:
         return self._block_index.get(block_id)
 
     def render_archive(self, max_chars: int | None = None) -> str:
-        return self._archive.render(max_chars or self.max_archive_chars)
+        """渲染全局上下文。两段式：最新状态快照 + 分级 archive。
+
+        当 context_state_tracker_enabled 且已生成快照时, 状态快照优先;
+        否则回退到旧 TieredArchive 渲染。
+        """
+        max_chars = max_chars or self.max_archive_chars
+        parts: list[str] = []
+        if getattr(self.cfg, "context_state_tracker_enabled", True) and self._state_snapshots:
+            state_text = self._latest_state.render()
+            if state_text and len(state_text) <= max_chars:
+                parts.append(state_text)
+                max_chars -= len(state_text)
+        if max_chars > 0:
+            arc_text = self._archive.render(max_chars)
+            if arc_text:
+                parts.append(arc_text)
+        return "\n\n".join(parts)
 
     def render_archive_for_block(
         self, block_id: str,
@@ -702,6 +863,268 @@ class ContextUnderstanding:
                 - 0.3 * dup_penalty
             )
             view.relevance_to_active = max(0.0, min(1.0, view.relevance_to_active))
+
+    # === 增量状态追踪相关方法（方案 §3, §5.4） ===
+
+    @property
+    def num_chunks(self) -> int:
+        return len(self._chunks)
+
+    @property
+    def chunks(self) -> list[list[str]]:
+        return self._chunks
+
+    @property
+    def chunk_blocks(self) -> dict[int, list[str]]:
+        return {i: list(self._chunks[i]) for i in range(len(self._chunks))}
+
+    @property
+    def state_snapshots(self) -> dict[int, GlobalState]:
+        return self._state_snapshots
+
+    def chunk_of_block(self, block_id: str) -> int | None:
+        return self._block_to_chunk.get(block_id)
+
+    def latest_state(self) -> GlobalState:
+        return copy.deepcopy(self._latest_state)
+
+    def snapshot_at(self, chunk_idx: int) -> GlobalState | None:
+        s = self._state_snapshots.get(chunk_idx)
+        return copy.deepcopy(s) if s is not None else None
+
+    def _chunkify(self, session) -> None:
+        """按 toolcall 边界切分 session 为 Chunk（方案 §3.2）。
+
+        每个 Chunk 包含 1~N (默认 3) 个完整 toolcall-toolresult 对,
+        绝不拆开 Action-Observation。thinking 归属其随后 toolcall; text 归属最近 chunk 尾部。
+        """
+        max_pairs = max(1, getattr(self.cfg, "context_chunk_max_tool_pairs", 3))
+        chunks: list[list[str]] = []
+        block_to_chunk: dict[str, int] = {}
+
+        for msg_idx, msg in enumerate(session.messages):
+            if msg.role != "assistant":
+                continue
+            blocks = list(msg.blocks)
+            i = 0
+            current: list[str] = []
+            pair_count = 0
+            while i < len(blocks):
+                b = blocks[i]
+                bt = _get_attr(b, "type", "")
+                bid = _get_attr(b, "id", "")
+                # thinking 永远归属当前 chunk, 不计入 pair
+                if bt == "thinking":
+                    if bid:
+                        current.append(bid)
+                        block_to_chunk[bid] = len(chunks)
+                    i += 1
+                    continue
+                # toolcall: 加入当前 chunk, 后续配对的 toolresult 也加入
+                if bt == "toolcall":
+                    if bid:
+                        current.append(bid)
+                        block_to_chunk[bid] = len(chunks)
+                    # 紧邻的同 id toolresult 一并加入
+                    j = i + 1
+                    while j < len(blocks):
+                        nb = blocks[j]
+                        nt = _get_attr(nb, "type", "")
+                        nbid = _get_attr(nb, "id", "")
+                        if nt == "toolresult" and nbid == bid:
+                            current.append(nbid)
+                            block_to_chunk[nbid] = len(chunks)
+                            break
+                        j += 1
+                    pair_count += 1
+                    i = j + 1
+                    if pair_count >= max_pairs:
+                        chunks.append(current)
+                        current = []
+                        pair_count = 0
+                    continue
+                # text: 归属最近 chunk 尾部
+                if bt == "text":
+                    if current and bid:
+                        current.append(bid)
+                        block_to_chunk[bid] = len(chunks)
+                    elif bid:
+                        current.append(bid)
+                        block_to_chunk[bid] = len(chunks)
+                    i += 1
+                    continue
+                # 其它类型（理论上不应出现）: 直接跳过
+                i += 1
+            if current:
+                chunks.append(current)
+        if current and not chunks:
+            chunks.append(current)
+
+        self._chunks = chunks
+        self._block_to_chunk = block_to_chunk
+
+    def _track_state(self, session) -> None:
+        """对每个 Chunk 增量更新 GlobalState, 保存快照。
+
+        严格遵守 max_calls 上限, 失败时沿用上一版状态并告警。
+        """
+        if not self._chunks:
+            return
+        max_calls = max(0, getattr(self.cfg, "context_max_state_llm_calls", 20))
+        max_retries = max(0, getattr(self.cfg, "context_state_max_retries", 1))
+        current = GlobalState()
+        snapshots: dict[int, GlobalState] = {}
+        for ci, block_ids in enumerate(self._chunks):
+            if self._state_tracking_calls >= max_calls:
+                log.warning(
+                    "state tracking hit max calls=%d, chunk %d+ reuses previous state",
+                    max_calls, ci,
+                )
+                snapshots[ci] = copy.deepcopy(current)
+                continue
+            new_state = self._state_update_one(current, session, block_ids, max_retries)
+            if new_state is None:
+                log.warning("state update failed at chunk %d, keep previous state", ci)
+                snapshots[ci] = copy.deepcopy(current)
+                continue
+            current = new_state
+            snapshots[ci] = copy.deepcopy(current)
+        self._latest_state = current
+        self._state_snapshots = snapshots
+
+    def _state_update_one(
+        self, current: GlobalState, session, block_ids: list[str], max_retries: int,
+    ) -> GlobalState | None:
+        """对单个 Chunk 调用 LLM 更新状态; 返回新状态或 None（失败时）。
+
+        渲染基于 session 的当前 block 内容 (而非 build 时快照),
+        这样编辑后重跑 (state_after) 才能反映最新文本。
+        """
+        try:
+            from infrastructure import LlamaCppClient
+        except Exception as e:
+            log.warning("LlamaCppClient not importable, skip state update: %s", e)
+            return None
+
+        chunk_text = self._render_chunk_text(session, block_ids)
+        if not chunk_text:
+            # 空 Chunk: 直接返回当前状态快照
+            return copy.deepcopy(current)
+
+        prompt = self._build_state_prompt(current, chunk_text)
+        # _build_state_prompt 返回的可能是 "system\n\nuser" 拼接, 解析出 messages
+        system_prompt, user_prompt = self._split_state_prompt(prompt)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        model = getattr(self.cfg, "context_state_model", None) or self.cfg.main_model
+        timeout = getattr(self.cfg, "llm_timeout_s", 120)
+
+        last_err: str = ""
+        for attempt in range(max_retries + 1):
+            self._state_tracking_calls += 1
+            retry_messages = messages
+            if attempt > 0:
+                # Retry: 注入 Nudge 提示, 强制 LLM 输出 JSON
+                retry_messages = list(messages) + [
+                    {"role": "user", "content": "上轮你只给了分析说明, 没有给出 JSON 代码块。请立即输出 ```json ... ``` 格式的完整状态 JSON, 不要继续解释。"}
+                ]
+            try:
+                client = LlamaCppClient.get(model, cfg=self.cfg, timeout=timeout)
+                text, _ = client.chat(retry_messages, max_tokens=4000, temperature=0.0, timeout_s=timeout)
+                data = _validate_state_dict(_try_parse_state_dict(text))
+                if data is None:
+                    raise ValueError("invalid state json after repair")
+                return GlobalState.from_dict(data)
+            except Exception as e:
+                last_err = str(e)
+                log.debug("state update attempt %d failed: %s; raw=%r", attempt + 1, e, text[:400] if isinstance(text, str) else text)
+        log.warning("state update exhausted retries: %s", last_err)
+        return None
+
+    def _render_chunk_text(self, session, block_ids: list[str]) -> str:
+        """将 Chunk 的 block 列表渲染为适合送入 LLM 的纯文本。
+
+        从 session 当前内容取 block (支持编辑后重跑), 已被 prune 的 block 跳过。
+        """
+        # 建立 block_id -> 当前 block 的快速索引
+        live: dict[str, object] = {}
+        for msg in session.messages:
+            for b in msg.blocks:
+                bid = _get_attr(b, "id", "")
+                if bid:
+                    live[bid] = b
+
+        lines: list[str] = []
+        for bid in block_ids:
+            block = live.get(bid)
+            if block is None:
+                continue  # 已被 prune 的 block 不参与状态更新
+            bt = _get_attr(block, "type", "")
+            if bt == "thinking":
+                content = _get_attr(block, "thinking", "")
+                lines.append(f"[thinking] {content}")
+            elif bt == "toolcall":
+                name = _get_attr(block, "name", "")
+                inp = _get_attr(block, "input", "")
+                lines.append(f"[toolcall:{name}] {inp}")
+            elif bt == "toolresult":
+                name = _get_attr(block, "name", "")
+                state = _get_attr(block, "state", "")
+                out = _get_attr(block, "output_text", "")
+                lines.append(f"[toolresult:{name} state={state}] {out[:1000]}")
+            elif bt == "text":
+                content = _get_attr(block, "text", "")
+                lines.append(f"[text] {content[:500]}")
+        return "\n".join(lines)
+
+    def _build_state_prompt(self, current: GlobalState, chunk_text: str) -> str:
+        """构造增量状态更新 prompt。"""
+        current_json = json.dumps(current.to_dict(), ensure_ascii=False, indent=2)
+        # 复用 prompts/state_tracker.yaml（如存在），否则用内置默认
+        try:
+            from prompts import load_and_render
+            tpl = load_and_render("state_tracker", "user",
+                                  current_state=current_json,
+                                  chunk=chunk_text)
+            system = load_and_render("state_tracker", "system")
+            return system + "\n\n" + tpl
+        except Exception:
+            # 内置默认
+            return _DEFAULT_STATE_TRACKER_PROMPT.format(
+                current_state=current_json, chunk=chunk_text,
+            )
+
+    @staticmethod
+    def _split_state_prompt(prompt: str) -> tuple[str, str]:
+        """把 _build_state_prompt 返回的 "system\\n\\nuser" 拆回 (system, user)。"""
+        marker = "\n\n"
+        idx = prompt.find(marker)
+        if idx == -1:
+            return prompt, ""
+        return prompt[:idx], prompt[idx + len(marker):]
+
+    def state_after(
+        self, session, chunk_idx: int, cfg=None,
+    ) -> GlobalState | None:
+        """编辑后, 对单个 chunk 重跑状态更新, 返回该 chunk 的新快照。
+
+        用于一致性校验（方案 §5.4）。从 chunk_idx=0 开始累积至 chunk_idx,
+        避免上游 chunk 未编辑时浪费 LLM 调用。
+        """
+        if chunk_idx < 0 or chunk_idx >= len(self._chunks):
+            return None
+        cfg = cfg or self.cfg
+        max_retries = max(0, getattr(cfg, "context_state_max_retries", 1))
+        # 从 chunk 0 重新累积到 chunk_idx (基于编辑后的 session 内容)
+        current = GlobalState()
+        for ci in range(0, chunk_idx + 1):
+            new_state = self._state_update_one(current, session, self._chunks[ci], max_retries)
+            if new_state is None:
+                return None
+            current = new_state
+        return current
 
 
 # === 便捷入口 ===

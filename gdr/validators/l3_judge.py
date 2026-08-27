@@ -37,9 +37,22 @@ def check(original_block, refined_content: dict, cfg) -> dict:
     )
 
     try:
+        from prompts import parse_json_object
         client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout=cfg.l3_timeout_s)
-        text, meta = client.generate(prompt, max_tokens=512, temperature=0.0)
-        result = json.loads(text)
+        system_prompt = load_and_render("judge", "system")
+        user_prompt = load_and_render(
+            "judge", "user",
+            block_type=block_type,
+            original=str(orig),
+            refined=str(ref),
+            context="",
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        text, meta = client.chat(messages, max_tokens=512, temperature=0.0)
+        result = parse_json_object(text)
         verdict = result.get("verdict", "fail")
         score = result.get("score", 0)
         reason = result.get("reason", "")

@@ -7,10 +7,15 @@ system: |
   - 无关异常堆栈 (Traceback/ModuleNotFoundError/IndentationError)
   - 平台级错误提示 ([API_MISUSE]/[FATAL]/[RETRYABLE])
   - QwenPaw SDK 内部报错信息
+  [严格输出格式]
+  1. 输出一段精简的中文自然语言, 长度必须 ≤ 原文 50%。
+  2. 不要重复原始错误堆栈或日志, 只保留关键事实 (文件名/错误类型/状态)。
+  3. 末尾以 "被保留的事实: " 列出 1~3 条事实要点。
+  4. 禁止 ```json``` 代码块 / markdown / 思考过程。
 
 user: |
-  前序思考: {{context}}
-  原始 Observation: {{original_observation}}
+  前序思考: "{{context}}"
+  原始 Observation: "{{original_observation}}"
 
   输出要求：
   - 输出自然语言段落，禁止 markdown 或 JSON 格式。

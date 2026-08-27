@@ -25,11 +25,58 @@ from core.policy import decide_policy, policy_reason, RefinementPolicy
 log = logging.getLogger(__name__)
 
 
+def _has_successful_terminal(session) -> bool:
+    """判断 session 是否以成功的最终动作收尾（用于硬过滤豁免）。"""
+    for msg in reversed(session.messages):
+        if msg.role != "assistant":
+            continue
+        for b in reversed(msg.blocks):
+            if isinstance(b, dict):
+                bt = b.get("type", "")
+                state = b.get("state", "")
+            else:
+                bt = getattr(b, "type", "")
+                state = getattr(b, "state", "")
+            if bt == "toolresult" and state == "success":
+                return True
+        return False
+    return False
+
+
+def _hard_filter_session(session, cfg: Settings) -> bool:
+    """Session 级零 LLM 硬过滤（方案 §5.1）。返回 True 表示通过。"""
+    if not getattr(cfg, "session_hard_filter_enabled", True):
+        return True
+    total_blocks = sum(len(m.blocks) for m in session.messages)
+    if total_blocks > cfg.session_max_blocks and not _has_successful_terminal(session):
+        log.warning(
+            "hard filter: session %s too many blocks (%d) without successful terminal",
+            session.session_id, total_blocks,
+        )
+        return False
+    if getattr(session, "error", None):
+        log.warning("hard filter: session %s has error=%s", session.session_id, session.error)
+        return False
+    for mi, m in enumerate(session.messages):
+        if getattr(m, "error", None):
+            log.warning(
+                "hard filter: session %s msg[%d] has error=%s",
+                session.session_id, mi, m.error,
+            )
+            return False
+    return True
+
+
 def process_one(
     session: Session, cfg: Settings, tool_names: list[str], hallu_apis: set[str],
 ) -> Session | None:
     t0 = time.perf_counter()
     try:
+        # === -1. Session 级硬过滤（方案 §5.1） ===
+        if not _hard_filter_session(session, cfg):
+            log.info("session %s filtered out by hard filter", session.session_id)
+            return None
+
         # === 0. 轻量健康分 (零 LLM) ===
         light_health = light_health_score_for_session(session, cfg)
 
@@ -248,8 +295,12 @@ def process_one(
             if _l1_sanity_check(session, tool_names, cfg.thought_max_len_l1):
                 log.info("no defects found in session %s", session.session_id)
                 return session
-            log.warning("session %s has no defect tags but failed L1 sanity check", session.session_id)
-            return None
+            log.warning(
+                "session %s has no defect tags but failed L1 sanity check; "
+                "falling back to original session to preserve audit trail",
+                session.session_id,
+            )
+            return session
 
         elapsed = time.perf_counter() - t0
         if elapsed > cfg.session_timeout_s:
@@ -264,6 +315,7 @@ def process_one(
             policy_decisions=policy_decisions,
             prune_block_ids=prune_block_ids,
             deferred_block_ids=deferred_block_ids,
+            cu=context_understanding,
         )
         log.debug(
             "session %s processed in %.2fs",
@@ -337,6 +389,36 @@ def _build_context(blocks: list, current_idx: int) -> dict:
     return ctx
 
 
+def _append_deferred_queue(session: Session, cfg: Settings) -> None:
+    """将 deferred / needs_review block 追加写入人工审核队列 jsonl (方案 §5.5)。
+
+    审核结果可反哺 prompt / 规则更新; 文件不存在时自动创建。
+    """
+    deferred = session.metadata.get("deferred_blocks") or []
+    edit_summary = session.metadata.get("edit_status_summary") or {}
+    needs_review_count = edit_summary.get("needs_review", 0)
+    if not deferred and not needs_review_count:
+        return
+    record = {
+        "session_id": session.session_id,
+        "source_file": getattr(session, "source_file", ""),
+        "deferred_blocks": deferred,
+        "needs_review_count": needs_review_count,
+        "edit_status_summary": edit_summary,
+    }
+    try:
+        path = Path(cfg.deferred_output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        log.info(
+            "deferred queue appended: %s (%d deferred, %d needs_review)",
+            path, len(deferred), needs_review_count,
+        )
+    except Exception as e:
+        log.warning("failed to append deferred queue: %s", e)
+
+
 def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dict:
     """单文件处理: load → refine → save。返回 per-file 状态 dict (供 worker 收集)。"""
     log.info("loading session from %s", input_path)
@@ -354,6 +436,8 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
             output_path.parent.mkdir(parents=True, exist_ok=True)
             save_session(result, output_path)
             log.info("saved refined session to %s", output_path)
+            # 方案 §5.5: 人工审核队列独立输出 (deferred blocks 追加到 jsonl)
+            _append_deferred_queue(result, cfg)
             return {"input": str(input_path), "output": str(output_path), "status": "success"}
         except Exception as e:
             log.error("failed to save %s: %s", output_path, e)

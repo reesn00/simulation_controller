@@ -34,6 +34,13 @@ class RefinementPolicy(StrEnum):
     DEFER_TO_HUMAN = "defer_to_human"
 
 
+class FailureHandlingMode(StrEnum):
+    """失败调用处理模式（方案 §5.3）。"""
+    CLEAN = "clean"      # 只保留成功路径
+    ROBUST = "robust"    # 保留 1 次典型错误 + 恢复, 触发 thought_refactor
+    DROP = "drop"        # 连续失败过多 → PRUNE_MESSAGE
+
+
 # === 决策表 ===
 
 _REPETITIVE_PRUNE = (DefectTag.REPETITIVE_CALL,)
@@ -87,7 +94,17 @@ def decide_policy(
 
     # === REPETITIVE_CALL ===
     if _has_any(defects, _REPETITIVE_PRUNE):
+        mode = getattr(cfg, "failure_handling_mode", "clean")
+        try:
+            fmode = FailureHandlingMode(mode)
+        except ValueError:
+            fmode = FailureHandlingMode.CLEAN
         if context_view.is_redundant_in_window:
+            # CLEAN: 直接删; ROBUST: 保留典型错误; DROP: 整条消息删
+            if fmode == FailureHandlingMode.DROP:
+                return RefinementPolicy.PRUNE_MESSAGE
+            if fmode == FailureHandlingMode.ROBUST:
+                return RefinementPolicy.REPAIR_IN_PLACE
             return RefinementPolicy.PRUNE_BLOCK
         if context_view.referenced_by:
             return RefinementPolicy.REPAIR_IN_PLACE

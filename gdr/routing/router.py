@@ -322,13 +322,15 @@ class Router:
                     from infrastructure import LlamaCppClient
                     llm = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
                     prompt = self._build_llm_review_prompt(block_type, content, context_text)
-                    text, _ = llm.generate(
-                        prompt,
-                        max_tokens=256,
+                    messages = [{"role": "user", "content": prompt}]
+                    text, _ = llm.chat(
+                        messages,
+                        max_tokens=400,
                         temperature=0.3,
                         timeout_s=cfg.llm_timeout_s,
                     )
-                    parsed = json.loads(text) if text.strip().startswith("{") else {}
+                    from prompts import parse_json_object
+                    parsed = parse_json_object(text)
                     if "has_defect" not in parsed:
                         parse_errors += 1
                         continue
@@ -380,6 +382,14 @@ class Router:
 
         if getattr(cfg, "llm_vote_use_cu", False) and context_understanding is not None:
             try:
+                # 优先注入增量状态追踪的最新快照（方案 §3.2）
+                if getattr(cfg, "context_state_tracker_enabled", True):
+                    state = context_understanding.latest_state()
+                    if state and (state.task_goal or state.key_entities or state.completed_actions):
+                        state_text = state.render()
+                        if state_text:
+                            return state_text
+                # 回退到 archive 渲染
                 cu_text = context_understanding.render_archive_for_block(
                     block_id,
                     max_chars=cfg.cu_prompt_max_chars,

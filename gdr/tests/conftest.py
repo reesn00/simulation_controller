@@ -16,6 +16,7 @@ def cfg() -> Settings:
         fold_use_cu=True,
         context_active_window_size=2,
         context_max_archive_chars=4000,
+        context_state_tracker_enabled=False,  # 单测纯本地, 不触发状态追踪 LLM 调用
     )
 
 

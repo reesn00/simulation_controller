@@ -23,6 +23,15 @@ class DefectTag(StrEnum):
     MESSAGE_UNHEALTHY = "message_unhealthy"
 
 
+class StepEditStatus(StrEnum):
+    """编辑状态（方案 §5.5）。"""
+    UNTOUCHED = "untouched"        # 未修改
+    EDITED = "edited"              # 已成功精修
+    PRESERVED = "preserved"        # 重要但无法准确修改, 保留原文
+    ROLLBACK = "rollback"          # 一致性校验冲突, 已回滚
+    NEEDS_REVIEW = "needs_review"  # 无法自动判断, 进入人工审核
+
+
 class BlockIndex(BaseModel):
     msg_idx: int
     block_idx: int
@@ -51,9 +60,11 @@ class BlockRefineRecord(BaseModel):
     original_content: dict
     refined_content: Optional[dict] = None
     attempts: int = 0
-    result: Literal["success", "failed", "escalated_then_failed"] = "failed"
+    result: Literal["success", "failed", "escalated_then_failed", "rollback"] = "failed"
     refine_log: list[RefineLogEntry] = []
     validation_results: list[ValidationResult] = []
+    # 方案 §5.5: 编辑状态, 由 reassembler 一致性校验与 metadata 落盘维护
+    edit_status: StepEditStatus = StepEditStatus.UNTOUCHED
 
 
 # 改进2: 宏观轨迹质量评分模型

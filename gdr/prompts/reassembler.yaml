@@ -7,8 +7,8 @@ system: |
   [评分] 0-10 分制，≥ 7 分通过。
 
 user: |
-  会话摘要: {{session_summary}}
+  会话摘要: "{{session_summary}}"
   各消息 thinking→toolcall→toolresult 序列:
-  {{messages_detail}}
+  "{{messages_detail}}"
 
   [输出] JSON: {"score": 0-10, "reason": "..."}

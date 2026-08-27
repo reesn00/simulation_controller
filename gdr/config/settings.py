@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     llm_timeout_s: int = 120
     l3_timeout_s: int = 60
 
-    max_compression_ratio: float = 0.50
+    max_compression_ratio: float = 1.50
     thought_min_len: int = 20
     thought_max_len: int = 500
     thought_max_len_l1: int = 2000
@@ -113,6 +113,32 @@ class Settings(BaseSettings):
     policy_defer_on_exhausted: bool = True       # REPAIR 失败耗尽是否转为 DEFER (而不是丢弃)
     policy_prune_with_pair_enabled: bool = False # 是否启用"连带 user 删除" (默认关闭，保守)
     policy_min_redundancy_for_prune: int = 1     # 窗口内至少 N 个等价版本才允许 PRUNE (默认 1: 任意已有等价版本即触发)
+
+    # === 增量状态追踪（方案 §3） ===
+    context_state_tracker_enabled: bool = True   # 是否启用增量状态追踪 (默认开启, 无回退开关)
+    context_chunk_max_tool_pairs: int = 3        # 每 Chunk 最大 toolcall-toolresult 对数
+    context_max_state_llm_calls: int = 20        # 单 session 状态追踪 LLM 调用上限
+    context_state_max_retries: int = 1           # 单 chunk 状态更新失败重试次数
+    state_escalate_to_tool_model: bool = False   # 复杂歧义场景是否升级 32B
+    # context_state_model 默认使用 main_model (9B 小模型优先)
+
+    # === Session 级硬过滤（方案 §5.1） ===
+    session_hard_filter_enabled: bool = True     # 是否启用 session 级硬过滤
+    session_max_blocks: int = 200                # 单 session 最大 block 数
+
+    # === 失败调用处理模式（方案 §5.3） ===
+    failure_handling_mode: str = "clean"         # clean / robust / drop
+    robust_max_failure_streak: int = 3           # robust 模式允许的最大连续失败次数
+
+    # === 一致性校验（方案 §5.4） ===
+    enable_edit_consistency_check: bool = True    # 编辑前后状态快照校验开关
+    consistency_rollback_on_entity_loss: bool = True  # 关键字段丢失时自动回滚
+
+    # === 训练质量评分（方案 §5.2） ===
+    enable_quality_scorer: bool = True           # 训练质量维度评分开关
+
+    # === 人工审核队列（方案 §5.5） ===
+    deferred_output_path: Path = Path("./refine_data/deferred.jsonl")  # 人工审核队列输出路径
 
     # === 批量 + 并行 ===
     batch_input_dir: Optional[Path] = None

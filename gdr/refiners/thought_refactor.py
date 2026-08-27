@@ -2,6 +2,7 @@ import json
 import re
 import logging
 from domain import ThinkingBlock, RefineLogEntry
+from prompts import parse_json_object
 
 log = logging.getLogger(__name__)
 
@@ -31,19 +32,29 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
     if not has_defect:
         return block.thinking
 
-    prompt = load_and_render(
-        "thought", "task",
+    system_prompt = load_and_render("thought", "system")
+    user_prompt = load_and_render(
+        "thought", "user",
         original_thinking=block.thinking,
         context=json.dumps(context, ensure_ascii=False),
         defects=", ".join(defects),
     )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
     last_error = None
     for attempt in range(cfg.max_retries_9b):
+        retry_messages = messages
+        if attempt > 0:
+            retry_messages = list(messages) + [
+                {"role": "user", "content": "上轮你只给了分析说明, 没有输出 JSON。请立即输出一个 ```json {\"refined_thought\": \"...\"} ``` 代码块, refined_thought 必须是修正后的 Thought 文本。"}
+            ]
         try:
             client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-            text, meta = client.generate(prompt, max_tokens=600)
-            result = json.loads(text)
+            text, meta = client.chat(retry_messages, max_tokens=600)
+            result = parse_json_object(text)
             refined = result.get("refined_thought", "")
             if not refined:
                 raise ValueError("empty refined_thought")
@@ -58,14 +69,14 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
             return refined
         except Exception as e:
             last_error = str(e)
-            log.debug("thought_refactor attempt %d failed: %s", attempt + 1, e)
+            log.debug("thought_refactor attempt %d failed: %s; raw=%r", attempt + 1, e, text[:400] if isinstance(text, str) else text)
             continue
 
     try:
         log.warning("escalation to 32B for block %s", block.id)
         client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-        text, meta = client.generate(prompt, max_tokens=600)
-        result = json.loads(text)
+        text, meta = client.chat(messages, max_tokens=600)
+        result = parse_json_object(text)
         refined = result.get("refined_thought", "")
         if refined and cfg.thought_min_len <= len(refined) <= cfg.thought_max_len:
             orig_entities = _extract_entities(block.thinking)

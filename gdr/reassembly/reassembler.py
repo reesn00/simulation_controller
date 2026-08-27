@@ -1,9 +1,99 @@
 import json
 import logging
-from domain import Session, BlockRefineRecord, MessageHealth, DefectTag
+from domain import Session, BlockRefineRecord, MessageHealth, DefectTag, StepEditStatus
 from core.policy import RefinementPolicy
 
 log = logging.getLogger(__name__)
+
+
+def _lost_critical_fields(before, after) -> list[str]:
+    """关键字段丢失/冲突检测 (方案 §5.4): 关键实体、约束、任务目标。"""
+    lost = []
+    before_keys = set(before.key_entities) - set(before.archived_actions)
+    after_keys = set(after.key_entities) - set(after.archived_actions)
+    if before_keys - after_keys:
+        lost.append("key_entities")
+    if set(before.critical_constraints) - set(after.critical_constraints):
+        lost.append("critical_constraints")
+    if before.task_goal and before.task_goal != after.task_goal:
+        lost.append("task_goal")
+    return lost
+
+
+def _validate_edit_consistency(
+    session: Session,
+    refine_records: list[BlockRefineRecord],
+    cu,
+    cfg,
+) -> list[BlockRefineRecord]:
+    """编辑后复用状态追踪器校验全局一致性 (方案 §5.4)。
+
+    对编辑过的 Chunk 从最早被编辑者起重跑增量状态更新, 对比前后状态快照:
+      - 关键字段丢失/冲突 → 回滚该 Chunk 内所有编辑 (result=rollback, 恢复原文)
+      - 状态重跑失败 → 该 Chunk 及之后的成功编辑标记 needs_review
+
+    注意: 调用时编辑已写回 session.blocks, 因此回滚必须把 block 恢复为 original_content。
+    """
+    edited_chunks: set[int] = set()
+    for r in refine_records:
+        if r.result != "success":
+            continue
+        ci = cu.chunk_of_block(r.block_index.block_id)
+        if ci is not None:
+            edited_chunks.add(ci)
+    if not edited_chunks:
+        return refine_records
+
+    first_edited = min(edited_chunks)
+    for ci in range(first_edited, cu.num_chunks):
+        new_state = cu.state_after(session, ci, cfg)
+        if new_state is None:
+            log.warning("state re-track failed at chunk %d, mark needs_review", ci)
+            for r in refine_records:
+                if r.result == "success":
+                    r_ci = cu.chunk_of_block(r.block_index.block_id)
+                    if r_ci is not None and r_ci >= ci:
+                        r.edit_status = StepEditStatus.NEEDS_REVIEW
+            return refine_records
+
+        before = cu.state_snapshots.get(ci)
+        if before is None:
+            continue
+        lost_keys = _lost_critical_fields(before, new_state)
+        if lost_keys and getattr(cfg, "consistency_rollback_on_entity_loss", True):
+            log.warning(
+                "consistency conflict at chunk %d: %s -> rollback edits in chunk",
+                ci, lost_keys,
+            )
+            for r in refine_records:
+                if r.block_index.block_id in cu.chunk_blocks.get(ci, []):
+                    r.refined_content = None
+                    r.result = "rollback"
+                    r.edit_status = StepEditStatus.ROLLBACK
+                    _restore_block_content(session, r)
+            # 回滚后快照恢复为编辑前状态, 继续校验后续 chunk
+            cu.state_snapshots[ci] = before
+    return refine_records
+
+
+def _restore_block_content(session: Session, record: BlockRefineRecord) -> None:
+    """把 block 恢复为 original_content（用于一致性回滚）。
+
+    按 block_id 定位 (prune 后 block_idx 可能错位, 不能直接用索引)。
+    """
+    bid = record.block_index.block_id
+    for msg in session.messages:
+        for block in msg.blocks:
+            cur_id = block.get("id", "") if isinstance(block, dict) else getattr(block, "id", "")
+            if cur_id != bid:
+                continue
+            orig = record.original_content or {}
+            for key, value in orig.items():
+                if isinstance(block, dict):
+                    block[key] = value
+                else:
+                    setattr(block, key, value)
+            return
 
 
 def _prune_repetitive_blocks(
@@ -390,6 +480,7 @@ def reassemble(
     policy_decisions: list[dict] | None = None,
     prune_block_ids: set[str] | None = None,
     deferred_block_ids: set[str] | None = None,
+    cu=None,
 ) -> Session | None:
     """组装 + 一致性终检 + 元数据落盘。
 
@@ -397,6 +488,7 @@ def reassemble(
       policy_decisions     决策层输出, 每个 dict 至少含 block_id / policy / reason / defects
       prune_block_ids      决策为 PRUNE_* 的 block ID 集合 (在元数据落盘前从 blocks 中移除)
       deferred_block_ids   决策为 DEFER_TO_HUMAN 的 block ID 集合 (不修改, 仅标记)
+      cu                   ContextUnderstanding 实例; 提供时执行方案 §5.4 编辑前后状态快照校验
 
     兼容性: 新参数均为可选; 旧调用方式 (只传前 3 个) 仍可用, 等价于关闭决策层。
     """
@@ -503,23 +595,43 @@ def reassemble(
                 else:
                     setattr(block, "output_text", refined["output_text"])
 
+    # === 方案 §5.4: 编辑前后状态快照一致性校验 + 自动回滚 ===
+    # 必须在编辑写回 blocks 之后执行; 回滚会把 block 恢复为 original_content
+    if cu is not None and cfg is not None and getattr(cfg, "enable_edit_consistency_check", True):
+        try:
+            refine_records = _validate_edit_consistency(session, refine_records, cu, cfg)
+        except Exception as e:
+            log.warning("edit consistency check failed, proceeding without rollback: %s", e)
+
+    # 方案 §5.5: 标记成功编辑的 edit_status
+    for r in refine_records:
+        if r.result == "success" and r.edit_status == StepEditStatus.UNTOUCHED:
+            r.edit_status = StepEditStatus.EDITED
+        elif r.result == "failed" and r.edit_status == StepEditStatus.UNTOUCHED:
+            r.edit_status = StepEditStatus.PRESERVED
+
     from infrastructure import LlamaCppClient
     from prompts import load_and_render
 
     strict = bool(getattr(cfg, "strict_consistency", True))
     try:
         messages_detail = _build_messages_detail(session)
-        prompt = load_and_render("reassembler", "system")
-        prompt += "\n\n" + load_and_render(
+        system_prompt = load_and_render("reassembler", "system")
+        user_prompt = load_and_render(
             "reassembler", "user",
             session_summary=session.summary,
             messages_detail=messages_detail,
         )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
         client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout=cfg.l3_timeout_s)
-        text, meta = client.generate(
-            prompt, max_tokens=256, temperature=0.0, timeout_s=cfg.l3_timeout_s,
+        text, meta = client.chat(
+            messages, max_tokens=256, temperature=0.0, timeout_s=cfg.l3_timeout_s,
         )
-        result = json.loads(text)
+        from prompts import parse_json_object
+        result = parse_json_object(text)
         score = result.get("score", 0)
         if score < 7:
             log.error(
@@ -601,6 +713,15 @@ def _attach_metadata(
         "failed_L3": l3_total - l3_passed,
     }
     session.metadata["modified_blocks"] = modified
+
+    # === 方案 §5.5: edit_status 汇总与版本血缘 ===
+    edit_summary: dict[str, int] = {}
+    for r in refine_records:
+        key = r.edit_status.value if hasattr(r.edit_status, "value") else str(r.edit_status)
+        edit_summary[key] = edit_summary.get(key, 0) + 1
+    session.metadata["edit_status_summary"] = edit_summary
+    session.metadata.setdefault("original_session_id", session.session_id)  # 血缘追溯
+    session.metadata.setdefault("refined_version", "v2")
 
     # === 新增: 决策层输出 ===
     if policy_decisions:

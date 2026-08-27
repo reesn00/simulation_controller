@@ -171,6 +171,12 @@ class LlamaCppClient:
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})
         text = message.get("content", "")
+        finish = choice.get("finish_reason", "")
+        if not text:
+            log.warning(
+                "empty llm response: model=%s finish_reason=%s payload_keys=%s raw_choice_keys=%s",
+                self.model, finish, list(payload.keys()), list(choice.keys()),
+            )
 
         usage = data.get("usage", {})
         meta = {

@@ -39,7 +39,7 @@ judge_model: MiniMax-M2.7        # env: GDR_JUDGE_MODEL
 # === 嵌入端点 (OpenAI-compatible /v1/embeddings) ===
 # v5-small-retrieval: 由外部 llama.cpp server 提供 (例: --port 8086 -m .../v5-small-retrieval-Q6_K.gguf -a v5-small-retrieval -ngl 999 --embedding -lm none -np 1 -c 18000)
 embedding_endpoint_url: http://127.0.0.1:8086/v1        # env: GDR_EMBEDDING_ENDPOINT_URL
-embedding_endpoint_model: v5-small-retrieval           # env: GDR_EMBEDDING_ENDPOINT_MODEL
+embedding_endpoint_model: v5-samll-jina           # env: GDR_EMBEDDING_ENDPOINT_MODEL
 embedding_expected_dim: 1024                           # 端点首响维度不匹配则启动失败
 embedding_timeout_s: 30.0
 embedding_max_batch: 32
@@ -78,7 +78,7 @@ llm_timeout_s: 120
 l3_timeout_s: 60
 
 # === 阈值 ===
-max_compression_ratio: 0.50
+max_compression_ratio: 1.50
 thought_min_len: 20
 thought_max_len: 500
 thought_max_len_l1: 2000
