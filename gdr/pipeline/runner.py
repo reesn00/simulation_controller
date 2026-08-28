@@ -44,14 +44,19 @@ def _has_successful_terminal(session) -> bool:
 
 
 def _hard_filter_session(session, cfg: Settings) -> bool:
-    """Session 级零 LLM 硬过滤（方案 §5.1）。返回 True 表示通过。"""
+    """Session 级零 LLM 硬过滤（方案 §5.1）。返回 True 表示通过。
+
+    修复 F（用户主旨）：仅按 block 数上限丢弃，不再因"无 successful terminal"丢弃。
+    即便 agent 最终失败跑路，只要数据完整（user≥2、assistant 有成功 toolresult），
+    都应进入 refine + reassemble 处理并导出。
+    """
     if not getattr(cfg, "session_hard_filter_enabled", True):
         return True
     total_blocks = sum(len(m.blocks) for m in session.messages)
-    if total_blocks > cfg.session_max_blocks and not _has_successful_terminal(session):
+    if total_blocks > cfg.session_max_blocks:
         log.warning(
-            "hard filter: session %s too many blocks (%d) without successful terminal",
-            session.session_id, total_blocks,
+            "hard filter: session %s too many blocks (%d > %d)",
+            session.session_id, total_blocks, cfg.session_max_blocks,
         )
         return False
     if getattr(session, "error", None):

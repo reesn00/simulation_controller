@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 
 
 class JsonlFormatter(logging.Formatter):
@@ -38,7 +38,7 @@ def setup_logger(log_dir: Path) -> None:
 
     # 幂等：避免多进程 worker 重复添加相同 handler
     has_stream = _has_handler(
-        root, lambda h: isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
+        root, lambda h: isinstance(h, logging.StreamHandler) and not isinstance(h, TimedRotatingFileHandler)
     )
     if not has_stream:
         h1 = logging.StreamHandler(sys.stdout)
@@ -47,18 +47,22 @@ def setup_logger(log_dir: Path) -> None:
         root.addHandler(h1)
 
     jsonl_path = log_dir / "gdr.jsonl"
+    # TimedRotatingFileHandler 切分后历史文件形如 gdr.jsonl.YYYYMMDDHH
     has_jsonl = _has_handler(
         root,
-        lambda h: isinstance(h, RotatingFileHandler)
+        lambda h: isinstance(h, TimedRotatingFileHandler)
         and getattr(h, "baseFilename", "") == str(jsonl_path.resolve()),
     )
     if not has_jsonl:
-        h2 = RotatingFileHandler(
+        h2 = TimedRotatingFileHandler(
             jsonl_path,
-            maxBytes=10_000_000,
-            backupCount=5,
+            when="H",        # 按小时切分
+            interval=1,      # 每 1 小时
+            backupCount=72,  # 保留 72 小时历史 (3 天); 设为 0 不自动清理
             encoding="utf-8",
+            utc=False,       # 用本地时间; 改成 True 则与 JsonlFormatter 的 UTC ISO 时间一致
         )
+        h2.suffix = "%Y%m%d%H"  # 历史文件后缀: gdr.jsonl.2026082821
         h2.setLevel(logging.DEBUG)
         h2.setFormatter(JsonlFormatter())
         root.addHandler(h2)

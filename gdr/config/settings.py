@@ -124,7 +124,7 @@ class Settings(BaseSettings):
 
     # === Session 级硬过滤（方案 §5.1） ===
     session_hard_filter_enabled: bool = True     # 是否启用 session 级硬过滤
-    session_max_blocks: int = 200                # 单 session 最大 block 数
+    session_max_blocks: int = 500                # 单 session 最大 block 数（覆盖 1ce... 类长 session；用户主旨：数据完整即处理并导出）
 
     # === 失败调用处理模式（方案 §5.3） ===
     failure_handling_mode: str = "clean"         # clean / robust / drop
