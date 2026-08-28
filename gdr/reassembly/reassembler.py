@@ -1,9 +1,58 @@
 import json
 import logging
+import time
 from domain import Session, BlockRefineRecord, MessageHealth, DefectTag, StepEditStatus
 from core.policy import RefinementPolicy
 
 log = logging.getLogger(__name__)
+
+# 修复 A: reassemble 内部 timeout 守护（防止 consistency check / judge 卡死导致 30+ 分钟）
+_REASSEMBLE_T0: float = 0.0
+
+
+def _over_session_budget(cfg, t0: float) -> bool:
+    """reassemble 内部判断：是否已超过 session_timeout_s 预算。"""
+    if cfg is None or t0 <= 0:
+        return False
+    budget = getattr(cfg, "session_timeout_s", 180)
+    return (time.perf_counter() - t0) > budget
+
+
+def _is_session_too_bad(session) -> bool:
+    """判断原 session 是否过于糟糕（应立刻丢弃，不值得保留 refine 成果）。
+
+    触发任一条件即返回 True:
+      1. 用户消息 ≤ 1 条（无后续交互可学习）
+      2. assistant 消息 ≤ 1 条，且该条无任何成功 toolresult（agent 第一次失败就跑路）
+    """
+    if session is None or not getattr(session, "messages", None):
+        return True
+
+    user_count = sum(1 for m in session.messages if m.role == "user")
+    assistant_msgs = [m for m in session.messages if m.role == "assistant"]
+
+    if user_count <= 1:
+        return True
+
+    if len(assistant_msgs) <= 1:
+        if not assistant_msgs:
+            return True
+        first = assistant_msgs[0]
+        has_success = False
+        for b in first.blocks:
+            if isinstance(b, dict):
+                bt = b.get("type", "")
+                state = b.get("state", "")
+            else:
+                bt = getattr(b, "type", "")
+                state = getattr(b, "state", "")
+            if bt == "toolresult" and state == "success":
+                has_success = True
+                break
+        if not has_success:
+            return True
+
+    return False
 
 
 def _lost_critical_fields(before, after) -> list[str]:
@@ -496,6 +545,9 @@ def reassemble(
     prune_block_ids = prune_block_ids or set()
     deferred_block_ids = deferred_block_ids or set()
 
+    # 修复 A: 启动内部超时计时器（仿 runner.py:306 风格）
+    _REASSEMBLE_T0 = time.perf_counter()
+
     if not refine_records and not policy_decisions:
         log.error("discard session %s, reason=all_blocks_invalid", session.session_id)
         return None
@@ -598,10 +650,28 @@ def reassemble(
     # === 方案 §5.4: 编辑前后状态快照一致性校验 + 自动回滚 ===
     # 必须在编辑写回 blocks 之后执行; 回滚会把 block 恢复为 original_content
     if cu is not None and cfg is not None and getattr(cfg, "enable_edit_consistency_check", True):
-        try:
-            refine_records = _validate_edit_consistency(session, refine_records, cu, cfg)
-        except Exception as e:
-            log.warning("edit consistency check failed, proceeding without rollback: %s", e)
+        if _over_session_budget(cfg, _REASSEMBLE_T0):
+            log.warning(
+                "session %s: over session budget (%.1fs) before consistency check, skipping",
+                session.session_id, cfg.session_timeout_s,
+            )
+        else:
+            had_success_before = any(r.result == "success" for r in refine_records)
+            try:
+                refine_records = _validate_edit_consistency(session, refine_records, cu, cfg)
+            except Exception as e:
+                log.warning("edit consistency check failed, proceeding without rollback: %s", e)
+            # 修复 B: 所有成功编辑都被一致性回滚 → blocks 已恢复为原文（语义安全），
+            # 短路跳过终 judge，避免 judge 把"无编辑痕迹"误判 0 分 → 双重丢弃。
+            still_success = sum(1 for r in refine_records if r.result == "success")
+            if had_success_before and still_success == 0:
+                log.warning(
+                    "session %s: all %d success edits rolled back by consistency check, "
+                    "skipping end-of-pipeline judge (blocks already restored to safe original)",
+                    session.session_id, had_success_before,
+                )
+                _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
+                return session
 
     # 方案 §5.5: 标记成功编辑的 edit_status
     for r in refine_records:
@@ -614,6 +684,14 @@ def reassemble(
     from prompts import load_and_render
 
     strict = bool(getattr(cfg, "strict_consistency", True))
+    # 修复 A: judge 调用前再判一次 budget，超时则跳过 judge、保留当前已修复的 session
+    if _over_session_budget(cfg, _REASSEMBLE_T0):
+        log.warning(
+            "session %s: over session budget (%.1fs) before judge, returning without final score",
+            session.session_id, cfg.session_timeout_s,
+        )
+        _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
+        return session
     try:
         messages_detail = _build_messages_detail(session)
         system_prompt = load_and_render("reassembler", "system")
@@ -634,11 +712,20 @@ def reassemble(
         result = parse_json_object(text)
         score = result.get("score", 0)
         if score < 7:
-            log.error(
-                "discard session %s, reason=consistency_score=%s",
-                session.session_id, score,
+            # 修复 E: judge 评分低 ≠ refine 错；仅当原 session 本身过于糟糕时才丢弃。
+            if _is_session_too_bad(session):
+                log.error(
+                    "discard session %s, reason=consistency_score=%s (session too bad)",
+                    session.session_id, score,
+                )
+                return None
+            log.warning(
+                "judge score %s < 7 for session %s, but session has usable content "
+                "(user>=2 + assistant has successes); returning session with refined blocks",
+                score, session.session_id,
             )
-            return None
+            _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
+            return session
     except Exception as e:
         if strict:
             log.error(

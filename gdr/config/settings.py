@@ -145,7 +145,7 @@ class Settings(BaseSettings):
     batch_output_dir: Optional[Path] = None
     workers: int = 1           # 1 = 单进程顺序; >1 = multiprocessing.Pool
     max_files: Optional[int] = None  # 限制本次处理的输入文件数 (None = 全部)
-    session_timeout_s: int = 180  # 单条 session 处理超时
+    session_timeout_s: int = 1200  # 单条 session 处理超时（CU 构建 ~300s + 路由 + refine + reassemble 余量）
 
     # === 严格性 ===
     strict_consistency: bool = True  # 一致性终检异常时是否丢弃
