@@ -692,6 +692,8 @@ def reassemble(
         )
         _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
         return session
+    # 修复 I: judge 调用前再判一次 budget（防止单次 LLM 调用耗时把 budget 耗光）
+    # 用户主旨: 数据完整即处理并导出. 一次 LLM 卡顿不应让整 session 丢失.
     try:
         messages_detail = _build_messages_detail(session)
         system_prompt = load_and_render("reassembler", "system")
@@ -727,13 +729,27 @@ def reassemble(
             _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
             return session
     except Exception as e:
-        if strict:
+        # 修复 I: 网络/LLM 临时超时（TimeoutError + httpx.TimeoutException）一律降级保留。
+        # 用户主旨: 数据完整即处理并导出. 一次 LLM 卡顿不应让整 session 丢失.
+        # 其他异常按 strict_consistency 处理.
+        from infrastructure.llm_client import TimeoutError as _LLMTimeout
+        _is_transient = isinstance(e, _LLMTimeout) or e.__class__.__name__ in (
+            "TimeoutException", "ReadTimeout", "ConnectTimeout", "RemoteProtocolError",
+        )
+        if strict and not _is_transient:
             log.error(
                 "discard session %s, reason=consistency_check_failed: %s",
                 session.session_id, e,
             )
             return None
-        log.warning("consistency check failed, proceeding anyway: %s", e)
+        if _is_transient:
+            log.warning(
+                "judge/judge transient failure for session %s (%s); returning session "
+                "without final consistency score per 'preserve data' policy",
+                session.session_id, e,
+            )
+        else:
+            log.warning("consistency check failed, proceeding anyway: %s", e)
 
     _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
     return session

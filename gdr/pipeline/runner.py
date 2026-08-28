@@ -308,10 +308,6 @@ def process_one(
             return session
 
         elapsed = time.perf_counter() - t0
-        if elapsed > cfg.session_timeout_s:
-            log.error("timeout processing session %s (%.1fs)", session.session_id, elapsed)
-            return None
-
         result = reassemble(
             session,
             refine_records,
@@ -322,6 +318,19 @@ def process_one(
             deferred_block_ids=deferred_block_ids,
             cu=context_understanding,
         )
+        # 用户主旨: 数据完整即处理并导出. reassembler 内部已有 budget 守护 (一致性前
+        # /judge 前), 但中间仍可能耗时; reassembler 已返回时不丢弃, 仅在返回 None
+        # (reassembler 完全失败) 且接近超时上限时回退到 original session.
+        if result is None and elapsed > cfg.session_timeout_s * 0.8:
+            log.warning(
+                "reassembler returned None for session %s after %.1fs (>80%% of %ds); "
+                "falling back to original session to preserve data",
+                session.session_id, elapsed, cfg.session_timeout_s,
+            )
+            session.metadata = session.metadata or {}
+            session.metadata["timeout_partial_save"] = True
+            session.metadata["timeout_elapsed_s"] = round(elapsed, 1)
+            return session
         log.debug(
             "session %s processed in %.2fs",
             session.session_id, elapsed,

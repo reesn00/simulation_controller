@@ -302,6 +302,40 @@ def _extract_entities(text: str) -> set[str]:
     entities: set[str] = set()
     if not text:
         return entities
+    # 防御: 单条超长/含恶意正则元字符的文本不应让整个 session 崩溃.
+    # entity 抽取失败时返回已累积的子集 (不抛).
+    try:
+        _REGEX_LIMIT = 500_000  # 字符; 超过则降级为前 N 字符抽取
+        if len(text) > _REGEX_LIMIT:
+            text = text[:_REGEX_LIMIT]
+        for m in re.finditer(r'"([^"]+)"', text):
+            entities.add(m.group(1))
+        for m in re.finditer(r"'([^']+)'", text):
+            entities.add(m.group(1))
+        for m in re.finditer(r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b", text):
+            entities.add(m.group(1))
+        for m in re.finditer(
+            r"\b(browser|execute_shell_command|write_file|read_file|search_file|"
+            r"list_files|glob|grep|tavily_search)\b", text, re.IGNORECASE
+        ):
+            entities.add(m.group(1).lower())
+        for m in re.finditer(r"\b(url|file_path|command|content|code|input|query|name)\b", text, re.IGNORECASE):
+            entities.add(m.group(1).lower())
+        # CJK 实体: 1~4 个汉字 (城市名/平台名/动词等)
+        for m in re.finditer(r"[一-鿿]{1,4}", text):
+            ent = m.group(0)
+            # 过滤常见停用词
+            if ent not in _CJK_STOPWORDS:
+                entities.add(ent)
+        # 数字 (含小数)
+        for m in re.finditer(r"\b\d+(?:\.\d+)?\b", text):
+            entities.add(m.group(0))
+    except re.error as e:
+        # 极端输入触发 re.error (罕见, 但不应让整条 session 因 entity 抽取失败而崩)
+        log.warning("_extract_entities re.error (text_len=%d): %s", len(text), e)
+    except Exception as e:
+        log.warning("_extract_entities failed (text_len=%d): %s", len(text), e)
+    return entities
     for m in re.finditer(r'"([^"]+)"', text):
         entities.add(m.group(1))
     for m in re.finditer(r"'([^']+)'", text):
