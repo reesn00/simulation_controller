@@ -19,16 +19,41 @@
 python run_etl.py --input origindata --output output [选项]
 ```
 
+### Windows 批处理
+
+```bat
+run_etl.bat                       :: 处理全部
+run_etl.bat 5                     :: 只处理 5 个
+run_etl.bat 5 10                  :: 跳过 10 个后处理 5 个
+run_etl.bat 5 0 1 42              :: --limit 5 --offset 0 --shuffle --seed 42
+run_batch.bat 49 10               :: 总数 49，每批 10
+run_batch.bat 49 10 0 1 42        :: 同上，带 shuffle
+set ETL_INPUT=D:\data\sessions ^& set ETL_OUTPUT=D:\out ^& run_etl.bat 5
+```
+
 ### 参数
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--input` | `origindata/` | 原始 session JSON 所在目录（递归扫描 `*.json`） |
 | `--output` | `output/` | 产物输出目录 |
+| `--limit N` | 全部 | 最多处理 N 个 session |
+| `--offset N` | `0` | 跳过前 N 个 session |
+| `--shuffle` | 关闭 | 按 `--seed` 打乱文件顺序后截取 |
+| `--seed N` | `0` | `--shuffle` 的随机种子 |
 | `--no-thinking` | 保留 | 不把 `thinking` 保留为 `reasoning_content` |
 | `--no-summary-system` | 保留 | `summary` 非空时不作为 `system` 消息插入 |
 | `--drop-empty-assistant` | 保留 | 丢弃 `content` 为空且无 `tool_calls` 的 assistant 消息 |
 | `--no-keep-tool-state` | 保留 | 在 error 的 tool result 前不加 `[state]` 标记 |
+
+### 分批处理
+
+```bash
+python run_etl.py --limit 5
+python run_etl.py --offset 10 --limit 5
+python run_etl.py --shuffle --seed 42 --limit 5
+python run_batch.py --total 49 --batch 10     # 写入 output/batch_0000/..batch_0004/
+```
 
 ## 输入格式（origindata/*.json）
 

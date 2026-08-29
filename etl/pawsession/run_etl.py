@@ -27,6 +27,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="原始 session JSON 所在目录（递归）")
     parser.add_argument("--output", default=str(HERE / "output"),
                         help="产物输出目录")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="最多处理的 session 数量（默认全部）")
+    parser.add_argument("--offset", type=int, default=0,
+                        help="跳过前 N 个 session 后再开始处理")
+    parser.add_argument("--shuffle", action="store_true",
+                        help="按固定种子随机打乱文件顺序后再截取")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="配合 --shuffle 使用的随机种子")
     parser.add_argument("--no-thinking", action="store_true",
                         help="不保留 thinking 为 reasoning_content")
     parser.add_argument("--no-summary-system", action="store_true",
@@ -43,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[etl] 输入目录不存在: {input_dir}", file=sys.stderr)
         return 2
 
+    if args.limit is not None and args.limit < 0:
+        print("[etl] --limit 必须为非负整数", file=sys.stderr)
+        return 2
+    if args.offset < 0:
+        print("[etl] --offset 必须为非负整数", file=sys.stderr)
+        return 2
+
     opts = TransformOptions(
         include_thinking=not args.no_thinking,
         include_summary_as_system=not args.no_summary_system,
@@ -54,9 +69,25 @@ def main(argv: list[str] | None = None) -> int:
     if not files:
         print(f"[etl] 未在 {input_dir} 下找到 .json session 文件", file=sys.stderr)
         return 1
+    total = len(files)
+    print(f"[etl] 发现 {total} 个 session 文件")
+
+    if args.shuffle:
+        import random
+        rng = random.Random(args.seed)
+        rng.shuffle(files)
+
+    start = min(args.offset, total)
+    end = total if args.limit is None else min(start + args.limit, total)
+    selected = files[start:end]
+    if not selected:
+        print(f"[etl] 在 offset={args.offset}, limit={args.limit} 范围内无文件可处理",
+              file=sys.stderr)
+        return 1
+    print(f"[etl] 本次处理 {len(selected)} 个 (offset={start}, limit={args.limit})")
 
     pairs = []
-    for fp in files:
+    for fp in selected:
         try:
             record = load_session(fp)
         except Exception as e:

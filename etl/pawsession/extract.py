@@ -113,6 +113,7 @@ class SessionRecord:
 
 
 def _parse_block(raw: dict[str, Any]) -> Optional[Any]:
+    # toolcall/toolresult 为预处理格式（无下划线）的类型名，等价于 tool_call/tool_result
     t = raw.get("type")
     if t == "text":
         return TextBlock(
@@ -126,7 +127,7 @@ def _parse_block(raw: dict[str, Any]) -> Optional[Any]:
             id=raw.get("id"),
             created_at=raw.get("created_at"),
         )
-    if t == "tool_call":
+    if t in ("tool_call", "toolcall"):
         return ToolCallBlock(
             id=raw.get("id", ""),
             name=raw.get("name", ""),
@@ -135,18 +136,23 @@ def _parse_block(raw: dict[str, Any]) -> Optional[Any]:
             suggested_rules=raw.get("suggested_rules", []) or [],
             created_at=raw.get("created_at"),
         )
-    if t == "tool_result":
-        out = raw.get("output") or []
-        text_parts: list[str] = []
-        for item in out:
-            if isinstance(item, dict) and item.get("type") == "text":
-                text_parts.append(item.get("text", "") or "")
-            elif isinstance(item, dict) and "text" in item:
-                text_parts.append(item.get("text", "") or "")
+    if t in ("tool_result", "toolresult"):
+        if isinstance(raw.get("output_text"), str):
+            # 预处理格式：output_text 直接是拼接好的字符串
+            output_text = raw["output_text"]
+        else:
+            out = raw.get("output") or []
+            text_parts: list[str] = []
+            for item in out:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", "") or "")
+                elif isinstance(item, dict) and "text" in item:
+                    text_parts.append(item.get("text", "") or "")
+            output_text = "\n".join(text_parts)
         return ToolResultBlock(
             id=raw.get("id", ""),
             name=raw.get("name", ""),
-            output_text="\n".join(text_parts),
+            output_text=output_text,
             state=raw.get("state", "success"),
             metadata=raw.get("metadata", {}) or {},
             created_at=raw.get("created_at"),
@@ -156,7 +162,8 @@ def _parse_block(raw: dict[str, Any]) -> Optional[Any]:
 
 def _parse_message(raw: dict[str, Any]) -> Message:
     blocks: list[Any] = []
-    for b in raw.get("content", []) or []:
+    # 预处理格式内容在 blocks，原始 dump 在 content
+    for b in raw.get("blocks") or raw.get("content", []) or []:
         parsed = _parse_block(b)
         if parsed is not None:
             blocks.append(parsed)
@@ -175,6 +182,18 @@ def _parse_message(raw: dict[str, Any]) -> Message:
 
 
 def parse_session(raw: dict[str, Any], source_file: str) -> SessionRecord:
+    if isinstance(raw.get("messages"), list):
+        # 预处理格式：session_id / summary / messages 位于顶层
+        return SessionRecord(
+            session_id=raw.get("session_id", "") or "",
+            summary=raw.get("summary", "") or "",
+            messages=[_parse_message(m) for m in raw["messages"]],
+            source_file=source_file,
+            raw_state={
+                k: v for k, v in raw.items() if k not in {"messages"}
+            },
+        )
+    # 原始 dump 格式：agent.state.context
     agent = raw.get("agent") or {}
     state = agent.get("state") or {}
     session_id = state.get("session_id", "")

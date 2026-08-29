@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -19,16 +21,18 @@ from extract import SessionRecord
 from transform import SFTSample, to_jsonl_dict
 
 
-_ABNORMAL_TERMINATORS = (0x2028, 0x2029, 0x0085)
+@lru_cache(maxsize=0x110000)
+def _drop_char(ch: str) -> bool:
+    # 丢弃编辑器无法渲染、对训练也是噪声的字符：
+    # 控制符(Cc)、私有使用区图标(Co)、代理对/未定义码点(Cs/Cn)、行/段分隔符(Zl/Zp)
+    return unicodedata.category(ch) in ("Cc", "Co", "Cs", "Cn", "Zl", "Zp")
 
 
 def _sanitize(text: str) -> str:
     if not text:
         return text
-    sanitized = text
-    for code in _ABNORMAL_TERMINATORS:
-        sanitized = sanitized.replace(chr(code), " ")
-    return sanitized
+    # \n/\t 需豁免：字符串内的会被 json.dumps 转义，文本里出现的只可能是缩进/换行结构
+    return "".join(ch for ch in text if ch in "\n\t" or not _drop_char(ch))
 
 
 @dataclass
