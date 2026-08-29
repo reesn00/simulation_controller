@@ -54,6 +54,11 @@ output/
 dist/
 gdr/origindata/
 gdr/refine_data
+data_refiner/input_data/
+data_refiner/output_data/cleaned/
+data_refiner/output_data/trajectory
+data_refiner/output_data/summary.json
+data_refiner/logs
 
 # Other
 .wheel-test/
