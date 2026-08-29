@@ -64,3 +64,4 @@ data_refiner/logs
 .wheel-test/
 tool_runtime/playwright/node_modules/
 etl/pawsession/origindata/useramulation_*
+etl\pawsession\output
