@@ -66,3 +66,5 @@ tool_runtime/playwright/node_modules/
 etl/pawsession/origindata/useramulation_*
 etl/pawsession/output
 etl/pawsession/origindata
+etl/qwenformat/input_data
+etl/qwenformat/output_data
