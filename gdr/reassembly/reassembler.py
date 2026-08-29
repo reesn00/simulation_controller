@@ -289,18 +289,22 @@ def _prune_context_switch_blocks(
 
 
 def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]:
-    """单条消息: 折叠同一工具的失败/中间重试, 保留最后一次成功。
+    """单条消息: 折叠连续工具调用段中的失败尝试。
 
     规则:
       - toolcall 与其后紧跟的同 id toolresult 构成一次尝试对 (name, state)。
-      - 按 name 连续分组 (被其他 name 打断即开新组)。
-      - 组内最后一次 success 保留 (其余全部标记删除, 包括中间 success 和所有 error)。
-      - 组内全为 error 时: 保守保留整组 (无成功结果可保, 不做删除)。
+      - 按"连续工具块"分段, 不看工具名; 出现 toolcall/toolresult 以外的块
+        (text/thinking 等) 即打断, 开启新段。
+      - 段内以每次 success 为切点划分子段: 子段 = 若干失败 + 结尾的 success,
+        删除子段内的失败, 保留该 success (所有 success 都保留)。
+      - 段尾若为一串没有 success 收尾的失败, 只保留其中最后一次尝试。
+      - 因此整段的最后一次工具调用必定保留。
       - 若 cu 提供, 仅当 block 被 active window 中 thinking/text 引用时, 才豁免删除
         (受 fold_protect_active_text_only 控制; 关闭后回退到任意 referenced_by)。
     返回 (新 blocks, 被删除的 block id 集合)。
     """
-    pairs: list[tuple[str, str, int, int | None]] = []
+    groups: list[list[tuple[str, str, int, int | None]]] = []
+    current: list[tuple[str, str, int, int | None]] = []
     i = 0
     n = len(blocks)
     while i < n:
@@ -314,6 +318,10 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
             bid = getattr(b, "id", "")
             name = getattr(b, "name", "")
         if t != "toolcall":
+            if t != "toolresult" and current:
+                # 非工具块打断连续段
+                groups.append(current)
+                current = []
             i += 1
             continue
 
@@ -335,15 +343,10 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
                 tr_idx = k
                 state = nstate
                 break
-        pairs.append((name, state or "", i, tr_idx))
+        current.append((name, state or "", i, tr_idx))
         i += 1
-
-    groups: list[list[tuple[str, str, int, int | None]]] = []
-    for p in pairs:
-        if groups and p[0] == groups[-1][-1][0]:
-            groups[-1].append(p)
-        else:
-            groups.append([p])
+    if current:
+        groups.append(current)
 
     ids_to_remove: set[str] = set()
     cu_enabled = getattr(cu.cfg if cu else None, "fold_use_cu", False) if cu else False
@@ -362,23 +365,21 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
         return bool(view.referenced_by)
 
     for g in groups:
-        # 找最后一次 success 索引
-        last_success_idx = -1
+        # 以每次 success 为切点划分子段, 计算需要保留的下标
+        keep_idx: set[int] = set()
+        seg_start = 0
         for i, p in enumerate(g):
             if p[1] == "success":
-                last_success_idx = i
-
-        if last_success_idx == -1:
-            log.info(
-                "keep all-failed tool group name=%s tries=%d (no success to retain)",
-                g[0][0], len(g),
-            )
-            continue
+                keep_idx.add(i)  # 子段: [seg_start, i], 保留结尾的 success
+                seg_start = i + 1
+        if seg_start < len(g):
+            # 段尾无 success 收尾的失败串: 只保留最后一次尝试
+            keep_idx.add(len(g) - 1)
 
         removed_in_group = 0
         for i, p in enumerate(g):
-            if i == last_success_idx:
-                continue  # 保留最后一次成功
+            if i in keep_idx:
+                continue
             _, state, tc_idx, tr_idx = p
             b = blocks[tc_idx]
             bid = b.get("id", "") if isinstance(b, dict) else getattr(b, "id", "")
@@ -400,9 +401,9 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
                 removed_in_group += 1
         if removed_in_group:
             log.info(
-                "folded %d %s try block(s) (errors + earlier successes), "
-                "kept last success in group of %d",
-                removed_in_group, g[0][0], len(g),
+                "folded %d failed try block(s) in tool segment of %d "
+                "(kept %d: all successes + last attempt)",
+                removed_in_group, len(g), len(keep_idx),
             )
 
     if not ids_to_remove:
@@ -414,8 +415,8 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
 
 
 def fold_failed_toolresults(session: Session, cfg, cu=None) -> int:
-    """会话级折叠: 对所有 assistant 消息删除失败/过时的工具尝试,
-    保留同一工具组内最后一次成功的 (toolcall, toolresult)。
+    """会话级折叠: 对所有 assistant 消息删除连续工具段中的失败尝试,
+    保留所有成功的 (toolcall, toolresult) 以及每段最后一次尝试。
 
     Args:
         cu: 可选的 ContextUnderstanding；启用 fold_use_cu 时会保护被引用的 block。
