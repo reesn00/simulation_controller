@@ -29,7 +29,7 @@
 
 # === HTTP OpenAI-compatible LLM endpoint (env: GDR_LLM_BASE_URL) ===
 llm_base_url: http://100.64.0.129/v1
-llm_api_key: bgw_Y_-cBJcZtPzcnhq6BkE8wYX4bqjmZ8edyPHi5BSxSTM    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
+llm_api_key: 7M    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
 
 # Model names registered at the endpoint
 main_model: MiniMax-M2.7         # env: GDR_MAIN_MODEL
