@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict
 from simulate_serve.configuration.catalog_loader import CatalogBundle
 from simulate_serve.configuration.catalog_schema import CriterionDocument, PersonaOverride, ScenarioDocument, TaskDocument
 from simulate_serve.configuration.diagnostics import CatalogDiagnostic, DiagnosticSeverity
-from simulate_serve.domain.persona import PersonaSpec
 from simulate_serve.domain.provenance import SourceRef, TaskProvenance
 from simulate_serve.domain.task import (
     AcceptanceCriterion,
@@ -19,6 +18,7 @@ from simulate_serve.domain.task import (
     IntentPriority,
     InteractionPolicy,
     OutputContract,
+    PersonaSpec,
     RemediationSpec,
     TaskIntent,
     TaskConstraint,

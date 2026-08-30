@@ -81,6 +81,7 @@ class HttpEmbedder(Embedder):
         max_batch: int = 32,
         max_retries: int = 3,
         expected_dim: Optional[int] = None,
+        max_input_chars: int = 6000,
     ):
         self.base_url = base_url.rstrip("/")
         # llama.cpp's /v1/embeddings lives at <base>/embeddings; OpenAI path is /v1/embeddings.
@@ -95,6 +96,9 @@ class HttpEmbedder(Embedder):
         self.max_batch = max_batch
         self.max_retries = max_retries
         self._expected_dim = expected_dim  # 若设置, 首响维度不符立即报错
+        # 超长输入会超过服务端 n_ctx (llama.cpp 返回 400 exceed_context_size_error),
+        # 截断到安全字符预算 —— L2 相似度对比用前缀已足够
+        self._max_input_chars = max(1, int(max_input_chars))
 
         self._dim: Optional[int] = None
         self._dim_lock = threading.Lock()
@@ -121,6 +125,7 @@ class HttpEmbedder(Embedder):
             timeout=float(getattr(cfg, "embedding_timeout_s", 30)),
             max_batch=int(getattr(cfg, "embedding_max_batch", 32)),
             expected_dim=getattr(cfg, "embedding_expected_dim", None),
+            max_input_chars=int(getattr(cfg, "embedding_max_input_chars", 6000)),
         )
 
     # ---- health -----------------------------------------------------------
@@ -142,11 +147,11 @@ class HttpEmbedder(Embedder):
         for attempt in range(self.max_retries):
             try:
                 resp = self._client.post(self._endpoint, json=payload)
-                if resp.status_code >= 500 or resp.status_code == 429:
+                if resp.status_code >= 400:
+                    # 4xx/5xx 一律带响应体, 否则只剩 "400 Bad Request" 无法定位拒绝原因
                     raise RuntimeError(
                         f"embedding endpoint {resp.status_code}: {resp.text[:200]}"
                     )
-                resp.raise_for_status()
                 body = resp.json()
                 # OpenAI shape: {"data": [{"embedding": [...], "index": i}, ...]}
                 data = body.get("data") or []
@@ -182,12 +187,21 @@ class HttpEmbedder(Embedder):
             )
         return self._dim
 
+    def _truncate(self, text: str) -> str:
+        if len(text) <= self._max_input_chars:
+            return text
+        log.debug(
+            "embedding input truncated: %d -> %d chars (server n_ctx protection)",
+            len(text), self._max_input_chars,
+        )
+        return text[: self._max_input_chars]
+
     def embed(self, text: str) -> list[float]:
         if not text:
             return []
         vecs = self._post({
             "model": self.model,
-            "input": text,
+            "input": self._truncate(text),
         })
         if not vecs:
             return []
@@ -199,7 +213,7 @@ class HttpEmbedder(Embedder):
             return []
         out: list[list[float]] = []
         for i in range(0, len(texts), self.max_batch):
-            chunk = texts[i : i + self.max_batch]
+            chunk = [self._truncate(t) for t in texts[i : i + self.max_batch]]
             vecs = self._post({"model": self.model, "input": chunk})
             if vecs and self._dim is None:
                 self._lock_dim(vecs[0])

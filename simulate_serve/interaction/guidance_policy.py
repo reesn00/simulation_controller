@@ -35,20 +35,24 @@ def select_guidance_gaps(task: CompiledTask, report: ValidationReport) -> tuple[
     )[: task.interaction_policy.max_gaps_per_turn]
 
 
+def _append_sentence(text: str, sentence: str) -> str:
+    if sentence in text:
+        return text
+    if text and not text.endswith(("。", "？", "！")):
+        text += "。"
+    return text + sentence
+
+
 def ensure_complete_revision_request(
     task: CompiledTask,
     content: str,
     regressed_criteria: tuple[str, ...] = (),
 ) -> str:
     text = content.strip()
-    if regressed_criteria and _REGRESSION_REQUEST not in text:
-        if text and not text.endswith(("。", "？", "！")):
-            text += "。"
-        text += _REGRESSION_REQUEST
-    if task.interaction_policy.preserve_satisfied_criteria and _COMPLETE_REVISION_REQUEST not in text:
-        if text and not text.endswith(("。", "？", "！")):
-            text += "。"
-        text += _COMPLETE_REVISION_REQUEST
+    if regressed_criteria:
+        text = _append_sentence(text, _REGRESSION_REQUEST)
+    if task.interaction_policy.preserve_satisfied_criteria:
+        text = _append_sentence(text, _COMPLETE_REVISION_REQUEST)
     return text
 
 
@@ -70,7 +74,7 @@ def deterministic_guidance(
         )
         if message:
             messages.append(message)
-    content = "。".join(message.rstrip("。？") for message in messages if message).strip()
+    content = "。".join(message.rstrip("。？") for message in messages).strip()
     if not content:
         fallback = task.interaction_policy.fallback_guidance
         content = fallback[0] if fallback else "这个结果还没满足我的需求，请再检查并补充。"

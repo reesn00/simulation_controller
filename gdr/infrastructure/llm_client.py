@@ -18,6 +18,19 @@ _MAX_CONCURRENT_GENERATIONS = 4
 _generation_sem = Semaphore(_MAX_CONCURRENT_GENERATIONS)
 
 
+def set_generation_concurrency(n: int) -> None:
+    """调整并发生成上限并重建信号量。
+
+    只应在进程启动阶段、任何 LLM 调用发出之前调用 (非线程安全);
+    runner 在主进程与每个 Pool worker 初始化时各调用一次。
+    """
+    global _MAX_CONCURRENT_GENERATIONS, _generation_sem
+    if n < 1:
+        return
+    _MAX_CONCURRENT_GENERATIONS = n
+    _generation_sem = Semaphore(n)
+
+
 def _get_http_client():
     """Lazily import httpx so that the module can still be imported when httpx is absent."""
     try:

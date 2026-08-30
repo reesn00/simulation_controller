@@ -66,6 +66,11 @@ pip install ".[sft]"
 | `GDR_EMBEDDING_ENDPOINT_URL` | `http://127.0.0.1:8086/v1` | OpenAI 兼容嵌入端点 (llama.cpp `--embedding`) |
 | `GDR_EMBEDDING_ENDPOINT_MODEL` | `v5-nano-retrieval` | 端点上注册的嵌入模型名 |
 | `GDR_ENABLE_L1` / `GDR_ENABLE_L2` / `GDR_ENABLE_L3` | `true` | 验证层开关 |
+| `GDR_WORKERS` | `2` | 批量模式进程数 (1 = 单进程顺序) |
+| `GDR_LLM_CONCURRENCY` | `4` | 单进程内 LLM 请求并发上限 (投票/refiner 线程池 + 生成信号量) |
+| `GDR_CONSISTENCY_MAX_LLM_CALLS` | `40` | 一致性校验状态重算 LLM 调用预算 (真增量 O(N), 超出标记 needs_review) |
+| `GDR_LLM_VOTE_SKIP_RULE_DECIDABLE` | `true` | 语义标签不改变决策的块跳过 LLM 投票 |
+| `GDR_LLM_VOTE_USE_CU` | `true` | 投票首票注入 CU 全局状态上下文 (确认票强制局部窗口) |
 | `GDR_INPUT_PATH` | `./data/input.json` | 输入 QwenPaw JSON |
 | `GDR_OUTPUT_PATH` | `./refine_data/output.json` | 输出精修 JSON |
 | `GDR_LOG_DIR` | `./logs` | 日志目录 |
@@ -139,7 +144,7 @@ gdr/
 │   ├── logging.py                # 双通道日志 (console + JSONL RotatingFile)
 │   └── llm_client.py             # HTTP OpenAI LLM client 单例池 (历史名 LlamaCppClient)
 ├── routing/
-│   └── router.py                 # 缺陷路由：规则层 + LLM 3-票投票层
+│   └── router.py                 # 缺陷路由：规则层 + LLM 级联投票层 (首票+确认票, 线程池并发)
 ├── pipeline/
 │   ├── runner.py                 # 主编排 (单 session 处理 + 多文件批量 + 多进程 Pool)
 │   └── cli.py                    # argparse CLI 入口

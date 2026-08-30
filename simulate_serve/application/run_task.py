@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 
 from simulate_serve.domain.run import ConversationTurn, RunFailure, TaskRun
 from simulate_serve.domain.state_machine import RunState, RunStateMachine
 from simulate_serve.domain.task import CompiledTask
-from simulate_serve.domain.validation import Verdict
+from simulate_serve.domain.validation import ValidationReport, Verdict
 from simulate_serve.interaction.actor import InteractionActor
-from simulate_serve.interaction.models import InteractionContext
+from simulate_serve.interaction.models import ClosingTrigger, InteractionContext
+from simulate_serve.validation.decline_detector import detect_honest_limitation
 
 from .ports import ExecutorGateway, RunRepositoryPort, ValidationPort
 from .errors import ExecutorPortError
 from .run_guard import RuntimeGuardPolicy, evaluate_runtime_guard
 
+
+logger = logging.getLogger(__name__)
 
 class TaskRuntime:
     def __init__(
@@ -55,11 +59,29 @@ class TaskRuntime:
 
             while True:
                 self._move(run, RunState.VALIDATING, "EXECUTOR_RESPONDED")
+                if (
+                    task.interaction_policy.blocked_action == "accept_honest_limitation"
+                    and detect_honest_limitation(response.text)
+                ):
+                    await self._append_closing(run, task, ClosingTrigger.AGENT_DECLINED)
+                    run.failure = RunFailure(
+                        code="AGENT_DECLINED",
+                        message="远端 Agent 明确声明无法完成",
+                        stage="executor_response",
+                    )
+                    self._move(
+                        run,
+                        RunState.GUIDE_EXHAUSTED,
+                        "AGENT_DECLINED",
+                        self._decision_detail(task, ValidationReport(verdict=Verdict.INCONCLUSIVE, criteria=()), "stop_declined"),
+                    )
+                    return run
                 report = await self.validator.validate(task, run, response.text)
                 run.validation_rounds.append(report)
                 self._persist(run)
 
                 if report.verdict is Verdict.PASS:
+                    await self._append_closing(run, task, ClosingTrigger.PASS)
                     self._move(
                         run,
                         RunState.SUCCESS,
@@ -69,6 +91,8 @@ class TaskRuntime:
                     return run
                 if report.verdict is Verdict.ERROR:
                     run.failure = RunFailure(code="VALIDATION_ERROR", message="; ".join(report.missing_items), stage="validation")
+                    if self._environment_owned(task, report):
+                        await self._append_closing(run, task, ClosingTrigger.ENVIRONMENT_STOP)
                     self._move(
                         run,
                         RunState.VALIDATION_ERROR,
@@ -78,6 +102,8 @@ class TaskRuntime:
                     return run
                 if report.verdict is Verdict.INCONCLUSIVE:
                     run.failure = RunFailure(code="VALIDATION_INCONCLUSIVE", message="; ".join(report.missing_items), stage="validation")
+                    if self._environment_owned(task, report):
+                        await self._append_closing(run, task, ClosingTrigger.ENVIRONMENT_STOP)
                     self._move(
                         run,
                         RunState.INCONCLUSIVE,
@@ -158,6 +184,41 @@ class TaskRuntime:
             raise
         finally:
             self._persist(run)
+
+    @staticmethod
+    def _environment_owned(task: CompiledTask, report: ValidationReport) -> bool:
+        """True when the current failure is attributed to the environment side."""
+        criteria = {item.criterion_id: item for item in task.criteria}
+        return any(
+            item.criterion_id in criteria
+            and criteria[item.criterion_id].remediation.owner == "environment"
+            and item.verdict is not Verdict.PASS
+            for item in report.criteria
+        )
+
+    # Closing turns are only produced for the known default actions; a scenario
+    # declaring any other action string keeps today's no-closing behaviour.
+    _CLOSING_ACTIONS = {
+        ClosingTrigger.PASS: frozenset({"thank_and_finish", "provide_clarification_and_continue"}),
+        ClosingTrigger.ENVIRONMENT_STOP: frozenset({"stop_without_blame_executor"}),
+        ClosingTrigger.AGENT_DECLINED: frozenset({"accept_honest_limitation"}),
+    }
+
+    async def _append_closing(self, run: TaskRun, task: CompiledTask, trigger: ClosingTrigger) -> None:
+        action = {
+            ClosingTrigger.PASS: task.interaction_policy.pass_action,
+            ClosingTrigger.ENVIRONMENT_STOP: task.interaction_policy.environment_error_action,
+            ClosingTrigger.AGENT_DECLINED: task.interaction_policy.blocked_action,
+        }[trigger]
+        if action not in self._CLOSING_ACTIONS[trigger]:
+            return
+        try:
+            closing = await self.actor.create_closing(self._context(task, run), trigger)
+        except Exception as exc:
+            logger.warning("closing message unavailable for %s: %s", trigger, exc)
+            return
+        run.conversation.append(ConversationTurn(role="user", content=closing.content))
+        self._persist(run)
 
     @staticmethod
     def _context(task: CompiledTask, run: TaskRun) -> InteractionContext:

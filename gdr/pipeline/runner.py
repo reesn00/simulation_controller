@@ -3,22 +3,25 @@ import time
 import json
 import logging
 import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
 
 from config import Settings, load_tools
 from infrastructure import setup_logger
+from infrastructure.llm_client import set_generation_concurrency
 from domain import (
     Session, load_session, save_session,
     BlockIndex, BlockRefineRecord, DefectTag,
-    ThinkingBlock, ToolcallBlock, ToolresultBlock, TextBlock,
+    ThinkingBlock, ToolcallBlock, ToolresultBlock,
 )
 from routing import Router
 from routing.health import light_health_score_for_session
 from refiners import thought_refactor, tool_fixer, obs_denoiser
 from validators import validate_block
 from reassembly import reassemble, fold_failed_toolresults, fold_repeated_thinking
+from reassembly.reassembler import _attach_metadata
 from core.context_understanding import build_context_for_session
 from core.policy import decide_policy, policy_reason, RefinementPolicy
 
@@ -72,6 +75,150 @@ def _hard_filter_session(session, cfg: Settings) -> bool:
     return True
 
 
+def _block_text_field(block, key: str, default: str = "") -> str:
+    if isinstance(block, dict):
+        return block.get(key, default) or default
+    return getattr(block, key, default) or default
+
+
+def _prepare_repair_item(
+    block, block_type: str, block_id: str,
+    defects: list[DefectTag], bi: BlockIndex, context: dict,
+) -> dict | None:
+    """决策层判定 REPAIR 后选择 refiner 模块并打包待修 item。
+
+    返回 None 表示该块无需/无法精修 (与原实现中的 continue 语义一致)。
+    """
+    defect_values = [d.value for d in defects if isinstance(d, DefectTag)]
+
+    if block_type == "thinking" and any(
+        d in [DefectTag.THOUGHT_TOO_SHORT, DefectTag.THOUGHT_TOO_LONG, DefectTag.THOUGHT_BROKEN_LOGIC]
+        for d in defects
+    ):
+        if isinstance(block, dict):
+            tb = ThinkingBlock(**{k: v for k, v in block.items() if k in ("type", "id", "thinking")})
+        else:
+            tb = block
+        return {
+            "bi": bi, "module": "thought_refactor", "block": block, "tb": tb,
+            "original": {"thinking": tb.thinking}, "context": context,
+            "defect_values": defect_values,
+        }
+
+    if block_type == "toolcall" and any(
+        d in [
+            DefectTag.TOOL_JSON_INVALID, DefectTag.TOOL_HALLUCINATED,
+            DefectTag.API_HALLUCINATION, DefectTag.TOOL_WRONG_SELECTION,
+            DefectTag.REPETITIVE_CALL,
+        ] for d in defects
+    ):
+        if DefectTag.CONTEXT_SWITCH_LOOP in defects:
+            return None
+        if isinstance(block, dict):
+            tb = ToolcallBlock(**{k: v for k, v in block.items() if k in ("type", "id", "name", "input", "state")})
+        else:
+            tb = block
+        return {
+            "bi": bi, "module": "tool_fixer", "block": block, "tb": tb,
+            "original": {"name": tb.name, "input": tb.input}, "context": context,
+            "defect_values": defect_values,
+        }
+
+    if block_type == "toolresult" and any(
+        d in [DefectTag.OBS_NOISE, DefectTag.OBS_DEBUG_LEAK] for d in defects
+    ):
+        if isinstance(block, dict):
+            tb = ToolresultBlock(**{k: v for k, v in block.items() if k in ("type", "id", "name", "output_text", "state")})
+        else:
+            tb = block
+        return {
+            "bi": bi, "module": "obs_denoiser", "block": block, "tb": tb,
+            "original": {"output_text": tb.output_text}, "context": context,
+            "defect_values": defect_values,
+        }
+
+    if block_type == "text" and DefectTag.TEXT_FACT_HALLUCINATION in defects:
+        log.warning(
+            "text block %s contains TEXT_FACT_HALLUCINATION, "
+            "marking as failed (requires manual review)",
+            block_id,
+        )
+        return {
+            "bi": bi, "module": "text_fact_check", "block": block, "tb": None,
+            "original": {"text": _block_text_field(block, "text")[:500]},
+            "context": context, "defect_values": defect_values,
+        }
+
+    if DefectTag.CONTEXT_SWITCH_LOOP in defects:
+        return None
+
+    # 无匹配模块: 与原实现一致, 产出一条 module="" 的 failed 记录
+    return {
+        "bi": bi, "module": "", "block": block, "tb": None,
+        "original": {}, "context": context, "defect_values": defect_values,
+    }
+
+
+def _execute_repair_item(item: dict, cfg, tool_names: list[str], hallu_apis: set[str]):
+    """执行单个块的精修 + 验证。线程安全: 只依赖 item 内数据与无状态模块函数。"""
+    module = item["module"]
+    refined = None
+    if module == "thought_refactor":
+        val = thought_refactor.refine(
+            item["tb"], item["context"], item["defect_values"], cfg,
+        )
+        refined = {"thinking": val} if val else None
+    elif module == "tool_fixer":
+        val = tool_fixer.refine(
+            item["tb"], item["context"], tool_names, hallu_apis,
+            item["defect_values"], cfg,
+        )
+        refined = val or None
+    elif module == "obs_denoiser":
+        val = obs_denoiser.refine(
+            item["tb"], item["context"], item["defect_values"], cfg,
+        )
+        refined = {"output_text": val} if val else None
+    # module == "" / "text_fact_check": refined 保持 None
+
+    if refined:
+        passed, val_results = validate_block(item["block"], refined, tool_names, cfg)
+        return refined, val_results, ("success" if passed else "failed")
+    return None, [], "failed"
+
+
+def _run_repairs(
+    repair_items: list[dict], cfg, tool_names: list[str], hallu_apis: set[str],
+) -> list[BlockRefineRecord]:
+    """并发执行精修 (块间独立), 按输入顺序产出 refine_records。"""
+    if not repair_items:
+        return []
+
+    workers = max(1, min(int(getattr(cfg, "llm_concurrency", 4)), len(repair_items)))
+
+    def _run(item: dict):
+        return _execute_repair_item(item, cfg, tool_names, hallu_apis)
+
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="gdr-refine") as pool:
+            outcomes = list(pool.map(_run, repair_items))
+    else:
+        outcomes = [_run(it) for it in repair_items]
+
+    records: list[BlockRefineRecord] = []
+    for item, (refined, val_results, result) in zip(repair_items, outcomes):
+        records.append(BlockRefineRecord(
+            block_index=item["bi"],
+            module=item["module"],
+            original_content=item["original"],
+            refined_content=refined,
+            attempts=cfg.max_retries_9b + 1,
+            result=result,
+            validation_results=val_results,
+        ))
+    return records
+
+
 def process_one(
     session: Session, cfg: Settings, tool_names: list[str], hallu_apis: set[str],
 ) -> Session | None:
@@ -85,18 +232,18 @@ def process_one(
         # === 0. 轻量健康分 (零 LLM) ===
         light_health = light_health_score_for_session(session, cfg)
 
-        # === 1. 上下文理解 (基于轻量健康初始化 CU) ===
+        # === 1. 上下文理解·结构层 (引用图/视图/archive, 零 LLM), 供 fold 保护 ===
         context_understanding = None
         if getattr(cfg, "enable_context_understanding", True):
             try:
                 context_understanding = build_context_for_session(
-                    session, cfg, light_health=light_health,
+                    session, cfg, light_health=light_health, track_state=False,
                 )
             except Exception as e:
                 log.warning("ContextUnderstanding.build failed, falling back: %s", e)
                 context_understanding = None
 
-        # === 2. 在 Router 之前先做会话级折叠, 并让 CU 保护被引用 block ===
+        # === 2. 会话级折叠 (CU 结构层保护被引用 block) ===
         folded = fold_failed_toolresults(session, cfg, cu=context_understanding)
         if folded:
             log.info("folded %d failed toolresult block(s)", folded)
@@ -104,6 +251,17 @@ def process_one(
         folded_thinking = fold_repeated_thinking(session, cfg, cu=context_understanding)
         if folded_thinking:
             log.info("folded %d consecutive thinking block(s)", folded_thinking)
+
+        # === 2.5 fold 后重切 chunk + 增量状态追踪 (唯一一次 LLM 状态追踪) ===
+        # chunk 划分反映折叠后的 session, 避免 fold 掉的块虚增一致性校验的重算长度
+        if context_understanding is not None:
+            try:
+                context_understanding.retrack_state(session)
+            except Exception as e:
+                log.warning(
+                    "retrack_state failed for session %s, CU state unavailable: %s",
+                    session.session_id, e,
+                )
 
         # === 3. Router.tag 使用 CU 作为 LLM 评审上下文 ===
         router = Router()
@@ -117,9 +275,9 @@ def process_one(
         policy_decisions: list[dict] = []
         prune_block_ids: set[str] = set()
         deferred_block_ids: set[str] = set()
+        repair_items: list[dict] = []
 
-        refine_records: list[BlockRefineRecord] = []
-
+        # === 3.5 决策层 (零 LLM, 串行; 保持块序) ===
         for msg_idx, msg in enumerate(session.messages):
             if msg.role != "assistant":
                 continue
@@ -147,164 +305,59 @@ def process_one(
 
                 bi = BlockIndex(msg_idx=msg_idx, block_idx=blk_idx, block_id=block_id, block_type=block_type)
                 context = _build_context(msg.blocks, blk_idx)
-
-                # === 决策层: 在调用 refiner 前选策略 ===
                 view = context_understanding.get_view(block_id) if context_understanding else None
                 policy = decide_policy(block, defects, view, retry_exhausted=False, cfg=cfg)
                 reason = policy_reason(policy, defects, view)
 
-                # PRUNE 策略: 不调用 refiner, 仅记录 + 标记
-                if policy in (RefinementPolicy.PRUNE_BLOCK, RefinementPolicy.PRUNE_WITH_PAIR):
-                    prune_block_ids.add(block_id)
-                    policy_decisions.append({
-                        "block_id": block_id,
-                        "msg_idx": msg_idx,
-                        "defects": [d.value for d in defects],
-                        "policy": policy.value,
-                        "reason": reason,
-                        "context_relevance": view.relevance_to_active if view else 0.0,
-                    })
-                    log.info("policy=PRUNE block_id=%s reason=%s", block_id, reason)
-                    continue
-                if policy == RefinementPolicy.PRUNE_MESSAGE:
-                    # 整条消息级删除由 reassembler 通过 health_scores 处理, 此处仅标记决策
-                    policy_decisions.append({
-                        "block_id": block_id,
-                        "msg_idx": msg_idx,
-                        "defects": [d.value for d in defects],
-                        "policy": policy.value,
-                        "reason": reason,
-                        "context_relevance": view.relevance_to_active if view else 0.0,
-                    })
-                    log.info("policy=PRUNE_MESSAGE block_id=%s reason=%s", block_id, reason)
-                    continue
-                if policy == RefinementPolicy.DEFER_TO_HUMAN:
-                    deferred_block_ids.add(block_id)
-                    policy_decisions.append({
-                        "block_id": block_id,
-                        "msg_idx": msg_idx,
-                        "defects": [d.value for d in defects],
-                        "policy": policy.value,
-                        "reason": reason,
-                        "context_relevance": view.relevance_to_active if view else 0.0,
-                    })
-                    log.info("policy=DEFER block_id=%s reason=%s", block_id, reason)
-                    continue
-
-                # policy == REPAIR_IN_PLACE: 走原 refiner 逻辑
-                policy_decisions.append({
+                decision = {
                     "block_id": block_id,
                     "msg_idx": msg_idx,
                     "defects": [d.value for d in defects],
                     "policy": policy.value,
                     "reason": reason,
                     "context_relevance": view.relevance_to_active if view else 0.0,
-                })
+                }
 
-                refined = None
-                module_name = ""
-                original_content = {}
-
-                if block_type == "thinking" and any(
-                    d in [DefectTag.THOUGHT_TOO_SHORT, DefectTag.THOUGHT_TOO_LONG, DefectTag.THOUGHT_BROKEN_LOGIC]
-                    for d in defects
-                ):
-                    module_name = "thought_refactor"
-                    if isinstance(block, dict):
-                        tb = ThinkingBlock(**{k: v for k, v in block.items() if k in ("type", "id", "thinking")})
-                    else:
-                        tb = block
-                    original_content = {"thinking": tb.thinking}
-                    refined_val = thought_refactor.refine(
-                        tb, context,
-                        [d.value for d in defects if isinstance(d, DefectTag)], cfg,
-                    )
-                    if refined_val:
-                        refined = {"thinking": refined_val}
-
-                elif block_type == "toolcall" and any(
-                    d in [
-                        DefectTag.TOOL_JSON_INVALID, DefectTag.TOOL_HALLUCINATED,
-                        DefectTag.API_HALLUCINATION, DefectTag.TOOL_WRONG_SELECTION,
-                        DefectTag.REPETITIVE_CALL,
-                    ] for d in defects
-                ):
-                    if DefectTag.CONTEXT_SWITCH_LOOP in defects:
-                        continue
-
-                    module_name = "tool_fixer"
-                    if isinstance(block, dict):
-                        tb = ToolcallBlock(**{k: v for k, v in block.items() if k in ("type", "id", "name", "input", "state")})
-                    else:
-                        tb = block
-                    original_content = {"name": tb.name, "input": tb.input}
-                    refined_val = tool_fixer.refine(
-                        tb, context, tool_names, hallu_apis,
-                        [d.value for d in defects if isinstance(d, DefectTag)], cfg,
-                    )
-                    if refined_val:
-                        refined = refined_val
-
-                elif block_type == "toolresult" and any(
-                    d in [DefectTag.OBS_NOISE, DefectTag.OBS_DEBUG_LEAK] for d in defects
-                ):
-                    module_name = "obs_denoiser"
-                    if isinstance(block, dict):
-                        tb = ToolresultBlock(**{k: v for k, v in block.items() if k in ("type", "id", "name", "output_text", "state")})
-                    else:
-                        tb = block
-                    original_content = {"output_text": tb.output_text}
-                    refined_val = obs_denoiser.refine(
-                        tb, context,
-                        [d.value for d in defects if isinstance(d, DefectTag)], cfg,
-                    )
-                    if refined_val:
-                        refined = {"output_text": refined_val}
-
-                elif block_type == "text" and DefectTag.TEXT_FACT_HALLUCINATION in defects:
-                    module_name = "text_fact_check"
-                    if isinstance(block, dict):
-                        tb = TextBlock(**{k: v for k, v in block.items() if k in ("type", "id", "text")})
-                    else:
-                        tb = block
-                    original_content = {"text": tb.text[:500]}
-                    log.warning(
-                        "text block %s contains TEXT_FACT_HALLUCINATION, "
-                        "marking as failed (requires manual review)",
-                        block_id,
-                    )
-                    refined = None
-
-                elif DefectTag.CONTEXT_SWITCH_LOOP in defects:
+                # PRUNE 策略: 不调用 refiner, 仅记录 + 标记
+                if policy in (RefinementPolicy.PRUNE_BLOCK, RefinementPolicy.PRUNE_WITH_PAIR):
+                    prune_block_ids.add(block_id)
+                    policy_decisions.append(decision)
+                    log.info("policy=PRUNE block_id=%s reason=%s", block_id, reason)
+                    continue
+                if policy == RefinementPolicy.PRUNE_MESSAGE:
+                    # 整条消息级删除由 reassembler 通过 health_scores 处理, 此处仅标记决策
+                    policy_decisions.append(decision)
+                    log.info("policy=PRUNE_MESSAGE block_id=%s reason=%s", block_id, reason)
+                    continue
+                if policy == RefinementPolicy.DEFER_TO_HUMAN:
+                    deferred_block_ids.add(block_id)
+                    policy_decisions.append(decision)
+                    log.info("policy=DEFER block_id=%s reason=%s", block_id, reason)
                     continue
 
-                if refined:
-                    passed, val_results = validate_block(block, refined, tool_names, cfg)
-                    result = "success" if passed else "failed"
-                else:
-                    val_results = []
-                    result = "failed"
+                # policy == REPAIR_IN_PLACE
+                policy_decisions.append(decision)
+                item = _prepare_repair_item(block, block_type, block_id, defects, bi, context)
+                if item is not None:
+                    repair_items.append(item)
 
-                record = BlockRefineRecord(
-                    block_index=bi,
-                    module=module_name,
-                    original_content=original_content,
-                    refined_content=refined,
-                    attempts=cfg.max_retries_9b + 1,
-                    result=result,
-                    validation_results=val_results,
-                )
-                refine_records.append(record)
+        # === 4. 并发精修 + 验证 (块间独立) ===
+        refine_records = _run_repairs(repair_items, cfg, tool_names, hallu_apis)
 
-        if not refine_records:
+        # 完全无缺陷且无决策时早退, 并挂上统一 metadata (此前该路径输出无 refine_history/
+        # validation_summary)。有 policy_decisions 时 (如全部 PRUNE) 必须继续走
+        # reassemble —— 否则剪枝决策会被静默丢弃。
+        if not refine_records and not policy_decisions:
             if _l1_sanity_check(session, tool_names, cfg.thought_max_len_l1):
                 log.info("no defects found in session %s", session.session_id)
+                _attach_metadata(session, [], policy_decisions, deferred_block_ids)
                 return session
             log.warning(
                 "session %s has no defect tags but failed L1 sanity check; "
                 "falling back to original session to preserve audit trail",
                 session.session_id,
             )
+            _attach_metadata(session, [], policy_decisions, deferred_block_ids)
             return session
 
         elapsed = time.perf_counter() - t0
@@ -461,10 +514,11 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
 
 
 # === 多进程 worker 入口 ===
-def _worker_init(log_dir: Path) -> None:
-    """Pool worker 初始化: 每个 worker 进程独立 setup_logger + 独立模型缓存。"""
+def _worker_init(log_dir: Path, llm_concurrency: int) -> None:
+    """Pool worker 初始化: 每个 worker 进程独立 setup_logger + 并发上限 + 模型缓存。"""
     setup_logger(log_dir)
-    log.info("worker pid=%d initialized", os.getpid())
+    set_generation_concurrency(llm_concurrency)
+    log.info("worker pid=%d initialized (llm_concurrency=%d)", os.getpid(), llm_concurrency)
 
 
 def _worker_process_file(args: tuple) -> dict:
@@ -528,6 +582,8 @@ def run(cfg: Settings) -> dict:
         log.warning("no input files found")
         return _aggregate([])
 
+    set_generation_concurrency(cfg.llm_concurrency)
+
     if cfg.batch_input_dir:
         cfg.batch_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -536,7 +592,10 @@ def run(cfg: Settings) -> dict:
         for fp in tqdm(inputs, desc="GDR refining"):
             results.append(_process_one_file(fp, _resolve_output(cfg, fp), cfg))
     else:
-        log.info("starting multiprocessing.Pool with %d workers", cfg.workers)
+        log.info(
+            "starting multiprocessing.Pool with %d workers (llm_concurrency=%d)",
+            cfg.workers, cfg.llm_concurrency,
+        )
         ctx = mp.get_context("spawn")  # Windows / Linux 均可用, 模型不跨进程共享
         tasks = [
             (str(fp), str(_resolve_output(cfg, fp)), cfg.model_dump(mode="json"))
@@ -545,7 +604,7 @@ def run(cfg: Settings) -> dict:
         with ctx.Pool(
             processes=cfg.workers,
             initializer=_worker_init,
-            initargs=(cfg.log_dir,),
+            initargs=(cfg.log_dir, cfg.llm_concurrency),
         ) as pool:
             results = list(tqdm(
                 pool.imap_unordered(_worker_process_file, tasks),

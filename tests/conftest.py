@@ -4,9 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from simulate_serve.domain.persona import PersonaSpec
 from simulate_serve.domain.provenance import SourceRef, TaskProvenance
-from simulate_serve.domain.task import AcceptanceCriterion, CompiledTask, InteractionPolicy, ValidationPolicy
+from simulate_serve.domain.task import AcceptanceCriterion, CompiledTask, InteractionPolicy, PersonaSpec, ValidationPolicy
 
 
 @pytest.fixture

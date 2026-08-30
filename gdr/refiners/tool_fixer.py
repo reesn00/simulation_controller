@@ -57,7 +57,7 @@ def refine(
             ]
         try:
             client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-            text, meta = client.chat(retry_messages, grammar_json_schema=OUTPUT_SCHEMA, max_tokens=512)
+            text, meta = client.chat(retry_messages, grammar_json_schema=OUTPUT_SCHEMA, max_tokens=1536)
             result = parse_json_object(text)
             name = result.get("name", "")
             inp = result.get("input", "")
@@ -80,7 +80,7 @@ def refine(
     try:
         log.warning("escalation to 32B for block %s", block.id)
         client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-        text, meta = client.chat(messages, grammar_json_schema=OUTPUT_SCHEMA, max_tokens=512)
+        text, meta = client.chat(messages, grammar_json_schema=OUTPUT_SCHEMA, max_tokens=1536)
         result = parse_json_object(text)
         name = result.get("name", "")
         inp = result.get("input", "")

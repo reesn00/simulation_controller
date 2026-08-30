@@ -35,7 +35,7 @@ def refine(block: ToolresultBlock, context: dict, defects: list[str], cfg) -> st
     for attempt in range(cfg.max_retries_9b):
         try:
             client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-            text, meta = client.chat(messages, max_tokens=512)
+            text, meta = client.chat(messages, max_tokens=1536)
             text = text.strip()
             if not text:
                 raise ValueError("empty output")
@@ -64,7 +64,7 @@ def refine(block: ToolresultBlock, context: dict, defects: list[str], cfg) -> st
     try:
         log.warning("escalation to 32B for block %s", block.id)
         client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-        text, meta = client.chat(messages, max_tokens=512)
+        text, meta = client.chat(messages, max_tokens=1536)
         text = text.strip()
         if text:
             ratio_text = _THINK_RE.sub("", text).strip() or text

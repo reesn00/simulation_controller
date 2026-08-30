@@ -50,3 +50,14 @@ def has_internal_reasoning_signals(value: str) -> bool:
     if _INTERNAL_MARKUP_RE.search(value):
         return True
     return bool(_INTERNAL_REASONING_RE.search(value))
+
+
+_INTERNAL_LEAK_RE = re.compile(
+    r"(验证器|验证准则|验收准则|内部规则|工具内部错误|验证机制|criterion[_ ]?id|validator|准则[\s:]?[a-zA-Z0-9_]{0,8})",
+    re.IGNORECASE,
+)
+
+
+def leaks_internal_rules(value: str) -> bool:
+    """Detect user-side text that would expose the validation harness to the remote agent."""
+    return bool(_INTERNAL_LEAK_RE.search(value))

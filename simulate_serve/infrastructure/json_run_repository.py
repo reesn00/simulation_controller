@@ -153,7 +153,7 @@ class JsonRunRepository:
 
     @classmethod
     def _is_distillable(cls, run: TaskRun) -> bool:
-        if not cls._is_clean(run) or len(run.conversation) < 2 or len(run.conversation) % 2:
+        if not cls._is_clean(run) or len(run.conversation) < 2:
             return False
         if not run.validation_rounds:
             return False
@@ -162,8 +162,14 @@ class JsonRunRepository:
             return False
         if any(item.verdict is not Verdict.PASS for item in report.criteria):
             return False
-        expected = ["user" if index % 2 == 0 else "assistant" for index in range(len(run.conversation))]
-        return [turn.role for turn in run.conversation] == expected
+        # Allow a single trailing user turn (the closing-utterance appended on PASS).
+        roles = [turn.role for turn in run.conversation]
+        if roles[-1] == "user":
+            roles = roles[:-1]
+        if len(roles) % 2 or not roles or roles[0] != "user":
+            return False
+        expected = ["user" if index % 2 == 0 else "assistant" for index in range(len(roles))]
+        return roles == expected
 
     @staticmethod
     def _validation_summary(run: TaskRun) -> dict[str, Any]:

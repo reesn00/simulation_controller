@@ -9,14 +9,18 @@ system: |
   4. 绝对不要在 JSON 块里写注释、解释、Markdown。
 
   [字段要求]
-  - task_goal: 字符串
-  - current_step: 字符串
-  - key_entities: 对象 (URL/订单号/用户名/文件路径/平台名 等)
-  - completed_actions: 字符串数组
-  - archived_actions: 字符串数组
-  - open_issues: 字符串数组
-  - last_error: 字符串或 null
-  - critical_constraints: 字符串数组
+  - task_goal: 字符串, ≤ 60 字
+  - current_step: 字符串, ≤ 120 字, 只描述当前正在做什么, 不要罗列历史过程
+  - key_entities: 对象 (URL/订单号/用户名/文件路径/平台名 等), 键数 ≤ 15
+  - completed_actions: 字符串数组, 每条 ≤ 50 字, 条数 ≤ 10, 只记新增动作
+  - archived_actions: 字符串数组, 每条 ≤ 50 字
+  - open_issues: 字符串数组, 每条 ≤ 50 字, 条数 ≤ 8
+  - last_error: 字符串或 null, ≤ 80 字
+  - critical_constraints: 字符串数组, 每条 ≤ 50 字, 条数 ≤ 6
+
+  [长度硬约束] 状态 JSON 是给下游 prompt 注入用的摘要, 不是叙事文本。
+  所有字段值必须压缩为要点, 丢弃细节叙事; 输出总长度不超过 1200 字。
+  超长的历史信息宁可直接丢弃, 也不要写进状态。
 user: |
   [当前状态]
   ```json

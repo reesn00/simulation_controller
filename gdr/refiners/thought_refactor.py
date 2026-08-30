@@ -53,7 +53,7 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
             ]
         try:
             client = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-            text, meta = client.chat(retry_messages, max_tokens=600)
+            text, meta = client.chat(retry_messages, max_tokens=1536)
             result = parse_json_object(text)
             refined = result.get("refined_thought", "")
             if not refined:
@@ -75,7 +75,7 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
     try:
         log.warning("escalation to 32B for block %s", block.id)
         client = LlamaCppClient.get(cfg.tool_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-        text, meta = client.chat(messages, max_tokens=600)
+        text, meta = client.chat(messages, max_tokens=1536)
         result = parse_json_object(text)
         refined = result.get("refined_thought", "")
         if refined and cfg.thought_min_len <= len(refined) <= cfg.thought_max_len:

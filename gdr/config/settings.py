@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     embedding_expected_dim: Optional[int] = None  # None=不校验; 设了则首次响应维度不符立即报错
     embedding_timeout_s: float = 30.0
     embedding_max_batch: int = 32
+    embedding_max_input_chars: int = 6000  # 单条输入字符上限 (超服务端 n_ctx 会 400 exceed_context_size)
 
     # Kept for backwards compatibility in prompts / context sizing; not used to load GGUF files.
     n_ctx: int = 8192
@@ -48,6 +49,10 @@ class Settings(BaseSettings):
 
     # 是否使用 ContextUnderstanding 替代旧的 ±N surrounding context 注入 LLM 投票 prompt
     llm_vote_use_cu: bool = True
+    # 语义标签不会改变决策结果的块跳过 LLM 投票 (省调用)。
+    # 依据 core/policy.py 决策表: 追加语义标签 (BROKEN_LOGIC/WRONG_SELECTION/OBS_NOISE)
+    # 仅对 THOUGHT_TOO_LONG 的 thinking 会翻转 PRUNE 决策, 其余分支先于/等价于语义分支。
+    llm_vote_skip_rule_decidable: bool = True
     # CU 注入 prompt 的最大字符预算
     cu_prompt_max_chars: int = 4000
     # CU archive 子集策略: "full" 使用完整 archive; "referenced" 仅使用 referenced_by/depends_on 相关条目
@@ -133,6 +138,7 @@ class Settings(BaseSettings):
     # === 一致性校验（方案 §5.4） ===
     enable_edit_consistency_check: bool = True    # 编辑前后状态快照校验开关
     consistency_rollback_on_entity_loss: bool = True  # 关键字段丢失时自动回滚
+    consistency_max_llm_calls: int = 40           # 一致性校验状态重算 LLM 调用预算 (含重试), 超出标记 needs_review
 
     # === 训练质量评分（方案 §5.2） ===
     enable_quality_scorer: bool = True           # 训练质量维度评分开关
@@ -143,7 +149,8 @@ class Settings(BaseSettings):
     # === 批量 + 并行 ===
     batch_input_dir: Optional[Path] = None
     batch_output_dir: Optional[Path] = None
-    workers: int = 1           # 1 = 单进程顺序; >1 = multiprocessing.Pool
+    workers: int = 2           # 1 = 单进程顺序; >1 = multiprocessing.Pool (批量模式进程数)
+    llm_concurrency: int = 4   # 单进程内 LLM 请求并发上限 (投票/refiner 线程池 + 生成信号量)
     max_files: Optional[int] = None  # 限制本次处理的输入文件数 (None = 全部)
     session_timeout_s: int = 1200  # 单条 session 处理超时（CU 构建 ~300s + 路由 + refine + reassemble 余量）
 

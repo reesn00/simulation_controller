@@ -51,7 +51,9 @@ def check(original_block, refined_content: dict, cfg) -> dict:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        text, meta = client.chat(messages, max_tokens=512, temperature=0.0)
+        # reasoning 模型 (如 MiniMax-M2.7) 的思考 token 计入 max_tokens,
+        # 预算过小会只输出思考、content 为空 (finish_reason=length) → 按失败处理
+        text, meta = client.chat(messages, max_tokens=2048, temperature=0.0)
         result = parse_json_object(text)
         verdict = result.get("verdict", "fail")
         score = result.get("score", 0)

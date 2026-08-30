@@ -1,6 +1,7 @@
 import json
 import re
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from difflib import SequenceMatcher
 
@@ -15,6 +16,24 @@ _NOISE_PATTERN = re.compile(
     r"DEBUG|Traceback|status:\s*5\d\d|Error:|\[API_MISUSE\]|FATAL|"
     r"ModuleNotFoundError|IndentationError|SyntaxError"
 )
+
+# 投票只会追加一个语义标签 (thinking→BROKEN_LOGIC / toolcall→WRONG_SELECTION /
+# toolresult→OBS_NOISE)。当块已有的规则标签命中的决策分支先于/等价于该语义分支时,
+# 追加语义标签不改变任何下游决策 (core/policy.py 决策表), 投票纯属浪费 → 跳过。
+#   thinking: TOO_SHORT 与 BROKEN_LOGIC 的策略等价; CONTEXT_SWITCH 分支更早;
+#             仅 THOUGHT_TOO_LONG + BROKEN_LOGIC 会把 PRUNE 翻成 REPAIR/DEFER → 保留投票
+#   toolcall: REPETITIVE/CONTEXT_SWITCH 分支更早, JSON_INVALID/HALLUCINATED/API_HALLU
+#             与 WRONG_SELECTION 同分支
+#   toolresult: DEBUG_LEAK 与 OBS_NOISE 同分支, CONTEXT_SWITCH 分支更早
+_VOTE_REDUNDANT_TAGS: dict[str, set[DefectTag]] = {
+    "thinking": {DefectTag.THOUGHT_TOO_SHORT, DefectTag.CONTEXT_SWITCH_LOOP},
+    "toolcall": {
+        DefectTag.REPETITIVE_CALL, DefectTag.CONTEXT_SWITCH_LOOP,
+        DefectTag.TOOL_JSON_INVALID, DefectTag.TOOL_HALLUCINATED,
+        DefectTag.API_HALLUCINATION,
+    },
+    "toolresult": {DefectTag.OBS_DEBUG_LEAK, DefectTag.CONTEXT_SWITCH_LOOP},
+}
 
 # 改进1: 从 toolresult 中提取事实实体（数值、价格、平台名等）
 _FACT_VALUE_PATTERN = re.compile(
@@ -278,20 +297,17 @@ class Router:
         self, blocks_info: list[dict], session, cfg,
         context_understanding=None,
     ) -> dict[str, list[DefectTag]]:
-        """鲁棒化的 3 票投票, 每次投票使用不同的上下文窗口策略。
+        """级联投票 + 线程池并发。
 
-        - 3 次请求各自的输入由 ``cfg.llm_vote_context_strategies`` 决定
-          (默认 ``["none", "±1", "pre2_post1"]``), 覆盖裸看 / 局部窗口 /
-          偏前文三种判断依据, 降低同 prompt 引发的系统性偏差。
-        - 解析失败 / 超时 视为弃权 (不计入有效票)
-        - 有效票数 < 2 → 不标记 (无足够信号)
-        - 有效票中 ≥ 2 票 has_defect=True → 标记
-
-        这样既保留 majority-vote 鲁棒性, 又避免单次解析错误连带全部丢分,
-        同时通过输入侧的多样性降低 LLM 系统性偏差的同票放大效应。
+        - 每个候选块先投"首票" (CU 全局状态上下文); 判无缺陷直接放行 (1 次调用)。
+        - 判有缺陷时用局部窗口上下文 (强制 surrounding, 绕过 CU 状态捷径) 补一票确认,
+          两票一致才标记; 分歧保守取无缺陷。假阳性会触发 PRUNE/多余精修, 代价高于假阴性。
+        - 块间投票相互独立, 用 ThreadPoolExecutor 并发; 实际 LLM 并发由
+          llm_client 的生成信号量 (llm_concurrency) 兜底。
+        - 解析失败 / 超时 视为弃权; 弃权不标记。
         """
         result: dict[str, list[DefectTag]] = {}
-        if not cfg.enable_llm_layer:
+        if not cfg.enable_llm_layer or not blocks_info:
             return result
 
         # 取有效策略 (不够 3 个则补 "none", 多了截断); 无效策略降级为 "none"
@@ -303,76 +319,112 @@ class Router:
             s if s in _VOTE_STRATEGY_SPAN else "none" for s in strategies
         ]
 
-        for info in blocks_info:
-            block_id = info["block_id"]
-            block_type = info.get("block_type", "")
-            content = info.get("content", "")
-            msg_idx = info.get("msg_idx")
-            block_idx = info.get("block_idx")
+        max_workers = max(1, min(int(getattr(cfg, "llm_concurrency", 4)), len(blocks_info)))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="gdr-vote") as pool:
+            votes = list(pool.map(
+                lambda info: self._vote_block(
+                    info, session, cfg, context_understanding, strategies,
+                ),
+                blocks_info,
+            ))
 
-            votes: list[bool] = []
-            parse_errors = 0
-            for vote_idx, strategy in enumerate(strategies):
-                context_text = self._build_review_context(
-                    session, msg_idx, block_idx, block_id, strategy,
-                    context_understanding=context_understanding,
-                    cfg=cfg,
-                )
-                try:
-                    from infrastructure import LlamaCppClient
-                    llm = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
-                    prompt = self._build_llm_review_prompt(block_type, content, context_text)
-                    messages = [{"role": "user", "content": prompt}]
-                    text, _ = llm.chat(
-                        messages,
-                        max_tokens=400,
-                        temperature=0.3,
-                        timeout_s=cfg.llm_timeout_s,
-                    )
-                    from prompts import parse_json_object
-                    parsed = parse_json_object(text)
-                    if "has_defect" not in parsed:
-                        parse_errors += 1
-                        continue
-                    votes.append(bool(parsed["has_defect"]))
-                except Exception as e:
-                    parse_errors += 1
-                    log.warning(
-                        "LLM review error for block %s (vote=%d/%d strategy=%s): %s",
-                        block_id, vote_idx + 1, len(strategies), strategy, e,
-                    )
-                    continue
-
-            if len(votes) < 2:
-                log.debug(
-                    "block %s LLM review abstained (votes=%d, errors=%d, strategies=%s)",
-                    block_id, len(votes), parse_errors, strategies,
-                )
-                continue
-
-            defect_votes = sum(1 for v in votes if v)
-            if defect_votes >= 2:
-                if block_type == "thinking":
-                    if DefectTag.THOUGHT_BROKEN_LOGIC not in result.get(block_id, []):
-                        result.setdefault(block_id, []).append(DefectTag.THOUGHT_BROKEN_LOGIC)
-                elif block_type == "toolcall":
-                    if DefectTag.TOOL_WRONG_SELECTION not in result.get(block_id, []):
-                        result.setdefault(block_id, []).append(DefectTag.TOOL_WRONG_SELECTION)
-                elif block_type == "toolresult":
-                    if DefectTag.OBS_NOISE not in result.get(block_id, []):
-                        result.setdefault(block_id, []).append(DefectTag.OBS_NOISE)
-
+        for block_id, tag in votes:
+            if tag is not None:
+                result.setdefault(block_id, []).append(tag)
         return result
+
+    def _vote_block(
+        self, info: dict, session, cfg, context_understanding,
+        strategies: list[str],
+    ) -> tuple[str, Optional[DefectTag]]:
+        """单个候选块的级联投票。返回 (block_id, 语义标签或 None)。"""
+        block_id = info["block_id"]
+        block_type = info.get("block_type", "")
+        try:
+            first = self._single_vote(
+                info, session, cfg, context_understanding,
+                strategy=strategies[0], force_surrounding=False,
+            )
+            if first is not True:
+                return block_id, None
+            # 确认票: 选一个非 "none" 策略并强制 surrounding 上下文,
+            # 保证确认票看到的是局部原文而非同一份 CU 状态摘要
+            confirm_strategy = next(
+                (s for s in strategies[1:] if s != "none"), "±1",
+            )
+            second = self._single_vote(
+                info, session, cfg, context_understanding,
+                strategy=confirm_strategy, force_surrounding=True,
+            )
+            if second is not True:
+                log.debug(
+                    "block %s vote not confirmed (v1=defect, v2=%s), skip tag",
+                    block_id, second,
+                )
+                return block_id, None
+        except Exception as e:
+            log.warning("LLM vote failed for block %s: %s", block_id, e)
+            return block_id, None
+
+        tag = {
+            "thinking": DefectTag.THOUGHT_BROKEN_LOGIC,
+            "toolcall": DefectTag.TOOL_WRONG_SELECTION,
+            "toolresult": DefectTag.OBS_NOISE,
+        }.get(block_type)
+        return block_id, tag
+
+    def _single_vote(
+        self, info: dict, session, cfg, context_understanding,
+        *, strategy: str, force_surrounding: bool,
+    ) -> Optional[bool]:
+        """投一票。返回 True/False; 解析失败/请求异常返回 None (弃权)。"""
+        block_id = info["block_id"]
+        block_type = info.get("block_type", "")
+        content = info.get("content", "")
+        context_text = self._build_review_context(
+            session, info.get("msg_idx"), info.get("block_idx"), block_id, strategy,
+            context_understanding=context_understanding, cfg=cfg,
+            force_surrounding=force_surrounding,
+        )
+        try:
+            from infrastructure import LlamaCppClient
+            llm = LlamaCppClient.get(cfg.main_model, cfg=cfg, timeout=cfg.llm_timeout_s)
+            prompt = self._build_llm_review_prompt(block_type, content, context_text)
+            messages = [{"role": "user", "content": prompt}]
+            text, _ = llm.chat(
+                messages,
+                # reasoning 模型的思考 token 计入 max_tokens, 预算过小 → content 为空弃权
+                max_tokens=1024,
+                temperature=0.3,
+                timeout_s=cfg.llm_timeout_s,
+            )
+            from prompts import parse_json_object
+            parsed = parse_json_object(text)
+            if "has_defect" not in parsed:
+                log.warning(
+                    "LLM review unparseable for block %s (strategy=%s)",
+                    block_id, strategy,
+                )
+                return None
+            return bool(parsed["has_defect"])
+        except Exception as e:
+            log.warning(
+                "LLM review error for block %s (strategy=%s): %s",
+                block_id, strategy, e,
+            )
+            return None
 
     def _build_review_context(
         self,
         session, msg_idx, block_idx, block_id: str, strategy: str,
-        context_understanding=None, cfg=None,
+        context_understanding=None, cfg=None, force_surrounding: bool = False,
     ) -> str:
         """组装 Router LLM 评审所需的上下文。
 
         当 ``cfg.llm_vote_use_cu=True`` 且 ``context_understanding`` 可用时,
         使用 CU archive/view 作为注入上下文; 否则回退到旧 ±N surrounding。
+        ``force_surrounding=True`` 跳过 CU 捷径, 直接用 ±N 局部原文 ——
+        用于确认票, 保证与首票 (CU 全局状态) 输入不同源。
         """
         cfg = cfg or self.cfg if hasattr(self, "cfg") else None
         if cfg is None:
@@ -380,7 +432,11 @@ class Router:
                 session, msg_idx, block_idx, strategy, max_chars=4000,
             )
 
-        if getattr(cfg, "llm_vote_use_cu", False) and context_understanding is not None:
+        if (
+            not force_surrounding
+            and getattr(cfg, "llm_vote_use_cu", False)
+            and context_understanding is not None
+        ):
             try:
                 # 优先注入增量状态追踪的最新快照（方案 §3.2）
                 if getattr(cfg, "context_state_tracker_enabled", True):
@@ -558,10 +614,11 @@ class Router:
                         defects_index.setdefault(bid, []).append(tag)
 
         # === LLM 投票层 ===
-        # 对"规则层已命中缺陷"的 thinking/toolcall/toolresult block 做 3 票投票,
-        # 3 次请求使用 cfg.llm_vote_context_strategies 配置的不同上下文窗口。
-        # 不健康消息的 block 不进入投票 (健康分已覆盖)。
+        # 对"规则层已命中缺陷"的 thinking/toolcall/toolresult block 做级联投票
+        # (首票 + 确认票), 不健康消息的 block 不进入投票 (健康分已覆盖)。
+        # 语义标签不改变决策的块 (llm_vote_skip_rule_decidable, 默认开) 直接跳过。
         candidate_blocks: list[dict] = []
+        skip_decidable = getattr(cfg, "llm_vote_skip_rule_decidable", True)
         for msg_idx, msg in enumerate(session.messages):
             if msg.role != "assistant":
                 continue
@@ -577,8 +634,17 @@ class Router:
                     bid = getattr(block, "id", "")
                 if btype not in ("thinking", "toolcall", "toolresult"):
                     continue
-                if bid not in defects_index or not defects_index[bid]:
+                block_defects = defects_index.get(bid) or []
+                if not block_defects:
                     continue
+                if skip_decidable:
+                    redundant = _VOTE_REDUNDANT_TAGS.get(btype, set())
+                    if redundant and redundant.intersection(block_defects):
+                        log.debug(
+                            "block %s skips LLM vote: tags %s cannot change policy",
+                            bid, [d.value for d in block_defects],
+                        )
+                        continue
                 candidate_blocks.append({
                     "block_id": bid,
                     "block_type": btype,

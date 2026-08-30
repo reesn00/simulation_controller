@@ -107,8 +107,22 @@ GLOBAL_STATE_SCHEMA: dict = {
 }
 
 
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
 def _try_parse_state_dict(text: str) -> dict | None:
-    """解析 LLM 输出的状态 JSON。优先从代码块中抽取，其次全文解析。"""
+    """解析 LLM 输出的状态 JSON。优先从代码块中抽取，其次全文解析。
+
+    Qwen 系模型常输出 <think>...</think> 推理前缀, 先剥掉再解析,
+    否则首段 { ... } 贪婪匹配会吞掉 think 内文本导致解析失败、触发无谓重试。
+    剥离后仍失败再回退原文 (兼容把 JSON 写在 think 块内的输出)。
+    """
+    if not text:
+        return None
+    return _parse_state_json(_THINK_RE.sub("", text)) or _parse_state_json(text)
+
+
+def _parse_state_json(text: str) -> dict | None:
     if not text:
         return None
     # 抽取 ```json ... ``` 代码块
@@ -454,6 +468,7 @@ class ContextUnderstanding:
         self, session,
         unhealthy_msg_indices: set[int] | None = None,
         light_health: dict[int, float] | None = None,
+        track_state: bool = True,
     ) -> None:
         """构建上下文理解。
 
@@ -463,6 +478,10 @@ class ContextUnderstanding:
             light_health: msg_idx -> health_score 的轻量映射；
                 当提供时，用于初始化 MessageSnapshot.is_healthy，
                 未提供则回退到 unhealthy_msg_indices。
+            track_state: 是否在本调用内执行 chunk 切分 + LLM 状态追踪。
+                传 False 只构建零 LLM 的结构层 (引用图/视图/archive, 供 fold 保护),
+                状态追踪留待 fold 之后调用 retrack_state() 完成,
+                保证 chunk 划分反映折叠后的 session 且状态追踪只跑一次。
         """
         self._unhealthy_msg_indices = unhealthy_msg_indices or set()
         self._light_health = light_health or {}
@@ -474,9 +493,8 @@ class ContextUnderstanding:
         self._evict_until_under_budget()
         self._annotate_block_views()
         # === 增量状态追踪阶段（方案 §3） ===
-        if getattr(self.cfg, "context_state_tracker_enabled", True):
-            self._chunkify(session)
-            self._track_state(session)
+        if track_state:
+            self.retrack_state(session)
 
     def get_view(self, block_id: str) -> BlockContextView | None:
         return self._block_index.get(block_id)
@@ -916,6 +934,39 @@ class ContextUnderstanding:
     def state_snapshots(self) -> dict[int, GlobalState]:
         return self._state_snapshots
 
+    @property
+    def state_tracking_calls(self) -> int:
+        """已消耗的状态追踪 LLM 调用数（含重试）。"""
+        return self._state_tracking_calls
+
+    def retrack_state(self, session) -> None:
+        """(重新)切分 chunk 并执行增量状态追踪。
+
+        fold/编辑后调用, 保证 chunk 划分反映当前 session 内容。
+        受 context_state_tracker_enabled 与 context_max_state_llm_calls 约束;
+        整个 CU 生命周期内状态追踪只应跑这一次。
+        """
+        if not getattr(self.cfg, "context_state_tracker_enabled", True):
+            return
+        self._chunkify(session)
+        self._track_state(session)
+
+    def update_state_chunk(
+        self, session, current_state: GlobalState, chunk_idx: int, cfg=None,
+    ) -> GlobalState | None:
+        """基于给定前置状态对单个 chunk 做一次增量更新 (一致性校验专用)。
+
+        与 state_after 的"从 chunk 0 重放"不同, 本方法只更新一个 chunk,
+        由调用方在外层循环中携带状态前进, 把一致性校验从 O(N²) 降到 O(N)。
+        返回新状态; chunk 越界或 LLM 更新失败返回 None。
+        """
+        if not (0 <= chunk_idx < len(self._chunks)):
+            return None
+        max_retries = max(0, getattr(self.cfg, "context_state_max_retries", 1))
+        return self._state_update_one(
+            current_state, session, self._chunks[chunk_idx], max_retries,
+        )
+
     def chunk_of_block(self, block_id: str) -> int | None:
         return self._block_to_chunk.get(block_id)
 
@@ -1032,7 +1083,7 @@ class ContextUnderstanding:
         """对单个 Chunk 调用 LLM 更新状态; 返回新状态或 None（失败时）。
 
         渲染基于 session 的当前 block 内容 (而非 build 时快照),
-        这样编辑后重跑 (state_after) 才能反映最新文本。
+        这样编辑后重算 (一致性校验的 update_state_chunk) 才能反映最新文本。
         """
         try:
             from infrastructure import LlamaCppClient
@@ -1066,7 +1117,9 @@ class ContextUnderstanding:
                 ]
             try:
                 client = LlamaCppClient.get(model, cfg=self.cfg, timeout=timeout)
-                text, _ = client.chat(retry_messages, max_tokens=4000, temperature=0.0, timeout_s=timeout)
+                # reasoning 模型 (如 MiniMax-M2.7) 的思考 token 计入 max_tokens; 该模型
+                # 单次状态输出可达 5-9k token, 预算不足会截断 JSON (invalid state json)
+                text, _ = client.chat(retry_messages, max_tokens=10000, temperature=0.0, timeout_s=timeout)
                 data = _validate_state_dict(_try_parse_state_dict(text))
                 if data is None:
                     raise ValueError("invalid state json after repair")
@@ -1144,8 +1197,9 @@ class ContextUnderstanding:
     ) -> GlobalState | None:
         """编辑后, 对单个 chunk 重跑状态更新, 返回该 chunk 的新快照。
 
-        用于一致性校验（方案 §5.4）。从 chunk_idx=0 开始累积至 chunk_idx,
-        避免上游 chunk 未编辑时浪费 LLM 调用。
+        旧版重放式实现: 从 chunk 0 累积至 chunk_idx, O(chunk_idx) 次调用。
+        生产路径已不再使用 —— 一致性校验改用 update_state_chunk 逐 chunk
+        真增量推进 (O(N) 总量), 本方法保留作兼容/调试用途。
         """
         if chunk_idx < 0 or chunk_idx >= len(self._chunks):
             return None
@@ -1167,8 +1221,13 @@ def build_context_for_session(
     session, cfg,
     unhealthy_msg_indices: set[int] | None = None,
     light_health: dict[int, float] | None = None,
+    track_state: bool = True,
 ) -> ContextUnderstanding:
-    """便捷工厂: 直接 build 完整上下文。"""
+    """便捷工厂: 直接 build 完整上下文。
+
+    track_state=False 时只构建零 LLM 结构层, 状态追踪由调用方在 fold 之后
+    调用 retrack_state(session) 完成。
+    """
     if not getattr(cfg, "enable_context_understanding", True):
         return None  # 由调用方 fallback 到旧 ±2 上下文
     cu = ContextUnderstanding(cfg)
@@ -1176,5 +1235,6 @@ def build_context_for_session(
         session,
         unhealthy_msg_indices=unhealthy_msg_indices,
         light_health=light_health,
+        track_state=track_state,
     )
     return cu

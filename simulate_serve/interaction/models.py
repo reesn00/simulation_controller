@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -13,6 +14,12 @@ class InteractionContext(BaseModel):
     conversation: tuple[ConversationTurn, ...] = ()
     guide_rounds: int = 0
     regressed_criteria: tuple[str, ...] = ()
+
+
+class ClosingTrigger(str, Enum):
+    PASS = "pass"
+    ENVIRONMENT_STOP = "environment_stop"
+    AGENT_DECLINED = "agent_declined"
 
 
 class UserUtterance(BaseModel):

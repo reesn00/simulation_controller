@@ -3,6 +3,7 @@ import logging
 import time
 from domain import Session, BlockRefineRecord, MessageHealth, DefectTag, StepEditStatus
 from core.policy import RefinementPolicy
+from core.context_understanding import GlobalState
 
 log = logging.getLogger(__name__)
 
@@ -77,9 +78,16 @@ def _validate_edit_consistency(
 ) -> list[BlockRefineRecord]:
     """编辑后复用状态追踪器校验全局一致性 (方案 §5.4)。
 
-    对编辑过的 Chunk 从最早被编辑者起重跑增量状态更新, 对比前后状态快照:
-      - 关键字段丢失/冲突 → 回滚该 Chunk 内所有编辑 (result=rollback, 恢复原文)
-      - 状态重跑失败 → 该 Chunk 及之后的成功编辑标记 needs_review
+    真增量实现: 从最早被编辑的 chunk 起, 携带状态逐 chunk 只更新一次,
+    复杂度 O(N - first_edited) —— 旧实现每次 state_after(ci) 都从 chunk 0
+    重放, 是 O(N²) 的 LLM 调用爆炸点。
+
+    起点取 first_edited 前一个 chunk 的编辑前快照: 其之前的 chunk 未被编辑,
+    快照仍然有效。first_edited=0 时从空状态开始, 与初始追踪等价。
+
+      - 关键字段丢失/冲突 → 回滚该 Chunk 内所有编辑 (result=rollback, 恢复原文),
+        并把当前状态重置为该 chunk 的编辑前快照后继续
+      - 状态重算失败 / LLM 调用预算耗尽 → 该 chunk 及之后的成功编辑标记 needs_review
 
     注意: 调用时编辑已写回 session.blocks, 因此回滚必须把 block 恢复为 original_content。
     """
@@ -94,35 +102,74 @@ def _validate_edit_consistency(
         return refine_records
 
     first_edited = min(edited_chunks)
+    budget = max(0, int(getattr(cfg, "consistency_max_llm_calls", 40)))
+
+    if first_edited > 0:
+        current = cu.snapshot_at(first_edited - 1)
+    else:
+        current = None
+    if current is None:
+        current = GlobalState()
+
     for ci in range(first_edited, cu.num_chunks):
-        new_state = cu.state_after(session, ci, cfg)
+        if budget <= 0:
+            log.warning(
+                "consistency LLM budget (%d) exhausted at chunk %d, "
+                "marking remaining edits needs_review",
+                getattr(cfg, "consistency_max_llm_calls", 40), ci,
+            )
+            _mark_needs_review_from(refine_records, cu, ci)
+            return refine_records
+
+        calls_before = cu.state_tracking_calls
+        new_state = cu.update_state_chunk(session, current, ci, cfg)
+        budget -= cu.state_tracking_calls - calls_before
         if new_state is None:
             log.warning("state re-track failed at chunk %d, mark needs_review", ci)
-            for r in refine_records:
-                if r.result == "success":
-                    r_ci = cu.chunk_of_block(r.block_index.block_id)
-                    if r_ci is not None and r_ci >= ci:
-                        r.edit_status = StepEditStatus.NEEDS_REVIEW
+            _mark_needs_review_from(refine_records, cu, ci)
             return refine_records
 
         before = cu.state_snapshots.get(ci)
-        if before is None:
-            continue
-        lost_keys = _lost_critical_fields(before, new_state)
-        if lost_keys and getattr(cfg, "consistency_rollback_on_entity_loss", True):
-            log.warning(
-                "consistency conflict at chunk %d: %s -> rollback edits in chunk",
-                ci, lost_keys,
-            )
-            for r in refine_records:
-                if r.block_index.block_id in cu.chunk_blocks.get(ci, []):
-                    r.refined_content = None
-                    r.result = "rollback"
-                    r.edit_status = StepEditStatus.ROLLBACK
-                    _restore_block_content(session, r)
-            # 回滚后快照恢复为编辑前状态, 继续校验后续 chunk
-            cu.state_snapshots[ci] = before
+        if before is not None:
+            lost_keys = _lost_critical_fields(before, new_state)
+            if lost_keys and getattr(cfg, "consistency_rollback_on_entity_loss", True):
+                log.warning(
+                    "consistency conflict at chunk %d: %s -> rollback edits in chunk",
+                    ci, lost_keys,
+                )
+                for r in refine_records:
+                    if r.block_index.block_id in cu.chunk_blocks.get(ci, []):
+                        r.refined_content = None
+                        r.result = "rollback"
+                        r.edit_status = StepEditStatus.ROLLBACK
+                        _restore_block_content(session, r)
+                # 回滚后该 chunk 回到编辑前状态, 后续 chunk 以此为起点
+                cu.state_snapshots[ci] = before
+                current = before
+                continue
+        current = new_state
     return refine_records
+
+
+def _mark_needs_review_from(
+    refine_records: list[BlockRefineRecord], cu, from_chunk: int,
+) -> None:
+    """把 from_chunk 及之后的成功编辑标记为 needs_review。"""
+    for r in refine_records:
+        if r.result != "success":
+            continue
+        r_ci = cu.chunk_of_block(r.block_index.block_id)
+        if r_ci is not None and r_ci >= from_chunk:
+            r.edit_status = StepEditStatus.NEEDS_REVIEW
+
+
+def _find_block_by_id(blocks: list, block_id: str):
+    """在块列表中按 id 定位块 (块可能是 dict 或 Pydantic 模型); 未找到返回 None。"""
+    for b in blocks:
+        bid = b.get("id", "") if isinstance(b, dict) else getattr(b, "id", "")
+        if bid == block_id:
+            return b
+    return None
 
 
 def _restore_block_content(session: Session, record: BlockRefineRecord) -> None:
@@ -604,9 +651,12 @@ def reassemble(
                 pruned_count, session.session_id,
             )
 
+    # 按记录写回 refined content。
+    # 修复: 必须按 block_id 定位块, 不能用 record.block_index.block_idx 位置索引 ——
+    # 上面的 repetitive/context-switch/policy 剪枝会删除块, 使记录中的位置索引失效,
+    # 轻则 IndexError 整 session 白跑被丢弃, 重则把内容错写到相邻块。
     for record in refine_records:
         idx = record.block_index
-        msg = session.messages[idx.msg_idx]
 
         # 改进2: 跳过不健康消息中的所有 block
         if idx.msg_idx in unhealthy_msg_indices:
@@ -616,7 +666,19 @@ def reassemble(
             )
             continue
 
-        block = msg.blocks[idx.block_idx]
+        if not (0 <= idx.msg_idx < len(session.messages)):
+            log.warning(
+                "record msg_idx %d out of range for session %s, skip writeback",
+                idx.msg_idx, session.session_id,
+            )
+            continue
+        block = _find_block_by_id(session.messages[idx.msg_idx].blocks, idx.block_id)
+        if block is None:
+            log.warning(
+                "block %s pruned/folded before writeback, skip (no content to edit)",
+                idx.block_id,
+            )
+            continue
 
         if isinstance(block, dict):
             block_type = block.get("type", "")
@@ -708,8 +770,9 @@ def reassemble(
             {"role": "user", "content": user_prompt},
         ]
         client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout=cfg.l3_timeout_s)
+        # reasoning 模型的思考 token 计入 max_tokens, 预算过小 → content 为空
         text, meta = client.chat(
-            messages, max_tokens=256, temperature=0.0, timeout_s=cfg.l3_timeout_s,
+            messages, max_tokens=2048, temperature=0.0, timeout_s=cfg.l3_timeout_s,
         )
         from prompts import parse_json_object
         result = parse_json_object(text)
