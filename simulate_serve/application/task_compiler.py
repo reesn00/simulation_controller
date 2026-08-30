@@ -92,8 +92,8 @@ class TaskCompiler:
 
         dimension = task.dimension
         if not dimension:
-            dimension = "文件操作" if task.task_id == "F001" else "内容载体类型" if task.task_id in {"T055", "T056", "T057"} else "未分类"
-            diagnostics.append(self._warning("DIMENSION_DERIVED", f"Derived dimension for {task.task_id}", task.task_id, "dimension"))
+            dimension = "未分类"
+            diagnostics.append(self._warning("DIMENSION_DERIVED", f"Task {task.task_id} has no dimension; using default", task.task_id, "dimension"))
         explain = task.explain or ""
         if not explain:
             diagnostics.append(self._warning("EXPLAIN_EMPTY", f"Task {task.task_id} has no explain text", task.task_id, "explain"))
@@ -162,6 +162,7 @@ class TaskCompiler:
             dimension=dimension,
             explain=explain,
             scenario_id=task.scenario,
+            offline_only=task.offline_only,
             task_prompt=request,
             intent=TaskIntent(
                 goal=intent.goal if intent else request,

@@ -12,7 +12,8 @@ rem                           the rest are passed through
 rem    run.bat --verbose      Non-numeric first arg: pass all through
 rem ============================================================
 
-cd /d "%~dp0"
+rem Script lives inside simulate_serve/, run from the project root
+cd /d "%~dp0.."
 
 set "LIMIT="
 set "ARGS="

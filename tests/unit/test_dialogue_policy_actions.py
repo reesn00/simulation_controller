@@ -136,32 +136,42 @@ async def test_executor_owned_failure_does_not_emit_environment_closing(compiled
 
 
 @pytest.mark.asyncio
-async def test_agent_declined_short_circuits_before_validation(compiled_task) -> None:
+async def test_agent_declined_terminates_after_failed_validation(compiled_task) -> None:
     task = compiled_task.model_copy(
         update={
             "interaction_policy": InteractionPolicy(blocked_action="accept_honest_limitation"),
         }
     )
-
-    class _NeverCalledValidator:
-        async def validate(self, task, run, response):  # pragma: no cover
-            raise AssertionError("validate should not run when agent has declined")
-
+    fail_report = ValidationReport(
+        verdict=Verdict.FAIL,
+        criteria=(
+            CriterionResult(
+                criterion_id=compiled_task.criteria[0].criterion_id,
+                verdict=Verdict.FAIL,
+                reason_code="X",
+                message="missing",
+                retryable=True,
+            ),
+        ),
+        retryable=True,
+    )
     runtime = TaskRuntime(
-        _ScriptedExecutor(["抱歉，我无法访问该网站，需要您先提供授权。"]),
+        _ScriptedExecutor(["抱歉，我无法完成这个任务。"]),
         DeterministicInteractionActor(),
-        _NeverCalledValidator(),
+        _ScriptedValidator([fail_report]),
     )
     run = await runtime.run(task)
 
     assert run.state.value == "guide_exhausted"
     assert run.failure is not None
     assert run.failure.code == "AGENT_DECLINED"
+    assert run.validation_rounds  # 放弃判定发生在验证之后，验证记录保留
     assert run.conversation[-1].content == "没关系，你能说明做不到的原因也很好，就到这里吧。"
 
 
 @pytest.mark.asyncio
-async def test_agent_declined_uses_default_blocked_action(compiled_task) -> None:
+async def test_pass_beats_decline_phrasing(compiled_task) -> None:
+    # 验证通过时不再做放弃判定：含“无法/需要确认”措辞的正确回复不会被终止。
     pass_report = ValidationReport(
         verdict=Verdict.PASS,
         criteria=(CriterionResult(criterion_id=compiled_task.criteria[0].criterion_id, verdict=Verdict.PASS, reason_code="OK", message="ok"),),
@@ -173,16 +183,55 @@ async def test_agent_declined_uses_default_blocked_action(compiled_task) -> None
     )
     run = await runtime.run(compiled_task)
 
-    # default blocked_action is accept_honest_limitation → decline still fires.
-    assert run.state.value == "guide_exhausted"
-    assert run.failure is not None and run.failure.code == "AGENT_DECLINED"
+    assert run.state.value == "success"
+
+
+@pytest.mark.asyncio
+async def test_no_decline_check_continues_instead_of_terminating(compiled_task) -> None:
+    task = compiled_task.model_copy(
+        update={"interaction_policy": InteractionPolicy(blocked_action="no_decline_check")}
+    )
+    fail_report = ValidationReport(
+        verdict=Verdict.FAIL,
+        criteria=(
+            CriterionResult(
+                criterion_id=compiled_task.criteria[0].criterion_id,
+                verdict=Verdict.FAIL,
+                reason_code="X",
+                message="missing",
+                retryable=True,
+            ),
+        ),
+        retryable=True,
+    )
+    inconclusive_report = ValidationReport(
+        verdict=Verdict.INCONCLUSIVE,
+        criteria=(
+            CriterionResult(
+                criterion_id=compiled_task.criteria[0].criterion_id,
+                verdict=Verdict.INCONCLUSIVE,
+                reason_code="X",
+                message="x",
+            ),
+        ),
+    )
+    runtime = TaskRuntime(
+        _ScriptedExecutor(["抱歉，我无法完成这个任务。", "结果如下，请查收。"]),
+        DeterministicInteractionActor(),
+        _ScriptedValidator([fail_report, inconclusive_report]),
+    )
+    run = await runtime.run(task)
+
+    # no_decline_check 场景：放弃话术不终止 run，而是进入引导追问。
+    assert run.state.value == "inconclusive"
+    assert run.guide_rounds == 1
 
 
 @pytest.mark.parametrize(
     "text",
     [
         "抱歉，我无法完成这个任务。",
-        "需要您先提供授权才能继续。",
+        "没有权限访问该资源，任务到此为止。",
         "I cannot access this page; out of my scope.",
     ],
 )
@@ -196,6 +245,8 @@ def test_detect_honest_limitation_flags_declarations(text: str) -> None:
         "",
         "这是结果列表，请查收。",
         "I can help with that. Here is the answer.",
+        "需要您先确认要哪一部《功夫》，我再继续搜索。",
+        "该网站无法访问，我给您换一个来源。",
     ],
 )
 def test_detect_honest_limitation_ignores_normal_replies(text: str) -> None:

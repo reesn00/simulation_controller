@@ -4,13 +4,28 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PACKAGE_DIR = Path(__file__).parent
 
 
 class StrictConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _check_header_safe(field: str, value: str) -> str:
+    """Header-bound values (Authorization, X-Agent-Id) must be ASCII.
+
+    Non-ASCII here (e.g. full-width dashes typed with a CJK IME) only surfaces
+    as an obscure UnicodeEncodeError deep inside the HTTP client at request
+    time; rejecting it at config load makes the misconfiguration obvious.
+    """
+    if value and not value.isascii():
+        raise ValueError(
+            f"{field}: contains non-ASCII characters; header-bound config values "
+            "must be ASCII (check for full-width punctuation, e.g. '——' vs '--')"
+        )
+    return value
 
 
 class AgentEndpointConfig(StrictConfig):
@@ -25,6 +40,11 @@ class AgentEndpointConfig(StrictConfig):
     max_poll_time: float = Field(default=180.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
 
+    @field_validator("execution_agent_id", "validation_agent_id", "auth_token")
+    @classmethod
+    def _header_fields_are_ascii(cls, value: str, info) -> str:
+        return _check_header_safe(f"agent_endpoint.{info.field_name}", value)
+
 
 class ModelConfig(StrictConfig):
     model_type: str = "OPENAI"
@@ -32,6 +52,11 @@ class ModelConfig(StrictConfig):
     api_key: str = ""
     base_url: str = ""
     temperature: float = 0.7
+
+    @field_validator("api_key")
+    @classmethod
+    def _api_key_is_ascii(cls, value: str) -> str:
+        return _check_header_safe("model.api_key", value)
 
 
 class ToolProviderConfig(StrictConfig):
@@ -58,10 +83,17 @@ class ValidationConfig(StrictConfig):
     judge_timeout_seconds: float = Field(default=60.0, gt=0)
 
 
+class InteractionConfig(StrictConfig):
+    # Local thinking models emit reasoning tokens before the visible follow-up;
+    # a too-small timeout silently degrades every follow-up to deterministic wording.
+    actor_timeout_seconds: float = Field(default=180.0, gt=0)
+
+
 class AppConfig(StrictConfig):
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent_endpoint: AgentEndpointConfig = Field(default_factory=AgentEndpointConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    interaction: InteractionConfig = Field(default_factory=InteractionConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     max_guide_rounds: int = Field(default=3, ge=0)
     output_dir: str = "output"

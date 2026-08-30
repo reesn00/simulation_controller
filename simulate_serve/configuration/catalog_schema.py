@@ -68,7 +68,10 @@ class DialoguePolicyDocument(StrictDocument):
     preserve_satisfied_criteria: bool = True
     never_expose_internal_rules: bool = True
     pass_action: str = "thank_and_finish"
-    blocked_action: str = "accept_honest_limitation"
+    # accept_honest_limitation: decline phrasing after a failed validation ends
+    # the run as AGENT_DECLINED. no_decline_check: refusal/clarification/honest
+    # degradation is the task goal itself, so decline detection is disabled.
+    blocked_action: Literal["accept_honest_limitation", "no_decline_check"] = "accept_honest_limitation"
     environment_error_action: str = "stop_without_blame_executor"
 
 
@@ -126,6 +129,9 @@ class ScenarioDocument(StrictDocument):
 class TaskDocument(StrictDocument):
     task_id: str
     task_type: str
+    # Excluded from live batches by default; fixtures-driven anomaly tasks and
+    # tasks whose evidence capability has no local provider go here.
+    offline_only: bool = False
     dimension: str | None = None
     explain: str | None = None
     scenario: str | None = None

@@ -25,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None, help="Path to config file")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--limit", type=int, default=0, help="Maximum tasks to run; 0 means all")
+    parser.add_argument(
+        "--include-offline",
+        action="store_true",
+        help="Include tasks marked offline_only (fixtures-driven anomaly tasks) in the live batch",
+    )
     parser.add_argument("--output-format", choices=("v2", "both", "legacy"), default="both")
     parser.add_argument("--rerun-task", metavar="TASK_ID", default="")
     parser.add_argument("--list-interrupted", action="store_true")
@@ -102,12 +107,15 @@ async def _run(config: AppConfig, args: argparse.Namespace) -> int:
         tasks = services.task_manager.compiled_tasks
         rerun_of = None
         if args.rerun_task:
+            # Explicit rerun by id is deliberate user intent; skip the offline filter.
             tasks = [item for item in tasks if item.task_id == args.rerun_task]
             if not tasks:
                 raise ValueError(f"Unknown task_id: {args.rerun_task}")
             previous = [item for item in services.repository.load_runs() if item.task_id == args.rerun_task]
             if previous:
                 rerun_of = max(previous, key=lambda item: item.started_at).run_id
+        elif not args.include_offline:
+            tasks = [item for item in tasks if not item.offline_only]
         runs = await services.batch_runner.run(tasks, limit=args.limit, rerun_of=rerun_of)
         stats = services.repository.export(output_format=args.output_format)
         logger.info("Batch completed: %s", stats)

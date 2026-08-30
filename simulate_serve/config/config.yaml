@@ -1,8 +1,8 @@
 model:
   model_type: OPENAI        # OPENAI | ANTHROPIC
   model_name: Qwen3.5-9B-UD-Q6_K_XL
-  api_key: "local——YOUR_API_KEY"
-  base_url: "http://0.0.0.0:9090"
+  api_key: "local-your-api-key"
+  base_url: "http://127.0.0.1:9090"
   temperature: 0.7
 
 agent_endpoint:
@@ -25,6 +25,9 @@ scenarios_file: scenarios.yaml
 validation:
   semantic_judge_enabled: true
   judge_timeout_seconds: 60
+
+interaction:
+  actor_timeout_seconds: 180   # 用户模拟器单次生成超时；本地思考型模型建议 >=180s
 
 tools:
   startup_policy: warn

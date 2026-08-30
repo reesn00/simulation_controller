@@ -61,13 +61,17 @@ class DeterministicInteractionActor:
 class CamelInteractionActor:
     """CAMEL-backed language layer. No validation tools are registered here."""
 
-    def __init__(self, model: object):
+    # Class-level default keeps __new__-constructed test instances working.
+    _timeout_seconds: float = 180.0
+
+    def __init__(self, model: object, *, timeout_seconds: float = 180.0):
         from camel.agents import ChatAgent
         from camel.messages import BaseMessage
 
         self._base_message = BaseMessage
         self._model = model
         self._agent_type = ChatAgent
+        self._timeout_seconds = timeout_seconds
 
     async def create_opening(self, context: InteractionContext) -> UserUtterance:
         # Catalog v2 defines initial_request/task_prompt as the authoritative
@@ -75,13 +79,35 @@ class CamelInteractionActor:
         return UserUtterance(content=context.task.task_prompt.strip(), action="open")
 
     async def create_followup(self, context: InteractionContext, report: ValidationReport) -> UserUtterance:
-        content = await self._generate(context, report, build_followup_prompt(context, report))
+        failed = select_guidance_gaps(context.task, report)
+        try:
+            content = await self._generate(context, report, build_followup_prompt(context, report))
+        except Exception as exc:
+            # A language-layer failure (slow model timeout, connection error, empty
+            # output) must not destroy an otherwise valid run; degrade to the same
+            # deterministic wording the leak path uses.
+            logger.warning(
+                "CAMEL actor followup failed (%s: %s); using deterministic guidance",
+                type(exc).__name__,
+                exc,
+            )
+            content, reasons, targets = deterministic_guidance(
+                context.task,
+                report,
+                context.regressed_criteria,
+            )
+            return UserUtterance(
+                content=content,
+                action="followup",
+                reason_codes=reasons,
+                target_criteria=targets,
+                guidance_level=guidance_level_for_round(context.guide_rounds),
+            )
         content = ensure_complete_revision_request(
             context.task,
             content,
             context.regressed_criteria,
         )
-        failed = select_guidance_gaps(context.task, report)
         return UserUtterance(
             content=content,
             action="followup",
@@ -106,9 +132,11 @@ class CamelInteractionActor:
         message = self._base_message.make_user_message(role_name="UserActor", content=prompt)
         try:
             if hasattr(agent, "astep"):
-                response = await asyncio.wait_for(agent.astep(message), timeout=60)
+                response = await asyncio.wait_for(agent.astep(message), timeout=self._timeout_seconds)
             else:
-                response = await asyncio.wait_for(asyncio.to_thread(agent.step, message), timeout=60)
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(agent.step, message), timeout=self._timeout_seconds
+                )
             raw = response.msgs[0].content if response.msgs else ""
             content = strip_hidden_markup(raw)
             if not content:
@@ -118,7 +146,7 @@ class CamelInteractionActor:
                 # agent; fall back to the deterministic guidance wording.
                 content, _, _ = deterministic_guidance(
                     context.task,
-                    context.report,
+                    report,
                     context.regressed_criteria,
                 )
             return content

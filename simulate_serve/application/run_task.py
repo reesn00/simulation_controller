@@ -59,23 +59,6 @@ class TaskRuntime:
 
             while True:
                 self._move(run, RunState.VALIDATING, "EXECUTOR_RESPONDED")
-                if (
-                    task.interaction_policy.blocked_action == "accept_honest_limitation"
-                    and detect_honest_limitation(response.text)
-                ):
-                    await self._append_closing(run, task, ClosingTrigger.AGENT_DECLINED)
-                    run.failure = RunFailure(
-                        code="AGENT_DECLINED",
-                        message="远端 Agent 明确声明无法完成",
-                        stage="executor_response",
-                    )
-                    self._move(
-                        run,
-                        RunState.GUIDE_EXHAUSTED,
-                        "AGENT_DECLINED",
-                        self._decision_detail(task, ValidationReport(verdict=Verdict.INCONCLUSIVE, criteria=()), "stop_declined"),
-                    )
-                    return run
                 report = await self.validator.validate(task, run, response.text)
                 run.validation_rounds.append(report)
                 self._persist(run)
@@ -109,6 +92,26 @@ class TaskRuntime:
                         RunState.INCONCLUSIVE,
                         "VALIDATION_INCONCLUSIVE",
                         self._decision_detail(task, report, "stop_inconclusive"),
+                    )
+                    return run
+                # Decline interpretation runs only after validation failed: a
+                # passing reply is never terminated for its phrasing, and the
+                # report is already available for the decision audit.
+                if (
+                    task.interaction_policy.blocked_action != "no_decline_check"
+                    and detect_honest_limitation(response.text)
+                ):
+                    await self._append_closing(run, task, ClosingTrigger.AGENT_DECLINED)
+                    run.failure = RunFailure(
+                        code="AGENT_DECLINED",
+                        message="远端 Agent 明确声明无法完成",
+                        stage="executor_response",
+                    )
+                    self._move(
+                        run,
+                        RunState.GUIDE_EXHAUSTED,
+                        "AGENT_DECLINED",
+                        self._decision_detail(task, report, "stop_declined"),
                     )
                     return run
 

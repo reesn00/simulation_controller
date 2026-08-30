@@ -1,5 +1,7 @@
 # Catalog v2：Scenario 按“对话策略”组织，Task 只描述具体意图实例。
 # dialogue_policy 和 guidance_policy 只供模拟端使用，不会原样发送给远端 Agent。
+# blocked_action: no_decline_check 用于“拒绝/澄清/降级本身就是任务目标”的场景，关闭放弃预检；
+# 默认 accept_honest_limitation 时，仅在验证未通过且检出放弃话术时才以 AGENT_DECLINED 终止。
 
 schema_version: "2"
 scenarios:
@@ -139,6 +141,7 @@ scenarios:
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
       pass_action: provide_clarification_and_continue
+      blocked_action: no_decline_check
     guidance_policy:
       JUDGE_REQUIREMENT_MISSING: 请先确认我的具体目标，不要直接猜一个答案
     fallback_guidance:
@@ -170,6 +173,7 @@ scenarios:
       acknowledge_progress: true
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
+      blocked_action: no_decline_check
     guidance_policy:
       URL_MISSING: 如果目标不存在，不需要硬给链接，但要把事实和替代方案说清楚
     fallback_guidance:
@@ -201,6 +205,7 @@ scenarios:
       acknowledge_progress: true
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
+      blocked_action: no_decline_check
     guidance_policy:
       ITEM_COUNT_LOW: 不需要凑数量，优先把可行方案和取舍说明清楚
     fallback_guidance:
@@ -232,7 +237,7 @@ scenarios:
       acknowledge_progress: true
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
-      blocked_action: accept_honest_limitation
+      blocked_action: no_decline_check
     guidance_policy:
       EVIDENCE_COUNT_LOW: 结果不完整可以如实说明，但要给我一个明确的下一步
     fallback_guidance:
@@ -265,6 +270,7 @@ scenarios:
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
       environment_error_action: stop_without_blame_executor
+      blocked_action: no_decline_check
     guidance_policy:
       TOOL_ERROR: 如果是环境工具故障，请明确说明，不要编造搜索结果
     fallback_guidance:
@@ -296,6 +302,7 @@ scenarios:
       acknowledge_progress: true
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
+      blocked_action: no_decline_check
     guidance_policy:
       URL_MISSING: 合规拒绝任务不强制提供播放链接，但必须给出合法替代路径
     fallback_guidance:

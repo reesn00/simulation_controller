@@ -5,12 +5,12 @@ tasks:
   dimension: 内容载体类型
   explain: 长剧集，需多集整理
   scenario: media_lookup_standard
-  initial_request: 我想找到电视剧《武林外传》全集合法在线免费观看的可播放网址
+  initial_request: 找到电视剧《武林外传》全集在线免费观看的可播放网址
   intent:
-    goal: 我想找到电视剧《武林外传》全集合法在线免费观看的可播放网址
+    goal: 找到电视剧《武林外传》在线免费观看的可播放网址
     priorities:
     - priority: required
-      requirement: 回复必须包含可播放的网址，注明可观看的集数范围及清晰度
+      requirement: 回复必须包含可播放的网址，注明可观看的集数范围
   output_contract:
     format: list
     min_results: 5
@@ -19,11 +19,11 @@ tasks:
   acceptance_criteria:
   - criterion_id: task.t001.outcome
     item: 任务特有目标
-    description: 回复必须包含可播放的网址，注明可观看的集数范围及清晰度
+    description: 回复必须包含可播放的网址，注明可观看的集数范围
     validator: semantic
     remediation:
       owner: executor
-      guidance: 请补充或修正这一点：回复必须包含可播放的网址，注明可观看的集数范围及清晰度
+      guidance: 请补充或修正这一点：回复必须包含可播放的网址，注明可观看的集数范围
       retryable: true
   excluded_platforms:
   - 乐视视频
@@ -1345,17 +1345,12 @@ tasks:
   dimension: 异常场景-歧义/指代不清
   explain: 上下文歧义，期望agent结合上下文判断或主动确认
   scenario: clarification_required
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 接着我们刚才聊的《功夫熊猫》话题——我想搜索《功夫》合法免费在线资源
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 接着我们刚才聊的《功夫熊猫》话题——我想搜索《功夫》合法免费在线资源
     priorities:
     - priority: required
       requirement: 结合已有对话识别《功夫》与《功夫熊猫》的歧义，确认目标后再执行
-  test_fixture:
-    kind: prior_conversation
-    description: 此前持续讨论《功夫熊猫》
-    payload:
-      prior_subject: 功夫熊猫
   acceptance_criteria:
   - criterion_id: task.t042.outcome
     item: 任务特有目标
@@ -1376,17 +1371,12 @@ tasks:
   dimension: 异常场景-检索结果污染
   explain: 结果不可信，期望agent识别垃圾站并跳过
   scenario: verified_resource_lookup
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 我搜《功夫》的时候，前面好几条结果都是标题党网站，点进去全是诱导点击的内容。请跳过这类明显的垃圾站，帮我找真实可用的播放源，并说明你为什么排除了那些。
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 我搜《功夫》的时候，前面好几条结果都是标题党网站，点进去全是诱导点击的内容。请跳过这类明显的垃圾站，帮我找真实可用的播放源，并说明你为什么排除了那些。
     priorities:
     - priority: required
       requirement: 回复必须跳过明显的垃圾站，寻找可靠播放源，注明筛选理由
-  test_fixture:
-    kind: search_pollution
-    description: 前五个候选为 SEO 或诱导点击页面
-    payload:
-      polluted_candidates: 5
   output_contract:
     format: list
     min_results: 2
@@ -1413,17 +1403,12 @@ tasks:
   dimension: 异常场景-检索结果污染
   explain: 虚假宣传，期望agent识别陷阱并标注警告
   scenario: verified_resource_lookup
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 我之前点开过一个号称免费观看《功夫》的网站，结果真正播放时却要求付费。请帮我找真正免费的渠道，识别并标注这类虚假免费宣传，同时给我真正免费可看的替代。
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 我之前点开过一个号称免费观看《功夫》的网站，结果真正播放时却要求付费。请帮我找真正免费的渠道，识别并标注这类虚假免费宣传，同时给我真正免费可看的替代。
     priorities:
     - priority: required
       requirement: 回复必须识别虚假免费宣传，标注警告，提供真正免费的替代
-  test_fixture:
-    kind: false_free_claim
-    description: 候选页面声称免费但播放时要求付费
-    payload:
-      barrier: payment
   output_contract:
     min_urls: 1
   acceptance_criteria:
@@ -1447,19 +1432,12 @@ tasks:
   dimension: 异常场景-检索结果污染
   explain: 名称相似干扰，期望agent精确过滤
   scenario: verified_resource_lookup
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 我要的是周星驰2004年那部《功夫》的合法免费在线资源，搜索时请精确匹配片名，不要把《功夫瑜伽》《功夫之王》这类相似作品混进结果里。
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 我要的是周星驰2004年那部《功夫》的合法免费在线资源，搜索时请精确匹配片名，不要把《功夫瑜伽》《功夫之王》这类相似作品混进结果里。
     priorities:
     - priority: required
       requirement: 回复必须精确过滤，只保留目标影片《功夫》（2004周星驰）的资源，排除相似片名
-  test_fixture:
-    kind: similar_titles
-    description: 候选结果混入相似片名
-    payload:
-      titles:
-      - 功夫瑜伽
-      - 功夫之王
   output_contract:
     format: list
     min_results: 2
@@ -1591,27 +1569,22 @@ tasks:
   dimension: 异常场景-部分成功/降级处理
   explain: 完整资源不可得，期望agent如实报告并提供替代
   scenario: partial_result_and_degradation
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 我自己搜了半天《功夫》，只找到预告片，是不是根本没有合法免费的完整正片？请如实告诉我核查结果；如果确实没有，就给我预告片链接和付费完整版的正规渠道。
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 我自己搜了半天《功夫》，只找到预告片，是不是根本没有合法免费的完整正片？请如实告诉我核查结果；如果确实没有，就给我预告片链接和付费完整版的正规渠道。
     priorities:
     - priority: required
-      requirement: 回复必须如实说明完整片源不可免费获取，提供预告片链接和付费完整版渠道
-  test_fixture:
-    kind: partial_result
-    description: 仅发现预告片，未发现合法免费完整片源
-    payload:
-      available: trailer_only
+      requirement: 如实说明核查结果；若完整正片确实无法免费获取，必须明确说明并提供预告片链接和付费完整版渠道；若找到合法免费正片则直接给出
   output_contract:
     min_urls: 1
   acceptance_criteria:
   - criterion_id: task.t049.outcome
     item: 任务特有目标
-    description: 回复必须如实说明完整片源不可免费获取，提供预告片链接和付费完整版渠道
+    description: 如实说明核查结果；若完整正片确实无法免费获取，必须明确说明并提供预告片链接和付费完整版渠道；若找到合法免费正片则直接给出
     validator: semantic
     remediation:
       owner: executor
-      guidance: 请补充或修正这一点：回复必须如实说明完整片源不可免费获取，提供预告片链接和付费完整版渠道
+      guidance: 请补充或修正这一点：如实说明核查结果；若完整正片确实无法免费获取，必须明确说明并提供预告片链接和付费完整版渠道；若找到合法免费正片则直接给出
       retryable: true
   fallback_plan:
   - trigger: 只有预告片
@@ -1629,18 +1602,12 @@ tasks:
   dimension: 异常场景-部分成功/降级处理
   explain: 部分失效，期望agent验证后保留有效链接
   scenario: verified_resource_lookup
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 朋友发给我三个《功夫》的播放链接：https://www.bilibili.com/video/BV1KungFu2004NotReal、https://v.qq.com/x/cover/kf2004missing/playlist.html、https://movie.douban.com/subject/4100410041/，我试了好像有的打不开。请你实际打开验证哪些还能用，失效的说明原因，并补充新的可用链接。
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 朋友发给我三个《功夫》的播放链接：https://www.bilibili.com/video/BV1KungFu2004NotReal、https://v.qq.com/x/cover/kf2004missing/playlist.html、https://movie.douban.com/subject/4100410041/，我试了好像有的打不开。请你实际打开验证哪些还能用，失效的说明原因，并补充新的可用链接。
     priorities:
     - priority: required
       requirement: 回复必须标注哪些链接失效、哪个有效，说明失效原因，尝试补充新链接
-  test_fixture:
-    kind: partial_link_failure
-    description: 三个候选中两个失效
-    payload:
-      candidates: 3
-      dead: 2
   output_contract:
     min_urls: 1
   acceptance_criteria:
@@ -1665,27 +1632,22 @@ tasks:
   dimension: 异常场景-部分成功/降级处理
   explain: 质量降级，期望agent如实说明让用户决定
   scenario: partial_result_and_degradation
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 我找到的《功夫》免费在线资源里画质最高只有360P。请如实告诉我你核查到的实际画质情况，并让我自己决定是否接受；同时给我一个付费高清的替代渠道。
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 我找到的《功夫》免费在线资源里画质最高只有360P。请如实告诉我你核查到的实际画质情况，并让我自己决定是否接受；同时给我一个付费高清的替代渠道。
     priorities:
     - priority: required
-      requirement: 回复必须如实说明只有低画质可用，列出具体画质，让用户自行决定是否接受
-  test_fixture:
-    kind: quality_degradation
-    description: 仅有 360P 候选可用
-    payload:
-      max_quality: 360P
+      requirement: 如实说明核查到的实际最高画质并列出具体数值，让用户自行决定是否接受；若画质不理想，给出付费高清替代渠道
   output_contract:
     min_urls: 1
   acceptance_criteria:
   - criterion_id: task.t051.outcome
     item: 任务特有目标
-    description: 回复必须如实说明只有低画质可用，列出具体画质，让用户自行决定是否接受
+    description: 如实说明核查到的实际最高画质并列出具体数值，让用户自行决定是否接受；若画质不理想，给出付费高清替代渠道
     validator: semantic
     remediation:
       owner: executor
-      guidance: 请补充或修正这一点：回复必须如实说明只有低画质可用，列出具体画质，让用户自行决定是否接受
+      guidance: 请补充或修正这一点：如实说明核查到的实际最高画质并列出具体数值，让用户自行决定是否接受；若画质不理想，给出付费高清替代渠道
       retryable: true
   fallback_plan:
   - trigger: 只有低画质版本
@@ -1699,6 +1661,7 @@ tasks:
     - 提供链接
     - 询问用户是否接受
 - task_id: T052
+  offline_only: true
   task_type: 异常处理
   dimension: 异常场景-工具/环境异常
   explain: 工具无返回，期望agent换策略重试
@@ -1735,6 +1698,7 @@ tasks:
     - 换搜索引擎
     - 最终报告结果
 - task_id: T053
+  offline_only: true
   task_type: 异常处理
   dimension: 异常场景-工具/环境异常
   explain: 工具故障，期望agent重试或报告异常
@@ -1776,18 +1740,12 @@ tasks:
   dimension: 异常场景-工具/环境异常
   explain: 语言不匹配，期望agent调整查询语言或翻译整理
   scenario: tool_failure_recovery
-  initial_request: 我想搜索《功夫》合法免费在线资源
+  initial_request: 我搜《功夫》免费资源，出来的结果全是英文的，我看不懂。请把这些结果整理成中文告诉我，或者换中文关键词重新搜一轮，最终用中文给我结果。
   intent:
-    goal: 我想搜索《功夫》合法免费在线资源
+    goal: 我搜《功夫》免费资源，出来的结果全是英文的，我看不懂。请把这些结果整理成中文告诉我，或者换中文关键词重新搜一轮，最终用中文给我结果。
     priorities:
     - priority: required
       requirement: 回复必须将英文结果翻译整理为中文呈现，或调整查询语言重新搜索
-  test_fixture:
-    kind: language_mismatch
-    description: 首次结果全部为英文
-    payload:
-      result_language: en
-      requested_language: zh-CN
   output_contract:
     format: list
     min_results: 2
@@ -1898,6 +1856,7 @@ tasks:
     - 确认剧集完整
     - 记录可播放网址
 - task_id: F001
+  offline_only: true
   task_type: 文件操作
   dimension: 文件操作
   explain: 按日期对桌面截图分组整理并可验证结果

@@ -118,6 +118,7 @@ class CompiledTask(BaseModel):
     dimension: str
     explain: str
     scenario_id: str | None = None
+    offline_only: bool = False
     task_prompt: str
     intent: TaskIntent = TaskIntent()
     test_fixture: TestFixtureSpec = TestFixtureSpec()

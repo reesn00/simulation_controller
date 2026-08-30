@@ -93,7 +93,10 @@ async def build_application(config: AppConfig) -> ApplicationServices:
     actor: InteractionActor
     judge = None
     try:
-        actor = CamelInteractionActor(build_camel_model(config.model))
+        actor = CamelInteractionActor(
+            build_camel_model(config.model),
+            timeout_seconds=config.interaction.actor_timeout_seconds,
+        )
     except Exception as exc:
         logger.warning("CAMEL interaction actor unavailable; using deterministic actor: %s", exc)
         actor = DeterministicInteractionActor()

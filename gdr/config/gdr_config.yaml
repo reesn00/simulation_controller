@@ -28,8 +28,8 @@
 #   GDR_LOG_DIR                  -> log_dir
 
 # === HTTP OpenAI-compatible LLM endpoint (env: GDR_LLM_BASE_URL) ===
-llm_base_url: http://100.64.0.129/v1
-llm_api_key: 7M    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
+llm_base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+llm_api_key: 33    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
 
 # Model names registered at the endpoint
 main_model: MiniMax-M2.7         # env: GDR_MAIN_MODEL
