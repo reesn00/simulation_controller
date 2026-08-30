@@ -11,7 +11,7 @@ class PersonaOverride(StrictDocument):
     role_description: str | None = None
     background: str | None = None
     tone: str | None = None
-    verbosity: str | None = None
+    verbosity: Literal["concise", "moderate", "detailed"] | None = None
 
 
 class RemediationDocument(StrictDocument):
@@ -123,7 +123,10 @@ class ScenarioDocument(StrictDocument):
     interaction_protocol: str | None = None
     fallback_guidance: list[str] | None = None
     dialogue_policy: DialoguePolicyDocument | None = None
-    guidance_policy: dict[str, str] = Field(default_factory=dict)
+    # reason_code -> one phrasing or a variant pool. Pools must carry at least
+    # two entries (contract test) so the simulated user can rotate phrasing
+    # across rounds and runs without repeating herself.
+    guidance_policy: dict[str, str | list[str]] = Field(default_factory=dict)
 
 
 class TaskDocument(StrictDocument):

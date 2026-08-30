@@ -61,3 +61,36 @@ _INTERNAL_LEAK_RE = re.compile(
 def leaks_internal_rules(value: str) -> bool:
     """Detect user-side text that would expose the validation harness to the remote agent."""
     return bool(_INTERNAL_LEAK_RE.search(value))
+
+
+def _char_ngrams(value: str, n: int) -> set[str]:
+    text = re.sub(r"\s+", "", value)
+    return {text[i : i + n] for i in range(max(len(text) - n + 1, 0))}
+
+
+def overlaps_internal_text(
+    value: str,
+    internal_texts,
+    *,
+    threshold: float = 0.55,
+    n: int = 3,
+) -> bool:
+    """Content-level leak check: True when `value` substantially echoes one of
+    `internal_texts` (criterion descriptions, remediation guidance).
+
+    Keyword checks cannot catch a user turn that reads out the acceptance
+    wording itself; char n-gram containment of the *output* against each
+    internal text can. The threshold is deliberately below 1.0 so a full
+    paraphrase-failure (near-verbatim echo) is caught while short shared
+    fragments in a natural reply are not.
+    """
+    output_grams = _char_ngrams(value, n)
+    if not output_grams:
+        return False
+    for internal in internal_texts:
+        internal_grams = _char_ngrams(str(internal), n)
+        if not internal_grams:
+            continue
+        if len(output_grams & internal_grams) / len(output_grams) >= threshold:
+            return True
+    return False

@@ -13,7 +13,7 @@ class PersonaSpec(BaseModel):
     role_description: str = "普通用户"
     background: str = ""
     tone: str = "口语化、自然"
-    verbosity: str = "medium"
+    verbosity: str = "moderate"
 
 
 class IntentPriority(BaseModel):
@@ -97,7 +97,7 @@ class InteractionPolicy(BaseModel):
     acknowledge_progress: bool = True
     preserve_satisfied_criteria: bool = True
     never_expose_internal_rules: bool = True
-    guidance_by_reason: dict[str, str] = Field(default_factory=dict)
+    guidance_by_reason: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     pass_action: str = "thank_and_finish"
     blocked_action: str = "accept_honest_limitation"
     environment_error_action: str = "stop_without_blame_executor"

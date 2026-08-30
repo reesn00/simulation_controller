@@ -65,6 +65,9 @@ class TaskRun(BaseModel):
     remote_agent_id: str = ""
     executor_turns: int = 0
     guide_rounds: int = 0
+    # Guidance level of each follow-up turn, in order; used to keep the
+    # simulated user's escalation monotonic within a run.
+    guidance_levels: list[str] = Field(default_factory=list)
     conversation: list[ConversationTurn] = Field(default_factory=list)
     state_events: list[RunEvent] = Field(default_factory=list)
     validation_rounds: list[ValidationReport] = Field(default_factory=list)

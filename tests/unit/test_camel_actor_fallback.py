@@ -32,8 +32,8 @@ class _SlowChatAgent(_FakeChatAgent):
 
 
 @pytest.mark.asyncio
-async def test_camel_actor_leak_falls_back_to_deterministic_guidance(compiled_task, monkeypatch) -> None:
-    """泄漏兜底必须使用当前轮验证报告构造追问。
+async def test_camel_actor_leak_falls_back_to_variant_pool(compiled_task, monkeypatch) -> None:
+    """泄漏输出必须整句丢弃并降级到变体池，而不是进入用户轮。
 
     历史缺陷：兜底路径引用了 InteractionContext 上不存在的 report 字段，
     一触发即 AttributeError → ACTOR_ERROR，整个 run 报废。
@@ -59,15 +59,16 @@ async def test_camel_actor_leak_falls_back_to_deterministic_guidance(compiled_ta
 
     utterance = await actor.create_followup(context, report)
 
-    assert "验证准则" not in utterance.content  # 泄漏文本被兜底替换
+    assert "验证准则" not in utterance.content  # 泄漏文本被整句丢弃
     assert utterance.action == "followup"
     assert utterance.content  # 兜底后仍有可发送的追问内容
-    assert "结果数量不足" in utterance.content  # 兜底内容来自验证报告缺口
+    assert utterance.source == "variants"  # 兜底来自变体池，而非报告原文
+    assert "结果数量不足" not in utterance.content  # 报告技术话术不进入用户轮
 
 
 @pytest.mark.asyncio
-async def test_camel_actor_timeout_falls_back_to_deterministic_guidance(compiled_task, monkeypatch) -> None:
-    """Actor 生成超时必须降级为确定性追问，而不是把整个 run 打成 ACTOR_ERROR。"""
+async def test_camel_actor_timeout_falls_back_to_variant_pool(compiled_task, monkeypatch) -> None:
+    """Actor 生成超时必须降级为变体池追问，而不是把整个 run 打成 ACTOR_ERROR。"""
     import camel.agents as camel_agents
 
     monkeypatch.setattr(camel_agents, "ChatAgent", _SlowChatAgent)
@@ -91,4 +92,4 @@ async def test_camel_actor_timeout_falls_back_to_deterministic_guidance(compiled
 
     assert utterance.action == "followup"
     assert utterance.content  # 降级后仍有可发送的追问内容
-    assert "结果数量不足" in utterance.content
+    assert utterance.source == "variants"

@@ -95,7 +95,9 @@ async def test_v2_fixture_is_private_and_semantic_gap_drives_offline_followup(pr
                 CriterionResult(
                     criterion_id=item.criterion_id,
                     verdict=Verdict.FAIL if self.calls == 1 and item.criterion_id == "task.t052.outcome" else Verdict.PASS,
-                    reason_code="RECOVERY_MISSING" if self.calls == 1 else "PASSED",
+                    # A scenario-vocabulary code: the follow-up must speak the
+                    # scenario's variant phrasing, not the criterion text.
+                    reason_code="EMPTY_RESULTS" if self.calls == 1 else "PASSED",
                     message="没有说明恢复策略" if self.calls == 1 else "已满足",
                     retryable=False,
                 )
@@ -116,4 +118,9 @@ async def test_v2_fixture_is_private_and_semantic_gap_drives_offline_followup(pr
     assert len(executor.messages) == 2
     assert "搜索工具首次返回空结果" not in executor.messages[0]
     assert "first_result" not in executor.messages[0]
-    assert "空结果后调整关键词或来源" in executor.messages[1]
+    # P1-1: the follow-up speaks the scenario variant pool (EMPTY_RESULTS),
+    # never the criterion remediation text or the judge's technical message.
+    assert (
+        "换关键词或换来源" in executor.messages[1] or "换个查法" in executor.messages[1]
+    )
+    assert "没有说明恢复策略" not in executor.messages[1]

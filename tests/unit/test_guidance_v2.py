@@ -9,7 +9,9 @@ from simulate_serve.interaction.models import InteractionContext
 
 
 @pytest.mark.asyncio
-async def test_deterministic_guidance_uses_executor_remediation_and_gap_limit(compiled_task, source_ref) -> None:
+async def test_deterministic_guidance_excludes_remediation_text_and_respects_gap_limit(compiled_task, source_ref) -> None:
+    """P1-1: remediation guidance is internal repair semantics and must never
+    surface as simulated-user speech; the variant/generic chain speaks instead."""
     criteria = (
         AcceptanceCriterion(
             criterion_id="task.one",
@@ -53,10 +55,12 @@ async def test_deterministic_guidance_uses_executor_remediation_and_gap_limit(co
 
     utterance = await DeterministicInteractionActor().create_followup(InteractionContext(task=task), report)
 
-    assert utterance.content.startswith("请补充第一个缺口。")
+    assert "请补充第一个缺口" not in utterance.content
+    assert "内部工具坏了" not in utterance.content
+    assert utterance.content  # the fallback chain still produces a sendable turn
     assert "完整的修订结果" in utterance.content
     assert utterance.target_criteria == ("task.one",)
-    assert "内部工具坏了" not in utterance.content
+    assert utterance.source == "variants"
 
 
 @pytest.mark.asyncio
@@ -65,7 +69,7 @@ async def test_deterministic_guidance_consumes_scenario_reason_policy(compiled_t
     task = compiled_task.model_copy(
         update={
             "criteria": (criterion,),
-            "interaction_policy": InteractionPolicy(guidance_by_reason={"URL_MISSING": "给我一个完整网址"}),
+            "interaction_policy": InteractionPolicy(guidance_by_reason={"URL_MISSING": ("给我一个完整网址",)}),
         }
     )
     report = ValidationReport(
@@ -86,6 +90,7 @@ async def test_deterministic_guidance_consumes_scenario_reason_policy(compiled_t
 
     assert utterance.content.startswith("给我一个完整网址。")
     assert "完整的修订结果" in utterance.content
+    assert utterance.variant_ids == ("URL_MISSING[0]",)
 
 
 @pytest.mark.asyncio
@@ -107,7 +112,10 @@ async def test_guidance_only_targets_retryable_executor_failures(compiled_task, 
     task = compiled_task.model_copy(
         update={
             "criteria": criteria,
-            "interaction_policy": InteractionPolicy(max_gaps_per_turn=1),
+            "interaction_policy": InteractionPolicy(
+                max_gaps_per_turn=1,
+                guidance_by_reason={"RETRYABLE": ("请修复可重试缺口",)},
+            ),
         }
     )
     report = ValidationReport(

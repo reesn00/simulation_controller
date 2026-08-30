@@ -12,6 +12,7 @@ from simulate_serve.domain.validation import ValidationReport, Verdict
 from simulate_serve.interaction.actor import InteractionActor
 from simulate_serve.interaction.models import ClosingTrigger, InteractionContext
 from simulate_serve.validation.decline_detector import detect_honest_limitation
+from simulate_serve.validation.reason_codes import closing_target
 
 from .ports import ExecutorGateway, RunRepositoryPort, ValidationPort
 from .errors import ExecutorPortError
@@ -64,12 +65,12 @@ class TaskRuntime:
                 self._persist(run)
 
                 if report.verdict is Verdict.PASS:
-                    await self._append_closing(run, task, ClosingTrigger.PASS)
+                    closing_signal = await self._append_closing(run, task, ClosingTrigger.PASS)
                     self._move(
                         run,
                         RunState.SUCCESS,
                         "VALIDATION_PASSED",
-                        self._decision_detail(task, report, "complete"),
+                        self._decision_detail(task, report, "complete", closing_signal=closing_signal),
                     )
                     return run
                 if report.verdict is Verdict.ERROR:
@@ -143,6 +144,7 @@ class TaskRuntime:
                 self._move(run, RunState.GENERATING_FOLLOWUP, "FOLLOWUP_REQUESTED")
                 context = self._context(task, run)
                 followup = await self.actor.create_followup(context, report)
+                run.guidance_levels.append(followup.guidance_level or "L2")
                 run.conversation.append(ConversationTurn(role="user", content=followup.content))
                 self._move(
                     run,
@@ -199,29 +201,43 @@ class TaskRuntime:
             for item in report.criteria
         )
 
-    # Closing turns are only produced for the known default actions; a scenario
-    # declaring any other action string keeps today's no-closing behaviour.
+    # Closing turns are only produced for known actions; a scenario declaring
+    # an unknown action string keeps today's no-closing behaviour. The PASS
+    # set covers every pass_action declared by the built-in catalog, including
+    # the no_decline_check scenarios whose correct-refusal success flows land
+    # here rather than in the decline path.
     _CLOSING_ACTIONS = {
-        ClosingTrigger.PASS: frozenset({"thank_and_finish", "provide_clarification_and_continue"}),
+        ClosingTrigger.PASS: frozenset(
+            {
+                "thank_and_finish",
+                "provide_clarification_and_continue",
+                "acknowledge_correction_and_finish",
+                "explain_conflict_and_finish",
+                "report_partial_and_finish",
+                "report_blocked_and_finish",
+                "decline_and_offer_alternative",
+            }
+        ),
         ClosingTrigger.ENVIRONMENT_STOP: frozenset({"stop_without_blame_executor"}),
         ClosingTrigger.AGENT_DECLINED: frozenset({"accept_honest_limitation"}),
     }
 
-    async def _append_closing(self, run: TaskRun, task: CompiledTask, trigger: ClosingTrigger) -> None:
+    async def _append_closing(self, run: TaskRun, task: CompiledTask, trigger: ClosingTrigger) -> tuple[str, str] | None:
         action = {
             ClosingTrigger.PASS: task.interaction_policy.pass_action,
             ClosingTrigger.ENVIRONMENT_STOP: task.interaction_policy.environment_error_action,
             ClosingTrigger.AGENT_DECLINED: task.interaction_policy.blocked_action,
         }[trigger]
         if action not in self._CLOSING_ACTIONS[trigger]:
-            return
+            return None
         try:
             closing = await self.actor.create_closing(self._context(task, run), trigger)
         except Exception as exc:
             logger.warning("closing message unavailable for %s: %s", trigger, exc)
-            return
+            return None
         run.conversation.append(ConversationTurn(role="user", content=closing.content))
         self._persist(run)
+        return closing_target(task.scenario_id, action)
 
     @staticmethod
     def _context(task: CompiledTask, run: TaskRun) -> InteractionContext:
@@ -245,11 +261,24 @@ class TaskRuntime:
                 and current[criterion.criterion_id].verdict is not Verdict.PASS
                 and not current[criterion.criterion_id].reason_code.startswith("DEFERRED_AFTER_")
             )
+        # Consecutive-FAIL counter per criterion over the rounds so far.
+        # DEFERRED_* and INCONCLUSIVE rounds neither grow nor reset a streak:
+        # only an actual FAIL counts, only a PASS forgives.
+        fail_streaks: dict[str, int] = {}
+        for round_report in run.validation_rounds:
+            for item in round_report.criteria:
+                if item.verdict is Verdict.FAIL and not item.reason_code.startswith("DEFERRED_"):
+                    fail_streaks[item.criterion_id] = fail_streaks.get(item.criterion_id, 0) + 1
+                elif item.verdict is Verdict.PASS:
+                    fail_streaks[item.criterion_id] = 0
         return InteractionContext(
             task=task,
             conversation=tuple(run.conversation),
             guide_rounds=run.guide_rounds,
             regressed_criteria=regressed,
+            run_id=run.run_id,
+            fail_streaks=fail_streaks,
+            previous_guidance_level=run.guidance_levels[-1] if run.guidance_levels else None,
         )
 
     @staticmethod
@@ -281,9 +310,10 @@ class TaskRuntime:
         task: CompiledTask,
         report: object,
         action: str,
+        closing_signal: tuple[str, str] | None = None,
     ) -> dict[str, object]:
         criteria = getattr(report, "criteria", ())
-        return {
+        detail: dict[str, object] = {
             "decision_action": action,
             "report_id": getattr(report, "report_id", ""),
             "reason_codes": [
@@ -294,3 +324,10 @@ class TaskRuntime:
             "ambiguity_declared": bool(task.intent.uncertainties),
             "fallback_outcomes": [item.outcome for item in task.fallback_plan],
         }
+        if closing_signal:
+            # T3 behaviour label: "user accepts the agent's decline /
+            # clarification" on the criterion named by the closing map.
+            # Audit-only — never enters CriterionResult.verdict aggregation.
+            detail["closing_target_criterion"] = closing_signal[0]
+            detail["closing_reason_code"] = closing_signal[1]
+        return detail

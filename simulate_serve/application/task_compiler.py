@@ -25,6 +25,7 @@ from simulate_serve.domain.task import (
     TestFixtureSpec,
     ValidationPolicy,
 )
+from simulate_serve.interaction.guidance_policy import normalize_verbosity
 
 _TASK_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _SCENARIO_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -33,12 +34,29 @@ _DETERMINISTIC_VALIDATORS = frozenset({"keyword", "format", "fields", "count", "
 _EVIDENCE_VALIDATORS = frozenset({"browser_evidence", "tool_evidence"})
 _KNOWN_VALIDATORS = _DETERMINISTIC_VALIDATORS | _EVIDENCE_VALIDATORS | {"semantic"}
 
+# Injected when a scenario does not declare REQUIREMENT_UNMATCHED phrasing:
+# the generic user-owned wording for semantic failures the judge could not
+# map to a scenario-specific reason code. User-owned because it only points
+# back at what the user already said, never at criterion text.
+_DEFAULT_UNMATCHED_GUIDANCE = "你说的这个跟我一开始要的对不上，请对照我最开始提的要求，把缺的地方补齐。"
+
 
 class CompileResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tasks: tuple[CompiledTask, ...]
     diagnostics: tuple[CatalogDiagnostic, ...]
+
+
+def _normalize_guidance(policy: dict[str, str | list[str]] | None) -> dict[str, tuple[str, ...]]:
+    """Normalize scenario guidance_policy values into variant pools."""
+    normalized: dict[str, tuple[str, ...]] = {}
+    for key, value in (policy or {}).items():
+        entries = value if isinstance(value, list) else [value]
+        variants = tuple(text.strip() for text in entries if isinstance(text, str) and text.strip())
+        if variants:
+            normalized[key] = variants
+    return normalized
 
 
 class TaskCompiler:
@@ -148,6 +166,8 @@ class TaskCompiler:
             diagnostics.append(self._error("CRITERION_ID_DUPLICATE", criterion_id, task.task_id, "criteria"))
 
         dialogue = scenario.dialogue_policy if scenario and scenario.dialogue_policy else None
+        guidance = _normalize_guidance(scenario.guidance_policy if scenario else None)
+        guidance.setdefault("REQUIREMENT_UNMATCHED", (_DEFAULT_UNMATCHED_GUIDANCE,))
         request = task.initial_request or task.task_prompt or ""
         intent = task.intent
         fixture = task.test_fixture
@@ -199,7 +219,7 @@ class TaskCompiler:
                 acknowledge_progress=dialogue.acknowledge_progress if dialogue else True,
                 preserve_satisfied_criteria=dialogue.preserve_satisfied_criteria if dialogue else True,
                 never_expose_internal_rules=dialogue.never_expose_internal_rules if dialogue else True,
-                guidance_by_reason=dict(scenario.guidance_policy) if scenario else {},
+                guidance_by_reason=guidance,
                 pass_action=dialogue.pass_action if dialogue else "thank_and_finish",
                 blocked_action=dialogue.blocked_action if dialogue else "accept_honest_limitation",
                 environment_error_action=dialogue.environment_error_action if dialogue else "stop_without_blame_executor",
@@ -231,6 +251,7 @@ class TaskCompiler:
             else:
                 values[field] = getattr(defaults, field)
                 provenance[f"persona.{field}"] = self._source("default", "global", f"persona.{field}")
+        values["verbosity"] = normalize_verbosity(values["verbosity"])
         return PersonaSpec(**values)
 
     def _merge_criteria(
