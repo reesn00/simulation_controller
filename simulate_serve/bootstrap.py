@@ -11,6 +11,10 @@ from simulate_serve.domain.task import CompiledTask
 from simulate_serve.infrastructure.camel_model_factory import build_camel_model
 from simulate_serve.infrastructure.json_run_repository import JsonRunRepository
 from simulate_serve.infrastructure.qwenpaw_client import AsyncQwenPawExecutor
+from simulate_serve.infrastructure.trajectory_archiver import (
+    QwenPawTrajectoryArchiver,
+    default_qwenpaw_console_dir,
+)
 from simulate_serve.interaction.actor import CamelInteractionActor, DeterministicInteractionActor, InteractionActor
 from simulate_serve.task_manager import TaskManager
 from simulate_serve.tools.evidence_adapter import BrowserEvidenceCollector
@@ -126,7 +130,27 @@ async def build_application(config: AppConfig) -> ApplicationServices:
         )
     validator = ValidationPipeline(judge=judge, evidence_collector=BrowserEvidenceCollector(registry, repository))
     executor = AsyncQwenPawExecutor(config.agent_endpoint)
-    runtime = TaskRuntime(executor=executor, actor=actor, validator=validator, repository=repository)
+    trajectory_archiver = None
+    if config.agent_endpoint.trajectory_capture_enabled:
+        trajectory_archiver = QwenPawTrajectoryArchiver(
+            config.output_dir,
+            user_id=config.agent_endpoint.user_id,
+            source_dir=config.agent_endpoint.trajectory_source_dir or None,
+        )
+        if config.agent_endpoint.trajectory_source_dir:
+            logger.info("Trajectory capture source: %s", config.agent_endpoint.trajectory_source_dir)
+        else:
+            logger.info(
+                "Trajectory capture source (default): %s",
+                default_qwenpaw_console_dir(config.agent_endpoint.execution_agent_id),
+            )
+    runtime = TaskRuntime(
+        executor=executor,
+        actor=actor,
+        validator=validator,
+        repository=repository,
+        trajectory_archiver=trajectory_archiver,
+    )
     return ApplicationServices(
         config=config,
         task_manager=manager,
