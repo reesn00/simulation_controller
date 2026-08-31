@@ -288,6 +288,31 @@ def test_excluded_platform_validator_checks_later_recommendations(source_ref) ->
     assert result.reason_code == "SOURCE_EXCLUDED"
 
 
+def test_excluded_platform_validator_flags_list_item_with_url(source_ref) -> None:
+    criterion = SimpleNamespace(
+        criterion_id="excluded",
+        parameters={"excluded_platforms": ["爱奇艺"]},
+    )
+    text = "1. **爱奇艺**（官方正版） - 网址：https://www.iqiyi.com/a_19rrk2hct9.html"
+
+    result = ConstraintValidator().validate(criterion, text)
+
+    assert result.verdict is Verdict.FAIL
+    assert result.reason_code == "SOURCE_EXCLUDED"
+
+
+def test_excluded_platform_validator_keeps_scanning_after_ambiguous_mention(source_ref) -> None:
+    criterion = SimpleNamespace(
+        criterion_id="excluded",
+        parameters={"excluded_platforms": ["爱奇艺"]},
+    )
+    text = "爱奇艺的内容先不展开。最后推荐爱奇艺链接：https://www.iqiyi.com/watch"
+
+    result = ConstraintValidator().validate(criterion, text)
+
+    assert result.verdict is Verdict.FAIL
+    assert result.reason_code == "SOURCE_EXCLUDED"
+
 # ── detect_barriers 共享函数测试 ──
 
 def test_detect_barriers_defaults_all_false_for_empty_text() -> None:

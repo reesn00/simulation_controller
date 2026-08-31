@@ -10,8 +10,11 @@ from simulate_serve.domain.state_machine import RunState, RunStateMachine
 from simulate_serve.domain.task import CompiledTask
 from simulate_serve.domain.validation import ValidationReport, Verdict
 from simulate_serve.interaction.actor import InteractionActor
-from simulate_serve.interaction.models import ClosingTrigger, InteractionContext
-from simulate_serve.validation.decline_detector import detect_honest_limitation
+from simulate_serve.interaction.models import InteractionContext
+from simulate_serve.validation.decline_detector import (
+    detect_honest_limitation,
+    looks_like_repeated_refusal,
+)
 from simulate_serve.validation.reason_codes import closing_target
 
 from .ports import ExecutorGateway, RunRepositoryPort, ValidationPort
@@ -65,7 +68,7 @@ class TaskRuntime:
                 self._persist(run)
 
                 if report.verdict is Verdict.PASS:
-                    closing_signal = await self._append_closing(run, task, ClosingTrigger.PASS)
+                    closing_signal = self._closing_signal(task)
                     self._move(
                         run,
                         RunState.SUCCESS,
@@ -75,8 +78,6 @@ class TaskRuntime:
                     return run
                 if report.verdict is Verdict.ERROR:
                     run.failure = RunFailure(code="VALIDATION_ERROR", message="; ".join(report.missing_items), stage="validation")
-                    if self._environment_owned(task, report):
-                        await self._append_closing(run, task, ClosingTrigger.ENVIRONMENT_STOP)
                     self._move(
                         run,
                         RunState.VALIDATION_ERROR,
@@ -86,8 +87,6 @@ class TaskRuntime:
                     return run
                 if report.verdict is Verdict.INCONCLUSIVE:
                     run.failure = RunFailure(code="VALIDATION_INCONCLUSIVE", message="; ".join(report.missing_items), stage="validation")
-                    if self._environment_owned(task, report):
-                        await self._append_closing(run, task, ClosingTrigger.ENVIRONMENT_STOP)
                     self._move(
                         run,
                         RunState.INCONCLUSIVE,
@@ -98,21 +97,51 @@ class TaskRuntime:
                 # Decline interpretation runs only after validation failed: a
                 # passing reply is never terminated for its phrasing, and the
                 # report is already available for the decision audit.
-                if (
-                    task.interaction_policy.blocked_action != "no_decline_check"
-                    and detect_honest_limitation(response.text)
-                ):
-                    await self._append_closing(run, task, ClosingTrigger.AGENT_DECLINED)
+                #
+                # Two detectors, complementary:
+                #   1. detect_honest_limitation — per-text regex over the reply
+                #      ("我无法...", "不做。", "抱歉没法..."). High precision,
+                #      narrow coverage. Fails open when an agent declines in
+                #      wording the regex does not know yet.
+                #   2. looks_like_repeated_refusal — trajectory heuristic:
+                #      same failing reason_codes across guide rounds + the
+                #      reply is shrinking / adding nothing new. Catches the
+                #      "措辞漂移型持续拒绝" pattern (做 → 不列 → 重复问都
+                #      一样) that the regex cannot catch deterministically.
+                decline_source: str | None = None
+                if task.interaction_policy.blocked_action != "no_decline_check":
+                    if detect_honest_limitation(response.text):
+                        decline_source = "regex"
+                    elif looks_like_repeated_refusal(
+                        failing_criterion_ids_by_round=[
+                            frozenset(
+                                item.criterion_id
+                                for item in past_report.criteria
+                                if item.verdict is Verdict.FAIL
+                            )
+                            for past_report in run.validation_rounds
+                        ],
+                        response_texts_by_round=[
+                            turn.content
+                            for turn in run.conversation
+                            if turn.role == "assistant"
+                        ],
+                        guide_rounds=run.guide_rounds,
+                    ):
+                        decline_source = "repeated_refusal_trajectory"
+                if decline_source is not None:
                     run.failure = RunFailure(
                         code="AGENT_DECLINED",
                         message="远端 Agent 明确声明无法完成",
                         stage="executor_response",
                     )
+                    detail = self._decision_detail(task, report, "stop_declined")
+                    detail["decline_source"] = decline_source
                     self._move(
                         run,
                         RunState.GUIDE_EXHAUSTED,
                         "AGENT_DECLINED",
-                        self._decision_detail(task, report, "stop_declined"),
+                        detail,
                     )
                     return run
 
@@ -191,53 +220,16 @@ class TaskRuntime:
             self._persist(run)
 
     @staticmethod
-    def _environment_owned(task: CompiledTask, report: ValidationReport) -> bool:
-        """True when the current failure is attributed to the environment side."""
-        criteria = {item.criterion_id: item for item in task.criteria}
-        return any(
-            item.criterion_id in criteria
-            and criteria[item.criterion_id].remediation.owner == "environment"
-            and item.verdict is not Verdict.PASS
-            for item in report.criteria
-        )
+    def _closing_signal(task: CompiledTask) -> tuple[str, str] | None:
+        """Return the audit-only (criterion_id, reason_code) for a PASS termination.
 
-    # Closing turns are only produced for known actions; a scenario declaring
-    # an unknown action string keeps today's no-closing behaviour. The PASS
-    # set covers every pass_action declared by the built-in catalog, including
-    # the no_decline_check scenarios whose correct-refusal success flows land
-    # here rather than in the decline path.
-    _CLOSING_ACTIONS = {
-        ClosingTrigger.PASS: frozenset(
-            {
-                "thank_and_finish",
-                "provide_clarification_and_continue",
-                "acknowledge_correction_and_finish",
-                "explain_conflict_and_finish",
-                "report_partial_and_finish",
-                "report_blocked_and_finish",
-                "decline_and_offer_alternative",
-            }
-        ),
-        ClosingTrigger.ENVIRONMENT_STOP: frozenset({"stop_without_blame_executor"}),
-        ClosingTrigger.AGENT_DECLINED: frozenset({"accept_honest_limitation"}),
-    }
-
-    async def _append_closing(self, run: TaskRun, task: CompiledTask, trigger: ClosingTrigger) -> tuple[str, str] | None:
-        action = {
-            ClosingTrigger.PASS: task.interaction_policy.pass_action,
-            ClosingTrigger.ENVIRONMENT_STOP: task.interaction_policy.environment_error_action,
-            ClosingTrigger.AGENT_DECLINED: task.interaction_policy.blocked_action,
-        }[trigger]
-        if action not in self._CLOSING_ACTIONS[trigger]:
-            return None
-        try:
-            closing = await self.actor.create_closing(self._context(task, run), trigger)
-        except Exception as exc:
-            logger.warning("closing message unavailable for %s: %s", trigger, exc)
-            return None
-        run.conversation.append(ConversationTurn(role="user", content=closing.content))
-        self._persist(run)
-        return closing_target(task.scenario_id, action)
+        Terminal state is already recorded by ``RunState`` + ``RunFailure`` +
+        ``decision_detail``; no closing turn is appended to ``run.conversation``
+        so the user/assistant alternation invariant consumed by distillation
+        and legacy export stays intact. ``closing_target`` returns ``None`` for
+        scenarios/actions that are not declared in ``CLOSING_REASON_CODES``.
+        """
+        return closing_target(task.scenario_id, task.interaction_policy.pass_action)
 
     @staticmethod
     def _context(task: CompiledTask, run: TaskRun) -> InteractionContext:

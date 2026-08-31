@@ -13,7 +13,7 @@ from .guidance_policy import (
     ensure_complete_revision_request,
     variant_pool_utterance,
 )
-from .models import ClosingTrigger, InteractionContext, UserUtterance
+from .models import InteractionContext, UserUtterance
 from .prompt_builder import build_followup_prompt, build_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -24,16 +24,11 @@ class InteractionActor(Protocol):
 
     async def create_followup(self, context: InteractionContext, report: ValidationReport) -> UserUtterance: ...
 
-    async def create_closing(self, context: InteractionContext, trigger: ClosingTrigger) -> UserUtterance: ...
 
-
-# Closing messages are deterministic templates on purpose: no extra LLM call and no
-# risk of the language layer weakening the terminal state.
-_CLOSING_MESSAGES = {
-    ClosingTrigger.PASS: "谢谢，这些内容已经满足我的需要了。",
-    ClosingTrigger.ENVIRONMENT_STOP: "好的，我知道这不是你能控制的，我们先到这里。",
-    ClosingTrigger.AGENT_DECLINED: "没关系，你能说明做不到的原因也很好，就到这里吧。",
-}
+# Closing turns are not surfaced through the language layer: terminal state is
+# already recorded by RunState + RunFailure + decision detail, and injecting a
+# synthetic user turn here would corrupt the user/assistant alternation that
+# distillation/export consume.
 
 # Minimum length for a text to take part in the criterion-echo gate: shorter
 # strings produce trivially high containment ratios.
@@ -67,9 +62,6 @@ class DeterministicInteractionActor:
     async def create_followup(self, context: InteractionContext, report: ValidationReport) -> UserUtterance:
         directive = build_guidance_directive(context, report)
         return variant_pool_utterance(context, directive)
-
-    async def create_closing(self, context: InteractionContext, trigger: ClosingTrigger) -> UserUtterance:
-        return UserUtterance(content=_CLOSING_MESSAGES[trigger], action="closing")
 
 
 class CamelInteractionActor:
@@ -129,10 +121,6 @@ class CamelInteractionActor:
             verbosity_level=directive.verbosity_level,
             content_chars=len(content),
         )
-
-    async def create_closing(self, context: InteractionContext, trigger: ClosingTrigger) -> UserUtterance:
-        # Deterministic template: terminal wording must not depend on model output.
-        return UserUtterance(content=_CLOSING_MESSAGES[trigger], action="closing")
 
     async def _generate(self, context: InteractionContext, report: ValidationReport, directive) -> str:
         agent = self._agent_type(

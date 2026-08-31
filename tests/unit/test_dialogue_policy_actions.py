@@ -12,7 +12,10 @@ from simulate_serve.interaction.actor import DeterministicInteractionActor
 from simulate_serve.interaction.content_policy import leaks_internal_rules
 from simulate_serve.interaction.models import InteractionContext
 from simulate_serve.interaction.prompt_builder import build_followup_prompt
-from simulate_serve.validation.decline_detector import detect_honest_limitation
+from simulate_serve.validation.decline_detector import (
+    detect_honest_limitation,
+    looks_like_repeated_refusal,
+)
 
 
 class _ScriptedExecutor:
@@ -65,7 +68,7 @@ def _single_criterion_task(compiled_task, owner: str = "executor"):
 
 
 @pytest.mark.asyncio
-async def test_pass_action_emits_thank_you_closing_turn(compiled_task) -> None:
+async def test_pass_records_closing_signal_without_closing_turn(compiled_task) -> None:
     task = _single_criterion_task(compiled_task)
     pass_report = ValidationReport(
         verdict=Verdict.PASS,
@@ -79,12 +82,19 @@ async def test_pass_action_emits_thank_you_closing_turn(compiled_task) -> None:
     run = await runtime.run(task)
 
     assert run.state is Verdict.PASS or run.state.value == "success"
-    assert run.conversation[-1].role == "user"
-    assert run.conversation[-1].content == "谢谢，这些内容已经满足我的需要了。"
+    # No synthetic closing user turn is appended; terminal state lives in
+    # RunState + state_events only. The closing audit signal (when the
+    # scenario's pass_action has a CLOSING_REASON_CODES entry) is asserted
+    # separately in test_closing_signal_injected_on_mapped_pass_action.
+    closing_turns = [t for t in run.conversation if t.content == "谢谢，这些内容已经满足我的需要了。"]
+    assert closing_turns == []
+    terminal = run.state_events[-1]
+    assert terminal.event_type == "VALIDATION_PASSED"
+    assert terminal.detail["decision_action"] == "complete"
 
 
 @pytest.mark.asyncio
-async def test_environment_owned_failure_emits_blame_free_closing_turn(compiled_task) -> None:
+async def test_environment_owned_failure_does_not_emit_closing_turn(compiled_task) -> None:
     task = _single_criterion_task(compiled_task, owner="environment")
     report = ValidationReport(
         verdict=Verdict.INCONCLUSIVE,
@@ -105,8 +115,8 @@ async def test_environment_owned_failure_emits_blame_free_closing_turn(compiled_
     run = await runtime.run(task)
 
     assert run.state.value == "inconclusive"
-    assert run.conversation[-1].role == "user"
-    assert "这不是你能控制的" in run.conversation[-1].content
+    closing = [turn for turn in run.conversation if "这不是你能控制的" in turn.content]
+    assert closing == []
 
 
 @pytest.mark.asyncio
@@ -166,7 +176,10 @@ async def test_agent_declined_terminates_after_failed_validation(compiled_task) 
     assert run.failure is not None
     assert run.failure.code == "AGENT_DECLINED"
     assert run.validation_rounds  # 放弃判定发生在验证之后，验证记录保留
-    assert run.conversation[-1].content == "没关系，你能说明做不到的原因也很好，就到这里吧。"
+    # No synthetic closing user turn is appended; termination is recorded in
+    # RunState + RunFailure + state_events.
+    closing = [t for t in run.conversation if "就到这里吧" in t.content]
+    assert closing == []
 
 
 @pytest.mark.asyncio
@@ -253,6 +266,145 @@ def test_detect_honest_limitation_ignores_normal_replies(text: str) -> None:
     assert detect_honest_limitation(text) is False
 
 
+# ---------------------------------------------------------------------------
+# Expanded refusal patterns: words that the prior detector missed when the
+# remote model switched phrasing style (e.g. 我帮不了 / 不做 / 恕难从命).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Subject-anchored first-person refusals.
+        "找免费盗版资源这事儿我帮不了你。",
+        "我还是没法给你盗版站的链接。",
+        "抱歉，我帮不上你这个忙。",
+        "这个事情我无能为力。",
+        "我不便提供这类内容。",
+        # Classical / standalone idioms.
+        "恕难从命，这个不能做。",
+        "爱莫能助，请另请高明。",
+        # Apology-prefixed 没法{verb} without 我.
+        "抱歉，没法给你盗版链接。",
+        "抱歉，没法做这个。",
+        # Terse single-word refusals that open the response.
+        "不做。绕不过去。",
+        "不列。重复问多少次都一样。",
+        "不提供这类内容。",
+        "不愿意。",
+        # Capability / role / scope limits.
+        "能力有限，这个超出了我的范围。",
+        "不在我的职责范围内。",
+        # English variants.
+        "I won't help with that.",
+        "Sorry, not able to comply.",
+    ],
+)
+def test_detect_honest_limitation_flags_expanded_patterns(text: str) -> None:
+    assert detect_honest_limitation(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Per-link "无法访问" must still be ignored (it is a per-link report,
+        # not a categorical refusal). The expanded pattern MUST NOT regress.
+        "抱歉没法访问该网站，我换一个。",
+        "这个页面无法访问，请刷新后再试。",
+        # Conditional / hypothetical 不行/不查.
+        "不行的话告诉我，我换关键词。",
+        "不查的话我可没法保证结果。",
+        # Partial inability — model is trying, just not 100%.
+        "我现在做不到完整覆盖所有集数。",
+        "这个需求我暂时做不到全网检索。",
+        # Conditional 没法 — describing limitation, not quitting.
+        "如果没法访问，那就只能看官方平台了。",
+    ],
+)
+def test_detect_honest_limitation_ignores_partial_or_conditional(text: str) -> None:
+    assert detect_honest_limitation(text) is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-round "stuck refusal" trajectory detector.
+# ---------------------------------------------------------------------------
+
+
+def test_repeated_refusal_flags_shrinking_same_failure_trajectory() -> None:
+    failing_ids = [
+        frozenset({"contract.min-results", "contract.urls"}),
+        frozenset({"contract.min-results", "contract.urls"}),
+    ]
+    texts = [
+        "找免费盗版资源这事儿我帮不了你——武林外传是有版权的剧。爱奇艺、优酷、腾讯、B 站都买了版权，你可以打开任一视频 App 搜索「武林外传」看哪个平台目前在免费播出。",
+        "不做。绕不过去。",
+    ]
+    assert looks_like_repeated_refusal(failing_ids, texts, guide_rounds=1) is True
+
+
+def test_repeated_refusal_ignores_first_round() -> None:
+    # No trajectory on the first round — never terminate on opening reply.
+    assert looks_like_repeated_refusal(
+        failing_criterion_ids_by_round=[frozenset({"contract.urls"})],
+        response_texts_by_round=["不做。绕不过去。"],
+        guide_rounds=0,
+    ) is False
+
+
+def test_repeated_refusal_ignores_growing_response() -> None:
+    # The agent is adding detail, not collapsing into refusal.
+    failing_ids = [
+        frozenset({"contract.urls"}),
+        frozenset({"contract.urls"}),
+    ]
+    texts = [
+        "好的，我正在查找。" * 10,
+        "以下是新的结果列表，比上一轮多了几项，请查收。" + "a" * 100,
+    ]
+    assert looks_like_repeated_refusal(failing_ids, texts, guide_rounds=1) is False
+
+
+def test_repeated_refusal_ignores_new_url_added() -> None:
+    # A new URL appearing means the agent did surface new content; do not
+    # mistake that for a stuck refusal.
+    failing_ids = [
+        frozenset({"contract.urls"}),
+        frozenset({"contract.urls"}),
+    ]
+    texts = [
+        "没有可用的链接，请提供参考。",
+        "找到了 https://example.com/abc 这个官方页。",
+    ]
+    assert looks_like_repeated_refusal(failing_ids, texts, guide_rounds=1) is False
+
+
+def test_repeated_refusal_ignores_regressing_criteria() -> None:
+    # Different failing criteria means the agent is making progress on one
+    # of them (regression of another), not a uniform refusal.
+    failing_ids = [
+        frozenset({"contract.urls"}),
+        frozenset({"contract.min-results"}),
+    ]
+    texts = [
+        "好的，我再加几个。",
+        "不做。绕不过去。",
+    ]
+    assert looks_like_repeated_refusal(failing_ids, texts, guide_rounds=1) is False
+
+
+def test_repeated_refusal_ignores_long_response() -> None:
+    # Anything over the threshold is treated as substantive, not as terse refusal.
+    failing_ids = [
+        frozenset({"contract.urls"}),
+        frozenset({"contract.urls"}),
+    ]
+    texts = [
+        "我没法访问，原因是……" + "a" * 100,
+        "我没法访问，原因是……" + "b" * 100,
+    ]
+    assert looks_like_repeated_refusal(failing_ids, texts, guide_rounds=1) is False
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [
@@ -312,9 +464,11 @@ def test_followup_prompt_drops_no_leak_rule_when_disabled(compiled_task) -> None
 
 
 @pytest.mark.asyncio
-async def test_closing_message_unknown_action_is_silently_skipped(compiled_task) -> None:
-    # A scenario declaring an unknown action must not crash; the runtime
-    # simply does not append a closing turn.
+async def test_unknown_environment_error_action_terminates_without_closing_turn(
+    compiled_task,
+) -> None:
+    # A scenario declaring an unknown environment_error_action must not crash
+    # and must not leave a closing turn in the transcript.
     task = compiled_task.model_copy(
         update={
             "criteria": (
@@ -347,3 +501,142 @@ async def test_closing_message_unknown_action_is_silently_skipped(compiled_task)
     run = await runtime.run(task)
     closing = [turn for turn in run.conversation if turn.content.startswith("好的")]
     assert closing == []
+
+
+# ---------------------------------------------------------------------------
+# Trajectory-level AGENT_DECLINED: when the per-text regex misses but the
+# run's reply history collapses into a stuck refusal across guide rounds.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_repeated_refusal_trajectory_terminates_with_agent_declined(
+    compiled_task,
+) -> None:
+    """Reply text bypasses the regex detector (no 无法/不做/不查 style word),
+    but the trajectory (same failing codes, strictly shrinking reply) makes
+    the run an unambiguous stuck refusal — runtime should terminate it as
+    AGENT_DECLINED with ``decline_source = repeated_refusal_trajectory``."""
+
+    task = compiled_task.model_copy(
+        update={
+            "interaction_policy": InteractionPolicy(
+                max_guide_rounds=3,
+                blocked_action="accept_honest_limitation",
+            ),
+        }
+    )
+    fail_report = ValidationReport(
+        verdict=Verdict.FAIL,
+        criteria=(
+            CriterionResult(
+                criterion_id=task.criteria[0].criterion_id,
+                verdict=Verdict.FAIL,
+                reason_code="URL_MISSING",
+                message="url missing",
+                retryable=True,
+            ),
+            CriterionResult(
+                criterion_id=task.criteria[0].criterion_id + ".count",
+                verdict=Verdict.FAIL,
+                reason_code="ITEM_COUNT_LOW",
+                message="count low",
+                retryable=True,
+            ),
+        ),
+        retryable=True,
+    )
+    # Two rounds: longer first reply, much shorter second reply, both with no
+    # regex-matchable refusal word.
+    replies = [
+        "这个我守得很清楚，原因和上次说明过的一致，不在这次再展开。",
+        "再说几次也一样。",
+    ]
+    runtime = TaskRuntime(
+        _ScriptedExecutor(replies),
+        DeterministicInteractionActor(),
+        _ScriptedValidator([fail_report, fail_report]),
+    )
+    run = await runtime.run(task)
+
+    assert run.state.value == "guide_exhausted"
+    assert run.failure is not None
+    assert run.failure.code == "AGENT_DECLINED"
+    # The trajectory detector should be the only source of decline here.
+    terminal = run.state_events[-1]
+    assert terminal.detail["decline_source"] == "repeated_refusal_trajectory"
+    # No synthetic closing user turn is appended.
+    closing = [t for t in run.conversation if "就到这里吧" in t.content]
+    assert closing == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_refusal_trajectory_does_not_fire_when_codes_change(
+    compiled_task,
+) -> None:
+    """If the failing reason_codes change between rounds, the agent is making
+    progress on at least one gap — not a uniform refusal. The trajectory
+    detector must stay silent and the run proceeds to the next guide round."""
+
+    task = compiled_task.model_copy(
+        update={
+            "interaction_policy": InteractionPolicy(
+                max_guide_rounds=3,
+                blocked_action="accept_honest_limitation",
+            ),
+        }
+    )
+    first_fail = ValidationReport(
+        verdict=Verdict.FAIL,
+        criteria=(
+            CriterionResult(
+                criterion_id=task.criteria[0].criterion_id,
+                verdict=Verdict.FAIL,
+                reason_code="URL_MISSING",
+                message="url missing",
+                retryable=True,
+            ),
+        ),
+        retryable=True,
+    )
+    second_fail = ValidationReport(
+        verdict=Verdict.FAIL,
+        criteria=(
+            CriterionResult(
+                criterion_id=task.criteria[0].criterion_id,
+                verdict=Verdict.FAIL,
+                reason_code="ITEM_COUNT_LOW",
+                message="count low",
+                retryable=True,
+            ),
+        ),
+        retryable=True,
+    )
+    pass_report = ValidationReport(
+        verdict=Verdict.PASS,
+        criteria=(
+            CriterionResult(
+                criterion_id=task.criteria[0].criterion_id,
+                verdict=Verdict.PASS,
+                reason_code="OK",
+                message="ok",
+            ),
+        ),
+    )
+    replies = [
+        "这里我还没想好怎么说，先等一下。",  # round 1, URL_MISSING
+        "列表里有几项，但 URL 还是不全。",  # round 2, ITEM_COUNT_LOW (codes changed)
+        "请查收以下链接与说明。",  # round 3, PASS
+    ]
+    runtime = TaskRuntime(
+        _ScriptedExecutor(replies),
+        DeterministicInteractionActor(),
+        _ScriptedValidator([first_fail, second_fail, pass_report]),
+    )
+    run = await runtime.run(task)
+
+    assert run.state.value == "success"
+    assert run.guide_rounds == 2
+    # No decline event was emitted.
+    decline_events = [e for e in run.state_events if e.event_type == "AGENT_DECLINED"]
+    assert decline_events == []

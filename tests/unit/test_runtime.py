@@ -84,8 +84,11 @@ async def test_runtime_followup_then_success(compiled_task) -> None:
     assert run.state is RunState.SUCCESS
     assert run.guide_rounds == 1
     assert executor.sessions == [None, "s1"]
-    assert [turn.role for turn in run.conversation] == ["user", "assistant", "user", "assistant", "user"]
-    assert run.conversation[-1].content == "谢谢，这些内容已经满足我的需要了。"
+    # No synthetic closing user turn — conversation alternation ends at the last
+    # assistant reply once validation passes.
+    assert [turn.role for turn in run.conversation] == ["user", "assistant", "user", "assistant"]
+    closing = [t for t in run.conversation if "谢谢" in t.content]
+    assert closing == []
     followup_event = next(item for item in run.state_events if item.event_type == "FOLLOWUP_CREATED")
     assert followup_event.detail["reason_codes"] == ["SCRIPTED"]
     assert followup_event.detail["target_criteria"] == [compiled_task.criteria[0].criterion_id]
