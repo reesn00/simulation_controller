@@ -1,4 +1,3 @@
-from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,12 +18,6 @@ class InteractionContext(BaseModel):
     run_id: str = ""
     fail_streaks: dict[str, int] = Field(default_factory=dict)
     previous_guidance_level: str | None = None
-
-
-class ClosingTrigger(str, Enum):
-    PASS = "pass"
-    ENVIRONMENT_STOP = "environment_stop"
-    AGENT_DECLINED = "agent_declined"
 
 
 class UserUtterance(BaseModel):

@@ -27,6 +27,11 @@ tasks:
       retryable: true
   excluded_platforms:
   - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   reference:
     evaluation_notes:
     - 网络搜索《武林外传》免费在线资源
@@ -49,6 +54,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t002.outcome
     item: 任务特有目标
@@ -80,6 +92,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t003.outcome
     item: 任务特有目标
@@ -111,6 +130,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t004.outcome
     item: 任务特有目标
@@ -142,6 +168,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t005.outcome
     item: 任务特有目标
@@ -173,6 +206,13 @@ tasks:
     min_results: 5
     count_unit: table_rows
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t006.outcome
     item: 任务特有目标
@@ -204,6 +244,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t007.outcome
     item: 任务特有目标
@@ -235,6 +282,13 @@ tasks:
     min_results: 5
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t008.outcome
     item: 任务特有目标
@@ -266,6 +320,13 @@ tasks:
     min_results: 5
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t009.outcome
     item: 任务特有目标
@@ -297,6 +358,13 @@ tasks:
     min_results: 10
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t010.outcome
     item: 任务特有目标
@@ -328,6 +396,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.bilingual-subtitles
     item: 中英双语字幕
@@ -366,6 +441,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t012.outcome
     item: 任务特有目标
@@ -397,6 +479,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t013.outcome
     item: 任务特有目标
@@ -428,6 +517,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t014.outcome
     item: 任务特有目标
@@ -459,6 +555,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.no-registration
     item: 无需注册
@@ -497,6 +600,13 @@ tasks:
     min_results: 3
     count_unit: table_rows
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t016.outcome
     item: 任务特有目标
@@ -528,6 +638,13 @@ tasks:
     min_results: 10
     count_unit: table_rows
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t017.outcome
     item: 任务特有目标
@@ -559,6 +676,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t018.outcome
     item: 任务特有目标
@@ -588,6 +712,13 @@ tasks:
   output_contract:
     format: card
     min_urls: 2
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t019.outcome
     item: 任务特有目标
@@ -620,6 +751,13 @@ tasks:
     min_results: 3
     count_unit: table_rows
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t020.outcome
     item: 任务特有目标
@@ -652,6 +790,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t021.outcome
     item: 任务特有目标
@@ -683,6 +828,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t022.outcome
     item: 任务特有目标
@@ -714,6 +866,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t023.outcome
     item: 任务特有目标
@@ -746,6 +905,13 @@ tasks:
     min_results: 3
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t024.outcome
     item: 任务特有目标
@@ -776,6 +942,13 @@ tasks:
     format: list
     min_results: 3
     count_unit: list_items
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t025.outcome
     item: 任务特有目标
@@ -812,6 +985,13 @@ tasks:
     min_results: 1
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.links-verifiable
     item: 链接可验证
@@ -866,6 +1046,13 @@ tasks:
     min_results: 2
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t027.outcome
     item: 任务特有目标
@@ -901,6 +1088,13 @@ tasks:
     min_results: 4
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t028.outcome
     item: 任务特有目标
@@ -964,6 +1158,13 @@ tasks:
     min_results: 2
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t030.outcome
     item: 任务特有目标
@@ -996,6 +1197,13 @@ tasks:
     min_results: 2
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t031.outcome
     item: 任务特有目标
@@ -1027,6 +1235,13 @@ tasks:
     min_results: 2
     count_unit: list_items
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t032.outcome
     item: 任务特有目标
@@ -1059,6 +1274,13 @@ tasks:
     min_results: 2
     count_unit: table_rows
     min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.t033.outcome
     item: 任务特有目标
@@ -1089,6 +1311,13 @@ tasks:
     priorities:
     - priority: required
       requirement: 核查《功夫2》的正式制作或上映状态；没有可靠依据时必须表达不确定，且不得编造播放链接
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
   - criterion_id: task.identify-nonexistent
     item: 识别不存在
