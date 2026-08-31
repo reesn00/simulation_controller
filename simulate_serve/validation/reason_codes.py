@@ -121,14 +121,13 @@ SEMANTIC_REASON_CODE_HINTS: Final[dict[str, str]] = {
 # ---------------------------------------------------------------------------
 # scenario_id -> closing_action -> (criterion_id, reason_code)
 #
-# The action key MUST be the action string that actually produces the closing
-# turn in `TaskRuntime._append_closing` — i.e. the scenario's `pass_action`
-# (these are all `no_decline_check` scenarios whose decline check is skipped,
-# so AGENT_DECLINED closings never fire for them). When a run terminates with
-# that action, the (criterion_id, reason_code) pair is injected into the
-# terminal decision detail as a "user accepts the agent's decline /
-# clarification" behaviour label. It does NOT enter CriterionResult.verdict
-# aggregation.
+# The action key MUST match the scenario's `pass_action`. When a run
+# terminates with that action, the (criterion_id, reason_code) pair is
+# attached to the terminal decision detail as a "user accepts the agent's
+# decline / clarification" behaviour label. It does NOT enter
+# CriterionResult.verdict aggregation. No user turn is appended to
+# ``run.conversation`` — closing state lives in ``RunState`` + ``RunFailure``
+# + decision detail only.
 CLOSING_REASON_CODES: Final[dict[str, dict[str, tuple[str, str]]]] = {
     "clarification_required": {
         "provide_clarification_and_continue": ("clarification.no-guessing", "JUDGE_REQUIREMENT_MISSING"),

@@ -6,6 +6,7 @@ from simulate_serve.domain.validation import CriterionResult, Verdict
 from .common import normalize, passed
 
 _NEGATION = re.compile(r"(?:不推荐|不要|排除|不符合|无法|不可用|拒绝|避免)")
+_RECOMMEND_TOKENS = ("推荐", "可以", "链接", "网址", "在线观看", "可播放", "播放", "http")
 
 
 class ConstraintValidator:
@@ -17,17 +18,22 @@ class ConstraintValidator:
         for platform in excluded:
             if not platform:
                 continue
+            saw_ambiguous = False
             for match in re.finditer(re.escape(platform), normalized):
                 start = match.start()
                 context = normalized[max(0, start - 16) : match.end() + 16]
-                recommends = any(token in context for token in ("推荐", "可以", "链接", "http"))
+                recommends = any(token in context for token in _RECOMMEND_TOKENS)
                 negated = bool(_NEGATION.search(context))
-                if recommends:
+                if recommends and not negated:
                     violations.append(platform)
                     break
+                if recommends:
+                    continue
                 if not negated:
-                    ambiguous.append(platform)
-                    break
+                    saw_ambiguous = True
+                    continue
+            if platform not in violations and saw_ambiguous:
+                ambiguous.append(platform)
         violations = list(dict.fromkeys(violations))
         ambiguous = [item for item in dict.fromkeys(ambiguous) if item not in violations]
         if violations:

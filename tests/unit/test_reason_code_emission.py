@@ -88,10 +88,10 @@ async def test_closing_signal_injected_on_mapped_pass_action(compiled_task) -> N
     run = await runtime.run(task)
 
     assert run.state.value == "success"
-    # New pass_action now produces a closing turn.
-    assert run.conversation[-1].role == "user"
-    assert run.conversation[-1].content == "谢谢，这些内容已经满足我的需要了。"
-    # Terminal event detail carries the behaviour label from the closing map.
+    # No synthetic closing user turn is appended; the closing signal lives in
+    # the terminal decision detail only.
+    closing = [t for t in run.conversation if "谢谢" in t.content]
+    assert closing == []
     terminal = run.state_events[-1]
     assert terminal.detail["decision_action"] == "complete"
     assert terminal.detail["closing_reason_code"] == "POLICY_BLOCKED"
