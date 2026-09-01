@@ -402,6 +402,44 @@ class SQLiteQueue:
                 (error_msg, now, int(task_id)),
             )
 
+    def requeue_dead(self, *, batch_id: int | None = None) -> int:
+        """把所有 ``state=dead``（或指定 batch）的 task 重置为 ``pending``.
+
+        不重置 ``attempts_*``；让 worker 重试但仍受 max_retry 约束。
+        若想完全重置，需要额外的 ``reset_attempts`` 标志（暂不提供）。
+
+        Returns: 被重置的行数.
+        """
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            if batch_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET state = 'pending',
+                        error_msg = NULL,
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        updated_at = ?
+                    WHERE state = 'dead'
+                    """,
+                    (now,),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET state = 'pending',
+                        error_msg = NULL,
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        updated_at = ?
+                    WHERE state = 'dead' AND batch_id = ?
+                    """,
+                    (now, int(batch_id)),
+                )
+            return int(cur.rowcount)
+
     # ------------------------------------------------------------------
     # 崩溃恢复
     # ------------------------------------------------------------------

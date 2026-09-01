@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
+
+# 让 ``gdr.config`` 包内 ``from config.settings import Settings`` 这种
+# 顶级包导入可解析：gdr 在 uv workspace 下不一定被 install 到 site-packages，
+# 但其 ``config/__init__.py`` 期望 ``config.settings`` 是顶级模块可导入。
+# 把 ``gdr/`` 加进 sys.path 后即可。
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_PROJECT_ROOT / "gdr"))
 
 from simulate_serve.domain.provenance import SourceRef, TaskProvenance
 from simulate_serve.domain.task import AcceptanceCriterion, CompiledTask, InteractionPolicy, PersonaSpec, ValidationPolicy

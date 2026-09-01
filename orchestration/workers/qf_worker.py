@@ -26,7 +26,6 @@ from etl.qwenformat.transform import (
 )
 from orchestration.queue import (
     STAGE_QF,
-    STATE_PENDING_GDR,
     SQLiteQueue,
     Task,
 )
@@ -94,11 +93,10 @@ class QfWorker(BaseWorker):
     # ------------------------------------------------------------------
 
     def mark_done(self, task: Task, output: Path) -> None:
+        """标记 qf 完成：state 从 ``qf_processing`` → ``pending_gdr``.
+
+        注：gdr worker 可能立刻抢占并把 state 推到 ``done``；因此这里不做
+        post-mark 校验（避免并发场景下的误报）。``mark_qf_done`` 自身的 SQL
+        守卫（``WHERE state='qf_processing'``）已保证写操作的原子性。
+        """
         self._queue.mark_qf_done(task.id, qf_output_path=output)
-        # 防御性校验：转出状态必须是 pending_gdr
-        refreshed = self._queue.get(task.id)
-        if refreshed is not None and refreshed.state != STATE_PENDING_GDR:
-            raise RuntimeError(
-                f"qf worker {self._worker_id}: task {task.id} post-mark state="
-                f"{refreshed.state!r} (expected 'pending_gdr')"
-            )
