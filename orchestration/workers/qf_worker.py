@@ -21,6 +21,7 @@ from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from etl.qwenformat.transform import (
     build_chat_env,
+    camel_agent_state_to_session,
     load_chat_template,
     trajectory_to_session_with_openai_metadata,
 )
@@ -76,6 +77,8 @@ class QfWorker(BaseWorker):
 
     def process(self, task: Task) -> Path:
         trajectory = json.loads(task.src_path.read_text(encoding="utf-8"))
+        if "agent" in trajectory:
+            trajectory = camel_agent_state_to_session(trajectory)
         out = trajectory_to_session_with_openai_metadata(
             trajectory, self._template, self._env,
         )

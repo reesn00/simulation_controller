@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import threading
 from pathlib import Path
@@ -35,6 +36,31 @@ from orchestration.health import collect_batches, write_health
 from orchestration.master import Master, OrchestrationError
 from orchestration.queue import STATE_DEAD, SQLiteQueue
 
+_log = logging.getLogger(__name__)
+
+
+def _load_all_task_ids(config_path: str | None) -> list[str]:
+    """从 simulate_serve config 加载全部 task_id 列表."""
+    from simulate_serve.config import load_config as load_ss_config
+    from simulate_serve.task_manager import TaskManager
+
+    ss_cfg = load_ss_config(config_path)
+    manager = TaskManager(
+        ss_cfg.tasks_file,
+        ss_cfg.scenarios_file,
+        config_dir=ss_cfg.config_dir,
+        max_guide_rounds=ss_cfg.max_guide_rounds,
+    )
+    return [t.task_id for t in manager.compiled_tasks]
+
+
+def _split_batches(task_ids: list[str], batch_size: int) -> list[list[str]]:
+    """按 batch_size 切分 task_ids 为多个批次."""
+    if batch_size <= 0:
+        return [list(task_ids)]
+    return [list(task_ids[i:i + batch_size])
+            for i in range(0, len(task_ids), batch_size)]
+
 
 # ---------------------------------------------------------------------------
 # 子命令
@@ -52,9 +78,18 @@ def _cmd_start(args: argparse.Namespace) -> int:
         print(f"[orchestration] already running: pid={existing_pid} (pid_file={pid_file})")
         return 1
 
-    # 清理旧 PID 文件（防止之前崩溃留下）
     if pid_file.exists():
         remove_pid_file(pid_file)
+
+    batch_size = args.batch_size if args.batch_size is not None else cfg.settings.batch_size
+
+    task_ids: list[str] = []
+    if args.tasks:
+        task_ids = [t.strip() for t in args.tasks.split(",") if t.strip()]
+    elif args.all_tasks:
+        task_ids = _load_all_task_ids(cfg.paths.simulate_serve_config)
+
+    batches = _split_batches(task_ids, batch_size) if task_ids else []
 
     if args.dry_run:
         print("[orchestration] dry-run:")
@@ -64,15 +99,29 @@ def _cmd_start(args: argparse.Namespace) -> int:
         print(f"  log_dir        = {log_dir}")
         print(f"  qf_workers     = {cfg.settings.qf_workers}")
         print(f"  gdr_workers    = {cfg.settings.gdr_workers}")
-        print(f"  batch_size     = {cfg.settings.batch_size}")
+        print(f"  batch_size     = {batch_size}")
         print(f"  detach         = {args.detach}")
+        if task_ids:
+            print(f"  tasks          = {len(task_ids)} ({','.join(task_ids[:5])}{'...' if len(task_ids) > 5 else ''})")
+            print(f"  batches        = {len(batches)}")
+        else:
+            print(f"  tasks          = (none, idle mode)")
+        print(f"  exit_when_done = {args.exit_when_done}")
         return 0
 
     if args.detach:
-        # detach：当前进程 fork 出一个子进程；父进程立即返回
+        detach_argv = [sys.executable, "-m", "orchestration", "start",
+                       "--config", str(args.config), "--foreground"]
+        if args.tasks:
+            detach_argv += ["--tasks", args.tasks]
+        if args.all_tasks:
+            detach_argv += ["--all-tasks"]
+        if args.exit_when_done:
+            detach_argv += ["--exit-when-done"]
+        if args.batch_size is not None:
+            detach_argv += ["--batch-size", str(args.batch_size)]
         handle = start_detached(
-            argv=[sys.executable, "-m", "orchestration", "start",
-                  "--config", str(args.config), "--foreground"],
+            argv=detach_argv,
             pid_file=pid_file,
             log_dir=log_dir,
             child_mode_arg="--foreground",
@@ -80,7 +129,6 @@ def _cmd_start(args: argparse.Namespace) -> int:
         print(f"[orchestration] detached: pid={handle.pid} pid_file={pid_file} log={log_dir}")
         return 0
 
-    # 前台
     def run(stop_event: threading.Event) -> None:
         queue = SQLiteQueue(
             sqlite_db,
@@ -89,14 +137,23 @@ def _cmd_start(args: argparse.Namespace) -> int:
         )
         master = Master(cfg=cfg, queue=queue)
 
-        def _on_stop(_signum, _frame):
-            stop_event.set()
-
-        # 信号已经由 daemon.install_signal_handlers 设了；这里不必重复
         master.start_workers()
         try:
-            # 跑空 batch 列表：master 只是常驻 + reap_stale
-            # 实际批次由外部调度触发（replay / 手工调用）
+            if batches:
+                _log.info("start: submitting %d batch(es), %d task(s) total",
+                          len(batches), len(task_ids))
+                summaries = master.run(batches)
+                for s in summaries:
+                    print(f"[orchestration] batch_id={s.batch_id} "
+                          f"runs={len(s.run_ids)} drained={s.drained} dead={s.dead_count}")
+                _log.info("start: all batches completed")
+
+                if args.exit_when_done:
+                    _log.info("start: --exit-when-done, shutting down")
+                    return
+            else:
+                _log.info("start: idle mode, no tasks submitted")
+
             stop_event.wait()
         finally:
             master.shutdown(timeout=10.0)
@@ -220,6 +277,14 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="前台运行（默认；detach 子进程会传此标志）")
     p_start.add_argument("--dry-run", action="store_true",
                          help="仅打印计划，不真的启动")
+    p_start.add_argument("--tasks", type=str, default=None,
+                         help="逗号分隔的 task_id 列表；指定后启动即提交批次")
+    p_start.add_argument("--all-tasks", action="store_true",
+                         help="加载 simulate_serve 全部 task_id 并提交")
+    p_start.add_argument("--exit-when-done", action="store_true",
+                         help="批次跑完后退出；不指定则继续常驻")
+    p_start.add_argument("--batch-size", type=int, default=None,
+                         help="覆盖 config 中的 batch_size")
     p_start.set_defaults(func=_cmd_start)
 
     p_status = sub.add_parser("status", help="打印队列/进程/dead 状态")

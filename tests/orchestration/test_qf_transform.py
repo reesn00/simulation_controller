@@ -9,6 +9,7 @@ import pytest
 
 from etl.qwenformat.transform import (
     build_chat_env,
+    camel_agent_state_to_session,
     load_chat_template,
     trajectory_to_session_with_openai_metadata,
 )
@@ -317,3 +318,86 @@ def test_thinking_then_text_no_tool_call(template_env):
     assert asst["content"] == "回答"
     assert asst["reasoning_content"] == "思考"
     assert "tool_calls" not in asst
+
+
+# ---------------------------------------------------------------------------
+# camel_agent_state_to_session：CAMEL agent trajectory → Session 形态
+# ---------------------------------------------------------------------------
+
+def _camel_trajectory() -> dict:
+    """真实 QwenPaw 拷贝出来的 CAMEL agent 形态."""
+    return {
+        "agent": {
+            "state": {
+                "session_id": "camel-session-001",
+                "summary": "查网址",
+                "context": [
+                    {
+                        "role": "user",
+                        "name": "user",
+                        "id": "turn_1",
+                        "content": [{"type": "text", "text": "帮我查个链接", "id": "t1"}],
+                        "metadata": {"qwenpaw_tag": "external_user_query"},
+                    },
+                    {
+                        "role": "assistant",
+                        "name": "Default",
+                        "id": "turn_2",
+                        "content": [
+                            {"type": "thinking", "thinking": "先搜索", "id": "th1"},
+                            {"type": "tool_call", "id": "tc1", "name": "web_search",
+                             "input": '{"q": "x"}', "state": "finished"},
+                            {"type": "tool_result", "id": "tc1", "name": "web_search",
+                             "output": [{"type": "text", "text": "结果A", "id": "r1"}],
+                             "state": "success"},
+                        ],
+                        "metadata": {},
+                    },
+                ],
+            }
+        }
+    }
+
+
+def test_camel_trajectory_flattens_to_session():
+    session = camel_agent_state_to_session(_camel_trajectory())
+    assert session["session_id"] == "camel-session-001"
+    assert session["summary"] == "查网址"
+    assert len(session["messages"]) == 2
+
+    user = session["messages"][0]
+    assert user["role"] == "user"
+    assert "blocks" in user
+    assert "content" not in user
+    assert user["blocks"][0]["text"] == "帮我查个链接"
+
+    asst = session["messages"][1]
+    assert asst["role"] == "assistant"
+    block_types = [b["type"] for b in asst["blocks"]]
+    assert block_types == ["thinking", "tool_call", "tool_result"]
+
+
+def test_camel_tool_result_output_merged_to_content():
+    session = camel_agent_state_to_session(_camel_trajectory())
+    asst = session["messages"][1]
+    tool_result = [b for b in asst["blocks"] if b["type"] == "tool_result"][0]
+    assert tool_result["content"] == "结果A"
+    assert "output" not in tool_result
+
+
+def test_camel_end_to_end_matches_session_path(template_env):
+    """CAMEL 形态经两次转换后，与直接喂 Session 形态的结果一致."""
+    template, env = template_env
+    camel_session = camel_agent_state_to_session(_camel_trajectory())
+    out = trajectory_to_session_with_openai_metadata(camel_session, template, env)
+    oa = out["metadata"]["openai_messages"]
+    assert oa[0]["role"] == "user"
+    assert oa[0]["content"] == "帮我查个链接"
+    assert [m["role"] for m in oa] == ["user", "assistant", "tool"]
+    assert oa[2]["content"] == "结果A"
+    assert "web_search" in out["metadata"]["qf_text"]
+
+
+def test_camel_empty_agent_returns_empty_session():
+    session = camel_agent_state_to_session({"agent": {"state": {}}})
+    assert session == {"session_id": None, "summary": "", "messages": []}

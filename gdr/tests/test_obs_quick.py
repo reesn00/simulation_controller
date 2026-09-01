@@ -1,7 +1,7 @@
 """Quick standalone test for obs_denoiser prompt + LLM response quality."""
 from prompts import load_and_render
 from infrastructure import LlamaCppClient
-from config.settings import Settings
+from gdr.config.settings import Settings
 
 cfg = Settings()
 obs_text = (

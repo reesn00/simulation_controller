@@ -138,6 +138,54 @@ def _make_tool_call_id(raw_id: str) -> str:
     return raw_id if raw_id.startswith("call_") else f"call_{raw_id}"
 
 
+def camel_agent_state_to_session(trajectory: dict[str, Any]) -> dict[str, Any]:
+    """把 QwenPaw 拷贝出来的 CAMEL agent trajectory 转为 Session 形态。
+
+    输入（CAMEL agent 原始 session JSON）：
+        ``{"agent": {"state": {"session_id", "summary", "context": [
+            {"role", "name", "id", "content": [block, ...], "metadata", ...}]}}}``
+
+    输出（``trajectory_to_session_with_openai_metadata`` 期待的 Session 形态）：
+        ``{"session_id", "summary", "messages": [{"role", "name", "id",
+          "blocks": [block, ...], "metadata", ...}]}``
+
+    变换点：
+        1. 顶层 ``agent.state`` 拍平为 ``session_id`` / ``summary``
+        2. 消息列表从 ``state.context`` 取出，``content`` 字段重命名为 ``blocks``
+        3. ``tool_result`` block 的 ``output``(list of text block) 拼为 ``content`` 字符串
+    """
+    agent = trajectory.get("agent") or {}
+    state = agent.get("state") or {}
+
+    messages: list[dict[str, Any]] = []
+    for msg in state.get("context") or []:
+        blocks: list[dict[str, Any]] = []
+        for raw_block in msg.get("content") or []:
+            block = dict(raw_block)
+            if block.get("type") == "tool_result" and "content" not in block:
+                parts = [
+                    item.get("text", "")
+                    for item in (block.get("output") or [])
+                    if isinstance(item, dict) and item.get("type") == "text"
+                ]
+                block["content"] = "".join(parts)
+                block.pop("output", None)
+            blocks.append(block)
+        messages.append({
+            "role": msg.get("role"),
+            "name": msg.get("name"),
+            "id": msg.get("id"),
+            "blocks": blocks,
+            "metadata": msg.get("metadata") or {},
+        })
+
+    return {
+        "session_id": state.get("session_id"),
+        "summary": state.get("summary", ""),
+        "messages": messages,
+    }
+
+
 def trajectory_to_session_with_openai_metadata(
     trajectory: dict[str, Any],
     template_str: str,

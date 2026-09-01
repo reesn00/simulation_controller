@@ -48,6 +48,9 @@ htmlcov/
 *.swp
 *.swo
 *~
+.codegraph/
+.codeartsdoer/
+.claude/
 
 # Project outputs
 output/
