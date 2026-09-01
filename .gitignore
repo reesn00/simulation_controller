@@ -68,3 +68,7 @@ etl/pawsession/output
 etl/pawsession/origindata
 etl/qwenformat/input_data
 etl/qwenformat/output_data
+
+# orchestration 运行时数据（SQLite 队列 / qf_out / pid / dead / logs）
+orchestration/data/
+orchestration/logs/

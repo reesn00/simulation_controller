@@ -1,0 +1,30 @@
+# orchestration 默认配置（骨架阶段；完整字段见 docs/orchestration-design.md §7）
+#
+# 本文件作为 force-include 被打进 wheel，让 `uv run orchestration` 可直接读
+# 默认配置；运行期可用 ORCH_* 环境变量覆盖（待 step 11 实施）。
+
+orchestration:
+  batch_size: 3
+  gdr_workers: 2
+  qf_workers: 4
+  gdr_wait_seconds: 10
+  max_retry_qf: 3
+  max_retry_gdr: 3
+  watcher_poll_seconds: 2
+  reap_stale_seconds: 300
+
+paths:
+  # 待 step 7 实施：必须指向真实存在路径
+  simulate_serve_config: "simulate_serve/config/config.yaml"
+  trajectory_dir: "output/agent_trajectory"
+  qf_output_dir: "orchestration/data/qf_out"
+  gdr_output_dir: "gdr/refine_data"
+  sqlite_db: "orchestration/data/orchestration.db"
+  dead_dir: "orchestration/data/dead"
+  pid_file: "orchestration/data/orchestration.pid"
+  log_dir: "orchestration/logs"
+
+# 待 step 10 实施：透传给 gdr.Settings
+gdr_settings:
+  workers: 2
+  llm_concurrency: 4

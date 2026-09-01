@@ -17,16 +17,20 @@ dependencies = [
 
 [project.scripts]
 useramulation = "simulate_serve.__main__:main"
+orchestration = "orchestration.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["simulate_serve"]
+packages = ["simulate_serve", "orchestration"]
 exclude = [
     "simulate_serve/config/config copy.yaml",
     "simulate_serve/**/__pycache__/**",
+    "orchestration/**/__pycache__/**",
+    "orchestration/data/**",
+    "orchestration/logs/**",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
@@ -35,6 +39,7 @@ exclude = [
 "simulate_serve/config/scenarios.yaml" = "simulate_serve/config/scenarios.yaml"
 "tool_runtime/playwright/package.json" = "simulate_serve/tool_runtime/playwright/package.json"
 "tool_runtime/playwright/package-lock.json" = "simulate_serve/tool_runtime/playwright/package-lock.json"
+"orchestration/config.yaml" = "orchestration/config.yaml"
 
 [dependency-groups]
 dev = [
