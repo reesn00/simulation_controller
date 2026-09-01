@@ -40,6 +40,7 @@ exclude = [
 "tool_runtime/playwright/package.json" = "simulate_serve/tool_runtime/playwright/package.json"
 "tool_runtime/playwright/package-lock.json" = "simulate_serve/tool_runtime/playwright/package-lock.json"
 "orchestration/config.yaml" = "orchestration/config.yaml"
+"orchestration/queue/schema.sql" = "orchestration/queue/schema.sql"
 
 [dependency-groups]
 dev = [
