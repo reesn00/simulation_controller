@@ -56,7 +56,7 @@ def _basic_trajectory() -> dict:
 
 
 def _trajectory_with_tool_call() -> dict:
-    """1 user + 1 assistant (thinking + text + tool_call) + 1 tool_result."""
+    """1 user + 1 assistant (thinking + text + toolcall) + 1 toolresult."""
     return {
         "session_id": "useramulation-test-002",
         "summary": "搜索网页",
@@ -76,7 +76,7 @@ def _trajectory_with_tool_call() -> dict:
                     {"type": "thinking", "thinking": "我应该搜索..."},
                     {"type": "text", "text": "我先搜索一下。"},
                     {
-                        "type": "tool_call",
+                        "type": "toolcall",
                         "id": "tc_001",
                         "name": "web_search",
                         "input": json.dumps({"q": "python tutorial"}),
@@ -181,12 +181,12 @@ def test_tools_unique_and_ordered(template_env):
             {"role": "user", "name": "user", "id": "u1",
              "blocks": [{"type": "text", "text": "x"}], "metadata": {}},
             {"role": "assistant", "name": "Default", "id": "a1", "blocks": [
-                {"type": "tool_call", "id": "tc_a", "name": "alpha", "input": "{}"},
-                {"type": "tool_call", "id": "tc_b", "name": "beta",  "input": "{}"},
+                {"type": "toolcall", "id": "tc_a", "name": "alpha", "input": "{}"},
+                {"type": "toolcall", "id": "tc_b", "name": "beta",  "input": "{}"},
             ], "metadata": {}},
             {"role": "assistant", "name": "Default", "id": "a2", "blocks": [
-                {"type": "tool_call", "id": "tc_c", "name": "alpha", "input": "{}"},  # 重复
-                {"type": "tool_call", "id": "tc_d", "name": "gamma", "input": "{}"},
+                {"type": "toolcall", "id": "tc_c", "name": "alpha", "input": "{}"},  # 重复
+                {"type": "toolcall", "id": "tc_d", "name": "gamma", "input": "{}"},
             ], "metadata": {}},
         ],
     }
@@ -350,6 +350,7 @@ def _camel_trajectory() -> dict:
                             {"type": "tool_result", "id": "tc1", "name": "web_search",
                              "output": [{"type": "text", "text": "结果A", "id": "r1"}],
                              "state": "success"},
+                            {"type": "hint", "hint": "placeholder", "id": "h1"},
                         ],
                         "metadata": {},
                     },
@@ -374,14 +375,14 @@ def test_camel_trajectory_flattens_to_session():
     asst = session["messages"][1]
     assert asst["role"] == "assistant"
     block_types = [b["type"] for b in asst["blocks"]]
-    assert block_types == ["thinking", "tool_call", "tool_result"]
+    assert block_types == ["thinking", "toolcall", "toolresult"]
 
 
-def test_camel_tool_result_output_merged_to_content():
+def test_camel_tool_result_output_merged_to_output_text():
     session = camel_agent_state_to_session(_camel_trajectory())
     asst = session["messages"][1]
-    tool_result = [b for b in asst["blocks"] if b["type"] == "tool_result"][0]
-    assert tool_result["content"] == "结果A"
+    tool_result = [b for b in asst["blocks"] if b["type"] == "toolresult"][0]
+    assert tool_result["output_text"] == "结果A"
     assert "output" not in tool_result
 
 
@@ -401,3 +402,11 @@ def test_camel_end_to_end_matches_session_path(template_env):
 def test_camel_empty_agent_returns_empty_session():
     session = camel_agent_state_to_session({"agent": {"state": {}}})
     assert session == {"session_id": None, "summary": "", "messages": []}
+
+
+def test_camel_hint_block_dropped():
+    """hint 等 GDR 未定义类型应被丢弃."""
+    session = camel_agent_state_to_session(_camel_trajectory())
+    asst = session["messages"][1]
+    assert all(b["type"] != "hint" for b in asst["blocks"])
+    assert [b["type"] for b in asst["blocks"]] == ["thinking", "toolcall", "toolresult"]

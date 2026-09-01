@@ -139,20 +139,23 @@ def _make_tool_call_id(raw_id: str) -> str:
 
 
 def camel_agent_state_to_session(trajectory: dict[str, Any]) -> dict[str, Any]:
-    """把 QwenPaw 拷贝出来的 CAMEL agent trajectory 转为 Session 形态。
+    """把 QwenPaw 拷贝出来的 CAMEL agent trajectory 转为 GDR Session 形态.
 
     输入（CAMEL agent 原始 session JSON）：
         ``{"agent": {"state": {"session_id", "summary", "context": [
             {"role", "name", "id", "content": [block, ...], "metadata", ...}]}}}``
 
-    输出（``trajectory_to_session_with_openai_metadata`` 期待的 Session 形态）：
+    输出（GDR ``domain.schema.Session`` 期待的 morph，block type 对齐 GDR 命名）：
         ``{"session_id", "summary", "messages": [{"role", "name", "id",
           "blocks": [block, ...], "metadata", ...}]}``
 
     变换点：
         1. 顶层 ``agent.state`` 拍平为 ``session_id`` / ``summary``
         2. 消息列表从 ``state.context`` 取出，``content`` 字段重命名为 ``blocks``
-        3. ``tool_result`` block 的 ``output``(list of text block) 拼为 ``content`` 字符串
+        3. block type 对齐 GDR schema 命名：
+           - ``tool_call``  → ``toolcall``（保留 id/name/input/state）
+           - ``tool_result`` → ``toolresult``（``output`` list → ``output_text`` str）
+           - ``hint`` 等 GDR 未定义的类型 → 丢弃
     """
     agent = trajectory.get("agent") or {}
     state = agent.get("state") or {}
@@ -161,15 +164,22 @@ def camel_agent_state_to_session(trajectory: dict[str, Any]) -> dict[str, Any]:
     for msg in state.get("context") or []:
         blocks: list[dict[str, Any]] = []
         for raw_block in msg.get("content") or []:
+            btype = raw_block.get("type")
             block = dict(raw_block)
-            if block.get("type") == "tool_result" and "content" not in block:
+            if btype == "tool_call":
+                block["type"] = "toolcall"
+            elif btype == "tool_result":
+                block["type"] = "toolresult"
                 parts = [
                     item.get("text", "")
                     for item in (block.get("output") or [])
                     if isinstance(item, dict) and item.get("type") == "text"
                 ]
-                block["content"] = "".join(parts)
+                block["output_text"] = "".join(parts)
                 block.pop("output", None)
+            elif btype not in ("thinking", "text"):
+                # GDR schema 未定义的类型（如 hint）丢弃
+                continue
             blocks.append(block)
         messages.append({
             "role": msg.get("role"),
@@ -207,11 +217,11 @@ def trajectory_to_session_with_openai_metadata(
         - ``qf_text``: 用 Qwen3 chat_template 渲染的训练文本
         - ``qf_rendered_at`` / ``qf_stats``
 
-    blocks 类型识别（trajectory schema）：
+    blocks 类型识别（GDR session schema）：
         - ``text``: 普通文本，拼到 user/assistant 的 content
         - ``thinking``: 思维链，拼到 assistant 的 reasoning_content
-        - ``tool_call``: 一条 tool_call，input 是 JSON 字符串
-        - ``tool_result``: 生成独立 role=tool 消息
+        - ``toolcall``: 一条 tool call，input 是 JSON 字符串
+        - ``toolresult``: 生成独立 role=tool 消息（字段 ``output_text``）
 
     Args:
         trajectory: 原始 trajectory dict
@@ -277,7 +287,7 @@ def trajectory_to_session_with_openai_metadata(
                     content_parts.append(block.get("text", ""))
                 elif btype == "thinking":
                     reasoning_parts.append(block.get("thinking", ""))
-                elif btype == "tool_call":
+                elif btype == "toolcall":
                     tc_id = block.get("id", "")
                     tc_name = block.get("name", "")
                     tc_input = block.get("input", "{}")
@@ -290,18 +300,18 @@ def trajectory_to_session_with_openai_metadata(
                     if tc_name and tc_name not in seen_tool_names:
                         tool_names_in_order.append(tc_name)
                         seen_tool_names.add(tc_name)
-                elif btype == "tool_result":
+                elif btype == "toolresult":
                     _flush_assistant(content_parts, reasoning_parts, tool_calls)
                     content_parts = []
                     reasoning_parts = []
                     tool_calls = []
-                    # tool_result → 独立 role=tool message
+                    # toolresult → 独立 role=tool message
                     raw_tc_id = block.get("tool_call_id") or block.get("id") or ""
                     openai_messages.append({
                         "role": "tool",
                         "tool_call_id": _make_tool_call_id(raw_tc_id),
                         "name": block.get("name", ""),
-                        "content": block.get("content", "") or "",
+                        "content": block.get("output_text", "") or "",
                     })
                     bump("tool_results_emitted")
 
