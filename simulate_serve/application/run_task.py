@@ -17,7 +17,7 @@ from simulate_serve.validation.decline_detector import (
 )
 from simulate_serve.validation.reason_codes import closing_target
 
-from .ports import ExecutorGateway, RunRepositoryPort, ValidationPort
+from .ports import ExecutorGateway, RunRepositoryPort, TrajectoryArchivePort, ValidationPort
 from .errors import ExecutorPortError
 from .run_guard import RuntimeGuardPolicy, evaluate_runtime_guard
 
@@ -33,12 +33,14 @@ class TaskRuntime:
         repository: RunRepositoryPort | None = None,
         *,
         guard_policy: RuntimeGuardPolicy | None = None,
+        trajectory_archiver: TrajectoryArchivePort | None = None,
     ):
         self.executor = executor
         self.actor = actor
         self.validator = validator
         self.repository = repository
         self.guard_policy = guard_policy or RuntimeGuardPolicy()
+        self.trajectory_archiver = trajectory_archiver
 
     async def run(self, task: CompiledTask, *, rerun_of: str | None = None) -> TaskRun:
         started_monotonic = time.monotonic()
@@ -202,6 +204,7 @@ class TaskRuntime:
                 run.remote_session_id = exc.remote_session_id
             if exc.agent_id:
                 run.remote_agent_id = exc.agent_id
+            self._archive_trajectory(run)
             run.failure = RunFailure(code="EXECUTOR_ERROR", message=str(exc), stage=exc.stage, retryable=exc.retryable)
             if not run.is_terminal:
                 self._move(run, RunState.EXECUTOR_ERROR, "EXECUTOR_ERROR")
@@ -273,8 +276,7 @@ class TaskRuntime:
             previous_guidance_level=run.guidance_levels[-1] if run.guidance_levels else None,
         )
 
-    @staticmethod
-    def _record_response(run: TaskRun, response: object) -> None:
+    def _record_response(self, run: TaskRun, response: object) -> None:
         from .ports import ExecutorResponse
 
         if not isinstance(response, ExecutorResponse):
@@ -288,6 +290,20 @@ class TaskRuntime:
         run.conversation.append(
             ConversationTurn(role="assistant", content=response.text, remote_task_id=response.remote_task_id)
         )
+        self._archive_trajectory(run)
+
+    def _archive_trajectory(self, run: TaskRun) -> None:
+        # Snapshot the remote session trajectory after every executor turn so
+        # an interrupted run still has its captured state; the archiver
+        # overwrites one file per run and never raises.
+        if not self.trajectory_archiver or not run.remote_session_id:
+            return
+        try:
+            self.trajectory_archiver.archive(run.run_id, run.remote_agent_id, run.remote_session_id)
+        except Exception:
+            # Port contract says implementations must not raise; enforce the
+            # invariant anyway so capture problems can never affect the run.
+            logger.warning("trajectory archiver raised; capture skipped", exc_info=True)
 
     def _move(self, run: TaskRun, target: RunState, event: str, detail: dict | None = None) -> None:
         RunStateMachine.transition(run, target, event, detail)

@@ -39,6 +39,11 @@ class AgentEndpointConfig(StrictConfig):
     poll_interval: float = Field(default=1.0, gt=0)
     max_poll_time: float = Field(default=180.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    # Remote session trajectory capture: copies the per-session JSON that
+    # QwenPaw persists under its workspace into output/agent_trajectory.
+    # Capture failures are logged, never fail a run (auxiliary audit data).
+    trajectory_capture_enabled: bool = True
+    trajectory_source_dir: str = ""
 
     @field_validator("execution_agent_id", "validation_agent_id", "auth_token")
     @classmethod

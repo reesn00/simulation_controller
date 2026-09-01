@@ -37,5 +37,15 @@ class RunRepositoryPort(Protocol):
     def append_event(self, run_id: str, event: object) -> None: ...
 
 
+class TrajectoryArchivePort(Protocol):
+    """Archive the remote agent's session trajectory for one run.
+
+    Implementations must not raise: trajectory capture is auxiliary audit
+    data and must never influence a run's outcome.
+    """
+
+    def archive(self, run_id: str, agent_id: str, session_id: str) -> None: ...
+
+
 class Clock(Protocol):
     async def sleep(self, seconds: float) -> None: ...

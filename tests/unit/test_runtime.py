@@ -309,3 +309,78 @@ async def test_runtime_records_remote_ids_from_poll_failure(compiled_task) -> No
     assert run.remote_task_ids == ["accepted-task"]
     assert run.remote_session_id == "accepted-session"
     assert run.remote_agent_id == "agent-a"
+
+
+class RecordingArchiver:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def archive(self, run_id: str, agent_id: str, session_id: str) -> None:
+        self.calls.append((run_id, agent_id, session_id))
+
+
+class ExplodingArchiver:
+    def archive(self, run_id: str, agent_id: str, session_id: str) -> None:
+        raise RuntimeError("capture backend down")
+
+
+@pytest.mark.asyncio
+async def test_runtime_archives_trajectory_after_every_executor_turn(compiled_task) -> None:
+    archiver = RecordingArchiver()
+    run = await TaskRuntime(
+        ScriptedExecutor(["partial", "done"]),
+        DeterministicInteractionActor(),
+        ScriptedValidator([Verdict.FAIL, Verdict.PASS]),
+        trajectory_archiver=archiver,
+    ).run(compiled_task)
+
+    assert run.state is RunState.SUCCESS
+    assert archiver.calls == [(run.run_id, "a", "s1"), (run.run_id, "a", "s1")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_archives_trajectory_on_executor_error(compiled_task) -> None:
+    class PollFailingExecutor:
+        async def open_session(self, message: str) -> ExecutorResponse:
+            raise ExecutorPortError(
+                "poll failed",
+                stage="poll",
+                remote_task_id="accepted-task",
+                remote_session_id="accepted-session",
+                agent_id="agent-a",
+            )
+
+    archiver = RecordingArchiver()
+    run = await TaskRuntime(
+        PollFailingExecutor(),
+        DeterministicInteractionActor(),
+        ScriptedValidator([Verdict.PASS]),
+        trajectory_archiver=archiver,
+    ).run(compiled_task)
+
+    assert run.state is RunState.EXECUTOR_ERROR
+    assert archiver.calls == [(run.run_id, "agent-a", "accepted-session")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_archiver_failure_never_affects_run(compiled_task) -> None:
+    run = await TaskRuntime(
+        ScriptedExecutor(["done"]),
+        DeterministicInteractionActor(),
+        ScriptedValidator([Verdict.PASS]),
+        trajectory_archiver=ExplodingArchiver(),
+    ).run(compiled_task)
+
+    assert run.state is RunState.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_runtime_without_archiver_skips_capture(compiled_task) -> None:
+    run = await TaskRuntime(
+        ScriptedExecutor(["done"]),
+        DeterministicInteractionActor(),
+        ScriptedValidator([Verdict.PASS]),
+    ).run(compiled_task)
+
+    assert run.state is RunState.SUCCESS
+    assert run.remote_session_id == "s1"
