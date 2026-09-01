@@ -4749,6 +4749,7 @@ source = { editable = "." }
 dependencies = [
     { name = "camel-ai" },
     { name = "httpx" },
+    { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -4773,6 +4774,7 @@ requires-dist = [
     { name = "camel-ai", specifier = ">=0.2.0" },
     { name = "cloverlabs-camoufox", marker = "extra == 'browser-camoufox'", specifier = "==0.6.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "jinja2", specifier = ">=3.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
