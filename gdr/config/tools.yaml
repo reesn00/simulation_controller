@@ -1,15 +1,21 @@
-tools:
+# 补充名单: agent.json (tool_source=auto 的权威源, builtin_tools) 之外的工具名。
+# - Skill 是 QwenPaw 运行时注入的技能调用工具 (qf_out 轨迹统计: 31 次真实调用),
+#   不在 agent.json 的 builtin_tools 里, 必须在这里补充;
+# - 其余条目是从 qf_out 轨迹沉淀的真实工具名, 作为 agent.json 读不到时的
+#   手工底座 (auto 失效 → 退回纯本名单, 缺名字会级联误判 TOOL_HALLUCINATED)。
+# 漂移发现: 会话中出现但不在白名单里的工具名会写入 session.metadata
+# ["unknown_tool_names"] 并告警, 按告警补到这里即可。
+extra_tools:
+  - Skill
   - browser
-  # 远端 QwenPaw Agent 实际启用的搜索工具 (qf_out 轨迹统计: web_search 25 次调用);
-  # 缺失会把真实调用级联误判为 TOOL_HALLUCINATED → tool_fix_exhausted 丢弃。
   - web_search
+  - web_fetch
   - execute_shell_command
   - write_file
   - read_file
-  - search_file
-  - list_files
-  - glob
-  - grep
+  - edit_file
+  - grep_search
+  - glob_search
 
 hallucinated_apis:
   - browser.evaluate

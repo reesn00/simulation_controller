@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from simulate_serve.application.run_batch import BatchRunner
 from simulate_serve.application.run_task import TaskRuntime
@@ -49,6 +49,16 @@ def validation_readiness_gaps(
     return gaps
 
 
+def filter_unready_tasks(
+    tasks: Sequence[CompiledTask],
+    gaps: dict[str, tuple[str, ...]],
+) -> tuple[list[CompiledTask], list[tuple[str, tuple[str, ...]]]]:
+    """Split tasks into runnable and readiness-blocked ``(task_id, missing)`` pairs."""
+    blocked = [(task.task_id, gaps[task.task_id]) for task in tasks if task.task_id in gaps]
+    runnable = [task for task in tasks if task.task_id not in gaps]
+    return runnable, blocked
+
+
 def render_validation_readiness(
     tasks: Sequence[CompiledTask],
     gaps: dict[str, tuple[str, ...]],
@@ -76,6 +86,9 @@ class ApplicationServices:
     registry: ToolRegistry
     executor: AsyncQwenPawExecutor
     batch_runner: BatchRunner
+    # task_id -> capabilities that keep the task from reaching PASS with the
+    # currently started local tools/judge; empty when everything is ready.
+    readiness_gaps: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     async def close(self) -> None:
         await self.executor.close()
@@ -104,31 +117,40 @@ async def build_application(config: AppConfig) -> ApplicationServices:
     except Exception as exc:
         logger.warning("CAMEL interaction actor unavailable; using deterministic actor: %s", exc)
         actor = DeterministicInteractionActor()
-    if config.validation.semantic_judge_enabled:
-        try:
-            judge = CamelSemanticJudge(
-                build_camel_model(config.model, temperature=0),
-                timeout_seconds=config.validation.judge_timeout_seconds,
-            )
-        except Exception as exc:
-            logger.warning("Semantic Judge unavailable; semantic criteria will be INCONCLUSIVE: %s", exc)
-    readiness_gaps = validation_readiness_gaps(
-        manager.compiled_tasks,
-        registry,
-        judge_available=judge is not None,
-    )
-    if readiness_gaps:
-        summary = "; ".join(
-            f"{task_id}={','.join(capabilities)}"
-            for task_id, capabilities in sorted(readiness_gaps.items())
-        )
+    if not config.validation.enabled:
         logger.warning(
-            "Validation readiness: %d/%d tasks cannot currently reach PASS: %s",
-            len(readiness_gaps),
-            len(manager.compiled_tasks),
-            summary,
+            "Validation disabled (record-only mode): runs execute remotely and archive "
+            "trajectories, but always end INCONCLUSIVE/VALIDATION_DISABLED — never SUCCESS."
         )
-    validator = ValidationPipeline(judge=judge, evidence_collector=BrowserEvidenceCollector(registry, repository))
+        readiness_gaps: dict[str, tuple[str, ...]] = {}
+    else:
+        if config.validation.semantic_judge_enabled:
+            try:
+                judge = CamelSemanticJudge(
+                    build_camel_model(config.model, temperature=0),
+                    timeout_seconds=config.validation.judge_timeout_seconds,
+                )
+            except Exception as exc:
+                logger.warning("Semantic Judge unavailable; semantic criteria will be INCONCLUSIVE: %s", exc)
+        readiness_gaps = validation_readiness_gaps(
+            manager.compiled_tasks,
+            registry,
+            judge_available=judge is not None,
+        )
+        if readiness_gaps:
+            summary = "; ".join(
+                f"{task_id}={','.join(capabilities)}"
+                for task_id, capabilities in sorted(readiness_gaps.items())
+            )
+            logger.warning(
+                "Validation readiness: %d/%d tasks cannot currently reach PASS: %s",
+                len(readiness_gaps),
+                len(manager.compiled_tasks),
+                summary,
+            )
+    validator = None
+    if config.validation.enabled:
+        validator = ValidationPipeline(judge=judge, evidence_collector=BrowserEvidenceCollector(registry, repository))
     executor = AsyncQwenPawExecutor(config.agent_endpoint)
     trajectory_archiver = None
     if config.agent_endpoint.trajectory_capture_enabled:
@@ -158,4 +180,5 @@ async def build_application(config: AppConfig) -> ApplicationServices:
         registry=registry,
         executor=executor,
         batch_runner=BatchRunner(runtime),
+        readiness_gaps=readiness_gaps,
     )

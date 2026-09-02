@@ -68,6 +68,28 @@ async def test_runtime_first_turn_success(compiled_task) -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_record_only_mode_runs_executor_without_validation(compiled_task) -> None:
+    # validation.enabled=false：远端照常执行并记录回复，但不验收、不追问，
+    # 以 INCONCLUSIVE/VALIDATION_DISABLED 终态收场。
+    executor = ScriptedExecutor(["远端原始回复"])
+    run = await TaskRuntime(executor, DeterministicInteractionActor(), None).run(compiled_task)
+    assert run.state is RunState.INCONCLUSIVE
+    assert run.failure is not None and run.failure.code == "VALIDATION_DISABLED"
+    assert run.executor_turns == 1
+    assert run.guide_rounds == 0
+    assert len(executor.sessions) == 1
+    assert [turn.role for turn in run.conversation] == ["user", "assistant"]
+    assert run.conversation[-1].content == "远端原始回复"
+    assert [event.event_type for event in run.state_events] == [
+        "RUN_PREPARING",
+        "OPENING_REQUESTED",
+        "OPENING_CREATED",
+        "EXECUTOR_RESPONDED",
+        "VALIDATION_DISABLED",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runtime_records_explicit_rerun_relationship(compiled_task) -> None:
     run = await TaskRuntime(
         ScriptedExecutor(["done"]),

@@ -84,6 +84,10 @@ class ToolsConfig(StrictConfig):
 
 
 class ValidationConfig(StrictConfig):
+    # enabled=false 进入 record-only 模式：远端照常执行、轨迹照常归档，
+    # 但本地不做任何验收，Run 以 INCONCLUSIVE/VALIDATION_DISABLED 终态收场，
+    # 永远不会标记 SUCCESS（不污染蒸馏数据集）。
+    enabled: bool = True
     semantic_judge_enabled: bool = True
     judge_timeout_seconds: float = Field(default=60.0, gt=0)
 
@@ -101,6 +105,10 @@ class AppConfig(StrictConfig):
     interaction: InteractionConfig = Field(default_factory=InteractionConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     max_guide_rounds: int = Field(default=3, ge=0)
+    # Drop tasks whose required validation capabilities are unavailable before
+    # submitting them to the executor; otherwise they run a full remote round
+    # and end in a guaranteed INCONCLUSIVE terminal state.
+    skip_unready_tasks: bool = False
     output_dir: str = "output"
     tasks_file: str = "tasks.yaml"
     scenarios_file: str = "scenarios.yaml"

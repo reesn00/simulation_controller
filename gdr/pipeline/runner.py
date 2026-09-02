@@ -322,6 +322,20 @@ def process_one(
             context_understanding=context_understanding,
         )
 
+        # === 3.2 白名单漂移报告 (只告警+记录, 不参与判定) ===
+        # 名单来源自动化后仅剩的过期风险: QwenPaw 新增动态工具而 extra_tools
+        # 没跟上。让漂移自己浮出, 而不是以 "sanity check failed" 的迷惑形式出现。
+        unknown_tools = _collect_unknown_tool_names(session, tool_names)
+        if unknown_tools:
+            session.metadata = session.metadata or {}
+            session.metadata["unknown_tool_names"] = sorted(unknown_tools)
+            log.warning(
+                "session %s uses tool(s) outside the whitelist: %s — real QwenPaw "
+                "dynamic tools should be added to tools.yaml extra_tools (auto "
+                "source: check qwenpaw_agent_json / tool_source)",
+                session.session_id, ", ".join(sorted(unknown_tools)),
+            )
+
         unhealthy_msg_indices = {h.msg_idx for h in health_scores if not h.is_healthy}
 
         policy_decisions: list[dict] = []
@@ -454,6 +468,29 @@ def process_one(
         return None
 
 
+def _collect_unknown_tool_names(session: Session, tool_names: list[str]) -> set[str]:
+    """会话中出现但不在白名单里的工具名 (白名单漂移报告, 不参与判定)。
+
+    空白名单 (降级态, 名称校验本来就跳过) 返回空集, 不产生噪声。
+    """
+    if not tool_names:
+        return set()
+    unknown: set[str] = set()
+    for msg in session.messages:
+        if msg.role != "assistant":
+            continue
+        for block in msg.blocks:
+            if isinstance(block, dict):
+                block_type = block.get("type", "")
+                name = block.get("name", "")
+            else:
+                block_type = getattr(block, "type", "")
+                name = getattr(block, "name", "")
+            if block_type == "toolcall" and name and name not in tool_names:
+                unknown.add(name)
+    return unknown
+
+
 def _l1_sanity_check(session: Session, tool_names: list[str], thought_max_len_l1: int) -> bool:
     """无 defect tag 时执行的轻量 L1 抽检，防止 router 漏检。
 
@@ -582,7 +619,9 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
         log.error("failed to load %s: %s", input_path, e)
         return {"input": str(input_path), "status": "load_error", "error": str(e)}
 
-    tool_names, hallu_apis = load_tools(cfg.tools_config_path)
+    tool_names, hallu_apis = load_tools(
+        cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source,
+    )
     result = process_one(session, cfg, tool_names, hallu_apis)
 
     if result is not None:

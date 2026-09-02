@@ -61,7 +61,7 @@ def _make_runner(kind: str, path: Path | None, cfg: Settings):
 # === 子命令实现 ===
 
 def cmd_build_pairs(args, cfg: Settings) -> None:
-    tools, hallu = load_tools(cfg.tools_config_path)
+    tools, hallu = load_tools(cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source)
     pairs = build_all_pairs(
         tools, hallu,
         n_tool=args.n_tool, n_thought=args.n_thought, n_obs=args.n_obs,

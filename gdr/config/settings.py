@@ -1,5 +1,7 @@
 from pathlib import Path
 from typing import Optional
+import json
+
 from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource, YamlConfigSettingsSource
 from pydantic import model_validator
 import logging
@@ -14,6 +16,10 @@ YAML_FILE = Path(__file__).resolve().parent / "gdr_config.yaml"
 # (orchestration master 从仓库根运行时, './config/tools.yaml' 在 CWD 下
 #  解析不到 → 空白名单 → 所有 toolcall 被级联误判 TOOL_HALLUCINATED 并丢弃。)
 GDR_ROOT = Path(__file__).resolve().parent.parent
+
+# QwenPaw agent.json 默认位置: builtin_tools 是远端 agent 真实工具集的权威来源。
+# agent_id 不同的部署用 qwenpaw_agent_json 配置 / GDR_QWENPAW_AGENT_JSON 覆盖。
+DEFAULT_QWENPAW_AGENT_JSON = Path("~/.qwenpaw/workspaces/default/agent.json")
 
 
 class Settings(BaseSettings):
@@ -71,6 +77,17 @@ class Settings(BaseSettings):
     max_retries_9b: int = 2
 
     tools_config_path: Path = Path("./config/tools.yaml")
+
+    # === 工具白名单来源 ===
+    # auto: QwenPaw agent.json 的 enabled builtin_tools (权威源) ∪ tools.yaml 补充名单
+    #       (extra_tools, 放 Skill 等运行时动态工具); agent.json 读不到时退回纯
+    #       tools.yaml 名单 (旧行为)。
+    # manual: 仅 tools.yaml 名单。off: 空白名单 (router / tool_fixer / L1 sanity
+    #         全部跳过名称校验)。
+    # 名单会漂移的兜底: pipeline/runner.process_one 会把会话中出现但不在白名单里的
+    # 工具名写入 session.metadata["unknown_tool_names"] 并告警, 漂移自动浮出。
+    tool_source: str = "auto"
+    qwenpaw_agent_json: Path = DEFAULT_QWENPAW_AGENT_JSON
 
     input_path: Path = Path("./data/input.json")
     output_path: Path = Path("./refine_data/output.json")
@@ -233,19 +250,94 @@ class Settings(BaseSettings):
         )
 
 
-def load_tools(tools_config_path: Path) -> tuple[list[str], set[str]]:
+def load_agent_tools(agent_json_path: Path) -> list[str] | None:
+    """从 QwenPaw agent.json 解析 enabled 的 builtin 工具名; 读不到/为空返回 None。
+
+    agent.json 由 QwenPaw 维护, 是远端 agent 真实工具集的权威来源 (随工具集变化
+    自动更新, 不需要手工同步); 技能运行时注入的动态工具 (如 Skill) 不在其中,
+    由 tools.yaml extra_tools 补充。
+    """
+    try:
+        with open(Path(agent_json_path).expanduser(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        builtin = (data.get("tools") or {}).get("builtin_tools") or {}
+        names = sorted(
+            name for name, spec in builtin.items()
+            if isinstance(spec, dict) and spec.get("enabled", True)
+        )
+        if not names:
+            log.warning("agent.json %s 中没有 enabled 的 builtin_tools", agent_json_path)
+            return None
+        return names
+    except Exception as e:
+        log.warning("failed to load agent tool list from %s (%s)", agent_json_path, e)
+        return None
+
+
+def load_tools(
+    tools_config_path: Path,
+    agent_json_path: Path | None = None,
+    tool_source: str = "auto",
+) -> tuple[list[str], set[str]]:
+    """解析工具白名单 + 幻觉 API 黑名单。
+
+    白名单三级合并 (tool_source=auto, 默认):
+      agent.json enabled builtin_tools (权威源) ∪ tools.yaml extra_tools (动态工具补充);
+      agent.json 读不到 → 退回纯 tools.yaml 名单 (旧行为); 两者皆空 → 空白名单,
+      router / tool_fixer / L1 sanity 全部跳过名称校验, 避免级联误杀真实数据。
+
+    hallucinated_apis 是已知坏字符串黑名单, 始终手工维护, 不参与自动来源。
+    """
+    manual_tools: list[str] = []
+    hallucinated_apis: set[str] = set()
     try:
         with open(tools_config_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        tools = data.get("tools", []) if data else []
-        hallucinated_apis = set(data.get("hallucinated_apis", []) if data else [])
-        return tools, hallucinated_apis
+            data = yaml.safe_load(f) or {}
+        # extra_tools 为补充名单 (旧键 tools 兼容)
+        manual_tools = list(data.get("extra_tools") or data.get("tools") or [])
+        hallucinated_apis = set(data.get("hallucinated_apis") or [])
     except Exception as e:
         log.error(
-            "failed to load tools config from %s (%s): falling back to EMPTY tool "
-            "whitelist — tool-name hallucination checks are skipped downstream "
-            "(router / tool_fixer / L1 sanity) to avoid mass false discards; "
-            "check GDR_TOOLS_CONFIG_PATH or gdr_config.yaml",
+            "failed to load tools config from %s (%s): manual whitelist unavailable, "
+            "relying on auto source only; check GDR_TOOLS_CONFIG_PATH or gdr_config.yaml",
             tools_config_path, e,
         )
-        return [], set()
+
+    if tool_source == "off":
+        log.info("tool_source=off: 工具白名单置空, router/tool_fixer/L1 跳过名称校验")
+        return [], hallucinated_apis
+
+    if tool_source == "manual":
+        if not manual_tools:
+            log.error(
+                "tool_source=manual but %s has no whitelist: tool-name hallucination "
+                "checks are skipped downstream (router / tool_fixer / L1 sanity)",
+                tools_config_path,
+            )
+        return manual_tools, hallucinated_apis
+
+    # auto: agent.json 权威源 ∪ 手工补充名单
+    agent_path = Path(agent_json_path) if agent_json_path else DEFAULT_QWENPAW_AGENT_JSON
+    auto_tools = load_agent_tools(agent_path)
+    if auto_tools is None:
+        log.warning(
+            "agent tool list unavailable (%s): falling back to manual tools.yaml "
+            "whitelist only — fix qwenpaw_agent_json or keep extra_tools in sync",
+            agent_path,
+        )
+        if not manual_tools:
+            log.error(
+                "tool whitelist resolved EMPTY (agent.json unreadable and %s empty): "
+                "tool-name hallucination checks are skipped downstream (router / "
+                "tool_fixer / L1 sanity) to avoid mass false discards",
+                tools_config_path,
+            )
+        return manual_tools, hallucinated_apis
+
+    merged = sorted(set(auto_tools) | set(manual_tools))
+    log.info(
+        "tool whitelist: %d enabled builtin tool(s) from %s ∪ %d extra_tool(s) "
+        "from %s → %d tools",
+        len(auto_tools), agent_path, len(manual_tools), tools_config_path, len(merged),
+    )
+    return merged, hallucinated_apis

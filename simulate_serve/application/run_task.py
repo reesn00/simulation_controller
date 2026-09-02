@@ -29,7 +29,7 @@ class TaskRuntime:
         self,
         executor: ExecutorGateway,
         actor: InteractionActor,
-        validator: ValidationPort,
+        validator: ValidationPort | None,
         repository: RunRepositoryPort | None = None,
         *,
         guard_policy: RuntimeGuardPolicy | None = None,
@@ -65,6 +65,17 @@ class TaskRuntime:
 
             while True:
                 self._move(run, RunState.VALIDATING, "EXECUTOR_RESPONDED")
+                if self.validator is None:
+                    # Record-only 模式（validation.enabled=false）：远端已执行、
+                    # 轨迹已在 _record_response 归档；不做验收、不追问，
+                    # 以 INCONCLUSIVE 终态收场（绝不标 SUCCESS）。
+                    run.failure = RunFailure(
+                        code="VALIDATION_DISABLED",
+                        message="本地验证已关闭（record-only 模式）",
+                        stage="validation",
+                    )
+                    self._move(run, RunState.INCONCLUSIVE, "VALIDATION_DISABLED")
+                    return run
                 report = await self.validator.validate(task, run, response.text)
                 run.validation_rounds.append(report)
                 self._persist(run)

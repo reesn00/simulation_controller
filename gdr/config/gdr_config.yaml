@@ -28,8 +28,8 @@
 #   GDR_LOG_DIR                  -> log_dir
 
 # === HTTP OpenAI-compatible LLM endpoint (env: GDR_LLM_BASE_URL) ===
-llm_base_url: http://100.64.0.129/v1
-llm_api_key: !!    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
+llm_base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+llm_api_key: !!     # 敏感! 本文件已被 gitignore, 勿复制到其他文件
 
 # Model names registered at the endpoint
 main_model: MiniMax-M2.7         # env: GDR_MAIN_MODEL
@@ -70,6 +70,14 @@ max_retries_9b: 2               # 原 .env GDR_MAX_RETRIES=2
 
 # === IO 路径 ===
 tools_config_path: ./config/tools.yaml
+
+# === 工具白名单来源 ===
+# auto: QwenPaw agent.json 的 enabled builtin_tools (权威源, 随工具集自动更新)
+#       ∪ tools.yaml extra_tools (Skill 等运行时动态工具);
+#       agent.json 读不到时退回纯 tools.yaml 名单。
+# manual: 仅 tools.yaml 名单。off: 空白名单 (router/tool_fixer/L1 跳过名称校验)。
+tool_source: auto
+qwenpaw_agent_json: ~/.qwenpaw/workspaces/default/agent.json
 input_path: origindata/0c175024ed9c4bde8e77f7b9dd125f08.json   # env: GDR_INPUT_PATH
 output_path: refine_data/output.json                            # env: GDR_OUTPUT_PATH
 log_dir: ./logs                                                 # env: GDR_LOG_DIR

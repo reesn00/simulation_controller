@@ -1,20 +1,24 @@
-"""回归: tools_config_path 锚定 / 空白名单降级防护 / router 弃权票聚合告警。
+"""回归: tools_config_path 锚定 / 空白名单降级防护 / 白名单来源自动化 /
+漂移报告 / router 弃权票聚合告警。
 
 背景 (2026-09-02 运行日志): master 从仓库根运行, './config/tools.yaml' 按 CWD
 解析失败 → 空白名单 → 一切工具名被级联误判 TOOL_HALLUCINATED → 真实 web_search
-调用的 block 以 tool_fix_exhausted 误杀。
+调用的 block 以 tool_fix_exhausted 误杀。后续又撞上手工白名单过期: QwenPaw
+运行时动态工具 Skill (31 次真实调用) 不在手工名单里被误判 → 白名单来源改为
+agent.json 自动解析 ∪ tools.yaml extra_tools 补充, 并加会话级漂移报告。
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from config import Settings
+from config import Settings, load_tools
 from domain import DefectTag, Message, Session, ToolcallBlock
 from refiners.tool_fixer import refine
 from routing.router import Router
-from pipeline.runner import _l1_sanity_check
+from pipeline.runner import _collect_unknown_tool_names, _l1_sanity_check, process_one
 
 
 def _web_search_block() -> ToolcallBlock:
@@ -77,14 +81,125 @@ def test_l1_sanity_check_empty_whitelist_skips_name_check():
     assert _l1_sanity_check(session, ["browser"], 2000) is False
 
 
-def test_tools_yaml_whitelists_remote_web_search():
-    """tools.yaml 必须包含远端 QwenPaw 实际使用的 web_search, 防级联误杀回归。"""
+def test_tools_yaml_extra_tools_cover_dynamic_skill_and_manual_floor():
+    """extra_tools 必须覆盖 agent.json 之外的运行时动态工具 Skill
+    (qf_out 统计: 31 次真实调用), 以及 auto 源失效时的 web_search 手工底座。"""
     import yaml
     from config.settings import YAML_FILE
 
     tools_path = Path(YAML_FILE).parent / "tools.yaml"
     data = yaml.safe_load(tools_path.read_text(encoding="utf-8"))
-    assert "web_search" in data["tools"]
+    assert "Skill" in data["extra_tools"]
+    assert "web_search" in data["extra_tools"]
+    # 幻觉 API 黑名单始终手工维护, 不得随来源重构丢失
+    assert "browser.evaluate" in data["hallucinated_apis"]
+
+
+# ---------------------------------------------------------------------------
+# 白名单来源自动化: agent.json 权威源 ∪ extra_tools 补充
+# ---------------------------------------------------------------------------
+
+
+def _write_agent_json(path: Path, enabled=("browser", "web_search"), disabled=("read_file",)) -> Path:
+    data = {"tools": {"builtin_tools": {
+        **{name: {"name": name, "enabled": True} for name in enabled},
+        **{name: {"name": name, "enabled": False} for name in disabled},
+    }}}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_load_tools_merges_agent_json_with_extra_tools(tmp_path):
+    agent = _write_agent_json(tmp_path / "agent.json")
+    yaml_path = tmp_path / "tools.yaml"
+    yaml_path.write_text(
+        "extra_tools:\n  - Skill\nhallucinated_apis:\n  - browser.evaluate\n",
+        encoding="utf-8",
+    )
+    tools, hallu = load_tools(yaml_path, agent, tool_source="auto")
+    assert "browser" in tools and "web_search" in tools
+    assert "read_file" not in tools, "disabled 的 builtin 工具不得进白名单"
+    assert "Skill" in tools, "extra_tools 必须补充 agent.json 之外的动态工具"
+    assert hallu == {"browser.evaluate"}
+
+
+def test_load_tools_auto_falls_back_to_manual_when_agent_json_missing(tmp_path):
+    yaml_path = tmp_path / "tools.yaml"
+    yaml_path.write_text("extra_tools:\n  - Skill\n  - web_search\n", encoding="utf-8")
+    tools, _ = load_tools(yaml_path, tmp_path / "missing.json", tool_source="auto")
+    assert tools == ["Skill", "web_search"]
+
+
+def test_load_tools_manual_source_ignores_agent_json(tmp_path):
+    agent = _write_agent_json(tmp_path / "agent.json")
+    yaml_path = tmp_path / "tools.yaml"
+    yaml_path.write_text("extra_tools:\n  - browser\n", encoding="utf-8")
+    tools, _ = load_tools(yaml_path, agent, tool_source="manual")
+    assert tools == ["browser"]
+
+
+def test_load_tools_off_disables_name_checks_but_keeps_hallu_apis(tmp_path):
+    yaml_path = tmp_path / "tools.yaml"
+    yaml_path.write_text(
+        "extra_tools:\n  - browser\nhallucinated_apis:\n  - browser.evaluate\n",
+        encoding="utf-8",
+    )
+    tools, hallu = load_tools(yaml_path, tool_source="off")
+    assert tools == []
+    assert hallu == {"browser.evaluate"}
+
+
+def test_load_tools_degrades_to_empty_when_all_sources_missing(tmp_path):
+    tools, _ = load_tools(
+        tmp_path / "missing.yaml", tmp_path / "missing.json", tool_source="auto",
+    )
+    assert tools == [], "全源失效必须降级为空白名单 (跳过名称校验), 不得误杀真实数据"
+
+
+def test_settings_default_tool_source_is_auto():
+    s = Settings()
+    assert s.tool_source == "auto"
+    assert str(s.qwenpaw_agent_json).endswith("agent.json")
+
+
+# ---------------------------------------------------------------------------
+# 白名单漂移报告: 会话中出现但不在白名单里的工具名只告警+记录, 不参与判定
+# ---------------------------------------------------------------------------
+
+
+def test_collect_unknown_tool_names():
+    session = Session(session_id="s", messages=[
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "toolcall", "id": "tc1", "name": "Skill", "input": "{}", "state": "finished"},
+            {"type": "toolcall", "id": "tc2", "name": "browser", "input": "{}", "state": "finished"},
+        ]),
+        Message(role="user", id="u1", blocks=[]),
+    ])
+    assert _collect_unknown_tool_names(session, ["browser"]) == {"Skill"}
+    assert _collect_unknown_tool_names(session, ["browser", "Skill"]) == set()
+    assert _collect_unknown_tool_names(session, []) == set(), "空白名单降级态不产生漂移噪声"
+
+
+def test_process_one_reports_unknown_tool_names_in_metadata(cfg):
+    """漂移信息必须写进输出 metadata 并以 warning 浮出, 而非静默误判。"""
+    session = Session(session_id="s-drift", messages=[
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "use the dynamic tool now"},
+            {"type": "toolcall", "id": "tc1", "name": "Skill", "input": '{"name": "docx"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "Skill", "output_text": "ok", "state": "success"},
+            {"type": "text", "id": "tx1", "text": "task finished"},
+        ]),
+    ])
+    with patch("pipeline.runner.fold_failed_toolresults", return_value=0), \
+         patch("pipeline.runner.fold_repeated_thinking", return_value=0), \
+         patch("pipeline.runner.build_context_for_session", return_value=MagicMock()), \
+         patch("pipeline.runner.Router") as mock_router_cls:
+        mock_router = MagicMock()
+        mock_router.tag.return_value = ({}, [])
+        mock_router_cls.return_value = mock_router
+        out = process_one(session, cfg, ["browser"], set())
+    assert out is not None
+    assert out.metadata.get("unknown_tool_names") == ["Skill"]
 
 
 # ---------------------------------------------------------------------------

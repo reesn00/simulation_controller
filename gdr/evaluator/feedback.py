@@ -76,7 +76,7 @@ def feedback_loop_iteration(
         log.info("feedback loop: all modules above threshold, no augmentation")
         return {"action": "none", "module": "all_ok", "iteration": iteration, "augmented_pairs": 0}, report
 
-    tool_names, hallu_apis = load_tools(cfg.tools_config_path)
+    tool_names, hallu_apis = load_tools(cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source)
     n_extra = max(100, int(cfg.eval_set_size * 0.5))
     new_pairs = augment_pairs_for_module(module, tool_names, hallu_apis, n_extra, mode="repaired")
 

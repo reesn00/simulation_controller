@@ -2,7 +2,7 @@ model:
   model_type: OPENAI        # OPENAI | ANTHROPIC
   model_name: MiniMax-M2.7
   api_key: "！！！"
-  base_url: "http://100.64.0.129/v1"
+  base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
   temperature: 0.7
 
 agent_endpoint:
@@ -12,17 +12,19 @@ agent_endpoint:
   auth_token: ""                       # Bearer token，未启用鉴权时留空
   user_id: "useramulation"
   timeout: 30.0                        # 单次 HTTP 请求超时（秒）
-  task_timeout: 900.0                 # 服务端任务看门狗超时（秒，15 分钟）覆盖搜索/抓取类长任务
+  task_timeout: 1800.0                # 服务端任务看门狗超时（秒，30 分钟）；须覆盖 QwenPaw 重启后冷 prefill 91k 前缀的耗时（约 15-20 分钟）
   poll_interval: 3.0                   # 轮询间隔（秒）
-  max_poll_time: 960.0                # 最长等待任务完成（秒，task_timeout + 60s 缓冲）
+  max_poll_time: 1860.0               # 最长等待任务完成（秒，task_timeout + 60s 缓冲）
   max_retries: 2                       # 提交任务重试次数
 
 max_guide_rounds: 3
+skip_unready_tasks: true   # 提交前剔除本地无法验收的任务（required_capabilities 缺失或 Judge 不可用），避免白跑 executor 后注定 INCONCLUSIVE
 output_dir: output
 tasks_file: tasks.yaml
 scenarios_file: scenarios.yaml
 
 validation:
+  enabled: false              # false = record-only：远端照常执行并归档轨迹，但不做本地验收；Run 以 INCONCLUSIVE 终态收场，绝不标 SUCCESS
   semantic_judge_enabled: true
   judge_timeout_seconds: 60
 

@@ -291,7 +291,7 @@ def append_pairs(path: Path, new_pairs: list[dict]) -> None:
 if __name__ == "__main__":
     from config import load_tools, Settings
     cfg = Settings()
-    tools, hallu = load_tools(cfg.tools_config_path)
+    tools, hallu = load_tools(cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source)
 
     # 精修探针训练对 (broken -> correct)
     pairs_repaired = build_all_pairs(tools, hallu, n_tool=100, n_thought=100, n_obs=100, mode="repaired")

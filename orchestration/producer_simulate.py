@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from simulate_serve.bootstrap import build_application
+from simulate_serve.bootstrap import build_application, filter_unready_tasks
 from simulate_serve.config import AppConfig, load_config
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.task import CompiledTask
@@ -38,6 +38,10 @@ from simulate_serve.infrastructure.trajectory_archiver import (
 from orchestration.queue import SQLiteQueue
 
 _log = logging.getLogger(__name__)
+
+
+class NoRunnableTasksError(ValueError):
+    """``skip_unready_tasks`` 过滤后没有任何可跑任务（可预期的用户输入错误）."""
 
 
 def _utc_now_iso() -> str:
@@ -68,6 +72,19 @@ async def _async_run_batch(
     services = await build_application(cfg)
     try:
         tasks = _select_tasks(services.task_manager.compiled_tasks, task_ids)
+        if cfg.skip_unready_tasks:
+            tasks, blocked = filter_unready_tasks(tasks, services.readiness_gaps)
+            if blocked:
+                _log.warning(
+                    "producer_simulate: skipped %d unvalidatable task(s): %s",
+                    len(blocked),
+                    "; ".join(f"{tid}={','.join(caps)}" for tid, caps in blocked),
+                )
+            if not tasks:
+                raise NoRunnableTasksError(
+                    "all requested task(s) were skipped: none can reach PASS "
+                    "with the current local validation readiness"
+                )
         batch_id = queue.insert_batch([t.task_id for t in tasks])
         queue.update_batch(batch_id, simulate_started_at=_utc_now_iso())
         _log.info(

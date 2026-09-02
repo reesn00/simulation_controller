@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from simulate_serve.bootstrap import render_validation_readiness, validation_readiness_gaps
+from simulate_serve.bootstrap import (
+    filter_unready_tasks,
+    render_validation_readiness,
+    validation_readiness_gaps,
+)
 from simulate_serve.domain.task import AcceptanceCriterion
 
 
@@ -67,3 +71,21 @@ def test_validation_readiness_render_groups_tasks_by_missing_capability(compiled
     assert "ready=0 blocked=1" in rendered
     assert f"browser.snapshot: 1 task(s) [{compiled_task.task_id}]" in rendered
     assert f"semantic_judge: 1 task(s) [{compiled_task.task_id}]" in rendered
+
+
+def test_filter_unready_tasks_splits_runnable_and_blocked(compiled_task) -> None:
+    ready = compiled_task
+    blocked = compiled_task.model_copy(update={"task_id": "T999"})
+    gaps = {"T999": ("browser.navigate", "browser.snapshot")}
+
+    runnable, skipped = filter_unready_tasks((ready, blocked), gaps)
+
+    assert [t.task_id for t in runnable] == [ready.task_id]
+    assert skipped == [("T999", ("browser.navigate", "browser.snapshot"))]
+
+
+def test_filter_unready_tasks_passes_all_when_gaps_empty(compiled_task) -> None:
+    runnable, skipped = filter_unready_tasks((compiled_task,), {})
+
+    assert runnable == [compiled_task]
+    assert skipped == []

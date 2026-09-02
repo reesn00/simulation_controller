@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Sequence
 
 from orchestration.config_loader import OrchestrationConfig, load_config
+from orchestration.producer_simulate import NoRunnableTasksError
 from orchestration.daemon import (
     is_running,
     read_pid_file,
@@ -326,7 +327,13 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except NoRunnableTasksError as exc:
+        # 可预期的输入错误（skip_unready_tasks 全过滤）：干净报错，不打 traceback.
+        _log.error("start aborted: %s", exc)
+        print(f"[orchestration] error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -8,7 +8,12 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .bootstrap import build_application, render_validation_readiness, validation_readiness_gaps
+from .bootstrap import (
+    build_application,
+    filter_unready_tasks,
+    render_validation_readiness,
+    validation_readiness_gaps,
+)
 from .config import AppConfig, load_config
 from .configuration.catalog_loader import CatalogValidationError
 from .infrastructure.json_run_repository import JsonRunRepository, RepositoryError
@@ -116,6 +121,15 @@ async def _run(config: AppConfig, args: argparse.Namespace) -> int:
                 rerun_of = max(previous, key=lambda item: item.started_at).run_id
         elif not args.include_offline:
             tasks = [item for item in tasks if not item.offline_only]
+        if config.skip_unready_tasks and not args.rerun_task:
+            # Explicit rerun is deliberate user intent; never silently drop it.
+            tasks, blocked = filter_unready_tasks(tasks, services.readiness_gaps)
+            if blocked:
+                logger.warning(
+                    "Skipped %d task(s) that cannot reach PASS with local validation readiness: %s",
+                    len(blocked),
+                    "; ".join(f"{tid}={','.join(caps)}" for tid, caps in blocked),
+                )
         runs = await services.batch_runner.run(tasks, limit=args.limit, rerun_of=rerun_of)
         stats = services.repository.export(output_format=args.output_format)
         logger.info("Batch completed: %s", stats)

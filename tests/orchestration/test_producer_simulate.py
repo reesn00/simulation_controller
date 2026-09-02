@@ -11,7 +11,7 @@ from typing import Sequence
 
 import pytest
 
-from orchestration.producer_simulate import run_batch
+from orchestration.producer_simulate import NoRunnableTasksError, run_batch
 from orchestration.queue import SQLiteQueue
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.state_machine import RunState
@@ -66,13 +66,19 @@ def _make_run(task_id: str, state: RunState = RunState.SUCCESS) -> TaskRun:
 
 
 class _FakeServices:
-    def __init__(self, tasks: Sequence[CompiledTask], runs: Sequence[TaskRun]):
+    def __init__(
+        self,
+        tasks: Sequence[CompiledTask],
+        runs: Sequence[TaskRun],
+        readiness_gaps: dict[str, tuple[str, ...]] | None = None,
+    ):
         self.task_manager = type("TM", (), {"compiled_tasks": list(tasks)})()
         self.batch_runner = type(
             "BR", (),
             {"_runs": list(runs), "_tasks": list(tasks),
              "run": _fake_run_async},
         )()
+        self.readiness_gaps = readiness_gaps or {}
         self._closed = False
 
     async def close(self) -> None:
@@ -224,3 +230,74 @@ def test_run_batch_each_call_gets_new_batch_id(env, monkeypatch) -> None:
     )
     assert bid1 != bid2
     assert bid2 == bid1 + 1
+
+
+def test_run_batch_skips_unready_tasks_when_configured(env, monkeypatch) -> None:
+    """skip_unready_tasks=true 时，readiness 受阻的 task 不进 batch 也不跑."""
+    queue, config_path, _ = env
+    config_path.write_text("skip_unready_tasks: true\n", encoding="utf-8")
+    t1 = _make_task("T1")
+    t2 = _make_task("T2")
+    fake = _FakeServices(
+        [t1, t2],
+        [_make_run("T1")],
+        readiness_gaps={"T2": ("browser.navigate", "browser.snapshot")},
+    )
+
+    async def fake_build_application(_cfg):
+        return fake
+
+    monkeypatch.setattr(
+        "orchestration.producer_simulate.build_application", fake_build_application,
+    )
+
+    batch_id, runs = run_batch(
+        config_path=config_path, task_ids=["T1", "T2"], limit=2, queue=queue,
+    )
+    assert [r.task_id for r in runs] == ["T1"]
+    with queue._conn() as conn:
+        row = conn.execute(
+            "SELECT task_ids FROM batches WHERE id = ?", (batch_id,),
+        ).fetchone()
+    assert set(row["task_ids"].split(",")) == {"T1"}
+
+
+def test_run_batch_all_tasks_unready_raises(env, monkeypatch) -> None:
+    queue, config_path, _ = env
+    config_path.write_text("skip_unready_tasks: true\n", encoding="utf-8")
+    t1 = _make_task("T1")
+    fake = _FakeServices(
+        [t1], [_make_run("T1")], readiness_gaps={"T1": ("semantic_judge",)},
+    )
+
+    async def fake_build_application(_cfg):
+        return fake
+
+    monkeypatch.setattr(
+        "orchestration.producer_simulate.build_application", fake_build_application,
+    )
+
+    with pytest.raises(NoRunnableTasksError, match="skip"):
+        run_batch(config_path=config_path, task_ids=["T1"], limit=1, queue=queue)
+    assert fake._closed, "services.close() 在过滤后全空的异常分支仍要执行"
+
+
+def test_run_batch_runs_unready_tasks_when_not_configured(env, monkeypatch) -> None:
+    """默认（skip_unready_tasks=false）保持原行为：即使无法验收也照常提交."""
+    queue, config_path, _ = env
+    t1 = _make_task("T1")
+    fake = _FakeServices(
+        [t1], [_make_run("T1")], readiness_gaps={"T1": ("browser.snapshot",)},
+    )
+
+    async def fake_build_application(_cfg):
+        return fake
+
+    monkeypatch.setattr(
+        "orchestration.producer_simulate.build_application", fake_build_application,
+    )
+
+    _, runs = run_batch(
+        config_path=config_path, task_ids=["T1"], limit=1, queue=queue,
+    )
+    assert [r.task_id for r in runs] == ["T1"]
