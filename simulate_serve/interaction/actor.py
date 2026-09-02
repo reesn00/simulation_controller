@@ -137,18 +137,31 @@ class CamelInteractionActor:
                 raise ValueError("CAMEL actor returned empty visible content")
             self._check_gates(context, content)
             budget = directive.verbosity_budget
+            # Persona budgets are calibrated for ASCII text; CJK wording runs
+            # longer per sentence, so a strict char gate would reject good
+            # paraphrases only to replace them with an equally long variant-pool
+            # fallback (the mandatory revision request alone eats most of a
+            # "concise" budget). Anchor the acceptance ceiling to that fallback:
+            # a paraphrase no more verbose than the wording it would otherwise
+            # be replaced by is accepted; only a longer one gets a compression
+            # retry and then the fallback.
             if len(content) > budget:
-                # One compression retry keeps a good paraphrase that is merely
-                # verbose; a second failure falls back to the variant pool.
-                content = await self._complete(
-                    agent,
-                    f"你刚才说的话太长了，请压缩到{budget}字以内，保留全部要点，直接输出压缩后的话。",
-                )
-                if not content:
-                    raise ValueError("CAMEL actor compression returned empty content")
-                self._check_gates(context, content)
-                if len(content) > budget:
-                    raise _SurfaceRejected(f"content still exceeds verbosity budget {budget}")
+                fallback_len = variant_pool_utterance(context, directive).content_chars
+                ceiling = max(budget, fallback_len)
+                if len(content) > ceiling:
+                    # One compression retry keeps a good paraphrase that is merely
+                    # verbose; a second failure falls back to the variant pool.
+                    content = await self._complete(
+                        agent,
+                        f"你刚才说的话太长了，请压缩到{budget}字以内，保留全部要点，直接输出压缩后的话。",
+                    )
+                    if not content:
+                        raise ValueError("CAMEL actor compression returned empty content")
+                    self._check_gates(context, content)
+                    if len(content) > ceiling:
+                        raise _SurfaceRejected(
+                            f"content still exceeds verbosity ceiling {ceiling} (budget {budget})"
+                        )
             return content
         finally:
             close = getattr(agent, "close", None)

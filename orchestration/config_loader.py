@@ -43,6 +43,11 @@ class OrchestrationSettings:
     reap_stale_interval_seconds: int = 60
     batch_drain_poll_seconds: float = 5.0
     batch_drain_timeout_seconds: float | None = None
+    # 空闲退避上限 (#7): 连续空轮时轮询间隔指数增长的封顶秒数;
+    # 0 = 关闭退避 (恒定 poll)。默认关闭以兼容短超时测试/低延迟场景,
+    # 内置 config.yaml 里给生产值。
+    worker_idle_backoff_max_seconds: float = 0.0
+    watcher_idle_backoff_max_seconds: float = 0.0
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> "OrchestrationSettings":

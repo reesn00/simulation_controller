@@ -110,8 +110,13 @@ def _cmd_start(args: argparse.Namespace) -> int:
         return 0
 
     if args.detach:
-        detach_argv = [sys.executable, "-m", "orchestration", "start",
-                       "--config", str(args.config), "--foreground"]
+        detach_argv = [sys.executable, "-m", "orchestration"]
+        # 全局参数必须排在子命令之前：--config 定义在顶层 parser 上，
+        # 若拼在 "start" 之后子进程 argparse 会报 unrecognized arguments，
+        # detach 的 master 永远起不来（静默失败，只有 master.log 可见）。
+        if args.config:
+            detach_argv += ["--config", str(args.config)]
+        detach_argv += ["start", "--foreground"]
         if args.tasks:
             detach_argv += ["--tasks", args.tasks]
         if args.all_tasks:
@@ -186,6 +191,21 @@ def _cmd_status(args: argparse.Namespace) -> int:
                 b = batches[bid]
                 print(f"    batch={bid} status={b['status']} "
                       f"qf={b['qf_count']} gdr={b['gdr_count']} dead={b['dead_count']}")
+                phases = []
+                for label, key in (
+                    ("sim@", "simulate_started_at"),
+                    ("sim!", "simulate_done_at"),
+                    ("qf@", "qf_started_at"),
+                    ("qf!", "qf_done_at"),
+                    ("gdr@", "gdr_started_at"),
+                    ("gdr!", "gdr_done_at"),
+                ):
+                    ts = b.get(key)
+                    if ts:
+                        # ISO 串截到秒, 保持单行可读; @=阶段开始 !=阶段收尾
+                        phases.append(f"{label}{str(ts)[11:19]}")
+                if phases:
+                    print(f"        phases: {'  '.join(phases)}")
         else:
             print("  batches        = (none)")
         dead_tasks = [t for t in queue.list_tasks_for_batch(-1)] if False else []

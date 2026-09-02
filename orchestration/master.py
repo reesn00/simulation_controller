@@ -138,8 +138,10 @@ class Master:
     def _add_thread(self, name: str, worker) -> None:
         """起一个 worker thread；用独立 stop_event 便于按 worker 关闭."""
         ev = threading.Event()
+        max_backoff = self._cfg.settings.worker_idle_backoff_max_seconds
         t = threading.Thread(
             target=worker.run_forever, args=(ev,),
+            kwargs={"max_poll_seconds": max_backoff} if max_backoff > 0 else {},
             name=f"worker-{worker.__class__.__name__}-{name}", daemon=True,
         )
         t.start()
@@ -274,8 +276,10 @@ class Master:
             dead_log_path=Path(self._cfg.paths.log_dir) / "watcher_dead.log",
         )
         stop_ev = threading.Event()
+        wb = s.watcher_idle_backoff_max_seconds
         t = threading.Thread(
             target=w.run_forever, args=(stop_ev,),
+            kwargs={"max_poll_seconds": wb} if wb > 0 else {},
             name=f"watcher-{batch_id}", daemon=True,
         )
         t.start()

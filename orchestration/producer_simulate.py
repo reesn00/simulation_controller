@@ -31,6 +31,9 @@ from simulate_serve.bootstrap import build_application
 from simulate_serve.config import AppConfig, load_config
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.task import CompiledTask
+from simulate_serve.infrastructure.trajectory_archiver import (
+    sanitize_filename_part,
+)
 
 from orchestration.queue import SQLiteQueue
 
@@ -73,6 +76,12 @@ async def _async_run_batch(
         )
         runs = await services.batch_runner.run(tasks, limit=limit)
         queue.update_batch(batch_id, simulate_done_at=_utc_now_iso())
+        # run_id → task_id 映射 (#9): producer 是唯一同时知道两者的环节。
+        # 键用 sanitize 后的 run_id —— trajectory 文件名与 watcher 登记的
+        # tasks.run_id 都是 sanitize 形态, worker 按 task.run_id 查询。
+        queue.insert_run_task_map(
+            [(sanitize_filename_part(r.run_id), r.task_id, batch_id) for r in runs]
+        )
         _log.info(
             "producer_simulate: batch_id=%d done runs=%d terminal=%d",
             batch_id, len(runs),

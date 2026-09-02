@@ -100,17 +100,37 @@ class TrajectoryWatcher:
     # 阻塞主循环
     # ------------------------------------------------------------------
 
-    def run_forever(self, stop_event: threading.Event) -> None:
+    def run_forever(
+        self,
+        stop_event: threading.Event,
+        *,
+        max_poll_seconds: float = 0.0,
+    ) -> None:
         """阻塞轮询，每轮扫描一次；``stop_event`` 设置后退出.
 
-        扫描之间的间隔为 ``poll_seconds``；若停止信号到达，剩余的等待
-        立即返回。
+        空闲退避 (#7): ``max_poll_seconds > 0`` 时，连续无新登记的轮次让等待
+        从 ``poll_seconds`` 指数翻倍、封顶 ``max_poll_seconds``；一旦有登记
+        立即复位。默认 0 = 关闭退避（与旧行为一致）。退避只延迟"新文件
+        出现→登记"的最坏路径，master 本来就要等批终态，可接受。
         """
+        idle_rounds = 0
         while not stop_event.is_set():
+            registered = 0
             try:
-                self.scan_once()
+                registered = self.scan_once().get("registered", 0)
             except Exception as exc:
                 # 扫描层不应该整体崩溃；记 dead 后继续
                 self._log_dead(Path("(scan_once)"), exc)
+            if registered:
+                idle_rounds = 0
+            else:
+                idle_rounds += 1
+            if max_poll_seconds > 0 and idle_rounds:
+                wait = min(
+                    self._poll_seconds * (2 ** (idle_rounds - 1)),
+                    max_poll_seconds,
+                )
+            else:
+                wait = self._poll_seconds
             # wait 返回 True 表示 set 被调用，False 表示 timeout
-            stop_event.wait(self._poll_seconds)
+            stop_event.wait(wait)

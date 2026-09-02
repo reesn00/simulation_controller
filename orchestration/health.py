@@ -2,7 +2,7 @@
 
 字段：
     * queue_counts: ``SQLiteQueue.count_by_state()``
-    * batches: ``{batch_id: {status, simulate_started_at, simulate_done_at, qf_count, gdr_count, dead_count}}``
+    * batches: ``{batch_id: {status, simulate/qf/gdr 各阶段 started_at/done_at, qf_count, gdr_count, dead_count}}``
     * last_updated: ISO8601 UTC
 """
 
@@ -29,6 +29,7 @@ def collect_batches(queue: SQLiteQueue) -> dict[int, dict[str, object]]:
         rows = conn.execute(
             """
             SELECT id, task_ids, simulate_started_at, simulate_done_at,
+                   qf_started_at, qf_done_at, gdr_started_at, gdr_done_at,
                    qf_count, gdr_count, dead_count, status
             FROM batches
             ORDER BY id
@@ -39,6 +40,11 @@ def collect_batches(queue: SQLiteQueue) -> dict[int, dict[str, object]]:
             "task_ids": (r["task_ids"] or "").split(",") if r["task_ids"] else [],
             "simulate_started_at": r["simulate_started_at"],
             "simulate_done_at": r["simulate_done_at"],
+            # 阶段级时间戳: 首次有 task 被拉入该阶段 / 批内该阶段全部收尾
+            "qf_started_at": r["qf_started_at"],
+            "qf_done_at": r["qf_done_at"],
+            "gdr_started_at": r["gdr_started_at"],
+            "gdr_done_at": r["gdr_done_at"],
             "qf_count": int(r["qf_count"] or 0),
             "gdr_count": int(r["gdr_count"] or 0),
             "dead_count": int(r["dead_count"] or 0),

@@ -83,7 +83,7 @@ class QfWorker(BaseWorker):
             trajectory, self._template, self._env,
         )
         session_id = task.session_id or task.src_path.stem
-        out_path = self._qf_output_dir / f"{session_id}.json"
+        out_path = self._qf_output_dir / self._output_name(task, session_id, suffix="")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(
             json.dumps(out, ensure_ascii=False, indent=2),

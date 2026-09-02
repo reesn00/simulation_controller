@@ -61,7 +61,10 @@ def refine(
             result = parse_json_object(text)
             name = result.get("name", "")
             inp = result.get("input", "")
-            if name not in tool_names:
+            # 空白名单 = 工具配置降级态, 不做名称校验 (与 router 的防护一致);
+            # 否则任何候选名都触发 "not in allowed list" → 重试耗尽 + 32B 升级
+            # 全部白费 → tool_fix_exhausted 误杀真实数据。
+            if tool_names and name not in tool_names:
                 raise ValueError(f"tool name not in allowed list: {name}")
             try:
                 json.loads(inp)
@@ -84,7 +87,7 @@ def refine(
         result = parse_json_object(text)
         name = result.get("name", "")
         inp = result.get("input", "")
-        if name in tool_names:
+        if (not tool_names) or name in tool_names:  # 空白名单降级态: 见上同注释
             try:
                 json.loads(inp)
                 inp_lower = inp.lower()

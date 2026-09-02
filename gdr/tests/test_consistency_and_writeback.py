@@ -169,3 +169,171 @@ def test_prune_only_decisions_reach_reassemble(cfg):
     assert [b.id for b in blocks] == ["tc1", "tc1"], "thought_too_long thinking 应被 PRUNE"
     dec = result.metadata["policy_decisions"]
     assert dec and dec[0]["policy"] == "prune_block"
+
+
+def test_judge_low_score_discards_session(cfg):
+    """终检 judge 分数低于 judge_min_score: 不进主输出 (None); 数据由
+    _process_one_file 转 judge_low.jsonl 审核通道 (见 test_judge_low_session_exported_to_review_channel)。"""
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    session = Session(session_id="low-score", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.return_value = ('{"score": 2}', None)
+        result = process_one(session, cfg, ["browser"], set())
+    assert result is None
+    assert session.metadata.get("judge_discard") == {"score": 2, "min_score": 7}
+
+
+# ---------------------------------------------------------------------------
+# 结构严重不可用硬过滤 (用户主旨: 只有数据本身不可用才丢弃)
+# ---------------------------------------------------------------------------
+
+
+def test_structural_filter_discards_user_only_session(cfg):
+    from domain import Session, Message
+    from pipeline.runner import _hard_filter_session
+
+    session = Session(session_id="user-only", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="user", id="u2", blocks=[]),
+    ])
+    assert _hard_filter_session(session, cfg) is False
+
+
+def test_structural_filter_discards_empty_assistant_shell(cfg):
+    from domain import Session, Message
+    from pipeline.runner import _hard_filter_session
+
+    session = Session(session_id="empty-shell", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[]),
+    ])
+    assert _hard_filter_session(session, cfg) is False
+
+
+def test_structural_filter_discards_lone_failed_assistant(cfg):
+    """单条 assistant、仅含失败工具调用且无任何 thinking/text 内容 → 不可用。"""
+    from domain import Session, Message
+    from pipeline.runner import _hard_filter_session
+
+    session = Session(session_id="lone-fail", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "", "state": "error"},
+        ]),
+    ])
+    assert _hard_filter_session(session, cfg) is False
+
+
+def test_structural_filter_keeps_thin_but_recoverable(cfg):
+    """保守边界: 单条 assistant 但存在成功 toolresult 或 thinking → 必须放行。"""
+    from domain import Session, Message
+    from pipeline.runner import _hard_filter_session
+
+    with_success = Session(session_id="thin-ok", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    with_thinking = Session(session_id="thin-think", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "让我想想"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "", "state": "error"},
+        ]),
+    ])
+    assert _hard_filter_session(with_success, cfg) is True
+    assert _hard_filter_session(with_thinking, cfg) is True
+
+
+def test_structural_unusable_discarded_before_any_llm(cfg):
+    """硬丢弃发生在零 LLM 阶段: 不消耗任何模型调用。"""
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    session = Session(session_id="dead-session", messages=[
+        Message(role="user", id="u1", blocks=[]),
+    ])
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        result = process_one(session, cfg, ["browser"], set())
+    assert result is None
+    assert not mock_llm.get.called, "结构过滤应在任何 LLM 调用之前短路"
+
+
+def test_judge_low_session_exported_to_review_channel(cfg, tmp_path):
+    """judge 低分: 主输出不落盘, 但完整 session 写入 judge_low.jsonl (数据不丢)。"""
+    import json
+    from unittest.mock import patch
+    from domain import Session, Message, save_session
+    from pipeline.runner import _process_one_file
+
+    cfg.judge_low_output_path = tmp_path / "judge_low.jsonl"
+    input_path = tmp_path / "in.json"
+    output_path = tmp_path / "out.json"
+    session = Session(session_id="low-score-file", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    save_session(session, input_path)
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.return_value = ('{"score": 2}', None)
+        status = _process_one_file(input_path, output_path, cfg)
+
+    assert status["status"] == "discard"
+    assert not output_path.exists(), "低分 session 不得进入主输出"
+    record = json.loads(cfg.judge_low_output_path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["session_id"] == "low-score-file"
+    assert record["judge"]["score"] == 2
+    assert record["session"]["session_id"] == "low-score-file", "审核通道须含完整 session"
+
+
+def test_judge_discard_not_resurrected_by_timeout_fallback(cfg, monkeypatch):
+    """judge 判死 (低分) 的 session 即使耗时接近超时, 也不得被 runner 兜底复活。"""
+    import time as _time
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    class _Clock:
+        now = 1000.0
+
+    clock = _Clock()
+    monkeypatch.setattr(_time, "perf_counter", lambda: clock.now)
+
+    session = Session(session_id="late-low-score", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+
+    def _fake_chat(*args, **kwargs):
+        # judge 返回时把时钟拨到预算耗尽: elapsed > 0.8 * session_timeout_s
+        clock.now = 1000.0 + cfg.session_timeout_s
+        return ('{"score": 2}', None)
+
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.side_effect = _fake_chat
+        result = process_one(session, cfg, ["browser"], set())
+
+    assert result is None
+    assert "timeout_partial_save" not in session.metadata, "judge 判死的 session 不得被超时兜底复活"

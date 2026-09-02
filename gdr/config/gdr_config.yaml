@@ -28,8 +28,8 @@
 #   GDR_LOG_DIR                  -> log_dir
 
 # === HTTP OpenAI-compatible LLM endpoint (env: GDR_LLM_BASE_URL) ===
-llm_base_url: https://ark.cn-beijing.volces.com/api/coding/v3
-llm_api_key: 33    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
+llm_base_url: http://100.64.0.129/v1
+llm_api_key: !!    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
 
 # Model names registered at the endpoint
 main_model: MiniMax-M2.7         # env: GDR_MAIN_MODEL
@@ -129,6 +129,11 @@ session_timeout_s: 1200  # 单条 session 处理超时（CU 构建 ~300s + 路�
 
 # === 严格性 ===
 strict_consistency: true
+judge_min_score: 7    # 终检 judge 进主输出的最低分 (0-10), 0 = 关闭
+# judge 低分不丢数据: 完整精修结果写 judge_low.jsonl 审核通道, 供后期人工修改并回;
+# 硬丢弃只发生在结构严重不可用时 (只有 user 消息 / assistant 空壳 / 极少且全失败)。
+judge_low_export_enabled: true
+judge_low_output_path: ./refine_data/judge_low.jsonl
 
 # === 评估器 (utility eval) ===
 evaluator_output_dir: ./evaluator_output

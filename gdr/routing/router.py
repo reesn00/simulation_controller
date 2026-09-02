@@ -114,7 +114,9 @@ class Router:
             tags.append(DefectTag.TOOL_JSON_INVALID)
             return tags
 
-        if block.name not in tool_names:
+        # 空白名单 = 工具配置加载失败的降级态: 不做名称校验 (否则一切工具名
+        # 都会被级联误判为幻觉), 见 config/settings.load_tools 的告警。
+        if tool_names and block.name not in tool_names:
             tags.append(DefectTag.TOOL_HALLUCINATED)
 
         input_lower = block.input.lower()
@@ -328,16 +330,35 @@ class Router:
                 blocks_info,
             ))
 
-        for block_id, tag in votes:
+        abstained = 0
+        for block_id, tag, did_abstain in votes:
+            if did_abstain:
+                abstained += 1
             if tag is not None:
                 result.setdefault(block_id, []).append(tag)
+        # 可观测性 (原问题: 解析失败被逐块 warning 静默淹没): 聚合弃权率,
+        # 全弃权说明评审层整体失效 (模型输出格式漂移 / endpoint 异常),
+        # 此时语义标签只剩确定性规则层, 必须以 ERROR 浮出。
+        if abstained:
+            ratio = abstained / len(blocks_info)
+            msg = (
+                "LLM review layer: %d/%d blocks abstained "
+                "(unparseable / request error), semantic tags incomplete" % (abstained, len(blocks_info))
+            )
+            if ratio >= 0.999:
+                log.error("%s — falling back to deterministic rule layer only", msg)
+            else:
+                log.warning(msg)
         return result
 
     def _vote_block(
         self, info: dict, session, cfg, context_understanding,
         strategies: list[str],
-    ) -> tuple[str, Optional[DefectTag]]:
-        """单个候选块的级联投票。返回 (block_id, 语义标签或 None)。"""
+    ) -> tuple[str, Optional[DefectTag], bool]:
+        """单个候选块的级联投票。返回 (block_id, 语义标签或 None, 是否弃权)。
+
+        弃权 = 首票或确认票因解析失败/请求异常返回 None (区别于真实判"无缺陷")。
+        """
         block_id = info["block_id"]
         block_type = info.get("block_type", "")
         try:
@@ -345,8 +366,10 @@ class Router:
                 info, session, cfg, context_understanding,
                 strategy=strategies[0], force_surrounding=False,
             )
+            if first is None:
+                return block_id, None, True
             if first is not True:
-                return block_id, None
+                return block_id, None, False
             # 确认票: 选一个非 "none" 策略并强制 surrounding 上下文,
             # 保证确认票看到的是局部原文而非同一份 CU 状态摘要
             confirm_strategy = next(
@@ -361,17 +384,17 @@ class Router:
                     "block %s vote not confirmed (v1=defect, v2=%s), skip tag",
                     block_id, second,
                 )
-                return block_id, None
+                return block_id, None, second is None
         except Exception as e:
             log.warning("LLM vote failed for block %s: %s", block_id, e)
-            return block_id, None
+            return block_id, None, True
 
         tag = {
             "thinking": DefectTag.THOUGHT_BROKEN_LOGIC,
             "toolcall": DefectTag.TOOL_WRONG_SELECTION,
             "toolresult": DefectTag.OBS_NOISE,
         }.get(block_type)
-        return block_id, tag
+        return block_id, tag, False
 
     def _single_vote(
         self, info: dict, session, cfg, context_understanding,

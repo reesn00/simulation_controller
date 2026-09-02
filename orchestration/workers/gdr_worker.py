@@ -78,7 +78,7 @@ class GdrWorker(BaseWorker):
                 f"gdr worker {self._worker_id}: qf output missing for task {task.id}: {qf_input}"
             )
         session_id = task.session_id or task.src_path.stem
-        out_path = self._gdr_output_dir / f"{session_id}_refined.json"
+        out_path = self._gdr_output_dir / self._output_name(task, session_id, suffix="_refined")
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 构造/复用 gdr.Settings：workers=1 走单进程，llm_concurrency 控制 LLM 信号量

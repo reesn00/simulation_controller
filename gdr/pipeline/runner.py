@@ -46,12 +46,62 @@ def _has_successful_terminal(session) -> bool:
     return False
 
 
+def _session_structurally_unusable(session) -> bool:
+    """结构严重不可用判定（零 LLM）。True = 没有任何处理与审核价值，硬丢弃。
+
+    保守原则（用户主旨）：只命中三类真正不可用的形态——
+      1. 完全没有 assistant 消息（只有 user）；
+      2. 所有 assistant 消息都是空壳（无任何 block）；
+      3. assistant 消息极少（≤1 条）且没有任何成功信号
+         （无 success toolresult、无非空 thinking/text）。
+    只要存在可恢复内容就放行；judge 低分不在此列（走 judge_low.jsonl 审核通道）。
+    """
+    assistants = [m for m in session.messages if getattr(m, "role", "") == "assistant"]
+    if not assistants:
+        log.warning("hard filter: session %s has no assistant message at all", session.session_id)
+        return True
+    if all(len(m.blocks) == 0 for m in assistants):
+        log.warning(
+            "hard filter: session %s assistant messages are all empty shells", session.session_id
+        )
+        return True
+    if len(assistants) <= 1:
+        has_signal = False
+        for m in assistants:
+            for b in m.blocks:
+                btype = _block_text_field(b, "type")
+                if btype == "toolresult" and _block_text_field(b, "state") == "success":
+                    has_signal = True
+                    break
+                if btype in ("thinking", "text") and _block_text_field(b, btype).strip():
+                    has_signal = True
+                    break
+            if has_signal:
+                break
+        if not has_signal:
+            log.warning(
+                "hard filter: session %s has a lone assistant message without any usable "
+                "content (no success toolresult, no thinking/text)",
+                session.session_id,
+            )
+            return True
+    return False
+
+
 def _hard_filter_session(session, cfg: Settings) -> bool:
     """Session 级零 LLM 硬过滤（方案 §5.1）。返回 True 表示通过。
 
     修复 F（用户主旨）：仅按 block 数上限丢弃，不再因"无 successful terminal"丢弃。
     即便 agent 最终失败跑路，只要数据完整（user≥2、assistant 有成功 toolresult），
     都应进入 refine + reassemble 处理并导出。
+
+    结构严重不可用判定（用户主旨补充）：只有数据本身严重不可用才在这里硬丢弃
+    （原始输入文件仍在 origindata，可事后修复重跑）：
+      * 完全没有 assistant 消息（只有 user）；
+      * 所有 assistant 消息都是空壳（无任何 block）；
+      * assistant 消息极少（≤1）且没有任何可用内容信号
+        （无成功 toolresult、无非空 thinking/text）。
+    judge 低分不属于硬丢弃——那部分走 judge_low.jsonl 审核通道，不丢数据。
     """
     if not getattr(cfg, "session_hard_filter_enabled", True):
         return True
@@ -61,6 +111,8 @@ def _hard_filter_session(session, cfg: Settings) -> bool:
             "hard filter: session %s too many blocks (%d > %d)",
             session.session_id, total_blocks, cfg.session_max_blocks,
         )
+        return False
+    if _session_structurally_unusable(session):
         return False
     if getattr(session, "error", None):
         log.warning("hard filter: session %s has error=%s", session.session_id, session.error)
@@ -374,7 +426,13 @@ def process_one(
         # 用户主旨: 数据完整即处理并导出. reassembler 内部已有 budget 守护 (一致性前
         # /judge 前), 但中间仍可能耗时; reassembler 已返回时不丢弃, 仅在返回 None
         # (reassembler 完全失败) 且接近超时上限时回退到 original session.
-        if result is None and elapsed > cfg.session_timeout_s * 0.8:
+        # 例外: judge 主动判死 (低分 / strict 一致性失败) 的 session 标记了
+        # judge_discard, 属于质量决策而非超时失败, 不允许被兜底复活。
+        if (
+            result is None
+            and not session.metadata.get("judge_discard")
+            and elapsed > cfg.session_timeout_s * 0.8
+        ):
             log.warning(
                 "reassembler returned None for session %s after %.1fs (>80%% of %ds); "
                 "falling back to original session to preserve data",
@@ -420,7 +478,7 @@ def _l1_sanity_check(session: Session, tool_names: list[str], thought_max_len_l1
                 else:
                     name = getattr(block, "name", "")
                     inp = getattr(block, "input", "")
-                if name not in tool_names:
+                if tool_names and name not in tool_names:
                     log.warning("sanity check failed: tool name %r not in whitelist", name)
                     return False
                 try:
@@ -486,6 +544,35 @@ def _append_deferred_queue(session: Session, cfg: Settings) -> None:
         log.warning("failed to append deferred queue: %s", e)
 
 
+def _append_judge_low_queue(session: Session, cfg: Settings) -> None:
+    """judge 低分 session 整体导出到审核通道 jsonl（方案 §5.5 的 session 级扩展）。
+
+    用户主旨: judge 分数噪声大, 低分不等于不可用。此类 session 不进主输出
+    (训练集), 但完整精修结果落 judge_low.jsonl, 保留后期人工修改/并回的可能。
+    """
+    if not getattr(cfg, "judge_low_export_enabled", True):
+        return
+    mark = (session.metadata or {}).get("judge_discard")
+    if not mark:
+        return
+    try:
+        record = {
+            "session_id": session.session_id,
+            "source_file": session.source_file,
+            "judge": mark,
+            "session": session.model_dump(mode="json"),
+        }
+        path = Path(cfg.judge_low_output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        log.warning(
+            "judge-low queue appended: %s (session %s, %s)", path, session.session_id, mark
+        )
+    except Exception as e:
+        log.warning("failed to append judge_low queue: %s", e)
+
+
 def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dict:
     """单文件处理: load → refine → save。返回 per-file 状态 dict (供 worker 收集)。"""
     log.info("loading session from %s", input_path)
@@ -509,6 +596,8 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
         except Exception as e:
             log.error("failed to save %s: %s", output_path, e)
             return {"input": str(input_path), "status": "save_error", "error": str(e)}
+    # result is None 且带 judge 标记 → 不丢数据, 转审核通道
+    _append_judge_low_queue(session, cfg)
     log.error("session discarded (input=%s)", input_path)
     return {"input": str(input_path), "status": "discard"}
 

@@ -34,6 +34,14 @@ STATE_DEAD = "dead"
 STAGE_QF = "qf"
 STAGE_GDR = "gdr"
 
+# batches 表的阶段时间戳列（schema.sql 定义 + _init_schema 幂等迁移白名单）。
+_BATCH_STAGE_COLUMNS = ("qf_started_at", "qf_done_at", "gdr_started_at", "gdr_done_at")
+
+# "该阶段在批内仍有在途 task" 的 state 集合 —— 判断 *_done_at 时批内不得存在。
+# dead 不阻塞阶段收尾（死信不再进入该阶段）。
+_QF_INFLIGHT_STATES = ("pending", "qf_processing")
+_GDR_INFLIGHT_STATES = ("pending", "qf_processing", "pending_gdr", "gdr_processing")
+
 
 # ---------------------------------------------------------------------------
 # 数据类
@@ -126,6 +134,12 @@ class SQLiteQueue:
         ddl = _SCHEMA_PATH.read_text(encoding="utf-8")
         with self._conn() as conn:
             conn.executescript(ddl)
+            # 幂等迁移: 旧 db 的 batches 表没有阶段时间戳列 (CREATE IF NOT
+            # EXISTS 不会给已存在的表补列)。列名来自下方白名单常量，无注入面。
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(batches)")}
+            for col in _BATCH_STAGE_COLUMNS:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE batches ADD COLUMN {col} TEXT")
 
     # ------------------------------------------------------------------
     # 内部：行转 Task
@@ -248,8 +262,13 @@ class SQLiteQueue:
         to_state: str,
         worker_id: str,
         n: int,
+        stage_started_col: str | None = None,
     ) -> list[Task]:
-        """原子地把最多 n 条 ``from_state`` 行改成 ``to_state`` 并返回它们."""
+        """原子地把最多 n 条 ``from_state`` 行改成 ``to_state`` 并返回它们.
+
+        ``stage_started_col``（batches 表列名，内部常量）非空时，同事务内给
+        被拉到 task 所属的批打首次阶段戳（COALESCE 只写第一次，重试不覆盖）。
+        """
         if n <= 0:
             return []
         now = _utc_now_iso()
@@ -277,6 +296,15 @@ class SQLiteQueue:
                     """,
                     (to_state, worker_id, now, now, from_state, int(n)),
                 ).fetchall()
+                if rows and stage_started_col:
+                    if stage_started_col not in _BATCH_STAGE_COLUMNS:  # 防御: 列名白名单
+                        raise ValueError(f"invalid stage column: {stage_started_col!r}")
+                    for bid in {int(r["batch_id"]) for r in rows}:
+                        conn.execute(
+                            f"UPDATE batches SET {stage_started_col} = COALESCE({stage_started_col}, ?)"
+                            " WHERE id = ?",
+                            (now, bid),
+                        )
                 conn.execute("COMMIT")
                 return [self._row_to_task(r) for r in rows]
             except Exception:
@@ -289,6 +317,7 @@ class SQLiteQueue:
             to_state=STATE_QF_PROCESSING,
             worker_id=worker_id,
             n=n,
+            stage_started_col="qf_started_at",
         )
 
     def pull_pending_gdr(self, *, worker_id: str, n: int) -> list[Task]:
@@ -297,6 +326,7 @@ class SQLiteQueue:
             to_state=STATE_GDR_PROCESSING,
             worker_id=worker_id,
             n=n,
+            stage_started_col="gdr_started_at",
         )
 
     # ------------------------------------------------------------------
@@ -304,7 +334,11 @@ class SQLiteQueue:
     # ------------------------------------------------------------------
 
     def mark_qf_done(self, task_id: int, *, qf_output_path: Path) -> None:
-        """qf 处理成功 → state=pending_gdr，等待 gdr 抢占."""
+        """qf 处理成功 → state=pending_gdr，等待 gdr 抢占.
+
+        若该 task 所属批内已无 qf 在途（pending/qf_processing），顺带打
+        ``batches.qf_done_at``（仅首次）。
+        """
         now = _utc_now_iso()
         with self._conn() as conn:
             conn.execute(
@@ -320,9 +354,13 @@ class SQLiteQueue:
                 """,
                 (str(qf_output_path), now, int(task_id)),
             )
+            self._stamp_stage_done(
+                conn, task_id, "qf_done_at", _QF_INFLIGHT_STATES, now,
+                started_col="qf_started_at",
+            )
 
     def mark_gdr_done(self, task_id: int, *, gdr_output_path: Path) -> None:
-        """gdr 处理成功 → state=done."""
+        """gdr 处理成功 → state=done；批内 gdr 全部收尾时打 ``gdr_done_at``."""
         now = _utc_now_iso()
         with self._conn() as conn:
             conn.execute(
@@ -338,6 +376,43 @@ class SQLiteQueue:
                 """,
                 (str(gdr_output_path), now, int(task_id)),
             )
+            self._stamp_stage_done(
+                conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
+                started_col="gdr_started_at",
+            )
+
+    @staticmethod
+    def _stamp_stage_done(
+        conn: sqlite3.Connection,
+        task_id: int,
+        col: str,
+        inflight_states: tuple[str, ...],
+        now: str,
+        *,
+        started_col: str,
+    ) -> None:
+        """task 刚离开某阶段后调用：若其所属批内该阶段已无在途 task 则打首次收尾戳.
+
+        ``col``/``started_col`` 来自模块内常量；``inflight_states`` 不含 dead
+        （死信不阻塞收尾）；``started_col IS NOT NULL`` 守卫避免给从未进入
+        该阶段的批打"凭空收尾"戳（health.json 里不会出现 done 而无 started）。
+        """
+        placeholders = ",".join("?" * len(inflight_states))
+        conn.execute(
+            f"""
+            UPDATE batches
+               SET {col} = ?
+             WHERE id = (SELECT batch_id FROM tasks WHERE id = ?)
+               AND {col} IS NULL
+               AND {started_col} IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM tasks t2
+                    WHERE t2.batch_id = batches.id
+                      AND t2.state IN ({placeholders})
+               )
+            """,
+            (now, int(task_id), *inflight_states),
+        )
 
     def mark_failed(self, task_id: int, *, stage: str, error_msg: str) -> str:
         """失败处理：attempts++；超 max → state=dead，否则退回可重试 state.
@@ -383,6 +458,18 @@ class SQLiteQueue:
                 """,
                 (new_state, new_attempts, error_msg, now, int(task_id)),
             )
+            if new_state == STATE_DEAD:
+                # 最后一条 task 死在某阶段时, 该阶段的收尾戳不能永远缺失
+                # (mark_*_done 不会再被调用)。dead 不属于任何在途集合，
+                # 因此对两个阶段都做条件补戳; 已打过/仍有在途时是 no-op。
+                self._stamp_stage_done(
+                    conn, task_id, "qf_done_at", _QF_INFLIGHT_STATES, now,
+                    started_col="qf_started_at",
+                )
+                self._stamp_stage_done(
+                    conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
+                    started_col="gdr_started_at",
+                )
             return new_state
 
     def mark_dead(self, task_id: int, *, error_msg: str) -> None:
@@ -547,6 +634,39 @@ class SQLiteQueue:
                 (int(batch_id),),
             ).fetchall()
         return [self._row_to_task(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # run_id → task_id 映射（#9: 产物文件名带 task_id 前缀）
+    # ------------------------------------------------------------------
+
+    def insert_run_task_map(self, rows: "list[tuple[str, str, int]]") -> None:
+        """批量登记 (run_id, task_id, batch_id) 映射；同 run_id 重复写入时覆盖.
+
+        由 producer 在 simulate 完成后调用——它是唯一同时知道 run_id 与
+        task_id 的环节；worker 侧只按 run_id 查询。
+        """
+        if not rows:
+            return
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executemany(
+                """
+                INSERT INTO run_tasks (run_id, task_id, batch_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    task_id  = excluded.task_id,
+                    batch_id = excluded.batch_id
+                """,
+                rows,
+            )
+            conn.execute("COMMIT")
+
+    def lookup_task_id(self, run_id: str) -> str | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT task_id FROM run_tasks WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return str(row["task_id"]) if row else None
 
     def get(self, task_id: int) -> Task | None:
         with self._conn() as conn:

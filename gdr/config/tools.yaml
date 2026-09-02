@@ -1,5 +1,8 @@
 tools:
   - browser
+  # 远端 QwenPaw Agent 实际启用的搜索工具 (qf_out 轨迹统计: web_search 25 次调用);
+  # 缺失会把真实调用级联误判为 TOOL_HALLUCINATED → tool_fix_exhausted 丢弃。
+  - web_search
   - execute_shell_command
   - write_file
   - read_file

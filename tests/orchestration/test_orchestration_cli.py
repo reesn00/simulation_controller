@@ -62,32 +62,56 @@ def test_start_dry_run_prints_plan(env, capsys) -> None:
 # start --detach
 # ---------------------------------------------------------------------------
 
+def _wait_child_up(pid_file: Path, timeout: float = 20.0) -> int | None:
+    """detach 的真实语义：main 立即返回，PID 由子进程 start_foreground 异步
+    写入（冷启动解释器 + import 需要时间）。轮询直到出现或超时."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+            except ValueError:
+                return None
+            if pid > 0:
+                return pid
+        time.sleep(0.2)
+    return None
+
+
 def test_start_detached_spawns_child(env) -> None:
     tmp, cfg = env
     rc = main(["--config", str(cfg), "start", "--detach"])
     assert rc == 0
     pid_file = tmp / "orch.pid"
-    assert pid_file.exists()
-    pid = int(pid_file.read_text(encoding="utf-8"))
-    assert pid > 0
-    # 子进程应在跑
-    import os, subprocess, sys
-    out = subprocess.run(
-        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-        capture_output=True, text=True, timeout=5,
-    )
-    assert str(pid) in out.stdout, f"child pid {pid} not alive"
-    # 清理
-    main(["--config", str(cfg), "stop", "--timeout", "5"])
+    try:
+        pid = _wait_child_up(pid_file)
+        assert pid, "detached child never wrote the pid file"
+        # 子进程应在跑
+        import subprocess
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, timeout=5,
+        )
+        assert str(pid) in out.stdout, f"child pid {pid} not alive"
+    finally:
+        main(["--config", str(cfg), "stop", "--timeout", "5"])
 
 
 def test_start_already_running_detected(env) -> None:
     tmp, cfg = env
-    main(["--config", str(cfg), "start", "--detach"])
     rc = main(["--config", str(cfg), "start", "--detach"])
-    assert rc == 1  # already running
-    # 清理
-    main(["--config", str(cfg), "stop", "--timeout", "5"])
+    assert rc == 0
+    pid_file = tmp / "orch.pid"
+    try:
+        # 必须等第一个子进程完成注册（写 PID）再发起第二次 start，
+        # 否则第二个 master 会并行启动并泄漏（互相覆盖 PID 文件）
+        assert _wait_child_up(pid_file), "first detached child never came up"
+        rc = main(["--config", str(cfg), "start", "--detach"])
+        assert rc == 1  # already running
+    finally:
+        main(["--config", str(cfg), "stop", "--timeout", "5"])
 
 
 # ---------------------------------------------------------------------------

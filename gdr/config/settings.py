@@ -10,6 +10,11 @@ log = logging.getLogger(__name__)
 # 主 yaml 配置文件的绝对路径 (基于本文件位置定位, 不依赖 CWD)
 YAML_FILE = Path(__file__).resolve().parent / "gdr_config.yaml"
 
+# gdr 包根目录: 相对路径配置一律锚定到这里, 不依赖调用方 CWD。
+# (orchestration master 从仓库根运行时, './config/tools.yaml' 在 CWD 下
+#  解析不到 → 空白名单 → 所有 toolcall 被级联误判 TOOL_HALLUCINATED 并丢弃。)
+GDR_ROOT = Path(__file__).resolve().parent.parent
+
 
 class Settings(BaseSettings):
     # HTTP OpenAI-compatible LLM endpoint
@@ -156,6 +161,11 @@ class Settings(BaseSettings):
 
     # === 严格性 ===
     strict_consistency: bool = True  # 一致性终检异常时是否丢弃
+    judge_min_score: int = 7        # 终检 judge 进主输出的最低分 (0-10), 0 = 关闭
+    # judge 低分 session 不丢: 完整精修结果另存审核通道, 供人工检查/后期修改后手动并回。
+    # 真正硬丢弃只发生在结构严重不可用时 (见 pipeline/runner._session_structurally_unusable)。
+    judge_low_export_enabled: bool = True
+    judge_low_output_path: Path = Path("./refine_data/judge_low.jsonl")
 
     # === 评估器 (utility eval, 设计文档 §13) ===
     evaluator_output_dir: Path = Path("./evaluator_output")
@@ -172,6 +182,19 @@ class Settings(BaseSettings):
     retention_threshold: float = 0.97  # 探针相对原 D 训练模型保留性 ≥ 阈值
     removal_threshold: float = 0.50    # 探针相对原 D 训练模型剔除性 ≥ 阈值
     max_feedback_iterations: int = 3   # 反馈回路最大重试轮数
+
+    @model_validator(mode="after")
+    def _anchor_relative_paths(self):
+        """相对路径配置锚定到 gdr 根 (不依赖调用方 CWD)。
+
+        绝对路径原样保留, 允许显式覆盖 (env GDR_TOOLS_CONFIG_PATH / yaml)。
+        """
+        p = Path(self.tools_config_path)
+        if not p.is_absolute():
+            p = (GDR_ROOT / p).resolve()
+            log.info("tools_config_path anchored to gdr root: %s", p)
+        self.tools_config_path = p
+        return self
 
     @model_validator(mode="after")
     def _warn_non_strict_consistency(self):
@@ -217,6 +240,12 @@ def load_tools(tools_config_path: Path) -> tuple[list[str], set[str]]:
         tools = data.get("tools", []) if data else []
         hallucinated_apis = set(data.get("hallucinated_apis", []) if data else [])
         return tools, hallucinated_apis
-    except Exception:
-        log.error("failed to load tools config from %s", tools_config_path)
+    except Exception as e:
+        log.error(
+            "failed to load tools config from %s (%s): falling back to EMPTY tool "
+            "whitelist — tool-name hallucination checks are skipped downstream "
+            "(router / tool_fixer / L1 sanity) to avoid mass false discards; "
+            "check GDR_TOOLS_CONFIG_PATH or gdr_config.yaml",
+            tools_config_path, e,
+        )
         return [], set()

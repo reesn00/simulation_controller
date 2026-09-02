@@ -312,3 +312,61 @@ async def test_camel_actor_compresses_over_budget_output(compiled_task, monkeypa
     assert utterance.source == "llm"
     assert utterance.content.startswith(short_reply)
     assert len(long_reply) > utterance.content_chars
+
+
+@pytest.mark.asyncio
+async def test_camel_actor_accepts_cjk_reply_within_variant_pool_length(
+    compiled_task, source_ref, monkeypatch
+) -> None:
+    """A CJK reply that exceeds the persona budget but is no longer than the
+    variant-pool fallback it would be replaced by is accepted without a
+    compression round-trip (the fallback itself carries the mandatory revision
+    request, so it is the real-world verbosity ceiling)."""
+    import camel.agents as camel_agents
+    from simulate_serve.domain.task import AcceptanceCriterion, InteractionPolicy, RemediationSpec
+
+    criterion = AcceptanceCriterion(
+        criterion_id="task.x",
+        description="内部准则描述文本",
+        remediation=RemediationSpec(owner="executor", guidance="绝不出现的内部修复话术"),
+        source=source_ref,
+    )
+    task = compiled_task.model_copy(
+        update={
+            "persona": PersonaSpec(verbosity="concise"),
+            "criteria": (criterion,),
+            "interaction_policy": InteractionPolicy(
+                guidance_by_reason={
+                    "X": ("场景话术要给足上下文长度才不会被预算误伤，这里补一句更完整的口语表达进来",)
+                }
+            ),
+        }
+    )
+    # 62 chars: over the concise budget (60) but within the fallback ceiling.
+    reply = (
+        "我看了下，这个结果跟我一开始提的要求还是对不上，"
+        "你把我最开始说的那几个点重新核对一遍，整理一份完整的结果再发给我，别再漏了。"
+    )
+
+    class _CountingChatAgent:
+        calls = 0
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def astep(self, message: object):
+            _CountingChatAgent.calls += 1
+            message_obj = type("M", (), {})()
+            message_obj.content = reply
+            return type("R", (), {"msgs": (message_obj,)})()
+
+    monkeypatch.setattr(camel_agents, "ChatAgent", _CountingChatAgent)
+    actor = CamelInteractionActor(model=object())
+    report = _fail_report("task.x", code="X")
+    context = InteractionContext(task=task, guide_rounds=0)
+
+    utterance = await actor.create_followup(context, report)
+
+    assert utterance.source == "llm"
+    assert _CountingChatAgent.calls == 1, "over budget but within ceiling: no compression retry"
+    assert utterance.content.startswith(reply)

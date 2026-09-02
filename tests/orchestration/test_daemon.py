@@ -182,25 +182,52 @@ def test_install_signal_handlers_sets_stop_event(tmp_path: Path) -> None:
 # start_detached + stop
 # ---------------------------------------------------------------------------
 
-def test_start_detached_spawns_child_and_writes_pid(tmp_path: Path) -> None:
-    """子进程 sleep 一会儿；父进程拿到 PID；之后 stop."""
+def _wait_pid_file(pid_file: Path, timeout: float = 15.0) -> int | None:
+    """轮询等待子进程自行写入 PID 文件（真实语义：父进程不预写）.
+
+    注意不要求写入值等于 ``Popen.pid``：uv venv 的 python.exe 是 trampoline，
+    ``-c`` 脚本运行在其 base-python 子进程中，os.getpid() 是孙进程 PID。
+    真实 master 同样经 start_foreground 写自己的 getpid，契约一致。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pid = read_pid_file(pid_file)
+        if pid is not None:
+            return pid
+        time.sleep(0.1)
+    return None
+
+
+def test_start_detached_child_writes_pid(tmp_path: Path) -> None:
+    """父进程不得预写 PID 文件（旧 bug：子进程 is_running 会把父预写的
+    "自己的 PID" 当作已运行实例并立刻退出）；PID 由子进程自行写入，
+    stop 凭该文件清理."""
     pid_file = tmp_path / "d.pid"
     log_dir = tmp_path / "d_logs"
 
-    # 子进程命令：python -c "import time; time.sleep(60)"
-    cmd = [sys.executable, "-c", "import time; time.sleep(60)"]
+    # 子进程模拟 start_foreground 的契约：稍后写自己的 PID，然后驻留
+    cmd = [
+        sys.executable, "-c",
+        "import os, time; time.sleep(0.5); "
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)",
+    ]
     handle = start_detached(
         argv=cmd, pid_file=pid_file, log_dir=log_dir, child_mode_arg="--ignored",
     )
     try:
         assert handle.pid > 0
-        assert read_pid_file(pid_file) == handle.pid
-        # 子进程应还活着
-        time.sleep(0.5)
-        assert is_process_alive(handle.pid)
+        # 真实语义：父进程刚返回时 PID 文件尚不存在
+        assert read_pid_file(pid_file) is None
+        # 子进程自行写入后 stop 才能找到它
+        child_pid = _wait_pid_file(pid_file)
+        assert child_pid is not None, "child did not write pid file"
+        assert is_process_alive(child_pid)
     finally:
-        # 清理子进程
-        stop(pid_file, timeout=5)
+        assert stop(pid_file, timeout=5) is True
+        if handle.is_alive():  # 兜底，绝不允许 sleep(60) 子进程泄漏锁日志
+            handle.proc.kill()
+            handle.proc.wait(timeout=5)
     assert not pid_file.exists()
 
 
@@ -214,7 +241,11 @@ def test_start_detached_creates_log_dir(tmp_path: Path) -> None:
     try:
         assert log_dir.is_dir()
     finally:
+        # dummy 子进程不写 PID 文件，stop 找不到目标；必须按句柄清理，
+        # 否则 sleep(60) 进程泄漏并锁住 .pytest-tmp 下的 master.log
         stop(pid_file, timeout=5)
+        handle.proc.kill()
+        handle.proc.wait(timeout=5)
 
 
 def test_stop_no_pid_file_returns_false(tmp_path: Path) -> None:

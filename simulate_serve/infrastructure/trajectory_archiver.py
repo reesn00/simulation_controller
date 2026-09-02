@@ -27,10 +27,20 @@ def default_qwenpaw_console_dir(agent_id: str) -> Path:
     return Path.home() / ".qwenpaw" / "workspaces" / workspace / "sessions" / "console"
 
 
+def sanitize_filename_part(value: str) -> str:
+    """Make an arbitrary id safe for embedding in a file name.
+
+    Public single source of truth: orchestration writes run_id -> task_id
+    mappings keyed by the *sanitized* run id (what the trajectory watcher
+    reads back from file names), so both sides must use this exact function.
+    """
+    return _UNSAFE_FILENAME_CHARS.sub("_", value)
+
+
 def trajectory_filename(run_id: str, session_id: str) -> str:
     """Target file name embedding both the run and the remote session id."""
-    safe_run = _UNSAFE_FILENAME_CHARS.sub("_", run_id) or "run"
-    safe_session = _UNSAFE_FILENAME_CHARS.sub("_", session_id) or "session"
+    safe_run = sanitize_filename_part(run_id) or "run"
+    safe_session = sanitize_filename_part(session_id) or "session"
     return f"{safe_run}__{safe_session}.json"
 
 

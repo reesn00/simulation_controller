@@ -175,6 +175,12 @@ def setup_logging(
         stream.setFormatter(fmt)
         root.addHandler(stream)
 
+    # 降噪: simulate_serve executor 轮询 QwenPaw 时 httpx 每个 GET 打一条
+    # INFO（master.log 里 ~3 秒一条的心跳噪声即来源于此，而非 watcher 本身）。
+    # 请求失败时 httpx 仍会在 WARNING+ 浮出，丢失的只是成功请求的行级记录。
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(max(logging.WARNING, level))
+
     return log_path
 
 
@@ -280,7 +286,10 @@ def start_detached(
 
     proc = subprocess.Popen(argv, **kwargs)
     log_fh.close()
-    write_pid_file(pid_file, proc.pid)
+    # 注意：不要在这里写 PID 文件——子进程会经过 ``_cmd_start`` 的
+    # ``is_running`` 检查，若父进程提前写入，子进程会把"自己的 PID"
+    # 当成"已运行实例"并立刻退出。PID 文件由子进程在
+    # ``start_foreground`` 中写入。
     _log.info("daemon: detached child pid=%s argv=%s", proc.pid, argv)
     return DetachedHandle(pid=proc.pid, pid_file=pid_file, proc=proc)
 

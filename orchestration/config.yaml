@@ -12,6 +12,10 @@ orchestration:
   max_retry_gdr: 3
   watcher_poll_seconds: 2
   reap_stale_seconds: 300
+  # 空闲退避 (#7): 连续空轮时轮询间隔指数翻倍、封顶此秒数; 0=关闭。
+  # 只在"确实无事可做"时降频, 拉到任务立即复位; 生产建议开启省 CPU/写锁。
+  worker_idle_backoff_max_seconds: 5
+  watcher_idle_backoff_max_seconds: 10
 
 paths:
   # 待 step 7 实施：必须指向真实存在路径
