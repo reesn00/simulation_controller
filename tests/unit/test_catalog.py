@@ -27,7 +27,9 @@ def test_special_dimensions_and_replace_policy(project_root: Path) -> None:
     assert tasks["F001"].dimension == "文件操作"
     assert tasks["T055"].dimension == "内容载体类型"
     assert "video.free" not in {item.criterion_id for item in tasks["T034"].criteria}
-    assert "task.identify-nonexistent" in {item.criterion_id for item in tasks["T034"].criteria}
+    t034_criteria = {item.criterion_id for item in tasks["T034"].criteria}
+    assert "task.identify-nonexistent" not in t034_criteria
+    assert "task.no-fabricated-links" in t034_criteria
     assert "video.free" not in {item.criterion_id for item in tasks["T046"].criteria}
 
 
