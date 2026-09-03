@@ -15,15 +15,19 @@ import pytest
 from orchestration.daemon import (
     DaemonError,
     ForegroundHandle,
+    clear_stop_sentinel,
     is_process_alive,
     is_running,
+    is_stop_sentinel_present,
     read_pid_file,
     remove_pid_file,
     setup_logging,
     start_detached,
     start_foreground,
     stop,
+    stop_sentinel_path,
     write_pid_file,
+    write_stop_sentinel,
 )
 
 
@@ -257,3 +261,100 @@ def test_stop_dead_pid_cleans_up(tmp_path: Path) -> None:
     write_pid_file(fp, 2_000_000)
     assert stop(fp, timeout=1) is True
     assert not fp.exists()
+
+
+# ---------------------------------------------------------------------------
+# STOP 哨兵文件
+# ---------------------------------------------------------------------------
+
+def test_stop_sentinel_path_is_sibling_of_pid_file(tmp_path: Path) -> None:
+    pid_file = tmp_path / "data" / "orchestration.pid"
+    assert stop_sentinel_path(pid_file) == tmp_path / "data" / "STOP"
+
+
+def test_write_and_clear_stop_sentinel(tmp_path: Path) -> None:
+    pid_file = tmp_path / "x.pid"
+    write_stop_sentinel(pid_file)
+    assert is_stop_sentinel_present(pid_file) is True
+    clear_stop_sentinel(pid_file)
+    assert is_stop_sentinel_present(pid_file) is False
+
+
+def test_clear_stop_sentinel_no_error_when_missing(tmp_path: Path) -> None:
+    clear_stop_sentinel(tmp_path / "x.pid")  # 不抛
+
+
+def test_start_foreground_clears_stale_stop_sentinel(tmp_path: Path) -> None:
+    """上次 stop 的哨兵残留不能让刚启动的 master 立刻自杀."""
+    pid_file = tmp_path / "f.pid"
+    log_dir = tmp_path / "logs"
+    write_stop_sentinel(pid_file)
+
+    def cb(stop_event):
+        # callback 跑起来时哨兵应已被 start_foreground 清掉
+        assert not is_stop_sentinel_present(pid_file)
+        stop_event.set()
+
+    start_foreground(
+        cfg_path=None, pid_file=pid_file, log_dir=log_dir, run_callback=cb,
+    )
+    assert not pid_file.exists()
+    assert not is_stop_sentinel_present(pid_file)
+
+
+def test_start_foreground_stop_sentinel_sets_stop_event(tmp_path: Path) -> None:
+    """运行中写入哨兵 → 监视线程 set stop_event → callback 退出 → 哨兵被清."""
+    pid_file = tmp_path / "f.pid"
+    log_dir = tmp_path / "logs"
+    seen: dict[str, object] = {}
+
+    def cb(stop_event):
+        seen["set"] = stop_event.wait(5.0)  # 等哨兵线程置位
+        seen["pid"] = os.getpid()
+
+    t = threading.Thread(
+        target=lambda: (time.sleep(0.3), write_stop_sentinel(pid_file)),
+    )
+    t.start()
+    start_foreground(
+        cfg_path=None, pid_file=pid_file, log_dir=log_dir, run_callback=cb,
+    )
+    t.join(timeout=2.0)
+    assert seen["set"] is True, "stop_event was never set by the sentinel watcher"
+    assert not pid_file.exists()
+    assert not is_stop_sentinel_present(pid_file)
+
+
+def test_stop_graceful_via_sentinel(tmp_path: Path) -> None:
+    """stop() 写哨兵 → 子进程哨兵线程响应 → 优雅退出（不强杀）.
+
+    子进程模拟 master：写 PID 文件后驻留，靠哨兵文件退出。
+    """
+    pid_file = tmp_path / "d.pid"
+    log_dir = tmp_path / "d_logs"
+    cmd = [
+        sys.executable, "-c",
+        "import os, time, threading\n"
+        "from pathlib import Path\n"
+        f"pid_file = Path({str(pid_file)!r})\n"
+        "sentinel = pid_file.parent / 'STOP'\n"
+        "open(pid_file, 'w').write(str(os.getpid()))\n"
+        "deadline = time.time() + 15\n"
+        "while not sentinel.exists() and time.time() < deadline:\n"
+        "    time.sleep(0.1)\n",
+    ]
+    handle = start_detached(
+        argv=cmd, pid_file=pid_file, log_dir=log_dir, child_mode_arg="--ignored",
+    )
+    try:
+        child_pid = _wait_pid_file(pid_file)
+        assert child_pid is not None, "child did not write pid file"
+        assert is_process_alive(child_pid)
+        # stop：优雅通道（哨兵）+ 兜底强杀；子进程应在 5s 内自行退出
+        assert stop(pid_file, timeout=5) is True
+    finally:
+        if handle.is_alive():
+            handle.proc.kill()
+            handle.proc.wait(timeout=5)
+    assert not pid_file.exists()
+    assert not is_stop_sentinel_present(pid_file)

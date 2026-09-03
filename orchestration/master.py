@@ -33,7 +33,7 @@ from typing import Callable, Sequence
 
 from gdr.config.settings import Settings as GdrSettings
 
-from orchestration.batch_tracker import wait_for_terminal
+from orchestration.batch_tracker import BatchTrackerStopped, wait_for_terminal
 from orchestration.config_loader import OrchestrationConfig
 from orchestration.failure_handler import reap_dead
 from orchestration.health import write_health
@@ -186,7 +186,12 @@ class Master:
         self,
         task_batches: Sequence[Sequence[str]],
     ) -> list[BatchSummary]:
-        """按 ``task_batches`` 顺序跑每批；返回 BatchSummary 列表."""
+        """按 ``task_batches`` 顺序跑每批；返回 BatchSummary 列表.
+
+        停止请求（stop_event 置位，含 STOP 哨兵文件 / 信号）时：
+        当前批通过 ``BatchTrackerStopped`` 提前中断（此时 simulate
+        产物可能不完整，不该继续收尾），已完成的批不受影响。
+        """
         if not self._workers_started:
             self.start_workers()
 
@@ -195,7 +200,14 @@ class Master:
             if self._stop_event.is_set():
                 _log.info("master: stop requested, break batch loop")
                 break
-            summaries.append(self._run_one_batch(list(batch)))
+            try:
+                summaries.append(self._run_one_batch(list(batch)))
+            except BatchTrackerStopped:
+                _log.warning(
+                    "master: stop requested during batch, aborting remaining %d batch(es)",
+                    len(task_batches) - len(summaries) - 1,
+                )
+                break
         return summaries
 
     def _run_one_batch(self, task_ids: list[str]) -> BatchSummary:
@@ -211,10 +223,16 @@ class Master:
         run_ids = tuple(r.run_id for r in runs)
 
         # 2. 防御性二次确认 run.json 终态
-        wait_for_terminal(
-            list(run_ids), runs_dir=runs_dir,
-            poll_seconds=s.batch_drain_poll_seconds, timeout=None,
-        )
+        try:
+            wait_for_terminal(
+                list(run_ids), runs_dir=runs_dir,
+                poll_seconds=s.batch_drain_poll_seconds, timeout=None,
+                stop_event=self._stop_event,
+            )
+        except BatchTrackerStopped:
+            # 停止请求：本批没有完整走完，run.json 可能仍在写；
+            # 直接向上抛，由 run() 捕获后跳出批循环
+            raise
 
         # 3. 启动本批 watcher
         watcher_stop = self._start_batch_watcher(batch_id)
@@ -299,7 +317,8 @@ class Master:
     ) -> bool:
         """本批所有 task 全部 ``done`` 或 ``dead`` 才返回 True.
 
-        timeout 非 None 时超返回 False 不抛。
+        timeout 非 None 时超返回 False 不抛。stop_event 置位时返回 False
+        （不抛：调用方 ``_run_one_batch`` 在批收尾后由 ``run`` 的批间检查跳出）。
         """
         deadline = time.monotonic() + timeout if timeout else None
         while True:
@@ -308,6 +327,15 @@ class Master:
                 return True
             if all(t.state in (STATE_DONE, STATE_DEAD) for t in tasks):
                 return True
+            if self._stop_event.is_set():
+                _log.warning(
+                    "master: stop requested, batch_id=%d not drained "
+                    "(pending=%d, pending_gdr=%d)",
+                    batch_id,
+                    sum(1 for t in tasks if t.state == STATE_PENDING),
+                    sum(1 for t in tasks if t.state == STATE_PENDING_GDR),
+                )
+                return False
             if deadline is not None and time.monotonic() >= deadline:
                 _log.warning(
                     "master: batch_id=%d not drained after %.1fs "
@@ -318,7 +346,9 @@ class Master:
                     sum(1 for t in tasks if t.state == STATE_DEAD),
                 )
                 return False
-            time.sleep(poll_seconds)
+            if self._stop_event.wait(poll_seconds):
+                # wait 兼作可中断 sleep：置位立即返回，下一轮头部走 Stopped 分支
+                continue
 
     # ------------------------------------------------------------------
     # reap_stale 周期

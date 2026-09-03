@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from orchestration.batch_tracker import (
+    BatchTrackerStopped,
     BatchTrackerTimeout,
     wait_for_terminal,
 )
@@ -151,3 +152,46 @@ def test_wait_for_terminal_unknown_state_keeps_trying(tmp_path: Path) -> None:
 def test_wait_for_terminal_empty_returns_empty(tmp_path: Path) -> None:
     result = wait_for_terminal([], runs_dir=tmp_path / "runs", poll_seconds=0.05)
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# stop_event 中断
+# ---------------------------------------------------------------------------
+
+def test_wait_for_terminal_stop_event_pre_set_raises_stopped(tmp_path: Path) -> None:
+    """stop_event 已置位 + 有 pending → 抛 BatchTrackerStopped（非超时）."""
+    runs_dir = tmp_path / "runs"
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(BatchTrackerStopped):
+        wait_for_terminal(["r1"], runs_dir=runs_dir, poll_seconds=0.05, stop_event=ev)
+
+
+def test_wait_for_terminal_stop_event_set_during_wait_raises_stopped(
+    tmp_path: Path,
+) -> None:
+    """等待途中 stop_event 置位 → 可中断 sleep 立即醒来并抛 Stopped."""
+    runs_dir = tmp_path / "runs"
+    _write_run_json(runs_dir, "r1", RunState.VALIDATING.value)
+    ev = threading.Event()
+
+    def stopper():
+        time.sleep(0.1)
+        ev.set()
+
+    threading.Thread(target=stopper, daemon=True).start()
+    start = time.monotonic()
+    with pytest.raises(BatchTrackerStopped):
+        wait_for_terminal(["r1"], runs_dir=runs_dir, poll_seconds=5.0, stop_event=ev)
+    # poll_seconds=5 但 stop 在 0.1s 置位：可中断等待应远小于 5s
+    assert time.monotonic() - start < 2.0
+
+
+def test_wait_for_terminal_terminal_beats_stop_event(tmp_path: Path) -> None:
+    """全终态时不等 stop_event（快速路径先行返回）."""
+    runs_dir = tmp_path / "runs"
+    _write_run_json(runs_dir, "r1", RunState.SUCCESS.value)
+    ev = threading.Event()
+    ev.set()
+    result = wait_for_terminal(["r1"], runs_dir=runs_dir, poll_seconds=0.05, stop_event=ev)
+    assert result == {"r1": RunState.SUCCESS}

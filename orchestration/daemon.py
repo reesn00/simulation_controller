@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -36,6 +37,7 @@ _log = logging.getLogger(__name__)
 DEFAULT_PID_FILE = "orchestration.pid"
 DEFAULT_LOG_DIR = "orchestration/logs"
 DEFAULT_LOG_FILE = "master.log"
+STOP_SENTINEL_FILE = "STOP"
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +187,57 @@ def setup_logging(
 
 
 # ---------------------------------------------------------------------------
+# STOP 哨兵文件（Windows 优雅停止主通道）
+# ---------------------------------------------------------------------------
+
+
+def stop_sentinel_path(pid_file: Path) -> Path:
+    """STOP 哨兵文件路径：固定放 pid 文件同目录（即 data/）."""
+    return Path(pid_file).parent / STOP_SENTINEL_FILE
+
+
+def write_stop_sentinel(pid_file: Path) -> Path:
+    """写 STOP 哨兵文件；master 轮询到即走优雅 shutdown.
+
+    detach 子进程没有控制台（DETACHED_PROCESS），CTRL_BREAK_EVENT
+    根本送达不了，taskkill /F 又是硬杀（master.shutdown 不会执行，
+    SQLite 任务卡 running）。哨兵文件是跨进程模型都可靠的通道。
+    """
+    path = stop_sentinel_path(pid_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"stop requested at {time.strftime('%Y-%m-%dT%H:%M:%S')}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def clear_stop_sentinel(pid_file: Path) -> None:
+    """清除 STOP 哨兵文件（master 启动时做，避免上次残留立刻自杀）."""
+    try:
+        stop_sentinel_path(pid_file).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def is_stop_sentinel_present(pid_file: Path) -> bool:
+    return stop_sentinel_path(pid_file).exists()
+
+
+def _poll_stop_sentinel(pid_file: Path, stop_event: threading.Event) -> None:
+    """后台线程：哨兵文件出现即 set stop_event（master 各阻塞点都会响应）."""
+    while not stop_event.is_set():
+        try:
+            if is_stop_sentinel_present(pid_file):
+                _log.info("daemon: STOP sentinel detected, setting stop_event")
+                stop_event.set()
+                return
+        except OSError as exc:
+            _log.warning("daemon: stop sentinel check failed: %s", exc)
+        stop_event.wait(1.0)
+
+
+# ---------------------------------------------------------------------------
 # 前台启动
 # ---------------------------------------------------------------------------
 
@@ -210,15 +263,25 @@ def start_foreground(
     """在当前进程跑 ``run_callback(stop_event)``；绑定信号 + 写 PID + 日志.
 
     ``run_callback`` 收到 stop_event 后应优雅退出（典型为 ``Master.shutdown``）。
+    信号之外还监听 STOP 哨兵文件（pid 同目录 /STOP），覆盖 detach 子进程
+    无控制台、CTRL_BREAK_EVENT 送达不了的 Windows 场景。
     """
     setup_logging(log_dir)
+    # 上次 stop 的哨兵残留会让刚启动的 master 立刻自杀，先清掉
+    clear_stop_sentinel(pid_file)
     write_pid_file(pid_file, os.getpid())
     stop_event = threading.Event()
     install_signal_handlers(stop_event)
+    sentinel_thread = threading.Thread(
+        target=_poll_stop_sentinel, args=(pid_file, stop_event),
+        name="stop-sentinel", daemon=True,
+    )
+    sentinel_thread.start()
     _log.info("daemon: foreground start pid=%s", os.getpid())
 
     def cleanup(*_a):
         remove_pid_file(pid_file)
+        clear_stop_sentinel(pid_file)
 
     try:
         run_callback(stop_event)
@@ -300,7 +363,14 @@ def start_detached(
 
 
 def stop(pid_file: Path, *, timeout: float = 10.0) -> bool:
-    """发信号给 PID 文件里的进程；超时未退出就 kill.
+    """优雅停止 PID 文件里的 master；超时未退出就强杀.
+
+    顺序（Windows / POSIX 一致）：
+        1. 写 STOP 哨兵文件 → master 哨兵线程 set stop_event →
+           各阻塞点中断 → ``master.shutdown`` 优雅收尾（最多 timeout 秒）
+        2. 超时兜底：Windows ``taskkill /F /T`` 强杀整棵树；
+           POSIX ``SIGTERM``（进程若已收到信号再补发无害，等价强杀）
+        3. 进程退出后清哨兵 + PID 文件
 
     Returns: True 表示进程已退出；False 表示超时或 PID 文件不存在.
     """
@@ -309,26 +379,39 @@ def stop(pid_file: Path, *, timeout: float = 10.0) -> bool:
         return False
     if not is_process_alive(pid):
         remove_pid_file(pid_file)
+        clear_stop_sentinel(pid_file)
         return True
 
+    # 1. 优雅通道：哨兵文件（master 侧 1s 轮询到即开始 shutdown）
+    write_stop_sentinel(pid_file)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_process_alive(pid):
+            remove_pid_file(pid_file)
+            clear_stop_sentinel(pid_file)
+            return True
+        time.sleep(0.2)
+
+    # 2. 超时强杀兜底（master 卡在不可中断调用时的最后手段）
+    _log.warning("daemon: graceful stop timed out for pid=%s, force killing", pid)
     try:
         if sys.platform == "win32":
-            # Windows：向进程树发 CTRL_BREAK_EVENT；进程组内有效
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True, text=True, timeout=timeout,
             )
         else:
-            os.kill(pid, signal.SIGTERM)
+            os.kill(pid, signal.SIGKILL)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        _log.warning("daemon: stop signal failed for pid=%s: %s", pid, exc)
+        _log.warning("daemon: stop force kill failed for pid=%s: %s", pid, exc)
 
-    # 等退出
-    import time
-    deadline = time.monotonic() + timeout
+    # 3. 强杀后确认退出（不给满 timeout，3s 足够 taskkill 生效）
+    deadline = time.monotonic() + min(timeout, 3.0)
     while time.monotonic() < deadline:
         if not is_process_alive(pid):
-            remove_pid_file(pid_file)
-            return True
+            break
         time.sleep(0.1)
-    return False
+    exited = not is_process_alive(pid)
+    remove_pid_file(pid_file)
+    clear_stop_sentinel(pid_file)
+    return exited

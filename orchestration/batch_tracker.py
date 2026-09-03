@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -36,12 +37,17 @@ class BatchTrackerTimeout(RuntimeError):
         )
 
 
+class BatchTrackerStopped(RuntimeError):
+    """wait_for_terminal 收到 stop_event，提前放弃等待（非超时）."""
+
+
 def wait_for_terminal(
     run_ids: list[str] | tuple[str, ...],
     *,
     runs_dir: Path,
     poll_seconds: float = 5.0,
     timeout: float | None = None,
+    stop_event: threading.Event | None = None,
 ) -> dict[str, RunState]:
     """阻塞等待所有 run.json 终态.
 
@@ -55,6 +61,9 @@ def wait_for_terminal(
         轮询间隔（秒）
     timeout:
         最长等待时间；None 表示无限等。超时抛 ``BatchTrackerTimeout``。
+    stop_event:
+        外部停止信号；置位后抛 ``BatchTrackerStopped``（区别于超时，
+        上层据此走 shutdown 而非报错）。
 
     Returns
     -------
@@ -63,6 +72,7 @@ def wait_for_terminal(
     异常
     ----
     ``BatchTrackerTimeout``：超时（仅在 timeout 非 None 且超时时）。
+    ``BatchTrackerStopped``：stop_event 置位（仅在传入 stop_event 且置位时）。
     """
     pending: dict[str, str] = {rid: "pending" for rid in run_ids}  # run_id → "missing"|state
     deadline = time.monotonic() + timeout if timeout else None
@@ -91,9 +101,21 @@ def wait_for_terminal(
 
         if not pending:
             break
+        if stop_event is not None and stop_event.is_set():
+            _log.warning(
+                "batch_tracker: stop requested, %d run(s) still pending", len(pending),
+            )
+            raise BatchTrackerStopped(
+                f"batch_tracker: stopped with {len(pending)} run(s) pending"
+            )
         if deadline is not None and time.monotonic() >= deadline:
             raise BatchTrackerTimeout(pending=pending, timeout=timeout)
-        time.sleep(poll_seconds)
+        if stop_event is not None:
+            # stop_event.wait 兼作可中断 sleep：置位立即返回
+            if stop_event.wait(poll_seconds):
+                continue  # 下一轮循环头部统一走 Stopped 分支
+        else:
+            time.sleep(poll_seconds)
 
     result: dict[str, RunState] = {}
     for run_id in run_ids:

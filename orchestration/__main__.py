@@ -4,7 +4,7 @@
 
 * ``start``   ：启动 master + workers；``--detach`` 后台化，默认前台
 * ``status``  ：打印 health.json + queue_counts + dead 列表
-* ``stop``    ：SIGTERM 给 master（PID 文件），超时后强杀
+* ``stop``    ：写 STOP 哨兵文件让 master 优雅 shutdown；超时后强杀
 * ``replay``  ：``state=dead`` 的 task 重置为 ``pending``；``--batch N`` 仅限该批次
 
 公共参数：
@@ -248,7 +248,7 @@ def _cmd_stop(args: argparse.Namespace) -> int:
         if pid_file.exists():
             remove_pid_file(pid_file)
         return 0
-    print(f"[orchestration] stopping pid={pid} ...")
+    print(f"[orchestration] stopping pid={pid} (graceful, timeout={args.timeout}s) ...")
     ok = daemon_stop(pid_file, timeout=args.timeout)
     if ok:
         print(f"[orchestration] stopped pid={pid}")
@@ -311,9 +311,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="打印队列/进程/dead 状态")
     p_status.set_defaults(func=_cmd_status)
 
-    p_stop = sub.add_parser("stop", help="优雅停止")
+    p_stop = sub.add_parser("stop", help="优雅停止（STOP 哨兵 + 超时强杀）")
     p_stop.add_argument("--timeout", type=float, default=10.0,
-                        help="超时秒数（默认 10）")
+                        help="优雅停止超时秒数；超时后 taskkill 强杀（默认 10）")
     p_stop.set_defaults(func=_cmd_stop)
 
     p_replay = sub.add_parser("replay", help="dead 任务重新入队")

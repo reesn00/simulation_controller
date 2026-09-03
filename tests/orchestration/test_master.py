@@ -283,6 +283,86 @@ def test_wait_batch_drained_empty_batch(env) -> None:
     assert m.wait_batch_drained(bid, poll_seconds=0.05) is True
 
 
+def test_wait_batch_drained_returns_false_on_stop(env) -> None:
+    """stop_event 置位 → 不再等 timeout，立即返回 False."""
+    _tmp, queue, m = env
+    fp = env[0] / "t.json"
+    fp.write_text("{}", encoding="utf-8")
+    queue.insert(src_path=fp, run_id="r", session_id="s", batch_id=1)
+    bid = queue.insert_batch(["r"])
+    m._stop_event.set()
+    start = time.monotonic()
+    assert m.wait_batch_drained(bid, poll_seconds=0.05, timeout=60.0) is False
+    assert time.monotonic() - start < 1.0
+
+
+# ---------------------------------------------------------------------------
+# 停止请求中断批循环
+# ---------------------------------------------------------------------------
+
+def test_run_stops_mid_batch_via_batch_tracker(env, monkeypatch) -> None:
+    """run.json 永不终态 + stop_event 置位 → BatchTrackerStopped 传播，
+    批循环中断，后续批不跑."""
+    _tmp, queue, m = env
+    _patch_qf_process(monkeypatch)
+    _patch_gdr_process(monkeypatch)
+
+    traj_dir = Path(m._cfg.paths.trajectory_dir)
+    runs_dir = Path(m._cfg.paths.runs_dir)
+
+    def producer(*, config_path, task_ids, limit, queue):
+        bid = queue.insert_batch(task_ids)
+        # 写 trajectory 但**不写 run.json**：wait_for_terminal 会卡住
+        # （run_id 非空才会真的进入轮询循环）
+        runs = []
+        for tid in task_ids:
+            (traj_dir / f"{tid}__sess.json").write_text("{}", encoding="utf-8")
+            runs.append(TaskRun(run_id=tid, task_id=tid, task_type="test",
+                                state=RunState.VALIDATING))
+        return bid, runs
+
+    m._producer_runner = producer
+
+    def stopper():
+        time.sleep(0.2)
+        m._stop_event.set()
+
+    threading.Thread(target=stopper, daemon=True).start()
+    start = time.monotonic()
+    summaries = m.run([["T1"], ["T2"]])
+    # T1 批未走完（被停止打断），T2 批不该开跑
+    assert summaries == []
+    assert time.monotonic() - start < 5.0
+
+
+def test_run_completed_batches_not_affected_by_stop(env, monkeypatch) -> None:
+    """停止发生在批间：已完成批的 summary 保留."""
+    _tmp, queue, m = env
+    _patch_qf_process(monkeypatch)
+    _patch_gdr_process(monkeypatch)
+
+    traj_dir = Path(m._cfg.paths.trajectory_dir)
+    runs_dir = Path(m._cfg.paths.runs_dir)
+    producer = _make_fake_producer(queue, traj_dir, runs_dir)
+    m._producer_runner = producer
+
+    real_one_batch = m._run_one_batch
+    calls = {"n": 0}
+
+    def counted_one_batch(task_ids):
+        calls["n"] += 1
+        result = real_one_batch(task_ids)
+        if calls["n"] == 1:
+            m._stop_event.set()  # 第一批完成后请求停止
+        return result
+
+    m._run_one_batch = counted_one_batch
+    summaries = m.run([["T1"], ["T2"]])
+    assert calls["n"] == 1
+    assert len(summaries) == 1
+    assert summaries[0].drained is True
+
+
 # ---------------------------------------------------------------------------
 # reap_stale 周期
 # ---------------------------------------------------------------------------
