@@ -1,13 +1,13 @@
 model:
   model_type: OPENAI        # OPENAI | ANTHROPIC
   model_name: MiniMax-M2.7
-  api_key: "！！！"
+  api_key: "ark-1feee0d7-fccf-4a36-be62-7420e3b22dac-f43cc"
   base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
   temperature: 0.7
 
 agent_endpoint:
   base_url: "http://localhost:8088"   # QwenPaw 后端地址（含端口，不含 /api）
-  execution_agent_id: ""               # 执行阶段 agent ID（X-Agent-Id），留空使用默认 agent
+  execution_agent_id: "default"               # 执行阶段 agent ID（X-Agent-Id），留空使用默认 agent
   validation_agent_id: ""              # 验证阶段 agent ID（X-Agent-Id），留空使用默认 agent
   auth_token: ""                       # Bearer token，未启用鉴权时留空
   user_id: "useramulation"

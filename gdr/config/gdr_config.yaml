@@ -29,7 +29,7 @@
 
 # === HTTP OpenAI-compatible LLM endpoint (env: GDR_LLM_BASE_URL) ===
 llm_base_url: https://ark.cn-beijing.volces.com/api/coding/v3
-llm_api_key: !!     # 敏感! 本文件已被 gitignore, 勿复制到其他文件
+llm_api_key: "ark-1feee0d7-fccf-4a36-be62-7420e3b22dac-f43cc"    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
 
 # Model names registered at the endpoint
 main_model: MiniMax-M2.7         # env: GDR_MAIN_MODEL
@@ -78,7 +78,7 @@ tools_config_path: ./config/tools.yaml
 # manual: 仅 tools.yaml 名单。off: 空白名单 (router/tool_fixer/L1 跳过名称校验)。
 tool_source: auto
 qwenpaw_agent_json: ~/.qwenpaw/workspaces/default/agent.json
-input_path: origindata/0c175024ed9c4bde8e77f7b9dd125f08.json   # env: GDR_INPUT_PATH
+input_path: ../output/agent_trajectory                                  # env: GDR_INPUT_PATH (trajectory JSONL 目录或单文件)
 output_path: refine_data/output.json                            # env: GDR_OUTPUT_PATH
 log_dir: ./logs                                                 # env: GDR_LOG_DIR
 

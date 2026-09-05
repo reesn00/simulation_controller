@@ -131,6 +131,8 @@ def _transform_assistant(msg: Message, opts: TransformOptions) -> list[dict[str,
 
 
 def _collect_tools(record: SessionRecord) -> list[dict[str, Any]]:
+    if record.tools:
+        return record.tools
     seen: dict[str, set[str]] = {}
     for m in record.messages:
         for b in m.blocks:

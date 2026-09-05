@@ -4,7 +4,7 @@ setlocal EnableExtensions
 rem ============================================================
 rem  GDR pipeline launcher
 rem
-rem  Input dir (fixed):  gdr\origindata
+rem  Input dir (fixed):  ..\output\agent_trajectory  (trajectory JSONL)
 rem  Output dir (fixed): gdr\refine_data
 rem
 rem  Usage:
@@ -33,11 +33,11 @@ shift
 goto :collect
 
 :run
-echo [run.bat] input=origindata output=refine_data max-files=%MAXFILES% (empty=all)
+echo [run.bat] input=..\output\agent_trajectory output=refine_data max-files=%MAXFILES% (empty=all)
 if defined MAXFILES (
-    uv run python -m pipeline.cli --batch-input-dir origindata --batch-output-dir refine_data --max-files %MAXFILES%%ARGS%
+    uv run python -m pipeline.cli --batch-input-dir ..\output\agent_trajectory --batch-output-dir refine_data --max-files %MAXFILES%%ARGS%
 ) else (
-    uv run python -m pipeline.cli --batch-input-dir origindata --batch-output-dir refine_data%ARGS%
+    uv run python -m pipeline.cli --batch-input-dir ..\output\agent_trajectory --batch-output-dir refine_data%ARGS%
 )
 
 endlocal

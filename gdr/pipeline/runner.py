@@ -685,7 +685,7 @@ def _aggregate(results: Iterable[dict]) -> dict:
 def _discover_inputs(cfg: Settings) -> list[Path]:
     """根据 cfg 决定输入文件列表, 支持 max_files 截断。"""
     if cfg.batch_input_dir:
-        inputs = sorted(p for p in cfg.batch_input_dir.glob("*.json") if p.is_file())
+        inputs = sorted(p for p in cfg.batch_input_dir.glob("*.jsonl") if p.is_file())
     else:
         inputs = [cfg.input_path]
     if cfg.max_files is not None:

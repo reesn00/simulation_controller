@@ -1,1 +1,1 @@
-"""QwenPaw session ETL: 把 agent session JSON 清洗为 SFT 微调数据。"""
+"""QwenPaw trajectory ETL: 把 agent trajectory JSONL 清洗为 SFT 微调数据。"""

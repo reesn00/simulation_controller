@@ -1,35 +1,35 @@
-"""Extract: 读取 QwenPaw session JSON，解析为强类型中间模型。
+"""Extract: 读取 QwenPaw agent trajectory JSONL，重放事件流为强类型中间模型。
 
-源文件结构（节选）:
-    {
-      "agent": {
-        "state": {
-          "session_id": "...",
-          "summary": "...",          # 会话总结（可能为空）
-          "context": [ Message ],     # 多轮消息列表
-          ...
-        },
-        "scroll": {...},
-        "mode_state": {...}
-      }
-    }
+源文件格式（每行一个 TrajectoryEvent，JSONL）:
+    {"trace_id", "span_id", "parent_span_id", "event_type", "timestamp",
+     "session_id", "agent_id", "user_id", "channel", "provider_id", "model_name",
+     "payload", "metadata"}
 
-Message:
-    name: "user" | "Default"
-    role: "user" | "assistant"
-    content: [ ContentBlock ]
-    metadata: {...}                  # 含 qwenpaw_tag / qwenpaw_turn_usage
+事件类型（event_type）:
+    turn_start         -> payload: {input_text, request_agent_id, agent_backend}
+    model_request      -> payload: {messages, tools, tool_choice?, ...}
+    model_response     -> payload: {usage, ...}
+    tool_call_request  -> payload: {tool_calls: [{id, type, function: {name, arguments}}]}
+    tool_execution     -> payload: {tool_call_id, tool_name, input, output}
+    thinking           -> payload: {thinking: str}
+    error              -> payload: {...}
+    cancel             -> payload: {...}
+    final_reply        -> payload: {content: [Message]}, Message.type ∈ {reasoning, message, ...}
 
-ContentBlock.type:
-    text      -> {"text": "..."}
-    thinking  -> {"thinking": "..."}
-    tool_call -> {"id","name","input"(JSON str),"state","suggested_rules"}
-    tool_result -> {"id","name","output":[{"type":"text","text":"..."}],"state","metadata"}
+重放规则:
+    turn_start        -> user message (input_text)
+    model_request     -> 提取 system prompt (首次) + tools 定义
+    thinking          -> 累积 ThinkingBlock 到当前 assistant buffer
+    tool_call_request -> 累积 ToolCallBlock 到当前 assistant buffer
+    tool_execution    -> 累积 ToolResultBlock 到当前 assistant buffer
+    final_reply       -> flush assistant buffer; 追加最终 assistant message (reasoning + text)
+    error/cancel      -> flush assistant buffer
 """
 
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -89,7 +89,8 @@ class SessionRecord:
     summary: str
     messages: list[Message]
     source_file: str
-    raw_state: dict[str, Any] = field(default_factory=dict)   # 审计用原始 state（去掉 context 巨量字段后）
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    raw_state: dict[str, Any] = field(default_factory=dict)
 
     @property
     def user_turns(self) -> int:
@@ -112,112 +113,234 @@ class SessionRecord:
         )
 
 
-def _parse_block(raw: dict[str, Any]) -> Optional[Any]:
-    # toolcall/toolresult 为预处理格式（无下划线）的类型名，等价于 tool_call/tool_result
-    t = raw.get("type")
-    if t == "text":
-        return TextBlock(
-            text=raw.get("text", "") or "",
-            id=raw.get("id"),
-            created_at=raw.get("created_at"),
-        )
-    if t == "thinking":
-        return ThinkingBlock(
-            thinking=raw.get("thinking", "") or "",
-            id=raw.get("id"),
-            created_at=raw.get("created_at"),
-        )
-    if t in ("tool_call", "toolcall"):
-        return ToolCallBlock(
-            id=raw.get("id", ""),
-            name=raw.get("name", ""),
-            input=raw.get("input", "") or "",
-            state=raw.get("state", "finished"),
-            suggested_rules=raw.get("suggested_rules", []) or [],
-            created_at=raw.get("created_at"),
-        )
-    if t in ("tool_result", "toolresult"):
-        if isinstance(raw.get("output_text"), str):
-            # 预处理格式：output_text 直接是拼接好的字符串
-            output_text = raw["output_text"]
-        else:
-            out = raw.get("output") or []
-            text_parts: list[str] = []
-            for item in out:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text_parts.append(item.get("text", "") or "")
-                elif isinstance(item, dict) and "text" in item:
-                    text_parts.append(item.get("text", "") or "")
-            output_text = "\n".join(text_parts)
-        return ToolResultBlock(
-            id=raw.get("id", ""),
-            name=raw.get("name", ""),
-            output_text=output_text,
-            state=raw.get("state", "success"),
-            metadata=raw.get("metadata", {}) or {},
-            created_at=raw.get("created_at"),
-        )
-    return None
+def _content_blocks_text(content: Any) -> str:
+    """从 message.content（ContentBlock 列表）拼接所有 text 块。"""
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", "") or "")
+    return "".join(parts)
 
 
-def _parse_message(raw: dict[str, Any]) -> Message:
-    blocks: list[Any] = []
-    # 预处理格式内容在 blocks，原始 dump 在 content
-    for b in raw.get("blocks") or raw.get("content", []) or []:
-        parsed = _parse_block(b)
-        if parsed is not None:
-            blocks.append(parsed)
-    return Message(
-        role=raw.get("role", "user"),
-        name=raw.get("name", ""),
-        id=raw.get("id", ""),
-        blocks=blocks,
-        metadata=raw.get("metadata", {}) or {},
-        created_at=raw.get("created_at"),
-        finished_at=raw.get("finished_at"),
-        finished_reason=raw.get("finished_reason"),
-        usage=raw.get("usage"),
-        error=raw.get("error"),
-    )
+def _extract_system_prompt(messages: Any) -> str:
+    """从 model_request.payload.messages 提取首个 system message 文本。"""
+    if not isinstance(messages, list):
+        return ""
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role") or msg.get("name")
+        if role == "system":
+            return _content_blocks_text(msg.get("content"))
+    return ""
 
 
-def parse_session(raw: dict[str, Any], source_file: str) -> SessionRecord:
-    if isinstance(raw.get("messages"), list):
-        # 预处理格式：session_id / summary / messages 位于顶层
+def _parse_tool_call(tc: Any) -> Optional[ToolCallBlock]:
+    """把 tool_call_request.payload.tool_calls 的一项转为 ToolCallBlock。"""
+    if not isinstance(tc, dict):
+        return None
+    tc_id = tc.get("id", "") or ""
+    func = tc.get("function")
+    if isinstance(func, dict):
+        tc_name = func.get("name", "") or ""
+        args = func.get("arguments", "")
+    else:
+        tc_name = tc.get("name", "") or ""
+        args = tc.get("arguments", "") or tc.get("input", "")
+    if not isinstance(args, str):
+        try:
+            args = json.dumps(args, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args = str(args)
+    return ToolCallBlock(id=tc_id, name=tc_name, input=args)
+
+
+def _parse_final_reply(content: Any) -> tuple[str, str]:
+    """从 final_reply.payload.content 提取 (reasoning, text)。
+
+    content 是 Message 列表，每个 Message.type ∈ {reasoning, message, ...}。
+    只取 reasoning 和 message 的文本，跳过 function_call 等工具相关类型
+    （工具调用已由独立的 tool_call_request/tool_execution 事件记录）。
+    """
+    if not isinstance(content, list):
+        return "", ""
+    reasoning_parts: list[str] = []
+    text_parts: list[str] = []
+    for msg in content:
+        if not isinstance(msg, dict):
+            continue
+        msg_type = msg.get("type")
+        msg_text = _content_blocks_text(msg.get("content"))
+        if msg_type == "reasoning" and msg_text:
+            reasoning_parts.append(msg_text)
+        elif msg_type == "message" and msg_text:
+            text_parts.append(msg_text)
+    return "".join(reasoning_parts), "".join(text_parts)
+
+
+def parse_trajectory(events: list[dict[str, Any]], source_file: str) -> SessionRecord:
+    """重放 trajectory 事件流，重建为 SessionRecord。
+
+    事件按 timestamp 顺序到达（调用方应保证有序）。重放算法：
+        turn_start    -> 追加 user message
+        model_request -> 首次提取 system prompt 作为 summary；记录 tools
+        thinking      -> 累积到 assistant buffer
+        tool_call_request -> 累积 ToolCallBlock 到 assistant buffer
+        tool_execution    -> 累积 ToolResultBlock 到 assistant buffer
+        final_reply  -> flush buffer；追加最终 assistant message
+        error/cancel -> flush buffer
+    """
+    if not events:
         return SessionRecord(
-            session_id=raw.get("session_id", "") or "",
-            summary=raw.get("summary", "") or "",
-            messages=[_parse_message(m) for m in raw["messages"]],
-            source_file=source_file,
-            raw_state={
-                k: v for k, v in raw.items() if k not in {"messages"}
-            },
+            session_id="", summary="", messages=[], source_file=source_file,
         )
-    # 原始 dump 格式：agent.state.context
-    agent = raw.get("agent") or {}
-    state = agent.get("state") or {}
-    session_id = state.get("session_id", "")
-    summary = state.get("summary", "") or ""
-    messages = [_parse_message(m) for m in (state.get("context") or [])]
-    audit_state = {
-        k: v
-        for k, v in state.items()
-        if k not in {"context"}
+
+    session_id = ""
+    system_prompt = ""
+    tools: list[dict[str, Any]] = []
+    messages: list[Message] = []
+    trace_ids: set[str] = set()
+    event_counter: Counter[str] = Counter()
+    model_name = ""
+    provider_id = ""
+    agent_id = ""
+    user_id = ""
+    channel = ""
+
+    asst_buf: Optional[Message] = None
+
+    def flush_assistant() -> None:
+        nonlocal asst_buf
+        if asst_buf is not None and asst_buf.blocks:
+            messages.append(asst_buf)
+        asst_buf = None
+
+    def ensure_assistant() -> Message:
+        nonlocal asst_buf
+        if asst_buf is None:
+            asst_buf = Message(role="assistant", name="assistant", id="", blocks=[])
+        return asst_buf
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        et = ev.get("event_type", "")
+        payload = ev.get("payload") or {}
+        ev_ts = ev.get("timestamp")
+
+        if not session_id:
+            session_id = ev.get("session_id", "") or ""
+        if not agent_id:
+            agent_id = ev.get("agent_id", "") or ""
+        if not user_id:
+            user_id = ev.get("user_id", "") or ""
+        if not channel:
+            channel = ev.get("channel", "") or ""
+        if not model_name:
+            model_name = ev.get("model_name", "") or ""
+        if not provider_id:
+            provider_id = ev.get("provider_id", "") or ""
+        trace_id = ev.get("trace_id", "") or ""
+        if trace_id:
+            trace_ids.add(trace_id)
+        event_counter[et] += 1
+
+        if et == "turn_start":
+            flush_assistant()
+            input_text = payload.get("input_text", "") or ""
+            if input_text:
+                messages.append(Message(
+                    role="user", name="user", id="",
+                    blocks=[TextBlock(text=input_text, created_at=ev_ts)],
+                    created_at=ev_ts,
+                ))
+        elif et == "model_request":
+            if not system_prompt:
+                system_prompt = _extract_system_prompt(payload.get("messages"))
+            ev_tools = payload.get("tools")
+            if isinstance(ev_tools, list) and ev_tools:
+                tools = ev_tools
+        elif et == "thinking":
+            thinking_text = payload.get("thinking", "") or ""
+            if thinking_text:
+                buf = ensure_assistant()
+                buf.blocks.append(ThinkingBlock(thinking=thinking_text, created_at=ev_ts))
+        elif et == "tool_call_request":
+            buf = ensure_assistant()
+            for tc in payload.get("tool_calls", []) or []:
+                parsed = _parse_tool_call(tc)
+                if parsed is not None:
+                    parsed.created_at = ev_ts
+                    buf.blocks.append(parsed)
+        elif et == "tool_execution":
+            buf = ensure_assistant()
+            tc_id = payload.get("tool_call_id", "") or ""
+            tc_name = payload.get("tool_name", "") or ""
+            output = payload.get("output", "")
+            if not isinstance(output, str):
+                try:
+                    output = json.dumps(output, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    output = str(output)
+            end_state = (ev.get("metadata") or {}).get("end_state", "success")
+            buf.blocks.append(ToolResultBlock(
+                id=tc_id, name=tc_name, output_text=output,
+                state=end_state if isinstance(end_state, str) else "success",
+                metadata=ev.get("metadata") or {},
+                created_at=ev_ts,
+            ))
+        elif et == "final_reply":
+            flush_assistant()
+            reasoning, text = _parse_final_reply(payload.get("content"))
+            blocks: list[Any] = []
+            if reasoning:
+                blocks.append(ThinkingBlock(thinking=reasoning, created_at=ev_ts))
+            if text:
+                blocks.append(TextBlock(text=text, created_at=ev_ts))
+            if blocks:
+                messages.append(Message(
+                    role="assistant", name="assistant", id="",
+                    blocks=blocks, created_at=ev_ts,
+                    usage=(ev.get("metadata") or {}).get("usage"),
+                ))
+        elif et in ("error", "cancel"):
+            flush_assistant()
+
+    flush_assistant()
+
+    raw_state = {
+        "trace_ids": sorted(trace_ids),
+        "event_count": sum(event_counter.values()),
+        "event_types": dict(event_counter),
+        "model_name": model_name,
+        "provider_id": provider_id,
+        "agent_id": agent_id,
+        "user_id": user_id,
+        "channel": channel,
     }
+
     return SessionRecord(
         session_id=session_id,
-        summary=summary,
+        summary=system_prompt,
         messages=messages,
         source_file=source_file,
-        raw_state=audit_state,
+        tools=tools,
+        raw_state=raw_state,
     )
 
 
 def iter_session_files(root: Path) -> Iterator[Path]:
-    yield from sorted((root).rglob("*.json"))
+    yield from sorted(Path(root).rglob("*.jsonl"))
 
 
 def load_session(path: Path) -> SessionRecord:
+    events: list[dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    return parse_session(raw, str(path))
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            events.append(json.loads(line))
+    return parse_trajectory(events, str(path))

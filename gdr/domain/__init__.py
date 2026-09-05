@@ -18,6 +18,7 @@ from domain.schema import (
     ToolresultBlock,
     ValidationResult,
     load_session,
+    load_trajectory,
     locate_block,
     save_session,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "ToolresultBlock",
     "ValidationResult",
     "load_session",
+    "load_trajectory",
     "locate_block",
     "save_session",
 ]

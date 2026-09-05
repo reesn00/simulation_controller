@@ -17,14 +17,14 @@ _COPY_RETRY_DELAY_SECONDS = 0.5
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def default_qwenpaw_console_dir(agent_id: str) -> Path:
-    """Per-agent console session directory inside the local QwenPaw home.
+def default_qwenpaw_trajectory_dir(agent_id: str) -> Path:
+    """Per-agent trajectory directory inside the local QwenPaw home.
 
     QwenPaw falls back to the ``default`` workspace when no agent id is sent,
     so an unset ``execution_agent_id`` maps to ``workspaces/default``.
     """
     workspace = agent_id.strip() or "default"
-    return Path.home() / ".qwenpaw" / "workspaces" / workspace / "sessions" / "console"
+    return Path.home() / ".qwenpaw" / "workspaces" / workspace / "trajectory"
 
 
 def sanitize_filename_part(value: str) -> str:
@@ -45,10 +45,10 @@ def trajectory_filename(run_id: str, session_id: str) -> str:
 
 
 class QwenPawTrajectoryArchiver:
-    """Copy QwenPaw's per-session trajectory JSON into output/agent_trajectory.
+    """Copy QwenPaw's per-session trajectory JSONL into output/agent_trajectory.
 
-    Source file convention: ``{user_id}_{session_id}.json`` inside the agent's
-    console session directory. The copy is overwritten on every archive call
+    Source file convention: ``{session_id}.jsonl`` inside the agent's
+    trajectory directory. The copy is overwritten on every archive call
     so multi-turn runs keep the latest state under one stable, self-describing
     name (``{run_id}__{session_id}.json``).
     """
@@ -79,8 +79,8 @@ class QwenPawTrajectoryArchiver:
             self._warn(session_id, "unexpected trajectory capture error for session %s: %s", session_id, exc)
 
     def _source_path(self, agent_id: str, session_id: str) -> Path:
-        base = self._source_override or default_qwenpaw_console_dir(agent_id)
-        return base / f"{self._user_id}_{session_id}.json"
+        base = self._source_override or default_qwenpaw_trajectory_dir(agent_id)
+        return base / f"{session_id}.jsonl"
 
     def _copy_with_retry(self, source: Path, target: Path, session_id: str) -> None:
         for attempt in range(_COPY_ATTEMPTS):

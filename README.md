@@ -87,6 +87,7 @@ Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或�
 - 标记 `offline_only` 的任务默认不进入线上批次（需 `--include-offline`）：fixture 驱动的环境异常任务（T052/T053）与本地无对应取证工具的任务（F001）。
 - 放弃预检（AGENT_DECLINED）在验证未通过之后才执行，且可通过场景 `blocked_action: no_decline_check` 关闭；"拒绝/澄清/诚实降级"即任务目标的场景均已关闭。
 - 未达标反馈由 Criterion remediation 生成，只追问远端可以修复的差量缺口。
+- Trajectory 归档源路径固定为 `~/.qwenpaw/workspaces/{agent_id}/trajectory/{session_id}.jsonl`；不做 `sessions/console` 目录兜底探测。QwenPaw 须将 trajectory 写入此路径，archiver 才能复制到 `output/agent_trajectory/`。
 
 ## orchestration 边界
 

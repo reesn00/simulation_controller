@@ -149,9 +149,12 @@ class Session(BaseModel):
     source_file: str = ""
     summary: str = ""
     raw_state_keys: list[str] = Field(default_factory=list)
-    reply_context: dict = Field(default_factory=dict)
-    permission_context: dict = Field(default_factory=dict)
-    tool_context_activated_groups: list = Field(default_factory=list)
+    trace_ids: list[str] = Field(default_factory=list)
+    event_count: int = 0
+    event_types: dict[str, int] = Field(default_factory=dict)
+    model_name: str = ""
+    provider_id: str = ""
+    agent_id: str = ""
     messages: list[Message]
     metadata: dict = Field(default_factory=dict)
 
@@ -186,6 +189,60 @@ def load_session(input_path: Path) -> Session:
             parsed_messages.append(Message(**msg))
         raw["messages"] = parsed_messages
     return Session.model_validate(raw)
+
+
+def load_trajectory(input_path: Path) -> Session:
+    """从 agent trajectory JSONL 加载 Session（新格式事件流）。
+
+    复用 etl/pawsession/extract.py 的事件重放逻辑，把 JSONL 事件流
+    （turn_start/model_request/tool_call_request/tool_execution/final_reply/...）
+    重放后转换为 gdr Session 模型。
+    """
+    import sys as _sys
+
+    _etl_dir = Path(__file__).resolve().parents[2] / "etl" / "pawsession"
+    if str(_etl_dir) not in _sys.path:
+        _sys.path.insert(0, str(_etl_dir))
+    from extract import (  # type: ignore[import-not-found]
+        load_session as _etl_load,
+        TextBlock as _TB,
+        ThinkingBlock as _ThB,
+        ToolCallBlock as _TCB,
+        ToolResultBlock as _TRB,
+    )
+
+    record = _etl_load(input_path)
+    messages: list[Message] = []
+    for m in record.messages:
+        blocks: list = []
+        for b in m.blocks:
+            if isinstance(b, _TB):
+                blocks.append(TextBlock(type="text", id=b.id or "", text=b.text))
+            elif isinstance(b, _ThB):
+                blocks.append(ThinkingBlock(type="thinking", id=b.id or "", thinking=b.thinking))
+            elif isinstance(b, _TCB):
+                blocks.append(ToolcallBlock(type="toolcall", id=b.id, name=b.name, input=b.input, state="finished"))
+            elif isinstance(b, _TRB):
+                state = "success" if b.state == "success" else "error"
+                blocks.append(ToolresultBlock(type="toolresult", id=b.id, name=b.name, output_text=b.output_text, state=state))
+        messages.append(Message(
+            role=m.role, name=m.name, id=m.id, blocks=blocks,
+            metadata=m.metadata, usage=m.usage,
+            error=str(m.error) if m.error is not None else None,
+            created_at=m.created_at or "", finished_at=m.finished_at,
+        ))
+    raw = record.raw_state
+    return Session(
+        session_id=record.session_id, source_file=record.source_file,
+        summary=record.summary, raw_state_keys=list(raw.keys()),
+        trace_ids=raw.get("trace_ids", []),
+        event_count=raw.get("event_count", 0),
+        event_types=raw.get("event_types", {}),
+        model_name=raw.get("model_name", ""),
+        provider_id=raw.get("provider_id", ""),
+        agent_id=raw.get("agent_id", ""),
+        messages=messages,
+    )
 
 
 def save_session(session: Session, output_path: Path) -> None:

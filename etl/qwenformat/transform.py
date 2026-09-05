@@ -196,6 +196,92 @@ def camel_agent_state_to_session(trajectory: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def parse_qwenpaw_jsonl(raw_text: str) -> dict[str, Any]:
+    """把 QwenPaw JSONL trajectory 解析为 Session dict.
+
+    QwenPaw 的 trajectory 文件是 JSONL 格式（每行一个独立 JSON event），
+    不是单个 JSON 对象。本函数逐行解析，从 ``turn_start`` 和
+    ``final_reply.content`` 重组为 ``trajectory_to_session_with_openai_metadata``
+    期望的 Session 形态。
+
+    Event types:
+        - ``turn_start``: payload.input_text → user message
+        - ``final_reply``: payload.content 是完整对话历史消息列表
+        - ``model_request`` / ``model_response`` / ``tool_execution``: 中间
+          状态，不直接用于 Session 重组（final_reply 已包含完整历史）
+
+    final_reply.content 中每条消息的 type 映射：
+        - ``reasoning`` → assistant + thinking block
+        - ``plugin_call`` → assistant + toolcall block
+        - ``plugin_call_output`` → tool message + toolresult block
+        - ``message`` → assistant + text block
+    """
+    events: list[dict[str, Any]] = []
+    for line in raw_text.strip().splitlines():
+        line = line.strip()
+        if line:
+            events.append(json.loads(line))
+
+    session_id = ""
+    messages: list[dict[str, Any]] = []
+
+    for event in events:
+        et = event.get("event_type")
+        payload = event.get("payload") or {}
+
+        if et == "turn_start":
+            session_id = event.get("session_id", "")
+            messages.append({
+                "role": "user",
+                "blocks": [{"type": "text", "text": payload.get("input_text", "")}],
+            })
+
+        elif et == "final_reply":
+            for msg in payload.get("content") or []:
+                mtype = msg.get("type")
+                blocks: list[dict[str, Any]] = []
+
+                if mtype == "reasoning":
+                    for c in msg.get("content") or []:
+                        if c.get("type") == "text":
+                            blocks.append({"type": "thinking", "thinking": c.get("text", "")})
+                    if blocks:
+                        messages.append({"role": "assistant", "blocks": blocks})
+
+                elif mtype == "plugin_call":
+                    for c in msg.get("content") or []:
+                        if c.get("type") == "data":
+                            d = c.get("data") or {}
+                            blocks.append({
+                                "type": "toolcall",
+                                "id": d.get("call_id", ""),
+                                "name": d.get("name", ""),
+                                "input": json.dumps(d.get("arguments", {}), ensure_ascii=False),
+                            })
+                    if blocks:
+                        messages.append({"role": "assistant", "blocks": blocks})
+
+                elif mtype == "plugin_call_output":
+                    for c in msg.get("content") or []:
+                        if c.get("type") == "data":
+                            d = c.get("data") or {}
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": d.get("call_id", ""),
+                                "name": d.get("name", ""),
+                                "blocks": [{"type": "toolresult", "output_text": str(d.get("output", ""))}],
+                            })
+
+                elif mtype == "message":
+                    for c in msg.get("content") or []:
+                        if c.get("type") == "text":
+                            blocks.append({"type": "text", "text": c.get("text", "")})
+                    if blocks:
+                        messages.append({"role": "assistant", "blocks": blocks})
+
+    return {"session_id": session_id, "summary": "", "messages": messages}
+
+
 def trajectory_to_session_with_openai_metadata(
     trajectory: dict[str, Any],
     template_str: str,

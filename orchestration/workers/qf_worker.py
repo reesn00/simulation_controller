@@ -23,6 +23,7 @@ from etl.qwenformat.transform import (
     build_chat_env,
     camel_agent_state_to_session,
     load_chat_template,
+    parse_qwenpaw_jsonl,
     trajectory_to_session_with_openai_metadata,
 )
 from orchestration.queue import (
@@ -76,7 +77,11 @@ class QfWorker(BaseWorker):
     # ------------------------------------------------------------------
 
     def process(self, task: Task) -> Path:
-        trajectory = json.loads(task.src_path.read_text(encoding="utf-8"))
+        raw = task.src_path.read_text(encoding="utf-8")
+        try:
+            trajectory = json.loads(raw)
+        except json.JSONDecodeError:
+            trajectory = parse_qwenpaw_jsonl(raw)
         if "agent" in trajectory:
             trajectory = camel_agent_state_to_session(trajectory)
         out = trajectory_to_session_with_openai_metadata(

@@ -13,7 +13,7 @@ from simulate_serve.infrastructure.json_run_repository import JsonRunRepository
 from simulate_serve.infrastructure.qwenpaw_client import AsyncQwenPawExecutor
 from simulate_serve.infrastructure.trajectory_archiver import (
     QwenPawTrajectoryArchiver,
-    default_qwenpaw_console_dir,
+    default_qwenpaw_trajectory_dir,
 )
 from simulate_serve.interaction.actor import CamelInteractionActor, DeterministicInteractionActor, InteractionActor
 from simulate_serve.task_manager import TaskManager
@@ -164,7 +164,7 @@ async def build_application(config: AppConfig) -> ApplicationServices:
         else:
             logger.info(
                 "Trajectory capture source (default): %s",
-                default_qwenpaw_console_dir(config.agent_endpoint.execution_agent_id),
+                default_qwenpaw_trajectory_dir(config.agent_endpoint.execution_agent_id),
             )
     runtime = TaskRuntime(
         executor=executor,

@@ -12,9 +12,9 @@ log = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="GDR Agent 数据精修流水线")
-    parser.add_argument("--input", type=Path, help="输入 QwenPaw JSON 文件路径 (单文件模式)")
+    parser.add_argument("--input", type=Path, help="输入 trajectory JSONL 文件路径 (单文件模式)")
     parser.add_argument("--output", type=Path, help="输出 JSON 文件路径 (单文件模式)")
-    parser.add_argument("--batch-input-dir", type=Path, help="批量输入目录 (扫描 *.json)")
+    parser.add_argument("--batch-input-dir", type=Path, help="批量输入目录 (扫描 *.jsonl)")
     parser.add_argument("--batch-output-dir", type=Path, help="批量输出目录")
     parser.add_argument("--workers", type=int, help="并行 worker 数 (1=顺序)")
     parser.add_argument("--max-files", type=int, help="限制处理的输入文件数量 (默认全部)")

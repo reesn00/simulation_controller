@@ -51,11 +51,12 @@ def _audit_dict(record: SessionRecord, sample: SFTSample) -> dict[str, Any]:
         "source_file": record.source_file,
         "summary": record.summary,
         "raw_state_keys": list(record.raw_state.keys()),
-        "reply_context": record.raw_state.get("reply_context"),
-        "permission_context": record.raw_state.get("permission_context"),
-        "tool_context_activated_groups": (
-            record.raw_state.get("tool_context", {}).get("activated_groups")
-        ),
+        "trace_ids": record.raw_state.get("trace_ids"),
+        "event_count": record.raw_state.get("event_count"),
+        "event_types": record.raw_state.get("event_types"),
+        "model_name": record.raw_state.get("model_name"),
+        "provider_id": record.raw_state.get("provider_id"),
+        "agent_id": record.raw_state.get("agent_id"),
         "messages": [
             {
                 "role": m.role,

@@ -2,7 +2,7 @@
 
 用法:
     python run_batch.py --total 49 --batch 10
-    python run_batch.py --total 49 --batch 10 --input origindata --output output
+    python run_batch.py --total 49 --batch 10 --input output/agent_trajectory --output output
 
 每个 batch 写盘到:
     <output>/batch_<index>/
@@ -29,13 +29,13 @@ import run_etl  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="QwenPaw session 分批 ETL")
-    parser.add_argument("--input", default=str(HERE / "origindata"),
-                        help="原始 session JSON 所在目录")
+    parser = argparse.ArgumentParser(description="agent trajectory 分批 ETL")
+    parser.add_argument("--input", default=str(run_etl.DEFAULT_INPUT),
+                        help="trajectory JSONL 所在目录")
     parser.add_argument("--output", default=str(HERE / "output"),
                         help="产物根目录（每个 batch 写入子目录）")
     parser.add_argument("--total", type=int, required=True,
-                        help="session 总数（>=1）")
+                        help="trajectory 总数（>=1）")
     parser.add_argument("--batch", type=int, default=10,
                         help="每批处理数量（默认 10）")
     parser.add_argument("--offset", type=int, default=0,

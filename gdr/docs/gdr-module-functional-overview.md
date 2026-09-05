@@ -21,7 +21,7 @@ gdr-evaluator   # 评估闭环：build-pairs / train-probe / evaluate / feedback
 
 | 层级 | 字段 | 说明 |
 |---|---|---|
-| `Session` | session_id / messages / reply_context / metadata | 一次完整 Agent 交互 |
+| `Session` | session_id / messages / trace_ids / event_types / metadata | 一次完整 Agent 交互 |
 | `Message` | role / id / blocks / metadata | 单条 user 或 assistant 消息 |
 | `BlockUnion` | ThinkingBlock \| ToolcallBlock \| ToolresultBlock \| TextBlock | 4 种原子块，按 `type` 字段 discriminator 区分 |
 

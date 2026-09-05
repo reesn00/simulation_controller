@@ -9,7 +9,7 @@ import pytest
 import simulate_serve.infrastructure.trajectory_archiver as trajectory_archiver_module
 from simulate_serve.infrastructure.trajectory_archiver import (
     QwenPawTrajectoryArchiver,
-    default_qwenpaw_console_dir,
+    default_qwenpaw_trajectory_dir,
     trajectory_filename,
 )
 
@@ -21,20 +21,20 @@ def _no_retry_sleep(monkeypatch):
 
 def _write_source(source_dir, user_id: str, session_id: str, payload: dict) -> None:
     source_dir.mkdir(parents=True, exist_ok=True)
-    (source_dir / f"{user_id}_{session_id}.json").write_text(
+    (source_dir / f"{session_id}.jsonl").write_text(
         json.dumps(payload), encoding="utf-8"
     )
 
 
-def test_default_console_dir_uses_agent_workspace() -> None:
-    assert default_qwenpaw_console_dir("agentX") == (
-        Path.home() / ".qwenpaw" / "workspaces" / "agentX" / "sessions" / "console"
+def test_default_trajectory_dir_uses_agent_workspace() -> None:
+    assert default_qwenpaw_trajectory_dir("agentX") == (
+        Path.home() / ".qwenpaw" / "workspaces" / "agentX" / "trajectory"
     )
 
 
-def test_default_console_dir_falls_back_to_default_workspace() -> None:
-    assert default_qwenpaw_console_dir("") == (
-        Path.home() / ".qwenpaw" / "workspaces" / "default" / "sessions" / "console"
+def test_default_trajectory_dir_falls_back_to_default_workspace() -> None:
+    assert default_qwenpaw_trajectory_dir("") == (
+        Path.home() / ".qwenpaw" / "workspaces" / "default" / "trajectory"
     )
 
 

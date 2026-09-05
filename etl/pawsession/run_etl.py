@@ -1,10 +1,10 @@
-"""ETL 主入口：批量处理 origindata 下的 session JSON，输出 SFT 微调数据。
+"""ETL 主入口：批量处理 agent trajectory JSONL，输出 SFT 微调数据。
 
 用法:
     python run_etl.py
-    python run_etl.py --input origindata --output output
+    python run_etl.py --input output/agent_trajectory --output output
     python run_etl.py --no-thinking        # 不保留 thinking
-    python run_etl.py --no-summary-system  # 不把 summary 作为 system
+    python run_etl.py --no-summary-system  # 不把 system prompt 作为 system
 """
 
 from __future__ import annotations
@@ -19,18 +19,20 @@ from transform import TransformOptions, transform_session
 
 
 HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = HERE.parent.parent
+DEFAULT_INPUT = PROJECT_ROOT / "output" / "agent_trajectory"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="QwenPaw session -> SFT ETL")
-    parser.add_argument("--input", default=str(HERE / "origindata"),
-                        help="原始 session JSON 所在目录（递归）")
+    parser = argparse.ArgumentParser(description="agent trajectory JSONL -> SFT ETL")
+    parser.add_argument("--input", default=str(DEFAULT_INPUT),
+                        help="trajectory JSONL 所在目录（递归扫描 *.jsonl）")
     parser.add_argument("--output", default=str(HERE / "output"),
                         help="产物输出目录")
     parser.add_argument("--limit", type=int, default=None,
-                        help="最多处理的 session 数量（默认全部）")
+                        help="最多处理的 trajectory 数量（默认全部）")
     parser.add_argument("--offset", type=int, default=0,
-                        help="跳过前 N 个 session 后再开始处理")
+                        help="跳过前 N 个 trajectory 后再开始处理")
     parser.add_argument("--shuffle", action="store_true",
                         help="按固定种子随机打乱文件顺序后再截取")
     parser.add_argument("--seed", type=int, default=0,
@@ -38,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-thinking", action="store_true",
                         help="不保留 thinking 为 reasoning_content")
     parser.add_argument("--no-summary-system", action="store_true",
-                        help="不把 summary 作为 system 消息")
+                        help="不把 system prompt 作为 system 消息")
     parser.add_argument("--drop-empty-assistant", action="store_true",
                         help="丢弃空 content 且无 tool_calls 的 assistant 消息")
     parser.add_argument("--no-keep-tool-state", action="store_true",
@@ -67,10 +69,10 @@ def main(argv: list[str] | None = None) -> int:
 
     files = list(iter_session_files(input_dir))
     if not files:
-        print(f"[etl] 未在 {input_dir} 下找到 .json session 文件", file=sys.stderr)
+        print(f"[etl] 未在 {input_dir} 下找到 .jsonl trajectory 文件", file=sys.stderr)
         return 1
     total = len(files)
-    print(f"[etl] 发现 {total} 个 session 文件")
+    print(f"[etl] 发现 {total} 个 trajectory 文件")
 
     if args.shuffle:
         import random
@@ -96,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         sample = transform_session(record, opts)
         pairs.append((record, sample))
         print(f"[etl] {fp.name} -> session={record.session_id} "
+              f"events={record.raw_state.get('event_count', 0)} "
               f"user={sample.stats['user_turns']} "
               f"asst={sample.stats['assistant_turns']} "
               f"tc={sample.stats['tool_calls']} "

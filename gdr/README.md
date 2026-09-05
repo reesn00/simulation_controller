@@ -6,11 +6,11 @@ LLM 调用通过 HTTP OpenAI 兼容接口（vLLM / llama.cpp server / Ollama 等
 
 ## 数据模型
 
-真实数据为 QwenPaw 平台导出的单文件 JSON 格式，核心结构为 **Session → Message → Block** 三级模型：
+真实数据为 QwenPaw agent trajectory JSONL 事件流格式（每行一个 TrajectoryEvent），经 `load_trajectory` 重放后核心结构为 **Session → Message → Block** 三级模型：
 
 | 层级 | 说明 |
 |------|------|
-| Session | 一次完整的 Agent 交互会话，含 session_id、messages、reply_context 等 |
+| Session | 一次完整的 Agent 交互会话，含 session_id、messages、trace_ids、event_types 等 |
 | Message | 单条对话记录，role 为 user 或 assistant |
 | Block | 原子内容单元，按 type 分为 thinking / toolcall / toolresult / text 四种 |
 
