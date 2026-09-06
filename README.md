@@ -40,6 +40,73 @@ simulate_serve（模拟采集 Run/审计 JSON）
 
 进程模型：master 主线程跑批循环，qf/gdr/watcher 都是常驻 Thread + 独立 stop_event；`reap_stale` 走独立 Thread 周期跑；stop 通道为 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险。空闲退避（`worker_idle_backoff_max_seconds`）让连续空轮指数翻倍、封顶到配置上限，省 CPU/写锁。
 
+## 数据格式与三阶段产物
+
+| 阶段 | 入口模块 | 产物文件 | 数据形态 |
+|---|---|---|---|
+| 模拟采集 | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（**AI SDK 形态**） |
+| 转换 | `etl/qwenformat` | `orchestration/data/qf_out/<TXXX>__<session>.json` | 单 Session JSON，含 `messages[*].blocks` 结构 |
+| 精修 | `gdr` | `gdr/refine_data/<TXXX>__<session>_refined.json` | 同 qf_out 结构 + `metadata.refine_history` |
+
+GDR 只接受 `qf_out` 格式（[`gdr/domain/schema.py::load_session`](gdr/domain/schema.py#L182-L198)），不直接消费 trajectory；`etl/qwenformat` 是 simulate_serve 与 gdr 之间的强制 adapter，qf_out 是单一真相来源。
+
+### trajectory（AI SDK 形态，2026-09-06 确认）
+
+QwenPaw 不会发出独立的 `tool_call_request` / `tool_execution` 事件来表达工具调用。**权威源是 LAST `model_request.payload.messages`**：
+
+- `messages[0]` (role=system)：完整 system prompt。
+- `messages[assistant].content`：AI SDK 块序列
+  - `type=text`：内含 `<think>...</think>`，需用 `_split_thinking` 拆为独立 ThinkingBlock + TextBlock。
+  - `type=tool_call`：{id, name, input (JSON str), state="finished"}。
+  - `type=tool_result`：{id, name, output, state}。
+- `model_request.payload.tools`：27 个工具完整定义（含 description + parameters schema），是 `tools` 列表的权威来源。
+- `final_reply.payload.content`：prior message / plugin_call / plugin_call_output / final message 的整段快照；**只取最后一个 `message` / `reasoning` 块**作为 AI 最终回复，中间的 plugin_call/output 和 prior message 已被 model_request 覆盖，跳过避免重复。
+
+事件序列：`turn_start → model_request (system+user) → model_response → tool_execution (QwenPaw 自产生) → model_request (完整快照) → model_response → final_reply`。中间的 `tool_execution` 不是权威，model_request 内的 `tool_result` 才是。
+
+[`etl/qwenformat/load.py::parse_trajectory`](etl/qwenformat/load.py) 检测 LAST model_request 是否含 assistant 决定走 **AI SDK 抽取路径**；旧事件流路径（thinking/tool_call_request/tool_execution 累计）作为 fallback 保留向后兼容，不主动丢弃。
+
+### qf_out（Session → Message → Block）
+
+```
+Session {
+  session_id, summary, messages: [
+    Message {
+      role: "system" | "user" | "assistant",
+      blocks: [ThinkingBlock | ToolcallBlock | ToolresultBlock | TextBlock],
+      metadata: {
+        openai_messages: [...],   # OpenAI function-calling 兼容形态
+        tools: [...],             # 来自 model_request.payload.tools
+        qf_text: "...",           # Qwen3 chat_template 渲染的训练文本
+        qf_rendered_at, qf_stats
+      }
+    }
+  ]
+}
+```
+
+`gdr/domain/schema.py::Message.role` 支持 `system`（原 schema 仅 `user | assistant`，扩展后接纳 qf_out 新增的 system message）。
+
+### refine_data
+
+GDR 三级精修（`obs_denoiser` / `thought_refactor` / `tool_fixer`）后的 Session，结构同 qf_out，额外在 `metadata` 追加：
+
+- `refine_history`：每块的精修模块、attempt、model_used、result。
+- `validation_summary`：L1/L2/L3 通过块数。
+- `modified_blocks`：被修改的 block id 列表。
+
+低分但结构可用的 session 走 `gdr/refine_data/judge_low.jsonl` 审核通道，**数据不丢**；只有三种硬丢弃（只剩 user / assistant 全空壳 / 极少且全失败），见 [`gdr/pipeline/runner.py::_session_structurally_unusable`](gdr/pipeline/runner.py)。
+
+### E2E 验证
+
+`.\run.bat start --tasks T001 --exit-when-done`（含 2026-09-06 qf_out 合约补丁后）：
+
+- trajectory：8 events（`turn_start / model_request / model_response / 2 tool_execution / model_request / model_response / final_reply`），最后 `final_reply`。
+- qf_out `messages`：system / user / assistant(thinking+text+2 toolcall+2 toolresult) / assistant(thinking+text)。
+- qf_out `metadata.openai_messages.roles`：`['system','user','assistant','tool','tool','assistant']`。
+- qf_out `metadata.tools`：27（含完整 description + parameters）。
+- refine_data：4 messages，所有角色 GDR 都接受；`batch_id=32 runs=1 drained=True dead=0`。
+
 ## 架构
 
 - `interaction/`：生成首轮请求和针对验证缺口的自然追问，不拥有验证工具。
