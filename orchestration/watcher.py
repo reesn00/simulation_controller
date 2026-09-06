@@ -8,6 +8,7 @@ trajectory 文件名由 ``simulate_serve/infrastructure/trajectory_archiver.py:3
 
 from __future__ import annotations
 
+import math
 import threading
 from pathlib import Path
 from typing import Optional
@@ -114,6 +115,10 @@ class TrajectoryWatcher:
         出现→登记"的最坏路径，master 本来就要等批终态，可接受。
         """
         idle_rounds = 0
+        if max_poll_seconds > 0:
+            cap_exp = max(0, math.ceil(math.log2(max_poll_seconds / self._poll_seconds)))
+        else:
+            cap_exp = 0
         while not stop_event.is_set():
             registered = 0
             try:
@@ -126,8 +131,9 @@ class TrajectoryWatcher:
             else:
                 idle_rounds += 1
             if max_poll_seconds > 0 and idle_rounds:
+                exp = min(idle_rounds - 1, cap_exp)
                 wait = min(
-                    self._poll_seconds * (2 ** (idle_rounds - 1)),
+                    self._poll_seconds * (2 ** exp),
                     max_poll_seconds,
                 )
             else:
