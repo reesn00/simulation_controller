@@ -8,8 +8,25 @@ import torch
 # 若直接在 Windows 上运行，改成 r"F:\modelscope\Qwen\Qwen3.5-9B"
 MODEL_PATH = "/mnt/f/modelscope/Qwen/Qwen3.5-9B"
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_FILE = os.path.join(_SCRIPT_DIR, "input_data", "sft_qwen3.jsonl")
+# 训练数据目录：读取其下全部 *.jsonl，而不是固定某一个文件，
+# 后续新增/拆分的数据分片无需再改脚本。
+DATA_DIR = os.path.join(_SCRIPT_DIR, "input_data")
 OUTPUT_DIR = os.path.join(_SCRIPT_DIR, "outputs")
+
+
+def _list_data_files(data_dir: str = DATA_DIR) -> list[str]:
+    """返回 data_dir 下所有 .jsonl 文件的完整路径（排序保证顺序稳定）。"""
+    if not os.path.isdir(data_dir):
+        raise FileNotFoundError(f"数据目录不存在: {data_dir}")
+    files = sorted(
+        os.path.join(data_dir, name)
+        for name in os.listdir(data_dir)
+        if name.endswith(".jsonl")
+    )
+    if not files:
+        raise FileNotFoundError(f"数据目录中没有 .jsonl 文件: {data_dir}")
+    print(f"加载 {len(files)} 个数据文件: {[os.path.basename(f) for f in files]}")
+    return files
 
 # 数据集渲染后 token 长度：min 1.4k / 中位数 45k / max 122k，49 条中 43 条超过 8192。
 # 16G 显存下取 32768；超过部分会被截断。显存不够可降到 16384，更充裕可升到 65536。
@@ -43,7 +60,8 @@ from datasets import load_dataset
 
 # 不再用 unsloth 的 "qwen3" 模板覆盖：本地模型自带 chat_template.jinja，
 # 已原生支持 tools / tool_calls / reasoning_content，与 Qwen3.5 的训练格式一致。
-dataset = load_dataset("json", data_files=DATA_FILE, split="train")
+DATA_FILES = _list_data_files()          # input_data/ 下全部 *.jsonl
+dataset = load_dataset("json", data_files=DATA_FILES, split="train")
 
 def formatting_prompts_func(examples):
     texts = [
