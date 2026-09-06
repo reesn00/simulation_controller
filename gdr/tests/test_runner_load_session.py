@@ -1,15 +1,14 @@
 """gdr.pipeline.runner._process_one_file 加载契约回归.
 
-qf 阶段产物(qf_out)是 Session JSON(整体多行 indent), 必须用 load_session 加载;
-曾错用 load_trajectory(JSONL 逐行) 导致
-"Expecting property name enclosed in double quotes: line 1 column 2 (char 1)".
+qf 阶段产物 (qf_out) 是单 Session JSON (整体多行 indent), 由
+``gdr.domain.load_session`` 加载. 不再支持 ``load_trajectory`` —— GDR
+只消费 etl/qwenformat 导出的 qf_out 格式, 不再兼容原始 trajectory JSONL.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import pytest
 from config import Settings
 
 
@@ -59,13 +58,13 @@ def test_process_one_file_loads_session_json(tmp_path, monkeypatch):
     assert out_path.exists()
 
 
-def test_load_trajectory_rejects_session_json(tmp_path):
-    """反向佐证: load_trajectory(JSONL 逐行) 对 Session JSON 报 JSONDecodeError.
+def test_gdr_domain_does_not_expose_load_trajectory():
+    """用户主旨: GDR 不再兼容原始 trajectory 直接加载; 不导出 load_trajectory."""
+    from domain import __all__ as domain_all
 
-    固化"qf_out 不可用 load_trajectory"的事实, 防止回退.
-    """
-    from domain import load_trajectory
+    assert "load_trajectory" not in domain_all
 
-    qf_in = _write_qf_out(tmp_path)
-    with pytest.raises(json.JSONDecodeError):
-        load_trajectory(qf_in)
+    import domain.schema as schema_mod
+    assert not hasattr(schema_mod, "load_trajectory"), (
+        "gdr.domain.schema.load_trajectory 已删除 (GDR 只消费 qf_out)"
+    )

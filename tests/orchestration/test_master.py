@@ -25,6 +25,7 @@ from orchestration.queue import (
 )
 from orchestration.workers.gdr_worker import GdrWorker
 from orchestration.workers.qf_worker import QfWorker
+from orchestration.watcher import TrajectoryWatcher
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.state_machine import RunState
 
@@ -205,6 +206,95 @@ def test_run_one_batch_end_to_end(env, monkeypatch) -> None:
     assert {t.run_id for t in tasks} == {"T1", "T2"}
     states = {t.run_id: t.state for t in tasks}
     assert states == {"T1": STATE_DONE, "T2": STATE_DONE}, f"states={states}"
+
+
+def test_run_one_batch_without_pre_registered_tasks(env, monkeypatch) -> None:
+    """回归: producer 不预占位 tasks 时, master 必须靠 ``_first_scan_watcher``
+    把本批 trajectory 同步登记, 否则 ``wait_batch_drained`` 在 watcher 异步
+    首轮前读到空 batch → 误判已 drain → master 立刻退出, tasks 永远 pending.
+
+    真实 ``producer_simulate.run_batch`` 不向 SQLite 写 task, 仅 ``insert_batch`` +
+    ``insert_run_task_map``; tasks 由 watcher 扫描 trajectory_dir 时登记.
+    若 master 同步首扫失败, 整个批会被丢在 pending.
+    """
+    _tmp, queue, m = env
+    _patch_qf_process(monkeypatch)
+    _patch_gdr_process(monkeypatch)
+
+    traj_dir = Path(m._cfg.paths.trajectory_dir)
+    runs_dir = Path(m._cfg.paths.runs_dir)
+
+    def real_like_producer(*, config_path, task_ids, limit, queue):
+        bid = queue.insert_batch(task_ids)
+        queue.update_batch(bid, simulate_started_at="2026-09-01T00:00:00Z")
+        runs: list[TaskRun] = []
+        for tid in task_ids[:limit]:
+            run_id = tid
+            tr = TaskRun(run_id=run_id, task_id=tid, task_type="test",
+                         state=RunState.SUCCESS)
+            runs.append(tr)
+            rd = runs_dir / run_id
+            rd.mkdir(parents=True, exist_ok=True)
+            (rd / "run.json").write_text(
+                json.dumps({"run_id": run_id, "state": "success"}), encoding="utf-8",
+            )
+            session = f"session_{tid}"
+            (traj_dir / f"{run_id}__{session}.json").write_text("{}", encoding="utf-8")
+            # 注意: 不调用 queue.insert(src_path=...) 预占位, 与真实 producer 一致.
+        queue.update_batch(bid, simulate_done_at="2026-09-01T00:00:01Z")
+        return bid, runs
+
+    m._producer_runner = real_like_producer
+
+    summaries = m.run([["T1", "T2"]])
+    s = summaries[0]
+    assert s.drained is True, "first_scan 必须同步登记, 否则 batch 被误判为 drain"
+
+    tasks = queue.list_tasks_for_batch(s.batch_id)
+    assert len(tasks) == 2, (
+        f"expected 2 tasks (注册 by first_scan), got {len(tasks)}; "
+        f"counts={queue.count_by_state()}"
+    )
+    states = {t.run_id: t.state for t in tasks}
+    assert states == {"T1": STATE_DONE, "T2": STATE_DONE}, (
+        f"tasks 应走完 qf+gdr, 实测: {states}"
+    )
+
+
+def test_first_scan_watcher_registers_existing_trajectories(env, monkeypatch) -> None:
+    """``_first_scan_watcher`` 必须返回已存在 trajectory 数量, 且把它们登记到 SQLite."""
+    _tmp, queue, m = env
+    traj_dir = Path(m._cfg.paths.trajectory_dir)
+
+    # 模拟 producer 已落地 trajectory 但 tasks 尚未登记
+    for i in range(3):
+        (traj_dir / f"run_r{i}__session_{i}.json").write_text("{}", encoding="utf-8")
+
+    queue.insert_batch(["T1"])
+    result = m._first_scan_watcher(batch_id=1)
+    assert result["registered"] == 3, f"expected 3 registered, got {result}"
+    assert result["skipped"] == 0
+    tasks = queue.list_tasks_for_batch(1)
+    assert len(tasks) == 3
+    assert {t.run_id for t in tasks} == {"run_r0", "run_r1", "run_r2"}
+
+
+def test_first_scan_watcher_idempotent_with_watcher_async(env, monkeypatch) -> None:
+    """同步 first_scan 后, 异步 watcher 再次 scan 必须 skip 已登记项, 不抛 UNIQUE."""
+    _tmp, queue, m = env
+    traj_dir = Path(m._cfg.paths.trajectory_dir)
+    (traj_dir / "run_r0__session_0.json").write_text("{}", encoding="utf-8")
+    queue.insert_batch(["T1"])
+    first = m._first_scan_watcher(batch_id=1)
+    assert first["registered"] == 1
+
+    # 异步 watcher 接到同样文件: 必须 skip, 不允许重复登记
+    async_w = TrajectoryWatcher(
+        trajectory_dir=traj_dir, queue=queue, batch_id=1, poll_seconds=0.05,
+    )
+    second = async_w.scan_once()
+    assert second["registered"] == 0
+    assert second["skipped"] == 1
 
 
 def test_run_multiple_batches(env, monkeypatch) -> None:

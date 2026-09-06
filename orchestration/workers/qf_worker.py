@@ -2,14 +2,19 @@
 
 流程：
     1. ``pull()``: 从队列 ``state='pending'`` 拉任务
-    2. ``process()``: 读 trajectory → 调
-       ``etl.qwenformat.transform.trajectory_to_session_with_openai_metadata``
-       → 落 ``qf_output_dir/<session_id>.json``
+    2. ``process()``: 读 trajectory（``run_<run_id>__<session_id>.json`` JSONL 事件流）
+       → ``etl.qwenformat.load.load_trajectory`` 重放为 ``SessionRecord``
+       → ``SessionRecord.to_session_dict`` 得到 Session 形态 dict
+       → ``etl.qwenformat.transform.trajectory_to_session_with_openai_metadata``
+       渲染出 Qwen3 训练文本，落 ``qf_output_dir/<session_id>.json``
     3. ``mark_done()``: ``queue.mark_qf_done(task.id, qf_output_path=...)``
        → state 转 ``pending_gdr``
 
 失败由 ``base_worker._handle_failure`` 走 ``queue.mark_failed(stage=qf)``；
 attempts 超 max 时入 dead。
+
+注: 仅识别新格式 trajectory JSONL 事件流 (``run_<run_id>__<session_id>.json``)；
+旧 CAMEL 单对象 / 裸 .jsonl 直接抛异常, 由 worker 标记失败入 dead, 不再兼容.
 """
 
 from __future__ import annotations
@@ -19,11 +24,10 @@ from pathlib import Path
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from etl.qwenformat.load import load_trajectory
 from etl.qwenformat.transform import (
     build_chat_env,
-    camel_agent_state_to_session,
     load_chat_template,
-    parse_qwenpaw_jsonl,
     trajectory_to_session_with_openai_metadata,
 )
 from orchestration.queue import (
@@ -77,13 +81,12 @@ class QfWorker(BaseWorker):
     # ------------------------------------------------------------------
 
     def process(self, task: Task) -> Path:
-        raw = task.src_path.read_text(encoding="utf-8")
-        try:
-            trajectory = json.loads(raw)
-        except json.JSONDecodeError:
-            trajectory = parse_qwenpaw_jsonl(raw)
-        if "agent" in trajectory:
-            trajectory = camel_agent_state_to_session(trajectory)
+        # 新格式 trajectory: ``run_<run_id>__<session_id>.json`` (JSONL 事件流)
+        # 不再支持旧 CAMEL 单对象 / 裸 .jsonl 形态; 解析失败抛异常, 由 worker
+        # 走 ``_handle_failure`` 标记失败并最终入 dead 归档 (与 producer 终止后
+        # 残留旧格式文件的预期一致, 不丢数据, 不兼容转换).
+        record = load_trajectory(task.src_path)
+        trajectory = record.to_session_dict()
         out = trajectory_to_session_with_openai_metadata(
             trajectory, self._template, self._env,
         )

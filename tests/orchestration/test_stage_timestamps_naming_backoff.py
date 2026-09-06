@@ -25,26 +25,53 @@ from orchestration.workers.gdr_worker import GdrWorker
 # helpers
 # ---------------------------------------------------------------------------
 
-def _trajectory(session_id: str = "sess-1") -> dict:
-    return {
-        "session_id": session_id,
-        "summary": "test",
-        "messages": [
-            {"role": "user", "name": "user", "id": "u1",
-             "blocks": [{"type": "text", "text": "hi"}], "metadata": {}},
-            {"role": "assistant", "name": "Default", "id": "a1",
-             "blocks": [
-                 {"type": "thinking", "thinking": "think"},
-                 {"type": "text", "text": "hello"},
-             ], "metadata": {}},
-        ],
-    }
+def _trajectory(session_id: str = "sess-1") -> str:
+    """新格式 trajectory JSONL: turn_start → model_request → model_response → final_reply."""
+    events = [
+        {
+            "trace_id": "t", "span_id": "s1", "parent_span_id": None,
+            "event_type": "turn_start", "timestamp": "2026-09-05T00:00:00+00:00",
+            "session_id": session_id, "agent_id": "default", "user_id": "u",
+            "channel": "console", "provider_id": "", "model_name": "m",
+            "payload": {"input_text": "hi", "request_agent_id": "default",
+                        "agent_backend": "x"},
+            "metadata": {},
+        },
+        {
+            "trace_id": "t", "span_id": "s2", "parent_span_id": None,
+            "event_type": "model_request", "timestamp": "2026-09-05T00:00:00+00:00",
+            "session_id": session_id, "agent_id": "default", "user_id": "u",
+            "channel": "console", "provider_id": "p", "model_name": "m",
+            "payload": {"messages": [], "tools": []},
+            "metadata": {},
+        },
+        {
+            "trace_id": "t", "span_id": "s3", "parent_span_id": "s2",
+            "event_type": "model_response", "timestamp": "2026-09-05T00:00:01+00:00",
+            "session_id": session_id, "agent_id": "default", "user_id": "u",
+            "channel": "console", "provider_id": "p", "model_name": "m",
+            "payload": {"usage": {"total_tokens": 10}},
+            "metadata": {"duration_ms": 1000},
+        },
+        {
+            "trace_id": "t", "span_id": "s4", "parent_span_id": None,
+            "event_type": "final_reply", "timestamp": "2026-09-05T00:00:02+00:00",
+            "session_id": session_id, "agent_id": "default", "user_id": "u",
+            "channel": "console", "provider_id": "p", "model_name": "m",
+            "payload": {"content": [
+                {"type": "reasoning", "content": [{"type": "text", "text": "think"}]},
+                {"type": "message", "content": [{"type": "text", "text": "hello"}]},
+            ]},
+            "metadata": {},
+        },
+    ]
+    return "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n"
 
 
 def _seed(queue: SQLiteQueue, tmp_path: Path, name: str, session_id: str,
           *, batch_id: int = 1, run_id: str = "r") -> int:
     fp = tmp_path / name
-    fp.write_text(json.dumps(_trajectory(session_id), ensure_ascii=False), encoding="utf-8")
+    fp.write_text(_trajectory(session_id), encoding="utf-8")
     tid, inserted = queue.insert(src_path=fp, run_id=run_id, session_id=session_id,
                                  batch_id=batch_id)
     assert inserted

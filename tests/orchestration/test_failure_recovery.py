@@ -173,8 +173,15 @@ def test_failure_injection_dead_archived(env, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 def test_recovery_reaper_unlocks_stale_qf_processing(env, monkeypatch) -> None:
-    """模拟一个 qf worker 拿锁后挂掉：task 卡在 qf_processing；reaper 把它退回 pending."""
+    """模拟一个 qf worker 拿锁后挂掉：task 卡在 qf_processing；reaper 把它退回 pending.
+
+    本测试只验证 reaper 行为 (qf_processing → pending). 让 QfWorker.run_once
+    空转, 避免 reaper 解锁后 worker 立即重新拉到任务、再次失败、最终
+    进 dead —— 让测试焦点保持在 reaper 上, 不受 qf 处理语义牵连.
+    """
     _tmp, queue, m, _ = env
+    # 隔离 qf worker: 不让 run_once 真的处理任何任务, 否则会失败级联
+    monkeypatch.setattr(QfWorker, "run_once", lambda self: 0)
     src = _tmp / "traj" / "r__s.json"
     src.write_text("{}", encoding="utf-8")
     tid, _ = queue.insert(src_path=src, run_id="r", session_id="s", batch_id=1)

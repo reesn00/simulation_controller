@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     tool_source: str = "auto"
     qwenpaw_agent_json: Path = DEFAULT_QWENPAW_AGENT_JSON
 
-    input_path: Path = Path("../output/agent_trajectory")
+    input_path: Path = Path("../output/agent_trajectory")  # 默认单文件入口路径；批量模式用 batch_input_dir
     output_path: Path = Path("./refine_data/output.json")
     log_dir: Path = Path("./logs")
 

@@ -234,8 +234,20 @@ class Master:
             # 直接向上抛，由 run() 捕获后跳出批循环
             raise
 
-        # 3. 启动本批 watcher
+        # 3. 启动本批 watcher (异步持续扫描新文件)
         watcher_stop = self._start_batch_watcher(batch_id)
+
+        # 3.5 同步首扫: 把 trajectory_dir 当前已有的 .json 立刻登记到 SQLite.
+        #     producer 完成后 trajectory 通常已落盘, 但异步 watcher 线程的首次
+        #     scan 可能比主线程的 wait_batch_drained 慢一拍. 若不主动先扫,
+        #     wait_batch_drained 会读到空 batch → 误判已 drain → master 立刻退出,
+        #     新登记的 task 被丢在 pending 状态, 永远无人处理.
+        first_scan = self._first_scan_watcher(batch_id)
+        if first_scan["registered"]:
+            _log.info(
+                "master: batch_id=%d first_scan registered=%d skipped=%d dead=%d",
+                batch_id, first_scan["registered"], first_scan["skipped"], first_scan["dead"],
+            )
 
         try:
             # 4. 等 SQLite 本批全 done / dead
@@ -303,6 +315,23 @@ class Master:
         t.start()
         self._threads.append((f"watcher-{batch_id}", t, stop_ev))
         return stop_ev
+
+    def _first_scan_watcher(self, batch_id: int) -> dict[str, int]:
+        """同步首次扫描 trajectory_dir, 把当前文件登记到 SQLite.
+
+        异步 watcher 线程与主线程 ``wait_batch_drained`` 之间存在 race:
+        主线程可能在 watcher 首次轮询前就读到空 batch 误判已 drain.
+        这里在主线程同步跑一次 ``scan_once`` 以消除该 race.
+        后续若还有新 trajectory 文件出现, 异步 watcher 仍会持续捕获.
+        """
+        s = self._cfg.settings
+        w = TrajectoryWatcher(
+            trajectory_dir=Path(self._cfg.paths.trajectory_dir),
+            queue=self._queue, batch_id=batch_id,
+            poll_seconds=s.watcher_poll_seconds,
+            dead_log_path=Path(self._cfg.paths.log_dir) / "watcher_dead.log",
+        )
+        return w.scan_once()
 
     # ------------------------------------------------------------------
     # batch_drained 轮询

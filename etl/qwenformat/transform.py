@@ -1,4 +1,8 @@
-"""Transform: 把 OpenAI function-calling SFT 数据适配为 Qwen3 官方 chat template 可用的格式。
+"""Transform: 把 Session dict 适配为 Qwen3 官方 chat template 可用的格式。
+
+输入 (``Session`` 形态，来自 ``etl/pawsession/extract.SessionRecord.to_session_dict``):
+    ``{"session_id", "summary", "messages": [{"role", "name", "id",
+        "blocks": [{"type": "text"|"thinking"|"toolcall"|"toolresult", ...}], ...}]}``
 
 相对原始 sft_openai.json 的修复点（对齐 Qwen3/2.5 官方 Jinja 模板）:
     1. tool_calls.function.arguments 由 JSON 字符串反序列化为 dict
@@ -121,7 +125,7 @@ def transform_sample(
 
 
 # ---------------------------------------------------------------------------
-# trajectory → Session JSON（含 OpenAI metadata）
+# Session dict → OpenAI metadata 注入
 # ---------------------------------------------------------------------------
 
 def _utc_now_iso() -> str:
@@ -138,150 +142,6 @@ def _make_tool_call_id(raw_id: str) -> str:
     return raw_id if raw_id.startswith("call_") else f"call_{raw_id}"
 
 
-def camel_agent_state_to_session(trajectory: dict[str, Any]) -> dict[str, Any]:
-    """把 QwenPaw 拷贝出来的 CAMEL agent trajectory 转为 GDR Session 形态.
-
-    输入（CAMEL agent 原始 session JSON）：
-        ``{"agent": {"state": {"session_id", "summary", "context": [
-            {"role", "name", "id", "content": [block, ...], "metadata", ...}]}}}``
-
-    输出（GDR ``domain.schema.Session`` 期待的 morph，block type 对齐 GDR 命名）：
-        ``{"session_id", "summary", "messages": [{"role", "name", "id",
-          "blocks": [block, ...], "metadata", ...}]}``
-
-    变换点：
-        1. 顶层 ``agent.state`` 拍平为 ``session_id`` / ``summary``
-        2. 消息列表从 ``state.context`` 取出，``content`` 字段重命名为 ``blocks``
-        3. block type 对齐 GDR schema 命名：
-           - ``tool_call``  → ``toolcall``（保留 id/name/input/state）
-           - ``tool_result`` → ``toolresult``（``output`` list → ``output_text`` str）
-           - ``hint`` 等 GDR 未定义的类型 → 丢弃
-    """
-    agent = trajectory.get("agent") or {}
-    state = agent.get("state") or {}
-
-    messages: list[dict[str, Any]] = []
-    for msg in state.get("context") or []:
-        blocks: list[dict[str, Any]] = []
-        for raw_block in msg.get("content") or []:
-            btype = raw_block.get("type")
-            block = dict(raw_block)
-            if btype == "tool_call":
-                block["type"] = "toolcall"
-            elif btype == "tool_result":
-                block["type"] = "toolresult"
-                parts = [
-                    item.get("text", "")
-                    for item in (block.get("output") or [])
-                    if isinstance(item, dict) and item.get("type") == "text"
-                ]
-                block["output_text"] = "".join(parts)
-                block.pop("output", None)
-            elif btype not in ("thinking", "text"):
-                # GDR schema 未定义的类型（如 hint）丢弃
-                continue
-            blocks.append(block)
-        messages.append({
-            "role": msg.get("role"),
-            "name": msg.get("name"),
-            "id": msg.get("id"),
-            "blocks": blocks,
-            "metadata": msg.get("metadata") or {},
-        })
-
-    return {
-        "session_id": state.get("session_id"),
-        "summary": state.get("summary", ""),
-        "messages": messages,
-    }
-
-
-def parse_qwenpaw_jsonl(raw_text: str) -> dict[str, Any]:
-    """把 QwenPaw JSONL trajectory 解析为 Session dict.
-
-    QwenPaw 的 trajectory 文件是 JSONL 格式（每行一个独立 JSON event），
-    不是单个 JSON 对象。本函数逐行解析，从 ``turn_start`` 和
-    ``final_reply.content`` 重组为 ``trajectory_to_session_with_openai_metadata``
-    期望的 Session 形态。
-
-    Event types:
-        - ``turn_start``: payload.input_text → user message
-        - ``final_reply``: payload.content 是完整对话历史消息列表
-        - ``model_request`` / ``model_response`` / ``tool_execution``: 中间
-          状态，不直接用于 Session 重组（final_reply 已包含完整历史）
-
-    final_reply.content 中每条消息的 type 映射：
-        - ``reasoning`` → assistant + thinking block
-        - ``plugin_call`` → assistant + toolcall block
-        - ``plugin_call_output`` → tool message + toolresult block
-        - ``message`` → assistant + text block
-    """
-    events: list[dict[str, Any]] = []
-    for line in raw_text.strip().splitlines():
-        line = line.strip()
-        if line:
-            events.append(json.loads(line))
-
-    session_id = ""
-    messages: list[dict[str, Any]] = []
-
-    for event in events:
-        et = event.get("event_type")
-        payload = event.get("payload") or {}
-
-        if et == "turn_start":
-            session_id = event.get("session_id", "")
-            messages.append({
-                "role": "user",
-                "blocks": [{"type": "text", "text": payload.get("input_text", "")}],
-            })
-
-        elif et == "final_reply":
-            for msg in payload.get("content") or []:
-                mtype = msg.get("type")
-                blocks: list[dict[str, Any]] = []
-
-                if mtype == "reasoning":
-                    for c in msg.get("content") or []:
-                        if c.get("type") == "text":
-                            blocks.append({"type": "thinking", "thinking": c.get("text", "")})
-                    if blocks:
-                        messages.append({"role": "assistant", "blocks": blocks})
-
-                elif mtype == "plugin_call":
-                    for c in msg.get("content") or []:
-                        if c.get("type") == "data":
-                            d = c.get("data") or {}
-                            blocks.append({
-                                "type": "toolcall",
-                                "id": d.get("call_id", ""),
-                                "name": d.get("name", ""),
-                                "input": json.dumps(d.get("arguments", {}), ensure_ascii=False),
-                            })
-                    if blocks:
-                        messages.append({"role": "assistant", "blocks": blocks})
-
-                elif mtype == "plugin_call_output":
-                    for c in msg.get("content") or []:
-                        if c.get("type") == "data":
-                            d = c.get("data") or {}
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": d.get("call_id", ""),
-                                "name": d.get("name", ""),
-                                "blocks": [{"type": "toolresult", "output_text": str(d.get("output", ""))}],
-                            })
-
-                elif mtype == "message":
-                    for c in msg.get("content") or []:
-                        if c.get("type") == "text":
-                            blocks.append({"type": "text", "text": c.get("text", "")})
-                    if blocks:
-                        messages.append({"role": "assistant", "blocks": blocks})
-
-    return {"session_id": session_id, "summary": "", "messages": messages}
-
-
 def trajectory_to_session_with_openai_metadata(
     trajectory: dict[str, Any],
     template_str: str,
@@ -289,12 +149,14 @@ def trajectory_to_session_with_openai_metadata(
     *,
     stats: Optional[dict[str, int]] = None,
 ) -> dict[str, Any]:
-    """把 simulate_serve 的 trajectory 转为 Session JSON（含 OpenAI metadata）.
+    """把 Session dict 转为含 OpenAI metadata 的产物。
 
     详见 ``docs/orchestration-design.md`` §6.4。
 
-    输入：trajectory dict（gdr 期待的 Session 形态）：
-        ``{"session_id": ..., "summary": ..., "messages": [{"role", "name", "id", "blocks", ...}, ...]}``
+    输入：Session dict（``etl.pawsession.extract.SessionRecord.to_session_dict`` 形态）：
+        ``{"session_id", "summary", "messages": [
+            {"role", "name", "id", "blocks": [{"type", ...}, ...], "metadata", ...}
+        ]}``
 
     输出：保持 ``session_id`` / ``summary`` / ``messages``（blocks 不动）；在
     ``metadata`` 里追加：
@@ -310,7 +172,7 @@ def trajectory_to_session_with_openai_metadata(
         - ``toolresult``: 生成独立 role=tool 消息（字段 ``output_text``）
 
     Args:
-        trajectory: 原始 trajectory dict
+        trajectory: Session dict
         template_str: 渲染好的 chat_template 文本
         env: 由 ``build_chat_env()`` 构造的 Jinja 环境
         stats: 可选统计 dict，会就地累加以下键：
@@ -330,6 +192,10 @@ def trajectory_to_session_with_openai_metadata(
     session_id = trajectory.get("session_id")
     summary = trajectory.get("summary", "")
     original_messages = trajectory.get("messages", []) or []
+    # trajectory.tools 由 etl.qwenformat.load 从 model_request.payload.tools 透传;
+    # 若存在, 作为 OpenAI tools 规范的权威来源 (含 schema / description 等),
+    # 否则由 toolcall 块推导 (fallback: 仅含 name + 空 description+parameters)。
+    trajectory_tools = trajectory.get("tools") or []
 
     openai_messages: list[dict[str, Any]] = []
     tool_names_in_order: list[str] = []
@@ -427,17 +293,32 @@ def trajectory_to_session_with_openai_metadata(
             # 未知 role：跳过
             continue
 
-    # tools 列表（去重、保序；按 OpenAI function schema 默认空 description+parameters）
+    # tools 列表
+    # 优先用 trajectory["tools"] (来自 model_request.payload.tools) — 含完整 schema;
+    # 缺失时回退到从 toolcall 推导 (仅含 name + 空 description+parameters)。
     tools: list[dict[str, Any]] = []
-    for name in tool_names_in_order:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": "",
-                "parameters": {"type": "object"},
-            },
-        })
+    if trajectory_tools:
+        seen: set[str] = set()
+        for tdef in trajectory_tools:
+            if not isinstance(tdef, dict):
+                continue
+            func = tdef.get("function") if isinstance(tdef.get("function"), dict) else None
+            name = (func or {}).get("name") or tdef.get("name") or ""
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            tools.append(tdef)
+    if not tools:
+        # fallback: 从 toolcall 推导
+        for name in tool_names_in_order:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": "",
+                    "parameters": {"type": "object"},
+                },
+            })
     local_stats["tools_unique"] = len(tools)
 
     # 包装成 OpenAI sample，过一遍 sanitize，再渲染
