@@ -63,6 +63,7 @@ data_refiner/output_data/trajectory
 data_refiner/output_data/summary.json
 data_refiner/logs
 refine_data/
+scripts/export_qf_sft/output
 
 # Other
 .wheel-test/

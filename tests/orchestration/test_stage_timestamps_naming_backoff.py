@@ -389,6 +389,32 @@ def test_worker_failure_rounds_do_not_backoff(tmp_path, monkeypatch) -> None:
     assert ev.waits == [0.3, 0.3, 0.3, 0.3]
 
 
+def test_worker_backoff_no_overflow_on_many_idle_rounds(tmp_path, monkeypatch) -> None:
+    """连续空闲远超 1024 轮时, 指数退避不得 OverflowError (回归: batch_id=45 崩溃)."""
+    queue = SQLiteQueue(tmp_path / "q.db")
+    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
+                 poll_seconds=1.0)
+    monkeypatch.setattr(w, "run_once", lambda: 0)
+    ev = _FakeEvent(2000)
+    w.run_forever(ev, max_poll_seconds=60.0)
+    assert len(ev.waits) == 2000
+    assert all(x <= 60.0 for x in ev.waits)
+    assert ev.waits[-1] == 60.0
+
+
+def test_watcher_backoff_no_overflow_on_many_idle_rounds(tmp_path, monkeypatch) -> None:
+    """watcher 同理: 长期无新登记不得因 2**idle 溢出崩溃."""
+    queue = SQLiteQueue(tmp_path / "q.db")
+    w = TrajectoryWatcher(trajectory_dir=tmp_path / "no_dir", queue=queue,
+                          batch_id=1, poll_seconds=1.0)
+    monkeypatch.setattr(w, "scan_once", lambda: {"registered": 0, "skipped": 0, "dead": 0})
+    ev = _FakeEvent(2000)
+    w.run_forever(ev, max_poll_seconds=60.0)
+    assert len(ev.waits) == 2000
+    assert all(x <= 60.0 for x in ev.waits)
+    assert ev.waits[-1] == 60.0
+
+
 def test_setup_logging_demotes_httpx(tmp_path) -> None:
     from orchestration.daemon import setup_logging
 
