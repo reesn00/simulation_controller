@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import traceback
 from abc import ABC, abstractmethod
@@ -160,6 +161,23 @@ class BaseWorker(ABC):
         低延迟场景不受影响；master 生产路径经配置显式开启）。
         """
         idle_rounds = 0
+        # 修复 P0 (worker OverflowError): ``min()`` 两侧在比较前都会被求值,
+        # 当 ``idle_rounds`` 持续上涨 (>1024 后 2**N 超出 float 上限), 乘以
+        # ``_poll_seconds`` 时 int→float 转换触发 OverflowError, 工作线程
+        # 会在 ``wait`` 这行整体抛栈, 淹没有用的 batch 日志. 提前把指数封顶
+        # 到 ``ceil(log2(max_poll_seconds / _poll_seconds)) + 1`` (向上取整
+        # 保证能取到 ``max_poll_seconds`` 封顶值), 又让 ``2 ** (idle_rounds
+        # - 1)`` 永远处于 float 安全范围. 退避关闭 (max_poll_seconds <= 0)
+        # 时无需封顶.
+        max_idle_exp = 0
+        if max_poll_seconds > 0 and self._poll_seconds > 0:
+            try:
+                max_idle_exp = max(
+                    1,
+                    math.ceil(math.log2(max_poll_seconds / self._poll_seconds)) + 1,
+                )
+            except (ValueError, OverflowError):
+                max_idle_exp = 30  # 兜底: 2**30 ≈ 1e9, 远低于 float 上限
         while not stop_event.is_set():
             self._last_pulled = 0
             processed = 0
@@ -172,8 +190,10 @@ class BaseWorker(ABC):
             else:
                 idle_rounds += 1
             if max_poll_seconds > 0 and idle_rounds:
+                # 先用 ``min(idle_rounds, max_idle_exp)`` 限制指数, 再算退避
+                capped_exp = idle_rounds if max_idle_exp == 0 else min(idle_rounds, max_idle_exp)
                 wait = min(
-                    self._poll_seconds * (2 ** (idle_rounds - 1)),
+                    self._poll_seconds * (2 ** (capped_exp - 1)),
                     max_poll_seconds,
                 )
             else:

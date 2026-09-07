@@ -195,7 +195,7 @@ def test_process_one_reports_unknown_tool_names_in_metadata(cfg):
          patch("pipeline.runner.build_context_for_session", return_value=MagicMock()), \
          patch("pipeline.runner.Router") as mock_router_cls:
         mock_router = MagicMock()
-        mock_router.tag.return_value = ({}, [])
+        mock_router.tag.return_value = ({}, [], [])
         mock_router_cls.return_value = mock_router
         out = process_one(session, cfg, ["browser"], set())
     assert out is not None
@@ -217,8 +217,12 @@ def test_llm_layer_all_abstain_logs_error(cfg, monkeypatch, caplog):
     r = Router()
     monkeypatch.setattr(Router, "_single_vote", lambda *a, **k: None)
     with caplog.at_level(logging.WARNING):
-        out = r._llm_layer([dict(_BLOCK_INFO)], session=None, cfg=cfg)
+        # 修复 P1.3: _llm_layer 修复后返回 (defects, abstentions)
+        out, abstentions = r._llm_layer([dict(_BLOCK_INFO)], session=None, cfg=cfg)
     assert out == {}
+    # 全弃权时 abstentions 应包含该 block
+    assert len(abstentions) == 1
+    assert abstentions[0]["block_id"] == "b1"
     assert any(
         rec.levelname == "ERROR" and "abstained" in rec.message for rec in caplog.records
     ), "全弃权必须以 ERROR 浮出而非逐块 warning 淹没"
@@ -236,7 +240,8 @@ def test_llm_layer_partial_abstain_logs_warning(cfg, monkeypatch, caplog):
     monkeypatch.setattr(Router, "_single_vote", _flaky)
     blocks = [dict(_BLOCK_INFO, block_id=f"b{i}") for i in range(2)]
     with caplog.at_level(logging.WARNING):
-        out = r._llm_layer(blocks, session=None, cfg=cfg)
+        # 修复 P1.3: _llm_layer 修复后返回 (defects, abstentions)
+        out, abstentions = r._llm_layer(blocks, session=None, cfg=cfg)
     assert out == {}
     recs = [r_ for r_ in caplog.records if "abstained" in r_.message]
     assert recs and recs[0].levelname == "WARNING", "部分弃权用 warning"

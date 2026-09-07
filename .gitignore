@@ -62,6 +62,7 @@ data_refiner/output_data/cleaned/
 data_refiner/output_data/trajectory
 data_refiner/output_data/summary.json
 data_refiner/logs
+refine_data/
 
 # Other
 .wheel-test/

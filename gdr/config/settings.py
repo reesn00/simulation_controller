@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     thought_min_len: int = 20
     thought_max_len: int = 500
     thought_max_len_l1: int = 2000
+    # 修复 P1.2: 9B/32B 重写输出经常以单字符之差超过 thought_max_len (如
+    # 501 vs 500), 直接 ValueError 丢弃整 block 太刚性. 允许在上限基础上
+    # 额外加 ``thought_max_len_grace_pct`` 的余量 (默认 10%) 才判 length
+    # out of range. 余量仅作用于长度校验, 不影响 judge 终评等其他流程.
+    thought_max_len_grace_pct: int = 10
 
     context_switch_threshold: int = 3
     repetitive_call_threshold: int = 3
@@ -183,6 +188,11 @@ class Settings(BaseSettings):
     # 真正硬丢弃只发生在结构严重不可用时 (见 pipeline/runner._session_structurally_unusable)。
     judge_low_export_enabled: bool = True
     judge_low_output_path: Path = Path("./refine_data/judge_low.jsonl")
+    # 修复 P1.3: LLM 投票层弃权 (解析失败/请求异常) 的 block 单独落 audit
+    # jsonl, 与 judge_low 同级但独立; 操作者可按需复核. 失败 block 不再让
+    # session 被丢, 也不让 session 静默"语义标签不全" — 至少看得到丢了谁。
+    routing_abstain_audit_enabled: bool = True
+    routing_abstain_audit_path: Path = Path("./refine_data/routing_low.jsonl")
 
     # === 评估器 (utility eval, 设计文档 §13) ===
     evaluator_output_dir: Path = Path("./evaluator_output")

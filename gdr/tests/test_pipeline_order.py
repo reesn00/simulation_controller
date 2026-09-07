@@ -19,7 +19,7 @@ def test_process_one_order(cfg, session_with_failed_retry):
         mock_fold_failed.return_value = 0
         mock_fold_thinking.return_value = 0
         mock_router = MagicMock()
-        mock_router.tag.return_value = ({}, [])
+        mock_router.tag.return_value = ({}, [], [])
         mock_router_cls.return_value = mock_router
 
         with patch("pipeline.runner.build_context_for_session") as mock_build_cu:

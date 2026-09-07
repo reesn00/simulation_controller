@@ -120,7 +120,7 @@ def test_vote_cascades_confirm_only_on_yes(cfg):
             client = mock_llm.get.return_value
             # 首票 false → 不应有第二次调用
             client.chat.return_value = ('{"has_defect": false}', None)
-            defects, _ = router.tag(session, ["browser"], set(), cfg, context_understanding=cu)
+            defects, _, _ = router.tag(session, ["browser"], set(), cfg, context_understanding=cu)
             assert len(contexts) == 1
             assert contexts[0][0] is False
             assert DefectTag.THOUGHT_BROKEN_LOGIC not in defects.get("th1", [])
@@ -131,7 +131,7 @@ def test_vote_cascades_confirm_only_on_yes(cfg):
                 ('{"has_defect": true}', None),
                 ('{"has_defect": true}', None),
             ]
-            defects, _ = router.tag(session, ["browser"], set(), cfg, context_understanding=cu)
+            defects, _, _ = router.tag(session, ["browser"], set(), cfg, context_understanding=cu)
             assert len(contexts) == 2
             assert contexts[0][0] is False and contexts[1][0] is True
             assert DefectTag.THOUGHT_BROKEN_LOGIC in defects.get("th1", [])
@@ -142,7 +142,7 @@ def test_vote_cascades_confirm_only_on_yes(cfg):
                 ('{"has_defect": true}', None),
                 ('{"has_defect": false}', None),
             ]
-            defects, _ = router.tag(session, ["browser"], set(), cfg, context_understanding=cu)
+            defects, _, _ = router.tag(session, ["browser"], set(), cfg, context_understanding=cu)
             assert len(contexts) == 2
             assert DefectTag.THOUGHT_BROKEN_LOGIC not in defects.get("th1", [])
     finally:

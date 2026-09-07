@@ -317,10 +317,19 @@ def process_one(
 
         # === 3. Router.tag 使用 CU 作为 LLM 评审上下文 ===
         router = Router()
-        defects_index, health_scores = router.tag(
+        defects_index, health_scores, routing_abstentions = router.tag(
             session, tool_names, hallu_apis, cfg,
             context_understanding=context_understanding,
         )
+        # 修复 P1.3: routing 弃权审计挂到 session.metadata, 让后续 judge /
+        # reassembler 看到哪些 block 被丢, 而不是只看一行聚合 WARNING 盲猜。
+        if routing_abstentions:
+            session.metadata = session.metadata or {}
+            session.metadata["routing_abstentions"] = {
+                "count": len(routing_abstentions),
+                "block_ids": sorted({a["block_id"] for a in routing_abstentions if a.get("block_id")}),
+                "block_types": sorted({a["block_type"] for a in routing_abstentions if a.get("block_type")}),
+            }
 
         # === 3.2 白名单漂移报告 (只告警+记录, 不参与判定) ===
         # 名单来源自动化后仅剩的过期风险: QwenPaw 新增动态工具而 extra_tools
@@ -610,6 +619,33 @@ def _append_judge_low_queue(session: Session, cfg: Settings) -> None:
         log.warning("failed to append judge_low queue: %s", e)
 
 
+def _append_routing_abstain_queue(session: Session, cfg: Settings) -> None:
+    """修复 P1.3: routing 弃权 block 列表 (LLM 解析失败/请求异常) 单独落
+    audit jsonl. 不阻塞主流程, 但操作者可按 session_id 复核丢了哪些 block.
+    """
+    if not getattr(cfg, "routing_abstain_audit_enabled", True):
+        return
+    abstentions = (session.metadata or {}).get("routing_abstentions")
+    if not abstentions or not abstentions.get("count"):
+        return
+    try:
+        record = {
+            "session_id": session.session_id,
+            "source_file": session.source_file,
+            "routing_abstentions": abstentions,
+        }
+        path = Path(cfg.routing_abstain_audit_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        log.warning(
+            "routing-abstain queue appended: %s (session %s, %d block(s))",
+            path, session.session_id, abstentions["count"],
+        )
+    except Exception as e:
+        log.warning("failed to append routing_abstain queue: %s", e)
+
+
 def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dict:
     """单文件处理: load → refine → save。返回 per-file 状态 dict (供 worker 收集)。"""
     log.info("loading session from %s", input_path)
@@ -623,6 +659,11 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
         cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source,
     )
     result = process_one(session, cfg, tool_names, hallu_apis)
+
+    # 修复 P1.3: 任意被处理的 session (含 discard 的 judge_low) 都要把
+    # routing 弃权审计落地, 独立于 judge 通道. 单 block 解析失败不再让整
+    # session 死, 但失败必须可审计。
+    _append_routing_abstain_queue(session, cfg)
 
     if result is not None:
         try:

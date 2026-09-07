@@ -298,7 +298,7 @@ class Router:
     def _llm_layer(
         self, blocks_info: list[dict], session, cfg,
         context_understanding=None,
-    ) -> dict[str, list[DefectTag]]:
+    ) -> tuple[dict[str, list[DefectTag]], list[dict]]:
         """级联投票 + 线程池并发。
 
         - 每个候选块先投"首票" (CU 全局状态上下文); 判无缺陷直接放行 (1 次调用)。
@@ -306,11 +306,17 @@ class Router:
           两票一致才标记; 分歧保守取无缺陷。假阳性会触发 PRUNE/多余精修, 代价高于假阴性。
         - 块间投票相互独立, 用 ThreadPoolExecutor 并发; 实际 LLM 并发由
           llm_client 的生成信号量 (llm_concurrency) 兜底。
-        - 解析失败 / 超时 视为弃权; 弃权不标记。
+        - 解析失败 / 超时 视为弃权; 弃权不标记, 但**记录到 abstentions 列表**
+          (修复 P1.3), 让 runner 可以写入 routing_low.jsonl 审核通道 + 挂到
+          session.metadata, 而不是仅靠一行聚合 WARNING 让操作者盲猜哪些
+          block 被丢。
+
+        返回: (defects_by_block_id, abstention_audit_records)
         """
         result: dict[str, list[DefectTag]] = {}
+        abstentions: list[dict] = []
         if not cfg.enable_llm_layer or not blocks_info:
-            return result
+            return result, abstentions
 
         # 取有效策略 (不够 3 个则补 "none", 多了截断); 无效策略降级为 "none"
         strategies = list(cfg.llm_vote_context_strategies or [])
@@ -331,9 +337,18 @@ class Router:
             ))
 
         abstained = 0
-        for block_id, tag, did_abstain in votes:
+        # 索引 by block_id, 单 block 可能多策略都弃权, 仅记录一次
+        for (block_id, tag, did_abstain), info in zip(votes, blocks_info):
             if did_abstain:
                 abstained += 1
+                abstentions.append({
+                    "session_id": getattr(session, "session_id", ""),
+                    "block_id": block_id,
+                    "block_type": info.get("block_type", ""),
+                    "msg_idx": info.get("msg_idx"),
+                    "block_idx": info.get("block_idx"),
+                    "strategy": strategies[0],
+                })
             if tag is not None:
                 result.setdefault(block_id, []).append(tag)
         # 可观测性 (原问题: 解析失败被逐块 warning 静默淹没): 聚合弃权率,
@@ -349,7 +364,7 @@ class Router:
                 log.error("%s — falling back to deterministic rule layer only", msg)
             else:
                 log.warning(msg)
-        return result
+        return result, abstentions
 
     def _vote_block(
         self, info: dict, session, cfg, context_understanding,
@@ -563,9 +578,17 @@ class Router:
         self, session: Session,
         tool_names: list[str], hallu_apis: set[str], cfg,
         *, context_understanding=None,
-    ) -> tuple[dict[str, list[DefectTag]], list[MessageHealth]]:
+    ) -> tuple[dict[str, list[DefectTag]], list[MessageHealth], list[dict]]:
+        """路由 tag。返回 (defects_index, health_scores, abstention_audit).
+
+        abstention_audit: 修复 P1.3 引入 — LLM 投票层弃权 (解析失败/请求异常)
+        的 block 列表, 供 runner 写入 routing_low.jsonl 审核通道并挂到
+        session.metadata, 不让单个 block 解析失败把整 session 拖死 (当前
+        行为已不会, 但操作者看不到具体丢了哪些)。
+        """
         defects_index: dict[str, list[DefectTag]] = {}
         health_scores: list[MessageHealth] = []
+        abstention_audit: list[dict] = []
 
         for msg_idx, msg in enumerate(session.messages):
             if msg.role != "assistant":
@@ -677,13 +700,14 @@ class Router:
                 })
 
         if candidate_blocks:
-            llm_tags = self._llm_layer(
+            llm_tags, session_abstentions = self._llm_layer(
                 candidate_blocks, session, cfg,
                 context_understanding=context_understanding,
             )
+            abstention_audit.extend(session_abstentions)
             for bid, tags in llm_tags.items():
                 for tag in tags:
                     if tag not in defects_index.get(bid, []):
                         defects_index.setdefault(bid, []).append(tag)
 
-        return defects_index, health_scores
+        return defects_index, health_scores, abstention_audit
