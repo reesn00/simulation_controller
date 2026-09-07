@@ -1,10 +1,10 @@
 """Transform: 把 Session dict 适配为 Qwen3 官方 chat template 可用的格式。
 
-输入 (``Session`` 形态，来自 ``etl/pawsession/extract.SessionRecord.to_session_dict``):
+输入 (``Session`` 形态，来自 ``etl/qwenformat/load.SessionRecord.to_session_dict``):
     ``{"session_id", "summary", "messages": [{"role", "name", "id",
         "blocks": [{"type": "text"|"thinking"|"toolcall"|"toolresult", ...}], ...}]}``
 
-相对原始 sft_openai.json 的修复点（对齐 Qwen3/2.5 官方 Jinja 模板）:
+对齐 Qwen3/2.5 官方 Jinja 模板的修复点:
     1. tool_calls.function.arguments 由 JSON 字符串反序列化为 dict
        （模板用 arguments|items 遍历参数，字符串会直接渲染失败）
     2. content 为 null 的消息转为 ""（部分实现不接受 None）
@@ -105,23 +105,6 @@ def render_sample_text(
         tools=tools,
         add_generation_prompt=False,
     )
-
-
-def transform_sample(
-    sample: dict[str, Any],
-    template_str: str,
-    env: ImmutableSandboxedEnvironment,
-    stats: Optional[dict[str, int]] = None,
-) -> dict[str, Any]:
-    sanitize_agent_sample(sample, stats)
-    text = render_sample_text(sample["messages"], sample.get("tools"), template_str, env)
-    return {
-        "id": sample.get("id"),
-        "source_file": sample.get("source_file"),
-        "messages": sample["messages"],
-        "tools": sample.get("tools"),
-        "text": text,
-    }
 
 
 # ---------------------------------------------------------------------------

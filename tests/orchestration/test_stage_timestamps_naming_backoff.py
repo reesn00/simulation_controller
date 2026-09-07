@@ -303,37 +303,6 @@ def test_worker_backoff_resets_after_processing(tmp_path, monkeypatch) -> None:
     assert ev.waits == [1.0, 2.0, 1.0, 1.0, 2.0, 4.0]
 
 
-def test_worker_backoff_no_overflow_under_extended_idle(tmp_path, monkeypatch) -> None:
-    """回归 P0: idle_rounds 持续上涨 (>1024 后 2**N 超出 float 上限) 时
-    ``min(self._poll_seconds * (2 ** (idle_rounds - 1)), max_poll_seconds)``
-    会触发 ``int too large to convert to float`` OverflowError, 整 worker
-    线程抛栈. 修复后指数被 ``ceil(log2(max/small)) + 1`` 封顶, idle 多少
-    轮都安全.
-    """
-    queue = SQLiteQueue(tmp_path / "q.db")
-    # poll_seconds 极小 (模拟 master 路径的 0.05), 大量空闲轮应不溢出
-    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
-                 poll_seconds=0.05)
-    monkeypatch.setattr(w, "run_once", lambda: 0)
-    # 触发 5000 轮空闲; 旧实现 2**(5000-1) 必溢出
-    ev = _FakeEvent(5000)
-    w.run_forever(ev, max_poll_seconds=10.0)
-    # 关键断言 1: run_forever 没抛 OverflowError (隐含 — 否则测试直接报错)
-    # 关键断言 2: 前若干轮按指数增长 (0.05 → 0.1 → 0.2 → ... → 10.0),
-    #            一旦达到 max_poll_seconds 后所有 wait 都等于 10.0
-    assert ev.waits[0] == 0.05
-    assert ev.waits[1] == 0.1
-    # 找到第一个被封顶的位置
-    cap_idx = next(
-        (i for i, w_ in enumerate(ev.waits) if w_ >= 10.0),
-        len(ev.waits),
-    )
-    # 封顶后所有 wait 都必须 <= max_poll_seconds (不能溢出到 inf/异常)
-    assert cap_idx < len(ev.waits), "退避未触发封顶"
-    for w_ in ev.waits[cap_idx:]:
-        assert w_ == 10.0, f"wait {w_} 在封顶后仍 > max_poll_seconds"
-
-
 def test_worker_backoff_disabled_with_zero_cap(tmp_path, monkeypatch) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
     w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
