@@ -72,6 +72,9 @@ etl/pawsession/origindata/useramulation_*
 etl/pawsession/output
 etl/pawsession/origindata
 
+# qwenformat 运行时提取的 system prompt / tool 模板（可由用户本地维护，不提交）
+etl/qwenformat/templates/
+
 # orchestration 运行时数据（SQLite 队列 / qf_out / pid / dead / logs）
 orchestration/data/
 orchestration/logs/

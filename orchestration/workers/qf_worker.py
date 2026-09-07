@@ -4,6 +4,9 @@
     1. ``pull()``: 从队列 ``state='pending'`` 拉任务
     2. ``process()``: 读 trajectory（``run_<run_id>__<session_id>.json`` JSONL 事件流）
        → ``etl.qwenformat.load.load_trajectory`` 重放为 ``SessionRecord``
+       → 用 ``etl.qwenformat.system_prompt`` 清洗 system prompt:
+           去掉 AGENTS.md / SOUL.md / PROFILE.md / agent-skills / About 框架块,
+           保留 Agent Identity 与约束段, 并提取 tool schema 到本地模板.
        → ``SessionRecord.to_session_dict`` 得到 Session 形态 dict
        → ``etl.qwenformat.transform.trajectory_to_session_with_openai_metadata``
        渲染出 Qwen3 训练文本，落 ``qf_output_dir/<session_id>.json``
@@ -25,6 +28,12 @@ from pathlib import Path
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from etl.qwenformat.load import load_trajectory
+from etl.qwenformat.system_prompt import (
+    partition_system_prompt,
+    render_cleaned_system,
+    save_section_templates,
+)
+from etl.qwenformat.tool_templates import save_tool_templates
 from etl.qwenformat.transform import (
     build_chat_env,
     load_chat_template,
@@ -52,6 +61,8 @@ class QfWorker(BaseWorker):
         template_str: str | None = None,
         env: ImmutableSandboxedEnvironment | None = None,
         template_path: Path | str | None = None,
+        system_templates_dir: Path | str | None = None,
+        update_templates: bool = True,
         n: int = 1,
         poll_seconds: float = 2.0,
     ) -> None:
@@ -66,8 +77,12 @@ class QfWorker(BaseWorker):
             template_str = load_chat_template(str(template_path))
         if env is None:
             env = build_chat_env()
+        if system_templates_dir is None:
+            system_templates_dir = Path(__file__).resolve().parents[2] / "etl" / "qwenformat" / "templates"
         self._template = template_str
         self._env = env
+        self._system_templates_dir = Path(system_templates_dir)
+        self._update_templates = update_templates
 
     # ------------------------------------------------------------------
     # pull
@@ -80,16 +95,70 @@ class QfWorker(BaseWorker):
     # process
     # ------------------------------------------------------------------
 
+    def _clean_system_prompt(
+        self, record,
+    ) -> tuple[str, dict[str, int]]:
+        """清洗 system prompt 并持久化本地模板.
+
+        返回 (new_system_text, stats).
+        """
+        original_system = record.summary or ""
+        sections = partition_system_prompt(original_system)
+        stats: dict[str, int] = {}
+
+        # 持久化角色/约束模板
+        save_section_templates(
+            sections,
+            self._system_templates_dir,
+            update_existing=self._update_templates,
+            stats=stats,
+        )
+        # 持久化 tool schema 模板
+        save_tool_templates(
+            record.tools or [],
+            self._system_templates_dir,
+            update_existing=self._update_templates,
+            stats=stats,
+        )
+
+        # 组装清洗后的 system prompt(保留 identity + constraint, 去掉 framework).
+        # tool schemas 仍由 Qwen3 chat_template 从 ``tools`` 列表自动渲染,
+        # 避免在 system text 中重复出现.
+        new_system, render_stats = render_cleaned_system(
+            sections, tools_text="", templates_dir=None
+        )
+        stats.update(render_stats)
+        return new_system, stats
+
     def process(self, task: Task) -> Path:
         # 新格式 trajectory: ``run_<run_id>__<session_id>.json`` (JSONL 事件流)
         # 不再支持旧 CAMEL 单对象 / 裸 .jsonl 形态; 解析失败抛异常, 由 worker
         # 走 ``_handle_failure`` 标记失败并最终入 dead 归档 (与 producer 终止后
         # 残留旧格式文件的预期一致, 不丢数据, 不兼容转换).
         record = load_trajectory(task.src_path)
+        new_system, clean_stats = self._clean_system_prompt(record)
+
+        # 把清洗后的 system prompt 写回 record
+        record.summary = new_system
+        if record.messages and record.messages[0].role == "system":
+            from etl.qwenformat.load import TextBlock
+            record.messages[0].blocks = [TextBlock(text=new_system)]
+        else:
+            # 早期事件流不会把 model_request.system 加入 messages, 需要手动补一条
+            # system message, 否则 qf transform 看不到 system prompt.
+            from etl.qwenformat.load import Message, TextBlock
+            record.messages.insert(
+                0,
+                Message(role="system", name="system", id="", blocks=[TextBlock(text=new_system)]),
+            )
+
         trajectory = record.to_session_dict()
         out = trajectory_to_session_with_openai_metadata(
             trajectory, self._template, self._env,
         )
+        # 把清洗统计合并到 qf_stats
+        out["metadata"]["qf_stats"].update(clean_stats)
+
         session_id = task.session_id or task.src_path.stem
         out_path = self._qf_output_dir / self._output_name(task, session_id, suffix="")
         out_path.parent.mkdir(parents=True, exist_ok=True)
