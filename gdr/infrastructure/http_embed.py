@@ -117,7 +117,7 @@ class HttpEmbedder(Embedder):
             raise RuntimeError(
                 "Embedding endpoint not configured. Set 'embedding_endpoint_url' "
                 "(e.g. http://127.0.0.1:8086/v1) and 'embedding_endpoint_model' "
-                "(e.g. v5-nano-retrieval) in gdr_config.yaml or GDR_* env vars."
+                "(e.g. v5-nano-retrieval) in config/config.yaml (gdr: 段) or GDR_* env vars."
             )
         return cls(
             base_url=url,

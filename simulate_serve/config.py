@@ -3,8 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from shared_config import (
+    ROOT_CONFIG_ENV,
+    ROOT_CONFIG_PATH,
+    find_root_config,
+    llm_defaults,
+    load_yaml_file,
+)
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -119,13 +126,54 @@ class AppConfig(StrictConfig):
         return Path(self.source_path).resolve().parent if self.source_path else PACKAGE_DIR / "config"
 
 
+def _parse_config_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    """根配置格式 (含顶层 ``simulate_serve:`` 段) → 扁平 AppConfig kwargs。
+
+    - model 段未写的 model_name/api_key/base_url 继承根配置 ``llm:`` 共享段;
+    - tasks_file/scenarios_file 未写时锚定包内 config 目录 (根配置位于
+      config/, 任务目录仍在 simulate_serve/config/);
+    - 旧格式 (扁平 model:/agent_endpoint:/...) 原样返回。
+    """
+    if "simulate_serve" not in raw:
+        return raw
+    section = dict(raw.get("simulate_serve") or {})
+    llm = llm_defaults(raw)
+    model = dict(section.get("model") or {})
+    for dest, llm_key in (
+        ("model_name", "model"),
+        ("api_key", "api_key"),
+        ("base_url", "base_url"),
+    ):
+        if not model.get(dest) and llm.get(llm_key):
+            model[dest] = llm[llm_key]
+    if model:
+        section["model"] = model
+    if not section.get("tasks_file"):
+        section["tasks_file"] = str(PACKAGE_DIR / "config" / "tasks.yaml")
+    if not section.get("scenarios_file"):
+        section["scenarios_file"] = str(PACKAGE_DIR / "config" / "scenarios.yaml")
+    return section
+
+
 def load_config(path: str | None = None) -> AppConfig:
-    """Load app configuration; missing explicit paths fail, missing implicit default returns defaults."""
-    config_path = Path(path).resolve() if path else PACKAGE_DIR / "config" / "config.yaml"
+    """Load app configuration from the unified root config (or an explicit file).
+
+    - path=None: 读统一根配置 ``config/config.yaml`` (``SIMCTL_CONFIG`` env
+      可重定向); 不存在则抛 FileNotFoundError (无包内兜底)。
+    - 显式 path: 根配置格式 (含顶层 ``simulate_serve:`` 段) 或旧扁平格式均可。
+    """
+    if path:
+        config_path = Path(path).resolve()
+    else:
+        root = find_root_config()
+        if root is None:
+            raise FileNotFoundError(
+                f"Unified root config not found: {ROOT_CONFIG_PATH} "
+                f"(or set {ROOT_CONFIG_ENV}); no fallback config exists"
+            )
+        config_path = root
     if not config_path.exists():
-        if path:
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-        return AppConfig(source_path=str(config_path))
-    with config_path.open(encoding="utf-8") as stream:
-        raw = yaml.safe_load(stream) or {}
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    raw = load_yaml_file(config_path)
+    raw = _parse_config_raw(raw)
     return AppConfig.model_validate({**raw, "source_path": str(config_path)})

@@ -17,7 +17,7 @@
         LLM 调用失败 / 质量门不通过 → 保留 L0 清洗后的完整原始内容.
         宁可多留, 不可错删 —— 保留完整内容好于粗糙截断.
 
-配置: ``etl/qwenformat/config.yaml`` 的 ``tool_output_summarizer:`` 段
+配置: 统一根配置 ``config/config.yaml`` 的 ``qf.tool_output_summarizer:`` 段
 (``LLMAnchoredSummarizer.from_config`` 读取); 每项可被同名
 ``QF_SUMMARIZER_*`` 环境变量覆盖 (env 优先).
 
@@ -340,7 +340,33 @@ class LLMAnchoredSummarizer:
     # 配置文件 / env 构造
     # ------------------------------------------------------------------
 
-    DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
+    @staticmethod
+    def _extract_qf_section(all_raw: dict[str, Any]) -> dict[str, Any]:
+        """从已加载的配置 dict 提取 tool_output_summarizer 段。
+
+        支持两种格式:
+        - 统一根配置: ``qf.tool_output_summarizer`` (base_url/model/api_key
+          未写时继承顶层 ``llm:`` 共享段);
+        - 旧格式: 顶层 ``tool_output_summarizer``。
+        """
+        qf = all_raw.get("qf")
+        section: dict[str, Any] = {}
+        if isinstance(qf, dict):
+            inner = qf.get("tool_output_summarizer")
+            if isinstance(inner, dict):
+                section = inner
+        if not section:
+            legacy = all_raw.get("tool_output_summarizer")
+            if isinstance(legacy, dict):
+                section = legacy
+        if not section:
+            return {}
+        out = dict(section)
+        llm = all_raw.get("llm") if isinstance(all_raw.get("llm"), dict) else {}
+        for key, llm_key in (("base_url", "base_url"), ("model", "model"), ("api_key", "api_key")):
+            if not out.get(key) and llm.get(llm_key):
+                out[key] = llm[llm_key]
+        return out
 
     @classmethod
     def from_config(
@@ -349,21 +375,33 @@ class LLMAnchoredSummarizer:
         *,
         stats: Optional[dict[str, int]] = None,
     ) -> Optional["LLMAnchoredSummarizer"]:
-        """按 ``etl/qwenformat/config.yaml`` 构造; env ``QF_SUMMARIZER_*`` 优先覆盖.
+        """按配置构造; env ``QF_SUMMARIZER_*`` 优先覆盖.
 
-        读取 ``tool_output_summarizer:`` 段 (enabled/base_url/model/api_key/
-        threshold_chars/faith_threshold/cache_dir). ``enabled=false`` 或
-        base_url/model 缺失时返回 None.
+        配置统一来自根配置 ``config/config.yaml`` 的 ``qf.tool_output_summarizer``
+        段 (config_path 显式传入时读该文件, 根/旧扁平格式均可)。
+        根配置不存在时返回 None (summarizer 是可选功能, 不阻塞主流程)。
+        ``enabled=false`` 或 base_url/model 缺失时返回 None.
         """
-        import yaml
-
-        path = Path(config_path) if config_path else cls.DEFAULT_CONFIG_PATH
-        raw: dict[str, Any] = {}
-        if path.exists():
-            all_raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            section = all_raw.get("tool_output_summarizer") or {}
-            if isinstance(section, dict):
-                raw = section
+        if config_path is not None:
+            path = Path(config_path)
+            all_raw: dict[str, Any] = {}
+            if path.exists():
+                try:
+                    import yaml
+                    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                except Exception:  # noqa: BLE001 - 配置损坏按禁用处理
+                    logger.warning("summarizer config %s unreadable; disabled", path)
+                    loaded = {}
+                if isinstance(loaded, dict):
+                    all_raw = loaded
+            raw = cls._extract_qf_section(all_raw)
+        else:
+            try:
+                from shared_config import find_root_config, load_yaml_file
+                root = find_root_config()
+            except ImportError:  # etl 脱离仓库使用时无 shared_config → 禁用
+                root = None
+            raw = cls._extract_qf_section(load_yaml_file(root)) if root is not None else {}
 
         env_enabled = os.environ.get("QF_SUMMARIZER_ENABLED", "").lower()
         if env_enabled:

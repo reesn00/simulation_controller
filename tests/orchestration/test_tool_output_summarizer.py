@@ -207,7 +207,7 @@ def test_from_env_enabled_but_missing_config(monkeypatch: pytest.MonkeyPatch) ->
 
 
 # ---------------------------------------------------------------------------
-# from_config (etl/qwenformat/config.yaml)
+# from_config (统一根配置 config/config.yaml 的 qf.tool_output_summarizer 段)
 # ---------------------------------------------------------------------------
 
 def _write_config(tmp_path: Path, body: str) -> Path:
@@ -274,6 +274,50 @@ tool_output_summarizer:
 
 def test_from_config_missing_file_returns_none(tmp_path: Path) -> None:
     assert LLMAnchoredSummarizer.from_config(tmp_path / "nope.yaml") is None
+
+
+def test_from_config_root_format_with_llm_fallback(tmp_path: Path) -> None:
+    """统一根配置格式: qf.tool_output_summarizer 段 + llm 共享段缺省."""
+    cfg = _write_config(tmp_path, """
+llm:
+  base_url: "http://llm-gateway/v1"
+  api_key: "kk"
+  model: "mm"
+qf:
+  tool_output_summarizer:
+    enabled: true
+    threshold_chars: 99
+""")
+    s = LLMAnchoredSummarizer.from_config(cfg)
+    # base_url/model 来自 llm 段; 没有继承时 from_config 会因缺配置返回 None
+    assert s is not None
+    assert s._threshold_chars == 99
+
+
+def test_from_config_root_format_explicit_overrides_llm(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, """
+llm:
+  base_url: "http://llm-gateway/v1"
+  model: "mm"
+qf:
+  tool_output_summarizer:
+    enabled: true
+    base_url: "http://qf-gateway/v1"
+""")
+    s = LLMAnchoredSummarizer.from_config(cfg)
+    assert s is not None  # base_url 显式指定, model 继承 llm 段
+
+
+def test_from_config_root_format_disabled(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, """
+llm:
+  base_url: "http://llm-gateway/v1"
+  model: "mm"
+qf:
+  tool_output_summarizer:
+    enabled: false
+""")
+    assert LLMAnchoredSummarizer.from_config(cfg) is None
 
 
 # ---------------------------------------------------------------------------

@@ -65,7 +65,7 @@ CLI / Bootstrap
 - Runtime 会识别“此前 PASS、本轮非 PASS”的回退准则，并在追问和 `FOLLOWUP_CREATED` 事件中明确记录。
 - Playwright/Camoufox 默认 disabled，启动不自动安装。使用 `--check-tools` 查看完整状态。
 - 使用 `--readiness` 在不连接 QwenPaw 的情况下汇总 Judge/Provider 缺口及受影响 Task；该命令不创建 Run 日志。
-- 内置并打包的 `config.yaml` 不含实际模型凭据或内部 endpoint；默认从 `OPENAI_API_KEY` / `OPENAI_BASE_URL`（或 Anthropic 对应变量）读取。自定义配置仍可显式填写，但不得提交、打包、复制到测试、文档或日志。
+- 全项目统一配置入口：仓库根 `config/config.yaml`（gitignored，含真实凭据；提交版模板 `config/config.example.yaml`）。四个模块（simulate_serve / orchestration / gdr / etl.qwenformat）的配置收纳于对应 section，`llm:` 共享段提供端点/密钥/模型缺省，支持 `${VAR}` 环境变量占位符。模块级配置文件已删除，根配置缺失直接报错、无兜底。定位可用 `SIMCTL_CONFIG`（gdr 用 `GDR_CONFIG_FILE`）重定向。凭据不得提交、打包、复制到测试、文档或日志。
 
 ## 输出
 

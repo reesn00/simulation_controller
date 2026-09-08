@@ -85,9 +85,9 @@ def test_tools_yaml_extra_tools_cover_dynamic_skill_and_manual_floor():
     """extra_tools 必须覆盖 agent.json 之外的运行时动态工具 Skill
     (qf_out 统计: 31 次真实调用), 以及 auto 源失效时的 web_search 手工底座。"""
     import yaml
-    from config.settings import YAML_FILE
+    from config.settings import GDR_ROOT
 
-    tools_path = Path(YAML_FILE).parent / "tools.yaml"
+    tools_path = GDR_ROOT / "config" / "tools.yaml"
     data = yaml.safe_load(tools_path.read_text(encoding="utf-8"))
     assert "Skill" in data["extra_tools"]
     assert "web_search" in data["extra_tools"]

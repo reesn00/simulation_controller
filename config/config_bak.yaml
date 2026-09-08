@@ -1,0 +1,244 @@
+# ============================================================
+# 统一配置入口 (全项目唯一的配置文件)
+#
+# simulate_serve / orchestration / gdr / etl.qwenformat 四个模块的
+# 配置全部收纳于此 (模块级配置文件已删除, 无兜底)。
+#
+# 加载优先级 (各模块统一): CLI 参数 > 环境变量 (GDR_* / QF_SUMMARIZER_* 等)
+#                       > 本文件对应 section > 代码默认值
+#
+# 本文件包含敏感凭据, 已被 .gitignore 忽略; 提交版模板见
+# config/config.example.yaml。api_key 支持 ${LLM_API_KEY} 占位符。
+#
+# llm: 为共享段, simulate_serve.model / gdr.*_model / qf.tool_output_summarizer
+# 未显式指定时自动继承其 base_url/api_key/model。
+# ============================================================
+
+llm:
+  base_url: "http://1/v1"
+  api_key: "bgw_"
+  model: "MiniMax-M2.7"
+
+# === simulate_serve (用户模拟服务) ===
+# model 段未写的 model_name/api_key/base_url 继承 llm 段;
+# tasks_file/scenarios_file 未写时自动锚定 simulate_serve/config/ 包内目录。
+simulate_serve:
+  model:
+    model_type: OPENAI        # OPENAI | ANTHROPIC
+    temperature: 0.7
+  agent_endpoint:
+    base_url: "http://localhost:8088"   # QwenPaw 后端地址（含端口，不含 /api）
+    execution_agent_id: "default"               # 执行阶段 agent ID（X-Agent-Id），留空使用默认 agent
+    validation_agent_id: ""              # 验证阶段 agent ID（X-Agent-Id），留空使用默认 agent
+    auth_token: ""                       # Bearer token，未启用鉴权时留空
+    user_id: "useramulation"
+    timeout: 30.0                        # 单次 HTTP 请求超时（秒）
+    task_timeout: 1800.0                # 服务端任务看门狗超时（秒，30 分钟）
+    poll_interval: 3.0                   # 轮询间隔（秒）
+    max_poll_time: 1860.0               # 最长等待任务完成（秒）
+    max_retries: 2                       # 提交任务重试次数
+  max_guide_rounds: 3
+  skip_unready_tasks: true   # 提交前剔除本地无法验收的任务
+  output_dir: output
+  validation:
+    enabled: false              # false = record-only：远端照常执行并归档轨迹，但不做本地验收
+    semantic_judge_enabled: true
+    judge_timeout_seconds: 60
+  interaction:
+    actor_timeout_seconds: 180   # 用户模拟器单次生成超时；本地思考型模型建议 >=180s
+  tools:
+    startup_policy: warn
+    providers:
+      - name: playwright
+        type: playwright_mcp
+        enabled: false
+        required: false
+        priority: 100
+        capabilities:
+          - browser.navigate
+          - browser.snapshot
+          - browser.inspect_links
+          - browser.inspect_media
+          - browser.detect_barrier
+      - name: camoufox
+        type: camoufox
+        enabled: false
+        required: false
+        priority: 50
+        capabilities:
+          - browser.navigate
+          - browser.snapshot
+          - browser.inspect_links
+          - browser.inspect_media
+          - browser.detect_barrier
+      - name: browser_use
+        type: browser_use
+        enabled: true
+        required: false
+        priority: 75
+        capabilities:
+          - browser.navigate
+          - browser.snapshot
+          - browser.inspect_links
+          - browser.inspect_media
+          - browser.detect_barrier
+
+# === orchestration (编排) ===
+orchestration:
+  batch_size: 3
+  gdr_workers: 2
+  qf_workers: 4
+  gdr_wait_seconds: 10
+  max_retry_qf: 3
+  max_retry_gdr: 3
+  watcher_poll_seconds: 2
+  reap_stale_seconds: 300
+  # 空闲退避: 连续空轮时轮询间隔指数翻倍、封顶此秒数; 0=关闭。
+  worker_idle_backoff_max_seconds: 5
+  watcher_idle_backoff_max_seconds: 10
+
+paths:
+  # 所有阶段产物与运行时状态统一收在 output/ 下
+  trajectory_dir: "output/agent_trajectory"
+  runs_dir: "output/runs"
+  qf_output_dir: "output/qf_out"
+  gdr_output_dir: "output/refine_data"
+  sqlite_db: "output/orchestration/orchestration.db"
+  dead_dir: "output/orchestration/dead"
+  pid_file: "output/orchestration/orchestration.pid"
+  log_dir: "output/orchestration/logs"
+  # simulate_serve_config 不需要写: 根配置文件本身就是 simulate_serve 的配置来源
+
+# 透传给 gdr worker 的并发参数
+gdr_settings:
+  workers: 2
+  llm_concurrency: 4
+
+# === gdr (数据精修) — 全量配置 ===
+# 字段与 gdr/config/settings.py 的 Settings 字段一一对应;
+# llm_base_url/llm_api_key/main_model/tool_model/judge_model 未写时继承 llm 段。
+# 环境变量 (GDR_*) 可逐项临时覆盖。
+gdr:
+  # 嵌入端点 (OpenAI-compatible /v1/embeddings)
+  embedding_endpoint_url: http://127.0.0.1:8086/v1
+  embedding_endpoint_model: v5-small-retrieval-Q6
+  embedding_expected_dim: 1024      # 端点首响维度不匹配则启动失败
+  embedding_timeout_s: 30.0
+  embedding_max_batch: 32
+
+  # 仅用于 prompts / context 尺寸估算, 不用于加载 GGUF 文件
+  n_ctx: 8192
+  n_gpu_layers: -1
+
+  # 验证开关
+  enable_l1: true
+  enable_l2: true
+  enable_l3: true
+  enable_llm_layer: true
+  enable_text_fact_check: true
+
+  # LLM 投票层 - 3 次请求各自的上下文策略
+  llm_vote_context_strategies: ["none", "±1", "pre2_post1"]
+  llm_vote_max_context_chars: 4000
+  llm_vote_use_cu: true
+  llm_vote_skip_rule_decidable: true  # 语义标签不改变决策的块跳过投票
+  cu_prompt_max_chars: 4000
+  cu_prompt_archive_strategy: referenced
+  fold_use_cu: true
+  fold_protect_active_text_only: true   # fold 失败重试保护只看 active window 引用
+
+  max_retries_9b: 2
+
+  # IO 路径 (tools_config_path 相对路径锚定 gdr 包根)
+  tools_config_path: ./config/tools.yaml
+  tool_source: auto              # auto: agent.json 权威源 ∪ tools.yaml; manual: 仅 tools.yaml; off: 空白名单
+  qwenpaw_agent_json: ~/.qwenpaw/workspaces/default/agent.json
+  input_path: ../output/agent_trajectory
+  output_path: refine_data/output.json
+  log_dir: ./logs
+
+  # 超时 (秒)
+  llm_timeout_s: 120
+  l3_timeout_s: 60
+
+  # 阈值
+  max_compression_ratio: 1.50
+  thought_min_len: 20
+  thought_max_len: 500
+  thought_max_len_l1: 2000
+  thought_max_len_grace_pct: 10   # thought_max_len 额外 +10% 单字符临界余量
+  context_switch_threshold: 3
+  repetitive_call_threshold: 3
+  message_health_min_ratio: 0.3
+  max_failures_before_success: 8
+
+  # 上下文理解 - 近期窗口
+  context_active_window_size: 4
+  context_relevance_threshold: 0.6
+  context_redundancy_threshold: 0.85
+  enable_context_understanding: true
+
+  # 上下文理解 - 分级压缩
+  context_max_archive_chars: 80000
+  context_max_t0_entries: 200
+  context_compression_strategy: hybrid
+  context_max_llm_compressions: 3
+
+  # Tier 阈值 (重要性分数 -> 级别)
+  context_tier0_threshold: 0.7
+  context_tier1_threshold: 0.5
+  context_tier2_threshold: 0.3
+  context_tier3_threshold: 0.1
+
+  # 重要性评分子项权重
+  context_importance_w_error: 0.30
+  context_importance_w_transit: 0.25
+  context_importance_w_refs: 0.20
+  context_importance_w_finality: 0.15
+  context_importance_w_novelty: 0.10
+
+  # 决策层
+  enable_policy_layer: true
+  policy_defer_on_exhausted: true
+  policy_prune_with_pair_enabled: false
+  policy_min_redundancy_for_prune: 1
+
+  # 批量 + 并行
+  batch_input_dir: null
+  batch_output_dir: null
+  workers: 2
+  llm_concurrency: 4
+  max_files: null
+  session_timeout_s: 1200   # 单条 session 处理超时
+
+  # 严格性
+  strict_consistency: true
+  judge_min_score: 7        # 终检 judge 进主输出的最低分 (0-10), 0 = 关闭
+  judge_low_export_enabled: true
+  judge_low_output_path: ./refine_data/judge_low.jsonl
+  routing_abstain_audit_enabled: true
+  routing_abstain_audit_path: ./refine_data/routing_low.jsonl
+
+  # 评估器 (utility eval)
+  evaluator_output_dir: ./evaluator_output
+  probe_base_model_name: Qwen/Qwen3.5-9B-Instruct
+  probe_train_data_dir: ./data/sft_pairs
+  probe_lora_r: 16
+  probe_lora_alpha: 32
+  probe_epochs: 3
+  probe_batch_size: 4
+  probe_learning_rate: 0.0002
+  eval_set_path: ./data/eval_set.jsonl
+  eval_held_out_size: 200
+  retention_threshold: 0.97
+  removal_threshold: 0.50
+  max_feedback_iterations: 3
+
+# === qf (etl.qwenformat 工具输出摘要) ===
+# base_url/model/api_key 未写时继承 llm 段; 各项可被 QF_SUMMARIZER_* env 覆盖。
+qf:
+  tool_output_summarizer:
+    enabled: false              # 总开关; 默认关闭 (验证达标后再开)
+    threshold_chars: 800        # L0 清洗后短于该字符数的工具输出跳过 LLM
+    faith_threshold: 0.7        # 质量门: kept_facts 命中率下限
+    cache_dir: "etl/qwenformat/cache/tool_summaries"

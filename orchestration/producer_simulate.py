@@ -4,7 +4,7 @@
 设计见 ``docs/orchestration-design.md`` §6.1。
 
 职责：
-    1. 加载 ``simulate_serve/config/config.yaml``
+    1. 加载统一根配置 ``config/config.yaml`` 的 simulate_serve 段
     2. ``build_application(config)`` 拿到 services（含 BatchRunner）
     3. 按 ``task_ids`` 从 ``TaskManager.compiled_tasks`` 找对应 ``CompiledTask``
     4. ``queue.insert_batch(task_ids_str)`` 拿到 batch_id
@@ -121,7 +121,7 @@ def run_batch(
     Parameters
     ----------
     config_path:
-        ``simulate_serve/config/config.yaml`` 路径
+        配置文件路径 (统一根配置, 含 ``simulate_serve:`` 段)
     task_ids:
         本批要跑的 task_id 列表
     limit:

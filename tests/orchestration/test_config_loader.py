@@ -21,12 +21,42 @@ from orchestration.config_loader import (
 # ---------------------------------------------------------------------------
 
 def test_load_config_default_when_no_file(tmp_path: Path, monkeypatch) -> None:
-    """无显式路径 + 默认文件存在 → 读默认文件."""
-    # 默认 config.yaml 在包内；存在即读
+    """无显式路径: 根配置存在则优先读根配置."""
+    # 仓库根 config/config.yaml 若存在 (本地开发), load_config() 读它;
+    # 用 SIMCTL_CONFIG 指向临时文件保证测试确定性。
+    fp = tmp_path / "root.yaml"
+    fp.write_text(yaml.safe_dump({
+        "orchestration": {"batch_size": 4},
+        "simulate_serve": {"model": {}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("SIMCTL_CONFIG", str(fp))
     cfg = load_config()
     assert isinstance(cfg, OrchestrationConfig)
-    assert cfg.settings.batch_size == 3
-    assert cfg.gdr.workers == 2
+    assert cfg.settings.batch_size == 4
+    assert cfg.paths.simulate_serve_config == str(fp)
+
+
+def test_load_config_missing_root_config_raises(tmp_path: Path, monkeypatch) -> None:
+    """根配置不存在 → FileNotFoundError (无包内兜底)."""
+    monkeypatch.setenv("SIMCTL_CONFIG", str(tmp_path / "nope.yaml"))
+    with pytest.raises(FileNotFoundError, match="Unified root config not found"):
+        load_config()
+
+
+def test_load_config_root_format_sets_simulate_serve_config(tmp_path: Path) -> None:
+    """统一根配置 (含 simulate_serve: 段): simulate_serve_config 指向该文件本身."""
+    fp = tmp_path / "root.yaml"
+    fp.write_text(yaml.safe_dump({
+        "llm": {"base_url": "http://llm/v1", "api_key": "k", "model": "m"},
+        "simulate_serve": {"model": {"temperature": 0.1}},
+        "orchestration": {"batch_size": 5},
+        "paths": {"sqlite_db": "/tmp/x.db"},
+    }), encoding="utf-8")
+    cfg = load_config(fp)
+    assert cfg.settings.batch_size == 5
+    assert cfg.paths.sqlite_db == "/tmp/x.db"
+    assert cfg.paths.simulate_serve_config == str(fp)
+    assert cfg.source_path == str(fp)
 
 
 def test_load_config_missing_explicit_path_raises(tmp_path: Path) -> None:
@@ -59,7 +89,7 @@ def test_load_config_partial_overrides_keep_defaults(tmp_path: Path) -> None:
     cfg = load_config(fp)
     assert cfg.settings.batch_size == 99
     assert cfg.settings.qf_workers == 4  # default
-    assert cfg.paths.simulate_serve_config == "simulate_serve/config/config.yaml"
+    assert cfg.paths.simulate_serve_config == "config/config.yaml"
 
 
 def test_load_config_empty_file_returns_defaults(tmp_path: Path) -> None:

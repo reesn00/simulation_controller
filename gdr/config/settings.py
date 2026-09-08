@@ -1,21 +1,85 @@
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import json
+import os
+import re
 
-from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource, YamlConfigSettingsSource
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 from pydantic import model_validator
 import logging
 import yaml
 
 log = logging.getLogger(__name__)
 
-# 主 yaml 配置文件的绝对路径 (基于本文件位置定位, 不依赖 CWD)
-YAML_FILE = Path(__file__).resolve().parent / "gdr_config.yaml"
-
 # gdr 包根目录: 相对路径配置一律锚定到这里, 不依赖调用方 CWD。
-# (orchestration master 从仓库根运行时, './config/tools.yaml' 在 CWD 下
-#  解析不到 → 空白名单 → 所有 toolcall 被级联误判 TOOL_HALLUCINATED 并丢弃。)
 GDR_ROOT = Path(__file__).resolve().parent.parent
+
+# 统一根配置 (仓库根 config/config.yaml) 的定位:
+#   1. GDR_CONFIG_FILE 环境变量 (显式覆盖)
+#   2. 仓库根 config/config.yaml
+# 不存在时抛 FileNotFoundError (无包内兜底)。
+ROOT_CONFIG_ENV = "GDR_CONFIG_FILE"
+REPO_ROOT_CONFIG = GDR_ROOT.parent / "config" / "config.yaml"
+
+_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+# 根配置 gdr: 段字段 → llm: 共享段字段的缺省映射
+_LLM_FIELD_FALLBACK = {
+    "llm_base_url": "base_url",
+    "llm_api_key": "api_key",
+    "main_model": "model",
+    "tool_model": "model",
+    "judge_model": "model",
+}
+
+
+def _expand_env_placeholders(value: Any) -> Any:
+    """递归展开 ${VAR} 占位符 (与根级 shared_config 等价的精简实现;
+    gdr 独立安装时不能 import 根级模块, 故自带一份)。"""
+    if isinstance(value, str):
+        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if isinstance(value, dict):
+        return {k: _expand_env_placeholders(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_placeholders(v) for v in value]
+    return value
+
+
+def _load_root_gdr_section() -> dict[str, Any]:
+    """读统一根配置的 ``gdr:`` 段 (含 ``llm:`` 共享段缺省合并)。
+
+    根配置不存在或不含 ``gdr:`` 段时抛 FileNotFoundError (无包内兜底)。
+    GDR_CONFIG_FILE 已设置但文件缺失时不静默回退仓库根默认路径。
+    """
+    env_path = os.environ.get(ROOT_CONFIG_ENV)
+    candidates = [Path(env_path)] if env_path else [REPO_ROOT_CONFIG]
+    for cand in candidates:
+        if not cand.is_file():
+            break
+        try:
+            raw = yaml.safe_load(cand.read_text(encoding="utf-8")) or {}
+        except Exception as e:  # noqa: BLE001 - 配置损坏直接报错, 不静默吞
+            raise FileNotFoundError(f"root config {cand} unreadable: {e}") from e
+        if not isinstance(raw, dict):
+            raw = {}
+        raw = _expand_env_placeholders(raw)
+        section = raw.get("gdr") if isinstance(raw.get("gdr"), dict) else {}
+        out = dict(section)
+        llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
+        for field_name, llm_key in _LLM_FIELD_FALLBACK.items():
+            if not out.get(field_name) and llm.get(llm_key):
+                out[field_name] = llm[llm_key]
+        log.info("gdr settings: root config %s gdr: section loaded (%d keys)", cand, len(out))
+        return out
+    raise FileNotFoundError(
+        f"Unified root config not found: {candidates[0]} "
+        f"(or set {ROOT_CONFIG_ENV}); no fallback config exists"
+    )
+
 
 # QwenPaw agent.json 默认位置: builtin_tools 是远端 agent 真实工具集的权威来源。
 # agent_id 不同的部署用 qwenpaw_agent_json 配置 / GDR_QWENPAW_AGENT_JSON 覆盖。
@@ -232,11 +296,12 @@ class Settings(BaseSettings):
             )
         return self
 
-    # 主配置源: gdr/config/gdr_config.yaml; 环境变量 (GDR_*) 与 .env 有更高优先级的覆盖权
+    # 配置源优先级 (高 → 低): init(kwargs) > 环境变量 (GDR_*) > 统一根配置
+    # (仓库根 config/config.yaml 的 gdr: 段, 含 llm: 共享段缺省) > 字段默认值
     # 注意: 类体内带下划线前缀的属性会被 pydantic 视为私有属性 (ModelPrivateAttr),
-    #       所以 yaml 路径必须以模块级常量存在, 不能放进类体。
+    #       所以常量必须以模块级形式存在, 不能放进类体。
     model_config = SettingsConfigDict(
-        env_prefix="GDR_",   # 进程环境变量 (GDR_*) 临时覆盖 yaml
+        env_prefix="GDR_",   # 进程环境变量 (GDR_*) 临时覆盖根配置
         extra="ignore",      # 未知 env 键静默忽略 (如旧的 GDR_MAX_RETRIES)
     )
 
@@ -249,15 +314,33 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # 优先级: init(kwargs) > env(GDR_*) > yaml > secrets > 字段默认值
         return (
             init_settings,
             env_settings,
-            YamlConfigSettingsSource(
-                settings_cls, yaml_file=YAML_FILE, yaml_file_encoding="utf-8",
-            ),
+            _RootConfigSettingsSource(settings_cls),
             file_secret_settings,
         )
+
+
+class _RootConfigSettingsSource(PydanticBaseSettingsSource):
+    """统一根配置 ``gdr:`` 段的 pydantic-settings source。
+
+    位置在 env (GDR_*) 之后、字段默认值之前: 根配置只覆盖其中出现的
+    字段, 其余走代码默认值。根配置缺失时抛 FileNotFoundError。
+    """
+
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+        super().__init__(settings_cls)
+        self._data = _load_root_gdr_section()
+
+    def get_field_value(self, field, field_name: str):  # type: ignore[override]
+        return self._data.get(field_name), field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        return {
+            k: v for k, v in self._data.items()
+            if v is not None and k in self.settings_cls.model_fields
+        }
 
 
 def load_agent_tools(agent_json_path: Path) -> list[str] | None:
@@ -309,7 +392,7 @@ def load_tools(
     except Exception as e:
         log.error(
             "failed to load tools config from %s (%s): manual whitelist unavailable, "
-            "relying on auto source only; check GDR_TOOLS_CONFIG_PATH or gdr_config.yaml",
+            "relying on auto source only; check GDR_TOOLS_CONFIG_PATH or config/config.yaml",
             tools_config_path, e,
         )
 

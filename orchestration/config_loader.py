@@ -1,5 +1,6 @@
-"""orchestration.config_loader: 加载 ``orchestration/config.yaml`` 为强类型 dataclass.
+"""orchestration.config_loader: 加载编排配置为强类型 dataclass.
 
+配置统一来自仓库根 ``config/config.yaml`` (``SIMCTL_CONFIG`` env 可重定向);
 设计见 ``docs/orchestration-design.md`` §7。
 """
 
@@ -9,12 +10,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
+from shared_config import (
+    ROOT_CONFIG_ENV,
+    ROOT_CONFIG_PATH,
+    find_root_config,
+    load_yaml_file,
+)
 
 
 @dataclass(frozen=True)
 class PathsConfig:
-    simulate_serve_config: str = "simulate_serve/config/config.yaml"
+    # simulate_serve 配置统一来自根配置; 加载含 simulate_serve: 段的文件时
+    # 此字段会被自动指向该文件本身 (见 load_config)。
+    simulate_serve_config: str = "config/config.yaml"
     trajectory_dir: str = "output/agent_trajectory"
     qf_output_dir: str = "output/qf_out"
     gdr_output_dir: str = "output/refine_data"
@@ -72,7 +80,7 @@ class GdrSettings:
 
 @dataclass(frozen=True)
 class OrchestrationConfig:
-    """整个 ``orchestration/config.yaml`` 的强类型视图."""
+    """根配置 ``config/config.yaml`` 的强类型视图."""
     settings: OrchestrationSettings = field(default_factory=OrchestrationSettings)
     paths: PathsConfig = field(default_factory=PathsConfig)
     gdr: GdrSettings = field(default_factory=GdrSettings)
@@ -89,18 +97,30 @@ class OrchestrationConfig:
 
 
 def load_config(path: str | Path | None = None) -> OrchestrationConfig:
-    """加载 ``orchestration/config.yaml``，缺省走包内默认.
+    """加载编排配置; 统一读根配置 ``config/config.yaml`` (无包内兜底).
 
-    缺省时返回全默认 ``OrchestrationConfig``；显式路径不存在则抛 ``FileNotFoundError``.
+    - path=None: 读根配置 (``SIMCTL_CONFIG`` env 可重定向);
+      不存在则抛 ``FileNotFoundError``。
+    - 显式 path: 根配置格式 (orchestration:/paths:/gdr_settings: 顶层段) 均可;
+      文件同时含 ``simulate_serve:`` 段时, ``paths.simulate_serve_config``
+      默认指向该文件本身 (producer 从同一文件读 simulate_serve 配置)。
     """
     if path is None:
-        cfg_path = Path(__file__).resolve().parent / "config.yaml"
+        root = find_root_config()
+        if root is None:
+            raise FileNotFoundError(
+                f"Unified root config not found: {ROOT_CONFIG_PATH} "
+                f"(or set {ROOT_CONFIG_ENV}); no fallback config exists"
+            )
+        cfg_path = root
     else:
         cfg_path = Path(path).resolve()
     if not cfg_path.exists():
-        if path is None:
-            return OrchestrationConfig()
         raise FileNotFoundError(f"Orchestration config not found: {cfg_path}")
-    with cfg_path.open(encoding="utf-8") as stream:
-        raw = yaml.safe_load(stream) or {}
+    raw = load_yaml_file(cfg_path)
+    raw = dict(raw)
+    if isinstance(raw.get("simulate_serve"), dict):
+        paths_raw = dict(raw.get("paths") or {})
+        paths_raw.setdefault("simulate_serve_config", str(cfg_path))
+        raw["paths"] = paths_raw
     return OrchestrationConfig.from_raw(raw, source_path=str(cfg_path))

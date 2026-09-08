@@ -35,12 +35,14 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"simulate_serve/config/config.yaml" = "simulate_serve/config/config.yaml"
+# shared_config: 根配置 config/config.yaml 的读取工具 (orchestration /
+# simulate_serve / etl.qwenformat 共用); 根配置本身含真实凭据不入包。
+# 模块级配置文件已删除, 所有配置统一由根 config/config.yaml 提供。
+"shared_config.py" = "shared_config.py"
 "simulate_serve/config/tasks.yaml" = "simulate_serve/config/tasks.yaml"
 "simulate_serve/config/scenarios.yaml" = "simulate_serve/config/scenarios.yaml"
 "tool_runtime/playwright/package.json" = "simulate_serve/tool_runtime/playwright/package.json"
 "tool_runtime/playwright/package-lock.json" = "simulate_serve/tool_runtime/playwright/package-lock.json"
-"orchestration/config.yaml" = "orchestration/config.yaml"
 "orchestration/queue/schema.sql" = "orchestration/queue/schema.sql"
 
 [dependency-groups]

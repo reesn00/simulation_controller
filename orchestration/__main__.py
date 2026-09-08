@@ -8,7 +8,8 @@
 * ``replay``  ：``state=dead`` 的 task 重置为 ``pending``；``--batch N`` 仅限该批次
 
 公共参数：
-    ``--config PATH``：orchestration config.yaml 路径；默认 ``orchestration/config.yaml``
+    ``--config PATH``：配置 yaml 路径；默认读仓库根 ``config/config.yaml``
+    (统一配置入口, SIMCTL_CONFIG env 可重定向), 缺失时报错 (无兜底)
 """
 
 from __future__ import annotations
@@ -287,7 +288,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--config", type=str, default=None,
-        help="orchestration config.yaml 路径；默认包内 config.yaml",
+        help="配置 yaml 路径 (根配置或 orchestration 格式均可)；默认仓库根 config/config.yaml",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

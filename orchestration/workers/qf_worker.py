@@ -9,7 +9,7 @@
            保留 Agent Identity 与约束段, 并提取 tool schema 到本地模板.
        → 用 ``etl.qwenformat.tool_output_summarizer`` 精简 tool_result:
            L0 规则预清洗 + L1 LLM 锚点摘要 (配置见
-           ``etl/qwenformat/config.yaml`` 的 tool_output_summarizer 段,
+           统一根配置 ``config/config.yaml`` 的 qf.tool_output_summarizer 段,
            env ``QF_SUMMARIZER_*`` 可覆盖; 默认关闭),
            失败保留完整内容, 原始输出存 metadata["raw_output"].
        → ``SessionRecord.to_session_dict`` 得到 Session 形态 dict
@@ -94,8 +94,8 @@ class QfWorker(BaseWorker):
         self._env = env
         self._system_templates_dir = Path(system_templates_dir)
         self._update_templates = update_templates
-        # tool_summarizer: None → 读 etl/qwenformat/config.yaml
-        # (tool_output_summarizer 段, env QF_SUMMARIZER_* 可覆盖);
+        # tool_summarizer: None → 读根配置 qf.tool_output_summarizer 段
+        # (env QF_SUMMARIZER_* 可覆盖);
         # False → 显式关闭; 或传入自定义 ToolOutputSummarizer (测试用 mock).
         if tool_summarizer is None:
             tool_summarizer = LLMAnchoredSummarizer.from_config()
