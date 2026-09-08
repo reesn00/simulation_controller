@@ -16,12 +16,12 @@ import yaml
 class PathsConfig:
     simulate_serve_config: str = "simulate_serve/config/config.yaml"
     trajectory_dir: str = "output/agent_trajectory"
-    qf_output_dir: str = "orchestration/data/qf_out"
-    gdr_output_dir: str = "gdr/refine_data"
-    sqlite_db: str = "orchestration/data/orchestration.db"
-    dead_dir: str = "orchestration/data/dead"
-    pid_file: str = "orchestration/data/orchestration.pid"
-    log_dir: str = "orchestration/logs"
+    qf_output_dir: str = "output/qf_out"
+    gdr_output_dir: str = "output/refine_data"
+    sqlite_db: str = "output/orchestration/orchestration.db"
+    dead_dir: str = "output/orchestration/dead"
+    pid_file: str = "output/orchestration/orchestration.pid"
+    log_dir: str = "output/orchestration/logs"
     runs_dir: str = "output/runs"  # JsonRunRepository 的 runs 根目录
 
     @classmethod

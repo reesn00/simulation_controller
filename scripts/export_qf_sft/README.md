@@ -1,6 +1,6 @@
 # export_qf_sft — Agent 轨迹转 Qwen3.5 SFT 数据
 
-把 `orchestration/data/qf_out/` 中的 agent 轨迹 JSON 转换为按
+把 `output/qf_out/` 中的 agent 轨迹 JSON 转换为按
 `etl/qwenformat/chat_template.jinja`（Qwen3.5 模板）逐字节渲染的 SFT 训练数据，
 并提供配套的 Unsloth LoRA 训练脚本。
 
@@ -41,12 +41,12 @@
 ## 导出
 
 ```powershell
-# 默认: unsloth 格式 + jsonl，输入 orchestration/data/qf_out，输出 output/
+# 默认: unsloth 格式 + jsonl，输入 output/qf_out，输出 output/
 python scripts/export_qf_sft/export_qf_sft.py
 
 # 指定参数
 python scripts/export_qf_sft/export_qf_sft.py `
-    --input orchestration/data/qf_out/T001__xxx.json `
+    --input output/qf_out/T001__xxx.json `
     --out-dir scripts/export_qf_sft/output `
     --mode unsloth --format parquet
 ```
@@ -55,7 +55,7 @@ python scripts/export_qf_sft/export_qf_sft.py `
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--input` | `orchestration/data/qf_out` | 轨迹 JSON 文件或目录 |
+| `--input` | `output/qf_out` | 轨迹 JSON 文件或目录 |
 | `--out-dir` | `output/` | 输出目录 |
 | `--mode` | `unsloth` | 见下表 |
 | `--format` | `jsonl` | `jsonl` 或 `parquet` |

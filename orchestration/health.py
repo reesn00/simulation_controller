@@ -1,4 +1,4 @@
-"""orchestration.health: 写 ``orchestration/data/health.json`` 供 CLI status 查询.
+"""orchestration.health: 写 ``<log_dir>/health.json`` 供 CLI status 查询.
 
 字段：
     * queue_counts: ``SQLiteQueue.count_by_state()``

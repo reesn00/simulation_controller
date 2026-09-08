@@ -18,7 +18,7 @@ simulate_serve（模拟采集 Run/审计 JSON）
 ```
 
 - `simulate_serve/`：主应用，六边形/分层架构。`configuration/` 加载严格 Schema v2 Catalog；`domain/` + `application/` 编译任务、维护异步运行状态机、编排远端会话；`interaction/` 生成首轮请求和针对验证缺口的自然追问，不拥有验证工具；`validation/` + `tools/` 负责确定性规则、语义 Judge、工具取证和四态结果聚合；`infrastructure/` 提供 QwenPaw HTTP、CAMEL 模型和 JSON v2 持久化。产出 Run/审计/蒸馏 JSON，是下游数据加工的源头。入口 `python -m simulate_serve`。
-- `orchestration/`：顶层流水线调度器，把 `simulate_serve → etl/qwenformat → gdr` 三个独立子系统串成 `trajectory → qf → gdr` 的批驱动 + 持续消费管道（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)）。`master.py` 跑主循环，按批次 spawn `producer_simulate / watcher / qf_workers / gdr_workers`；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → qf_processing → pending_gdr → gdr_processing → done`，超限入 `dead`），`reap_stale` 周期回退卡死的 `*_processing` 任务；`workers/base_worker.py` 提供通用 pull-process-mark 循环 + 重试/dead 逻辑，`qf_worker` 调 [`etl/qwenformat/transform.py`](etl/qwenformat/transform.py) 的 `trajectory_to_session_with_openai_metadata`，`gdr_worker` 调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（含凑批等待）；`batch_tracker.py` 等 `run.json.state ∈ TERMINAL_STATES`；`watcher.py` 轮询 `output/agent_trajectory/` 入队；`failure_handler.py` 把 `state=dead` 的 `src + qf_output + gdr_output` 移到 `data/dead/` 并追加 `dead.log`；`health.py` 写 `data/health.json`；`daemon.py` 处理 PID file + signal + STOP 哨兵文件（Windows 上 CTRL_BREAK_EVENT 不可达，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令；`run.bat` 是 Windows wrapper。完整跑完后修正完的精修 JSON 落在 `gdr/refine_data/<TXXX>__<session>_refined.json`；低分但结构可用的 session 走 `refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `orchestration/data/dead/`。入口 `python -m orchestration`。
+- `orchestration/`：顶层流水线调度器，把 `simulate_serve → etl/qwenformat → gdr` 三个独立子系统串成 `trajectory → qf → gdr` 的批驱动 + 持续消费管道（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)）。`master.py` 跑主循环，按批次 spawn `producer_simulate / watcher / qf_workers / gdr_workers`；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → qf_processing → pending_gdr → gdr_processing → done`，超限入 `dead`），`reap_stale` 周期回退卡死的 `*_processing` 任务；`workers/base_worker.py` 提供通用 pull-process-mark 循环 + 重试/dead 逻辑，`qf_worker` 调 [`etl/qwenformat/transform.py`](etl/qwenformat/transform.py) 的 `trajectory_to_session_with_openai_metadata`，`gdr_worker` 调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（含凑批等待）；`batch_tracker.py` 等 `run.json.state ∈ TERMINAL_STATES`；`watcher.py` 轮询 `output/agent_trajectory/` 入队；`failure_handler.py` 把 `state=dead` 的 `src + qf_output + gdr_output` 移到 `output/orchestration/dead/` 并追加 `dead.log`；`health.py` 写 `output/orchestration/logs/health.json`；`daemon.py` 处理 PID file + signal + STOP 哨兵文件（Windows 上 CTRL_BREAK_EVENT 不可达，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令；`run.bat` 是 Windows wrapper。所有阶段产物与运行时状态统一收在 `output/` 下。完整跑完后修正完的精修 JSON 落在 `output/refine_data/<TXXX>__<session>_refined.json`；低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `output/orchestration/dead/`。入口 `python -m orchestration`。
 - `data_refiner/`：合成会话数据的轻量规则清洗，只标注不删除。依次执行无效文件判定（R3）、连续工具调用失败段剪裁（R1）、thinking 长度标注（R2），并输出轨迹块状态报告（R5）。入口 `python -m data_refiner --input ... --output ...`。
 - `etl/`：SFT 训练格式转换。`pawsession/` 按 extract/transform/load 把 QwenPaw origindata 转为 OpenAI function-calling 格式 `sft_openai.jsonl`，并附每会话审计与 `stats.json`（入口 `etl/pawsession/run_etl.py`）；`qwenformat/` 被 `orchestration` 的 `qf_worker` 调用，负责把 trajectory JSONL 事件流重放为 Session dict 并渲染 `chat_template.jinja` 生成 Qwen3 SFT 训练文本。
 - `gdr/`：独立的 uv workspace 成员（gdr-agent），对 QwenPaw Agent 轨迹做"脏数据入、干净数据出"的自动缺陷检测与精修。Session → Message → Block 三级数据模型，13 种缺陷标签（规则层 + LLM 三票投票），含 obs_denoiser/thought_refactor/tool_fixer 精修器、L1/L2/L3 三级验证、模型路由与评估闭环。入口 `gdr-pipeline`（编排）与 `gdr-evaluator`（评估）。
@@ -34,7 +34,7 @@ simulate_serve（模拟采集 Run/审计 JSON）
 | 子命令 | 作用 |
 |---|---|
 | `start` | 启动 master + workers；`--detach` 后台化、`--dry-run` 只打印计划、`--tasks T001,T002` 指定批次、`--all-tasks` 加载 catalog 全部 task、`--batch-size N` 覆盖 config、`--exit-when-done` 跑完即退 |
-| `status` | 读 `data/orchestration.db` 队列状态 + `data/health.json` + 死信列表 + 阶段时间戳（`sim@/sim!` `qf@/qf!` `gdr@/gdr!`，`@`=开始 `!=`收尾） |
+| `status` | 读 `output/orchestration/orchestration.db` 队列状态 + `output/orchestration/logs/health.json` + 死信列表 + 阶段时间戳（`sim@/sim!` `qf@/qf!` `gdr@/gdr!`，`@`=开始 `!=`收尾） |
 | `stop` | 写 STOP 哨兵文件让 master 优雅 shutdown；超时后 `taskkill /F /T`（Windows）或 `SIGKILL`（POSIX）兜底 |
 | `replay` | `state=dead` 的 task 重置回 `pending`；`--batch N` 仅限该批次 |
 
@@ -45,8 +45,8 @@ simulate_serve（模拟采集 Run/审计 JSON）
 | 阶段 | 入口模块 | 产物文件 | 数据形态 |
 |---|---|---|---|
 | 模拟采集 | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（**AI SDK 形态**） |
-| 转换 | `etl/qwenformat` | `orchestration/data/qf_out/<TXXX>__<session>.json` | 单 Session JSON，含 `messages[*].blocks` 结构 |
-| 精修 | `gdr` | `gdr/refine_data/<TXXX>__<session>_refined.json` | 同 qf_out 结构 + `metadata.refine_history` |
+| 转换 | `etl/qwenformat` | `output/qf_out/<TXXX>__<session>.json` | 单 Session JSON，含 `messages[*].blocks` 结构 |
+| 精修 | `gdr` | `output/refine_data/<TXXX>__<session>_refined.json` | 同 qf_out 结构 + `metadata.refine_history` |
 
 GDR 只接受 `qf_out` 格式（[`gdr/domain/schema.py::load_session`](gdr/domain/schema.py#L182-L198)），不直接消费 trajectory；`etl/qwenformat` 是 simulate_serve 与 gdr 之间的强制 adapter，qf_out 是单一真相来源。
 
@@ -95,7 +95,7 @@ GDR 三级精修（`obs_denoiser` / `thought_refactor` / `tool_fixer`）后的 S
 - `validation_summary`：L1/L2/L3 通过块数。
 - `modified_blocks`：被修改的 block id 列表。
 
-低分但结构可用的 session 走 `gdr/refine_data/judge_low.jsonl` 审核通道，**数据不丢**；只有三种硬丢弃（只剩 user / assistant 全空壳 / 极少且全失败），见 [`gdr/pipeline/runner.py::_session_structurally_unusable`](gdr/pipeline/runner.py)。
+低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道，**数据不丢**；只有三种硬丢弃（只剩 user / assistant 全空壳 / 极少且全失败），见 [`gdr/pipeline/runner.py::_session_structurally_unusable`](gdr/pipeline/runner.py)。
 
 ### E2E 验证
 
@@ -184,7 +184,7 @@ orchestration 的 `start → producer_simulate → qf_worker → gdr_worker → 
 ### C. 配套生态（不进入 Python 进程）
 
 - `tool_runtime/playwright/`：Node 子工程，仅含 `package.json` + `package-lock.json`；由 wheel 的 `force-include` 把 `node_modules/` 拷贝到 `simulate_serve/tools/browser/`，运行时按需启用。
-- `refine_data/judge_low.jsonl`：gdr 终检 judge 低分但结构可用的 session 审核通道快照，**单文件 JSONL 数据**，非代码；详见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)。
+- `output/refine_data/judge_low.jsonl`：gdr 终检 judge 低分但结构可用的 session 审核通道快照，**单文件 JSONL 数据**，非代码；详见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)。
 
 ### D. `gdr/` 内部子模块（orchestration 只取 `pipeline._process_one_file`）
 

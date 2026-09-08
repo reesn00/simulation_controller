@@ -27,7 +27,7 @@
 
 用法:
     python scripts/export_qf_sft/export_qf_sft.py \
-        --input orchestration/data/qf_out \
+        --input output/qf_out \
         --out-dir scripts/export_qf_sft/output \
         --mode per-turn
 """
@@ -44,7 +44,7 @@ import jinja2
 from jinja2.sandbox import SandboxedEnvironment
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_INPUT = ROOT / "orchestration/data/qf_out"
+DEFAULT_INPUT = ROOT / "output/qf_out"
 DEFAULT_TEMPLATE = ROOT / "etl/qwenformat/chat_template.jinja"
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "output"
 
@@ -310,7 +310,7 @@ def write_samples(samples: list[dict], out_file: Path, fmt: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="qf_out agent 轨迹 -> Qwen3.5 SFT 数据")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT,
-                        help="轨迹 JSON 文件或目录（默认 orchestration/data/qf_out）")
+                        help="轨迹 JSON 文件或目录（默认 output/qf_out）")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="输出目录")
     parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE,
                         help="Qwen3.5 chat template 路径")

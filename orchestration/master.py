@@ -148,18 +148,25 @@ class Master:
         self._threads.append((name, t, ev))
 
     def _build_gdr_settings(self) -> GdrSettings:
+        gdr_out = Path(self._cfg.paths.gdr_output_dir)
+        # gdr Settings 里 output/deferred/judge_low/routing_low 是 CWD 相对默认值,
+        # 不覆盖会落到仓库根 refine_data/; 统一锚到 gdr_output_dir 下。
+        # log_dir 默认 ./logs 同理锚到编排 log_dir（多进程批量模式才会用）。
+        anchored = {
+            "batch_output_dir": gdr_out,
+            "output_path": gdr_out / "output.json",
+            "deferred_output_path": gdr_out / "deferred.jsonl",
+            "judge_low_output_path": gdr_out / "judge_low.jsonl",
+            "routing_abstain_audit_path": gdr_out / "routing_low.jsonl",
+            "log_dir": Path(self._cfg.paths.log_dir),
+            "workers": 1,
+            "max_files": 1,
+        }
         if self._gdr_settings is not None:
-            return self._gdr_settings.model_copy(update={
-                "batch_output_dir": Path(self._cfg.paths.gdr_output_dir),
-                "workers": 1,
-                "max_files": 1,
-            })
-        g = self._cfg.gdr
+            return self._gdr_settings.model_copy(update=anchored)
         return GdrSettings(
-            batch_output_dir=Path(self._cfg.paths.gdr_output_dir),
-            workers=1,
-            llm_concurrency=g.llm_concurrency,
-            max_files=1,
+            llm_concurrency=self._cfg.gdr.llm_concurrency,
+            **anchored,
         )
 
     def shutdown(self, *, timeout: float = 10.0) -> None:

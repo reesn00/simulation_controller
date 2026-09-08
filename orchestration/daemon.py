@@ -35,7 +35,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_PID_FILE = "orchestration.pid"
-DEFAULT_LOG_DIR = "orchestration/logs"
+DEFAULT_LOG_DIR = "output/orchestration/logs"
 DEFAULT_LOG_FILE = "master.log"
 STOP_SENTINEL_FILE = "STOP"
 
