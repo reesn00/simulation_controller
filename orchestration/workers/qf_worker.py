@@ -8,8 +8,10 @@
            去掉 AGENTS.md / SOUL.md / PROFILE.md / About 框架块,
            保留 Agent Identity 与约束段, 并提取 tool schema 到本地模板.
        → 用 ``etl.qwenformat.tool_output_summarizer`` 精简 tool_result:
-           L0 规则预清洗 + L1 LLM 锚点摘要 (env ``QF_SUMMARIZER_*`` 控制,
-           默认关闭), 失败保留完整内容, 原始输出存 metadata["raw_output"].
+           L0 规则预清洗 + L1 LLM 锚点摘要 (配置见
+           ``etl/qwenformat/config.yaml`` 的 tool_output_summarizer 段,
+           env ``QF_SUMMARIZER_*`` 可覆盖; 默认关闭),
+           失败保留完整内容, 原始输出存 metadata["raw_output"].
        → ``SessionRecord.to_session_dict`` 得到 Session 形态 dict
        → ``etl.qwenformat.transform.trajectory_to_session_with_openai_metadata``
        渲染出 Qwen3 训练文本，落 ``qf_output_dir/<session_id>.json``
@@ -92,14 +94,11 @@ class QfWorker(BaseWorker):
         self._env = env
         self._system_templates_dir = Path(system_templates_dir)
         self._update_templates = update_templates
-        # tool_summarizer: None → 按 env (QF_SUMMARIZER_ENABLED) 自动构造;
+        # tool_summarizer: None → 读 etl/qwenformat/config.yaml
+        # (tool_output_summarizer 段, env QF_SUMMARIZER_* 可覆盖);
         # False → 显式关闭; 或传入自定义 ToolOutputSummarizer (测试用 mock).
         if tool_summarizer is None:
-            cache_dir = (
-                Path(__file__).resolve().parents[2]
-                / "etl" / "qwenformat" / "cache" / "tool_summaries"
-            )
-            tool_summarizer = LLMAnchoredSummarizer.from_env(cache_dir=cache_dir)
+            tool_summarizer = LLMAnchoredSummarizer.from_config()
         self._tool_summarizer = tool_summarizer or None
 
     # ------------------------------------------------------------------

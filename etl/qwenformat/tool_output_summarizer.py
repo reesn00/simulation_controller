@@ -17,6 +17,10 @@
         LLM 调用失败 / 质量门不通过 → 保留 L0 清洗后的完整原始内容.
         宁可多留, 不可错删 —— 保留完整内容好于粗糙截断.
 
+配置: ``etl/qwenformat/config.yaml`` 的 ``tool_output_summarizer:`` 段
+(``LLMAnchoredSummarizer.from_config`` 读取); 每项可被同名
+``QF_SUMMARIZER_*`` 环境变量覆盖 (env 优先).
+
 质量门 (校验可信性, 不校验长度):
     1. 格式: LLM 输出 JSON 可解析, summary 非空;
        relevant=true 时 kept_facts 必须非空.
@@ -333,8 +337,63 @@ class LLMAnchoredSummarizer:
         self._stats = stats if stats is not None else {}
 
     # ------------------------------------------------------------------
-    # env 构造
+    # 配置文件 / env 构造
     # ------------------------------------------------------------------
+
+    DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
+
+    @classmethod
+    def from_config(
+        cls,
+        config_path: Optional[Path] = None,
+        *,
+        stats: Optional[dict[str, int]] = None,
+    ) -> Optional["LLMAnchoredSummarizer"]:
+        """按 ``etl/qwenformat/config.yaml`` 构造; env ``QF_SUMMARIZER_*`` 优先覆盖.
+
+        读取 ``tool_output_summarizer:`` 段 (enabled/base_url/model/api_key/
+        threshold_chars/faith_threshold/cache_dir). ``enabled=false`` 或
+        base_url/model 缺失时返回 None.
+        """
+        import yaml
+
+        path = Path(config_path) if config_path else cls.DEFAULT_CONFIG_PATH
+        raw: dict[str, Any] = {}
+        if path.exists():
+            all_raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            section = all_raw.get("tool_output_summarizer") or {}
+            if isinstance(section, dict):
+                raw = section
+
+        env_enabled = os.environ.get("QF_SUMMARIZER_ENABLED", "").lower()
+        if env_enabled:
+            enabled = env_enabled in ("1", "true", "yes")
+        else:
+            enabled = bool(raw.get("enabled", False))
+        if not enabled:
+            return None
+
+        base_url = os.environ.get("QF_SUMMARIZER_BASE_URL") or str(raw.get("base_url") or "")
+        model = os.environ.get("QF_SUMMARIZER_MODEL") or str(raw.get("model") or "")
+        api_key = os.environ.get("QF_SUMMARIZER_API_KEY") or str(raw.get("api_key") or "")
+        if not base_url or not model:
+            logger.warning("tool_output_summarizer enabled but base_url/model missing; disabled")
+            return None
+
+        threshold = int(
+            os.environ.get("QF_SUMMARIZER_THRESHOLD_CHARS")
+            or raw.get("threshold_chars") or 800
+        )
+        faith = float(raw.get("faith_threshold", 0.7))
+        cache_raw = raw.get("cache_dir")
+        cache_dir = Path(str(cache_raw)) if cache_raw else None
+        return cls(
+            llm_caller=_default_llm_caller(base_url, api_key, model, timeout=60.0),
+            threshold_chars=threshold,
+            faith_threshold=faith,
+            cache_dir=cache_dir,
+            stats=stats,
+        )
 
     @classmethod
     def from_env(
@@ -343,7 +402,7 @@ class LLMAnchoredSummarizer:
         cache_dir: Optional[Path] = None,
         stats: Optional[dict[str, int]] = None,
     ) -> Optional["LLMAnchoredSummarizer"]:
-        """按 env 构造; QF_SUMMARIZER_ENABLED 未开或配置不全时返回 None.
+        """仅按 env 构造 (不含 yaml); QF_SUMMARIZER_ENABLED 未开或配置不全时返回 None.
 
         环境变量:
             QF_SUMMARIZER_ENABLED        "1"/"true" 开启 (默认关)

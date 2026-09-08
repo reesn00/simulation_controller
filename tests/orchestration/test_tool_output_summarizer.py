@@ -207,6 +207,76 @@ def test_from_env_enabled_but_missing_config(monkeypatch: pytest.MonkeyPatch) ->
 
 
 # ---------------------------------------------------------------------------
+# from_config (etl/qwenformat/config.yaml)
+# ---------------------------------------------------------------------------
+
+def _write_config(tmp_path: Path, body: str) -> Path:
+    fp = tmp_path / "config.yaml"
+    fp.write_text(body, encoding="utf-8")
+    return fp
+
+
+@pytest.fixture(autouse=True)
+def _clear_summarizer_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in ("QF_SUMMARIZER_ENABLED", "QF_SUMMARIZER_BASE_URL",
+                "QF_SUMMARIZER_API_KEY", "QF_SUMMARIZER_MODEL",
+                "QF_SUMMARIZER_THRESHOLD_CHARS"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_from_config_default_file_disabled() -> None:
+    """仓库内置 config.yaml 默认 enabled: false → None."""
+    assert LLMAnchoredSummarizer.from_config() is None
+
+
+def test_from_config_loads_yaml(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, """
+tool_output_summarizer:
+  enabled: true
+  base_url: "http://example.invalid/v1"
+  model: "mini-summarizer"
+  api_key: "k"
+  threshold_chars: 123
+  faith_threshold: 0.5
+  cache_dir: "{cache}"
+""".format(cache=(tmp_path / "cache").as_posix()))
+    s = LLMAnchoredSummarizer.from_config(cfg)
+    assert s is not None
+    assert s._threshold_chars == 123
+    assert s._faith_threshold == 0.5
+    assert s._cache_dir == tmp_path / "cache"
+
+
+def test_from_config_env_overrides_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _write_config(tmp_path, """
+tool_output_summarizer:
+  enabled: true
+  base_url: "http://example.invalid/v1"
+  model: "mini-summarizer"
+  threshold_chars: 123
+""")
+    monkeypatch.setenv("QF_SUMMARIZER_THRESHOLD_CHARS", "456")
+    s = LLMAnchoredSummarizer.from_config(cfg)
+    assert s is not None
+    assert s._threshold_chars == 456
+
+
+def test_from_config_env_can_disable_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _write_config(tmp_path, """
+tool_output_summarizer:
+  enabled: true
+  base_url: "http://example.invalid/v1"
+  model: "m"
+""")
+    monkeypatch.setenv("QF_SUMMARIZER_ENABLED", "0")
+    assert LLMAnchoredSummarizer.from_config(cfg) is None
+
+
+def test_from_config_missing_file_returns_none(tmp_path: Path) -> None:
+    assert LLMAnchoredSummarizer.from_config(tmp_path / "nope.yaml") is None
+
+
+# ---------------------------------------------------------------------------
 # summarize_record
 # ---------------------------------------------------------------------------
 
