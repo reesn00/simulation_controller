@@ -5,8 +5,11 @@
     2. ``process()``: 读 trajectory（``run_<run_id>__<session_id>.json`` JSONL 事件流）
        → ``etl.qwenformat.load.load_trajectory`` 重放为 ``SessionRecord``
        → 用 ``etl.qwenformat.system_prompt`` 清洗 system prompt:
-           去掉 AGENTS.md / SOUL.md / PROFILE.md / agent-skills / About 框架块,
+           去掉 AGENTS.md / SOUL.md / PROFILE.md / About 框架块,
            保留 Agent Identity 与约束段, 并提取 tool schema 到本地模板.
+       → 用 ``etl.qwenformat.tool_output_summarizer`` 精简 tool_result:
+           L0 规则预清洗 + L1 LLM 锚点摘要 (env ``QF_SUMMARIZER_*`` 控制,
+           默认关闭), 失败保留完整内容, 原始输出存 metadata["raw_output"].
        → ``SessionRecord.to_session_dict`` 得到 Session 形态 dict
        → ``etl.qwenformat.transform.trajectory_to_session_with_openai_metadata``
        渲染出 Qwen3 训练文本，落 ``qf_output_dir/<session_id>.json``
@@ -32,6 +35,11 @@ from etl.qwenformat.system_prompt import (
     partition_system_prompt,
     render_cleaned_system,
     save_section_templates,
+)
+from etl.qwenformat.tool_output_summarizer import (
+    LLMAnchoredSummarizer,
+    ToolOutputSummarizer,
+    summarize_record,
 )
 from etl.qwenformat.tool_templates import save_tool_templates
 from etl.qwenformat.transform import (
@@ -63,6 +71,7 @@ class QfWorker(BaseWorker):
         template_path: Path | str | None = None,
         system_templates_dir: Path | str | None = None,
         update_templates: bool = True,
+        tool_summarizer: ToolOutputSummarizer | None | bool = None,
         n: int = 1,
         poll_seconds: float = 2.0,
     ) -> None:
@@ -83,6 +92,15 @@ class QfWorker(BaseWorker):
         self._env = env
         self._system_templates_dir = Path(system_templates_dir)
         self._update_templates = update_templates
+        # tool_summarizer: None → 按 env (QF_SUMMARIZER_ENABLED) 自动构造;
+        # False → 显式关闭; 或传入自定义 ToolOutputSummarizer (测试用 mock).
+        if tool_summarizer is None:
+            cache_dir = (
+                Path(__file__).resolve().parents[2]
+                / "etl" / "qwenformat" / "cache" / "tool_summaries"
+            )
+            tool_summarizer = LLMAnchoredSummarizer.from_env(cache_dir=cache_dir)
+        self._tool_summarizer = tool_summarizer or None
 
     # ------------------------------------------------------------------
     # pull
@@ -137,6 +155,11 @@ class QfWorker(BaseWorker):
         # 残留旧格式文件的预期一致, 不丢数据, 不兼容转换).
         record = load_trajectory(task.src_path)
         new_system, clean_stats = self._clean_system_prompt(record)
+
+        # 工具返回内容精简: L0 规则预清洗 + L1 LLM 锚点摘要,
+        # 失败保留完整内容; 原始 output 留在 block.metadata["raw_output"].
+        if self._tool_summarizer is not None:
+            summarize_record(record, self._tool_summarizer, stats=clean_stats)
 
         # 把清洗后的 system prompt 写回 record
         record.summary = new_system

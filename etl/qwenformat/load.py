@@ -138,6 +138,8 @@ class SessionRecord:
                         "name": b.name,
                         "output_text": b.output_text,
                         "state": b.state,
+                        # metadata 可能含 raw_output (tool_output_summarizer 保留的原始返回)
+                        "metadata": b.metadata,
                     })
                 else:
                     blocks.append(b)

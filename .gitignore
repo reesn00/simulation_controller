@@ -78,3 +78,6 @@ etl/qwenformat/templates/
 # orchestration 运行时数据（SQLite 队列 / qf_out / pid / dead / logs）
 orchestration/data/
 orchestration/logs/
+
+# qwenformat LLM 摘要缓存（运行时生成，不提交）
+etl/qwenformat/cache/

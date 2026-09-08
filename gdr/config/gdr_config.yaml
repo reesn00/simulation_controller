@@ -28,8 +28,8 @@
 #   GDR_LOG_DIR                  -> log_dir
 
 # === HTTP OpenAI-compatible LLM endpoint (env: GDR_LLM_BASE_URL) ===
-llm_base_url: https://ark.cn-beijing.volces.com/api/coding/v3
-llm_api_key: "ark-1feee0d7-fccf-4a36-be62-7420e3b22dac-f43cc"    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
+llm_base_url: http://100.64.0.129/v1
+llm_api_key: "bgw_Y_-"    # 敏感! 本文件已被 gitignore, 勿复制到其他文件
 
 # Model names registered at the endpoint
 main_model: MiniMax-M2.7         # env: GDR_MAIN_MODEL
@@ -91,6 +91,8 @@ max_compression_ratio: 1.50
 thought_min_len: 20
 thought_max_len: 500
 thought_max_len_l1: 2000
+# 修复 P1.2: 允许 thought_max_len 额外 +10% 作为单字符临界 (501 vs 500) 的余量
+thought_max_len_grace_pct: 10
 context_switch_threshold: 3
 repetitive_call_threshold: 3
 message_health_min_ratio: 0.3
@@ -142,6 +144,10 @@ judge_min_score: 7    # 终检 judge 进主输出的最低分 (0-10), 0 = 关闭
 # 硬丢弃只发生在结构严重不可用时 (只有 user 消息 / assistant 空壳 / 极少且全失败)。
 judge_low_export_enabled: true
 judge_low_output_path: ./refine_data/judge_low.jsonl
+# 修复 P1.3: LLM 投票弃权 (解析失败/请求异常) 的 block 单独落 audit
+# jsonl, 与 judge_low 平行但不阻塞主流程
+routing_abstain_audit_enabled: true
+routing_abstain_audit_path: ./refine_data/routing_low.jsonl
 
 # === 评估器 (utility eval) ===
 evaluator_output_dir: ./evaluator_output
