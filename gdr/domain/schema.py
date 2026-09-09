@@ -107,6 +107,17 @@ class ToolresultBlock(BaseModel):
     output_text: str
     state: Literal["success", "error"]
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_state(cls, data: dict) -> dict:
+        """上游存在 success/error 之外的状态 (如审批拒绝的 denied), 统一映射为
+        error, 原值保留在 original_state 中。"""
+        if isinstance(data, dict):
+            state = data.get("state")
+            if state is not None and state not in ("success", "error"):
+                data = {**data, "original_state": state, "state": "error"}
+        return data
+
 
 class TextBlock(BaseModel):
     model_config = ConfigDict(extra="allow")

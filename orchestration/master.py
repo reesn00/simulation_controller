@@ -83,13 +83,16 @@ class Master:
         queue: SQLiteQueue,
         producer_runner: ProducerRunner | None = None,
         gdr_settings: GdrSettings | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self._cfg = cfg
         self._queue = queue
         self._producer_runner: ProducerRunner = producer_runner or self._default_producer
         self._gdr_settings = gdr_settings
 
-        self._stop_event = threading.Event()
+        # 外部（daemon 信号 / STOP 哨兵）可注入共享 stop_event，
+        # 让 Ctrl+C 直接触发主循环的 BatchTrackerStopped 中断路径
+        self._stop_event = stop_event if stop_event is not None else threading.Event()
         self._threads: list[tuple[str, threading.Thread, threading.Event]] = []
         self._reaper_thread: threading.Thread | None = None
         self._workers_started = False

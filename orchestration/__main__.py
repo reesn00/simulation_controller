@@ -142,7 +142,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
             max_retry_qf=cfg.settings.max_retry_qf,
             max_retry_gdr=cfg.settings.max_retry_gdr,
         )
-        master = Master(cfg=cfg, queue=queue)
+        master = Master(cfg=cfg, queue=queue, stop_event=stop_event)
 
         master.start_workers()
         try:
