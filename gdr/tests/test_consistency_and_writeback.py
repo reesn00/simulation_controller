@@ -7,7 +7,9 @@ import pytest
 
 from core.context_understanding import GlobalState
 from domain import BlockIndex, BlockRefineRecord, StepEditStatus
-from reassembly.reassembler import reassemble, _validate_edit_consistency
+from reassembly.reassembler import (
+    reassemble, _validate_edit_consistency, _lost_critical_fields,
+)
 
 
 class _StubCU:
@@ -337,3 +339,124 @@ def test_judge_discard_not_resurrected_by_timeout_fallback(cfg, monkeypatch):
 
     assert result is None
     assert "timeout_partial_save" not in session.metadata, "judge 判死的 session 不得被超时兜底复活"
+
+
+# ---------------------------------------------------------------------------
+# 一致性校验语义化比较 + 回滚前 LLM 复核 (修复摘要改写漂移造成的批量误回滚)
+# ---------------------------------------------------------------------------
+
+
+def test_lost_fields_reworded_constraint_not_flagged():
+    """约束换说法但语义等价 → 不算丢失 (旧实现精确字符串差集会误报)。"""
+    before = GlobalState(critical_constraints=["必须在 9 月 10 日前完成支付"])
+    after = GlobalState(critical_constraints=["支付须在 9 月 10 日前完成"])
+    assert _lost_critical_fields(before, after) == []
+
+
+def test_lost_fields_contained_constraint_not_flagged():
+    before = GlobalState(critical_constraints=["不得泄露用户手机号"])
+    after = GlobalState(critical_constraints=["不得泄露用户手机号等隐私信息"])
+    assert _lost_critical_fields(before, after) == []
+
+
+def test_lost_fields_genuine_constraint_drop_flagged():
+    before = GlobalState(critical_constraints=["必须使用 HTTPS 上传"])
+    after = GlobalState(critical_constraints=[])
+    assert _lost_critical_fields(before, after) == ["critical_constraints"]
+
+
+def test_lost_fields_entity_key_reworded_not_flagged():
+    """实体键名轻微改写 (订单号→订单编号) 不算丢失。"""
+    before = GlobalState(key_entities={"订单号": "A-123"})
+    after = GlobalState(key_entities={"订单编号": "A-123"})
+    assert _lost_critical_fields(before, after) == []
+
+
+def test_lost_fields_archived_entity_exempt():
+    """实体已从 key_entities 移除, 但其值出现在 archived_actions 中 → 豁免。
+
+    旧实现 set(key_entities) - set(archived_actions) 命名空间不相交, 从未生效。
+    """
+    before = GlobalState(key_entities={"订单号": "A-123"})
+    after = GlobalState(archived_actions=["已完成订单 A-123 的退款"])
+    assert _lost_critical_fields(before, after) == []
+
+
+def test_lost_fields_genuine_entity_drop_flagged():
+    before = GlobalState(key_entities={"订单号": "A-123"})
+    after = GlobalState()
+    assert _lost_critical_fields(before, after) == ["key_entities"]
+
+
+def test_lost_fields_task_goal_whitespace_normalized():
+    before = GlobalState(task_goal="帮用户退款")
+    after = GlobalState(task_goal="  帮用户退款\n")
+    assert _lost_critical_fields(before, after) == []
+
+
+class _DriftCU(_StubCU):
+    """编辑前快照含关键实体, 重算后缺失 (模拟两遍 LLM 摘要的裁量漂移)。"""
+
+    def __init__(self, num_chunks: int):
+        super().__init__(num_chunks)
+        for ci in range(num_chunks):
+            self._snapshots[ci] = GlobalState(key_entities={"订单号": "A-123"})
+
+    def update_state_chunk(self, session, current_state, chunk_idx: int, cfg=None):
+        self.calls.append(chunk_idx)
+        return GlobalState()
+
+
+class _ConfirmCfg:
+    consistency_max_llm_calls = 10
+    consistency_rollback_on_entity_loss = True
+    consistency_semantic_confirm = True
+    consistency_constraint_similarity = 0.6
+
+
+def test_unconfirmed_loss_keeps_edits():
+    """复核判定为摘要漂移 (未确认丢失) → 保留编辑, 不回滚。"""
+    cu = _DriftCU(num_chunks=2)
+    records = [_record("b0"), _record("b1")]
+    with patch("reassembly.reassembler._confirm_loss_with_llm", return_value=False):
+        out = _validate_edit_consistency(None, records, cu, _ConfirmCfg())
+    assert all(r.result == "success" for r in out)
+
+
+def test_confirmed_loss_rolls_back_and_restores_block():
+    """复核确认真丢失 → 回滚该 chunk 编辑并把 block 恢复为 original_content。"""
+    from domain import Session, Message
+
+    session = Session(session_id="rb", messages=[
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "b0", "thinking": "new"},
+        ]),
+    ])
+    cu = _DriftCU(num_chunks=1)
+    rec = _record("b0")
+    with patch("reassembly.reassembler._confirm_loss_with_llm", return_value=True):
+        out = _validate_edit_consistency(session, [rec], cu, _ConfirmCfg())
+    assert out[0].result == "rollback"
+    assert out[0].edit_status == StepEditStatus.ROLLBACK
+    assert out[0].refined_content is None
+    assert session.messages[0].blocks[0].thinking == "old"
+
+
+def test_semantic_confirm_disabled_rolls_back_directly():
+    """关闭复核时保持旧的直接回滚行为。"""
+    from domain import Session, Message
+
+    class _NoConfirmCfg(_ConfirmCfg):
+        consistency_semantic_confirm = False
+
+    session = Session(session_id="rb2", messages=[
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "b0", "thinking": "new"},
+        ]),
+    ])
+    cu = _DriftCU(num_chunks=1)
+    rec = _record("b0")
+    with patch("reassembly.reassembler._confirm_loss_with_llm") as mock_confirm:
+        out = _validate_edit_consistency(session, [rec], cu, _NoConfirmCfg())
+    assert not mock_confirm.called
+    assert out[0].result == "rollback"

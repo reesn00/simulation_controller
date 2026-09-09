@@ -229,7 +229,11 @@ class Settings(BaseSettings):
     # === 一致性校验（方案 §5.4） ===
     enable_edit_consistency_check: bool = True    # 编辑前后状态快照校验开关
     consistency_rollback_on_entity_loss: bool = True  # 关键字段丢失时自动回滚
-    consistency_max_llm_calls: int = 40           # 一致性校验状态重算 LLM 调用预算 (含重试), 超出标记 needs_review
+    consistency_max_llm_calls: int = 40           # 一致性校验状态重算 LLM 调用预算 (含重试与复核), 超出标记 needs_review
+    # 前后状态均为 LLM 压缩摘要, 精确比较差集误报率高: 低于该相似度才算真丢失
+    consistency_constraint_similarity: float = 0.6
+    # 回滚前由 LLM 复核"丢失"是真丢失还是摘要改写漂移; 复核失败=不回滚 (数据保全优先)
+    consistency_semantic_confirm: bool = True
 
     # === 训练质量评分（方案 §5.2） ===
     enable_quality_scorer: bool = True           # 训练质量维度评分开关

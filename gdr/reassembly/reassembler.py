@@ -19,18 +19,111 @@ def _over_session_budget(cfg, t0: float) -> bool:
     return (time.perf_counter() - t0) > budget
 
 
-def _lost_critical_fields(before, after) -> list[str]:
-    """关键字段丢失/冲突检测 (方案 §5.4): 关键实体、约束、任务目标。"""
+def _normalize_text(s) -> str:
+    """折叠空白 + 小写, 用于对 LLM 摘要文本做稳健比较。"""
+    return " ".join(str(s).split()).lower()
+
+
+def _textually_similar(a: str, b: str, threshold: float) -> bool:
+    """两条摘要文本是否语义等价 (归一化后包含或高相似度)。"""
+    if not a or not b:
+        return False
+    if a in b or b in a:
+        return True
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a, b).ratio() >= threshold
+
+
+def _entity_archived(key, value, archived_actions) -> bool:
+    """实体是否已归档: 键或值的文本出现在 archived_actions 描述中即视为豁免。
+
+    旧实现用 set(key_entities) - set(archived_actions) 做差集, 但前者是实体名
+    (URL/订单号), 后者是动作描述句, 两个命名空间几乎不相交, 豁免从未生效。
+    """
+    if not archived_actions:
+        return False
+    haystack = _normalize_text(" ".join(str(a) for a in archived_actions))
+    for needle in (key, value):
+        n = _normalize_text(needle)
+        if len(n) >= 2 and n in haystack:
+            return True
+    return False
+
+
+def _lost_critical_fields(before, after, similarity_threshold: float = 0.6) -> list[str]:
+    """关键字段丢失/冲突检测 (方案 §5.4): 关键实体、约束、任务目标。
+
+    前后两份状态均为 LLM 压缩摘要 (state_tracker prompt 主动要求丢历史细节),
+    逐字符串精确比较差集会把"换说法/换保留集"误判为丢失, 因此:
+      - key_entities: 归一化后按键比较, 模糊等价 (包含/高相似) 或已归档的不算丢失
+      - critical_constraints: 自由文本条目, 逐条与 after 全量做模糊匹配
+      - task_goal: 归一化空白后比较 (措辞漂移由下游 LLM 复核兜底)
+    """
     lost = []
-    before_keys = set(before.key_entities) - set(before.archived_actions)
-    after_keys = set(after.key_entities) - set(after.archived_actions)
-    if before_keys - after_keys:
+    after_keys = [_normalize_text(k) for k in after.key_entities]
+    genuinely_missing = False
+    for k, v in before.key_entities.items():
+        nk = _normalize_text(k)
+        if any(_textually_similar(nk, ak, similarity_threshold) for ak in after_keys):
+            continue
+        if _entity_archived(k, v, after.archived_actions):
+            continue
+        genuinely_missing = True
+        break
+    if genuinely_missing:
         lost.append("key_entities")
-    if set(before.critical_constraints) - set(after.critical_constraints):
+
+    after_constraints = [_normalize_text(c) for c in after.critical_constraints]
+    if any(
+        not any(_textually_similar(_normalize_text(c), ac, similarity_threshold)
+                for ac in after_constraints)
+        for c in before.critical_constraints
+    ):
         lost.append("critical_constraints")
-    if before.task_goal and before.task_goal != after.task_goal:
+
+    if before.task_goal and _normalize_text(before.task_goal) != _normalize_text(after.task_goal):
         lost.append("task_goal")
     return lost
+
+
+def _confirm_loss_with_llm(lost_keys: list[str], before, after, cfg) -> bool:
+    """回滚前复核: 让 LLM 判定 flagged 丢失是真丢失还是摘要改写漂移。
+
+    状态追踪器对同一块文本的两遍摘要本就有裁量差, 直接按差集回滚误报率高。
+    复核失败 (请求异常/输出不可解析) 一律视为"未确认"→ 不回滚, 与
+    "数据完整即处理导出"的主旨一致; 严格回滚可关闭 consistency_semantic_confirm。
+    """
+    try:
+        from infrastructure import LlamaCppClient
+        from prompts import load_and_render, parse_json_object
+
+        system_prompt = load_and_render("consistency_confirmer", "system")
+        user_prompt = load_and_render(
+            "consistency_confirmer", "user",
+            lost_fields=", ".join(lost_keys),
+            before_state=json.dumps(before.to_dict(), ensure_ascii=False),
+            after_state=json.dumps(after.to_dict(), ensure_ascii=False),
+        )
+        model = getattr(cfg, "context_state_model", None) or cfg.main_model
+        timeout = getattr(cfg, "llm_timeout_s", 120)
+        client = LlamaCppClient.get(model, cfg=cfg, timeout=timeout)
+        text, _ = client.chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=2048, temperature=0.0, timeout_s=timeout,
+        )
+        result = parse_json_object(text)
+        confirmed = bool(result.get("lost", False))
+        log.info(
+            "consistency confirmer: fields=%s lost=%s reason=%s",
+            lost_keys, confirmed, result.get("reason", ""),
+        )
+        return confirmed
+    except Exception as e:
+        log.warning("consistency confirmer failed (%s), treating loss as unconfirmed", e)
+        return False
 
 
 def _validate_edit_consistency(
@@ -48,8 +141,9 @@ def _validate_edit_consistency(
     起点取 first_edited 前一个 chunk 的编辑前快照: 其之前的 chunk 未被编辑,
     快照仍然有效。first_edited=0 时从空状态开始, 与初始追踪等价。
 
-      - 关键字段丢失/冲突 → 回滚该 Chunk 内所有编辑 (result=rollback, 恢复原文),
-        并把当前状态重置为该 chunk 的编辑前快照后继续
+      - 关键字段丢失/冲突 → 先经 LLM 复核 (consistency_semantic_confirm) 排除
+        摘要改写漂移, 确认后回滚该 Chunk 内所有编辑 (result=rollback, 恢复原文),
+        并把当前状态重置为该 chunk 的编辑前快照后继续; 未确认则保留编辑
       - 状态重算失败 / LLM 调用预算耗尽 → 该 chunk 及之后的成功编辑标记 needs_review
 
     注意: 调用时编辑已写回 session.blocks, 因此回滚必须把 block 恢复为 original_content。
@@ -94,8 +188,21 @@ def _validate_edit_consistency(
 
         before = cu.state_snapshots.get(ci)
         if before is not None:
-            lost_keys = _lost_critical_fields(before, new_state)
+            threshold = float(getattr(cfg, "consistency_constraint_similarity", 0.6))
+            lost_keys = _lost_critical_fields(before, new_state, similarity_threshold=threshold)
             if lost_keys and getattr(cfg, "consistency_rollback_on_entity_loss", True):
+                # 回滚前复核 (方案改进): 两遍 LLM 摘要的裁量差会制造假"丢失",
+                # 由 confirmer 判定是否真丢失; 未确认 (含复核失败) 则保留编辑。
+                if getattr(cfg, "consistency_semantic_confirm", True):
+                    budget -= 1
+                    if not _confirm_loss_with_llm(lost_keys, before, new_state, cfg):
+                        log.info(
+                            "consistency conflict at chunk %d: %s not confirmed "
+                            "(summary drift), keeping edits",
+                            ci, lost_keys,
+                        )
+                        current = new_state
+                        continue
                 log.warning(
                     "consistency conflict at chunk %d: %s -> rollback edits in chunk",
                     ci, lost_keys,
