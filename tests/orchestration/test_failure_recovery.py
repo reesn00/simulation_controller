@@ -88,11 +88,18 @@ def _patch_gdr(monkeypatch, fail_for: set[str] | None = None):
         if task.run_id in fail_for:
             raise RuntimeError("gdr injected failure")
         session = task.session_id or task.src_path.stem
-        out = self._gdr_output_dir / f"{session}_refined.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("{}", encoding="utf-8")
-        self._queue.mark_gdr_done(task.id, gdr_output_path=out)
-        return out
+        base = f"{self._gdr_output_dir / session}_refined"
+        paths = {
+            "messages": f"{base}.messages.json",
+            "openai": f"{base}.openai.json",
+            "qwenjina": f"{base}.qwenjina.txt",
+            "meta": f"{base}.meta.json",
+        }
+        for p in paths.values():
+            Path(p).parent.mkdir(parents=True, exist_ok=True)
+            Path(p).write_text("{}", encoding="utf-8")
+        self._last_outputs = paths
+        return Path(paths["messages"])
     monkeypatch.setattr(GdrWorker, "process", fake)
 
 
@@ -208,6 +215,9 @@ def test_recovery_reaper_unlocks_stale_qf_processing(env, monkeypatch) -> None:
 
 def test_recovery_reaper_unlocks_stale_gdr_processing(env, monkeypatch) -> None:
     _tmp, queue, m, _ = env
+    # 隔离 gdr worker: 不让 run_once 真的抢回 pending_gdr 并处理, 否则退锁后
+    # 立即被 worker 拉走、load_error 级联进 dead (与 qf 版本对称的竞态隔离)。
+    monkeypatch.setattr(GdrWorker, "run_once", lambda self: 0)
     tid = _seed_qf_done(_tmp, queue, "r", "s", batch_id=1)
     queue.pull_pending_gdr(worker_id="dead_gdr", n=1)
     with queue._conn() as conn:

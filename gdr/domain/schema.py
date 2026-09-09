@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, Annotated, Optional
 from pathlib import Path
@@ -209,10 +210,63 @@ def load_session(input_path: Path) -> Session:
     return Session.model_validate(raw)
 
 
-def save_session(session: Session, output_path: Path) -> None:
-    data = session.model_dump(mode="json", exclude_none=True)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+@dataclass(frozen=True)
+class SessionOutputs:
+    """``save_session`` 拆出的 4 份视图文件路径；``qwenjina`` 可为 None."""
+
+    messages: Path
+    openai: Path
+    qwenjina: Optional[Path]
+    meta: Path
+
+
+def save_session(session: Session, base_path: Path) -> SessionOutputs:
+    """把 refined Session 按视图拆成 4 份文件写入 ``base_path`` 所在目录.
+
+    ``base_path`` 是无扩展名 stem（如 ``.../xxx_refined``），4 份文件共用同一
+    stem、仅尾缀与扩展名不同：
+
+    * ``<base>.messages.json``  — blocks 视图（``{"messages": [...]}``）
+    * ``<base>.openai.json``    — OpenAI function-calling 视图
+    * ``<base>.qwenjina.txt``   — Qwen3 chat_template 纯文本；qf_text 缺失则不写
+    * ``<base>.meta.json``      — 审计 metadata 全量 + session_id
+    """
+    base_path = Path(base_path)
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+
+    messages_path = Path(str(base_path) + ".messages.json")
+    payload = {"messages": [m.model_dump(mode="json", exclude_none=True) for m in session.messages]}
+    messages_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+    openai_path = Path(str(base_path) + ".openai.json")
+    openai_payload = {
+        "openai_messages": (session.metadata or {}).get("openai_messages", []),
+    }
+    openai_path.write_text(
+        json.dumps(openai_payload, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+    qf_text = (session.metadata or {}).get("qf_text")
+    qwenjina_path: Optional[Path] = None
+    if qf_text:
+        qwenjina_path = Path(str(base_path) + ".qwenjina.txt")
+        qwenjina_path.write_text(str(qf_text), encoding="utf-8")
+
+    meta = dict(session.metadata or {})
+    meta["session_id"] = session.session_id
+    meta_path = Path(str(base_path) + ".meta.json")
+    meta_path.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+    return SessionOutputs(
+        messages=messages_path,
+        openai=openai_path,
+        qwenjina=qwenjina_path,
+        meta=meta_path,
+    )
 
 
 def locate_block(session: Session, block_id: str) -> tuple[int, int] | None:

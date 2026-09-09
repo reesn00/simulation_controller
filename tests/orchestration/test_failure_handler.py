@@ -19,7 +19,14 @@ def _force_dead(queue: SQLiteQueue, src_path: Path, *, qf_output: Path | None = 
         queue.mark_qf_done(tid, qf_output_path=qf_output)
         queue.pull_pending_gdr(worker_id="w", n=1)
         if gdr_output is not None:
-            queue.mark_gdr_done(tid, gdr_output_path=gdr_output)
+            base = gdr_output.with_suffix("")
+            queue.mark_gdr_done(
+                tid,
+                gdr_messages_path=Path(str(base) + ".messages.json"),
+                gdr_openai_path=Path(str(base) + ".openai.json"),
+                gdr_qwenjina_path=None,
+                gdr_meta_path=Path(str(base) + ".meta.json"),
+            )
     queue.mark_dead(tid, error_msg="forced")
     return tid
 

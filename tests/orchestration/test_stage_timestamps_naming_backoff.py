@@ -132,9 +132,21 @@ def test_stage_done_only_after_batch_drains_stage(tmp_path) -> None:
 
     queue.pull_pending_gdr(worker_id="w", n=2)
     assert _batch_row(queue, 1)["gdr_started_at"] is not None
-    queue.mark_gdr_done(t1, gdr_output_path=tmp_path / "a_r.json")
+    queue.mark_gdr_done(
+        t1,
+        gdr_messages_path=tmp_path / "a_r.messages.json",
+        gdr_openai_path=tmp_path / "a_r.openai.json",
+        gdr_qwenjina_path=None,
+        gdr_meta_path=tmp_path / "a_r.meta.json",
+    )
     assert _batch_row(queue, 1)["gdr_done_at"] is None
-    queue.mark_gdr_done(t2, gdr_output_path=tmp_path / "b_r.json")
+    queue.mark_gdr_done(
+        t2,
+        gdr_messages_path=tmp_path / "b_r.messages.json",
+        gdr_openai_path=tmp_path / "b_r.openai.json",
+        gdr_qwenjina_path=None,
+        gdr_meta_path=tmp_path / "b_r.meta.json",
+    )
     row = _batch_row(queue, 1)
     assert row["gdr_done_at"] is not None
     assert row["qf_started_at"] <= row["qf_done_at"] <= row["gdr_started_at"] <= row["gdr_done_at"]
@@ -163,8 +175,9 @@ def test_mark_dead_before_any_pull_stamps_nothing(tmp_path) -> None:
     assert row["qf_started_at"] is None and row["qf_done_at"] is None
 
 
-def test_legacy_db_migrated_with_new_columns(tmp_path) -> None:
-    """旧库 (batches 无阶段戳列) 打开时幂等 ALTER 补列, 且 collect/打标可用."""
+def test_legacy_db_tasks_rebuilt_and_batches_migrated(tmp_path) -> None:
+    """旧库 tasks 含 gdr_output_path 列 + batches 无阶段戳列: 打开时 tasks DROP
+    重建为 4 字段, batches 幂等 ALTER 补阶段戳列, 且 collect/打标可用."""
     db = tmp_path / "legacy.db"
     conn = sqlite3.connect(db)
     conn.executescript("""
@@ -190,6 +203,15 @@ def test_legacy_db_migrated_with_new_columns(tmp_path) -> None:
     conn.close()
 
     queue = SQLiteQueue(db)
+    # tasks 表已重建: gdr_output_path 列消失, 4 个 gdr_*_path 列出现
+    with queue._conn() as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(tasks)")}
+    assert "gdr_output_path" not in cols
+    assert {
+        "gdr_messages_path", "gdr_openai_path",
+        "gdr_qwenjina_path", "gdr_meta_path",
+    } <= cols
+
     queue.insert_batch(["T1"])
     t1 = _seed(queue, tmp_path, "r__a.json", "a", batch_id=1)
     queue.pull_pending_qf(worker_id="w", n=1)

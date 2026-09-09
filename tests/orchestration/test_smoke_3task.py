@@ -40,11 +40,18 @@ def _patch_qf(monkeypatch):
 def _patch_gdr(monkeypatch):
     def fake(self, task):
         session = task.session_id or task.src_path.stem
-        out = self._gdr_output_dir / f"{session}_refined.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps({"refined": True}), encoding="utf-8")
-        self._queue.mark_gdr_done(task.id, gdr_output_path=out)
-        return out
+        base = f"{self._gdr_output_dir / session}_refined"
+        paths = {
+            "messages": f"{base}.messages.json",
+            "openai": f"{base}.openai.json",
+            "qwenjina": f"{base}.qwenjina.txt",
+            "meta": f"{base}.meta.json",
+        }
+        for p in paths.values():
+            Path(p).parent.mkdir(parents=True, exist_ok=True)
+            Path(p).write_text(json.dumps({"refined": True}), encoding="utf-8")
+        self._last_outputs = paths
+        return Path(paths["messages"])
     monkeypatch.setattr(GdrWorker, "process", fake)
 
 
@@ -138,10 +145,15 @@ def test_smoke_3task_batch_end_to_end(tmp_path, monkeypatch) -> None:
     assert row["status"] == "done"
     assert int(row["dead_count"]) == 0
 
-    # 3 份 refined JSON 落盘
-    refined = sorted(p.name for p in gdr_out.glob("*_refined.json"))
+    # 3 task × 4 份视图文件落盘
+    refined = sorted(p.name for p in gdr_out.glob("*_refined.*"))
     assert refined == [
-        "session_T1_refined.json", "session_T2_refined.json", "session_T3_refined.json",
+        "session_T1_refined.messages.json", "session_T1_refined.meta.json",
+        "session_T1_refined.openai.json", "session_T1_refined.qwenjina.txt",
+        "session_T2_refined.messages.json", "session_T2_refined.meta.json",
+        "session_T2_refined.openai.json", "session_T2_refined.qwenjina.txt",
+        "session_T3_refined.messages.json", "session_T3_refined.meta.json",
+        "session_T3_refined.openai.json", "session_T3_refined.qwenjina.txt",
     ]
 
     # health.json 写入

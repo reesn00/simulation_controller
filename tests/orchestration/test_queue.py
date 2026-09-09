@@ -183,7 +183,13 @@ def test_mark_gdr_done_transitions_to_done(queue: SQLiteQueue) -> None:
     [qf] = queue.pull_pending_qf(worker_id="w", n=1)
     queue.mark_qf_done(qf.id, qf_output_path=qf.src_path.parent / "qf.json")
     [gdr] = queue.pull_pending_gdr(worker_id="w", n=1)
-    queue.mark_gdr_done(gdr.id, gdr_output_path=gdr.src_path.parent / "refined.json")
+    queue.mark_gdr_done(
+        gdr.id,
+        gdr_messages_path=gdr.src_path.parent / "refined.messages.json",
+        gdr_openai_path=gdr.src_path.parent / "refined.openai.json",
+        gdr_qwenjina_path=None,
+        gdr_meta_path=gdr.src_path.parent / "refined.meta.json",
+    )
 
     refreshed = queue.get(qf.id)
     assert refreshed is not None

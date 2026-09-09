@@ -41,7 +41,7 @@ def test_process_one_file_loads_session_json(tmp_path, monkeypatch):
     from pipeline import runner
 
     qf_in = _write_qf_out(tmp_path)
-    out_path = tmp_path / "gdr_out" / "s1_refined.json"
+    base_path = tmp_path / "gdr_out" / "s1_refined"
 
     monkeypatch.setattr(runner, "load_tools", lambda *a, **k: ([], []))
     monkeypatch.setattr(runner, "process_one", lambda session, cfg, tn, ha: session)
@@ -52,10 +52,14 @@ def test_process_one_file_loads_session_json(tmp_path, monkeypatch):
         max_files=1,
         enable_llm_layer=False,
     )
-    result = runner._process_one_file(qf_in, out_path, cfg)
+    result = runner._process_one_file(qf_in, base_path, cfg)
 
     assert result["status"] == "success", result
-    assert out_path.exists()
+    outputs = result["outputs"]
+    assert Path(outputs["messages"]).exists()
+    assert Path(outputs["openai"]).exists()
+    assert Path(outputs["qwenjina"]).exists()  # fixture 含 qf_text
+    assert Path(outputs["meta"]).exists()
 
 
 def test_gdr_domain_does_not_expose_load_trajectory():

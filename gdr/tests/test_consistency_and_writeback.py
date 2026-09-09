@@ -1,6 +1,7 @@
 """回归测试: 一致性校验真增量 (O(N)) 与 refine_records 按 block_id 写回。"""
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -279,12 +280,12 @@ def test_judge_low_session_exported_to_review_channel(cfg, tmp_path):
     """judge 低分: 主输出不落盘, 但完整 session 写入 judge_low.jsonl (数据不丢)。"""
     import json
     from unittest.mock import patch
-    from domain import Session, Message, save_session
+    from domain import Session, Message
     from pipeline.runner import _process_one_file
 
     cfg.judge_low_output_path = tmp_path / "judge_low.jsonl"
     input_path = tmp_path / "in.json"
-    output_path = tmp_path / "out.json"
+    output_base = tmp_path / "out"
     session = Session(session_id="low-score-file", messages=[
         Message(role="user", id="u1", blocks=[]),
         Message(role="assistant", id="a1", blocks=[
@@ -293,13 +294,17 @@ def test_judge_low_session_exported_to_review_channel(cfg, tmp_path):
             {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
         ]),
     ])
-    save_session(session, input_path)
+    input_path.write_text(
+        json.dumps(session.model_dump(mode="json", exclude_none=True), ensure_ascii=False),
+        encoding="utf-8",
+    )
     with patch("infrastructure.LlamaCppClient") as mock_llm:
         mock_llm.get.return_value.chat.return_value = ('{"score": 2}', None)
-        status = _process_one_file(input_path, output_path, cfg)
+        status = _process_one_file(input_path, output_base, cfg)
 
     assert status["status"] == "discard"
-    assert not output_path.exists(), "低分 session 不得进入主输出"
+    for suffix in (".messages.json", ".openai.json", ".qwenjina.txt", ".meta.json"):
+        assert not Path(str(output_base) + suffix).exists(), "低分 session 不得进入主输出"
     record = json.loads(cfg.judge_low_output_path.read_text(encoding="utf-8").splitlines()[0])
     assert record["session_id"] == "low-score-file"
     assert record["judge"]["score"] == 2

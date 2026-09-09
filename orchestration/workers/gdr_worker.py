@@ -3,9 +3,9 @@
 流程：
     1. ``pull()``: 从队列 ``state='pending_gdr'`` 拉任务
     2. ``process()``: 读 qf_out/<session>.json → 调
-       ``gdr.pipeline._process_one_file(input, output, cfg)`` → 落
-       ``gdr_output_dir/<session>_refined.json``
-    3. ``mark_done()``: ``queue.mark_gdr_done(task.id, gdr_output_path=...)``
+       ``gdr.pipeline._process_one_file(input, base_path, cfg)`` → 落
+       ``gdr_output_dir/<session>_refined.{messages,openai}.json`` 等 4 份视图
+    3. ``mark_done()``: ``queue.mark_gdr_done(task.id, gdr_*_path=...)``
        → state 转 ``done``
 
 并发模型：
@@ -58,6 +58,8 @@ class GdrWorker(BaseWorker):
         self._gdr_output_dir = Path(gdr_output_dir)
         self._gdr_settings = gdr_settings
         self._llm_concurrency = int(llm_concurrency)
+        #: process 拆出的 4 份视图路径 (供 mark_done 回写队列)；见 §5 契约 A。
+        self._last_outputs: dict[str, str | None] | None = None
 
     # ------------------------------------------------------------------
     # pull
@@ -78,8 +80,8 @@ class GdrWorker(BaseWorker):
                 f"gdr worker {self._worker_id}: qf output missing for task {task.id}: {qf_input}"
             )
         session_id = task.session_id or task.src_path.stem
-        out_path = self._gdr_output_dir / self._output_name(task, session_id, suffix="_refined")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_base = self._gdr_output_dir / self._output_name(task, session_id, suffix="_refined")
+        base_path = out_base.with_suffix("")  # strip `.json` → 拆 4 份的 stem
 
         # 构造/复用 gdr.Settings：workers=1 走单进程，llm_concurrency 控制 LLM 信号量
         if self._gdr_settings is None:
@@ -97,7 +99,7 @@ class GdrWorker(BaseWorker):
                 "max_files": 1,
             })
 
-        result = _process_one_file(qf_input, out_path, cfg)
+        result = _process_one_file(qf_input, base_path, cfg)
         if result is None or result.get("status") != "success":
             # gdr 返回 None 通常是软超时部分保存；非 success 也算失败
             status = result.get("status") if result else "None"
@@ -105,7 +107,9 @@ class GdrWorker(BaseWorker):
                 f"gdr worker {self._worker_id}: gdr returned non-success "
                 f"(status={status!r}, task={task.id})"
             )
-        return out_path
+        outputs = result.get("outputs") or {}
+        self._last_outputs = outputs
+        return Path(outputs["messages"])
 
     # ------------------------------------------------------------------
     # mark_done
@@ -117,4 +121,11 @@ class GdrWorker(BaseWorker):
         与 qf_worker.mark_done 同样的并发考量：不在 mark 后做 post-mark 校验，
         ``mark_gdr_done`` 自身的 SQL 守卫已保证原子性。
         """
-        self._queue.mark_gdr_done(task.id, gdr_output_path=output)
+        outputs = self._last_outputs or {}
+        self._queue.mark_gdr_done(
+            task.id,
+            gdr_messages_path=Path(outputs["messages"]),
+            gdr_openai_path=Path(outputs["openai"]),
+            gdr_qwenjina_path=Path(outputs["qwenjina"]) if outputs.get("qwenjina") else None,
+            gdr_meta_path=Path(outputs["meta"]),
+        )

@@ -22,7 +22,13 @@ def test_collect_batches_returns_inserted(tmp_path: Path) -> None:
     queue.pull_pending_qf(worker_id="w", n=1)
     queue.mark_qf_done(tid, qf_output_path=fp)
     queue.pull_pending_gdr(worker_id="w", n=1)
-    queue.mark_gdr_done(tid, gdr_output_path=fp)
+    queue.mark_gdr_done(
+        tid,
+        gdr_messages_path=fp,
+        gdr_openai_path=fp,
+        gdr_qwenjina_path=None,
+        gdr_meta_path=fp,
+    )
 
     bid = queue.insert_batch(["r"])
     queue.update_batch(bid, simulate_started_at="2026-09-01T00:00:00Z",

@@ -53,7 +53,9 @@ def reap_dead(
     with queue._conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, src_path, batch_id, qf_output_path, gdr_output_path,
+            SELECT id, src_path, batch_id, qf_output_path,
+                   gdr_messages_path, gdr_openai_path, gdr_qwenjina_path,
+                   gdr_meta_path,
                    attempts_qf, attempts_gdr, error_msg
             FROM tasks
             WHERE state = ?
@@ -69,7 +71,11 @@ def reap_dead(
         prefix = f"{batch_id}_{task_id}"
         moved: list[str] = []
 
-        for col in ("src_path", "qf_output_path", "gdr_output_path"):
+        for col in (
+            "src_path", "qf_output_path",
+            "gdr_messages_path", "gdr_openai_path",
+            "gdr_qwenjina_path", "gdr_meta_path",
+        ):
             src = r[col]
             if not src:
                 continue

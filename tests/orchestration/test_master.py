@@ -143,11 +143,18 @@ def _patch_qf_process(monkeypatch, fail_for: set[str] | None = None):
 def _patch_gdr_process(monkeypatch):
     def fake_process(self, task):
         session = task.session_id or task.src_path.stem
-        out = self._gdr_output_dir / f"{session}_refined.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("{}", encoding="utf-8")
-        self._queue.mark_gdr_done(task.id, gdr_output_path=out)
-        return out
+        base = f"{self._gdr_output_dir / session}_refined"
+        paths = {
+            "messages": f"{base}.messages.json",
+            "openai": f"{base}.openai.json",
+            "qwenjina": f"{base}.qwenjina.txt",
+            "meta": f"{base}.meta.json",
+        }
+        for p in paths.values():
+            Path(p).parent.mkdir(parents=True, exist_ok=True)
+            Path(p).write_text("{}", encoding="utf-8")
+        self._last_outputs = paths
+        return Path(paths["messages"])
 
     monkeypatch.setattr(GdrWorker, "process", fake_process)
 
@@ -352,7 +359,13 @@ def test_wait_batch_drained_returns_true_when_all_done(env) -> None:
     queue.pull_pending_qf(worker_id="w", n=1)
     queue.mark_qf_done(tid, qf_output_path=fp)
     queue.pull_pending_gdr(worker_id="w", n=1)
-    queue.mark_gdr_done(tid, gdr_output_path=fp)
+    queue.mark_gdr_done(
+        tid,
+        gdr_messages_path=fp,
+        gdr_openai_path=fp,
+        gdr_qwenjina_path=None,
+        gdr_meta_path=fp,
+    )
 
     bid = queue.insert_batch(["r"])
     assert m.wait_batch_drained(bid, poll_seconds=0.05) is True

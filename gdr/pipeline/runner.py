@@ -667,12 +667,20 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
 
     if result is not None:
         try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            save_session(result, output_path)
-            log.info("saved refined session to %s", output_path)
+            outputs = save_session(result, output_path)
+            log.info("saved refined session to %s", outputs.messages)
             # 方案 §5.5: 人工审核队列独立输出 (deferred blocks 追加到 jsonl)
             _append_deferred_queue(result, cfg)
-            return {"input": str(input_path), "output": str(output_path), "status": "success"}
+            return {
+                "input": str(input_path),
+                "outputs": {
+                    "messages": str(outputs.messages),
+                    "openai": str(outputs.openai),
+                    "qwenjina": str(outputs.qwenjina) if outputs.qwenjina else None,
+                    "meta": str(outputs.meta),
+                },
+                "status": "success",
+            }
         except Exception as e:
             log.error("failed to save %s: %s", output_path, e)
             return {"input": str(input_path), "status": "save_error", "error": str(e)}
@@ -740,8 +748,8 @@ def _discover_inputs(cfg: Settings) -> list[Path]:
 
 def _resolve_output(cfg: Settings, input_path: Path) -> Path:
     if cfg.batch_input_dir and cfg.batch_output_dir:
-        return cfg.batch_output_dir / f"{input_path.stem}_refined.json"
-    return cfg.output_path
+        return cfg.batch_output_dir / f"{input_path.stem}_refined"
+    return cfg.output_path.with_suffix("")
 
 
 def run(cfg: Settings) -> dict:

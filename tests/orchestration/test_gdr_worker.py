@@ -75,6 +75,21 @@ def _seed_qf_task_split(queue: SQLiteQueue, src_path: Path, qf_path: Path,
     return tid
 
 
+def _write_refined_outputs(base_path: Path) -> dict:
+    """模拟真实 save_session: 按 stem 写 4 份视图文件并返回 outputs dict."""
+    base = str(base_path)
+    files = {
+        "messages": f"{base}.messages.json",
+        "openai": f"{base}.openai.json",
+        "qwenjina": f"{base}.qwenjina.txt",
+        "meta": f"{base}.meta.json",
+    }
+    for p in files.values():
+        Path(p).parent.mkdir(parents=True, exist_ok=True)
+        Path(p).write_text("{}", encoding="utf-8")
+    return files
+
+
 # ---------------------------------------------------------------------------
 # 构造
 # ---------------------------------------------------------------------------
@@ -107,7 +122,7 @@ def test_pull_returns_pending_gdr_only(env, monkeypatch) -> None:
 
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker._process_one_file",
-        lambda *a, **kw: {"status": "success", "input": str(a[0]), "output": str(a[1])},
+        lambda *a, **kw: {"status": "success"},
     )
 
     w = GdrWorker(queue=queue, worker_id="w", gdr_output_dir=gdr_out)
@@ -128,10 +143,7 @@ def test_process_calls_gdr_and_returns_output(env, monkeypatch) -> None:
         captured["input"] = input_path
         captured["output"] = output_path
         captured["cfg_workers"] = cfg.workers
-        # 模拟写出 output 文件
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("{}", encoding="utf-8")
-        return {"status": "success"}
+        return {"status": "success", "outputs": _write_refined_outputs(output_path)}
 
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker._process_one_file",
@@ -142,7 +154,7 @@ def test_process_calls_gdr_and_returns_output(env, monkeypatch) -> None:
     [task] = w.pull()
     out_path = w.process(task)
 
-    assert out_path == gdr_out / "s1_refined.json"
+    assert out_path == gdr_out / "s1_refined.messages.json"
     assert out_path.exists()
     assert captured["input"] == qf
     # 强制 cfg.workers=1（避免 gdr 内部 Pool）
@@ -160,8 +172,7 @@ def test_process_uses_qf_output_path_not_src_path(env, monkeypatch) -> None:
     captured = {}
     def fake(input_path, output_path, cfg):
         captured["input"] = input_path
-        output_path.write_text("{}", encoding="utf-8")
-        return {"status": "success"}
+        return {"status": "success", "outputs": _write_refined_outputs(output_path)}
 
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker._process_one_file", fake,
@@ -227,8 +238,7 @@ def test_mark_done_transitions_to_done(env, monkeypatch) -> None:
     tid = _seed_qf_task(queue, qf, "s1")
 
     def fake(i, o, c):
-        o.write_text("{}", encoding="utf-8")
-        return {"status": "success"}
+        return {"status": "success", "outputs": _write_refined_outputs(o)}
 
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker._process_one_file", fake,
@@ -241,7 +251,9 @@ def test_mark_done_transitions_to_done(env, monkeypatch) -> None:
     refreshed = queue.get(tid)
     assert refreshed is not None
     assert refreshed.state == STATE_DONE
-    assert refreshed.gdr_output_path == str(out_path)
+    assert refreshed.gdr_messages_path == str(out_path)
+    assert refreshed.gdr_openai_path is not None
+    assert refreshed.gdr_meta_path is not None
 
 
 # ---------------------------------------------------------------------------
@@ -303,8 +315,7 @@ def test_run_once_end_to_end_qf_then_gdr(env, monkeypatch) -> None:
     _seed_qf_task(queue, qf, "s1")
 
     def fake(i, o, c):
-        o.write_text(json.dumps({"refined": True}), encoding="utf-8")
-        return {"status": "success"}
+        return {"status": "success", "outputs": _write_refined_outputs(o)}
 
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker._process_one_file", fake,
@@ -329,8 +340,7 @@ def test_run_forever_exits_on_stop_event(env, monkeypatch) -> None:
     _seed_qf_task(queue, qf, "s1")
 
     def fake(i, o, c):
-        o.write_text("{}", encoding="utf-8")
-        return {"status": "success"}
+        return {"status": "success", "outputs": _write_refined_outputs(o)}
 
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker._process_one_file", fake,
@@ -351,8 +361,7 @@ def test_run_forever_processes_later_added_tasks(env, monkeypatch) -> None:
     queue, gdr_out, tmp_path = env
 
     def fake(i, o, c):
-        o.write_text("{}", encoding="utf-8")
-        return {"status": "success"}
+        return {"status": "success", "outputs": _write_refined_outputs(o)}
 
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker._process_one_file", fake,
@@ -370,4 +379,4 @@ def test_run_forever_processes_later_added_tasks(env, monkeypatch) -> None:
     t.join(timeout=1.0)
 
     assert queue.count_by_state().get(STATE_DONE) == 1
-    assert (gdr_out / "late_refined.json").exists()
+    assert (gdr_out / "late_refined.messages.json").exists()

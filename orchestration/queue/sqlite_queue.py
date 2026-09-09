@@ -59,7 +59,10 @@ class Task:
     attempts_qf: int
     attempts_gdr: int
     qf_output_path: str | None
-    gdr_output_path: str | None
+    gdr_messages_path: str | None
+    gdr_openai_path: str | None
+    gdr_qwenjina_path: str | None
+    gdr_meta_path: str | None
     error_msg: str | None
     locked_by: str | None
     locked_at: str | None
@@ -133,6 +136,7 @@ class SQLiteQueue:
     def _init_schema(self) -> None:
         ddl = _SCHEMA_PATH.read_text(encoding="utf-8")
         with self._conn() as conn:
+            self._drop_legacy_tasks_if_needed(conn)
             conn.executescript(ddl)
             # 幂等迁移: 旧 db 的 batches 表没有阶段时间戳列 (CREATE IF NOT
             # EXISTS 不会给已存在的表补列)。列名来自下方白名单常量，无注入面。
@@ -140,6 +144,23 @@ class SQLiteQueue:
             for col in _BATCH_STAGE_COLUMNS:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE batches ADD COLUMN {col} TEXT")
+
+    @staticmethod
+    def _drop_legacy_tasks_if_needed(conn: sqlite3.Connection) -> None:
+        """旧库 tasks 表带 ``gdr_output_path`` 列时直接 DROP 重建 (决策: 不迁移).
+
+        ``CREATE TABLE IF NOT EXISTS`` 不会给已存在的表补列，故检测到旧列
+        时先行 DROP，随后 ``executescript`` 按新 schema 重建空表。batches /
+        run_tasks 无外键引用 tasks，DROP 不级联。
+        """
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'",
+        )}
+        if "tasks" not in tables:
+            return
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+        if "gdr_output_path" in cols:
+            conn.execute("DROP TABLE tasks")
 
     # ------------------------------------------------------------------
     # 内部：行转 Task
@@ -157,7 +178,10 @@ class SQLiteQueue:
             attempts_qf=row["attempts_qf"],
             attempts_gdr=row["attempts_gdr"],
             qf_output_path=row["qf_output_path"],
-            gdr_output_path=row["gdr_output_path"],
+            gdr_messages_path=row["gdr_messages_path"],
+            gdr_openai_path=row["gdr_openai_path"],
+            gdr_qwenjina_path=row["gdr_qwenjina_path"],
+            gdr_meta_path=row["gdr_meta_path"],
             error_msg=row["error_msg"],
             locked_by=row["locked_by"],
             locked_at=row["locked_at"],
@@ -290,7 +314,9 @@ class SQLiteQueue:
                     )
                     RETURNING id, src_path, run_id, session_id, batch_id,
                               state, attempts_qf, attempts_gdr,
-                              qf_output_path, gdr_output_path,
+                              qf_output_path, gdr_messages_path,
+                              gdr_openai_path, gdr_qwenjina_path,
+                              gdr_meta_path,
                               error_msg, locked_by, locked_at,
                               created_at, updated_at
                     """,
@@ -359,7 +385,15 @@ class SQLiteQueue:
                 started_col="qf_started_at",
             )
 
-    def mark_gdr_done(self, task_id: int, *, gdr_output_path: Path) -> None:
+    def mark_gdr_done(
+        self,
+        task_id: int,
+        *,
+        gdr_messages_path: Path,
+        gdr_openai_path: Path,
+        gdr_qwenjina_path: Path | None,
+        gdr_meta_path: Path,
+    ) -> None:
         """gdr 处理成功 → state=done；批内 gdr 全部收尾时打 ``gdr_done_at``."""
         now = _utc_now_iso()
         with self._conn() as conn:
@@ -367,14 +401,24 @@ class SQLiteQueue:
                 """
                 UPDATE tasks
                 SET state = 'done',
-                    gdr_output_path = ?,
+                    gdr_messages_path = ?,
+                    gdr_openai_path = ?,
+                    gdr_qwenjina_path = ?,
+                    gdr_meta_path = ?,
                     error_msg = NULL,
                     locked_by = NULL,
                     locked_at = NULL,
                     updated_at = ?
                 WHERE id = ? AND state = 'gdr_processing'
                 """,
-                (str(gdr_output_path), now, int(task_id)),
+                (
+                    str(gdr_messages_path),
+                    str(gdr_openai_path),
+                    str(gdr_qwenjina_path) if gdr_qwenjina_path else None,
+                    str(gdr_meta_path),
+                    now,
+                    int(task_id),
+                ),
             )
             self._stamp_stage_done(
                 conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
@@ -625,7 +669,8 @@ class SQLiteQueue:
                 """
                 SELECT id, src_path, run_id, session_id, batch_id, state,
                        attempts_qf, attempts_gdr, qf_output_path,
-                       gdr_output_path, error_msg, locked_by, locked_at,
+                       gdr_messages_path, gdr_openai_path, gdr_qwenjina_path,
+                       gdr_meta_path, error_msg, locked_by, locked_at,
                        created_at, updated_at
                 FROM tasks
                 WHERE batch_id = ?
@@ -674,7 +719,8 @@ class SQLiteQueue:
                 """
                 SELECT id, src_path, run_id, session_id, batch_id, state,
                        attempts_qf, attempts_gdr, qf_output_path,
-                       gdr_output_path, error_msg, locked_by, locked_at,
+                       gdr_messages_path, gdr_openai_path, gdr_qwenjina_path,
+                       gdr_meta_path, error_msg, locked_by, locked_at,
                        created_at, updated_at
                 FROM tasks
                 WHERE id = ?
