@@ -12,6 +12,7 @@ import pytest
 
 from etl.qwenformat.tool_output_summarizer import (
     LLMAnchoredSummarizer,
+    RuleOnlySummarizer,
     ToolOutputContext,
     clean_l0,
     summarize_record,
@@ -66,6 +67,48 @@ def test_l0_keeps_cjk_punctuation_and_is_idempotent() -> None:
     assert removed == 0
     again, _ = clean_l0(cleaned)
     assert again == cleaned
+
+
+def test_l0_removes_ui_noise_lines() -> None:
+    raw = (
+        "武林外传 热度 3275\n"
+        "正在加载...\n"
+        "加载中...\n"
+        "节目还没有准备好，晚点回来再试试～\n"
+        "登录后可专享\n"
+        "帐号登录\n"
+        "奇秀直播\n"
+        "相关推荐 换一组\n"
+        "回到顶部\n"
+        "剧情讨论"
+    )
+    cleaned, removed = clean_l0(raw)
+    assert removed > 0
+    assert cleaned == "武林外传 热度 3275\n剧情讨论"
+
+
+def test_l0_removes_symbol_run_lines() -> None:
+    raw = "正文行\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n另一行"
+    cleaned, _ = clean_l0(raw)
+    assert "^" not in cleaned
+    assert "正文行" in cleaned and "另一行" in cleaned
+
+
+def test_l0_keeps_inline_noise_phrase_and_short_symbol_runs() -> None:
+    # 只删整行: 正文中含同名片段不删; 短符号串 (如 SyntaxError 的 ^ 指示符) 保留
+    raw = "提示: 节目还没有准备好属于占位文案\n    ^\n====="
+    cleaned, _ = clean_l0(raw)
+    assert "提示: 节目还没有准备好属于占位文案" in cleaned
+    assert "^" in cleaned
+    assert "=====" in cleaned
+
+
+def test_l0_noise_removal_is_idempotent() -> None:
+    raw = "A\n正在加载...\n^^^^^^^^^^^^^^\n\nB\n"
+    cleaned, _ = clean_l0(raw)
+    again, removed_again = clean_l0(cleaned)
+    assert again == cleaned
+    assert removed_again == 0
 
 
 # ---------------------------------------------------------------------------
@@ -218,15 +261,16 @@ def _write_config(tmp_path: Path, body: str) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clear_summarizer_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in ("QF_SUMMARIZER_ENABLED", "QF_SUMMARIZER_BASE_URL",
-                "QF_SUMMARIZER_API_KEY", "QF_SUMMARIZER_MODEL",
-                "QF_SUMMARIZER_THRESHOLD_CHARS"):
+    for var in ("QF_SUMMARIZER_ENABLED", "QF_SUMMARIZER_L0_ENABLED",
+                "QF_SUMMARIZER_BASE_URL", "QF_SUMMARIZER_API_KEY",
+                "QF_SUMMARIZER_MODEL", "QF_SUMMARIZER_THRESHOLD_CHARS"):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_from_config_default_file_disabled() -> None:
-    """仓库内置 config.yaml 默认 enabled: false → None."""
-    assert LLMAnchoredSummarizer.from_config() is None
+def test_from_config_default_file_l0_only() -> None:
+    """仓库内置 config.yaml 默认 enabled: false → L0-only (RuleOnlySummarizer)."""
+    s = LLMAnchoredSummarizer.from_config()
+    assert isinstance(s, RuleOnlySummarizer)
 
 
 def test_from_config_loads_yaml(tmp_path: Path) -> None:
@@ -269,11 +313,52 @@ tool_output_summarizer:
   model: "m"
 """)
     monkeypatch.setenv("QF_SUMMARIZER_ENABLED", "0")
+    # L1 被 env 关闭 → 回退 L0-only
+    assert isinstance(LLMAnchoredSummarizer.from_config(cfg), RuleOnlySummarizer)
+
+
+def test_from_config_missing_file_l0_only(tmp_path: Path) -> None:
+    """配置文件不存在: L0 默认开启, 返回 RuleOnlySummarizer."""
+    assert isinstance(
+        LLMAnchoredSummarizer.from_config(tmp_path / "nope.yaml"), RuleOnlySummarizer
+    )
+
+
+def test_from_config_l0_disabled_returns_none(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, """
+tool_output_summarizer:
+  l0_enabled: false
+""")
     assert LLMAnchoredSummarizer.from_config(cfg) is None
 
 
-def test_from_config_missing_file_returns_none(tmp_path: Path) -> None:
-    assert LLMAnchoredSummarizer.from_config(tmp_path / "nope.yaml") is None
+def test_from_config_env_can_disable_l0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _write_config(tmp_path, """
+tool_output_summarizer:
+  enabled: true
+  base_url: "http://example.invalid/v1"
+  model: "m"
+""")
+    monkeypatch.setenv("QF_SUMMARIZER_L0_ENABLED", "0")
+    assert LLMAnchoredSummarizer.from_config(cfg) is None
+
+
+def test_from_config_l1_missing_llm_config_falls_back_to_l0(tmp_path: Path) -> None:
+    cfg = _write_config(tmp_path, """
+tool_output_summarizer:
+  enabled: true
+""")
+    assert isinstance(LLMAnchoredSummarizer.from_config(cfg), RuleOnlySummarizer)
+
+
+def test_rule_only_summarizer_applies_l0() -> None:
+    s = RuleOnlySummarizer()
+    out = s.summarize("web_search", "正文 😀\n正在加载...\n^^^^^^^^^^^^", ToolOutputContext())
+    assert "😀" not in out
+    assert "正在加载" not in out
+    assert "^" not in out
+    assert "正文" in out
+    assert s._stats["tool_output_chars_before"] > s._stats["tool_output_chars_after"]
 
 
 def test_from_config_root_format_with_llm_fallback(tmp_path: Path) -> None:
@@ -289,7 +374,7 @@ qf:
     threshold_chars: 99
 """)
     s = LLMAnchoredSummarizer.from_config(cfg)
-    # base_url/model 来自 llm 段; 没有继承时 from_config 会因缺配置返回 None
+    # base_url/model 来自 llm 段; 没有继承时回退 L0-only
     assert s is not None
     assert s._threshold_chars == 99
 
@@ -317,7 +402,8 @@ qf:
   tool_output_summarizer:
     enabled: false
 """)
-    assert LLMAnchoredSummarizer.from_config(cfg) is None
+    # L1 关闭 → L0-only
+    assert isinstance(LLMAnchoredSummarizer.from_config(cfg), RuleOnlySummarizer)
 
 
 # ---------------------------------------------------------------------------
@@ -467,9 +553,9 @@ def test_qf_worker_applies_tool_summarizer(tmp_path: Path) -> None:
     assert payload["metadata"]["qf_stats"]["tool_results_processed"] == 1
 
 
-def test_qf_worker_default_no_summarizer(tmp_path: Path,
-                                         monkeypatch: pytest.MonkeyPatch) -> None:
-    """未开 env 时 worker 不摘要, tool 内容原样输出."""
+def test_qf_worker_default_l0_only(tmp_path: Path,
+                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认配置 (L1 关) 时 worker 走 RuleOnlySummarizer: L0 清洗生效, 无 LLM."""
     monkeypatch.delenv("QF_SUMMARIZER_ENABLED", raising=False)
     from orchestration.queue import SQLiteQueue
     from orchestration.workers.qf_worker import QfWorker
@@ -482,10 +568,29 @@ def test_qf_worker_default_no_summarizer(tmp_path: Path,
 
     w = QfWorker(queue=queue, worker_id="w", qf_output_dir=qf_out,
                  system_templates_dir=tmp_path / "templates")
-    assert w._tool_summarizer is None
+    assert isinstance(w._tool_summarizer, RuleOnlySummarizer)
     [task] = w.pull()
     out_path = w.process(task)
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     tool_msg = next(m for m in payload["metadata"]["openai_messages"]
                     if m["role"] == "tool")
     assert tool_msg["content"] == RAW_LONG
+
+
+def test_qf_worker_explicit_false_disables_summarizer(tmp_path: Path,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """tool_summarizer=False 显式关闭: 不清洗, tool 内容原样输出."""
+    monkeypatch.delenv("QF_SUMMARIZER_ENABLED", raising=False)
+    from orchestration.queue import SQLiteQueue
+    from orchestration.workers.qf_worker import QfWorker
+
+    queue = SQLiteQueue(tmp_path / "q.db")
+    qf_out = tmp_path / "qf_out"
+    fp = tmp_path / "r1__sess.json"
+    fp.write_text(_trajectory_jsonl_with_tool("sess"), encoding="utf-8")
+    queue.insert(src_path=fp, run_id="r1", session_id="sess", batch_id=1)
+
+    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=qf_out,
+                 system_templates_dir=tmp_path / "templates",
+                 tool_summarizer=False)
+    assert w._tool_summarizer is None

@@ -238,6 +238,10 @@ class Settings(BaseSettings):
     # === 训练质量评分（方案 §5.2） ===
     enable_quality_scorer: bool = True           # 训练质量维度评分开关
 
+    # === 使用量裁剪（落盘前按真实调用裁剪 system prompt / tools + 路径泛化） ===
+    enable_usage_prune: bool = True              # system 按功能段删留 / tools 裁剪 / 重渲染 qf_text
+    qf_chat_template_path: Path = Path("./etl/qwenformat/chat_template.jinja")  # qf_text 重渲染模板
+
     # === 人工审核队列（方案 §5.5） ===
     deferred_output_path: Path = Path("./refine_data/deferred.jsonl")  # 人工审核队列输出路径
 
@@ -289,6 +293,12 @@ class Settings(BaseSettings):
             p = (GDR_ROOT / p).resolve()
             log.info("tools_config_path anchored to gdr root: %s", p)
         self.tools_config_path = p
+        # etl/ 与 gdr/ 同级, 模板路径锚到仓库根
+        t = Path(self.qf_chat_template_path)
+        if not t.is_absolute():
+            t = (GDR_ROOT.parent / t).resolve()
+            log.info("qf_chat_template_path anchored to repo root: %s", t)
+        self.qf_chat_template_path = t
         return self
 
     @model_validator(mode="after")

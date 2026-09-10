@@ -5,8 +5,10 @@
     L0 规则预清洗
         只清理确定性、无语义的字符级/行级噪声, 不碰内容本身:
         emoji / Private Use Area 字形 / variation selector / ZWJ / ANSI 转义 /
-        制表符 (→ 2 空格) / CRLF 归一 / 行尾空白 / 连续重复行 / 多空行折叠.
-        不截断、不删整段、不按关键词过滤 —— 语义判断全部留给 L1.
+        制表符 (→ 2 空格) / CRLF 归一 / 行尾空白 / 连续重复行 / 多空行折叠 /
+        确定性 UI 噪音整行 (网页骨架文案, 见 ``_NOISE_LINE_PATTERNS``) /
+        单符号长串整行 (``^^^^^^^^`` 等).
+        不截断、不删整段、不按语义性关键词过滤 —— 语义判断全部留给 L1.
 
     L1 LLM 锚点摘要
         以「用户 query」为任务相关性主锚点, 「tool_input」为辅助锚点,
@@ -19,7 +21,9 @@
 
 配置: 统一根配置 ``config/config.yaml`` 的 ``qf.tool_output_summarizer:`` 段
 (``LLMAnchoredSummarizer.from_config`` 读取); 每项可被同名
-``QF_SUMMARIZER_*`` 环境变量覆盖 (env 优先).
+``QF_SUMMARIZER_*`` 环境变量覆盖 (env 优先). 分层开关: ``l0_enabled``
+(L0 规则预清洗, 默认开启) / ``enabled`` (L1 LLM 摘要, 默认关闭;
+关闭或 LLM 配置缺失时回退为仅 L0).
 
 质量门 (校验可信性, 不校验长度):
     1. 格式: LLM 输出 JSON 可解析, summary 非空;
@@ -62,6 +66,33 @@ logger = logging.getLogger(__name__)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _URL_RE = re.compile(r"https?://[^\s)\]>\"']+")
 _NUMBER_RE = re.compile(r"\d{2,}")
+
+# 确定性 UI 噪音整行: 网页骨架/加载占位文案, 任何语境下都不携带任务信息.
+# 只匹配整行 (strip 后), 不影响正文里出现的同名片段.
+_NOISE_LINE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p)
+    for p in (
+        r"^(?:正在)?加载(?:中)?[.。…·]*$",      # 正在加载... / 加载中...
+        r"^节目还没有准备好.*$",                  # 节目还没有准备好，晚点回来再试试～
+        r"^登录后可专享$",
+        r"^帐[号號]登录$",
+        r"^奇秀直播$",
+        r"^相关推荐\s*换一组$",
+        r"^回到顶部$",
+    )
+)
+
+# 单符号长串整行: 同一非文字字符重复 >= 10 次 (^^^^^^^^ / ====== / ~~~~~~ 等).
+_SYMBOL_RUN_LINE_RE = re.compile(r"^([^\w\s])\1{9,}$")
+
+
+def _is_noise_line(stripped: str) -> bool:
+    """strip 后的整行是否为确定性 UI 噪音 / 符号长串."""
+    if _SYMBOL_RUN_LINE_RE.match(stripped):
+        return True
+    # 去掉截断标记 [...] 再匹配: "[...] 相关推荐 换一组" 仍是纯噪音行
+    normalized = stripped.replace("[...]", "").strip()
+    return any(p.match(normalized) for p in _NOISE_LINE_PATTERNS)
 
 
 def _is_droppable_char(ch: str) -> bool:
@@ -113,6 +144,12 @@ def clean_l0(text: str) -> tuple[str, int]:
             out_lines.append("")
             continue
         blank_run = 0
+        if _is_noise_line(stripped):
+            # 与重复行去重同理: 撤回已追加的空行, 避免留下悬挂空行
+            if out_lines and out_lines[-1] == "":
+                out_lines.pop()
+                blank_run = 1
+            continue
         if prev is not None and stripped == prev:
             # 若已追加了空行, 把它撤回, 避免 dup 删除后留下悬挂空行
             if out_lines and out_lines[-1] == "":
@@ -153,6 +190,25 @@ class ToolOutputSummarizer(Protocol):
     def summarize(self, tool_name: str, raw_output: str, ctx: ToolOutputContext) -> str:
         """返回精简后的输出. 实现必须保证失败时返回完整内容 (L0 之后)."""
         ...
+
+
+class RuleOnlySummarizer:
+    """仅 L0 规则清洗 (L1 未启用时的默认实现, 不依赖 LLM)."""
+
+    def __init__(self, *, stats: Optional[dict[str, int]] = None) -> None:
+        self._stats = stats if stats is not None else {}
+
+    def summarize(self, tool_name: str, raw_output: str, ctx: ToolOutputContext) -> str:
+        cleaned, removed = clean_l0(raw_output)
+        if removed:
+            self._stats["l0_chars_removed"] = self._stats.get("l0_chars_removed", 0) + removed
+        self._stats["tool_output_chars_before"] = (
+            self._stats.get("tool_output_chars_before", 0) + len(raw_output)
+        )
+        self._stats["tool_output_chars_after"] = (
+            self._stats.get("tool_output_chars_after", 0) + len(cleaned)
+        )
+        return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -374,13 +430,18 @@ class LLMAnchoredSummarizer:
         config_path: Optional[Path] = None,
         *,
         stats: Optional[dict[str, int]] = None,
-    ) -> Optional["LLMAnchoredSummarizer"]:
+    ) -> Optional[ToolOutputSummarizer]:
         """按配置构造; env ``QF_SUMMARIZER_*`` 优先覆盖.
 
         配置统一来自根配置 ``config/config.yaml`` 的 ``qf.tool_output_summarizer``
         段 (config_path 显式传入时读该文件, 根/旧扁平格式均可)。
-        根配置不存在时返回 None (summarizer 是可选功能, 不阻塞主流程)。
-        ``enabled=false`` 或 base_url/model 缺失时返回 None.
+
+        分层开关:
+        - L0 规则预清洗 (``l0_enabled``, 默认开启): 确定性规则, 不依赖 LLM,
+          配置缺失/损坏时也生效;
+        - L1 LLM 锚点摘要 (``enabled``, 默认关闭): 关闭或 base_url/model
+          缺失时回退为仅 L0 的 ``RuleOnlySummarizer``;
+        - 仅 ``l0_enabled=false`` 时返回 None (整体禁用).
         """
         if config_path is not None:
             path = Path(config_path)
@@ -389,8 +450,8 @@ class LLMAnchoredSummarizer:
                 try:
                     import yaml
                     loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-                except Exception:  # noqa: BLE001 - 配置损坏按禁用处理
-                    logger.warning("summarizer config %s unreadable; disabled", path)
+                except Exception:  # noqa: BLE001 - 配置损坏按 L0-only 处理
+                    logger.warning("summarizer config %s unreadable; L0-only", path)
                     loaded = {}
                 if isinstance(loaded, dict):
                     all_raw = loaded
@@ -399,9 +460,17 @@ class LLMAnchoredSummarizer:
             try:
                 from shared_config import find_root_config, load_yaml_file
                 root = find_root_config()
-            except ImportError:  # etl 脱离仓库使用时无 shared_config → 禁用
+            except ImportError:  # etl 脱离仓库使用时无 shared_config → 无配置, L0-only
                 root = None
             raw = cls._extract_qf_section(load_yaml_file(root)) if root is not None else {}
+
+        env_l0 = os.environ.get("QF_SUMMARIZER_L0_ENABLED", "").lower()
+        if env_l0:
+            l0_enabled = env_l0 in ("1", "true", "yes")
+        else:
+            l0_enabled = bool(raw.get("l0_enabled", True))
+        if not l0_enabled:
+            return None
 
         env_enabled = os.environ.get("QF_SUMMARIZER_ENABLED", "").lower()
         if env_enabled:
@@ -409,14 +478,16 @@ class LLMAnchoredSummarizer:
         else:
             enabled = bool(raw.get("enabled", False))
         if not enabled:
-            return None
+            return RuleOnlySummarizer(stats=stats)
 
         base_url = os.environ.get("QF_SUMMARIZER_BASE_URL") or str(raw.get("base_url") or "")
         model = os.environ.get("QF_SUMMARIZER_MODEL") or str(raw.get("model") or "")
         api_key = os.environ.get("QF_SUMMARIZER_API_KEY") or str(raw.get("api_key") or "")
         if not base_url or not model:
-            logger.warning("tool_output_summarizer enabled but base_url/model missing; disabled")
-            return None
+            logger.warning(
+                "tool_output_summarizer L1 enabled but base_url/model missing; L0-only"
+            )
+            return RuleOnlySummarizer(stats=stats)
 
         threshold = int(
             os.environ.get("QF_SUMMARIZER_THRESHOLD_CHARS")

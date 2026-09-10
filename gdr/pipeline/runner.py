@@ -646,6 +646,44 @@ def _append_routing_abstain_queue(session: Session, cfg: Settings) -> None:
         log.warning("failed to append routing_abstain queue: %s", e)
 
 
+# === 使用量裁剪 (落盘前) ===
+# 模板/环境按路径缓存, 进程内只加载一次
+_PRUNE_TEMPLATE_CACHE: dict = {}
+
+
+def _apply_usage_prune(session, cfg: Settings) -> None:
+    """落盘前按真实调用裁剪 system prompt / tools + 路径泛化, 并重渲染 qf_text.
+
+    在 router / judge / refine 全部完成后执行 —— 所有 LLM 评审阶段看到的仍是
+    原始完整 system prompt, 裁剪只作用于训练产物视图。失败时保留未裁剪的
+    session (数据保全优先), 不阻断落盘。
+    """
+    try:
+        from etl.qwenformat.transform import build_chat_env, load_chat_template
+        from etl.qwenformat.usage_prune import prune_session_in_place
+
+        key = str(cfg.qf_chat_template_path)
+        if key not in _PRUNE_TEMPLATE_CACHE:
+            _PRUNE_TEMPLATE_CACHE[key] = (load_chat_template(key), build_chat_env())
+        template_str, env = _PRUNE_TEMPLATE_CACHE[key]
+
+        data = session.model_dump(mode="json", exclude_none=True)
+        stats = prune_session_in_place(data, template_str, env)
+        pruned = Session.model_validate(data)
+        session.messages = pruned.messages
+        session.metadata = pruned.metadata
+        session.summary = pruned.summary
+        log.info(
+            "usage prune: system %s->%s chars, tools %s->%s, dropped sections %s",
+            stats.get("system_chars_before"), stats.get("system_chars_after"),
+            stats.get("tools_before"), stats.get("tools_after"),
+            stats.get("dropped_sections"),
+        )
+    except Exception as e:
+        log.warning("usage prune failed for session %s, keeping unpruned: %s",
+                    getattr(session, "session_id", "?"), e)
+
+
 def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dict:
     """单文件处理: load → refine → save。返回 per-file 状态 dict (供 worker 收集)。"""
     log.info("loading session from %s", input_path)
@@ -666,6 +704,8 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
     _append_routing_abstain_queue(session, cfg)
 
     if result is not None:
+        if cfg.enable_usage_prune:
+            _apply_usage_prune(result, cfg)
         try:
             outputs = save_session(result, output_path)
             log.info("saved refined session to %s", outputs.messages)

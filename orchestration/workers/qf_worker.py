@@ -95,7 +95,8 @@ class QfWorker(BaseWorker):
         self._system_templates_dir = Path(system_templates_dir)
         self._update_templates = update_templates
         # tool_summarizer: None → 读根配置 qf.tool_output_summarizer 段
-        # (env QF_SUMMARIZER_* 可覆盖);
+        # (env QF_SUMMARIZER_* 可覆盖); L0 规则清洗默认开启, L1 LLM 摘要
+        # 由 enabled 开关控制 (关闭时回退 RuleOnlySummarizer);
         # False → 显式关闭; 或传入自定义 ToolOutputSummarizer (测试用 mock).
         if tool_summarizer is None:
             tool_summarizer = LLMAnchoredSummarizer.from_config()
