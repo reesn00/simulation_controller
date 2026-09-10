@@ -245,6 +245,24 @@ def test_mark_failed_dead_after_max_retry(queue: SQLiteQueue) -> None:
     assert refreshed.attempts_qf == 3
 
 
+def test_mark_failed_non_retryable_goes_dead_without_attempt(queue: SQLiteQueue) -> None:
+    """永久性错误：不消耗 attempts，直接 dead，error_msg 带 [non-retryable] 前缀."""
+    _seed(queue, 1)
+    [task] = queue.pull_pending_qf(worker_id="w", n=1)
+
+    new_state = queue.mark_failed(
+        task.id, stage=STAGE_QF, error_msg="corrupt file", retryable=False,
+    )
+    assert new_state == STATE_DEAD
+    refreshed = queue.get(task.id)
+    assert refreshed is not None
+    assert refreshed.state == STATE_DEAD
+    assert refreshed.attempts_qf == 0
+    assert refreshed.error_msg is not None
+    assert refreshed.error_msg.startswith("[non-retryable] ")
+    assert "corrupt file" in refreshed.error_msg
+
+
 def test_mark_failed_unknown_stage_raises(queue: SQLiteQueue) -> None:
     _seed(queue, 1)
     [task] = queue.pull_pending_qf(worker_id="w", n=1)

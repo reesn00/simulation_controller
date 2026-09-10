@@ -8,6 +8,7 @@ trajectory 文件名由 ``simulate_serve/infrastructure/trajectory_archiver.py:3
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Optional
 
 from orchestration.queue import SQLiteQueue
 
+
+_log = logging.getLogger(__name__)
 
 _DOUBLE_UNDERSCORE = "__"
 
@@ -56,6 +59,36 @@ class TrajectoryWatcher:
         self._dead_log_path = Path(dead_log_path) if dead_log_path else None
 
     # ------------------------------------------------------------------
+    # 批次归属
+    # ------------------------------------------------------------------
+
+    def _resolve_batch_id(self, run_id: str) -> int:
+        """按 ``run_tasks`` 映射反查真实批次；查不到回退本 watcher 绑定批次.
+
+        watcher 按批启停，迟到的 trajectory（archiver 延迟落盘）若直接沿用
+        绑定批次会被归错批。producer 在 simulate 完成后已写入
+        ``run_id → (task_id, batch_id)`` 映射，且 watcher 启动晚于 producer，
+        真实 run 的文件必然命中；回退路径只服务手工投放 replay 文件等场景。
+        """
+        try:
+            hit = self._queue.lookup_run(run_id)
+        except Exception as exc:
+            _log.warning(
+                "watcher: lookup_run failed for run %s (%s); fallback to batch %d",
+                run_id, exc, self._batch_id,
+            )
+            return self._batch_id
+        if hit is None:
+            return self._batch_id
+        _task_id, batch_id = hit
+        if batch_id != self._batch_id:
+            _log.info(
+                "watcher: run %s attributed to batch %d (watcher bound to %d)",
+                run_id, batch_id, self._batch_id,
+            )
+        return batch_id
+
+    # ------------------------------------------------------------------
     # 单次扫描
     # ------------------------------------------------------------------
 
@@ -73,12 +106,13 @@ class TrajectoryWatcher:
 
         for fp in sorted(self._trajectory_dir.glob("*.json")):
             run_id, session_id = parse_trajectory_filename(fp)
+            batch_id = self._resolve_batch_id(run_id)
             try:
                 _, inserted = self._queue.insert(
                     src_path=fp,
                     run_id=run_id,
                     session_id=session_id,
-                    batch_id=self._batch_id,
+                    batch_id=batch_id,
                 )
                 if inserted:
                     result["registered"] += 1

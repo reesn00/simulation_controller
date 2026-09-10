@@ -458,8 +458,18 @@ class SQLiteQueue:
             (now, int(task_id), *inflight_states),
         )
 
-    def mark_failed(self, task_id: int, *, stage: str, error_msg: str) -> str:
+    def mark_failed(
+        self,
+        task_id: int,
+        *,
+        stage: str,
+        error_msg: str,
+        retryable: bool = True,
+    ) -> str:
         """失败处理：attempts++；超 max → state=dead，否则退回可重试 state.
+
+        ``retryable=False`` 表示永久性错误：不消耗 attempts，直接入 dead，
+        ``error_msg`` 加 ``[non-retryable]`` 前缀（status / dead.log 可辨）。
 
         Returns: 新的 state（pending / pending_gdr / dead）。
         """
@@ -482,7 +492,12 @@ class SQLiteQueue:
                 max_retry = self._max_retry_gdr
                 attempts_col = "attempts_gdr"
 
-            if new_attempts > max_retry:
+            if not retryable:
+                # 永久错误：不递增 attempts，直接 dead
+                new_attempts -= 1
+                new_state = STATE_DEAD
+                error_msg = "[non-retryable] " + error_msg
+            elif new_attempts > max_retry:
                 new_state = STATE_DEAD
             elif stage == STAGE_QF:
                 new_state = STATE_PENDING
@@ -712,6 +727,18 @@ class SQLiteQueue:
                 "SELECT task_id FROM run_tasks WHERE run_id = ?", (run_id,)
             ).fetchone()
         return str(row["task_id"]) if row else None
+
+    def lookup_run(self, run_id: str) -> tuple[str, int] | None:
+        """按 run_id 反查 ``(task_id, batch_id)``；无映射返回 None.
+
+        watcher 用它在登记 trajectory 时修正批次归属（迟到文件归到真实批次，
+        而不是当前 watcher 绑定的批次）。
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT task_id, batch_id FROM run_tasks WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return (str(row["task_id"]), int(row["batch_id"])) if row else None
 
     def get(self, task_id: int) -> Task | None:
         with self._conn() as conn:

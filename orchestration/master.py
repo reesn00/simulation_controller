@@ -270,6 +270,17 @@ class Master:
             watcher_stop.set()
             _log.info("master: batch_id=%d watcher stopped", batch_id)
 
+        # 4.5 补偿扫描: 兜住 watcher 最后一轮到停止之间落盘的迟到文件。
+        #     有 run_tasks 映射的文件会归到真实批次（可能不是本批）；
+        #     新登记的任务由常驻 worker 继续消费，不再阻塞本批 drain。
+        final_scan = self._first_scan_watcher(batch_id)
+        if final_scan["registered"]:
+            _log.info(
+                "master: batch_id=%d final_scan registered=%d skipped=%d dead=%d",
+                batch_id, final_scan["registered"],
+                final_scan["skipped"], final_scan["dead"],
+            )
+
         # 5. 死信归档
         archives = reap_dead(
             self._queue,

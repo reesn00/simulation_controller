@@ -49,6 +49,7 @@ from etl.qwenformat.transform import (
     load_chat_template,
     trajectory_to_session_with_openai_metadata,
 )
+from orchestration.errors import NonRetryableError
 from orchestration.queue import (
     STAGE_QF,
     SQLiteQueue,
@@ -153,7 +154,18 @@ class QfWorker(BaseWorker):
         # 不再支持旧 CAMEL 单对象 / 裸 .jsonl 形态; 解析失败抛异常, 由 worker
         # 走 ``_handle_failure`` 标记失败并最终入 dead 归档 (与 producer 终止后
         # 残留旧格式文件的预期一致, 不丢数据, 不兼容转换).
-        record = load_trajectory(task.src_path)
+        # 文件缺失 / 解析失败是永久性错误（重试不会改变文件内容），
+        # 包成 NonRetryableError 直接入 dead，不消耗重试次数。
+        if not task.src_path.exists():
+            raise NonRetryableError(f"trajectory missing: {task.src_path}")
+        try:
+            record = load_trajectory(task.src_path)
+        except (ValueError, UnicodeDecodeError) as exc:
+            # 解析失败是永久性错误（重试不会改变文件内容），直接入 dead；
+            # 其余异常（IO 抖动等）原样抛出，按可重试处理
+            raise NonRetryableError(
+                f"trajectory parse failed: {type(exc).__name__}: {exc}"
+            ) from exc
         new_system, clean_stats = self._clean_system_prompt(record)
 
         # 工具返回内容精简: L0 规则预清洗 + L1 LLM 锚点摘要,

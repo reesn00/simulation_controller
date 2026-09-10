@@ -320,13 +320,11 @@ def test_run_once_no_tasks_returns_zero(env) -> None:
 # 失败 / 重试 / dead
 # ---------------------------------------------------------------------------
 
-def test_run_once_handles_process_failure_via_mark_failed(env) -> None:
-    """process 抛异常 → mark_failed(stage=qf) → attempts_qf=1, state=pending."""
+def test_run_once_parse_failure_is_non_retryable_dead(env) -> None:
+    """trajectory 解析失败是永久错误 → 直接 dead，不消耗 attempts."""
     queue, qf_out, tmp_path, templates_dir = env
     tid = _seed_trajectory(queue, tmp_path, "r1__a.json", "a")
     # 让 trajectory 内容不可解析 → load_trajectory 抛 ValueError("no parseable events")
-    # 旧 etl.pawsession 直接 json.loads 全文件 → JSONDecodeError; 新 loader 改用大括号
-    # 深度计数 + 显式 ValueError, 错误更清晰且与 docstring 契约一致.
     (tmp_path / "r1__a.json").write_text("{not json", encoding="utf-8")
     w = QfWorker(queue=queue, worker_id="w", qf_output_dir=qf_out, system_templates_dir=templates_dir)
     success = w.run_once()
@@ -334,15 +332,56 @@ def test_run_once_handles_process_failure_via_mark_failed(env) -> None:
 
     refreshed = queue.get(tid)
     assert refreshed is not None
-    assert refreshed.state == STATE_PENDING
-    assert refreshed.attempts_qf == 1
+    assert refreshed.state == STATE_DEAD
+    assert refreshed.attempts_qf == 0  # 永久错误不消耗重试次数
+    assert "[non-retryable]" in (refreshed.error_msg or "")
     assert "no parseable events" in (refreshed.error_msg or "")
 
 
-def test_run_once_dead_after_max_retries(env) -> None:
+def test_run_once_missing_trajectory_is_non_retryable_dead(env) -> None:
+    """src 文件缺失 → 直接 dead，不消耗 attempts."""
     queue, qf_out, tmp_path, templates_dir = env
     tid = _seed_trajectory(queue, tmp_path, "r1__a.json", "a")
-    (tmp_path / "r1__a.json").write_text("{bad", encoding="utf-8")
+    (tmp_path / "r1__a.json").unlink()
+    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=qf_out, system_templates_dir=templates_dir)
+    assert w.run_once() == 0
+
+    refreshed = queue.get(tid)
+    assert refreshed is not None
+    assert refreshed.state == STATE_DEAD
+    assert refreshed.attempts_qf == 0
+    assert "[non-retryable]" in (refreshed.error_msg or "")
+
+
+def _raise_flaky(*_a, **_kw):
+    raise RuntimeError("flaky io")
+
+
+def test_run_once_retryable_failure_requeues(env, monkeypatch) -> None:
+    """可重试错误 → mark_failed(stage=qf) → attempts_qf=1, state=pending."""
+    queue, qf_out, tmp_path, templates_dir = env
+    tid = _seed_trajectory(queue, tmp_path, "r1__a.json", "a")
+    monkeypatch.setattr(
+        "orchestration.workers.qf_worker.load_trajectory", _raise_flaky,
+    )
+    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=qf_out, system_templates_dir=templates_dir)
+    success = w.run_once()
+    assert success == 0
+
+    refreshed = queue.get(tid)
+    assert refreshed is not None
+    assert refreshed.state == STATE_PENDING
+    assert refreshed.attempts_qf == 1
+    assert "flaky io" in (refreshed.error_msg or "")
+
+
+def test_run_once_dead_after_max_retries(env, monkeypatch) -> None:
+    queue, qf_out, tmp_path, templates_dir = env
+    tid = _seed_trajectory(queue, tmp_path, "r1__a.json", "a")
+    # 可重试错误才会走满 max_retry（解析失败已是 non-retryable，一次即 dead）
+    monkeypatch.setattr(
+        "orchestration.workers.qf_worker.load_trajectory", _raise_flaky,
+    )
 
     w = QfWorker(queue=queue, worker_id="w", qf_output_dir=qf_out, system_templates_dir=templates_dir)
     # max_retry_qf=2 → 第 3 次失败入 dead

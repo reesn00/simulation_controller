@@ -28,6 +28,7 @@ from pathlib import Path
 from gdr.config.settings import Settings
 from gdr.pipeline.runner import _process_one_file
 
+from orchestration.errors import NonRetryableError
 from orchestration.queue import (
     STAGE_GDR,
     SQLiteQueue,
@@ -76,7 +77,8 @@ class GdrWorker(BaseWorker):
         # qf_output_path 由 qf_worker 写入，存的是绝对路径
         qf_input = Path(task.qf_output_path) if task.qf_output_path else task.src_path
         if not qf_input.exists():
-            raise FileNotFoundError(
+            # 输入缺失是永久性错误，直接 dead，不白跑 LLM 重试
+            raise NonRetryableError(
                 f"gdr worker {self._worker_id}: qf output missing for task {task.id}: {qf_input}"
             )
         session_id = task.session_id or task.src_path.stem
@@ -101,11 +103,19 @@ class GdrWorker(BaseWorker):
 
         result = _process_one_file(qf_input, base_path, cfg)
         if result is None or result.get("status") != "success":
-            # gdr 返回 None 通常是软超时部分保存；非 success 也算失败
+            # gdr 返回 None 通常是软超时部分保存；save_error / None 按可重试处理。
             status = result.get("status") if result else "None"
+            err = (result or {}).get("error", "")
+            if status in ("load_error", "discard"):
+                # load_error = 输入文件坏（永久）；discard = 结构不可用（硬丢弃，
+                # 重试结果相同）—— 都不值得再花 LLM 调用
+                raise NonRetryableError(
+                    f"gdr worker {self._worker_id}: gdr status={status!r} "
+                    f"(task={task.id}) {err}"
+                )
             raise RuntimeError(
                 f"gdr worker {self._worker_id}: gdr returned non-success "
-                f"(status={status!r}, task={task.id})"
+                f"(status={status!r}, task={task.id}) {err}"
             )
         outputs = result.get("outputs") or {}
         self._last_outputs = outputs

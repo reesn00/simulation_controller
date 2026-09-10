@@ -114,6 +114,39 @@ def test_scan_once_mixed_new_and_existing(tmp_path: Path) -> None:
     assert queue.count_pending_qf() == 3
 
 
+def test_scan_once_attributes_to_mapped_batch(tmp_path: Path) -> None:
+    """run_tasks 有映射时，迟到文件归到真实批次而非 watcher 绑定批次."""
+    queue = SQLiteQueue(tmp_path / "q.db")
+    traj_dir = tmp_path / "traj"
+    traj_dir.mkdir()
+    _make_traj(traj_dir, "run_001__s.json")
+    queue.insert_run_task_map([("run_001", "T001", 3)])
+
+    # watcher 绑定 batch 5，但 run_001 真实属于 batch 3
+    w = TrajectoryWatcher(trajectory_dir=traj_dir, queue=queue, batch_id=5)
+    result = w.scan_once()
+    assert result == {"registered": 1, "skipped": 0, "dead": 0}
+    tasks = queue.list_tasks_for_batch(3)
+    assert len(tasks) == 1
+    assert tasks[0].run_id == "run_001"
+    assert queue.list_tasks_for_batch(5) == []
+
+
+def test_scan_once_falls_back_to_bound_batch_without_mapping(tmp_path: Path) -> None:
+    """run_tasks 无映射（手工投放 / 旧库）→ 回退 watcher 绑定批次."""
+    queue = SQLiteQueue(tmp_path / "q.db")
+    traj_dir = tmp_path / "traj"
+    traj_dir.mkdir()
+    _make_traj(traj_dir, "run_009__s.json")
+
+    w = TrajectoryWatcher(trajectory_dir=traj_dir, queue=queue, batch_id=5)
+    result = w.scan_once()
+    assert result == {"registered": 1, "skipped": 0, "dead": 0}
+    tasks = queue.list_tasks_for_batch(5)
+    assert len(tasks) == 1
+    assert tasks[0].run_id == "run_009"
+
+
 def test_scan_once_logs_dead_to_dead_log(tmp_path: Path) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
     traj_dir = tmp_path / "traj"

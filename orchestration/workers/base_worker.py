@@ -25,6 +25,7 @@ from simulate_serve.infrastructure.trajectory_archiver import (
     sanitize_filename_part,
 )
 
+from orchestration.errors import NonRetryableError
 from orchestration.queue import (
     STATE_DEAD,
     STAGE_GDR,
@@ -80,13 +81,15 @@ class BaseWorker(ABC):
 
     def _handle_failure(self, task: Task, exc: BaseException) -> None:
         msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=4)}"
+        retryable = not isinstance(exc, NonRetryableError)
         new_state = self._queue.mark_failed(
-            task.id, stage=self.stage, error_msg=msg,
+            task.id, stage=self.stage, error_msg=msg, retryable=retryable,
         )
         if new_state == STATE_DEAD:
             _log.error(
-                "[%s worker %s] task %d dead after %d retries: %s",
+                "[%s worker %s] task %d dead%s after %d retries: %s",
                 self.stage, self._worker_id, task.id,
+                " (non-retryable)" if not retryable else "",
                 self._queue._max_retry_qf if self.stage == STAGE_QF  # noqa: SLF001
                 else self._queue._max_retry_gdr,                         # noqa: SLF001
                 exc,

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestration.errors import NonRetryableError
 from orchestration.queue import (
     STATE_DEAD,
     STATE_DONE,
@@ -198,11 +199,28 @@ def test_process_missing_qf_output_raises(env, monkeypatch) -> None:
 
     w = GdrWorker(queue=queue, worker_id="w", gdr_output_dir=gdr_out)
     [task] = w.pull()
-    with pytest.raises(FileNotFoundError, match="qf output missing"):
+    with pytest.raises(NonRetryableError, match="qf output missing"):
         w.process(task)
 
 
 def test_process_gdr_returns_non_success_raises(env, monkeypatch) -> None:
+    """可重试的非 success（如 save_error）→ 普通 RuntimeError，走重试."""
+    queue, gdr_out, tmp_path = env
+    qf = _make_qf_output(tmp_path, "s1")
+    _seed_qf_task(queue, qf, "s1")
+
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker._process_one_file",
+        lambda i, o, c: {"status": "save_error"},
+    )
+    w = GdrWorker(queue=queue, worker_id="w", gdr_output_dir=gdr_out)
+    [task] = w.pull()
+    with pytest.raises(RuntimeError, match="non-success"):
+        w.process(task)
+
+
+def test_process_gdr_permanent_status_raises_non_retryable(env, monkeypatch) -> None:
+    """load_error / discard 是永久结果 → NonRetryableError（不消耗重试）."""
     queue, gdr_out, tmp_path = env
     qf = _make_qf_output(tmp_path, "s1")
     _seed_qf_task(queue, qf, "s1")
@@ -213,8 +231,28 @@ def test_process_gdr_returns_non_success_raises(env, monkeypatch) -> None:
     )
     w = GdrWorker(queue=queue, worker_id="w", gdr_output_dir=gdr_out)
     [task] = w.pull()
-    with pytest.raises(RuntimeError, match="non-success"):
+    with pytest.raises(NonRetryableError, match="discard"):
         w.process(task)
+
+
+def test_run_once_load_error_goes_dead_without_retry(env, monkeypatch) -> None:
+    """load_error 经 run_once → 直接 dead，attempts_gdr 不增，带 [non-retryable] 前缀."""
+    queue, gdr_out, tmp_path = env
+    qf = _make_qf_output(tmp_path, "s1")
+    tid = _seed_qf_task(queue, qf, "s1")
+
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker._process_one_file",
+        lambda i, o, c: {"status": "load_error", "error": "bad json"},
+    )
+    w = GdrWorker(queue=queue, worker_id="w", gdr_output_dir=gdr_out)
+    assert w.run_once() == 0
+
+    refreshed = queue.get(tid)
+    assert refreshed is not None
+    assert refreshed.state == STATE_DEAD
+    assert refreshed.attempts_gdr == 0
+    assert "[non-retryable]" in (refreshed.error_msg or "")
 
 
 def test_process_gdr_returns_none_raises(env, monkeypatch) -> None:
