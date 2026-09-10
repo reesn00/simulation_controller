@@ -108,7 +108,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
             print(f"  batches        = {len(batches)}")
         else:
             print(f"  tasks          = (none, idle mode)")
-        print(f"  exit_when_done = {args.exit_when_done}")
+        print(f"  stay           = {args.stay}")
         return 0
 
     if args.detach:
@@ -123,8 +123,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
             detach_argv += ["--tasks", args.tasks]
         if args.all_tasks:
             detach_argv += ["--all-tasks"]
-        if args.exit_when_done:
-            detach_argv += ["--exit-when-done"]
+        if args.stay:
+            detach_argv += ["--stay"]
         if args.batch_size is not None:
             detach_argv += ["--batch-size", str(args.batch_size)]
         handle = start_detached(
@@ -155,8 +155,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
                           f"runs={len(s.run_ids)} drained={s.drained} dead={s.dead_count}")
                 _log.info("start: all batches completed")
 
-                if args.exit_when_done:
-                    _log.info("start: --exit-when-done, shutting down")
+                if not args.stay:
+                    _log.info("start: all batches done, shutting down (use --stay to keep resident)")
                     return
             else:
                 _log.info("start: idle mode, no tasks submitted")
@@ -303,8 +303,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="逗号分隔的 task_id 列表；指定后启动即提交批次")
     p_start.add_argument("--all-tasks", action="store_true",
                          help="加载 simulate_serve 全部 task_id 并提交")
+    p_start.add_argument("--stay", action="store_true",
+                         help="批次跑完后继续常驻；默认跑完即退出")
     p_start.add_argument("--exit-when-done", action="store_true",
-                         help="批次跑完后退出；不指定则继续常驻")
+                         help="已废弃：跑完即退现在是默认行为，保留仅为兼容旧命令")
     p_start.add_argument("--batch-size", type=int, default=None,
                          help="覆盖 config 中的 batch_size")
     p_start.set_defaults(func=_cmd_start)

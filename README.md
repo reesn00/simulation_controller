@@ -33,7 +33,7 @@ simulate_serve（模拟采集 Run/审计 JSON）
 
 | 子命令 | 作用 |
 |---|---|
-| `start` | 启动 master + workers；`--detach` 后台化、`--dry-run` 只打印计划、`--tasks T001,T002` 指定批次、`--all-tasks` 加载 catalog 全部 task、`--batch-size N` 覆盖 config、`--exit-when-done` 跑完即退 |
+| `start` | 启动 master + workers；`--detach` 后台化、`--dry-run` 只打印计划、`--tasks T001,T002` 指定批次、`--all-tasks` 加载 catalog 全部 task、`--batch-size N` 覆盖 config；批次跑完即退出（默认），`--stay` 常驻 |
 | `status` | 读 `output/orchestration/orchestration.db` 队列状态 + `output/orchestration/logs/health.json` + 死信列表 + 阶段时间戳（`sim@/sim!` `qf@/qf!` `gdr@/gdr!`，`@`=开始 `!=`收尾） |
 | `stop` | 写 STOP 哨兵文件让 master 优雅 shutdown；超时后 `taskkill /F /T`（Windows）或 `SIGKILL`（POSIX）兜底 |
 | `replay` | `state=dead` 的 task 重置回 `pending`；`--batch N` 仅限该批次 |
@@ -99,7 +99,7 @@ GDR 三级精修（`obs_denoiser` / `thought_refactor` / `tool_fixer`）后的 S
 
 ### E2E 验证
 
-`.\run.bat start --tasks T001 --exit-when-done`（含 2026-09-06 qf_out 合约补丁后）：
+`.\run.bat start --tasks T001`（含 2026-09-06 qf_out 合约补丁后）：
 
 - trajectory：8 events（`turn_start / model_request / model_response / 2 tool_execution / model_request / model_response / final_reply`），最后 `final_reply`。
 - qf_out `messages`：system / user / assistant(thinking+text+2 toolcall+2 toolresult) / assistant(thinking+text)。
