@@ -6,7 +6,7 @@ import torch
 # ============ 0. 路径配置 ============
 # 当前在 WSL2 中运行，Windows 的 F:\modelscope\Qwen\Qwen3.5-9B 挂载为 /mnt/f/...
 # 若直接在 Windows 上运行，改成 r"F:\modelscope\Qwen\Qwen3.5-9B"
-MODEL_PATH = "/mnt/f/modelscope/Qwen/Qwen3.5-9B"
+MODEL_PATH = "/home/ub/work/models/Qwen/Qwen3.5-2B"
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 训练数据目录：读取其下全部 *.jsonl，而不是固定某一个文件，
 # 后续新增/拆分的数据分片无需再改脚本。
@@ -15,16 +15,35 @@ OUTPUT_DIR = os.path.join(_SCRIPT_DIR, "outputs")
 
 
 def _list_data_files(data_dir: str = DATA_DIR) -> list[str]:
-    """返回 data_dir 下所有 .jsonl 文件的完整路径（排序保证顺序稳定）。"""
+    """返回 data_dir 下所有训练数据文件的完整路径（排序保证顺序稳定）。
+
+    支持两种来源:
+      - ``.qwenjina.txt`` — 已被 ``etl/qwenformat/chat_template.jinja`` 渲染好的
+        训练纯文本；每个文件 = 1 条样本，直接读为 ``text`` 字段（跳过
+        ``apply_chat_template``，避免重复渲染）。
+      - ``.jsonl``         — 结构化 ``{messages, tools}``；每行 = 1 条样本，
+        走 ``tokenizer.apply_chat_template`` 渲染。
+
+    两种后缀可独立使用，但不要混在同一目录（分支判断会很脆）。
+    """
     if not os.path.isdir(data_dir):
         raise FileNotFoundError(f"数据目录不存在: {data_dir}")
     files = sorted(
         os.path.join(data_dir, name)
         for name in os.listdir(data_dir)
-        if name.endswith(".jsonl")
+        if name.endswith(".qwenjina.txt") or name.endswith(".jsonl")
     )
     if not files:
-        raise FileNotFoundError(f"数据目录中没有 .jsonl 文件: {data_dir}")
+        raise FileNotFoundError(
+            f"数据目录中没有 .qwenjina.txt 或 .jsonl 文件: {data_dir}"
+        )
+    kinds = {".qwenjina.txt", ".jsonl"} if any(
+        f.endswith(".qwenjina.txt") for f in files
+    ) and any(f.endswith(".jsonl") for f in files) else None
+    if kinds:
+        raise ValueError(
+            f"数据目录中 .qwenjina.txt 与 .jsonl 混存，请只保留一种: {data_dir}"
+        )
     print(f"加载 {len(files)} 个数据文件: {[os.path.basename(f) for f in files]}")
     return files
 
@@ -56,27 +75,35 @@ model = FastLanguageModel.get_peft_model(
 )
 
 # ============ 3. 准备数据集 ============
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
 
 # 不再用 unsloth 的 "qwen3" 模板覆盖：本地模型自带 chat_template.jinja，
 # 已原生支持 tools / tool_calls / reasoning_content，与 Qwen3.5 的训练格式一致。
-DATA_FILES = _list_data_files()          # input_data/ 下全部 *.jsonl
-dataset = load_dataset("json", data_files=DATA_FILES, split="train")
+DATA_FILES = _list_data_files()          # input_data/ 下全部 *.qwenjina.txt 或 *.jsonl
+if DATA_FILES[0].endswith(".qwenjina.txt"):
+    # 已渲染的训练纯文本：每个文件 = 1 条样本，整文件读为 text 字段。
+    # 不再调用 tokenizer.apply_chat_template（与 qwenjina.txt 一致，避免重复渲染）。
+    dataset = Dataset.from_dict({
+        "text": [open(f, encoding="utf-8").read() for f in DATA_FILES],
+    })
+else:
+    # 结构化 {messages, tools}：自行 apply_chat_template
+    dataset = load_dataset("json", data_files=DATA_FILES, split="train")
 
-def formatting_prompts_func(examples):
-    texts = [
-        tokenizer.apply_chat_template(
-            convo, tools=tools, tokenize=False, add_generation_prompt=False
-        )
-        for convo, tools in zip(examples["messages"], examples["tools"])
-    ]
-    return {"text": texts}
+    def formatting_prompts_func(examples):
+        texts = [
+            tokenizer.apply_chat_template(
+                convo, tools=tools, tokenize=False, add_generation_prompt=False
+            )
+            for convo, tools in zip(examples["messages"], examples["tools"])
+        ]
+        return {"text": texts}
 
-dataset = dataset.map(
-    formatting_prompts_func,
-    batched=True,
-    remove_columns=[c for c in dataset.column_names if c != "text"],
-)
+    dataset = dataset.map(
+        formatting_prompts_func,
+        batched=True,
+        remove_columns=[c for c in dataset.column_names if c != "text"],
+    )
 
 # 查看一条样本确认格式正确
 print(dataset[0]["text"][:500])
