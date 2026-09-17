@@ -240,7 +240,7 @@ class TaskRuntime:
         Terminal state is already recorded by ``RunState`` + ``RunFailure`` +
         ``decision_detail``; no closing turn is appended to ``run.conversation``
         so the user/assistant alternation invariant consumed by distillation
-        and legacy export stays intact. ``closing_target`` returns ``None`` for
+        stays intact. ``closing_target`` returns ``None`` for
         scenarios/actions that are not declared in ``CLOSING_REASON_CODES``.
         """
         return closing_target(task.scenario_id, task.interaction_policy.pass_action)

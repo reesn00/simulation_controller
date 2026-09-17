@@ -35,8 +35,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include tasks marked offline_only (fixtures-driven anomaly tasks) in the live batch",
     )
-    parser.add_argument("--output-format", choices=("v2", "both", "legacy"), default="both")
     parser.add_argument("--rerun-task", metavar="TASK_ID", default="")
+    parser.add_argument(
+        "--tasks",
+        metavar="TASK_IDS",
+        default="",
+        help="Comma-separated task ids to run (e.g. T001,T003); runs exactly these tasks",
+    )
     parser.add_argument("--list-interrupted", action="store_true")
     parser.add_argument("--check-tools", action="store_true")
     parser.add_argument("--readiness", action="store_true", help="Report local validation readiness without calling QwenPaw")
@@ -111,6 +116,8 @@ async def _run(config: AppConfig, args: argparse.Namespace) -> int:
     try:
         tasks = services.task_manager.compiled_tasks
         rerun_of = None
+        if args.rerun_task and args.tasks:
+            raise ValueError("--rerun-task and --tasks are mutually exclusive")
         if args.rerun_task:
             # Explicit rerun by id is deliberate user intent; skip the offline filter.
             tasks = [item for item in tasks if item.task_id == args.rerun_task]
@@ -119,10 +126,19 @@ async def _run(config: AppConfig, args: argparse.Namespace) -> int:
             previous = [item for item in services.repository.load_runs() if item.task_id == args.rerun_task]
             if previous:
                 rerun_of = max(previous, key=lambda item: item.started_at).run_id
+        elif args.tasks:
+            # Explicit selection is deliberate user intent; skip the offline filter.
+            wanted = [item.strip() for item in args.tasks.split(",") if item.strip()]
+            known = {item.task_id for item in tasks}
+            missing = [task_id for task_id in wanted if task_id not in known]
+            if missing:
+                raise ValueError(f"Unknown task_id(s): {', '.join(missing)}")
+            selected = set(wanted)
+            tasks = [item for item in tasks if item.task_id in selected]
         elif not args.include_offline:
             tasks = [item for item in tasks if not item.offline_only]
-        if config.skip_unready_tasks and not args.rerun_task:
-            # Explicit rerun is deliberate user intent; never silently drop it.
+        if config.skip_unready_tasks and not args.rerun_task and not args.tasks:
+            # Explicit selection is deliberate user intent; never silently drop it.
             tasks, blocked = filter_unready_tasks(tasks, services.readiness_gaps)
             if blocked:
                 logger.warning(
@@ -131,7 +147,7 @@ async def _run(config: AppConfig, args: argparse.Namespace) -> int:
                     "; ".join(f"{tid}={','.join(caps)}" for tid, caps in blocked),
                 )
         runs = await services.batch_runner.run(tasks, limit=args.limit, rerun_of=rerun_of)
-        stats = services.repository.export(output_format=args.output_format)
+        stats = services.repository.export()
         logger.info("Batch completed: %s", stats)
         return 0
     finally:

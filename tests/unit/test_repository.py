@@ -41,16 +41,13 @@ def test_repository_exports_all_runs_but_distills_clean_success_only(tmp_path: P
     repository.save_run(run_record("success", RunState.SUCCESS))
     repository.save_run(run_record("failed", RunState.GUIDE_EXHAUSTED))
     repository.save_run(run_record("thought", RunState.SUCCESS, "<think>hidden</think>answer"))
-    stats = repository.export(output_format="both")
+    stats = repository.export()
     all_runs = (tmp_path / "datasets" / "all_runs.v2.jsonl").read_text(encoding="utf-8").splitlines()
     distill = (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").splitlines()
-    legacy = (tmp_path / "legacy" / "distill_dataset.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(all_runs) == 3
     assert len(distill) == 1
-    assert len(legacy) == 1
     assert json.loads(distill[0])["run_id"] == "success"
     assert json.loads(distill[0])["task"]["task_id"] == "T1"
-    assert all(json.loads(line)["internal_thoughts"] == [] for line in legacy)
     assert stats["states"]["success"] == 2
     assert stats["stats_schema_version"] == "2"
     assert stats["by_task_type"]["x"]["success"] == 2
@@ -70,7 +67,7 @@ def test_success_without_validation_is_not_distilled_or_reported_as_pass(tmp_pat
     repository = JsonRunRepository(tmp_path)
     repository.save_run(run_record("unvalidated", RunState.SUCCESS, validated=False))
 
-    repository.export(output_format="v2")
+    repository.export()
 
     assert not (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").strip()
     loaded = repository.load_runs()[0]
@@ -87,7 +84,7 @@ def test_untagged_internal_reasoning_is_not_distilled(tmp_path: Path) -> None:
         )
     )
 
-    repository.export(output_format="v2")
+    repository.export()
 
     assert not (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").strip()
 

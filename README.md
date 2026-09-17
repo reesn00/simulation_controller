@@ -124,7 +124,10 @@ python -m simulate_serve --validate-config
 python -m simulate_serve --check-tools
 
 # 运行任务；默认跳过 offline_only 任务（T052/T053/F001），如需包含加 --include-offline
-python -m simulate_serve --limit 1 --output-format both
+python -m simulate_serve --limit 1
+
+# 指定任务运行（逗号分隔；显式指定视为用户意图，跳过 offline 过滤与 unready 丢弃）
+python -m simulate_serve --tasks T001,T003
 
 # orchestration 顶层流水线
 python -m orchestration --dry-run start --all-tasks         # 打印计划，不真启动

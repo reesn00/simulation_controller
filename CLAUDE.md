@@ -11,7 +11,8 @@ uv sync --group dev
 uv run python -m simulate_serve --validate-config
 uv run python -m simulate_serve --check-tools
 uv run python -m simulate_serve --readiness
-uv run python -m simulate_serve --limit 1 --output-format both
+uv run python -m simulate_serve --limit 1
+uv run python -m simulate_serve --tasks T001,T003
 uv run python -m pytest -q
 ```
 
@@ -69,7 +70,7 @@ CLI / Bootstrap
 
 ## 输出
 
-v2 输出在 `output/runs|artifacts|datasets|reports`；legacy 兼容投影在 `output/legacy`。审计保存所有 Run，蒸馏只导出干净的 SUCCESS 对话。非终态启动恢复时标记 `INTERRUPTED`，绝不自动重复远端任务。
+v2 输出在 `output/runs|artifacts|datasets|reports`。审计保存所有 Run，蒸馏只导出干净的 SUCCESS 对话。非终态启动恢复时标记 `INTERRUPTED`，绝不自动重复远端任务。
 
 ## 文档
 

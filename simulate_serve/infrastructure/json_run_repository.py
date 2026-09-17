@@ -35,8 +35,7 @@ class JsonRunRepository:
         self.artifacts_dir = self.root / "artifacts"
         self.datasets_dir = self.root / "datasets"
         self.reports_dir = self.root / "reports"
-        self.legacy_dir = self.root / "legacy"
-        for path in (self.runs_dir, self.artifacts_dir, self.datasets_dir, self.reports_dir, self.legacy_dir):
+        for path in (self.runs_dir, self.artifacts_dir, self.datasets_dir, self.reports_dir):
             path.mkdir(parents=True, exist_ok=True)
         self.max_artifact_bytes = max_artifact_bytes
         self.max_total_artifact_bytes = max_total_artifact_bytes
@@ -110,7 +109,7 @@ class JsonRunRepository:
             interrupted.append(run)
         return interrupted
 
-    def export(self, *, output_format: str = "both") -> dict[str, Any]:
+    def export(self) -> dict[str, Any]:
         runs = self.load_runs()
         self._write_jsonl(self.datasets_dir / "all_runs.v2.jsonl", [run.model_dump(mode="json") for run in runs])
         distill = [
@@ -131,14 +130,9 @@ class JsonRunRepository:
             for run in runs
             if run.state is RunState.SUCCESS and self._is_distillable(run)
         ]
-        if output_format in {"v2", "both"}:
-            self._write_jsonl(self.datasets_dir / "distill_dataset.v2.jsonl", distill)
+        self._write_jsonl(self.datasets_dir / "distill_dataset.v2.jsonl", distill)
         stats = self._stats(runs)
         self._atomic_json(self.reports_dir / "stats.v2.json", stats)
-        if output_format in {"legacy", "both"}:
-            from simulate_serve.infrastructure.legacy_exporter import LegacyExporter
-
-            LegacyExporter(self.legacy_dir).export(runs, stats)
         return stats
 
     @staticmethod

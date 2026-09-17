@@ -59,7 +59,7 @@ async def test_catalog_runtime_validation_repository_export(project_root: Path, 
     )
     runs = await BatchRunner(runtime).run([task])
     assert runs[0].state is RunState.SUCCESS
-    stats = repository.export(output_format="v2")
+    stats = repository.export()
     assert stats["states"] == {"success": 1}
     assert (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").strip()
 
