@@ -26,7 +26,7 @@ from orchestration.workers.qf_worker import QfWorker
 def _trajectory_jsonl(session_id: str = "sess-1") -> str:
     """新格式 trajectory: ``run_<run_id>__<session_id>.json`` JSONL 事件流.
 
-    最小有效序列: turn_start → model_request → model_response → final_reply.
+    最小有效序列: turn_start → model_request → model_response(含 content) → final_reply.
     """
     events = [
         {
@@ -53,7 +53,19 @@ def _trajectory_jsonl(session_id: str = "sess-1") -> str:
             "event_type": "model_response", "timestamp": "2026-09-05T00:00:01+00:00",
             "session_id": session_id, "agent_id": "default", "user_id": "u",
             "channel": "console", "provider_id": "p", "model_name": "m",
-            "payload": {"usage": {"total_tokens": 10}}, "metadata": {"duration_ms": 1000},
+            "payload": {
+                "content": [
+                    {"type": "thinking", "thinking": "think",
+                     "id": "th1", "created_at": "2026-09-05T00:00:01+00:00",
+                     "finished_at": None},
+                    {"type": "text", "text": "hello",
+                     "id": "tx1", "created_at": "2026-09-05T00:00:01+00:00",
+                     "finished_at": None},
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5, "type": "chat"},
+                "finished_reason": "completed",
+            },
+            "metadata": {"duration_ms": 1000},
         },
         {
             "trace_id": "t1", "span_id": "s4", "parent_span_id": None,
@@ -66,7 +78,7 @@ def _trajectory_jsonl(session_id: str = "sess-1") -> str:
                     {"type": "message", "content": [{"type": "text", "text": "hello"}]},
                 ],
             },
-            "metadata": {},
+            "metadata": {"status": "completed", "usage": {"input_tokens": 10, "output_tokens": 5}},
         },
     ]
     return "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n"
@@ -118,7 +130,19 @@ def _trajectory_jsonl_with_framework_system(session_id: str = "sess-1") -> str:
             "event_type": "model_response", "timestamp": "2026-09-05T00:00:01+00:00",
             "session_id": session_id, "agent_id": "default", "user_id": "u",
             "channel": "console", "provider_id": "p", "model_name": "m",
-            "payload": {"usage": {"total_tokens": 10}}, "metadata": {"duration_ms": 1000},
+            "payload": {
+                "content": [
+                    {"type": "thinking", "thinking": "think",
+                     "id": "th1", "created_at": "2026-09-05T00:00:01+00:00",
+                     "finished_at": None},
+                    {"type": "text", "text": "hello",
+                     "id": "tx1", "created_at": "2026-09-05T00:00:01+00:00",
+                     "finished_at": None},
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5, "type": "chat"},
+                "finished_reason": "completed",
+            },
+            "metadata": {"duration_ms": 1000},
         },
         {
             "trace_id": "t1", "span_id": "s4", "parent_span_id": None,
@@ -131,7 +155,7 @@ def _trajectory_jsonl_with_framework_system(session_id: str = "sess-1") -> str:
                     {"type": "message", "content": [{"type": "text", "text": "hello"}]},
                 ],
             },
-            "metadata": {},
+            "metadata": {"status": "completed", "usage": {"input_tokens": 10, "output_tokens": 5}},
         },
     ]
     return "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n"
@@ -207,7 +231,7 @@ def test_process_writes_qf_output(env) -> None:
 
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["session_id"] == "sess"
-    # messages (blocks) 保留; 早期事件流的 system prompt 现在会被补成 system message
+    # messages (blocks) 保留: system / user / assistant(thinking+text)
     assert len(payload["messages"]) == 3
     assert payload["messages"][0]["role"] == "system"
     user_msg = payload["messages"][1]

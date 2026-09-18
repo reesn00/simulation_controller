@@ -454,11 +454,14 @@ def _fold_msg_failed_toolresults(blocks: list, cu=None) -> tuple[list, set[str]]
                 nt = getattr(nb, "type", "")
                 nbid = getattr(nb, "id", "")
                 nstate = getattr(nb, "state", "")
-            if nt == "toolcall":
-                break
             if nt == "toolresult" and nbid == bid:
                 tr_idx = k
                 state = nstate
+                break
+            # 并行调用时 result 顺序不保证与 call 一致 (call, call, result,
+            # result), 因此扫描可跨过后续 toolcall; 仅非工具块 (text/thinking)
+            # 打断配对 —— 连续工具段之外不会有本 call 的 result.
+            if nt != "toolcall" and nt != "toolresult":
                 break
         current.append((name, state or "", i, tr_idx))
         i += 1

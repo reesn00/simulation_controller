@@ -136,7 +136,7 @@ def trajectory_to_session_with_openai_metadata(
 
     详见 ``docs/orchestration-design.md`` §6.4。
 
-    输入：Session dict（``etl.pawsession.extract.SessionRecord.to_session_dict`` 形态）：
+    输入：Session dict（``etl.qwenformat.load.SessionRecord.to_session_dict`` 形态）：
         ``{"session_id", "summary", "messages": [
             {"role", "name", "id", "blocks": [{"type", ...}, ...], "metadata", ...}
         ]}``

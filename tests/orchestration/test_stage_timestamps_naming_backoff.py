@@ -50,7 +50,18 @@ def _trajectory(session_id: str = "sess-1") -> str:
             "event_type": "model_response", "timestamp": "2026-09-05T00:00:01+00:00",
             "session_id": session_id, "agent_id": "default", "user_id": "u",
             "channel": "console", "provider_id": "p", "model_name": "m",
-            "payload": {"usage": {"total_tokens": 10}},
+            "payload": {
+                "content": [
+                    {"type": "thinking", "thinking": "think",
+                     "id": "th1", "created_at": "2026-09-05T00:00:01+00:00",
+                     "finished_at": None},
+                    {"type": "text", "text": "hello",
+                     "id": "tx1", "created_at": "2026-09-05T00:00:01+00:00",
+                     "finished_at": None},
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5, "type": "chat"},
+                "finished_reason": "completed",
+            },
             "metadata": {"duration_ms": 1000},
         },
         {

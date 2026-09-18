@@ -44,27 +44,26 @@ simulate_serve（模拟采集 Run/审计 JSON）
 
 | 阶段 | 入口模块 | 产物文件 | 数据形态 |
 |---|---|---|---|
-| 模拟采集 | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（**AI SDK 形态**） |
+| 模拟采集 | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（独立事件流形态，见 docs/agent-trajectory-format.md） |
 | 转换 | `etl/qwenformat` | `output/qf_out/<TXXX>__<session>.json` | 单 Session JSON，含 `messages[*].blocks` 结构 |
 | 精修 | `gdr` | `output/refine_data/<TXXX>__<session>_refined.json` | 同 qf_out 结构 + `metadata.refine_history` |
 
 GDR 只接受 `qf_out` 格式（[`gdr/domain/schema.py::load_session`](gdr/domain/schema.py#L182-L198)），不直接消费 trajectory；`etl/qwenformat` 是 simulate_serve 与 gdr 之间的强制 adapter，qf_out 是单一真相来源。
 
-### trajectory（AI SDK 形态，2026-09-06 确认）
+### trajectory（独立事件流形态，2026-09-18 确认）
 
-QwenPaw 不会发出独立的 `tool_call_request` / `tool_execution` 事件来表达工具调用。**权威源是 LAST `model_request.payload.messages`**：
+完整格式定义见 [`docs/agent-trajectory-format.md`](docs/agent-trajectory-format.md)。每类事件只有一个职责，冗余源一律跳过：
 
-- `messages[0]` (role=system)：完整 system prompt。
-- `messages[assistant].content`：AI SDK 块序列
-  - `type=text`：内含 `<think>...</think>`，需用 `_split_thinking` 拆为独立 ThinkingBlock + TextBlock。
-  - `type=tool_call`：{id, name, input (JSON str), state="finished"}。
-  - `type=tool_result`：{id, name, output, state}。
-- `model_request.payload.tools`：27 个工具完整定义（含 description + parameters schema），是 `tools` 列表的权威来源。
-- `final_reply.payload.content`：prior message / plugin_call / plugin_call_output / final message 的整段快照；**只取最后一个 `message` / `reasoning` 块**作为 AI 最终回复，中间的 plugin_call/output 和 prior message 已被 model_request 覆盖，跳过避免重复。
+- `turn_start` → user message（`payload.input_text`）。
+- `model_request` → 首个事件提取 system prompt；`payload.tools` 是工具定义权威来源。
+- `model_response` → **模型输出主数据源**：`payload.content` 携带 `thinking`（独立结构化块）/ `tool_call`（state=pending，重放归一为 finished）/ `text` 块。
+- `tool_execution` → 工具结果唯一事件源（state 在 `metadata.end_state`）。
+- `final_reply` → 轮终态：flush 本轮 assistant message，`metadata.usage` 附到该消息；`payload.content` 是冗余快照，跳过。
+- `tool_call_request` / `model_request.payload.messages` 快照 → 冗余，重放跳过。
 
-事件序列：`turn_start → model_request (system+user) → model_response → tool_execution (QwenPaw 自产生) → model_request (完整快照) → model_response → final_reply`。中间的 `tool_execution` 不是权威，model_request 内的 `tool_result` 才是。
+事件序列：`turn_start → model_request → model_response (thinking+tool_call×n) → tool_call_request (冗余) → tool_execution ×n → … → model_response (thinking+text) → final_reply`。多轮会话每轮一对 `turn_start` / `final_reply`。
 
-[`etl/qwenformat/load.py::parse_trajectory`](etl/qwenformat/load.py) 检测 LAST model_request 是否含 assistant 决定走 **AI SDK 抽取路径**；旧事件流路径（thinking/tool_call_request/tool_execution 累计）作为 fallback 保留向后兼容，不主动丢弃。
+[`etl/qwenformat/load.py::parse_trajectory`](etl/qwenformat/load.py) 是单路径事件重放，不做旧格式兼容（AI SDK 内嵌快照 / inline ` md` 拆分路径已于 2026-09-18 移除）。
 
 ### qf_out（Session → Message → Block）
 

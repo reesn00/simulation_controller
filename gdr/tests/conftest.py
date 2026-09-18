@@ -81,6 +81,21 @@ def session_with_referenced_failed_block(cfg) -> Session:
 
 
 @pytest.fixture
+def session_with_parallel_calls(cfg) -> Session:
+    """并行工具调用: 新格式 trajectory 中 result 按完成序返回,
+    与 call 顺序不一致 (call, call, result, result)。"""
+    return _make_session([
+        [
+            {"type": "thinking", "id": "th1", "thinking": "search two sources"},
+            {"type": "toolcall", "id": "tc1", "name": "web_search", "input": '{"q": "a"}', "state": "finished"},
+            {"type": "toolcall", "id": "tc2", "name": "web_search", "input": '{"q": "b"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc2", "name": "web_search", "output_text": "ok-b", "state": "success"},
+            {"type": "toolresult", "id": "tc1", "name": "web_search", "output_text": "ok-a", "state": "success"},
+        ],
+    ])
+
+
+@pytest.fixture
 def session_with_multiple_successes(cfg) -> Session:
     """连续多次同名成功 + 一个错误, 应只保留最后一次成功。"""
     return _make_session([

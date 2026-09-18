@@ -58,6 +58,22 @@ def test_fold_failed_keeps_all_successes(cfg, session_with_multiple_successes):
     assert removed >= 1
 
 
+def test_fold_failed_keeps_parallel_call_successes(cfg, session_with_parallel_calls):
+    """并行调用 (call, call, result, result — result 顺序与 call 不一致):
+    配对扫描必须跨过后续 toolcall 找到同 id 的 result, 不得把成功调用
+    误判为无 result 的失败尝试。"""
+    session = session_with_parallel_calls
+    light = light_health_score_for_session(session, cfg)
+    cu = build_context_for_session(session, cfg, light_health=light)
+
+    removed = fold_failed_toolresults(session, cfg, cu=cu)
+    ids_after = {b.id for msg in session.messages for b in msg.blocks}
+
+    # 两个并行调用都成功, 全部保留
+    assert removed == 0
+    assert {"tc1", "tc2"} <= ids_after, f"parallel successes should be kept; got {ids_after}"
+
+
 def test_fold_failed_keeps_last_attempt_of_trailing_failures(cfg):
     """段尾无成功收尾的失败串: 只保留最后一次尝试。"""
     from tests.conftest import _make_session

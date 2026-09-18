@@ -179,8 +179,8 @@ class QfWorker(BaseWorker):
             from etl.qwenformat.load import TextBlock
             record.messages[0].blocks = [TextBlock(text=new_system)]
         else:
-            # 早期事件流不会把 model_request.system 加入 messages, 需要手动补一条
-            # system message, 否则 qf transform 看不到 system prompt.
+            # 截断 trajectory 可能没有 model_request (无 system prompt 可提取),
+            # 需要手动补一条 system message, 否则 qf transform 看不到 system prompt.
             from etl.qwenformat.load import Message, TextBlock
             record.messages.insert(
                 0,
