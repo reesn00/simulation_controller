@@ -256,6 +256,13 @@ class Settings(BaseSettings):
     # === 严格性 ===
     strict_consistency: bool = True  # 一致性终检异常时是否丢弃
     judge_min_score: int = 7        # 终检 judge 进主输出的最低分 (0-10), 0 = 关闭
+    # 终检 judge 阈值豁免: 当 refiner 修改的 block 很少时, L3 judge 实际判的是
+    # 原 trajectory 内部自洽度, 跟"精修质量"已解耦. search-heavy 类任务经常
+    # 因为远端本身反复重设 query / 自我怀疑, 被 L3 一致性严打; 而 refiner
+    # 几乎不动原内容. 此时允许放宽阈值, 让合格样本进主输出, 但仍走
+    # judge_low 旁路, 留下完整审计. 仅当 modified_blocks <= N 时生效.
+    judge_min_score_relaxed: int = 3     # 放宽后的最低分 (0-10), 0 = 关闭豁免
+    judge_min_modified_for_relaxation: int = 5  # modified_blocks <= 此值才走放宽
     # judge 低分 session 不丢: 完整精修结果另存审核通道, 供人工检查/后期修改后手动并回。
     # 真正硬丢弃只发生在结构严重不可用时 (见 pipeline/runner._session_structurally_unusable)。
     judge_low_export_enabled: bool = True

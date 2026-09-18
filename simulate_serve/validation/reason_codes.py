@@ -36,6 +36,12 @@ DETERMINISTIC_REASON_CODES: Final[frozenset[str]] = frozenset({
     # Format / count / fields / keyword / url deterministic
     "CHAR_COUNT_LOW",
     "ITEM_COUNT_LOW",
+    # Tool-call repetition: emitted by the deterministic post-processor in
+    # ValidationPipeline when the most recent round's toolcall_blocks contain
+    # a run of consecutive same-name + same-input calls >= scenario threshold.
+    # Lives in the deterministic track so it stays reachable from any scenario
+    # that has the tool_repetitive_threshold policy field.
+    "TOOL_REPETITIVE",
     "FIELD_MISSING",
     "FORMAT_JSON_REQUIRED",
     "FORMAT_JSON_OBJECT_REQUIRED",

@@ -48,7 +48,7 @@ class _ScriptedValidator:
     def __init__(self, reports: list[ValidationReport]):
         self.reports = deque(reports)
 
-    async def validate(self, task, run, response) -> ValidationReport:
+    async def validate(self, task, run, response, *, toolcall_blocks=()) -> ValidationReport:
         return self.reports.popleft()
 
 

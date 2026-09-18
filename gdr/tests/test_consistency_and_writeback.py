@@ -196,6 +196,76 @@ def test_judge_low_score_discards_session(cfg):
     assert session.metadata.get("judge_discard") == {"score": 2, "min_score": 7}
 
 
+def test_judge_relaxed_threshold_keeps_minimal_edit_session(cfg):
+    """modified_blocks 很少时, L3 阈值放宽: 仍进主输出, 但 metadata 记录
+    放宽标记供审计/复盘。score=3 / strict=7 / relaxed=3 / modified=2 → 放行。"""
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    session = Session(session_id="relaxed-keep", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.return_value = ('{"score": 3}', None)
+        result = process_one(session, cfg, ["browser"], set())
+    assert result is not None, "放宽阈值后 score=3 应通过, 不进 judge_low"
+    assert session.metadata.get("judge_discard") is None
+    relaxed = session.metadata.get("judge_relaxed") or {}
+    assert relaxed.get("score") == 3
+    assert relaxed.get("original_min_score") == 7
+    assert relaxed.get("relaxed_min_score") == 3
+    assert relaxed.get("modified_blocks") is not None
+
+
+def test_judge_relaxed_still_discards_below_relaxed_min(cfg):
+    """score < relaxed_min 时仍走 discard 路径, 不无限兜底。"""
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    session = Session(session_id="still-discard", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.return_value = ('{"score": 1}', None)
+        result = process_one(session, cfg, ["browser"], set())
+    assert result is None
+    assert session.metadata.get("judge_discard", {}).get("score") == 1
+
+
+def test_judge_relaxed_disabled_when_relaxed_score_zero(cfg):
+    """judge_min_score_relaxed=0 时关闭豁免, 走严格阈值。"""
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    cfg.judge_min_score_relaxed = 0  # 关闭豁免
+    session = Session(session_id="no-relax", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.return_value = ('{"score": 3}', None)
+        result = process_one(session, cfg, ["browser"], set())
+    assert result is None
+    assert session.metadata.get("judge_discard", {}).get("score") == 3
+
+
 # ---------------------------------------------------------------------------
 # 结构严重不可用硬过滤 (用户主旨: 只有数据本身不可用才丢弃)
 # ---------------------------------------------------------------------------

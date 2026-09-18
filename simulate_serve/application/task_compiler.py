@@ -223,6 +223,7 @@ class TaskCompiler:
                 pass_action=dialogue.pass_action if dialogue else "thank_and_finish",
                 blocked_action=dialogue.blocked_action if dialogue else "accept_honest_limitation",
                 environment_error_action=dialogue.environment_error_action if dialogue else "stop_without_blame_executor",
+                tool_repetitive_threshold=dialogue.tool_repetitive_threshold if dialogue else 5,
             ),
             validation_policy=ValidationPolicy(source_schema_version=schema_version),
             reference_text=reference_text,

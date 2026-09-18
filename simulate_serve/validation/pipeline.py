@@ -11,6 +11,7 @@ from .deterministic import (
     FieldValidator,
     FormatValidator,
     KeywordValidator,
+    ToolRepetitiveValidator,
     UrlSyntaxValidator,
 )
 from .evidence_collector import EvidenceCollector
@@ -30,7 +31,14 @@ class ValidationPipeline:
             "constraint": ConstraintValidator(),
         }
 
-    async def validate(self, task: CompiledTask, run: TaskRun, response_text: str):
+    async def validate(
+        self,
+        task: CompiledTask,
+        run: TaskRun,
+        response_text: str,
+        *,
+        toolcall_blocks: tuple[dict, ...] | list[dict] = (),
+    ):
         text = response_text.strip()
         required_ids = frozenset(item.criterion_id for item in task.criteria if item.required)
         if not text:
@@ -117,6 +125,32 @@ class ValidationPipeline:
                 )
             else:
                 results.extend(await self.judge.judge(task, text, tuple(semantic)))
+
+        # Deterministic post-processor: tool-call repetition guard. Runs after
+        # the text-only deterministic validators AND the semantic judge so it
+        # can override any prior PASS / FAIL / INCONCLUSIVE on every criterion
+        # (deterministic, evidence, semantic) with a TOOL_REPETITIVE verdict.
+        # Threshold and toolcall snapshot come from the most recent executor
+        # round (passed in via ``toolcall_blocks``); when ``toolcall_blocks`` is
+        # empty the executor did not surface any tool calls this round and
+        # the validator is a no-op.
+        threshold = task.interaction_policy.tool_repetitive_threshold
+        if toolcall_blocks and threshold >= 2:
+            tool_rep = ToolRepetitiveValidator(toolcall_blocks, threshold)
+            criteria_by_id = {criterion.criterion_id: criterion for criterion in task.criteria}
+            overridden: list[CriterionResult] = []
+            for item in results:
+                criterion = criteria_by_id.get(item.criterion_id)
+                if criterion is None:
+                    overridden.append(item)
+                    continue
+                # Only override a verdict when the tool-repeat detector
+                # actually fires; otherwise keep the existing result so other
+                # validators (keyword, count, judge, etc.) still drive the
+                # verdict.
+                replacement = tool_rep.validate(criterion, text)
+                overridden.append(replacement if replacement is not None else item)
+            results = overridden
 
         # Preserve task criterion order regardless of validator execution path.
         by_id = {item.criterion_id: item for item in results}

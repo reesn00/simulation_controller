@@ -17,6 +17,12 @@ class ExecutorResponse(BaseModel):
     remote_task_id: str
     agent_id: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Toolcall blocks from the most recent executor round, sourced from the
+    # trajectory JSONL after the archiver's flush wait. Empty tuple when the
+    # remote side did not surface any tool calls this round (text-only
+    # replies) — the validator treats empty as a no-op rather than zero
+    # repetition, since a session with no tool calls is not a loop.
+    toolcall_blocks: tuple[dict, ...] = ()
 
 
 class ExecutorGateway(Protocol):
@@ -28,7 +34,14 @@ class ExecutorGateway(Protocol):
 
 
 class ValidationPort(Protocol):
-    async def validate(self, task: CompiledTask, run: TaskRun, response_text: str) -> ValidationReport: ...
+    async def validate(
+        self,
+        task: CompiledTask,
+        run: TaskRun,
+        response_text: str,
+        *,
+        toolcall_blocks: tuple[dict, ...] = (),
+    ) -> ValidationReport: ...
 
 
 class RunRepositoryPort(Protocol):

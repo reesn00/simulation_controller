@@ -76,7 +76,9 @@ class TaskRuntime:
                     )
                     self._move(run, RunState.INCONCLUSIVE, "VALIDATION_DISABLED")
                     return run
-                report = await self.validator.validate(task, run, response.text)
+                report = await self.validator.validate(
+                    task, run, response.text, toolcall_blocks=response.toolcall_blocks
+                )
                 run.validation_rounds.append(report)
                 self._persist(run)
 

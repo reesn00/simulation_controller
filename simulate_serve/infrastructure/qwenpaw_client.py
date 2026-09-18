@@ -11,6 +11,9 @@ import httpx
 from simulate_serve.application.ports import ExecutorResponse
 from simulate_serve.application.errors import ExecutorPortError
 from simulate_serve.config import AgentEndpointConfig
+from simulate_serve.infrastructure.trajectory_archiver import (
+    default_qwenpaw_trajectory_dir,
+)
 from simulate_serve.interaction.content_policy import INTERNAL_BLOCK_TYPES, strip_hidden_markup
 
 logger = logging.getLogger(__name__)
@@ -73,6 +76,7 @@ class AsyncQwenPawExecutor:
             remote_task_id=remote_task_id,
             agent_id=agent_id,
             metadata=response_metadata,
+            toolcall_blocks=self._extract_toolcall_blocks(agent_id, final_session),
         )
 
     async def _submit(self, message: str, agent_id: str, session_id: str | None) -> tuple[str, str]:
@@ -182,3 +186,108 @@ class AsyncQwenPawExecutor:
         if not visible:
             raise ExecutorError("Remote response has no visible final text", stage="extract")
         return visible
+
+    def _extract_toolcall_blocks(self, agent_id: str, session_id: str) -> tuple[dict, ...]:
+        """Return ``tool_call`` blocks from the most recent round in the trajectory.
+
+        QwenPaw emits ``model_response`` events whose ``payload.content`` is a
+        list of blocks (think / text / tool_call). The trajectory JSONL only
+        carries these events — the task ``result`` payload returned by the HTTP
+        poll does not — so we read the file directly with the same path the
+        trajectory archiver uses. Failures are logged and swallowed: the
+        downstream ``TOOL_REPETITIVE`` check is best-effort and a missing or
+        malformed trajectory must never block the run.
+        """
+        if not session_id:
+            return ()
+        try:
+            trajectory_path = default_qwenpaw_trajectory_dir(agent_id) / f"{session_id}.jsonl"
+            blocks = _read_toolcall_blocks(trajectory_path)
+        except Exception as exc:  # auxiliary capture must never fail the run
+            logger.debug(
+                "trajectory parse for toolcall_blocks failed (session=%s): %s",
+                session_id, exc,
+            )
+            return ()
+        return blocks
+
+
+def _read_toolcall_blocks(trajectory_path) -> tuple[dict, ...]:
+    """Parse a QwenPaw trajectory JSONL and return its ``tool_call`` blocks in order.
+
+    Lives at module scope so ``qwenpaw_client`` can be constructed cheaply
+    (no I/O at import) and so the brace-balanced scanner can be unit-tested
+    in isolation. Trajectory events may themselves contain embedded newlines
+    (tool result payloads), so a naive line-split can land mid-object; the
+    scanner respects JSON string boundaries to guarantee we only slice on
+    real object boundaries.
+    """
+    try:
+        with trajectory_path.open("rb") as f:
+            raw = f.read()
+    except OSError:
+        return ()
+    if not raw:
+        return ()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ()
+
+    toolcall_blocks: list[dict] = []
+    for event in _iter_events(text):
+        event_type = event.get("event_type") if isinstance(event, dict) else None
+        if event_type != "model_response":
+            continue
+        payload = event.get("payload") if isinstance(event, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        content = payload.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").casefold()
+            if block_type in {"tool_call", "toolcall", "tool_use"}:
+                toolcall_blocks.append(block)
+    return tuple(toolcall_blocks)
+
+
+def _iter_events(text: str):
+    """Yield fully-balanced JSON objects from a trajectory file's text.
+
+    Trajectory events may contain embedded newlines (tool result payloads),
+    so a naive line-split can land mid-object. The brace counter respects
+    JSON string boundaries; we slice the text on every brace-balanced
+    boundary and ``json.loads`` the slice, skipping anything that does not
+    parse cleanly.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    obj_start = -1
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and obj_start >= 0:
+                try:
+                    import json as _json
+                    yield _json.loads(text[obj_start : i + 1])
+                except (ValueError, _json.JSONDecodeError):
+                    pass
+                obj_start = -1

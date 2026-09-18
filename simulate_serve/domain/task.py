@@ -101,6 +101,10 @@ class InteractionPolicy(BaseModel):
     pass_action: str = "thank_and_finish"
     blocked_action: str = "accept_honest_limitation"
     environment_error_action: str = "stop_without_blame_executor"
+    # Default 5 mirrors DialoguePolicyDocument.tool_repetitive_threshold; the
+    # compiler passes the scenario value through so per-scenario overrides
+    # (e.g. lighter on quick lookup scenarios) are honoured.
+    tool_repetitive_threshold: int = 5
 
 
 class ValidationPolicy(BaseModel):

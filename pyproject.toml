@@ -30,8 +30,7 @@ exclude = [
     "simulate_serve/config/config copy.yaml",
     "simulate_serve/**/__pycache__/**",
     "orchestration/**/__pycache__/**",
-    "orchestration/data/**",
-    "orchestration/logs/**",
+    "output/orchestration/**",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]

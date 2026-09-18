@@ -41,7 +41,7 @@ class ScriptedValidator:
     def __init__(self, verdicts: list[Verdict]):
         self.verdicts = deque(verdicts)
 
-    async def validate(self, task, run, response) -> ValidationReport:
+    async def validate(self, task, run, response, *, toolcall_blocks=()) -> ValidationReport:
         verdict = self.verdicts.popleft()
         result = CriterionResult(
             criterion_id=task.criteria[0].criterion_id,

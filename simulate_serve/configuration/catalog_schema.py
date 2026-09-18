@@ -73,6 +73,15 @@ class DialoguePolicyDocument(StrictDocument):
     # degradation is the task goal itself, so decline detection is disabled.
     blocked_action: Literal["accept_honest_limitation", "no_decline_check"] = "accept_honest_limitation"
     environment_error_action: str = "stop_without_blame_executor"
+    # Early-stop threshold for the tool-call repetition guard: when the most
+    # recent round's toolcall sequence contains a run of consecutive calls
+    # with the same name and effectively-identical input whose length meets or
+    # exceeds this threshold, the deterministic post-processor emits a
+    # TOOL_REPETITIVE failure so the Interaction Actor can guide the user to
+    # ask the executor to stop repeating and summarise what it already has.
+    # Lower bound 2 keeps the guard meaningful even on a 2-call threshold;
+    # upper bound 20 caps how forgiving a scenario can be.
+    tool_repetitive_threshold: int = Field(default=5, ge=2, le=20)
 
 
 class CriterionDocument(StrictDocument):

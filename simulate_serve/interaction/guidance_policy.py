@@ -59,6 +59,7 @@ _NATURAL_MESSAGES = {
     "PARTIAL_FILES": "到底处理了多少个、放到哪里了？说清楚。",
     "PATH_CONFLICT": "有重名冲突吧？你打算怎么处理，先告诉我。",
     "UNCONFIRMED_DELETE": "删东西之前得先问我一声，说明影响。",
+    "TOOL_REPETITIVE": "你一直在重复同一个搜索，先把能确认的链接发我，剩下的不要了。",
 }
 
 _COMPLETE_REVISION_REQUEST = "请保留已经满足的内容，并给我一份包含全部要求的完整的修订结果。"

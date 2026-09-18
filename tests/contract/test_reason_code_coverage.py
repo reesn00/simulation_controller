@@ -29,6 +29,22 @@ from simulate_serve.validation.reason_codes import (
 # validator (or none) routes the criterion to the semantic judge.
 _EVIDENCE_VALIDATORS = frozenset({"browser_evidence", "tool_evidence"})
 
+# Deterministic codes emitted by a post-processor that runs after the
+# text-stage AND the semantic judge. The post-processor sees every
+# criterion's result (deterministic, evidence, or semantic) and can
+# override it, so these codes are live for any scenario regardless of
+# whether it carries evidence-validator criteria. Keeping this list
+# explicit (rather than "all deterministic codes are live") preserves the
+# test's intent: deterministic-only codes that *do* require an evidence
+# path must still prove that path exists.
+_POST_PROCESSOR_DETERMINISTIC_CODES = frozenset({
+    # Tool-call repetition guard in ValidationPipeline. The pipeline reads
+    # ``toolcall_blocks`` from the most recent executor round and overrides
+    # any criterion result, so the emission does not depend on the
+    # scenario's validator mix.
+    "TOOL_REPETITIVE",
+})
+
 
 def _registry_codes() -> set[str]:
     return (
@@ -66,6 +82,8 @@ def test_every_guidance_key_has_a_live_emission_path(scenarios: list[ScenarioDoc
         )
         for key in scenario.guidance_policy or {}:
             if key in SEMANTIC_REASON_CODE_HINTS or is_closing(key):
+                continue
+            if key in _POST_PROCESSOR_DETERMINISTIC_CODES:
                 continue
             if key in DETERMINISTIC_REASON_CODES and has_evidence:
                 continue

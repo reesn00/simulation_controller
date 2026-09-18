@@ -828,6 +828,10 @@ def reassemble(
         )
         _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
         return session
+    # 阈值豁免/判分相关变量提前绑定, 让 try/except 块外也能引用, 避免 LLM 调用
+    # 抛异常时出现 UnboundLocalError.
+    score: int | float = 0
+    relaxed_note: dict[str, object] | None = None
     # 修复 I: judge 调用前再判一次 budget（防止单次 LLM 调用耗时把 budget 耗光）
     # 用户主旨: 数据完整即处理并导出. 一次 LLM 卡顿不应让整 session 丢失.
     try:
@@ -851,15 +855,45 @@ def reassemble(
         result = parse_json_object(text)
         score = result.get("score", 0)
         min_score = int(getattr(cfg, "judge_min_score", 7))
-        if score < min_score:
+        # 阈值豁免: modified_blocks 很少时, L3 judge 实际判的是原 trajectory
+        # 内部自洽度, 与 refiner 编辑质量解耦; 走放宽阈值让合格样本进主输出,
+        # 同时在 metadata 记 relaxed_note 供审计/复盘, 不让 search-heavy 任务
+        # 被一票打死.
+        modified_count = sum(1 for r in refine_records if r.result == "success")
+        relaxed_for_minimal_edits = (
+            int(getattr(cfg, "judge_min_score_relaxed", 3)) > 0
+            and modified_count <= int(getattr(cfg, "judge_min_modified_for_relaxation", 5))
+        )
+        effective_min_score = min_score
+        if (
+            relaxed_for_minimal_edits
+            and score < min_score
+            and score >= int(getattr(cfg, "judge_min_score_relaxed", 3))
+        ):
+            effective_min_score = int(getattr(cfg, "judge_min_score_relaxed", 3))
+            relaxed_note = {
+                "modified_blocks": modified_count,
+                "original_min_score": min_score,
+                "relaxed_min_score": effective_min_score,
+            }
+            log.warning(
+                "session %s: score=%s < strict=%s but modified_blocks=%s <= threshold; "
+                "relaxing min_score to %s and tagging for audit",
+                session.session_id, score, min_score, modified_count, effective_min_score,
+            )
+        if score < effective_min_score:
             # 低分 session 不进主输出 (训练集): 终检分数不达标意味着重写后的轨迹
             # 质量不足以直接训练。但数据不丢 —— runner 检测到该标记后会把完整
             # session 写入 judge_low.jsonl 审核通道, 供人工检查/后期修改并回。
             # 超时兜底不得复活本条 (judge 已明确给出低分, 非流程中断)。
-            session.metadata["judge_discard"] = {"score": score, "min_score": min_score}
+            discard_meta: dict[str, object] = {"score": score, "min_score": effective_min_score}
+            if relaxed_note is not None:
+                discard_meta.update(relaxed_note)
+            session.metadata["judge_discard"] = discard_meta
             log.error(
-                "discard session %s, reason=consistency_score=%s < %s",
-                session.session_id, score, min_score,
+                "discard session %s, reason=consistency_score=%s < %s%s",
+                session.session_id, score, effective_min_score,
+                " (relaxed)" if relaxed_note is not None else "",
             )
             return None
     except Exception as e:
@@ -889,6 +923,13 @@ def reassemble(
             log.warning("consistency check failed, proceeding anyway: %s", e)
 
     _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
+    # 记录阈值豁免信息, 让 runner 端可按需筛选"放宽通过的样本"用于审计/复盘
+    if relaxed_note is not None:
+        session.metadata.setdefault("judge_relaxed", {})
+        session.metadata["judge_relaxed"].update({
+            "score": score,
+            **relaxed_note,
+        })
     return session
 
 

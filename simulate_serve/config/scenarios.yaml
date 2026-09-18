@@ -57,6 +57,7 @@ scenarios:
       acknowledge_progress: true
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
+      tool_repetitive_threshold: 5
     guidance_policy:
       URL_MISSING:
       - 请直接给我能点开的完整网址
@@ -70,6 +71,10 @@ scenarios:
       MEDIA_PLAYBACK_UNCONFIRMED:
       - 我还是不确定能不能真的播起来，你实际放一下再回我
       - 你没证明这视频能播，换一个能当场验证的
+      TOOL_REPETITIVE:
+      - 你一直在重复同一个搜索，先把能确认的链接发我，剩下的不要了
+      - 别再搜了，把目前找到的整理一下发我
+      - 差不多了，停下，把结果发我就行
       REQUIREMENT_UNMATCHED:
       - 你给的这些跟我一开始要的对不上，对照我最开始说的再补补
       - 这不是我要的东西，把我的要求再对一遍，缺啥补啥
@@ -103,6 +108,7 @@ scenarios:
       acknowledge_progress: true
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
+      tool_repetitive_threshold: 5
     guidance_policy:
       ITEM_COUNT_LOW:
       - 数量不够啊，再补一些，格式别变
@@ -119,6 +125,10 @@ scenarios:
       UNVERIFIED_CLAIM:
       - 没核实的东西别写成确定的，标一下或者给来源
       - 拿不准的就说拿不准，别写成事实
+      TOOL_REPETITIVE:
+      - 你一直在重复同一个搜索，先把目前能整理的发我，剩下的不要了
+      - 别再搜了，把目前找到的整理一下发我
+      - 差不多了，停下，把结果发我就行
       REQUIREMENT_UNMATCHED:
       - 这跟我一开始要的整理方式对不上，按我最开始说的重新弄
       - 不对，再看看我最初的要求，缺的补上
@@ -159,6 +169,7 @@ scenarios:
       acknowledge_progress: true
       preserve_satisfied_criteria: true
       never_expose_internal_rules: true
+      tool_repetitive_threshold: 5
     guidance_policy:
       EVIDENCE_COUNT_LOW:
       - 确认能用的链接还是太少，继续验证再补
@@ -169,6 +180,10 @@ scenarios:
       BROWSER_BARRIER:
       - 这个有登录或付费墙，标出来再换一个
       - 有门槛的别留着，说明原因再补新的
+      TOOL_REPETITIVE:
+      - 你一直在重复同一个搜索，先把目前能确认的发我，剩下的不要了
+      - 别再搜了，把目前找到的整理一下发我
+      - 差不多了，停下，把结果发我就行
       REQUIREMENT_UNMATCHED:
       - 我要的是实际验证过的结果，对照我最开始说的再来一遍
       - 还是不对，把我的要求再对一遍再做
