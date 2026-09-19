@@ -853,12 +853,75 @@ _INCOMPLETE_TEXT_MARKERS = (
 )
 
 
+# F3-D fix: 完整收尾的结构信号。判定 text 是否"看起来像完整回复", 与
+# _is_text_incomplete (判不完整) 是镜像关系。这些都是"出现即完整"的强信号
+# — 与 _INCOMPLETE_TEXT_MARKERS (出现即不完整) 对偶。
+_COMPLETE_TAIL_TOKENS = (
+    "总结", "结论", "已核实", "已完成", "下一步", "锚点", "报告完毕",
+    "报告完", "汇报完毕", "汇总完毕", "排查完", "结束",
+    "completion complete", "task complete", "done",
+    # 中文口语化收尾
+    "就这样", "以上", "完毕", "结束", "结果如上",
+)
+
+
+def _has_structural_close(s: str) -> bool:
+    """F3-D fix: 尾部是否存在结构性闭合信号 (markdown / bracket pair / etc).
+
+    这些是"出现即完整"的强信号, 优先于字符级标点判断。覆盖:
+      - markdown 表格行: 尾部或近尾部含 '|' 行
+      - markdown 分隔线: '---' 或 '***' (近尾部即可, 不必在末尾)
+      - code fence 闭合: 尾部含 '```'
+      - colon-fenced block 闭合: 尾部含 ':::'
+      - 中文方括号闭合: 【】、⟦⟧、『』
+      - 双重方括号闭合: ]]
+    """
+    tail = s.rstrip()[-300:] if len(s) > 300 else s.rstrip()
+    last_line = tail.splitlines()[-1] if tail else ""
+    # markdown 表格行 / 段落收尾的 '|'
+    if last_line.strip().startswith("|") and last_line.strip().endswith("|"):
+        return True
+    # markdown 分隔线 (近尾部即可, 不必在末尾; 否则一段以分隔线开头但
+    # 后续还有内容的报告会被漏判)
+    for line in tail.splitlines():
+        stripped = line.strip()
+        if stripped in ("---", "***", "___") or (
+            len(stripped) >= 3 and all(c in "-*_" for c in stripped)
+        ):
+            return True
+    # code fence 闭合: 尾部含 '```' 但前面已开 (含 '```' 即可)
+    if "```" in tail:
+        return True
+    # colon-fenced block 闭合
+    if tail.rstrip().endswith(":::"):
+        return True
+    # 中文方括号闭合 (配对出现)
+    bracket_pairs = [
+        ("⟦", "⟧"), ("【", "】"), ("『", "』"),
+        ("「", "」"), ("《", "》"), ("(", ")"),
+        ("[", "]"), ("{", "}"),
+    ]
+    for open_b, close_b in bracket_pairs:
+        # open 在文中出现过, close 也出现且出现在 open 之后 → 完整闭合
+        oi = s.rfind(open_b)
+        ci = s.rfind(close_b)
+        if oi != -1 and ci != -1 and ci > oi:
+            # 必须末尾或近末尾是 close_b 才算完整收尾
+            if tail.endswith(close_b) or close_b in tail[-10:]:
+                return True
+    return False
+
+
 def _is_text_incomplete(text: str) -> bool:
     """启发式: text 末尾不像完整回复 (低强度信号, 仅辅助).
 
     判定的中文半句话/继续词前缀 + 没有结论性结尾 (句号/感叹号/双引号闭合).
     这是非常弱的信号 — 漏判无害 (false negative), 误判只让 session 走
-    incomplete.jsonl 旁路 (false positive 由人工复核).
+    incomplete.jsonl 旁路 (false positive 由人工复核)。
+
+    F3-D fix: 加入结构性闭合信号 (markdown 表格/分隔线/code fence/bracket
+    pair) 与尾部语义收尾词 ("总结"/"结论"/"已完成"/"下一步" 等) — 这些是
+    "出现即完整" 的强信号, 弥补单纯看末尾标点对结构化总结报告的盲区。
     """
     s = text.strip()
     if not s:
@@ -866,6 +929,13 @@ def _is_text_incomplete(text: str) -> bool:
     # 末尾是省略号或被截断
     if s.endswith("...") or s.endswith("…"):
         return True
+    # 强信号: 结构性闭合 → 视为完整, 不论末尾标点
+    if len(s) > 30 and _has_structural_close(s):
+        return False
+    # 强信号: 尾部含语义收尾词 → 视为完整
+    tail_window = s[-100:]
+    if len(s) > 30 and any(tok in tail_window for tok in _COMPLETE_TAIL_TOKENS):
+        return False
     # 长文本无句末标点 → 大概率被截断
     # 短文本 (<30 chars) 容忍, 可能是 "好的" "OK" 等
     if len(s) > 30:
@@ -875,7 +945,7 @@ def _is_text_incomplete(text: str) -> bool:
             # 容忍明确结尾词
             if not any(s.endswith(w) for w in ("完", "了", "好", "OK", "ok")):
                 return True
-    # 包含继续性词前缀 + 长文本
+    # 包含继续性词前缀 + 长文本 (前缀 marker, 仅在文本开头 60 字符)
     if len(s) > 30:
         for marker in _INCOMPLETE_TEXT_MARKERS:
             if marker in s[:60]:
