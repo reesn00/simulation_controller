@@ -52,6 +52,9 @@ class GdrWorker(BaseWorker):
         llm_concurrency: int = 4,
         n: int = 1,
         poll_seconds: float = 2.0,
+        #: 方向 B: 允许拉取的 batch_id 集合 (引用, 由 Master 持有并在 batch
+        #: 启停时增删). 为空集合 / None 时退化为旧行为 (拉所有 pending_gdr).
+        allowed_batch_ids: set[int] | None = None,
     ) -> None:
         super().__init__(
             queue=queue, worker_id=worker_id, n=n, poll_seconds=poll_seconds,
@@ -61,13 +64,30 @@ class GdrWorker(BaseWorker):
         self._llm_concurrency = int(llm_concurrency)
         #: process 拆出的 4 份视图路径 (供 mark_done 回写队列)；见 §5 契约 A。
         self._last_outputs: dict[str, str | None] | None = None
+        #: 引用 Master 的活跃 batch 集合. 取一次快照传给 pull_pending_gdr,
+        #: 避免 GIL 下边迭代边改引发的 RuntimeError; 下次 pull 再取新快照。
+        self._allowed_batch_ids = allowed_batch_ids
 
     # ------------------------------------------------------------------
     # pull
     # ------------------------------------------------------------------
 
     def pull(self) -> list[Task]:
-        return self._queue.pull_pending_gdr(worker_id=self._worker_id, n=self._n)
+        # 方向 B: 只拉当前活跃 batch 的任务, 防止跨 batch 偷拉导致 master
+        # shutdown 时 worker 仍在跑别的 batch 的活 → interpreter shutdown 错误。
+        # 取一次快照而非直接传 set, 避免边迭代边改 (CPython GIL 下 set 迭代修改
+        # 会抛 RuntimeError; 取 list 副本后传给 SQL 是安全的)。
+        if self._allowed_batch_ids is None:
+            batch_filter: list[int] | None = None
+        else:
+            batch_filter = sorted(self._allowed_batch_ids) if self._allowed_batch_ids else []
+            # 空集合 = 当前没有活跃 batch, 直接返回空, 不打 SQL。
+            if not batch_filter:
+                return []
+        return self._queue.pull_pending_gdr(
+            worker_id=self._worker_id, n=self._n,
+            batch_ids=batch_filter,
+        )
 
     # ------------------------------------------------------------------
     # process
@@ -106,9 +126,11 @@ class GdrWorker(BaseWorker):
             # gdr 返回 None 通常是软超时部分保存；save_error / None 按可重试处理。
             status = result.get("status") if result else "None"
             err = (result or {}).get("error", "")
-            if status in ("load_error", "discard"):
+            if status in ("load_error", "discard", "incomplete"):
                 # load_error = 输入文件坏（永久）；discard = 结构不可用（硬丢弃，
-                # 重试结果相同）—— 都不值得再花 LLM 调用
+                # 重试结果相同）—— 都不值得再花 LLM 调用。incomplete = 未闭合
+                # session 检测已旁路到 refine_data/incomplete.jsonl, refine_data
+                # 跳过, 重跑只会让 detector 再命中一次, 不改变 outcome。
                 raise NonRetryableError(
                     f"gdr worker {self._worker_id}: gdr status={status!r} "
                     f"(task={task.id}) {err}"

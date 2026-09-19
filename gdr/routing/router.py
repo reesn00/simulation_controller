@@ -127,6 +127,92 @@ class Router:
 
         return tags
 
+    def _rule_layer_tool_off_topic(
+        self,
+        block: ToolcallBlock,
+        *,
+        tool_descriptions: dict[str, str],
+        off_topic_blacklist: set[str],
+        user_intent_heuristic: str | None,
+        cfg,
+        embed_cache: dict[str, list[float]] | None = None,
+    ) -> list[DefectTag]:
+        """P0-1.3: 工具与 user 初始意图无关 (TOOL_OFF_TOPIC) 双路检测。
+
+        规则层 (零嵌入, 零 LLM):
+          命中 tools.yaml off_topic_blacklist 即判 off-topic.
+
+        嵌入层 (1 次 user_intent 嵌入 + 至多 1 次工具描述嵌入 / 单 session):
+          cfg.tool_off_topic_use_embedding 开启时, 把 user_intent 与 tool
+          description 各跑一次嵌入, 余弦相似度 < cfg.tool_off_topic_embed_threshold
+          判 off-topic. 同一 session 内同名工具描述只嵌入一次 (embed_cache).
+          嵌入 service 不可用 / 描述缺失 / user_intent 缺失 → 跳过该层.
+
+        双路互斥: 任一命中即打 tag. 命中位置写入 metadata.tool_off_topic_reason
+        (blacklist | embed_sim=<x>) 供 audit.
+        """
+        tags: list[DefectTag] = []
+        if not getattr(cfg, "enable_tool_off_topic_detection", True):
+            return tags
+
+        # --- 规则层: 黑名单 ---
+        if getattr(cfg, "tool_off_topic_use_blacklist", True) and off_topic_blacklist:
+            if block.name in off_topic_blacklist:
+                tags.append(DefectTag.TOOL_OFF_TOPIC)
+                return tags  # 短路: 黑名单命中不再走嵌入
+
+        # --- 嵌入层: user_intent × tool_description 余弦相似度 ---
+        if (
+            getattr(cfg, "tool_off_topic_use_embedding", True)
+            and user_intent_heuristic
+            and tool_descriptions
+        ):
+            desc = tool_descriptions.get(block.name)
+            if not desc:
+                return tags  # 无描述, 嵌入层无法判定, 不打 tag
+            try:
+                from infrastructure.http_embed import HttpEmbedder, get_embedder
+                embedder = get_embedder(cfg)
+                # user_intent embedding: 跨 block 共享, cache 一次即可.
+                # 这里不放在 router 实例 (多线程可能竞态), 改由 caller 注入;
+                # 但 tag() 是入口, 单线程调用, 这里用一个轻量缓存.
+                ui_vec: list[float] | None = None
+                if embed_cache is not None and "_user_intent_vec" in embed_cache:
+                    ui_vec = embed_cache["_user_intent_vec"]
+                else:
+                    ui_vec = embedder.embed(user_intent_heuristic)
+                    if embed_cache is not None and ui_vec:
+                        embed_cache["_user_intent_vec"] = ui_vec
+                if not ui_vec:
+                    return tags
+
+                cache_key = f"_desc::{block.name}"
+                td_vec: list[float] | None = None
+                if embed_cache is not None and cache_key in embed_cache:
+                    td_vec = embed_cache[cache_key]
+                else:
+                    td_vec = embedder.embed(desc)
+                    if embed_cache is not None and td_vec:
+                        embed_cache[cache_key] = td_vec
+                if not td_vec:
+                    return tags
+
+                sim = HttpEmbedder.cosine(ui_vec, td_vec)
+                threshold = float(getattr(cfg, "tool_off_topic_embed_threshold", 0.30))
+                if sim < threshold:
+                    tags.append(DefectTag.TOOL_OFF_TOPIC)
+                    log.debug(
+                        "tool_off_topic: %s sim=%.3f < %.3f (user_intent=%s)",
+                        block.name, sim, threshold, user_intent_heuristic[:60],
+                    )
+            except Exception as e:
+                # 嵌入 service 不可用 → 跳过, 不让 router 失败
+                log.debug(
+                    "tool_off_topic embedding layer skipped for %s: %s",
+                    block.name, e,
+                )
+        return tags
+
     def _rule_layer_toolresult(self, block: ToolresultBlock) -> list[DefectTag]:
         tags = []
         if _NOISE_PATTERN.search(block.output_text):
@@ -431,8 +517,10 @@ class Router:
             messages = [{"role": "user", "content": prompt}]
             text, _ = llm.chat(
                 messages,
-                # reasoning 模型的思考 token 计入 max_tokens, 预算过小 → content 为空弃权
-                max_tokens=1024,
+                # reasoning 模型的思考 token 计入 max_tokens, 1024 思考就吃光 →
+                # content 为空 → parse 失败 → 弃权. 改走 cfg.llm_vote_max_tokens
+                # (默认 36000, 不在代码侧硬截; 后端按自己的 n_ctx 自然截断)。
+                max_tokens=cfg.llm_vote_max_tokens,
                 temperature=0.3,
                 timeout_s=cfg.llm_timeout_s,
             )
@@ -577,9 +665,19 @@ class Router:
     def tag(
         self, session: Session,
         tool_names: list[str], hallu_apis: set[str], cfg,
-        *, context_understanding=None,
+        *,
+        context_understanding=None,
+        tool_descriptions: dict[str, str] | None = None,
+        off_topic_blacklist: set[str] | None = None,
+        user_intent_heuristic: str | None = None,
     ) -> tuple[dict[str, list[DefectTag]], list[MessageHealth], list[dict]]:
         """路由 tag。返回 (defects_index, health_scores, abstention_audit).
+
+        P0-1.3 新增 kwargs:
+          tool_descriptions     工具名→描述映射, 嵌入层判定 off-topic 用
+          off_topic_blacklist  已知 off-topic 工具名集合, 规则层快速路径
+          user_intent_heuristic 启发式 user_intent 文本 (截断首条 user),
+                                嵌入层判定 off-topic 用. 无 / 短于阈值则跳过嵌入层.
 
         abstention_audit: 修复 P1.3 引入 — LLM 投票层弃权 (解析失败/请求异常)
         的 block 列表, 供 runner 写入 routing_low.jsonl 审核通道并挂到
@@ -589,6 +687,10 @@ class Router:
         defects_index: dict[str, list[DefectTag]] = {}
         health_scores: list[MessageHealth] = []
         abstention_audit: list[dict] = []
+
+        # P0-1.3: 单 session 内嵌入缓存. 共享 user_intent 嵌入 + 复用同名工具
+        # 描述嵌入, 避免重复 HTTP 调用. Router.tag 单线程调用, 简单 dict 即可.
+        embed_cache: dict[str, list[float]] = {}
 
         for msg_idx, msg in enumerate(session.messages):
             if msg.role != "assistant":
@@ -623,6 +725,18 @@ class Router:
                     else:
                         tb = block
                     tags = self._rule_layer_toolcall(tb, tool_names, hallu_apis)
+                    # P0-1.3: 工具与意图无关双路检测 (规则层 + 嵌入层).
+                    # 嵌入层依赖 user_intent / 工具描述, 嵌入 service 不可用时
+                    # 降级跳过; 不会让 router 整体失败.
+                    off_topic_tags = self._rule_layer_tool_off_topic(
+                        tb,
+                        tool_descriptions=tool_descriptions or {},
+                        off_topic_blacklist=off_topic_blacklist or set(),
+                        user_intent_heuristic=user_intent_heuristic,
+                        cfg=cfg,
+                        embed_cache=embed_cache,
+                    )
+                    tags = tags + off_topic_tags
                 elif block_type == "toolresult":
                     if isinstance(block, dict):
                         tb = ToolresultBlock(**{k: v for k, v in block.items() if k in ("type", "id", "name", "output_text", "state")})

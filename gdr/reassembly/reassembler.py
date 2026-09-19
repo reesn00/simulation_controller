@@ -19,6 +19,49 @@ def _over_session_budget(cfg, t0: float) -> bool:
     return (time.perf_counter() - t0) > budget
 
 
+def _judge_min_score_for(cfg, modified_count: int) -> tuple[int, str | None]:
+    """Fix B: 根据 modified_blocks 计算阶梯阈值。
+
+    返回 (effective_min_score, relaxed_kind):
+      - relaxed_kind = None: 严格阈值 judge_min_score, 不放宽
+      - relaxed_kind = "passthrough" / "low_edit" / "relaxed": 阶梯档位
+
+    阶梯触发按 modified_blocks 计数 (修改越少, 阈值越低):
+      modified_count <= passthrough_threshold → passthrough_min
+      modified_count <= low_edit_threshold    → low_edit_min
+      modified_count <= relaxed_threshold     → relaxed_min
+      其他                                   → judge_min_score
+    任一档 (threshold, min) 设为 0 即关闭该档。
+    """
+    min_score = int(getattr(cfg, "judge_min_score", 7))
+    passthrough_threshold = int(getattr(cfg, "judge_min_modified_passthrough", 1))
+    low_edit_threshold = int(getattr(cfg, "judge_min_modified_low_edit", 3))
+    relaxed_threshold = int(getattr(cfg, "judge_min_modified_for_relaxation", 5))
+    passthrough_min = int(getattr(cfg, "judge_min_score_passthrough", 2))
+    low_edit_min = int(getattr(cfg, "judge_min_score_low_edit", 5))
+    relaxed_min = int(getattr(cfg, "judge_min_score_relaxed", 3))
+
+    if (
+        passthrough_threshold > 0
+        and passthrough_min > 0
+        and modified_count <= passthrough_threshold
+    ):
+        return passthrough_min, "passthrough"
+    if (
+        low_edit_threshold > 0
+        and low_edit_min > 0
+        and modified_count <= low_edit_threshold
+    ):
+        return low_edit_min, "low_edit"
+    if (
+        relaxed_threshold > 0
+        and relaxed_min > 0
+        and modified_count <= relaxed_threshold
+    ):
+        return relaxed_min, "relaxed"
+    return min_score, None
+
+
 def _normalize_text(s) -> str:
     """折叠空白 + 小写, 用于对 LLM 摘要文本做稳健比较。"""
     return " ".join(str(s).split()).lower()
@@ -806,7 +849,7 @@ def reassemble(
                     "skipping end-of-pipeline judge (blocks already restored to safe original)",
                     session.session_id, had_success_before,
                 )
-                _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
+                _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids, cfg=cfg)
                 return session
 
     # 方案 §5.5: 标记成功编辑的 edit_status
@@ -826,12 +869,26 @@ def reassemble(
             "session %s: over session budget (%.1fs) before judge, returning without final score",
             session.session_id, cfg.session_timeout_s,
         )
-        _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
+        _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids, cfg=cfg)
         return session
     # 阈值豁免/判分相关变量提前绑定, 让 try/except 块外也能引用, 避免 LLM 调用
     # 抛异常时出现 UnboundLocalError.
     score: int | float = 0
     relaxed_note: dict[str, object] | None = None
+
+    # P0-1.1: LLM 抽取 user_intent (1 次轻量 LLM 调用). 失败/关闭时降级到
+    # heuristic_user_intent (截断首条 user, 零 LLM). 写入 metadata.user_intent
+    # 供 judge prompt 注入 + 后续 audit / 抽样解释.
+    user_intent_text = ""
+    try:
+        from core.user_intent import extract_user_intent_llm
+        user_intent_text = extract_user_intent_llm(session, cfg) or ""
+    except Exception as e:
+        log.warning("user_intent extraction failed (%s); using empty intent", e)
+    session.metadata = session.metadata or {}
+    if user_intent_text:
+        session.metadata["user_intent"] = user_intent_text
+
     # 修复 I: judge 调用前再判一次 budget（防止单次 LLM 调用耗时把 budget 耗光）
     # 用户主旨: 数据完整即处理并导出. 一次 LLM 卡顿不应让整 session 丢失.
     try:
@@ -841,59 +898,123 @@ def reassemble(
             "reassembler", "user",
             session_summary=session.summary,
             messages_detail=messages_detail,
+            user_intent=user_intent_text or "(未抽取到 user_intent, 跳过意图达成判定)",
         )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
         client = LlamaCppClient.get(cfg.judge_model, cfg=cfg, timeout=cfg.l3_timeout_s)
-        # reasoning 模型的思考 token 计入 max_tokens, 预算过小 → content 为空
+        # reasoning 模型的思考 token 计入 max_tokens, 预算过小 → content 为空.
+        # max_tokens 走 cfg.judge_max_tokens (默认 36000), 不在代码侧硬截;
+        # 后端按自己的 n_ctx / max-model-len 自然截断。
         text, meta = client.chat(
-            messages, max_tokens=2048, temperature=0.0, timeout_s=cfg.l3_timeout_s,
+            messages, max_tokens=cfg.judge_max_tokens, temperature=0.0, timeout_s=cfg.l3_timeout_s,
         )
         from prompts import parse_json_object
         result = parse_json_object(text)
+        # Judge 失效/无信号检测: text 为空 / parse 失败 / 没有 score 字段 →
+        # 视为 judge 不可用, 走宽松路径, 跟抛异常时的"transient failure"语义一致.
+        # 用户主旨: 一次 LLM 卡顿不应让整 session 丢失.
+        judge_unavailable = (
+            not text
+            or not str(text).strip()
+            or not result
+            or "score" not in result
+        )
+        if judge_unavailable:
+            log.warning(
+                "session %s: judge LLM response unavailable "
+                "(empty_text=%s, parse_failed=%s, no_score_field=%s); "
+                "treating as judge-unavailable, not discarding",
+                session.session_id,
+                not text or not str(text).strip(),
+                not result,
+                "score" not in result,
+            )
+            _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids, cfg=cfg)
+            session.metadata.setdefault("judge_unavailable_at", {})
+            session.metadata["judge_unavailable_at"].update({
+                "raw_text_preview": (str(text)[:200] if text else ""),
+            })
+            return session
+
+        # P0-1.1: 解析 intent_fulfillment_score. 写入 metadata 供 audit +
+        # quality_scorer 读. intent 字段缺失视为意图判定不可用, 仍按
+        # judge_unavailable 降级保留 (不丢弃).
+        intent_score_raw = result.get("intent_fulfillment_score")
+        if intent_score_raw is not None:
+            try:
+                intent_score = int(intent_score_raw)
+            except (TypeError, ValueError):
+                intent_score = None
+            if intent_score is not None and intent_score in (0, 1, 2):
+                session.metadata["user_intent_fulfillment_score"] = intent_score
+                session.metadata["user_intent_fulfilled"] = intent_score == 2
+                session.metadata["user_intent_fulfillment_reason"] = str(
+                    result.get("intent_fulfillment_reason", "") or ""
+                )
+            else:
+                log.debug(
+                    "session %s: intent_fulfillment_score=%r not in {0,1,2}; skipping",
+                    session.session_id, intent_score_raw,
+                )
+                session.metadata["user_intent_fulfillment_score"] = None
+        else:
+            log.debug(
+                "session %s: judge did not return intent_fulfillment_score; skipping",
+                session.session_id,
+            )
         score = result.get("score", 0)
+        # Fix A: 把 L3 judge 的 reason 串入 discard metadata, 让 judge_low.jsonl
+        # 每条审计记录都带 LLM 评语; 不再只存 {score, min_score}.
+        judge_reason = str(result.get("reason", "") or "")
         min_score = int(getattr(cfg, "judge_min_score", 7))
         # 阈值豁免: modified_blocks 很少时, L3 judge 实际判的是原 trajectory
         # 内部自洽度, 与 refiner 编辑质量解耦; 走放宽阈值让合格样本进主输出,
         # 同时在 metadata 记 relaxed_note 供审计/复盘, 不让 search-heavy 任务
         # 被一票打死.
         modified_count = sum(1 for r in refine_records if r.result == "success")
-        relaxed_for_minimal_edits = (
-            int(getattr(cfg, "judge_min_score_relaxed", 3)) > 0
-            and modified_count <= int(getattr(cfg, "judge_min_modified_for_relaxation", 5))
-        )
-        effective_min_score = min_score
+        # Fix B: 三段阶梯阈值 (passthrough / low_edit / relaxed), 默认值
+        # 与原单层 (judge_min_score=7 + relaxed=3) 兼容; 阶梯触发按
+        # modified_blocks 计数, 越少编辑越宽松. 见 _judge_min_score_for.
+        effective_min_score, relaxed_kind = _judge_min_score_for(cfg, modified_count)
         if (
-            relaxed_for_minimal_edits
+            relaxed_kind is not None
             and score < min_score
-            and score >= int(getattr(cfg, "judge_min_score_relaxed", 3))
+            and score >= effective_min_score
         ):
-            effective_min_score = int(getattr(cfg, "judge_min_score_relaxed", 3))
             relaxed_note = {
+                "kind": relaxed_kind,
                 "modified_blocks": modified_count,
                 "original_min_score": min_score,
+                "effective_min_score": effective_min_score,
+                # 兼容旧字段名 (既有测试与审计脚本可能仍读 relaxed_min_score)
                 "relaxed_min_score": effective_min_score,
             }
             log.warning(
-                "session %s: score=%s < strict=%s but modified_blocks=%s <= threshold; "
+                "session %s: score=%s < strict=%s but modified_blocks=%s in [%s] bucket; "
                 "relaxing min_score to %s and tagging for audit",
-                session.session_id, score, min_score, modified_count, effective_min_score,
+                session.session_id, score, min_score, modified_count,
+                relaxed_kind, effective_min_score,
             )
         if score < effective_min_score:
             # 低分 session 不进主输出 (训练集): 终检分数不达标意味着重写后的轨迹
             # 质量不足以直接训练。但数据不丢 —— runner 检测到该标记后会把完整
             # session 写入 judge_low.jsonl 审核通道, 供人工检查/后期修改并回。
             # 超时兜底不得复活本条 (judge 已明确给出低分, 非流程中断)。
-            discard_meta: dict[str, object] = {"score": score, "min_score": effective_min_score}
-            if relaxed_note is not None:
-                discard_meta.update(relaxed_note)
+            discard_meta: dict[str, object] = {
+                "score": score,
+                "min_score": effective_min_score,
+                "reason": judge_reason,  # Fix A: LLM 评语写入, 审计可见
+                "relaxed_kind": relaxed_kind,  # Fix B: 阶梯档位, 审计可见
+                "modified_blocks": modified_count,
+            }
             session.metadata["judge_discard"] = discard_meta
             log.error(
                 "discard session %s, reason=consistency_score=%s < %s%s",
                 session.session_id, score, effective_min_score,
-                " (relaxed)" if relaxed_note is not None else "",
+                f" (relaxed={relaxed_kind})" if relaxed_kind else "",
             )
             return None
     except Exception as e:
@@ -907,7 +1028,12 @@ def reassemble(
         if strict and not _is_transient:
             # 同低分分支: 标记 discard 原因, 阻止 runner 超时兜底复活被
             # strict 模式判死的 session。
-            session.metadata["judge_discard"] = {"reason": "consistency_check_failed"}
+            # Fix A: 把异常 reason 也串进 judge_discard, 审计可见
+            session.metadata["judge_discard"] = {
+                "reason": "consistency_check_failed",
+                "exception": str(e),
+                "exception_type": e.__class__.__name__,
+            }
             log.error(
                 "discard session %s, reason=consistency_check_failed: %s",
                 session.session_id, e,
@@ -922,9 +1048,10 @@ def reassemble(
         else:
             log.warning("consistency check failed, proceeding anyway: %s", e)
 
-    _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids)
+    _attach_metadata(session, refine_records, policy_decisions, deferred_block_ids, cfg=cfg)
     # 记录阈值豁免信息, 让 runner 端可按需筛选"放宽通过的样本"用于审计/复盘
-    if relaxed_note is not None:
+    # Fix B: 加 judge_relaxed_audit_note 开关, 关掉时不写 metadata 留痕
+    if relaxed_note is not None and bool(getattr(cfg, "judge_relaxed_audit_note", True)):
         session.metadata.setdefault("judge_relaxed", {})
         session.metadata["judge_relaxed"].update({
             "score": score,
@@ -960,7 +1087,22 @@ def _attach_metadata(
     refine_records: list[BlockRefineRecord],
     policy_decisions: list[dict] | None = None,
     deferred_block_ids: set[str] | None = None,
+    cfg=None,
 ) -> None:
+    # P0-1.2: 先跑 quality_scorer, 它会读 metadata.user_intent_fulfillment_score
+    # / judge_score / validation_summary 等已有信号, 写入
+    # training_value_score + complexity_tier + components. 然后下面照常
+    # 落 refine_history / validation_summary 等. 注意 quality_scorer 必须在
+    # _attach_metadata 内第一行调用 (晚于 metadata.user_intent_fulfillment_score
+    # 写入, 早于本函数覆盖 validation_summary).
+    if cfg is not None:
+        try:
+            from core.quality_scorer import compute_quality_score
+            compute_quality_score(session, cfg)
+        except Exception as e:
+            log.warning("quality_scorer failed for session %s: %s",
+                        getattr(session, "session_id", "?"), e)
+
     total = sum(len(m.blocks) for m in session.messages)
     modified = [r.block_index.block_id for r in refine_records if r.result == "success"]
     l1_total = sum(1 for r in refine_records for v in r.validation_results if v.level == "L1")

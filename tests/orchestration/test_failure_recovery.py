@@ -71,6 +71,17 @@ def env(tmp_path: Path, monkeypatch):
     m.shutdown(timeout=2.0)
 
 
+@pytest.fixture
+def register_batches():
+    """工厂: 拿 master 后注册一批 batch_id, 让 worker 能拉到对应 task.
+    修复方向 B 后, 直接 ``start_workers()`` 不会自动加入活跃集合 (避免
+    跨 batch 偷拉), 测试需要显式注册."""
+    def _reg(m: Master, *batch_ids: int) -> None:
+        for bid in batch_ids:
+            m.register_active_batch(bid)
+    return _reg
+
+
 def _patch_qf(monkeypatch):
     def fake(self, task):
         session = task.session_id or task.src_path.stem
@@ -123,13 +134,14 @@ def _seed_qf_done(tmp_path: Path, queue: SQLiteQueue, run_id: str,
 # 失败注入：gdr 多次失败 → dead
 # ---------------------------------------------------------------------------
 
-def test_failure_injection_gdr_reaches_dead(env, monkeypatch) -> None:
+def test_failure_injection_gdr_reaches_dead(env, monkeypatch, register_batches) -> None:
     """gdr 一直抛异常 → attempts_gdr 累加 → 第 max+1 次入 dead."""
     _tmp, queue, m, _paths = env
     _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch, fail_for={"T_BAD"})
     _seed_qf_done(_tmp, queue, "T_BAD", "sess_BAD")
     _seed_qf_done(_tmp, queue, "T_OK", "sess_OK")
+    register_batches(m, 1)  # 方向 B: 注册活跃 batch, gdr worker 才能拉到 task
 
     m.start_workers()
     # 等到 T_BAD 入 dead + T_OK 完成
@@ -150,12 +162,13 @@ def test_failure_injection_gdr_reaches_dead(env, monkeypatch) -> None:
     assert bad_task.attempts_gdr >= 3
 
 
-def test_failure_injection_dead_archived(env, monkeypatch) -> None:
+def test_failure_injection_dead_archived(env, monkeypatch, register_batches) -> None:
     """dead 任务被 reap_dead 移动到 dead_dir."""
     _tmp, queue, m, paths = env
     _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch, fail_for={"T_X"})
     _seed_qf_done(_tmp, queue, "T_X", "sess_X", batch_id=7)
+    register_batches(m, 7)  # 方向 B: 注册活跃 batch
 
     m.start_workers()
     deadline = time.monotonic() + 4.0
@@ -240,12 +253,13 @@ def test_recovery_reaper_unlocks_stale_gdr_processing(env, monkeypatch) -> None:
 # 凑批：单 task 时不阻塞，按 1 个处理
 # ---------------------------------------------------------------------------
 
-def test_batch_drain_single_task_does_not_block(env, monkeypatch) -> None:
+def test_batch_drain_single_task_does_not_block(env, monkeypatch, register_batches) -> None:
     """单 task 时 batch_drain 等 worker 处理完，不阻塞."""
     _tmp, queue, m, _ = env
     _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch)
     _seed_qf_done(_tmp, queue, "lonely", "sess_lonely", batch_id=1)
+    register_batches(m, 1)  # 方向 B: 注册活跃 batch
 
     m.start_workers()
     drained = m.wait_batch_drained(1, poll_seconds=0.05, timeout=4.0)

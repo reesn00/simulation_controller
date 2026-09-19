@@ -193,7 +193,15 @@ def test_judge_low_score_discards_session(cfg):
         mock_llm.get.return_value.chat.return_value = ('{"score": 2}', None)
         result = process_one(session, cfg, ["browser"], set())
     assert result is None
-    assert session.metadata.get("judge_discard") == {"score": 2, "min_score": 7}
+    discard = session.metadata.get("judge_discard") or {}
+    assert discard.get("score") == 2
+    # Fix B: modified=0 落入 relaxed 档 (conftest 已关 passthrough/low_edit);
+    # 仍 < relaxed_min=3 → 触发 discard, min_score 字段记放宽后阈值
+    assert discard.get("min_score") == 3
+    assert discard.get("relaxed_kind") == "relaxed"
+    # Fix A: reason / modified_blocks 也写入 metadata
+    assert discard.get("reason") == ""  # LLM 返回 {"score": 2} 无 reason
+    assert discard.get("modified_blocks") is not None
 
 
 def test_judge_relaxed_threshold_keeps_minimal_edit_session(cfg):
@@ -264,6 +272,55 @@ def test_judge_relaxed_disabled_when_relaxed_score_zero(cfg):
         result = process_one(session, cfg, ["browser"], set())
     assert result is None
     assert session.metadata.get("judge_discard", {}).get("score") == 3
+
+
+def test_judge_empty_response_keeps_session(cfg):
+    """Judge LLM 返回空文本 (token 预算耗尽 / 模型卡死) 时, 不应判死。
+    走 judge_unavailable 旁路, 让合格 session 进主输出, 留下 metadata 供审计。"""
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    # 用 thought_too_long 触发 refine, 才能跑到 L3 judge 路径
+    session = Session(session_id="empty-judge", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.return_value = ("", None)
+        result = process_one(session, cfg, ["browser"], set())
+    assert result is not None
+    assert session.metadata.get("judge_discard") is None
+    assert session.metadata.get("judge_unavailable_at") is not None
+
+
+def test_judge_unparseable_response_keeps_session(cfg):
+    """Judge LLM 返回非 JSON 文本 (reasoning model 思考 token 占满预算) 时,
+    同样不应判死, 走 judge_unavailable 旁路。"""
+    from unittest.mock import patch
+    from domain import Session, Message
+    from pipeline.runner import process_one
+
+    session = Session(session_id="unparseable-judge", messages=[
+        Message(role="user", id="u1", blocks=[]),
+        Message(role="assistant", id="a1", blocks=[
+            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
+            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
+            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
+        ]),
+    ])
+    with patch("infrastructure.LlamaCppClient") as mock_llm:
+        mock_llm.get.return_value.chat.return_value = (
+            "I cannot score this session because ...", None,
+        )
+        result = process_one(session, cfg, ["browser"], set())
+    assert result is not None
+    assert session.metadata.get("judge_discard") is None
+    assert session.metadata.get("judge_unavailable_at") is not None
 
 
 # ---------------------------------------------------------------------------

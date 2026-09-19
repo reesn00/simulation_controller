@@ -4,11 +4,19 @@ system: |
   1. 每轮 thinking 块引用的事实是否来自同组 toolresult 块的观测结果
   2. thinking → toolcall → toolresult 决策序列是否逻辑自洽
   3. 工具调用与思考链决策之间是否存在矛盾
+  4. agent 最终回复是否回应了用户的初始意图 (user_intent)
   [评分] 0-10 分制，≥ 7 分通过。
+  [意图达成] 请同时给出 intent_fulfillment_score:
+    0 = 完全未回应 user_intent (跑题 / 答非所问 / 中途放弃)
+    1 = 部分回应 (解决一部分问题, 但核心点未答)
+    2 = 完整回应 (user_intent 列出的子目标全部覆盖, 答案完整可执行)
 
 user: |
   会话摘要: "{{session_summary}}"
   各消息 thinking→toolcall→toolresult 序列:
   "{{messages_detail}}"
 
-  [输出] JSON: {"score": 0-10, "reason": "..."}
+  [user_intent] (用户初始意图, 由 LLM 从首条 user 消息抽取, 用于意图达成判定)
+  {{user_intent}}
+
+  [输出] JSON: {"score": 0-10, "intent_fulfillment_score": 0|1|2, "intent_fulfillment_reason": "..."}

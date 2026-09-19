@@ -52,8 +52,10 @@ def check(original_block, refined_content: dict, cfg) -> dict:
             {"role": "user", "content": user_prompt},
         ]
         # reasoning 模型 (如 MiniMax-M2.7) 的思考 token 计入 max_tokens,
-        # 预算过小会只输出思考、content 为空 (finish_reason=length) → 按失败处理
-        text, meta = client.chat(messages, max_tokens=2048, temperature=0.0)
+        # 预算过小会只输出思考、content 为空 (finish_reason=length) → 按失败处理.
+        # max_tokens 走 cfg.judge_max_tokens (默认 36000), 不在代码侧硬截;
+        # 后端按自己的 n_ctx / max-model-len 自然截断。
+        text, meta = client.chat(messages, max_tokens=cfg.judge_max_tokens, temperature=0.0)
         result = parse_json_object(text)
         verdict = result.get("verdict", "fail")
         score = result.get("score", 0)

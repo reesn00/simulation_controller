@@ -7,8 +7,16 @@ system: |
   - 输出 JSON: {"refined_thought": "..."}
   - 回答末尾列出"我新增了哪些原始 Thought 中没有的内容"。
 
+  [硬约束 - 不可违反]
+  - 【必须原样保留】下方"实体清单"中的每一项，禁止改写、调整、标准化、同义替换。
+  - 包含但不限于：完整 URL（含协议头、host、path、query — 禁止 www↔m / http↔https 等"mobile 标准化"）、
+    文件路径、工具名（如 browser / execute_shell_command）、CamelCase 专名、数字 ID。
+  - 改写后 refined_thought 必须【逐字包含】这些实体, 包括大小写、标点、URL 形式。
+  - 违反此约束的输出会被检测层拒收, 整条 thinking 被丢弃, 训练样本损失。
+
 user: |
   [输入]
   - 原始 Thought: {{original_thinking}}
   - 上下文（相邻 toolcall/toolresult）: {{context}}
   - 缺陷类型: {{defects}}
+  - 实体清单（必须原样保留）: {{entities}}

@@ -185,6 +185,20 @@ class LlamaCppClient:
         message = choice.get("message", {})
         text = message.get("content", "")
         finish = choice.get("finish_reason", "")
+        # reasoning 模型兜底: 某些 OpenAI 兼容端点 (DeepSeek / 部分 vLLM 配置)
+        # 把思考链放在 message.reasoning_content 字段, 而 content 仅承载最终
+        # 答案. content 为空但 reasoning_content 非空时, 优先尝试把
+        # reasoning_content 作为答案用 — 多数情况下 reasoning_content 末尾
+        # 已经包含 JSON 答案; 少数只放纯思考时仍会走到 parse_json_object 失败
+        # 的旧路径, 但至少有了一次机会, 不再白丢。
+        reasoning_text = message.get("reasoning_content", "") or ""
+        if not text and reasoning_text:
+            text = reasoning_text
+            log.info(
+                "llm response: content empty, fell back to reasoning_content "
+                "(model=%s, reasoning_len=%d)",
+                self.model, len(reasoning_text),
+            )
         if not text:
             log.warning(
                 "empty llm response: model=%s finish_reason=%s payload_keys=%s raw_choice_keys=%s",
@@ -198,5 +212,11 @@ class LlamaCppClient:
             "tokens_out": usage.get("completion_tokens", 0),
             "latency_s": round(time.perf_counter() - t0, 3),
             "timed_out": False,
+            # 用于审计: 是否走了 reasoning_content 兜底 (True/False), 调用方
+            # 可写入 session.metadata / audit log, 便于排查 reasoning 模型
+            # "思考塞满 budget" 的现场。
+            "used_reasoning_content_fallback": bool(
+                reasoning_text and not message.get("content")
+            ),
         }
         return text, meta

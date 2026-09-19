@@ -237,6 +237,35 @@ class Settings(BaseSettings):
 
     # === 训练质量评分（方案 §5.2） ===
     enable_quality_scorer: bool = True           # 训练质量维度评分开关
+    # P0-1.2: quality_scorer 子权重与分桶阈值。组合 health / judge /
+    # intent_fulfillment / modified_blocks / tool_diversity / noise /
+    # depth 七维信号, 输出 [0,1] 的 training_value_score + complexity_tier.
+    # 权重和阈值仅生效在 enable_quality_scorer=True 且 _attach_metadata
+    # 之前被 compute_quality_score 调用的场景, 默认值在常规批次上
+    # 训练价值分布大致均匀 (easy/medium/hard 各 ~33%).
+    quality_scorer_weight_health: float = 0.25
+    quality_scorer_weight_judge: float = 0.25
+    quality_scorer_weight_intent: float = 0.20
+    quality_scorer_weight_modified: float = 0.10
+    quality_scorer_weight_diversity: float = 0.10
+    quality_scorer_weight_noise: float = 0.05
+    quality_scorer_weight_depth: float = 0.05
+    # complexity_tier 分桶阈值: score >= easy_max → easy;
+    #   score >= medium_max → medium; 否则 hard.
+    quality_scorer_tier_easy_max: float = 0.70
+    quality_scorer_tier_medium_max: float = 0.40
+    # === P0-1.1: user_intent 抽取（1 次轻量 LLM 调用）===
+    enable_user_intent_extraction: bool = True   # 是否抽取 user_intent
+    user_intent_max_chars: int = 1500            # 送 LLM 的首条 user 原文上限
+    user_intent_min_chars_for_extract: int = 20  # 首条 user 太短则跳过抽取
+    user_intent_model: Optional[str] = None      # None=走 main_model (9B)
+    user_intent_max_tokens: int = 1024           # 抽取步骤 LLM 输出预算
+    # === P0-1.3: 工具与意图无关 (TOOL_OFF_TOPIC) 检测 ===
+    enable_tool_off_topic_detection: bool = True
+    tool_off_topic_use_blacklist: bool = True    # 启用 tools.yaml off_topic_blacklist
+    tool_off_topic_use_embedding: bool = True    # 启用 user_intent × tool_desc 嵌入相似度
+    tool_off_topic_embed_threshold: float = 0.30 # 余弦相似度低于此值判 off-topic
+    # 同名工具的 description 在单 session 内缓存一次 (避免重复嵌入)
 
     # === 使用量裁剪（落盘前按真实调用裁剪 system prompt / tools + 路径泛化） ===
     enable_usage_prune: bool = True              # system 按功能段删留 / tools 裁剪 / 重渲染 qf_text
@@ -263,6 +292,21 @@ class Settings(BaseSettings):
     # judge_low 旁路, 留下完整审计. 仅当 modified_blocks <= N 时生效.
     judge_min_score_relaxed: int = 3     # 放宽后的最低分 (0-10), 0 = 关闭豁免
     judge_min_modified_for_relaxation: int = 5  # modified_blocks <= 此值才走放宽
+    # L3 judge 输出预算 (max_tokens). reasoning 模型 (Qwen3.5 / DeepSeek 系 / o1
+    # 类) 把思考链计入 max_tokens, 2048 经常被思考吃掉, JSON 只剩半截 → 解析
+    # 失败 → score=0 → 误判 discard. 默认给到 36k 留足空间, 不在代码侧设上限:
+    # 后端 (llama.cpp / vLLM / Ollama) 会按自己的 n_ctx / max-model-len 自然
+    # 截断, 服务端可控. 该字段同时供 validators/l3_judge.py (per-block L3)
+    # 和 reassembler.py (end-to-end L3) 复用, 统一口径避免一处调一处忘。
+    judge_max_tokens: int = 36000
+    # Router LLM 投票输出预算 (max_tokens). 与 judge_max_tokens 同根问题
+    # (reasoning 模型思考计入 max_tokens, 1024 思考就吃光, parse_json_object 拿不到
+    # {"has_defect": ...} → router 弃权, 落到 routing_low.jsonl 旁路)。默认 36k,
+    # 不在代码侧硬截; 后端按自己的 n_ctx / max-model-len 自然截断。投票场景下
+    # 答案本应很短 ("has_defect: true/false"), 实际收到 36k 上限也只触发一次
+    # finish_reason=stop, 不会浪费推理预算 — reasoning 模型思考 + 短答案 8k~16k
+    # 通常足够, 36k 仅给极端长思考链留缓冲。
+    llm_vote_max_tokens: int = 36000
     # judge 低分 session 不丢: 完整精修结果另存审核通道, 供人工检查/后期修改后手动并回。
     # 真正硬丢弃只发生在结构严重不可用时 (见 pipeline/runner._session_structurally_unusable)。
     judge_low_export_enabled: bool = True
@@ -272,6 +316,56 @@ class Settings(BaseSettings):
     # session 被丢, 也不让 session 静默"语义标签不全" — 至少看得到丢了谁。
     routing_abstain_audit_enabled: bool = True
     routing_abstain_audit_path: Path = Path("./refine_data/routing_low.jsonl")
+    # 未闭合 session 防呆 (修复方向 #完整性检测): 远端 sim 端把仍在跑
+    # (尾巴 toolcall 没 toolresult / text 没构成完整回复) 的 trajectory 当
+    # "已完成"提交时, gdr 侧把整 session 路由到 incomplete.jsonl 旁路, 不写
+    # refine_data. 避免:
+    #   1. SFT 用"agent 在工具调用中途被打断"作为正例, 训练出截断响应模式
+    #   2. judge 在不完整证据上判分, 噪声被吸收进训练集
+    # 触发条件 (见 pipeline/runner._detect_incomplete_session):
+    #   - 最后一条 assistant 的最后一个 block 是 toolcall (无对应 toolresult)
+    #   - toolcall 计数 > toolresult 计数 (尾部配对缺失)
+    #   - 最后一条 assistant 的最后 text block 不构成结论 (启发式, 低强度)
+    # 关闭: incomplete_detection_enabled=False 退回旧行为 (仍写 refine_data,
+    # 仅在 metadata 标 incomplete=True 供后续过滤)。默认 True。
+    incomplete_detection_enabled: bool = True
+    incomplete_output_path: Path = Path("./refine_data/incomplete.jsonl")
+    # F2 fix: 末尾 assistant 仅含 thinking (无 final text) 时的字符阈值;
+    # thinking_chars ≥ 该值且无未配对 toolcall 时判 incomplete.
+    incomplete_thinking_only_min_chars: int = 200
+
+    # === F1 fix: tools 字段透传到 refine_data 视图 ===
+    # 控制 messages.json / openai.json 顶层是否写入 metadata["tools"].
+    # qwenjina.txt 已是 qf_text 渲染产物 (渲染时已传 tools), meta.json
+    # 一直含 tools. 默认开启; 关闭后恢复旧行为, 便于回滚与对比.
+    include_tools_in_payloads: bool = True
+    # 单 session 写入的 schema 上限, 防止 SFT 训练样本被超长 schema 拖慢.
+    # 0 = 不截断.
+    tools_payload_max: int = 64
+
+    # === Fix A: judge_low.jsonl 字段展开 ===
+    # 把 session.metadata["judge_discard"] 中的 reason / relaxed_kind /
+    # modified_blocks 等字段扁平化到 judge_low.jsonl 的顶层 judge 对象,
+    # 便于审计/grep. 关闭则仅写 {score, min_score} (旧行为, 兼容旧 reader).
+    judge_low_include_reason: bool = True
+
+    # === Fix B: judge_min_score 三段阶梯阈值 ===
+    # L3 judge 给分是轨迹整体自洽度 (含原始 trajectory 风格), refiner 编辑
+    # 质量会显著拉低该分. 按 modified_blocks 数量分档, 编辑越少 → 阈值越低,
+    # 让 search-heavy 任务或 system 清洗类样本不被一票打死. 阶梯顺序:
+    #   passthrough (modified<=passthrough_threshold) → judge_min_score_passthrough
+    #   low_edit    (modified<=low_edit_threshold)    → judge_min_score_low_edit
+    #   relaxed     (modified<=relaxed_threshold)     → judge_min_score_relaxed
+    # 否则用 judge_min_score 严格阈值. 关闭阶梯: 把对应 threshold 设为 0.
+    judge_min_modified_passthrough: int = 1   # ≤1 modified blocks 视为基本未改
+    judge_min_score_passthrough: int = 2     # passthrough 档最低分门槛
+    judge_min_modified_low_edit: int = 3     # ≤3 modified blocks 视为轻编辑
+    judge_min_score_low_edit: int = 5        # low_edit 档最低分门槛
+    # 既有 relaxed 阈值保留 (≤5 modified blocks 时放宽到 3 分)
+    # judge_min_modified_for_relaxation: int = 5
+    # judge_min_score_relaxed: int = 3
+    # 阶梯触发后, 是否在 metadata 留 judge_relaxation.note 字段.
+    judge_relaxed_audit_note: bool = True
 
     # === 评估器 (utility eval, 设计文档 §13) ===
     evaluator_output_dir: Path = Path("./evaluator_output")
@@ -392,24 +486,45 @@ def load_tools(
     tools_config_path: Path,
     agent_json_path: Path | None = None,
     tool_source: str = "auto",
-) -> tuple[list[str], set[str]]:
-    """解析工具白名单 + 幻觉 API 黑名单。
+) -> tuple[list[str], set[str], dict[str, str], set[str]]:
+    """解析工具白名单 + 幻觉 API 黑名单 + 工具语义描述 + off-topic 黑名单。
+
+    返回 (tool_names, hallucinated_apis, tool_descriptions, off_topic_blacklist):
+      tool_names           白名单 (列表, 经过去重+排序)
+      hallucinated_apis    已知坏字符串黑名单 (路由/tool_fixer/L1 用)
+      tool_descriptions    工具名 → 一句话描述 (P0-1.3 TOOL_OFF_TOPIC 嵌入层用)
+      off_topic_blacklist  TOOL_OFF_TOPIC 规则层黑名单 (P0-1.3)
 
     白名单三级合并 (tool_source=auto, 默认):
       agent.json enabled builtin_tools (权威源) ∪ tools.yaml extra_tools (动态工具补充);
       agent.json 读不到 → 退回纯 tools.yaml 名单 (旧行为); 两者皆空 → 空白名单,
       router / tool_fixer / L1 sanity 全部跳过名称校验, 避免级联误杀真实数据。
 
-    hallucinated_apis 是已知坏字符串黑名单, 始终手工维护, 不参与自动来源。
+    tool_descriptions / off_topic_blacklist 仅从 tools.yaml 读取, 不与 agent.json
+    合并 (描述是手工语义, agent.json 没有这层信息)。未在 yaml 列出的工具, 嵌入
+    层无法判定, router 走跳过 (不算 off-topic, 也不算 hit)。
     """
     manual_tools: list[str] = []
     hallucinated_apis: set[str] = set()
+    tool_descriptions: dict[str, str] = {}
+    off_topic_blacklist: set[str] = set()
     try:
         with open(tools_config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         # extra_tools 为补充名单 (旧键 tools 兼容)
         manual_tools = list(data.get("extra_tools") or data.get("tools") or [])
         hallucinated_apis = set(data.get("hallucinated_apis") or [])
+        # P0-1.3: 工具描述 + off-topic 黑名单 (仅 yaml, 不与 agent.json 合并)
+        desc_raw = data.get("tool_descriptions") or {}
+        if isinstance(desc_raw, dict):
+            tool_descriptions = {
+                str(k): str(v).strip()
+                for k, v in desc_raw.items()
+                if v and str(v).strip()
+            }
+        ot_raw = data.get("off_topic_blacklist") or []
+        if isinstance(ot_raw, list):
+            off_topic_blacklist = {str(x).strip() for x in ot_raw if str(x).strip()}
     except Exception as e:
         log.error(
             "failed to load tools config from %s (%s): manual whitelist unavailable, "
@@ -419,7 +534,7 @@ def load_tools(
 
     if tool_source == "off":
         log.info("tool_source=off: 工具白名单置空, router/tool_fixer/L1 跳过名称校验")
-        return [], hallucinated_apis
+        return [], hallucinated_apis, tool_descriptions, off_topic_blacklist
 
     if tool_source == "manual":
         if not manual_tools:
@@ -428,7 +543,7 @@ def load_tools(
                 "checks are skipped downstream (router / tool_fixer / L1 sanity)",
                 tools_config_path,
             )
-        return manual_tools, hallucinated_apis
+        return manual_tools, hallucinated_apis, tool_descriptions, off_topic_blacklist
 
     # auto: agent.json 权威源 ∪ 手工补充名单
     agent_path = Path(agent_json_path) if agent_json_path else DEFAULT_QWENPAW_AGENT_JSON
@@ -446,12 +561,13 @@ def load_tools(
                 "tool_fixer / L1 sanity) to avoid mass false discards",
                 tools_config_path,
             )
-        return manual_tools, hallucinated_apis
+        return manual_tools, hallucinated_apis, tool_descriptions, off_topic_blacklist
 
     merged = sorted(set(auto_tools) | set(manual_tools))
     log.info(
         "tool whitelist: %d enabled builtin tool(s) from %s ∪ %d extra_tool(s) "
-        "from %s → %d tools",
-        len(auto_tools), agent_path, len(manual_tools), tools_config_path, len(merged),
+        "from %s → %d tools (descriptions=%d, off_topic_blacklist=%d)",
+        len(auto_tools), agent_path, len(manual_tools), tools_config_path,
+        len(merged), len(tool_descriptions), len(off_topic_blacklist),
     )
-    return merged, hallucinated_apis
+    return merged, hallucinated_apis, tool_descriptions, off_topic_blacklist

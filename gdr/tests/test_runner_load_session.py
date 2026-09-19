@@ -43,8 +43,11 @@ def test_process_one_file_loads_session_json(tmp_path, monkeypatch):
     qf_in = _write_qf_out(tmp_path)
     base_path = tmp_path / "gdr_out" / "s1_refined"
 
-    monkeypatch.setattr(runner, "load_tools", lambda *a, **k: ([], []))
-    monkeypatch.setattr(runner, "process_one", lambda session, cfg, tn, ha: session)
+    monkeypatch.setattr(runner, "load_tools", lambda *a, **k: ([], [], {}, set()))
+    monkeypatch.setattr(
+        runner, "process_one",
+        lambda session, cfg, tn, ha, *, tool_descriptions=None, off_topic_blacklist=None: session,
+    )
 
     cfg = Settings(
         batch_output_dir=tmp_path / "gdr_out",
@@ -140,8 +143,11 @@ def _run_prune_case(tmp_path, monkeypatch, **cfg_overrides):
 
     qf_in = _write_qf_out_with_system(tmp_path)
     base_path = tmp_path / "gdr_out" / "s2_refined"
-    monkeypatch.setattr(runner, "load_tools", lambda *a, **k: ([], []))
-    monkeypatch.setattr(runner, "process_one", lambda session, cfg, tn, ha: session)
+    monkeypatch.setattr(runner, "load_tools", lambda *a, **k: ([], [], {}, set()))
+    monkeypatch.setattr(
+        runner, "process_one",
+        lambda session, cfg, tn, ha, *, tool_descriptions=None, off_topic_blacklist=None: session,
+    )
     cfg = Settings(
         batch_output_dir=tmp_path / "gdr_out",
         workers=1, max_files=1, enable_llm_layer=False,

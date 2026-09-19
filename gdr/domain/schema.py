@@ -1,7 +1,8 @@
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, Annotated, Optional
+from types import SimpleNamespace
+from typing import Any, Literal, Annotated, Optional
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
@@ -22,6 +23,8 @@ class DefectTag(StrEnum):
     TEXT_FACT_HALLUCINATION = "text_fact_hallucination"
     # 改进2: 宏观轨迹质量
     MESSAGE_UNHEALTHY = "message_unhealthy"
+    # P0-1.3: 工具与 user 初始意图无关（agent "为展示能力"调用的无关工具）
+    TOOL_OFF_TOPIC = "tool_off_topic"
 
 
 class StepEditStatus(StrEnum):
@@ -226,24 +229,37 @@ def save_session(session: Session, base_path: Path) -> SessionOutputs:
     ``base_path`` 是无扩展名 stem（如 ``.../xxx_refined``），4 份文件共用同一
     stem、仅尾缀与扩展名不同：
 
-    * ``<base>.messages.json``  — blocks 视图（``{"messages": [...]}``）
-    * ``<base>.openai.json``    — OpenAI function-calling 视图
-    * ``<base>.qwenjina.txt``   — Qwen3 chat_template 纯文本；qf_text 缺失则不写
+    * ``<base>.messages.json``  — blocks 视图（``{"messages": [...], "tools": [...]}``）
+    * ``<base>.openai.json``    — OpenAI function-calling 视图（顶层带 ``tools``）
+    * ``<base>.qwenjina.txt``   — Qwen3 chat_template 纯文本（qf_text 已含 tools
+                                  文本化，渲染阶段传入）；qf_text 缺失则不写
     * ``<base>.meta.json``      — 审计 metadata 全量 + session_id
+
+    F1 fix: tools 字段同时写入 messages.json 与 openai.json 顶层, 受
+    ``include_tools_in_payloads`` 与 ``tools_payload_max`` 控制. qwenjina.txt
+    由 ``transform.render_sample_text`` 渲染时已传 tools, 不需重复注入.
     """
     base_path = Path(base_path)
     base_path.parent.mkdir(parents=True, exist_ok=True)
 
+    tools_payload = _extract_tools_payload(session)
+
     messages_path = Path(str(base_path) + ".messages.json")
-    payload = {"messages": [m.model_dump(mode="json", exclude_none=True) for m in session.messages]}
+    payload: dict[str, Any] = {
+        "messages": [m.model_dump(mode="json", exclude_none=True) for m in session.messages],
+    }
+    if tools_payload is not None:
+        payload["tools"] = tools_payload
     messages_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
     )
 
     openai_path = Path(str(base_path) + ".openai.json")
-    openai_payload = {
+    openai_payload: dict[str, Any] = {
         "openai_messages": (session.metadata or {}).get("openai_messages", []),
     }
+    if tools_payload is not None:
+        openai_payload["tools"] = tools_payload
     openai_path.write_text(
         json.dumps(openai_payload, ensure_ascii=False, indent=2), encoding="utf-8",
     )
@@ -267,6 +283,47 @@ def save_session(session: Session, base_path: Path) -> SessionOutputs:
         qwenjina=qwenjina_path,
         meta=meta_path,
     )
+
+
+def _extract_tools_payload(session: Session) -> Optional[list[dict[str, Any]]]:
+    """F1 fix: 从 ``session.metadata["tools"]`` 取 tools, 按 settings 做截断.
+
+    返回 None 表示不写入 (开关关闭或 metadata["tools"] 为空).
+    tools 顺序由 qf 阶段保证 (末次 model_request 的 tools 胜出 + 去重),
+    这里只做透传, 不重新排序.
+    """
+    cfg = _current_settings()
+    if not getattr(cfg, "include_tools_in_payloads", True):
+        return None
+    tools = (session.metadata or {}).get("tools") or []
+    if not tools:
+        return None
+    cap = max(0, int(getattr(cfg, "tools_payload_max", 64)))
+    if cap and len(tools) > cap:
+        tools = tools[:cap]
+    return tools
+
+
+def _current_settings() -> Any:
+    """取 gdr settings, 失败时返回包含默认值的 Namespace.
+
+    单元测试或 root config 缺失时, 默认开启 tools 透传 + 截断阈值 64,
+    与 ``Settings`` 字段默认值一致, 避免 import-time 副作用.
+    """
+    from gdr.config.settings import Settings
+    try:
+        return Settings()
+    except Exception:
+        return SimpleNamespace(include_tools_in_payloads=True, tools_payload_max=64)
+
+
+def _json_default(obj: Any) -> Any:
+    """``save_session`` / ``write_refined_session`` 共用的 JSON 兜底序列化."""
+    if isinstance(obj, BaseModel):
+        return obj.model_dump(mode="json", exclude_none=True)
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(mode="json", exclude_none=True)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def locate_block(session: Session, block_id: str) -> tuple[int, int] | None:

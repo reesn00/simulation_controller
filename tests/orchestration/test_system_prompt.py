@@ -205,3 +205,62 @@ def test_partition_from_real_trajectory():
     assert "Agent Identity" in new_system
     assert "RETRIEVAL HEADLINE" in new_system
     assert stats["framework_sections"] > 0
+
+
+# ---------------------------------------------------------------------------
+# F3-C fix: render_cleaned_system 默认追加 Reasoning requirement 段
+# ---------------------------------------------------------------------------
+
+
+class TestReasoningRequirementSection:
+    """F3-C: 在清洗后的 system 末尾追加 Reasoning requirement 段, 要求
+    agent 每轮 assistant message 都先输出 thinking 块再 content / tool_call.
+    默认开启; 通过 ``append_reasoning_requirement=False`` 可关闭.
+    """
+
+    def test_default_appends_reasoning_requirement(self):
+        sections = partition_system_prompt(_sample_system_prompt())
+        new_system, stats = render_cleaned_system(sections)
+        assert "Reasoning requirement" in new_system
+        assert "thinking" in new_system.lower()
+        assert stats["reasoning_requirement_appended"] == 1
+
+    def test_disabled_skips_reasoning_requirement(self):
+        sections = partition_system_prompt(_sample_system_prompt())
+        new_system, stats = render_cleaned_system(
+            sections, append_reasoning_requirement=False,
+        )
+        assert "Reasoning requirement" not in new_system
+        assert stats["reasoning_requirement_appended"] == 0
+
+    def test_reasoning_requirement_appended_at_tail(self):
+        """Reasoning requirement 必须出现在末尾, 不参与 insert_tools_at 定位."""
+        sections = partition_system_prompt(_sample_system_prompt())
+        new_system, _ = render_cleaned_system(sections)
+        # 长期记忆 应在 Reasoning requirement 之前
+        assert new_system.index("长期记忆") < new_system.index("Reasoning requirement")
+
+    def test_existing_section_order_preserved_with_appended(self):
+        """开启 Reasoning requirement 时, 原 section 相对顺序不变."""
+        sections = partition_system_prompt(_sample_system_prompt())
+        new_system, _ = render_cleaned_system(sections)
+
+        identity_pos = new_system.index("Agent Identity")
+        image_pos = new_system.index("You can only understand")
+        dirs_pos = new_system.index("Directories")
+        headline_pos = new_system.index("RETRIEVAL HEADLINE")
+        memory_pos = new_system.index("长期记忆")
+        req_pos = new_system.index("Reasoning requirement")
+
+        assert identity_pos < image_pos < dirs_pos < headline_pos < memory_pos < req_pos
+
+    def test_disabled_preserves_legacy_order(self):
+        """关闭时与既有测试一致: Reasoning requirement 不出现."""
+        sections = partition_system_prompt(_sample_system_prompt())
+        new_system, _ = render_cleaned_system(
+            sections, append_reasoning_requirement=False,
+        )
+        identity_pos = new_system.index("Agent Identity")
+        memory_pos = new_system.index("长期记忆")
+        assert identity_pos < memory_pos
+        assert "Reasoning requirement" not in new_system

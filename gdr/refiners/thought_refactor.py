@@ -15,13 +15,52 @@ log = logging.getLogger(__name__)
 # 不再被纳入实体集合.
 
 _URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
+# 修复 P1.3 (再加固): path 前面不能紧跟字母数字 / 点 / 左括号 —— 防止 prose 里
+# 的非正式 URL path 片段 (如 "m.iqiyi.com/a_19rrk2hct9.html)" "/a_xxx).") 被误
+# 当成 Unix 路径. 真实 Unix 绝对路径前面通常是空格/标点/行首; 真实 Windows
+# 路径独立分支不受此约束. 同时贪婪部分仍然排除 `;`, `(`, `)`, `,` 等 URL
+# 边界标点, 兜底.
 _FILE_PATH_PATTERN = re.compile(
     r"(?:"
-    r"/[A-Za-z0-9_\-.]{3,}[^\s\"'<>]*"   # /usr/bin (unix 绝对路径, 首段 ≥3 字符)
-    r"|~[\\/][^\s\"'<>]{2,}"              # ~/foo 或 ~\foo
-    r"|[A-Za-z]:[\\](?!/)[^\s\"'<>]{2,}"  # C:\Users (Windows, 排除 C:/foo URL)
+    r"(?<![A-Za-z0-9.(])/[A-Za-z0-9_\-.]{3,}[^\s\"'<>();,]*"  # /usr/bin
+    r"|~[\\/][^\s\"'<>();,]{2,}"                                # ~/foo
+    r"|[A-Za-z]:[\\](?!/)[^\s\"'<>();,]{2,}"                    # C:\Users
     r")"
 )
+
+# 修复 P1.4: decision / meta-reasoning 类 thinking 强制跳过 thought_refactor.
+# 这类内容核心是 policy decision ("let me be pragmatic and decide...") 或
+# composition planning ("now compose the answer..."), 改写既无必要又会反复
+# 失败: 9B/32B 倾向输出 "解释如何改" 而非 JSON, 或按语法正确化丢掉伪实体.
+# 关键词命中数 ≥ _DECISION_HIT_THRESHOLD 才触发跳过, 防止 "let me check..."
+# 这类真实探索性 thinking 被误伤.
+_DECISION_MARKERS = (
+    "let me decide",
+    "let me be pragmatic",
+    "let me just",
+    "policy decision",
+    "i'll instead",
+    "i will instead",
+    "now compose",
+    "compose the answer",
+    "compose the response",
+    "headline format",
+    "i'll offer",
+    "rather than just",
+    "per the ",
+)
+_DECISION_HIT_THRESHOLD = 2
+
+
+def _is_decision_or_meta_reasoning(text: str) -> bool:
+    """启发式: thinking 含 ≥2 个 decision / meta-reasoning 标记 → 跳过 LLM 改写.
+
+    单个标记不足以判定 ("let me check the actual download links for this first"
+    也是真实探索, 不能判 decision); 多个标记重合才足以认为是决策/组合阶段.
+    """
+    lowered = text.lower()
+    hits = sum(1 for m in _DECISION_MARKERS if m in lowered)
+    return hits >= _DECISION_HIT_THRESHOLD
 _SHORT_QUOTED_IDENT = re.compile(r"['\"`]([A-Za-z0-9_\-./]{3,40})['\"`]")
 _CAMEL_CASE_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b")
 _NUMERIC_ID_PATTERN = re.compile(r"\b\d{2,}\b")
@@ -85,9 +124,17 @@ def _extract_entities(text: str) -> set[str]:
 
 
 def _entities_preserved(orig: set[str], refined: set[str]) -> tuple[bool, set[str]]:
-    """比较实体集合是否被保留. 对 URL/路径等结构化实体做精确比对; 对
-    CamelCase 专名 / 工具名 / 数字 ID 则允许大小写不敏感比对, 减少
-    误判. 返回 (是否保留, 缺失实体).
+    """比较实体集合是否被保留. 严格匹配: 实体原字面值必须在 refined 中
+    出现. 修复 P1.7: 撤销 P1.6 的 host 弹性豁免 — 训练数据要求 reasoning
+    链与 final text URL 逐字一致 (www.iqiyi.com ≠ m.iqiyi.com 是不同
+    context), LLM 改写时禁止 host 标准化; 既然 prompt 已硬约束, 这里
+    检测严格化即可, 双重保险.
+
+    对 URL 仍保留 prefix 兜底 (refined 含 orig 路径或反之), 因 LLM 在 URL
+    末尾加 query / 去 query 算保留; 但 host 变化必须判 missing.
+
+    对 CamelCase / 工具名保留大小写不敏感比对 (LLM 改写时常大小写变形).
+    返回 (是否保留, 缺失实体).
     """
     missing: set[str] = set()
     refined_lower = {e.lower() for e in refined}
@@ -97,7 +144,8 @@ def _entities_preserved(orig: set[str], refined: set[str]) -> tuple[bool, set[st
         # 大小写不敏感 fallback (CamelCase / 工具名常见)
         if ent.lower() in refined_lower:
             continue
-        # URL 子串匹配 (refiner 偶尔在尾部加斜杠或去 query)
+        # URL prefix 兜底: refiner 偶尔在 orig URL 末尾加 ?query 或去 query
+        # 算保留. 但 host 必须一致 — P1.7 修复后这点已由 prompt 硬约束.
         if ent.startswith(("http://", "https://")):
             if any(ent.startswith(p) or p.startswith(ent) for p in refined if p.startswith(("http://", "https://"))):
                 continue
@@ -115,12 +163,30 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
     if not has_defect:
         return block.thinking
 
+    # 修复 P1.4: decision / meta-reasoning 类 thinking 直接保留原文, 不进 LLM.
+    # 这类内容的核心是 policy decision / composition planning, LLM 改写要么
+    # 输出"如何改"的解释 (empty refined_thought), 要么按语法修复丢伪实体
+    # (entity loss), 反复失败. 保留原文 → judge 仍能基于原 thinking 评分.
+    if _is_decision_or_meta_reasoning(block.thinking):
+        log.info(
+            "skipping thought_refactor (decision/meta-reasoning) for block %s",
+            block.id,
+        )
+        return block.thinking
+
     system_prompt = load_and_render("thought", "system")
+    # 修复 P1.7: 显式注入实体清单作为硬约束, 让 LLM 在改写时逐字保留
+    # (URL host / 工具名 / 数字 ID 等). 不注入时 LLM 会"善意"地做 mobile
+    # 标准化 (www↔m) 等导致 reasoning 链与 final text URL 不一致, 训练
+    # 数据隐性 bug.
+    orig_entities_set = _extract_entities(block.thinking)
+    orig_entities_sorted = sorted(orig_entities_set)
     user_prompt = load_and_render(
         "thought", "user",
         original_thinking=block.thinking,
         context=json.dumps(context, ensure_ascii=False),
         defects=", ".join(defects),
+        entities=", ".join(orig_entities_sorted) if orig_entities_sorted else "(无)",
     )
     messages = [
         {"role": "system", "content": system_prompt},
@@ -147,9 +213,8 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
             _max_with_grace = cfg.thought_max_len + _grace
             if len(refined) < cfg.thought_min_len or len(refined) > _max_with_grace:
                 raise ValueError(f"length out of range: {len(refined)}")
-            orig_entities = _extract_entities(block.thinking)
             new_entities = _extract_entities(refined)
-            preserved, missing = _entities_preserved(orig_entities, new_entities)
+            preserved, missing = _entities_preserved(orig_entities_set, new_entities)
             if not preserved:
                 log.warning("entity loss in block %s: %s", block.id, sorted(missing)[:8])
                 raise ValueError(f"entity loss: {sorted(missing)[:8]}")
@@ -169,9 +234,8 @@ def refine(block: ThinkingBlock, context: dict, defects: list[str], cfg) -> str 
         _grace = max(1, int(cfg.thought_max_len * getattr(cfg, "thought_max_len_grace_pct", 10) / 100))
         _max_with_grace = cfg.thought_max_len + _grace
         if refined and cfg.thought_min_len <= len(refined) <= _max_with_grace:
-            orig_entities = _extract_entities(block.thinking)
             new_entities = _extract_entities(refined)
-            preserved, _missing = _entities_preserved(orig_entities, new_entities)
+            preserved, _missing = _entities_preserved(orig_entities_set, new_entities)
             if preserved:
                 return refined
     except Exception as e:

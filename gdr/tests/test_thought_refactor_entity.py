@@ -99,5 +99,76 @@ def test_entities_preserved_strict():
     assert any("example.com" in m for m in missing)
 
 
+# ---------------------------------------------------------------------------
+# P1.7: 撤销 P1.6 的 host 弹性豁免. URL entity 必须严格匹配, host 变化
+# (www↔m / http↔https 等"mobile 标准化") 视为 entity loss — 训练数据要求
+# reasoning 链与 final text URL 逐字一致, host 改了 reasoning 上下文就
+# 矛盾. prompt 已硬约束 LLM 不改实体, 检测严格化是双重保险.
+# ---------------------------------------------------------------------------
+
+
+def test_entities_preserved_strict_on_www_to_mobile():
+    """www ↔ m host 切换必须判 entity loss.
+
+    修复方向从 P1.6 反转: P1.6 把这种情况判 preserved (放宽), 但这掩盖了
+    LLM 改写时违反"实体不可改"约束的隐性 bug. 严格化后这种违规会被检测
+    抓住 → retry → 仍违规 → discard, 防止坏训练数据流入.
+    """
+    orig = tr._extract_entities(
+        "Confirmed: https://www.iqiyi.com/a_19rrk2hct9.html is live"
+    )
+    refined = tr._extract_entities(
+        "Confirmed: https://m.iqiyi.com/a_19rrk2hct9.html is live"
+    )
+    preserved, missing = tr._entities_preserved(orig, refined)
+    assert not preserved, (
+        "host 变化 (www↔m) 必须判 entity loss, 不能放宽 (P1.7 撤销 P1.6)"
+    )
+    assert any("iqiyi.com/a_19rrk2hct9" in m for m in missing)
+
+
+def test_entities_preserved_strict_on_http_to_https():
+    """scheme 变化 (http ↔ https) 同样判 entity loss."""
+    orig = tr._extract_entities("see http://example.com/path for source")
+    refined = tr._extract_entities("see https://example.com/path for source")
+    preserved, missing = tr._entities_preserved(orig, refined)
+    assert not preserved, "scheme 切换应判 entity loss (P1.7 严格化)"
+    assert any("example.com/path" in m for m in missing)
+
+
+def test_entities_preserved_query_appended_still_preserved():
+    """query 追加 (?utm=xxx) 仍 preserved, 历史 prefix 兜底兼容.
+
+    refiner 在 orig URL 末尾加 ?utm_source / ?from=mobile 等 tracking 参数
+    不算 URL 丢失, reasoning 链仍指向同一资源. 这一行为在 P1.6 之前已
+    存在, P1.7 保留.
+    """
+    orig_ents = {"https://example.com/path"}
+    refined_ents = {"https://example.com/path?utm=x"}
+    preserved, missing = tr._entities_preserved(orig_ents, refined_ents)
+    assert preserved, (
+        f"query 追加 (refined 包含 orig 前缀) 应 preserved, missing={missing}"
+    )
+    assert not missing
+
+
+def test_entities_preserved_strict_on_path_change():
+    """path 不同 → missing (路径差异常被视为不同 URL)."""
+    orig_ents = {"https://example.com/path_a"}
+    refined_ents = {"https://example.com/path_b"}
+    preserved, missing = tr._entities_preserved(orig_ents, refined_ents)
+    assert not preserved
+    assert any("path_a" in m for m in missing)
+
+
+def test_entities_preserved_url_fully_removed_still_detected():
+    """URL 完全删掉仍判 missing."""
+    orig = tr._extract_entities("see https://example.com/path for source")
+    refined = tr._extract_entities("see generic page for source")
+    preserved, missing = tr._entities_preserved(orig, refined)
+    assert not preserved
+    assert any("example.com" in m for m in missing)
+
+
 def ents_orig(text: str) -> list[str]:
     return list(tr._extract_entities(text))

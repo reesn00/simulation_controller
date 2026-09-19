@@ -163,7 +163,9 @@ def _cmd_start(args: argparse.Namespace) -> int:
 
             stop_event.wait()
         finally:
-            master.shutdown(timeout=10.0)
+            # 用配置里的 worker_shutdown_timeout_seconds (方向 A, 默认 600s),
+            # 让 in-progress 任务有窗口跑完, 不被 interpreter shutdown 切断。
+            master.shutdown()
 
     start_foreground(
         cfg_path=Path(args.config) if args.config else None,

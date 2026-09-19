@@ -96,6 +96,10 @@ class Master:
         self._threads: list[tuple[str, threading.Thread, threading.Event]] = []
         self._reaper_thread: threading.Thread | None = None
         self._workers_started = False
+        # 方向 B: 当前活跃 batch_id 集合. gdr worker 拉任务时只取这些 batch
+        # 的 pending_gdr, 防止跨 batch 偷拉导致 master shutdown 时 worker 仍在
+        # 跑别的 batch 的活 → interpreter shutdown 错误。
+        self._active_batch_ids: set[int] = set()
 
     # ------------------------------------------------------------------
     # 启动 / 关闭
@@ -128,6 +132,7 @@ class Master:
                 gdr_settings=self._build_gdr_settings(),
                 llm_concurrency=self._cfg.gdr.llm_concurrency,
                 n=1, poll_seconds=worker_poll,
+                allowed_batch_ids=self._active_batch_ids,  # 方向 B: 共享集合引用
             )
             self._add_thread(f"gdr_{i}", w)
 
@@ -149,6 +154,20 @@ class Master:
         )
         t.start()
         self._threads.append((name, t, ev))
+
+    # ------------------------------------------------------------------
+    # 方向 B: 活跃 batch 集合 API (worker 按此过滤 pending_gdr)
+    # ------------------------------------------------------------------
+
+    def register_active_batch(self, batch_id: int) -> None:
+        """把 batch_id 加入活跃集合. 生产路径在 ``_run_one_batch`` 调,
+        单元测试或外部手动注入时可显式调. 同一 batch_id 重复注册幂等."""
+        self._active_batch_ids.add(batch_id)
+
+    def unregister_active_batch(self, batch_id: int) -> None:
+        """把 batch_id 从活跃集合移除. 后续 gdr worker 不会再拉此 batch 的
+        新任务; in-progress 任务继续跑完."""
+        self._active_batch_ids.discard(batch_id)
 
     def _build_gdr_settings(self) -> GdrSettings:
         gdr_out = Path(self._cfg.paths.gdr_output_dir)
@@ -172,8 +191,23 @@ class Master:
             **anchored,
         )
 
-    def shutdown(self, *, timeout: float = 10.0) -> None:
-        """设置所有 stop_event 并 join."""
+    def shutdown(self, *, timeout: float | None = None) -> None:
+        """设置所有 stop_event 并 join.
+
+        timeout: 等待 worker 线程 join 的最长时间 (秒). None 时读
+        ``self._cfg.settings.worker_shutdown_timeout_seconds`` (默认 600s,
+        方向 A). 显式传值覆盖配置, 单元测试 fixture 用小值加速。
+        """
+        if timeout is None:
+            timeout = float(
+                self._cfg.settings.worker_shutdown_timeout_seconds
+            )
+        # 方向 B: shutdown 时立即清空活跃 batch 集合, 让 gdr worker 在下一次
+        # pull 时看到空集合 → 直接返回 []. 已拉到的 in-progress 任务会跑完,
+        # 但不会触发新的 LLM 调用 (减少 interpreter shutdown race 的窗口)。
+        # 必须先于 stop_event.set() 之前完成, 避免 worker 看到 stop_event 但
+        # 集合里还有 batch → 仍尝试拉空集合浪费一次 SQL。
+        self._active_batch_ids.clear()
         for name, _t, ev in self._threads:
             ev.set()
         if self._stop_event is not None:
@@ -230,6 +264,9 @@ class Master:
             config_path=config_path, task_ids=task_ids,
             limit=s.batch_size, queue=self._queue,
         )
+        # 方向 B: 把本批加入活跃集合, gdr worker 在 batch_drain 之前都只会
+        # 拉这一批的任务. 防止 worker 偷拉别批遗留导致 master shutdown race.
+        self.register_active_batch(batch_id)
         run_ids = tuple(r.run_id for r in runs)
 
         # 2. 防御性二次确认 run.json 终态
@@ -268,6 +305,10 @@ class Master:
             )
         finally:
             watcher_stop.set()
+            # 方向 B: 本批 drain 后立即从活跃集合移除, gdr worker 不会再拉本批
+            # 的新任务 (in-progress 任务继续跑完). 已拉到的任务继续写到 done,
+            # 不影响本批 drain 的结果。
+            self._active_batch_ids.discard(batch_id)
             _log.info("master: batch_id=%d watcher stopped", batch_id)
 
         # 4.5 补偿扫描: 兜住 watcher 最后一轮到停止之间落盘的迟到文件。

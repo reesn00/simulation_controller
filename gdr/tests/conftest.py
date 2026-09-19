@@ -17,6 +17,11 @@ def cfg() -> Settings:
         context_active_window_size=2,
         context_max_archive_chars=4000,
         context_state_tracker_enabled=False,  # 单测纯本地, 不触发状态追踪 LLM 调用
+        # 阶梯阈值: 既有测试断言基于单层 (relaxed_min=3 for modified<=5),
+        # 关闭新增 passthrough / low_edit 两档以保持既有测试通过; 阶梯行为
+        # 由 tests/test_judge_relaxation.py 单独覆盖.
+        judge_min_modified_passthrough=0,
+        judge_min_modified_low_edit=0,
     )
 
 

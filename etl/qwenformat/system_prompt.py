@@ -61,6 +61,29 @@ _SYSTEM_BOUNDARIES: list[tuple[str, str, str]] = [
 _AGENT_SKILLS_END = "</agent-skills>"
 
 
+# F3-C fix: 在清洗后的 system prompt 末尾追加 Reasoning requirement 段,
+# 要求 agent 每轮 assistant message 都先输出 thinking 块再 content / tool_call.
+# 本仓库内仅控制 qf_text 渲染产物 (SFT 训练数据形态), 真正的源头是远端
+# QwenPaw agent 配置 (AGENTS.md / SOUL.md / PROFILE.md), 仓库外需同步修改.
+_REASONING_REQUIREMENT_SECTION = """# Reasoning requirement (F3-C)
+
+Each turn of the assistant message must include a structured ``thinking`` block
+**before** any ``content`` (visible text) and any ``tool_call``. The thinking
+block records the reasoning that led to the decision; it is not visible to the
+user but is part of the training signal and is required for the conversation
+to be archived as a complete sample.
+
+Rules:
+
+- Emit exactly one ``thinking`` block at the start of every assistant turn.
+- Do not skip thinking even when the turn is a one-line acknowledgement.
+- A turn without a thinking block will be flagged as an incomplete session
+  and excluded from the training dataset.
+- Thinking blocks must be substantive (>= 1 sentence) and reflect the actual
+  reasoning, not boilerplate.
+"""
+
+
 def _slugify(title: str) -> str:
     """把标题变成合法文件名."""
     s = title.strip().lower()
@@ -216,6 +239,7 @@ def render_cleaned_system(
     *,
     templates_dir: Optional[Path] = None,
     insert_tools_at: str = "agent-skills",
+    append_reasoning_requirement: bool = True,
 ) -> tuple[str, dict[str, int]]:
     """把保留段与 tool 模板重组成新的 system prompt.
 
@@ -225,15 +249,21 @@ def render_cleaned_system(
         templates_dir: 若提供, 优先读取本地模板替换对应段.
         insert_tools_at: ``agent-skills`` 时插入到原 ``<agent-skills>`` 段位置;
             未找到则追加到末尾. ``end`` 时直接追加到末尾.
+        append_reasoning_requirement: F3-C. 当 True (默认) 时在清洗后的
+            system 末尾追加 ``Reasoning requirement`` 段, 要求 agent 每轮先
+            输出 thinking. 关闭后恢复原行为, 便于对比实验. 仅影响 qf_text
+            渲染产物, 不改变 QwenPaw agent 实际行为 (需仓库外同步改
+            AGENTS.md / SOUL.md).
 
     Returns:
-        (new_system_text, stats)
+        (new_system_text, stats). stats 含 ``reasoning_requirement_appended``。
     """
     stats: dict[str, int] = {
         "identity_sections": 0,
         "constraint_sections": 0,
         "framework_sections": 0,
         "unknown_sections": 0,
+        "reasoning_requirement_appended": 0,
     }
 
     agent_skills_index: Optional[int] = None
@@ -253,6 +283,12 @@ def render_cleaned_system(
             rendered_parts.insert(agent_skills_index, tools_text_stripped)
         else:
             rendered_parts.append(tools_text_stripped)
+
+    # F3-C fix: 末尾追加 Reasoning requirement (仅当开关开启).
+    # 强制在最后一段之后追加, 不参与 insert_tools_at 的定位逻辑.
+    if append_reasoning_requirement:
+        rendered_parts.append(_REASONING_REQUIREMENT_SECTION)
+        stats["reasoning_requirement_appended"] = 1
 
     # 用双换行拼接各段, 保持可读性
     return "\n\n".join(p.strip() for p in rendered_parts if p.strip()), stats

@@ -364,6 +364,12 @@ def write_refined_session(session: dict[str, Any], path: Path | str) -> None:
     """把 session dict 按拆分四视图写回 ``<stem>.messages.json`` 同 stem 的 4 份文件.
 
     qf_text 缺失时跳过 qwenjina.txt (与 ``save_session`` 一致).
+
+    F1 fix: tools 字段同步写入 messages.json 与 openai.json 顶层, 受
+    ``include_tools_in_payloads`` 与 ``tools_payload_max`` 控制.
+    qwenjina.txt 由 ``transform.render_sample_text`` 渲染时已传 tools,
+    自带工具定义文本; 不需再注入. ``usage_prune`` 路径下 metadata["tools"]
+    已是裁剪后的子集, ``openai_messages`` 也已重渲染, 同步透传即可.
     """
     path = Path(path)
     if not path.name.endswith(_MESSAGES_SUFFIX):
@@ -371,19 +377,29 @@ def write_refined_session(session: dict[str, Any], path: Path | str) -> None:
     base = _split_base(path)
     metadata = dict(session.get("metadata") or {})
 
+    tools_payload = _extract_tools_payload_for_prune(metadata)
+
+    messages_payload: dict[str, Any] = {"messages": session.get("messages", [])}
+    if tools_payload is not None:
+        messages_payload["tools"] = tools_payload
     path.write_text(
-        json.dumps({"messages": session.get("messages", [])}, ensure_ascii=False, indent=2),
+        json.dumps(messages_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+    openai_payload: dict[str, Any] = {
+        "openai_messages": metadata.get("openai_messages", []),
+    }
+    if tools_payload is not None:
+        openai_payload["tools"] = tools_payload
     base.with_name(base.name + ".openai.json").write_text(
-        json.dumps(
-            {"openai_messages": metadata.get("openai_messages", [])},
-            ensure_ascii=False, indent=2,
-        ),
+        json.dumps(openai_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     qf_text = metadata.get("qf_text")
     if qf_text:
+        # qf_text 已由 transform.render_sample_text 渲染时传入 tools,
+        # 自带工具定义文本; 不需再注入.
         base.with_name(base.name + ".qwenjina.txt").write_text(
             str(qf_text), encoding="utf-8"
         )
@@ -391,6 +407,35 @@ def write_refined_session(session: dict[str, Any], path: Path | str) -> None:
     base.with_name(base.name + ".meta.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _extract_tools_payload_for_prune(
+    metadata: dict[str, Any],
+) -> Optional[list[dict[str, Any]]]:
+    """F1 fix: usage_prune 路径的 tools 透传助手, 与 gdr save_session 一致."""
+    cfg = _current_settings_for_prune()
+    if not getattr(cfg, "include_tools_in_payloads", True):
+        return None
+    tools = metadata.get("tools") or []
+    if not tools:
+        return None
+    cap = max(0, int(getattr(cfg, "tools_payload_max", 64)))
+    if cap and len(tools) > cap:
+        tools = tools[:cap]
+    return tools
+
+
+def _current_settings_for_prune() -> Any:
+    """从 gdr Settings 取配置. 失败时回退到 Namespace 默认值.
+
+    etl 与 gdr 同仓库但解耦; etl 单元测试不应强制加载根配置.
+    """
+    try:
+        from gdr.config.settings import Settings
+        return Settings()
+    except Exception:
+        from types import SimpleNamespace as _NS
+        return _NS(include_tools_in_payloads=True, tools_payload_max=64)
 
 
 # ---------------------------------------------------------------------------

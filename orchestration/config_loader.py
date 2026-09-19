@@ -56,6 +56,13 @@ class OrchestrationSettings:
     # 内置 config.yaml 里给生产值。
     worker_idle_backoff_max_seconds: float = 0.0
     watcher_idle_backoff_max_seconds: float = 0.0
+    # 方向 A: Master.shutdown 等待 worker 线程 join 的最长时间. 默认 600s
+    # (10 分钟) — 单条 session 处理上限 (gdr.cfg.session_timeout_s=1200s)
+    # 的 50%, 留余量让正在跑的 LLM 调用有窗口写完产物, 不被半路切断
+    # → interpreter shutdown 错误 (方向 B 已减少跨 batch 偷拉, 配合本字段
+    # 把"in-progress 任务被打断"的概率压到接近零).
+    # 生产里按需调大 (例如 1500s), 单元测试 fixture 一般用更小的值.
+    worker_shutdown_timeout_seconds: float = 600.0
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> "OrchestrationSettings":

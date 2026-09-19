@@ -5,7 +5,7 @@ import logging
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 from tqdm import tqdm
 
 from config import Settings, load_tools
@@ -14,7 +14,7 @@ from infrastructure.llm_client import set_generation_concurrency
 from domain import (
     Session, load_session, save_session,
     BlockIndex, BlockRefineRecord, DefectTag,
-    ThinkingBlock, ToolcallBlock, ToolresultBlock,
+    ThinkingBlock, ToolcallBlock, ToolresultBlock, Message,
 )
 from routing import Router
 from routing.health import light_health_score_for_session
@@ -273,6 +273,9 @@ def _run_repairs(
 
 def process_one(
     session: Session, cfg: Settings, tool_names: list[str], hallu_apis: set[str],
+    *,
+    tool_descriptions: dict[str, str] | None = None,
+    off_topic_blacklist: set[str] | None = None,
 ) -> Session | None:
     t0 = time.perf_counter()
     try:
@@ -315,12 +318,31 @@ def process_one(
                     session.session_id, e,
                 )
 
+        # === P0-1.3 + P0-1.1 共享: 启发式 user_intent（截断首条 user, 零 LLM）===
+        # router 阶段在 judge / reassembler 之前, 不能调 LLM 抽取更精确的
+        # user_intent; 这里用启发式 (截断首条 user 消息前 N 字符) 给
+        # TOOL_OFF_TOPIC 嵌入层做意图参考. reassembler 阶段会调 LLM 抽取
+        # 更精确版本 (覆盖 metadata.user_intent), 这里的结果仅作为
+        # metadata.user_intent_heuristic 留存审计.
+        from core.user_intent import heuristic_user_intent
+        user_intent_heuristic = heuristic_user_intent(
+            session,
+            max_chars=int(getattr(cfg, "user_intent_max_chars", 1500)),
+            min_chars=int(getattr(cfg, "user_intent_min_chars_for_extract", 20)),
+        )
+
         # === 3. Router.tag 使用 CU 作为 LLM 评审上下文 ===
         router = Router()
         defects_index, health_scores, routing_abstentions = router.tag(
             session, tool_names, hallu_apis, cfg,
             context_understanding=context_understanding,
+            tool_descriptions=tool_descriptions or {},
+            off_topic_blacklist=off_topic_blacklist or set(),
+            user_intent_heuristic=user_intent_heuristic,
         )
+        if user_intent_heuristic:
+            session.metadata = session.metadata or {}
+            session.metadata["user_intent_heuristic"] = user_intent_heuristic
         # 修复 P1.3: routing 弃权审计挂到 session.metadata, 让后续 judge /
         # reassembler 看到哪些 block 被丢, 而不是只看一行聚合 WARNING 盲猜。
         if routing_abstentions:
@@ -425,14 +447,14 @@ def process_one(
         if not refine_records and not policy_decisions:
             if _l1_sanity_check(session, tool_names, cfg.thought_max_len_l1):
                 log.info("no defects found in session %s", session.session_id)
-                _attach_metadata(session, [], policy_decisions, deferred_block_ids)
+                _attach_metadata(session, [], policy_decisions, deferred_block_ids, cfg=cfg)
                 return session
             log.warning(
                 "session %s has no defect tags but failed L1 sanity check; "
                 "falling back to original session to preserve audit trail",
                 session.session_id,
             )
-            _attach_metadata(session, [], policy_decisions, deferred_block_ids)
+            _attach_metadata(session, [], policy_decisions, deferred_block_ids, cfg=cfg)
             return session
 
         elapsed = time.perf_counter() - t0
@@ -595,6 +617,9 @@ def _append_judge_low_queue(session: Session, cfg: Settings) -> None:
 
     用户主旨: judge 分数噪声大, 低分不等于不可用。此类 session 不进主输出
     (训练集), 但完整精修结果落 judge_low.jsonl, 保留后期人工修改/并回的可能。
+
+    Fix A: 把 L3 judge 的 reason / relaxed_kind / modified_blocks 等扁平化到
+    judge 字段, 审计时可直接读到 LLM 评语与阶梯档位, 无需再解 metadata.
     """
     if not getattr(cfg, "judge_low_export_enabled", True):
         return
@@ -602,10 +627,24 @@ def _append_judge_low_queue(session: Session, cfg: Settings) -> None:
     if not mark:
         return
     try:
+        # Fix A: 把 mark 展开为顶层字段, 让审计/grep 直接命中
+        include_reason = bool(getattr(cfg, "judge_low_include_reason", True))
+        judge_payload: dict[str, object] = {
+            "score": mark.get("score"),
+            "min_score": mark.get("min_score"),
+        }
+        if include_reason:
+            # 兼容旧 judge_discard 中没有 reason / relaxed_kind 字段的情况
+            judge_payload["reason"] = mark.get("reason", "")
+            judge_payload["relaxed_kind"] = mark.get("relaxed_kind")
+            judge_payload["modified_blocks"] = mark.get("modified_blocks")
+            if "exception" in mark:
+                judge_payload["exception"] = mark.get("exception")
+                judge_payload["exception_type"] = mark.get("exception_type")
         record = {
             "session_id": session.session_id,
             "source_file": session.source_file,
-            "judge": mark,
+            "judge": judge_payload,
             "session": session.model_dump(mode="json"),
         }
         path = Path(cfg.judge_low_output_path)
@@ -644,6 +683,233 @@ def _append_routing_abstain_queue(session: Session, cfg: Settings) -> None:
         )
     except Exception as e:
         log.warning("failed to append routing_abstain queue: %s", e)
+
+
+# === 未闭合 session 防呆 (方向 #完整性检测) ===
+# 复现链 (2026-09-19 T001 useramulation-fc37...): 远端 sim 把"最后还在跑
+# shell cleanup 命令" 的 trajectory 当"已完成"提交, gdr 直接处理出
+# 159 个 block 的 refine_data, 但末尾 toolcall 缺 toolresult, 最后 text 不
+# 构成回复. SFT 用这种半截样本会污染训练. 这里在落盘前做完整性检查.
+
+
+def _detect_incomplete_session(session: Session) -> dict | None:
+    """检测未闭合 session. 返回 None 表示完整, dict 表示未闭合 + 诊断.
+
+    检查维度 (由强到弱):
+      1. 末尾 toolcall 缺 toolresult (硬指标 — chain-of-thought 训练数据
+         必须三元组配对; 缺失会让模型学到"agent 半截完成任务"模式)
+      2. toolcall 总数 > toolresult 总数 (尾部配对缺失, 同 1 的弱化版)
+      3. 末尾 assistant text 不构成完整回复 (启发式, 见 _is_text_incomplete)
+      4. F2 fix: 末尾 assistant 仅含 thinking (无 final text) 且无未配对 toolcall
+         — agent 写了思考但没收口. 复现链 (2026-09-19 T001): 最后一条
+         assistant 是 thinking-only 空 content, 原 3 维全部跳过, 误判完整.
+
+    不检测:
+      - 单条 user + 单条 assistant (合法短回复)
+      - 只有 thinking 无 toolcall (合法纯推理, 但仅限 < threshold)
+      - thinking_chars < incomplete_thinking_only_min_chars (快速结尾思考)
+    """
+    # 找到最后一条 assistant message
+    last_asst_idx: int | None = None
+    for i in range(len(session.messages) - 1, -1, -1):
+        if session.messages[i].role == "assistant":
+            last_asst_idx = i
+            break
+    if last_asst_idx is None:
+        # 没有 assistant — 极端异常, 但也不算"未闭合"
+        return None
+
+    last_asst = session.messages[last_asst_idx]
+    blocks = last_asst.blocks or []
+    if not blocks:
+        # 空 assistant 不算未闭合, 是 sim 端异常
+        return None
+
+    # 全局计数 toolcall / toolresult (fold 后的剩余)
+    total_toolcall = 0
+    total_toolresult = 0
+    for m in session.messages:
+        for b in (m.blocks or []):
+            t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+            if t in ("toolcall", "tool_call"):
+                total_toolcall += 1
+            elif t in ("toolresult", "tool_result"):
+                total_toolresult += 1
+
+    pending_toolcall = max(0, total_toolcall - total_toolresult)
+
+    reasons: list[str] = []
+
+    # 维度 1: 末尾是 toolcall (没等结果回来)
+    last_block = blocks[-1]
+    last_t = last_block.get("type") if isinstance(last_block, dict) else getattr(last_block, "type", None)
+    if last_t in ("toolcall", "tool_call"):
+        last_name = last_block.get("name", "?") if isinstance(last_block, dict) else getattr(last_block, "name", "?")
+        reasons.append(f"last_assistant_block_is_toolcall:{last_name}")
+
+    # 维度 2: toolcall 总数 ≠ toolresult 总数 (尾部配对缺失)
+    if total_toolcall > total_toolresult:
+        reasons.append(
+            f"toolcall_result_mismatch:{total_toolcall}_vs_{total_toolresult}"
+        )
+
+    # 维度 3: 末尾 assistant text 不构成完整回复 (启发式)
+    last_text_block = None
+    for b in reversed(blocks):
+        t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+        if t == "text":
+            last_text_block = b
+            break
+    if last_text_block is not None and last_t != "text":
+        # 末尾不是 text, 维度 1/2 已覆盖; 此处跳过
+        pass
+    elif last_text_block is not None:
+        # 末尾是 text, 检查是否像半句话
+        text_content = (
+            last_text_block.get("text", "")
+            if isinstance(last_text_block, dict)
+            else getattr(last_text_block, "text", "")
+        )
+        if _is_text_incomplete(text_content):
+            reasons.append("last_text_incomplete")
+
+    # 维度 4 (F2 fix): 末尾 assistant 仅 thinking, 无 final text, 无未配对 toolcall.
+    # 复现链: 远端 agent 跑完最后一轮工具后, 写了 reasoning 但没产出面向用户的总结 text,
+    # sim 端误标 "已完成". 启发式: 字符阈值由 cfg.incomplete_thinking_only_min_chars 控制.
+    if last_text_block is None and pending_toolcall == 0:
+        text_chars, thinking_chars, _ = _last_assistant_block_summary(last_asst)
+        threshold = int(getattr(_current_runner_cfg(), "incomplete_thinking_only_min_chars", 200))
+        if text_chars == 0 and thinking_chars >= threshold:
+            reasons.append(
+                f"last_assistant_no_final_text:thinking_only:{thinking_chars}chars"
+            )
+
+    if not reasons:
+        return None
+    return {
+        "is_incomplete": True,
+        "reasons": reasons,
+        "last_assistant_msg_idx": last_asst_idx,
+        "last_block_type": last_t,
+        "total_toolcall": total_toolcall,
+        "total_toolresult": total_toolresult,
+    }
+
+
+def _last_assistant_block_summary(last_msg: Message) -> tuple[int, int, int]:
+    """返回 (text_chars, thinking_chars, toolcall_count_in_this_msg).
+
+    同时被维度 4 与未来扩展使用; 不读 message 外的全局统计.
+    """
+    text_chars = 0
+    thinking_chars = 0
+    tc_count = 0
+    for b in (last_msg.blocks or []):
+        if isinstance(b, dict):
+            btype = b.get("type")
+        else:
+            btype = getattr(b, "type", None)
+        if btype == "text":
+            text_chars += len((b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")) or "")
+        elif btype == "thinking":
+            thinking_chars += len(
+                (b.get("thinking", "") if isinstance(b, dict) else getattr(b, "thinking", "")) or ""
+            )
+        elif btype in ("toolcall", "tool_call"):
+            tc_count += 1
+    return text_chars, thinking_chars, tc_count
+
+
+def _current_runner_cfg() -> Any:
+    """从 gdr Settings 取 cfg; 失败时回退到 Namespace 默认值.
+
+    runner 是 gdr 内部模块, 默认应能加载根配置; 单测环境兜底即可.
+    """
+    try:
+        from gdr.config.settings import Settings
+        return Settings()
+    except Exception:
+        from types import SimpleNamespace as _NS
+        return _NS(incomplete_thinking_only_min_chars=200)
+
+
+_INCOMPLETE_TEXT_MARKERS = (
+    "我先说清楚一点",
+    "继续",  # "继续..." / "继续查"
+    "再",  # "再查..." / "再确认"
+    "等",  # "等一下" / "等结果"
+    "我先",
+    "让我",
+    "查一下",
+    "继续看",
+    # F2 fix: 新增自承未出答案的措辞
+    "稍后整理",
+    "稍后汇总",
+    "我先把",  # "我先把结果整理一下"
+    "等下",
+    "稍等",
+    "等一下",
+    "稍等一下",
+)
+
+
+def _is_text_incomplete(text: str) -> bool:
+    """启发式: text 末尾不像完整回复 (低强度信号, 仅辅助).
+
+    判定的中文半句话/继续词前缀 + 没有结论性结尾 (句号/感叹号/双引号闭合).
+    这是非常弱的信号 — 漏判无害 (false negative), 误判只让 session 走
+    incomplete.jsonl 旁路 (false positive 由人工复核).
+    """
+    s = text.strip()
+    if not s:
+        return True
+    # 末尾是省略号或被截断
+    if s.endswith("...") or s.endswith("…"):
+        return True
+    # 长文本无句末标点 → 大概率被截断
+    # 短文本 (<30 chars) 容忍, 可能是 "好的" "OK" 等
+    if len(s) > 30:
+        sentence_end = set(".!?。！？\"'""''")
+        # 末尾 (去除尾部空白) 不在结束标点集 → 不像完整
+        if s.rstrip()[-1] not in sentence_end:
+            # 容忍明确结尾词
+            if not any(s.endswith(w) for w in ("完", "了", "好", "OK", "ok")):
+                return True
+    # 包含继续性词前缀 + 长文本
+    if len(s) > 30:
+        for marker in _INCOMPLETE_TEXT_MARKERS:
+            if marker in s[:60]:
+                return True
+    return False
+
+
+def _append_incomplete_queue(session: Session, diagnostic: dict, cfg: Settings) -> None:
+    """未闭合 session 完整 dump 到 incomplete.jsonl 旁路 (含 diagnostic).
+
+    与 judge_low 同级但独立; 供远端运维复核, 决定是否补 trajectory / 走
+    FOLLOWUP_CREATED 让远端继续跑. 与 judge_low 的关键区别: incomplete 的
+    数据更值得保留 (内容质量未知, 不是被判分低), 所以保留完整 session
+    而不只是 metadata.
+    """
+    if not getattr(cfg, "incomplete_detection_enabled", True):
+        return
+    try:
+        record = {
+            "session_id": session.session_id,
+            "source_file": getattr(session, "source_file", ""),
+            "diagnostic": diagnostic,
+            "session": session.model_dump(mode="json"),
+        }
+        path = Path(cfg.incomplete_output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        log.warning(
+            "incomplete queue appended: %s (session %s, reasons=%s)",
+            path, session.session_id, diagnostic["reasons"],
+        )
+    except Exception as e:
+        log.warning("failed to append incomplete queue: %s", e)
 
 
 # === 使用量裁剪 (落盘前) ===
@@ -693,10 +959,14 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
         log.error("failed to load %s: %s", input_path, e)
         return {"input": str(input_path), "status": "load_error", "error": str(e)}
 
-    tool_names, hallu_apis = load_tools(
+    tool_names, hallu_apis, tool_descriptions, off_topic_blacklist = load_tools(
         cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source,
     )
-    result = process_one(session, cfg, tool_names, hallu_apis)
+    result = process_one(
+        session, cfg, tool_names, hallu_apis,
+        tool_descriptions=tool_descriptions,
+        off_topic_blacklist=off_topic_blacklist,
+    )
 
     # 修复 P1.3: 任意被处理的 session (含 discard 的 judge_low) 都要把
     # routing 弃权审计落地, 独立于 judge 通道. 单 block 解析失败不再让整
@@ -704,6 +974,25 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
     _append_routing_abstain_queue(session, cfg)
 
     if result is not None:
+        # 方向 #完整性检测: 在 save_session 之前做未闭合检查. 未闭合 session
+        # 不写 refine_data (避免 SFT 用"agent 半截完成任务"作为正例), 整体
+        # 路由到 incomplete.jsonl 旁路, 供运维复核或远端走 FOLLOWUP_CREATED
+        # 让远端继续跑. 不阻断主流程 — 只是换个落盘点.
+        if getattr(cfg, "incomplete_detection_enabled", True):
+            diagnostic = _detect_incomplete_session(result)
+            if diagnostic is not None:
+                log.warning(
+                    "session %s flagged as INCOMPLETE (%s); redirecting to %s, "
+                    "skipping refine_data write",
+                    result.session_id, diagnostic["reasons"],
+                    cfg.incomplete_output_path,
+                )
+                _append_incomplete_queue(result, diagnostic, cfg)
+                return {
+                    "input": str(input_path),
+                    "status": "incomplete",
+                    "diagnostic": diagnostic,
+                }
         if cfg.enable_usage_prune:
             _apply_usage_prune(result, cfg)
         try:
@@ -711,6 +1000,9 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
             log.info("saved refined session to %s", outputs.messages)
             # 方案 §5.5: 人工审核队列独立输出 (deferred blocks 追加到 jsonl)
             _append_deferred_queue(result, cfg)
+            # P0-1.2: 透传 training_value_score / complexity_tier 到 batch report,
+            # 便于训练侧按 tier 抽样 / 监控 quality_scorer 分布.
+            meta = result.metadata or {}
             return {
                 "input": str(input_path),
                 "outputs": {
@@ -720,6 +1012,8 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
                     "meta": str(outputs.meta),
                 },
                 "status": "success",
+                "complexity_tier": meta.get("complexity_tier"),
+                "training_value_score": meta.get("training_value_score"),
             }
         except Exception as e:
             log.error("failed to save %s: %s", output_path, e)
@@ -746,11 +1040,22 @@ def _worker_process_file(args: tuple) -> dict:
 
 
 def _aggregate(results: Iterable[dict]) -> dict:
-    """汇总 per-file 结果为单次运行的统计 dict。"""
+    """汇总 per-file 结果为单次运行的统计 dict。
+
+    P0-1.2: 扩展聚合 tier 分布 + training_value_score 统计 (max/min/avg/
+    bucket), 供训练侧按 tier 抽样和回归监控. 仅 success 路径有 tier / score;
+    discard / incomplete / error 路径跳过.
+    """
     total = 0
     success = 0
     discard = 0
+    incomplete = 0
     error = 0
+    tier_dist: dict[str, int] = {"easy": 0, "medium": 0, "hard": 0}
+    score_sum = 0.0
+    score_min: float | None = None
+    score_max: float | None = None
+    score_buckets = {"[0,0.3)": 0, "[0.3,0.5)": 0, "[0.5,0.7)": 0, "[0.7,1.0]": 0}
     for r in results:
         if r is None:
             continue
@@ -758,16 +1063,45 @@ def _aggregate(results: Iterable[dict]) -> dict:
         s = r.get("status")
         if s == "success":
             success += 1
+            tier = r.get("complexity_tier")
+            if tier in tier_dist:
+                tier_dist[tier] += 1
+            tv = r.get("training_value_score")
+            if isinstance(tv, (int, float)):
+                score_sum += float(tv)
+                if score_min is None or float(tv) < score_min:
+                    score_min = float(tv)
+                if score_max is None or float(tv) > score_max:
+                    score_max = float(tv)
+                if tv < 0.3:
+                    score_buckets["[0,0.3)"] += 1
+                elif tv < 0.5:
+                    score_buckets["[0.3,0.5)"] += 1
+                elif tv < 0.7:
+                    score_buckets["[0.5,0.7)"] += 1
+                else:
+                    score_buckets["[0.7,1.0]"] += 1
         elif s == "discard":
             discard += 1
+        elif s == "incomplete":
+            incomplete += 1
         else:
             error += 1
     return {
         "total": total,
         "success": success,
         "discard": discard,
+        "incomplete": incomplete,
         "error": error,
         "kept_ratio": round(success / max(total, 1), 4),
+        "tier_distribution": tier_dist,
+        "training_value_score_summary": {
+            "scored_count": sum(tier_dist.values()),
+            "avg": round(score_sum / max(sum(tier_dist.values()), 1), 4),
+            "min": round(score_min, 4) if score_min is not None else None,
+            "max": round(score_max, 4) if score_max is not None else None,
+            "buckets": score_buckets,
+        },
     }
 
 

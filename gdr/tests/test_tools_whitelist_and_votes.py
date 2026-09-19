@@ -116,7 +116,7 @@ def test_load_tools_merges_agent_json_with_extra_tools(tmp_path):
         "extra_tools:\n  - Skill\nhallucinated_apis:\n  - browser.evaluate\n",
         encoding="utf-8",
     )
-    tools, hallu = load_tools(yaml_path, agent, tool_source="auto")
+    tools, hallu, _descs, _black = load_tools(yaml_path, agent, tool_source="auto")
     assert "browser" in tools and "web_search" in tools
     assert "read_file" not in tools, "disabled 的 builtin 工具不得进白名单"
     assert "Skill" in tools, "extra_tools 必须补充 agent.json 之外的动态工具"
@@ -126,7 +126,7 @@ def test_load_tools_merges_agent_json_with_extra_tools(tmp_path):
 def test_load_tools_auto_falls_back_to_manual_when_agent_json_missing(tmp_path):
     yaml_path = tmp_path / "tools.yaml"
     yaml_path.write_text("extra_tools:\n  - Skill\n  - web_search\n", encoding="utf-8")
-    tools, _ = load_tools(yaml_path, tmp_path / "missing.json", tool_source="auto")
+    tools, _, _, _ = load_tools(yaml_path, tmp_path / "missing.json", tool_source="auto")
     assert tools == ["Skill", "web_search"]
 
 
@@ -134,7 +134,7 @@ def test_load_tools_manual_source_ignores_agent_json(tmp_path):
     agent = _write_agent_json(tmp_path / "agent.json")
     yaml_path = tmp_path / "tools.yaml"
     yaml_path.write_text("extra_tools:\n  - browser\n", encoding="utf-8")
-    tools, _ = load_tools(yaml_path, agent, tool_source="manual")
+    tools, _, _, _ = load_tools(yaml_path, agent, tool_source="manual")
     assert tools == ["browser"]
 
 
@@ -144,13 +144,13 @@ def test_load_tools_off_disables_name_checks_but_keeps_hallu_apis(tmp_path):
         "extra_tools:\n  - browser\nhallucinated_apis:\n  - browser.evaluate\n",
         encoding="utf-8",
     )
-    tools, hallu = load_tools(yaml_path, tool_source="off")
+    tools, hallu, _descs, _black = load_tools(yaml_path, tool_source="off")
     assert tools == []
     assert hallu == {"browser.evaluate"}
 
 
 def test_load_tools_degrades_to_empty_when_all_sources_missing(tmp_path):
-    tools, _ = load_tools(
+    tools, _, _, _ = load_tools(
         tmp_path / "missing.yaml", tmp_path / "missing.json", tool_source="auto",
     )
     assert tools == [], "全源失效必须降级为空白名单 (跳过名称校验), 不得误杀真实数据"

@@ -287,11 +287,17 @@ class SQLiteQueue:
         worker_id: str,
         n: int,
         stage_started_col: str | None = None,
+        batch_ids: list[int] | None = None,
     ) -> list[Task]:
         """原子地把最多 n 条 ``from_state`` 行改成 ``to_state`` 并返回它们.
 
         ``stage_started_col``（batches 表列名，内部常量）非空时，同事务内给
         被拉到 task 所属的批打首次阶段戳（COALESCE 只写第一次，重试不覆盖）。
+
+        ``batch_ids``（修复 race #方向B）非空时只拉属于这些 batch 的 task,
+        让 worker 不会跨 batch 偷拉不属于本轮 run 的遗留 task, 避免 master
+        在本轮 batch drain 后误以为没事、实际 worker 还在跑别的 batch 的活
+        → shutdown 强杀导致 interpreter shutdown 错误。
         """
         if n <= 0:
             return []
@@ -299,19 +305,35 @@ class SQLiteQueue:
         with self._conn() as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                if batch_ids:
+                    # 仅从这些 batch 拉。占位符动态生成 (batch 列表长度由调用方控制,
+                    # 不接受外部输入, 长度安全; 但仍做一次类型校验防 SQL 注入)。
+                    if not all(isinstance(b, int) for b in batch_ids):
+                        raise TypeError(
+                            f"batch_ids must be list[int], got {[type(b).__name__ for b in batch_ids]}"
+                        )
+                    placeholders = ",".join("?" for _ in batch_ids)
+                    select_sql = (
+                        f"SELECT id FROM tasks "
+                        f"WHERE state = ? AND batch_id IN ({placeholders}) "
+                        f"ORDER BY id LIMIT ?"
+                    )
+                    select_params = (from_state, *batch_ids, int(n))
+                else:
+                    select_sql = (
+                        "SELECT id FROM tasks "
+                        "WHERE state = ? "
+                        "ORDER BY id LIMIT ?"
+                    )
+                    select_params = (from_state, int(n))
                 rows = conn.execute(
-                    """
+                    f"""
                     UPDATE tasks
                     SET state = ?,
                         locked_by = ?,
                         locked_at = ?,
                         updated_at = ?
-                    WHERE id IN (
-                        SELECT id FROM tasks
-                        WHERE state = ?
-                        ORDER BY id
-                        LIMIT ?
-                    )
+                    WHERE id IN ({select_sql})
                     RETURNING id, src_path, run_id, session_id, batch_id,
                               state, attempts_qf, attempts_gdr,
                               qf_output_path, gdr_messages_path,
@@ -320,7 +342,7 @@ class SQLiteQueue:
                               error_msg, locked_by, locked_at,
                               created_at, updated_at
                     """,
-                    (to_state, worker_id, now, now, from_state, int(n)),
+                    (to_state, worker_id, now, now, *select_params),
                 ).fetchall()
                 if rows and stage_started_col:
                     if stage_started_col not in _BATCH_STAGE_COLUMNS:  # 防御: 列名白名单
@@ -346,13 +368,19 @@ class SQLiteQueue:
             stage_started_col="qf_started_at",
         )
 
-    def pull_pending_gdr(self, *, worker_id: str, n: int) -> list[Task]:
+    def pull_pending_gdr(
+        self, *, worker_id: str, n: int,
+        batch_ids: list[int] | None = None,
+    ) -> list[Task]:
+        """拉 pending_gdr 任务. ``batch_ids`` 非空时仅从这些 batch 取,
+        避免 worker 跨 batch 偷拉 (方向 B: 修复 shutdown race)."""
         return self._pull_n(
             from_state=STATE_PENDING_GDR,
             to_state=STATE_GDR_PROCESSING,
             worker_id=worker_id,
             n=n,
             stage_started_col="gdr_started_at",
+            batch_ids=batch_ids,
         )
 
     # ------------------------------------------------------------------

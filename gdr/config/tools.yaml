@@ -32,3 +32,27 @@ hallucinated_apis:
   - browser.get_page_text
   - browser.read
   - browser.handle_dialog
+
+# P0-1.3: TOOL_OFF_TOPIC 检测——已知与 user 意图无关的工具黑名单（规则层快速路径）。
+# 命中即打 DefectTag.TOOL_OFF_TOPIC, policy 走 PRUNE_BLOCK。
+# 该名单维护成本高, 主要覆盖"明显无关"的几条; 实际大批识别靠嵌入相似度。
+off_topic_blacklist: []
+  # 示例（按需取消注释或追加）:
+  # - weather_check
+  # - calendar_lookup
+
+# P0-1.3: 工具语义描述（嵌入层用）。key = 工具名, value = 一句话描述。
+# router 用它与 user_intent 算余弦相似度, 低于 cfg.tool_off_topic_embed_threshold
+# 判 off-topic. 未列出的工具描述为空, 嵌入层会跳过（无法判定）。
+tool_descriptions: {}
+  # 示例:
+  # browser: 浏览网页, 抓取页面内容, 与网页交互.
+  # execute_shell_command: 在本地 shell 执行命令, 读写文件, 跑测试.
+  # web_search: 关键词搜索, 返回网页摘要.
+  # web_fetch: 抓取指定 URL 的内容.
+  # write_file: 创建或覆盖文件.
+  # read_file: 读取文件内容.
+  # edit_file: 对文件做精确 patch.
+  # grep_search: 在代码库里按正则搜索.
+  # glob_search: 按 glob 模式列文件.
+  # Skill: 调用 QwenPaw 已注册的技能（运行时注入）.

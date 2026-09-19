@@ -51,6 +51,7 @@ _HALLUCINATED = (DefectTag.TOOL_HALLUCINATED,)
 _JSON_INVALID = (DefectTag.TOOL_JSON_INVALID,)
 _API_HALLU = (DefectTag.API_HALLUCINATION,)
 _WRONG_TOOL = (DefectTag.TOOL_WRONG_SELECTION,)
+_OFF_TOPIC = (DefectTag.TOOL_OFF_TOPIC,)
 _TOO_SHORT = (DefectTag.THOUGHT_TOO_SHORT,)
 _TOO_LONG = (DefectTag.THOUGHT_TOO_LONG,)
 _BROKEN_LOGIC = (DefectTag.THOUGHT_BROKEN_LOGIC,)
@@ -134,6 +135,16 @@ def decide_policy(
             return RefinementPolicy.DEFER_TO_HUMAN
         return RefinementPolicy.REPAIR_IN_PLACE
 
+    # === TOOL_OFF_TOPIC (P0-1.3): 工具与 user 意图无关 ===
+    # SFT 训练目标 = agent 解决问题. agent 调与问题无关的工具（"为展示能力"）
+    # 应直接删除 toolcall + 对应 toolresult, 避免污染训练集.
+    # 决策始终 PRUNE_BLOCK: 改写工具名/参数都不能消除"无关"事实, 删是最干净信号.
+    if _has_any(defects, _OFF_TOPIC):
+        if context_view.referenced_by:
+            # 被后续 thinking/text 引用 → 删会断链, 降级为 DEFER 留人工审
+            return RefinementPolicy.DEFER_TO_HUMAN
+        return RefinementPolicy.PRUNE_BLOCK
+
     # === THOUGHT_TOO_SHORT ===
     if _has_any(defects, _TOO_SHORT):
         if context_view.is_transition_point and defer_on_exhaust:
@@ -205,6 +216,8 @@ def policy_reason(policy: RefinementPolicy, defects: list[DefectTag], context_vi
             return f"{defect_str} → repair (referenced by {len(context_view.referenced_by)} blocks)"
         return f"{defect_str} → repair (no redundancy detected)"
     if policy == RefinementPolicy.PRUNE_BLOCK:
+        if DefectTag.TOOL_OFF_TOPIC in defects:
+            return f"{defect_str} → prune_block (tool off-topic vs user_intent)"
         return f"{defect_str} → prune_block (redundant_in_window={context_view.is_redundant_in_window})"
     if policy == RefinementPolicy.PRUNE_WITH_PAIR:
         return f"{defect_str} → prune_with_pair"
