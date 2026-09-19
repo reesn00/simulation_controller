@@ -41,6 +41,19 @@ CLI / Bootstrap
 - ToolRegistry 是工具创建、健康检查、能力选择和关闭的唯一 owner。
 - 所有必选 Criterion 必须 PASS 才能成功；工具缺失不能 fail-open。
 - 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
+- `gdr/reassembly/reassembler.py` 工具配对扫描必须**跨 toolcall 连续扫描**——并行调用（call, call, result, result）下"在下一个 toolcall 处截断"会把成功调用误判为失败删除。
+
+## 数据格式约定
+
+QwenPaw trajectory 形态（2026-09-18 起，单路径事件流）：重放唯一入口 `etl/qwenformat/load.py::parse_trajectory`，每轮一个 assistant message（含全部 thinking / tool_call / tool_result / 最终 text）。
+
+事件约定：
+- `model_response.payload.content` 携带模型输出块：`thinking`（独立结构化块）/ `tool_call`（state=pending）/ `text`
+- `tool_call_request` 独立事件回归但冗余（与 model_response 重复），重放跳过
+- `tool_execution` 是工具结果唯一事件源（state 在 `metadata.end_state`）
+- `final_reply.payload.content` 是冗余快照，只取 `metadata.usage`
+
+格式演化历史与早期 AI SDK 内嵌快照路径见 `docs/project-notes.md`。
 
 ## 目录索引
 
@@ -74,4 +87,6 @@ v2 输出在 `output/runs|artifacts|datasets|reports`。审计保存所有 Run�
 
 ## 文档
 
-实施基线为 `docs/refactor-implementation-plan.md`，当前实现和验证结果见 `docs/refactor-development-progress.md` 与 `docs/phase6-final-validation-report.md`。
+- `docs/refactor-development-progress.md` — gdr SFT 数据质量修复迭代日志（含 2026-09-19 六件套 F1/F2/F3-C + Fix A/B/C + F3-D/E）
+- `docs/执行agent资料/`、`docs/任务合集/`、`docs/设计方案/` — 项目历史档案
+- 框架与策略长文：`docs/gdr-context-understanding-and-policy.md`、`docs/gdr-module-functional-overview.md`、`docs/gdr-mvp-design.md`、`docs/incremental-state-tracking-plan.md`

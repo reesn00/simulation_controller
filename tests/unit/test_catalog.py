@@ -11,7 +11,7 @@ from simulate_serve.task_manager import TaskManager
 
 def test_builtin_catalog_compiles_all_tasks(project_root: Path) -> None:
     manager = TaskManager("tasks.yaml", "scenarios.yaml", config_dir=project_root / "simulate_serve" / "config")
-    assert len(manager.compiled_tasks) == 58
+    assert len(manager.compiled_tasks) == 68
     assert manager.diagnostics == ()
     assert all(task.criteria for task in manager.compiled_tasks)
     assert not any(
@@ -24,7 +24,6 @@ def test_builtin_catalog_compiles_all_tasks(project_root: Path) -> None:
 def test_special_dimensions_and_replace_policy(project_root: Path) -> None:
     manager = TaskManager("tasks.yaml", "scenarios.yaml", config_dir=project_root / "simulate_serve" / "config")
     tasks = {task.task_id: task for task in manager.compiled_tasks}
-    assert tasks["F001"].dimension == "文件操作"
     assert tasks["T055"].dimension == "内容载体类型"
     assert "video.free" not in {item.criterion_id for item in tasks["T034"].criteria}
     t034_criteria = {item.criterion_id for item in tasks["T034"].criteria}

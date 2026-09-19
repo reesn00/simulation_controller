@@ -2077,44 +2077,435 @@ tasks:
     - 验证网址可播放
     - 确认剧集完整
     - 记录可播放网址
-- task_id: F001
-  offline_only: true
-  task_type: 文件操作
-  dimension: 文件操作
-  explain: 按日期对桌面截图分组整理并可验证结果
-  scenario: file_operation
-  initial_request: 帮我把桌面上的所有截图按日期整理到不同文件夹
+- task_id: T058
+  task_type: 场景化查询
+  dimension: 角色动机/使用场景
+  explain: 影视从业者（导演风格研究）
+  scenario: rights_and_use_case
+  initial_request: 我是影视从业者，研究周星驰导演风格，想搜索《功夫》合法免费在线资源用于作品分析，需要完整版无删减、画面清晰可逐帧
   intent:
-    goal: 帮我把桌面上的所有截图按日期整理到不同文件夹
+    goal: 我是影视从业者，研究周星驰导演风格，想搜索《功夫》合法免费在线资源用于作品分析，需要完整版无删减、画面清晰可逐帧
     priorities:
     - priority: required
-      requirement: 回复必须说明整理方案或执行结果，包括目标路径、文件数量、是否保留原文件
+      requirement: 回复必须包含可播放网址，注明是否完整无删减、画质可逐帧分析、是否仅限个人研究使用
+  output_contract:
+    format: list
+    min_results: 2
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
   acceptance_criteria:
-  - criterion_id: task.group-by-date
-    item: 按日期分组
-    description: 文件夹必须以日期命名，截图归入对应日期
-    remediation:
-      owner: executor
-      guidance: 文件夹必须以日期命名，截图归入对应日期
-      retryable: true
-  - criterion_id: task.result-verifiable
-    item: 结果可验证
-    description: 执行后需要给出处理了多少文件、目标路径在哪
-    remediation:
-      owner: executor
-      guidance: 执行后需要给出处理了多少文件、目标路径在哪
-      retryable: true
-  - criterion_id: task.f001.outcome
+  - criterion_id: task.t058.outcome
     item: 任务特有目标
-    description: 回复必须说明整理方案或执行结果，包括目标路径、文件数量、是否保留原文件
+    description: 回复必须包含可播放网址，注明是否完整无删减、画质可逐帧分析、是否仅限个人研究使用
     validator: semantic
     remediation:
       owner: executor
-      guidance: 回复必须说明整理方案或执行结果，包括目标路径、文件数量、是否保留原文件
+      guidance: 回复必须包含可播放网址，注明是否完整无删减、画质可逐帧分析、是否仅限个人研究使用
       retryable: true
   reference:
     evaluation_notes:
-    - 识别桌面截图文件
-    - 按修改日期分组
-    - 创建日期文件夹并移动文件
-    - 返回整理摘要
+    - 搜索《功夫》合法免费在线资源
+    - 筛选完整无删减版本
+    - 确认画质可逐帧分析
+    - 标注仅限个人研究使用
+    - 验证可播放
+    - 记录可播放网址
+- task_id: T059
+  task_type: 场景化查询
+  dimension: 角色动机/使用场景
+  explain: 普通上班族（通勤碎片化观看）
+  scenario: media_lookup_standard
+  initial_request: 我是普通上班族，每天地铁通勤一小时，想找适合手机端播放、单集15-30分钟的优质剧集在线免费资源
+  intent:
+    goal: 我是普通上班族，每天地铁通勤一小时，想找适合手机端播放、单集15-30分钟的优质剧集在线免费资源
+    priorities:
+    - priority: required
+      requirement: 回复必须包含适合通勤观看的短剧集或单元剧网址，注明单集时长和移动端兼容性
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.t059.outcome
+    item: 任务特有目标
+    description: 回复必须包含适合通勤观看的短剧集或单元剧网址，注明单集时长和移动端兼容性
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含适合通勤观看的短剧集或单元剧网址，注明单集时长和移动端兼容性
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 筛选适合通勤的短剧集（单集15-30分钟）
+    - 确认移动端播放体验
+    - 搜索合法免费在线资源
+    - 验证可播放
+    - 整理为清单
+- task_id: T060
+  task_type: 场景化查询
+  dimension: 角色动机/使用场景
+  explain: 社交聚会发起人（多人一起看）
+  scenario: rights_and_use_case
+  initial_request: 我想组织朋友家庭聚会一起看老电影《功夫》，需要支持投屏到大屏的合法免费在线资源，并确认仅限家庭或私人场合使用
+  intent:
+    goal: 我想组织朋友家庭聚会一起看老电影《功夫》，需要支持投屏到大屏的合法免费在线资源，并确认仅限家庭或私人场合使用
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可投屏到大屏的播放网址，注明是否支持多人观看、是否仅限家庭或私人场合使用
+  output_contract:
+    format: list
+    min_results: 2
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.t060.outcome
+    item: 任务特有目标
+    description: 回复必须包含可投屏到大屏的播放网址，注明是否支持多人观看、是否仅限家庭或私人场合使用
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可投屏到大屏的播放网址，注明是否支持多人观看、是否仅限家庭或私人场合使用
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《功夫》支持投屏的合法免费在线资源
+    - 确认支持多人同步观看
+    - 标注仅限家庭或私人场合使用
+    - 验证可播放
+    - 整理为清单
+- task_id: T061
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 教育课程
+  scenario: media_lookup_standard
+  initial_request: 我想在线学习 Python 编程，找到 MIT 公开课《计算机科学导论》免费在线播放资源
+  intent:
+    goal: 我想在线学习 Python 编程，找到 MIT 公开课《计算机科学导论》免费在线播放资源
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，注明课程来源（中文字幕或英文字幕）、画质和讲师信息
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  acceptance_criteria:
+  - criterion_id: task.t061.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，注明课程来源（中文字幕或英文字幕）、画质和讲师信息
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，注明课程来源（中文字幕或英文字幕）、画质和讲师信息
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索 MIT 公开课在线播放资源
+    - 确认有字幕（中或英）
+    - 验证画质清晰
+    - 记录讲师信息
+    - 记录可播放网址
+- task_id: T062
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: UGC 短视频
+  scenario: media_lookup_standard
+  initial_request: 我想看最新最火的 UGC 短视频合集，包括美食制作、旅行 vlog、街头采访类内容，单条 5 分钟以内
+  intent:
+    goal: 我想看最新最火的 UGC 短视频合集，包括美食制作、旅行 vlog、街头采访类内容，单条 5 分钟以内
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，注明内容类型（美食、旅行、街头等）、时长和上传者
+  output_contract:
+    format: list
+    min_results: 5
+    count_unit: list_items
+    min_urls: 1
+  acceptance_criteria:
+  - criterion_id: task.t062.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，注明内容类型（美食、旅行、街头等）、时长和上传者
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，注明内容类型（美食、旅行、街头等）、时长和上传者
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索 UGC 短视频合集
+    - 筛选最新最热内容
+    - 按时长筛选（5 分钟以内）
+    - 验证可播放
+    - 整理为清单
+- task_id: T063
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 动漫剧集
+  scenario: media_lookup_standard
+  initial_request: 我想看日本动漫《进击的巨人》全季免费在线播放资源，4季完整
+  intent:
+    goal: 我想看日本动漫《进击的巨人》全季免费在线播放资源，4季完整
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，注明季数集数覆盖（中文字幕）、画质
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.t063.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，注明季数集数覆盖（中文字幕）、画质
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，注明季数集数覆盖（中文字幕）、画质
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《进击的巨人》合法免费在线资源
+    - 确认覆盖全部 4 季
+    - 验证中文字幕
+    - 验证网址可播放
+    - 记录可播放网址
+- task_id: T064
+  task_type: 约束检索
+  dimension: 约束条件
+  explain: 非VIP（无需付费会员即可观看）
+  scenario: media_lookup_standard
+  initial_request: 我想找电视剧《狂飙》全集在线免费观看资源，无需开通 VIP 会员即可直接观看
+  intent:
+    goal: 我想找电视剧《狂飙》全集在线免费观看资源，无需开通 VIP 会员即可直接观看
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，明确标注无需 VIP 或付费会员即可观看，区分 VIP 专享内容
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.no-vip-required
+    item: 无需 VIP
+    description: 不需要付费 VIP 会员即可观看
+    remediation:
+      owner: executor
+      guidance: 必须明确标注无需 VIP 或付费会员，区分 VIP 专享内容
+      retryable: true
+  - criterion_id: task.t064.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，明确标注无需 VIP 或付费会员即可观看，区分 VIP 专享内容
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，明确标注无需 VIP 或付费会员即可观看，区分 VIP 专享内容
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《狂飙》全集在线免费资源
+    - 筛选非 VIP 专享的链接
+    - 验证无需付费即可观看
+    - 标注各链接 VIP 门槛
+    - 记录可播放网址
+- task_id: T065
+  task_type: 约束检索
+  dimension: 约束条件
+  explain: 严格免费（无任何形式费用或后续套路）
+  scenario: media_lookup_standard
+  initial_request: 我想找一部高分国产电影，必须严格免费观看、无需任何形式的费用、会员或后续收费套路
+  intent:
+    goal: 我想找一部高分国产电影，必须严格免费观看、无需任何形式的费用、会员或后续收费套路
+    priorities:
+    - priority: required
+      requirement: 回复必须包含真正免费的播放网址，明确说明免费范围（无广告插入、无后续收费、无试用到期）
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.strictly-free
+    item: 严格免费
+    description: 无任何费用或后续收费套路
+    remediation:
+      owner: executor
+      guidance: 必须明确说明免费范围（无广告插入、无后续收费、无试用到期）
+      retryable: true
+  - criterion_id: task.t065.outcome
+    item: 任务特有目标
+    description: 回复必须包含真正免费的播放网址，明确说明免费范围（无广告插入、无后续收费、无试用到期）
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含真正免费的播放网址，明确说明免费范围（无广告插入、无后续收费、无试用到期）
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索高分国产电影
+    - 筛选真正免费资源
+    - 验证无任何费用或套路
+    - 标注免费范围
+    - 验证可播放
+    - 记录可播放网址
+- task_id: T066
+  task_type: 视频查询
+  dimension: 检索入口/查询策略
+  explain: 平台反向（指定平台内检索）
+  scenario: media_lookup_standard
+  initial_request: 我想在 B 站搜索纪录片《河西走廊》第一季完整版在线免费播放资源，请只在 B 站内找
+  intent:
+    goal: 我想在 B 站搜索纪录片《河西走廊》第一季完整版在线免费播放资源，请只在 B 站内找
+    priorities:
+    - priority: required
+      requirement: 回复必须仅包含 B 站内的播放网址，明确标注是否 B 站官方或 UP 主上传、画质
+  output_contract:
+    format: list
+    min_results: 2
+    count_unit: list_items
+    min_urls: 1
+  acceptance_criteria:
+  - criterion_id: task.platform-only
+    item: 仅限指定平台
+    description: 只在指定平台内检索，不推荐其他平台
+    remediation:
+      owner: executor
+      guidance: 必须明确仅限 B 站资源，不得推荐其他平台
+      retryable: true
+  - criterion_id: task.t066.outcome
+    item: 任务特有目标
+    description: 回复必须仅包含 B 站内的播放网址，明确标注是否 B 站官方或 UP 主上传、画质
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须仅包含 B 站内的播放网址，明确标注是否 B 站官方或 UP 主上传、画质
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索 B 站《河西走廊》资源
+    - 确认仅 B 站资源
+    - 标注来源（官方或 UP 主）
+    - 验证画质清晰
+    - 验证可播放
+    - 记录可播放网址
+- task_id: T067
+  task_type: 视频查询
+  dimension: 检索入口/查询策略
+  explain: 无片名关键词（按主题或类型模糊检索）
+  scenario: media_lookup_standard
+  initial_request: 我想看一部最近口碑不错的国产悬疑电影，不记得具体片名了，请帮我找找在线可看的资源
+  intent:
+    goal: 我想看一部最近口碑不错的国产悬疑电影，不记得具体片名了，请帮我找找在线可看的资源
+    priorities:
+    - priority: required
+      requirement: 回复必须列出近期口碑国产悬疑片候选（含豆瓣或猫眼评分），并给出可播放网址
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.t067.outcome
+    item: 任务特有目标
+    description: 回复必须列出近期口碑国产悬疑片候选（含豆瓣或猫眼评分），并给出可播放网址
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须列出近期口碑国产悬疑片候选（含豆瓣或猫眼评分），并给出可播放网址
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索近期口碑国产悬疑片
+    - 筛选高评分作品
+    - 验证在线可观看资源
+    - 整理为候选清单
+    - 记录可播放网址
+- task_id: T068
+  task_type: 视频查询
+  dimension: 检索入口/查询策略
+  explain: 热度榜单
+  scenario: aggregate_and_compare
+  initial_request: 我想看最近微博或抖音热度榜单上排名前 10 的华语电影，要求在线可看
+  intent:
+    goal: 我想看最近微博或抖音热度榜单上排名前 10 的华语电影，要求在线可看
+    priorities:
+    - priority: required
+      requirement: 回复必须以表格列出至少 10 部华语电影（片名、热度排名、播放网址），数据来源标注
+  output_contract:
+    format: table
+    min_results: 10
+    count_unit: table_rows
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.t068.outcome
+    item: 任务特有目标
+    description: 回复必须以表格列出至少 10 部华语电影（片名、热度排名、播放网址），数据来源标注
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须以表格列出至少 10 部华语电影（片名、热度排名、播放网址），数据来源标注
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 获取微博或抖音热度榜 TOP10
+    - 筛选华语电影
+    - 逐部搜索在线资源
+    - 验证可播放
+    - 整理为热度榜单表格

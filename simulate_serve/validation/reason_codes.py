@@ -66,14 +66,6 @@ DETERMINISTIC_REASON_CODES: Final[frozenset[str]] = frozenset({
     "MEDIA_MISSING",
     "MEDIA_PLAYBACK_UNCONFIRMED",
     "TOOL_ERROR",
-    # tool_evidence track. No filesystem.inspect provider exists yet, so these
-    # are declared-but-pending: the file_operation scenario reaches them only
-    # once a read-only filesystem evidence provider is registered. They stay
-    # in the deterministic set (their criteria are tool_evidence), but a
-    # provider implementation is a prerequisite for any real emission.
-    "PARTIAL_FILES",            # file evidence: partial success
-    "PATH_CONFLICT",            # file evidence: name collision
-    "UNCONFIRMED_DELETE",       # file evidence: destructive op without consent
 })
 
 

@@ -336,6 +336,148 @@ class TestF2ThinkingOnlyTail:
 
 
 # ---------------------------------------------------------------------------
+# F3-E fix: 维度 2 豁免 — 未配对 toolcall 之后有完整收尾 text → 不算 incomplete
+# ---------------------------------------------------------------------------
+
+
+class TestF3EMismatchWithCompleteClose:
+    """复现链 (2026-09-19 T001 03f3f0fd): 31 个 toolcall / 30 个 toolresult,
+    但末尾 text 块以结构闭合符号 (⟦...⟧) 收口, agent 主动放弃等结果.
+    修复: 维度 2 加豁免, 末尾 text 含完整收尾信号时跳过维度 2.
+    """
+
+    def test_unpaired_toolcall_followed_by_complete_text_not_flagged(self):
+        """未配对 toolcall + 末尾结构闭合 text → 不算 incomplete."""
+        s = _session(
+            ("user", [_text("query")]),
+            ("assistant", [
+                _tc("browser", "tc1"),
+                _tr("tc1"),
+                _tc("execute_shell_command", "tc2"),  # 未配对 toolcall
+                _thinking("系统拦下了 del, 决定放弃重试"),
+                _thinking("现在给出最终回复"),
+                _text(
+                    "删除临时文件被系统拦下了（del 被判为高危），"
+                    "我留在工作区里没管它——下面说结果。\n\n"
+                    "## 结论\n\n"
+                    "央视网 (CCTV) 有正版 80 集。\n\n"
+                    "⟦ T001 免费全集｜已完成：给出央视网入口; 已排除盗版;"
+                    "待办: 海外 IP 下央视网被拦需替代渠道｜锚点: VIDA1354531513618469 ⟧"
+                ),
+            ]),
+        )
+        diag = _detect_incomplete_session(s)
+        # F3-E: 维度 2 被豁免, 维度 3 也由 F3-D 兜底 → 应返回 None
+        assert diag is None, f"期望 None, 实际 {diag}"
+
+    def test_unpaired_toolcall_followed_by_complete_text_via_keywords(self):
+        """未配对 toolcall + 末尾含 '下一步' 等语义收尾词 → 不算 incomplete."""
+        s = _session(
+            ("user", [_text("query")]),
+            ("assistant", [
+                _tc("browser", "tc1"),
+                _tr("tc1"),
+                _tc("execute_shell_command", "tc2"),  # 未配对
+                _text("排查完成。下一步：等用户确认是否需要建定时任务监控。"),
+            ]),
+        )
+        diag = _detect_incomplete_session(s)
+        assert diag is None, f"期望 None, 实际 {diag}"
+
+    def test_unpaired_toolcall_followed_by_markdown_report_not_flagged(self):
+        """未配对 toolcall + 末尾 markdown 报告 (表格+分隔线) → 不算 incomplete."""
+        s = _session(
+            ("user", [_text("query")]),
+            ("assistant", [
+                _tc("browser", "tc1"),
+                _tr("tc1"),
+                _tc("execute_shell_command", "tc2"),  # 未配对
+                _text(
+                    "## 结果\n\n"
+                    "| 平台 | 状态 |\n|---|---|\n"
+                    "| A | OK |\n| B | 404 |\n\n"
+                    "---"
+                ),
+            ]),
+        )
+        diag = _detect_incomplete_session(s)
+        assert diag is None, f"期望 None, 实际 {diag}"
+
+    def test_unpaired_toolcall_with_incomplete_text_still_flagged(self):
+        """未配对 toolcall + 末尾是截断 text (无收尾信号) → 仍判 incomplete."""
+        s = _session(
+            ("user", [_text("query")]),
+            ("assistant", [
+                _tc("browser", "tc1"),
+                _tr("tc1"),
+                _tc("execute_shell_command", "tc2"),  # 未配对
+                # 长文无标点 + 无结构闭合 + 无语义收尾词
+                _text(
+                    "let me first clarify one thing about the request the user "
+                    "wants free full streaming links for unlicensed content"
+                ),
+            ]),
+        )
+        diag = _detect_incomplete_session(s)
+        assert diag is not None
+        # 维度 2 命中 (无豁免信号)
+        assert any(
+            r.startswith("toolcall_result_mismatch") for r in diag["reasons"]
+        )
+
+    def test_balanced_toolcall_text_incomplete_still_flagged(self):
+        """配对平衡 (无维度 2 触发) 但末尾 text 不完整 → 维度 3 仍命中.
+
+        防止 F3-E 误改: 豁免只针对维度 2, 维度 3 由 _is_text_incomplete
+        独立判定. 这里验证修复未影响维度 3 的硬指标路径.
+        """
+        s = _session(
+            ("user", [_text("query")]),
+            ("assistant", [
+                _tc("browser", "tc1"),
+                _tr("tc1"),
+                _text(
+                    "let me first clarify one thing about the request the user "
+                    "wants free full streaming links"
+                ),
+            ]),
+        )
+        diag = _detect_incomplete_session(s)
+        assert diag is not None
+        # 维度 3 触发 (末尾 text 启发式判不完整)
+        assert any(
+            r.startswith("last_text_incomplete") for r in diag["reasons"]
+        )
+        # 维度 2 不触发 (1 vs 1 配对)
+        assert not any(
+            r.startswith("toolcall_result_mismatch") for r in diag["reasons"]
+        )
+
+    def test_real_t001_artifact_reproduction(self):
+        """复现 T001 03f3f0fd 实际结构: 末尾 toolcall (del) 未配对 + 完整 text 收尾."""
+        s = _session(
+            ("user", [_text("找到电视剧《武林外传》全集在线免费观看的可播放网址")]),
+            ("assistant", [
+                _thinking("整理已验证的事实清单"),
+                _tc("execute_shell_command", "del-cleanup"),  # 未配对
+                _thinking("del 被系统拦下, 决定放弃重试"),
+                _thinking("现在写最终回复"),
+                _text(
+                    "删除临时文件被系统拦下了（`del` 被判为高危，审批超时），"
+                    "我留在工作区里没管它——下面说结果。\n\n"
+                    "## 能免费看全集的正版网址：央视网\n\n"
+                    "https://tv.cctv.com/2012-12-03/VIDA1354531513618469.shtml\n\n"
+                    "⟦ 武林外传免费全集｜已完成: 给出央视网入口; 已排除盗版; "
+                    "待办: 海外 IP 需替代渠道｜锚点: VIDA1354531513618469 ⟧"
+                ),
+            ]),
+        )
+        diag = _detect_incomplete_session(s)
+        # F3-E + F3-D 联合修复后: 维度 2 豁免, 维度 3 由结构闭合绕过
+        assert diag is None, f"期望 None, 实际 {diag}"
+
+
+# ---------------------------------------------------------------------------
 # _append_incomplete_queue jsonl write
 # ---------------------------------------------------------------------------
 

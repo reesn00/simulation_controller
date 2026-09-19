@@ -748,10 +748,30 @@ def _detect_incomplete_session(session: Session) -> dict | None:
         reasons.append(f"last_assistant_block_is_toolcall:{last_name}")
 
     # 维度 2: toolcall 总数 ≠ toolresult 总数 (尾部配对缺失)
+    # F3-E fix: 当未配对 toolcall 之后紧跟完整收尾的 text 块时, 视为 agent
+    # 主动放弃等结果 (例如高危指令被 runtime 拦截后放弃重试), 不算 incomplete.
+    # 这种样本是 SFT 想要的"健康妥协"模式, 不应被硬指标误杀.
+    # 豁免条件: 末尾是 text, 且 text 含结构闭合/语义收尾信号 (复用 F3-D 启发式).
     if total_toolcall > total_toolresult:
-        reasons.append(
-            f"toolcall_result_mismatch:{total_toolcall}_vs_{total_toolresult}"
-        )
+        skip_mismatch_for_complete_close = False
+        if last_t == "text":
+            text_content = (
+                last_block.get("text", "")
+                if isinstance(last_block, dict)
+                else getattr(last_block, "text", "")
+            )
+            if _has_complete_close_signal(text_content):
+                skip_mismatch_for_complete_close = True
+                log.info(
+                    "session %s: toolcall/result mismatch (%d vs %d) but last text "
+                    "has complete-close signal, treating as agent-intentional closure",
+                    getattr(last_asst, "id", "?"),
+                    total_toolcall, total_toolresult,
+                )
+        if not skip_mismatch_for_complete_close:
+            reasons.append(
+                f"toolcall_result_mismatch:{total_toolcall}_vs_{total_toolresult}"
+            )
 
     # 维度 3: 末尾 assistant text 不构成完整回复 (启发式)
     last_text_block = None
@@ -909,6 +929,26 @@ def _has_structural_close(s: str) -> bool:
             # 必须末尾或近末尾是 close_b 才算完整收尾
             if tail.endswith(close_b) or close_b in tail[-10:]:
                 return True
+    return False
+
+
+def _has_complete_close_signal(s: str) -> bool:
+    """F3-E fix: 弱化版的"完整收尾"检测, 用于维度 2 豁免判定.
+
+    与 _has_structural_close 区别: 此函数判断"text 末尾是否有清晰收尾",
+    放宽条件 (因为用于豁免一个本来不完全的硬指标, 不能误放真截断).
+    比 _is_text_incomplete 更宽松: 任何结构闭合或语义收尾词即视为收口.
+
+    注意: 不设最短长度门槛. 短文本如 "排查完成。下一步: ..." 虽 < 30 字符,
+    但含明确语义收尾词, 也应视为完整收口 (因为有结构化的"完成/下一步"信号).
+    """
+    if not s:
+        return False
+    if _has_structural_close(s):
+        return True
+    tail_window = s[-100:]
+    if any(tok in tail_window for tok in _COMPLETE_TAIL_TOKENS):
+        return True
     return False
 
 

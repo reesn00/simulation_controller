@@ -116,13 +116,13 @@ GDR 三级精修（`obs_denoiser` / `thought_refactor` / `tool_fixer`）后的 S
 ## 常用命令
 
 ```powershell
-# 验证 58 个内置任务，不连接模型、远端 Agent 或公网
+# 验证 68 个内置任务，不连接模型、远端 Agent 或公网
 python -m simulate_serve --validate-config
 
 # 检查全部配置工具并打印 READY/DISABLED/失败原因
 python -m simulate_serve --check-tools
 
-# 运行任务；默认跳过 offline_only 任务（T052/T053/F001），如需包含加 --include-offline
+# 运行任务；默认跳过 offline_only 任务（T052/T053），如需包含加 --include-offline
 python -m simulate_serve --limit 1
 
 # 指定任务运行（逗号分隔；显式指定视为用户意图，跳过 offline 过滤与 unready 丢弃）
@@ -151,9 +151,9 @@ Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或�
 - POST 结果不明且远端没有幂等键时不会自动重复提交。
 - 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
 - 审计数据保存所有 Run；蒸馏数据只导出干净的成功对话。
-- 内置 Catalog 使用 Schema v2：58 个 Task 全部关联 11 个对话策略 Scenario。
+- 内置 Catalog 使用 Schema v2：68 个 Task 全部关联 10 个对话策略 Scenario。
 - `test_fixture` 仅用于本地离线用例，不进入远端首轮请求、交互 Prompt 或 Semantic Judge。
-- 标记 `offline_only` 的任务默认不进入线上批次（需 `--include-offline`）：fixture 驱动的环境异常任务（T052/T053）与本地无对应取证工具的任务（F001）。
+- 标记 `offline_only` 的任务默认不进入线上批次（需 `--include-offline`）：fixture 驱动的环境异常任务（T052/T053）。
 - 放弃预检（AGENT_DECLINED）在验证未通过之后才执行，且可通过场景 `blocked_action: no_decline_check` 关闭；"拒绝/澄清/诚实降级"即任务目标的场景均已关闭。
 - 未达标反馈由 Criterion remediation 生成，只追问远端可以修复的差量缺口。
 - Trajectory 归档源路径固定为 `~/.qwenpaw/workspaces/{agent_id}/trajectory/{session_id}.jsonl`；不做 `sessions/console` 目录兜底探测。QwenPaw 须将 trajectory 写入此路径，archiver 才能复制到 `output/agent_trajectory/`。

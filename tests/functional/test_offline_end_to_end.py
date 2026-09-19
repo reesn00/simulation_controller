@@ -66,24 +66,6 @@ async def test_catalog_runtime_validation_repository_export(project_root: Path, 
 
 @pytest.mark.asyncio
 @pytest.mark.functional
-async def test_file_operation_self_report_is_inconclusive_without_evidence_provider(project_root: Path) -> None:
-    manager = TaskManager("tasks.yaml", "scenarios.yaml", config_dir=project_root / "simulate_serve" / "config")
-    task = next(item for item in manager.compiled_tasks if item.task_id == "F001")
-    reply = "已把桌面截图按日期整理完成，共处理 8 个文件。"
-    runtime = TaskRuntime(
-        ScriptedExecutor([reply]),
-        DeterministicInteractionActor(),
-        ValidationPipeline(judge=ScriptedSemanticJudge()),
-    )
-
-    run = await runtime.run(task)
-
-    assert run.state is RunState.INCONCLUSIVE
-    assert any(item.reason_code == "TOOL_UNAVAILABLE" for item in run.validation_rounds[-1].criteria)
-
-
-@pytest.mark.asyncio
-@pytest.mark.functional
 async def test_v2_fixture_is_private_and_semantic_gap_drives_offline_followup(project_root: Path) -> None:
     class SequentialJudge:
         def __init__(self) -> None:

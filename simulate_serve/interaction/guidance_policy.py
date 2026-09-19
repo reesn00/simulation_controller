@@ -56,9 +56,6 @@ _NATURAL_MESSAGES = {
     "MEDIA_MISSING": "页面能开，但没看到能播的正片，再确认一下。",
     "MEDIA_PLAYBACK_UNCONFIRMED": "我还是不能确认视频真的开始播了，换个能当场验证的。",
     "TOOL_ERROR": "工具出问题就直说，别拿编的结果糊弄我。",
-    "PARTIAL_FILES": "到底处理了多少个、放到哪里了？说清楚。",
-    "PATH_CONFLICT": "有重名冲突吧？你打算怎么处理，先告诉我。",
-    "UNCONFIRMED_DELETE": "删东西之前得先问我一声，说明影响。",
     "TOOL_REPETITIVE": "你一直在重复同一个搜索，先把能确认的链接发我，剩下的不要了。",
 }
 
