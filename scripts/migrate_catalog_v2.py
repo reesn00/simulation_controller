@@ -22,19 +22,24 @@ SCENARIOS: dict[str, set[str]] = {
         "T001", "T002", "T003", "T004", "T005", "T011", "T012", "T013", "T014", "T015",
         "T021", "T022", "T023", "T024", "T028", "T054", "T056", "T057",
         "T059", "T061", "T062", "T063", "T064", "T065", "T066", "T067",
+        "E001", "E002", "E003", "E004", "E005", "E006", "E007", "E008",
+        "E013", "E014", "E015", "E016", "E017",
+        "E021", "E022", "E023", "E025", "E029",
     },
     "aggregate_and_compare": {
         "T006", "T007", "T008", "T009", "T010", "T016", "T017", "T018", "T019", "T020", "T029",
         "T068",
+        "E009", "E010", "E011", "E012", "E018", "E019", "E020", "E026",
     },
     "verified_resource_lookup": {"T026", "T043", "T044", "T045", "T050"},
     "clarification_required": {"T040", "T041", "T042", "T055"},
-    "fact_correction": {"T034", "T035", "T036"},
+    "fact_correction": {"T034", "T035", "T036", "E030"},
     "constraint_conflict": {"T025", "T037", "T038", "T039"},
     "partial_result_and_degradation": {"T049", "T051"},
     "tool_failure_recovery": {"T052", "T053"},
     "policy_boundary": {"T046", "T047", "T048"},
-    "rights_and_use_case": {"T027", "T030", "T031", "T032", "T033", "T058", "T060"},
+    "rights_and_use_case": {"T027", "T030", "T031", "T032", "T033", "T058", "T060",
+                            "E024", "E027", "E028"},
 }
 
 
@@ -92,6 +97,10 @@ URL_TASKS = {
     "T021", "T022", "T023", "T024", "T026", "T027", "T028", "T029", "T030", "T031",
     "T032", "T033", "T043", "T044", "T045", "T049", "T050", "T051", "T054", "T056", "T057",
     "T058", "T059", "T060", "T061", "T062", "T063", "T064", "T065", "T066", "T067", "T068",
+    "E001", "E002", "E003", "E004", "E005", "E006", "E007", "E008",
+    "E009", "E010", "E011", "E012", "E013", "E014", "E015", "E016", "E017", "E018",
+    "E019", "E020", "E021", "E022", "E023", "E024", "E025", "E026", "E027", "E028",
+    "E029", "E030",
 }
 
 
@@ -249,7 +258,7 @@ def main() -> None:
         tasks = [refine_v2_task(item) for item in raw["tasks"]]
     else:
         raise SystemExit(f"Unsupported built-in catalog version: {version}")
-    if len(tasks) != 68 or len({item["task_id"] for item in tasks}) != 68:
+    if len(tasks) != 98 or len({item["task_id"] for item in tasks}) != 98:
         raise ValueError("Task count or ID uniqueness changed during migration")
     document = {"schema_version": "2", "tasks": tasks}
     TASKS_PATH.write_text(

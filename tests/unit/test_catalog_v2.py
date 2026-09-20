@@ -126,7 +126,7 @@ def test_builtin_v2_catalog_has_no_legacy_validation_rules(project_root: Path) -
         project_root / "simulate_serve" / "config" / "scenarios.yaml",
     )
     assert bundle.schema_version == "2"
-    assert len(bundle.tasks) == 68
+    assert len(bundle.tasks) == 98
     assert len(bundle.scenarios) == 10
     assert all(task.scenario for task in bundle.tasks)
     assert all(task.validation_rules is None for task in bundle.tasks)

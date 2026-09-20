@@ -1,12 +1,42 @@
 @echo off
-rem orchestration/run.bat - Windows wrapper
+rem ============================================================================
+rem orchestration/run.bat - Windows wrapper for the three-stage pipeline.
 rem
-rem Usage:
-rem   run.bat start [--detach|--dry-run]
+rem Forwards every %* argument to:  uv run python -m orchestration %*
+rem (or system python when uv is not installed).
+rem
+rem IMPORTANT: this file is kept ASCII-only. Windows cmd.exe locks its code
+rem page when opening a .bat file, so non-ASCII comments in rem lines are
+rem would be misdecoded by the active code page (e.g. 936 / GBK) and surface
+rem as bogus "is not recognized as an internal or external command" errors.
+rem Detailed usage notes (in Chinese) live in orchestration/README.md.
+rem
+rem Quick reference:
+rem   run.bat start --all-tasks --detach
+rem   run.bat start --tasks T001,T003
+rem   run.bat start --tasks E001,E002,E003 --batch-size 3
+rem   run.bat start --all-tasks --dry-run
 rem   run.bat status
-rem   run.bat stop
-rem   run.bat replay [--batch N]
-rem   run.bat --config PATH <subcmd> ...
+rem   run.bat stop --timeout 30
+rem   run.bat replay --batch 7
+rem
+rem Subcommands and options:
+rem   start [--detach|--foreground] [--dry-run] [--tasks T1,T2,... | --all-tasks]
+rem         [--stay] [--batch-size N] [--exit-when-done]
+rem   status
+rem   stop [--timeout SECONDS]
+rem   replay [--batch BATCH_ID]
+rem
+rem Global options (before the subcommand):
+rem   --config PATH     YAML path; defaults to <repo>/config/config.yaml.
+rem                     Override with the SIMCTL_CONFIG env var.
+rem
+rem Notes vs simulate_serve CLI:
+rem   - run.bat does NOT recognise --include-offline. T052/T053 (offline_only)
+rem     are submitted unconditionally; skip them via explicit --tasks lists.
+rem   - simulate_serve filters offline_only by default; orchestration does not
+rem     (see orchestration/producer_simulate.py).
+rem ============================================================================
 
 setlocal
 

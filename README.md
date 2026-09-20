@@ -116,7 +116,7 @@ GDR 三级精修（`obs_denoiser` / `thought_refactor` / `tool_fixer`）后的 S
 ## 常用命令
 
 ```powershell
-# 验证 68 个内置任务，不连接模型、远端 Agent 或公网
+# 验证 98 个内置任务，不连接模型、远端 Agent 或公网
 python -m simulate_serve --validate-config
 
 # 检查全部配置工具并打印 READY/DISABLED/失败原因
@@ -151,7 +151,7 @@ Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或�
 - POST 结果不明且远端没有幂等键时不会自动重复提交。
 - 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
 - 审计数据保存所有 Run；蒸馏数据只导出干净的成功对话。
-- 内置 Catalog 使用 Schema v2：68 个 Task 全部关联 10 个对话策略 Scenario。
+- 内置 Catalog 使用 Schema v2：68 个训练任务加 30 个分布外评估任务（E001-E030），共 98 个 Task 全部关联 10 个对话策略 Scenario。
 - `test_fixture` 仅用于本地离线用例，不进入远端首轮请求、交互 Prompt 或 Semantic Judge。
 - 标记 `offline_only` 的任务默认不进入线上批次（需 `--include-offline`）：fixture 驱动的环境异常任务（T052/T053）。
 - 放弃预检（AGENT_DECLINED）在验证未通过之后才执行，且可通过场景 `blocked_action: no_decline_check` 关闭；"拒绝/澄清/诚实降级"即任务目标的场景均已关闭。

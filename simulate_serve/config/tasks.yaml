@@ -2509,3 +2509,1125 @@ tasks:
     - 逐部搜索在线资源
     - 验证可播放
     - 整理为热度榜单表格
+- task_id: E001
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 剧情电影资源查询（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想看姜文执导的电影《让子弹飞》高清免费在线可播放的网址
+  intent:
+    goal: 我想看姜文执导的电影《让子弹飞》高清免费在线可播放的网址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整可访问的播放网址，注明画质和版本
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e001.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整可访问的播放网址，注明画质和版本
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整可访问的播放网址，注明画质和版本
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《让子弹飞》免费在线资源
+    - 验证网址可播放
+    - 确认画质清晰
+    - 记录可播放网址
+- task_id: E002
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 古装电视剧全集资源查询（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想在线观看电视剧《琅琊榜》全集，需要可正常播放的网址
+  intent:
+    goal: 我想在线观看电视剧《琅琊榜》全集，需要可正常播放的网址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整的播放网址，并说明是否全集可看
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e002.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整的播放网址，并说明是否全集可看
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整的播放网址，并说明是否全集可看
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《琅琊榜》全集资源
+    - 验证网址可播放
+    - 确认剧集完整
+    - 记录可播放网址
+- task_id: E003
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 自然纪录片资源查询（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想看 BBC 纪录片《地球脉动》第一季在线免费观看的可播放网址
+  intent:
+    goal: 我想看 BBC 纪录片《地球脉动》第一季在线免费观看的可播放网址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整可访问的播放网址，注明季数集数和清晰度
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e003.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整可访问的播放网址，注明季数集数和清晰度
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整可访问的播放网址，注明季数集数和清晰度
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《地球脉动》在线免费资源
+    - 确认是第一季内容
+    - 验证网址可播放
+    - 记录可播放网址
+- task_id: E004
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 吉卜力动画电影（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想看宫崎骏导演动画电影《千与千寻》合法在线免费观看的高清网址
+  intent:
+    goal: 我想看宫崎骏导演动画电影《千与千寻》合法在线免费观看的高清网址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整可访问的播放网址，注明版本（修复版或原版）和清晰度
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e004.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整可访问的播放网址，注明版本（修复版或原版）和清晰度
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整可访问的播放网址，注明版本（修复版或原版）和清晰度
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《千与千寻》在线免费资源
+    - 区分修复版与原版
+    - 验证网址可播放
+    - 记录可播放网址及版本信息
+- task_id: E005
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 音乐选秀综艺节目（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想看综艺节目《中国好声音》历届在线免费观看完整期数的可播放网址
+  intent:
+    goal: 我想看综艺节目《中国好声音》历届在线免费观看完整期数的可播放网址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整可访问的播放网址，注明季期数覆盖和清晰度
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e005.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整可访问的播放网址，注明季期数覆盖和清晰度
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整可访问的播放网址，注明季期数覆盖和清晰度
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《中国好声音》免费在线资源
+    - 确认期数覆盖完整
+    - 验证网址可播放
+    - 记录可播放网址及期数
+- task_id: E006
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 国际短片合集（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找《戛纳最佳短片2025》合集在线免费观看的可播放网址
+  intent:
+    goal: 我想找《戛纳最佳短片2025》合集在线免费观看的可播放网址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整可访问的播放网址，注明包含的短片数量及是否完整
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e006.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整可访问的播放网址，注明包含的短片数量及是否完整
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整可访问的播放网址，注明包含的短片数量及是否完整
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索 2025 戛纳最佳短片资源
+    - 确认合集完整性
+    - 验证网址可播放
+    - 记录可播放网址及短片列表
+- task_id: E007
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: 高校公开课（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想在线学习积极心理学，找到哈佛大学公开课《幸福课》免费在线播放资源
+  intent:
+    goal: 我想在线学习积极心理学，找到哈佛大学公开课《幸福课》免费在线播放资源
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，注明课程来源（中文字幕或英文字幕）、画质和讲师信息
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  acceptance_criteria:
+  - criterion_id: task.e007.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，注明课程来源（中文字幕或英文字幕）、画质和讲师信息
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，注明课程来源（中文字幕或英文字幕）、画质和讲师信息
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索哈佛《幸福课》在线播放资源
+    - 确认有字幕（中或英）
+    - 验证画质清晰
+    - 记录讲师信息
+    - 记录可播放网址
+- task_id: E008
+  task_type: 视频查询
+  dimension: 内容载体类型
+  explain: UGC 美食类短视频（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想看最新美食制作类 UGC 短视频合集，单条 3 分钟以内
+  intent:
+    goal: 我想看最新美食制作类 UGC 短视频合集，单条 3 分钟以内
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，注明内容主题、时长和上传者
+  output_contract:
+    format: list
+    min_results: 5
+    count_unit: list_items
+    min_urls: 1
+  acceptance_criteria:
+  - criterion_id: task.e008.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，注明内容主题、时长和上传者
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，注明内容主题、时长和上传者
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索美食类 UGC 短视频合集
+    - 筛选最新内容
+    - 按时长筛选（3 分钟以内）
+    - 验证可播放
+    - 整理为清单
+- task_id: E009
+  task_type: 聚合检索
+  dimension: 检索入口/查询策略
+  explain: 按导演聚合（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想找到王家卫执导的所有电影合法在线播放渠道，按年份整理成目录
+  intent:
+    goal: 我想找到王家卫执导的所有电影合法在线播放渠道，按年份整理成目录
+    priorities:
+    - priority: required
+      requirement: 回复必须按年份排列，包含电影名、年份、播放网址三列，至少覆盖5部作品
+  output_contract:
+    format: table
+    min_results: 5
+    count_unit: table_rows
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e009.outcome
+    item: 任务特有目标
+    description: 回复必须按年份排列，包含电影名、年份、播放网址三列，至少覆盖5部作品
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须按年份排列，包含电影名、年份、播放网址三列，至少覆盖5部作品
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 确认王家卫执导的完整片单
+    - 逐部搜索免费在线资源
+    - 验证网址可播放
+    - 按年份排序整理为表格
+- task_id: E010
+  task_type: 聚合检索
+  dimension: 检索入口/查询策略
+  explain: 历届榜单（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想找到奥斯卡历届最佳影片（近20年）中可合法免费观看的电影播放地址
+  intent:
+    goal: 我想找到奥斯卡历届最佳影片（近20年）中可合法免费观看的电影播放地址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含至少10部奥斯卡最佳影片的免费在线播放地址，注明年份和获奖信息
+  output_contract:
+    format: list
+    min_results: 10
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e010.outcome
+    item: 任务特有目标
+    description: 回复必须包含至少10部奥斯卡最佳影片的免费在线播放地址，注明年份和获奖信息
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含至少10部奥斯卡最佳影片的免费在线播放地址，注明年份和获奖信息
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 获取近20年奥斯卡最佳影片名单
+    - 逐部搜索免费在线资源
+    - 验证网址可播放
+    - 整理为清单并注明年份
+- task_id: E011
+  task_type: 聚合检索
+  dimension: 检索入口/查询策略
+  explain: 按导演聚合（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想找到张艺谋执导的所有电影合法在线播放渠道，按年代整理成目录
+  intent:
+    goal: 我想找到张艺谋执导的所有电影合法在线播放渠道，按年代整理成目录
+    priorities:
+    - priority: required
+      requirement: 回复必须按年代排列，包含电影名、年代、播放网址三列，至少覆盖5部作品
+  output_contract:
+    format: table
+    min_results: 5
+    count_unit: table_rows
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e011.outcome
+    item: 任务特有目标
+    description: 回复必须按年代排列，包含电影名、年代、播放网址三列，至少覆盖5部作品
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须按年代排列，包含电影名、年代、播放网址三列，至少覆盖5部作品
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 确认张艺谋执导的完整片单
+    - 逐部搜索免费在线资源
+    - 验证网址可播放
+    - 按年代排序整理为表格
+- task_id: E012
+  task_type: 聚合检索
+  dimension: 检索入口/查询策略
+  explain: 按奖项聚合（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想找到近10届戛纳金棕榈奖最佳影片的合法在线免费观看地址
+  intent:
+    goal: 我想找到近10届戛纳金棕榈奖最佳影片的合法在线免费观看地址
+    priorities:
+    - priority: required
+      requirement: 回复必须列出至少5部金棕榈最佳影片及其免费在线播放地址，注明获奖年份
+  output_contract:
+    format: list
+    min_results: 5
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e012.outcome
+    item: 任务特有目标
+    description: 回复必须列出至少5部金棕榈最佳影片及其免费在线播放地址，注明获奖年份
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须列出至少5部金棕榈最佳影片及其免费在线播放地址，注明获奖年份
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 查询近10届戛纳金棕榈最佳影片名单
+    - 逐部搜索免费在线资源
+    - 验证网址可播放
+    - 整理为清单并标注获奖年份
+- task_id: E013
+  task_type: 多语检索
+  dimension: 语言/地域
+  explain: 字幕约束（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找电影《让子弹飞》带日语字幕的合法在线播放渠道
+  intent:
+    goal: 我想找电影《让子弹飞》带日语字幕的合法在线播放渠道
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，明确标注为日语字幕版本
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e013.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，明确标注为日语字幕版本
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，明确标注为日语字幕版本
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《让子弹飞》带日语字幕的在线资源
+    - 确认字幕为日语
+    - 验证网址可播放
+    - 记录可播放网址
+- task_id: E014
+  task_type: 约束检索
+  dimension: 约束条件
+  explain: 高画质约束（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找电影《大话西游之大圣娶亲》蓝光画质以上的合法免费观看地址
+  intent:
+    goal: 我想找电影《大话西游之大圣娶亲》蓝光画质以上的合法免费观看地址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，并注明画质为蓝光或以上
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e014.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，并注明画质为蓝光或以上
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，并注明画质为蓝光或以上
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《大话西游之大圣娶亲》在线免费资源
+    - 筛选蓝光及以上画质
+    - 验证网址可播放且画质达标
+    - 记录可播放网址及画质
+- task_id: E015
+  task_type: 约束检索
+  dimension: 约束条件
+  explain: 语言版本约束（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找电影《无间道》港版原声（粤语）在线免费播放链接
+  intent:
+    goal: 我想找电影《无间道》港版原声（粤语）在线免费播放链接
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，并明确标注为粤语原声版本
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e015.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，并明确标注为粤语原声版本
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，并明确标注为粤语原声版本
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《无间道》港版粤语原声在线资源
+    - 确认为粤语而非国语配音
+    - 验证网址可播放
+    - 记录可播放网址及语言版本
+- task_id: E016
+  task_type: 约束检索
+  dimension: 约束条件
+  explain: 设备适配约束（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找电影《霸王别姬》可在智能电视端流畅播放的合法免费观看网站
+  intent:
+    goal: 我想找电影《霸王别姬》可在智能电视端流畅播放的合法免费观看网站
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，并注明是否支持智能电视端播放
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e016.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，并注明是否支持智能电视端播放
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，并注明是否支持智能电视端播放
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《霸王别姬》免费在线资源
+    - 筛选支持智能电视端播放的站点
+    - 验证电视端可正常加载
+    - 记录可播放网址及适配情况
+- task_id: E017
+  task_type: 约束检索
+  dimension: 约束条件
+  explain: 访问门槛约束（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找电影《哪吒之魔童降世》无需注册即可直接观看的在线免费资源
+  intent:
+    goal: 我想找电影《哪吒之魔童降世》无需注册即可直接观看的在线免费资源
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，并确认无需注册或登录即可观看
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e017.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，并确认无需注册或登录即可观看
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，并确认无需注册或登录即可观看
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《哪吒之魔童降世》免费在线资源
+    - 筛选无需注册的站点
+    - 验证可直接播放
+    - 记录可播放网址及访问条件
+- task_id: E018
+  task_type: 目录整理
+  dimension: 输出形式/整理粒度
+  explain: 结构化对比输出（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想搜索《让子弹飞》合法免费在线资源，整理为含平台名、画质、字幕的对比表格
+  intent:
+    goal: 我想搜索《让子弹飞》合法免费在线资源，整理为含平台名、画质、字幕的对比表格
+    priorities:
+    - priority: required
+      requirement: 回复必须以表格形式呈现，包含平台名、画质、字幕三列，至少3行数据
+  output_contract:
+    format: table
+    min_results: 3
+    count_unit: table_rows
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e018.outcome
+    item: 任务特有目标
+    description: 回复必须以表格形式呈现，包含平台名、画质、字幕三列，至少3行数据
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须以表格形式呈现，包含平台名、画质、字幕三列，至少3行数据
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 网络搜索《让子弹飞》多个免费在线资源
+    - 记录各平台信息
+    - 验证网址可播放
+    - 整理为对比表格
+- task_id: E019
+  task_type: 目录整理
+  dimension: 输出形式/整理粒度
+  explain: 批量+分类输出（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想搜索10部高分华语剧情片的合法免费在线播放渠道，按年代分类整理为策展目录
+  intent:
+    goal: 我想搜索10部高分华语剧情片的合法免费在线播放渠道，按年代分类整理为策展目录
+    priorities:
+    - priority: required
+      requirement: 回复必须包含至少10部影片，按年代（90年代/00年代/10年代等）分类，含播放地址
+  output_contract:
+    format: table
+    min_results: 10
+    count_unit: table_rows
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e019.outcome
+    item: 任务特有目标
+    description: 回复必须包含至少10部影片，按年代（90年代/00年代/10年代等）分类，含播放地址
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含至少10部影片，按年代（90年代/00年代/10年代等）分类，含播放地址
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 确定10部高分华语剧情片
+    - 逐部搜索免费在线资源
+    - 按年代分类
+    - 整理为策展目录
+- task_id: E020
+  task_type: 目录整理
+  dimension: 输出形式/整理粒度
+  explain: 地域分组输出（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想搜索《大话西游》合法免费在线资源，按地区可用性（大陆/港台/海外）分组整理
+  intent:
+    goal: 我想搜索《大话西游》合法免费在线资源，按地区可用性（大陆/港台/海外）分组整理
+    priorities:
+    - priority: required
+      requirement: 回复必须按大陆、港台、海外三组分类，每组至少1个可用播放地址
+  output_contract:
+    format: table
+    min_results: 3
+    count_unit: table_rows
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e020.outcome
+    item: 任务特有目标
+    description: 回复必须按大陆、港台、海外三组分类，每组至少1个可用播放地址
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须按大陆、港台、海外三组分类，每组至少1个可用播放地址
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《大话西游》免费在线资源
+    - 判断各地区可访问性
+    - 按地区分组
+    - 验证各地区链接可用
+    - 整理为分组目录
+- task_id: E021
+  task_type: 多语检索
+  dimension: 语言/地域
+  explain: 欧洲外语片（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找西班牙电影《看不见的客人》合法在线播放渠道
+  intent:
+    goal: 我想找西班牙电影《看不见的客人》合法在线播放渠道
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整可访问的播放网址，注明语言版本和字幕情况
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e021.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整可访问的播放网址，注明语言版本和字幕情况
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整可访问的播放网址，注明语言版本和字幕情况
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《看不见的客人》免费在线资源
+    - 确认语言版本（西班牙语或中字版）
+    - 验证网址可播放
+    - 记录可播放网址及语言信息
+- task_id: E022
+  task_type: 多语检索
+  dimension: 语言/地域
+  explain: 印度外语片（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找印度电影《三傻大闹宝莱坞》在线免费中文字幕观看地址
+  intent:
+    goal: 我想找印度电影《三傻大闹宝莱坞》在线免费中文字幕观看地址
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，明确标注为中文字幕版本
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e022.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，明确标注为中文字幕版本
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，明确标注为中文字幕版本
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《三傻大闹宝莱坞》中文字幕免费在线资源
+    - 确认字幕为中文
+    - 验证网址可播放
+    - 记录可播放网址
+- task_id: E023
+  task_type: 多语检索
+  dimension: 语言/地域
+  explain: 美剧资源（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想找美剧《绝命毒师》全五季在线免费观看资源
+  intent:
+    goal: 我想找美剧《绝命毒师》全五季在线免费观看资源
+    priorities:
+    - priority: required
+      requirement: 回复必须包含完整可访问的播放网址，注明季数覆盖和字幕情况
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e023.outcome
+    item: 任务特有目标
+    description: 回复必须包含完整可访问的播放网址，注明季数覆盖和字幕情况
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含完整可访问的播放网址，注明季数覆盖和字幕情况
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《绝命毒师》合法免费在线资源
+    - 确认覆盖全部5季
+    - 验证中文字幕
+    - 验证网址可播放
+    - 记录可播放网址
+- task_id: E024
+  task_type: 多步推理
+  dimension: 任务复杂度/推理链长度
+  explain: 版权方核查（分布外泛化样本）
+  scenario: rights_and_use_case
+  initial_request: 我想先确认电影《霸王别姬》的版权方，再搜索版权方官方提供的合法免费观看渠道
+  intent:
+    goal: 我想先确认电影《霸王别姬》的版权方，再搜索版权方官方提供的合法免费观看渠道
+    priorities:
+    - priority: required
+      requirement: 回复必须先说明版权方信息，再列出该版权方提供的官方免费在线渠道
+  output_contract:
+    format: list
+    min_results: 2
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e024.outcome
+    item: 任务特有目标
+    description: 回复必须先说明版权方信息，再列出该版权方提供的官方免费在线渠道
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须先说明版权方信息，再列出该版权方提供的官方免费在线渠道
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 查询《霸王别姬》版权归属
+    - 确认版权方
+    - 搜索版权方官方平台
+    - 查找免费播放渠道
+    - 验证可播放
+    as_of: '2026-08-16'
+    forbidden_assumptions:
+    - 不得把可能随时间、地区或授权变化的信息写成永久事实
+- task_id: E025
+  task_type: 多步推理
+  dimension: 任务复杂度/推理链长度
+  explain: 主资源+衍生资源（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我想搜索《教父》三部曲合法免费在线资源，同时搜索该系列的花絮和幕后纪录片，合并整理
+  intent:
+    goal: 我想搜索《教父》三部曲合法免费在线资源，同时搜索该系列的花絮和幕后纪录片，合并整理
+    priorities:
+    - priority: required
+      requirement: 回复必须包含三部曲正片播放链接和至少2个花絮或幕后资源链接，分类呈现
+  output_contract:
+    format: list
+    min_results: 5
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e025.outcome
+    item: 任务特有目标
+    description: 回复必须包含三部曲正片播放链接和至少2个花絮或幕后资源链接，分类呈现
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含三部曲正片播放链接和至少2个花絮或幕后资源链接，分类呈现
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《教父》三部曲免费在线资源
+    - 搜索花絮资源
+    - 搜索幕后纪录片
+    - 验证所有链接
+    - 合并整理为分类列表
+- task_id: E026
+  task_type: 多步推理
+  dimension: 任务复杂度/推理链长度
+  explain: 多对象对比（分布外泛化样本）
+  scenario: aggregate_and_compare
+  initial_request: 我想搜索《让子弹飞》合法免费在线资源，与同类型片《天下无贼》《疯狂的石头》的可用资源做交叉对比
+  intent:
+    goal: 我想搜索《让子弹飞》合法免费在线资源，与同类型片《天下无贼》《疯狂的石头》的可用资源做交叉对比
+    priorities:
+    - priority: required
+      requirement: 回复必须以表格对比三部影片的可用免费资源，包含片名、平台、画质、是否可用
+  output_contract:
+    format: table
+    min_results: 3
+    count_unit: table_rows
+    min_urls: 1
+  acceptance_criteria:
+  - criterion_id: task.e026.outcome
+    item: 任务特有目标
+    description: 回复必须以表格对比三部影片的可用免费资源，包含片名、平台、画质、是否可用
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须以表格对比三部影片的可用免费资源，包含片名、平台、画质、是否可用
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 分别搜索三部影片的免费在线资源
+    - 验证各自可用性
+    - 对比资源质量
+    - 整理为交叉对比表格
+- task_id: E027
+  task_type: 场景化查询
+  dimension: 角色动机/使用场景
+  explain: 教师教学场景（分布外泛化样本）
+  scenario: rights_and_use_case
+  initial_request: 我是大学中文系教师，想搜索《霸王别姬》合法免费在线资源用于课堂电影分析教学，需要画质清晰、有英文字幕辅助讲解
+  intent:
+    goal: 我是大学中文系教师，想搜索《霸王别姬》合法免费在线资源用于课堂电影分析教学，需要画质清晰、有英文字幕辅助讲解
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，注明画质、英文字幕和是否仅限课堂教学使用
+  output_contract:
+    format: list
+    min_results: 2
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e027.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，注明画质、英文字幕和是否仅限课堂教学使用
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，注明画质、英文字幕和是否仅限课堂教学使用
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《霸王别姬》免费在线资源
+    - 筛选含英文字幕的版本
+    - 确认画质适合课堂放映
+    - 验证可播放
+    - 记录适合教学的链接
+- task_id: E028
+  task_type: 场景化查询
+  dimension: 角色动机/使用场景
+  explain: 海外文化推广场景（分布外泛化样本）
+  scenario: rights_and_use_case
+  initial_request: 我是海外华人文化社团组织者，想搜索《哪吒之魔童降世》合法免费在线资源用于本地春节文化活动放映
+  intent:
+    goal: 我是海外华人文化社团组织者，想搜索《哪吒之魔童降世》合法免费在线资源用于本地春节文化活动放映
+    priorities:
+    - priority: required
+      requirement: 回复必须包含可播放网址，注明是否支持投屏、是否仅限非商业文化活动放映
+  output_contract:
+    format: list
+    min_results: 2
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e028.outcome
+    item: 任务特有目标
+    description: 回复必须包含可播放网址，注明是否支持投屏、是否仅限非商业文化活动放映
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含可播放网址，注明是否支持投屏、是否仅限非商业文化活动放映
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《哪吒之魔童降世》免费在线资源
+    - 筛选支持投屏或大屏播放的
+    - 标注仅限非商业文化活动
+    - 验证可播放
+    - 记录适合放映的链接
+- task_id: E029
+  task_type: 场景化查询
+  dimension: 角色动机/使用场景
+  explain: 老年用户场景（分布外泛化样本）
+  scenario: media_lookup_standard
+  initial_request: 我是退休老人，眼睛不太好，想找老电影《地道战》《地雷战》《英雄儿女》高清在线资源，希望有清晰的字幕便于跟读
+  intent:
+    goal: 我是退休老人，眼睛不太好，想找老电影《地道战》《地雷战》《英雄儿女》高清在线资源，希望有清晰的字幕便于跟读
+    priorities:
+    - priority: required
+      requirement: 回复必须包含清晰的播放网址，注明字幕清晰度和字号
+  output_contract:
+    format: list
+    min_results: 3
+    count_unit: list_items
+    min_urls: 1
+  excluded_platforms:
+  - 乐视视频
+  - 腾讯视频
+  - 芒果tv
+  - 爱奇艺
+  - 优酷
+  - 哔哩哔哩
+  acceptance_criteria:
+  - criterion_id: task.e029.outcome
+    item: 任务特有目标
+    description: 回复必须包含清晰的播放网址，注明字幕清晰度和字号
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 回复必须包含清晰的播放网址，注明字幕清晰度和字号
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索三部老抗战电影高清资源
+    - 筛选字幕清晰的版本
+    - 确认画质清晰
+    - 验证可播放
+    - 记录可播放网址
+- task_id: E030
+  task_type: 异常处理
+  dimension: 异常场景-资源不存在
+  explain: 未上映影片（分布外泛化样本）
+  scenario: fact_correction
+  initial_request: 我想找电影《阿凡达4》合法免费在线播放渠道
+  intent:
+    goal: 我想找电影《阿凡达4》合法免费在线播放渠道
+    priorities:
+    - priority: required
+      requirement: 核查《阿凡达4》的正式制作或上映状态；没有可靠依据时必须表达不确定，且不得编造播放链接
+  acceptance_criteria:
+  - criterion_id: task.e030.outcome
+    item: 任务特有目标
+    description: 核查《阿凡达4》的正式制作或上映状态；没有可靠依据时必须表达不确定，且不得编造播放链接
+    validator: semantic
+    remediation:
+      owner: executor
+      guidance: 核查《阿凡达4》的正式制作或上映状态；没有可靠依据时必须表达不确定，且不得编造播放链接
+      retryable: true
+  reference:
+    evaluation_notes:
+    - 搜索《阿凡达4》相关信息
+    - 确认该片是否存在或已上映
+    - 若不存在或未上映则如实告知用户
+    - 提供替代建议（如《阿凡达》前三部）
+    as_of: '2026-08-16'
+    forbidden_assumptions:
+    - 不得把可能随时间、地区或授权变化的信息写成永久事实

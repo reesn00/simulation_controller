@@ -11,7 +11,7 @@ from simulate_serve.task_manager import TaskManager
 
 def test_builtin_catalog_compiles_all_tasks(project_root: Path) -> None:
     manager = TaskManager("tasks.yaml", "scenarios.yaml", config_dir=project_root / "simulate_serve" / "config")
-    assert len(manager.compiled_tasks) == 68
+    assert len(manager.compiled_tasks) == 98
     assert manager.diagnostics == ()
     assert all(task.criteria for task in manager.compiled_tasks)
     assert not any(
