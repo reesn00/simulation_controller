@@ -22,7 +22,10 @@ def validate_block(
     results: list[ValidationResult] = []
 
     if cfg.enable_l1:
-        l1_passed = l1_rules.check(original_block, refined_content, tool_names, cfg.thought_max_len_l1)
+        l1_passed = l1_rules.check(
+            original_block, refined_content, tool_names,
+            cfg.thought_max_len_l1, cfg=cfg,
+        )
         results.append(ValidationResult(level="L1", passed=l1_passed))
         if not l1_passed:
             return (False, results)
