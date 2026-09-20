@@ -183,6 +183,7 @@ class Settings(BaseSettings):
     context_relevance_threshold: float = 0.6     # 相关性阈值
     context_redundancy_threshold: float = 0.85   # 判定"窗口内已存在等价版本"的语义相似度阈值
     enable_context_understanding: bool = True    # 是否启用 context_understanding 模块 (False 则退化为旧 ±2 上下文)
+    enable_jieba_entity_extraction: bool = True  # 实体抽取时是否启用 jieba.analyse.extract_tags (False 则回退到旧 1~4 字 CJK 窗口; jieba 未安装时自动降级)
 
     # === 上下文理解 - 分级压缩 ===
     context_max_archive_chars: int = 80000       # archive 总字符上限 (默认 80k, 留 4 倍余量)

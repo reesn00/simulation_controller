@@ -12,6 +12,7 @@ dependencies = [
     "orjson>=3.9",
     "PyYAML>=6.0",
     "Jinja2>=3.1",
+    "jieba>=0.42",   # 中文实体抽取 (jieba.analyse.extract_tags); 未安装时自动降级
 ]
 
 [project.optional-dependencies]

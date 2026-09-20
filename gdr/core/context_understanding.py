@@ -312,16 +312,116 @@ def _get_attr(block, attr: str, default=""):
     return getattr(block, attr, default)
 
 
-def _extract_entities(text: str) -> set[str]:
-    entities: set[str] = set()
+# === CJK 语种快检 (Unicode 块范围) ===
+# jieba 是纯中文分词器, 不识别日文/韩文 → 走旧正则路径兜底,
+# 避免把"こんにちは"切成 ["こ","ん","に","ち","は"] 这种垃圾单字实体。
+
+_HIRAGANA = range(0x3040, 0x30A0)
+_KATAKANA = range(0x30A0, 0x3100)
+_KATAKANA_PHONETIC = range(0x31F0, 0x3200)
+_HANGUL_JAMO = range(0x1100, 0x1200)
+_HANGUL_SYLLABLES = range(0xAC00, 0xD7B0)
+# CJK Unified Ideographs 主块 (U+4E00..U+9FFF) 用于启发式判断中文比例
+_CJK_UNIFIED = range(0x4E00, 0xA000)
+
+
+def _has_non_chinese_cjk(text: str) -> bool:
+    """检查文本是否含日文 (平假名 / 片假名) 或韩文 (谚文 / Hangul Jamo)。
+
+    任何日韩字符出现即返回 True, 整条文本走旧正则路径。
+    """
     if not text:
-        return entities
+        return False
+    for ch in text:
+        cp = ord(ch)
+        if cp in _HIRAGANA or cp in _KATAKANA or cp in _KATAKANA_PHONETIC:
+            return True
+        if cp in _HANGUL_JAMO or cp in _HANGUL_SYLLABLES:
+            return True
+    return False
+
+
+def _contains_cjk_char(text: str) -> bool:
+    """文本是否含任意 CJK 统一表意文字字符 (用于判断是否需要中文抽取路径)。"""
+    if not text:
+        return False
+    for ch in text:
+        if _CJK_UNIFIED.start <= ord(ch) < _CJK_UNIFIED.stop:
+            return True
+    return False
+
+
+def _has_any_cjk_entity(entities: set[str]) -> bool:
+    """entities 集合里是否含 CJK 表意文字字符 (用于判断 jieba 是否产出)。"""
+    for ent in entities:
+        for ch in ent:
+            if _CJK_UNIFIED.start <= ord(ch) < _CJK_UNIFIED.stop:
+                return True
+    return False
+
+
+def _extract_entities_jieba(text: str, entities: set[str], top_k: int = 10) -> None:
+    """用 jieba.analyse.extract_tags 抽取中文关键术语, 写入 entities 集合。
+
+    jieba 不可用时静默返回 (调用方已落入降级路径);
+    单次超时由外层 try/except 守护; top_k 限 10 避免短文本撑爆集合。
+    """
+    try:
+        import jieba.analyse  # type: ignore
+    except Exception:
+        return
+    try:
+        for word in jieba.analyse.extract_tags(text, topK=top_k):
+            if word and word not in _CJK_STOPWORDS and len(word) <= 8:
+                entities.add(word)
+    except Exception as e:
+        log.debug("_extract_entities_jieba extract failed (text_len=%d): %s", len(text), e)
+
+
+def _jieba_available() -> bool:
+    """探测 jieba 是否可用 (供测试与降级路径判断)。"""
+    try:
+        import jieba.analyse  # type: ignore
+        return True
+    except Exception:
+        return False
+
+
+def _fallback_cjk_window(text: str, entities: set[str]) -> None:
+    """旧 1~4 字 CJK 窗口抽 (jieba 不可用时的降级路径)。"""
+    for m in re.finditer(r"[一-鿿]{1,4}", text):
+        ent = m.group(0)
+        if ent not in _CJK_STOPWORDS:
+            entities.add(ent)
+
+
+def _extract_entities(text: str, cfg=None) -> set[str]:
+    """抽取文本中的实体字符串, 供引用图与相关性计算使用。
+
+    语种分发 (零 LLM):
+      - 检测到日文/韩文 → 跳过 jieba, 仅走英文/数字/引号串正则
+        (与历史行为对齐, 避免 jieba 把假名/谚文切成单字污染信号)
+      - 中文主导 → jieba.analyse.extract_tags(top_k=10) 替换 1~4 字 CJK 窗口
+        (大幅降低"我们/决定/下一步"等口语噪声, 提升稀疏度的拉杆)
+      - 缺 jieba 包 → 中文路径自动降级为旧 1~4 字窗口 (与历史行为一致)
+      - cfg.enable_jieba_entity_extraction=False → 显式禁用 jieba, 走旧路径
+
+    返回永远是 set[str], 调用方无感。
+    """
+    if not text:
+        return set()
+    use_jieba = True
+    if cfg is not None:
+        use_jieba = getattr(cfg, "enable_jieba_entity_extraction", True)
+    entities: set[str] = set()
     # 防御: 单条超长/含恶意正则元字符的文本不应让整个 session 崩溃.
     # entity 抽取失败时返回已累积的子集 (不抛).
     try:
         _REGEX_LIMIT = 500_000  # 字符; 超过则降级为前 N 字符抽取
         if len(text) > _REGEX_LIMIT:
             text = text[:_REGEX_LIMIT]
+
+        # === 通用部分: 任何语种都适用 ===
         for m in re.finditer(r'"([^"]+)"', text):
             entities.add(m.group(1))
         for m in re.finditer(r"'([^']+)'", text):
@@ -335,43 +435,29 @@ def _extract_entities(text: str) -> set[str]:
             entities.add(m.group(1).lower())
         for m in re.finditer(r"\b(url|file_path|command|content|code|input|query|name)\b", text, re.IGNORECASE):
             entities.add(m.group(1).lower())
-        # CJK 实体: 1~4 个汉字 (城市名/平台名/动词等)
-        for m in re.finditer(r"[一-鿿]{1,4}", text):
-            ent = m.group(0)
-            # 过滤常见停用词
-            if ent not in _CJK_STOPWORDS:
-                entities.add(ent)
         # 数字 (含小数)
         for m in re.finditer(r"\b\d+(?:\.\d+)?\b", text):
             entities.add(m.group(0))
+
+        # === CJK 部分: 按语种分发 ===
+        if _has_non_chinese_cjk(text):
+            # 日文/韩文: 跳过 jieba 与 CJK 字符窗口, 走旧 fallback 路径
+            pass
+        elif _contains_cjk_char(text) and use_jieba:
+            # 中文主导: 优先 jieba.extract_tags; 缺包/抽空时降级到 1~4 字窗口
+            _extract_entities_jieba(text, entities, top_k=10)
+            if not _has_any_cjk_entity(entities):
+                # jieba 不可用或未产出有效中文关键词 → 旧窗口兜底
+                _fallback_cjk_window(text, entities)
+        elif _contains_cjk_char(text):
+            # 显式禁用 jieba → 走旧 1~4 字窗口
+            _fallback_cjk_window(text, entities)
+        # else: 无任何 CJK 字符的纯英文/数字文本, 不走 CJK 路径
     except re.error as e:
         # 极端输入触发 re.error (罕见, 但不应让整条 session 因 entity 抽取失败而崩)
         log.warning("_extract_entities re.error (text_len=%d): %s", len(text), e)
     except Exception as e:
         log.warning("_extract_entities failed (text_len=%d): %s", len(text), e)
-    return entities
-    for m in re.finditer(r'"([^"]+)"', text):
-        entities.add(m.group(1))
-    for m in re.finditer(r"'([^']+)'", text):
-        entities.add(m.group(1))
-    for m in re.finditer(r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b", text):
-        entities.add(m.group(1))
-    for m in re.finditer(
-        r"\b(browser|execute_shell_command|write_file|read_file|search_file|"
-        r"list_files|glob|grep|tavily_search)\b", text, re.IGNORECASE
-    ):
-        entities.add(m.group(1).lower())
-    for m in re.finditer(r"\b(url|file_path|command|content|code|input|query|name)\b", text, re.IGNORECASE):
-        entities.add(m.group(1).lower())
-    # CJK 实体: 1~4 个汉字 (城市名/平台名/动词等)
-    for m in re.finditer(r"[一-鿿]{1,4}", text):
-        ent = m.group(0)
-        # 过滤常见停用词
-        if ent not in _CJK_STOPWORDS:
-            entities.add(ent)
-    # 数字 (含小数)
-    for m in re.finditer(r"\b\d+(?:\.\d+)?\b", text):
-        entities.add(m.group(0))
     return entities
 
 
@@ -567,7 +653,7 @@ class ContextUnderstanding:
                 if not bid:
                     continue
                 content_text = _block_text(block)
-                entities = _extract_entities(content_text)
+                entities = _extract_entities(content_text, cfg=self.cfg)
                 decisions = []
                 if content_text and _DECISION_KEYWORDS.search(content_text):
                     decisions.append(content_text[:120])
@@ -894,7 +980,7 @@ class ContextUnderstanding:
                 for b in snap.blocks:
                     txt = b.get("thinking", "") or b.get("output_text", "") or b.get("text", "") or \
                           f"{b.get('name', '')} {b.get('input', '')}"
-                    entity_pool.update(_extract_entities(txt))
+                    entity_pool.update(_extract_entities(txt, cfg=self.cfg))
             if view.entities_mentioned and entity_pool:
                 jaccard = len(view.entities_mentioned & entity_pool) / \
                           len(view.entities_mentioned | entity_pool)
