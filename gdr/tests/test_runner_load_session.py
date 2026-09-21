@@ -166,11 +166,21 @@ def test_process_one_file_usage_prune_enabled(tmp_path, monkeypatch):
 
     sys_text = msgs["messages"][0]["blocks"][0]["text"]
     assert "Agent Identity" in sys_text          # identity 始终保留
-    assert "RETRIEVAL HEADLINE" not in sys_text  # 无 ⟦⟧ → 删
+    # F3-D: RETRIEVAL HEADLINE 段已下线; 在该 fixture 中其文本位于 Agent Identity
+    # 与 THE MAP 之间 (无 Conversation Persistence boundary 匹配), 会被 partition
+    # 归入 Agent Identity 段 (identity 始终保留), 因此 RETRIEVAL HEADLINE
+    # 文本被原样保留. 测试期望不再断言"被裁".
+    assert "RETRIEVAL HEADLINE" in sys_text      # 归入 identity 段, 保留
     assert "THE MAP" not in sys_text             # 未调 recall_history → 删
     assert "长期记忆" not in sys_text             # 未调 memory_search → 删
     assert "<agent-skills>" not in sys_text      # 未调 Skill → 整段删
-    assert meta["tools"] == []                   # 无任何工具调用 → 清空
+    # P0-R fix: 无任何工具调用时, 仍按 SFT 噪声策略保留 unused 子集
+    # (fixture 仅有 2 个 unused, ratio + min 上限 → 全部保留).
+    names = {t["function"]["name"] for t in meta["tools"]}
+    assert "web_search" in names and "recall_history" in names
+    tp = meta["usage_prune"]["tools_prune"]
+    assert tp["strategy"] == "deterministic"
+    assert set(tp["kept_unused"]) == {"web_search", "recall_history"}
     assert meta["usage_prune"]["system_chars_after"] < meta["usage_prune"]["system_chars_before"]
     # 四视图同源
     assert meta["openai_messages"][0]["content"] == sys_text

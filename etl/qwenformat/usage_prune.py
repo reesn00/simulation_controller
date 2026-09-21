@@ -4,13 +4,16 @@
     - 删除是无损的, 压缩是有损的 —— 优先"按使用情况整段删除";
       保留下来的段 **原样保留**, 不做任何改写, 避免失真.
     - 段级拆复用 ``system_prompt.partition_system_prompt`` 的职责分类:
-        - ``RETRIEVAL HEADLINE`` / ``Conversation Persistence``:
-          仅当 assistant 最终文本出现 ``⟦...⟧`` headline 时保留;
+        - ``Conversation Persistence``:
+          仅当 assistant 最终文本出现 ``⟦...⟧`` headline 时保留 (兼容历史
+          qf_out, F3-D 后该判定仍可用于过滤其它段);
         - ``THE MAP`` / ``DISCIPLINE``: 仅当调用过 ``recall_history`` 时保留;
         - ``长期记忆``: 仅当调用过 ``memory_search`` 时保留;
         - ``agent-skills``: 只保留被 ``Skill`` 工具真实调用的 skill 条目
           (条目原文保留, 仅去掉 ``<dir>`` 本机路径行);
         - ``identity`` / ``Directories`` / ``unknown``: 始终保留.
+        - ``RETRIEVAL HEADLINE`` 段已下线 (F3-D): 模板删除, boundary 移除;
+          历史 qf_out 含此段时不再被 partition 识别, 自然归入 unknown 段.
     - ``metadata.tools`` 裁剪为实际调用的工具集合.
     - 本机路径泛化: 全文件内 ``<盘符>:\\Users\\<name>`` 根路径统一替换为
       按 session_id 种子从 persona 池采样的用户名, 并顺带变化 workspace 目录名;
@@ -88,8 +91,12 @@ def collect_usage(session: dict[str, Any]) -> dict[str, Any]:
 def _keep_section(title: str, kind: str, usage: dict[str, Any]) -> bool:
     """按使用情况决定某个 partition 段是否保留."""
     called_tools = usage["called_tools"]
-    if title == "RETRIEVAL HEADLINE" or title == "Conversation Persistence":
+    if title == "Conversation Persistence":
         return usage["has_headline"]
+    # F3-D: RETRIEVAL HEADLINE 段已下线 (模板与 boundary 已删除).
+    # 历史 qf_out 含此段时, partition 会归为 unknown; 落到 default True 分支
+    # 保留 (与其它 unknown 段一致行为), 由 gdr.save_session 后续 ⟦⟧ 剥离
+    # 处理训练数据污染.
     if title in ("THE MAP", "DISCIPLINE"):
         return "recall_history" in called_tools
     if title == "长期记忆":
@@ -178,25 +185,90 @@ def _tool_name(tdef: dict[str, Any]) -> str:
 
 
 def prune_tools(
-    tools: list[dict[str, Any]], called_tools: set[str]
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """把 tools 列表裁剪为实际调用的集合 (保序).
+    tools: list[dict[str, Any]],
+    called_tools: set[str],
+    *,
+    session_id: str = "",
+    keep_unused_min: int = 0,
+    keep_unused_max: int = 0,
+    keep_unused_ratio: float = 0.0,
+    strategy: str = "none",
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    """把 tools 列表裁剪为实际调用的集合 (保序) + 可选保留 unused 子集.
 
     被调用但不在原列表中的工具补一个最小 schema, 保证 toolcall 必有定义.
-    返回 (pruned_tools, dropped_tool_names).
+
+    P0-R fix: SFT 训练样本若只展示被调工具, 模型会学到"工具列表短 = 该调用"
+    的错误相关. 通过 ``keep_unused_min`` / ``keep_unused_max`` /
+    ``keep_unused_ratio`` 联合控制从 unused 池随机保留若干个未用工具. 保留数量
+    计算: ``min(len(unused), max) * ratio`` 后与 ``min`` 取 max; 同 session_id
+    多次调用结果一致 (按 session_id 种子采样); 不同 session_id 跨样本多样.
+
+    Args:
+        tools: 原始 tools 列表 (来自 trajectory).
+        called_tools: 真实调用的工具名集合 (来自 collect_usage).
+        session_id: 用于 deterministic 采样的种子源.
+        keep_unused_min: 至少保留几个 unused 工具 (下界).
+        keep_unused_max: 最多保留几个 unused 工具 (上界).
+        keep_unused_ratio: 按 unused 池比例采样的上限, 与 max 取 min.
+        strategy: ``"none"`` 仅保留 called (旧行为); ``"deterministic"`` 按
+            session_id 种子采样.
+
+    Returns:
+        (pruned_tools, dropped_tool_names, audit) — audit 含 strategy /
+        kept_unused / kept_unused_count / sampled_from_pool_size.
     """
     pruned: list[dict[str, Any]] = []
     dropped: list[str] = []
     seen: set[str] = set()
+    called_in_order: list[dict[str, Any]] = []
+    unused_pool: list[dict[str, Any]] = []
+
     for tdef in tools or []:
         name = _tool_name(tdef)
         if not name:
             continue
         if name in called_tools and name not in seen:
             seen.add(name)
-            pruned.append(tdef)
+            called_in_order.append(tdef)
         elif name not in called_tools:
+            unused_pool.append(tdef)
             dropped.append(name)
+
+    # P0-R: 按 session_id 种子从 unused 池随机保留 (跨样本多样, 样本内确定)
+    audit: dict[str, Any] = {
+        "strategy": strategy,
+        "kept_unused": [],
+        "kept_unused_count": 0,
+        "sampled_from_pool_size": len(unused_pool),
+    }
+    if strategy == "deterministic" and unused_pool:
+        ratio_n = int(len(unused_pool) * keep_unused_ratio)
+        n_keep = max(keep_unused_min, min(keep_unused_max, ratio_n))
+        n_keep = min(n_keep, len(unused_pool))
+        if n_keep > 0:
+            rng = random.Random(
+                _seed_from_session(session_id or "unknown") ^ 0x7E4E
+            )
+            kept_unused_tdefs = rng.sample(unused_pool, n_keep)
+            # 按原 tools 顺序追加 (稳定, 便于审计)
+            kept_names = {_tool_name(t) for t in kept_unused_tdefs}
+            for tdef in unused_pool:
+                if _tool_name(tdef) in kept_names:
+                    pruned.append(tdef)
+                    kept_names.discard(_tool_name(tdef))
+            audit["kept_unused"] = sorted(
+                _tool_name(t) for t in kept_unused_tdefs
+            )
+            audit["kept_unused_count"] = len(audit["kept_unused"])
+            # 真正保留的 unused 不再算 dropped
+            audit_kept_set = set(audit["kept_unused"])
+            dropped = [n for n in dropped if n not in audit_kept_set]
+
+    # called 在前段 (保原 tools 顺序)
+    pruned = called_in_order + pruned
+
+    # 缺失的 called 工具补最小 schema
     for name in called_tools - seen:
         pruned.append({
             "type": "function",
@@ -206,7 +278,8 @@ def prune_tools(
                 "parameters": {"type": "object"},
             },
         })
-    return pruned, dropped
+
+    return pruned, dropped, audit
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +508,13 @@ def _current_settings_for_prune() -> Any:
         return Settings()
     except Exception:
         from types import SimpleNamespace as _NS
-        return _NS(include_tools_in_payloads=True, tools_payload_max=64)
+        return _NS(
+            include_tools_in_payloads=True, tools_payload_max=64,
+            tools_prune_strategy="deterministic",
+            tools_prune_keep_unused_min=4,
+            tools_prune_keep_unused_max=12,
+            tools_prune_keep_unused_ratio=0.3,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +525,11 @@ def prune_session_in_place(
     session: dict[str, Any],
     template_str: str,
     env,
+    *,
+    tools_prune_strategy: str | None = None,
+    tools_prune_keep_unused_min: int | None = None,
+    tools_prune_keep_unused_max: int | None = None,
+    tools_prune_keep_unused_ratio: float | None = None,
 ) -> dict[str, Any]:
     """在 refined session dict 上执行: 路径泛化 → system 裁剪 → tools 裁剪 → 重渲染.
 
@@ -453,8 +537,13 @@ def prune_session_in_place(
     ``metadata.tools`` / ``metadata.qf_text`` 全部同步更新; metadata 的
     其他键 (refine_history / validation_summary 等) 原样保留.
 
+    P0-R fix: ``tools_prune_*`` 形参控制 tools 随机保留 unused 子集行为
+    (默认从 gdr Settings 取, 失败回退到 ``strategy="deterministic"`` 默认值);
+    显式传 ``None`` 等价"用默认", 显式传字符串``"none"`` / 数字 0 等价
+    "强制关闭".
+
     Returns:
-        stats dict (裁剪前后长度 / 丢弃的段与工具 / 路径映射).
+        stats dict (裁剪前后长度 / 丢弃的段与工具 / 路径映射 / tools_prune audit).
     """
     stats: dict[str, Any] = {}
 
@@ -486,12 +575,37 @@ def prune_session_in_place(
     if session.get("summary"):
         session["summary"] = new_system
 
-    # 3. tools 裁剪
+    # 3. tools 裁剪 (含 P0-R 未用工具随机保留)
     old_tools = (session.get("metadata") or {}).get("tools") or []
-    new_tools, dropped_tools = prune_tools(old_tools, usage["called_tools"])
+    _default_cfg = _current_settings_for_prune()
+    new_tools, dropped_tools, tools_audit = prune_tools(
+        old_tools, usage["called_tools"],
+        session_id=session.get("session_id", ""),
+        keep_unused_min=(
+            tools_prune_keep_unused_min
+            if tools_prune_keep_unused_min is not None
+            else getattr(_default_cfg, "tools_prune_keep_unused_min", 4)
+        ),
+        keep_unused_max=(
+            tools_prune_keep_unused_max
+            if tools_prune_keep_unused_max is not None
+            else getattr(_default_cfg, "tools_prune_keep_unused_max", 12)
+        ),
+        keep_unused_ratio=(
+            tools_prune_keep_unused_ratio
+            if tools_prune_keep_unused_ratio is not None
+            else getattr(_default_cfg, "tools_prune_keep_unused_ratio", 0.3)
+        ),
+        strategy=(
+            tools_prune_strategy
+            if tools_prune_strategy is not None
+            else getattr(_default_cfg, "tools_prune_strategy", "deterministic")
+        ),
+    )
     stats["tools_before"] = len(old_tools)
     stats["tools_after"] = len(new_tools)
     stats["dropped_tools"] = dropped_tools
+    stats["tools_prune"] = tools_audit
 
     # 4. 复用 qf transform 重渲染三处副本
     trajectory = {
@@ -514,10 +628,9 @@ def prune_session_in_place(
     rendered_tool_names = {_tool_name(t) for t in metadata["tools"]}
     missing = usage["called_tools"] - rendered_tool_names
     assert not missing, f"called tools missing after prune: {missing}"
-    if usage["has_headline"]:
-        assert "RETRIEVAL HEADLINE" in new_system, (
-            "headline marker present but instruction section dropped"
-        )
+    # F3-D: RETRIEVAL HEADLINE 段已下线. 即便 assistant 文本含 ⟦⟧, 也不再
+    # 强约束 cleaned system 必须保留该 instruction 段. 训练数据中的 ⟦⟧
+    # 由 gdr.refiners.meta_tag_strip 在 save_session 落盘前剥离.
 
     stats["qf_text_chars_after"] = len(metadata["qf_text"])
     return stats

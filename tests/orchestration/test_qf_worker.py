@@ -266,7 +266,10 @@ def test_process_cleans_framework_system_prompt(env) -> None:
     assert system_msg is not None
     cleaned = system_msg["content"]
     assert "Agent Identity" in cleaned
-    assert "RETRIEVAL HEADLINE" in cleaned
+    # F3-D: RETRIEVAL HEADLINE 段已下线. 该 fixture 中其文本位于 PROFILE.md
+    # 之后、下一个 boundary (长期记忆) 之前, 被 partition 归入 framework
+    # 段, 清洗时被丢弃.
+    assert "RETRIEVAL HEADLINE" not in cleaned
     assert "长期记忆" in cleaned
     assert "AGENTS.md" not in cleaned
     assert "SOUL.md" not in cleaned
@@ -274,7 +277,8 @@ def test_process_cleans_framework_system_prompt(env) -> None:
 
     # 模板已持久化
     assert (templates_dir / "role" / "identity.txt").exists()
-    assert (templates_dir / "constraints" / "retrieval_headline.txt").exists()
+    # F3-D: retrieval_headline 模板不再生成
+    assert not (templates_dir / "constraints" / "retrieval_headline.txt").exists()
     assert (templates_dir / "tools" / "web_search.txt").exists()
 
     # tools 元数据仍保留完整 schema

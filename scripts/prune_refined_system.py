@@ -52,6 +52,25 @@ def main() -> int:
         help="refined 文件的 glob 模式 (缺省匹配 output/refine_data/ 两种形态)",
     )
     parser.add_argument("--dry-run", action="store_true", help="只报告, 不写回")
+    # P0-R: tools 未用工具随机保留覆写 (None = 走 cfg 默认)
+    parser.add_argument(
+        "--tools-prune-strategy",
+        choices=["none", "deterministic"],
+        default=None,
+        help="P0-R tools 未用保留策略 (覆盖 cfg 默认)",
+    )
+    parser.add_argument(
+        "--tools-keep-unused-min", type=int, default=None,
+        help="P0-R 最少保留多少 unused 工具 (覆盖 cfg)",
+    )
+    parser.add_argument(
+        "--tools-keep-unused-max", type=int, default=None,
+        help="P0-R 最多保留多少 unused 工具 (覆盖 cfg)",
+    )
+    parser.add_argument(
+        "--tools-keep-unused-ratio", type=float, default=None,
+        help="P0-R 按 unused 池比例采样上限 (覆盖 cfg)",
+    )
     args = parser.parse_args()
 
     template = load_chat_template(str(REPO_ROOT / "etl" / "qwenformat" / "chat_template.jinja"))
@@ -67,7 +86,13 @@ def main() -> int:
     for f in files:
         session = load_refined_session(f)
         size_before = Path(f).stat().st_size
-        stats = prune_session_in_place(session, template, env)
+        stats = prune_session_in_place(
+            session, template, env,
+            tools_prune_strategy=args.tools_prune_strategy,
+            tools_prune_keep_unused_min=args.tools_keep_unused_min,
+            tools_prune_keep_unused_max=args.tools_keep_unused_max,
+            tools_prune_keep_unused_ratio=args.tools_keep_unused_ratio,
+        )
         if not args.dry_run:
             write_refined_session(session, f)
         size_after = len(json.dumps(session, ensure_ascii=False))
@@ -81,6 +106,11 @@ def main() -> int:
         print(f"  dropped sections: {stats['dropped_sections']}")
         print(f"  kept skills: {stats['kept_skills']}  dropped: {len(stats['dropped_skills'])}")
         print(f"  path new roots: {stats['path_new_roots']}")
+        tp = stats.get("tools_prune", {})
+        if tp:
+            print(f"  tools_prune: strategy={tp['strategy']} "
+                  f"kept_unused={tp['kept_unused']} "
+                  f"pool={tp['sampled_from_pool_size']}")
     return 0
 
 

@@ -50,7 +50,9 @@ _SYSTEM_BOUNDARIES: list[tuple[str, str, str]] = [
     (r"^You can only understand text content", "constraint", "Image Understanding"),
     (r"^### Directories\s*$", "constraint", "Directories"),
     (r"^你的对话会被持久记录", "constraint", "Conversation Persistence"),
-    (r"^检索标题（RETRIEVAL HEADLINE）", "constraint", "RETRIEVAL HEADLINE"),
+    # F3-D: RETRIEVAL HEADLINE 段已下线. 历史 qf_out 仍可能含此段, 通过
+    # partition 后归为 unknown (不在 _SYSTEM_BOUNDARIES 里匹配), 由后续
+    # usage_prune 与 retention filter 决定是否保留.
     (r"^地图（THE MAP）", "constraint", "THE MAP"),
     (r"^纪律（DISCIPLINE）", "constraint", "DISCIPLINE"),
     (r"^={10,}", "framework", "Framework Info"),

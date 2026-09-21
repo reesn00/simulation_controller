@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 import json
 import os
 import re
@@ -138,6 +138,16 @@ class Settings(BaseSettings):
     # (默认 True)。设为 False 时退回旧行为, 任何 referenced_by 都算保护。
     fold_protect_active_text_only: bool = True
 
+    # === P0 方案 ②: 重试循环 LLM 判剪枝 ===
+    # 启用: 对连续 ≥min_consecutive 次同函数调用且结果全 429 的段, 走 LLM
+    # 判定"是否同一意图反复重试"; LLM 同意则保留 1-3 条 (含至少 1 失败),
+    # 其余删除. LLM 任何异常 → 保守 fallback 保留原状.
+    retry_loop_clip_enabled: bool = True
+    retry_loop_clip_min_consecutive: int = 5
+    retry_loop_clip_max_keep: int = 3
+    # LLM 调用超时; 超时/失败 → 整段保留.
+    retry_loop_clip_llm_timeout_s: int = 60
+
     max_retries_9b: int = 2
 
     tools_config_path: Path = Path("./config/tools.yaml")
@@ -271,6 +281,18 @@ class Settings(BaseSettings):
     # === 使用量裁剪（落盘前按真实调用裁剪 system prompt / tools + 路径泛化） ===
     enable_usage_prune: bool = True              # system 按功能段删留 / tools 裁剪 / 重渲染 qf_text
     qf_chat_template_path: Path = Path("./etl/qwenformat/chat_template.jinja")  # qf_text 重渲染模板
+
+    # === P0-R fix: 随机保留 unused 工具作为 SFT 噪声 ===
+    # 真实部署中 agent 面对完整工具菜单, SFT 训练样本若只展示被调工具, 会
+    # 让模型学到"工具列表短 = 该调用"的错误相关. 该组配置控制从 unused
+    # 池随机保留若干个未用工具, 让模型学到"长工具列表 ≠ 该全调".
+    # - strategy="none": 仅保留 called (回滚逃生口, 不推荐用于生产)
+    # - strategy="deterministic": 按 session_id 种子从 unused 池采样
+    #   (跨 session 多样, session 内确定, 可复跑)
+    tools_prune_strategy: Literal["none", "deterministic"] = "deterministic"
+    tools_prune_keep_unused_min: int = 4     # 至少保留 N 个未用工具
+    tools_prune_keep_unused_max: int = 12    # 最多保留 N 个未用工具
+    tools_prune_keep_unused_ratio: float = 0.3  # 按 unused 池比例 (与 max 取 min)
 
     # === 人工审核队列（方案 §5.5） ===
     deferred_output_path: Path = Path("./refine_data/deferred.jsonl")  # 人工审核队列输出路径

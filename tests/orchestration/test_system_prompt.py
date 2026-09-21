@@ -57,7 +57,9 @@ def test_partition_classifies_constraint_sections():
     assert by_title["Image Understanding"].kind == "constraint"
     assert by_title["Directories"].kind == "constraint"
     assert by_title["Conversation Persistence"].kind == "constraint"
-    assert by_title["RETRIEVAL HEADLINE"].kind == "constraint"
+    # F3-D: RETRIEVAL HEADLINE 段已下线, 不再作为独立 constraint 段.
+    # 历史 qf_out 中该段文本会归入前后相邻的 boundary 之间 (此处归入
+    # Conversation Persistence 段), 不影响识别.
     assert by_title["THE MAP"].kind == "constraint"
     assert by_title["DISCIPLINE"].kind == "constraint"
     assert by_title["长期记忆"].kind == "constraint"
@@ -75,12 +77,16 @@ def test_render_cleaned_system_removes_framework_sections():
     assert "Agent Identity" in new_system
     assert "Your agent id is `default`" in new_system
     assert "<agent-skills>" in new_system
+    # F3-D: RETRIEVAL HEADLINE 已不是独立 boundary. 在本 fixture 中其文本
+    # 位于 Conversation Persistence 与 THE MAP 两 boundary 之间, 被 partition
+    # 归入 Conversation Persistence 段, render_cleaned_system 仍按原样保留.
     assert "RETRIEVAL HEADLINE" in new_system
     assert "长期记忆" in new_system
 
     assert stats["framework_sections"] == 5
     assert stats["identity_sections"] == 1
-    assert stats["constraint_sections"] == 8
+    # F3-D: RETRIEVAL HEADLINE 段不再计入 constraint; 7 = 8 - 1
+    assert stats["constraint_sections"] == 7
 
 
 def test_render_cleaned_system_keeps_original_order():
@@ -102,7 +108,8 @@ def test_save_section_templates_creates_files(tmp_path: Path):
 
     assert any(p.name == "identity.txt" and p.parent.name == "role" for p in saved)
     assert any(p.name == "image_understanding.txt" and p.parent.name == "constraints" for p in saved)
-    assert any(p.name == "retrieval_headline.txt" and p.parent.name == "constraints" for p in saved)
+    # F3-D: retrieval_headline 模板不再生成
+    assert not any(p.name == "retrieval_headline.txt" for p in saved)
     assert any(p.name == "discipline.txt" and p.parent.name == "constraints" for p in saved)
 
     identity_path = section_template_path(tmp_path, sections[0])

@@ -238,40 +238,65 @@ def save_session(session: Session, base_path: Path) -> SessionOutputs:
     F1 fix: tools 字段同时写入 messages.json 与 openai.json 顶层, 受
     ``include_tools_in_payloads`` 与 ``tools_payload_max`` 控制. qwenjina.txt
     由 ``transform.render_sample_text`` 渲染时已传 tools, 不需重复注入.
+
+    F3-D 强化: 对 ``messages.json`` / ``openai.json`` / ``qwenjina.txt`` 三份
+    训练数据落地文件做 ⟦...⟧ 元注释剥离; ``meta.json`` 额外记录
+    ``meta_tag_contamination`` 字段供观测 (出现次数与路径).
     """
+    # 局部导入避免循环依赖 (schema 是 gdr.domain 的最底层)
+    from gdr.refiners.meta_tag_strip import (
+        annotate_meta_tags,
+        strip_meta_tags,
+        strip_session_payload,
+    )
+
     base_path = Path(base_path)
     base_path.parent.mkdir(parents=True, exist_ok=True)
 
     tools_payload = _extract_tools_payload(session)
 
+    # 1. messages.json: 递归剥离 ⟦⟧
     messages_path = Path(str(base_path) + ".messages.json")
-    payload: dict[str, Any] = {
+    raw_messages_payload: dict[str, Any] = {
         "messages": [m.model_dump(mode="json", exclude_none=True) for m in session.messages],
     }
+    payload = strip_session_payload(raw_messages_payload)
     if tools_payload is not None:
         payload["tools"] = tools_payload
     messages_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
     )
 
+    # 2. openai.json: 递归剥离 ⟦⟧
     openai_path = Path(str(base_path) + ".openai.json")
-    openai_payload: dict[str, Any] = {
+    raw_openai_payload: dict[str, Any] = {
         "openai_messages": (session.metadata or {}).get("openai_messages", []),
     }
+    openai_payload = strip_session_payload(raw_openai_payload)
     if tools_payload is not None:
         openai_payload["tools"] = tools_payload
     openai_path.write_text(
         json.dumps(openai_payload, ensure_ascii=False, indent=2), encoding="utf-8",
     )
 
+    # 3. qwenjina.txt: 纯文本剥离 ⟦⟧
     qf_text = (session.metadata or {}).get("qf_text")
     qwenjina_path: Optional[Path] = None
     if qf_text:
+        cleaned_qf_text = strip_meta_tags(str(qf_text))
         qwenjina_path = Path(str(base_path) + ".qwenjina.txt")
-        qwenjina_path.write_text(str(qf_text), encoding="utf-8")
-
+        qwenjina_path.write_text(cleaned_qf_text, encoding="utf-8")
+    # 4. meta.json: 不剥离, 但扫描 3 份输出文件 + session 原始内容, 写入
+    # ``meta_tag_contamination`` 字段, 含 has_meta_tag / total_count /
+    # occurrences (path, tag, char_offset)
     meta = dict(session.metadata or {})
     meta["session_id"] = session.session_id
+    meta["meta_tag_contamination"] = annotate_meta_tags(
+        payload,
+        openai_payload,
+        cleaned_qf_text if qf_text else "",
+        session.model_dump(mode="json", exclude_none=True),
+    )
     meta_path = Path(str(base_path) + ".meta.json")
     meta_path.write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8",

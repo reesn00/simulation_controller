@@ -307,6 +307,32 @@ def process_one(
         if folded_thinking:
             log.info("folded %d consecutive thinking block(s)", folded_thinking)
 
+        # === 2.3 P0 方案 ②: 重试循环 LLM 判剪枝 ===
+        # 在 fold 之后、reassembler 之前; 复用 main_model (与 thought_refactor
+        # 用的同一个本地 9B 模型, 避免引入新 LLM 依赖). LLM 任何异常/不确定
+        # 判定 → 保守 fallback, 不动数据.
+        if getattr(cfg, "retry_loop_clip_enabled", True):
+            from refiners.retry_loop_clip import clip_session
+            from infrastructure import LlamaCppClient
+            try:
+                clip_client = LlamaCppClient.get(
+                    cfg.main_model, cfg=cfg,
+                    timeout=int(getattr(cfg, "retry_loop_clip_llm_timeout_s", 60)),
+                )
+                removed_clip = clip_session(
+                    session, clip_client,
+                    min_consecutive=int(getattr(cfg, "retry_loop_clip_min_consecutive", 5)),
+                    max_keep=int(getattr(cfg, "retry_loop_clip_max_keep", 3)),
+                    llm_timeout_s=int(getattr(cfg, "retry_loop_clip_llm_timeout_s", 60)),
+                )
+                if removed_clip:
+                    log.info("retry_loop_clip removed %d block(s)", removed_clip)
+            except Exception as e:
+                log.warning(
+                    "retry_loop_clip failed for session %s, skipping: %s",
+                    session.session_id, e,
+                )
+
         # === 2.5 fold 后重切 chunk + 增量状态追踪 (唯一一次 LLM 状态追踪) ===
         # chunk 划分反映折叠后的 session, 避免 fold 掉的块虚增一致性校验的重算长度
         if context_understanding is not None:
@@ -1044,7 +1070,13 @@ def _apply_usage_prune(session, cfg: Settings) -> None:
         template_str, env = _PRUNE_TEMPLATE_CACHE[key]
 
         data = session.model_dump(mode="json", exclude_none=True)
-        stats = prune_session_in_place(data, template_str, env)
+        stats = prune_session_in_place(
+            data, template_str, env,
+            tools_prune_strategy=cfg.tools_prune_strategy,
+            tools_prune_keep_unused_min=cfg.tools_prune_keep_unused_min,
+            tools_prune_keep_unused_max=cfg.tools_prune_keep_unused_max,
+            tools_prune_keep_unused_ratio=cfg.tools_prune_keep_unused_ratio,
+        )
         pruned = Session.model_validate(data)
         session.messages = pruned.messages
         session.metadata = pruned.metadata
