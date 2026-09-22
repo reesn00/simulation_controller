@@ -1,6 +1,6 @@
 """回归: #8 批阶段时间戳 / #9 产物文件名 task_id 前缀 / #7 轮询空闲退避与降噪.
 
-#8: batches.qf/gdr_started_at 由首次 pull 打点 (COALESCE 不覆盖),
+#8: batches.gdr/etl_started_at 由首次 pull 打点 (COALESCE 不覆盖),
     *_done_at 由批内该阶段清空时打点; dead 收尾补戳; 未开始的阶段不打收尾戳;
     旧 db 自动迁移。
 #9: producer 写 run_tasks 映射 (sanitize 后的 run_id 为键); worker 产物文件名
@@ -13,11 +13,12 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from pathlib import Path
 
 from orchestration.health import collect_batches
 from orchestration.queue import SQLiteQueue
 from orchestration.watcher import TrajectoryWatcher
-from orchestration.workers.qf_worker import QfWorker
+from orchestration.workers.etl_worker import EtlWorker
 from orchestration.workers.gdr_worker import GdrWorker
 
 
@@ -118,13 +119,13 @@ def test_pull_stamps_stage_started_once_not_overwritten(tmp_path) -> None:
     _seed(queue, tmp_path, "r__a.json", "a", batch_id=1)
     _seed(queue, tmp_path, "r__b.json", "b", batch_id=1)
 
-    queue.pull_pending_qf(worker_id="w", n=1)
-    first = _batch_row(queue, 1)["qf_started_at"]
+    queue.pull_pending_gdr(worker_id="w", n=1)
+    first = _batch_row(queue, 1)["gdr_started_at"]
     assert first is not None
-    assert _batch_row(queue, 1)["gdr_started_at"] is None
+    assert _batch_row(queue, 1)["etl_started_at"] is None
 
-    queue.pull_pending_qf(worker_id="w", n=1)
-    assert _batch_row(queue, 1)["qf_started_at"] == first, "第二次 pull 不得覆盖首戳"
+    queue.pull_pending_gdr(worker_id="w", n=1)
+    assert _batch_row(queue, 1)["gdr_started_at"] == first, "第二次 pull 不得覆盖首戳"
 
 
 def test_stage_done_only_after_batch_drains_stage(tmp_path) -> None:
@@ -133,48 +134,49 @@ def test_stage_done_only_after_batch_drains_stage(tmp_path) -> None:
     t1 = _seed(queue, tmp_path, "r__a.json", "a", batch_id=1)
     t2 = _seed(queue, tmp_path, "r__b.json", "b", batch_id=1)
 
-    queue.pull_pending_qf(worker_id="w", n=2)
-    queue.mark_qf_done(t1, qf_output_path=tmp_path / "a.json")
-    assert _batch_row(queue, 1)["qf_done_at"] is None, "批内仍有 qf_processing 不得收尾"
-
-    queue.mark_qf_done(t2, qf_output_path=tmp_path / "b.json")
-    assert _batch_row(queue, 1)["qf_done_at"] is not None
-    assert _batch_row(queue, 1)["gdr_done_at"] is None
-
     queue.pull_pending_gdr(worker_id="w", n=2)
-    assert _batch_row(queue, 1)["gdr_started_at"] is not None
-    queue.mark_gdr_done(
+    queue.mark_gdr_done(t1, gdr_refined_path=tmp_path / "a.json")
+    assert _batch_row(queue, 1)["gdr_done_at"] is None, "批内仍有 gdr_processing 不得收尾"
+
+    queue.mark_gdr_done(t2, gdr_refined_path=tmp_path / "b.json")
+    assert _batch_row(queue, 1)["gdr_done_at"] is not None
+    assert _batch_row(queue, 1)["etl_done_at"] is None
+
+    queue.pull_pending_etl(worker_id="w", n=2)
+    assert _batch_row(queue, 1)["etl_started_at"] is not None
+    queue.mark_etl_done(
         t1,
-        gdr_messages_path=tmp_path / "a_r.messages.json",
-        gdr_openai_path=tmp_path / "a_r.openai.json",
-        gdr_qwenjina_path=None,
-        gdr_meta_path=tmp_path / "a_r.meta.json",
+        etl_messages_path=tmp_path / "a_r.messages.json",
+        etl_openai_path=tmp_path / "a_r.openai.json",
+        etl_qwenjina_path=None,
+        etl_meta_path=tmp_path / "a_r.meta.json",
     )
-    assert _batch_row(queue, 1)["gdr_done_at"] is None
-    queue.mark_gdr_done(
+    assert _batch_row(queue, 1)["etl_done_at"] is None
+    queue.mark_etl_done(
         t2,
-        gdr_messages_path=tmp_path / "b_r.messages.json",
-        gdr_openai_path=tmp_path / "b_r.openai.json",
-        gdr_qwenjina_path=None,
-        gdr_meta_path=tmp_path / "b_r.meta.json",
+        etl_messages_path=tmp_path / "b_r.messages.json",
+        etl_openai_path=tmp_path / "b_r.openai.json",
+        etl_qwenjina_path=None,
+        etl_meta_path=tmp_path / "b_r.meta.json",
     )
     row = _batch_row(queue, 1)
-    assert row["gdr_done_at"] is not None
-    assert row["qf_started_at"] <= row["qf_done_at"] <= row["gdr_started_at"] <= row["gdr_done_at"]
+    assert row["etl_done_at"] is not None
+    assert (row["gdr_started_at"] <= row["gdr_done_at"]
+            <= row["etl_started_at"] <= row["etl_done_at"])
 
 
-def test_dead_last_task_stamps_qf_done_but_not_gdr(tmp_path) -> None:
-    """最后一条 task 死于 qf: qf_done_at 补戳; gdr 从未开始则不打凭空收尾戳."""
-    queue = SQLiteQueue(tmp_path / "q.db", max_retry_qf=0)
+def test_dead_last_task_stamps_gdr_done_but_not_etl(tmp_path) -> None:
+    """最后一条 task 死于 gdr: gdr_done_at 补戳; etl 从未开始则不打凭空收尾戳."""
+    queue = SQLiteQueue(tmp_path / "q.db", max_retry_gdr=0)
     queue.insert_batch(["T1"])
     t1 = _seed(queue, tmp_path, "r__a.json", "a", batch_id=1)
-    queue.pull_pending_qf(worker_id="w", n=1)
-    new_state = queue.mark_failed(t1, stage="qf", error_msg="boom")
+    queue.pull_pending_gdr(worker_id="w", n=1)
+    new_state = queue.mark_failed(t1, stage="gdr", error_msg="boom")
     assert new_state == "dead"
     row = _batch_row(queue, 1)
-    assert row["qf_done_at"] is not None
-    assert row["gdr_started_at"] is None
-    assert row["gdr_done_at"] is None, "未开始的阶段不得有 done 戳"
+    assert row["gdr_done_at"] is not None
+    assert row["etl_started_at"] is None
+    assert row["etl_done_at"] is None, "未开始的阶段不得有 done 戳"
 
 
 def test_mark_dead_before_any_pull_stamps_nothing(tmp_path) -> None:
@@ -183,12 +185,12 @@ def test_mark_dead_before_any_pull_stamps_nothing(tmp_path) -> None:
     t1 = _seed(queue, tmp_path, "r__a.json", "a", batch_id=1)
     queue.mark_dead(t1, error_msg="watcher parse fail")
     row = _batch_row(queue, 1)
-    assert row["qf_started_at"] is None and row["qf_done_at"] is None
+    assert row["gdr_started_at"] is None and row["gdr_done_at"] is None
 
 
 def test_legacy_db_tasks_rebuilt_and_batches_migrated(tmp_path) -> None:
-    """旧库 tasks 含 gdr_output_path 列 + batches 无阶段戳列: 打开时 tasks DROP
-    重建为 4 字段, batches 幂等 ALTER 补阶段戳列, 且 collect/打标可用."""
+    """旧库 tasks 含 qf_output_path / 旧 gdr_*_path 列 + batches 无阶段戳列: 打开时
+    tasks DROP 重建为新 4 视图列, batches 幂等 ALTER 补阶段戳列, 且 collect/打标可用."""
     db = tmp_path / "legacy.db"
     conn = sqlite3.connect(db)
     conn.executescript("""
@@ -196,8 +198,11 @@ def test_legacy_db_tasks_rebuilt_and_batches_migrated(tmp_path) -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           src_path TEXT NOT NULL UNIQUE, run_id TEXT NOT NULL, session_id TEXT,
           batch_id INTEGER NOT NULL, state TEXT NOT NULL,
-          attempts_qf INTEGER NOT NULL DEFAULT 0, attempts_gdr INTEGER NOT NULL DEFAULT 0,
-          qf_output_path TEXT, gdr_output_path TEXT, error_msg TEXT,
+          attempts_gdr INTEGER NOT NULL DEFAULT 0, attempts_etl INTEGER NOT NULL DEFAULT 0,
+          qf_output_path TEXT,
+          gdr_messages_path TEXT, gdr_openai_path TEXT,
+          gdr_qwenjina_path TEXT, gdr_meta_path TEXT,
+          error_msg TEXT,
           locked_by TEXT, locked_at TEXT,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -214,21 +219,23 @@ def test_legacy_db_tasks_rebuilt_and_batches_migrated(tmp_path) -> None:
     conn.close()
 
     queue = SQLiteQueue(db)
-    # tasks 表已重建: gdr_output_path 列消失, 4 个 gdr_*_path 列出现
+    # tasks 表已重建: 旧 qf/gdr_* 列消失, 新 4 个 etl_*_path 列出现
     with queue._conn() as c:
         cols = {r[1] for r in c.execute("PRAGMA table_info(tasks)")}
-    assert "gdr_output_path" not in cols
+    assert "qf_output_path" not in cols
+    assert "gdr_messages_path" not in cols
+    assert "gdr_meta_path" not in cols
     assert {
-        "gdr_messages_path", "gdr_openai_path",
-        "gdr_qwenjina_path", "gdr_meta_path",
+        "etl_messages_path", "etl_openai_path",
+        "etl_qwenjina_path", "etl_meta_path",
     } <= cols
 
     queue.insert_batch(["T1"])
     t1 = _seed(queue, tmp_path, "r__a.json", "a", batch_id=1)
-    queue.pull_pending_qf(worker_id="w", n=1)
-    assert _batch_row(queue, 1)["qf_started_at"] is not None
-    queue.mark_qf_done(t1, qf_output_path=tmp_path / "a.json")
-    assert _batch_row(queue, 1)["qf_done_at"] is not None
+    queue.pull_pending_gdr(worker_id="w", n=1)
+    assert _batch_row(queue, 1)["gdr_started_at"] is not None
+    queue.mark_gdr_done(t1, gdr_refined_path=tmp_path / "a.json")
+    assert _batch_row(queue, 1)["gdr_done_at"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -245,26 +252,51 @@ def test_run_task_map_insert_lookup_and_overwrite(tmp_path) -> None:
     queue.insert_run_task_map([])  # 空入参不炸
 
 
-def test_output_name_prefixed_when_mapped(tmp_path) -> None:
+def test_output_name_prefixed_when_mapped(tmp_path, monkeypatch) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
     queue.insert_batch(["T42"])
     tid = _seed(queue, tmp_path, "runx__sess.json", "sess", batch_id=1, run_id="runx")
     queue.insert_run_task_map([("runx", "zh_travel_01", 1)])
 
-    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "qf_out")
-    [task] = w.pull()
-    out_path = w.process(task)
-    assert out_path == tmp_path / "qf_out" / "zh_travel_01__sess.json"
+    # mock gdr pipeline: 不真跑 LLM, 只在 base_path 落一个空 C2 文件 + 返回 success
+    import json
+    def fake_process_one(input_path, base_path, cfg):
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path.write_text(json.dumps({"session_id": "sess", "messages": []}),
+                             encoding="utf-8")
+        return {"status": "success", "output": str(base_path)}
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker._process_one_file",
+        fake_process_one,
+    )
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker.from_trajectory",
+        lambda _path: None,
+    )
+
+    # gdr worker: 写 C2 refined Session, suffix=""
+    w_g = GdrWorker(queue=queue, worker_id="g", refined_dir=tmp_path / "refined")
+    [task] = w_g.pull()
+    out_path = w_g.process(task)
+    assert out_path == tmp_path / "refined" / "zh_travel_01__sess.json"
     assert out_path.exists()
     # gdr 命名同源: 直接校验共享 helper (不跑真实 _process_one_file)
-    g = GdrWorker(queue=queue, worker_id="g", gdr_output_dir=tmp_path / "gdr_out")
-    assert g._output_name(task, "sess", suffix="_refined") == "zh_travel_01__sess_refined.json"  # noqa: SLF001
+    assert w_g._output_name(task, "sess", suffix="") == "zh_travel_01__sess.json"  # noqa: SLF001
+
+    # etl worker: etl 不调 _output_name (它沿用 c2 stem 加尾缀);
+    # 验证 etl worker 实例能拉到 task + 与 gdr worker 共用 run_tasks 映射
+    e_w = EtlWorker(queue=queue, worker_id="e", outputs_dir=tmp_path / "etl_outputs")
+    # etl 命名约定: c2 stem = "zh_travel_01__sess" (gdr 输出文件名去扩展名)
+    c2_stem = out_path.stem  # "zh_travel_01__sess"
+    assert c2_stem == "zh_travel_01__sess"
+    # etl 末端 save_session_v2 会写出 c2_stem + .messages.json / .openai.json 等
+    assert f"{c2_stem}.messages.json" == "zh_travel_01__sess.messages.json"
 
 
 def test_output_name_falls_back_without_mapping(tmp_path) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
     _seed(queue, tmp_path, "runx__sess.json", "sess", run_id="runx")
-    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "qf_out")
+    w = GdrWorker(queue=queue, worker_id="w", refined_dir=tmp_path / "qf_out")
     [task] = w.pull()
     assert w._output_name(task, "sess", suffix="") == "sess.json"  # noqa: SLF001
 
@@ -273,7 +305,7 @@ def test_output_name_falls_back_without_mapping(tmp_path) -> None:
             raise RuntimeError("db locked")
 
     q2 = _NoLookupQueue(tmp_path / "q2.db")
-    w2 = QfWorker(queue=q2, worker_id="w", qf_output_dir=tmp_path / "qf_out2")
+    w2 = GdrWorker(queue=q2, worker_id="w", refined_dir=tmp_path / "qf_out2")
     assert w2._output_name(task, "sess", suffix="") == "sess.json"  # noqa: SLF001
 
 
@@ -316,7 +348,7 @@ def test_producer_run_batch_writes_map(tmp_path, monkeypatch) -> None:
 
 def test_worker_backoff_grows_and_caps(tmp_path, monkeypatch) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
-    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
+    w = GdrWorker(queue=queue, worker_id="w", refined_dir=tmp_path / "o",
                  poll_seconds=1.0)
     monkeypatch.setattr(w, "run_once", lambda: 0)
     ev = _FakeEvent(4)
@@ -326,7 +358,7 @@ def test_worker_backoff_grows_and_caps(tmp_path, monkeypatch) -> None:
 
 def test_worker_backoff_resets_after_processing(tmp_path, monkeypatch) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
-    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
+    w = GdrWorker(queue=queue, worker_id="w", refined_dir=tmp_path / "o",
                  poll_seconds=1.0)
     seq = iter([0, 0, 2, 0, 0, 0])
     monkeypatch.setattr(w, "run_once", lambda: next(seq))
@@ -338,7 +370,7 @@ def test_worker_backoff_resets_after_processing(tmp_path, monkeypatch) -> None:
 
 def test_worker_backoff_disabled_with_zero_cap(tmp_path, monkeypatch) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
-    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
+    w = GdrWorker(queue=queue, worker_id="w", refined_dir=tmp_path / "o",
                  poll_seconds=0.5)
     monkeypatch.setattr(w, "run_once", lambda: 0)
     ev = _FakeEvent(3)
@@ -379,12 +411,12 @@ def test_worker_failure_rounds_do_not_backoff(tmp_path, monkeypatch) -> None:
     """拉到 task 但全部失败不算空闲: 重试节奏保持 poll 恒定 (drain 超时可预期)."""
     queue = SQLiteQueue(tmp_path / "q.db")
 
-    class _W(QfWorker):
+    class _W(GdrWorker):
         def run_once(self):
             self._last_pulled = 1  # 模拟拉到 1 条但处理失败 (返回 0)
             return 0
 
-    w = _W(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
+    w = _W(queue=queue, worker_id="w", refined_dir=tmp_path / "o",
            poll_seconds=0.3)
     ev = _FakeEvent(4)
     w.run_forever(ev, max_poll_seconds=100.0)
@@ -394,7 +426,7 @@ def test_worker_failure_rounds_do_not_backoff(tmp_path, monkeypatch) -> None:
 def test_worker_backoff_no_overflow_on_many_idle_rounds(tmp_path, monkeypatch) -> None:
     """连续空闲远超 1024 轮时, 指数退避不得 OverflowError (回归: batch_id=45 崩溃)."""
     queue = SQLiteQueue(tmp_path / "q.db")
-    w = QfWorker(queue=queue, worker_id="w", qf_output_dir=tmp_path / "o",
+    w = GdrWorker(queue=queue, worker_id="w", refined_dir=tmp_path / "o",
                  poll_seconds=1.0)
     monkeypatch.setattr(w, "run_once", lambda: 0)
     ev = _FakeEvent(2000)
@@ -434,5 +466,3 @@ def test_setup_logging_demotes_httpx(tmp_path) -> None:
                 root.removeHandler(h)
         for n, lvl in before.items():
             logging.getLogger(n).setLevel(lvl)
-
-

@@ -1,6 +1,6 @@
 """orchestration.master 单元测试.
 
-通过 monkeypatch ``QfWorker.process`` / ``GdrWorker.process`` 避免真实 LLM 调用;
+通过 monkeypatch ``GdrWorker.process`` / ``EtlWorker.process`` 避免真实 LLM 调用;
 producer 注入 fake 让 batch_id 走完整路径.
 """
 
@@ -14,17 +14,17 @@ from typing import Sequence
 
 import pytest
 
-# 显式 import，确保 QfWorker/GdrWorker 在 monkeypatch 之前已注册
+# 显式 import，确保 GdrWorker/EtlWorker 在 monkeypatch 之前已注册
 from orchestration.config_loader import OrchestrationConfig
 from orchestration.master import Master
 from orchestration.queue import (
     STATE_DEAD,
     STATE_DONE,
-    STATE_PENDING_GDR,
+    STATE_PENDING_ETL,
     SQLiteQueue,
 )
+from orchestration.workers.etl_worker import EtlWorker
 from orchestration.workers.gdr_worker import GdrWorker
-from orchestration.workers.qf_worker import QfWorker
 from orchestration.watcher import TrajectoryWatcher
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.state_machine import RunState
@@ -41,8 +41,8 @@ def env(tmp_path: Path, monkeypatch) -> tuple[Path, SQLiteQueue, Master]:
     traj_dir.mkdir()
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    qf_out = tmp_path / "qf_out"
-    gdr_out = tmp_path / "gdr_out"
+    refined_dir = tmp_path / "refined"
+    etl_outputs_dir = tmp_path / "etl_outputs"
     dead_dir = tmp_path / "dead"
     log_dir = tmp_path / "logs"
     config_path = tmp_path / "sim.yaml"
@@ -51,10 +51,10 @@ def env(tmp_path: Path, monkeypatch) -> tuple[Path, SQLiteQueue, Master]:
     cfg = OrchestrationConfig.from_raw({
         "orchestration": {
             "batch_size": 3,
-            "qf_workers": 1,
+            "etl_workers": 1,
             "gdr_workers": 1,
-            "max_retry_qf": 1,
             "max_retry_gdr": 1,
+            "max_retry_etl": 1,
             "watcher_poll_seconds": 0.02,
             "reap_stale_interval_seconds": 60,
             "reap_stale_seconds": 60,
@@ -64,8 +64,8 @@ def env(tmp_path: Path, monkeypatch) -> tuple[Path, SQLiteQueue, Master]:
         "paths": {
             "simulate_serve_config": str(config_path),
             "trajectory_dir": str(traj_dir),
-            "qf_output_dir": str(qf_out),
-            "gdr_output_dir": str(gdr_out),
+            "refined_dir": str(refined_dir),
+            "etl_outputs_dir": str(etl_outputs_dir),
             "sqlite_db": str(tmp_path / "q.db"),
             "dead_dir": str(dead_dir),
             "log_dir": str(log_dir),
@@ -75,8 +75,8 @@ def env(tmp_path: Path, monkeypatch) -> tuple[Path, SQLiteQueue, Master]:
 
     queue = SQLiteQueue(
         tmp_path / "q.db",
-        max_retry_qf=1,
         max_retry_gdr=1,
+        max_retry_etl=1,
     )
     m = Master(cfg=cfg, queue=queue)
     yield tmp_path, queue, m
@@ -123,40 +123,45 @@ def _make_fake_producer(
     return producer
 
 
-def _patch_qf_process(monkeypatch, fail_for: set[str] | None = None):
-    """monkeypatch QfWorker.process."""
+def _patch_gdr_process(monkeypatch, fail_for: set[str] | None = None):
+    """monkeypatch GdrWorker.process (新架构首阶段, 写 C2 refined Session)."""
     fail_for = fail_for or set()
 
     def fake_process(self, task):
         if task.run_id in fail_for:
-            raise RuntimeError("qf forced fail")
+            raise RuntimeError("gdr forced fail")
         session = task.session_id or task.src_path.stem
-        out = self._qf_output_dir / f"{session}.json"
+        out = self._refined_dir / f"{session}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("{}", encoding="utf-8")
-        self._queue.mark_qf_done(task.id, qf_output_path=out)
+        out.write_text(
+            '{"session_id":"' + session + '","messages":[],"schema_version":"refined_session.v1"}',
+            encoding="utf-8",
+        )
+        self._queue.mark_gdr_done(task.id, gdr_refined_path=out)
         return out
 
-    monkeypatch.setattr(QfWorker, "process", fake_process)
+    monkeypatch.setattr(GdrWorker, "process", fake_process)
 
 
-def _patch_gdr_process(monkeypatch):
+def _patch_etl_process(monkeypatch):
+    """monkeypatch EtlWorker.process (新架构末阶段, 拆 C2 → 4 视图)."""
     def fake_process(self, task):
-        session = task.session_id or task.src_path.stem
-        base = f"{self._gdr_output_dir / session}_refined"
+        c2 = Path(task.gdr_refined_path)
+        base = self._outputs_dir / c2.stem
         paths = {
-            "messages": f"{base}.messages.json",
-            "openai": f"{base}.openai.json",
-            "qwenjina": f"{base}.qwenjina.txt",
-            "meta": f"{base}.meta.json",
+            "messages": base.with_suffix(".messages.json"),
+            "openai": base.with_suffix(".openai.json"),
+            "qwenjina": base.with_suffix(".qwenjina.txt"),
+            "meta": base.with_suffix(".meta.json"),
         }
         for p in paths.values():
-            Path(p).parent.mkdir(parents=True, exist_ok=True)
-            Path(p).write_text("{}", encoding="utf-8")
-        self._last_outputs = paths
-        return Path(paths["messages"])
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("{}", encoding="utf-8")
+        from types import SimpleNamespace
+        self._last_outputs = SimpleNamespace(**paths)
+        return paths["messages"]
 
-    monkeypatch.setattr(GdrWorker, "process", fake_process)
+    monkeypatch.setattr(EtlWorker, "process", fake_process)
 
 
 # ---------------------------------------------------------------------------
@@ -165,20 +170,20 @@ def _patch_gdr_process(monkeypatch):
 
 def test_start_workers_spawns_threads(env, monkeypatch) -> None:
     _tmp, queue, m = env
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
     m.start_workers()
     assert len(m.alive_workers) == 2
-    assert any(name == "qf_0" for name in m.alive_workers)
     assert any(name == "gdr_0" for name in m.alive_workers)
+    assert any(name == "etl_0" for name in m.alive_workers)
     with pytest.raises(Exception):
         m.start_workers()
 
 
 def test_shutdown_stops_all_workers(env, monkeypatch) -> None:
     _tmp, queue, m = env
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
     m.start_workers()
     assert len(m.alive_workers) == 2
     m.shutdown(timeout=2.0)
@@ -191,8 +196,8 @@ def test_shutdown_stops_all_workers(env, monkeypatch) -> None:
 
 def test_run_one_batch_end_to_end(env, monkeypatch) -> None:
     _tmp, queue, m = env
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
 
     traj_dir = Path(m._cfg.paths.trajectory_dir)
     runs_dir = Path(m._cfg.paths.runs_dir)
@@ -225,8 +230,8 @@ def test_run_one_batch_without_pre_registered_tasks(env, monkeypatch) -> None:
     若 master 同步首扫失败, 整个批会被丢在 pending.
     """
     _tmp, queue, m = env
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
 
     traj_dir = Path(m._cfg.paths.trajectory_dir)
     runs_dir = Path(m._cfg.paths.runs_dir)
@@ -264,7 +269,7 @@ def test_run_one_batch_without_pre_registered_tasks(env, monkeypatch) -> None:
     )
     states = {t.run_id: t.state for t in tasks}
     assert states == {"T1": STATE_DONE, "T2": STATE_DONE}, (
-        f"tasks 应走完 qf+gdr, 实测: {states}"
+        f"tasks 应走完 gdr+etl, 实测: {states}"
     )
 
 
@@ -306,8 +311,8 @@ def test_first_scan_watcher_idempotent_with_watcher_async(env, monkeypatch) -> N
 
 def test_run_multiple_batches(env, monkeypatch) -> None:
     _tmp, queue, m = env
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
     traj_dir = Path(m._cfg.paths.trajectory_dir)
     runs_dir = Path(m._cfg.paths.runs_dir)
     producer = _make_fake_producer(queue, traj_dir, runs_dir)
@@ -326,8 +331,8 @@ def test_run_multiple_batches(env, monkeypatch) -> None:
 
 def test_run_one_batch_with_dead_task(env, monkeypatch) -> None:
     _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_qf_process(monkeypatch, fail_for={"T_BAD"})
+    _patch_etl_process(monkeypatch)
+    _patch_gdr_process(monkeypatch, fail_for={"T_BAD"})
     traj_dir = Path(m._cfg.paths.trajectory_dir)
     runs_dir = Path(m._cfg.paths.runs_dir)
     producer = _make_fake_producer(queue, traj_dir, runs_dir,
@@ -356,15 +361,15 @@ def test_wait_batch_drained_returns_true_when_all_done(env) -> None:
     fp = env[0] / "t.json"
     fp.write_text("{}", encoding="utf-8")
     tid, _ = queue.insert(src_path=fp, run_id="r", session_id="s", batch_id=1)
-    queue.pull_pending_qf(worker_id="w", n=1)
-    queue.mark_qf_done(tid, qf_output_path=fp)
     queue.pull_pending_gdr(worker_id="w", n=1)
-    queue.mark_gdr_done(
+    queue.mark_gdr_done(tid, gdr_refined_path=fp)
+    queue.pull_pending_etl(worker_id="w", n=1)
+    queue.mark_etl_done(
         tid,
-        gdr_messages_path=fp,
-        gdr_openai_path=fp,
-        gdr_qwenjina_path=None,
-        gdr_meta_path=fp,
+        etl_messages_path=fp,
+        etl_openai_path=fp,
+        etl_qwenjina_path=None,
+        etl_meta_path=fp,
     )
 
     bid = queue.insert_batch(["r"])
@@ -407,8 +412,8 @@ def test_run_stops_mid_batch_via_batch_tracker(env, monkeypatch) -> None:
     """run.json 永不终态 + stop_event 置位 → BatchTrackerStopped 传播，
     批循环中断，后续批不跑."""
     _tmp, queue, m = env
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
 
     traj_dir = Path(m._cfg.paths.trajectory_dir)
     runs_dir = Path(m._cfg.paths.runs_dir)
@@ -441,8 +446,8 @@ def test_run_stops_mid_batch_via_batch_tracker(env, monkeypatch) -> None:
 def test_run_completed_batches_not_affected_by_stop(env, monkeypatch) -> None:
     """停止发生在批间：已完成批的 summary 保留."""
     _tmp, queue, m = env
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
 
     traj_dir = Path(m._cfg.paths.trajectory_dir)
     runs_dir = Path(m._cfg.paths.runs_dir)
@@ -481,8 +486,8 @@ def test_reaper_loop_calls_reap_stale(env, monkeypatch) -> None:
         calls["n"] += 1
         return real(*a, **kw)
     monkeypatch.setattr(queue, "reap_stale", spy)
-    _patch_qf_process(monkeypatch)
     _patch_gdr_process(monkeypatch)
+    _patch_etl_process(monkeypatch)
     m.start_workers()
     time.sleep(0.3)
     m.shutdown(timeout=1.0)

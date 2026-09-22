@@ -12,10 +12,11 @@ from config import Settings, load_tools
 from infrastructure import setup_logger
 from infrastructure.llm_client import set_generation_concurrency
 from domain import (
-    Session, load_session, save_session,
+    Session, save_refined_session,
     BlockIndex, BlockRefineRecord, DefectTag,
     ThinkingBlock, ToolcallBlock, ToolresultBlock, Message,
 )
+from parsers import from_trajectory
 from routing import Router
 from routing.health import light_health_score_for_session
 from refiners import thought_refactor, tool_fixer, obs_denoiser
@@ -1048,55 +1049,17 @@ def _append_incomplete_queue(session: Session, diagnostic: dict, cfg: Settings) 
         log.warning("failed to append incomplete queue: %s", e)
 
 
-# === 使用量裁剪 (落盘前) ===
-# 模板/环境按路径缓存, 进程内只加载一次
-_PRUNE_TEMPLATE_CACHE: dict = {}
-
-
-def _apply_usage_prune(session, cfg: Settings) -> None:
-    """落盘前按真实调用裁剪 system prompt / tools + 路径泛化, 并重渲染 qf_text.
-
-    在 router / judge / refine 全部完成后执行 —— 所有 LLM 评审阶段看到的仍是
-    原始完整 system prompt, 裁剪只作用于训练产物视图。失败时保留未裁剪的
-    session (数据保全优先), 不阻断落盘。
-    """
-    try:
-        from etl.qwenformat.transform import build_chat_env, load_chat_template
-        from etl.qwenformat.usage_prune import prune_session_in_place
-
-        key = str(cfg.qf_chat_template_path)
-        if key not in _PRUNE_TEMPLATE_CACHE:
-            _PRUNE_TEMPLATE_CACHE[key] = (load_chat_template(key), build_chat_env())
-        template_str, env = _PRUNE_TEMPLATE_CACHE[key]
-
-        data = session.model_dump(mode="json", exclude_none=True)
-        stats = prune_session_in_place(
-            data, template_str, env,
-            tools_prune_strategy=cfg.tools_prune_strategy,
-            tools_prune_keep_unused_min=cfg.tools_prune_keep_unused_min,
-            tools_prune_keep_unused_max=cfg.tools_prune_keep_unused_max,
-            tools_prune_keep_unused_ratio=cfg.tools_prune_keep_unused_ratio,
-        )
-        pruned = Session.model_validate(data)
-        session.messages = pruned.messages
-        session.metadata = pruned.metadata
-        session.summary = pruned.summary
-        log.info(
-            "usage prune: system %s->%s chars, tools %s->%s, dropped sections %s",
-            stats.get("system_chars_before"), stats.get("system_chars_after"),
-            stats.get("tools_before"), stats.get("tools_after"),
-            stats.get("dropped_sections"),
-        )
-    except Exception as e:
-        log.warning("usage prune failed for session %s, keeping unpruned: %s",
-                    getattr(session, "session_id", "?"), e)
-
+# === 多进程 worker 入口 ===
 
 def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dict:
-    """单文件处理: load → refine → save。返回 per-file 状态 dict (供 worker 收集)。"""
-    log.info("loading session from %s", input_path)
+    """单文件处理: load → refine → save。返回 per-file 状态 dict (供 worker 收集)。
+
+    新架构：input 是 trajectory（C1 契约），output 是单 C2 refined Session 文件。
+    etl 阶段读 C2 后做格式整理 + 拆 4 视图（C3 契约）。
+    """
+    log.info("loading trajectory from %s", input_path)
     try:
-        session = load_session(input_path)
+        session = from_trajectory(input_path)
     except Exception as e:
         log.error("failed to load %s: %s", input_path, e)
         return {"input": str(input_path), "status": "load_error", "error": str(e)}
@@ -1116,9 +1079,9 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
     _append_routing_abstain_queue(session, cfg)
 
     if result is not None:
-        # 方向 #完整性检测: 在 save_session 之前做未闭合检查. 未闭合 session
-        # 不写 refine_data (避免 SFT 用"agent 半截完成任务"作为正例), 整体
-        # 路由到 incomplete.jsonl 旁路, 供运维复核或远端走 FOLLOWUP_CREATED
+        # 方向 #完整性检测: 在 save_refined_session 之前做未闭合检查. 未闭合
+        # session 不写 refine_data (避免 SFT 用"agent 半截完成任务"作为正例),
+        # 整体路由到 incomplete.jsonl 旁路, 供运维复核或远端走 FOLLOWUP_CREATED
         # 让远端继续跑. 不阻断主流程 — 只是换个落盘点.
         if getattr(cfg, "incomplete_detection_enabled", True):
             diagnostic = _detect_incomplete_session(result)
@@ -1135,11 +1098,9 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
                     "status": "incomplete",
                     "diagnostic": diagnostic,
                 }
-        if cfg.enable_usage_prune:
-            _apply_usage_prune(result, cfg)
         try:
-            outputs = save_session(result, output_path)
-            log.info("saved refined session to %s", outputs.messages)
+            output = save_refined_session(result, output_path)
+            log.info("saved refined session to %s", output)
             # 方案 §5.5: 人工审核队列独立输出 (deferred blocks 追加到 jsonl)
             _append_deferred_queue(result, cfg)
             # P0-1.2: 透传 training_value_score / complexity_tier 到 batch report,
@@ -1147,12 +1108,7 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
             meta = result.metadata or {}
             return {
                 "input": str(input_path),
-                "outputs": {
-                    "messages": str(outputs.messages),
-                    "openai": str(outputs.openai),
-                    "qwenjina": str(outputs.qwenjina) if outputs.qwenjina else None,
-                    "meta": str(outputs.meta),
-                },
+                "output": str(output),
                 "status": "success",
                 "complexity_tier": meta.get("complexity_tier"),
                 "training_value_score": meta.get("training_value_score"),
@@ -1263,9 +1219,14 @@ def _discover_inputs(cfg: Settings) -> list[Path]:
 
 
 def _resolve_output(cfg: Settings, input_path: Path) -> Path:
+    """新架构 gdr 输出单 C2 refined Session：路径无 ``_refined`` 后缀（etl 阶段加）.
+
+    路径形态：``<batch_output_dir>/<task_id>__<session_id>.json``（直接是单文件，
+    不再是 stem；etl 阶段调 ``save_session_v2`` 时再加 ``_refined`` 后缀拆 4 视图）。
+    """
     if cfg.batch_input_dir and cfg.batch_output_dir:
-        return cfg.batch_output_dir / f"{input_path.stem}_refined"
-    return cfg.output_path.with_suffix("")
+        return cfg.batch_output_dir / f"{input_path.stem}.json"
+    return cfg.output_path
 
 
 def run(cfg: Settings) -> dict:

@@ -45,7 +45,7 @@ CLI / Bootstrap
 
 ## 数据格式约定
 
-QwenPaw trajectory 形态（2026-09-18 起，单路径事件流）：重放唯一入口 `etl/qwenformat/load.py::parse_trajectory`，每轮一个 assistant message（含全部 thinking / tool_call / tool_result / 最终 text）。
+QwenPaw trajectory 形态（2026-09-18 起，单路径事件流）：重放唯一入口 `etl/qwenformat/load.py::parse_trajectory`（被 `gdr/parsers.from_trajectory` 薄包装），每轮一个 assistant message（含全部 thinking / tool_call / tool_result / 最终 text）。
 
 事件约定：
 - `model_response.payload.content` 携带模型输出块：`thinking`（独立结构化块）/ `tool_call`（state=pending）/ `text`
@@ -54,6 +54,34 @@ QwenPaw trajectory 形态（2026-09-18 起，单路径事件流）：重放唯�
 - `final_reply.payload.content` 是冗余快照，只取 `metadata.usage`
 
 格式演化历史与早期 AI SDK 内嵌快照路径见 `docs/project-notes.md`。
+
+## Pipeline 流程（2026-09-22 起新架构）
+
+`simulation server → gdr → etl`。三阶段各守一道边界，每段交接面写一份契约文件。
+
+```text
+┌──────────────────┐         ┌──────────────┐         ┌──────────────────┐
+│ simulation       │  C1     │     gdr      │  C2     │       etl        │
+│ server           │ ──────► │ (refine)     │ ──────► │ (format convert) │ ─► 训练
+└──────────────────┘         └──────────────┘         └──────────────────┘
+output/agent_trajectory/      output/refined/          output/refine_data/
+```
+
+| 阶段 | 输入 | 输出 | 职责 |
+|---|---|---|---|
+| **simulation server** | Persona + Scenario + Task | C1 trajectory 事件流 | 驱动远端 Agent，多轮验证 + 追问；落 run 元数据 + 轨迹 |
+| **gdr** | C1 trajectory | C2 refined Session（单文件） | 块级精修：硬过滤 + 健康分 + CU + fold + retry_loop_clip + router + policy + refiners + validators + reassemble + meta_tag_strip |
+| **etl** | C2 refined Session | C3 4 视图文件 | 格式整理：usage_prune + transform + system_prompt partition + tool_templates + tool_output_summarizer → save_session_v2 拆 4 视图 |
+
+### 关键契约
+
+| 编号 | 路径 | 入口 | 出口 |
+|---|---|---|---|
+| C1 | `output/agent_trajectory/<run_id>__<session_id>.json` | simulate_serve archiver | `gdr/parsers.from_trajectory` |
+| C2 | `output/refined/<TXXX>__<session_id>.json` | `gdr/pipeline/runner.py::_process_one_file` | `etl/parsers.load_refined_session` |
+| C3 | `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json` | `etl/writers/render_to_4_views` → `gdr.domain.schema.save_session_v2` | 训练框架 / audit |
+
+完整契约字段级 schema 见 [docs/contracts/](docs/contracts/)。
 
 ## 目录索引
 
@@ -66,6 +94,13 @@ QwenPaw trajectory 形态（2026-09-18 起，单路径事件流）：重放唯�
 | `validation/` | 确定性校验、Claim、Evidence、Semantic Judge、聚合 |
 | `tools/` | Registry、health、CAMEL adapter、Playwright/Camoufox |
 | `infrastructure/` | 异步 QwenPaw、CAMEL model、v2 Repository/Exporter |
+| `etl/qwenformat/` | trajectory 重放 + transform + system_prompt partition + tool_output_summarizer + usage_prune + chat_template |
+| `etl/parsers/` | C2 契约入口：`load_refined_session` |
+| `etl/writers/` | C3 4 视图写入：`render_to_4_views` → `gdr.domain.schema.save_session_v2` |
+| `gdr/parsers/` | C1 契约入口：`from_trajectory` |
+| `gdr/domain/` | Session / Message / Block pydantic 类型 + `save_session_v2` / `save_refined_session` |
+| `gdr/{refiners,validators,core,reassembly,routing,config,prompts}/` | gdr 内部模块（详见 [docs/设计方案/gdr-plan.md](docs/设计方案/gdr-plan.md)） |
+| `orchestration/` | 顶层调度（master / producer / watcher / workers / queue / failure_handler / batch_tracker） |
 | `tests/` | unit、contract、functional；默认不访问公网 |
 
 ## 配置和工具
@@ -83,7 +118,16 @@ QwenPaw trajectory 形态（2026-09-18 起，单路径事件流）：重放唯�
 
 ## 输出
 
-v2 输出在 `output/runs|artifacts|datasets|reports`。审计保存所有 Run，蒸馏只导出干净的 SUCCESS 对话。非终态启动恢复时标记 `INTERRUPTED`，绝不自动重复远端任务。
+按阶段分目录（新架构，2026-09-22 起）：
+
+- `output/runs|artifacts|reports` —— simulate_serve 自洽（run 元数据 / content-addressed 制品 / 聚合统计）
+- `output/agent_trajectory/` —— C1 trajectory 事件流（simulate_serve → gdr 交接面）
+- `output/refined/` —— C2 单 refined Session（gdr → etl 交接面）
+- `output/refine_data/` —— C3 4 视图文件（etl → 训练 / audit）；旁路 jsonl（incomplete / judge_low / deferred / routing_low）也在此
+
+审计保存所有 Run；非终态启动恢复时标记 `INTERRUPTED`，绝不自动重复远端任务。
+`simulate_serve` 不再导出 `output/datasets/all_runs.v2.jsonl` / `distill_dataset.v2.jsonl`
+（已被 C3 取代）。
 
 ## 文档
 

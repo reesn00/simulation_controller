@@ -2,6 +2,12 @@
 
 配置统一来自仓库根 ``config/config.yaml`` (``SIMCTL_CONFIG`` env 可重定向);
 设计见 ``docs/orchestration-design.md`` §7。
+
+新架构 ``simulation server → gdr → etl`` 下:
+- ``paths.refined_dir``: gdr 写 C2 refined Session 单文件 (C2 契约)
+- ``paths.etl_outputs_dir``: etl 末端写 4 视图 (C3 契约)
+- ``settings.gdr_workers``: gdr 进程数 (首阶段, LLM 密集)
+- ``settings.etl_workers``: etl 进程数 (末阶段, 本地计算)
 """
 
 from __future__ import annotations
@@ -24,8 +30,8 @@ class PathsConfig:
     # 此字段会被自动指向该文件本身 (见 load_config)。
     simulate_serve_config: str = "config/config.yaml"
     trajectory_dir: str = "output/agent_trajectory"
-    qf_output_dir: str = "output/qf_out"
-    gdr_output_dir: str = "output/refine_data"
+    refined_dir: str = "output/refined"               # gdr 写 C2 单文件
+    etl_outputs_dir: str = "output/refine_data"       # etl 末端写 4 视图 (C3)
     sqlite_db: str = "output/orchestration/orchestration.db"
     dead_dir: str = "output/orchestration/dead"
     pid_file: str = "output/orchestration/orchestration.pid"
@@ -42,10 +48,9 @@ class OrchestrationSettings:
     """顶层 orchestration.* 配置."""
     batch_size: int = 3
     gdr_workers: int = 2
-    qf_workers: int = 4
-    gdr_wait_seconds: float = 10.0
-    max_retry_qf: int = 3
+    etl_workers: int = 2
     max_retry_gdr: int = 3
+    max_retry_etl: int = 3
     watcher_poll_seconds: float = 2.0
     reap_stale_seconds: int = 300
     reap_stale_interval_seconds: int = 60

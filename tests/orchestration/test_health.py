@@ -19,26 +19,26 @@ def test_collect_batches_returns_inserted(tmp_path: Path) -> None:
     fp = tmp_path / "t.json"
     fp.write_text("{}", encoding="utf-8")
     tid, _ = queue.insert(src_path=fp, run_id="r", session_id="s", batch_id=1)
-    queue.pull_pending_qf(worker_id="w", n=1)
-    queue.mark_qf_done(tid, qf_output_path=fp)
     queue.pull_pending_gdr(worker_id="w", n=1)
-    queue.mark_gdr_done(
+    queue.mark_gdr_done(tid, gdr_refined_path=fp)
+    queue.pull_pending_gdr(worker_id="w", n=1)
+    queue.mark_etl_done(
         tid,
-        gdr_messages_path=fp,
-        gdr_openai_path=fp,
-        gdr_qwenjina_path=None,
-        gdr_meta_path=fp,
+        etl_messages_path=fp,
+        etl_openai_path=fp,
+        etl_qwenjina_path=None,
+        etl_meta_path=fp,
     )
 
     bid = queue.insert_batch(["r"])
     queue.update_batch(bid, simulate_started_at="2026-09-01T00:00:00Z",
                        simulate_done_at="2026-09-01T00:00:01Z",
-                       qf_count=1, gdr_count=1, dead_count=0, status="done")
+                       gdr_count=1, etl_count=1, dead_count=0, status="done")
     batches = collect_batches(queue)
     assert bid in batches
     assert batches[bid]["task_ids"] == ["r"]
-    assert batches[bid]["qf_count"] == 1
     assert batches[bid]["gdr_count"] == 1
+    assert batches[bid]["etl_count"] == 1
     assert batches[bid]["dead_count"] == 0
     assert batches[bid]["status"] == "done"
 

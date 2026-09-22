@@ -1,10 +1,16 @@
 gdr 目录：模块功能与时序概括
 一句话定位
-gdr 是一条轨迹数据精炼流水线：读入原始智能体对话轨迹，逐块检出缺陷、按策略修复或裁剪，最后经一致性校验与模型终审，产出多视图输出文件与可直接用于监督微调的训练样本。全程只有一个“编排者”（gdr/pipeline/runner.py）按固定顺序驱动各模块，模型调用被严格限制在三个点位，其余全部是零模型调用的确定性处理。
+gdr 是一条轨迹数据精炼流水线：读入原始智能体对话轨迹，逐块检出缺陷、按策略修复或裁剪，最后经一致性校验与模型终审，产出**单 C2 refined Session**（不在 gdr 内部写多视图；多视图拆分由下游 etl 阶段的 `gdr.domain.schema.save_session_v2` 完成）。全程只有一个"编排者"（gdr/pipeline/runner.py）按固定顺序驱动各模块，模型调用被严格限制在三个点位，其余全部是零模型调用的确定性处理。
+
+> 新架构（2026-09-22 起）：`simulation server → gdr → etl`。gdr 不再做 qf_text 渲染与
+> usage_prune；runner.py::_apply_usage_prune 整段已删除；gdr 输出单 C2 文件
+> `output/refined/<TXXX>__<session_id>.json`，etl 阶段统一做格式整理并拆 4 视图。
+> 契约详见 [docs/contracts/](../contracts/)。
 
 主流程时序（单条轨迹的完整旅程）
 
-load_session 加载会话                    domain/schema.py
+from_trajectory 加载会话               gdr/parsers/__init__.py
+  │       (薄包装 etl.qwenformat.load.load_trajectory + Session.model_validate)
   │
   ├─ ① 硬过滤                            runner._hard_filter_session
   │     整段不合格（缺关键字段等）→ 直接淘汰，不进入后续
@@ -46,9 +52,11 @@ load_session 加载会话                    domain/schema.py
   ├─ ⑪ 完整性检查                        runner（保存前）
   │     末尾工具调用未闭合/配对缺失/文本不完整 → 旁路，不写训练数据
   │
-  └─ ⑫ 保存                              domain/schema.py save_session
-        四视图：通用消息 / OpenAI 格式 / 特定平台格式（可选）/ 元数据
-        外加：干净对话写入训练数据目录（仅完整会话）
+  └─ ⑫ 保存                              domain/schema.save_refined_session
+        单 C2 refined Session：refined blocks + 全部审计 metadata
+        路径：output/refined/<TXXX>__<session_id>.json
+        下游：etl 阶段读 C2，做 usage_prune + transform + partition + summarizer
+        后由 save_session_v2 拆 4 视图落到 output/refine_data/
 批处理层把上述单文件流程并发套起来，最后汇总出批次报告：各复杂度档位的数量分布、训练价值分数的最小/最大/平均与分档统计。
 
 模块分组职责
@@ -216,7 +224,7 @@ L1 是无 LLM 的确定性校验，单 block 微秒级，能挡住最常见的�
 
 ### 六、保存前完整性检查
 
-runner 在 `process_one` 末尾、`save_session` 之前执行 `_detect_incomplete_session` 四维检测（F2 / F3-D / F3-E）：
+runner 在 `process_one` 末尾、`save_refined_session` 之前执行 `_detect_incomplete_session` 四维检测（F2 / F3-D / F3-E）：
 
 1. 末尾 assistant 无 final text
 2. toolcall/toolresult 数量不匹配（**F3-E 豁免**：仅末尾是 text 块 + 含完整收尾信号时跳过，记 INFO "agent-intentional closure"）
@@ -225,18 +233,18 @@ runner 在 `process_one` 末尾、`save_session` 之前执行 `_detect_incomplet
 
 "完整收尾信号"由 `_has_complete_close_signal` 给出（弱化版，不设最短长度门槛），强信号版 `_has_structural_close` 还覆盖 markdown 表格行、分隔线、code fence、colon-fenced block、方括号配对闭合（⟦⟧、【】、()、[] 等）。
 
-判 incomplete 的 session 走 `_append_incomplete_queue`，由 `failure_handler.reap_dead`（Fix C）保留 qf_out + 写 INDEX.jsonl，可被 `reprocess_dead` 按 score/status 过滤回灌。
+判 incomplete 的 session 走 `_append_incomplete_queue`，由 `failure_handler.reap_dead`（Fix C）保留 refined 单文件 + 写 INDEX.jsonl，可被 `reprocess_dead` 按 score/status 过滤回灌。
 
 ### 七、与修复日志的对应关系
 
 | 修复 | 对应执行点 |
 |---|---|
-| F1（tools 字段透传） | `_attach_metadata` 之外的 `domain/schema.py::save_session`，未在本节展开 |
+| F1（tools 字段透传） | `_attach_metadata` 之外的 `domain/schema.py::save_refined_session`，未在本节展开 |
 | F2（thinking-only tail 维度 4） | `_detect_incomplete_session` 第六节 |
 | F3-C（system_prompt 追加 reasoning requirement） | 不在 gdr 本体内，详见 `etl/qwenformat/system_prompt.py` |
 | Fix A（judge reason 串入 metadata） | 重组终审第 7 步 |
 | Fix B（judge 三段阶梯） | 重组终审第 7 步 `_judge_min_score_for` |
-| Fix C（failure_handler 保留 qf_out + INDEX.jsonl） | 第六节旁路通道 |
+| Fix C（failure_handler 保留 refined 单文件 + INDEX.jsonl） | 第六节旁路通道 |
 | F3-D（结构闭合信号） | 第六节 `_has_structural_close` |
 | F3-E（维度 2 豁免） | 第六节 `_has_complete_close_signal` |
 | P1.1（thought_refactor entity_loss 误判） | 精修器 1 的实体抽取 |

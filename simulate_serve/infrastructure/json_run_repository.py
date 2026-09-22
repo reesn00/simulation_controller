@@ -4,18 +4,15 @@ import hashlib
 import json
 import os
 import tempfile
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from statistics import mean
 from typing import Any
 
 from simulate_serve.application.errors import RepositoryPortError
 from simulate_serve.domain.evidence import Evidence
 from simulate_serve.domain.run import RunEvent, TaskRun
 from simulate_serve.domain.state_machine import RunState, TERMINAL_STATES
-from simulate_serve.domain.validation import ValidationReport, Verdict
-from simulate_serve.interaction.content_policy import has_internal_reasoning_signals
+from simulate_serve.domain.validation import ValidationReport
 
 
 class RepositoryError(RepositoryPortError):
@@ -23,6 +20,14 @@ class RepositoryError(RepositoryPortError):
 
 
 class JsonRunRepository:
+    """模拟 server 端的 Run 持久化 (审计用).
+
+    新架构 ``simulation server → gdr → etl`` 下:
+    - simulation server 只产出 Run 审计数据 (`runs/<run_id>/`).
+    - SFT 蒸馏 / 训练数据由 gdr + etl 末端产出 (C2 → C3 契约, 见
+      ``docs/contracts/``); 本类不再写 ``datasets/`` 或 ``reports/stats.json``.
+    """
+
     def __init__(
         self,
         output_dir: str | Path,
@@ -33,9 +38,7 @@ class JsonRunRepository:
         self.root = Path(output_dir)
         self.runs_dir = self.root / "runs"
         self.artifacts_dir = self.root / "artifacts"
-        self.datasets_dir = self.root / "datasets"
-        self.reports_dir = self.root / "reports"
-        for path in (self.runs_dir, self.artifacts_dir, self.datasets_dir, self.reports_dir):
+        for path in (self.runs_dir, self.artifacts_dir):
             path.mkdir(parents=True, exist_ok=True)
         self.max_artifact_bytes = max_artifact_bytes
         self.max_total_artifact_bytes = max_total_artifact_bytes
@@ -109,152 +112,6 @@ class JsonRunRepository:
             interrupted.append(run)
         return interrupted
 
-    def export(self) -> dict[str, Any]:
-        runs = self.load_runs()
-        self._write_jsonl(self.datasets_dir / "all_runs.v2.jsonl", [run.model_dump(mode="json") for run in runs])
-        distill = [
-            {
-                "dataset_schema_version": "2",
-                "run_id": run.run_id,
-                "task": {
-                    "task_id": run.task_id,
-                    "task_type": run.task_type,
-                    "dimension": run.dimension,
-                    "scenario_id": run.scenario_id,
-                },
-                "persona": {"role_description": run.persona_role},
-                "messages": [{"role": turn.role, "content": turn.content} for turn in run.conversation],
-                "validation_summary": self._validation_summary(run),
-                "lineage": {"source_run_id": run.run_id, "rerun_of": run.rerun_of},
-            }
-            for run in runs
-            if run.state is RunState.SUCCESS and self._is_distillable(run)
-        ]
-        self._write_jsonl(self.datasets_dir / "distill_dataset.v2.jsonl", distill)
-        stats = self._stats(runs)
-        self._atomic_json(self.reports_dir / "stats.v2.json", stats)
-        return stats
-
-    @staticmethod
-    def _is_clean(run: TaskRun) -> bool:
-        forbidden = ("<think>", "</think>", "authorization:", "cookie:")
-        for turn in run.conversation:
-            if any(token in turn.content.casefold() for token in forbidden):
-                return False
-            if turn.role == "assistant" and has_internal_reasoning_signals(turn.content):
-                return False
-        return True
-
-    @classmethod
-    def _is_distillable(cls, run: TaskRun) -> bool:
-        if not cls._is_clean(run) or len(run.conversation) < 2:
-            return False
-        if not run.validation_rounds:
-            return False
-        report = run.validation_rounds[-1]
-        if report.verdict is not Verdict.PASS or not report.criteria:
-            return False
-        if any(item.verdict is not Verdict.PASS for item in report.criteria):
-            return False
-        # Allow a single trailing user turn (the closing-utterance appended on PASS).
-        roles = [turn.role for turn in run.conversation]
-        if roles[-1] == "user":
-            roles = roles[:-1]
-        if len(roles) % 2 or not roles or roles[0] != "user":
-            return False
-        expected = ["user" if index % 2 == 0 else "assistant" for index in range(len(roles))]
-        return roles == expected
-
-    @staticmethod
-    def _validation_summary(run: TaskRun) -> dict[str, Any]:
-        if not run.validation_rounds:
-            return {"verdict": Verdict.INCONCLUSIVE.value, "report_id": None, "criteria": []}
-        report = run.validation_rounds[-1]
-        return {
-            "verdict": report.verdict.value,
-            "report_id": report.report_id,
-            "criteria": [
-                {
-                    "criterion_id": item.criterion_id,
-                    "verdict": item.verdict.value,
-                    "reason_code": item.reason_code,
-                    "evidence_ids": list(item.evidence_ids),
-                }
-                for item in report.criteria
-            ],
-        }
-
-    def _stats(self, runs: list[TaskRun]) -> dict[str, Any]:
-        states = Counter(run.state.value for run in runs)
-        terminal = [run for run in runs if run.state in TERMINAL_STATES]
-        rounds = sorted(run.guide_rounds for run in terminal)
-        durations = sorted(
-            (run.completed_at - run.started_at).total_seconds()
-            for run in terminal
-            if run.completed_at is not None
-        )
-        criteria = Counter(
-            item.verdict.value
-            for run in runs
-            for report in run.validation_rounds
-            for item in report.criteria
-        )
-        tool_status = Counter()
-        tool_provider = Counter()
-        tool_timeouts = 0
-        for run in runs:
-            path = self.runs_dir / run.run_id / "evidence.jsonl"
-            if not path.exists():
-                continue
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                evidence = json.loads(line)
-                tool_status[str(evidence.get("status", "unknown"))] += 1
-                tool_provider[str(evidence.get("source", "unknown"))] += 1
-                if "timeout" in str(evidence.get("summary", "")).casefold():
-                    tool_timeouts += 1
-        return {
-            "stats_schema_version": "2",
-            "total": len(runs),
-            "states": dict(sorted(states.items())),
-            "success_rate": states.get(RunState.SUCCESS.value, 0) / len(terminal) if terminal else 0.0,
-            "guide_rounds": self._distribution(rounds),
-            "run_duration_seconds": self._distribution(durations),
-            "criteria": dict(sorted(criteria.items())),
-            "tools": {
-                "status": dict(sorted(tool_status.items())),
-                "providers": dict(sorted(tool_provider.items())),
-                "timeouts": tool_timeouts,
-            },
-            "by_task_type": self._group_states(runs, "task_type"),
-            "by_dimension": self._group_states(runs, "dimension"),
-            "by_scenario": self._group_states(runs, "scenario_id"),
-        }
-
-    @staticmethod
-    def _distribution(values: list[float] | list[int]) -> dict[str, float]:
-        if not values:
-            return {"avg": 0.0, "p50": 0.0, "p95": 0.0}
-        return {
-            "avg": float(mean(values)),
-            "p50": float(JsonRunRepository._percentile(values, 0.50)),
-            "p95": float(JsonRunRepository._percentile(values, 0.95)),
-        }
-
-    @staticmethod
-    def _percentile(values: list[float] | list[int], quantile: float) -> float:
-        index = max(0, min(len(values) - 1, int((len(values) - 1) * quantile + 0.5)))
-        return float(values[index])
-
-    @staticmethod
-    def _group_states(runs: list[TaskRun], field: str) -> dict[str, dict[str, int]]:
-        groups: dict[str, Counter[str]] = {}
-        for run in runs:
-            key = str(getattr(run, field) or "(none)")
-            groups.setdefault(key, Counter())[run.state.value] += 1
-        return {key: dict(sorted(value.items())) for key, value in sorted(groups.items())}
-
     def _reconcile_append_only_records(self, run: TaskRun, run_dir: Path) -> None:
         event_values = self._read_jsonl(run_dir / "events.jsonl")
         if event_values:
@@ -284,7 +141,7 @@ class JsonRunRepository:
 
     @staticmethod
     def _ensure_unique_ids(values: list[Any], field: str, run_id: str) -> None:
-        ids = [str(getattr(item, field)) for item in values]
+        ids = [str(getattr(item, field) or "") for item in values]
         if len(ids) != len(set(ids)):
             raise RepositoryError(f"Run {run_id} has duplicate {field} values")
 
@@ -318,11 +175,6 @@ class JsonRunRepository:
             stream.write(json.dumps(value, ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-
-    @classmethod
-    def _write_jsonl(cls, path: Path, values: list[Any]) -> None:
-        content = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in values).encode("utf-8")
-        cls._atomic_bytes(path, content)
 
     @classmethod
     def _atomic_json(cls, path: Path, value: Any) -> None:

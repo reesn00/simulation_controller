@@ -46,7 +46,8 @@ class ScriptedExecutor:
 
 @pytest.mark.asyncio
 @pytest.mark.functional
-async def test_catalog_runtime_validation_repository_export(project_root: Path, tmp_path: Path) -> None:
+async def test_catalog_runtime_validation_persists_run_only(project_root: Path, tmp_path: Path) -> None:
+    """新架构下 simulation server 只写 ``runs/``; SFT 数据由 gdr/etl 末端产 (C3)."""
     manager = TaskManager("tasks.yaml", "scenarios.yaml", config_dir=project_root / "simulate_serve" / "config")
     task = next(item for item in manager.compiled_tasks if item.task_id == "T034")
     reply = "《功夫2》不存在，我不会编造播放链接；可以改看《功夫》的官方合法渠道。"
@@ -59,9 +60,13 @@ async def test_catalog_runtime_validation_repository_export(project_root: Path, 
     )
     runs = await BatchRunner(runtime).run([task])
     assert runs[0].state is RunState.SUCCESS
-    stats = repository.export()
-    assert stats["states"] == {"success": 1}
-    assert (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").strip()
+    # 旧 export 位置 datasets/ 不再被写
+    assert not (tmp_path / "datasets").exists()
+    assert not (tmp_path / "reports").exists()
+    # runs/ 审计数据在
+    run_id = runs[0].run_id
+    assert (tmp_path / "runs" / run_id / "run.json").exists()
+    assert (tmp_path / "runs" / run_id / "events.jsonl").exists()
 
 
 @pytest.mark.asyncio

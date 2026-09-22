@@ -192,3 +192,48 @@ T001 任务三次重跑均进入 `incomplete` 或 `discard` 死信通道：
 3. **数据完整性优先于判分**：incomplete 旁路保留完整 session（不丢数据），审计通道完整可回灌
 4. **修复与既有测试共存**：所有改动均保留既有测试路径（如 `_has_complete_close_signal` 不破坏 `_is_text_incomplete`）
 5. **质量好 ≠ 不该死信**：内容质量与硬指标判定是不同维度；好的 trajectory 因结构不闭合而死信是规则漏洞，应修规则而非接受它
+
+---
+
+## 4. 架构迁移：`simulation server → etl → gdr` 改为 `→ gdr → etl`（2026-09-22）
+
+### 4.1 动机
+
+原架构 gdr 是末阶段，读 etl 已经渲染的 `qf_output_path`（含 `metadata.openai_messages / qf_text`）。
+问题：etl 必须先调 LLM 渲染 qf_text + transform，gdr 才能拿到输入；gdr 改完块再调一次
+`usage_prune` 改 metadata。两段都耗 LLM 配额，链路长，重复渲染。
+
+新架构：gdr 是首阶段，直接读 trajectory；只精修 block。etl 是末阶段，只做格式转换
+（usage_prune / transform / partition / summarizer）。etl 不在头部，重渲染只在尾部
+做一次。
+
+### 4.2 关键变化
+
+- **gdr 输入**：trajectory JSON → `gdr.parsers.from_trajectory` 轻解析；不再读 `qf_out`
+- **gdr 输出**：单 C2 refined Session（`output/refined/<TXXX>__<session>.json`）；不再写 4 视图
+- **etl 输入**：C2 单文件 → `etl.parsers.load_refined_session`
+- **etl 输出**：4 视图（`output/refine_data/<TXXX>__<session>_refined.{messages,openai,qwenjina.txt,meta}.json`）
+- **删除**：`gdr/pipeline/runner.py::_apply_usage_prune`；`gdr/config/settings.py::enable_usage_prune` / `qf_chat_template_path`；`gdr/domain/schema.py::save_session`（旧单文件版）
+- **新增**：`gdr/parsers/`（C1 入口）；`etl/parsers/`（C2 入口）；`etl/writers/`（C3 写 4 视图）
+- **orchestration 状态机**：`pending → gdr_processing → pending_etl → etl_processing → done`
+- **SQLite 字段**：`gdr_output_path` → `gdr_refined_path`；新增 `etl_*_path` 4 列；删除 `qf_output_path`
+
+### 4.3 契约层（`docs/contracts/`）
+
+- `C1-trajectory-events.md` —— simulation server → gdr
+- `C2-refined-session.md` —— gdr → etl
+- `C3-final-sft-views.md` —— etl → 训练 / audit
+- `migration-plan.md` —— 直切新架构的完整步骤 + 回滚
+- `README.md` —— 旧 vs 新对比表
+
+### 4.4 修正既有条目
+
+- §1.6 "Fix C：failure_handler 保留 qf_out + INDEX.jsonl + reprocess_dead" —— qf 阶段已删除；改为保留 refined 单文件 + INDEX.jsonl
+- §1.7 "F3-D：`_is_text_incomplete` 结构闭合信号" —— 内部调用从 `save_session` 改为 `save_refined_session`
+- §1.8 "F3-E：维度 2 豁免" —— 不变；仍是 runner 在 `save_refined_session` 之前的四维检测
+
+### 4.5 验证
+
+- `uv run python -m pytest -q` —— **475 / 475 通过**（0 跳过）
+- `python scripts/purge_qf_out.py` —— 已清空 `output/qf_out/`（旧 1 文件 / 182KB）
+- `python scripts/purge_legacy_refined.py` —— 已清空 `output/refine_data/` 旧 `*_refined.{messages,openai,qwenjina,meta}.json`（4 文件 / 57KB），旁路 jsonl 保留

@@ -29,7 +29,7 @@
 - `etl/qwenformat/load.py::_final_reply_last_text` 只取 final_reply 最后一个 message/reasoning 块（中间 plugin_call / plugin_call_output / 早期 message 被 model_request.messages 覆盖，跳过避免重复）。
 - `etl/qwenformat/load.py::to_session_dict` 把 SessionRecord.tools 透传到 Session dict (`"tools": list(self.tools)`)。
 - `etl/qwenformat/transform.py::trajectory_to_session_with_openai_metadata` 优先用 `trajectory["tools"]`（来自 model_request.payload.tools，含完整 description + parameters schema）；缺失时回退到从 toolcall 推导。
-- `gdr/domain/schema.py::Message.role` 从 `Literal["user","assistant"]` 扩展为 `Literal["system","user","assistant"]`，接纳 qf_out 新增的 system message；schema 其余约束不动。
+- `gdr/domain/schema.py::Message.role` 从 `Literal["user","assistant"]` 扩展为 `Literal["system","user","assistant"]`，接纳 etl 新增的 system message；schema 其余约束不动。
 
 ### 2.2 2026-09-18 独立事件流（当前）
 
@@ -41,3 +41,19 @@ QwenPaw 后端在两周内切换了 trajectory 输出形态，从 AI SDK 内嵌�
 1. 在 `etl/qwenformat/load.py` 单一入口实现版本探测 / 新格式适配
 2. 同步更新 [CLAUDE.md "数据格式约定"](../CLAUDE.md)
 3. 在本文件追加变更条目（不复用旧段落，避免误导）
+
+## 3. Pipeline 架构演化历史
+
+### 3.1 2026-09-22 直切：`simulation server → gdr → etl`
+
+旧架构 `simulation server → etl → gdr` 把 gdr 放在末阶段，etl 头部 qf_worker 先
+调 LLM 渲染 qf_text + transform，gdr 才能拿 `qf_output_path` 当输入；gdr 改完块
+再调一次 `usage_prune` 重渲染 metadata。两段都耗 LLM 配额，链路长，重复渲染。
+
+新架构 gdr 是首阶段，直接读 trajectory；只精修 block、写单 C2 refined Session。
+etl 是末阶段，只做格式转换（usage_prune / transform / partition / summarizer），
+重渲染只在尾部做一次。
+
+详细契约 / 模块边界 / 迁移步骤见 [docs/contracts/migration-plan.md](contracts/migration-plan.md)
+与 [docs/contracts/README.md](contracts/README.md)。本次落地的代码改动日志见
+[docs/refactor-development-progress.md §4](refactor-development-progress.md)。

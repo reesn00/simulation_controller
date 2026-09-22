@@ -7,7 +7,7 @@
 
 ## 概述
 
-入口模块：`python -m orchestration`（或 `orchestration\run.bat` 的 Windows 包装）。
+入口模块：`python -m orchestration`（或 [`scripts\run.bat`](../scripts/run.bat) 的 Windows 包装）。
 子命令：`start` / `status` / `stop` / `replay`，与 `master.py` / `queue/sqlite_queue.py` /
 `workers/*.py` 协同工作。
 
@@ -28,25 +28,25 @@ CTRL_BREAK_EVENT 不可达，哨兵文件是唯一可靠通道）。
 
 ```powershell
 # 后台跑全部 task（含 E001-E030 评估集）
-orchestration\run.bat start --all-tasks --detach
+scripts\run.bat start --all-tasks --detach
 
 # 前台跑 T001/T003，跑完即退
-orchestration\run.bat start --tasks T001,T003
+scripts\run.bat start --tasks T001,T003
 
 # 前台跑评估集 E001-E003（与 T 任务 schema 一致，行为无差）
-orchestration\run.bat start --tasks E001,E002,E003 --batch-size 3
+scripts\run.bat start --tasks E001,E002,E003 --batch-size 3
 
 # 仅打印计划（config / sqlite_db / pid_file / 批次切分），不真启动
-orchestration\run.bat start --all-tasks --dry-run
+scripts\run.bat start --all-tasks --dry-run
 
 # 查看队列 / 进程 / dead 状态
-orchestration\run.bat status
+scripts\run.bat status
 
 # 优雅停止（30s 超时后 taskkill 强杀）
-orchestration\run.bat stop --timeout 30
+scripts\run.bat stop --timeout 30
 
 # 重放 batch_id=7 的 dead task
-orchestration\run.bat replay --batch 7
+scripts\run.bat replay --batch 7
 ```
 
 ### 全局选项（必须放在子命令前）
@@ -133,7 +133,6 @@ orchestration/
 ├── daemon.py            pid_file + signal + STOP 哨兵 + 日志
 ├── batch_tracker.py     run.json.state 终结态等待
 ├── config.yaml          默认配置（被打进 wheel）
-├── run.bat              Windows 包装（ASCII-only）
-├── data/                运行时数据：SQLite 队列 / qf_out / pid / dead
+├── data/                运行时数据：SQLite 队列 / pid / dead
 └── logs/                运行时日志
 ```

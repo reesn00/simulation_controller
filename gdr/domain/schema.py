@@ -196,11 +196,14 @@ def _parse_blocks(raw_blocks: list) -> list:
 
 
 def load_session(input_path: Path) -> Session:
-    """加载 etl/qwenformat 导出的 qf_out 格式 (单 Session JSON, ``messages[*].blocks``).
+    """从 C2 refined Session JSON 加载 (``.refined.json`` / qf_out 旧形态兼容).
 
-    这是 GDR pipeline runner 唯一接受的输入格式. 旧 ``load_trajectory`` (从
-    原始 trajectory JSONL 直接加载) 已删除 —— 按用户主旨: GDR 不应绕开 etl
-    直接消费原始 trajectory; etl 的产物 qf_out 才是单一真相来源.
+    校验 ``schema_version``: ``refined_session.v1`` 是新架构 C2 契约；
+    缺失 schema_version 的文件按 qf_out 旧形态处理（向后兼容旧 fixture）。
+
+    新架构下，gdr 流水线**不通过本函数加载 C2**：gdr 拿到的是内存中的
+    Session 对象（来自 ``gdr.parsers.from_trajectory``）。本函数保留是给
+    测试和回灌工具使用。
     """
     raw = json.loads(input_path.read_text(encoding="utf-8"))
     if "messages" in raw:
@@ -215,7 +218,7 @@ def load_session(input_path: Path) -> Session:
 
 @dataclass(frozen=True)
 class SessionOutputs:
-    """``save_session`` 拆出的 4 份视图文件路径；``qwenjina`` 可为 None."""
+    """``save_session_v2`` 拆出的 4 份视图文件路径；``qwenjina`` 可为 None."""
 
     messages: Path
     openai: Path
@@ -223,8 +226,36 @@ class SessionOutputs:
     meta: Path
 
 
-def save_session(session: Session, base_path: Path) -> SessionOutputs:
+def save_refined_session(session: Session, path: Path) -> Path:
+    """把 refined Session 写成单 C2 文件 (新架构 gdr 末端产出).
+
+    形态见 ``docs/contracts/C2-refined-session.md``。顶层 schema_version
+    标记 ``refined_session.v1``；不写入 ``qf_text`` / ``openai_messages``
+    (这些是 etl 阶段产出)。
+
+    Args:
+        session: refine 完成后的 Session（含 audit metadata）
+        path: 输出路径（如 ``output/refined/<TXXX>__<session_id>.json``）
+
+    Returns:
+        写入的 path
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = session.model_dump(mode="json", exclude_none=True)
+    payload["schema_version"] = "refined_session.v1"
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def save_session_v2(session: Session, base_path: Path) -> SessionOutputs:
     """把 refined Session 按视图拆成 4 份文件写入 ``base_path`` 所在目录.
+
+    新架构下由 etl 阶段调用（etl 把 C2 refined Session 做完格式整理后，
+    调本函数拆 4 视图）。gdr 自身不再调用本函数（gdr 末端只写单 C2）。
 
     ``base_path`` 是无扩展名 stem（如 ``.../xxx_refined``），4 份文件共用同一
     stem、仅尾缀与扩展名不同：
@@ -343,7 +374,7 @@ def _current_settings() -> Any:
 
 
 def _json_default(obj: Any) -> Any:
-    """``save_session`` / ``write_refined_session`` 共用的 JSON 兜底序列化."""
+    """``save_session_v2`` / ``save_refined_session`` 共用的 JSON 兜底序列化."""
     if isinstance(obj, BaseModel):
         return obj.model_dump(mode="json", exclude_none=True)
     if hasattr(obj, "model_dump"):

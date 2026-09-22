@@ -3,7 +3,7 @@
 设计见 ``docs/orchestration-design.md`` §6（worker 通用行为）。
 
 子类只需实现：
-    * ``stage``: STAGE_QF 或 STAGE_GDR
+    * ``stage``: STAGE_GDR 或 STAGE_ETL
     * ``pull()``: 从队列拉任务
     * ``process(task) -> Path``: 处理单个任务，返回输出路径
     * ``mark_done(task, output)``: 标记完成
@@ -28,8 +28,8 @@ from simulate_serve.infrastructure.trajectory_archiver import (
 from orchestration.errors import NonRetryableError
 from orchestration.queue import (
     STATE_DEAD,
+    STAGE_ETL,
     STAGE_GDR,
-    STAGE_QF,
     SQLiteQueue,
     Task,
 )
@@ -39,12 +39,12 @@ _log = logging.getLogger(__name__)
 
 
 class BaseWorker(ABC):
-    """qf / gdr worker 的通用基类."""
+    """gdr / etl worker 的通用基类."""
 
     @property
     @abstractmethod
     def stage(self) -> str:
-        """返回 ``STAGE_QF`` 或 ``STAGE_GDR``."""
+        """返回 ``STAGE_GDR`` 或 ``STAGE_ETL``."""
 
     @abstractmethod
     def pull(self) -> list[Task]:
@@ -66,7 +66,7 @@ class BaseWorker(ABC):
         n: int = 1,
         poll_seconds: float = 2.0,
     ) -> None:
-        if self.stage not in (STAGE_QF, STAGE_GDR):
+        if self.stage not in (STAGE_GDR, STAGE_ETL):
             raise ValueError(f"invalid stage: {self.stage!r}")
         self._queue = queue
         self._worker_id = worker_id
@@ -90,8 +90,8 @@ class BaseWorker(ABC):
                 "[%s worker %s] task %d dead%s after %d retries: %s",
                 self.stage, self._worker_id, task.id,
                 " (non-retryable)" if not retryable else "",
-                self._queue._max_retry_qf if self.stage == STAGE_QF  # noqa: SLF001
-                else self._queue._max_retry_gdr,                         # noqa: SLF001
+                self._queue._max_retry_gdr if self.stage == STAGE_GDR  # noqa: SLF001
+                else self._queue._max_retry_etl,                         # noqa: SLF001
                 exc,
             )
 

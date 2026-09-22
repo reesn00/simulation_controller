@@ -2,9 +2,12 @@
 
 所有上下游都通过 `from domain import ...` 访问, 与原 `from schema import ...` 等价。
 
-GDR 仅消费 etl/qwenformat 导出的 qf_out 格式 (单 Session JSON,
-``messages[*].blocks`` 形态), 由 ``load_session`` 直接加载. 不再支持
-直接读取原始 trajectory JSONL —— 该加载路径已删除, 旧调用方走 dead 路径.
+新架构 ``simulation server → gdr → etl`` 下：
+- gdr 通过 ``gdr.parsers.from_trajectory`` 加载 trajectory（C1 契约），
+  不再通过本目录的 ``load_session``。``load_session`` 保留供测试 / 回灌使用。
+- gdr 末端用 ``save_refined_session`` 写单 C2 refined Session（C2 契约）。
+- etl 通过 ``save_session_v2`` 拆 4 视图（C3 契约），4 视图写入实现在
+  本目录下，不在 etl 中重复实现。
 """
 from domain.schema import (
     BlockIndex,
@@ -24,7 +27,8 @@ from domain.schema import (
     ValidationResult,
     load_session,
     locate_block,
-    save_session,
+    save_refined_session,
+    save_session_v2,
 )
 
 __all__ = [
@@ -45,5 +49,6 @@ __all__ = [
     "ValidationResult",
     "load_session",
     "locate_block",
-    "save_session",
+    "save_refined_session",
+    "save_session_v2",
 ]

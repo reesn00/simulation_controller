@@ -67,14 +67,14 @@ def test_load_config_missing_explicit_path_raises(tmp_path: Path) -> None:
 def test_load_config_overrides(tmp_path: Path) -> None:
     fp = tmp_path / "orch.yaml"
     fp.write_text(yaml.safe_dump({
-        "orchestration": {"batch_size": 7, "qf_workers": 8, "gdr_workers": 9},
+        "orchestration": {"batch_size": 7, "gdr_workers": 8, "etl_workers": 9},
         "paths": {"trajectory_dir": "/tmp/x", "sqlite_db": "/tmp/x.db"},
         "gdr_settings": {"workers": 5, "llm_concurrency": 11},
     }), encoding="utf-8")
     cfg = load_config(fp)
     assert cfg.settings.batch_size == 7
-    assert cfg.settings.qf_workers == 8
-    assert cfg.settings.gdr_workers == 9
+    assert cfg.settings.gdr_workers == 8
+    assert cfg.settings.etl_workers == 9
     assert cfg.paths.trajectory_dir == "/tmp/x"
     assert cfg.paths.sqlite_db == "/tmp/x.db"
     assert cfg.gdr.workers == 5
@@ -88,7 +88,7 @@ def test_load_config_partial_overrides_keep_defaults(tmp_path: Path) -> None:
                   encoding="utf-8")
     cfg = load_config(fp)
     assert cfg.settings.batch_size == 99
-    assert cfg.settings.qf_workers == 4  # default
+    assert cfg.settings.etl_workers == 2  # default
     assert cfg.paths.simulate_serve_config == "config/config.yaml"
 
 

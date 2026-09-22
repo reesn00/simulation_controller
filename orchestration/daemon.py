@@ -93,6 +93,9 @@ def is_process_alive(pid: int) -> bool:
             out = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                 capture_output=True, text=True, timeout=5,
+                # CREATE_NO_WINDOW = 0x08000000：禁止弹出新的 cmd 窗口
+                # （pytest / IDE 测试运行器无控制台时 tasklist 默认会闪一个窗口）
+                creationflags=0x08000000,  # type: ignore[arg-type]
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
@@ -399,6 +402,9 @@ def stop(pid_file: Path, *, timeout: float = 10.0) -> bool:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True, text=True, timeout=timeout,
+                # CREATE_NO_WINDOW = 0x08000000：禁止弹出新的 cmd 窗口
+                # （pytest / IDE 测试运行器无控制台时 taskkill 默认会闪一个窗口）
+                creationflags=0x08000000,  # type: ignore[arg-type]
             )
         else:
             os.kill(pid, signal.SIGKILL)

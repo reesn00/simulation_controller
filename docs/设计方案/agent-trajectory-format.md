@@ -10,11 +10,15 @@
 ```text
 QwenPaw 远端: ~/.qwenpaw/workspaces/<agent>/trajectory/<session_id>.jsonl
   -> simulate_serve (QwenPawTrajectoryArchiver) 复制为
-     output/agent_trajectory/<run_id>__<session_id>.json
-  -> orchestration.watcher 登记 -> qf_worker (etl.qwenformat.load 重放)
-  -> output/qf_out/<session_id>.json (Session blocks 视图)
-  -> gdr refine -> 训练数据
+     output/agent_trajectory/<run_id>__<session_id>.json (C1)
+  -> orchestration.watcher 登记 -> gdr_worker (gdr.parsers.from_trajectory 重放)
+  -> output/refined/<TXXX>__<session_id>.json (C2, 单 Session)
+  -> etl_worker (etl.parsers.load_refined_session + render_to_4_views)
+  -> output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json (C3)
+  -> 训练数据
 ```
+
+> 2026-09-22 起新架构 `simulation server → gdr → etl`；旧的 `qf_worker` + `output/qf_out/` 路径已删除（详见 [docs/contracts/migration-plan.md](../contracts/migration-plan.md)）。
 
 - 每行一个事件（JSONL），但 `tool_execution.payload.output` 可含原始换行/引号，
   **不能按行切分**，须用大括号深度计数（`load._iter_json_objects`）。

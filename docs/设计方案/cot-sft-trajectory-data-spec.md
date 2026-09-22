@@ -1,16 +1,24 @@
 # CoT SFT Agent 轨迹数据要求与规范
 
 > 依据 2026-09-10/11 批次（60 run / 38 条 trajectory / 36 个 qf_out / 41 个
-> `_refined.qwenjina.txt`）的质量审查结论制定。适用对象：gdr refine 产出的
+> `_refined.qwenjina.txt`）的质量审查结论制定。适用对象：gdr + etl 流水线产出的
 > `_refined.qwenjina.txt`（Qwen3 chat_template 渲染纯文本），用于 CoT SFT 训练。
 > 后续批次按本规范验收；文中标注"建议值"的阈值可按训练目标调整。
+>
+> 2026-09-22 架构变更：`simulation server → gdr → etl`。本文件 §1 链路图按新架构
+> 描述；§2 之后的质量规范与字段值不受影响。`output/qf_out/` 路径在新流水线中
+> 不再生效，等价的 Session 形态由 `output/refined/<TXXX>__<session_id>.json` 提供
+> （详见 [docs/contracts/migration-plan.md](../contracts/migration-plan.md)）。
 
 ## 1. 数据链路与消费形态
 
 ```text
 agent_trajectory/*.json (JSONL 事件流)
-  -> etl/qwenformat -> output/qf_out/*.json (Session, blocks 视图)
-  -> gdr refine     -> *_refined.{messages,openai,meta}.json + .qwenjina.txt
+  -> gdr (gdr.parsers.from_trajectory 重放)
+  -> output/refined/<TXXX>__<session_id>.json (C2, 单 Session)
+  -> etl (etl.parsers + render_to_4_views)
+  -> output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,meta}.json
+     + .qwenjina.txt
   -> CoT SFT 训练集
 ```
 
@@ -97,6 +105,9 @@ agent_trajectory/*.json (JSONL 事件流)
 **结论：本批次不可用于 CoT SFT。** 主因是 think 块 100% 为空——qf_out 源
 即无 thinking（38 个中 37 个为 0），而上游 trajectory 实际含约 2050 万字符
 结构化 thinking，属 ETL 丢失，需修复后重新导出再验收。
+> 2026-09-18 起的独立事件流格式已修复该问题；2026-09-22 起的
+> `simulation server → gdr → etl` 新架构不再走 `output/qf_out/`，thinking
+> 经 `gdr.parsers.from_trajectory` 直接透传（见 [docs/contracts/C1-trajectory-events.md](../contracts/C1-trajectory-events.md)）。
 
 ## 6. 已知强制停止模式（验收时重点排查）
 
@@ -104,7 +115,7 @@ agent_trajectory/*.json (JSONL 事件流)
 |---|---|---|
 | 1800s 墙钟超时 | run.json failure: `Task timed out after 1800s` | T017、T010、T020、T056 |
 | 内容审查拒绝 | DashScope `data_inspection_failed` | T003、T007 |
-| 轨迹解析失败入 dead | orchestration/dead/（session 记录恢复，无 qf_out） | T020、T056、T055 |
+| 轨迹解析失败入 dead | orchestration/dead/（session 记录恢复，无 refined 单文件） | T020、T056、T055 |
 
 注意：dead 来源 ≠ 未完成。T055 在 dead 但正常完成（有完整结论与 headline）；
 判定完成度以结尾内容 + run 状态为准，不以目录来源为准。未发现任何"最大推理

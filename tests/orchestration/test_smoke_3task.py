@@ -1,9 +1,9 @@
 """3 task 批次端到端 smoke test.
 
 模拟 ``docs/orchestration-design.md`` §10 的 smoke 场景：
-    * 3 task 一批跑通 producer → qf → gdr
+    * 3 task 一批跑通 producer → gdr → etl
     * batches 表 ``status='done'`` 且 ``dead_count=0``
-    * 3 份 refined JSON 落盘
+    * 3 份 C2 refined Session 落盘 + 3×4 视图 etl 落盘
     * health.json 写入
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,50 +21,59 @@ from orchestration.queue import (
     STATE_DONE,
     SQLiteQueue,
 )
+from orchestration.workers.etl_worker import EtlWorker
 from orchestration.workers.gdr_worker import GdrWorker
-from orchestration.workers.qf_worker import QfWorker
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.state_machine import RunState
 
 
-def _patch_qf(monkeypatch):
-    def fake(self, task):
-        session = task.session_id or task.src_path.stem
-        out = self._qf_output_dir / f"{session}.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps({"ok": True}), encoding="utf-8")
-        self._queue.mark_qf_done(task.id, qf_output_path=out)
-        return out
-    monkeypatch.setattr(QfWorker, "process", fake)
-
-
 def _patch_gdr(monkeypatch):
+    """GdrWorker.process stub: 写 C2 refined Session 单文件."""
+
     def fake(self, task):
         session = task.session_id or task.src_path.stem
-        base = f"{self._gdr_output_dir / session}_refined"
-        paths = {
-            "messages": f"{base}.messages.json",
-            "openai": f"{base}.openai.json",
-            "qwenjina": f"{base}.qwenjina.txt",
-            "meta": f"{base}.meta.json",
-        }
-        for p in paths.values():
-            Path(p).parent.mkdir(parents=True, exist_ok=True)
-            Path(p).write_text(json.dumps({"refined": True}), encoding="utf-8")
-        self._last_outputs = paths
-        return Path(paths["messages"])
+        out = self._refined_dir / f"{session}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps({"session_id": session, "messages": []}),
+            encoding="utf-8",
+        )
+        self._queue.mark_gdr_done(task.id, gdr_refined_path=out)
+        return out
+
     monkeypatch.setattr(GdrWorker, "process", fake)
 
 
+def _patch_etl(monkeypatch):
+    """EtlWorker.process stub: 写 4 视图产物."""
+
+    def fake(self, task):
+        c2 = Path(task.gdr_refined_path)
+        base = self._outputs_dir / c2.stem
+        paths = {
+            "messages": base.with_suffix(".messages.json"),
+            "openai": base.with_suffix(".openai.json"),
+            "qwenjina": base.with_suffix(".qwenjina.txt"),
+            "meta": base.with_suffix(".meta.json"),
+        }
+        for p in paths.values():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"refined": True}), encoding="utf-8")
+        self._last_outputs = SimpleNamespace(**paths)
+        return paths["messages"]
+
+    monkeypatch.setattr(EtlWorker, "process", fake)
+
+
 def test_smoke_3task_batch_end_to_end(tmp_path, monkeypatch) -> None:
-    queue = SQLiteQueue(tmp_path / "q.db", max_retry_qf=2, max_retry_gdr=2)
+    queue = SQLiteQueue(tmp_path / "q.db", max_retry_gdr=2, max_retry_etl=2)
     traj_dir = tmp_path / "traj"
     runs_dir = tmp_path / "runs"
-    qf_out = tmp_path / "qf_out"
-    gdr_out = tmp_path / "gdr_out"
+    refined_dir = tmp_path / "refined"
+    etl_outputs_dir = tmp_path / "etl_outputs"
     dead_dir = tmp_path / "dead"
     log_dir = tmp_path / "logs"
-    for d in (traj_dir, runs_dir, qf_out, gdr_out, dead_dir, log_dir):
+    for d in (traj_dir, runs_dir, refined_dir, etl_outputs_dir, dead_dir, log_dir):
         d.mkdir()
     config_path = tmp_path / "sim.yaml"
     config_path.write_text("{}", encoding="utf-8")
@@ -71,10 +81,10 @@ def test_smoke_3task_batch_end_to_end(tmp_path, monkeypatch) -> None:
     cfg = OrchestrationConfig.from_raw({
         "orchestration": {
             "batch_size": 3,
-            "qf_workers": 2,
+            "etl_workers": 2,
             "gdr_workers": 2,
-            "max_retry_qf": 2,
             "max_retry_gdr": 2,
+            "max_retry_etl": 2,
             "watcher_poll_seconds": 0.02,
             "reap_stale_interval_seconds": 60,
             "reap_stale_seconds": 60,
@@ -84,8 +94,8 @@ def test_smoke_3task_batch_end_to_end(tmp_path, monkeypatch) -> None:
         "paths": {
             "simulate_serve_config": str(config_path),
             "trajectory_dir": str(traj_dir),
-            "qf_output_dir": str(qf_out),
-            "gdr_output_dir": str(gdr_out),
+            "refined_dir": str(refined_dir),
+            "etl_outputs_dir": str(etl_outputs_dir),
             "sqlite_db": str(tmp_path / "q.db"),
             "dead_dir": str(dead_dir),
             "log_dir": str(log_dir),
@@ -93,8 +103,8 @@ def test_smoke_3task_batch_end_to_end(tmp_path, monkeypatch) -> None:
         },
     })
 
-    _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch)
+    _patch_etl(monkeypatch)
 
     def fake_producer(*, config_path, task_ids, limit, queue):
         bid = queue.insert_batch(task_ids)
@@ -145,16 +155,20 @@ def test_smoke_3task_batch_end_to_end(tmp_path, monkeypatch) -> None:
     assert row["status"] == "done"
     assert int(row["dead_count"]) == 0
 
-    # 3 task × 4 份视图文件落盘
-    refined = sorted(p.name for p in gdr_out.glob("*_refined.*"))
-    assert refined == [
-        "session_T1_refined.messages.json", "session_T1_refined.meta.json",
-        "session_T1_refined.openai.json", "session_T1_refined.qwenjina.txt",
-        "session_T2_refined.messages.json", "session_T2_refined.meta.json",
-        "session_T2_refined.openai.json", "session_T2_refined.qwenjina.txt",
-        "session_T3_refined.messages.json", "session_T3_refined.meta.json",
-        "session_T3_refined.openai.json", "session_T3_refined.qwenjina.txt",
+    # 3 task × 4 份 etl 视图文件落盘
+    out_files = sorted(p.name for p in etl_outputs_dir.glob("*.*"))
+    assert out_files == [
+        "session_T1.messages.json", "session_T1.meta.json",
+        "session_T1.openai.json", "session_T1.qwenjina.txt",
+        "session_T2.messages.json", "session_T2.meta.json",
+        "session_T2.openai.json", "session_T2.qwenjina.txt",
+        "session_T3.messages.json", "session_T3.meta.json",
+        "session_T3.openai.json", "session_T3.qwenjina.txt",
     ]
+
+    # 3 task × 1 份 C2 refined 落盘
+    c2_files = sorted(p.name for p in refined_dir.glob("*.json"))
+    assert c2_files == ["session_T1.json", "session_T2.json", "session_T3.json"]
 
     # health.json 写入
     health_path = log_dir / "health.json"
@@ -168,14 +182,14 @@ def test_smoke_3task_batch_end_to_end(tmp_path, monkeypatch) -> None:
 
 def test_smoke_multi_batch_sequential(tmp_path, monkeypatch) -> None:
     """3 个连续批次，每批 1 task."""
-    queue = SQLiteQueue(tmp_path / "q.db", max_retry_qf=2, max_retry_gdr=2)
+    queue = SQLiteQueue(tmp_path / "q.db", max_retry_gdr=2, max_retry_etl=2)
     traj_dir = tmp_path / "traj"
     runs_dir = tmp_path / "runs"
-    qf_out = tmp_path / "qf_out"
-    gdr_out = tmp_path / "gdr_out"
+    refined_dir = tmp_path / "refined"
+    etl_outputs_dir = tmp_path / "etl_outputs"
     dead_dir = tmp_path / "dead"
     log_dir = tmp_path / "logs"
-    for d in (traj_dir, runs_dir, qf_out, gdr_out, dead_dir, log_dir):
+    for d in (traj_dir, runs_dir, refined_dir, etl_outputs_dir, dead_dir, log_dir):
         d.mkdir()
     config_path = tmp_path / "sim.yaml"
     config_path.write_text("{}", encoding="utf-8")
@@ -183,10 +197,10 @@ def test_smoke_multi_batch_sequential(tmp_path, monkeypatch) -> None:
     cfg = OrchestrationConfig.from_raw({
         "orchestration": {
             "batch_size": 1,
-            "qf_workers": 1,
+            "etl_workers": 1,
             "gdr_workers": 1,
-            "max_retry_qf": 2,
             "max_retry_gdr": 2,
+            "max_retry_etl": 2,
             "watcher_poll_seconds": 0.02,
             "reap_stale_interval_seconds": 60,
             "reap_stale_seconds": 60,
@@ -196,8 +210,8 @@ def test_smoke_multi_batch_sequential(tmp_path, monkeypatch) -> None:
         "paths": {
             "simulate_serve_config": str(config_path),
             "trajectory_dir": str(traj_dir),
-            "qf_output_dir": str(qf_out),
-            "gdr_output_dir": str(gdr_out),
+            "refined_dir": str(refined_dir),
+            "etl_outputs_dir": str(etl_outputs_dir),
             "sqlite_db": str(tmp_path / "q.db"),
             "dead_dir": str(dead_dir),
             "log_dir": str(log_dir),
@@ -205,8 +219,8 @@ def test_smoke_multi_batch_sequential(tmp_path, monkeypatch) -> None:
         },
     })
 
-    _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch)
+    _patch_etl(monkeypatch)
 
     def fake_producer(*, config_path, task_ids, limit, queue):
         bid = queue.insert_batch(task_ids)

@@ -28,12 +28,12 @@ def env(tmp_path: Path, monkeypatch):
     """创建最小可用 config.yaml + 空 SQLite + 切换到 tmp_path."""
     cfg_path = tmp_path / "orch.yaml"
     cfg_path.write_text(json.dumps({
-        "orchestration": {"max_retry_qf": 1, "max_retry_gdr": 1},
+        "orchestration": {"max_retry_gdr": 1, "max_retry_etl": 1},
         "paths": {
             "simulate_serve_config": str(tmp_path / "sim.yaml"),
             "trajectory_dir": str(tmp_path / "traj"),
-            "qf_output_dir": str(tmp_path / "qf_out"),
-            "gdr_output_dir": str(tmp_path / "gdr_out"),
+            "refined_dir": str(tmp_path / "refined"),
+            "etl_outputs_dir": str(tmp_path / "etl_outputs"),
             "sqlite_db": str(tmp_path / "q.db"),
             "dead_dir": str(tmp_path / "dead"),
             "pid_file": str(tmp_path / "orch.pid"),
@@ -90,9 +90,16 @@ def test_start_detached_spawns_child(env) -> None:
         assert pid, "detached child never wrote the pid file"
         # 子进程应在跑
         import subprocess
+        import sys
+        run_kwargs: dict[str, object] = {
+            "capture_output": True, "text": True, "timeout": 5,
+        }
+        if sys.platform == "win32":
+            # CREATE_NO_WINDOW = 0x08000000：禁止 tasklist 弹出 cmd 窗口
+            run_kwargs["creationflags"] = 0x08000000
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True, timeout=5,
+            **run_kwargs,
         )
         assert str(pid) in out.stdout, f"child pid {pid} not alive"
     finally:

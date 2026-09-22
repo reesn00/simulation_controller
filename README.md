@@ -6,21 +6,21 @@
 
 ```
 simulate_serve（模拟采集 Run/审计 JSON）
-  → orchestration（顶层调度：trajectory → qwenformat → gdr 三阶段流水线）
+  → orchestration（顶层调度：trajectory → gdr → etl 三阶段流水线，2026-09-22 新架构）
        ├── trajectory  →  watcher → SQLite 队列
-       ├── qf_worker   →  etl/qwenformat 扩展（带 OpenAI metadata 的 Session JSON）
-       └── gdr_worker  →  gdr 三级精修
+       ├── gdr_worker  →  gdr 三级精修 → output/refined/ 单 Session（C2 契约）
+       └── etl_worker  →  etl 4 视图拆分 → output/refine_data/（C3 契约）
   → data_refiner（规则剪裁合成数据）
   → etl/pawsession（QwenPaw 会话 → OpenAI SFT 格式）
-  → etl/qwenformat（OpenAI SFT → Qwen3 训练 JSONL）
+  → etl/qwenformat（trajectory → Session 解析；gdr.parsers 唯一调用入口）
   → scripts/model_train（unsloth LoRA 微调 Qwen3.5-9B + 推理验证）
   → gdr（平行的 LLM 驱动三级精修流水线）
 ```
 
 - `simulate_serve/`：主应用，六边形/分层架构。`configuration/` 加载严格 Schema v2 Catalog；`domain/` + `application/` 编译任务、维护异步运行状态机、编排远端会话；`interaction/` 生成首轮请求和针对验证缺口的自然追问，不拥有验证工具；`validation/` + `tools/` 负责确定性规则、语义 Judge、工具取证和四态结果聚合；`infrastructure/` 提供 QwenPaw HTTP、CAMEL 模型和 JSON v2 持久化。产出 Run/审计/蒸馏 JSON，是下游数据加工的源头。入口 `python -m simulate_serve`。
-- `orchestration/`：顶层流水线调度器，把 `simulate_serve → etl/qwenformat → gdr` 三个独立子系统串成 `trajectory → qf → gdr` 的批驱动 + 持续消费管道（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)）。`master.py` 跑主循环，按批次 spawn `producer_simulate / watcher / qf_workers / gdr_workers`；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → qf_processing → pending_gdr → gdr_processing → done`，超限入 `dead`），`reap_stale` 周期回退卡死的 `*_processing` 任务；`workers/base_worker.py` 提供通用 pull-process-mark 循环 + 重试/dead 逻辑，`qf_worker` 调 [`etl/qwenformat/transform.py`](etl/qwenformat/transform.py) 的 `trajectory_to_session_with_openai_metadata`，`gdr_worker` 调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（含凑批等待）；`batch_tracker.py` 等 `run.json.state ∈ TERMINAL_STATES`；`watcher.py` 轮询 `output/agent_trajectory/` 入队；`failure_handler.py` 把 `state=dead` 的 `src + qf_output + gdr_output` 移到 `output/orchestration/dead/` 并追加 `dead.log`；`health.py` 写 `output/orchestration/logs/health.json`；`daemon.py` 处理 PID file + signal + STOP 哨兵文件（Windows 上 CTRL_BREAK_EVENT 不可达，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令；`run.bat` 是 Windows wrapper。所有阶段产物与运行时状态统一收在 `output/` 下。完整跑完后修正完的精修 JSON 落在 `output/refine_data/<TXXX>__<session>_refined.json`；低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `output/orchestration/dead/`。入口 `python -m orchestration`。
+- `orchestration/`：顶层流水线调度器，把 `simulate_serve → gdr → etl` 三个独立子系统串成 `trajectory → refined → 4 视图` 的批驱动 + 持续消费管道（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)，迁移说明见 [`docs/contracts/migration-plan.md`](docs/contracts/migration-plan.md)）。`master.py` 跑主循环，按批次 spawn `producer_simulate / watcher / gdr_workers / etl_workers`；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → gdr_processing → pending_etl → etl_processing → done`，超限入 `dead`），`reap_stale` 周期回退卡死的 `*_processing` 任务；`workers/base_worker.py` 提供通用 pull-process-mark 循环 + 重试/dead 逻辑，`gdr_worker` 调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（C1 trajectory → C2 refined Session），`etl_worker` 调 [`etl/parsers.py::load_refined_session`](etl/parsers/__init__.py) + [`gdr/domain/schema.py::save_session_v2`](gdr/domain/schema.py)（C2 → C3 4 视图）；`batch_tracker.py` 等 `run.json.state ∈ TERMINAL_STATES`；`watcher.py` 轮询 `output/agent_trajectory/` 入队；`failure_handler.py` 把 `state=dead` 的 `src + gdr_refined_path` 移到 `output/orchestration/dead/` 并追加 `dead.log`；`health.py` 写 `output/orchestration/logs/health.json`；`daemon.py` 处理 PID file + signal + STOP 哨兵文件（Windows 上 CTRL_BREAK_EVENT 不可达，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令；`run.bat` 是 Windows wrapper。所有阶段产物与运行时状态统一收在 `output/` 下。gdr 阶段把精修完的 Session 单文件写到 `output/refined/<TXXX>__<session_id>.json`（C2 契约，schema_version=refined_session.v1），etl 阶段沿用同一 stem 拆 4 视图到 `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json`（C3 契约）；低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `output/orchestration/dead/`。入口 `python -m orchestration`。
 - `data_refiner/`：合成会话数据的轻量规则清洗，只标注不删除。依次执行无效文件判定（R3）、连续工具调用失败段剪裁（R1）、thinking 长度标注（R2），并输出轨迹块状态报告（R5）。入口 `python -m data_refiner --input ... --output ...`。
-- `etl/`：SFT 训练格式转换。`pawsession/` 按 extract/transform/load 把 QwenPaw origindata 转为 OpenAI function-calling 格式 `sft_openai.jsonl`，并附每会话审计与 `stats.json`（入口 `etl/pawsession/run_etl.py`）；`qwenformat/` 被 `orchestration` 的 `qf_worker` 调用，负责把 trajectory JSONL 事件流重放为 Session dict 并渲染 `chat_template.jinja` 生成 Qwen3 SFT 训练文本。
+- `etl/`：SFT 训练格式转换。`pawsession/` 按 extract/transform/load 把 QwenPaw origindata 转为 OpenAI function-calling 格式 `sft_openai.jsonl`，并附每会话审计与 `stats.json`（入口 `etl/pawsession/run_etl.py`）；`qwenformat/` 提供 trajectory 重放（`load.parse_trajectory`，新架构下被 [`gdr.parsers.from_trajectory`](gdr/parsers/__init__.py) 局部导入调用，C1 契约重放唯一入口）+ 训练格式转换（`transform.trajectory_to_session_with_openai_metadata` / `chat_template.jinja`，etl 阶段 C2 → C3 时复用，写 `metadata.openai_messages` / `qf_text` / `qf_rendered_at`）。`parsers/` 包是 C2 契约入口（[`etl/parsers.load_refined_session`](etl/parsers/__init__.py)），`writers/` 包是 C3 写入入口（[`etl.writers.render_to_4_views`](etl/writers/__init__.py)）。
 - `gdr/`：独立的 uv workspace 成员（gdr-agent），对 QwenPaw Agent 轨迹做"脏数据入、干净数据出"的自动缺陷检测与精修。Session → Message → Block 三级数据模型，13 种缺陷标签（规则层 + LLM 三票投票），含 obs_denoiser/thought_refactor/tool_fixer 精修器、L1/L2/L3 三级验证、模型路由与评估闭环。入口 `gdr-pipeline`（编排）与 `gdr-evaluator`（评估）。
 - `scripts/`：迁移与训练脚本。`migrate_catalog_v2.py` 为 v1 → v2 Task Catalog 的一次性确定性迁移；`model_train/main.py` 用 unsloth + LoRA 在 WSL2 下微调 Qwen3.5-9B（数据指向 `etl/qwenformat` 产物）；`model_train/infer.py` 做训练后推理验证。
 - `tool_runtime/`：Node 侧工具运行时，当前仅包含 Playwright MCP（`@playwright/mcp`）依赖，打包时并入 `simulate_serve/tool_runtime/`，默认禁用。
@@ -34,21 +34,21 @@ simulate_serve（模拟采集 Run/审计 JSON）
 | 子命令 | 作用 |
 |---|---|
 | `start` | 启动 master + workers；`--detach` 后台化、`--dry-run` 只打印计划、`--tasks T001,T002` 指定批次、`--all-tasks` 加载 catalog 全部 task、`--batch-size N` 覆盖 config；批次跑完即退出（默认），`--stay` 常驻 |
-| `status` | 读 `output/orchestration/orchestration.db` 队列状态 + `output/orchestration/logs/health.json` + 死信列表 + 阶段时间戳（`sim@/sim!` `qf@/qf!` `gdr@/gdr!`，`@`=开始 `!=`收尾） |
+| `status` | 读 `output/orchestration/orchestration.db` 队列状态 + `output/orchestration/logs/health.json` + 死信列表 + 阶段时间戳（`sim@/sim!` `gdr@/gdr!` `etl@/etl!`，`@`=开始 `!=`收尾） |
 | `stop` | 写 STOP 哨兵文件让 master 优雅 shutdown；超时后 `taskkill /F /T`（Windows）或 `SIGKILL`（POSIX）兜底 |
 | `replay` | `state=dead` 的 task 重置回 `pending`；`--batch N` 仅限该批次 |
 
-进程模型：master 主线程跑批循环，qf/gdr/watcher 都是常驻 Thread + 独立 stop_event；`reap_stale` 走独立 Thread 周期跑；stop 通道为 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险。空闲退避（`worker_idle_backoff_max_seconds`）让连续空轮指数翻倍、封顶到配置上限，省 CPU/写锁。
+进程模型：master 主线程跑批循环，gdr/etl/watcher 都是常驻 Thread + 独立 stop_event；`reap_stale` 走独立 Thread 周期跑；stop 通道为 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险。空闲退避（`worker_idle_backoff_max_seconds`）让连续空轮指数翻倍、封顶到配置上限，省 CPU/写锁。
 
-## 数据格式与三阶段产物
+## 数据格式与三阶段产物（2026-09-22 新架构 `simulation server → gdr → etl`）
 
 | 阶段 | 入口模块 | 产物文件 | 数据形态 |
 |---|---|---|---|
-| 模拟采集 | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（独立事件流形态，见 docs/agent-trajectory-format.md） |
-| 转换 | `etl/qwenformat` | `output/qf_out/<TXXX>__<session>.json` | 单 Session JSON，含 `messages[*].blocks` 结构 |
-| 精修 | `gdr` | `output/refine_data/<TXXX>__<session>_refined.json` | 同 qf_out 结构 + `metadata.refine_history` |
+| 模拟采集（C1） | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（独立事件流形态，见 docs/agent-trajectory-format.md） |
+| 精修（C2） | `gdr` | `output/refined/<TXXX>__<session_id>.json` | 单 Session JSON，`schema_version: refined_session.v1`，含 `messages[*].blocks` + `metadata.refine_history` |
+| 4 视图（C3） | `etl` | `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json` | 训练框架 / audit 用的 4 视图文件 |
 
-GDR 只接受 `qf_out` 格式（[`gdr/domain/schema.py::load_session`](gdr/domain/schema.py#L182-L198)），不直接消费 trajectory；`etl/qwenformat` 是 simulate_serve 与 gdr 之间的强制 adapter，qf_out 是单一真相来源。
+GDR 直接消费 trajectory C1 契约（[`gdr/parsers.from_trajectory`](gdr/parsers/__init__.py)），不再走 `etl/qwenformat` 的中间转换；`output/refined/` 是 `gdr → etl` 之间的唯一交接面（C2 契约）。etl 通过 [`etl/parsers.load_refined_session`](etl/parsers/__init__.py) 校验 C2 后调用 [`gdr/domain/schema.py::save_session_v2`](gdr/domain/schema.py) 拆 4 视图（C3 契约）。
 
 ### trajectory（独立事件流形态，2026-09-18 确认）
 
@@ -63,48 +63,62 @@ GDR 只接受 `qf_out` 格式（[`gdr/domain/schema.py::load_session`](gdr/domai
 
 事件序列：`turn_start → model_request → model_response (thinking+tool_call×n) → tool_call_request (冗余) → tool_execution ×n → … → model_response (thinking+text) → final_reply`。多轮会话每轮一对 `turn_start` / `final_reply`。
 
-[`etl/qwenformat/load.py::parse_trajectory`](etl/qwenformat/load.py) 是单路径事件重放，不做旧格式兼容（AI SDK 内嵌快照 / inline ` md` 拆分路径已于 2026-09-18 移除）。
+[`etl/qwenformat/load.py::parse_trajectory`](etl/qwenformat/load.py) 是单路径事件重放，不做旧格式兼容（AI SDK 内嵌快照 / inline ` md` 拆分路径已于 2026-09-18 移除）。新架构下它由 [`gdr/parsers.from_trajectory`](gdr/parsers/__init__.py) 局部导入调用，是 trajectory 重放的唯一调用入口；orchestration 不直接读 trajectory。
 
-### qf_out（Session → Message → Block）
+### refined（C2 单 Session 文件）
 
 ```
 Session {
-  session_id, summary, messages: [
+  schema_version: "refined_session.v1",
+  session_id, original_session_id, refined_version, run_id, task_id,
+  source_file, summary,
+  model_name, provider_id, agent_id, trace_ids, event_count, event_types,
+  messages: [
     Message {
       role: "system" | "user" | "assistant",
       blocks: [ThinkingBlock | ToolcallBlock | ToolresultBlock | TextBlock],
-      metadata: {
-        openai_messages: [...],   # OpenAI function-calling 兼容形态
-        tools: [...],             # 来自 model_request.payload.tools
-        qf_text: "...",           # Qwen3 chat_template 渲染的训练文本
-        qf_rendered_at, qf_stats
-      }
+      metadata: {},
+      usage: {...}
     }
-  ]
+  ],
+  tools: [...],
+  metadata: {
+    refine_history: [...],                # 每次精修的 [module, attempts, model_used, result, reason, block_id]
+    validation_summary: {...},             # L1/L2/L3 通过块数
+    policy_decisions: [...],
+    modified_blocks: [...],
+    meta_tag_contamination: {...},         # ⟦⟧ 剥离统计（F3-D）
+    training_value_score, complexity_tier,
+    health_score, intent_achievement,
+    ...
+  }
 }
 ```
 
-`gdr/domain/schema.py::Message.role` 支持 `system`（原 schema 仅 `user | assistant`，扩展后接纳 qf_out 新增的 system message）。
+完整字段级 schema 见 [`docs/contracts/C2-refined-session.md`](docs/contracts/C2-refined-session.md)。
 
-### refine_data
+### refine_data（C3 4 视图）
 
-GDR 三级精修（`obs_denoiser` / `thought_refactor` / `tool_fixer`）后的 Session，结构同 qf_out，额外在 `metadata` 追加：
+GDR 精修（C2）通过后，etl 在尾部做格式整理（`usage_prune` + `transform` + `system_prompt` 切分 + `tool_templates` + `tool_output_summarizer`）并 [`save_session_v2`](gdr/domain/schema.py) 拆 4 视图：
 
-- `refine_history`：每块的精修模块、attempt、model_used、result。
-- `validation_summary`：L1/L2/L3 通过块数。
-- `modified_blocks`：被修改的 block id 列表。
+- `<stem>.messages.json` —— 完整 Session（与 C2 同结构，但带 etl 处理的 `metadata.openai_messages` / `qf_text` / `qf_rendered_at`）
+- `<stem>.openai.json` —— OpenAI function-calling 形态
+- `<stem>.qwenjina.txt` —— Qwen3 chat_template 渲染的训练文本（可选）
+- `<stem>.meta.json` —— 元数据 + ⟦⟧ 污染统计
+
+完整字段级 schema 见 [`docs/contracts/C3-final-sft-views.md`](docs/contracts/C3-final-sft-views.md)。
 
 低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道，**数据不丢**；只有三种硬丢弃（只剩 user / assistant 全空壳 / 极少且全失败），见 [`gdr/pipeline/runner.py::_session_structurally_unusable`](gdr/pipeline/runner.py)。
 
 ### E2E 验证
 
-`.\run.bat start --tasks T001`（含 2026-09-06 qf_out 合约补丁后）：
+`.\run.bat start --tasks T001`（2026-09-22 新架构验证）：
 
 - trajectory：8 events（`turn_start / model_request / model_response / 2 tool_execution / model_request / model_response / final_reply`），最后 `final_reply`。
-- qf_out `messages`：system / user / assistant(thinking+text+2 toolcall+2 toolresult) / assistant(thinking+text)。
-- qf_out `metadata.openai_messages.roles`：`['system','user','assistant','tool','tool','assistant']`。
-- qf_out `metadata.tools`：27（含完整 description + parameters）。
-- refine_data：4 messages，所有角色 GDR 都接受；`batch_id=32 runs=1 drained=True dead=0`。
+- refined `messages`：system / user / assistant(thinking+text+2 toolcall+2 toolresult) / assistant(thinking+text)，所有 thinking 块非空。
+- refined `metadata.openai_messages.roles`：`['system','user','assistant','tool','tool','assistant']`。
+- refined `metadata.tools`：27（含完整 description + parameters）。
+- refine_data 4 视图：`<stem>.messages.json` / `<stem>.openai.json` / `<stem>.qwenjina.txt` / `<stem>.meta.json`；`batch_id=32 runs=1 drained=True dead=0`。
 
 ## 架构
 
@@ -136,7 +150,7 @@ python -m orchestration status                              # 队列/进程/dead
 python -m orchestration stop --timeout 15                   # 优雅停，超时强杀
 python -m orchestration replay --batch 7                    # 重放指定批次的 dead
 # Windows wrapper 等价于：
-orchestration\run.bat start --tasks T001,T002
+scripts\run.bat start --tasks T001,T002
 
 # 离线测试
 python -m pytest -q
@@ -160,23 +174,23 @@ Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或�
 
 ## orchestration 边界
 
-- master 主线程跑批循环；qf/gdr/watcher 是常驻 Thread + 独立 `stop_event`，worker 异常不致死。
+- master 主线程跑批循环；gdr/etl/watcher 是常驻 Thread + 独立 `stop_event`，worker 异常不致死。
 - `reap_stale` 周期（默认 60s 一次，5 分钟前的 `*_processing` 视为陈旧）回退卡死锁。
 - 优雅停止走 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险；Windows detach 子进程无控制台、CTRL_BREAK_EVENT 不可达，哨兵文件是唯一可靠通道。
 - 空闲退避（`worker_idle_backoff_max_seconds`）让连续空轮指数翻倍、封顶到配置上限；拉到任务立即复位。生产建议开启，省 CPU/写锁。
 - judge 低分不进主输出，但完整精修 session 走 `refine_data/judge_low.jsonl` 审核通道（数据不丢）；真正硬丢弃仅三种（只剩 user / assistant 全空壳 / 极少且全失败），见 [`gdr/pipeline/runner.py:_session_structurally_unusable`](gdr/pipeline/runner.py)。
-- orchestration 不改 `simulate_serve` / `gdr` 任何代码；qf 走的是 [`etl/qwenformat/transform.py`](etl/qwenformat/transform.py) 的扩展函数。
+- orchestration 不改 `simulate_serve` / `gdr` / `etl` 任何代码；只通过 [`gdr/parsers.from_trajectory`](gdr/parsers/__init__.py)、[`gdr/pipeline.runner._process_one_file`](gdr/pipeline/runner.py)、[`etl/parsers.load_refined_session`](etl/parsers/__init__.py)、[`gdr/domain.save_session_v2`](gdr/domain/schema.py) 四个公开入口串联三阶段。
 
 ## 旁路模块（不参与 orchestration 主链路）
 
-orchestration 的 `start → producer_simulate → qf_worker → gdr_worker → watcher → reap_dead` 主链路只调用四个外部入口：`simulate_serve` 全量、`etl.qwenformat.transform`、`gdr.config.settings`、`gdr.pipeline.runner._process_one_file`。以下目录/脚本**不在该主链路**——或平行存在、或一次性、或只服务特定子任务。
+orchestration 的 `start → producer_simulate → gdr_worker → etl_worker → watcher → reap_dead` 主链路只调用四个公开入口：`gdr.parsers.from_trajectory`、`gdr.pipeline.runner._process_one_file`、`etl.parsers.load_refined_session`、`gdr.domain.save_session_v2`。以下目录/脚本**不在该主链路**——或平行存在、或一次性、或只服务特定子任务。
 
 ### A. 独立垂类工具链（自有入口，不依赖 orchestration）
 
 | 路径 | 职责 | 入口 |
 |---|---|---|
 | `data_refiner/` | 合成会话数据的轻量规则清洗，只标注不删除：thinking 长度检查、连续失败裁剪、无效文件过滤、轨迹块状态报告；`refiner/` 下含 `runner / trimmer / validity / thinking_check / loader / report` 六个子模块 | `python -m data_refiner` |
-| `etl/pawsession/` | **只服务**"PawSession origindata → OpenAI function-calling 格式"的单向 ETL；与 `etl/qwenformat` 平行，**未被 orchestration 引用**（orchestration 的 qf 阶段走 `qwenformat`） | `python -m etl.pawsession.run_etl` |
+| `etl/pawsession/` | **只服务**"PawSession origindata → OpenAI function-calling 格式"的单向 ETL；与 `etl/qwenformat` 平行，**未被 orchestration 引用**（orchestration 直接走 `gdr.parsers.from_trajectory` → trajectory 重放） | `python -m etl.pawsession.run_etl` |
 | `scripts/model_train/` | 独立的 unsloth + LoRA 训练/推理脚本（`main.py` 微调 Qwen3.5-9B，`infer.py` 推理验证），不在主 `pyproject.toml` 依赖里，需单独安装 unsloth / trl / datasets | `python scripts/model_train/main.py` |
 
 ### B. 一次性工具（脚本级，不再演进）
@@ -188,14 +202,14 @@ orchestration 的 `start → producer_simulate → qf_worker → gdr_worker → 
 - `tool_runtime/playwright/`：Node 子工程，仅含 `package.json` + `package-lock.json`；由 wheel 的 `force-include` 把 `node_modules/` 拷贝到 `simulate_serve/tools/browser/`，运行时按需启用。
 - `output/refine_data/judge_low.jsonl`：gdr 终检 judge 低分但结构可用的 session 审核通道快照，**单文件 JSONL 数据**，非代码；详见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)。
 
-### D. `gdr/` 内部子模块（orchestration 只取 `pipeline._process_one_file`）
+### D. `gdr/` 内部子模块（orchestration 只取 `parsers.from_trajectory` + `pipeline._process_one_file`）
 
-`gdr/` 子目录共 11 类，只有 `gdr.pipeline.runner._process_one_file` 被 orchestration 调用；其余子模块互依并汇入同一接缝，不直接对外：
+`gdr/` 子目录共 11 类，orchestration 只通过两个接缝调用：trajectory 重放走 `gdr.parsers.from_trajectory`（C1 契约入口），单文件精修走 `gdr.pipeline.runner._process_one_file`（C2 契约入口）；`gdr.domain.save_session_v2` 是 etl 拆 4 视图时复用的写入函数：
 
-- `core/`（context_understanding、policy）、`domain/`（schema）、`evaluator/`（cli、dual_eval、probe、report、feedback）、`infrastructure/`（http_embed、llm_client、logging）、`prompts/`（YAML 模板）、`refiners/`（obs_denoiser、thought_refactor、tool_fixer）、`routing/`（router、health）、`validators/`（l1_rules、l2_semantic、l3_judge）、`data/`（sft_pairs）、`origindata/`（原始数据集）、`docs/`（gdr 设计文档）
+- `core/`（context_understanding、policy）、`domain/`（schema，含 `save_refined_session` / `save_session_v2`）、`evaluator/`（cli、dual_eval、probe、report、feedback）、`infrastructure/`（http_embed、llm_client、logging）、`prompts/`（YAML 模板）、`refiners/`（obs_denoiser、thought_refactor、tool_fixer）、`routing/`（router、health）、`validators/`（l1_rules、l2_semantic、l3_judge）、`parsers/`（C1 契约入口）、`data/`（sft_pairs）、`origindata/`（原始数据集）、`docs/`（gdr 设计文档）
 
-主链路外部接口：`gdr-pipeline`（编排入口）/ `gdr-evaluator`（评估入口），orchestration 不依赖这两个 CLI，只复用 `_process_one_file` 进程内函数。
+主链路外部接口：`gdr-pipeline`（编排入口）/ `gdr-evaluator`（评估入口），orchestration 不依赖这两个 CLI，只复用进程内函数。
 
-> **编排侧依赖清单基于** `orchestration/__main__.py`、`master.py`、`producer_simulate.py`、`watcher.py`、`workers/base_worker.py`、`workers/qf_worker.py`、`workers/gdr_worker.py` 的静态 `import` 扫描结果。
+> **编排侧依赖清单基于** `orchestration/__main__.py`、`master.py`、`producer_simulate.py`、`watcher.py`、`workers/base_worker.py`、`workers/gdr_worker.py`、`workers/etl_worker.py` 的静态 `import` 扫描结果。
 
 Catalog v2 字段、迁移决策和本地验收矩阵见 `docs/catalog-v2-optimization.md`。orchestration 设计与决策见 `docs/orchestration-design.md`。

@@ -86,7 +86,7 @@ def test_scan_once_idempotent(tmp_path: Path) -> None:
     r2 = w.scan_once()
     assert r1 == {"registered": 1, "skipped": 0, "dead": 0}
     assert r2 == {"registered": 0, "skipped": 1, "dead": 0}
-    assert queue.count_pending_qf() == 1
+    assert queue.count_pending_gdr() == 1
 
 
 def test_scan_once_nonexistent_dir_returns_zeros(tmp_path: Path) -> None:
@@ -111,7 +111,7 @@ def test_scan_once_mixed_new_and_existing(tmp_path: Path) -> None:
     _make_traj(traj_dir, "run_003__s.json")
     result = w.scan_once()
     assert result == {"registered": 2, "skipped": 1, "dead": 0}
-    assert queue.count_pending_qf() == 3
+    assert queue.count_pending_gdr() == 3
 
 
 def test_scan_once_attributes_to_mapped_batch(tmp_path: Path) -> None:
@@ -219,7 +219,7 @@ def test_run_forever_exits_on_stop_event(tmp_path: Path) -> None:
     stop.set()
     t.join(timeout=1.0)
 
-    assert queue.count_pending_qf() == 1
+    assert queue.count_pending_gdr() == 1
     assert not t.is_alive()
 
 
@@ -243,4 +243,4 @@ def test_run_forever_registers_files_added_after_start(tmp_path: Path) -> None:
     stop.set()
     t.join(timeout=1.0)
 
-    assert queue.count_pending_qf() == 1
+    assert queue.count_pending_gdr() == 1

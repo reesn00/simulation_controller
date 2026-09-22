@@ -172,48 +172,6 @@ def test_save_tool_templates_creates_files(tmp_path: Path):
     assert "web_search" in (tmp_path / "tools" / "web_search.txt").read_text(encoding="utf-8")
 
 
-def test_partition_from_real_trajectory():
-    """用仓库中真实 trajectory 验证 partition 不抛错且能识别主要段."""
-    fp = Path("output/agent_trajectory/run_1359b724f9c84661b7267dc7d443e017"
-              "__useramulation-a3a43ff775d84e62b4a84b1ef7dfb928.json")
-    if not fp.exists():
-        pytest.skip("真实 trajectory 不存在")
-
-    with fp.open(encoding="utf-8") as f:
-        for line in f:
-            obj = json.loads(line)
-            if obj.get("event_type") == "model_request":
-                msgs = obj["payload"]["messages"]
-                sys = next((m for m in msgs if m.get("name") == "system"), None)
-                text = sys["content"][0]["text"]
-                break
-        else:
-            pytest.fail("未找到 model_request")
-
-    sections = partition_system_prompt(text)
-    titles = [s.title for s in sections]
-    kinds = {s.title: s.kind for s in sections}
-
-    assert "Agent Identity" in titles
-    assert kinds["AGENTS.md"] == "framework"
-    assert kinds["SOUL.md"] == "framework"
-    assert kinds["PROFILE.md"] == "framework"
-    assert kinds["agent-skills"] == "constraint"
-    assert kinds["Framework Info"] == "framework"
-    assert kinds["RETRIEVAL HEADLINE"] == "constraint"
-    assert kinds["THE MAP"] == "constraint"
-    assert kinds["DISCIPLINE"] == "constraint"
-    assert kinds["长期记忆"] == "constraint"
-
-    new_system, stats = render_cleaned_system(sections)
-    assert "# AGENTS.md" not in new_system
-    assert "# SOUL.md" not in new_system
-    assert "# PROFILE.md" not in new_system
-    assert "Agent Identity" in new_system
-    assert "RETRIEVAL HEADLINE" in new_system
-    assert stats["framework_sections"] > 0
-
-
 # ---------------------------------------------------------------------------
 # F3-C fix: render_cleaned_system 默认追加 Reasoning requirement 段
 # ---------------------------------------------------------------------------

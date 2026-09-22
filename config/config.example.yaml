@@ -54,13 +54,13 @@ simulate_serve:
     #     capabilities: [browser.navigate, browser.snapshot]
 
 # === orchestration (编排) ===
+# 新架构 simulation server → gdr → etl: qf 阶段已删除。
 orchestration:
   batch_size: 3
-  gdr_workers: 2
-  qf_workers: 4
-  gdr_wait_seconds: 10
-  max_retry_qf: 3
+  gdr_workers: 2       # 首阶段 (LLM 密集), 读 trajectory 写 C2 refined Session
+  etl_workers: 2       # 末阶段 (本地计算), 读 C2 拆 4 视图 (C3 契约)
   max_retry_gdr: 3
+  max_retry_etl: 3
   watcher_poll_seconds: 2
   reap_stale_seconds: 300
   worker_idle_backoff_max_seconds: 5
@@ -69,8 +69,8 @@ orchestration:
 paths:
   trajectory_dir: "output/agent_trajectory"
   runs_dir: "output/runs"
-  qf_output_dir: "output/qf_out"
-  gdr_output_dir: "output/refine_data"
+  refined_dir: "output/refined"             # gdr 末端写 C2 refined Session 单文件
+  etl_outputs_dir: "output/refine_data"     # etl 末端写 4 视图 (C3 契约)
   sqlite_db: "output/orchestration/orchestration.db"
   dead_dir: "output/orchestration/dead"
   pid_file: "output/orchestration/orchestration.pid"

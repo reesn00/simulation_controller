@@ -36,21 +36,16 @@ def run_record(run_id: str, state: RunState, content: str = "answer", *, validat
     return run
 
 
-def test_repository_exports_all_runs_but_distills_clean_success_only(tmp_path: Path) -> None:
+def test_repository_no_longer_writes_datasets_or_reports(tmp_path: Path) -> None:
+    """新架构下 JsonRunRepository 不再产 datasets/reports; SFT 数据由 gdr/etl 写 (C3 契约)."""
     repository = JsonRunRepository(tmp_path)
     repository.save_run(run_record("success", RunState.SUCCESS))
     repository.save_run(run_record("failed", RunState.GUIDE_EXHAUSTED))
-    repository.save_run(run_record("thought", RunState.SUCCESS, "<think>hidden</think>answer"))
-    stats = repository.export()
-    all_runs = (tmp_path / "datasets" / "all_runs.v2.jsonl").read_text(encoding="utf-8").splitlines()
-    distill = (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(all_runs) == 3
-    assert len(distill) == 1
-    assert json.loads(distill[0])["run_id"] == "success"
-    assert json.loads(distill[0])["task"]["task_id"] == "T1"
-    assert stats["states"]["success"] == 2
-    assert stats["stats_schema_version"] == "2"
-    assert stats["by_task_type"]["x"]["success"] == 2
+    # 旧位置 (datasets/, reports/) 不再被创建 / 写入
+    assert not (tmp_path / "datasets").exists()
+    assert not (tmp_path / "reports").exists()
+    # runs 仍在
+    assert (tmp_path / "runs" / "success" / "run.json").exists()
 
 
 def test_repository_marks_non_terminal_runs_interrupted(tmp_path: Path) -> None:
@@ -61,32 +56,6 @@ def test_repository_marks_non_terminal_runs_interrupted(tmp_path: Path) -> None:
     assert repository.load_runs()[0].state is RunState.INTERRUPTED
     events = (tmp_path / "runs" / "active" / "events.jsonl").read_text(encoding="utf-8")
     assert "RUN_INTERRUPTED" in events
-
-
-def test_success_without_validation_is_not_distilled_or_reported_as_pass(tmp_path: Path) -> None:
-    repository = JsonRunRepository(tmp_path)
-    repository.save_run(run_record("unvalidated", RunState.SUCCESS, validated=False))
-
-    repository.export()
-
-    assert not (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").strip()
-    loaded = repository.load_runs()[0]
-    assert repository._validation_summary(loaded)["verdict"] == Verdict.INCONCLUSIVE.value
-
-
-def test_untagged_internal_reasoning_is_not_distilled(tmp_path: Path) -> None:
-    repository = JsonRunRepository(tmp_path)
-    repository.save_run(
-        run_record(
-            "untagged-reasoning",
-            RunState.SUCCESS,
-            "用户希望我先分析任务。让我先搜索资料。\n\n这是给用户的最终答案。",
-        )
-    )
-
-    repository.export()
-
-    assert not (tmp_path / "datasets" / "distill_dataset.v2.jsonl").read_text(encoding="utf-8").strip()
 
 
 def test_recovery_reconciles_event_appended_before_checkpoint(tmp_path: Path) -> None:

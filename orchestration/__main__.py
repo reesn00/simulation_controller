@@ -99,8 +99,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
         print(f"  sqlite_db      = {sqlite_db}")
         print(f"  pid_file       = {pid_file}")
         print(f"  log_dir        = {log_dir}")
-        print(f"  qf_workers     = {cfg.settings.qf_workers}")
         print(f"  gdr_workers    = {cfg.settings.gdr_workers}")
+        print(f"  etl_workers    = {cfg.settings.etl_workers}")
         print(f"  batch_size     = {batch_size}")
         print(f"  detach         = {args.detach}")
         if task_ids:
@@ -139,8 +139,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
     def run(stop_event: threading.Event) -> None:
         queue = SQLiteQueue(
             sqlite_db,
-            max_retry_qf=cfg.settings.max_retry_qf,
             max_retry_gdr=cfg.settings.max_retry_gdr,
+            max_retry_etl=cfg.settings.max_retry_etl,
         )
         master = Master(cfg=cfg, queue=queue, stop_event=stop_event)
 
@@ -194,15 +194,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
             for bid in sorted(batches):
                 b = batches[bid]
                 print(f"    batch={bid} status={b['status']} "
-                      f"qf={b['qf_count']} gdr={b['gdr_count']} dead={b['dead_count']}")
+                      f"gdr={b['gdr_count']} etl={b['etl_count']} dead={b['dead_count']}")
                 phases = []
                 for label, key in (
                     ("sim@", "simulate_started_at"),
                     ("sim!", "simulate_done_at"),
-                    ("qf@", "qf_started_at"),
-                    ("qf!", "qf_done_at"),
                     ("gdr@", "gdr_started_at"),
                     ("gdr!", "gdr_done_at"),
+                    ("etl@", "etl_started_at"),
+                    ("etl!", "etl_done_at"),
                 ):
                     ts = b.get(key)
                     if ts:
@@ -286,7 +286,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="orchestration",
-        description="simulate_serve / qwenformat / gdr 三阶段流水线调度器",
+        description="simulate_serve / gdr / etl 三阶段流水线调度器（2026-09-22 起的 simulation server → gdr → etl 新架构）",
     )
     parser.add_argument(
         "--config", type=str, default=None,

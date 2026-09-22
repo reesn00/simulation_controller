@@ -7,6 +7,10 @@ SQLite 的 WAL 模式天然支持读并发 + 写串行，因此不需要进程�
 把最多 N 条目标 state 的行改成 ``*_processing`` 并返回，避免
 ``SELECT-then-UPDATE`` 的竞态。
 
+新架构 ``simulation server → gdr → etl`` 下, 状态机：
+    pending → gdr_processing → pending_etl → etl_processing → done
+各阶段的"在途"判定见 `_GDR_INFLIGHT_STATES` / `_ETL_INFLIGHT_STATES`。
+
 详见 ``docs/orchestration-design.md`` §5（schema）和 §6.1-§6.3（算法）。
 """
 
@@ -25,22 +29,27 @@ from typing import Iterator
 # ---------------------------------------------------------------------------
 
 STATE_PENDING = "pending"
-STATE_QF_PROCESSING = "qf_processing"
-STATE_PENDING_GDR = "pending_gdr"
 STATE_GDR_PROCESSING = "gdr_processing"
+STATE_PENDING_ETL = "pending_etl"
+STATE_ETL_PROCESSING = "etl_processing"
 STATE_DONE = "done"
 STATE_DEAD = "dead"
 
-STAGE_QF = "qf"
 STAGE_GDR = "gdr"
+STAGE_ETL = "etl"
 
 # batches 表的阶段时间戳列（schema.sql 定义 + _init_schema 幂等迁移白名单）。
-_BATCH_STAGE_COLUMNS = ("qf_started_at", "qf_done_at", "gdr_started_at", "gdr_done_at")
+_BATCH_STAGE_COLUMNS = (
+    "gdr_started_at", "gdr_done_at",
+    "etl_started_at", "etl_done_at",
+)
 
 # "该阶段在批内仍有在途 task" 的 state 集合 —— 判断 *_done_at 时批内不得存在。
 # dead 不阻塞阶段收尾（死信不再进入该阶段）。
-_QF_INFLIGHT_STATES = ("pending", "qf_processing")
-_GDR_INFLIGHT_STATES = ("pending", "qf_processing", "pending_gdr", "gdr_processing")
+_GDR_INFLIGHT_STATES = ("pending", "gdr_processing")
+_ETL_INFLIGHT_STATES = (
+    "pending", "gdr_processing", "pending_etl", "etl_processing",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -56,13 +65,13 @@ class Task:
     session_id: str | None
     batch_id: int
     state: str
-    attempts_qf: int
     attempts_gdr: int
-    qf_output_path: str | None
-    gdr_messages_path: str | None
-    gdr_openai_path: str | None
-    gdr_qwenjina_path: str | None
-    gdr_meta_path: str | None
+    attempts_etl: int
+    gdr_refined_path: str | None
+    etl_messages_path: str | None
+    etl_openai_path: str | None
+    etl_qwenjina_path: str | None
+    etl_meta_path: str | None
     error_msg: str | None
     locked_by: str | None
     locked_at: str | None
@@ -94,21 +103,21 @@ class SQLiteQueue:
     * WAL 模式下多个 reader 可并发，writer 自动排队。
     * 抢占（pull）用 ``UPDATE...RETURNING`` 原子完成。
     * 进程崩溃恢复靠 ``reap_stale`` 把超时 ``locked_at`` 的 ``*_processing``
-      退回 ``pending`` / ``pending_gdr``。
+      退回 ``pending`` / ``pending_etl``。
     """
 
     def __init__(
         self,
         db_path: Path,
         *,
-        max_retry_qf: int = 3,
         max_retry_gdr: int = 3,
+        max_retry_etl: int = 3,
         busy_timeout_ms: int = 30_000,
     ) -> None:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._max_retry_qf = int(max_retry_qf)
         self._max_retry_gdr = int(max_retry_gdr)
+        self._max_retry_etl = int(max_retry_etl)
         self._busy_timeout_ms = int(busy_timeout_ms)
         self._init_schema()
 
@@ -138,20 +147,27 @@ class SQLiteQueue:
         with self._conn() as conn:
             self._drop_legacy_tasks_if_needed(conn)
             conn.executescript(ddl)
-            # 幂等迁移: 旧 db 的 batches 表没有阶段时间戳列 (CREATE IF NOT
-            # EXISTS 不会给已存在的表补列)。列名来自下方白名单常量，无注入面。
+            # 幂等迁移: 旧 db 的 batches 表可能缺阶段时间戳列或 etl_count
+            # (CREATE IF NOT EXISTS 不会给已存在的表补列)。列名来自下方
+            # 白名单常量，无注入面。
             cols = {r[1] for r in conn.execute("PRAGMA table_info(batches)")}
             for col in _BATCH_STAGE_COLUMNS:
                 if col not in cols:
                     conn.execute(f"ALTER TABLE batches ADD COLUMN {col} TEXT")
+            if "etl_count" not in cols:
+                conn.execute("ALTER TABLE batches ADD COLUMN etl_count INTEGER NOT NULL DEFAULT 0")
 
     @staticmethod
     def _drop_legacy_tasks_if_needed(conn: sqlite3.Connection) -> None:
-        """旧库 tasks 表带 ``gdr_output_path`` 列时直接 DROP 重建 (决策: 不迁移).
+        """旧库 tasks 表带 qf/gdr_old 列时直接 DROP 重建 (决策: 不迁移).
 
         ``CREATE TABLE IF NOT EXISTS`` 不会给已存在的表补列，故检测到旧列
         时先行 DROP，随后 ``executescript`` 按新 schema 重建空表。batches /
         run_tasks 无外键引用 tasks，DROP 不级联。
+
+        触发条件: 检测到旧架构任一独有的列 (``qf_output_path`` / 旧 4 视图列)
+        —— 当前 schema.sql 的列集合是 4 视图改名为 etl_* + gdr_refined_path,
+        与旧 schema 共享 attempts_* 前缀, 因此单看列名不行, 必须显式列举。
         """
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'",
@@ -159,7 +175,14 @@ class SQLiteQueue:
         if "tasks" not in tables:
             return
         cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
-        if "gdr_output_path" in cols:
+        legacy_markers = {
+            "qf_output_path",        # 旧架构 qf 阶段唯一列
+            "gdr_messages_path",     # 旧架构 gdr 阶段 4 视图列 (新架构改名为 etl_*)
+            "gdr_openai_path",
+            "gdr_qwenjina_path",
+            "gdr_meta_path",
+        }
+        if legacy_markers & cols:
             conn.execute("DROP TABLE tasks")
 
     # ------------------------------------------------------------------
@@ -175,13 +198,13 @@ class SQLiteQueue:
             session_id=row["session_id"],
             batch_id=row["batch_id"],
             state=row["state"],
-            attempts_qf=row["attempts_qf"],
             attempts_gdr=row["attempts_gdr"],
-            qf_output_path=row["qf_output_path"],
-            gdr_messages_path=row["gdr_messages_path"],
-            gdr_openai_path=row["gdr_openai_path"],
-            gdr_qwenjina_path=row["gdr_qwenjina_path"],
-            gdr_meta_path=row["gdr_meta_path"],
+            attempts_etl=row["attempts_etl"],
+            gdr_refined_path=row["gdr_refined_path"],
+            etl_messages_path=row["etl_messages_path"],
+            etl_openai_path=row["etl_openai_path"],
+            etl_qwenjina_path=row["etl_qwenjina_path"],
+            etl_meta_path=row["etl_meta_path"],
             error_msg=row["error_msg"],
             locked_by=row["locked_by"],
             locked_at=row["locked_at"],
@@ -250,8 +273,8 @@ class SQLiteQueue:
         status: str | None = None,
         simulate_started_at: str | None = None,
         simulate_done_at: str | None = None,
-        qf_count: int | None = None,
         gdr_count: int | None = None,
+        etl_count: int | None = None,
         dead_count: int | None = None,
     ) -> None:
         """增量更新 batches 行；只覆盖传入字段."""
@@ -263,10 +286,10 @@ class SQLiteQueue:
             sets.append("simulate_started_at = ?"); args.append(simulate_started_at)
         if simulate_done_at is not None:
             sets.append("simulate_done_at = ?"); args.append(simulate_done_at)
-        if qf_count is not None:
-            sets.append("qf_count = ?"); args.append(int(qf_count))
         if gdr_count is not None:
             sets.append("gdr_count = ?"); args.append(int(gdr_count))
+        if etl_count is not None:
+            sets.append("etl_count = ?"); args.append(int(etl_count))
         if dead_count is not None:
             sets.append("dead_count = ?"); args.append(int(dead_count))
         if not sets:
@@ -276,7 +299,7 @@ class SQLiteQueue:
             conn.execute(f"UPDATE batches SET {', '.join(sets)} WHERE id = ?", args)
 
     # ------------------------------------------------------------------
-    # 抢占：pull_pending_qf / pull_pending_gdr
+    # 抢占：pull_pending (gdr) / pull_pending_etl
     # ------------------------------------------------------------------
 
     def _pull_n(
@@ -335,10 +358,10 @@ class SQLiteQueue:
                         updated_at = ?
                     WHERE id IN ({select_sql})
                     RETURNING id, src_path, run_id, session_id, batch_id,
-                              state, attempts_qf, attempts_gdr,
-                              qf_output_path, gdr_messages_path,
-                              gdr_openai_path, gdr_qwenjina_path,
-                              gdr_meta_path,
+                              state, attempts_gdr, attempts_etl,
+                              gdr_refined_path,
+                              etl_messages_path, etl_openai_path,
+                              etl_qwenjina_path, etl_meta_path,
                               error_msg, locked_by, locked_at,
                               created_at, updated_at
                     """,
@@ -359,23 +382,17 @@ class SQLiteQueue:
                 conn.execute("ROLLBACK")
                 raise
 
-    def pull_pending_qf(self, *, worker_id: str, n: int) -> list[Task]:
-        return self._pull_n(
-            from_state=STATE_PENDING,
-            to_state=STATE_QF_PROCESSING,
-            worker_id=worker_id,
-            n=n,
-            stage_started_col="qf_started_at",
-        )
-
     def pull_pending_gdr(
         self, *, worker_id: str, n: int,
         batch_ids: list[int] | None = None,
     ) -> list[Task]:
-        """拉 pending_gdr 任务. ``batch_ids`` 非空时仅从这些 batch 取,
-        避免 worker 跨 batch 偷拉 (方向 B: 修复 shutdown race)."""
+        """拉 ``state=pending`` task（gdr 阶段首跑）.
+
+        ``batch_ids`` 非空时仅从这些 batch 取, 避免 worker 跨 batch 偷拉
+        (方向 B: 修复 shutdown race)。
+        """
         return self._pull_n(
-            from_state=STATE_PENDING_GDR,
+            from_state=STATE_PENDING,
             to_state=STATE_GDR_PROCESSING,
             worker_id=worker_id,
             n=n,
@@ -383,74 +400,96 @@ class SQLiteQueue:
             batch_ids=batch_ids,
         )
 
+    def pull_pending_etl(
+        self, *, worker_id: str, n: int,
+        batch_ids: list[int] | None = None,
+    ) -> list[Task]:
+        """拉 ``state=pending_etl`` task（gdr 完成, 等 etl 收尾）.
+
+        ``batch_ids`` 非空时仅从这些 batch 取, 同 ``pull_pending_gdr``。
+        """
+        return self._pull_n(
+            from_state=STATE_PENDING_ETL,
+            to_state=STATE_ETL_PROCESSING,
+            worker_id=worker_id,
+            n=n,
+            stage_started_col="etl_started_at",
+            batch_ids=batch_ids,
+        )
+
     # ------------------------------------------------------------------
     # 标记完成 / 失败 / 死信
     # ------------------------------------------------------------------
 
-    def mark_qf_done(self, task_id: int, *, qf_output_path: Path) -> None:
-        """qf 处理成功 → state=pending_gdr，等待 gdr 抢占.
+    def mark_gdr_done(self, task_id: int, *, gdr_refined_path: Path) -> None:
+        """gdr 处理成功 → state=pending_etl，等待 etl 抢占.
 
-        若该 task 所属批内已无 qf 在途（pending/qf_processing），顺带打
-        ``batches.qf_done_at``（仅首次）。
+        写 C2 refined Session 单文件路径（``gdr_refined_path``）；etl 阶段
+        从该路径读 C2 拆 4 视图。若该 task 所属批内已无 gdr 在途
+        （pending/gdr_processing），顺带打 ``batches.gdr_done_at``（仅首次）。
         """
         now = _utc_now_iso()
         with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE tasks
-                SET state = 'pending_gdr',
-                    qf_output_path = ?,
-                    error_msg = NULL,
-                    locked_by = NULL,
-                    locked_at = NULL,
-                    updated_at = ?
-                WHERE id = ? AND state = 'qf_processing'
-                """,
-                (str(qf_output_path), now, int(task_id)),
-            )
-            self._stamp_stage_done(
-                conn, task_id, "qf_done_at", _QF_INFLIGHT_STATES, now,
-                started_col="qf_started_at",
-            )
-
-    def mark_gdr_done(
-        self,
-        task_id: int,
-        *,
-        gdr_messages_path: Path,
-        gdr_openai_path: Path,
-        gdr_qwenjina_path: Path | None,
-        gdr_meta_path: Path,
-    ) -> None:
-        """gdr 处理成功 → state=done；批内 gdr 全部收尾时打 ``gdr_done_at``."""
-        now = _utc_now_iso()
-        with self._conn() as conn:
-            conn.execute(
-                """
-                UPDATE tasks
-                SET state = 'done',
-                    gdr_messages_path = ?,
-                    gdr_openai_path = ?,
-                    gdr_qwenjina_path = ?,
-                    gdr_meta_path = ?,
+                SET state = 'pending_etl',
+                    gdr_refined_path = ?,
                     error_msg = NULL,
                     locked_by = NULL,
                     locked_at = NULL,
                     updated_at = ?
                 WHERE id = ? AND state = 'gdr_processing'
                 """,
+                (str(gdr_refined_path), now, int(task_id)),
+            )
+            self._stamp_stage_done(
+                conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
+                started_col="gdr_started_at",
+            )
+
+    def mark_etl_done(
+        self,
+        task_id: int,
+        *,
+        etl_messages_path: Path,
+        etl_openai_path: Path,
+        etl_qwenjina_path: Path | None,
+        etl_meta_path: Path,
+    ) -> None:
+        """etl 处理成功 → state=done；批内 etl 全部收尾时打 ``etl_done_at``.
+
+        etl 末端把 C2 refined Session 拆成 4 视图（C3 契约），记录 4 个产物
+        路径以便 producer / 观测工具回查。
+        """
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE tasks
+                SET state = 'done',
+                    etl_messages_path = ?,
+                    etl_openai_path = ?,
+                    etl_qwenjina_path = ?,
+                    etl_meta_path = ?,
+                    error_msg = NULL,
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND state = 'etl_processing'
+                """,
                 (
-                    str(gdr_messages_path),
-                    str(gdr_openai_path),
-                    str(gdr_qwenjina_path) if gdr_qwenjina_path else None,
-                    str(gdr_meta_path),
+                    str(etl_messages_path),
+                    str(etl_openai_path),
+                    str(etl_qwenjina_path) if etl_qwenjina_path else None,
+                    str(etl_meta_path),
                     now,
                     int(task_id),
                 ),
             )
             self._stamp_stage_done(
-                conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
-                started_col="gdr_started_at",
+                conn, task_id, "etl_done_at", _ETL_INFLIGHT_STATES, now,
+                started_col="etl_started_at",
             )
 
     @staticmethod
@@ -499,26 +538,26 @@ class SQLiteQueue:
         ``retryable=False`` 表示永久性错误：不消耗 attempts，直接入 dead，
         ``error_msg`` 加 ``[non-retryable]`` 前缀（status / dead.log 可辨）。
 
-        Returns: 新的 state（pending / pending_gdr / dead）。
+        Returns: 新的 state（pending / pending_etl / dead）。
         """
-        if stage not in (STAGE_QF, STAGE_GDR):
+        if stage not in (STAGE_GDR, STAGE_ETL):
             raise ValueError(f"unknown stage: {stage!r}")
         now = _utc_now_iso()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT attempts_qf, attempts_gdr, state FROM tasks WHERE id = ?",
+                "SELECT attempts_gdr, attempts_etl, state FROM tasks WHERE id = ?",
                 (int(task_id),),
             ).fetchone()
             if row is None:
                 raise KeyError(f"task {task_id} not found")
-            if stage == STAGE_QF:
-                new_attempts = int(row["attempts_qf"]) + 1
-                max_retry = self._max_retry_qf
-                attempts_col = "attempts_qf"
-            else:
+            if stage == STAGE_GDR:
                 new_attempts = int(row["attempts_gdr"]) + 1
                 max_retry = self._max_retry_gdr
                 attempts_col = "attempts_gdr"
+            else:
+                new_attempts = int(row["attempts_etl"]) + 1
+                max_retry = self._max_retry_etl
+                attempts_col = "attempts_etl"
 
             if not retryable:
                 # 永久错误：不递增 attempts，直接 dead
@@ -527,10 +566,10 @@ class SQLiteQueue:
                 error_msg = "[non-retryable] " + error_msg
             elif new_attempts > max_retry:
                 new_state = STATE_DEAD
-            elif stage == STAGE_QF:
+            elif stage == STAGE_GDR:
                 new_state = STATE_PENDING
             else:
-                new_state = STATE_PENDING_GDR
+                new_state = STATE_PENDING_ETL
 
             conn.execute(
                 f"""
@@ -550,12 +589,12 @@ class SQLiteQueue:
                 # (mark_*_done 不会再被调用)。dead 不属于任何在途集合，
                 # 因此对两个阶段都做条件补戳; 已打过/仍有在途时是 no-op。
                 self._stamp_stage_done(
-                    conn, task_id, "qf_done_at", _QF_INFLIGHT_STATES, now,
-                    started_col="qf_started_at",
-                )
-                self._stamp_stage_done(
                     conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
                     started_col="gdr_started_at",
+                )
+                self._stamp_stage_done(
+                    conn, task_id, "etl_done_at", _ETL_INFLIGHT_STATES, now,
+                    started_col="etl_started_at",
                 )
             return new_state
 
@@ -632,13 +671,13 @@ class SQLiteQueue:
                 """
                 SELECT id, state, locked_at
                 FROM tasks
-                WHERE state IN ('qf_processing', 'gdr_processing')
+                WHERE state IN ('gdr_processing', 'etl_processing')
                   AND locked_at IS NOT NULL
                 """
             ).fetchall()
             now = datetime.now(timezone.utc)
-            reap_ids_qf: list[int] = []
             reap_ids_gdr: list[int] = []
+            reap_ids_etl: list[int] = []
             for r in rows:
                 try:
                     ts = datetime.strptime(r["locked_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
@@ -647,30 +686,17 @@ class SQLiteQueue:
                     continue
                 if (now - ts).total_seconds() < older_than_seconds:
                     continue
-                if r["state"] == "qf_processing":
-                    reap_ids_qf.append(int(r["id"]))
-                else:
+                if r["state"] == "gdr_processing":
                     reap_ids_gdr.append(int(r["id"]))
+                else:
+                    reap_ids_etl.append(int(r["id"]))
 
             now_iso = _utc_now_iso()
-            if reap_ids_qf:
-                conn.execute(
-                    f"""
-                    UPDATE tasks
-                    SET state = 'pending',
-                        locked_by = NULL,
-                        locked_at = NULL,
-                        error_msg = COALESCE(error_msg, 'reaped: stale qf lock'),
-                        updated_at = '{now_iso}'
-                    WHERE id IN ({','.join('?' * len(reap_ids_qf))})
-                    """,
-                    reap_ids_qf,
-                )
             if reap_ids_gdr:
                 conn.execute(
                     f"""
                     UPDATE tasks
-                    SET state = 'pending_gdr',
+                    SET state = 'pending',
                         locked_by = NULL,
                         locked_at = NULL,
                         error_msg = COALESCE(error_msg, 'reaped: stale gdr lock'),
@@ -679,7 +705,20 @@ class SQLiteQueue:
                     """,
                     reap_ids_gdr,
                 )
-            return len(reap_ids_qf) + len(reap_ids_gdr)
+            if reap_ids_etl:
+                conn.execute(
+                    f"""
+                    UPDATE tasks
+                    SET state = 'pending_etl',
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        error_msg = COALESCE(error_msg, 'reaped: stale etl lock'),
+                        updated_at = '{now_iso}'
+                    WHERE id IN ({','.join('?' * len(reap_ids_etl))})
+                    """,
+                    reap_ids_etl,
+                )
+            return len(reap_ids_gdr) + len(reap_ids_etl)
 
     # ------------------------------------------------------------------
     # 统计 / 查询
@@ -693,16 +732,18 @@ class SQLiteQueue:
         return {r["state"]: int(r["n"]) for r in rows}
 
     def count_pending_gdr(self) -> int:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM tasks WHERE state = 'pending_gdr'"
-            ).fetchone()
-        return int(row["n"]) if row else 0
-
-    def count_pending_qf(self) -> int:
+        """``state=pending`` 行数（gdr 阶段首跑池大小）."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM tasks WHERE state = 'pending'"
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_pending_etl(self) -> int:
+        """``state=pending_etl`` 行数（gdr 完成, 等 etl 收尾的积压）."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM tasks WHERE state = 'pending_etl'"
             ).fetchone()
         return int(row["n"]) if row else 0
 
@@ -711,9 +752,10 @@ class SQLiteQueue:
             rows = conn.execute(
                 """
                 SELECT id, src_path, run_id, session_id, batch_id, state,
-                       attempts_qf, attempts_gdr, qf_output_path,
-                       gdr_messages_path, gdr_openai_path, gdr_qwenjina_path,
-                       gdr_meta_path, error_msg, locked_by, locked_at,
+                       attempts_gdr, attempts_etl,
+                       gdr_refined_path,
+                       etl_messages_path, etl_openai_path, etl_qwenjina_path,
+                       etl_meta_path, error_msg, locked_by, locked_at,
                        created_at, updated_at
                 FROM tasks
                 WHERE batch_id = ?
@@ -773,9 +815,10 @@ class SQLiteQueue:
             row = conn.execute(
                 """
                 SELECT id, src_path, run_id, session_id, batch_id, state,
-                       attempts_qf, attempts_gdr, qf_output_path,
-                       gdr_messages_path, gdr_openai_path, gdr_qwenjina_path,
-                       gdr_meta_path, error_msg, locked_by, locked_at,
+                       attempts_gdr, attempts_etl,
+                       gdr_refined_path,
+                       etl_messages_path, etl_openai_path, etl_qwenjina_path,
+                       etl_meta_path, error_msg, locked_by, locked_at,
                        created_at, updated_at
                 FROM tasks
                 WHERE id = ?

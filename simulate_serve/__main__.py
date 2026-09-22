@@ -147,8 +147,10 @@ async def _run(config: AppConfig, args: argparse.Namespace) -> int:
                     "; ".join(f"{tid}={','.join(caps)}" for tid, caps in blocked),
                 )
         runs = await services.batch_runner.run(tasks, limit=args.limit, rerun_of=rerun_of)
-        stats = services.repository.export()
-        logger.info("Batch completed: %s", stats)
+        logger.info(
+            "Batch completed: %d run(s) (gdr/etl downstream produces SFT data; see C2/C3 contracts)",
+            len(runs),
+        )
         return 0
     finally:
         await services.close()

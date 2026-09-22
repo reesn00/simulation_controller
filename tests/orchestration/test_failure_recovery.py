@@ -3,14 +3,13 @@
 覆盖 ``docs/orchestration-design.md`` §10：
 
 * 失败注入：mock gdr 抛异常 → attempts_gdr 累加 → 第 max+1 次入 dead；产物被 reap_dead 移到 dead_dir
-* 崩溃恢复：worker 拿到锁后挂掉，reap_stale 把 ``*_processing`` 退回 pending / pending_gdr
+* 崩溃恢复：worker 拿到锁后挂掉，reap_stale 把 ``*_processing`` 退回 pending / pending_etl
 * 凑批：单个 task 时 gdr worker 不阻塞，按 1 个处理
 """
 
 from __future__ import annotations
 
 import json
-import threading
 import time
 from pathlib import Path
 
@@ -22,11 +21,11 @@ from orchestration.queue import (
     STATE_DEAD,
     STATE_DONE,
     STATE_PENDING,
-    STATE_PENDING_GDR,
+    STATE_PENDING_ETL,
     SQLiteQueue,
 )
+from orchestration.workers.etl_worker import EtlWorker
 from orchestration.workers.gdr_worker import GdrWorker
-from orchestration.workers.qf_worker import QfWorker
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.state_machine import RunState
 
@@ -37,26 +36,26 @@ from simulate_serve.domain.state_machine import RunState
 
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch):
-    queue = SQLiteQueue(tmp_path / "q.db", max_retry_qf=2, max_retry_gdr=2)
+    queue = SQLiteQueue(tmp_path / "q.db", max_retry_gdr=2, max_retry_etl=2)
     paths = {
         "simulate_serve_config": str(tmp_path / "sim.yaml"),
         "trajectory_dir": str(tmp_path / "traj"),
-        "qf_output_dir": str(tmp_path / "qf_out"),
-        "gdr_output_dir": str(tmp_path / "gdr_out"),
+        "refined_dir": str(tmp_path / "refined"),
+        "etl_outputs_dir": str(tmp_path / "etl_outputs"),
         "sqlite_db": str(tmp_path / "q.db"),
         "dead_dir": str(tmp_path / "dead"),
         "log_dir": str(tmp_path / "logs"),
         "runs_dir": str(tmp_path / "runs"),
     }
-    for sub in (paths["trajectory_dir"], paths["runs_dir"], paths["qf_output_dir"],
-                paths["gdr_output_dir"], paths["dead_dir"], paths["log_dir"]):
+    for sub in (paths["trajectory_dir"], paths["runs_dir"], paths["refined_dir"],
+                paths["etl_outputs_dir"], paths["dead_dir"], paths["log_dir"]):
         Path(sub).mkdir(parents=True, exist_ok=True)
     (tmp_path / "sim.yaml").write_text("{}", encoding="utf-8")
 
     cfg = OrchestrationConfig.from_raw({
         "orchestration": {
             "batch_size": 3,
-            "qf_workers": 1,
+            "etl_workers": 1,
             "gdr_workers": 1,
             "watcher_poll_seconds": 0.02,
             "reap_stale_interval_seconds": 0.1,
@@ -82,51 +81,64 @@ def register_batches():
     return _reg
 
 
-def _patch_qf(monkeypatch):
-    def fake(self, task):
-        session = task.session_id or task.src_path.stem
-        out = self._qf_output_dir / f"{session}.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("{}", encoding="utf-8")
-        self._queue.mark_qf_done(task.id, qf_output_path=out)
-        return out
-    monkeypatch.setattr(QfWorker, "process", fake)
-
-
 def _patch_gdr(monkeypatch, fail_for: set[str] | None = None):
+    """让 GdrWorker.process 立即返回 (不实际跑 LLM); 只看 pull 行为."""
     fail_for = fail_for or set()
+
     def fake(self, task):
         if task.run_id in fail_for:
             raise RuntimeError("gdr injected failure")
         session = task.session_id or task.src_path.stem
-        base = f"{self._gdr_output_dir / session}_refined"
+        out = self._refined_dir / f"{session}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            '{"session_id":"' + session + '","messages":[],"schema_version":"refined_session.v1"}',
+            encoding="utf-8",
+        )
+        self._queue.mark_gdr_done(task.id, gdr_refined_path=out)
+        return out
+
+    monkeypatch.setattr(GdrWorker, "process", fake)
+
+
+def _patch_etl(monkeypatch):
+    """让 EtlWorker.process 立即返回 (不实际拆 4 视图); 只看 pull 行为."""
+
+    def fake(self, task):
+        c2 = Path(task.gdr_refined_path)
+        base = self._outputs_dir / c2.stem
         paths = {
-            "messages": f"{base}.messages.json",
-            "openai": f"{base}.openai.json",
-            "qwenjina": f"{base}.qwenjina.txt",
-            "meta": f"{base}.meta.json",
+            "messages": base.with_suffix(".messages.json"),
+            "openai": base.with_suffix(".openai.json"),
+            "qwenjina": base.with_suffix(".qwenjina.txt"),
+            "meta": base.with_suffix(".meta.json"),
         }
         for p in paths.values():
             Path(p).parent.mkdir(parents=True, exist_ok=True)
             Path(p).write_text("{}", encoding="utf-8")
-        self._last_outputs = paths
+        from types import SimpleNamespace
+        self._last_outputs = SimpleNamespace(**paths)
         return Path(paths["messages"])
-    monkeypatch.setattr(GdrWorker, "process", fake)
+
+    monkeypatch.setattr(EtlWorker, "process", fake)
 
 
-def _seed_qf_done(tmp_path: Path, queue: SQLiteQueue, run_id: str,
-                  session_id: str, batch_id: int = 1) -> int:
-    """登记 task 到 state=pending_gdr（qf 已完成）."""
+def _seed_gdr_done(tmp_path: Path, queue: SQLiteQueue, run_id: str,
+                   session_id: str, batch_id: int = 1) -> int:
+    """登记 task, 模拟 gdr 已完成 → state=pending_etl."""
     src = tmp_path / "traj" / f"{run_id}__{session_id}.json"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("{}", encoding="utf-8")
-    qf = tmp_path / "qf_out" / f"{session_id}.json"
-    qf.parent.mkdir(parents=True, exist_ok=True)
-    qf.write_text("{}", encoding="utf-8")
+    c2 = tmp_path / "refined" / f"{session_id}.json"
+    c2.parent.mkdir(parents=True, exist_ok=True)
+    c2.write_text(
+        '{"session_id":"' + session_id + '","messages":[],"schema_version":"refined_session.v1"}',
+        encoding="utf-8",
+    )
     tid, _ = queue.insert(src_path=src, run_id=run_id,
-                         session_id=session_id, batch_id=batch_id)
-    queue.pull_pending_qf(worker_id="seed", n=1)
-    queue.mark_qf_done(tid, qf_output_path=qf)
+                          session_id=session_id, batch_id=batch_id)
+    queue.pull_pending_gdr(worker_id="seed", n=1)
+    queue.mark_gdr_done(tid, gdr_refined_path=c2)
     return tid
 
 
@@ -137,14 +149,22 @@ def _seed_qf_done(tmp_path: Path, queue: SQLiteQueue, run_id: str,
 def test_failure_injection_gdr_reaches_dead(env, monkeypatch, register_batches) -> None:
     """gdr 一直抛异常 → attempts_gdr 累加 → 第 max+1 次入 dead."""
     _tmp, queue, m, _paths = env
-    _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch, fail_for={"T_BAD"})
-    _seed_qf_done(_tmp, queue, "T_BAD", "sess_BAD")
-    _seed_qf_done(_tmp, queue, "T_OK", "sess_OK")
-    register_batches(m, 1)  # 方向 B: 注册活跃 batch, gdr worker 才能拉到 task
+    _patch_etl(monkeypatch)
+
+    # T_BAD 是 pending, T_OK 也是 pending; gdr worker 拉两个都失败; T_BAD 进 dead, T_OK 完成
+    src_bad = _tmp / "traj" / "T_BAD__sess_BAD.json"
+    src_bad.parent.mkdir(parents=True, exist_ok=True)
+    src_bad.write_text("{}", encoding="utf-8")
+    queue.insert(src_path=src_bad, run_id="T_BAD", session_id="sess_BAD", batch_id=1)
+
+    src_ok = _tmp / "traj" / "T_OK__sess_OK.json"
+    src_ok.write_text("{}", encoding="utf-8")
+    queue.insert(src_path=src_ok, run_id="T_OK", session_id="sess_OK", batch_id=1)
+
+    register_batches(m, 1)
 
     m.start_workers()
-    # 等到 T_BAD 入 dead + T_OK 完成
     deadline = time.monotonic() + 4.0
     while time.monotonic() < deadline:
         tasks = queue.list_tasks_for_batch(1)
@@ -165,10 +185,14 @@ def test_failure_injection_gdr_reaches_dead(env, monkeypatch, register_batches) 
 def test_failure_injection_dead_archived(env, monkeypatch, register_batches) -> None:
     """dead 任务被 reap_dead 移动到 dead_dir."""
     _tmp, queue, m, paths = env
-    _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch, fail_for={"T_X"})
-    _seed_qf_done(_tmp, queue, "T_X", "sess_X", batch_id=7)
-    register_batches(m, 7)  # 方向 B: 注册活跃 batch
+    _patch_etl(monkeypatch)
+
+    src = _tmp / "traj" / "T_X__sess_X.json"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("{}", encoding="utf-8")
+    queue.insert(src_path=src, run_id="T_X", session_id="sess_X", batch_id=7)
+    register_batches(m, 7)
 
     m.start_workers()
     deadline = time.monotonic() + 4.0
@@ -192,21 +216,21 @@ def test_failure_injection_dead_archived(env, monkeypatch, register_batches) -> 
 # 崩溃恢复：reap_stale 退回 processing 锁
 # ---------------------------------------------------------------------------
 
-def test_recovery_reaper_unlocks_stale_qf_processing(env, monkeypatch) -> None:
-    """模拟一个 qf worker 拿锁后挂掉：task 卡在 qf_processing；reaper 把它退回 pending.
+def test_recovery_reaper_unlocks_stale_gdr_processing(env, monkeypatch) -> None:
+    """模拟 gdr worker 拿锁后挂掉：task 卡在 gdr_processing；reaper 把它退回 pending.
 
-    本测试只验证 reaper 行为 (qf_processing → pending). 让 QfWorker.run_once
+    本测试只验证 reaper 行为 (gdr_processing → pending). 让 GdrWorker.run_once
     空转, 避免 reaper 解锁后 worker 立即重新拉到任务、再次失败、最终
-    进 dead —— 让测试焦点保持在 reaper 上, 不受 qf 处理语义牵连.
+    进 dead —— 让测试焦点保持在 reaper 上, 不受 gdr 处理语义牵连.
     """
     _tmp, queue, m, _ = env
-    # 隔离 qf worker: 不让 run_once 真的处理任何任务, 否则会失败级联
-    monkeypatch.setattr(QfWorker, "run_once", lambda self: 0)
+    # 隔离 gdr worker: 不让 run_once 真的处理任何任务
+    monkeypatch.setattr(GdrWorker, "run_once", lambda self: 0)
     src = _tmp / "traj" / "r__s.json"
     src.write_text("{}", encoding="utf-8")
     tid, _ = queue.insert(src_path=src, run_id="r", session_id="s", batch_id=1)
-    # 模拟 qf worker 拿锁后崩溃：把 locked_at 设为很久以前
-    queue.pull_pending_qf(worker_id="dead_worker", n=1)
+    # 模拟 gdr worker 拿锁后崩溃：把 locked_at 设为很久以前
+    queue.pull_pending_gdr(worker_id="dead_worker", n=1)
     with queue._conn() as conn:
         conn.execute(
             "UPDATE tasks SET locked_at = '2000-01-01T00:00:00.000000Z' WHERE id = ?",
@@ -226,13 +250,14 @@ def test_recovery_reaper_unlocks_stale_qf_processing(env, monkeypatch) -> None:
     assert refreshed.state == STATE_PENDING, f"still {refreshed.state}"
 
 
-def test_recovery_reaper_unlocks_stale_gdr_processing(env, monkeypatch) -> None:
+def test_recovery_reaper_unlocks_stale_etl_processing(env, monkeypatch) -> None:
+    """模拟 etl worker 拿锁后挂掉：task 卡在 etl_processing；reaper 把它退回 pending_etl."""
     _tmp, queue, m, _ = env
-    # 隔离 gdr worker: 不让 run_once 真的抢回 pending_gdr 并处理, 否则退锁后
-    # 立即被 worker 拉走、load_error 级联进 dead (与 qf 版本对称的竞态隔离)。
-    monkeypatch.setattr(GdrWorker, "run_once", lambda self: 0)
-    tid = _seed_qf_done(_tmp, queue, "r", "s", batch_id=1)
-    queue.pull_pending_gdr(worker_id="dead_gdr", n=1)
+    # 隔离 etl worker: 不让 run_once 真的抢回 pending_etl 并处理
+    monkeypatch.setattr(EtlWorker, "run_once", lambda self: 0)
+    tid = _seed_gdr_done(_tmp, queue, "r", "s", batch_id=1)
+    # 让 task 进入 etl_processing (模拟 etl worker 拿锁后崩溃)
+    queue.pull_pending_etl(worker_id="dead_etl", n=1)
     with queue._conn() as conn:
         conn.execute(
             "UPDATE tasks SET locked_at = '2000-01-01T00:00:00.000000Z' WHERE id = ?",
@@ -242,11 +267,11 @@ def test_recovery_reaper_unlocks_stale_gdr_processing(env, monkeypatch) -> None:
     m.start_workers()
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
-        if queue.get(tid).state == STATE_PENDING_GDR:
+        if queue.get(tid).state == STATE_PENDING_ETL:
             break
         time.sleep(0.05)
     m.shutdown(timeout=2.0)
-    assert queue.get(tid).state == STATE_PENDING_GDR
+    assert queue.get(tid).state == STATE_PENDING_ETL
 
 
 # ---------------------------------------------------------------------------
@@ -256,10 +281,13 @@ def test_recovery_reaper_unlocks_stale_gdr_processing(env, monkeypatch) -> None:
 def test_batch_drain_single_task_does_not_block(env, monkeypatch, register_batches) -> None:
     """单 task 时 batch_drain 等 worker 处理完，不阻塞."""
     _tmp, queue, m, _ = env
-    _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch)
-    _seed_qf_done(_tmp, queue, "lonely", "sess_lonely", batch_id=1)
-    register_batches(m, 1)  # 方向 B: 注册活跃 batch
+    _patch_etl(monkeypatch)
+    src = _tmp / "traj" / "lonely__sess_lonely.json"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("{}", encoding="utf-8")
+    queue.insert(src_path=src, run_id="lonely", session_id="sess_lonely", batch_id=1)
+    register_batches(m, 1)
 
     m.start_workers()
     drained = m.wait_batch_drained(1, poll_seconds=0.05, timeout=4.0)
@@ -276,11 +304,10 @@ def test_batch_drain_single_task_does_not_block(env, monkeypatch, register_batch
 def test_master_run_batch_with_gdr_failure(env, monkeypatch) -> None:
     """一个 batch 里混合 done + dead：master._run_one_batch 仍能跑完."""
     _tmp, queue, m, paths = env
-    _patch_qf(monkeypatch)
     _patch_gdr(monkeypatch, fail_for={"T_BAD"})
+    _patch_etl(monkeypatch)
     traj_dir = Path(paths["trajectory_dir"])
     runs_dir = Path(paths["runs_dir"])
-    (tmp_path := _tmp / "_placeholder").parent  # noqa
     traj_dir.mkdir(exist_ok=True)
     runs_dir.mkdir(exist_ok=True)
 

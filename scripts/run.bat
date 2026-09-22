@@ -1,6 +1,12 @@
 @echo off
 rem ============================================================================
-rem orchestration/run.bat - Windows wrapper for the three-stage pipeline.
+rem scripts/run.bat - Windows wrapper for the three-stage pipeline.
+rem
+rem Kept under scripts/ so all entry-point wrappers live next to other
+rem operator tooling (migrate_catalog_v2.py / purge_qf_out.py / etc.).
+rem The file moved from orchestration/ in 2026-09-22 with the
+rem `simulation server -> gdr -> etl` migration; behaviour is unchanged
+rem because the wrapper only forwards %* to `python -m orchestration`.
 rem
 rem Forwards every %* argument to:  uv run python -m orchestration %*
 rem (or system python when uv is not installed).

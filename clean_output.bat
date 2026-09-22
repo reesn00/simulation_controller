@@ -13,18 +13,18 @@ if exist "output\refine_data" (
     echo   skip [not found]: output\refine_data
 )
 
-if exist "output\qf_out" (
-    rmdir /s /q "output\qf_out"
-    echo   cleaned: output\qf_out
-) else (
-    echo   skip [not found]: output\qf_out
-)
-
 if exist "output\agent_trajectory" (
     rmdir /s /q "output\agent_trajectory"
     echo   cleaned: output\agent_trajectory
 ) else (
     echo   skip [not found]: output\agent_trajectory
+)
+
+if exist "output\refined" (
+    rmdir /s /q "output\refined"
+    echo   cleaned: output\refined
+) else (
+    echo   skip [not found]: output\refined
 )
 
 if exist "output\orchestration\dead" (

@@ -1,23 +1,23 @@
-"""orchestration.master: 主循环 — 串起 producer / watcher / qf / gdr workers.
+"""orchestration.master: 主循环 — 串起 producer / watcher / gdr / etl workers.
 
 设计见 ``docs/orchestration-design.md`` §6.1、§9。
 
-进程模型：
-    * 主进程跑主循环
-    * qf / gdr 用常驻 Thread + ``stop_event`` 关闭
-    * watcher 按批次起新 Thread，每批独立 stop_event
-    * ``reap_stale`` 用独立 Thread 定时跑
+新架构 ``simulation server → gdr → etl`` 下:
+- 主进程跑主循环
+- gdr / etl 用常驻 Thread + ``stop_event`` 关闭
+- watcher 按批次起新 Thread, 每批独立 stop_event
+- ``reap_stale`` 用独立 Thread 定时跑
 
-主循环每批：
+主循环每批:
     1. ``producer_simulate.run_batch(task_ids, ...)`` → ``(batch_id, [TaskRun])``
     2. ``batch_tracker.wait_for_terminal(run_ids)``（防御性二次确认）
     3. 启动本批 watcher（轮询 trajectory_dir → SQLite，batch_id 锁定）
-    4. ``wait_batch_drained(batch_id)``：本批所有 task 走到 ``done`` 或 ``dead``
+    4. ``wait_batch_drained(batch_id)``: 本批所有 task 走到 ``done`` 或 ``dead``
     5. 关闭本批 watcher
     6. ``reap_dead(...)`` 把 dead 产物归档
     7. ``write_health(...)``
 
-边界：
+边界:
     * ``producer_simulate`` 是阻塞调用，跑在主线程
     * worker / watcher / reap_stale 异常不会让主循环死；run_forever 内 try/except 已覆盖
 """
@@ -42,12 +42,12 @@ from orchestration.queue import (
     STATE_DEAD,
     STATE_DONE,
     STATE_PENDING,
-    STATE_PENDING_GDR,
+    STATE_PENDING_ETL,
     SQLiteQueue,
 )
 from orchestration.watcher import TrajectoryWatcher
+from orchestration.workers.etl_worker import EtlWorker
 from orchestration.workers.gdr_worker import GdrWorker
-from orchestration.workers.qf_worker import QfWorker
 
 _log = logging.getLogger(__name__)
 
@@ -96,8 +96,8 @@ class Master:
         self._threads: list[tuple[str, threading.Thread, threading.Event]] = []
         self._reaper_thread: threading.Thread | None = None
         self._workers_started = False
-        # 方向 B: 当前活跃 batch_id 集合. gdr worker 拉任务时只取这些 batch
-        # 的 pending_gdr, 防止跨 batch 偷拉导致 master shutdown 时 worker 仍在
+        # 方向 B: 当前活跃 batch_id 集合. gdr / etl worker 拉任务时只取这些
+        # batch 的任务, 防止跨 batch 偷拉导致 master shutdown 时 worker 仍在
         # 跑别的 batch 的活 → interpreter shutdown 错误。
         self._active_batch_ids: set[int] = set()
 
@@ -106,35 +106,37 @@ class Master:
     # ------------------------------------------------------------------
 
     def start_workers(self) -> None:
-        """启动 qf × K、gdr × M 常驻 worker 和 reap_stale 周期."""
+        """启动 gdr × K、etl × M 常驻 worker 和 reap_stale 周期."""
         if self._workers_started:
             raise OrchestrationError("workers already started")
         self._workers_started = True
 
         s = self._cfg.settings
-        qf_out = Path(self._cfg.paths.qf_output_dir)
-        gdr_out = Path(self._cfg.paths.gdr_output_dir)
+        refined_dir = Path(self._cfg.paths.refined_dir)
+        etl_outputs_dir = Path(self._cfg.paths.etl_outputs_dir)
         # worker 内 poll 用一个保守的间隔；master 主循环会用 batch_drain_poll_seconds
         # 等终态，所以这里不必太快；过长只是首次响应慢一点
         worker_poll = min(0.1, s.batch_drain_poll_seconds)
 
-        for i in range(s.qf_workers):
-            w = QfWorker(
-                queue=self._queue, worker_id=f"qf_{i}",
-                qf_output_dir=qf_out, n=1, poll_seconds=worker_poll,
-            )
-            self._add_thread(f"qf_{i}", w)
-
         for i in range(s.gdr_workers):
             w = GdrWorker(
                 queue=self._queue, worker_id=f"gdr_{i}",
-                gdr_output_dir=gdr_out,
+                refined_dir=refined_dir,
                 gdr_settings=self._build_gdr_settings(),
                 llm_concurrency=self._cfg.gdr.llm_concurrency,
                 n=1, poll_seconds=worker_poll,
                 allowed_batch_ids=self._active_batch_ids,  # 方向 B: 共享集合引用
             )
             self._add_thread(f"gdr_{i}", w)
+
+        for i in range(s.etl_workers):
+            w = EtlWorker(
+                queue=self._queue, worker_id=f"etl_{i}",
+                outputs_dir=etl_outputs_dir,
+                n=1, poll_seconds=worker_poll,
+                allowed_batch_ids=self._active_batch_ids,  # 方向 B: 共享集合引用
+            )
+            self._add_thread(f"etl_{i}", w)
 
         # reap_stale 周期
         self._reaper_thread = threading.Thread(
@@ -156,7 +158,7 @@ class Master:
         self._threads.append((name, t, ev))
 
     # ------------------------------------------------------------------
-    # 方向 B: 活跃 batch 集合 API (worker 按此过滤 pending_gdr)
+    # 方向 B: 活跃 batch 集合 API (worker 按此过滤 pending)
     # ------------------------------------------------------------------
 
     def register_active_batch(self, batch_id: int) -> None:
@@ -165,21 +167,21 @@ class Master:
         self._active_batch_ids.add(batch_id)
 
     def unregister_active_batch(self, batch_id: int) -> None:
-        """把 batch_id 从活跃集合移除. 后续 gdr worker 不会再拉此 batch 的
-        新任务; in-progress 任务继续跑完."""
+        """把 batch_id 从活跃集合移除. 后续 gdr / etl worker 不会再拉此
+        batch 的新任务; in-progress 任务继续跑完."""
         self._active_batch_ids.discard(batch_id)
 
     def _build_gdr_settings(self) -> GdrSettings:
-        gdr_out = Path(self._cfg.paths.gdr_output_dir)
+        refined_dir = Path(self._cfg.paths.refined_dir)
         # gdr Settings 里 output/deferred/judge_low/routing_low 是 CWD 相对默认值,
-        # 不覆盖会落到仓库根 refine_data/; 统一锚到 gdr_output_dir 下。
+        # 不覆盖会落到仓库根 refine_data/; 统一锚到 refined_dir 下。
         # log_dir 默认 ./logs 同理锚到编排 log_dir（多进程批量模式才会用）。
         anchored = {
-            "batch_output_dir": gdr_out,
-            "output_path": gdr_out / "output.json",
-            "deferred_output_path": gdr_out / "deferred.jsonl",
-            "judge_low_output_path": gdr_out / "judge_low.jsonl",
-            "routing_abstain_audit_path": gdr_out / "routing_low.jsonl",
+            "batch_output_dir": refined_dir,
+            "output_path": refined_dir / "output.json",
+            "deferred_output_path": refined_dir / "deferred.jsonl",
+            "judge_low_output_path": refined_dir / "judge_low.jsonl",
+            "routing_abstain_audit_path": refined_dir / "routing_low.jsonl",
             "log_dir": Path(self._cfg.paths.log_dir),
             "workers": 1,
             "max_files": 1,
@@ -202,11 +204,10 @@ class Master:
             timeout = float(
                 self._cfg.settings.worker_shutdown_timeout_seconds
             )
-        # 方向 B: shutdown 时立即清空活跃 batch 集合, 让 gdr worker 在下一次
-        # pull 时看到空集合 → 直接返回 []. 已拉到的 in-progress 任务会跑完,
-        # 但不会触发新的 LLM 调用 (减少 interpreter shutdown race 的窗口)。
-        # 必须先于 stop_event.set() 之前完成, 避免 worker 看到 stop_event 但
-        # 集合里还有 batch → 仍尝试拉空集合浪费一次 SQL。
+        # 方向 B: shutdown 时立即清空活跃 batch 集合, 让 gdr / etl worker 在
+        # 下一次 pull 时看到空集合 → 直接返回 []. 已拉到的 in-progress 任务
+        # 会跑完, 但不会触发新的 LLM 调用 (减少 interpreter shutdown race
+        # 的窗口)。必须先于 stop_event.set() 之前完成。
         self._active_batch_ids.clear()
         for name, _t, ev in self._threads:
             ev.set()
@@ -264,8 +265,8 @@ class Master:
             config_path=config_path, task_ids=task_ids,
             limit=s.batch_size, queue=self._queue,
         )
-        # 方向 B: 把本批加入活跃集合, gdr worker 在 batch_drain 之前都只会
-        # 拉这一批的任务. 防止 worker 偷拉别批遗留导致 master shutdown race.
+        # 方向 B: 把本批加入活跃集合, gdr / etl worker 在 batch_drain 之前都
+        # 只会拉这一批的任务. 防止 worker 偷拉别批遗留导致 master shutdown race.
         self.register_active_batch(batch_id)
         run_ids = tuple(r.run_id for r in runs)
 
@@ -305,9 +306,9 @@ class Master:
             )
         finally:
             watcher_stop.set()
-            # 方向 B: 本批 drain 后立即从活跃集合移除, gdr worker 不会再拉本批
-            # 的新任务 (in-progress 任务继续跑完). 已拉到的任务继续写到 done,
-            # 不影响本批 drain 的结果。
+            # 方向 B: 本批 drain 后立即从活跃集合移除, gdr / etl worker 不会再
+            # 拉本批的新任务 (in-progress 任务继续跑完). 已拉到的任务继续写到
+            # done, 不影响本批 drain 的结果。
             self._active_batch_ids.discard(batch_id)
             _log.info("master: batch_id=%d watcher stopped", batch_id)
 
@@ -332,7 +333,7 @@ class Master:
         self._queue.update_batch(
             batch_id,
             dead_count=dead_count,
-            qf_count=self._count_terminal_for_batch(batch_id, STATE_DONE)
+            gdr_count=self._count_terminal_for_batch(batch_id, STATE_DONE)
             + self._count_terminal_for_batch(batch_id, STATE_DEAD),
             status="done",
         )
@@ -421,19 +422,19 @@ class Master:
             if self._stop_event.is_set():
                 _log.warning(
                     "master: stop requested, batch_id=%d not drained "
-                    "(pending=%d, pending_gdr=%d)",
+                    "(pending=%d, pending_etl=%d)",
                     batch_id,
                     sum(1 for t in tasks if t.state == STATE_PENDING),
-                    sum(1 for t in tasks if t.state == STATE_PENDING_GDR),
+                    sum(1 for t in tasks if t.state == STATE_PENDING_ETL),
                 )
                 return False
             if deadline is not None and time.monotonic() >= deadline:
                 _log.warning(
                     "master: batch_id=%d not drained after %.1fs "
-                    "(pending=%d, pending_gdr=%d, dead=%d)",
+                    "(pending=%d, pending_etl=%d, dead=%d)",
                     batch_id, timeout or 0.0,
                     sum(1 for t in tasks if t.state == STATE_PENDING),
-                    sum(1 for t in tasks if t.state == STATE_PENDING_GDR),
+                    sum(1 for t in tasks if t.state == STATE_PENDING_ETL),
                     sum(1 for t in tasks if t.state == STATE_DEAD),
                 )
                 return False

@@ -1,8 +1,8 @@
 """orchestration.health: 写 ``<log_dir>/health.json`` 供 CLI status 查询.
 
-字段：
+字段:
     * queue_counts: ``SQLiteQueue.count_by_state()``
-    * batches: ``{batch_id: {status, simulate/qf/gdr 各阶段 started_at/done_at, qf_count, gdr_count, dead_count}}``
+    * batches: ``{batch_id: {status, simulate/gdr/etl 各阶段 started_at/done_at, gdr_count, etl_count, dead_count}}``
     * last_updated: ISO8601 UTC
 """
 
@@ -23,14 +23,15 @@ def _utc_now_iso() -> str:
 
 
 def collect_batches(queue: SQLiteQueue) -> dict[int, dict[str, object]]:
-    """读 SQLite batches 表全部行；返回 ``{batch_id: row_dict}``."""
+    """读 SQLite batches 表全部行; 返回 ``{batch_id: row_dict}``."""
     out: dict[int, dict[str, object]] = {}
     with queue._conn() as conn:
         rows = conn.execute(
             """
             SELECT id, task_ids, simulate_started_at, simulate_done_at,
-                   qf_started_at, qf_done_at, gdr_started_at, gdr_done_at,
-                   qf_count, gdr_count, dead_count, status
+                   gdr_started_at, gdr_done_at,
+                   etl_started_at, etl_done_at,
+                   gdr_count, etl_count, dead_count, status
             FROM batches
             ORDER BY id
             """
@@ -41,12 +42,12 @@ def collect_batches(queue: SQLiteQueue) -> dict[int, dict[str, object]]:
             "simulate_started_at": r["simulate_started_at"],
             "simulate_done_at": r["simulate_done_at"],
             # 阶段级时间戳: 首次有 task 被拉入该阶段 / 批内该阶段全部收尾
-            "qf_started_at": r["qf_started_at"],
-            "qf_done_at": r["qf_done_at"],
             "gdr_started_at": r["gdr_started_at"],
             "gdr_done_at": r["gdr_done_at"],
-            "qf_count": int(r["qf_count"] or 0),
+            "etl_started_at": r["etl_started_at"],
+            "etl_done_at": r["etl_done_at"],
             "gdr_count": int(r["gdr_count"] or 0),
+            "etl_count": int(r["etl_count"] or 0),
             "dead_count": int(r["dead_count"] or 0),
             "status": r["status"],
         }
@@ -59,7 +60,7 @@ def write_health(
     output_path: Path,
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """收集状态写到 ``output_path``；返回写入的 dict."""
+    """收集状态写到 ``output_path``; 返回写入的 dict."""
     payload: dict[str, object] = {
         "last_updated": _utc_now_iso(),
         "queue_counts": queue.count_by_state(),
@@ -69,7 +70,7 @@ def write_health(
         payload.update(extra)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as f:
+    with output_path.open("w", encoding="utf-8", newline="\n") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
     _log.debug("health: wrote %s", output_path)
     return payload
