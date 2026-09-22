@@ -136,3 +136,7 @@ class CompiledTask(BaseModel):
     validation_policy: ValidationPolicy
     reference_text: str | None = None
     provenance: TaskProvenance
+    # trajectory 完整性重投上限: BatchRunner 监测 ``completion_check`` 不为
+    # complete 时累计 ``run.retry_count``, 超过本值落 ``COMPLETION_INCOMPLETE``
+    # 终态. 默认 3, 与 orchestration 侧 ``max_retry_gdr/etl`` 默认对齐.
+    max_run_retries: int = 3

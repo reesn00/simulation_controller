@@ -55,30 +55,23 @@ simulate_serve:
 
 # === orchestration (编排) ===
 # 新架构 simulation server → gdr → etl: qf 阶段已删除。
+# 字段语义详见 docs/设计方案/pipeline-contracts.md §1。
 orchestration:
-  batch_size: 3
-  gdr_workers: 2       # 首阶段 (LLM 密集), 读 trajectory 写 C2 refined Session
-  etl_workers: 2       # 末阶段 (本地计算), 读 C2 拆 4 视图 (C3 契约)
-  max_retry_gdr: 3
-  max_retry_etl: 3
-  watcher_poll_seconds: 2
-  reap_stale_seconds: 300
-  worker_idle_backoff_max_seconds: 5
-  watcher_idle_backoff_max_seconds: 10
+  pipeline:
+    max_parallelism: 1        # 同时跑 task 的子进程槽位数 (≥1)
+    max_retry_gdr: 3          # gdr 阶段最大重试次数 (≥0)
+    max_retry_etl: 3          # etl 阶段最大重试次数 (≥0)
+    retry_poll_seconds: 2.0   # 重试循环之间的休眠秒数 (>0)
 
 paths:
-  trajectory_dir: "output/agent_trajectory"
-  runs_dir: "output/runs"
-  refined_dir: "output/refined"             # gdr 末端写 C2 refined Session 单文件
-  etl_outputs_dir: "output/refine_data"     # etl 末端写 4 视图 (C3 契约)
+  trajectory_dir: "output/agent_trajectory"   # simulate_serve 写 C1 trajectory
+  runs_dir: "output/runs"                     # JsonRunRepository 的 runs 根目录
+  refined_dir: "output/refined"               # gdr 末端写 C2 refined Session 单文件
+  etl_outputs_dir: "output/refine_data"       # etl 末端写 4 视图 (C3 契约)
   sqlite_db: "output/orchestration/orchestration.db"
   dead_dir: "output/orchestration/dead"
   pid_file: "output/orchestration/orchestration.pid"
   log_dir: "output/orchestration/logs"
-
-gdr_settings:
-  workers: 2
-  llm_concurrency: 4
 
 # === gdr (数据精修) — 全量配置 ===
 # 字段与 gdr/config/settings.py 的 Settings 字段一一对应;

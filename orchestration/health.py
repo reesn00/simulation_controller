@@ -1,9 +1,12 @@
 """orchestration.health: 写 ``<log_dir>/health.json`` 供 CLI status 查询.
 
-字段:
-    * queue_counts: ``SQLiteQueue.count_by_state()``
-    * batches: ``{batch_id: {status, simulate/gdr/etl 各阶段 started_at/done_at, gdr_count, etl_count, dead_count}}``
-    * last_updated: ISO8601 UTC
+字段 (契约 §6.5):
+    * phases:        ``SQLiteQueue.count_by_phase()``
+    * total:         phases 所有计数之和
+    * last_updated:  ISO8601 UTC
+
+老的 ``collect_batches`` / batches 表 / dead_count / gdr_count 等字段已删除
+(契约 §6.5 明确不导出)。
 """
 
 from __future__ import annotations
@@ -12,8 +15,9 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from orchestration.queue import SQLiteQueue
+from orchestration.queue import ALL_PHASES, SQLiteQueue
 
 _log = logging.getLogger(__name__)
 
@@ -22,54 +26,49 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def collect_batches(queue: SQLiteQueue) -> dict[int, dict[str, object]]:
-    """读 SQLite batches 表全部行; 返回 ``{batch_id: row_dict}``."""
-    out: dict[int, dict[str, object]] = {}
-    with queue._conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, task_ids, simulate_started_at, simulate_done_at,
-                   gdr_started_at, gdr_done_at,
-                   etl_started_at, etl_done_at,
-                   gdr_count, etl_count, dead_count, status
-            FROM batches
-            ORDER BY id
-            """
-        ).fetchall()
-    for r in rows:
-        out[int(r["id"])] = {
-            "task_ids": (r["task_ids"] or "").split(",") if r["task_ids"] else [],
-            "simulate_started_at": r["simulate_started_at"],
-            "simulate_done_at": r["simulate_done_at"],
-            # 阶段级时间戳: 首次有 task 被拉入该阶段 / 批内该阶段全部收尾
-            "gdr_started_at": r["gdr_started_at"],
-            "gdr_done_at": r["gdr_done_at"],
-            "etl_started_at": r["etl_started_at"],
-            "etl_done_at": r["etl_done_at"],
-            "gdr_count": int(r["gdr_count"] or 0),
-            "etl_count": int(r["etl_count"] or 0),
-            "dead_count": int(r["dead_count"] or 0),
-            "status": r["status"],
+def collect_tasks(queue: SQLiteQueue) -> dict[str, Any]:
+    """统计 tasks 表状态 (契约 §6.5).
+
+    返回:
+        {
+            "phases": {"pending": int, "simulate": int, "gdr": int,
+                       "etl": int, "done": int, "dead": int},
+            "total": int,
+            "last_updated": str,  # ISO8601
         }
-    return out
+    """
+    counts = queue.count_by_phase()
+    # 契约 §6.5 给的示例要求 6 个 phase 全字段 (含 0 计数的);
+    # count_by_phase 已返回全分布, 这里再覆盖一次保证 keys 完整。
+    phases: dict[str, int] = {p: int(counts.get(p, 0)) for p in ALL_PHASES}
+    total = sum(phases.values())
+    return {
+        "phases": phases,
+        "total": total,
+        "last_updated": _utc_now_iso(),
+    }
 
 
 def write_health(
     queue: SQLiteQueue,
     *,
-    output_path: Path,
+    log_dir: Path,
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """收集状态写到 ``output_path``; 返回写入的 dict."""
-    payload: dict[str, object] = {
-        "last_updated": _utc_now_iso(),
-        "queue_counts": queue.count_by_state(),
-        "batches": collect_batches(queue),
-    }
+    """收集状态写到 ``<log_dir>/health.json``; 返回写入的 dict.
+
+    Args:
+        queue: SQLite 队列 (读 tasks 表)
+        log_dir: 日志目录 (不存在 → 自动 mkdir)
+        extra: 额外写入 health.json 的字段 (例如 status / summary / submitted)
+    """
+    log_dir = Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    output_path = log_dir / "health.json"
+
+    payload: dict[str, object] = collect_tasks(queue)
     if extra:
         payload.update(extra)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="\n") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
     _log.debug("health: wrote %s", output_path)

@@ -1,203 +1,64 @@
-"""orchestration.workers.base_worker: 通用 pull-process-mark 循环 + 重试/dead 逻辑.
+"""orchestration.workers.base_worker: ST-3 worker 公共工具.
 
-设计见 ``docs/orchestration-design.md`` §6（worker 通用行为）。
+新架构 ``simulation server → gdr → etl`` 下 worker 是无状态函数:
+    * ``run_gdr_once`` (orchestration.workers.gdr_worker)
+    * ``run_etl_once`` (orchestration.workers.etl_worker)
 
-子类只需实现：
-    * ``stage``: STAGE_GDR 或 STAGE_ETL
-    * ``pull()``: 从队列拉任务
-    * ``process(task) -> Path``: 处理单个任务，返回输出路径
-    * ``mark_done(task, output)``: 标记完成
+本模块只保留产物命名的 ``_output_filename`` 工具 ——
+由 ST-5 PipelineExecutor 在子进程入口 ``_run_one_task_pipeline`` 内调用,
+为 gdr 阶段算 C2 refined Session 的输出文件名.
 
-主循环 ``run_forever(stop_event)``：每轮 pull → process → mark；处理
-异常走 ``queue.mark_failed(stage=...)``，attempts 超 max 时入 dead。
+不再保留 ``BaseWorker`` 抽象类 / ``run_forever`` 主循环 / ``pull`` /
+``run_once`` 等方法. 调度循环归 PipelineExecutor (multiprocessing.Pool);
+retry 循环归 PipelineExecutor (基于 max_retry_gdr / max_retry_etl);
+SQLite 写归 PipelineExecutor (调 SQLiteQueue.mark_phase).
 """
 
 from __future__ import annotations
 
-import logging
-import math
-import threading
-import traceback
-from abc import ABC, abstractmethod
-from pathlib import Path
+import re
 
-from simulate_serve.infrastructure.trajectory_archiver import (
-    sanitize_filename_part,
-)
-
-from orchestration.errors import NonRetryableError
-from orchestration.queue import (
-    STATE_DEAD,
-    STAGE_ETL,
-    STAGE_GDR,
-    SQLiteQueue,
-    Task,
-)
+# 文件名合法字符: ASCII 字母 / 数字 / 点 / 下划线 / 连字符.
+# 与 simulate_serve.infrastructure.trajectory_archiver.sanitize_filename_part
+# 保持一致; 不复用是因为该函数在 simulate_serve 路径下,
+# orchestration 引用 simulate_serve 反而打破层依赖.
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-_log = logging.getLogger(__name__)
+def _sanitize_filename_part(value: str) -> str:
+    """Make an arbitrary id safe for embedding in a file name.
+
+    非法字符 (含路径分隔符 / 空格 / 控制字符) 替换为 ``_``; 空字符串原样
+    返回 (调用方按业务决定 fallback).
+    """
+    return _UNSAFE_FILENAME_CHARS.sub("_", value)
 
 
-class BaseWorker(ABC):
-    """gdr / etl worker 的通用基类."""
+def _output_filename(
+    task_id: str,
+    session_id: str,
+    *,
+    suffix: str = "",
+) -> str:
+    """产物文件命名: ``<safe_task_id>__<safe_session_id><suffix>``.
 
-    @property
-    @abstractmethod
-    def stage(self) -> str:
-        """返回 ``STAGE_GDR`` 或 ``STAGE_ETL``."""
+    Parameters
+    ----------
+    task_id:
+        Catalog 内的 task_id, 通常以 ``TXXX`` 形态. 内部做 sanitize,
+        文件名非法字符替换为 ``_``.
+    session_id:
+        QwenPaw 返回的远端 session_id. 同样 sanitize.
+    suffix:
+        文件扩展名/尾缀, 例如 ``""`` / ``".messages.json"`` /
+        ``".openai.json"`` / ``".meta.json"``. 默认空串 → 用于 gdr
+        阶段 C2 refined Session 单文件 (``.json`` 由 caller 加).
 
-    @abstractmethod
-    def pull(self) -> list[Task]:
-        """从 SQLite 队列拉任务；返回 ``[]`` 表示当前无活可干."""
-
-    @abstractmethod
-    def process(self, task: Task) -> Path:
-        """处理单个 task，返回主产物路径."""
-
-    @abstractmethod
-    def mark_done(self, task: Task, output: Path) -> None:
-        """标记 task 完成（state 转下一阶段 + 记录 output 路径）."""
-
-    def __init__(
-        self,
-        *,
-        queue: SQLiteQueue,
-        worker_id: str,
-        n: int = 1,
-        poll_seconds: float = 2.0,
-    ) -> None:
-        if self.stage not in (STAGE_GDR, STAGE_ETL):
-            raise ValueError(f"invalid stage: {self.stage!r}")
-        self._queue = queue
-        self._worker_id = worker_id
-        self._n = max(1, int(n))
-        self._poll_seconds = float(poll_seconds)
-        #: 上一轮 run_once 拉到的 task 数（含最终失败的）；退避判活用。
-        self._last_pulled = 0
-
-    # ------------------------------------------------------------------
-    # 失败处理
-    # ------------------------------------------------------------------
-
-    def _handle_failure(self, task: Task, exc: BaseException) -> None:
-        msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=4)}"
-        retryable = not isinstance(exc, NonRetryableError)
-        new_state = self._queue.mark_failed(
-            task.id, stage=self.stage, error_msg=msg, retryable=retryable,
-        )
-        if new_state == STATE_DEAD:
-            _log.error(
-                "[%s worker %s] task %d dead%s after %d retries: %s",
-                self.stage, self._worker_id, task.id,
-                " (non-retryable)" if not retryable else "",
-                self._queue._max_retry_gdr if self.stage == STAGE_GDR  # noqa: SLF001
-                else self._queue._max_retry_etl,                         # noqa: SLF001
-                exc,
-            )
-
-    # ------------------------------------------------------------------
-    # 产物命名 (#9: 可追溯性)
-    # ------------------------------------------------------------------
-
-    def _output_name(self, task: Task, session_id: str, *, suffix: str) -> str:
-        """``{task_id}__{session_id}{suffix}.json``；映射缺失时回退旧命名.
-
-        task_id 从 run_tasks 表按 ``task.run_id``（watcher 从 trajectory 文件
-        名解析的 sanitize 形态）反查。查不到（旧库、手工放入的 replay
-        trajectory、producer 未跑完的残留）时保持 ``{session_id}{suffix}.json``
-        旧文件名，行为向后兼容。
-        """
-        task_id: str | None = None
-        try:
-            task_id = self._queue.lookup_task_id(task.run_id)
-        except Exception:
-            _log.warning(
-                "[%s worker %s] lookup_task_id failed for run %s; fallback naming",
-                self.stage, self._worker_id, task.run_id,
-            )
-        safe_task = sanitize_filename_part(task_id) if task_id else ""
-        prefix = f"{safe_task}__" if safe_task else ""
-        return f"{prefix}{session_id}{suffix}.json"
-
-    # ------------------------------------------------------------------
-    # 主循环
-    # ------------------------------------------------------------------
-
-    def run_once(self) -> int:
-        """跑一轮：pull → process → mark；返回处理成功的 task 数.
-
-        副作用：把本轮拉到的 task 数（含后续失败的）记入 ``_last_pulled``，
-        供 ``run_forever`` 区分"真空闲"与"有活但失败"。
-        """
-        tasks = self.pull()
-        self._last_pulled = len(tasks)
-        if not tasks:
-            return 0
-        success = 0
-        for task in tasks:
-            try:
-                output = self.process(task)
-            except Exception as exc:
-                self._handle_failure(task, exc)
-                continue
-            try:
-                self.mark_done(task, output)
-            except Exception as exc:
-                # mark_done 自身失败（极少见，例如 SQLite 不可用）→ 记失败
-                self._handle_failure(task, exc)
-                continue
-            success += 1
-        return success
-
-    def run_forever(
-        self,
-        stop_event: threading.Event,
-        *,
-        max_poll_seconds: float = 0.0,
-    ) -> None:
-        """阻塞主循环；``stop_event`` 设置后退出（最多延迟当前等待间隔）.
-
-        空闲退避 (#7): ``max_poll_seconds > 0`` 时，连续**真正空闲**（pull
-        不到任何 task）的轮次让等待从 ``poll_seconds`` 指数翻倍、封顶
-        ``max_poll_seconds``；拉到任务（哪怕处理失败）立即复位。默认 0 =
-        关闭退避，保持恒定 ``poll_seconds``（与旧行为一致，短超时的测试/
-        低延迟场景不受影响；master 生产路径经配置显式开启）。
-        """
-        idle_rounds = 0
-        # 修复 P0 (worker OverflowError): ``min()`` 两侧在比较前都会被求值,
-        # 当 ``idle_rounds`` 持续上涨 (>1024 后 2**N 超出 float 上限), 乘以
-        # ``_poll_seconds`` 时 int→float 转换触发 OverflowError, 工作线程
-        # 会在 ``wait`` 这行整体抛栈, 淹没有用的 batch 日志. 提前把指数
-        # ``exp = idle_rounds - 1`` 封顶到 ``cap_exp`` (向上取整保证能取到
-        # ``max_poll_seconds`` 封顶值), 又让 ``2 ** exp`` 永远处于 float
-        # 安全范围. 退避关闭 (max_poll_seconds <= 0) 时 ``cap_exp = 0`` 关闭
-        # 退避, 行为不变.
-        if max_poll_seconds > 0 and self._poll_seconds > 0:
-            cap_exp = max(
-                0,
-                math.ceil(math.log2(max_poll_seconds / self._poll_seconds)),
-            )
-        else:
-            cap_exp = 0
-        while not stop_event.is_set():
-            self._last_pulled = 0
-            processed = 0
-            try:
-                processed = self.run_once()
-            except Exception:
-                _log.exception("[%s worker %s] run_once failed", self.stage, self._worker_id)
-            if processed or self._last_pulled:
-                idle_rounds = 0
-            else:
-                idle_rounds += 1
-            if max_poll_seconds > 0 and idle_rounds:
-                # ``exp = min(idle_rounds - 1, cap_exp)`` 限制指数后再算退避,
-                # 封顶后 ``wait`` 自然落到 ``max_poll_seconds`` 上.
-                exp = min(idle_rounds - 1, cap_exp)
-                wait = min(
-                    self._poll_seconds * (2 ** exp),
-                    max_poll_seconds,
-                )
-            else:
-                wait = self._poll_seconds
-            stop_event.wait(wait)
+    Returns
+    -------
+    文件名 (不含目录), 例如 ``"T001__abc123.json"``.
+    """
+    safe_task = _sanitize_filename_part(task_id) if task_id else ""
+    safe_session = _sanitize_filename_part(session_id) if session_id else ""
+    prefix = f"{safe_task}__" if safe_task else ""
+    return f"{prefix}{safe_session}{suffix}"

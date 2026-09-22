@@ -1,13 +1,28 @@
-"""orchestration.workers: gdr / etl worker 进程.
+"""orchestration.workers: ST-3 起 worker 是无状态模块函数.
 
-base_worker 提供通用 pull-process-mark 三段循环 + 重试/dead 逻辑；
-gdr_worker / etl_worker 提供具体 stage 实现。
+新架构 ``simulation server → gdr → etl`` 下, worker 入口:
 
-新架构 ``simulation server → gdr → etl`` 下, qf 阶段已删除。
+    * ``run_gdr_once`` (orchestration.workers.gdr_worker)
+    * ``run_etl_once``  (orchestration.workers.etl_worker)
+
+调度 (multiprocessing.Pool / 重试 / SQLite 写) 全部归 ST-5 PipelineExecutor.
 """
 
-from orchestration.workers.base_worker import BaseWorker
-from orchestration.workers.etl_worker import EtlWorker
-from orchestration.workers.gdr_worker import GdrWorker
+from orchestration.workers.base_worker import _output_filename
+from orchestration.workers.etl_worker import EtlOutputs, run_etl_once
+from orchestration.workers.gdr_worker import (
+    GdrNonRetryableError,
+    GdrResult,
+    RetryableGdrError,
+    run_gdr_once,
+)
 
-__all__ = ["BaseWorker", "EtlWorker", "GdrWorker"]
+__all__ = [
+    "EtlOutputs",
+    "GdrNonRetryableError",
+    "GdrResult",
+    "RetryableGdrError",
+    "_output_filename",
+    "run_etl_once",
+    "run_gdr_once",
+]

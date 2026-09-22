@@ -20,18 +20,19 @@ rem
 rem Quick reference:
 rem   run.bat start --all-tasks --detach
 rem   run.bat start --tasks T001,T003
-rem   run.bat start --tasks E001,E002,E003 --batch-size 3
+rem   run.bat start --tasks E001,E002,E003 --parallelism 3
 rem   run.bat start --all-tasks --dry-run
 rem   run.bat status
 rem   run.bat stop --timeout 30
-rem   run.bat replay --batch 7
+rem   run.bat replay
+rem   run.bat replay --no-archive
 rem
 rem Subcommands and options:
 rem   start [--detach|--foreground] [--dry-run] [--tasks T1,T2,... | --all-tasks]
-rem         [--stay] [--batch-size N] [--exit-when-done]
+rem         [--parallelism N] [--stay]
 rem   status
 rem   stop [--timeout SECONDS]
-rem   replay [--batch BATCH_ID]
+rem   replay [--no-archive]
 rem
 rem Global options (before the subcommand):
 rem   --config PATH     YAML path; defaults to <repo>/config/config.yaml.

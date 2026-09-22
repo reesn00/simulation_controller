@@ -6,6 +6,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .completion import CompletionCheck
 from .state_machine import RunState
 from .validation import ValidationReport
 
@@ -74,6 +75,15 @@ class TaskRun(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
     failure: RunFailure | None = None
     rerun_of: str | None = None
+    # trajectory 完整性重投计数: BatchRunner 监测 ``completion_check.status``
+    # 不为 complete 时递增, 触发原地重跑同 run_id (不创建新 run).
+    retry_count: int = 0
+    # 来自 ``CompiledTask.max_run_retries``; 落 TaskRun 便于审计每个 run
+    # 当时设定的上限 (catalog 配置变更不影响历史 run).
+    max_run_retries: int = 0
+    # ``simulate_serve.checker`` 在 trajectory 落盘后产出, 既用于本地
+    # 重试决策, 也落 ``run.json`` 供下游 / 审计读取.
+    completion_check: CompletionCheck | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
 

@@ -11,10 +11,14 @@ uv sync --group dev
 uv run python -m simulate_serve --validate-config
 uv run python -m simulate_serve --check-tools
 uv run python -m simulate_serve --readiness
-uv run python -m simulate_serve --limit 1
-uv run python -m simulate_serve --tasks T001,T003
+uv run python -m orchestration start --tasks T001,T003 --parallelism 1
+uv run python -m orchestration start --all-tasks --parallelism 4 --dry-run
+uv run python -m orchestration status
+uv run python -m orchestration replay
 uv run python -m pytest -q
 ```
+
+> `python -m simulate_serve --tasks / --rerun-task / --limit / --include-offline` 已于 2026-09-22 删除（任务运行入口移交 `orchestration`）；`simulate_serve` 仅保留只读开关。orchestration 默认 `max_parallelism=1` 严格串行，≥2 启用 `multiprocessing.Pool` 并发。
 
 远端执行 Agent 的 LLM 功能已可用（2026-09 确认，此前"未启用"记录已失效）。完整链路验证为可执行项：真实模型输出的端到端批次应当实际运行并记录结果，不再标记为待验证；日常回归仍以单元、合约和离线功能测试为默认门禁。
 
@@ -100,7 +104,7 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 | `gdr/parsers/` | C1 契约入口：`from_trajectory` |
 | `gdr/domain/` | Session / Message / Block pydantic 类型 + `save_session_v2` / `save_refined_session` |
 | `gdr/{refiners,validators,core,reassembly,routing,config,prompts}/` | gdr 内部模块（详见 [docs/设计方案/gdr-plan.md](docs/设计方案/gdr-plan.md)） |
-| `orchestration/` | 顶层调度（master / producer / watcher / workers / queue / failure_handler / batch_tracker） |
+| `orchestration/` | 顶层调度（master / pipeline_executor / task_pipeline / producer / workers / queue / failure_handler；2026-09-22 起删 watcher / batch_tracker / qf_worker） |
 | `tests/` | unit、contract、functional；默认不访问公网 |
 
 ## 配置和工具
@@ -131,6 +135,7 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 
 ## 文档
 
+- `docs/orchestration-design.md` — orchestration 三阶段流水线设计基线（2026-09-22 重写）
 - `docs/refactor-development-progress.md` — gdr SFT 数据质量修复迭代日志（含 2026-09-19 六件套 F1/F2/F3-C + Fix A/B/C + F3-D/E）
 - `docs/执行agent资料/`、`docs/任务合集/`、`docs/设计方案/` — 项目历史档案
 - 框架与策略长文：`docs/gdr-context-understanding-and-policy.md`、`docs/gdr-module-functional-overview.md`、`docs/gdr-mvp-design.md`、`docs/incremental-state-tracking-plan.md`

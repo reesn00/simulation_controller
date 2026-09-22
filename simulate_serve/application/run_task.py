@@ -42,18 +42,63 @@ class TaskRuntime:
         self.guard_policy = guard_policy or RuntimeGuardPolicy()
         self.trajectory_archiver = trajectory_archiver
 
-    async def run(self, task: CompiledTask, *, rerun_of: str | None = None) -> TaskRun:
+    def trajectory_path_for(self, run: TaskRun) -> str | None:
+        """拼 ``<safe_run>__<safe_session>.json`` 路径. session_id 缺失或 archiver 未启用返 None."""
+        if self.trajectory_archiver is None or not run.remote_session_id:
+            return None
+        path = self.trajectory_archiver.trajectory_path(run.run_id, run.remote_session_id)
+        return str(path) if path is not None else None
+
+    async def run(
+        self,
+        task: CompiledTask,
+        *,
+        rerun_of: str | None = None,
+        reuse_run: TaskRun | None = None,
+    ) -> TaskRun:
+        """执行单个 task 的多轮 actor→executor→validate 主循环。
+
+        Args:
+            task: 已编译任务
+            rerun_of: 手动血缘 (--rerun-task CLI 透传)
+            reuse_run: BatchRunner 重投时复用 run_id 入口; 传 None 时新建
+                       uuid run_id. 复用时除 ``run_id / task_id / task_type
+                       / catalog_schema_version / dimension / scenario_id /
+                       persona_role / rerun_of / started_at`` 外的字段都
+                       会被重置 (state/conversation/.../completion_check)。
+        """
         started_monotonic = time.monotonic()
-        run = TaskRun(
-            run_id=f"run_{uuid.uuid4().hex}",
-            task_id=task.task_id,
-            task_type=task.task_type,
-            catalog_schema_version=task.validation_policy.source_schema_version,
-            dimension=task.dimension,
-            scenario_id=task.scenario_id,
-            persona_role=task.persona.role_description,
-            rerun_of=rerun_of,
-        )
+        if reuse_run is not None:
+            # 重投入口: 复用 run_id 与血缘字段, 重置运行态字段.
+            run = reuse_run
+            run.retry_count += 1
+            run.max_run_retries = task.max_run_retries
+            run.state = RunState.PENDING
+            run.state_events = []
+            run.conversation = []
+            run.validation_rounds = []
+            run.guidance_levels = []
+            run.guide_rounds = 0
+            run.executor_turns = 0
+            run.failure = None
+            run.completion_check = None
+            run.completed_at = None
+            run.remote_session_id = ""
+            run.remote_task_ids = []
+            run.remote_agent_id = ""
+            run.evidence_ids = []
+        else:
+            run = TaskRun(
+                run_id=f"run_{uuid.uuid4().hex}",
+                task_id=task.task_id,
+                task_type=task.task_type,
+                catalog_schema_version=task.validation_policy.source_schema_version,
+                dimension=task.dimension,
+                scenario_id=task.scenario_id,
+                persona_role=task.persona.role_description,
+                rerun_of=rerun_of,
+                max_run_retries=task.max_run_retries,
+            )
         self._move(run, RunState.PREPARING, "RUN_PREPARING")
         try:
             self._move(run, RunState.GENERATING_OPENING, "OPENING_REQUESTED")

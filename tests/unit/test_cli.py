@@ -9,9 +9,21 @@ EXAMPLE_CONFIG = PACKAGE_DIR.parent / "config" / "config.example.yaml"
 
 
 def test_help_parser_has_operational_commands() -> None:
+    """simulate_serve 自留只读开关;任务相关 CLI 已移交 orchestration.
+
+    契约 §7.6:保留 --validate-config / --check-tools / --readiness /
+    --list-interrupted; --tasks / --rerun-task 等任务相关 CLI 删除.
+    """
     parser = build_parser()
     options = {action.dest for action in parser._actions}
-    assert {"validate_config", "check_tools", "readiness", "rerun_task", "tasks", "list_interrupted"}.issubset(options)
+    # 只读开关必须存在
+    assert {"validate_config", "check_tools", "readiness", "list_interrupted"}.issubset(options)
+    # 任务相关 CLI 已删除 (移交 orchestration 顶层)
+    assert "tasks" not in options
+    assert "rerun_task" not in options
+    assert "limit" not in options
+    assert "include_offline" not in options
+    assert "max_run_retries" not in options
 
 
 def test_validate_example_config_succeeds() -> None:

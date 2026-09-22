@@ -23,6 +23,11 @@ class RunState(str, Enum):
     ACTOR_ERROR = "actor_error"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
+    # 终态: BatchRunner 重试 max_run_retries 次后 trajectory 仍不完整,
+    # 落 ``RunFailure(code="COMPLETION_INCOMPLETE")`` 并标记本终态.
+    # 与 INTERRUPTED 类似: 半跑半终态, 标记后 ``orchestration.batch_tracker``
+    # 会从轮询中识别 (TERMINAL_STATES 包含).
+    COMPLETION_INCOMPLETE = "completion_incomplete"
 
     @property
     def is_terminal(self) -> bool:
@@ -39,26 +44,51 @@ TERMINAL_STATES = frozenset(
         RunState.ACTOR_ERROR,
         RunState.CANCELLED,
         RunState.INTERRUPTED,
+        RunState.COMPLETION_INCOMPLETE,
     }
 )
 
+# 非终态都可以跳到 CANCELLED / INTERRUPTED / COMPLETION_INCOMPLETE (兜底).
+# COMPLETION_INCOMPLETE 与 INTERRUPTED 语义相近但来源不同:
+#   - INTERRUPTED: 进程被杀 / 启动扫库兜底
+#   - COMPLETION_INCOMPLETE: 主动判定 trajectory 不完整且重试耗尽
+_NONTERMINAL_RECOVERY_TARGETS = frozenset(
+    {RunState.CANCELLED, RunState.INTERRUPTED, RunState.COMPLETION_INCOMPLETE}
+)
+
+
+def _with_recovery(base: frozenset[RunState]) -> frozenset[RunState]:
+    """给非终态的迁移集合追加兜底目标 (CANCELLED / INTERRUPTED / COMPLETION_INCOMPLETE)."""
+    return base | _NONTERMINAL_RECOVERY_TARGETS
+
+
 ALLOWED_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
-    RunState.PENDING: frozenset({RunState.PREPARING, RunState.CANCELLED, RunState.INTERRUPTED}),
-    RunState.PREPARING: frozenset({RunState.GENERATING_OPENING, RunState.ACTOR_ERROR, RunState.CANCELLED, RunState.INTERRUPTED}),
-    RunState.GENERATING_OPENING: frozenset({RunState.WAITING_EXECUTOR, RunState.ACTOR_ERROR, RunState.CANCELLED, RunState.INTERRUPTED}),
-    RunState.WAITING_EXECUTOR: frozenset({RunState.VALIDATING, RunState.EXECUTOR_ERROR, RunState.CANCELLED, RunState.INTERRUPTED}),
-    RunState.VALIDATING: frozenset(
-        {
-            RunState.SUCCESS,
-            RunState.GENERATING_FOLLOWUP,
-            RunState.GUIDE_EXHAUSTED,
-            RunState.INCONCLUSIVE,
-            RunState.VALIDATION_ERROR,
-            RunState.CANCELLED,
-            RunState.INTERRUPTED,
-        }
+    RunState.PENDING: _with_recovery(
+        frozenset({RunState.PREPARING})
     ),
-    RunState.GENERATING_FOLLOWUP: frozenset({RunState.WAITING_EXECUTOR, RunState.ACTOR_ERROR, RunState.CANCELLED, RunState.INTERRUPTED}),
+    RunState.PREPARING: _with_recovery(
+        frozenset({RunState.GENERATING_OPENING, RunState.ACTOR_ERROR})
+    ),
+    RunState.GENERATING_OPENING: _with_recovery(
+        frozenset({RunState.WAITING_EXECUTOR, RunState.ACTOR_ERROR})
+    ),
+    RunState.WAITING_EXECUTOR: _with_recovery(
+        frozenset({RunState.VALIDATING, RunState.EXECUTOR_ERROR})
+    ),
+    RunState.VALIDATING: _with_recovery(
+        frozenset(
+            {
+                RunState.SUCCESS,
+                RunState.GENERATING_FOLLOWUP,
+                RunState.GUIDE_EXHAUSTED,
+                RunState.INCONCLUSIVE,
+                RunState.VALIDATION_ERROR,
+            }
+        )
+    ),
+    RunState.GENERATING_FOLLOWUP: _with_recovery(
+        frozenset({RunState.WAITING_EXECUTOR, RunState.ACTOR_ERROR})
+    ),
 }
 
 

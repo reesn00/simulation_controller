@@ -1,18 +1,20 @@
 """orchestration.config_loader: 加载编排配置为强类型 dataclass.
 
 配置统一来自仓库根 ``config/config.yaml`` (``SIMCTL_CONFIG`` env 可重定向);
-设计见 ``docs/orchestration-design.md`` §7。
+新架构 ``simulation server → gdr → etl`` 下的契约见
+``docs/设计方案/pipeline-contracts.md`` §1.
 
-新架构 ``simulation server → gdr → etl`` 下:
-- ``paths.refined_dir``: gdr 写 C2 refined Session 单文件 (C2 契约)
-- ``paths.etl_outputs_dir``: etl 末端写 4 视图 (C3 契约)
-- ``settings.gdr_workers``: gdr 进程数 (首阶段, LLM 密集)
-- ``settings.etl_workers``: etl 进程数 (末阶段, 本地计算)
+新结构:
+- ``settings: PipelineSettings`` —  ``max_parallelism`` / 重试上限 / 轮询秒数
+- ``paths: Paths``               — 全部为 ``pathlib.Path``
+- ``gdr_settings: gdr.Settings`` — 复用 gdr 库的 ``Settings`` 类型
+
+``load_config`` 不创建任何目录 (契约 §1.5), 由调用方按需 ``mkdir``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,101 +25,142 @@ from shared_config import (
     load_yaml_file,
 )
 
-
-@dataclass(frozen=True)
-class PathsConfig:
-    # simulate_serve 配置统一来自根配置; 加载含 simulate_serve: 段的文件时
-    # 此字段会被自动指向该文件本身 (见 load_config)。
-    simulate_serve_config: str = "config/config.yaml"
-    trajectory_dir: str = "output/agent_trajectory"
-    refined_dir: str = "output/refined"               # gdr 写 C2 单文件
-    etl_outputs_dir: str = "output/refine_data"       # etl 末端写 4 视图 (C3)
-    sqlite_db: str = "output/orchestration/orchestration.db"
-    dead_dir: str = "output/orchestration/dead"
-    pid_file: str = "output/orchestration/orchestration.pid"
-    log_dir: str = "output/orchestration/logs"
-    runs_dir: str = "output/runs"  # JsonRunRepository 的 runs 根目录
-
-    @classmethod
-    def from_raw(cls, raw: dict[str, Any]) -> "PathsConfig":
-        return cls(**raw) if raw else cls()
+from orchestration.settings import Paths, PipelineSettings
 
 
-@dataclass(frozen=True)
-class OrchestrationSettings:
-    """顶层 orchestration.* 配置."""
-    batch_size: int = 3
-    gdr_workers: int = 2
-    etl_workers: int = 2
-    max_retry_gdr: int = 3
-    max_retry_etl: int = 3
-    watcher_poll_seconds: float = 2.0
-    reap_stale_seconds: int = 300
-    reap_stale_interval_seconds: int = 60
-    batch_drain_poll_seconds: float = 5.0
-    batch_drain_timeout_seconds: float | None = None
-    # 空闲退避上限 (#7): 连续空轮时轮询间隔指数增长的封顶秒数;
-    # 0 = 关闭退避 (恒定 poll)。默认关闭以兼容短超时测试/低延迟场景,
-    # 内置 config.yaml 里给生产值。
-    worker_idle_backoff_max_seconds: float = 0.0
-    watcher_idle_backoff_max_seconds: float = 0.0
-    # 方向 A: Master.shutdown 等待 worker 线程 join 的最长时间. 默认 600s
-    # (10 分钟) — 单条 session 处理上限 (gdr.cfg.session_timeout_s=1200s)
-    # 的 50%, 留余量让正在跑的 LLM 调用有窗口写完产物, 不被半路切断
-    # → interpreter shutdown 错误 (方向 B 已减少跨 batch 偷拉, 配合本字段
-    # 把"in-progress 任务被打断"的概率压到接近零).
-    # 生产里按需调大 (例如 1500s), 单元测试 fixture 一般用更小的值.
-    worker_shutdown_timeout_seconds: float = 600.0
-
-    @classmethod
-    def from_raw(cls, raw: dict[str, Any]) -> "OrchestrationSettings":
-        if not raw:
-            return cls()
-        # 允许 None 表示无限等待
-        if raw.get("batch_drain_timeout_seconds") is None:
-            raw = {**raw, "batch_drain_timeout_seconds": None}
-        return cls(**raw)
+class ConfigValidationError(ValueError):
+    """编排配置校验失败时抛 (契约 §1.5)."""
 
 
-@dataclass(frozen=True)
-class GdrSettings:
-    """透传给 ``gdr.Settings`` 的子集（master 只覆盖并发/路径）."""
-    workers: int = 2
-    llm_concurrency: int = 4
+# ---------------------------------------------------------------------------
+# Paths 默认值 (契约 §1.2)
+# ---------------------------------------------------------------------------
 
-    @classmethod
-    def from_raw(cls, raw: dict[str, Any]) -> "GdrSettings":
-        return cls(**raw) if raw else cls()
+_PATHS_DEFAULTS: dict[str, str] = {
+    "simulate_serve_config": "config/config.yaml",
+    "trajectory_dir": "output/agent_trajectory",
+    "runs_dir": "output/runs",
+    "refined_dir": "output/refined",
+    "etl_outputs_dir": "output/refine_data",
+    "sqlite_db": "output/orchestration/orchestration.db",
+    "dead_dir": "output/orchestration/dead",
+    "pid_file": "output/orchestration/orchestration.pid",
+    "log_dir": "output/orchestration/logs",
+}
 
+
+# ---------------------------------------------------------------------------
+# 顶层 dataclass
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class OrchestrationConfig:
-    """根配置 ``config/config.yaml`` 的强类型视图."""
-    settings: OrchestrationSettings = field(default_factory=OrchestrationSettings)
-    paths: PathsConfig = field(default_factory=PathsConfig)
-    gdr: GdrSettings = field(default_factory=GdrSettings)
+    """仓库根 ``config/config.yaml`` 的编排层强类型视图.
+
+    字段:
+        settings: PipelineSettings
+        paths: Paths
+        gdr_settings: ``gdr.config.settings.Settings`` 实例
+        source_path: 实际加载的 yaml 文件绝对路径 (调试用)
+    """
+
+    settings: PipelineSettings
+    paths: Paths
+    gdr_settings: Any  # 实际类型: gdr.config.settings.Settings; 类型注解用 Any 避免硬依赖
     source_path: str = ""
 
-    @classmethod
-    def from_raw(cls, raw: dict[str, Any], *, source_path: str = "") -> "OrchestrationConfig":
-        return cls(
-            settings=OrchestrationSettings.from_raw(raw.get("orchestration") or {}),
-            paths=PathsConfig.from_raw(raw.get("paths") or {}),
-            gdr=GdrSettings.from_raw(raw.get("gdr_settings") or {}),
-            source_path=source_path,
-        )
+
+# ---------------------------------------------------------------------------
+# YAML → dataclass 转换
+# ---------------------------------------------------------------------------
+
+def _build_pipeline_settings(raw: dict[str, Any]) -> PipelineSettings:
+    """解析 ``orchestration.pipeline:`` 段, 应用契约 §1.5 校验."""
+    if raw is None:
+        raw = {}
+    max_parallelism = int(raw.get("max_parallelism", 1))
+    if max_parallelism < 1:
+        raise ConfigValidationError("max_parallelism must be ≥ 1")
+    max_retry_gdr = int(raw.get("max_retry_gdr", 3))
+    if max_retry_gdr < 0:
+        raise ConfigValidationError("max_retry_gdr must be ≥ 0")
+    max_retry_etl = int(raw.get("max_retry_etl", 3))
+    if max_retry_etl < 0:
+        raise ConfigValidationError("max_retry_etl must be ≥ 0")
+    retry_poll_seconds = float(raw.get("retry_poll_seconds", 2.0))
+    if retry_poll_seconds <= 0:
+        raise ConfigValidationError("retry_poll_seconds must be > 0")
+    return PipelineSettings(
+        max_parallelism=max_parallelism,
+        max_retry_gdr=max_retry_gdr,
+        max_retry_etl=max_retry_etl,
+        retry_poll_seconds=retry_poll_seconds,
+    )
 
 
-def load_config(path: str | Path | None = None) -> OrchestrationConfig:
-    """加载编排配置; 统一读根配置 ``config/config.yaml`` (无包内兜底).
+def _build_paths(raw: dict[str, Any], *, default_config_path: Path) -> Paths:
+    """解析 ``paths:`` 段, 把字符串路径转 ``Path``.
 
-    - path=None: 读根配置 (``SIMCTL_CONFIG`` env 可重定向);
-      不存在则抛 ``FileNotFoundError``。
-    - 显式 path: 根配置格式 (orchestration:/paths:/gdr_settings: 顶层段) 均可;
-      文件同时含 ``simulate_serve:`` 段时, ``paths.simulate_serve_config``
-      默认指向该文件本身 (producer 从同一文件读 simulate_serve 配置)。
+    根配置同时含 ``simulate_serve:`` 段时, ``paths.simulate_serve_config``
+    默认指向该配置文件本身 (与旧行为一致 — producer 从同一文件读 simulate_serve
+    配置, 避免双配置).
     """
-    if path is None:
+    if raw is None:
+        raw = {}
+    resolved: dict[str, str] = dict(_PATHS_DEFAULTS)
+    for key in resolved:
+        if key in raw and raw[key] is not None:
+            resolved[key] = str(raw[key])
+    # 根格式下 simulate_serve_config 默认指向文件本身 (若用户未显式覆盖)
+    if "simulate_serve_config" not in raw:
+        resolved["simulate_serve_config"] = str(default_config_path)
+    # 校验非空
+    for key, val in resolved.items():
+        if not val or not isinstance(val, str):
+            raise ConfigValidationError(f"paths.{key} must be a non-empty string")
+    return Paths(
+        simulate_serve_config=Path(resolved["simulate_serve_config"]),
+        trajectory_dir=Path(resolved["trajectory_dir"]),
+        runs_dir=Path(resolved["runs_dir"]),
+        refined_dir=Path(resolved["refined_dir"]),
+        etl_outputs_dir=Path(resolved["etl_outputs_dir"]),
+        sqlite_db=Path(resolved["sqlite_db"]),
+        dead_dir=Path(resolved["dead_dir"]),
+        pid_file=Path(resolved["pid_file"]),
+        log_dir=Path(resolved["log_dir"]),
+    )
+
+
+def _build_gdr_settings() -> Any:
+    """构造 ``gdr.config.settings.Settings`` 实例.
+
+    gdr 的 ``Settings`` 是 pydantic ``BaseSettings``, 自动从仓库根配置
+    (或 ``GDR_CONFIG_FILE`` env) 加载; 我们只需 ``Settings()`` 即可.
+    """
+    from gdr.config.settings import Settings
+    return Settings()
+
+
+# ---------------------------------------------------------------------------
+# 公开接口
+# ---------------------------------------------------------------------------
+
+def load_config(config_path: Path | None = None) -> OrchestrationConfig:
+    """加载编排配置; 失败抛 ``ConfigValidationError`` 或 ``FileNotFoundError``.
+
+    Args:
+        config_path: 显式配置文件路径; ``None`` 时按 ``find_root_config`` 定位
+            (``SIMCTL_CONFIG`` env > 仓库根 ``config/config.yaml``).
+            文件不存在 → ``FileNotFoundError`` (无包内兜底).
+
+    校验:
+        - ``max_parallelism ≥ 1`` (契约 §1.5).
+        - 各 path 必须是非空字符串 (契约 §1.5).
+
+    副作用:
+        - 不创建任何目录 (契约 §1.5).
+    """
+    if config_path is None:
         root = find_root_config()
         if root is None:
             raise FileNotFoundError(
@@ -126,13 +169,39 @@ def load_config(path: str | Path | None = None) -> OrchestrationConfig:
             )
         cfg_path = root
     else:
-        cfg_path = Path(path).resolve()
+        cfg_path = Path(config_path).resolve()
     if not cfg_path.exists():
         raise FileNotFoundError(f"Orchestration config not found: {cfg_path}")
+
     raw = load_yaml_file(cfg_path)
-    raw = dict(raw)
-    if isinstance(raw.get("simulate_serve"), dict):
-        paths_raw = dict(raw.get("paths") or {})
-        paths_raw.setdefault("simulate_serve_config", str(cfg_path))
-        raw["paths"] = paths_raw
-    return OrchestrationConfig.from_raw(raw, source_path=str(cfg_path))
+    if not isinstance(raw, dict):
+        raw = {}
+
+    orchestration_raw = raw.get("orchestration") or {}
+    if not isinstance(orchestration_raw, dict):
+        orchestration_raw = {}
+    # 兼容两种结构:
+    #   1) 新契约: orchestration.pipeline: {...}
+    #   2) 过渡期: orchestration: 直接是 pipeline 字段 (顶层展开)
+    pipeline_raw = orchestration_raw.get("pipeline")
+    if not isinstance(pipeline_raw, dict):
+        # 旧顶层展开结构 — 把 orchestration 整段当 pipeline 字段读
+        # (去掉已知的 paths 字段)
+        pipeline_raw = orchestration_raw
+
+    paths_raw = raw.get("paths")
+    if paths_raw is None and isinstance(orchestration_raw.get("paths"), dict):
+        paths_raw = orchestration_raw["paths"]
+    if not isinstance(paths_raw, dict):
+        paths_raw = {}
+
+    settings = _build_pipeline_settings(pipeline_raw)
+    paths = _build_paths(paths_raw, default_config_path=cfg_path)
+    gdr_settings = _build_gdr_settings()
+
+    return OrchestrationConfig(
+        settings=settings,
+        paths=paths,
+        gdr_settings=gdr_settings,
+        source_path=str(cfg_path),
+    )

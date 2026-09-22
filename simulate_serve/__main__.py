@@ -10,13 +10,12 @@ from pydantic import ValidationError
 
 from .bootstrap import (
     build_application,
-    filter_unready_tasks,
     render_validation_readiness,
     validation_readiness_gaps,
 )
 from .config import AppConfig, load_config
 from .configuration.catalog_loader import CatalogValidationError
-from .infrastructure.json_run_repository import JsonRunRepository, RepositoryError
+from .infrastructure.json_run_repository import JsonRunRepository
 from .infrastructure.camel_model_factory import model_runtime_configured
 from .task_manager import TaskManager
 from .tools.factories import create_default_registry
@@ -26,25 +25,30 @@ logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="CAMEL-AI User Simulator for Agent Data Distillation")
+    """simulate_serve 只读开关入口 — 任务执行已移交 orchestration.
+
+    设计依据 ``docs/设计方案/pipeline-contracts.md`` §7.6 — 保留:
+        --validate-config / --check-tools / --readiness / --list-interrupted
+
+    删除 (移交 orchestration):
+        --tasks / --rerun-task / --limit / --include-offline / --max-run-retries
+
+    任务执行入口请用 ``python -m orchestration start ...``。
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "CAMEL-AI User Simulator for Agent Data Distillation "
+            "(只读开关入口; 任务执行请用 orchestration start)"
+        ),
+    )
     parser.add_argument("--config", default=None, help="Path to config file")
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--limit", type=int, default=0, help="Maximum tasks to run; 0 means all")
-    parser.add_argument(
-        "--include-offline",
-        action="store_true",
-        help="Include tasks marked offline_only (fixtures-driven anomaly tasks) in the live batch",
-    )
-    parser.add_argument("--rerun-task", metavar="TASK_ID", default="")
-    parser.add_argument(
-        "--tasks",
-        metavar="TASK_IDS",
-        default="",
-        help="Comma-separated task ids to run (e.g. T001,T003); runs exactly these tasks",
-    )
     parser.add_argument("--list-interrupted", action="store_true")
     parser.add_argument("--check-tools", action="store_true")
-    parser.add_argument("--readiness", action="store_true", help="Report local validation readiness without calling QwenPaw")
+    parser.add_argument(
+        "--readiness", action="store_true",
+        help="Report local validation readiness without calling QwenPaw",
+    )
     parser.add_argument("--validate-config", action="store_true")
     return parser
 
@@ -111,51 +115,6 @@ async def _check_readiness(config: AppConfig) -> int:
         await registry.close()
 
 
-async def _run(config: AppConfig, args: argparse.Namespace) -> int:
-    services = await build_application(config)
-    try:
-        tasks = services.task_manager.compiled_tasks
-        rerun_of = None
-        if args.rerun_task and args.tasks:
-            raise ValueError("--rerun-task and --tasks are mutually exclusive")
-        if args.rerun_task:
-            # Explicit rerun by id is deliberate user intent; skip the offline filter.
-            tasks = [item for item in tasks if item.task_id == args.rerun_task]
-            if not tasks:
-                raise ValueError(f"Unknown task_id: {args.rerun_task}")
-            previous = [item for item in services.repository.load_runs() if item.task_id == args.rerun_task]
-            if previous:
-                rerun_of = max(previous, key=lambda item: item.started_at).run_id
-        elif args.tasks:
-            # Explicit selection is deliberate user intent; skip the offline filter.
-            wanted = [item.strip() for item in args.tasks.split(",") if item.strip()]
-            known = {item.task_id for item in tasks}
-            missing = [task_id for task_id in wanted if task_id not in known]
-            if missing:
-                raise ValueError(f"Unknown task_id(s): {', '.join(missing)}")
-            selected = set(wanted)
-            tasks = [item for item in tasks if item.task_id in selected]
-        elif not args.include_offline:
-            tasks = [item for item in tasks if not item.offline_only]
-        if config.skip_unready_tasks and not args.rerun_task and not args.tasks:
-            # Explicit selection is deliberate user intent; never silently drop it.
-            tasks, blocked = filter_unready_tasks(tasks, services.readiness_gaps)
-            if blocked:
-                logger.warning(
-                    "Skipped %d task(s) that cannot reach PASS with local validation readiness: %s",
-                    len(blocked),
-                    "; ".join(f"{tid}={','.join(caps)}" for tid, caps in blocked),
-                )
-        runs = await services.batch_runner.run(tasks, limit=args.limit, rerun_of=rerun_of)
-        logger.info(
-            "Batch completed: %d run(s) (gdr/etl downstream produces SFT data; see C2/C3 contracts)",
-            len(runs),
-        )
-        return 0
-    finally:
-        await services.close()
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -185,16 +144,19 @@ def main(argv: list[str] | None = None) -> int:
             for run in interrupted:
                 print(f"{run.run_id}\t{run.task_id}\t{run.completed_at or ''}")
             return 0
-        return asyncio.run(_run(config, args))
+        # 无任务入口: simulate_serve 不再直接跑 batch, 提示用 orchestration start.
+        print(
+            "[simulate_serve] task execution has moved to "
+            "`python -m orchestration start --all-tasks`.",
+            file=sys.stderr,
+        )
+        return 0
     except (FileNotFoundError, ValueError, ValidationError, CatalogValidationError) as exc:
         logger.error("Configuration/CLI error: %s", exc)
         return 2
     except RequiredToolUnavailableError as exc:
         logger.error("%s", exc.report.render())
         return 3
-    except RepositoryError as exc:
-        logger.error("Repository error: %s", exc)
-        return 4
     except KeyboardInterrupt:
         return 130
     except Exception:

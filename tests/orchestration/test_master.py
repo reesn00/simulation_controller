@@ -1,494 +1,360 @@
-"""orchestration.master 单元测试.
+"""orchestration.master 单元测试 (新架构 simulation server → gdr → etl).
 
-通过 monkeypatch ``GdrWorker.process`` / ``EtlWorker.process`` 避免真实 LLM 调用;
-producer 注入 fake 让 batch_id 走完整路径.
+新 Master 仅持有配置 / queue / stop_event, 调度全部委托给 PipelineExecutor.
+
+测试覆盖:
+* Master.run 委托 PipelineExecutor → 返回 PipelineSummary
+* Master.status 读 phases / total / last_updated
+* Master.shutdown 设 stop_event
+* Master._build_gdr_settings 锚定路径 + workers=1
+* write_health 在 run 前 / 后都被调用
 """
 
 from __future__ import annotations
 
 import json
-import threading
-import time
+import multiprocessing
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any
 
 import pytest
 
-# 显式 import，确保 GdrWorker/EtlWorker 在 monkeypatch 之前已注册
+from gdr.config.settings import Settings as GdrSettings
 from orchestration.config_loader import OrchestrationConfig
 from orchestration.master import Master
+from orchestration.pipeline_executor import PipelineSummary
 from orchestration.queue import (
-    STATE_DEAD,
-    STATE_DONE,
-    STATE_PENDING_ETL,
+    PHASE_DEAD,
+    PHASE_DONE,
     SQLiteQueue,
 )
-from orchestration.workers.etl_worker import EtlWorker
-from orchestration.workers.gdr_worker import GdrWorker
-from orchestration.watcher import TrajectoryWatcher
-from simulate_serve.domain.run import TaskRun
-from simulate_serve.domain.state_machine import RunState
 
 
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def env(tmp_path: Path, monkeypatch) -> tuple[Path, SQLiteQueue, Master]:
-    queue = SQLiteQueue(tmp_path / "q.db")
-    traj_dir = tmp_path / "traj"
-    traj_dir.mkdir()
-    runs_dir = tmp_path / "runs"
-    runs_dir.mkdir()
-    refined_dir = tmp_path / "refined"
-    etl_outputs_dir = tmp_path / "etl_outputs"
-    dead_dir = tmp_path / "dead"
-    log_dir = tmp_path / "logs"
-    config_path = tmp_path / "sim.yaml"
-    config_path.write_text("{}", encoding="utf-8")
 
-    cfg = OrchestrationConfig.from_raw({
-        "orchestration": {
-            "batch_size": 3,
-            "etl_workers": 1,
-            "gdr_workers": 1,
-            "max_retry_gdr": 1,
-            "max_retry_etl": 1,
-            "watcher_poll_seconds": 0.02,
-            "reap_stale_interval_seconds": 60,
-            "reap_stale_seconds": 60,
-            "batch_drain_poll_seconds": 0.02,
-            "batch_drain_timeout_seconds": 5.0,
-        },
-        "paths": {
-            "simulate_serve_config": str(config_path),
-            "trajectory_dir": str(traj_dir),
-            "refined_dir": str(refined_dir),
-            "etl_outputs_dir": str(etl_outputs_dir),
-            "sqlite_db": str(tmp_path / "q.db"),
-            "dead_dir": str(dead_dir),
-            "log_dir": str(log_dir),
-            "runs_dir": str(runs_dir),
-        },
-    })
+def _make_paths(tmp_path: Path) -> dict[str, str]:
+    paths = {
+        "simulate_serve_config": str(tmp_path / "sim.yaml"),
+        "trajectory_dir": str(tmp_path / "traj"),
+        "refined_dir": str(tmp_path / "refined"),
+        "etl_outputs_dir": str(tmp_path / "etl_outputs"),
+        "sqlite_db": str(tmp_path / "q.db"),
+        "dead_dir": str(tmp_path / "dead"),
+        "log_dir": str(tmp_path / "logs"),
+        "runs_dir": str(tmp_path / "runs"),
+        "pid_file": str(tmp_path / "orch.pid"),
+    }
+    for sub in ("traj", "runs", "refined", "etl_outputs", "dead", "logs"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sim.yaml").write_text("{}", encoding="utf-8")
+    return paths
 
-    queue = SQLiteQueue(
-        tmp_path / "q.db",
+
+def _make_cfg(tmp_path: Path) -> OrchestrationConfig:
+    """直接构造 OrchestrationConfig, 不走 load_config (避免根 config.yaml 依赖)."""
+    from orchestration.settings import Paths, PipelineSettings
+    paths_dict = _make_paths(tmp_path)
+    paths_obj = Paths(
+        simulate_serve_config=Path(paths_dict["simulate_serve_config"]),
+        trajectory_dir=Path(paths_dict["trajectory_dir"]),
+        runs_dir=Path(paths_dict["runs_dir"]),
+        refined_dir=Path(paths_dict["refined_dir"]),
+        etl_outputs_dir=Path(paths_dict["etl_outputs_dir"]),
+        sqlite_db=Path(paths_dict["sqlite_db"]),
+        dead_dir=Path(paths_dict["dead_dir"]),
+        pid_file=Path(paths_dict["pid_file"]),
+        log_dir=Path(paths_dict["log_dir"]),
+    )
+    settings_obj = PipelineSettings(
+        max_parallelism=4,
         max_retry_gdr=1,
         max_retry_etl=1,
+        retry_poll_seconds=0.05,
     )
-    m = Master(cfg=cfg, queue=queue)
-    yield tmp_path, queue, m
-    m.shutdown(timeout=2.0)
+    gdr_settings = GdrSettings(
+        batch_output_dir=paths_obj.refined_dir, workers=1,
+        llm_concurrency=1, max_files=1,
+    )
+    cfg = OrchestrationConfig(
+        settings=settings_obj,
+        paths=paths_obj,
+        gdr_settings=gdr_settings,
+        source_path="",
+    )
+    return cfg
 
 
-def _make_fake_producer(
-    queue: SQLiteQueue,
-    traj_dir: Path,
-    runs_dir: Path,
-    trajectory_files: dict[str, str] | None = None,
-):
-    """返回一个 fake producer_runner: 写 SQLite batches + 落地 run.json + 放 trajectory + 预占位 tasks.
+# ---------------------------------------------------------------------------
+# PipelineExecutor stub (替换 multiprocessing.Pool)
+# ---------------------------------------------------------------------------
 
-    约定：run_id == task_id（简化测试语义）。
 
-    注意：fake 预占位 tasks（state=pending, src_path=trajectory 路径）让
-    ``wait_batch_drained`` 能在 watcher 实际登记前看到正确数量的 task；
-    watcher 后续 scan 同样 src_path 时 INSERT UNIQUE 冲突 → skip.
-    """
-    def producer(*, config_path, task_ids, limit, queue):
-        bid = queue.insert_batch(task_ids)
-        queue.update_batch(bid, simulate_started_at="2026-09-01T00:00:00Z")
-        runs: list[TaskRun] = []
-        for tid in task_ids[:limit]:
-            run_id = tid
-            tr = TaskRun(run_id=run_id, task_id=tid, task_type="test",
-                         state=RunState.SUCCESS)
-            runs.append(tr)
-            rd = runs_dir / run_id
-            rd.mkdir(parents=True, exist_ok=True)
-            (rd / "run.json").write_text(
-                json.dumps({"run_id": run_id, "state": "success"}), encoding="utf-8",
-            )
-            session = (trajectory_files or {}).get(tid, f"session_{tid}")
-            traj_path = traj_dir / f"{run_id}__{session}.json"
+_BEHAVIORS: dict[str, dict[str, Any]] = {}
+
+
+class _FakeAsyncResult:
+    def __init__(self, task_id, queue, paths, behavior):
+        self._task_id = task_id
+        self._queue = queue
+        self._paths = paths
+        self._behavior = behavior
+        self._result: dict | None = None
+        self._exc: BaseException | None = None
+        self._ready_flag = False
+        self._compute()
+
+    def _compute(self) -> None:
+        try:
+            queue = self._queue
+            tid = self._task_id
+            behavior = self._behavior
+
+            queue.upsert_task(tid)
+            queue.mark_phase(tid, new_phase="simulate")
+
+            traj_dir = self._paths.trajectory_dir
+            traj_dir.mkdir(parents=True, exist_ok=True)
+            traj_path = traj_dir / f"{tid}__session_{tid}.json"
             traj_path.write_text("{}", encoding="utf-8")
-            # 预占位：让 wait_batch_drained 立刻看到 N 条 pending task
-            queue.insert(src_path=traj_path, run_id=run_id,
-                         session_id=session, batch_id=bid)
-        queue.update_batch(bid, simulate_done_at="2026-09-01T00:00:01Z")
-        return bid, runs
 
-    return producer
+            run_state = behavior.get("simulate_state", "success")
+            if run_state != "success":
+                queue.mark_failed(
+                    tid, stage="simulate", error_msg=f"simulate={run_state}",
+                )
+                self._result = {
+                    "task_id": tid, "phase": "dead",
+                    "stage": "simulate", "error": f"simulate={run_state}",
+                }
+                self._ready_flag = True
+                return
 
-
-def _patch_gdr_process(monkeypatch, fail_for: set[str] | None = None):
-    """monkeypatch GdrWorker.process (新架构首阶段, 写 C2 refined Session)."""
-    fail_for = fail_for or set()
-
-    def fake_process(self, task):
-        if task.run_id in fail_for:
-            raise RuntimeError("gdr forced fail")
-        session = task.session_id or task.src_path.stem
-        out = self._refined_dir / f"{session}.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(
-            '{"session_id":"' + session + '","messages":[],"schema_version":"refined_session.v1"}',
-            encoding="utf-8",
-        )
-        self._queue.mark_gdr_done(task.id, gdr_refined_path=out)
-        return out
-
-    monkeypatch.setattr(GdrWorker, "process", fake_process)
-
-
-def _patch_etl_process(monkeypatch):
-    """monkeypatch EtlWorker.process (新架构末阶段, 拆 C2 → 4 视图)."""
-    def fake_process(self, task):
-        c2 = Path(task.gdr_refined_path)
-        base = self._outputs_dir / c2.stem
-        paths = {
-            "messages": base.with_suffix(".messages.json"),
-            "openai": base.with_suffix(".openai.json"),
-            "qwenjina": base.with_suffix(".qwenjina.txt"),
-            "meta": base.with_suffix(".meta.json"),
-        }
-        for p in paths.values():
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("{}", encoding="utf-8")
-        from types import SimpleNamespace
-        self._last_outputs = SimpleNamespace(**paths)
-        return paths["messages"]
-
-    monkeypatch.setattr(EtlWorker, "process", fake_process)
-
-
-# ---------------------------------------------------------------------------
-# start_workers / shutdown
-# ---------------------------------------------------------------------------
-
-def test_start_workers_spawns_threads(env, monkeypatch) -> None:
-    _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
-    m.start_workers()
-    assert len(m.alive_workers) == 2
-    assert any(name == "gdr_0" for name in m.alive_workers)
-    assert any(name == "etl_0" for name in m.alive_workers)
-    with pytest.raises(Exception):
-        m.start_workers()
-
-
-def test_shutdown_stops_all_workers(env, monkeypatch) -> None:
-    _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
-    m.start_workers()
-    assert len(m.alive_workers) == 2
-    m.shutdown(timeout=2.0)
-    assert all(not t.is_alive() for _n, t, _ev in m._threads)
-
-
-# ---------------------------------------------------------------------------
-# 主循环：单批 / 多批
-# ---------------------------------------------------------------------------
-
-def test_run_one_batch_end_to_end(env, monkeypatch) -> None:
-    _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
-
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
-    runs_dir = Path(m._cfg.paths.runs_dir)
-    producer = _make_fake_producer(queue, traj_dir, runs_dir,
-                                   {"T1": "sess_T1", "T2": "sess_T2"})
-    m._producer_runner = producer
-
-    summaries = m.run([["T1", "T2"]])
-    assert len(summaries) == 1
-    s = summaries[0]
-    assert s.batch_id > 0
-    assert set(s.run_ids) == {"T1", "T2"}
-    assert s.drained is True
-    assert s.dead_count == 0
-
-    tasks = queue.list_tasks_for_batch(s.batch_id)
-    assert len(tasks) == 2, f"expected 2 tasks, got {len(tasks)}; counts={queue.count_by_state()}"
-    assert {t.run_id for t in tasks} == {"T1", "T2"}
-    states = {t.run_id: t.state for t in tasks}
-    assert states == {"T1": STATE_DONE, "T2": STATE_DONE}, f"states={states}"
-
-
-def test_run_one_batch_without_pre_registered_tasks(env, monkeypatch) -> None:
-    """回归: producer 不预占位 tasks 时, master 必须靠 ``_first_scan_watcher``
-    把本批 trajectory 同步登记, 否则 ``wait_batch_drained`` 在 watcher 异步
-    首轮前读到空 batch → 误判已 drain → master 立刻退出, tasks 永远 pending.
-
-    真实 ``producer_simulate.run_batch`` 不向 SQLite 写 task, 仅 ``insert_batch`` +
-    ``insert_run_task_map``; tasks 由 watcher 扫描 trajectory_dir 时登记.
-    若 master 同步首扫失败, 整个批会被丢在 pending.
-    """
-    _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
-
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
-    runs_dir = Path(m._cfg.paths.runs_dir)
-
-    def real_like_producer(*, config_path, task_ids, limit, queue):
-        bid = queue.insert_batch(task_ids)
-        queue.update_batch(bid, simulate_started_at="2026-09-01T00:00:00Z")
-        runs: list[TaskRun] = []
-        for tid in task_ids[:limit]:
-            run_id = tid
-            tr = TaskRun(run_id=run_id, task_id=tid, task_type="test",
-                         state=RunState.SUCCESS)
-            runs.append(tr)
-            rd = runs_dir / run_id
-            rd.mkdir(parents=True, exist_ok=True)
-            (rd / "run.json").write_text(
-                json.dumps({"run_id": run_id, "state": "success"}), encoding="utf-8",
+            queue.mark_phase(
+                tid, new_phase="gdr",
+                run_id=tid, session_id=f"session_{tid}", src_path=traj_path,
             )
-            session = f"session_{tid}"
-            (traj_dir / f"{run_id}__{session}.json").write_text("{}", encoding="utf-8")
-            # 注意: 不调用 queue.insert(src_path=...) 预占位, 与真实 producer 一致.
-        queue.update_batch(bid, simulate_done_at="2026-09-01T00:00:01Z")
-        return bid, runs
 
-    m._producer_runner = real_like_producer
+            if behavior.get("gdr_fail", False):
+                queue.mark_failed(tid, stage="gdr", error_msg="gdr=fail")
+                self._result = {
+                    "task_id": tid, "phase": "dead",
+                    "stage": "gdr", "error": "gdr=fail",
+                }
+                self._ready_flag = True
+                return
 
-    summaries = m.run([["T1", "T2"]])
-    s = summaries[0]
-    assert s.drained is True, "first_scan 必须同步登记, 否则 batch 被误判为 drain"
+            refined_path = self._paths.refined_dir / f"{tid}.json"
+            refined_path.write_text("{}", encoding="utf-8")
+            queue.mark_phase(tid, new_phase="etl", gdr_refined_path=refined_path)
 
-    tasks = queue.list_tasks_for_batch(s.batch_id)
-    assert len(tasks) == 2, (
-        f"expected 2 tasks (注册 by first_scan), got {len(tasks)}; "
-        f"counts={queue.count_by_state()}"
-    )
-    states = {t.run_id: t.state for t in tasks}
-    assert states == {"T1": STATE_DONE, "T2": STATE_DONE}, (
-        f"tasks 应走完 gdr+etl, 实测: {states}"
-    )
+            if behavior.get("etl_fail", False):
+                queue.mark_failed(tid, stage="etl", error_msg="etl=fail")
+                self._result = {
+                    "task_id": tid, "phase": "dead",
+                    "stage": "etl", "error": "etl=fail",
+                }
+                self._ready_flag = True
+                return
 
+            base = self._paths.etl_outputs_dir / f"{tid}"
+            msgs = base.with_suffix(".messages.json")
+            openai = base.with_suffix(".openai.json")
+            meta = base.with_suffix(".meta.json")
+            for p in (msgs, openai, meta):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("{}", encoding="utf-8")
+            queue.mark_phase(
+                tid, new_phase="done",
+                etl_messages_path=msgs, etl_openai_path=openai,
+                etl_qwenjina_path=None, etl_meta_path=meta,
+            )
+            self._result = {
+                "task_id": tid, "phase": "done",
+                "stage": "done", "error": None,
+            }
+            self._ready_flag = True
+        except BaseException as exc:  # noqa: BLE001
+            self._exc = exc
+            self._ready_flag = True
 
-def test_first_scan_watcher_registers_existing_trajectories(env, monkeypatch) -> None:
-    """``_first_scan_watcher`` 必须返回已存在 trajectory 数量, 且把它们登记到 SQLite."""
-    _tmp, queue, m = env
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
+    def ready(self, timeout=None):
+        return self._ready_flag
 
-    # 模拟 producer 已落地 trajectory 但 tasks 尚未登记
-    for i in range(3):
-        (traj_dir / f"run_r{i}__session_{i}.json").write_text("{}", encoding="utf-8")
-
-    queue.insert_batch(["T1"])
-    result = m._first_scan_watcher(batch_id=1)
-    assert result["registered"] == 3, f"expected 3 registered, got {result}"
-    assert result["skipped"] == 0
-    tasks = queue.list_tasks_for_batch(1)
-    assert len(tasks) == 3
-    assert {t.run_id for t in tasks} == {"run_r0", "run_r1", "run_r2"}
-
-
-def test_first_scan_watcher_idempotent_with_watcher_async(env, monkeypatch) -> None:
-    """同步 first_scan 后, 异步 watcher 再次 scan 必须 skip 已登记项, 不抛 UNIQUE."""
-    _tmp, queue, m = env
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
-    (traj_dir / "run_r0__session_0.json").write_text("{}", encoding="utf-8")
-    queue.insert_batch(["T1"])
-    first = m._first_scan_watcher(batch_id=1)
-    assert first["registered"] == 1
-
-    # 异步 watcher 接到同样文件: 必须 skip, 不允许重复登记
-    async_w = TrajectoryWatcher(
-        trajectory_dir=traj_dir, queue=queue, batch_id=1, poll_seconds=0.05,
-    )
-    second = async_w.scan_once()
-    assert second["registered"] == 0
-    assert second["skipped"] == 1
+    def get(self, timeout=None):
+        if self._exc is not None:
+            raise self._exc
+        assert self._result is not None
+        return self._result
 
 
-def test_run_multiple_batches(env, monkeypatch) -> None:
-    _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
-    runs_dir = Path(m._cfg.paths.runs_dir)
-    producer = _make_fake_producer(queue, traj_dir, runs_dir)
-    m._producer_runner = producer
+class _FakePool:
+    def __init__(self, *, processes, initializer, initargs):
+        if initializer is not None:
+            initializer(*initargs)
 
-    summaries = m.run([["T1"], ["T2"], ["T3"]])
-    assert len(summaries) == 3
-    assert summaries[0].batch_id != summaries[1].batch_id
-    assert all(s.drained for s in summaries)
-    assert all(len(queue.list_tasks_for_batch(s.batch_id)) == 1 for s in summaries)
+    def apply_async(self, fn, args):
+        tid = args[0]
+        paths_obj = args[1]
+        queue = SQLiteQueue(paths_obj.sqlite_db)
+        behavior = _BEHAVIORS.get(tid, {})
+        return _FakeAsyncResult(tid, queue, paths_obj, behavior)
+
+    def close(self):
+        pass
+
+    def join(self):
+        pass
 
 
-# ---------------------------------------------------------------------------
-# 主循环：含 dead
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _clear_behaviors():
+    _BEHAVIORS.clear()
+    yield
+    _BEHAVIORS.clear()
 
-def test_run_one_batch_with_dead_task(env, monkeypatch) -> None:
-    _tmp, queue, m = env
-    _patch_etl_process(monkeypatch)
-    _patch_gdr_process(monkeypatch, fail_for={"T_BAD"})
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
-    runs_dir = Path(m._cfg.paths.runs_dir)
-    producer = _make_fake_producer(queue, traj_dir, runs_dir,
-                                   {"T_OK": "s1", "T_BAD": "s2"})
-    m._producer_runner = producer
 
-    summaries = m.run([["T_OK", "T_BAD"]])
-    assert len(summaries) == 1
-    s = summaries[0]
-    states = {t.run_id: t.state for t in queue.list_tasks_for_batch(s.batch_id)}
-    assert states["T_OK"] == STATE_DONE
-    assert states["T_BAD"] == STATE_DEAD
-    assert s.dead_count == 1
-    dead_dir = Path(m._cfg.paths.dead_dir)
-    moved = list(dead_dir.glob("*.json"))
-    assert len(moved) >= 1
-    assert any("T_BAD" in p.name or "s2" in p.name for p in moved)
+@pytest.fixture
+def fake_pool(monkeypatch):
+    monkeypatch.setattr(multiprocessing, "Pool", _FakePool)
+    return _FakePool
 
 
 # ---------------------------------------------------------------------------
-# wait_batch_drained
+# 主循环: Master.run → PipelineExecutor.run
 # ---------------------------------------------------------------------------
 
-def test_wait_batch_drained_returns_true_when_all_done(env) -> None:
-    _tmp, queue, m = env
-    fp = env[0] / "t.json"
-    fp.write_text("{}", encoding="utf-8")
-    tid, _ = queue.insert(src_path=fp, run_id="r", session_id="s", batch_id=1)
-    queue.pull_pending_gdr(worker_id="w", n=1)
-    queue.mark_gdr_done(tid, gdr_refined_path=fp)
-    queue.pull_pending_etl(worker_id="w", n=1)
-    queue.mark_etl_done(
-        tid,
-        etl_messages_path=fp,
-        etl_openai_path=fp,
-        etl_qwenjina_path=None,
-        etl_meta_path=fp,
-    )
 
-    bid = queue.insert_batch(["r"])
-    assert m.wait_batch_drained(bid, poll_seconds=0.05) is True
+def test_master_run_delegates_to_pipeline_executor(tmp_path: Path, fake_pool) -> None:
+    """Master.run 直接返回 PipelineExecutor.run 的结果."""
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
+
+    summary = master.run(["T1", "T2"])
+    assert isinstance(summary, PipelineSummary)
+    assert summary.total == 2
+    assert summary.done == 2
 
 
-def test_wait_batch_drained_timeout_when_stuck(env) -> None:
-    _tmp, queue, m = env
-    fp = env[0] / "t.json"
-    fp.write_text("{}", encoding="utf-8")
-    queue.insert(src_path=fp, run_id="r", session_id="s", batch_id=1)
-    bid = queue.insert_batch(["r"])
-    assert m.wait_batch_drained(bid, poll_seconds=0.05, timeout=0.2) is False
+def test_master_run_returns_summary_with_dead(tmp_path: Path, fake_pool) -> None:
+    _BEHAVIORS["T_BAD"] = {"gdr_fail": True}
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
 
-
-def test_wait_batch_drained_empty_batch(env) -> None:
-    _tmp, queue, m = env
-    bid = queue.insert_batch(["nobody"])
-    assert m.wait_batch_drained(bid, poll_seconds=0.05) is True
-
-
-def test_wait_batch_drained_returns_false_on_stop(env) -> None:
-    """stop_event 置位 → 不再等 timeout，立即返回 False."""
-    _tmp, queue, m = env
-    fp = env[0] / "t.json"
-    fp.write_text("{}", encoding="utf-8")
-    queue.insert(src_path=fp, run_id="r", session_id="s", batch_id=1)
-    bid = queue.insert_batch(["r"])
-    m._stop_event.set()
-    start = time.monotonic()
-    assert m.wait_batch_drained(bid, poll_seconds=0.05, timeout=60.0) is False
-    assert time.monotonic() - start < 1.0
+    summary = master.run(["T_OK", "T_BAD"])
+    assert summary.done == 1
+    assert summary.dead == 1
 
 
 # ---------------------------------------------------------------------------
-# 停止请求中断批循环
+# write_health 在 run 前 / 后都被调用
 # ---------------------------------------------------------------------------
 
-def test_run_stops_mid_batch_via_batch_tracker(env, monkeypatch) -> None:
-    """run.json 永不终态 + stop_event 置位 → BatchTrackerStopped 传播，
-    批循环中断，后续批不跑."""
-    _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
 
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
-    runs_dir = Path(m._cfg.paths.runs_dir)
+def test_master_run_writes_health_before_and_after(tmp_path: Path, fake_pool) -> None:
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
 
-    def producer(*, config_path, task_ids, limit, queue):
-        bid = queue.insert_batch(task_ids)
-        # 写 trajectory 但**不写 run.json**：wait_for_terminal 会卡住
-        # （run_id 非空才会真的进入轮询循环）
-        runs = []
-        for tid in task_ids:
-            (traj_dir / f"{tid}__sess.json").write_text("{}", encoding="utf-8")
-            runs.append(TaskRun(run_id=tid, task_id=tid, task_type="test",
-                                state=RunState.VALIDATING))
-        return bid, runs
+    master.run(["T1", "T2"])
 
-    m._producer_runner = producer
-
-    def stopper():
-        time.sleep(0.2)
-        m._stop_event.set()
-
-    threading.Thread(target=stopper, daemon=True).start()
-    start = time.monotonic()
-    summaries = m.run([["T1"], ["T2"]])
-    # T1 批未走完（被停止打断），T2 批不该开跑
-    assert summaries == []
-    assert time.monotonic() - start < 5.0
-
-
-def test_run_completed_batches_not_affected_by_stop(env, monkeypatch) -> None:
-    """停止发生在批间：已完成批的 summary 保留."""
-    _tmp, queue, m = env
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
-
-    traj_dir = Path(m._cfg.paths.trajectory_dir)
-    runs_dir = Path(m._cfg.paths.runs_dir)
-    producer = _make_fake_producer(queue, traj_dir, runs_dir)
-    m._producer_runner = producer
-
-    real_one_batch = m._run_one_batch
-    calls = {"n": 0}
-
-    def counted_one_batch(task_ids):
-        calls["n"] += 1
-        result = real_one_batch(task_ids)
-        if calls["n"] == 1:
-            m._stop_event.set()  # 第一批完成后请求停止
-        return result
-
-    m._run_one_batch = counted_one_batch
-    summaries = m.run([["T1"], ["T2"]])
-    assert calls["n"] == 1
-    assert len(summaries) == 1
-    assert summaries[0].drained is True
+    health_path = Path(cfg.paths.log_dir) / "health.json"
+    assert health_path.exists()
+    data = json.loads(health_path.read_text(encoding="utf-8"))
+    # run 后 health 含 completed + summary
+    assert data.get("status") == "completed"
+    assert "summary" in data
+    assert data["summary"]["done"] == 2
+    assert data["summary"]["dead"] == 0
+    # phases 也写入了
+    assert "phases" in data
+    assert data["phases"]["done"] == 2
 
 
 # ---------------------------------------------------------------------------
-# reap_stale 周期
+# Master.status
 # ---------------------------------------------------------------------------
 
-def test_reaper_loop_calls_reap_stale(env, monkeypatch) -> None:
-    _tmp, queue, m = env
-    raw = m._cfg.settings
-    object.__setattr__(raw, "reap_stale_interval_seconds", 0.1)
-    object.__setattr__(raw, "reap_stale_seconds", 0)
-    calls = {"n": 0}
-    real = queue.reap_stale
-    def spy(*a, **kw):
-        calls["n"] += 1
-        return real(*a, **kw)
-    monkeypatch.setattr(queue, "reap_stale", spy)
-    _patch_gdr_process(monkeypatch)
-    _patch_etl_process(monkeypatch)
-    m.start_workers()
-    time.sleep(0.3)
-    m.shutdown(timeout=1.0)
-    assert calls["n"] >= 1
+
+def test_master_status_returns_phases_and_total(tmp_path: Path, fake_pool) -> None:
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
+    # 跑完后查 status
+    master.run(["T1"])
+    status = master.status()
+    assert "phases" in status
+    assert "total" in status
+    assert "last_updated" in status
+    assert status["phases"]["done"] == 1
+    assert status["total"] == 1
+
+
+def test_master_status_initial_state(tmp_path: Path, fake_pool) -> None:
+    """未跑任何 task 前 status 应含 6 个 phase 全 0 字段."""
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
+    status = master.status()
+    assert set(status["phases"].keys()) == {
+        "pending", "simulate", "gdr", "etl", "done", "dead",
+    }
+    assert status["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Master.shutdown
+# ---------------------------------------------------------------------------
+
+
+def test_master_shutdown_sets_stop_event(tmp_path: Path, fake_pool) -> None:
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
+    assert not master._stop_event.is_set()
+    master.shutdown()
+    assert master._stop_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# _build_gdr_settings
+# ---------------------------------------------------------------------------
+
+
+def test_master_build_gdr_settings_anchored(tmp_path: Path, fake_pool) -> None:
+    """_build_gdr_settings 必须 workers=1 + 锚到 refined_dir/log_dir."""
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
+    settings = master._build_gdr_settings()
+    assert settings.workers == 1
+    assert Path(settings.batch_output_dir) == Path(cfg.paths.refined_dir)
+    assert Path(settings.log_dir) == Path(cfg.paths.log_dir)
+
+
+# ---------------------------------------------------------------------------
+# 旧 batch 相关方法已删除
+# ---------------------------------------------------------------------------
+
+
+def test_master_no_batch_methods(tmp_path: Path) -> None:
+    """契约 §6.3: Master 不再持有 batch 相关方法."""
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
+    # 这些方法必须不存在
+    for name in (
+        "start_workers", "_add_thread", "_start_batch_watcher",
+        "_first_scan_watcher", "wait_batch_drained",
+        "register_active_batch", "unregister_active_batch",
+        "_reaper_loop", "_reaper_thread", "_run_one_batch",
+        "_count_terminal_for_batch",
+    ):
+        assert not hasattr(master, name), f"Master.{name} should be deleted"
+
+    # 这些字段也不应存在
+    for attr in ("_threads", "_workers_started", "_active_batch_ids"):
+        assert not hasattr(master, attr), f"Master.{attr} should be deleted"
+
+
+def test_master_no_alive_workers_property(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    master = Master(cfg=cfg)
+    assert not hasattr(master, "alive_workers")

@@ -1,40 +1,49 @@
-"""orchestration.workers.gdr_worker 单元测试.
+"""orchestration.workers.gdr_worker 单元测试 (ST-3).
 
 通过 monkeypatch ``gdr.pipeline.runner._process_one_file`` 避免依赖真实 LLM endpoint.
 
-新架构下 gdr 是首阶段:
-    - 输入: trajectory JSONL (``task.src_path``)
-    - 输出: C2 refined Session 单文件 (``gdr_refined_path``)
+新接口::
+
+    run_gdr_once(*, src_path, refined_dir, gdr_settings, task_id, session_id)
+        -> GdrResult
 """
 
 from __future__ import annotations
 
-import threading
-import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from orchestration.errors import NonRetryableError
-from orchestration.queue import (
-    STATE_DEAD,
-    STATE_DONE,
-    STATE_PENDING,
-    STATE_PENDING_ETL,
-    SQLiteQueue,
+from gdr.config.settings import Settings
+from orchestration.workers.gdr_worker import (
+    GdrNonRetryableError,
+    GdrResult,
+    RetryableGdrError,
+    run_gdr_once,
 )
-from orchestration.workers.gdr_worker import GdrWorker
 
 
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def env(tmp_path: Path):
-    queue = SQLiteQueue(tmp_path / "q.db", max_retry_gdr=2, max_retry_etl=2)
     refined_dir = tmp_path / "refined"
-    return queue, refined_dir, tmp_path
+    settings = Settings(
+        llm_base_url="http://localhost:0/v1",
+        llm_api_key="x",
+        main_model="m",
+        tool_model="m",
+        judge_model="m",
+        workers=2,          # 显式传非 1, 测试 run_gdr_once 强制 workers=1
+        llm_concurrency=4,
+        max_files=99,       # 显式传非 1, 测试强制 max_files=1
+    )
+    return tmp_path, refined_dir, settings
 
 
 def _make_trajectory(tmp_path: Path, session_id: str) -> Path:
@@ -42,12 +51,6 @@ def _make_trajectory(tmp_path: Path, session_id: str) -> Path:
     fp = tmp_path / f"{session_id}.json"
     fp.write_text("{}\n", encoding="utf-8")
     return fp
-
-
-def _seed_gdr_task(queue: SQLiteQueue, src_path: Path, session_id: str) -> int:
-    """登记 task 并保持 ``state=pending`` (让 GdrWorker.pull() 拉到)."""
-    tid, _ = queue.insert(src_path=src_path, run_id="r1", session_id=session_id, batch_id=1)
-    return tid
 
 
 def _write_c2_output(output_path: Path) -> dict:
@@ -60,28 +63,8 @@ def _write_c2_output(output_path: Path) -> dict:
     return {"status": "success", "output": str(output_path)}
 
 
-# ---------------------------------------------------------------------------
-# 构造
-# ---------------------------------------------------------------------------
-
-def test_construct_default(env) -> None:
-    queue, refined_dir, _ = env
-    GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-
-
-def test_construct_with_settings(env) -> None:
-    queue, refined_dir, _ = env
-    from gdr.config.settings import Settings
-    cfg = Settings(workers=2, llm_concurrency=4)
-    GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir, gdr_settings=cfg)
-
-
-# ---------------------------------------------------------------------------
-# pull / process / mark_done
-# ---------------------------------------------------------------------------
-
-def _mock_gdr(monkeypatch, fake_process_one):
-    """同时 mock ``from_trajectory`` (GdrWorker 前置校验) + ``_process_one_file``."""
+def _mock_gdr(monkeypatch: pytest.MonkeyPatch, fake_process_one: Any) -> None:
+    """同时 mock ``from_trajectory`` (run_gdr_once 前置校验) + ``_process_one_file``."""
     monkeypatch.setattr(
         "orchestration.workers.gdr_worker.from_trajectory",
         lambda path: None,
@@ -92,32 +75,15 @@ def _mock_gdr(monkeypatch, fake_process_one):
     )
 
 
-def test_pull_returns_pending_only(env) -> None:
-    """GdrWorker 从 ``state=pending`` 拉 (新架构首阶段), 不应拉到 pending_etl."""
-    queue, refined_dir, tmp_path = env
-    # 先插 other (id=1) → setup 拉到 (id=1, s1 待会儿才插, 此时 other 唯一 pending)
-    other = tmp_path / "other.json"
-    other.write_text("{}", encoding="utf-8")
-    queue.insert(src_path=other, run_id="r2", session_id="other", batch_id=1)
-    [seed_task] = queue.pull_pending_gdr(worker_id="setup", n=1)
-    queue.mark_gdr_done(seed_task.id, gdr_refined_path=other.parent / "other_refined.json")
+# ---------------------------------------------------------------------------
+# 成功路径
+# ---------------------------------------------------------------------------
 
-    # 后插 s1 → 唯一 pending
+
+def test_run_gdr_once_success(env, monkeypatch) -> None:
+    """run_gdr_once 成功: 写入 C2, 返 GdrResult 含 refined_path / duration."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
-
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    tasks = w.pull()
-    # s1 是 pending → 拉到; other 是 pending_etl → 不会拉到
-    assert len(tasks) == 1
-    assert tasks[0].state == "gdr_processing"
-    assert tasks[0].session_id == "s1"
-
-
-def test_process_calls_gdr_and_returns_c2(env, monkeypatch) -> None:
-    queue, refined_dir, tmp_path = env
-    src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
 
     captured: dict = {}
 
@@ -125,229 +91,262 @@ def test_process_calls_gdr_and_returns_c2(env, monkeypatch) -> None:
         captured["input"] = input_path
         captured["output"] = output_path
         captured["cfg_workers"] = cfg.workers
+        captured["cfg_max_files"] = cfg.max_files
+        captured["cfg_batch_output_dir"] = cfg.batch_output_dir
         return _write_c2_output(output_path)
 
     _mock_gdr(monkeypatch, fake_process_one)
 
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    [task] = w.pull()
-    out_path = w.process(task)
+    result = run_gdr_once(
+        src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+        task_id="T001", session_id="s1",
+    )
 
-    # 单 C2 文件 (无 _refined 后缀, etl 末端会加 .messages.json 等尾缀)
-    assert out_path.name == "s1.json"
-    assert out_path.exists()
+    assert isinstance(result, GdrResult)
+    assert result.task_id == "T001"
+    assert result.session_id == "s1"
+    assert result.refined_path.name == "T001__s1.json"
+    assert result.refined_path.exists()
+    assert result.duration_seconds >= 0
+    # 输入路径透传
     assert captured["input"] == src
-    # 强制 cfg.workers=1 (避免 gdr 内部 Pool)
+    # 强制 cfg.workers=1 / max_files=1
     assert captured["cfg_workers"] == 1
+    assert captured["cfg_max_files"] == 1
+    # batch_output_dir 锚到 refined_dir
+    assert Path(captured["cfg_batch_output_dir"]) == refined_dir
 
 
-def test_process_uses_src_path_not_qf_output(env, monkeypatch) -> None:
-    """新架构 gdr 从 ``task.src_path`` (trajectory) 读，不再读 qf_output."""
-    queue, refined_dir, tmp_path = env
+def test_run_gdr_once_creates_refined_dir(env, monkeypatch) -> None:
+    """refined_dir 不存在时, run_gdr_once 应自动创建."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
+    # refined_dir 不创建, 让 run_gdr_once 内部创建
+    assert not refined_dir.exists()
 
-    captured = {}
-    def fake(input_path, output_path, cfg):
-        captured["input"] = input_path
-        return _write_c2_output(output_path)
+    _mock_gdr(monkeypatch, lambda i, o, c: _write_c2_output(o))
 
-    _mock_gdr(monkeypatch, fake)
-
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    [task] = w.pull()
-    w.process(task)
-    assert captured["input"] == src
+    result = run_gdr_once(
+        src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+        task_id="T001", session_id="s1",
+    )
+    assert refined_dir.exists()
+    assert result.refined_path.exists()
 
 
-def test_process_missing_src_raises(env, monkeypatch) -> None:
-    """trajectory 源文件缺失是永久性错误."""
-    queue, refined_dir, tmp_path = env
+def test_run_gdr_once_filename_sanitizes_unsafe_chars(env, monkeypatch) -> None:
+    """文件名非法字符 (含 ``/`` 等) 应 sanitize 为 ``_``."""
+    tmp_path, refined_dir, settings = env
+    # 不走 _make_trajectory (该辅助函数自己就会因 session_id 含 '/' 报错);
+    # 直接造一个物理文件 + 传一个虚拟 src_path 给 run_gdr_once,
+    # 焦点是 task_id / session_id 的 sanitize 行为, 不是 src 文件内容.
+    safe_src = _make_trajectory(tmp_path, "s1")
+    src = tmp_path / "s" / "1.json"  # 物理上不存在的路径, 仅用于验证 sanitize 命名
+    _mock_gdr(monkeypatch, lambda i, o, c: _write_c2_output(o))
+
+    result = run_gdr_once(
+        src_path=safe_src, refined_dir=refined_dir, gdr_settings=settings,
+        task_id="T/001", session_id="s/1",
+    )
+    # 文件名应 sanitize
+    assert "/" not in result.refined_path.name
+    assert result.refined_path.name == "T_001__s_1.json"
+
+
+# ---------------------------------------------------------------------------
+# 异常路径 - 永久性 (GdrNonRetryableError)
+# ---------------------------------------------------------------------------
+
+
+def test_run_gdr_once_missing_src_raises_non_retryable(env, monkeypatch) -> None:
+    """src 不存在 → GdrNonRetryableError (永久)."""
+    tmp_path, refined_dir, settings = env
     src = tmp_path / "missing.json"  # 不创建
-    _seed_gdr_task(queue, src, "s1")
 
     _mock_gdr(monkeypatch, lambda *a, **kw: {"status": "success"})
 
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    [task] = w.pull()
-    with pytest.raises(NonRetryableError, match="trajectory missing"):
-        w.process(task)
+    with pytest.raises(GdrNonRetryableError, match="trajectory missing"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
 
 
-def test_process_gdr_returns_non_success_raises(env, monkeypatch) -> None:
-    """可重试的非 success (如 save_error) → 普通 RuntimeError, 走重试."""
-    queue, refined_dir, tmp_path = env
+def test_run_gdr_once_trajectory_parse_error_is_non_retryable(env, monkeypatch) -> None:
+    """from_trajectory 抛 ValueError → GdrNonRetryableError (永久)."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
 
-    _mock_gdr(monkeypatch, lambda i, o, c: {"status": "save_error"})
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    [task] = w.pull()
-    with pytest.raises(RuntimeError, match="non-success"):
-        w.process(task)
+    def boom_from_trajectory(_path):
+        raise ValueError("bad json")
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker.from_trajectory",
+        boom_from_trajectory,
+    )
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker._process_one_file",
+        lambda *a, **kw: {"status": "success"},
+    )
+
+    with pytest.raises(GdrNonRetryableError, match="parse failed"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
 
 
-def test_process_gdr_permanent_status_raises_non_retryable(env, monkeypatch) -> None:
-    """load_error / discard 是永久结果 → NonRetryableError (不消耗重试)."""
-    queue, refined_dir, tmp_path = env
+def test_run_gdr_once_load_error_status_is_non_retryable(env, monkeypatch) -> None:
+    """gdr.status='load_error' → GdrNonRetryableError (永久)."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
+    _mock_gdr(monkeypatch, lambda i, o, c: {"status": "load_error", "error": "bad"})
 
+    with pytest.raises(GdrNonRetryableError, match="load_error"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
+
+
+def test_run_gdr_once_discard_status_is_non_retryable(env, monkeypatch) -> None:
+    """gdr.status='discard' → GdrNonRetryableError (永久)."""
+    tmp_path, refined_dir, settings = env
+    src = _make_trajectory(tmp_path, "s1")
     _mock_gdr(monkeypatch, lambda i, o, c: {"status": "discard"})
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    [task] = w.pull()
-    with pytest.raises(NonRetryableError, match="discard"):
-        w.process(task)
+
+    with pytest.raises(GdrNonRetryableError, match="discard"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
 
 
-def test_run_once_load_error_goes_dead_without_retry(env, monkeypatch) -> None:
-    """load_error 经 run_once → 直接 dead, attempts_gdr 不增, 带 [non-retryable] 前缀."""
-    queue, refined_dir, tmp_path = env
+def test_run_gdr_once_incomplete_status_is_non_retryable(env, monkeypatch) -> None:
+    """gdr.status='incomplete' → GdrNonRetryableError (永久)."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    tid = _seed_gdr_task(queue, src, "s1")
+    _mock_gdr(monkeypatch, lambda i, o, c: {"status": "incomplete"})
 
-    _mock_gdr(monkeypatch, lambda i, o, c: {"status": "load_error", "error": "bad json"})
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    assert w.run_once() == 0
-
-    refreshed = queue.get(tid)
-    assert refreshed is not None
-    assert refreshed.state == STATE_DEAD
-    assert refreshed.attempts_gdr == 0
-    assert "[non-retryable]" in (refreshed.error_msg or "")
+    with pytest.raises(GdrNonRetryableError, match="incomplete"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
 
 
-def test_process_gdr_returns_none_raises(env, monkeypatch) -> None:
-    queue, refined_dir, tmp_path = env
+# ---------------------------------------------------------------------------
+# 异常路径 - 可重试 (RetryableGdrError)
+# ---------------------------------------------------------------------------
+
+
+def test_run_gdr_once_save_error_is_retryable(env, monkeypatch) -> None:
+    """gdr.status='save_error' → RetryableGdrError (可重试)."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
+    _mock_gdr(monkeypatch, lambda i, o, c: {"status": "save_error", "error": "io"})
 
+    with pytest.raises(RetryableGdrError, match="save_error"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
+
+
+def test_run_gdr_once_returns_none_is_retryable(env, monkeypatch) -> None:
+    """gdr 返回 None (软超时部分保存) → RetryableGdrError (可重试)."""
+    tmp_path, refined_dir, settings = env
+    src = _make_trajectory(tmp_path, "s1")
     _mock_gdr(monkeypatch, lambda i, o, c: None)
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    [task] = w.pull()
-    with pytest.raises(RuntimeError, match="status='None'"):
-        w.process(task)
+
+    with pytest.raises(RetryableGdrError, match="None"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
 
 
-def test_mark_done_transitions_to_pending_etl(env, monkeypatch) -> None:
-    """gdr 完成 → state=pending_etl, 写 C2 路径."""
-    queue, refined_dir, tmp_path = env
+def test_run_gdr_once_unknown_status_is_retryable(env, monkeypatch) -> None:
+    """gdr.status 未知字符串 → RetryableGdrError (保守)."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    tid = _seed_gdr_task(queue, src, "s1")
+    _mock_gdr(monkeypatch, lambda i, o, c: {"status": "something_weird"})
 
-    _mock_gdr(monkeypatch, lambda i, o, c: _write_c2_output(o))
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    [task] = w.pull()
-    out_path = w.process(task)
-    w.mark_done(task, out_path)
-
-    refreshed = queue.get(tid)
-    assert refreshed is not None
-    assert refreshed.state == STATE_PENDING_ETL
-    assert refreshed.gdr_refined_path == str(out_path)
+    with pytest.raises(RetryableGdrError, match="something_weird"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
 
 
 # ---------------------------------------------------------------------------
-# 失败 / 重试 / dead
+# 边界场景
 # ---------------------------------------------------------------------------
 
-def test_run_once_marks_failed_on_process_error(env, monkeypatch) -> None:
-    queue, refined_dir, tmp_path = env
+
+def test_run_gdr_once_unexpected_exception_propagates(env, monkeypatch) -> None:
+    """_process_one_file 抛未捕获异常 → 透传 (PipelineExecutor 兜底)."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    tid = _seed_gdr_task(queue, src, "s1")
-
-    def boom(input_path, output_path, cfg):
-        raise ValueError("gdr exploded")
-
-    _mock_gdr(monkeypatch, boom)
-
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    success = w.run_once()
-    assert success == 0
-
-    refreshed = queue.get(tid)
-    assert refreshed is not None
-    assert refreshed.state == STATE_PENDING  # 退回 pending (新架构首阶段), 可重试
-    assert refreshed.attempts_gdr == 1
-    assert "gdr exploded" in (refreshed.error_msg or "")
-
-
-def test_run_once_dead_after_max_retries_gdr(env, monkeypatch) -> None:
-    queue, refined_dir, tmp_path = env
-    src = _make_trajectory(tmp_path, "s1")
-    tid = _seed_gdr_task(queue, src, "s1")
 
     def boom(*a, **kw):
-        raise ValueError("boom")
+        raise RuntimeError("gdr exploded")
     _mock_gdr(monkeypatch, boom)
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    w.run_once()  # 1
-    w.run_once()  # 2
-    w.run_once()  # 3 > max_retry_gdr=2 → dead
 
-    refreshed = queue.get(tid)
-    assert refreshed is not None
-    assert refreshed.state == STATE_DEAD
-    assert refreshed.attempts_gdr == 3
+    with pytest.raises(RuntimeError, match="gdr exploded"):
+        run_gdr_once(
+            src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+            task_id="T001", session_id="s1",
+        )
 
 
-# ---------------------------------------------------------------------------
-# 完整闭环 (gdr → etl)
-# ---------------------------------------------------------------------------
-
-def test_run_once_end_to_end_gdr_then_etl(env, monkeypatch) -> None:
-    """gdr 完成 C2 后被 etl 消费的端到端 (etl 由 EtlWorker 消费, 这里只验证 gdr 末端)."""
-    queue, refined_dir, tmp_path = env
+def test_run_gdr_once_success_uses_settings_output_path(env, monkeypatch) -> None:
+    """gdr 返回 status='success' 但 output field 缺失时, 退回计算的 out_path."""
+    tmp_path, refined_dir, settings = env
     src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
 
+    # 返回 success 不带 output, run_gdr_once 应兜底到本地 out_path
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker.from_trajectory",
+        lambda path: None,
+    )
+    def fake_no_output(input_path, output_path, cfg):
+        # 模拟 gdr 写文件但不返回 output field
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("{}", encoding="utf-8")
+        return {"status": "success"}  # 没有 output field
+    monkeypatch.setattr(
+        "orchestration.workers.gdr_worker._process_one_file",
+        fake_no_output,
+    )
+
+    result = run_gdr_once(
+        src_path=src, refined_dir=refined_dir, gdr_settings=settings,
+        task_id="T001", session_id="s1",
+    )
+    # 兜底到本地计算路径
+    assert result.refined_path.name == "T001__s1.json"
+    assert result.refined_path.exists()
+
+
+def test_run_gdr_once_is_pure_module_function(env, monkeypatch) -> None:
+    """run_gdr_once 不维护任何状态; 多次调用互不影响."""
+    tmp_path, refined_dir, settings = env
+    src_a = _make_trajectory(tmp_path, "s_a")
+    src_b = _make_trajectory(tmp_path, "s_b")
     _mock_gdr(monkeypatch, lambda i, o, c: _write_c2_output(o))
 
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir)
-    success = w.run_once()
-    assert success == 1
-    counts = queue.count_by_state()
-    assert counts.get(STATE_PENDING_ETL) == 1
-    assert counts.get(STATE_PENDING, 0) == 0
+    r_a = run_gdr_once(
+        src_path=src_a, refined_dir=refined_dir, gdr_settings=settings,
+        task_id="T_A", session_id="s_a",
+    )
+    r_b = run_gdr_once(
+        src_path=src_b, refined_dir=refined_dir, gdr_settings=settings,
+        task_id="T_B", session_id="s_b",
+    )
 
-
-# ---------------------------------------------------------------------------
-# run_forever
-# ---------------------------------------------------------------------------
-
-def test_run_forever_exits_on_stop_event(env, monkeypatch) -> None:
-    queue, refined_dir, tmp_path = env
-    src = _make_trajectory(tmp_path, "s1")
-    _seed_gdr_task(queue, src, "s1")
-
-    _mock_gdr(monkeypatch, lambda i, o, c: _write_c2_output(o))
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir, poll_seconds=0.05)
-    stop = threading.Event()
-    t = threading.Thread(target=w.run_forever, args=(stop,), daemon=True)
-    t.start()
-    time.sleep(0.2)
-    stop.set()
-    t.join(timeout=1.0)
-
-    assert not t.is_alive()
-    assert queue.count_by_state().get(STATE_PENDING_ETL) == 1
-
-
-def test_run_forever_processes_later_added_tasks(env, monkeypatch) -> None:
-    queue, refined_dir, tmp_path = env
-
-    _mock_gdr(monkeypatch, lambda i, o, c: _write_c2_output(o))
-    w = GdrWorker(queue=queue, worker_id="w", refined_dir=refined_dir, poll_seconds=0.05)
-    stop = threading.Event()
-    t = threading.Thread(target=w.run_forever, args=(stop,), daemon=True)
-    t.start()
-
-    time.sleep(0.1)
-    src = _make_trajectory(tmp_path, "late")
-    queue.insert(src_path=src, run_id="rl", session_id="late", batch_id=1)
-    time.sleep(0.3)
-    stop.set()
-    t.join(timeout=1.0)
-
-    assert queue.count_by_state().get(STATE_PENDING_ETL) == 1
-    assert (refined_dir / "late.json").exists()
+    assert r_a.refined_path != r_b.refined_path
+    assert r_a.task_id == "T_A"
+    assert r_b.task_id == "T_B"
+    # 两个 C2 文件都存在
+    assert r_a.refined_path.exists()
+    assert r_b.refined_path.exists()

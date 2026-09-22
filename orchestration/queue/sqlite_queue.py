@@ -1,17 +1,18 @@
-"""SQLite 任务队列实现.
+"""SQLite 任务队列实现 (2026-09-22 ST-2 重构).
 
-每个 ``SQLiteQueue`` 实例 = 一个进程内单例；不同进程共享同一个 db 文件。
-SQLite 的 WAL 模式天然支持读并发 + 写串行，因此不需要进程间锁。
+每个 ``SQLiteQueue`` 实例 = 一个进程内单例; 不同进程共享同一个 db 文件.
+SQLite 的 WAL 模式天然支持读并发 + 写串行, 因此不需要进程间锁.
 
-抢占（pull）操作使用 ``BEGIN IMMEDIATE`` + ``UPDATE...RETURNING`` 原子地
-把最多 N 条目标 state 的行改成 ``*_processing`` 并返回，避免
-``SELECT-then-UPDATE`` 的竞态。
+新架构 ``simulation server → gdr → etl`` 下, 状态机:
+    pending → simulate → gdr → etl → done
+(失败终态走 dead, 调用 ``mark_failed`` 一步到位; ``requeue_dead`` 复活)
 
-新架构 ``simulation server → gdr → etl`` 下, 状态机：
-    pending → gdr_processing → pending_etl → etl_processing → done
-各阶段的"在途"判定见 `_GDR_INFLIGHT_STATES` / `_ETL_INFLIGHT_STATES`。
+阶段推进不通过中间的 ``*_processing`` 抢占, 而是由 ``PipelineExecutor``
+按 ``max_parallelism`` 调度 ``multiprocessing.Pool`` 一次性跑单 task 全流程.
+子进程内通过 ``SQLiteQueue(paths.sqlite_db)`` 重新构造 (connection 不可
+pickle, 见契约 §2.7).
 
-详见 ``docs/orchestration-design.md`` §5（schema）和 §6.1-§6.3（算法）。
+详见 ``docs/设计方案/pipeline-contracts.md`` §2.
 """
 
 from __future__ import annotations
@@ -21,35 +22,36 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 
 # ---------------------------------------------------------------------------
-# 常量
+# 常量 (契约 §2.3)
 # ---------------------------------------------------------------------------
 
-STATE_PENDING = "pending"
-STATE_GDR_PROCESSING = "gdr_processing"
-STATE_PENDING_ETL = "pending_etl"
-STATE_ETL_PROCESSING = "etl_processing"
-STATE_DONE = "done"
-STATE_DEAD = "dead"
+PHASE_PENDING = "pending"
+PHASE_SIMULATE = "simulate"
+PHASE_GDR = "gdr"
+PHASE_ETL = "etl"
+PHASE_DONE = "done"
+PHASE_DEAD = "dead"
 
+ALL_PHASES = frozenset({
+    PHASE_PENDING, PHASE_SIMULATE, PHASE_GDR,
+    PHASE_ETL, PHASE_DONE, PHASE_DEAD,
+})
+TERMINAL_PHASES = frozenset({PHASE_DONE, PHASE_DEAD})
+
+STAGE_SIMULATE = "simulate"
 STAGE_GDR = "gdr"
 STAGE_ETL = "etl"
+_VALID_STAGES = (STAGE_SIMULATE, STAGE_GDR, STAGE_ETL)
 
-# batches 表的阶段时间戳列（schema.sql 定义 + _init_schema 幂等迁移白名单）。
-_BATCH_STAGE_COLUMNS = (
-    "gdr_started_at", "gdr_done_at",
-    "etl_started_at", "etl_done_at",
-)
-
-# "该阶段在批内仍有在途 task" 的 state 集合 —— 判断 *_done_at 时批内不得存在。
-# dead 不阻塞阶段收尾（死信不再进入该阶段）。
-_GDR_INFLIGHT_STATES = ("pending", "gdr_processing")
-_ETL_INFLIGHT_STATES = (
-    "pending", "gdr_processing", "pending_etl", "etl_processing",
-)
+_ATTEMPT_COLUMNS = {
+    STAGE_SIMULATE: "attempts_simulate",
+    STAGE_GDR: "attempts_gdr",
+    STAGE_ETL: "attempts_etl",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -58,25 +60,35 @@ _ETL_INFLIGHT_STATES = (
 
 @dataclass(frozen=True)
 class Task:
-    """从 tasks 表读出的一行，路径字段已转为 Path."""
-    id: int
-    src_path: Path
-    run_id: str
+    """从 tasks 表读出的一行 (契约 §2.4); 路径字段已转为 Path."""
+    task_id: str
+    phase: str
+    run_id: str | None
     session_id: str | None
-    batch_id: int
-    state: str
+    attempts_simulate: int
     attempts_gdr: int
     attempts_etl: int
-    gdr_refined_path: str | None
-    etl_messages_path: str | None
-    etl_openai_path: str | None
-    etl_qwenjina_path: str | None
-    etl_meta_path: str | None
+    src_path: Path | None
+    gdr_refined_path: Path | None
+    etl_messages_path: Path | None
+    etl_openai_path: Path | None
+    etl_qwenjina_path: Path | None
+    etl_meta_path: Path | None
     error_msg: str | None
-    locked_by: str | None
-    locked_at: str | None
-    created_at: str
+    started_at: str
     updated_at: str
+
+
+class TaskAlreadyTerminal(Exception):
+    """upsert_task 时遇到终态 task 时抛 (契约 §2.6)."""
+
+    def __init__(self, task_id: str, current_phase: str) -> None:
+        super().__init__(
+            f"task {task_id!r} is already terminal (phase={current_phase!r}); "
+            "use requeue_dead() to revive before upserting"
+        )
+        self.task_id = task_id
+        self.current_phase = current_phase
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +96,15 @@ class Task:
 # ---------------------------------------------------------------------------
 
 def _utc_now_iso() -> str:
-    """UTC ISO8601 字符串（微秒精度，Z 结尾），用作 SQLite TEXT 时间戳."""
+    """UTC ISO8601 字符串 (微秒精度, Z 结尾), 用作 SQLite TEXT 时间戳."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 _SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
+
+
+def _to_path_or_none(val: str | None) -> Path | None:
+    return Path(val) if val else None
 
 
 # ---------------------------------------------------------------------------
@@ -96,30 +112,40 @@ _SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # ---------------------------------------------------------------------------
 
 class SQLiteQueue:
-    """SQLite-backed 任务队列.
+    """SQLite-backed 任务队列 (契约 §2.5).
 
-    设计要点：
-    * 每个方法开新连接、用 ``BEGIN IMMEDIATE`` 串行化写操作；不需要进程内锁。
-    * WAL 模式下多个 reader 可并发，writer 自动排队。
-    * 抢占（pull）用 ``UPDATE...RETURNING`` 原子完成。
-    * 进程崩溃恢复靠 ``reap_stale`` 把超时 ``locked_at`` 的 ``*_processing``
-      退回 ``pending`` / ``pending_etl``。
+    设计要点:
+    * 每个方法开新连接、用 ``BEGIN IMMEDIATE`` 串行化写操作; 不需要进程内锁.
+    * WAL 模式下多个 reader 可并发, writer 自动排队.
+    * 多进程并发安全: 子进程必须重新构造 ``SQLiteQueue(db_path)`` 实例
+      (sqlite3 connection 不可 pickle, 契约 §2.7).
     """
 
     def __init__(
         self,
         db_path: Path,
         *,
-        max_retry_gdr: int = 3,
-        max_retry_etl: int = 3,
         busy_timeout_ms: int = 30_000,
     ) -> None:
         self._db_path = Path(db_path)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._max_retry_gdr = int(max_retry_gdr)
-        self._max_retry_etl = int(max_retry_etl)
         self._busy_timeout_ms = int(busy_timeout_ms)
         self._init_schema()
+
+    # ------------------------------------------------------------------
+    # 上下文管理 (契约 §2.5)
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "SQLiteQueue":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        # 当前实现每个方法都开新连接, 无外部资源需释放; 保留接口契约.
+        return None
+
+    @property
+    def db_path(self) -> Path:
+        """暴露 db 文件路径, 供子进程重连 / 健康检查使用."""
+        return self._db_path
 
     # ------------------------------------------------------------------
     # 连接管理
@@ -130,8 +156,8 @@ class SQLiteQueue:
         conn = sqlite3.connect(
             self._db_path,
             timeout=self._busy_timeout_ms / 1000,
-            isolation_level=None,            # autocommit; 我们显式 BEGIN/COMMIT
-            check_same_thread=False,         # SQLiteQueue 内部不持有连接，跨线程安全
+            isolation_level=None,            # autocommit; 显式 BEGIN/COMMIT
+            check_same_thread=False,         # 跨线程安全 (单实例不持连接)
         )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
@@ -145,45 +171,17 @@ class SQLiteQueue:
     def _init_schema(self) -> None:
         ddl = _SCHEMA_PATH.read_text(encoding="utf-8")
         with self._conn() as conn:
-            self._drop_legacy_tasks_if_needed(conn)
+            # 旧架构遗留表 (batches / run_tasks) 直接 DROP — 新 schema 不用它们.
+            # CREATE IF NOT EXISTS 不会创建它们, 留着占空间且干扰测试断言.
+            for tbl in ("batches", "run_tasks"):
+                cur = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name=?",
+                    (tbl,),
+                )
+                if cur.fetchone() is not None:
+                    conn.execute(f"DROP TABLE {tbl}")
             conn.executescript(ddl)
-            # 幂等迁移: 旧 db 的 batches 表可能缺阶段时间戳列或 etl_count
-            # (CREATE IF NOT EXISTS 不会给已存在的表补列)。列名来自下方
-            # 白名单常量，无注入面。
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(batches)")}
-            for col in _BATCH_STAGE_COLUMNS:
-                if col not in cols:
-                    conn.execute(f"ALTER TABLE batches ADD COLUMN {col} TEXT")
-            if "etl_count" not in cols:
-                conn.execute("ALTER TABLE batches ADD COLUMN etl_count INTEGER NOT NULL DEFAULT 0")
-
-    @staticmethod
-    def _drop_legacy_tasks_if_needed(conn: sqlite3.Connection) -> None:
-        """旧库 tasks 表带 qf/gdr_old 列时直接 DROP 重建 (决策: 不迁移).
-
-        ``CREATE TABLE IF NOT EXISTS`` 不会给已存在的表补列，故检测到旧列
-        时先行 DROP，随后 ``executescript`` 按新 schema 重建空表。batches /
-        run_tasks 无外键引用 tasks，DROP 不级联。
-
-        触发条件: 检测到旧架构任一独有的列 (``qf_output_path`` / 旧 4 视图列)
-        —— 当前 schema.sql 的列集合是 4 视图改名为 etl_* + gdr_refined_path,
-        与旧 schema 共享 attempts_* 前缀, 因此单看列名不行, 必须显式列举。
-        """
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'",
-        )}
-        if "tasks" not in tables:
-            return
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
-        legacy_markers = {
-            "qf_output_path",        # 旧架构 qf 阶段唯一列
-            "gdr_messages_path",     # 旧架构 gdr 阶段 4 视图列 (新架构改名为 etl_*)
-            "gdr_openai_path",
-            "gdr_qwenjina_path",
-            "gdr_meta_path",
-        }
-        if legacy_markers & cols:
-            conn.execute("DROP TABLE tasks")
 
     # ------------------------------------------------------------------
     # 内部：行转 Task
@@ -192,637 +190,281 @@ class SQLiteQueue:
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> Task:
         return Task(
-            id=row["id"],
-            src_path=Path(row["src_path"]),
+            task_id=row["task_id"],
+            phase=row["phase"],
             run_id=row["run_id"],
             session_id=row["session_id"],
-            batch_id=row["batch_id"],
-            state=row["state"],
+            attempts_simulate=row["attempts_simulate"],
             attempts_gdr=row["attempts_gdr"],
             attempts_etl=row["attempts_etl"],
-            gdr_refined_path=row["gdr_refined_path"],
-            etl_messages_path=row["etl_messages_path"],
-            etl_openai_path=row["etl_openai_path"],
-            etl_qwenjina_path=row["etl_qwenjina_path"],
-            etl_meta_path=row["etl_meta_path"],
+            src_path=_to_path_or_none(row["src_path"]),
+            gdr_refined_path=_to_path_or_none(row["gdr_refined_path"]),
+            etl_messages_path=_to_path_or_none(row["etl_messages_path"]),
+            etl_openai_path=_to_path_or_none(row["etl_openai_path"]),
+            etl_qwenjina_path=_to_path_or_none(row["etl_qwenjina_path"]),
+            etl_meta_path=_to_path_or_none(row["etl_meta_path"]),
             error_msg=row["error_msg"],
-            locked_by=row["locked_by"],
-            locked_at=row["locked_at"],
-            created_at=row["created_at"],
+            started_at=row["started_at"],
             updated_at=row["updated_at"],
         )
 
+    _TASK_COLUMNS = (
+        "task_id, phase, run_id, session_id, "
+        "attempts_simulate, attempts_gdr, attempts_etl, "
+        "src_path, gdr_refined_path, "
+        "etl_messages_path, etl_openai_path, etl_qwenjina_path, etl_meta_path, "
+        "error_msg, started_at, updated_at"
+    )
+
+    def _select_task_by_task_id(
+        self, conn: sqlite3.Connection, task_id: str, *,
+        for_update: bool = False,
+    ) -> sqlite3.Row | None:
+        sql = f"SELECT {self._TASK_COLUMNS} FROM tasks WHERE task_id = ?"
+        if for_update:
+            sql += " AND phase NOT IN ('done', 'dead')"
+        return conn.execute(sql, (task_id,)).fetchone()
+
     # ------------------------------------------------------------------
-    # insert / 重复登记
+    # 写入: upsert_task / mark_phase / increment_attempts / mark_failed
     # ------------------------------------------------------------------
 
-    def insert(
-        self,
-        *,
-        src_path: Path,
-        run_id: str,
-        session_id: str | None,
-        batch_id: int,
-    ) -> tuple[int, bool]:
-        """登记一个 task；按 ``src_path`` UNIQUE 做幂等.
+    def upsert_task(self, task_id: str, *, phase: str = PHASE_PENDING) -> Task:
+        """新建或重置 task 行 (契约 §2.5).
 
-        Returns: ``(task_id, inserted_now)``。重复登记返回 ``inserted_now=False``。
+        - 不存在 → INSERT (phase=pending 默认, attempts 清零).
+        - 存在但 phase ∉ TERMINAL_PHASES → 重置 phase + 清 attempts + 清错误 + 清产物路径.
+        - 存在且 phase ∈ TERMINAL_PHASES → 抛 ``TaskAlreadyTerminal``.
+
+        返回: 新建的 Task (含 DB 自动写的时间戳).
         """
-        with self._conn() as conn:
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    """
-                    INSERT INTO tasks (src_path, run_id, session_id, batch_id, state)
-                    VALUES (?, ?, ?, ?, 'pending')
-                    """,
-                    (str(src_path), run_id, session_id, int(batch_id)),
-                )
-                inserted = True
-                task_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-                conn.execute("COMMIT")
-                return int(task_id), inserted
-            except sqlite3.IntegrityError:
-                conn.execute("ROLLBACK")
-                row = conn.execute(
-                    "SELECT id FROM tasks WHERE src_path = ?", (str(src_path),)
-                ).fetchone()
-                assert row is not None  # UNIQUE 违反说明行存在
-                return int(row["id"]), False
-
-    # ------------------------------------------------------------------
-    # 批量登记：batches 表
-    # ------------------------------------------------------------------
-
-    def insert_batch(self, task_ids: list[str]) -> int:
-        """在 batches 表登记一批 task 列表，返回 batch_id."""
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            cur = conn.execute(
-                "INSERT INTO batches (task_ids, status) VALUES (?, 'running')",
-                (",".join(task_ids),),
-            )
-            batch_id = cur.lastrowid
-            conn.execute("COMMIT")
-            return int(batch_id)
-
-    def update_batch(
-        self,
-        batch_id: int,
-        *,
-        status: str | None = None,
-        simulate_started_at: str | None = None,
-        simulate_done_at: str | None = None,
-        gdr_count: int | None = None,
-        etl_count: int | None = None,
-        dead_count: int | None = None,
-    ) -> None:
-        """增量更新 batches 行；只覆盖传入字段."""
-        sets: list[str] = []
-        args: list[object] = []
-        if status is not None:
-            sets.append("status = ?"); args.append(status)
-        if simulate_started_at is not None:
-            sets.append("simulate_started_at = ?"); args.append(simulate_started_at)
-        if simulate_done_at is not None:
-            sets.append("simulate_done_at = ?"); args.append(simulate_done_at)
-        if gdr_count is not None:
-            sets.append("gdr_count = ?"); args.append(int(gdr_count))
-        if etl_count is not None:
-            sets.append("etl_count = ?"); args.append(int(etl_count))
-        if dead_count is not None:
-            sets.append("dead_count = ?"); args.append(int(dead_count))
-        if not sets:
-            return
-        args.append(int(batch_id))
-        with self._conn() as conn:
-            conn.execute(f"UPDATE batches SET {', '.join(sets)} WHERE id = ?", args)
-
-    # ------------------------------------------------------------------
-    # 抢占：pull_pending (gdr) / pull_pending_etl
-    # ------------------------------------------------------------------
-
-    def _pull_n(
-        self,
-        *,
-        from_state: str,
-        to_state: str,
-        worker_id: str,
-        n: int,
-        stage_started_col: str | None = None,
-        batch_ids: list[int] | None = None,
-    ) -> list[Task]:
-        """原子地把最多 n 条 ``from_state`` 行改成 ``to_state`` 并返回它们.
-
-        ``stage_started_col``（batches 表列名，内部常量）非空时，同事务内给
-        被拉到 task 所属的批打首次阶段戳（COALESCE 只写第一次，重试不覆盖）。
-
-        ``batch_ids``（修复 race #方向B）非空时只拉属于这些 batch 的 task,
-        让 worker 不会跨 batch 偷拉不属于本轮 run 的遗留 task, 避免 master
-        在本轮 batch drain 后误以为没事、实际 worker 还在跑别的 batch 的活
-        → shutdown 强杀导致 interpreter shutdown 错误。
-        """
-        if n <= 0:
-            return []
+        if phase not in ALL_PHASES:
+            raise ValueError(f"invalid phase: {phase!r}")
         now = _utc_now_iso()
         with self._conn() as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                if batch_ids:
-                    # 仅从这些 batch 拉。占位符动态生成 (batch 列表长度由调用方控制,
-                    # 不接受外部输入, 长度安全; 但仍做一次类型校验防 SQL 注入)。
-                    if not all(isinstance(b, int) for b in batch_ids):
-                        raise TypeError(
-                            f"batch_ids must be list[int], got {[type(b).__name__ for b in batch_ids]}"
+                row = self._select_task_by_task_id(conn, task_id)
+                if row is None:
+                    conn.execute(
+                        """
+                        INSERT INTO tasks (
+                            task_id, phase,
+                            attempts_simulate, attempts_gdr, attempts_etl,
+                            error_msg, started_at, updated_at
                         )
-                    placeholders = ",".join("?" for _ in batch_ids)
-                    select_sql = (
-                        f"SELECT id FROM tasks "
-                        f"WHERE state = ? AND batch_id IN ({placeholders}) "
-                        f"ORDER BY id LIMIT ?"
+                        VALUES (?, ?, 0, 0, 0, NULL, ?, ?)
+                        """,
+                        (task_id, phase, now, now),
                     )
-                    select_params = (from_state, *batch_ids, int(n))
                 else:
-                    select_sql = (
-                        "SELECT id FROM tasks "
-                        "WHERE state = ? "
-                        "ORDER BY id LIMIT ?"
+                    if row["phase"] in TERMINAL_PHASES:
+                        raise TaskAlreadyTerminal(task_id, row["phase"])
+                    conn.execute(
+                        """
+                        UPDATE tasks
+                        SET phase = ?,
+                            attempts_simulate = 0,
+                            attempts_gdr = 0,
+                            attempts_etl = 0,
+                            run_id = NULL,
+                            session_id = NULL,
+                            src_path = NULL,
+                            gdr_refined_path = NULL,
+                            etl_messages_path = NULL,
+                            etl_openai_path = NULL,
+                            etl_qwenjina_path = NULL,
+                            etl_meta_path = NULL,
+                            error_msg = NULL,
+                            updated_at = ?
+                        WHERE task_id = ?
+                        """,
+                        (phase, now, task_id),
                     )
-                    select_params = (from_state, int(n))
-                rows = conn.execute(
-                    f"""
-                    UPDATE tasks
-                    SET state = ?,
-                        locked_by = ?,
-                        locked_at = ?,
-                        updated_at = ?
-                    WHERE id IN ({select_sql})
-                    RETURNING id, src_path, run_id, session_id, batch_id,
-                              state, attempts_gdr, attempts_etl,
-                              gdr_refined_path,
-                              etl_messages_path, etl_openai_path,
-                              etl_qwenjina_path, etl_meta_path,
-                              error_msg, locked_by, locked_at,
-                              created_at, updated_at
-                    """,
-                    (to_state, worker_id, now, now, *select_params),
-                ).fetchall()
-                if rows and stage_started_col:
-                    if stage_started_col not in _BATCH_STAGE_COLUMNS:  # 防御: 列名白名单
-                        raise ValueError(f"invalid stage column: {stage_started_col!r}")
-                    for bid in {int(r["batch_id"]) for r in rows}:
-                        conn.execute(
-                            f"UPDATE batches SET {stage_started_col} = COALESCE({stage_started_col}, ?)"
-                            " WHERE id = ?",
-                            (now, bid),
-                        )
                 conn.execute("COMMIT")
-                return [self._row_to_task(r) for r in rows]
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            refreshed = self._select_task_by_task_id(conn, task_id)
+            assert refreshed is not None
+            return self._row_to_task(refreshed)
+
+    def mark_phase(
+        self,
+        task_id: str,
+        *,
+        new_phase: str,
+        run_id: str | None = None,
+        session_id: str | None = None,
+        src_path: Path | None = None,
+        gdr_refined_path: Path | None = None,
+        etl_messages_path: Path | None = None,
+        etl_openai_path: Path | None = None,
+        etl_qwenjina_path: Path | None = None,
+        etl_meta_path: Path | None = None,
+    ) -> None:
+        """推进 phase, 同步写各阶段产物路径 (契约 §2.5).
+
+        阶段间合法性由调用方保证 (典型序列: pending → simulate → gdr → etl → done);
+        本方法不做迁移检查, 但 new_phase 必须 ∈ ALL_PHASES.
+        """
+        if new_phase not in ALL_PHASES:
+            raise ValueError(f"invalid phase: {new_phase!r}")
+        now = _utc_now_iso()
+        sets = ["phase = ?", "updated_at = ?"]
+        args: list[object] = [new_phase, now]
+        # 各字段仅在显式传入时更新 (None 不覆盖) — 但契约允许显式 None 表示"清空"
+        # 这里采用"显式传 None 也保留原值"的语义, 调用方需要清空就再写一次.
+        if run_id is not None:
+            sets.append("run_id = ?"); args.append(run_id)
+        if session_id is not None:
+            sets.append("session_id = ?"); args.append(session_id)
+        if src_path is not None:
+            sets.append("src_path = ?"); args.append(str(src_path))
+        if gdr_refined_path is not None:
+            sets.append("gdr_refined_path = ?"); args.append(str(gdr_refined_path))
+        if etl_messages_path is not None:
+            sets.append("etl_messages_path = ?"); args.append(str(etl_messages_path))
+        if etl_openai_path is not None:
+            sets.append("etl_openai_path = ?"); args.append(str(etl_openai_path))
+        if etl_qwenjina_path is not None:
+            sets.append("etl_qwenjina_path = ?"); args.append(str(etl_qwenjina_path))
+        if etl_meta_path is not None:
+            sets.append("etl_meta_path = ?"); args.append(str(etl_meta_path))
+        args.append(task_id)
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(sets)} WHERE task_id = ?",
+                args,
+            )
+
+    def increment_attempts(self, task_id: str, *, stage: str) -> int:
+        """自增 attempts_simulate | attempts_gdr | attempts_etl, 返回新值.
+
+        stage ∈ {STAGE_SIMULATE, STAGE_GDR, STAGE_ETL}; 其他值抛 ``ValueError``.
+        """
+        if stage not in _VALID_STAGES:
+            raise ValueError(
+                f"invalid stage: {stage!r}; expected one of {_VALID_STAGES}"
+            )
+        col = _ATTEMPT_COLUMNS[stage]
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    f"SELECT {col} AS n FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"task {task_id!r} not found")
+                new_val = int(row["n"]) + 1
+                conn.execute(
+                    f"UPDATE tasks SET {col} = ?, updated_at = ? WHERE task_id = ?",
+                    (new_val, now, task_id),
+                )
+                conn.execute("COMMIT")
+                return new_val
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
 
-    def pull_pending_gdr(
-        self, *, worker_id: str, n: int,
-        batch_ids: list[int] | None = None,
-    ) -> list[Task]:
-        """拉 ``state=pending`` task（gdr 阶段首跑）.
-
-        ``batch_ids`` 非空时仅从这些 batch 取, 避免 worker 跨 batch 偷拉
-        (方向 B: 修复 shutdown race)。
-        """
-        return self._pull_n(
-            from_state=STATE_PENDING,
-            to_state=STATE_GDR_PROCESSING,
-            worker_id=worker_id,
-            n=n,
-            stage_started_col="gdr_started_at",
-            batch_ids=batch_ids,
-        )
-
-    def pull_pending_etl(
-        self, *, worker_id: str, n: int,
-        batch_ids: list[int] | None = None,
-    ) -> list[Task]:
-        """拉 ``state=pending_etl`` task（gdr 完成, 等 etl 收尾）.
-
-        ``batch_ids`` 非空时仅从这些 batch 取, 同 ``pull_pending_gdr``。
-        """
-        return self._pull_n(
-            from_state=STATE_PENDING_ETL,
-            to_state=STATE_ETL_PROCESSING,
-            worker_id=worker_id,
-            n=n,
-            stage_started_col="etl_started_at",
-            batch_ids=batch_ids,
-        )
-
-    # ------------------------------------------------------------------
-    # 标记完成 / 失败 / 死信
-    # ------------------------------------------------------------------
-
-    def mark_gdr_done(self, task_id: int, *, gdr_refined_path: Path) -> None:
-        """gdr 处理成功 → state=pending_etl，等待 etl 抢占.
-
-        写 C2 refined Session 单文件路径（``gdr_refined_path``）；etl 阶段
-        从该路径读 C2 拆 4 视图。若该 task 所属批内已无 gdr 在途
-        （pending/gdr_processing），顺带打 ``batches.gdr_done_at``（仅首次）。
-        """
-        now = _utc_now_iso()
-        with self._conn() as conn:
-            conn.execute(
-                """
-                UPDATE tasks
-                SET state = 'pending_etl',
-                    gdr_refined_path = ?,
-                    error_msg = NULL,
-                    locked_by = NULL,
-                    locked_at = NULL,
-                    updated_at = ?
-                WHERE id = ? AND state = 'gdr_processing'
-                """,
-                (str(gdr_refined_path), now, int(task_id)),
-            )
-            self._stamp_stage_done(
-                conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
-                started_col="gdr_started_at",
-            )
-
-    def mark_etl_done(
-        self,
-        task_id: int,
-        *,
-        etl_messages_path: Path,
-        etl_openai_path: Path,
-        etl_qwenjina_path: Path | None,
-        etl_meta_path: Path,
-    ) -> None:
-        """etl 处理成功 → state=done；批内 etl 全部收尾时打 ``etl_done_at``.
-
-        etl 末端把 C2 refined Session 拆成 4 视图（C3 契约），记录 4 个产物
-        路径以便 producer / 观测工具回查。
-        """
-        now = _utc_now_iso()
-        with self._conn() as conn:
-            conn.execute(
-                """
-                UPDATE tasks
-                SET state = 'done',
-                    etl_messages_path = ?,
-                    etl_openai_path = ?,
-                    etl_qwenjina_path = ?,
-                    etl_meta_path = ?,
-                    error_msg = NULL,
-                    locked_by = NULL,
-                    locked_at = NULL,
-                    updated_at = ?
-                WHERE id = ? AND state = 'etl_processing'
-                """,
-                (
-                    str(etl_messages_path),
-                    str(etl_openai_path),
-                    str(etl_qwenjina_path) if etl_qwenjina_path else None,
-                    str(etl_meta_path),
-                    now,
-                    int(task_id),
-                ),
-            )
-            self._stamp_stage_done(
-                conn, task_id, "etl_done_at", _ETL_INFLIGHT_STATES, now,
-                started_col="etl_started_at",
-            )
-
-    @staticmethod
-    def _stamp_stage_done(
-        conn: sqlite3.Connection,
-        task_id: int,
-        col: str,
-        inflight_states: tuple[str, ...],
-        now: str,
-        *,
-        started_col: str,
-    ) -> None:
-        """task 刚离开某阶段后调用：若其所属批内该阶段已无在途 task 则打首次收尾戳.
-
-        ``col``/``started_col`` 来自模块内常量；``inflight_states`` 不含 dead
-        （死信不阻塞收尾）；``started_col IS NOT NULL`` 守卫避免给从未进入
-        该阶段的批打"凭空收尾"戳（health.json 里不会出现 done 而无 started）。
-        """
-        placeholders = ",".join("?" * len(inflight_states))
-        conn.execute(
-            f"""
-            UPDATE batches
-               SET {col} = ?
-             WHERE id = (SELECT batch_id FROM tasks WHERE id = ?)
-               AND {col} IS NULL
-               AND {started_col} IS NOT NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM tasks t2
-                    WHERE t2.batch_id = batches.id
-                      AND t2.state IN ({placeholders})
-               )
-            """,
-            (now, int(task_id), *inflight_states),
-        )
-
     def mark_failed(
         self,
-        task_id: int,
+        task_id: str,
         *,
         stage: str,
         error_msg: str,
-        retryable: bool = True,
-    ) -> str:
-        """失败处理：attempts++；超 max → state=dead，否则退回可重试 state.
+    ) -> None:
+        """标 phase=dead, 写 error_msg (契约 §2.5).
 
-        ``retryable=False`` 表示永久性错误：不消耗 attempts，直接入 dead，
-        ``error_msg`` 加 ``[non-retryable]`` 前缀（status / dead.log 可辨）。
-
-        Returns: 新的 state（pending / pending_etl / dead）。
+        注: 本方法不递增 attempts; 调用方负责按重试上限决定何时调用它
+        (典型用法: 失败次数达到 max_retry_* 后再 mark_failed).
         """
-        if stage not in (STAGE_GDR, STAGE_ETL):
-            raise ValueError(f"unknown stage: {stage!r}")
-        now = _utc_now_iso()
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT attempts_gdr, attempts_etl, state FROM tasks WHERE id = ?",
-                (int(task_id),),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"task {task_id} not found")
-            if stage == STAGE_GDR:
-                new_attempts = int(row["attempts_gdr"]) + 1
-                max_retry = self._max_retry_gdr
-                attempts_col = "attempts_gdr"
-            else:
-                new_attempts = int(row["attempts_etl"]) + 1
-                max_retry = self._max_retry_etl
-                attempts_col = "attempts_etl"
-
-            if not retryable:
-                # 永久错误：不递增 attempts，直接 dead
-                new_attempts -= 1
-                new_state = STATE_DEAD
-                error_msg = "[non-retryable] " + error_msg
-            elif new_attempts > max_retry:
-                new_state = STATE_DEAD
-            elif stage == STAGE_GDR:
-                new_state = STATE_PENDING
-            else:
-                new_state = STATE_PENDING_ETL
-
-            conn.execute(
-                f"""
-                UPDATE tasks
-                SET state = ?,
-                    {attempts_col} = ?,
-                    error_msg = ?,
-                    locked_by = NULL,
-                    locked_at = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (new_state, new_attempts, error_msg, now, int(task_id)),
+        if stage not in _VALID_STAGES:
+            raise ValueError(
+                f"invalid stage: {stage!r}; expected one of {_VALID_STAGES}"
             )
-            if new_state == STATE_DEAD:
-                # 最后一条 task 死在某阶段时, 该阶段的收尾戳不能永远缺失
-                # (mark_*_done 不会再被调用)。dead 不属于任何在途集合，
-                # 因此对两个阶段都做条件补戳; 已打过/仍有在途时是 no-op。
-                self._stamp_stage_done(
-                    conn, task_id, "gdr_done_at", _GDR_INFLIGHT_STATES, now,
-                    started_col="gdr_started_at",
-                )
-                self._stamp_stage_done(
-                    conn, task_id, "etl_done_at", _ETL_INFLIGHT_STATES, now,
-                    started_col="etl_started_at",
-                )
-            return new_state
-
-    def mark_dead(self, task_id: int, *, error_msg: str) -> None:
-        """强制置 dead（不计入 attempts，用于 watcher 解析失败等场景）."""
+        del stage  # 仅用于校验, 不写库
         now = _utc_now_iso()
         with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE tasks
-                SET state = 'dead',
+                SET phase = ?,
                     error_msg = ?,
-                    locked_by = NULL,
-                    locked_at = NULL,
                     updated_at = ?
-                WHERE id = ?
+                WHERE task_id = ?
                 """,
-                (error_msg, now, int(task_id)),
+                (PHASE_DEAD, error_msg, now, task_id),
             )
 
-    def requeue_dead(self, *, batch_id: int | None = None) -> int:
-        """把所有 ``state=dead``（或指定 batch）的 task 重置为 ``pending``.
+    def requeue_dead(self) -> int:
+        """所有 phase=dead 改 phase=pending, 清空 error_msg / 产物路径.
 
-        不重置 ``attempts_*``；让 worker 重试但仍受 max_retry 约束。
-        若想完全重置，需要额外的 ``reset_attempts`` 标志（暂不提供）。
-
-        Returns: 被重置的行数.
+        返回: 被重置的行数 (契约 §2.5).
         """
         now = _utc_now_iso()
         with self._conn() as conn:
-            if batch_id is None:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                    SET state = 'pending',
-                        error_msg = NULL,
-                        locked_by = NULL,
-                        locked_at = NULL,
-                        updated_at = ?
-                    WHERE state = 'dead'
-                    """,
-                    (now,),
-                )
-            else:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                    SET state = 'pending',
-                        error_msg = NULL,
-                        locked_by = NULL,
-                        locked_at = NULL,
-                        updated_at = ?
-                    WHERE state = 'dead' AND batch_id = ?
-                    """,
-                    (now, int(batch_id)),
-                )
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                SET phase = ?,
+                    error_msg = NULL,
+                    run_id = NULL,
+                    session_id = NULL,
+                    src_path = NULL,
+                    gdr_refined_path = NULL,
+                    etl_messages_path = NULL,
+                    etl_openai_path = NULL,
+                    etl_qwenjina_path = NULL,
+                    etl_meta_path = NULL,
+                    updated_at = ?
+                WHERE phase = ?
+                """,
+                (PHASE_PENDING, now, PHASE_DEAD),
+            )
             return int(cur.rowcount)
 
     # ------------------------------------------------------------------
-    # 崩溃恢复
+    # 读取
     # ------------------------------------------------------------------
 
-    def reap_stale(self, *, older_than_seconds: int) -> int:
-        """把 ``locked_at`` 超过阈值的 ``*_processing`` 行退回可重试 state.
-
-        用法：master 定时调用；处理崩溃 worker 留下的"幽灵锁"。
-
-        Returns: 被退回的行数。
-        """
-        # 计算 cutoff：当前时间 - older_than_seconds（按 ISO 字符串字典序比较）
-        # 简化做法：拉出所有 processing 行，Python 侧判断是否超时
+    def get_task(self, task_id: str) -> Task | None:
+        """按 task_id 查单行, 不存在返 None (契约 §2.5)."""
         with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, state, locked_at
-                FROM tasks
-                WHERE state IN ('gdr_processing', 'etl_processing')
-                  AND locked_at IS NOT NULL
-                """
-            ).fetchall()
-            now = datetime.now(timezone.utc)
-            reap_ids_gdr: list[int] = []
-            reap_ids_etl: list[int] = []
-            for r in rows:
-                try:
-                    ts = datetime.strptime(r["locked_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
-                    ts = ts.replace(tzinfo=timezone.utc)
-                except (TypeError, ValueError):
-                    continue
-                if (now - ts).total_seconds() < older_than_seconds:
-                    continue
-                if r["state"] == "gdr_processing":
-                    reap_ids_gdr.append(int(r["id"]))
-                else:
-                    reap_ids_etl.append(int(r["id"]))
+            row = self._select_task_by_task_id(conn, task_id)
+            return self._row_to_task(row) if row else None
 
-            now_iso = _utc_now_iso()
-            if reap_ids_gdr:
-                conn.execute(
-                    f"""
-                    UPDATE tasks
-                    SET state = 'pending',
-                        locked_by = NULL,
-                        locked_at = NULL,
-                        error_msg = COALESCE(error_msg, 'reaped: stale gdr lock'),
-                        updated_at = '{now_iso}'
-                    WHERE id IN ({','.join('?' * len(reap_ids_gdr))})
-                    """,
-                    reap_ids_gdr,
-                )
-            if reap_ids_etl:
-                conn.execute(
-                    f"""
-                    UPDATE tasks
-                    SET state = 'pending_etl',
-                        locked_by = NULL,
-                        locked_at = NULL,
-                        error_msg = COALESCE(error_msg, 'reaped: stale etl lock'),
-                        updated_at = '{now_iso}'
-                    WHERE id IN ({','.join('?' * len(reap_ids_etl))})
-                    """,
-                    reap_ids_etl,
-                )
-            return len(reap_ids_gdr) + len(reap_ids_etl)
-
-    # ------------------------------------------------------------------
-    # 统计 / 查询
-    # ------------------------------------------------------------------
-
-    def count_by_state(self) -> dict[str, int]:
+    def list_tasks(
+        self,
+        *,
+        phase: str | None = None,
+        limit: int | None = None,
+    ) -> list[Task]:
+        """按 phase 过滤; phase=None 返全部; 按 started_at 排序 (契约 §2.5)."""
+        if phase is not None and phase not in ALL_PHASES:
+            raise ValueError(f"invalid phase: {phase!r}")
+        sql = f"SELECT {self._TASK_COLUMNS} FROM tasks"
+        args: list[object] = []
+        if phase is not None:
+            sql += " WHERE phase = ?"
+            args.append(phase)
+        sql += " ORDER BY started_at, task_id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT state, COUNT(*) AS n FROM tasks GROUP BY state"
-            ).fetchall()
-        return {r["state"]: int(r["n"]) for r in rows}
-
-    def count_pending_gdr(self) -> int:
-        """``state=pending`` 行数（gdr 阶段首跑池大小）."""
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM tasks WHERE state = 'pending'"
-            ).fetchone()
-        return int(row["n"]) if row else 0
-
-    def count_pending_etl(self) -> int:
-        """``state=pending_etl`` 行数（gdr 完成, 等 etl 收尾的积压）."""
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM tasks WHERE state = 'pending_etl'"
-            ).fetchone()
-        return int(row["n"]) if row else 0
-
-    def list_tasks_for_batch(self, batch_id: int) -> list[Task]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, src_path, run_id, session_id, batch_id, state,
-                       attempts_gdr, attempts_etl,
-                       gdr_refined_path,
-                       etl_messages_path, etl_openai_path, etl_qwenjina_path,
-                       etl_meta_path, error_msg, locked_by, locked_at,
-                       created_at, updated_at
-                FROM tasks
-                WHERE batch_id = ?
-                ORDER BY id
-                """,
-                (int(batch_id),),
-            ).fetchall()
+            rows = conn.execute(sql, args).fetchall()
         return [self._row_to_task(r) for r in rows]
 
-    # ------------------------------------------------------------------
-    # run_id → task_id 映射（#9: 产物文件名带 task_id 前缀）
-    # ------------------------------------------------------------------
-
-    def insert_run_task_map(self, rows: "list[tuple[str, str, int]]") -> None:
-        """批量登记 (run_id, task_id, batch_id) 映射；同 run_id 重复写入时覆盖.
-
-        由 producer 在 simulate 完成后调用——它是唯一同时知道 run_id 与
-        task_id 的环节；worker 侧只按 run_id 查询。
-        """
-        if not rows:
-            return
+    def count_by_phase(self) -> dict[str, int]:
+        """返 {phase: count} 全分布 (契约 §2.5)."""
         with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.executemany(
-                """
-                INSERT INTO run_tasks (run_id, task_id, batch_id)
-                VALUES (?, ?, ?)
-                ON CONFLICT(run_id) DO UPDATE SET
-                    task_id  = excluded.task_id,
-                    batch_id = excluded.batch_id
-                """,
-                rows,
-            )
-            conn.execute("COMMIT")
-
-    def lookup_task_id(self, run_id: str) -> str | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT task_id FROM run_tasks WHERE run_id = ?", (run_id,)
-            ).fetchone()
-        return str(row["task_id"]) if row else None
-
-    def lookup_run(self, run_id: str) -> tuple[str, int] | None:
-        """按 run_id 反查 ``(task_id, batch_id)``；无映射返回 None.
-
-        watcher 用它在登记 trajectory 时修正批次归属（迟到文件归到真实批次，
-        而不是当前 watcher 绑定的批次）。
-        """
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT task_id, batch_id FROM run_tasks WHERE run_id = ?", (run_id,)
-            ).fetchone()
-        return (str(row["task_id"]), int(row["batch_id"])) if row else None
-
-    def get(self, task_id: int) -> Task | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                """
-                SELECT id, src_path, run_id, session_id, batch_id, state,
-                       attempts_gdr, attempts_etl,
-                       gdr_refined_path,
-                       etl_messages_path, etl_openai_path, etl_qwenjina_path,
-                       etl_meta_path, error_msg, locked_by, locked_at,
-                       created_at, updated_at
-                FROM tasks
-                WHERE id = ?
-                """,
-                (int(task_id),),
-            ).fetchone()
-        return self._row_to_task(row) if row else None
+            rows = conn.execute(
+                "SELECT phase, COUNT(*) AS n FROM tasks GROUP BY phase"
+            ).fetchall()
+        out: dict[str, int] = {p: 0 for p in ALL_PHASES}
+        for r in rows:
+            out[str(r["phase"])] = int(r["n"])
+        return out

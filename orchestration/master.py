@@ -1,55 +1,44 @@
-"""orchestration.master: 主循环 — 串起 producer / watcher / gdr / etl workers.
+"""orchestration.master: 新架构 (simulation server → gdr → etl) 主入口.
 
-设计见 ``docs/orchestration-design.md`` §6.1、§9。
-
-新架构 ``simulation server → gdr → etl`` 下:
-- 主进程跑主循环
-- gdr / etl 用常驻 Thread + ``stop_event`` 关闭
-- watcher 按批次起新 Thread, 每批独立 stop_event
-- ``reap_stale`` 用独立 Thread 定时跑
-
-主循环每批:
-    1. ``producer_simulate.run_batch(task_ids, ...)`` → ``(batch_id, [TaskRun])``
-    2. ``batch_tracker.wait_for_terminal(run_ids)``（防御性二次确认）
-    3. 启动本批 watcher（轮询 trajectory_dir → SQLite，batch_id 锁定）
-    4. ``wait_batch_drained(batch_id)``: 本批所有 task 走到 ``done`` 或 ``dead``
-    5. 关闭本批 watcher
-    6. ``reap_dead(...)`` 把 dead 产物归档
-    7. ``write_health(...)``
+设计依据 ``docs/设计方案/pipeline-contracts.md`` §6.
 
 边界:
-    * ``producer_simulate`` 是阻塞调用，跑在主线程
-    * worker / watcher / reap_stale 异常不会让主循环死；run_forever 内 try/except 已覆盖
+* Master 仅持有配置 / queue / stop_event, **不直接起 worker 线程**;
+  调度全部由 ``PipelineExecutor`` (multiprocessing.Pool) 完成.
+* Master ``shutdown()`` 仅 set stop_event, 已在跑的子进程会跑完单个 task
+  然后正常退出 (子进程跑一个 task = 一次 apply_async 调).
+* ``status()`` 走 SQLite 直接读 ``tasks`` 表.
+* ``run()`` 前后各调一次 ``write_health``, 落 ``log_dir/health.json``.
+
+删除 (契约 §6.3 明确):
+* start_workers / _add_thread / _start_batch_watcher / _first_scan_watcher
+* wait_batch_drained / register_active_batch / unregister_active_batch
+* _reaper_loop / _reaper_thread
+* _active_batch_ids / _threads / _workers_started
+* alive_workers / _count_terminal_for_batch / _run_one_batch
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any
 
 from gdr.config.settings import Settings as GdrSettings
 
-from orchestration.batch_tracker import BatchTrackerStopped, wait_for_terminal
 from orchestration.config_loader import OrchestrationConfig
-from orchestration.failure_handler import reap_dead
-from orchestration.health import write_health
-from orchestration.producer_simulate import run_batch as producer_run_batch
-from orchestration.queue import (
-    STATE_DEAD,
-    STATE_DONE,
-    STATE_PENDING,
-    STATE_PENDING_ETL,
-    SQLiteQueue,
-)
-from orchestration.watcher import TrajectoryWatcher
-from orchestration.workers.etl_worker import EtlWorker
-from orchestration.workers.gdr_worker import GdrWorker
+from orchestration.health import collect_tasks, write_health
+from orchestration.pipeline_executor import PipelineExecutor, PipelineSummary
+from orchestration.queue import SQLiteQueue
 
 _log = logging.getLogger(__name__)
+
+
+class OrchestrationError(RuntimeError):
+    """master 启动 / 运行期错误."""
 
 
 # ---------------------------------------------------------------------------
@@ -57,125 +46,86 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class OrchestrationError(RuntimeError):
-    """master 启动 / 运行期错误."""
-
-
-@dataclass(frozen=True)
-class BatchSummary:
-    batch_id: int
-    run_ids: tuple[str, ...]
-    drained: bool
-    dead_count: int
-
-
-# producer_runner 签名：(config_path, task_ids, limit, queue) → (batch_id, [TaskRun])
-ProducerRunner = Callable[..., tuple[int, list]]
-
-
 class Master:
-    """orchestration 主循环."""
+    """orchestration 主入口 (新架构三阶段流水线)."""
 
-    def __init__(
-        self,
-        *,
-        cfg: OrchestrationConfig,
-        queue: SQLiteQueue,
-        producer_runner: ProducerRunner | None = None,
-        gdr_settings: GdrSettings | None = None,
-        stop_event: threading.Event | None = None,
-    ) -> None:
+    def __init__(self, cfg: OrchestrationConfig) -> None:
         self._cfg = cfg
-        self._queue = queue
-        self._producer_runner: ProducerRunner = producer_runner or self._default_producer
-        self._gdr_settings = gdr_settings
-
-        # 外部（daemon 信号 / STOP 哨兵）可注入共享 stop_event，
-        # 让 Ctrl+C 直接触发主循环的 BatchTrackerStopped 中断路径
-        self._stop_event = stop_event if stop_event is not None else threading.Event()
-        self._threads: list[tuple[str, threading.Thread, threading.Event]] = []
-        self._reaper_thread: threading.Thread | None = None
-        self._workers_started = False
-        # 方向 B: 当前活跃 batch_id 集合. gdr / etl worker 拉任务时只取这些
-        # batch 的任务, 防止跨 batch 偷拉导致 master shutdown 时 worker 仍在
-        # 跑别的 batch 的活 → interpreter shutdown 错误。
-        self._active_batch_ids: set[int] = set()
+        self._queue = SQLiteQueue(cfg.paths.sqlite_db)
+        self._stop_event = threading.Event()
 
     # ------------------------------------------------------------------
-    # 启动 / 关闭
+    # 公开 API
     # ------------------------------------------------------------------
 
-    def start_workers(self) -> None:
-        """启动 gdr × K、etl × M 常驻 worker 和 reap_stale 周期."""
-        if self._workers_started:
-            raise OrchestrationError("workers already started")
-        self._workers_started = True
+    def run(self, task_ids: list[str]) -> PipelineSummary:
+        """创建 PipelineExecutor 跑完 task_ids, 返回 PipelineSummary.
 
-        s = self._cfg.settings
-        refined_dir = Path(self._cfg.paths.refined_dir)
-        etl_outputs_dir = Path(self._cfg.paths.etl_outputs_dir)
-        # worker 内 poll 用一个保守的间隔；master 主循环会用 batch_drain_poll_seconds
-        # 等终态，所以这里不必太快；过长只是首次响应慢一点
-        worker_poll = min(0.1, s.batch_drain_poll_seconds)
-
-        for i in range(s.gdr_workers):
-            w = GdrWorker(
-                queue=self._queue, worker_id=f"gdr_{i}",
-                refined_dir=refined_dir,
-                gdr_settings=self._build_gdr_settings(),
-                llm_concurrency=self._cfg.gdr.llm_concurrency,
-                n=1, poll_seconds=worker_poll,
-                allowed_batch_ids=self._active_batch_ids,  # 方向 B: 共享集合引用
+        副作用:
+            - run() 前 ``write_health`` (status=starting)
+            - run() 后 ``write_health`` (done/dead 已统计)
+        """
+        # 启动前先落一次 health (空 / 启动态)
+        try:
+            write_health(
+                self._queue,
+                log_dir=Path(self._cfg.paths.log_dir),
+                extra={"status": "running", "submitted": list(task_ids)},
             )
-            self._add_thread(f"gdr_{i}", w)
+        except Exception as exc:
+            _log.warning("master: pre-run write_health failed: %s", exc)
 
-        for i in range(s.etl_workers):
-            w = EtlWorker(
-                queue=self._queue, worker_id=f"etl_{i}",
-                outputs_dir=etl_outputs_dir,
-                n=1, poll_seconds=worker_poll,
-                allowed_batch_ids=self._active_batch_ids,  # 方向 B: 共享集合引用
-            )
-            self._add_thread(f"etl_{i}", w)
-
-        # reap_stale 周期
-        self._reaper_thread = threading.Thread(
-            target=self._reaper_loop, name="reaper", daemon=True,
+        executor = PipelineExecutor(
+            queue=self._queue,
+            settings=self._cfg.settings,
+            paths=self._cfg.paths,
+            gdr_settings=self._build_gdr_settings(),
         )
-        self._reaper_thread.start()
-        _log.info("master: started %d worker(s)", len(self._threads))
+        try:
+            summary = executor.run(task_ids)
+        finally:
+            # run 后落 health — 此时 tasks 表已全 done/dead
+            try:
+                write_health(
+                    self._queue,
+                    log_dir=Path(self._cfg.paths.log_dir),
+                    extra={
+                        "status": "completed",
+                        "summary": {
+                            "total": summary.total,
+                            "done": summary.done,
+                            "dead": summary.dead,
+                            "duration_seconds": summary.duration_seconds,
+                        },
+                    },
+                )
+            except Exception as exc:
+                _log.warning("master: post-run write_health failed: %s", exc)
+        return summary
 
-    def _add_thread(self, name: str, worker) -> None:
-        """起一个 worker thread；用独立 stop_event 便于按 worker 关闭."""
-        ev = threading.Event()
-        max_backoff = self._cfg.settings.worker_idle_backoff_max_seconds
-        t = threading.Thread(
-            target=worker.run_forever, args=(ev,),
-            kwargs={"max_poll_seconds": max_backoff} if max_backoff > 0 else {},
-            name=f"worker-{worker.__class__.__name__}-{name}", daemon=True,
+    def shutdown(self) -> None:
+        """设置 stop_event; 正在跑的子进程仍会跑完当前 task."""
+        self._stop_event.set()
+        _log.info("master: shutdown signal set")
+
+    def status(self) -> dict:
+        """返回 ``{phases, total, last_updated}`` (契约 §6.2).
+
+        数据源: ``SQLiteQueue.count_by_phase()``.
+        """
+        phases = collect_tasks(self._queue)
+        phases["last_updated"] = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
         )
-        t.start()
-        self._threads.append((name, t, ev))
+        return phases
 
     # ------------------------------------------------------------------
-    # 方向 B: 活跃 batch 集合 API (worker 按此过滤 pending)
+    # 内部
     # ------------------------------------------------------------------
-
-    def register_active_batch(self, batch_id: int) -> None:
-        """把 batch_id 加入活跃集合. 生产路径在 ``_run_one_batch`` 调,
-        单元测试或外部手动注入时可显式调. 同一 batch_id 重复注册幂等."""
-        self._active_batch_ids.add(batch_id)
-
-    def unregister_active_batch(self, batch_id: int) -> None:
-        """把 batch_id 从活跃集合移除. 后续 gdr / etl worker 不会再拉此
-        batch 的新任务; in-progress 任务继续跑完."""
-        self._active_batch_ids.discard(batch_id)
 
     def _build_gdr_settings(self) -> GdrSettings:
+        """构造 gdr Settings 实例, workers=1, llm_concurrency 透传 (契约 §6.2)."""
         refined_dir = Path(self._cfg.paths.refined_dir)
-        # gdr Settings 里 output/deferred/judge_low/routing_low 是 CWD 相对默认值,
-        # 不覆盖会落到仓库根 refine_data/; 统一锚到 refined_dir 下。
-        # log_dir 默认 ./logs 同理锚到编排 log_dir（多进程批量模式才会用）。
         anchored = {
             "batch_output_dir": refined_dir,
             "output_path": refined_dir / "output.json",
@@ -186,292 +136,5 @@ class Master:
             "workers": 1,
             "max_files": 1,
         }
-        if self._gdr_settings is not None:
-            return self._gdr_settings.model_copy(update=anchored)
-        return GdrSettings(
-            llm_concurrency=self._cfg.gdr.llm_concurrency,
-            **anchored,
-        )
-
-    def shutdown(self, *, timeout: float | None = None) -> None:
-        """设置所有 stop_event 并 join.
-
-        timeout: 等待 worker 线程 join 的最长时间 (秒). None 时读
-        ``self._cfg.settings.worker_shutdown_timeout_seconds`` (默认 600s,
-        方向 A). 显式传值覆盖配置, 单元测试 fixture 用小值加速。
-        """
-        if timeout is None:
-            timeout = float(
-                self._cfg.settings.worker_shutdown_timeout_seconds
-            )
-        # 方向 B: shutdown 时立即清空活跃 batch 集合, 让 gdr / etl worker 在
-        # 下一次 pull 时看到空集合 → 直接返回 []. 已拉到的 in-progress 任务
-        # 会跑完, 但不会触发新的 LLM 调用 (减少 interpreter shutdown race
-        # 的窗口)。必须先于 stop_event.set() 之前完成。
-        self._active_batch_ids.clear()
-        for name, _t, ev in self._threads:
-            ev.set()
-        if self._stop_event is not None:
-            self._stop_event.set()
-        deadline = time.monotonic() + timeout
-        for name, t, _ev in self._threads:
-            remaining = max(0.0, deadline - time.monotonic())
-            t.join(timeout=remaining)
-            if t.is_alive():
-                _log.warning("master: worker %s did not exit in time", name)
-        if self._reaper_thread is not None:
-            self._reaper_thread.join(timeout=2.0)
-        _log.info("master: shutdown complete")
-
-    # ------------------------------------------------------------------
-    # 主循环
-    # ------------------------------------------------------------------
-
-    def run(
-        self,
-        task_batches: Sequence[Sequence[str]],
-    ) -> list[BatchSummary]:
-        """按 ``task_batches`` 顺序跑每批；返回 BatchSummary 列表.
-
-        停止请求（stop_event 置位，含 STOP 哨兵文件 / 信号）时：
-        当前批通过 ``BatchTrackerStopped`` 提前中断（此时 simulate
-        产物可能不完整，不该继续收尾），已完成的批不受影响。
-        """
-        if not self._workers_started:
-            self.start_workers()
-
-        summaries: list[BatchSummary] = []
-        for batch in task_batches:
-            if self._stop_event.is_set():
-                _log.info("master: stop requested, break batch loop")
-                break
-            try:
-                summaries.append(self._run_one_batch(list(batch)))
-            except BatchTrackerStopped:
-                _log.warning(
-                    "master: stop requested during batch, aborting remaining %d batch(es)",
-                    len(task_batches) - len(summaries) - 1,
-                )
-                break
-        return summaries
-
-    def _run_one_batch(self, task_ids: list[str]) -> BatchSummary:
-        s = self._cfg.settings
-        config_path = self._cfg.paths.simulate_serve_config
-        runs_dir = Path(self._cfg.paths.runs_dir)
-
-        # 1. producer
-        batch_id, runs = self._producer_runner(
-            config_path=config_path, task_ids=task_ids,
-            limit=s.batch_size, queue=self._queue,
-        )
-        # 方向 B: 把本批加入活跃集合, gdr / etl worker 在 batch_drain 之前都
-        # 只会拉这一批的任务. 防止 worker 偷拉别批遗留导致 master shutdown race.
-        self.register_active_batch(batch_id)
-        run_ids = tuple(r.run_id for r in runs)
-
-        # 2. 防御性二次确认 run.json 终态
-        try:
-            wait_for_terminal(
-                list(run_ids), runs_dir=runs_dir,
-                poll_seconds=s.batch_drain_poll_seconds, timeout=None,
-                stop_event=self._stop_event,
-            )
-        except BatchTrackerStopped:
-            # 停止请求：本批没有完整走完，run.json 可能仍在写；
-            # 直接向上抛，由 run() 捕获后跳出批循环
-            raise
-
-        # 3. 启动本批 watcher (异步持续扫描新文件)
-        watcher_stop = self._start_batch_watcher(batch_id)
-
-        # 3.5 同步首扫: 把 trajectory_dir 当前已有的 .json 立刻登记到 SQLite.
-        #     producer 完成后 trajectory 通常已落盘, 但异步 watcher 线程的首次
-        #     scan 可能比主线程的 wait_batch_drained 慢一拍. 若不主动先扫,
-        #     wait_batch_drained 会读到空 batch → 误判已 drain → master 立刻退出,
-        #     新登记的 task 被丢在 pending 状态, 永远无人处理.
-        first_scan = self._first_scan_watcher(batch_id)
-        if first_scan["registered"]:
-            _log.info(
-                "master: batch_id=%d first_scan registered=%d skipped=%d dead=%d",
-                batch_id, first_scan["registered"], first_scan["skipped"], first_scan["dead"],
-            )
-
-        try:
-            # 4. 等 SQLite 本批全 done / dead
-            drained = self.wait_batch_drained(
-                batch_id,
-                poll_seconds=s.batch_drain_poll_seconds,
-                timeout=s.batch_drain_timeout_seconds,
-            )
-        finally:
-            watcher_stop.set()
-            # 方向 B: 本批 drain 后立即从活跃集合移除, gdr / etl worker 不会再
-            # 拉本批的新任务 (in-progress 任务继续跑完). 已拉到的任务继续写到
-            # done, 不影响本批 drain 的结果。
-            self._active_batch_ids.discard(batch_id)
-            _log.info("master: batch_id=%d watcher stopped", batch_id)
-
-        # 4.5 补偿扫描: 兜住 watcher 最后一轮到停止之间落盘的迟到文件。
-        #     有 run_tasks 映射的文件会归到真实批次（可能不是本批）；
-        #     新登记的任务由常驻 worker 继续消费，不再阻塞本批 drain。
-        final_scan = self._first_scan_watcher(batch_id)
-        if final_scan["registered"]:
-            _log.info(
-                "master: batch_id=%d final_scan registered=%d skipped=%d dead=%d",
-                batch_id, final_scan["registered"],
-                final_scan["skipped"], final_scan["dead"],
-            )
-
-        # 5. 死信归档
-        archives = reap_dead(
-            self._queue,
-            dead_dir=Path(self._cfg.paths.dead_dir),
-            dead_log_path=Path(self._cfg.paths.log_dir) / "dead.log",
-        )
-        dead_count = sum(1 for a in archives if a.moved_to)
-        self._queue.update_batch(
-            batch_id,
-            dead_count=dead_count,
-            gdr_count=self._count_terminal_for_batch(batch_id, STATE_DONE)
-            + self._count_terminal_for_batch(batch_id, STATE_DEAD),
-            status="done",
-        )
-
-        # 6. 写 health.json
-        try:
-            write_health(
-                self._queue,
-                output_path=Path(self._cfg.paths.log_dir) / "health.json",
-            )
-        except Exception as exc:
-            _log.warning("master: write_health failed: %s", exc)
-
-        return BatchSummary(
-            batch_id=batch_id, run_ids=run_ids,
-            drained=drained, dead_count=dead_count,
-        )
-
-    def _count_terminal_for_batch(self, batch_id: int, state: str) -> int:
-        tasks = self._queue.list_tasks_for_batch(batch_id)
-        return sum(1 for t in tasks if t.state == state)
-
-    # ------------------------------------------------------------------
-    # watcher 按批
-    # ------------------------------------------------------------------
-
-    def _start_batch_watcher(self, batch_id: int) -> threading.Event:
-        s = self._cfg.settings
-        w = TrajectoryWatcher(
-            trajectory_dir=Path(self._cfg.paths.trajectory_dir),
-            queue=self._queue, batch_id=batch_id,
-            poll_seconds=s.watcher_poll_seconds,
-            dead_log_path=Path(self._cfg.paths.log_dir) / "watcher_dead.log",
-        )
-        stop_ev = threading.Event()
-        wb = s.watcher_idle_backoff_max_seconds
-        t = threading.Thread(
-            target=w.run_forever, args=(stop_ev,),
-            kwargs={"max_poll_seconds": wb} if wb > 0 else {},
-            name=f"watcher-{batch_id}", daemon=True,
-        )
-        t.start()
-        self._threads.append((f"watcher-{batch_id}", t, stop_ev))
-        return stop_ev
-
-    def _first_scan_watcher(self, batch_id: int) -> dict[str, int]:
-        """同步首次扫描 trajectory_dir, 把当前文件登记到 SQLite.
-
-        异步 watcher 线程与主线程 ``wait_batch_drained`` 之间存在 race:
-        主线程可能在 watcher 首次轮询前就读到空 batch 误判已 drain.
-        这里在主线程同步跑一次 ``scan_once`` 以消除该 race.
-        后续若还有新 trajectory 文件出现, 异步 watcher 仍会持续捕获.
-        """
-        s = self._cfg.settings
-        w = TrajectoryWatcher(
-            trajectory_dir=Path(self._cfg.paths.trajectory_dir),
-            queue=self._queue, batch_id=batch_id,
-            poll_seconds=s.watcher_poll_seconds,
-            dead_log_path=Path(self._cfg.paths.log_dir) / "watcher_dead.log",
-        )
-        return w.scan_once()
-
-    # ------------------------------------------------------------------
-    # batch_drained 轮询
-    # ------------------------------------------------------------------
-
-    def wait_batch_drained(
-        self,
-        batch_id: int,
-        *,
-        poll_seconds: float = 5.0,
-        timeout: float | None = None,
-    ) -> bool:
-        """本批所有 task 全部 ``done`` 或 ``dead`` 才返回 True.
-
-        timeout 非 None 时超返回 False 不抛。stop_event 置位时返回 False
-        （不抛：调用方 ``_run_one_batch`` 在批收尾后由 ``run`` 的批间检查跳出）。
-        """
-        deadline = time.monotonic() + timeout if timeout else None
-        while True:
-            tasks = self._queue.list_tasks_for_batch(batch_id)
-            if not tasks:
-                return True
-            if all(t.state in (STATE_DONE, STATE_DEAD) for t in tasks):
-                return True
-            if self._stop_event.is_set():
-                _log.warning(
-                    "master: stop requested, batch_id=%d not drained "
-                    "(pending=%d, pending_etl=%d)",
-                    batch_id,
-                    sum(1 for t in tasks if t.state == STATE_PENDING),
-                    sum(1 for t in tasks if t.state == STATE_PENDING_ETL),
-                )
-                return False
-            if deadline is not None and time.monotonic() >= deadline:
-                _log.warning(
-                    "master: batch_id=%d not drained after %.1fs "
-                    "(pending=%d, pending_etl=%d, dead=%d)",
-                    batch_id, timeout or 0.0,
-                    sum(1 for t in tasks if t.state == STATE_PENDING),
-                    sum(1 for t in tasks if t.state == STATE_PENDING_ETL),
-                    sum(1 for t in tasks if t.state == STATE_DEAD),
-                )
-                return False
-            if self._stop_event.wait(poll_seconds):
-                # wait 兼作可中断 sleep：置位立即返回，下一轮头部走 Stopped 分支
-                continue
-
-    # ------------------------------------------------------------------
-    # reap_stale 周期
-    # ------------------------------------------------------------------
-
-    def _reaper_loop(self) -> None:
-        s = self._cfg.settings
-        while not self._stop_event.wait(s.reap_stale_interval_seconds):
-            try:
-                n = self._queue.reap_stale(older_than_seconds=s.reap_stale_seconds)
-                if n:
-                    _log.info("master: reaped %d stale lock(s)", n)
-            except Exception as exc:
-                _log.exception("master: reaper failed: %s", exc)
-
-    # ------------------------------------------------------------------
-    # 默认 producer
-    # ------------------------------------------------------------------
-
-    def _default_producer(
-        self, *, config_path, task_ids, limit, queue,
-    ) -> tuple[int, list]:
-        return producer_run_batch(
-            config_path=config_path, task_ids=list(task_ids),
-            limit=int(limit), queue=queue,
-        )
-
-    # ------------------------------------------------------------------
-    # 状态辅助
-    # ------------------------------------------------------------------
-
-    @property
-    def alive_workers(self) -> tuple[str, ...]:
-        return tuple(name for name, t, _ev in self._threads if t.is_alive())
+        # gdr_settings 是 pydantic BaseSettings, 用 model_copy 覆盖派生字段
+        return self._cfg.gdr_settings.model_copy(update=anchored)

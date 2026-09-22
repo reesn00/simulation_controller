@@ -6,10 +6,12 @@
 
 ```
 simulate_serve（模拟采集 Run/审计 JSON）
-  → orchestration（顶层调度：trajectory → gdr → etl 三阶段流水线，2026-09-22 新架构）
-       ├── trajectory  →  watcher → SQLite 队列
-       ├── gdr_worker  →  gdr 三级精修 → output/refined/ 单 Session（C2 契约）
-       └── etl_worker  →  etl 4 视图拆分 → output/refine_data/（C3 契约）
+  → orchestration（顶层调度：multiprocessing.Pool 单 task 流水线，2026-09-22 新架构 simulation server → gdr → etl）
+       ├── PipelineExecutor.run：multiprocessing.Pool 子进程调度（max_parallelism 槽位填充）
+       ├── task_pipeline._run_one_task_pipeline：单 task 三阶段严格串行
+       ├── producer_simulate.run_one_task：simulate_serve in-process 入口
+       ├── workers.gdr_worker.run_gdr_once：C1 trajectory → C2 refined Session
+       └── workers.etl_worker.run_etl_once：C2 refined Session → C3 4 视图
   → data_refiner（规则剪裁合成数据）
   → etl/pawsession（QwenPaw 会话 → OpenAI SFT 格式）
   → etl/qwenformat（trajectory → Session 解析；gdr.parsers 唯一调用入口）
@@ -18,27 +20,27 @@ simulate_serve（模拟采集 Run/审计 JSON）
 ```
 
 - `simulate_serve/`：主应用，六边形/分层架构。`configuration/` 加载严格 Schema v2 Catalog；`domain/` + `application/` 编译任务、维护异步运行状态机、编排远端会话；`interaction/` 生成首轮请求和针对验证缺口的自然追问，不拥有验证工具；`validation/` + `tools/` 负责确定性规则、语义 Judge、工具取证和四态结果聚合；`infrastructure/` 提供 QwenPaw HTTP、CAMEL 模型和 JSON v2 持久化。产出 Run/审计/蒸馏 JSON，是下游数据加工的源头。入口 `python -m simulate_serve`。
-- `orchestration/`：顶层流水线调度器，把 `simulate_serve → gdr → etl` 三个独立子系统串成 `trajectory → refined → 4 视图` 的批驱动 + 持续消费管道（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)，迁移说明见 [`docs/contracts/migration-plan.md`](docs/contracts/migration-plan.md)）。`master.py` 跑主循环，按批次 spawn `producer_simulate / watcher / gdr_workers / etl_workers`；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → gdr_processing → pending_etl → etl_processing → done`，超限入 `dead`），`reap_stale` 周期回退卡死的 `*_processing` 任务；`workers/base_worker.py` 提供通用 pull-process-mark 循环 + 重试/dead 逻辑，`gdr_worker` 调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（C1 trajectory → C2 refined Session），`etl_worker` 调 [`etl/parsers.py::load_refined_session`](etl/parsers/__init__.py) + [`gdr/domain/schema.py::save_session_v2`](gdr/domain/schema.py)（C2 → C3 4 视图）；`batch_tracker.py` 等 `run.json.state ∈ TERMINAL_STATES`；`watcher.py` 轮询 `output/agent_trajectory/` 入队；`failure_handler.py` 把 `state=dead` 的 `src + gdr_refined_path` 移到 `output/orchestration/dead/` 并追加 `dead.log`；`health.py` 写 `output/orchestration/logs/health.json`；`daemon.py` 处理 PID file + signal + STOP 哨兵文件（Windows 上 CTRL_BREAK_EVENT 不可达，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令；`run.bat` 是 Windows wrapper。所有阶段产物与运行时状态统一收在 `output/` 下。gdr 阶段把精修完的 Session 单文件写到 `output/refined/<TXXX>__<session_id>.json`（C2 契约，schema_version=refined_session.v1），etl 阶段沿用同一 stem 拆 4 视图到 `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json`（C3 契约）；低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `output/orchestration/dead/`。入口 `python -m orchestration`。
+- `orchestration/`：顶层流水线调度器（2026-09-22 重写），把 `simulate_serve → gdr → etl` 三个独立子系统串成 `simulation server → gdr → etl` 单 task 三阶段流水线（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)，契约见 [`docs/设计方案/pipeline-contracts.md`](docs/设计方案/pipeline-contracts.md)）。`master.py` 只持有配置 / queue / `stop_event`，按 `--parallelism N` 起 `PipelineExecutor` 调 `multiprocessing.Pool` 子进程池；`pipeline_executor.py` 维护 `in_flight: dict[AsyncResult, str]` 槽位填充（详见 [`orchestration/pipeline_executor.py:_dispatch`](orchestration/pipeline_executor.py)），`task_pipeline._run_one_task_pipeline` 是子进程顶层入口（picklable），每个子进程完整跑单个 task 的 simulate → gdr → etl 三阶段；`settings.py` 拆 `PipelineSettings` + `Paths` 两个 frozen dataclass；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → simulate → gdr → etl → done`，超限入 `dead`，见 [`docs/设计方案/pipeline-contracts.md` §2](docs/设计方案/pipeline-contracts.md)）；`workers/{base,gdr,etl}_worker.py` 把旧 class 改为模块顶层函数 `run_gdr_once` / `run_etl_once`，分别调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（C1 trajectory → C2 refined Session）和 [`etl/parsers.py::load_refined_session`](etl/parsers/__init__.py) + [`gdr/domain/schema.py::save_session_v2`](gdr/domain/schema.py)（C2 → C3 4 视图）；`producer_simulate.run_one_task` 是 simulate_serve 的 in-process 单 task 入口；`failure_handler.py` 把 `phase=dead` 的 task 产物移到 `output/orchestration/dead/` 并追加 `dead.log`（删 batch_id 字段）；`health.py` 走 `collect_tasks` 直读 SQLite 6 个 phase 计数；`daemon.py` 处理 PID file + STOP 哨兵文件（Windows detach 子进程无控制台，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令（`--parallelism N` 控并行度，`--tasks T1,T2` 子集过滤，`--all-tasks` 拉全 catalog，`--dry-run` 只打印计划）；`run.bat` 是 Windows wrapper。所有阶段产物与运行时状态统一收在 `output/` 下。gdr 阶段把精修完的 Session 单文件写到 `output/refined/<TXXX>__<session_id>.json`（C2 契约，`schema_version: refined_session.v1`），etl 阶段沿用同一 stem 拆 4 视图到 `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json`（C3 契约）；低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `output/orchestration/dead/`。入口 `python -m orchestration`。
 - `data_refiner/`：合成会话数据的轻量规则清洗，只标注不删除。依次执行无效文件判定（R3）、连续工具调用失败段剪裁（R1）、thinking 长度标注（R2），并输出轨迹块状态报告（R5）。入口 `python -m data_refiner --input ... --output ...`。
 - `etl/`：SFT 训练格式转换。`pawsession/` 按 extract/transform/load 把 QwenPaw origindata 转为 OpenAI function-calling 格式 `sft_openai.jsonl`，并附每会话审计与 `stats.json`（入口 `etl/pawsession/run_etl.py`）；`qwenformat/` 提供 trajectory 重放（`load.parse_trajectory`，新架构下被 [`gdr.parsers.from_trajectory`](gdr/parsers/__init__.py) 局部导入调用，C1 契约重放唯一入口）+ 训练格式转换（`transform.trajectory_to_session_with_openai_metadata` / `chat_template.jinja`，etl 阶段 C2 → C3 时复用，写 `metadata.openai_messages` / `qf_text` / `qf_rendered_at`）。`parsers/` 包是 C2 契约入口（[`etl/parsers.load_refined_session`](etl/parsers/__init__.py)），`writers/` 包是 C3 写入入口（[`etl.writers.render_to_4_views`](etl/writers/__init__.py)）。
 - `gdr/`：独立的 uv workspace 成员（gdr-agent），对 QwenPaw Agent 轨迹做"脏数据入、干净数据出"的自动缺陷检测与精修。Session → Message → Block 三级数据模型，13 种缺陷标签（规则层 + LLM 三票投票），含 obs_denoiser/thought_refactor/tool_fixer 精修器、L1/L2/L3 三级验证、模型路由与评估闭环。入口 `gdr-pipeline`（编排）与 `gdr-evaluator`（评估）。
 - `scripts/`：迁移与训练脚本。`migrate_catalog_v2.py` 为 v1 → v2 Task Catalog 的一次性确定性迁移；`model_train/main.py` 用 unsloth + LoRA 在 WSL2 下微调 Qwen3.5-9B（数据指向 `etl/qwenformat` 产物）；`model_train/infer.py` 做训练后推理验证。
 - `tool_runtime/`：Node 侧工具运行时，当前仅包含 Playwright MCP（`@playwright/mcp`）依赖，打包时并入 `simulate_serve/tool_runtime/`，默认禁用。
-- `tests/`：主应用离线测试套件（pytest-socket 限本机），分 `unit/`、`contract/`、`functional/` 三层；`tests/orchestration/` 覆盖 master / queue / watcher / workers / failure_handler / daemon / CLI 等子模块，含离线 3-task 端到端冒烟与失败注入。
+- `tests/`：主应用离线测试套件（pytest-socket 限本机），分 `unit/`、`contract/`、`functional/` 三层；`tests/orchestration/` 覆盖 master / pipeline_executor / task_pipeline / queue / workers / failure_handler / health / CLI 等子模块，含离线 3-task 端到端冒烟与失败注入。
 - `docs/`：实施基线、phase0–6 系列报告、Catalog v2 优化说明、QwenPaw HTTP API 定义、`orchestration-design.md`（orchestration 设计基线）等 20 余篇文档。
 
 ## orchestration 三阶段流水线
 
-把"模拟采集 → 精修"做成一条 daemon 化的批驱动流水线。子命令语义：
+把"模拟采集 → 精修 → 训练视图拆分"做成单 task 三阶段严格串行 + 跨 task 可配置并行度的一条流水线。子命令语义：
 
 | 子命令 | 作用 |
 |---|---|
-| `start` | 启动 master + workers；`--detach` 后台化、`--dry-run` 只打印计划、`--tasks T001,T002` 指定批次、`--all-tasks` 加载 catalog 全部 task、`--batch-size N` 覆盖 config；批次跑完即退出（默认），`--stay` 常驻 |
-| `status` | 读 `output/orchestration/orchestration.db` 队列状态 + `output/orchestration/logs/health.json` + 死信列表 + 阶段时间戳（`sim@/sim!` `gdr@/gdr!` `etl@/etl!`，`@`=开始 `!=`收尾） |
+| `start` | 启动 master 跑流水线；`--tasks T1,T2` 子集过滤、`--all-tasks` 拉全 catalog、`--parallelism N` 设子进程并行度（默认 1 严格串行）、`--detach` 后台化、`--dry-run` 只打印计划；task 跑完即退出（默认），`--stay` 常驻 |
+| `status` | 读 `output/orchestration/orchestration.db` 队列 6 个 phase 计数 + `output/orchestration/logs/health.json` + 最近 10 个 task 的 `task_id/phase/error_msg` |
 | `stop` | 写 STOP 哨兵文件让 master 优雅 shutdown；超时后 `taskkill /F /T`（Windows）或 `SIGKILL`（POSIX）兜底 |
-| `replay` | `state=dead` 的 task 重置回 `pending`；`--batch N` 仅限该批次 |
+| `replay` | `phase=dead` 的 task 重置回 `pending` 重新入队（无 `--batch` 选项，新架构无 batch 概念） |
 
-进程模型：master 主线程跑批循环，gdr/etl/watcher 都是常驻 Thread + 独立 stop_event；`reap_stale` 走独立 Thread 周期跑；stop 通道为 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险。空闲退避（`worker_idle_backoff_max_seconds`）让连续空轮指数翻倍、封顶到配置上限，省 CPU/写锁。
+进程模型：master 主线程跑一次 `PipelineExecutor.run(task_ids)`，由 [`orchestration/pipeline_executor.py`](orchestration/pipeline_executor.py) 起 `multiprocessing.Pool(processes=max_parallelism)` 并维护 `in_flight` 槽位填充；每个子进程内由 [`orchestration/task_pipeline.py::_run_one_task_pipeline`](orchestration/task_pipeline.py) 完整跑单个 task 的 `simulate → gdr → etl` 三阶段；三阶段顺序由 `_run_one_task_pipeline` 函数体 step 1–10 顺序保证，不依赖外部调度。stop 通道为 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险（Windows detach 子进程无控制台，靠哨兵文件兜底）。子进程不响应 stop_event（跑完一个 task 自然退出）；master 主线程 `shutdown()` 仅 set stop_event 提前退出 wait loop。
 
 ## 数据格式与三阶段产物（2026-09-22 新架构 `simulation server → gdr → etl`）
 
@@ -136,19 +138,14 @@ python -m simulate_serve --validate-config
 # 检查全部配置工具并打印 READY/DISABLED/失败原因
 python -m simulate_serve --check-tools
 
-# 运行任务；默认跳过 offline_only 任务（T052/T053），如需包含加 --include-offline
-python -m simulate_serve --limit 1
-
-# 指定任务运行（逗号分隔；显式指定视为用户意图，跳过 offline 过滤与 unready 丢弃）
-python -m simulate_serve --tasks T001,T003
-
-# orchestration 顶层流水线
-python -m orchestration --dry-run start --all-tasks         # 打印计划，不真启动
-python -m orchestration start --detach --tasks T001,T002,T003 # 后台跑指定批次
-python -m orchestration start --all-tasks --batch-size 5     # 整 catalog 按 5 个/批
-python -m orchestration status                              # 队列/进程/dead/阶段时间戳
-python -m orchestration stop --timeout 15                   # 优雅停，超时强杀
-python -m orchestration replay --batch 7                    # 重放指定批次的 dead
+# orchestration 顶层流水线 (新架构 simulation server → gdr → etl)
+python -m orchestration start --all-tasks --dry-run --parallelism 1   # 打印计划，不真启动
+python -m orchestration start --detach --tasks T001,T002,T003         # 后台跑指定 task
+python -m orchestration start --all-tasks --parallelism 4             # 整 catalog 4 子进程并行
+python -m orchestration start --all-tasks --parallelism 1 --stay      # 单进程串行，跑完常驻
+python -m orchestration status                                       # 队列 6 phase 计数 + 最近 task
+python -m orchestration stop --timeout 15                            # 优雅停，超时强杀
+python -m orchestration replay                                       # 重放全部 phase=dead 的 task
 # Windows wrapper 等价于：
 scripts\run.bat start --tasks T001,T002
 
@@ -174,16 +171,18 @@ Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或�
 
 ## orchestration 边界
 
-- master 主线程跑批循环；gdr/etl/watcher 是常驻 Thread + 独立 `stop_event`，worker 异常不致死。
-- `reap_stale` 周期（默认 60s 一次，5 分钟前的 `*_processing` 视为陈旧）回退卡死锁。
+- `master.py` 仅持有配置 / `SQLiteQueue` / `stop_event`，不直接起 worker 线程；调度全部由 [`PipelineExecutor`](orchestration/pipeline_executor.py) 的 `multiprocessing.Pool` 完成。
+- 单 task 三阶段 `simulate → gdr → etl` 在子进程内严格串行（[`task_pipeline._run_one_task_pipeline`](orchestration/task_pipeline.py) 函数体 step 1–10），不依赖外部调度；不同 task 之间可任意阶段重叠，由 `max_parallelism` 槽位控制并发度。
+- 子进程内未捕获异常被顶层 try/except 兜底 → `queue.mark_failed(stage=<current_stage>)` + 返回 `{"phase": "dead"}`，**不抛异常给主进程**；主进程通过 `future.get()` 拿到 dict，按 `phase` 计入 `done/dead`。
+- 子进程崩溃（pool 进程异常退出）由 `future.get()` 抛 `Exception`，主进程捕获后 `dead++` + 兜底 `mark_failed(stage="simulate")`，**继续下一个**。
 - 优雅停止走 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险；Windows detach 子进程无控制台、CTRL_BREAK_EVENT 不可达，哨兵文件是唯一可靠通道。
-- 空闲退避（`worker_idle_backoff_max_seconds`）让连续空轮指数翻倍、封顶到配置上限；拉到任务立即复位。生产建议开启，省 CPU/写锁。
-- judge 低分不进主输出，但完整精修 session 走 `refine_data/judge_low.jsonl` 审核通道（数据不丢）；真正硬丢弃仅三种（只剩 user / assistant 全空壳 / 极少且全失败），见 [`gdr/pipeline/runner.py:_session_structurally_unusable`](gdr/pipeline/runner.py)。
+- `phase=dead` 的 task 不自动重跑；用 `python -m orchestration replay` 复活。
+- judge 低分不进主输出，但完整精修 session 走 `refine_data/judge_low.jsonl` 审核通道（数据不丢）；真正硬丢弃仅三种（只剩 user / assistant 全空壳 / 极少且全失败），见 [`gdr/pipeline/runner.py::_session_structurally_unusable`](gdr/pipeline/runner.py)。
 - orchestration 不改 `simulate_serve` / `gdr` / `etl` 任何代码；只通过 [`gdr/parsers.from_trajectory`](gdr/parsers/__init__.py)、[`gdr/pipeline.runner._process_one_file`](gdr/pipeline/runner.py)、[`etl/parsers.load_refined_session`](etl/parsers/__init__.py)、[`gdr/domain.save_session_v2`](gdr/domain/schema.py) 四个公开入口串联三阶段。
 
 ## 旁路模块（不参与 orchestration 主链路）
 
-orchestration 的 `start → producer_simulate → gdr_worker → etl_worker → watcher → reap_dead` 主链路只调用四个公开入口：`gdr.parsers.from_trajectory`、`gdr.pipeline.runner._process_one_file`、`etl.parsers.load_refined_session`、`gdr.domain.save_session_v2`。以下目录/脚本**不在该主链路**——或平行存在、或一次性、或只服务特定子任务。
+orchestration 的 `start → PipelineExecutor (multiprocessing.Pool) → task_pipeline._run_one_task_pipeline → producer_simulate.run_one_task + workers.{gdr,etl}_worker` 主链路只调用四个公开入口：`gdr.parsers.from_trajectory`、`gdr.pipeline.runner._process_one_file`、`etl.parsers.load_refined_session`、`gdr.domain.save_session_v2`。以下目录/脚本**不在该主链路**——或平行存在、或一次性、或只服务特定子任务。
 
 ### A. 独立垂类工具链（自有入口，不依赖 orchestration）
 
@@ -210,6 +209,6 @@ orchestration 的 `start → producer_simulate → gdr_worker → etl_worker →
 
 主链路外部接口：`gdr-pipeline`（编排入口）/ `gdr-evaluator`（评估入口），orchestration 不依赖这两个 CLI，只复用进程内函数。
 
-> **编排侧依赖清单基于** `orchestration/__main__.py`、`master.py`、`producer_simulate.py`、`watcher.py`、`workers/base_worker.py`、`workers/gdr_worker.py`、`workers/etl_worker.py` 的静态 `import` 扫描结果。
+> **编排侧依赖清单基于** `orchestration/__main__.py`、`master.py`、`pipeline_executor.py`、`task_pipeline.py`、`producer_simulate.py`、`workers/base_worker.py`、`workers/gdr_worker.py`、`workers/etl_worker.py` 的静态 `import` 扫描结果。
 
 Catalog v2 字段、迁移决策和本地验收矩阵见 `docs/catalog-v2-optimization.md`。orchestration 设计与决策见 `docs/orchestration-design.md`。

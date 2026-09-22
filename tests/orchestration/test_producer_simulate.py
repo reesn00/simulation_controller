@@ -1,18 +1,25 @@
-"""orchestration.producer_simulate 单元测试.
+"""orchestration.producer_simulate 单元测试 (ST-4).
 
 mock ``simulate_serve.bootstrap.build_application``，避免真实 QwenPaw 连接.
+
+新接口::
+
+    async run_one_task(task_id, *, config_path) -> TaskRun
+    run_one_task_sync(task_id, *, config_path) -> TaskRun   # asyncio.run 包装
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 from pathlib import Path
 from typing import Sequence
 
 import pytest
 
-from orchestration.producer_simulate import NoRunnableTasksError, run_batch
-from orchestration.queue import SQLiteQueue
+from orchestration.producer_simulate import (
+    run_one_task,
+    run_one_task_sync,
+)
 from simulate_serve.domain.run import TaskRun
 from simulate_serve.domain.state_machine import RunState
 from simulate_serve.domain.task import CompiledTask
@@ -22,13 +29,13 @@ from simulate_serve.domain.task import CompiledTask
 # fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def env(tmp_path: Path):
-    queue = SQLiteQueue(tmp_path / "q.db")
+    # simulate_serve.load_config 读 AppConfig; 空 yaml 可读.
     config_path = tmp_path / "config.yaml"
-    # simulate_serve 的 load_config 不依赖 yaml 字段（默认即可），空文件可读
     config_path.write_text("{}", encoding="utf-8")
-    return queue, config_path, tmp_path
+    return tmp_path, config_path
 
 
 def _make_task(task_id: str) -> CompiledTask:
@@ -62,7 +69,9 @@ def _make_task(task_id: str) -> CompiledTask:
 
 
 def _make_run(task_id: str, state: RunState = RunState.SUCCESS) -> TaskRun:
-    return TaskRun(run_id=f"run_{task_id}", task_id=task_id, task_type="test", state=state)
+    return TaskRun(
+        run_id=f"run_{task_id}", task_id=task_id, task_type="test", state=state,
+    )
 
 
 class _FakeServices:
@@ -70,38 +79,34 @@ class _FakeServices:
         self,
         tasks: Sequence[CompiledTask],
         runs: Sequence[TaskRun],
-        readiness_gaps: dict[str, tuple[str, ...]] | None = None,
     ):
         self.task_manager = type("TM", (), {"compiled_tasks": list(tasks)})()
         self.batch_runner = type(
             "BR", (),
-            {"_runs": list(runs), "_tasks": list(tasks),
-             "run": _fake_run_async},
+            {"_runs": list(runs), "run": _fake_run_async},
         )()
-        self.readiness_gaps = readiness_gaps or {}
         self._closed = False
 
     async def close(self) -> None:
         self._closed = True
 
 
-async def _fake_run_async(self, tasks, *, limit=0):
+async def _fake_run_async(self, tasks, *, limit=0, rerun_of=None, max_run_retries=None):
     """返回与传入 tasks 对应的预设 runs（按 task_id 匹配）."""
     by_id = {r.task_id: r for r in self._runs}
     return [by_id[t.task_id] for t in tasks if t.task_id in by_id]
 
 
 # ---------------------------------------------------------------------------
-# run_batch
+# run_one_task (async)
 # ---------------------------------------------------------------------------
 
-def test_run_batch_writes_batches_row(env, monkeypatch) -> None:
-    queue, config_path, _ = env
+
+def test_run_one_task_returns_task_run(env, monkeypatch) -> None:
+    """run_one_task: 找 task → 跑 batch_runner → 返 runs[0]."""
+    _, config_path = env
     t1 = _make_task("T1")
-    t2 = _make_task("T2")
-    r1 = _make_run("T1", RunState.SUCCESS)
-    r2 = _make_run("T2", RunState.GUIDE_EXHAUSTED)
-    fake = _FakeServices([t1, t2], [r1, r2])
+    fake = _FakeServices([t1], [_make_run("T1", RunState.SUCCESS)])
 
     async def fake_build_application(_cfg):
         return fake
@@ -110,65 +115,20 @@ def test_run_batch_writes_batches_row(env, monkeypatch) -> None:
         "orchestration.producer_simulate.build_application", fake_build_application,
     )
 
-    batch_id, runs = run_batch(
-        config_path=config_path, task_ids=["T1", "T2"], limit=2, queue=queue,
+    run = asyncio.run(
+        run_one_task("T1", config_path=config_path)
     )
-    assert batch_id > 0
-    assert len(runs) == 2
-    assert {r.task_id for r in runs} == {"T1", "T2"}
-    assert fake._closed, "services.close() 必须被调"
-
-    # SQLite batches 行验证
-    with queue._conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM batches WHERE id = ?", (batch_id,),
-        ).fetchone()
-    assert row is not None
-    task_ids_csv = row["task_ids"]
-    assert set(task_ids_csv.split(",")) == {"T1", "T2"}
-    assert row["simulate_started_at"] is not None
-    assert row["simulate_done_at"] is not None
-    assert row["simulate_started_at"] <= row["simulate_done_at"]
+    assert isinstance(run, TaskRun)
+    assert run.task_id == "T1"
+    assert run.run_id == "run_T1"
+    assert run.state == RunState.SUCCESS
+    # services.close() 必须被调 (释放 QwenPaw executor / ToolRegistry)
+    assert fake._closed
 
 
-def test_run_batch_limit_truncates(env, monkeypatch) -> None:
-    """limit < len(task_ids) 时 batch_runner.run 的 limit 参数生效."""
-    queue, config_path, _ = env
-    tasks = [_make_task(f"T{i}") for i in range(5)]
-    runs = [_make_run(f"T{i}", RunState.SUCCESS) for i in range(5)]
-    fake = _FakeServices(tasks, runs)
-    captured: dict = {}
-
-    async def fake_build_application(_cfg):
-        return fake
-
-    async def capturing_run(self, tasks_arg, *, limit=0):
-        captured["limit"] = limit
-        captured["len"] = len(tasks_arg)
-        # 模仿真 BatchRunner.run 的切片行为
-        selected = list(tasks_arg[:limit] if limit > 0 else tasks_arg)
-        by_id = {r.task_id: r for r in self._runs}
-        return [by_id[t.task_id] for t in selected if t.task_id in by_id]
-
-    fake.batch_runner = type(
-        "BR", (),
-        {"_runs": list(runs), "run": capturing_run},
-    )()
-
-    monkeypatch.setattr(
-        "orchestration.producer_simulate.build_application", fake_build_application,
-    )
-
-    batch_id, runs = run_batch(
-        config_path=config_path,
-        task_ids=[f"T{i}" for i in range(5)], limit=3, queue=queue,
-    )
-    assert captured["limit"] == 3
-    assert len(runs) == 3
-
-
-def test_run_batch_unknown_task_id_raises(env, monkeypatch) -> None:
-    queue, config_path, _ = env
+def test_run_one_task_raises_keyerror_for_unknown_task(env, monkeypatch) -> None:
+    """task_id 不在 catalog → KeyError (契约 §4.2)."""
+    _, config_path = env
     t1 = _make_task("T1")
     fake = _FakeServices([t1], [_make_run("T1")])
 
@@ -180,38 +140,77 @@ def test_run_batch_unknown_task_id_raises(env, monkeypatch) -> None:
     )
 
     with pytest.raises(KeyError, match="T_MISSING"):
-        run_batch(
-            config_path=config_path,
-            task_ids=["T1", "T_MISSING"], limit=2, queue=queue,
+        asyncio.run(
+            run_one_task("T_MISSING", config_path=config_path)
         )
+    # close 仍在异常分支执行
+    assert fake._closed, "services.close() 在异常分支仍要执行"
 
 
-def test_run_batch_services_close_called_even_on_error(env, monkeypatch) -> None:
-    queue, config_path, _ = env
+def test_run_one_task_propagates_batch_runner_exception(env, monkeypatch) -> None:
+    """batch_runner.run 抛异常 → run_one_task 透传 (PipelineExecutor 兜底)."""
+    _, config_path = env
     t1 = _make_task("T1")
     fake = _FakeServices([t1], [_make_run("T1")])
 
+    async def boom(self, _tasks, *, limit=0, rerun_of=None, max_run_retries=None):
+        raise RuntimeError("simulate_serve internal failure")
+    fake.batch_runner = type("BR", (), {"run": boom})()
+
     async def fake_build_application(_cfg):
         return fake
-
-    async def boom(self, _tasks, *, limit=0):
-        raise RuntimeError("simulate_serve internal failure")
-
-    fake.batch_runner = type("BR", (), {"run": boom})()
 
     monkeypatch.setattr(
         "orchestration.producer_simulate.build_application", fake_build_application,
     )
 
     with pytest.raises(RuntimeError, match="simulate_serve internal failure"):
-        run_batch(
-            config_path=config_path, task_ids=["T1"], limit=1, queue=queue,
-        )
-    assert fake._closed, "services.close() 在异常分支仍要执行"
+        asyncio.run(run_one_task("T1", config_path=config_path))
+    assert fake._closed
 
 
-def test_run_batch_each_call_gets_new_batch_id(env, monkeypatch) -> None:
-    queue, config_path, _ = env
+def test_run_one_task_does_not_write_sqlite(env, monkeypatch) -> None:
+    """run_one_task 不写 SQLite —— 由 PipelineExecutor 调 mark_phase."""
+    _, config_path = env
+    t1 = _make_task("T1")
+    fake = _FakeServices([t1], [_make_run("T1")])
+
+    async def fake_build_application(_cfg):
+        return fake
+
+    # 关键断言: producer_simulate 模块不能 import SQLiteQueue
+    monkeypatch.setattr(
+        "orchestration.producer_simulate.build_application", fake_build_application,
+    )
+    import orchestration.producer_simulate as psm
+    assert not hasattr(psm, "SQLiteQueue"), (
+        "run_one_task 必须不依赖 SQLiteQueue (PipelineExecutor 负责 phase 推进)"
+    )
+
+    asyncio.run(run_one_task("T1", config_path=config_path))
+
+
+def test_run_one_task_returns_failure_state(env, monkeypatch) -> None:
+    """run_one_task 返 run.state == FAIL (executor 失败) → caller 据此标 dead."""
+    _, config_path = env
+    t1 = _make_task("T1")
+    fake = _FakeServices([t1], [_make_run("T1", RunState.GUIDE_EXHAUSTED)])
+
+    async def fake_build_application(_cfg):
+        return fake
+
+    monkeypatch.setattr(
+        "orchestration.producer_simulate.build_application", fake_build_application,
+    )
+
+    run = asyncio.run(run_one_task("T1", config_path=config_path))
+    assert run.state == RunState.GUIDE_EXHAUSTED
+    assert run.is_terminal
+
+
+def test_run_one_task_no_limit_parameter(env, monkeypatch) -> None:
+    """run_one_task 不接受 limit 参数 (单 task 入口, 契约 §4.4)."""
+    _, config_path = env
     t1 = _make_task("T1")
     fake = _FakeServices([t1], [_make_run("T1")])
 
@@ -222,27 +221,23 @@ def test_run_batch_each_call_gets_new_batch_id(env, monkeypatch) -> None:
         "orchestration.producer_simulate.build_application", fake_build_application,
     )
 
-    bid1, _ = run_batch(
-        config_path=config_path, task_ids=["T1"], limit=1, queue=queue,
-    )
-    bid2, _ = run_batch(
-        config_path=config_path, task_ids=["T1"], limit=1, queue=queue,
-    )
-    assert bid1 != bid2
-    assert bid2 == bid1 + 1
+    # limit 参数应不存在 (用 inspect 静态验证)
+    import inspect
+    sig = inspect.signature(run_one_task)
+    assert "limit" not in sig.parameters
+    assert "queue" not in sig.parameters
 
 
-def test_run_batch_skips_unready_tasks_when_configured(env, monkeypatch) -> None:
-    """skip_unready_tasks=true 时，readiness 受阻的 task 不进 batch 也不跑."""
-    queue, config_path, _ = env
-    config_path.write_text("skip_unready_tasks: true\n", encoding="utf-8")
+# ---------------------------------------------------------------------------
+# run_one_task_sync (同步包装)
+# ---------------------------------------------------------------------------
+
+
+def test_run_one_task_sync_returns_task_run(env, monkeypatch) -> None:
+    """run_one_task_sync: 同步包装版, 供子进程入口调."""
+    _, config_path = env
     t1 = _make_task("T1")
-    t2 = _make_task("T2")
-    fake = _FakeServices(
-        [t1, t2],
-        [_make_run("T1")],
-        readiness_gaps={"T2": ("browser.navigate", "browser.snapshot")},
-    )
+    fake = _FakeServices([t1], [_make_run("T1")])
 
     async def fake_build_application(_cfg):
         return fake
@@ -251,24 +246,16 @@ def test_run_batch_skips_unready_tasks_when_configured(env, monkeypatch) -> None
         "orchestration.producer_simulate.build_application", fake_build_application,
     )
 
-    batch_id, runs = run_batch(
-        config_path=config_path, task_ids=["T1", "T2"], limit=2, queue=queue,
-    )
-    assert [r.task_id for r in runs] == ["T1"]
-    with queue._conn() as conn:
-        row = conn.execute(
-            "SELECT task_ids FROM batches WHERE id = ?", (batch_id,),
-        ).fetchone()
-    assert set(row["task_ids"].split(",")) == {"T1"}
+    run = run_one_task_sync("T1", config_path=config_path)
+    assert isinstance(run, TaskRun)
+    assert run.task_id == "T1"
 
 
-def test_run_batch_all_tasks_unready_raises(env, monkeypatch) -> None:
-    queue, config_path, _ = env
-    config_path.write_text("skip_unready_tasks: true\n", encoding="utf-8")
+def test_run_one_task_sync_propagates_exception(env, monkeypatch) -> None:
+    """run_one_task_sync: 异常透传."""
+    _, config_path = env
     t1 = _make_task("T1")
-    fake = _FakeServices(
-        [t1], [_make_run("T1")], readiness_gaps={"T1": ("semantic_judge",)},
-    )
+    fake = _FakeServices([t1], [_make_run("T1")])
 
     async def fake_build_application(_cfg):
         return fake
@@ -277,18 +264,30 @@ def test_run_batch_all_tasks_unready_raises(env, monkeypatch) -> None:
         "orchestration.producer_simulate.build_application", fake_build_application,
     )
 
-    with pytest.raises(NoRunnableTasksError, match="skip"):
-        run_batch(config_path=config_path, task_ids=["T1"], limit=1, queue=queue)
-    assert fake._closed, "services.close() 在过滤后全空的异常分支仍要执行"
+    with pytest.raises(KeyError, match="T_MISSING"):
+        run_one_task_sync("T_MISSING", config_path=config_path)
 
 
-def test_run_batch_runs_unready_tasks_when_not_configured(env, monkeypatch) -> None:
-    """默认（skip_unready_tasks=false）保持原行为：即使无法验收也照常提交."""
-    queue, config_path, _ = env
+# ---------------------------------------------------------------------------
+# BatchRunner.run 不接受 limit (契约 §4.4 删除)
+# ---------------------------------------------------------------------------
+
+
+def test_batch_runner_limit_still_defaulted_in_services(env, monkeypatch) -> None:
+    """BatchRunner.run 仍接受 limit (默认 0 = 不限); run_one_task 用默认 0 调用."""
+    _, config_path = env
     t1 = _make_task("T1")
-    fake = _FakeServices(
-        [t1], [_make_run("T1")], readiness_gaps={"T1": ("browser.snapshot",)},
-    )
+    fake = _FakeServices([t1], [_make_run("T1")])
+
+    captured: dict = {}
+
+    async def capturing_run(self, tasks, *, limit=0, rerun_of=None, max_run_retries=None):
+        captured["limit"] = limit
+        return [_make_run("T1")]
+
+    fake.batch_runner = type(
+        "BR", (), {"_runs": [_make_run("T1")], "run": capturing_run},
+    )()
 
     async def fake_build_application(_cfg):
         return fake
@@ -297,7 +296,6 @@ def test_run_batch_runs_unready_tasks_when_not_configured(env, monkeypatch) -> N
         "orchestration.producer_simulate.build_application", fake_build_application,
     )
 
-    _, runs = run_batch(
-        config_path=config_path, task_ids=["T1"], limit=1, queue=queue,
-    )
-    assert [r.task_id for r in runs] == ["T1"]
+    asyncio.run(run_one_task("T1", config_path=config_path))
+    # run_one_task 不传 limit, BatchRunner.run 拿到 limit=0 (默认 = 不限).
+    assert captured["limit"] == 0

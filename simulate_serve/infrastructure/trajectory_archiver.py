@@ -96,6 +96,17 @@ class QwenPawTrajectoryArchiver:
         except Exception as exc:  # auxiliary capture must never fail a run
             self._warn(session_id, "unexpected trajectory capture error for session %s: %s", session_id, exc)
 
+    def trajectory_path(self, run_id: str, session_id: str) -> Path | None:
+        """Return the on-disk trajectory target path; None when session_id is empty.
+
+        Implements ``simulate_serve.application.ports.TrajectoryArchivePort``;
+        callers (BatchRunner) use this to locate the file for
+        ``simulate_serve.checker.check_completion``.
+        """
+        if not session_id:
+            return None
+        return self.output_dir / trajectory_filename(run_id, session_id)
+
     def _source_path(self, agent_id: str, session_id: str) -> Path:
         base = self._source_override or default_qwenpaw_trajectory_dir(agent_id)
         return base / f"{session_id}.jsonl"

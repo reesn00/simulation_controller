@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,6 +59,14 @@ class TrajectoryArchivePort(Protocol):
     """
 
     def archive(self, run_id: str, agent_id: str, session_id: str) -> None: ...
+
+    def trajectory_path(self, run_id: str, session_id: str) -> Path | None:
+        """Return the on-disk trajectory path for ``(run_id, session_id)``.
+
+        Returns ``None`` when the archiver cannot resolve the path (e.g. no
+        remote session yet). Callers must not assume the file exists; the
+        path is the eventual target produced by ``archive``.
+        """
 
 
 class Clock(Protocol):
