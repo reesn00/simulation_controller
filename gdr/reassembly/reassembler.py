@@ -5,7 +5,53 @@ from domain import Session, BlockRefineRecord, MessageHealth, DefectTag, StepEdi
 from core.policy import RefinementPolicy
 from core.context_understanding import GlobalState
 
+# PR 3 (Commit 3d): reassembler 嵌 3 个 generation 子 span. 工厂 fail-safe,
+# 缺 client 时 span 上下文管理器立即 yield None, 业务流程不受影响.
+try:
+    from simulate_serve.observability.langfuse_client import (
+        get_client as _lf_get_client_for_reassemble,
+        step_span as _lf_step_span_for_reassemble,
+    )
+except Exception:  # pragma: no cover
+    _lf_get_client_for_reassemble = None  # type: ignore[assignment]
+    _lf_step_span_for_reassemble = None  # type: ignore[assignment]
+
 log = logging.getLogger(__name__)
+
+
+def _lf_gen_span(cfg, name: str, **metadata):
+    """构造一个 step_span(as_type="generation") context manager, 缺 client 时返回 None.
+
+    调用规约::
+
+        with _lf_gen_span(cfg, "gdr.reassemble.l3_judge", tool="l3_judge") as span:
+            ...
+
+    span 为 None 时跳过; 调用方无需分支。
+    """
+    if _lf_step_span_for_reassemble is None:
+        return _null_cm()
+    client = _lf_get_client_for_reassemble(cfg) if _lf_get_client_for_reassemble else None
+    if client is None:
+        return _null_cm()
+    return _lf_step_span_for_reassemble(
+        client,
+        name=name,
+        as_type="generation",
+        session_id="",
+        task_id=None,
+        metadata=metadata,
+    )
+
+
+class _null_cm:
+    """空 context manager: __enter__ 返回 None, __exit__ 透传。"""
+
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
 
 # 修复 A: reassemble 内部 timeout 守护（防止 consistency check / judge 卡死导致 30+ 分钟）
 _REASSEMBLE_T0: float = 0.0
@@ -837,7 +883,16 @@ def reassemble(
         else:
             had_success_before = any(r.result == "success" for r in refine_records)
             try:
-                refine_records = _validate_edit_consistency(session, refine_records, cu, cfg)
+                # PR 3 step 13 子 span 2: gdr.reassemble.consistency_check.
+                # 包整个 _validate_edit_consistency (内部可能多次 LLM 调用, 一并归集)
+                with _lf_gen_span(
+                    cfg, "gdr.reassemble.consistency_check",
+                    tool="edit_consistency",
+                    edited_records=sum(
+                        1 for r in refine_records if r.result == "success"
+                    ),
+                ):
+                    refine_records = _validate_edit_consistency(session, refine_records, cu, cfg)
             except Exception as e:
                 log.warning("edit consistency check failed, proceeding without rollback: %s", e)
             # 修复 B: 所有成功编辑都被一致性回滚 → blocks 已恢复为原文（语义安全），
@@ -882,7 +937,13 @@ def reassemble(
     user_intent_text = ""
     try:
         from core.user_intent import extract_user_intent_llm
-        user_intent_text = extract_user_intent_llm(session, cfg) or ""
+        # PR 3 step 13 子 span 1: gdr.reassemble.user_intent_llm
+        with _lf_gen_span(
+            cfg, "gdr.reassemble.user_intent_llm",
+            tool="user_intent_extract",
+            max_chars=int(getattr(cfg, "user_intent_max_chars", 1500)),
+        ):
+            user_intent_text = extract_user_intent_llm(session, cfg) or ""
     except Exception as e:
         log.warning("user_intent extraction failed (%s); using empty intent", e)
     session.metadata = session.metadata or {}
@@ -908,9 +969,17 @@ def reassemble(
         # reasoning 模型的思考 token 计入 max_tokens, 预算过小 → content 为空.
         # max_tokens 走 cfg.judge_max_tokens (默认 36000), 不在代码侧硬截;
         # 后端按自己的 n_ctx / max-model-len 自然截断。
-        text, meta = client.chat(
-            messages, max_tokens=cfg.judge_max_tokens, temperature=0.0, timeout_s=cfg.l3_timeout_s,
-        )
+        # PR 3 step 13 子 span 3: gdr.reassemble.l3_judge (generation)
+        with _lf_gen_span(
+            cfg, "gdr.reassemble.l3_judge",
+            tool="l3_judge",
+            judge_model=str(cfg.judge_model),
+            max_tokens=int(cfg.judge_max_tokens),
+            timeout_s=int(cfg.l3_timeout_s),
+        ):
+            text, meta = client.chat(
+                messages, max_tokens=cfg.judge_max_tokens, temperature=0.0, timeout_s=cfg.l3_timeout_s,
+            )
         from prompts import parse_json_object
         result = parse_json_object(text)
         # Judge 失效/无信号检测: text 为空 / parse 失败 / 没有 score 字段 →

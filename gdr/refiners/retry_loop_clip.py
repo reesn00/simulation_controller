@@ -19,6 +19,17 @@ import json
 import logging
 from typing import Any
 
+# PR 3 (Commit 3b): 子 generation span. 失败时安全降级到无 span,
+# 与 PR 1 factory 的零侵入语义一致.
+try:
+    from simulate_serve.observability.langfuse_client import (
+        get_client as _lf_get_client_for_clip,
+        step_span as _lf_step_span_for_clip,
+    )
+except Exception:  # pragma: no cover
+    _lf_get_client_for_clip = None  # type: ignore[assignment]
+    _lf_step_span_for_clip = None  # type: ignore[assignment]
+
 log = logging.getLogger(__name__)
 
 
@@ -206,6 +217,9 @@ def llm_judge_retry_loop(
     """用 LLM 判断 segment 是否为重试循环, 返回保留的下标或 None.
 
     严格 fallback: 任何异常 / 解析失败 / 字段缺失 → 返回 None (不动数据).
+
+    PR 3 (Commit 3b): 子 generation span ``gdr.retry_loop_clip.judge``,
+    as_type="generation". 工厂 fail-safe, 缺 client 时不抛.
     """
     if not segment:
         return None
@@ -218,11 +232,46 @@ def llm_judge_retry_loop(
         count=len(segment), max_keep=max_keep, calls=calls_payload,
     )
 
+    # PR 3: 子 generation span. 仅当工厂 client 可用且 cfg 标记开启时起.
+    # cfg 通过 llm_client.cfg 兼容 (LlamaCppClient 在 .get(cfg=cfg) 时记录 cfg).
+    _span_cm = None
+    _cfg = getattr(llm_client, "cfg", None)
+    _client = _lf_get_client_for_clip(_cfg) if (_lf_get_client_for_clip and _cfg) else None
+    _raw_holder: dict[str, str] = {}
+    if _client is not None and _lf_step_span_for_clip is not None:
+        _span_cm = _lf_step_span_for_clip(
+            _client,
+            name="gdr.retry_loop_clip.judge",
+            as_type="generation",
+            session_id="",
+            task_id=None,
+            metadata={
+                "tool": "retry_loop_clip_judge",
+                "segment_size": len(segment),
+                "max_keep": max_keep,
+            },
+            input_data={"prompt_chars": len(prompt)},
+            output_capture=lambda: {"raw_text_chars": len(_raw_holder.get("raw", ""))},
+        )
+
     try:
-        raw, _meta = llm_client.generate(prompt, max_tokens=400, timeout_s=timeout_s)
+        if _span_cm is not None:
+            with _span_cm:
+                raw, _meta = llm_client.generate(
+                    prompt, max_tokens=400, timeout_s=timeout_s,
+                )
+                _raw_holder["raw"] = raw
+        else:
+            raw, _meta = llm_client.generate(
+                prompt, max_tokens=400, timeout_s=timeout_s,
+            )
+    except Exception as e:
+        log.warning("llm_judge_retry_loop: LLM call failed (%s) — fallback to keep", e)
+        return None
+    try:
         parsed = json.loads(raw)
     except Exception as e:
-        log.warning("llm_judge_retry_loop: LLM call/parse failed (%s) — fallback to keep", e)
+        log.warning("llm_judge_retry_loop: parse failed (%s) — fallback to keep", e)
         return None
 
     if not isinstance(parsed, dict):

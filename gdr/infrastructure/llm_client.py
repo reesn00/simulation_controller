@@ -99,7 +99,15 @@ class LlamaCppClient:
             if key not in cls._instances:
                 log.info("creating HTTP LLM client: base_url=%s model=%s", base_url, model_name)
                 cls._instances[key] = cls(base_url, api_key, model_name, timeout)
-            return cls._instances[key]
+            instance = cls._instances[key]
+        # PR 3 (Commit 3b/9): 让下游 helper 能拿到 cfg (retry_loop_clip 子 generation
+        # span 需要 cfg 调工厂 get_client). 每次 get 调用都覆盖, 兼容 cfg 重置场景.
+        if cfg is not None:
+            try:
+                instance.cfg = cfg  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        return instance
 
     def _post_chat_completions(self, payload: dict, timeout_s: float | None = None) -> dict:
         httpx = _get_http_client()
@@ -151,6 +159,57 @@ class LlamaCppClient:
         temperature: float = 0.0,
         timeout_s: int | None = None,
     ) -> tuple[str, dict]:
+        # PR 3 (Commit 9): per-LLM-span hook. 仅当
+        # ``langfuse_gdr_per_llm_span=True`` 时, 在 chat 入口起 generation span.
+        # 默认 false (避免 100+ spans/session 配额爆炸); 启用时建议配合
+        # ``sample_rate=0.1`` 进一步降采样. factory 缺 client 时 hook 立即
+        # yield None, 业务流程不受影响.
+        _lf_per_llm_span_cm = None
+        if getattr(self, "cfg", None) is not None and getattr(
+            self.cfg, "langfuse_gdr_per_llm_span", False
+        ):
+            try:
+                from simulate_serve.observability.langfuse_client import (
+                    get_client as _lf_get_client_for_chat,
+                )
+                from gdr.observability.llm_hook import maybe_llm_span
+                _lf_client = _lf_get_client_for_chat(self.cfg)
+                if _lf_client is not None:
+                    _lf_per_llm_span_cm = maybe_llm_span(
+                        _lf_client,
+                        name=f"gdr.llm.{self.model}",
+                        model=self.model,
+                        messages=list(messages),
+                        metadata={
+                            "max_tokens": int(max_tokens),
+                            "temperature": float(temperature),
+                        },
+                    )
+            except Exception as exc:  # pragma: no cover - fail-safe
+                log.debug("per_llm_span hook skipped: %s", exc)
+                _lf_per_llm_span_cm = None
+
+        # 进入 span (如果有); ``with`` 即使 cm 是 None 也走业务路径
+        if _lf_per_llm_span_cm is not None:
+            with _lf_per_llm_span_cm:
+                return self._chat_inner(
+                    messages, grammar_json_schema, max_tokens,
+                    temperature, timeout_s,
+                )
+        return self._chat_inner(
+            messages, grammar_json_schema, max_tokens,
+            temperature, timeout_s,
+        )
+
+    def _chat_inner(
+        self,
+        messages: list[dict],
+        grammar_json_schema: dict | None,
+        max_tokens: int,
+        temperature: float,
+        timeout_s: int | None,
+    ) -> tuple[str, dict]:
+        """``chat`` 内部实现: 与 per-LLM-span hook 解耦, 便于嵌套调用。"""
         t0 = time.perf_counter()
 
         content = messages[-1].get("content", "") if messages else ""
