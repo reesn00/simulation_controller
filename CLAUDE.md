@@ -45,6 +45,10 @@ CLI / Bootstrap
 - ToolRegistry 是工具创建、健康检查、能力选择和关闭的唯一 owner。
 - 所有必选 Criterion 必须 PASS 才能成功；工具缺失不能 fail-open。
 - 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
+  *例外*:Langfuse 观测副本(2026-09-23 起的可选可观测性,见
+  `docs/observability-langfuse-plan.md`)按设计上传完整 trajectory / refined
+  Session / 4 视图内容用于对比观察,**不入训练集**(独立 Langfuse 项目),不替代
+  `output/` 制品的脱敏策略。
 - `gdr/reassembly/reassembler.py` 工具配对扫描必须**跨 toolcall 连续扫描**——并行调用（call, call, result, result）下"在下一个 toolcall 处截断"会把成功调用误判为失败删除。
 
 ## 数据格式约定

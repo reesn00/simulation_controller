@@ -105,12 +105,36 @@ class InteractionConfig(StrictConfig):
     actor_timeout_seconds: float = Field(default=180.0, gt=0)
 
 
+class LangfuseConfig(StrictConfig):
+    """Langfuse observability toggle for the simulate_serve stage.
+
+    Default is ``enabled=False`` so existing batches / existing tasks have
+    zero behavior change. When enabled, the trajectory archiver uploads
+    one trace per archive call (i.e., per executor turn).
+    """
+
+    enabled: bool = False
+    public_key: str = ""
+    secret_key: str = ""
+    base_url: str = "https://cloud.langfuse.com"
+    environment: str = "dev"
+    release: str = ""
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    flush_at: int = Field(default=512, ge=1)
+    flush_interval: float = Field(default=5.0, gt=0)
+    timeout: int = Field(default=10, gt=0)
+    upload_payload: Literal["full", "summary", "none"] = "full"
+    max_payload_bytes: int = Field(default=0, ge=0)
+    max_block_payload_bytes: int = Field(default=0, ge=0)
+
+
 class AppConfig(StrictConfig):
     model: ModelConfig = Field(default_factory=ModelConfig)
     agent_endpoint: AgentEndpointConfig = Field(default_factory=AgentEndpointConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     interaction: InteractionConfig = Field(default_factory=InteractionConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    langfuse: LangfuseConfig = Field(default_factory=LangfuseConfig)
     max_guide_rounds: int = Field(default=3, ge=0)
     # Drop tasks whose required validation capabilities are unavailable before
     # submitting them to the executor; otherwise they run a full remote round
@@ -152,6 +176,16 @@ def _parse_config_raw(raw: dict[str, Any]) -> dict[str, Any]:
         section["tasks_file"] = str(PACKAGE_DIR / "config" / "tasks.yaml")
     if not section.get("scenarios_file"):
         section["scenarios_file"] = str(PACKAGE_DIR / "config" / "scenarios.yaml")
+    # Root-level ``langfuse:`` section (shared with gdr / etl stages) becomes
+    # the simulate_serve.langfuse sub-config when the latter is absent.
+    # The shared ``stages:`` sub-key is consumed by the orchestration-side
+    # loader (gdr / etl read it directly from root); it is NOT part of the
+    # simulate_serve LangfuseConfig schema, so we drop it on the way down
+    # to avoid AppConfig's extra_forbid rejection.
+    if "langfuse" in raw and "langfuse" not in section:
+        lf_root = dict(raw["langfuse"])
+        lf_root.pop("stages", None)
+        section["langfuse"] = lf_root
     return section
 
 
