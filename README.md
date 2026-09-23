@@ -122,6 +122,20 @@ GDR 精修（C2）通过后，etl 在尾部做格式整理（`usage_prune` + `tr
 - refined `metadata.tools`：27（含完整 description + parameters）。
 - refine_data 4 视图：`<stem>.messages.json` / `<stem>.openai.json` / `<stem>.qwenjina.txt` / `<stem>.meta.json`；`batch_id=32 runs=1 drained=True dead=0`。
 
+## 可选观测（Langfuse）
+
+三阶段流水线每个 task 产生 3 个相互独立的 Langfuse trace，由同一个 `session_id` 串联（**不是**父子跨进程 trace），用于在 UI 里按时间轴对比观察"原始 trajectory → 每步精修 → 最终训练视图"的演化。**默认关闭**——`config/config.yaml` 里 `langfuse.enabled: false` 时工厂 `get_client()` 返回 `None`，业务零侵入；`langfuse` 本身也是 optional dependency（`uv sync --extra observability` 才装 SDK）。
+
+| 阶段 | Trace 名 | 子 span | 触发点 |
+|---|---|---|---|
+| simulate_serve | `simulate_serve:<task_id>` | 0（一个 stage trace） | `trajectory_archiver.archive()` 的 `finally` 块；多轮按 turn 触发，最终覆盖到终态 |
+| gdr | `gdr.process_one` | 25（21 step + 3 reassemble generation + 1 retry_loop_clip judge generation） | `gdr/pipeline/runner.py::process_one` body 起 |
+| etl | `etl:<task_id>` | 2（`etl.load_refined_session` + `etl.save_c3_4views`） | `orchestration/workers/etl_worker.py::run_etl_once` |
+
+隐私边界：观测副本是**独立 Langfuse 项目**，`session_id` 是与 `output/` 制品的唯一共享字段（用于 Langfuse 端聚合），二者数据流互不替代——若 Langfuse 端被攻破，泄露的是观测副本而非训练数据。`os` 的脱敏策略继续适用于 `output/`。
+
+启用 / 关闭 / 字段白名单 / 各阶段 span 名 / 故障排查 / 采样建议见 [`docs/observability-langfuse.md`](docs/observability-langfuse.md)；编排侧接入点（`_worker_init` 的 `_reset_for_fork` + atexit `_lf_shutdown` + fork-safe client）见 [`docs/orchestration-design.md`](docs/orchestration-design.md) §6.6；设计意图与 13 + 1 字段 schema 见 [`docs/observability-langfuse-plan.md`](docs/observability-langfuse-plan.md)。
+
 ## 架构
 
 - `interaction/`：生成首轮请求和针对验证缺口的自然追问，不拥有验证工具。
@@ -160,7 +174,7 @@ Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或�
 - 本地模拟端拥有最终验收权；远端 Validation Agent 不能直接判成功。
 - 必选准则只有全部 `PASS` 才能成功；工具缺失为 `INCONCLUSIVE`，异常为 `ERROR`。
 - POST 结果不明且远端没有幂等键时不会自动重复提交。
-- 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
+- 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。Langfuse 观测副本（2026-09-23 起的可选可观测性，见 [`docs/observability-langfuse.md`](docs/observability-langfuse.md)）按设计上传完整 trajectory / refined Session / 4 视图内容用于对比观察，**不入训练集**（独立 Langfuse 项目），不替代 `output/` 制品的脱敏策略。完整字段级 schema 与 13 + 1 个白名单字段见 [`docs/observability-langfuse-plan.md`](docs/observability-langfuse-plan.md) §3；启用方式见 [`docs/observability-langfuse.md`](docs/observability-langfuse.md) §2。
 - 审计数据保存所有 Run；蒸馏数据只导出干净的成功对话。
 - 内置 Catalog 使用 Schema v2：68 个训练任务加 30 个分布外评估任务（E001-E030），共 98 个 Task 全部关联 10 个对话策略 Scenario。
 - `test_fixture` 仅用于本地离线用例，不进入远端首轮请求、交互 Prompt 或 Semantic Judge。

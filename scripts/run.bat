@@ -27,6 +27,15 @@ rem   run.bat stop --timeout 30
 rem   run.bat replay
 rem   run.bat replay --no-archive
 rem
+rem Observability (Langfuse, optional):
+rem   Langfuse is enabled via config/config.yaml's `langfuse:` section, NOT via
+rem   CLI flags. Set LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY env vars before
+rem   launch (or point SIMCTL_CONFIG at a config file with the credentials
+rem   already inlined). When enabled=false (default), get_client() returns None
+rem   and there is zero runtime overhead. Full walkthrough in
+rem   orchestration/README.md (search "Langfuse") and docs/observability-langfuse.md
+rem   (Chinese).
+rem
 rem Subcommands and options:
 rem   start [--detach|--foreground] [--dry-run] [--tasks T1,T2,... | --all-tasks]
 rem         [--parallelism N] [--stay]

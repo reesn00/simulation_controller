@@ -26,6 +26,7 @@ from typing import Any
 
 from gdr.config.settings import Settings as GdrSettings
 
+from orchestration._windows import install_no_window_policy
 from orchestration.queue import (
     PHASE_DEAD,
     SQLiteQueue,
@@ -38,6 +39,10 @@ from orchestration.task_pipeline import (
 )
 
 _log = logging.getLogger(__name__)
+
+# Pool 创建前幂等安装:Windows 禁止 spawn worker 弹 cmd 窗口
+# (CPython 3.12 multiprocessing 默认行为会弹,见 orchestration/_windows.py)。
+install_no_window_policy()
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from orchestration._windows import (
+    CREATE_NO_WINDOW,
+    install_no_window_policy,
+)
+
 _log = logging.getLogger(__name__)
+
+# Module 加载时立即安装 no-window 策略 (幂等)。
+# 这样 daemon.start_detached 启 Python 子进程时 + 同进程 multiprocessing.Pool
+# 启 worker 时都不会弹 cmd 窗口。
+install_no_window_policy()
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +356,11 @@ def start_detached(
     if sys.platform == "win32":
         # CREATE_NEW_PROCESS_GROUP = 0x00000200
         # DETACHED_PROCESS = 0x00000008
-        kwargs["creationflags"] = 0x00000008 | 0x00000200  # type: ignore[assignment]
+        # CREATE_NO_WINDOW = 0x08000000 (避免 python.exe 弹 cmd 窗口;
+        # DETACHED_PROCESS 只脱离父控制台,不阻止子进程创建**新**控制台)
+        kwargs["creationflags"] = (
+            0x00000008 | 0x00000200 | CREATE_NO_WINDOW  # type: ignore[assignment]
+        )
     else:
         kwargs["start_new_session"] = True  # type: ignore[assignment]
 

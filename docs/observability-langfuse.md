@@ -290,7 +290,7 @@ except Exception as exc:
 | 读者 | 文档 |
 |---|---|
 | 用户 / 运维 / 数据科学家 | 本文(就这一篇) |
-| 设计师 / 架构师 | [docs/observability-langfuse-plan.md](observability-langfuse-plan.md)(设计意图 + 13 字段 schema + 风险与回退) |
+| 设计师 / 架构师 | [docs/observability-langfuse-plan.md](observability-langfuse-plan.md)(设计意图 + 13 字段 schema + 风险与回退) · [docs/orchestration-design.md](orchestration-design.md) §3.1 / §6.6 / §4 `task_pipeline` 行(orchestration 侧接入点:_worker_init fork-safe + atexit + 双轨传参) |
 | simulate_serve 开发者 | [docs/langfuse-simulate-server.md](langfuse-simulate-server.md)(PR 2 实施参考) |
 | gdr 开发者 | [docs/langfuse-gdr.md](langfuse-gdr.md)(PR 3 实施参考) |
 | etl 开发者 | [docs/langfuse-etl.md](langfuse-etl.md)(PR 4 实施参考) |

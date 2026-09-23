@@ -145,6 +145,73 @@ scripts\run.bat replay
 
 `load_config` 不创建任何目录（契约 §1.5），由调用方按需 `mkdir`。
 
+## 可选观测（Langfuse）
+
+`run.bat` / `python -m orchestration` **不**新增 Langfuse CLI 参数；观测启用完全由
+`config/config.yaml` 顶层 `langfuse:` 段控制。`enabled=false`（默认）时工厂
+`get_client()` 返回 None，业务零侵入。
+
+启用步骤：
+
+```powershell
+# 1. 装 SDK（optional dependency）
+uv sync --extra observability
+
+# 2. 注入凭据（避免写进 yaml / 提交）
+$env:LANGFUSE_PUBLIC_KEY = "pk-lf-..."
+$env:LANGFUSE_SECRET_KEY = "sk-lf-..."
+
+# 3. 打开 config/config.yaml（gitignored），新增 langfuse: 段
+#    langfuse:
+#      enabled: true
+#      public_key: "${LANGFUSE_PUBLIC_KEY}"
+#      secret_key: "${LANGFUSE_SECRET_KEY}"
+#      base_url: "https://cloud.langfuse.com"  # 自部署改 host
+#      environment: "dev"                       # 生产改 "prod"
+#      release: "${LANGFUSE_RELEASE:-local}"
+#      sample_rate: 1.0                         # 大规模任务降到 0.1
+#      upload_payload: full                     # full | summary | none
+
+# 4. 启动（行为完全不变，只是多了观测副本）
+scripts\run.bat start --all-tasks --parallelism 4
+```
+
+三阶段各产生一个独立 trace（`simulate_serve:<task_id>` / `gdr.process_one` /
+`etl:<task_id>`），用同一个 `session_id` 在 Langfuse 端按时间轴串联。`multiprocessing.Pool`
+子进程由 `_reset_for_fork()` 处理 fork-safe（socket 失效问题）。
+
+| 关注点 | 文档 |
+|---|---|
+| 用户视角总览（启用 / 关闭 / 字段白名单 / span 名清单 / 故障排查 / 采样建议） | [`docs/observability-langfuse.md`](../docs/observability-langfuse.md) |
+| 设计基线（13 字段 schema + 风险与回退） | [`docs/observability-langfuse-plan.md`](../docs/observability-langfuse-plan.md) |
+| orchestration 侧接入点（`_worker_init` fork-safe + atexit + 双轨传参） | [`docs/orchestration-design.md`](../docs/orchestration-design.md) §3.1 / §6.6 / §4 `task_pipeline` 行 |
+| 模块级实施参考 | [`docs/langfuse-simulate-server.md`](../docs/langfuse-simulate-server.md) · [`docs/langfuse-gdr.md`](../docs/langfuse-gdr.md) · [`docs/langfuse-etl.md`](../docs/langfuse-etl.md) |
+
+隐私边界：观测副本是**独立 Langfuse 项目**，`session_id` 是与 `output/` 制品的
+唯一共享字段（用于 Langfuse 端聚合）。`output/` 制品的脱敏策略继续适用 CLAUDE.md
+"不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile"——Langfuse
+观测副本按设计上传完整 trajectory / refined Session / 4 视图内容用于对比观察，
+**不入训练集**，不替代 `output/` 制品的脱敏策略。
+
+## Windows 控制台窗口抑制（2026-09-23）
+
+pytest / IDE 测试运行器在 Windows 上跑 `multiprocessing.Pool` worker 或
+`daemon.start_detached` 子进程时，会弹一个 cmd 终端窗口挤占桌面。
+[`orchestration/_windows.py`](orchestration/_windows.py) 提供幂等的
+`install_no_window_policy()`，自动安装于：
+
+- `orchestration.daemon` module 加载时 → `start_detached` 的 `creationflags`
+  显式 OR 上 `CREATE_NO_WINDOW`（`0x08000000`）
+- `orchestration.pipeline_executor` module 加载时 → monkey-patch
+  `_winapi.CreateProcess`，对 cmd 含 `--multiprocessing-fork` 指纹
+  （CPython 3.12 multiprocessing spawn worker 唯一标记）的调用，把
+  `dwCreationFlags=0` 补成 `CREATE_NO_WINDOW`
+- `tests/conftest.py` 顶部 import 时 → pytest 自身启的子进程也覆盖
+
+**对调用方透明**——`multiprocessing.Pool(...)` / `subprocess.run([python, ...])`
+调用语法不变；非 Windows 平台自动 no-op。详见
+[`docs/orchestration-design.md` §6.7](../docs/orchestration-design.md)。
+
 ## 与 `simulate_serve` CLI 的差异（重要）
 
 新架构 `python -m simulate_serve` 只保留只读开关（`--validate-config` /

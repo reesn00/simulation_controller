@@ -77,6 +77,28 @@
 
 跨进程共享：唯一资源是 SQLite（`output/orchestration/orchestration.db`）；SQLite 自身 serializes 写，多子进程并发安全。文件系统产物各子进程独立写。
 
+### 3.1 横切观测层（Langfuse，可选）
+
+三阶段产生 3 个相互独立的 trace，由同一个 `session_id` 串联（**不强制父子跨进程**）：
+
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│ trace 1: simulate_serve:<task_id>                                     │
+│   └─ stage_trace (input=None, output=C1 trajectory dict)             │
+│       └─ 触发:trajectory_archiver.archive() 的 finally 块             │
+│                                                                      │
+│ trace 2: gdr.process_one                                              │
+│   └─ 25 子 span(21 step + 3 reassemble generation + 1 judge gen)     │
+│       └─ 触发:gdr/pipeline/runner.py::process_one body 起             │
+│                                                                      │
+│ trace 3: etl:<task_id>                                                │
+│   └─ 2 子 span(etl.load_refined_session + etl.save_c3_4views)        │
+│       └─ 触发:orchestration/workers/etl_worker.py::run_etl_once      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+默认关闭:`langfuse.enabled=false` 时工厂 `get_client()` 返回 None,业务零侵入;启用时由 `orchestration.task_pipeline._run_one_task_pipeline` 入口一次性 `load_langfuse_config()` + `get_client(cfg)` 装配 client,子阶段 `run_gdr_once` / `run_etl_once` 接收 `langfuse_cfg` / `langfuse_client` 双轨参数。`multiprocessing.Pool` 子进程 fork 后 SDK 不 fork-safe(socket 失效),`_worker_init` 调用 `_reset_for_fork()` 清旧 `_client`,子进程下次 `get_client()` 重新 init 一份(主进程 / 子进程各持一份);atexit `_lf_shutdown`(仅当 enabled)确保退出前 flush。详见 §6.6 与用户视角 [`docs/observability-langfuse.md`](observability-langfuse.md)。
+
 ## 4. 模块划分
 
 | 模块 | 角色 | 文件 |
@@ -84,7 +106,7 @@
 | `orchestration/__main__.py` | CLI 入口：`start` / `status` / `stop` / `replay` 四个子命令 | [`orchestration/__main__.py`](../orchestration/__main__.py) |
 | `orchestration.master` | `Master` 类：持有 cfg / queue / stop_event；`run()` 调 PipelineExecutor，`shutdown()` set stop_event，`status()` 走 `count_by_phase()` | [`orchestration/master.py`](../orchestration/master.py) |
 | `orchestration.pipeline_executor` | `PipelineExecutor`：起 `multiprocessing.Pool`，维护 `in_flight: dict[AsyncResult, str]` 槽位填充 | [`orchestration/pipeline_executor.py`](../orchestration/pipeline_executor.py) |
-| `orchestration.task_pipeline` | `_worker_init` + `_run_one_task_pipeline`：子进程入口，完整跑 simulate → gdr → etl | [`orchestration/task_pipeline.py`](../orchestration/task_pipeline.py) |
+| `orchestration.task_pipeline` | `_worker_init`(fork-safe:`_reset_for_fork()` + atexit `_lf_shutdown`)+ `_run_one_task_pipeline`:子进程入口,完整跑 simulate → gdr → etl + Langfuse client 装配(`load_langfuse_config` + `get_client`)+ `_safe_run_gdr` / `_safe_run_etl` 双轨传 `langfuse_cfg` / `langfuse_client` | [`orchestration/task_pipeline.py`](../orchestration/task_pipeline.py) |
 | `orchestration.settings` | `PipelineSettings` + `Paths`（frozen dataclass） | [`orchestration/settings.py`](../orchestration/settings.py) |
 | `orchestration.config_loader` | `load_config`：从 YAML 解析为 `OrchestrationConfig` | [`orchestration/config_loader.py`](../orchestration/config_loader.py) |
 | `orchestration.queue.sqlite_queue` | `SQLiteQueue`：upsert_task / mark_phase / mark_failed / requeue_dead / list_tasks / count_by_phase | [`orchestration/queue/sqlite_queue.py`](../orchestration/queue/sqlite_queue.py) |
@@ -352,6 +374,99 @@ def _run_one_task_pipeline(
 - `_run_one_task_pipeline` 在子进程内同步阻塞，跑完直接 `mark_phase(gdr)`。
 - 无跨批次凑批等待逻辑。
 
+### 6.6 Langfuse 横切观测层接入点（2026-09-23，PR 1–6）
+
+Langfuse 集成是**横切观测层**，**不**改变三阶段数据契约（`simulation server → gdr → etl` 的 C1/C2/C3 文件格式不变），仅在三阶段的关键节点开 trace 供 UI 对比观察。
+
+#### 6.6.1 装配点（`_run_one_task_pipeline` 入口）
+
+子进程入口一次性 `load_langfuse_config()` + `get_client(cfg)`，仅当 `enabled=True` 构造 client，否则 `langfuse_client=None`，所有下游 `_safe_run_gdr` / `_safe_run_etl` 拿到 `None` 时业务零侵入：
+
+```python
+langfuse_cfg = load_langfuse_config()  # 从根 config/config.yaml 的 langfuse: 段
+langfuse_client = get_client(langfuse_cfg) if langfuse_cfg.enabled else None
+refined_path = _safe_run_gdr(
+    task_id=task_id, src_path=src_path, ..., langfuse_cfg=langfuse_cfg, langfuse_client=langfuse_client,
+)
+etl_outputs = _safe_run_etl(
+    task_id=task_id, c2_path=refined_path, ..., langfuse_cfg=langfuse_cfg, langfuse_client=langfuse_client,
+)
+```
+
+子阶段 worker（`run_gdr_once` / `run_etl_once`）接收双轨参数，**优先级**：显式 `langfuse_client` > 显式 `langfuse_cfg` > 旧 `gdr_settings` / `etl_settings` 兜底。这样 PR 5 引入的 orchestration 入口不影响 PR 3 阶段直接调 worker 的旧路径（gdr 进程内 `pipeline/runner.py::_process_one_file` 仍走 `gdr.config.settings.langfuse_*` flat 字段）。
+
+#### 6.6.2 fork-safe 客户端（`_worker_init`）
+
+`multiprocessing.Pool` 默认 fork 模型下，主进程的 Langfuse SDK client（含 HTTPS socket / 内部 queue）在子进程里**不可用**——`file descriptor` 失效导致 `ConnectionError` / `Bad file descriptor`。
+
+[`orchestration/task_pipeline.py::_worker_init`](../orchestration/task_pipeline.py) 在 `Pool(initializer=_worker_init)` 触发时：
+
+1. 调工厂 `_reset_for_fork()` 把主进程 `_client` 单例清空（idempotent）；
+2. 当 `langfuse_cfg.enabled=True` 时 `atexit.register(_lf_shutdown)` 兜底退出前 `client.flush()`，避免 SIGKILL/OOM 丢批次。
+
+子进程下次 `get_client(cfg)` 触发重新 init 一份（主进程 / 子进程各持一份，互不污染）。
+
+**注**：`Pool` 必须显式传 `initializer=_worker_init, initargs=(paths,)`，不能只传 `processes=N`。旧版只传 `processes=N` 会跳过 worker init → `_reset_for_fork()` 不被调用 → 偶发 `ConnectionError` 但 trace 仍能写出（业务不挂，观测丢数据）。
+
+#### 6.6.3 三阶段 trace 名与签出位置
+
+| 阶段 | Trace 名 | 触发点 | 子 span |
+|---|---|---|---|
+| simulate_serve | `simulate_serve:<task_id>` | `trajectory_archiver.archive()` finally 块（每 turn 调用一次，最终覆盖到终态） | 0（一个 stage trace） |
+| gdr | `gdr.process_one`（在 `pipeline/runner.py::process_one` body 起；`run_gdr_once` 不再起 outer） | 同左 | 25 个（21 step + 3 reassemble generation + 1 retry_loop_clip judge generation） |
+| etl | `etl:<task_id>`（`stage_trace` 外层；`metadata.attempt:N` 标记重试） | `etl_worker.run_etl_once` body | 2 个（`etl.load_refined_session` + `etl.save_c3_4views`） |
+
+**session_id 串联三阶段**：simulate_serve 用 `trajectory_archiver.set_run_context(run_ctx)` 注入 `session_id = run.remote_session_id`；gdr 从 C1 → C2 保留 `Session.session_id`；etl 入口用 `run_etl_once(session_id=...)` 入参。三阶段必须用**同一个** `session_id`，否则 Langfuse UI 看到 3 个独立 trace 不串起来。`_run_one_task_pipeline` 函数体内 step 5/7 把 `session_id` 传下去，**不要**在 worker 内重派生。
+
+#### 6.6.4 payload 模式与 fork-safe 关闭
+
+`upload_payload: full | summary | none` 三态（默认 full）。`max_payload_bytes` 触发降级：单 span payload 超过阈值时降级到 summary（仅保留 keys + byte 数），避免大 session（1000+ block）OOM。
+
+`enabled=false` 时：
+
+- 工厂 `get_client()` 返回 None，`step_span` / `stage_trace` 都是空 no-op；
+- `_worker_init` 不会注册 atexit；
+- 业务路径零侵入（已验证 678 passed + 3 skipped with `enabled=false`）。
+
+**基线**：三阶段数据契约（C1/C2/C3）字段、文件路径、SSE 事件流、QwenPaw 交互协议 — 全部不受 Langfuse 影响。`output/` 的脱敏策略继续适用；Langfuse 端是独立项目，独立数据流。
+
+详见用户视角 [`docs/observability-langfuse.md`](observability-langfuse.md)（启用 / 关闭 / 字段白名单 / 故障排查 / 采样建议）· 设计基线 [`docs/observability-langfuse-plan.md`](observability-langfuse-plan.md)（13 字段 schema + 风险与回退）· 模块级实施参考 [`docs/langfuse-simulate-server.md`](langfuse-simulate-server.md) · [`docs/langfuse-gdr.md`](langfuse-gdr.md) · [`docs/langfuse-etl.md`](langfuse-etl.md)。
+
+### 6.7 Windows 控制台窗口抑制（2026-09-23）
+
+**问题**：pytest / IDE 测试运行器在 Windows 上跑 `multiprocessing.Pool` worker 或 `daemon.start_detached` 子进程时，会弹一个 cmd 终端窗口挤占桌面。
+
+**根因（实测 CPython 3.12）**：
+
+1. `Lib/multiprocessing/popen_spawn_win32.py:77` 调 `_winapi.CreateProcess(python_exe, cmd, ..., 0, ...)`，`creationflags=0` 即默认行为 → `python.exe`（console application）会创建新控制台窗口。CPython 内部**未**硬编码 `CREATE_NO_WINDOW`（与早期文档认知不符）。
+2. `daemon.start_detached` 调 `subprocess.Popen(argv, creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)`。`DETACHED_PROCESS` 仅让子进程脱离父控制台，但 `python.exe` 仍创建**新**控制台窗口。
+
+**修复**：幂等的 [`orchestration/_windows.py`](../orchestration/_windows.py) `install_no_window_policy()`：
+
+| 路径 | 措施 | 触发时机 |
+|---|---|---|
+| `multiprocessing.Pool` worker | monkey-patch `_winapi.CreateProcess`，对 cmd 含 `--multiprocessing-fork` 指纹（CPython 3.12 spawn worker 唯一标记）的调用，把 `dwCreationFlags=0` 补成 `CREATE_NO_WINDOW`（`0x08000000`） | `orchestration.pipeline_executor` module 加载时调一次 |
+| `daemon.start_detached` | `subprocess.Popen` 的 `creationflags` 显式 OR 上 `CREATE_NO_WINDOW` | `orchestration.daemon` module 加载时调一次 |
+| pytest 自身 | 同 `install_no_window_policy()` 自动安装；防止 pytest 自身启动的子进程弹窗 | `tests/conftest.py` 顶部 import 时调一次（兜底） |
+
+**关键不变量**：
+
+- `install_no_window_policy()` **幂等**：首次 patch，后续 no-op；非 Windows 平台标记"已处理"也是 no-op。
+- **不覆盖**调用方已显式传入的非零 `dwCreationFlags`（尊重意图，例如 `daemon.start_detached` 的 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` 不会被覆盖——它们在自己配置时已 OR 上 `CREATE_NO_WINDOW`）。
+- **指纹匹配**精确到 `--multiprocessing-fork`：其他 `_winapi.CreateProcess` 用途（非 multiprocessing spawn）不受影响。
+
+**验证**（`tests/orchestration/test_no_window_policy.py`，7 项全过）：
+
+- `test_install_is_idempotent`：多次调不重复 patch
+- `test_createprocess_gets_wrapped_marker`：Windows 上 `_winapi.CreateProcess` 有 `_no_window_wrapped` 标记
+- `test_wrap_with_mp_fork_injects_create_no_window`：mp fork 指纹 → 补 `CREATE_NO_WINDOW`
+- `test_wrap_with_explicit_nonzero_flags_respects_caller`：调用方已传 `0x00000008` → 不覆盖
+- `test_wrap_without_mp_fork_does_not_inject`：无指纹 → 不动
+- `test_mp_pool_worker_creationflags_have_no_window`：真实 `multiprocessing.Pool(1)` worker 触发 wrap，flags 含 `CREATE_NO_WINDOW`
+- `test_daemon_start_detached_creationflags_have_no_window`：mock Popen 验证 `daemon.start_detached` 传入的 `creationflags` 包含 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`
+
+**非 Windows 平台**：`_winapi.CreateProcess` 不存在，`install_no_window_policy()` 直接标记 `_INSTALLED=True` 返回 False（no-op）；不抛错。
+
 ## 7. 配置（`config/config.yaml`）
 
 ```yaml
@@ -540,6 +655,8 @@ python -m orchestration start --all-tasks --parallelism 4
 - **设计基线**：[`docs/设计方案/pipeline-serial-parallel-refactor.md`](设计方案/pipeline-serial-parallel-refactor.md) /
   [`docs/设计方案/pipeline-contracts.md`](设计方案/pipeline-contracts.md) /
   [`docs/设计方案/round-1-summary.md`](设计方案/round-1-summary.md) 是本次重写的方案、契约与实施汇总。
+- **横切观测（Langfuse，2026-09-23）**：[`docs/observability-langfuse.md`](observability-langfuse.md)（用户视角总览：启用 / 关闭 / 字段白名单 / 各阶段 span 名 / 故障排查 / 采样建议）/ [`docs/observability-langfuse-plan.md`](observability-langfuse-plan.md)（设计基线：13 字段 schema + 风险与回退）/ [`docs/langfuse-simulate-server.md`](langfuse-simulate-server.md) · [`docs/langfuse-gdr.md`](langfuse-gdr.md) · [`docs/langfuse-etl.md`](langfuse-etl.md)（模块级实施参考）。本设计文档的 §3.1 / §6.6 / §4 `task_pipeline` 行涵盖其在 orchestration 侧的接入点；观测层**不**改变三阶段数据契约（C1/C2/C3 字段、文件路径、SSE 事件流）。
+- **Windows 控制台窗口抑制（2026-09-23）**：§6.7 + [`orchestration/_windows.py`](../orchestration/_windows.py) `install_no_window_policy()`：幂等 monkey-patch `_winapi.CreateProcess`，对 `multiprocessing.Pool` worker（cmd 含 `--multiprocessing-fork` 指纹）强制补 `CREATE_NO_WINDOW`；`daemon.start_detached` 的 `creationflags` 显式 OR 上 `CREATE_NO_WINDOW`。避免 pytest / IDE 测试运行器在 Windows 上弹 cmd 窗口。`tests/orchestration/test_no_window_policy.py` 7 项验证全过。
 
 ## 12. 后续步骤
 
