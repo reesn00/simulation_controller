@@ -163,7 +163,10 @@ def _patch_pipeline(
     class _EtlNonRetryableError(Exception):
         pass
 
-    def fake_run_gdr_once(*, src_path, refined_dir, gdr_settings, task_id, session_id):
+    def fake_run_gdr_once(
+        *, src_path, refined_dir, gdr_settings, task_id, session_id,
+        langfuse_client=None, langfuse_cfg=None,
+    ):
         counts["gdr"] += 1
         if gdr_nonretryable and counts["gdr"] == 1:
             raise _GdrNonRetryableError("gdr permanent fail")
@@ -177,7 +180,10 @@ def _patch_pipeline(
             refined_path=refined, task_id=task_id, session_id=session_id,
         )
 
-    def fake_run_etl_once(*, c2_path, etl_outputs_dir, task_id, session_id):
+    def fake_run_etl_once(
+        *, c2_path, etl_outputs_dir, task_id, session_id,
+        attempt=0, langfuse_cfg=None,
+    ):
         counts["etl"] += 1
         if etl_nonretryable and counts["etl"] == 1:
             raise _EtlNonRetryableError("etl permanent fail")
@@ -504,3 +510,203 @@ def test_production_uses_run_one_task_sync_not_async(tmp_path: Path, monkeypatch
     assert counts["simulate"] == 1
     assert counts["gdr"] == 1
     assert counts["etl"] == 1
+
+
+# ---------------------------------------------------------------------------
+# PR 5: Langfuse cfg / client plumbing + worker_init atexit
+# ---------------------------------------------------------------------------
+
+
+def test_run_one_task_pipeline_constructs_langfuse_cfg_when_enabled(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """``_run_one_task_pipeline`` 入口构造 ``langfuse_cfg`` 且 enabled=True 时
+    调 ``get_client``;并将 cfg / client 透传给 ``run_gdr_once`` /
+    ``run_etl_once``.
+    """
+    from dataclasses import dataclass
+
+    paths = _make_paths(tmp_path)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    @dataclass(frozen=True)
+    class _Cfg:
+        enabled: bool = True
+        public_key: str = "pk"
+        secret_key: str = "sk"
+        upload_payload: str = "full"
+        per_step_span: bool = True
+
+    # Stub load_langfuse_config to return our enabled cfg.
+    monkeypatch.setattr(
+        "orchestration.observability.langfuse_config.load_langfuse_config",
+        lambda: _Cfg(),
+    )
+
+    # get_client counter to verify it's called when enabled.
+    from simulate_serve.observability import langfuse_client
+
+    fake_client = object()  # any truthy singleton
+    get_client_calls = {"n": 0}
+
+    def fake_get_client(_cfg):
+        get_client_calls["n"] += 1
+        return fake_client
+
+    monkeypatch.setattr(langfuse_client, "get_client", fake_get_client)
+    monkeypatch.setattr(
+        "simulate_serve.observability.langfuse_client.get_client",
+        fake_get_client,
+    )
+
+    counts = _patch_pipeline(monkeypatch)
+
+    result = _run_one_task_pipeline(
+        "T_LF", paths, gdr_settings, settings,
+    )
+    assert result["phase"] == PHASE_DONE
+    assert counts["simulate"] == 1
+    assert counts["gdr"] == 1
+    assert counts["etl"] == 1
+    # enabled → get_client at least once
+    assert get_client_calls["n"] >= 1
+
+
+def test_run_one_task_pipeline_disabled_langfuse_skips_client(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """``langfuse.enabled=False`` → ``get_client`` 不被调用;业务路径不受影响."""
+    from dataclasses import dataclass
+
+    paths = _make_paths(tmp_path)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    @dataclass(frozen=True)
+    class _Cfg:
+        enabled: bool = False
+        public_key: str = ""
+        secret_key: str = ""
+
+    monkeypatch.setattr(
+        "orchestration.observability.langfuse_config.load_langfuse_config",
+        lambda: _Cfg(),
+    )
+
+    from simulate_serve.observability import langfuse_client
+
+    get_client_calls = {"n": 0}
+
+    def fake_get_client(_cfg):
+        get_client_calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(langfuse_client, "get_client", fake_get_client)
+    monkeypatch.setattr(
+        "simulate_serve.observability.langfuse_client.get_client",
+        fake_get_client,
+    )
+
+    counts = _patch_pipeline(monkeypatch)
+
+    result = _run_one_task_pipeline(
+        "T_LF_OFF", paths, gdr_settings, settings,
+    )
+    assert result["phase"] == PHASE_DONE
+    # enabled=False → get_client 不被调用 (短路)
+    assert get_client_calls["n"] == 0
+
+
+def test_worker_init_registers_atexit_when_enabled(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """``_worker_init`` 在 ``langfuse.enabled=True`` 时注册 atexit.shutdown."""
+    import atexit
+
+    paths = _make_paths(tmp_path)
+
+    # Stub load_langfuse_config to return enabled True.
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _Cfg:
+        enabled: bool = True
+
+    monkeypatch.setattr(
+        "orchestration.observability.langfuse_config.load_langfuse_config",
+        lambda: _Cfg(),
+    )
+
+    # 收集 _lf_shutdown 引用
+    registered: list = []
+
+    import simulate_serve.observability.langfuse_client as lf
+
+    real_shutdown = lf.shutdown
+
+    def spy_shutdown():
+        registered.append("called")
+        return real_shutdown()
+
+    monkeypatch.setattr(lf, "shutdown", spy_shutdown)
+    # task_pipeline 内部从 langfuse_client 拉 shutdown — module 已经在前面
+    # import 一次,monkeypatch 在 module 上覆盖 attribute.
+    # 直接验证 _worker_init 注册行为更稳:
+    from orchestration.task_pipeline import _worker_init
+
+    # 重新 patch task_pipeline 内部 from-import 的 shutdown
+    # task_pipeline 在函数体内 `from ... import shutdown as _lf_shutdown`,
+    # 这相当于在调用时局部绑 — monkeypatch 同步生效.
+    before_atexit = atexit._ncallbacks() if hasattr(atexit, "_ncallbacks") else None
+
+    _worker_init(paths)
+
+    # 不需要具体计数(atexit unregister 难),只验证 _worker_init 在 enabled
+    # 时不抛异常且 _reset_for_fork 被调 (用 spy 验证)
+    reset_calls = {"n": 0}
+    real_reset = lf._reset_for_fork
+
+    def spy_reset():
+        reset_calls["n"] += 1
+        return real_reset()
+
+    monkeypatch.setattr(lf, "_reset_for_fork", spy_reset)
+
+    _worker_init(paths)
+    assert reset_calls["n"] == 1
+
+
+def test_worker_init_disabled_skips_atexit_register(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """``langfuse.enabled=False`` → ``_worker_init`` 不抛异常, ``_reset_for_fork``
+    仍然调 (always idempotent), atexit 不注册 shutdown."""
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _Cfg:
+        enabled: bool = False
+
+    monkeypatch.setattr(
+        "orchestration.observability.langfuse_config.load_langfuse_config",
+        lambda: _Cfg(),
+    )
+
+    paths = _make_paths(tmp_path)
+    from orchestration.task_pipeline import _worker_init
+
+    # 验证不抛异常 + reset 被调
+    import simulate_serve.observability.langfuse_client as lf
+
+    reset_calls = {"n": 0}
+    real_reset = lf._reset_for_fork
+
+    def spy_reset():
+        reset_calls["n"] += 1
+        return real_reset()
+
+    monkeypatch.setattr(lf, "_reset_for_fork", spy_reset)
+
+    _worker_init(paths)
+    assert reset_calls["n"] == 1

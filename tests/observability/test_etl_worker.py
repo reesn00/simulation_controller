@@ -809,18 +809,101 @@ def test_run_etl_once_langfuse_failure_isolated(
 
 
 # ---------------------------------------------------------------------------
-# 12. _safe_run_etl 重试 → N 独立 trace (留给 PR 5)
+# 12. _safe_run_etl 重试 → N 独立 trace (PR 5)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason="PR 4 不动 _safe_run_etl; 透传 attempt + langfuse_cfg 由 PR 5 实施."
-)
 def test_run_etl_once_retry_creates_independent_traces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     enabled_cfg: _EnabledCfg, fake_langfuse: Any,
 ) -> None:
-    """max_retry=2 → 应有 3 个独立 outer ``stage_trace`` (attempt=0/1/2).
+    """``_safe_run_etl(max_retry=2, langfuse_cfg=enabled_cfg)`` →
+    应有 3 个独立 outer ``stage_trace`` (attempt=0/1/2).
 
-    留给 PR 5 实施 (``task_pipeline._safe_run_etl``)."""
-    raise NotImplementedError
+    PR 5 任务 1 + 任务 4:
+      - ``_safe_run_etl`` 接收 ``langfuse_cfg`` 并透传给 ``run_etl_once``
+      - ``_run_one_task_pipeline`` 入口构造 ``langfuse_cfg`` 并透传
+      - 每次 attempt 都是新 outer span (``metadata.attempt=N`` + tag ``attempt:N``)
+
+    测试策略: 调**真实** ``run_etl_once`` (含 outer stage_trace), 在
+    ``save_session_v2`` 处按 attempt 注入失败, 前两次抛 RuntimeError,
+    第三次成功. 这样 outer span 真的被 SDK mock 记录, attempt:N tag 真的
+    写进了 call_args_list。
+    """
+    from orchestration.queue import SQLiteQueue
+    from orchestration.task_pipeline import _safe_run_etl
+
+    _install_mocks(monkeypatch, tmp_path)
+
+    # 按 attempt 让 save_session_v2 失败 (前 2 次) / 成功 (第 3 次).
+    attempt_state = {"n": 0}
+
+    real_save_v2_module = None
+
+    def conditional_save_v2(session, base_path):
+        attempt_state["n"] += 1
+        if attempt_state["n"] < 3:
+            raise RuntimeError(f"save fail attempt {attempt_state['n']}")
+        # 3rd: write 4 views
+        base_path = Path(base_path)
+        msgs = Path(str(base_path) + ".messages.json")
+        op = Path(str(base_path) + ".openai.json")
+        meta = Path(str(base_path) + ".meta.json")
+        for p in (msgs, op, meta):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("{}", encoding="utf-8")
+        return _FakeSessionOutputs(msgs, op, None, meta)
+
+    monkeypatch.setattr(
+        "orchestration.workers.etl_worker.save_session_v2",
+        conditional_save_v2,
+    )
+
+    db = tmp_path / "q.db"
+    queue = SQLiteQueue(db)
+    queue.upsert_task("T001")
+
+    c2 = _write_c2(tmp_path, session_id="s1")
+    outputs_dir = tmp_path / "out"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    # 关键: 调真实 run_etl_once, 让 outer stage_trace 走通;失败 2 次 +
+    # 成功 1 次 = 3 个独立 outer trace. attempt 通过 stage_trace 的
+    # metadata.attempt + tags=["attempt:N"] 区分。
+    result = _safe_run_etl(
+        task_id="T001",
+        c2_path=c2,
+        etl_outputs_dir=outputs_dir,
+        session_id="s1",
+        max_retry=2,
+        queue=queue,
+        langfuse_cfg=enabled_cfg,
+    )
+    assert result is not None
+    assert attempt_state["n"] == 3
+
+    span_calls = fake_langfuse.start_as_current_observation.call_args_list
+    outer_names = [c.kwargs.get("name") for c in span_calls
+                   if c.kwargs.get("name") == "etl:T001"]
+    assert len(outer_names) == 3, (
+        f"expected 3 outer etl:T001 spans (one per attempt); got {outer_names}"
+    )
+
+    # attempt:N 通过 propagate_attributes(tags=...) 传, 不是
+    # start_as_current_observation kwargs. fake_langfuse fixture 没有装
+    # propagate_attributes mock, 但全局 propagate_attributes 是真的
+    # langfuse SDK mock(由 fake_langfuse 装在 langfuse_client 模块).
+    # 我们直接调 propagate_attributes 在 module 上抓 call_args.
+    from simulate_serve.observability import langfuse_client as _lf
+
+    pa = getattr(_lf, "propagate_attributes", None)
+    attempt_tags: list[str] = []
+    if pa is not None and hasattr(pa, "call_args_list"):
+        for c in pa.call_args_list:
+            tags = c.kwargs.get("tags") or []
+            for t in tags:
+                if isinstance(t, str) and t.startswith("attempt:"):
+                    attempt_tags.append(t)
+    assert sorted(attempt_tags) == ["attempt:0", "attempt:1", "attempt:2"], (
+        f"expected attempt:0/1/2 tags; got {attempt_tags}"
+    )

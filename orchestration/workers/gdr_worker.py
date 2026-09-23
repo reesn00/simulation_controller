@@ -17,6 +17,10 @@
       -> from_trajectory(src_path) 校验 + 解析
       -> _process_one_file(src_path, out_path, settings)
       -> C2 refined Session 单文件 (refined_path)
+
+PR 3 (Commit 8): 外层包 ``stage_trace`` (``name="gdr:{task_id}"``) + 入口
+``set_current_task_id(task_id)`` / finally 清 None; 让 21 步骤子 span
+通过 ``_current_task_id()`` 读 task_id 写 metadata, UI 可按 task_id 过滤。
 """
 
 from __future__ import annotations
@@ -29,6 +33,16 @@ from pathlib import Path
 from gdr.config.settings import Settings
 from gdr.parsers import from_trajectory
 from gdr.pipeline.runner import _process_one_file
+
+# PR 3: Langfuse 可观测性 import.
+from simulate_serve.observability.langfuse_client import (
+    get_client as _lf_get_client_for_gdr_worker,
+    stage_trace as _lf_stage_trace_for_gdr_worker,
+)
+from gdr.observability.runner_helpers import (
+    _payload_mode as _lf_payload_mode_for_gdr_worker,
+    set_current_task_id as _lf_set_current_task_id_for_gdr_worker,
+)
 
 from orchestration.workers.base_worker import _output_filename
 
@@ -75,6 +89,8 @@ def run_gdr_once(
     gdr_settings: Settings,
     task_id: str,
     session_id: str,
+    langfuse_client: Any | None = None,
+    langfuse_cfg: Any | None = None,
 ) -> GdrResult:
     """单个 trajectory JSONL 文件 → 一个 C2 refined Session JSON.
 
@@ -98,6 +114,14 @@ def run_gdr_once(
         Catalog 内的 task_id, 用于产物文件名 + ``GdrResult.task_id``.
     session_id:
         远端 session_id, 用于产物文件名 + ``GdrResult.session_id``.
+    langfuse_client:
+        PR 5: 外部已构造好的 Langfuse 客户端 (主进程 ``_run_one_task_pipeline``
+        入口构造); 非 None 时优先使用, 跳过本函数内 ``get_client``。
+        默认 None (PR 3 旧调用兼容, 内部用 ``get_client(gdr_settings)``)。
+    langfuse_cfg:
+        PR 5: 外部 ``LangfuseConfig`` 容器; 与 ``langfuse_client`` 二选一,
+        若 ``langfuse_client is None`` 且 ``langfuse_cfg`` 给出, 内部 fallback
+        走 ``get_client(langfuse_cfg)``。保留是为了 PR 3 旧测试不破。
 
     Returns
     -------
@@ -118,75 +142,132 @@ def run_gdr_once(
         LLM 调用临时失败. 可重试.
     Exception:
         任何未显式分类的异常, 由 PipelineExecutor 兜底标 dead.
+
+    Notes
+    -----
+    PR 5 双轨客户端 (dual-track client):
+      1. ``langfuse_client`` 显式注入 (主进程路径) — 复用同一个进程级 singleton
+      2. ``langfuse_cfg`` 注入但 ``langfuse_client=None`` — fallback 调 ``get_client``
+      3. 都为 None — 退化 ``get_client(gdr_settings)`` (PR 3 行为)
     """
     src_path = Path(src_path)
     refined_dir = Path(refined_dir)
 
     t0 = time.perf_counter()
 
-    # --- 1. src 存在性 + 解析前置校验 (永久性错误直接抛 GdrNonRetryableError) ---
-    if not src_path.exists():
-        raise GdrNonRetryableError(
-            f"run_gdr_once: trajectory missing for task {task_id}: {src_path}"
-        )
+    # PR 3 (Commit 8): thread-local task_id 守护 — 进入时设, finally 清空.
+    # 21 步骤 helper 通过 _current_task_id() 读, 让子 span metadata 含 task_id.
+    _lf_set_current_task_id_for_gdr_worker(task_id)
+    _lf_final_result_holder: dict | None = {"status": None}
+
+    # PR 5: 三段式 client 解析 — 显式 client > 显式 cfg > 旧 gdr_settings 兜底.
+    if langfuse_client is not None:
+        _lf_client = langfuse_client
+    elif langfuse_cfg is not None:
+        _lf_client = _lf_get_client_for_gdr_worker(langfuse_cfg)
+    else:
+        _lf_client = _lf_get_client_for_gdr_worker(gdr_settings)
+
+    # payload_mode: 显式 cfg 优先 (主进程路径), 否则走 gdr_settings (旧路径).
+    if langfuse_cfg is not None:
+        _lf_payload_mode = _lf_payload_mode_for_gdr_worker(langfuse_cfg)
+    else:
+        _lf_payload_mode = _lf_payload_mode_for_gdr_worker(gdr_settings)
     try:
-        from_trajectory(src_path)
-    except (ValueError, UnicodeDecodeError, FileNotFoundError) as exc:
-        # 解析失败是永久性错误 (重试不会改变文件内容)
-        raise GdrNonRetryableError(
-            f"run_gdr_once: trajectory parse failed "
-            f"({type(exc).__name__}): {exc}"
-        ) from exc
-
-    # --- 2. 构造/复用 gdr.Settings ---
-    # 强制 workers=1 / max_files=1 / batch_output_dir=refined_dir,
-    # 其余 (llm_concurrency / model / endpoint / ...) 全部透传.
-    cfg = gdr_settings.model_copy(update={
-        "batch_output_dir": refined_dir,
-        "workers": 1,
-        "max_files": 1,
-    })
-
-    # --- 3. 计算输出路径 + 调 _process_one_file ---
-    out_path = refined_dir / _output_filename(task_id, session_id, suffix=".json")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    result = _process_one_file(src_path, out_path, cfg)
-
-    # --- 4. 解读 gdr.status ---
-    if result is None:
-        raise RetryableGdrError(
-            f"run_gdr_once: gdr returned None (task={task_id})"
-        )
-
-    status = result.get("status")
-    err = (result or {}).get("error", "")
-
-    if status == "success":
-        refined_path = Path(result.get("output") or out_path)
-        duration = time.perf_counter() - t0
-        _log.info(
-            "run_gdr_once: success task=%s refined=%s duration=%.2fs",
-            task_id, refined_path, duration,
-        )
-        return GdrResult(
-            refined_path=refined_path,
-            task_id=task_id,
+        with _lf_stage_trace_for_gdr_worker(
+            _lf_client,
             session_id=session_id,
-            duration_seconds=duration,
-        )
+            name=f"gdr:{task_id}",
+            user_id=session_id,  # 用 session_id 作 user_id, 与 simulate_serve 端一致
+            task_id=task_id,
+            tags=["stage:gdr", f"task:{task_id}"],
+            metadata={
+                "src_path": str(src_path),
+                "refined_dir": str(refined_dir),
+                "session_id": session_id,
+            },
+            input_data=None,
+            output_capture=lambda: {
+                "refined_path": str(_lf_final_result_holder.get("refined_path")),
+                "status": _lf_final_result_holder.get("status"),
+                "duration_seconds": round(time.perf_counter() - t0, 3),
+            } if _lf_final_result_holder.get("status") else None,
+            payload_mode=_lf_payload_mode,
+        ):
+            # --- 1. src 存在性 + 解析前置校验 (永久性错误直接抛 GdrNonRetryableError) ---
+            if not src_path.exists():
+                _lf_final_result_holder["status"] = "missing_src"
+                raise GdrNonRetryableError(
+                    f"run_gdr_once: trajectory missing for task {task_id}: {src_path}"
+                )
+            try:
+                from_trajectory(src_path)
+            except (ValueError, UnicodeDecodeError, FileNotFoundError) as exc:
+                # 解析失败是永久性错误 (重试不会改变文件内容)
+                _lf_final_result_holder["status"] = "parse_error"
+                raise GdrNonRetryableError(
+                    f"run_gdr_once: trajectory parse failed "
+                    f"({type(exc).__name__}): {exc}"
+                ) from exc
 
-    if status in ("load_error", "discard", "incomplete"):
-        # load_error = 输入文件坏 (永久); discard = 结构不可用 (硬丢弃,
-        # 重试结果相同); incomplete = 未闭合 session 检测已旁路到
-        # refine_data/incomplete.jsonl, refine_data 跳过, 重跑只会让
-        # detector 再命中一次, 不改变 outcome.
-        raise GdrNonRetryableError(
-            f"run_gdr_once: gdr status={status!r} (task={task_id}) {err}"
-        )
+            # --- 2. 构造/复用 gdr.Settings ---
+            # 强制 workers=1 / max_files=1 / batch_output_dir=refined_dir,
+            # 其余 (llm_concurrency / model / endpoint / ...) 全部透传.
+            cfg = gdr_settings.model_copy(update={
+                "batch_output_dir": refined_dir,
+                "workers": 1,
+                "max_files": 1,
+            })
 
-    # save_error / 其他未分类 → 可重试.
-    raise RetryableGdrError(
-        f"run_gdr_once: gdr returned non-retryable-error status={status!r} "
-        f"(task={task_id}) {err}"
-    )
+            # --- 3. 计算输出路径 + 调 _process_one_file ---
+            out_path = refined_dir / _output_filename(task_id, session_id, suffix=".json")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+            result = _process_one_file(src_path, out_path, cfg)
+
+            # --- 4. 解读 gdr.status ---
+            if result is None:
+                _lf_final_result_holder["status"] = "gdr_returned_none"
+                raise RetryableGdrError(
+                    f"run_gdr_once: gdr returned None (task={task_id})"
+                )
+
+            status = result.get("status")
+            err = (result or {}).get("error", "")
+
+            if status == "success":
+                refined_path = Path(result.get("output") or out_path)
+                duration = time.perf_counter() - t0
+                _log.info(
+                    "run_gdr_once: success task=%s refined=%s duration=%.2fs",
+                    task_id, refined_path, duration,
+                )
+                _lf_final_result_holder["refined_path"] = refined_path
+                _lf_final_result_holder["status"] = "success"
+                return GdrResult(
+                    refined_path=refined_path,
+                    task_id=task_id,
+                    session_id=session_id,
+                    duration_seconds=duration,
+                )
+
+            if status in ("load_error", "discard", "incomplete"):
+                # load_error = 输入文件坏 (永久); discard = 结构不可用 (硬丢弃,
+                # 重试结果相同); incomplete = 未闭合 session 检测已旁路到
+                # refine_data/incomplete.jsonl, refine_data 跳过, 重跑只会让
+                # detector 再命中一次, 不改变 outcome.
+                _lf_final_result_holder["status"] = status
+                raise GdrNonRetryableError(
+                    f"run_gdr_once: gdr status={status!r} (task={task_id}) {err}"
+                )
+
+            # save_error / 其他未分类 → 可重试.
+            _lf_final_result_holder["status"] = status
+            raise RetryableGdrError(
+                f"run_gdr_once: gdr returned non-retryable-error status={status!r} "
+                f"(task={task_id}) {err}"
+            )
+    finally:
+        # PR 3 (Commit 8): finally 清 task_id thread-local, 避免 worker 复用
+        # 同一线程时泄漏到下次 task.
+        _lf_set_current_task_id_for_gdr_worker(None)
