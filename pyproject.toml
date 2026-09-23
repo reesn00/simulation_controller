@@ -78,6 +78,7 @@ markers = [
     "known_gap: accepted defect pending its planned phase",
     "package: package build and installation tests",
     "browser_smoke: optional local browser smoke tests",
+    "langfuse_real: requires real Langfuse credentials (LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY); not run on default CI",
 ]
 
 [tool.uv.workspace]
