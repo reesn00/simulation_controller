@@ -69,7 +69,19 @@ def _mock_etl(
     if fake_load_session is None:
         def fake_load_session(path):
             # 返回一个空对象, 模拟 Session (含 messages / metadata).
-            return _FakeSession(path)
+            # ``session_id`` 优先从 C2 payload 读 (与真实 ``load_refined_session``
+            # 一致); 缺失时退化到 ``path.stem`` (旧 fixture 行为).
+            import json
+            payload_session_id: str | None = None
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    sid = payload.get("session_id")
+                    if isinstance(sid, str):
+                        payload_session_id = sid
+            except Exception:
+                payload_session_id = None
+            return _FakeSession(path, session_id=payload_session_id)
         monkeypatch.setattr(
             "orchestration.workers.etl_worker.load_refined_session",
             fake_load_session,
@@ -89,9 +101,11 @@ def _mock_etl(
 class _FakeSession:
     """最小 Session 替身 (满足 ``model_dump`` 接口足够)."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, session_id: str | None = None) -> None:
         self._path = path
-        self.session_id = path.stem
+        # 默认从 path.stem 推导; 测试需要注入 ``session_id`` 跟 ``run_etl_once``
+        # 的入参 arg 一致 (例如测试 sanitize 行为时 arg 含 '/'.
+        self.session_id = session_id if session_id is not None else path.stem
         self.messages: list = []
         self.metadata: dict = {}
 
@@ -200,10 +214,18 @@ def test_run_etl_once_creates_outputs_dir(env, monkeypatch) -> None:
 def test_run_etl_once_filename_sanitizes_unsafe_chars(env, monkeypatch) -> None:
     """task_id / session_id 含非法字符时, 文件名 sanitize 为 ``_``."""
     tmp_path, etl_outputs_dir = env
-    # 不走 _write_c2 (该辅助函数自己就会因 session_id 含 '/' 报错);
-    # 直接造一个物理 C2 + 传一个虚拟 session_id 给 run_etl_once,
-    # 焦点是 task_id / session_id 的 sanitize 行为, 不是 C2 文件内容.
-    c2 = _write_c2(tmp_path, session_id="s_safe")
+    # 物理 C2 文件名固定 (Windows 不允许文件名含 '/'), 但 payload 内
+    # ``session_id`` 字段传与 run_etl_once arg 一致的带 '/' 值:
+    # ``_FakeSession`` 通过 ``payload["session_id"]`` 注入 session_id,
+    # 因此 ``run_etl_once`` 的 ``assert session_id == arg`` 校验可以通过.
+    c2 = tmp_path / "safe_name.json"
+    payload = {
+        "session_id": "s/1",
+        "messages": [],
+        "schema_version": "refined_session.v1",
+        "metadata": {},
+    }
+    c2.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     _mock_etl(monkeypatch, fake_session_outputs_factory=_make_fake_save_v2(tmp_path))
 
