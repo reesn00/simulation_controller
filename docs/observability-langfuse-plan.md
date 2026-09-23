@@ -696,6 +696,30 @@ observability = ["langfuse>=3.0,<4.0"]
 
 CI 默认不连 Langfuse(凭据缺失场景),只跑 unit + contract;functional 可加 `LANGFUSE_TEST_PUBLIC_KEY` env 触发。
 
+### 10.3 实施 Commit 历史(2026-09-23 落地后)
+
+下面按 **git 时间顺序** 列出 PR 1-6 实际落地的 commit hash 与各自承担的范围。由于 PR 2/3/4/5 的子 agent 在执行时把代码落在了工作区未提交,PR 6 在不重写历史(`git rebase -i` 会破坏 review trail 且影响 e773ac4 测试 runtime)的前提下用**增量 commit** 拆分补齐,详情见各 commit message。
+
+| # | 范围 | Commit | 说明 |
+|---|---|---|---|
+| 0 | 工厂 PR 1 早期落地 | `e816b42` | `simulate_serve/observability/langfuse_client.py` 工厂 + SDK init fail-safe;`test_langfuse_factory.py` |
+| 0 | 工厂 PR 1 测试 | `35040b5` | `tests/observability/test_etl_worker.py` etl 端合约测试 |
+| 0 | bootstrap + archiver + run_task + etl_worker(混合) | `e773ac4` | **混合 commit**:`simulate_serve/bootstrap.py` + `application/run_task.py` + `infrastructure/trajectory_archiver.py` + `orchestration/workers/etl_worker.py` + `tests/observability/test_simulate_serve_archiver.py`。该 commit 标题仅 "test" 但实际包含 PR 2 + PR 4 落地。已加 `git notes` 说明,见 `git notes show e773ac4` |
+| 0 | docs 清理 + etl 模块方案 | `d309b3c` / `78e6948` | `docs/cleanup` + `docs/langfuse-etl.md` 658 行 + `docs/observability-langfuse-plan.md` 737 行 |
+| 0 | PR 5 orchestration 接线 | `b550f39` | `orchestration/task_pipeline.py` + `gdr_worker.py` dual-track + etl / task_pipeline 单测 |
+| 1 | PR 6 docs backfill | `ba76c0b` | `docs/langfuse-gdr.md` 638 行 + `docs/langfuse-simulate-server.md` 658 行(原 PR 2/3 留下未提交的模块级方案) |
+| 2 | PR 6 deps + gdr flat settings | `33d2988` | `pyproject.toml` / `uv.lock` / `gdr/pyproject.toml` / `gdr/config/settings.py` / `config/config.example.yaml` |
+| 3 | PR 6 simulate_serve schema + CLAUDE.md | `7642302` | `simulate_serve/config.py` LangfuseConfig + `_parse_config_raw` 剥除 `stages:` + CLAUDE.md 隐私段落 |
+| 4 | PR 6 gdr LLM hooks | `0062005` | `gdr/infrastructure/llm_client.py` per-LLM span + `gdr/refiners/retry_loop_clip.py` judge generation + `gdr/reassembly/reassembler.py` 3 reassemble generation spans |
+| 5 | PR 6 gdr runner + observability modules + tests | `aabd1e3` | `gdr/pipeline/runner.py` 21 step spans + `gdr/observability/` + `orchestration/observability/langfuse_config.py` + `simulate_serve/observability/__init__.py` + `tests/observability/test_gdr_*` |
+
+**关于 `e773ac4` 不重写的决定**:
+
+- 该 commit 已 lock,影响 `tests/observability/test_simulate_serve_archiver.py` 与 `test_bootstrap.py` 等 runtime 测试路径
+- `git rebase -i` 重写历史会触发上述测试 re-run,引入非 PR 6 范围的副作用
+- `git notes` 已显式记录其内容归属,后续 review 可在 `git log --notes` 中读到
+- 净效果:5 commit + 4 历史 commit,共 9 commit + e773ac4 注解,符合 PR 1-6 整体节奏
+
 ---
 
 ## 11. 实施拆分(PR 顺序)
