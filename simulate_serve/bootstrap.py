@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from simulate_serve.application.run_batch import BatchRunner
 from simulate_serve.application.run_task import TaskRuntime
@@ -89,10 +90,25 @@ class ApplicationServices:
     # task_id -> capabilities that keep the task from reaching PASS with the
     # currently started local tools/judge; empty when everything is ready.
     readiness_gaps: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Langfuse client (process-local singleton from PR 1). None when the
+    # module is disabled, missing credentials, or SDK import failed — the
+    # archiver's ``_emit_trail`` already no-ops in that case, but we keep
+    # the reference here so the close hook can flush / shutdown the
+    # background thread safely at process exit.
+    langfuse: Any | None = None
 
     async def close(self) -> None:
         await self.executor.close()
         await self.registry.close()
+        # Langfuse shutdown: flush pending spans and reset the
+        # process-local singleton. Any failure is logged at WARNING — the
+        # close path must not raise because callers (CLI / orchestration
+        # worker) treat close() as best-effort cleanup.
+        try:
+            from simulate_serve.observability.langfuse_client import shutdown as _lf_shutdown
+            _lf_shutdown()
+        except Exception:
+            logger.warning("Langfuse shutdown raised; ignored", exc_info=True)
 
 
 async def build_application(config: AppConfig) -> ApplicationServices:
@@ -154,10 +170,14 @@ async def build_application(config: AppConfig) -> ApplicationServices:
     executor = AsyncQwenPawExecutor(config.agent_endpoint)
     trajectory_archiver = None
     if config.agent_endpoint.trajectory_capture_enabled:
+        # PR 2: forward ``langfuse_config`` to the archiver so every copy
+        # round-trips through ``_emit_trail``. ``None`` keeps the
+        # pre-PR-2 behavior (no Langfuse activity at all).
         trajectory_archiver = QwenPawTrajectoryArchiver(
             config.output_dir,
             user_id=config.agent_endpoint.user_id,
             source_dir=config.agent_endpoint.trajectory_source_dir or None,
+            langfuse_config=config.langfuse,
         )
         if config.agent_endpoint.trajectory_source_dir:
             logger.info("Trajectory capture source: %s", config.agent_endpoint.trajectory_source_dir)
@@ -173,6 +193,15 @@ async def build_application(config: AppConfig) -> ApplicationServices:
         repository=repository,
         trajectory_archiver=trajectory_archiver,
     )
+    # PR 2: instantiate the process-local Langfuse client once at start-up
+    # so the close hook can flush it. ``get_client`` returns ``None`` for
+    # disabled configs / missing credentials / SDK failures — we propagate
+    # that to ``ApplicationServices.langfuse`` verbatim.
+    langfuse_client: Any | None = None
+    if config.langfuse and getattr(config.langfuse, "enabled", False):
+        from simulate_serve.observability.langfuse_client import get_client
+
+        langfuse_client = get_client(config.langfuse)
     return ApplicationServices(
         config=config,
         task_manager=manager,
@@ -181,4 +210,5 @@ async def build_application(config: AppConfig) -> ApplicationServices:
         executor=executor,
         batch_runner=BatchRunner(runtime),
         readiness_gaps=readiness_gaps,
+        langfuse=langfuse_client,
     )

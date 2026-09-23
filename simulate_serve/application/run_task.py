@@ -357,6 +357,18 @@ class TaskRuntime:
         if not self.trajectory_archiver or not run.remote_session_id:
             return
         try:
+            # PR 2: inject per-turn run context before archive() so the
+            # archiver's ``_emit_trail`` can build the Langfuse trace
+            # metadata. ``hasattr`` guards against legacy ``TrajectoryArchivePort``
+            # mocks that do not implement ``set_run_context``; those stay
+            # zero-impact because ``archive()`` itself is unchanged.
+            if hasattr(self.trajectory_archiver, "set_run_context"):
+                self.trajectory_archiver.set_run_context({
+                    "run_id": run.run_id,
+                    "task_id": run.task_id,
+                    "remote_session_id": run.remote_session_id,
+                    "remote_agent_id": run.remote_agent_id,
+                })
             self.trajectory_archiver.archive(run.run_id, run.remote_agent_id, run.remote_session_id)
         except Exception:
             # Port contract says implementations must not raise; enforce the

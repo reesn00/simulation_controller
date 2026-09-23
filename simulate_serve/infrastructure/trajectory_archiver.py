@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,11 @@ class QwenPawTrajectoryArchiver:
     trajectory directory. The copy is overwritten on every archive call
     so multi-turn runs keep the latest state under one stable, self-describing
     name (``{run_id}__{session_id}.json``).
+
+    When ``langfuse_config`` is provided and enabled, each archive call also
+    emits one Langfuse ``stage_trace`` per turn (overwriting semantics carry
+    over: the trace's ``output`` reflects the latest on-disk copy at the
+    moment of emission).
     """
 
     def __init__(
@@ -77,24 +83,138 @@ class QwenPawTrajectoryArchiver:
         *,
         user_id: str,
         source_dir: str | Path | None = None,
+        langfuse_config: Any | None = None,
     ):
         self._user_id = user_id
         self._source_override = Path(source_dir) if source_dir else None
         self.output_dir = Path(output_dir) / "agent_trajectory"
         self._warned_missing: set[str] = set()
+        # Langfuse observability hook (PR 2). None ⇒ no-op; the get_client
+        # call inside ``_emit_trail`` returns None and short-circuits.
+        self._langfuse_config = langfuse_config
+        # Per-turn run context set by ``set_run_context`` before ``archive()``.
+        # Read by ``_emit_trail`` to build trace metadata / tags.
+        self._run_ctx: dict[str, Any] = {}
+
+    def set_run_context(self, run_ctx: dict[str, Any]) -> None:
+        """Set per-turn run context used by ``_emit_trail`` for Langfuse metadata.
+
+        Called by ``TaskRuntime._archive_trajectory`` before each ``archive()``
+        so the emitted trace carries the right ``run_id / task_id /
+        remote_session_id / remote_agent_id``. The ``TrajectoryArchivePort``
+        protocol does not require this method (old mocks may lack it) — the
+        caller guards with ``hasattr`` before invoking.
+        """
+        self._run_ctx = dict(run_ctx)
 
     def archive(self, run_id: str, agent_id: str, session_id: str) -> None:
         if not session_id:
             return
+        target: Path | None = None
+        last_event_type: str | None = None
+        terminal_reached = False
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             source = self._source_path(agent_id, session_id)
             target = self.output_dir / trajectory_filename(run_id, session_id)
             self._copy_with_retry(source, target, session_id)
+            last_event_type = _trajectory_last_event_type(source)
+            terminal_reached = last_event_type in _TERMINAL_EVENT_TYPES
         except OSError as exc:
             self._warn(session_id, "trajectory copy failed for session %s: %s", session_id, exc)
         except Exception as exc:  # auxiliary capture must never fail a run
             self._warn(session_id, "unexpected trajectory capture error for session %s: %s", session_id, exc)
+        finally:
+            # Langfuse trail emission (PR 2). Fail-safe: a Langfuse error
+            # never propagates and never fails a run. ``target`` is None
+            # only when ``session_id`` was empty (early return above), so
+            # this branch only fires when we actually attempted a copy.
+            if target is not None:
+                self._emit_trail(target, last_event_type, terminal_reached)
+
+    def _emit_trail(
+        self,
+        source: Path,
+        last_event_type: str | None,
+        terminal_reached: bool,
+    ) -> None:
+        """Emit one Langfuse ``stage_trace`` per archive call.
+
+        No-op when:
+          * ``langfuse_config`` is None or ``enabled=False``;
+          * SDK is missing (``get_client`` returns None);
+          * ``run_ctx`` lacks ``task_id`` (no trace identity → skip silently).
+
+        ``stage_trace`` exceptions are swallowed here as a network-failure
+        fail-safe; business exceptions are caught by ``archive()``'s outer
+        ``except`` branches before reaching this method, so any exception
+        observed here is purely an SDK / upload error.
+        """
+        cfg = self._langfuse_config
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return
+        # Local import keeps the door sealed for callers who never enable
+        # Langfuse (the SDK import itself is the slow path).
+        from simulate_serve.observability.langfuse_client import (
+            get_client,
+            stage_trace,
+        )
+
+        client = get_client(cfg)
+        if client is None:
+            return
+        run = self._run_ctx
+        session_id = run.get("remote_session_id") or run.get("run_id") or ""
+        task_id = run.get("task_id") or ""
+        if not task_id:
+            return
+        payload_mode = getattr(cfg, "upload_payload", "full")
+
+        def _output_payload() -> Any:
+            # Read the on-disk copy fresh inside the closure so the span
+            # captures the file as of ``__exit__`` (the JSONL may have been
+            # overwritten by a later ``archive()`` call before flush).
+            if not source.exists():
+                return {"_missing": True}
+            try:
+                return [
+                    json.loads(line)
+                    for line in source.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            except Exception as exc:
+                return {"_read_error": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            with stage_trace(
+                client,
+                session_id=session_id,
+                name=f"simulate_serve:{task_id}",
+                user_id=session_id,
+                task_id=task_id,
+                tags=["stage:simulate_serve", f"task:{task_id}"],
+                metadata={
+                    "stage": "simulate_serve",
+                    "run_id": run.get("run_id"),
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "agent_id": run.get("remote_agent_id"),
+                    "terminal_reached": terminal_reached,
+                    "last_event_type": last_event_type,
+                    "trajectory_path": str(source),
+                },
+                input_data=None,
+                output_capture=_output_payload,
+                payload_mode=payload_mode,
+                max_payload_bytes=getattr(cfg, "max_payload_bytes", 0),
+            ):
+                pass
+        except Exception as exc:  # network / SDK fail-safe; never break a run
+            logger.warning(
+                "Langfuse _emit_trail failed for session %s: %s",
+                session_id,
+                exc,
+            )
 
     def trajectory_path(self, run_id: str, session_id: str) -> Path | None:
         """Return the on-disk trajectory target path; None when session_id is empty.
