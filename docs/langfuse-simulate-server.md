@@ -1,5 +1,7 @@
 # Langfuse 集成 — simulate_serve 模块详细实施方案
 
+> **用户视角文档已迁至 [docs/observability-langfuse.md](observability-langfuse.md)。本文档保留为模块级实施参考。**
+>
 > 配套基线:[docs/observability-langfuse-plan.md](observability-langfuse-plan.md)(整体设计 + 配置 Schema + 客户端工厂设计 + 命名规范)
 > 配套模块:[docs/langfuse-gdr.md](langfuse-gdr.md) · [docs/langfuse-etl.md](langfuse-etl.md)
 > 边界协商:见 §3.6

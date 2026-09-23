@@ -1,5 +1,7 @@
 # Langfuse 集成 — gdr 模块详细实施方案
 
+> **用户视角文档已迁至 [docs/observability-langfuse.md](observability-langfuse.md)。本文档保留为模块级实施参考。**
+>
 > 配套基线:[docs/observability-langfuse-plan.md](observability-langfuse-plan.md)
 > 配套模块:[docs/langfuse-simulate-server.md](langfuse-simulate-server.md) · [docs/langfuse-etl.md](langfuse-etl.md)
 > 边界协商:见 §3.6
