@@ -26,6 +26,20 @@ from reassembly.reassembler import _attach_metadata
 from core.context_understanding import build_context_for_session
 from core.policy import decide_policy, policy_reason, RefinementPolicy
 
+# PR 3: Langfuse 可观测性 (Commit 2 — _process_one_file outer span).
+# 工厂位于 simulate_serve/observability/langfuse_client.py (PR 1 冻结签名);
+# gdr 是 workspace 成员, 仅 import 工厂公开 API, 不耦合 simulate_serve 业务。
+from simulate_serve.observability.langfuse_client import (
+    get_client as _lf_get_client,
+    stage_trace as _lf_stage_trace,
+)
+from gdr.observability.runner_helpers import (
+    _current_task_id,
+    _gdr_step_span_ctx,
+    _payload_mode,
+    set_current_task_id as _lf_set_current_task_id,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -281,32 +295,50 @@ def process_one(
     t0 = time.perf_counter()
     try:
         # === -1. Session 级硬过滤（方案 §5.1） ===
-        if not _hard_filter_session(session, cfg):
-            log.info("session %s filtered out by hard filter", session.session_id)
-            return None
+        with _gdr_step_span_ctx(
+            "gdr.hard_filter", session, metadata={"step": "hard_filter"},
+        ):
+            if not _hard_filter_session(session, cfg):
+                log.info("session %s filtered out by hard filter", session.session_id)
+                return None
 
         # === 0. 轻量健康分 (零 LLM) ===
-        light_health = light_health_score_for_session(session, cfg)
+        with _gdr_step_span_ctx(
+            "gdr.light_health", session, metadata={"step": "light_health"},
+        ):
+            light_health = light_health_score_for_session(session, cfg)
 
         # === 1. 上下文理解·结构层 (引用图/视图/archive, 零 LLM), 供 fold 保护 ===
         context_understanding = None
         if getattr(cfg, "enable_context_understanding", True):
-            try:
-                context_understanding = build_context_for_session(
-                    session, cfg, light_health=light_health, track_state=False,
-                )
-            except Exception as e:
-                log.warning("ContextUnderstanding.build failed, falling back: %s", e)
-                context_understanding = None
+            with _gdr_step_span_ctx(
+                "gdr.context_understanding.build", session,
+                metadata={"step": "context_understanding_build"},
+            ):
+                try:
+                    context_understanding = build_context_for_session(
+                        session, cfg, light_health=light_health, track_state=False,
+                    )
+                except Exception as e:
+                    log.warning("ContextUnderstanding.build failed, falling back: %s", e)
+                    context_understanding = None
 
         # === 2. 会话级折叠 (CU 结构层保护被引用 block) ===
-        folded = fold_failed_toolresults(session, cfg, cu=context_understanding)
-        if folded:
-            log.info("folded %d failed toolresult block(s)", folded)
+        with _gdr_step_span_ctx(
+            "gdr.fold.failed_toolresults", session,
+            metadata={"step": "fold_failed_toolresults"},
+        ):
+            folded = fold_failed_toolresults(session, cfg, cu=context_understanding)
+            if folded:
+                log.info("folded %d failed toolresult block(s)", folded)
 
-        folded_thinking = fold_repeated_thinking(session, cfg, cu=context_understanding)
-        if folded_thinking:
-            log.info("folded %d consecutive thinking block(s)", folded_thinking)
+        with _gdr_step_span_ctx(
+            "gdr.fold.repeated_thinking", session,
+            metadata={"step": "fold_repeated_thinking"},
+        ):
+            folded_thinking = fold_repeated_thinking(session, cfg, cu=context_understanding)
+            if folded_thinking:
+                log.info("folded %d consecutive thinking block(s)", folded_thinking)
 
         # === 2.3 P0 方案 ②: 重试循环 LLM 判剪枝 ===
         # 在 fold 之后、reassembler 之前; 复用 main_model (与 thought_refactor
@@ -315,35 +347,48 @@ def process_one(
         if getattr(cfg, "retry_loop_clip_enabled", True):
             from refiners.retry_loop_clip import clip_session
             from infrastructure import LlamaCppClient
-            try:
-                clip_client = LlamaCppClient.get(
-                    cfg.main_model, cfg=cfg,
-                    timeout=int(getattr(cfg, "retry_loop_clip_llm_timeout_s", 60)),
-                )
-                removed_clip = clip_session(
-                    session, clip_client,
-                    min_consecutive=int(getattr(cfg, "retry_loop_clip_min_consecutive", 5)),
-                    max_keep=int(getattr(cfg, "retry_loop_clip_max_keep", 3)),
-                    llm_timeout_s=int(getattr(cfg, "retry_loop_clip_llm_timeout_s", 60)),
-                )
-                if removed_clip:
-                    log.info("retry_loop_clip removed %d block(s)", removed_clip)
-            except Exception as e:
-                log.warning(
-                    "retry_loop_clip failed for session %s, skipping: %s",
-                    session.session_id, e,
-                )
+            # PR 3 step 5: gdr.retry_loop_clip outer + 子 generation (在
+            # llm_judge_retry_loop 内 step_span(as_type="generation"))
+            with _gdr_step_span_ctx(
+                "gdr.retry_loop_clip", session,
+                metadata={"tool": "retry_loop_clip"},
+            ):
+                try:
+                    clip_client = LlamaCppClient.get(
+                        cfg.main_model, cfg=cfg,
+                        timeout=int(getattr(cfg, "retry_loop_clip_llm_timeout_s", 60)),
+                    )
+                    removed_clip = clip_session(
+                        session, clip_client,
+                        min_consecutive=int(getattr(cfg, "retry_loop_clip_min_consecutive", 5)),
+                        max_keep=int(getattr(cfg, "retry_loop_clip_max_keep", 3)),
+                        llm_timeout_s=int(getattr(cfg, "retry_loop_clip_llm_timeout_s", 60)),
+                    )
+                    if removed_clip:
+                        log.info("retry_loop_clip removed %d block(s)", removed_clip)
+                except Exception as e:
+                    log.warning(
+                        "retry_loop_clip failed for session %s, skipping: %s",
+                        session.session_id, e,
+                    )
 
         # === 2.5 fold 后重切 chunk + 增量状态追踪 (唯一一次 LLM 状态追踪) ===
         # chunk 划分反映折叠后的 session, 避免 fold 掉的块虚增一致性校验的重算长度
         if context_understanding is not None:
-            try:
-                context_understanding.retrack_state(session)
-            except Exception as e:
-                log.warning(
-                    "retrack_state failed for session %s, CU state unavailable: %s",
-                    session.session_id, e,
-                )
+            # PR 3 step 6: gdr.cu.retrack_state outer; 子 generation 由
+            # commit 9 per_llm_span hook 在 _track_state 内部调用 LLM 时
+            # 自动包 (此处不重复加, 避免双 span)。
+            with _gdr_step_span_ctx(
+                "gdr.cu.retrack_state", session,
+                metadata={"step": "retrack_state"},
+            ):
+                try:
+                    context_understanding.retrack_state(session)
+                except Exception as e:
+                    log.warning(
+                        "retrack_state failed for session %s, CU state unavailable: %s",
+                        session.session_id, e,
+                    )
 
         # === P0-1.3 + P0-1.1 共享: 启发式 user_intent（截断首条 user, 零 LLM）===
         # router 阶段在 judge / reassembler 之前, 不能调 LLM 抽取更精确的
@@ -352,21 +397,40 @@ def process_one(
         # 更精确版本 (覆盖 metadata.user_intent), 这里的结果仅作为
         # metadata.user_intent_heuristic 留存审计.
         from core.user_intent import heuristic_user_intent
-        user_intent_heuristic = heuristic_user_intent(
-            session,
-            max_chars=int(getattr(cfg, "user_intent_max_chars", 1500)),
-            min_chars=int(getattr(cfg, "user_intent_min_chars_for_extract", 20)),
-        )
+        # PR 3 step 7: gdr.user_intent.heuristic
+        with _gdr_step_span_ctx(
+            "gdr.user_intent.heuristic", session,
+            metadata={"step": "user_intent_heuristic"},
+        ):
+            user_intent_heuristic = heuristic_user_intent(
+                session,
+                max_chars=int(getattr(cfg, "user_intent_max_chars", 1500)),
+                min_chars=int(getattr(cfg, "user_intent_min_chars_for_extract", 20)),
+            )
 
         # === 3. Router.tag 使用 CU 作为 LLM 评审上下文 ===
         router = Router()
-        defects_index, health_scores, routing_abstentions = router.tag(
-            session, tool_names, hallu_apis, cfg,
-            context_understanding=context_understanding,
-            tool_descriptions=tool_descriptions or {},
-            off_topic_blacklist=off_topic_blacklist or set(),
-            user_intent_heuristic=user_intent_heuristic,
-        )
+        # PR 3 step 8: gdr.router.tag — metadata 记 candidate_blocks 数量 +
+        # vote_concurrency (LLM 投票层 fan-out 上限, 便于 UI 看并发度)
+        with _gdr_step_span_ctx(
+            "gdr.router.tag", session,
+            metadata={
+                "tool": "router_tag",
+                "candidate_blocks": len([
+                    blk for msg in session.messages
+                    if msg.role == "assistant"
+                    for blk in msg.blocks
+                ]),
+                "vote_concurrency": int(getattr(cfg, "llm_concurrency", 4)),
+            },
+        ):
+            defects_index, health_scores, routing_abstentions = router.tag(
+                session, tool_names, hallu_apis, cfg,
+                context_understanding=context_understanding,
+                tool_descriptions=tool_descriptions or {},
+                off_topic_blacklist=off_topic_blacklist or set(),
+                user_intent_heuristic=user_intent_heuristic,
+            )
         if user_intent_heuristic:
             session.metadata = session.metadata or {}
             session.metadata["user_intent_heuristic"] = user_intent_heuristic
@@ -402,80 +466,116 @@ def process_one(
         repair_items: list[dict] = []
 
         # === 3.5 决策层 (零 LLM, 串行; 保持块序) ===
-        for msg_idx, msg in enumerate(session.messages):
-            if msg.role != "assistant":
-                continue
-
-            msg_health = next((h for h in health_scores if h.msg_idx == msg_idx), None)
-            if msg_health and not msg_health.is_healthy:
-                # 不健康消息整体短路：不再扫描其 block 缺陷，避免无意义精修
-                log.info(
-                    "skipping unhealthy msg[%d] entirely (score=%.2f)",
-                    msg_idx, msg_health.health_score,
-                )
-                continue
-
-            for blk_idx, block in enumerate(msg.blocks):
-                if isinstance(block, dict):
-                    block_type = block.get("type", "")
-                    block_id = block.get("id", "")
-                else:
-                    block_type = getattr(block, "type", "")
-                    block_id = getattr(block, "id", "")
-
-                defects = defects_index.get(block_id, [])
-                if not defects:
+        # PR 3 step 9: gdr.policy.decide — metadata 含 defect_total /
+        # policy 分布计数 (便于 audit 看剪枝/修复决策密度)
+        _defect_total = sum(len(v) for v in defects_index.values())
+        with _gdr_step_span_ctx(
+            "gdr.policy.decide", session,
+            metadata={
+                "step": "policy_decide",
+                "defect_total": _defect_total,
+                "message_count": len(session.messages),
+            },
+        ):
+            for msg_idx, msg in enumerate(session.messages):
+                if msg.role != "assistant":
                     continue
 
-                bi = BlockIndex(msg_idx=msg_idx, block_idx=blk_idx, block_id=block_id, block_type=block_type)
-                context = _build_context(msg.blocks, blk_idx)
-                view = context_understanding.get_view(block_id) if context_understanding else None
-                policy = decide_policy(block, defects, view, retry_exhausted=False, cfg=cfg)
-                reason = policy_reason(policy, defects, view)
-
-                decision = {
-                    "block_id": block_id,
-                    "msg_idx": msg_idx,
-                    "defects": [d.value for d in defects],
-                    "policy": policy.value,
-                    "reason": reason,
-                    "context_relevance": view.relevance_to_active if view else 0.0,
-                }
-
-                # PRUNE 策略: 不调用 refiner, 仅记录 + 标记
-                if policy in (RefinementPolicy.PRUNE_BLOCK, RefinementPolicy.PRUNE_WITH_PAIR):
-                    prune_block_ids.add(block_id)
-                    policy_decisions.append(decision)
-                    log.info("policy=PRUNE block_id=%s reason=%s", block_id, reason)
-                    continue
-                if policy == RefinementPolicy.PRUNE_MESSAGE:
-                    # 整条消息级删除由 reassembler 通过 health_scores 处理, 此处仅标记决策
-                    policy_decisions.append(decision)
-                    log.info("policy=PRUNE_MESSAGE block_id=%s reason=%s", block_id, reason)
-                    continue
-                if policy == RefinementPolicy.DEFER_TO_HUMAN:
-                    deferred_block_ids.add(block_id)
-                    policy_decisions.append(decision)
-                    log.info("policy=DEFER block_id=%s reason=%s", block_id, reason)
+                msg_health = next((h for h in health_scores if h.msg_idx == msg_idx), None)
+                if msg_health and not msg_health.is_healthy:
+                    # 不健康消息整体短路：不再扫描其 block 缺陷，避免无意义精修
+                    log.info(
+                        "skipping unhealthy msg[%d] entirely (score=%.2f)",
+                        msg_idx, msg_health.health_score,
+                    )
                     continue
 
-                # policy == REPAIR_IN_PLACE
+                for blk_idx, block in enumerate(msg.blocks):
+                    if isinstance(block, dict):
+                        block_type = block.get("type", "")
+                        block_id = block.get("id", "")
+                    else:
+                        block_type = getattr(block, "type", "")
+                        block_id = getattr(block, "id", "")
+
+                    defects = defects_index.get(block_id, [])
+                    if not defects:
+                        continue
+
+                    bi = BlockIndex(msg_idx=msg_idx, block_idx=blk_idx, block_id=block_id, block_type=block_type)
+                    context = _build_context(msg.blocks, blk_idx)
+                    view = context_understanding.get_view(block_id) if context_understanding else None
+                    policy = decide_policy(block, defects, view, retry_exhausted=False, cfg=cfg)
+                    reason = policy_reason(policy, defects, view)
+
+                    decision = {
+                        "block_id": block_id,
+                        "msg_idx": msg_idx,
+                        "defects": [d.value for d in defects],
+                        "policy": policy.value,
+                        "reason": reason,
+                        "context_relevance": view.relevance_to_active if view else 0.0,
+                    }
+
+                    # PRUNE 策略: 不调用 refiner, 仅记录 + 标记
+                    if policy in (RefinementPolicy.PRUNE_BLOCK, RefinementPolicy.PRUNE_WITH_PAIR):
+                        prune_block_ids.add(block_id)
+                        policy_decisions.append(decision)
+                        log.info("policy=PRUNE block_id=%s reason=%s", block_id, reason)
+                        continue
+                    if policy == RefinementPolicy.PRUNE_MESSAGE:
+                        # 整条消息级删除由 reassembler 通过 health_scores 处理, 此处仅标记决策
+                        policy_decisions.append(decision)
+                        log.info("policy=PRUNE_MESSAGE block_id=%s reason=%s", block_id, reason)
+                        continue
+                    if policy == RefinementPolicy.DEFER_TO_HUMAN:
+                        deferred_block_ids.add(block_id)
+                        policy_decisions.append(decision)
+                        log.info("policy=DEFER block_id=%s reason=%s", block_id, reason)
+                        continue
+
+                    # policy == REPAIR_IN_PLACE
                 policy_decisions.append(decision)
                 item = _prepare_repair_item(block, block_type, block_id, defects, bi, context)
                 if item is not None:
                     repair_items.append(item)
 
+        # PR 3 step 9 收尾: policy.decide span 在循环结束处 __exit__
+        # (上下文管理器自动关闭), 此处无须显式 close. 之后进入 step 10
+        # _run_repairs 的 span.
+
         # === 4. 并发精修 + 验证 (块间独立) ===
-        refine_records = _run_repairs(repair_items, cfg, tool_names, hallu_apis)
+        # PR 3 step 10: gdr.refine.run_repairs 外层 span. 内层 ThreadPoolExecutor
+        # 不为每条 repair_item 单独起 span (避免几千子节点), 仅 metadata 聚合
+        # success_count / failure_count. 高级模式 ``langfuse_gdr_per_refine_span``
+        # 启用时由 _run_repairs 内部逐条起 (后续可扩展, 默认 false)。
+        with _gdr_step_span_ctx(
+            "gdr.refine.run_repairs", session,
+            metadata={
+                "step": "refine_run_repairs",
+                "repair_item_count": len(repair_items),
+                "per_refine_span": bool(
+                    getattr(cfg, "langfuse_gdr_per_refine_span", False)
+                ),
+            },
+        ):
+            refine_records = _run_repairs(
+                repair_items, cfg, tool_names, hallu_apis,
+            )
 
         # 完全无缺陷且无决策时早退, 并挂上统一 metadata (此前该路径输出无 refine_history/
         # validation_summary)。有 policy_decisions 时 (如全部 PRUNE) 必须继续走
         # reassemble —— 否则剪枝决策会被静默丢弃。
         if not refine_records and not policy_decisions:
-            if _l1_sanity_check(session, tool_names, cfg.thought_max_len_l1):
-                log.info("no defects found in session %s", session.session_id)
-                _attach_metadata(session, [], policy_decisions, deferred_block_ids, cfg=cfg)
-                return session
+            # PR 3 step 12: gdr.early_exit — 无缺陷且 L1 sanity 通过时短路径.
+            with _gdr_step_span_ctx(
+                "gdr.early_exit", session,
+                metadata={"step": "early_exit"},
+            ):
+                if _l1_sanity_check(session, tool_names, cfg.thought_max_len_l1):
+                    log.info("no defects found in session %s", session.session_id)
+                    _attach_metadata(session, [], policy_decisions, deferred_block_ids, cfg=cfg)
+                    return session
             log.warning(
                 "session %s has no defect tags but failed L1 sanity check; "
                 "falling back to original session to preserve audit trail",
@@ -485,16 +585,28 @@ def process_one(
             return session
 
         elapsed = time.perf_counter() - t0
-        result = reassemble(
-            session,
-            refine_records,
-            health_scores,
-            cfg,
-            policy_decisions=policy_decisions,
-            prune_block_ids=prune_block_ids,
-            deferred_block_ids=deferred_block_ids,
-            cu=context_understanding,
-        )
+        # PR 3 step 13: gdr.reassemble outer span. 内嵌 3 个 generation 子 span
+        # (user_intent_llm / consistency_check / l3_judge) 由 reassembler 内部
+        # 调用 step_span(as_type="generation") 自起, 这里只起外层. metadata 含
+        # refine_records_count 便于 audit 看精修密度.
+        with _gdr_step_span_ctx(
+            "gdr.reassemble", session,
+            metadata={
+                "step": "reassemble",
+                "refine_records_count": len(refine_records),
+                "policy_decisions_count": len(policy_decisions),
+            },
+        ):
+            result = reassemble(
+                session,
+                refine_records,
+                health_scores,
+                cfg,
+                policy_decisions=policy_decisions,
+                prune_block_ids=prune_block_ids,
+                deferred_block_ids=deferred_block_ids,
+                cu=context_understanding,
+            )
         # 用户主旨: 数据完整即处理并导出. reassembler 内部已有 budget 守护 (一致性前
         # /judge 前), 但中间仍可能耗时; reassembler 已返回时不丢弃, 仅在返回 None
         # (reassembler 完全失败) 且接近超时上限时回退到 original session.
@@ -505,15 +617,28 @@ def process_one(
             and not session.metadata.get("judge_discard")
             and elapsed > cfg.session_timeout_s * 0.8
         ):
-            log.warning(
-                "reassembler returned None for session %s after %.1fs (>80%% of %ds); "
-                "falling back to original session to preserve data",
-                session.session_id, elapsed, cfg.session_timeout_s,
-            )
-            session.metadata = session.metadata or {}
-            session.metadata["timeout_partial_save"] = True
-            session.metadata["timeout_elapsed_s"] = round(elapsed, 1)
-            return session
+            # PR 3 step 14: gdr.timeout_fallback — 仅当 result is None 且超时时
+            # 才进入. metadata 含 elapsed vs session_timeout_s 比例, audit 排查.
+            with _gdr_step_span_ctx(
+                "gdr.timeout_fallback", session,
+                metadata={
+                    "step": "timeout_fallback",
+                    "elapsed_s": round(elapsed, 1),
+                    "timeout_s": int(cfg.session_timeout_s),
+                    "judge_discard": bool(
+                        session.metadata.get("judge_discard")
+                    ),
+                },
+            ):
+                log.warning(
+                    "reassembler returned None for session %s after %.1fs (>80%% of %ds); "
+                    "falling back to original session to preserve data",
+                    session.session_id, elapsed, cfg.session_timeout_s,
+                )
+                session.metadata = session.metadata or {}
+                session.metadata["timeout_partial_save"] = True
+                session.metadata["timeout_elapsed_s"] = round(elapsed, 1)
+                return session
         log.debug(
             "session %s processed in %.2fs",
             session.session_id, elapsed,
@@ -522,6 +647,19 @@ def process_one(
         return result
 
     except Exception as e:
+        # PR 3 step 15: gdr.unhandled_error — 顶层异常单独 span 记录,
+        # 让运维能定位"pipeline 崩在 step 几".
+        try:
+            with _gdr_step_span_ctx(
+                "gdr.unhandled_error", session,
+                metadata={
+                    "step": "unhandled_error",
+                    "exception_type": type(e).__name__,
+                },
+            ):
+                pass  # 仅 span; 实际异常继续往外传
+        except Exception:
+            pass  # 二度防护: span 失败不能掩盖原始异常
         log.exception("pipeline error for session %s: %s", session.session_id, e)
         return None
 
@@ -1056,85 +1194,198 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
 
     新架构：input 是 trajectory（C1 契约），output 是单 C2 refined Session 文件。
     etl 阶段读 C2 后做格式整理 + 拆 4 视图（C3 契约）。
+
+    PR 3 (Commit 2): 外层包 ``stage_trace`` (``name="gdr.process_one"``),
+    ``session_id=""`` 占位 (from_trajectory 后由 21 步骤 helper 通过
+    ``session._gdr_cfg`` + ``session.session_id`` 自填; ``session_id`` 由
+    propagate_attributes 在子 span 内部重新设, 不依赖 outer 的初始值)。
     """
     log.info("loading trajectory from %s", input_path)
-    try:
-        session = from_trajectory(input_path)
-    except Exception as e:
-        log.error("failed to load %s: %s", input_path, e)
-        return {"input": str(input_path), "status": "load_error", "error": str(e)}
-
-    tool_names, hallu_apis, tool_descriptions, off_topic_blacklist = load_tools(
-        cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source,
-    )
-    result = process_one(
-        session, cfg, tool_names, hallu_apis,
-        tool_descriptions=tool_descriptions,
-        off_topic_blacklist=off_topic_blacklist,
-    )
-
-    # 修复 P1.3: 任意被处理的 session (含 discard 的 judge_low) 都要把
-    # routing 弃权审计落地, 独立于 judge 通道. 单 block 解析失败不再让整
-    # session 死, 但失败必须可审计。
-    _append_routing_abstain_queue(session, cfg)
-
-    if result is not None:
-        # 方向 #完整性检测: 在 save_refined_session 之前做未闭合检查. 未闭合
-        # session 不写 refine_data (避免 SFT 用"agent 半截完成任务"作为正例),
-        # 整体路由到 incomplete.jsonl 旁路, 供运维复核或远端走 FOLLOWUP_CREATED
-        # 让远端继续跑. 不阻断主流程 — 只是换个落盘点.
-        if getattr(cfg, "incomplete_detection_enabled", True):
-            diagnostic = _detect_incomplete_session(result)
-            if diagnostic is not None:
-                log.warning(
-                    "session %s flagged as INCOMPLETE (%s); redirecting to %s, "
-                    "skipping refine_data write",
-                    result.session_id, diagnostic["reasons"],
-                    cfg.incomplete_output_path,
-                )
-                _append_incomplete_queue(result, diagnostic, cfg)
-                return {
-                    "input": str(input_path),
-                    "status": "incomplete",
-                    "diagnostic": diagnostic,
-                }
+    # === PR 3: outer stage_trace ===
+    # session_id 初值 "" 是因为 from_trajectory 之前拿不到 session.session_id;
+    # 一旦 from_trajectory 返回, 子步骤 helper 会用 session.session_id 重新
+    # 通过 step_span(session_id=...) 起 span. propagate_attributes 仅在子
+    # span 期间生效, 不影响 outer trace 的 session_id.
+    # input_data=None: C1 trajectory 太大, simulate_serve 已传过; output 由
+    # output_capture 闭包从局部变量 ``_lf_final_result`` 拿. 该变量在每条
+    # 出口路径上被赋值 (None 表示无结果, 工厂会跳过 output 更新).
+    _lf_client = _lf_get_client(cfg)
+    _lf_final_result: dict | None = None
+    with _lf_stage_trace(
+        _lf_client,
+        session_id="",
+        name="gdr.process_one",
+        task_id=_current_task_id(),
+        tags=["stage:gdr"],
+        metadata={"input_path": str(input_path)},
+        input_data=None,
+        output_capture=lambda: _lf_final_result,
+        payload_mode=_payload_mode(cfg),
+    ):
         try:
-            output = save_refined_session(result, output_path)
-            log.info("saved refined session to %s", output)
-            # 方案 §5.5: 人工审核队列独立输出 (deferred blocks 追加到 jsonl)
-            _append_deferred_queue(result, cfg)
-            # P0-1.2: 透传 training_value_score / complexity_tier 到 batch report,
-            # 便于训练侧按 tier 抽样 / 监控 quality_scorer 分布.
-            meta = result.metadata or {}
-            return {
-                "input": str(input_path),
-                "output": str(output),
-                "status": "success",
-                "complexity_tier": meta.get("complexity_tier"),
-                "training_value_score": meta.get("training_value_score"),
-            }
+            session = from_trajectory(input_path)
+            session._gdr_cfg = cfg   # 绑定 cfg 给子步骤 helper 读
         except Exception as e:
-            log.error("failed to save %s: %s", output_path, e)
-            return {"input": str(input_path), "status": "save_error", "error": str(e)}
-    # result is None 且带 judge 标记 → 不丢数据, 转审核通道
-    _append_judge_low_queue(session, cfg)
-    log.error("session discarded (input=%s)", input_path)
-    return {"input": str(input_path), "status": "discard"}
+            log.error("failed to load %s: %s", input_path, e)
+            _lf_final_result = {"input": str(input_path), "status": "load_error", "error": str(e)}
+            return _lf_final_result
+
+        tool_names, hallu_apis, tool_descriptions, off_topic_blacklist = load_tools(
+            cfg.tools_config_path, cfg.qwenpaw_agent_json, cfg.tool_source,
+        )
+        result = process_one(
+            session, cfg, tool_names, hallu_apis,
+            tool_descriptions=tool_descriptions,
+            off_topic_blacklist=off_topic_blacklist,
+        )
+
+        # 修复 P1.3: 任意被处理的 session (含 discard 的 judge_low) 都要把
+        # routing 弃权审计落地, 独立于 judge 通道. 单 block 解析失败不再让整
+        # session 死, 但失败必须可审计。
+        # PR 3 step 16: gdr.audit.routing_abstain — 仅 metadata, 不传 payload
+        # (queue 写 jsonl, 避免 input/output 双倍上传)。
+        with _gdr_step_span_ctx(
+            "gdr.audit.routing_abstain", session,
+            metadata={
+                "step": "audit_routing_abstain",
+                "audit_path": str(getattr(cfg, "routing_abstain_audit_path", "")),
+                "enabled": bool(
+                    getattr(cfg, "routing_abstain_audit_enabled", True)
+                ),
+            },
+        ):
+            _append_routing_abstain_queue(session, cfg)
+
+        if result is not None:
+            # 方向 #完整性检测: 在 save_refined_session 之前做未闭合检查. 未闭合
+            # session 不写 refine_data (避免 SFT 用"agent 半截完成任务"作为正例),
+            # 整体路由到 incomplete.jsonl 旁路, 供运维复核或远端走 FOLLOWUP_CREATED
+            # 让远端继续跑. 不阻断主流程 — 只是换个落盘点.
+            # PR 3 step 17: gdr.incomplete_check — 纯结构判定, 不传 payload
+            if getattr(cfg, "incomplete_detection_enabled", True):
+                with _gdr_step_span_ctx(
+                    "gdr.incomplete_check", session,
+                    metadata={
+                        "step": "incomplete_check",
+                        "enabled": True,
+                    },
+                ):
+                    diagnostic = _detect_incomplete_session(result)
+                if diagnostic is not None:
+                    log.warning(
+                        "session %s flagged as INCOMPLETE (%s); redirecting to %s, "
+                        "skipping refine_data write",
+                        result.session_id, diagnostic["reasons"],
+                        cfg.incomplete_output_path,
+                    )
+                    # 把 incomplete.jsonl 落盘也包到 audit span 里 (同 step 17 语义)
+                    _append_incomplete_queue(result, diagnostic, cfg)
+                    _lf_final_result = {
+                        "input": str(input_path),
+                        "status": "incomplete",
+                        "diagnostic": diagnostic,
+                    }
+                    return _lf_final_result
+            try:
+                # PR 3 step 18: gdr.save_refined_session (IO, 只 metadata, 不传 payload;
+                # C2 文件已包含完整精修结果, 重复上传浪费带宽)
+                with _gdr_step_span_ctx(
+                    "gdr.save_refined_session", session,
+                    metadata={
+                        "step": "save_refined_session",
+                        "output_path": str(output_path),
+                    },
+                ):
+                    output = save_refined_session(result, output_path)
+                log.info("saved refined session to %s", output)
+                # 方案 §5.5: 人工审核队列独立输出 (deferred blocks 追加到 jsonl)
+                # PR 3 step 19: gdr.audit.deferred — 仅 metadata
+                with _gdr_step_span_ctx(
+                    "gdr.audit.deferred", session,
+                    metadata={
+                        "step": "audit_deferred",
+                        "deferred_path": str(
+                            getattr(cfg, "deferred_output_path", "")
+                        ),
+                        "deferred_count": len(deferred_block_ids),
+                    },
+                ):
+                    _append_deferred_queue(result, cfg)
+                # P0-1.2: 透传 training_value_score / complexity_tier 到 batch report,
+                # 便于训练侧按 tier 抽样 / 监控 quality_scorer 分布.
+                meta = result.metadata or {}
+                _lf_final_result = {
+                    "input": str(input_path),
+                    "output": str(output),
+                    "status": "success",
+                    "complexity_tier": meta.get("complexity_tier"),
+                    "training_value_score": meta.get("training_value_score"),
+                }
+                return _lf_final_result
+            except Exception as e:
+                log.error("failed to save %s: %s", output_path, e)
+                _lf_final_result = {"input": str(input_path), "status": "save_error", "error": str(e)}
+                return _lf_final_result
+        # result is None 且带 judge 标记 → 不丢数据, 转审核通道
+        # PR 3 step 20: gdr.audit.judge_low — 仅 metadata
+        with _gdr_step_span_ctx(
+            "gdr.audit.judge_low", session,
+            metadata={
+                "step": "audit_judge_low",
+                "judge_low_path": str(
+                    getattr(cfg, "judge_low_output_path", "")
+                ),
+                "enabled": bool(getattr(cfg, "judge_low_export_enabled", True)),
+            },
+        ):
+            _append_judge_low_queue(session, cfg)
+        log.error("session discarded (input=%s)", input_path)
+        _lf_final_result = {"input": str(input_path), "status": "discard"}
+        return _lf_final_result
 
 
 # === 多进程 worker 入口 ===
 def _worker_init(log_dir: Path, llm_concurrency: int) -> None:
-    """Pool worker 初始化: 每个 worker 进程独立 setup_logger + 并发上限 + 模型缓存。"""
+    """Pool worker 初始化: 每个 worker 进程独立 setup_logger + 并发上限 + 模型缓存。
+
+    PR 3 (Commit 8): fork-safe 重置 Langfuse singleton. spawn 上下文下子进程
+    fork 自 master, 父进程的 Langfuse socket / 后台线程不可跨进程使用;
+    通过 ``_reset_for_fork()`` 把 ``_client = None``, 下次 ``get_client`` 自动
+    重建. 失败也不抛 (业务兜底).
+    """
     setup_logger(log_dir)
     set_generation_concurrency(llm_concurrency)
+    try:
+        from simulate_serve.observability.langfuse_client import _reset_for_fork
+        _reset_for_fork()
+    except Exception as exc:
+        log.debug("Langfuse _reset_for_fork skipped: %s", exc)
     log.info("worker pid=%d initialized (llm_concurrency=%d)", os.getpid(), llm_concurrency)
 
 
 def _worker_process_file(args: tuple) -> dict:
-    """Pool worker 入口: 从 dict 重建 Settings, 然后走单文件流程。"""
+    """Pool worker 入口: 从 dict 重建 Settings, 然后走单文件流程。
+
+    PR 3 (Commit 8): try/finally flush Langfuse 客户端. Pool worker 子进程退出
+    之前 flush, 否则 21 步骤 spans 可能积压直到 shutdown 才上传, 与多进程并发
+    模型不兼容. ``get_client`` 在子进程 ``_worker_init`` 已重置, 这里新建 client.
+    """
     input_path_str, output_path_str, cfg_dict = args
     cfg = Settings(**cfg_dict)
-    return _process_one_file(Path(input_path_str), Path(output_path_str), cfg)
+    try:
+        return _process_one_file(Path(input_path_str), Path(output_path_str), cfg)
+    finally:
+        # 子进程退出前显式 flush, 不依赖 Langfuse SDK 内部 atexit (multiprocessing
+        # spawn 上下文下 atexit 时机不可靠). 失败静默吞, 不影响业务结果返回.
+        try:
+            from simulate_serve.observability.langfuse_client import (
+                get_client as _lf_flush_get_client,
+            )
+            _lf_client = _lf_flush_get_client(cfg)
+            if _lf_client is not None and hasattr(_lf_client, "flush"):
+                _lf_client.flush()
+        except Exception as exc:
+            log.debug("Langfuse flush skipped in worker: %s", exc)
 
 
 def _aggregate(results: Iterable[dict]) -> dict:
