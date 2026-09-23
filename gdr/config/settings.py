@@ -70,6 +70,37 @@ def _load_root_gdr_section() -> dict[str, Any]:
         section = raw.get("gdr") if isinstance(raw.get("gdr"), dict) else {}
         out = dict(section)
         llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
+
+        # PR 3 (Commit 10): 把 ``langfuse.stages.gdr`` 嵌套段铺平到 gdr Settings
+        # 字段 (langfuse_gdr_per_step_span / langfuse_gdr_per_llm_span /
+        # langfuse_gdr_per_refine_span). 根级 langfuse: 段的通用字段
+        # (enabled / public_key / secret_key / base_url / environment / ...)
+        # 保持由 simulate_serve.observability.langfuse_client 工厂鸭子类型
+        # 解析 (它通过 ``getattr(cfg, "langfuse_<key>")`` 直接读 gdr 字段,
+        # 但 ``langfuse.*`` 全局字段由 ``cfg.langfuse_*`` 映射)。这里只负责把
+        # ``stages.gdr.*`` 三档 stage 专用布尔值落到 ``langfuse_gdr_*`` 字段。
+        langfuse_root = raw.get("langfuse") if isinstance(raw.get("langfuse"), dict) else {}
+        langfuse_stages = (
+            langfuse_root.get("stages") if isinstance(langfuse_root.get("stages"), dict) else {}
+        )
+        gdr_stage = langfuse_stages.get("gdr") if isinstance(langfuse_stages.get("gdr"), dict) else {}
+        if gdr_stage:
+            # ``enabled`` 阶段开关 → ``langfuse_enabled`` 兜底 (Factory 读 langfuse_enabled)
+            if "enabled" in gdr_stage and "langfuse_enabled" not in out:
+                out["langfuse_enabled"] = bool(gdr_stage["enabled"])
+            if "per_step_span" in gdr_stage and "langfuse_gdr_per_step_span" not in out:
+                out["langfuse_gdr_per_step_span"] = bool(gdr_stage["per_step_span"])
+            if "per_llm_span" in gdr_stage and "langfuse_gdr_per_llm_span" not in out:
+                out["langfuse_gdr_per_llm_span"] = bool(gdr_stage["per_llm_span"])
+            if "per_refine_span" in gdr_stage and "langfuse_gdr_per_refine_span" not in out:
+                out["langfuse_gdr_per_refine_span"] = bool(gdr_stage["per_refine_span"])
+            # upload_payload / max_payload_bytes 也下沉到 gdr (Factory 读 langfuse_*)。
+            if "upload_payload" in gdr_stage and "langfuse_upload_payload" not in out:
+                out["langfuse_upload_payload"] = gdr_stage["upload_payload"]
+            if "max_payload_bytes" in gdr_stage and "langfuse_max_payload_bytes" not in out:
+                out["langfuse_max_payload_bytes"] = gdr_stage["max_payload_bytes"]
+            if "max_block_payload_bytes" in gdr_stage and "langfuse_max_block_payload_bytes" not in out:
+                out["langfuse_max_block_payload_bytes"] = gdr_stage["max_block_payload_bytes"]
         for field_name, llm_key in _LLM_FIELD_FALLBACK.items():
             if not out.get(field_name) and llm.get(llm_key):
                 out[field_name] = llm[llm_key]
@@ -401,6 +432,21 @@ class Settings(BaseSettings):
     retention_threshold: float = 0.97  # 探针相对原 D 训练模型保留性 ≥ 阈值
     removal_threshold: float = 0.50    # 探针相对原 D 训练模型剔除性 ≥ 阈值
     max_feedback_iterations: int = 3   # 反馈回路最大重试轮数
+
+    # === Langfuse 可观测性 (PR 3, 扁平字段) ===
+    # gdr 端 Settings 字段扁平 (与现有 llm_* / context_* 风格一致), 不破坏
+    # env_prefix="GDR_" 的扁平覆盖语义。工厂 _extract_langfuse_fields 鸭子
+    # 类型兼容嵌套 / 扁平两种形态, 这里只负责"扁平字段 + 兜底"。
+    langfuse_enabled: bool = False
+    # 21 步骤逐个起 step_span (默认 true; 上传成本可控时强烈推荐)
+    langfuse_gdr_per_step_span: bool = True
+    # LlamaCppClient.chat 级 generation span (默认 false; 100+ spans/session 配额爆炸)
+    langfuse_gdr_per_llm_span: bool = False
+    # 每条 repair_item 一个 span (高级; 默认 false, 默认外层 gdr.refine.run_repairs 一个)
+    langfuse_gdr_per_refine_span: bool = False
+    langfuse_upload_payload: Literal["full", "summary", "none"] | None = None
+    langfuse_max_payload_bytes: int = 0
+    langfuse_max_block_payload_bytes: int = 0
 
     @model_validator(mode="after")
     def _anchor_relative_paths(self):

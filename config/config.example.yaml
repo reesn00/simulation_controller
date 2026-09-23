@@ -16,6 +16,35 @@ llm:
   api_key: "${LLM_API_KEY}"     # 支持环境变量占位符, 避免明文凭据落盘
   model: "your-model-name"
 
+# === Langfuse observability (simulate_serve / gdr / etl 三阶段共享) ===
+# 默认 enabled=false, 旧批次零侵入; 生产环境另在 config/config.yaml 覆盖。
+# 凭据经 ${LANGFUSE_*} 环境变量注入, 不在仓库内出现明文。
+# upload_payload: full | summary | none — full 默认, 用于"对比观察原始 vs 精修 vs 整理";
+#                   summary 仅传 metadata + 体积; none 完全关闭 payload。
+langfuse:
+  enabled: false
+  public_key: "${LANGFUSE_PUBLIC_KEY}"
+  secret_key: "${LANGFUSE_SECRET_KEY}"
+  base_url: "https://cloud.langfuse.com"
+  environment: "dev"
+  release: "${LANGFUSE_RELEASE:-local}"
+  sample_rate: 1.0
+  flush_at: 512
+  flush_interval: 5.0
+  timeout: 10
+  upload_payload: full
+  max_payload_bytes: 0
+  stages:                          # 阶段级开关; 各阶段可独立关停
+    simulate_serve:
+      enabled: true                # 当根 enabled=true 时, simulate_serve 是否上传
+    gdr:
+      enabled: true
+      per_step_span: true          # 21 步骤逐个起 step_span
+      per_llm_span: false          # LlamaCppClient.chat 级 generation span
+    etl:
+      enabled: true
+      per_step_span: true          # etl.load_refined_session / etl.save_c3_4views
+
 # === simulate_serve (用户模拟服务) ===
 # model 段未写的 model_name/api_key/base_url 继承 llm 段;
 # tasks_file/scenarios_file 未写时自动锚定 simulate_serve/config/ 包内目录。
@@ -177,6 +206,20 @@ gdr:
   retention_threshold: 0.97
   removal_threshold: 0.50
   max_feedback_iterations: 3
+
+  # === Langfuse 可观测性 (gdr PR 3, 扁平字段) ===
+  # 与 ``langfuse.stages.gdr`` 段等价; 前者覆盖后者 (运行时前者字段直接生效)。
+  # ``langfuse_*`` 通用字段 (enabled / public_key / secret_key / base_url / ...)
+  # 由 simulate_serve.observability.langfuse_client 工厂鸭子类型解析, 这里只
+  # 暴露 gdr 阶段专用开关。``stages.gdr`` 嵌套配置更便于和其他阶段共用同一份
+  # ``langfuse:`` 凭据段; 扁平字段更便于 env_prefix=GDR_ 临时覆盖。
+  langfuse_enabled: false                # stages.gdr.enabled 同义; 默认关闭
+  langfuse_gdr_per_step_span: true       # 21 步骤逐个起 step_span
+  langfuse_gdr_per_llm_span: false       # LlamaCppClient.chat 级 generation span (100+ spans/session)
+  langfuse_gdr_per_refine_span: false    # 每条 repair_item 一个 span (高级)
+  langfuse_upload_payload: full          # full | summary | none
+  langfuse_max_payload_bytes: 0          # session payload 截断阈值 (0 = 不截断)
+  langfuse_max_block_payload_bytes: 0    # 单 block payload 截断阈值 (0 = 不截断)
 
 # === qf (etl.qwenformat 工具输出摘要) ===
 # base_url/model/api_key 未写时继承 llm 段; 各项可被 QF_SUMMARIZER_* env 覆盖。
