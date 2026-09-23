@@ -481,8 +481,14 @@ def test_archive_metadata_terminal_reached_true_on_error(tmp_path, monkeypatch) 
 
 def test_archive_sdk_exception_does_not_break_archive(tmp_path, monkeypatch, caplog) -> None:
     """SDK raising during ``start_as_current_observation.__enter__()`` must be
-    swallowed by ``_emit_trail``'s outer try/except — the on-disk copy is
-    preserved and the failure is logged at WARNING level."""
+    swallowed by the factory fail-safe (PR 5) — the on-disk copy is preserved
+    and the failure is logged at WARNING level.
+
+    PR 5 改动:工厂 ``_open_observation`` 内部对 ``start_as_current_observation``
+    与 ``cm.__enter__()`` 包 try/except;异常不再 bubble 到 ``_emit_trail`` 外层
+    try/except,所以日志位置从 archiver 移到 factory (logger 名称变化).
+    业务可观察性不变:WARNING + 落盘不中断。
+    """
     from simulate_serve.observability import langfuse_client
 
     boom_cm = mock.MagicMock(name="BoomCM")
@@ -504,16 +510,21 @@ def test_archive_sdk_exception_does_not_break_archive(tmp_path, monkeypatch, cap
     _write_source(tmp_path / "console", "s1",
                   {"event_type": "final_reply"})
 
-    with caplog.at_level(logging.WARNING, logger="simulate_serve.infrastructure.trajectory_archiver"):
+    # PR 5: factory 已吞 SDK 异常,所以 WARNING 来自 langfuse_client 而非 archiver
+    with caplog.at_level(logging.WARNING, logger="simulate_serve.observability.langfuse_client"):
         archiver.archive("r1", "agentX", "s1")  # must not raise
 
     # On-disk copy must still exist (the archive() finally-block must not
     # have aborted the copy when the Langfuse side fell over).
     target = tmp_path / "output" / "agent_trajectory" / "r1__s1.json"
     assert target.is_file()
-    # And the failure must have been logged.
-    assert any("_emit_trail failed" in r.getMessage() for r in caplog.records
-               if r.levelno == logging.WARNING)
+    # PR 5: 失败由工厂 swallowed,日志在 factory 而非 archiver
+    assert any(
+        "langfuse observation __enter__ failed" in r.getMessage()
+        or "langfuse start_observation failed" in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
 
 
 def test_archive_get_client_none_skips_silently(tmp_path, monkeypatch) -> None:
