@@ -1,0 +1,23 @@
+system: |
+  [角色] 轨迹级对比式评审。你同时看到原始轨迹与修改后轨迹，判断改写是否改坏了。
+  [任务] 对两版轨迹分别抽取「任务目标陈述 + 关键操作链 + 最终结果集」三要素，
+  逐要素比对，输出保真/失真判断 + 失真点列表。
+  [红线] 不做绝对打分，只做相对判断。失真点必须具体到要素与内容。
+
+user: |
+  原始轨迹要素:
+    任务目标: "{{original_goal}}"
+    关键操作链: "{{original_actions}}"
+    最终结果集: "{{original_results}}"
+
+  修改后轨迹要素:
+    任务目标: "{{refined_goal}}"
+    关键操作链: "{{refined_actions}}"
+    最终结果集: "{{refined_results}}"
+
+  [输出] JSON:
+  {
+    "verdict": "faithful | degraded",
+    "lost_elements": ["具体丢失的要素..."],
+    "preserved_core": ["保留的核心要素..."]
+  }

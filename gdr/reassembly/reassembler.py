@@ -1226,3 +1226,16 @@ def _attach_metadata(
         } or list(deferred_block_ids or []))
         if deferred_ids:
             session.metadata["deferred_blocks"] = deferred_ids
+
+
+def check_action_obs_alignment(session: Session) -> list:
+    """action-observation 对齐完整性校验 (方案 trajectory-scoring-two-layer.md).
+
+    薄包装, 委托给 validators.l4_trajectory_compare.check_alignment.
+    跨 toolcall 连续扫描: 每 toolcall 必有同 id toolresult 且 state=success.
+
+    Returns:
+        list[Breakpoint]: 断裂点列表 (空 = 完全对齐).
+    """
+    from validators.l4_trajectory_compare import check_alignment
+    return check_alignment(session)

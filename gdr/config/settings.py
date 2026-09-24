@@ -9,7 +9,7 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
-from pydantic import model_validator
+from pydantic import Field, model_validator
 import logging
 import yaml
 
@@ -324,6 +324,15 @@ class Settings(BaseSettings):
     # === 人工审核队列（方案 §5.5） ===
     deferred_output_path: Path = Path("./refine_data/deferred.jsonl")  # 人工审核队列输出路径
 
+    # === Usage Prune 前移到 gdr (方案 etl-prune-frontload.md) ===
+    # gdr 末尾 step 22 调用 prune_session_in_place, 让写出的 C2 refined
+    # Session 天然是已精简 + 已脱敏形态 (CLAUDE.md 隐私红线级别).
+    # 关闭后回退到 etl 阶段裁剪 (旧行为, 仅存量重跑兼容).
+    usage_prune_enabled: bool = True
+    # 独立式评分 reject 旁路 (C2 不落盘, 转 audit/scoring_reject.jsonl)
+    scoring_reject_audit_enabled: bool = True
+    scoring_reject_output_path: Path = Path("./audit/scoring_reject.jsonl")
+
     # === 批量 + 并行 ===
     batch_input_dir: Optional[Path] = None
     batch_output_dir: Optional[Path] = None
@@ -416,6 +425,37 @@ class Settings(BaseSettings):
     # judge_min_score_relaxed: int = 3
     # 阶梯触发后, 是否在 metadata 留 judge_relaxation.note 字段.
     judge_relaxed_audit_note: bool = True
+
+    # === 两层评分系统 (方案 trajectory-scoring-two-layer.md) ===
+    # 第一层: 对比式评分 (Reference-based, 原始轨迹 vs 修改后轨迹)
+    enable_trajectory_compare: bool = True
+    compare_fidelity_llm: bool = True           # fidelity 三要素抽取用 LLM
+    compare_diff_classifier: str = "rule_first"  # rule_first / llm_only / hybrid
+    compare_coherence_reuse_reassembly: bool = True  # 复用 reassembly 配对扫描
+    compare_max_retries: int = 2                # 对比式 fail 回精修的最大重试轮数
+
+    # 第二层: 独立式评分 (Reference-free, 只看修改后轨迹)
+    enable_free_quality: bool = True
+    enable_redline: bool = True
+    # 红线合规: 规则层黑名单 (正则模式); 空列表 = 该类红线不检查
+    redline_piracy_url_patterns: list[str] = Field(default_factory=list)
+    redline_privacy_patterns: list[str] = Field(default_factory=list)
+    redline_prompt_injection_patterns: list[str] = Field(default_factory=list)
+    redline_tos_violation_selectors: list[str] = Field(default_factory=list)
+    redline_llm_review_suspicious: bool = True  # 可疑项 LLM 复核
+    # 绝对质量分 (1-5 分制) 放行阈值
+    absolute_quality_min_score: int = 4         # 总分 ≥ 此值才放行
+    absolute_quality_min_subscore_executability: int = 4  # 子分门槛
+    absolute_quality_min_subscore_action_obs: int = 4
+    absolute_quality_score_mapping: str = "linear_tier"   # [0,1]→1-5 映射策略
+
+    # 金标集 / 漂移监控
+    golden_set_enabled: bool = False
+    golden_set_path: Path = Path("./data/golden_trajectories")
+    golden_set_anchor_count: int = 50           # 锚点轨迹数
+    golden_set_drift_threshold: float = 0.3     # 漂移告警阈值
+    golden_set_drift_action: str = "alert"      # alert / rollback_model / recalibrate
+    golden_set_probe_pairs_per_batch: int = 20  # 每批混入探针对数
 
     # === 评估器 (utility eval, 设计文档 §13) ===
     evaluator_output_dir: Path = Path("./evaluator_output")

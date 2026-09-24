@@ -221,6 +221,43 @@ gdr:
   langfuse_max_payload_bytes: 0          # session payload 截断阈值 (0 = 不截断)
   langfuse_max_block_payload_bytes: 0    # 单 block payload 截断阈值 (0 = 不截断)
 
+  # === 两层评分系统 (方案 trajectory-scoring-two-layer.md) ===
+  # 第一层: 对比式评分 (Reference-based, 原始轨迹 vs 修改后轨迹)
+  enable_trajectory_compare: true
+  compare_fidelity_llm: true              # fidelity 三要素抽取用 LLM
+  compare_diff_classifier: "rule_first"   # rule_first / llm_only / hybrid
+  compare_coherence_reuse_reassembly: true
+  compare_max_retries: 2                  # 对比式 fail 回精修的最大重试轮数
+
+  # 第二层: 独立式评分 (Reference-free, 只看修改后轨迹)
+  enable_free_quality: true
+  enable_redline: true
+  redline_piracy_url_patterns: []         # 侵权站点 URL 正则黑名单
+  redline_privacy_patterns: []            # 隐私正则 (账号/Cookie/手机号/邮箱)
+  redline_prompt_injection_patterns: []   # 注入性语句
+  redline_tos_violation_selectors: []     # ToS 违规 DOM selector 模式
+  redline_llm_review_suspicious: true     # 可疑项 LLM 复核
+  absolute_quality_min_score: 4           # 放行阈值 ≥4/5
+  absolute_quality_min_subscore_executability: 4
+  absolute_quality_min_subscore_action_obs: 4
+  absolute_quality_score_mapping: "linear_tier"
+
+  # 金标集 / 漂移监控
+  golden_set_enabled: false
+  golden_set_path: ./data/golden_trajectories
+  golden_set_anchor_count: 50
+  golden_set_drift_threshold: 0.3
+  golden_set_drift_action: "alert"
+  golden_set_probe_pairs_per_batch: 20
+
+  # === Usage Prune 前移到 gdr (方案 etl-prune-frontload.md) ===
+  # gdr 末尾 step 22: 按真实调用裁剪 system/tools + 本机路径泛化 (CLAUDE.md 隐私红线).
+  # 关闭后回退到 etl 阶段裁剪 (仅存量重跑兼容).
+  usage_prune_enabled: true
+  # 独立式评分 reject 旁路 (C2 不落盘, 转 audit/scoring_reject.jsonl).
+  scoring_reject_audit_enabled: true
+  scoring_reject_output_path: ./audit/scoring_reject.jsonl
+
 # === qf (etl.qwenformat 工具输出摘要) ===
 # base_url/model/api_key 未写时继承 llm 段; 各项可被 QF_SUMMARIZER_* env 覆盖。
 qf:

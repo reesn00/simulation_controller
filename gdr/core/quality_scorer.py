@@ -236,3 +236,103 @@ def compute_tier_distribution(sessions: list[Session]) -> dict[str, int]:
         if tier in out:
             out[tier] += 1
     return out
+
+
+# ============================================================
+# 两层评分系统: [0,1]→1-5 映射 + 子分拆分
+# (方案 trajectory-scoring-two-layer.md §2.2 维度2)
+# ============================================================
+
+def map_to_1_5(score: float, tier: str = "medium") -> int:
+    """[0,1] 连续分 → 1-5 整数分 (linear_tier 策略).
+
+    基础线性映射 round(1 + score*4), 再按 tier 校准:
+      easy   → max(base, 4)  (高质量不低于 4)
+      hard   → min(base, 3)  (低质量不高于 3)
+      medium → base
+    """
+    base = round(1.0 + max(0.0, min(1.0, float(score))) * 4.0)
+    base = max(1, min(5, base))
+    if tier == "easy":
+        return max(base, 4)
+    if tier == "hard":
+        return min(base, 3)
+    return base
+
+
+def _executability_subscore(session: Session) -> int:
+    """可执行性子分: 有配对 toolresult 且 state=success 的 toolcall 比例 → 1-5."""
+    toolcall_count = 0
+    success_count = 0
+    all_blocks: list[tuple[str, str, str]] = []
+    for msg in session.messages:
+        if msg.role != "assistant":
+            continue
+        for blk in msg.blocks:
+            btype = blk.get("type", "") if isinstance(blk, dict) else getattr(blk, "type", "")
+            bid = blk.get("id", "") if isinstance(blk, dict) else getattr(blk, "id", "")
+            bstate = blk.get("state", "") if isinstance(blk, dict) else getattr(blk, "state", "")
+            all_blocks.append((btype, bid, bstate))
+    for i, (bt, bid, _bs) in enumerate(all_blocks):
+        if bt != "toolcall":
+            continue
+        toolcall_count += 1
+        for j in range(i + 1, len(all_blocks)):
+            nbt, nbid, nbs = all_blocks[j]
+            if nbt not in ("toolcall", "toolresult"):
+                break
+            if nbt == "toolresult" and nbid == bid:
+                if nbs == "success":
+                    success_count += 1
+                break
+    if toolcall_count == 0:
+        return 4
+    ratio = success_count / toolcall_count
+    return max(1, min(5, round(1 + ratio * 4)))
+
+
+def _action_obs_alignment_subscore(session: Session) -> int:
+    """action-obs 对齐子分: 5 - min(断裂点数, 4)."""
+    from validators.l4_trajectory_compare import check_alignment
+    breakpoints = check_alignment(session)
+    return max(1, 5 - min(len(breakpoints), 4))
+
+
+def _result_quality_subscore(session: Session, meta: dict) -> int:
+    """结果质量子分: intent_fulfillment {0,1,2}→{3,4,5} + claims 命中."""
+    fulfillment = _safe_meta_get(meta, "user_intent_fulfillment_score")
+    base = {0: 3, 1: 4, 2: 5}.get(int(fulfillment) if fulfillment is not None else None, 3)
+    validation = _safe_meta_get(meta, "validation_summary") or {}
+    total = int(validation.get("total_blocks") or 0)
+    failed_l1 = int(validation.get("failed_L1") or 0)
+    if total > 0 and failed_l1 == 0:
+        base = max(base, 4)
+    return max(1, min(5, base))
+
+
+def _language_subscore(session: Session, meta: dict) -> int:
+    """语言/格式子分: L1/L3 通过率 + meta_tag 无污染 → 1-5."""
+    validation = _safe_meta_get(meta, "validation_summary") or {}
+    total = int(validation.get("total_blocks") or 0)
+    failed_l1 = int(validation.get("failed_L1") or 0)
+    failed_l3 = int(validation.get("failed_L3") or 0)
+    if total <= 0:
+        return 4
+    pass_ratio = 1.0 - (failed_l1 + failed_l3) / (2 * total)
+    pass_ratio = max(0.0, min(1.0, pass_ratio))
+    score = round(1 + pass_ratio * 4)
+    contamination = _safe_meta_get(meta, "meta_tag_contamination") or {}
+    if isinstance(contamination, dict) and contamination.get("has_meta_tag"):
+        score = max(1, score - 1)
+    return max(1, min(5, score))
+
+
+def compute_subscores(session: Session, cfg: Any) -> dict[str, int]:
+    """计算四维子分 (1-5 制), 供独立式绝对质量分使用."""
+    meta = session.metadata or {}
+    return {
+        "executability": _executability_subscore(session),
+        "action_obs_alignment": _action_obs_alignment_subscore(session),
+        "result_quality": _result_quality_subscore(session, meta),
+        "language": _language_subscore(session, meta),
+    }

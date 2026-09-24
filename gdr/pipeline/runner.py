@@ -294,6 +294,12 @@ def process_one(
 ) -> Session | None:
     t0 = time.perf_counter()
     try:
+        # 保留原始 session 深拷贝, 供两层评分系统对比式评分使用
+        # (方案 trajectory-scoring-two-layer.md §3). 仅启用时才拷贝 (省内存).
+        original_session_for_compare: Session | None = None
+        if getattr(cfg, "enable_trajectory_compare", True) or getattr(cfg, "enable_free_quality", True):
+            original_session_for_compare = session.model_copy(deep=True)
+
         # === -1. Session 级硬过滤（方案 §5.1） ===
         with _gdr_step_span_ctx(
             "gdr.hard_filter", session, metadata={"step": "hard_filter"},
@@ -639,6 +645,88 @@ def process_one(
                 session.metadata["timeout_partial_save"] = True
                 session.metadata["timeout_elapsed_s"] = round(elapsed, 1)
                 return session
+        # === 两层评分系统 (方案 trajectory-scoring-two-layer.md) ===
+        # 第一层对比式 + 第二层独立式, 结果写入 metadata 供下游门控.
+        if result is not None:
+            result.metadata = result.metadata or {}
+            if (
+                getattr(cfg, "enable_trajectory_compare", True)
+                and original_session_for_compare is not None
+            ):
+                with _gdr_step_span_ctx(
+                    "gdr.trajectory_compare", result,
+                    metadata={"step": "trajectory_compare"},
+                ):
+                    try:
+                        from validators.l4_trajectory_compare import compare as traj_compare
+                        compare_result = traj_compare(
+                            original_session_for_compare, result, refine_records, cfg,
+                        )
+                        result.metadata["trajectory_compare"] = compare_result.model_dump(mode="json")
+                    except Exception as e:
+                        log.warning("trajectory compare failed for %s: %s", result.session_id, e)
+            if getattr(cfg, "enable_free_quality", True):
+                with _gdr_step_span_ctx(
+                    "gdr.free_quality", result,
+                    metadata={"step": "free_quality"},
+                ):
+                    try:
+                        from validators.free_quality import evaluate as free_eval
+                        free_result = free_eval(result, cfg)
+                        result.metadata["trajectory_free"] = free_result.model_dump(mode="json")
+                        if free_result.decision == "reject":
+                            result.metadata["scoring_reject"] = True
+                    except Exception as e:
+                        log.warning("free quality eval failed for %s: %s", result.session_id, e)
+
+            # === step 22: usage_prune 前移到 gdr (方案 etl-prune-frontload.md) ===
+            # 结构裁剪 + 本机路径泛化 (CLAUDE.md 隐私红线), 让 C2 天然是
+            # 已精简 + 已脱敏形态. etl 不再做结构裁剪.
+            if getattr(cfg, "usage_prune_enabled", True):
+                with _gdr_step_span_ctx(
+                    "gdr.usage_prune", result,
+                    metadata={"step": "usage_prune"},
+                ):
+                    try:
+                        from gdr.refiners.usage_prune import prune_session_in_place
+                        usage_prune_stats = prune_session_in_place(result, cfg)
+                        result.metadata["usage_prune"] = usage_prune_stats
+                    except Exception as e:
+                        log.warning(
+                            "usage_prune failed for %s: %s; "
+                            "continuing without structural pruning",
+                            result.session_id, e,
+                        )
+
+            # === step 23: 独立式 reject 门控 (方案 etl-prune-frontload.md §5.2) ===
+            # 红线违规 / 总分 < 4 → 不写 C2, 转 audit/scoring_reject.jsonl.
+            # 让评分真正生效, 而非悬空写 metadata.
+            free_decision = (
+                (result.metadata.get("trajectory_free") or {}).get("decision")
+            )
+            if free_decision == "reject":
+                with _gdr_step_span_ctx(
+                    "gdr.scoring_reject_gate", result,
+                    metadata={
+                        "step": "scoring_reject_gate",
+                        "audit_path": str(
+                            getattr(cfg, "scoring_reject_output_path", "")
+                        ),
+                        "enabled": bool(
+                            getattr(cfg, "scoring_reject_audit_enabled", True)
+                        ),
+                    },
+                ):
+                    result.metadata["scoring_reject"] = True
+                    _append_scoring_reject_queue(result, cfg)
+                    log.warning(
+                        "session %s rejected by free_quality; "
+                        "redirecting to %s, skipping C2 write",
+                        result.session_id,
+                        getattr(cfg, "scoring_reject_output_path", "?"),
+                    )
+                return None
+
         log.debug(
             "session %s processed in %.2fs",
             session.session_id, elapsed,
@@ -848,6 +936,52 @@ def _append_routing_abstain_queue(session: Session, cfg: Settings) -> None:
         )
     except Exception as e:
         log.warning("failed to append routing_abstain queue: %s", e)
+
+
+def _append_scoring_reject_queue(session: Session, cfg: Settings) -> None:
+    """独立式评分 reject 旁路 (方案 etl-prune-frontload.md §5.2).
+
+    红线违规 / 总分 < 4 / 子分门槛未达 的 session 不写 C2 refine_data,
+    整体转 audit/scoring_reject.jsonl 供事后复核. 与 judge_low / incomplete
+    / routing_abstain 同级独立 audit 通道; 记录含 redline.labels 与
+    absolute_quality.fail_reasons 便于根因分析.
+    """
+    if not getattr(cfg, "scoring_reject_audit_enabled", True):
+        return
+    meta = session.metadata or {}
+    free = meta.get("trajectory_free") or {}
+    if free.get("decision") != "reject":
+        return
+    try:
+        redline = free.get("redline") or {}
+        absolute_quality = free.get("absolute_quality") or {}
+        record = {
+            "session_id": session.session_id,
+            "source_file": session.source_file,
+            "scoring_reject": {
+                "decision": free.get("decision"),
+                "redline_violation": redline.get("violation", False),
+                "redline_labels": redline.get("labels", []),
+                "absolute_quality_score": absolute_quality.get("score"),
+                "absolute_quality_subscores": absolute_quality.get("subscores", {}),
+                "absolute_quality_fail_reasons": absolute_quality.get("fail_reasons", []),
+            },
+            "session": session.model_dump(mode="json"),
+        }
+        path = Path(getattr(cfg, "scoring_reject_output_path", "./audit/scoring_reject.jsonl"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        log.warning(
+            "scoring-reject queue appended: %s (session %s, decision=%s, "
+            "redline_violation=%s, score=%s)",
+            path, session.session_id,
+            free.get("decision"),
+            redline.get("violation", False),
+            absolute_quality.get("score"),
+        )
+    except Exception as e:
+        log.warning("failed to append scoring_reject queue: %s", e)
 
 
 # === 未闭合 session 防呆 (方向 #完整性检测) ===
