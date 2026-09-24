@@ -12,7 +12,14 @@ from simulate_serve.task_manager import TaskManager
 def test_builtin_catalog_compiles_all_tasks(project_root: Path) -> None:
     manager = TaskManager("tasks.yaml", "scenarios.yaml", config_dir=project_root / "simulate_serve" / "config")
     assert len(manager.compiled_tasks) == 98
-    assert manager.diagnostics == ()
+    # 无 ERROR 级别诊断; WARNING 级 EXCLUDED_PLATFORMS_ADVISORY 是 fixture 把
+    # excluded_platforms 标为 advisory 的预期信号 (见 test_catalog_v2)。
+    errors = [d for d in manager.diagnostics if d.severity.value == "error"]
+    assert errors == []
+    non_advisory = tuple(
+        d for d in manager.diagnostics if d.code != "EXCLUDED_PLATFORMS_ADVISORY"
+    )
+    assert non_advisory == ()
     assert all(task.criteria for task in manager.compiled_tasks)
     assert not any(
         item.parameters.get("legacy")

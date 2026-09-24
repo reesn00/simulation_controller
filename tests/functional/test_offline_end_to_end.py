@@ -111,3 +111,81 @@ async def test_v2_fixture_is_private_and_semantic_gap_drives_offline_followup(pr
         "换关键词或换来源" in executor.messages[1] or "换个查法" in executor.messages[1]
     )
     assert "没有说明恢复策略" not in executor.messages[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.functional
+async def test_advisory_excluded_platforms_does_not_dead_run(project_root: Path) -> None:
+    """excluded_platforms_severity=advisory 时, 即使 Agent 4 轮都给出含
+    排除平台的回复, run 不进 dead (T001 历史 guide_exhausted 回归验证)。
+
+    与 strict 行为对比: 派生 ``derived.<task>.excluded-platforms`` 硬 FAIL 准则,
+    命中 SOURCE_EXCLUDED -> retryable gap -> 4 轮耗尽 -> GUIDE_EXHAUSTED。
+    advisory 行为: 不派生准则 -> 该点不阻塞 verdict。
+    """
+
+    class PassAllJudge:
+        """所有非语义 validator PASS, semantic 准则 PASS, 模拟 fixture
+        完整自检路径 (避开 DEFERRED_AFTER_HARD_FAIL 的环境缺失分支)."""
+
+        async def judge(self, task, response_text, criteria):
+            return tuple(
+                CriterionResult(
+                    criterion_id=item.criterion_id,
+                    verdict=Verdict.PASS,
+                    reason_code="PASSED",
+                    message="ok",
+                    retryable=False,
+                )
+                for item in criteria
+            )
+
+    manager = TaskManager("tasks.yaml", "scenarios.yaml", config_dir=project_root / "simulate_serve" / "config")
+    task = next(item for item in manager.compiled_tasks if item.task_id == "T001")
+    # 关键断言: advisory 模式不派生硬 FAIL criterion
+    assert task.excluded_platforms
+    assert not any(
+        c.criterion_id.endswith(".excluded-platforms") for c in task.criteria
+    )
+    # Agent 4 轮都返回含腾讯/爱奇艺的回复 — advisory 模式不该死信
+    # (每次回复用不同编号避免 RESPONSE_LOOP_DETECTED guard 提前终止)
+    replies = [
+        "1. 腾讯视频 https://v.qq.com/a 1-80集\n"
+        "2. 爱奇艺 https://www.iqiyi.com/b 1-80集\n"
+        "3. 优酷 https://youku.com/c 1-80集\n"
+        "4. 哔哩哔哩 https://www.bilibili.com/d 1-80集\n"
+        "5. 央视网 https://tv.cctv.com/e 1-80集",
+        "5 个链接如下:\n"
+        "- 腾讯视频 https://v.qq.com/1 1-80集\n"
+        "- 爱奇艺 https://www.iqiyi.com/2 1-80集\n"
+        "- 优酷 https://youku.com/3 1-80集\n"
+        "- 哔哩哔哩 https://www.bilibili.com/4 1-80集\n"
+        "- 央视网 https://tv.cctv.com/5 1-80集",
+        "1) 腾讯视频 https://v.qq.com/6 1-80集\n"
+        "2) 爱奇艺 https://www.iqiyi.com/7 1-80集\n"
+        "3) 优酷 https://youku.com/8 1-80集\n"
+        "4) 哔哩哔哩 https://www.bilibili.com/9 1-80集\n"
+        "5) 央视网 https://tv.cctv.com/10 1-80集",
+        "整理后的链接:\n"
+        "* 腾讯视频 https://v.qq.com/11 1-80集\n"
+        "* 爱奇艺 https://www.iqiyi.com/12 1-80集\n"
+        "* 优酷 https://youku.com/13 1-80集\n"
+        "* 哔哩哔哩 https://www.bilibili.com/14 1-80集\n"
+        "* 央视网 https://tv.cctv.com/15 1-80集",
+    ]
+    executor = ScriptedExecutor(replies)
+    run = await TaskRuntime(
+        executor,
+        DeterministicInteractionActor(),
+        ValidationPipeline(judge=PassAllJudge()),
+    ).run(task)
+    # 核心断言: 不进 GUIDE_EXHAUSTED / dead (历史 T001 死信回归验证)。
+    # INCONCLUSIVE 在本地无 browser 工具时是合法终点, 不算 dead。
+    assert run.state is not RunState.GUIDE_EXHAUSTED
+    assert run.state is not RunState.EXECUTOR_ERROR
+    assert run.state in (RunState.SUCCESS, RunState.INCONCLUSIVE)
+    # 同时确认 excluded_platforms 不在 missing_items (即未阻塞失败)
+    assert not any(
+        "被排除的平台" in item or "SOURCE_EXCLUDED" in item
+        for item in run.failure.message.split("; ") if run.failure
+    )

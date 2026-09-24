@@ -129,6 +129,10 @@ class ScenarioDocument(StrictDocument):
     acceptance_criteria: list[CriterionDocument] | None = None
     constraints: list[str] | None = None
     excluded_platforms: list[str] | None = None
+    # ``strict``: 命中即生成 ``derived.<task>.excluded-platforms`` 硬 FAIL 准则.
+    # ``advisory``: 仅作为引导信号写入 system prompt, 不派生硬 FAIL 准则
+    # (Agent 仍会被提示换源, 但即使回复中保留这些平台也不会因这点进 dead).
+    excluded_platforms_severity: Literal["strict", "advisory"] | None = None
     interaction_protocol: str | None = None
     fallback_guidance: list[str] | None = None
     dialogue_policy: DialoguePolicyDocument | None = None
@@ -159,6 +163,9 @@ class TaskDocument(StrictDocument):
     acceptance_criteria: list[CriterionDocument] | None = None
     constraints: list[str] | None = None
     excluded_platforms: list[str] | None = None
+    # 覆盖同名字段在 ScenarioDocument 上的语义; 取值优先级 task > scenario > 默认 strict.
+    # ``advisory``: 仅写入 prompt 引导信号, 不派生硬 FAIL 准则.
+    excluded_platforms_severity: Literal["strict", "advisory"] | None = None
     interaction_protocol: str | None = None
     fallback_guidance: list[str] | None = None
     validation_rules: LegacyValidationRulesDocument | None = None

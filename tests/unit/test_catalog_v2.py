@@ -160,3 +160,172 @@ def test_builtin_v2_catalog_has_no_legacy_validation_rules(project_root: Path) -
     assert by_id["T019"].output_contract.format == "card"
     assert by_id["T019"].output_contract.min_urls == 2
     assert by_id["T055"].output_contract.format is None
+
+
+def test_v2_strict_excluded_platforms_derives_constraint_criterion(tmp_path: Path) -> None:
+    """默认 strict 行为: excluded_platforms 派生 ``derived.<task>.excluded-platforms`` 硬 FAIL 准则."""
+    task = {
+        "task_id": "T1",
+        "task_type": "x",
+        "scenario": "base",
+        "initial_request": "请处理",
+        "intent": {"goal": "完成任务"},
+        "excluded_platforms": ["腾讯视频", "爱奇艺"],
+    }
+    scenario = {"scenario_id": "base", "dialogue_policy": {}}
+    tasks_path, scenarios_path = _write_catalog(tmp_path, task, scenario)
+
+    compiled = TaskCompiler().compile(
+        CatalogLoader().load(tasks_path, scenarios_path)
+    ).tasks[0]
+
+    derived = [c for c in compiled.criteria if c.criterion_id.endswith(".excluded-platforms")]
+    assert len(derived) == 1
+    assert derived[0].validator == "constraint"
+    assert list(derived[0].parameters["excluded_platforms"]) == ["腾讯视频", "爱奇艺"]
+    # CompiledTask.excluded_platforms 仍写入 (tuple), prompt_builder 可读
+    assert compiled.excluded_platforms == ("腾讯视频", "爱奇艺")
+
+
+def test_v2_advisory_excluded_platforms_skips_constraint_criterion(tmp_path: Path) -> None:
+    """advisory: 不派生硬 FAIL 准则, 但 prompt 引导信号保留."""
+    task = {
+        "task_id": "T1",
+        "task_type": "x",
+        "scenario": "base",
+        "initial_request": "请处理",
+        "intent": {"goal": "完成任务"},
+        "excluded_platforms": ["腾讯视频", "爱奇艺"],
+        "excluded_platforms_severity": "advisory",
+    }
+    scenario = {"scenario_id": "base", "dialogue_policy": {}}
+    tasks_path, scenarios_path = _write_catalog(tmp_path, task, scenario)
+
+    compiled = TaskCompiler().compile(
+        CatalogLoader().load(tasks_path, scenarios_path)
+    ).tasks[0]
+
+    derived = [c for c in compiled.criteria if c.criterion_id.endswith(".excluded-platforms")]
+    assert derived == []
+    # 关键不变量: CompiledTask.excluded_platforms 仍写入 (供 prompt_builder 读)
+    assert compiled.excluded_platforms == ("腾讯视频", "爱奇艺")
+    # prompt 仍包含引导文字
+    prompt = build_system_prompt(InteractionContext(task=compiled))
+    assert "腾讯视频" in prompt
+    assert "爱奇艺" in prompt
+
+
+def test_v2_advisory_excluded_platforms_emits_warning_diagnostic(tmp_path: Path) -> None:
+    """advisory 触发 EXCLUDED_PLATFORMS_ADVISORY 警告诊断."""
+    from simulate_serve.configuration.diagnostics import DiagnosticSeverity
+
+    task = {
+        "task_id": "T1",
+        "task_type": "x",
+        "scenario": "base",
+        "initial_request": "请处理",
+        "intent": {"goal": "完成任务"},
+        "excluded_platforms": ["哔哩哔哩"],
+        "excluded_platforms_severity": "advisory",
+    }
+    scenario = {"scenario_id": "base", "dialogue_policy": {}}
+    tasks_path, scenarios_path = _write_catalog(tmp_path, task, scenario)
+
+    result = TaskCompiler().compile(CatalogLoader().load(tasks_path, scenarios_path))
+    warnings = [d for d in result.diagnostics if d.code == "EXCLUDED_PLATFORMS_ADVISORY"]
+    assert len(warnings) == 1
+    assert warnings[0].severity is DiagnosticSeverity.WARNING
+    assert warnings[0].source == "T1"
+    assert warnings[0].path == "excluded_platforms_severity"
+
+
+def test_v2_severity_resolution_task_overrides_scenario(tmp_path: Path) -> None:
+    """task 级 severity 覆盖 scenario 级; scenario 级 fallback 生效."""
+    base_task = {
+        "task_id": "T1",
+        "task_type": "x",
+        "scenario": "base",
+        "initial_request": "请处理",
+        "intent": {"goal": "完成任务"},
+        "excluded_platforms": ["腾讯视频"],
+    }
+
+    # case 1: task=advisory 覆盖 scenario=strict
+    scenario_strict = {
+        "scenario_id": "base",
+        "dialogue_policy": {},
+        "excluded_platforms_severity": "strict",
+    }
+    task_adv = {**base_task, "excluded_platforms_severity": "advisory"}
+    tasks_path, scenarios_path = _write_catalog(tmp_path, task_adv, scenario_strict)
+    compiled = TaskCompiler().compile(
+        CatalogLoader().load(tasks_path, scenarios_path)
+    ).tasks[0]
+    assert not [c for c in compiled.criteria if c.criterion_id.endswith(".excluded-platforms")]
+
+    # case 2: task 未设, scenario=advisory 兜底
+    task_default = dict(base_task)
+    scenario_adv = {
+        "scenario_id": "base",
+        "dialogue_policy": {},
+        "excluded_platforms_severity": "advisory",
+    }
+    tasks_path, scenarios_path = _write_catalog(tmp_path, task_default, scenario_adv)
+    compiled = TaskCompiler().compile(
+        CatalogLoader().load(tasks_path, scenarios_path)
+    ).tasks[0]
+    assert not [c for c in compiled.criteria if c.criterion_id.endswith(".excluded-platforms")]
+
+    # case 3: task=strict 覆盖 scenario=advisory
+    task_strict = {**base_task, "excluded_platforms_severity": "strict"}
+    tasks_path, scenarios_path = _write_catalog(tmp_path, task_strict, scenario_adv)
+    compiled = TaskCompiler().compile(
+        CatalogLoader().load(tasks_path, scenarios_path)
+    ).tasks[0]
+    assert [c for c in compiled.criteria if c.criterion_id.endswith(".excluded-platforms")]
+
+
+def test_v2_rejects_invalid_severity_value(tmp_path: Path) -> None:
+    """非法 severity 值被 schema 拒绝."""
+    task = {
+        "task_id": "T1",
+        "task_type": "x",
+        "scenario": "base",
+        "initial_request": "请处理",
+        "intent": {"goal": "完成任务"},
+        "excluded_platforms": ["腾讯视频"],
+        "excluded_platforms_severity": "soft",  # 非 Literal 取值
+    }
+    scenario = {"scenario_id": "base", "dialogue_policy": {}}
+    tasks_path, scenarios_path = _write_catalog(tmp_path, task, scenario)
+
+    with pytest.raises(CatalogValidationError):
+        CatalogLoader().load(tasks_path, scenarios_path)
+
+
+def test_v2_builtin_catalog_excluded_platforms_are_advisory(project_root: Path) -> None:
+    """内置 fixture 全局验证: 67 个含 excluded_platforms 的 task 全部标 advisory,
+    且都不派生 ``derived.<task>.excluded-platforms`` 准则."""
+    bundle = CatalogLoader().load(
+        project_root / "simulate_serve" / "config" / "tasks.yaml",
+        project_root / "simulate_serve" / "config" / "scenarios.yaml",
+    )
+    compiled = TaskCompiler().compile(bundle)
+    tasks_with_excluded = [t for t in bundle.tasks if t.excluded_platforms]
+    assert len(tasks_with_excluded) >= 60  # 防止 fixture 退化
+    assert all(t.excluded_platforms_severity == "advisory" for t in tasks_with_excluded)
+
+    advisory_diag_count = sum(
+        1 for d in compiled.diagnostics if d.code == "EXCLUDED_PLATFORMS_ADVISORY"
+    )
+    assert advisory_diag_count == len(tasks_with_excluded)
+
+    compiled_by_id = {t.task_id: t for t in compiled.tasks}
+    for t in tasks_with_excluded:
+        derived = [
+            c for c in compiled_by_id[t.task_id].criteria
+            if c.criterion_id.endswith(".excluded-platforms")
+        ]
+        assert derived == [], f"{t.task_id} 应不派生 excluded-platforms 准则"
+        # 但 CompiledTask.excluded_platforms 必须写入, prompt 才能读到
+        assert compiled_by_id[t.task_id].excluded_platforms

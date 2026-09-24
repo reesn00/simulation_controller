@@ -137,6 +137,25 @@ class TaskCompiler:
         )
         constraints = self._dedupe((scenario.constraints or ()) if scenario else (), task.constraints or ())
         excluded = self._dedupe((scenario.excluded_platforms or ()) if scenario else (), task.excluded_platforms or ())
+        # excluded_platforms_severity 解析: task > scenario > 默认 strict.
+        # ``strict`` 派生 ``derived.<task>.excluded-platforms`` 硬 FAIL 准则;
+        # ``advisory`` 仅写入 prompt 引导信号, 不派生硬 FAIL 准则.
+        severity = task.excluded_platforms_severity
+        if severity is None and scenario is not None:
+            severity = scenario.excluded_platforms_severity
+        severity = severity or "strict"
+        severity_source_type = (
+            "task"
+            if task.excluded_platforms_severity is not None
+            else "scenario"
+            if scenario is not None and scenario.excluded_platforms_severity is not None
+            else "default"
+        )
+        severity_source_id = (
+            task.task_id
+            if task.excluded_platforms_severity is not None
+            else (scenario.scenario_id if scenario is not None and scenario.excluded_platforms_severity is not None else "global")
+        )
         if constraints:
             criteria.append(
                 AcceptanceCriterion(
@@ -148,7 +167,7 @@ class TaskCompiler:
                     source=self._source("derived", task.task_id, "constraints"),
                 )
             )
-        if excluded:
+        if excluded and severity == "strict":
             criteria.append(
                 AcceptanceCriterion(
                     criterion_id=f"derived.{task.task_id.lower()}.excluded-platforms",
@@ -158,6 +177,23 @@ class TaskCompiler:
                     remediation=RemediationSpec(owner="executor", guidance="请移除被排除的平台，并更换为符合要求的来源"),
                     source=self._source("derived", task.task_id, "excluded_platforms"),
                 )
+            )
+        elif excluded and severity == "advisory":
+            diagnostics.append(
+                self._warning(
+                    "EXCLUDED_PLATFORMS_ADVISORY",
+                    (
+                        "excluded_platforms 仅作为引导信号写入 prompt, 不派生硬 FAIL 准则; "
+                        "Agent 仍会被提示换源, 但最终结果保留这些平台时不会因此点进入 dead"
+                    ),
+                    task.task_id,
+                    "excluded_platforms_severity",
+                )
+            )
+            provenance["excluded_platforms_severity"] = self._source(
+                severity_source_type,
+                severity_source_id,
+                "excluded_platforms_severity",
             )
         if task.validation_prompt:
             diagnostics.append(self._warning("VALIDATION_PROMPT_DEPRECATED", "validation_prompt is ignored by the local pipeline", task.task_id, "validation_prompt"))

@@ -32,6 +32,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   reference:
     evaluation_notes:
     - 网络搜索《武林外传》免费在线资源
@@ -61,6 +62,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t002.outcome
     item: 任务特有目标
@@ -99,6 +101,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t003.outcome
     item: 任务特有目标
@@ -137,6 +140,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t004.outcome
     item: 任务特有目标
@@ -175,6 +179,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t005.outcome
     item: 任务特有目标
@@ -213,6 +218,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t006.outcome
     item: 任务特有目标
@@ -251,6 +257,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t007.outcome
     item: 任务特有目标
@@ -289,6 +296,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t008.outcome
     item: 任务特有目标
@@ -327,6 +335,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t009.outcome
     item: 任务特有目标
@@ -365,6 +374,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t010.outcome
     item: 任务特有目标
@@ -403,6 +413,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.bilingual-subtitles
     item: 中英双语字幕
@@ -448,6 +459,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t012.outcome
     item: 任务特有目标
@@ -486,6 +498,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t013.outcome
     item: 任务特有目标
@@ -524,6 +537,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t014.outcome
     item: 任务特有目标
@@ -562,6 +576,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.no-registration
     item: 无需注册
@@ -607,6 +622,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t016.outcome
     item: 任务特有目标
@@ -645,6 +661,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t017.outcome
     item: 任务特有目标
@@ -683,6 +700,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t018.outcome
     item: 任务特有目标
@@ -719,6 +737,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t019.outcome
     item: 任务特有目标
@@ -758,6 +777,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t020.outcome
     item: 任务特有目标
@@ -797,6 +817,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t021.outcome
     item: 任务特有目标
@@ -835,6 +856,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t022.outcome
     item: 任务特有目标
@@ -873,6 +895,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t023.outcome
     item: 任务特有目标
@@ -912,6 +935,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t024.outcome
     item: 任务特有目标
@@ -949,6 +973,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t025.outcome
     item: 任务特有目标
@@ -992,6 +1017,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.links-verifiable
     item: 链接可验证
@@ -1053,6 +1079,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t027.outcome
     item: 任务特有目标
@@ -1095,6 +1122,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t028.outcome
     item: 任务特有目标
@@ -1165,6 +1193,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t030.outcome
     item: 任务特有目标
@@ -1204,6 +1233,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t031.outcome
     item: 任务特有目标
@@ -1242,6 +1272,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t032.outcome
     item: 任务特有目标
@@ -1281,6 +1312,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t033.outcome
     item: 任务特有目标
@@ -1318,6 +1350,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.no-fabricated-links
     item: 不编造链接
@@ -2100,6 +2133,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t058.outcome
     item: 任务特有目标
@@ -2140,6 +2174,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t059.outcome
     item: 任务特有目标
@@ -2179,6 +2214,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t060.outcome
     item: 任务特有目标
@@ -2282,6 +2318,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t063.outcome
     item: 任务特有目标
@@ -2321,6 +2358,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.no-vip-required
     item: 无需 VIP
@@ -2367,6 +2405,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.strictly-free
     item: 严格免费
@@ -2454,6 +2493,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t067.outcome
     item: 任务特有目标
@@ -2493,6 +2533,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.t068.outcome
     item: 任务特有目标
@@ -2532,6 +2573,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e001.outcome
     item: 任务特有目标
@@ -2570,6 +2612,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e002.outcome
     item: 任务特有目标
@@ -2608,6 +2651,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e003.outcome
     item: 任务特有目标
@@ -2646,6 +2690,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e004.outcome
     item: 任务特有目标
@@ -2684,6 +2729,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e005.outcome
     item: 任务特有目标
@@ -2722,6 +2768,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e006.outcome
     item: 任务特有目标
@@ -2824,6 +2871,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e009.outcome
     item: 任务特有目标
@@ -2862,6 +2910,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e010.outcome
     item: 任务特有目标
@@ -2900,6 +2949,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e011.outcome
     item: 任务特有目标
@@ -2938,6 +2988,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e012.outcome
     item: 任务特有目标
@@ -2976,6 +3027,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e013.outcome
     item: 任务特有目标
@@ -3014,6 +3066,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e014.outcome
     item: 任务特有目标
@@ -3052,6 +3105,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e015.outcome
     item: 任务特有目标
@@ -3090,6 +3144,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e016.outcome
     item: 任务特有目标
@@ -3128,6 +3183,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e017.outcome
     item: 任务特有目标
@@ -3166,6 +3222,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e018.outcome
     item: 任务特有目标
@@ -3204,6 +3261,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e019.outcome
     item: 任务特有目标
@@ -3242,6 +3300,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e020.outcome
     item: 任务特有目标
@@ -3281,6 +3340,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e021.outcome
     item: 任务特有目标
@@ -3319,6 +3379,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e022.outcome
     item: 任务特有目标
@@ -3357,6 +3418,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e023.outcome
     item: 任务特有目标
@@ -3396,6 +3458,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e024.outcome
     item: 任务特有目标
@@ -3438,6 +3501,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e025.outcome
     item: 任务特有目标
@@ -3508,6 +3572,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e027.outcome
     item: 任务特有目标
@@ -3547,6 +3612,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e028.outcome
     item: 任务特有目标
@@ -3586,6 +3652,7 @@ tasks:
   - 爱奇艺
   - 优酷
   - 哔哩哔哩
+  excluded_platforms_severity: advisory
   acceptance_criteria:
   - criterion_id: task.e029.outcome
     item: 任务特有目标
