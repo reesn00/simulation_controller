@@ -1,5 +1,12 @@
 # etl 修剪调整前移方案（处理提前 / 门控验证放后）
 
+> ✅ **已实施**（2026-09-24）。Phase A→B→C→D 全绿：564→764 全测试绿。
+> 实现位置：
+> - gdr step 22 `prune_session_in_place`：[`gdr/refiners/usage_prune.py`](../../gdr/refiners/usage_prune.py) + [`gdr/refiners/system_prompt.py`](../../gdr/refiners/system_prompt.py)
+> - gdr step 23 reject 门控：[`gdr/pipeline/runner.py`](../../gdr/pipeline/runner.py) `_append_scoring_reject_queue`
+> - etl 兜底：[`etl/parsers/__init__.py`](../../etl/parsers/__init__.py) `gate_then_load` + `append_scoring_reject_fallback`
+> - 配置：[`config/config.example.yaml`](../../config/config.example.yaml) `gdr.usage_prune_enabled` / `gdr.scoring_reject_audit_enabled` / `gdr.scoring_reject_output_path`
+> - 测试：[`tests/unit/test_usage_prune_gdr.py`](../../tests/unit/test_usage_prune_gdr.py)（33 项）+ [`tests/unit/test_etl_gate.py`](../../tests/unit/test_etl_gate.py)（12 项）
 > 场景：将 `etl/qwenformat/` 中属于"结构裁剪 / 隐私脱敏"性质的修剪调整前移到
 > gdr 精修阶段，让 gdr 写出的 C2 refined Session **天然已是训练就绪形态**；
 > 门控验证（两层评分）下沉到 C2 落盘前的最后一步生效，让评分结果真正

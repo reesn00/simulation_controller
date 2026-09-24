@@ -1,5 +1,13 @@
 # Agent 轨迹数据两层评分系统设计（契合本项目）
 
+> ✅ **已实施**（2026-09-24）。两层评分系统已落地：
+> - 对比式（第一层）：[`gdr/validators/l4_trajectory_compare.py`](../../gdr/validators/l4_trajectory_compare.py) + [`gdr/validators/l4_diff_classifier.py`](../../gdr/validators/l4_diff_classifier.py)
+> - 独立式（第二层）：[`gdr/validators/free_quality.py`](../../gdr/validators/free_quality.py)
+> - 红线检测：[`gdr/validators/redline.py`](../../gdr/validators/redline.py) + [`gdr/prompts/redline.yaml`](../../gdr/prompts/redline.yaml)
+> - Schema / 类型：[`gdr/domain/scoring_schema.py`](../../gdr/domain/scoring_schema.py) + [`gdr/core/quality_scorer.py`](../../gdr/core/quality_scorer.py)
+> - 金标 / 漂移监控：[`gdr/evaluator/drift_monitor.py`](../../gdr/evaluator/drift_monitor.py) + [`gdr/evaluator/golden_set/`](../../gdr/evaluator/golden_set/)
+> - 测试：[`tests/unit/test_trajectory_scoring.py`](../../tests/unit/test_trajectory_scoring.py)（25 项全绿）
+>
 > 场景：浏览器在线视频网址检索与整理的 agent 轨迹数据（LLM 修改后）评分。
 > 参考方案：用户提供的对比式 + 独立式两层评分方法论。
 > 本文档在该方法论基础上，对齐本项目 gdr 精修管道的现有能力，给出**复用 / 新建 / 改造**的落地设计，不另起炉灶。

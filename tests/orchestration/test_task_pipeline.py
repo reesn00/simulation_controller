@@ -20,6 +20,7 @@ import pytest
 
 from gdr.config.settings import Settings as GdrSettings
 from orchestration.queue import (
+    PHASE_AUDITED,
     PHASE_DEAD,
     PHASE_DONE,
     PHASE_ETL,
@@ -116,6 +117,7 @@ def _patch_pipeline(
     simulate_state: str = "success",
     gdr_fail_count: int = 0,
     gdr_nonretryable: bool = False,
+    gdr_audited: str | None = None,
     etl_fail_count: int = 0,
     etl_nonretryable: bool = False,
     simulate_exc: BaseException | None = None,
@@ -126,6 +128,8 @@ def _patch_pipeline(
         simulate_state:        模拟 TaskRun.state 字符串; success 等
         gdr_fail_count:        gdr 重试次数, 前 N 次抛普通 Exception, 之后成功
         gdr_nonretryable:      gdr 抛 NonRetryableError (直接 dead)
+        gdr_audited:           gdr 抛 GdrAuditedError (走 audited 终态, 不进 dead);
+                              取值 "judge_discard" / "scoring_reject" 表示拒收原因
         etl_fail_count:        etl 重试次数
         etl_nonretryable:      etl 抛 NonRetryableError
         simulate_exc:          simulate 直接抛异常 (非 TaskRun)
@@ -160,6 +164,17 @@ def _patch_pipeline(
     class _GdrNonRetryableError(Exception):
         pass
 
+    class _GdrAuditedError(Exception):
+        """评分低 → audited 终态, 不进 dead (CLAUDE.md "数据保留原则").
+
+        对应 orchestration.workers.gdr_worker.GdrAuditedError 的契约:
+        message 字符串 + audit_reason kwarg.
+        """
+
+        def __init__(self, message: str, *, audit_reason: str) -> None:
+            super().__init__(message)
+            self.audit_reason = audit_reason
+
     class _EtlNonRetryableError(Exception):
         pass
 
@@ -168,6 +183,12 @@ def _patch_pipeline(
         langfuse_client=None, langfuse_cfg=None,
     ):
         counts["gdr"] += 1
+        if gdr_audited and counts["gdr"] == 1:
+            # 评分低 → audited, 抛 GdrAuditedError (单次判定, 不重试)
+            raise _GdrAuditedError(
+                f"gdr status={gdr_audited!r} (task={task_id})",
+                audit_reason=gdr_audited,
+            )
         if gdr_nonretryable and counts["gdr"] == 1:
             raise _GdrNonRetryableError("gdr permanent fail")
         if counts["gdr"] <= gdr_fail_count:
@@ -213,6 +234,7 @@ def _patch_pipeline(
     import orchestration.workers.gdr_worker as _gw
     import orchestration.workers.etl_worker as _ew
     monkeypatch.setattr(_gw, "GdrNonRetryableError", _GdrNonRetryableError)
+    monkeypatch.setattr(_gw, "GdrAuditedError", _GdrAuditedError)
     monkeypatch.setattr(_gw, "run_gdr_once", fake_run_gdr_once)
     monkeypatch.setattr(_ew, "EtlNonRetryableError", _EtlNonRetryableError)
     monkeypatch.setattr(_ew, "run_etl_once", fake_run_etl_once)
@@ -418,6 +440,84 @@ def test_etl_nonretryable_direct_dead(tmp_path: Path, monkeypatch) -> None:
     assert result["phase"] == PHASE_DEAD
     assert result["stage"] == "etl"
     assert counts["etl"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 评分低 → audited 终态 (CLAUDE.md "数据保留原则")
+# ---------------------------------------------------------------------------
+
+
+def test_gdr_judge_discard_marks_audited(tmp_path: Path, monkeypatch) -> None:
+    """judge 评分低 (judge_discard) → audited, 不进 dead.
+
+    与 gdr_nonretryable 走 dead 不同: 评分低是质量决策, 不是结构失败.
+    data 保留在 src_path + 旁路 jsonl, failure_handler 不归档.
+    """
+    paths = _make_paths(tmp_path)
+    queue = SQLiteQueue(paths.sqlite_db)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    counts = _patch_pipeline(monkeypatch, gdr_audited="judge_discard")
+    result = _run_one_task_pipeline(
+        "T1", paths, gdr_settings, settings,
+    )
+
+    assert result["phase"] == PHASE_AUDITED
+    assert result["stage"] == "gdr"
+    # 单次判定, 不重试 (拒收是确定性结果, 重试无意义)
+    assert counts["gdr"] == 1
+
+    task = queue.get_task("T1")
+    assert task is not None
+    assert task.phase == PHASE_AUDITED
+    # error_msg 含 audit_reason 便于审计
+    assert task.error_msg is not None
+    assert "judge_discard" in task.error_msg
+
+
+def test_gdr_scoring_reject_marks_audited(tmp_path: Path, monkeypatch) -> None:
+    """free_quality 评分低 (scoring_reject) → audited, 不进 dead."""
+    paths = _make_paths(tmp_path)
+    queue = SQLiteQueue(paths.sqlite_db)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    counts = _patch_pipeline(monkeypatch, gdr_audited="scoring_reject")
+    result = _run_one_task_pipeline(
+        "T1", paths, gdr_settings, settings,
+    )
+
+    assert result["phase"] == PHASE_AUDITED
+    assert result["stage"] == "gdr"
+    assert counts["gdr"] == 1
+
+    task = queue.get_task("T1")
+    assert task is not None
+    assert task.phase == PHASE_AUDITED
+    assert task.error_msg is not None
+    assert "scoring_reject" in task.error_msg
+
+
+def test_audited_does_not_invoke_etl(tmp_path: Path, monkeypatch) -> None:
+    """audited 终态后 etl 不跑 (C2 可能没写, 即便写了也不进训练集)."""
+    paths = _make_paths(tmp_path)
+    queue = SQLiteQueue(paths.sqlite_db)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    counts = _patch_pipeline(monkeypatch, gdr_audited="judge_discard")
+    _run_one_task_pipeline("T1", paths, gdr_settings, settings)
+
+    assert counts["gdr"] == 1
+    assert counts["etl"] == 0
+
+    task = queue.get_task("T1")
+    assert task is not None
+    # etl 路径字段保持 None, 不写 etl_messages_path / etl_openai_path 等
+    assert task.etl_messages_path is None
+    assert task.etl_openai_path is None
+    assert task.etl_meta_path is None
 
 
 # ---------------------------------------------------------------------------

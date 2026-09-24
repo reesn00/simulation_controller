@@ -73,6 +73,19 @@ class GdrNonRetryableError(Exception):
     """轨迹文件不合法 / schema 不匹配 / 远端 LLM 永久错误 — 不应重试."""
 
 
+class GdrAuditedError(Exception):
+    """评分低但结构合格的 session — 不应进 dead, 走 audited 终态.
+
+    CLAUDE.md "数据保留原则": judge_discard / scoring_reject 的 session 数据
+    保留在原 src_path + 旁路 jsonl, 不进 dead_dir, 供后期人工复核 / 任务调优 /
+    质量问题归因. error_msg 含 audit_reason 供 master 决策.
+    """
+
+    def __init__(self, message: str, *, audit_reason: str) -> None:
+        super().__init__(message)
+        self.audit_reason = audit_reason
+
+
 class RetryableGdrError(Exception):
     """LLM 调用失败 / 临时 IO 错误 — 可重试."""
 
@@ -256,9 +269,21 @@ def run_gdr_once(
                 # 重试结果相同); incomplete = 未闭合 session 检测已旁路到
                 # refine_data/incomplete.jsonl, refine_data 跳过, 重跑只会让
                 # detector 再命中一次, 不改变 outcome.
+                # 三者都是结构性问题 → 走 dead (CLAUDE.md "数据保留原则" 边界).
                 _lf_final_result_holder["status"] = status
                 raise GdrNonRetryableError(
                     f"run_gdr_once: gdr status={status!r} (task={task_id}) {err}"
+                )
+
+            # 评分低 (结构合格, 仅质量决策) → 走 audited, 不进 dead.
+            # judge_discard: C2 已写 + judge_low.jsonl 已落 + refined 保留;
+            # scoring_reject: C2 不写 (C2 即为待训练产物, 拒收不写) +
+            #                 audit/scoring_reject.jsonl 已落.
+            if status in ("judge_discard", "scoring_reject"):
+                _lf_final_result_holder["status"] = status
+                raise GdrAuditedError(
+                    f"run_gdr_once: gdr status={status!r} (task={task_id}) {err}",
+                    audit_reason=status,
                 )
 
             # save_error / 其他未分类 → 可重试.

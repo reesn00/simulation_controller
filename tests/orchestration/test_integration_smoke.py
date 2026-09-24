@@ -323,13 +323,16 @@ class TestStatusCommand:
         assert isinstance(result["total"], int)
         assert isinstance(result["last_updated"], str)
 
-    def test_collect_tasks_includes_all_six_phase_keys(self, tmp_path: Path) -> None:
-        """6 个 phase key 必全在 (契约 §6.5), 即使某些计数为 0."""
+    def test_collect_tasks_includes_all_seven_phase_keys(self, tmp_path: Path) -> None:
+        """7 个 phase key 必全在 (契约 §6.5), 即使某些计数为 0.
+
+        含 audited (评分低但结构合格 session 的终态, CLAUDE.md "数据保留原则").
+        """
         queue = SQLiteQueue(tmp_path / "q.db")
         result = collect_tasks(queue)
 
         assert set(result["phases"].keys()) == {
-            "pending", "simulate", "gdr", "etl", "done", "dead",
+            "pending", "simulate", "gdr", "etl", "done", "dead", "audited",
         }
 
     def test_collect_tasks_total_equals_sum_of_phases(self, tmp_path: Path) -> None:
@@ -836,13 +839,16 @@ class TestHealthChecks:
     def test_write_health_phases_full_six_phase_distribution(
         self, tmp_path: Path,
     ) -> None:
-        """写入的 ``phases`` 必须含 6 个 phase 键, 即使某些计数为 0."""
+        """写入的 ``phases`` 必须含 7 个 phase 键 (含 audited), 即使某些计数为 0.
+
+        audited 是评分低但结构合格 session 的终态, 见 CLAUDE.md "数据保留原则".
+        """
         queue = SQLiteQueue(tmp_path / "q.db")
         _seed_tasks(queue, {"T_A": PHASE_PENDING})
         write_health(queue, log_dir=tmp_path)
         data = json.loads((tmp_path / "health.json").read_text(encoding="utf-8"))
         assert set(data["phases"].keys()) == {
-            "pending", "simulate", "gdr", "etl", "done", "dead",
+            "pending", "simulate", "gdr", "etl", "done", "dead", "audited",
         }
         assert data["phases"]["pending"] == 1
         assert data["phases"]["done"] == 0

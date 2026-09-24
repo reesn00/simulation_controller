@@ -18,7 +18,7 @@
 | 中间态 `gdr_processing` / `etl_processing` | 需要 `reap_stale` 周期回退卡死任务 | 用 `multiprocessing.Pool` 的 future + 内存 `in_flight: dict[AsyncResult, str]` 替代，无中间态 |
 | `batch_tracker.wait_for_terminal` | 凑批等待逻辑复杂 | 子进程内 `producer_simulate.run_one_task` 同步阻塞，跑完直接 mark_phase |
 
-详细删除清单与新机制映射见 [`docs/设计方案/pipeline-serial-parallel-refactor.md`](设计方案/pipeline-serial-parallel-refactor.md)；第 1 轮实施汇总见 [`docs/设计方案/round-1-summary.md`](设计方案/round-1-summary.md)；模块接口级契约见 [`docs/设计方案/pipeline-contracts.md`](设计方案/pipeline-contracts.md)。
+详细删除清单与新机制映射见 [`docs/设计方案/pipeline-serial-parallel-refactor.md`](设计方案/pipeline-serial-parallel-refactor.md) 与 [`docs/contracts/migration-plan.md`](../contracts/migration-plan.md)；模块接口级契约见 [`docs/设计方案/pipeline-contracts.md`](设计方案/pipeline-contracts.md)。
 
 ## 2. 设计决策汇总
 
@@ -364,7 +364,7 @@ def _run_one_task_pipeline(
   `_run_one_task_pipeline` 步骤 4 直接拼 `src_path = trajectory_dir / <safe_run>__<safe_session>.json`。
 - 子进程之间无 SQLite 队列争夺 simulate→gdr 边界；唯一共享资源是 SQLite 状态机
   （`tasks` 表）。
-- 详见 [`docs/设计方案/round-1-summary.md` §五](设计方案/round-1-summary.md)。
+- 详见 [`docs/设计方案/pipeline-serial-parallel-refactor.md` §2](设计方案/pipeline-serial-parallel-refactor.md) 设计决策汇总。
 
 ### 6.5 （删除）batch_tracker 章节
 
@@ -654,7 +654,7 @@ python -m orchestration start --all-tasks --parallelism 4
   schema；本设计文档描述 orchestration 如何把它们串起来。
 - **设计基线**：[`docs/设计方案/pipeline-serial-parallel-refactor.md`](设计方案/pipeline-serial-parallel-refactor.md) /
   [`docs/设计方案/pipeline-contracts.md`](设计方案/pipeline-contracts.md) /
-  [`docs/设计方案/round-1-summary.md`](设计方案/round-1-summary.md) 是本次重写的方案、契约与实施汇总。
+  [`docs/contracts/migration-plan.md`](../contracts/migration-plan.md) 是本次重写的方案、契约与实施汇总。
 - **横切观测（Langfuse，2026-09-23）**：[`docs/observability-langfuse.md`](observability-langfuse.md)（用户视角总览：启用 / 关闭 / 字段白名单 / 各阶段 span 名 / 故障排查 / 采样建议）/ [`docs/observability-langfuse-plan.md`](observability-langfuse-plan.md)（设计基线：13 字段 schema + 风险与回退）/ [`docs/langfuse-simulate-server.md`](langfuse-simulate-server.md) · [`docs/langfuse-gdr.md`](langfuse-gdr.md) · [`docs/langfuse-etl.md`](langfuse-etl.md)（模块级实施参考）。本设计文档的 §3.1 / §6.6 / §4 `task_pipeline` 行涵盖其在 orchestration 侧的接入点；观测层**不**改变三阶段数据契约（C1/C2/C3 字段、文件路径、SSE 事件流）。
 - **Windows 控制台窗口抑制（2026-09-23）**：§6.7 + [`orchestration/_windows.py`](../orchestration/_windows.py) `install_no_window_policy()`：幂等 monkey-patch `_winapi.CreateProcess`，对 `multiprocessing.Pool` worker（cmd 含 `--multiprocessing-fork` 指纹）强制补 `CREATE_NO_WINDOW`；`daemon.start_detached` 的 `creationflags` 显式 OR 上 `CREATE_NO_WINDOW`。避免 pytest / IDE 测试运行器在 Windows 上弹 cmd 窗口。`tests/orchestration/test_no_window_policy.py` 7 项验证全过。
 

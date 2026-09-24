@@ -17,6 +17,7 @@ pickle, 见契约 §2.7).
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,17 +36,20 @@ PHASE_GDR = "gdr"
 PHASE_ETL = "etl"
 PHASE_DONE = "done"
 PHASE_DEAD = "dead"
+PHASE_AUDITED = "audited"
 
 ALL_PHASES = frozenset({
     PHASE_PENDING, PHASE_SIMULATE, PHASE_GDR,
-    PHASE_ETL, PHASE_DONE, PHASE_DEAD,
+    PHASE_ETL, PHASE_DONE, PHASE_DEAD, PHASE_AUDITED,
 })
-TERMINAL_PHASES = frozenset({PHASE_DONE, PHASE_DEAD})
+TERMINAL_PHASES = frozenset({PHASE_DONE, PHASE_DEAD, PHASE_AUDITED})
 
 STAGE_SIMULATE = "simulate"
 STAGE_GDR = "gdr"
 STAGE_ETL = "etl"
 _VALID_STAGES = (STAGE_SIMULATE, STAGE_GDR, STAGE_ETL)
+
+_log = logging.getLogger(__name__)
 
 _ATTEMPT_COLUMNS = {
     STAGE_SIMULATE: "attempts_simulate",
@@ -181,6 +185,19 @@ class SQLiteQueue:
                 )
                 if cur.fetchone() is not None:
                     conn.execute(f"DROP TABLE {tbl}")
+            # schema 迁移 (2026-09-24 ST-2.5): 旧 tasks 表 CHECK 约束不含 'audited';
+            # SQLite 不能 ALTER 约束, 检测到旧 schema 时 DROP + 重建.
+            # 评分低 (judge_discard / scoring_reject) 走 audited 终态, 不进 dead.
+            cur = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'",
+            )
+            row = cur.fetchone()
+            if row is not None and "'audited'" not in (row["sql"] or ""):
+                _log.warning(
+                    "queue: legacy tasks schema without 'audited' phase detected, "
+                    "DROP and recreate (audit + dead counts preserved by sidecar jsonl)",
+                )
+                conn.execute("DROP TABLE tasks")
             conn.executescript(ddl)
 
     # ------------------------------------------------------------------
@@ -397,6 +414,38 @@ class SQLiteQueue:
                 WHERE task_id = ?
                 """,
                 (PHASE_DEAD, error_msg, now, task_id),
+            )
+
+    def mark_audited(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        error_msg: str,
+    ) -> None:
+        """标 phase=audited, 写 error_msg (CLAUDE.md "数据保留原则").
+
+        用于: gdr 评分低 (judge_discard / scoring_reject) 但结构合格的 task
+        终态。不进 dead — 数据保留在原 src_path + 旁路 jsonl, 供后期人工复核。
+
+        注: 本方法不递增 attempts; 调用方负责按需重试后单次判定。
+        """
+        if stage not in _VALID_STAGES:
+            raise ValueError(
+                f"invalid stage: {stage!r}; expected one of {_VALID_STAGES}"
+            )
+        del stage  # 仅用于校验, 不写库
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE tasks
+                SET phase = ?,
+                    error_msg = ?,
+                    updated_at = ?
+                WHERE task_id = ?
+                """,
+                (PHASE_AUDITED, error_msg, now, task_id),
             )
 
     def requeue_dead(self) -> int:

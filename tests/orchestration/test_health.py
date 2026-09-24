@@ -51,14 +51,17 @@ def test_collect_tasks_counts_by_phase(tmp_path: Path) -> None:
 
 
 def test_collect_tasks_initializes_all_phase_keys(tmp_path: Path) -> None:
-    """契约 §6.5: phases 必须含 6 个 phase 全字段 (即使计数为 0)."""
+    """契约 §6.5: phases 必须含 7 个 phase 全字段 (即使计数为 0).
+
+    含 audited (评分低但结构合格 session 的终态, 见 CLAUDE.md "数据保留原则").
+    """
     queue = SQLiteQueue(tmp_path / "q.db")
     queue.upsert_task("T1")
     queue.mark_phase("T1", new_phase="simulate")
 
     result = collect_tasks(queue)
     assert set(result["phases"].keys()) == {
-        "pending", "simulate", "gdr", "etl", "done", "dead",
+        "pending", "simulate", "gdr", "etl", "done", "dead", "audited",
     }
 
 

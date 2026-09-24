@@ -28,6 +28,7 @@ from gdr.config.settings import Settings as GdrSettings
 
 from orchestration._windows import install_no_window_policy
 from orchestration.queue import (
+    PHASE_AUDITED,
     PHASE_DEAD,
     SQLiteQueue,
     TaskAlreadyTerminal,
@@ -53,12 +54,15 @@ class PipelineSummary:
         total:           提交的总 task 数
         done:            phase=done 的 task 数
         dead:            phase=dead 的 task 数 (含子进程崩溃兜底)
+        audited:         phase=audited 的 task 数 (评分低但结构合格,
+                         CLAUDE.md "数据保留原则")
         duration_seconds: 主循环总耗时
     """
 
     total: int
     done: int
     dead: int
+    audited: int
     duration_seconds: float
 
 
@@ -129,6 +133,7 @@ class PipelineExecutor:
             total=len(task_ids),
             done=summary["done"],
             dead=summary["dead"],
+            audited=summary["audited"],
             duration_seconds=duration,
         )
 
@@ -147,13 +152,14 @@ class PipelineExecutor:
         """维护 in_flight 槽位;填槽 + 收集,直到 pending 列表空且 in_flight 空.
 
         返回:
-            {"done": int, "dead": int} — 仅统计,不含 total/duration
+            {"done": int, "dead": int, "audited": int} — 仅统计,不含 total/duration
             (那两项由 ``run`` 包装)。
         """
         in_flight: dict[AsyncResult, str] = {}
         pending: list[str] = list(task_ids)
         done_count = 0
         dead_count = 0
+        audited_count = 0
 
         def _fill_slots() -> None:
             """当槽位未满且 pending 非空时,投递下一个 task."""
@@ -212,9 +218,17 @@ class PipelineExecutor:
                             task_id, mark_exc,
                         )
                     continue
-                # 正常返回 dict
-                if isinstance(result, dict) and result.get("phase") == "done":
-                    done_count += 1
+                # 正常返回 dict;按 phase 分类 (done / audited / 其他 → dead)
+                if isinstance(result, dict):
+                    phase = result.get("phase")
+                    if phase == "done":
+                        done_count += 1
+                    elif phase == PHASE_AUDITED:
+                        # 评分低但结构合格 → audited, 不计 dead
+                        # (CLAUDE.md "数据保留原则")
+                        audited_count += 1
+                    else:
+                        dead_count += 1
                 else:
                     dead_count += 1
             # 填新槽
@@ -223,4 +237,4 @@ class PipelineExecutor:
             if in_flight:
                 time.sleep(0.05)
 
-        return {"done": done_count, "dead": dead_count}
+        return {"done": done_count, "dead": dead_count, "audited": audited_count}

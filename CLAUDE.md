@@ -139,6 +139,46 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 `simulate_serve` 不再导出 `output/datasets/all_runs.v2.jsonl` / `distill_dataset.v2.jsonl`
 （已被 C3 取代）。
 
+## 数据保留原则
+
+本项目的核心场景目标是**生成 agent 轨迹数据**,不仅用于 SFT 训练,还需为
+任务调优、修改与质量问题分析提供输入。**结构合格但评分低**的轨迹与高质量
+轨迹同等重要,不能因为评分低就丢入死信。
+
+### 死信判定的边界
+
+仅当数据**结构严重不可用**时才进死信（`output/orchestration/dead/`）:
+
+1. 轨迹不完整 —— 尾部 toolcall 缺 toolresult / 配对缺失 / 末段截断
+2. 仅有用户内容无 assistant 内容 —— 全程 agent 未产生任何回复
+3. 没有明确的模型总结回复 —— 末尾 text 被启发式判截断,或末段仅 thinking
+   无 final text
+
+凡**结构合格 + 含 assistant 回复**的轨迹一律**不**进死信:
+
+- 评分低（judge / free_quality 子分未达）但结构完整 → 走旁路审计
+  `refine_data/judge_low.jsonl` / `audit/scoring_reject.jsonl`,供后期人工复核
+  与质量问题归因
+- 评审层弃权（LLM 投票解析失败）→ `refine_data/routing_abstain.jsonl`,仅
+  丢单 block 不丢整 session
+
+### 双轨归档
+
+- **死信** = `output/orchestration/dead/<task_id>__<filename>`(src_path 物理
+  move)
+- **旁路** = `refine_data/{incomplete,judge_low,deferred,routing_low}.jsonl`
+  / `audit/scoring_reject.jsonl`(完整 session dump 或仅 metadata)
+
+死信与旁路互为兜底:所有原始 trajectory 在当前架构下均可经 `requeue_dead()`
+复活,或经旁路 jsonl 直接读取完整 session。**无永久丢失路径**。改动丢弃
+逻辑前必须先 grep `phase='dead'` / `_append_*_queue` / `GdrNonRetryableError`
+/ `GdrAuditedError` 确认无遗漏。
+
+**实施状态 (2026-09-24)**: 评分低 (judge_discard / scoring_reject) 已走
+`PHASE_AUDITED` 终态 + `mark_audited` 队列方法, 不再进 dead。详见
+[docs/设计方案/pipeline-contracts.md](docs/设计方案/pipeline-contracts.md) §2
+phase 表 + `mark_audited` 定义。
+
 ## 文档
 
 - `docs/orchestration-design.md` — orchestration 三阶段流水线设计基线（2026-09-22 重写）

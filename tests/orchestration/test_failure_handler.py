@@ -3,12 +3,16 @@
 死信可能落在任意阶段: simulate / gdr / etl.
 failure_handler 把 ``src_path`` + ``gdr_refined_path`` + ``etl_*_path`` (若存在)
 一并移入 dead/. 旧 batch_id 字段已删除 (契约 §6.4).
+
+audited 终态 (评分低但结构合格) 不进 dead — 见 CLAUDE.md "数据保留原则".
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+import pytest
 
 from orchestration.failure_handler import reap_dead
 from orchestration.queue import SQLiteQueue
@@ -158,6 +162,65 @@ def test_reap_dead_empty_when_no_dead(tmp_path: Path) -> None:
     queue = SQLiteQueue(tmp_path / "q.db")
     archives = reap_dead(queue, dead_dir=tmp_path / "dead")
     assert archives == []
+
+
+def test_reap_dead_skips_audited_phase(tmp_path: Path) -> None:
+    """audited 终态 (评分低但结构合格) 不进 dead, failure_handler 不归档.
+
+    见 CLAUDE.md "数据保留原则": 评分低 → audited, 数据保留在原
+    src_path + 旁路 jsonl, 不进 dead_dir.
+    """
+    from orchestration.queue import PHASE_AUDITED, PHASE_GDR
+
+    queue = SQLiteQueue(tmp_path / "q.db")
+    src = tmp_path / "raw.json"
+    src.write_text("{}", encoding="utf-8")
+    queue.upsert_task("r__s")
+    queue.mark_phase("r__s", new_phase=PHASE_GDR, src_path=src)
+    queue.mark_audited(
+        "r__s", stage="gdr",
+        error_msg="[audited:judge_discard] gdr status='judge_discard'",
+    )
+
+    archives = reap_dead(queue, dead_dir=tmp_path / "dead")
+    # audited task 不被归档, src 保留原位
+    assert archives == []
+    assert src.exists()
+    # 任务 phase 仍是 audited
+    assert queue.get_task("r__s").phase == PHASE_AUDITED
+
+
+def test_mark_audited_records_phase_and_error(tmp_path: Path) -> None:
+    """mark_audited 写入 phase='audited' + error_msg, 不重置 attempts."""
+    from orchestration.queue import PHASE_AUDITED
+
+    queue = SQLiteQueue(tmp_path / "q.db")
+    queue.upsert_task("T1")
+    queue.mark_phase("T1", new_phase="gdr")
+    queue.increment_attempts("T1", stage="gdr")
+    queue.increment_attempts("T1", stage="gdr")
+
+    queue.mark_audited(
+        "T1", stage="gdr",
+        error_msg="[audited:scoring_reject] free_quality reject",
+    )
+
+    task = queue.get_task("T1")
+    assert task is not None
+    assert task.phase == PHASE_AUDITED
+    assert task.error_msg is not None
+    assert "scoring_reject" in task.error_msg
+    # mark_audited 不重置 attempts (与 mark_failed 契约一致)
+    assert task.attempts_gdr == 2
+
+
+def test_mark_audited_validates_stage(tmp_path: Path) -> None:
+    """mark_audited 的 stage 必须在 _VALID_STAGES 内, 否则 ValueError."""
+    queue = SQLiteQueue(tmp_path / "q.db")
+    queue.upsert_task("T1")
+
+    with pytest.raises(ValueError, match="invalid stage"):
+        queue.mark_audited("T1", stage="unknown", error_msg="oops")
 
 
 def test_dead_archive_no_batch_id_field(tmp_path: Path) -> None:

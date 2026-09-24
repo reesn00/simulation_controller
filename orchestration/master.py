@@ -84,7 +84,7 @@ class Master:
         try:
             summary = executor.run(task_ids)
         finally:
-            # run 后落 health — 此时 tasks 表已全 done/dead
+            # run 后落 health — 此时 tasks 表已全 done/dead/audited
             try:
                 write_health(
                     self._queue,
@@ -95,6 +95,7 @@ class Master:
                             "total": summary.total,
                             "done": summary.done,
                             "dead": summary.dead,
+                            "audited": summary.audited,
                             "duration_seconds": summary.duration_seconds,
                         },
                     },

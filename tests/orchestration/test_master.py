@@ -292,12 +292,15 @@ def test_master_status_returns_phases_and_total(tmp_path: Path, fake_pool) -> No
 
 
 def test_master_status_initial_state(tmp_path: Path, fake_pool) -> None:
-    """未跑任何 task 前 status 应含 6 个 phase 全 0 字段."""
+    """未跑任何 task 前 status 应含 7 个 phase 全 0 字段 (含 audited).
+
+    audited = 评分低但结构合格 session 的终态, 见 CLAUDE.md "数据保留原则".
+    """
     cfg = _make_cfg(tmp_path)
     master = Master(cfg=cfg)
     status = master.status()
     assert set(status["phases"].keys()) == {
-        "pending", "simulate", "gdr", "etl", "done", "dead",
+        "pending", "simulate", "gdr", "etl", "done", "dead", "audited",
     }
     assert status["total"] == 0
 

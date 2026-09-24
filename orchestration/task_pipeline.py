@@ -114,13 +114,28 @@ def _mark_dead(
                      task_id, stage, exc)
 
 
+def _mark_audited(
+    queue: Any, task_id: str, *, stage: str, error_msg: str,
+) -> None:
+    """统一 ``mark_audited`` 入口;异常被吞,不抛给主进程.
+
+    评分低但结构合格的 session 走 audited 终态, 不进 dead —
+    见 CLAUDE.md "数据保留原则".
+    """
+    try:
+        queue.mark_audited(task_id, stage=stage, error_msg=error_msg)
+    except Exception as exc:  # pragma: no cover - 兜底
+        _log.warning("task_pipeline: mark_audited(%s, %s) failed: %s",
+                     task_id, stage, exc)
+
+
 def _safe_run_gdr(
     *, task_id: str, src_path: Path, refined_dir: Path,
     session_id: str, gdr_settings: GdrSettings,
     max_retry: int, queue: Any,
     langfuse_cfg: Any | None = None,
     langfuse_client: Any | None = None,
-) -> Path | None:
+) -> tuple[Path | None, str]:
     """gdr 阶段重试循环 (契约 §3.3).
 
     PR 5 接入:
@@ -130,10 +145,17 @@ def _safe_run_gdr(
         attempt 区别由 metadata 标记, 不开 attempt 级 span; 失败重试时
         外层 stage_trace 已被标 ERROR, 第二次是新的 stage_trace)。
 
-    返回: refined_path 成功;None 失败 (已 mark_failed)。
+    返回: (refined_path, status) 元组:
+        - (path, "success")  → C2 已写, 进 etl 阶段
+        - (None, "dead")     → 结构性问题 (load_error/discard/incomplete),
+                                已 mark_failed, 任务终止
+        - (None, "audited")  → 评分低 (judge_discard/scoring_reject),
+                                已 mark_audited, 任务终止但**不进 dead**
+                                (CLAUDE.md "数据保留原则")
     """
     # 延迟 import,避免父进程触发 gdr / httpx / asyncio 初始化
     from orchestration.workers.gdr_worker import (
+        GdrAuditedError,
         GdrNonRetryableError,
         run_gdr_once,
     )
@@ -151,13 +173,22 @@ def _safe_run_gdr(
                 langfuse_client=langfuse_client,
                 langfuse_cfg=langfuse_cfg,
             )
-            return result.refined_path
+            return result.refined_path, "success"
+        except GdrAuditedError as exc:
+            # 评分低 (judge_discard / scoring_reject) → audited 终态,
+            # 不进 dead (CLAUDE.md "数据保留原则"). 单次判定, 不重试
+            # (拒收是确定性结果, 重试无意义).
+            _mark_audited(
+                queue, task_id, stage="gdr",
+                error_msg=f"[audited:{exc.audit_reason}] {exc}",
+            )
+            return None, "audited"
         except GdrNonRetryableError as exc:
             _mark_dead(
                 queue, task_id, stage="gdr",
                 error_msg=f"[non-retryable] {type(exc).__name__}: {exc}",
             )
-            return None
+            return None, "dead"
         except Exception as exc:
             last_exc = exc
             _log.warning(
@@ -174,7 +205,7 @@ def _safe_run_gdr(
             f"{last_exc}"
         ),
     )
-    return None
+    return None, "dead"
 
 
 def _safe_run_etl(
@@ -280,6 +311,7 @@ def _run_one_task_pipeline(
     """
     # 延迟 import SQLiteQueue 以避免父进程触发不必要的初始化
     from orchestration.queue import (
+        PHASE_AUDITED,
         PHASE_DEAD,
         PHASE_DONE,
         PHASE_ETL,
@@ -425,7 +457,7 @@ def _run_one_task_pipeline(
         result["stage"] = "gdr"
 
         # 7. gdr 重试循环
-        refined_path = _safe_run_gdr(
+        refined_path, gdr_status = _safe_run_gdr(
             task_id=task_id,
             src_path=src_path,
             refined_dir=paths.refined_dir,
@@ -436,7 +468,15 @@ def _run_one_task_pipeline(
             langfuse_cfg=langfuse_cfg,
             langfuse_client=langfuse_client,
         )
-        if refined_path is None:
+        if gdr_status == "audited":
+            # 评分低 (judge_discard / scoring_reject) → audited 终态,
+            # 数据已在旁路 jsonl, src_path 保留, 不进 dead
+            # (CLAUDE.md "数据保留原则"). task 终止于此.
+            result["phase"] = PHASE_AUDITED
+            result["stage"] = "gdr"
+            result["error"] = None
+            return result
+        if gdr_status == "dead" or refined_path is None:
             result["error"] = "gdr failed"
             return result
 

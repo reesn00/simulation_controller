@@ -16,6 +16,7 @@ import pytest
 
 from orchestration.queue import (
     ALL_PHASES,
+    PHASE_AUDITED,
     PHASE_DEAD,
     PHASE_DONE,
     PHASE_ETL,
@@ -432,8 +433,66 @@ def test_count_by_phase_mixed(queue: SQLiteQueue) -> None:
 # ---------------------------------------------------------------------------
 
 def test_terminal_phases_set() -> None:
-    """契约 §2.3: TERMINAL_PHASES = {done, dead}."""
-    assert TERMINAL_PHASES == frozenset({PHASE_DONE, PHASE_DEAD})
+    """契约 §2.3: TERMINAL_PHASES = {done, dead, audited}.
+
+    含 audited (评分低但结构合格 session 的终态, 见 CLAUDE.md "数据保留原则").
+    """
+    assert TERMINAL_PHASES == frozenset({PHASE_DONE, PHASE_DEAD, PHASE_AUDITED})
+
+
+def test_legacy_schema_migrates_to_audited_phase(tmp_path: Path) -> None:
+    """旧 tasks 表 CHECK 约束不含 'audited' → _init_schema DROP + 重建.
+
+    旧库 (2026-09-24 之前的 schema) 写入 'audited' 会触发 CHECK 失败.
+    _init_schema 检测到旧约束后自动 DROP + 重建, 兼容升级.
+    """
+    import sqlite3
+
+    db = tmp_path / "legacy.db"
+    # 手工构造旧 schema (CHECK 约束不含 'audited')
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE tasks (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id           TEXT NOT NULL UNIQUE,
+            run_id            TEXT,
+            session_id        TEXT,
+            phase             TEXT NOT NULL CHECK(phase IN
+                                  ('pending','simulate','gdr','etl','done','dead')),
+            attempts_simulate INTEGER NOT NULL DEFAULT 0,
+            attempts_gdr      INTEGER NOT NULL DEFAULT 0,
+            attempts_etl      INTEGER NOT NULL DEFAULT 0,
+            src_path          TEXT,
+            gdr_refined_path  TEXT,
+            etl_messages_path TEXT,
+            etl_openai_path   TEXT,
+            etl_qwenjina_path TEXT,
+            etl_meta_path     TEXT,
+            error_msg         TEXT,
+            started_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+    """)
+    conn.execute(
+        "INSERT INTO tasks (task_id, phase) VALUES (?, ?)",
+        ("legacy_task", "pending"),
+    )
+    conn.commit()
+    conn.close()
+
+    # 重新打开, _init_schema 应检测旧约束并 DROP + 重建
+    q = SQLiteQueue(db)
+
+    # 旧 task 数据丢失 (DROP TABLE 副作用), 但 schema 已升级可写 'audited'
+    q.upsert_task("new_task")
+    q.mark_phase("new_task", new_phase="gdr")
+    q.mark_audited("new_task", stage="gdr", error_msg="[audited:test] x")
+
+    task = q.get_task("new_task")
+    assert task is not None
+    assert task.phase == "audited"
+    assert task.error_msg is not None
+    assert "audited:test" in task.error_msg
 
 
 def test_task_already_terminal_attributes() -> None:

@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     run_id            TEXT,
     session_id        TEXT,
     phase             TEXT NOT NULL CHECK(phase IN
-                          ('pending','simulate','gdr','etl','done','dead')),
+                          ('pending','simulate','gdr','etl','done','dead','audited')),
     attempts_simulate INTEGER NOT NULL DEFAULT 0,
     attempts_gdr      INTEGER NOT NULL DEFAULT 0,
     attempts_etl      INTEGER NOT NULL DEFAULT 0,

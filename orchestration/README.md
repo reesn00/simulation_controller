@@ -3,7 +3,7 @@
 把 `simulate_serve` / `gdr` / `etl` 三个独立子系统串成
 `simulation server → gdr → etl` 单 task 三阶段严格串行 + 跨 task 可配置并行度的
 调度器。新架构删除了旧版"批次驱动 + 多 worker 线程 + watcher + 中间态"的所有
-组件，详见 [`docs/设计方案/round-1-summary.md`](../docs/设计方案/round-1-summary.md)
+组件，详见 [`docs/设计方案/pipeline-serial-parallel-refactor.md`](../docs/设计方案/pipeline-serial-parallel-refactor.md)
 与 [`docs/设计方案/pipeline-contracts.md`](../docs/设计方案/pipeline-contracts.md)。
 
 设计、决策、契约见 [`docs/orchestration-design.md`](../docs/orchestration-design.md)。

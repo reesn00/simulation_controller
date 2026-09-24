@@ -725,7 +725,14 @@ def process_one(
                         result.session_id,
                         getattr(cfg, "scoring_reject_output_path", "?"),
                     )
-                return None
+                # 评分低 (free_quality reject) → status="scoring_reject",
+                # 走 audited 终态, 不进 dead (CLAUDE.md "数据保留原则" —
+                # 结构合格但评分低的轨迹保留供人工复核).
+                _lf_final_result = {
+                    "input": str(input_path),
+                    "status": "scoring_reject",
+                }
+                return _lf_final_result
 
         log.debug(
             "session %s processed in %.2fs",
@@ -1473,8 +1480,16 @@ def _process_one_file(input_path: Path, output_path: Path, cfg: Settings) -> dic
             },
         ):
             _append_judge_low_queue(session, cfg)
-        log.error("session discarded (input=%s)", input_path)
-        _lf_final_result = {"input": str(input_path), "status": "discard"}
+        # 评分低 (judge_discard) → status="judge_discard", 走 audited 终态,
+        # 不进 dead (CLAUDE.md "数据保留原则" — 结构合格的轨迹保留供人工复核).
+        log.warning(
+            "session %s discarded by judge (judge_low); "
+            "redirecting to audit, not dead",
+            input_path,
+        )
+        _lf_final_result = {
+            "input": str(input_path), "status": "judge_discard",
+        }
         return _lf_final_result
 
 

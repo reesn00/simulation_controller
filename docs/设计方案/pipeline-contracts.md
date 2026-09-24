@@ -141,12 +141,13 @@ PHASE_GDR        = "gdr"
 PHASE_ETL        = "etl"
 PHASE_DONE       = "done"
 PHASE_DEAD       = "dead"
+PHASE_AUDITED    = "audited"   # 评分低但结构合格 (CLAUDE.md 数据保留原则)
 
 ALL_PHASES = frozenset({
     PHASE_PENDING, PHASE_SIMULATE, PHASE_GDR,
-    PHASE_ETL, PHASE_DONE, PHASE_DEAD,
+    PHASE_ETL, PHASE_DONE, PHASE_DEAD, PHASE_AUDITED,
 })
-TERMINAL_PHASES = frozenset({PHASE_DONE, PHASE_DEAD})
+TERMINAL_PHASES = frozenset({PHASE_DONE, PHASE_DEAD, PHASE_AUDITED})
 ```
 
 ### 2.4 Task dataclass(返回类型)
@@ -213,6 +214,20 @@ class SQLiteQueue:
         error_msg: str,
     ) -> None:
         """标 phase=dead,写 error_msg."""
+
+    def mark_audited(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        error_msg: str,
+    ) -> None:
+        """标 phase=audited,写 error_msg.
+
+        用于: gdr 评分低 (judge_discard / scoring_reject) 但结构合格的 task
+        终态。不进 dead — 数据保留在原 src_path + 旁路 jsonl,
+        供后期人工复核 / 任务调优 / 质量问题归因。
+        """
 
     def requeue_dead(self) -> int:
         """所有 phase=dead 改 phase=pending,清空 error_msg / 产物路径;返回受影响行数."""
@@ -462,6 +477,7 @@ class PipelineSummary:
     total: int                  # 提交的总 task 数
     done: int                   # phase=done 的 task 数
     dead: int                   # phase=dead 的 task 数
+    audited: int                # phase=audited 的 task 数 (评分低但结构合格)
     duration_seconds: float     # 主循环总耗时
 ```
 
@@ -519,7 +535,7 @@ def _run_one_task_pipeline(
     """单个 task 在子进程内完整跑 simulate → gdr → etl.
 
     返回:
-      {"task_id": str, "phase": "done"|"dead", "stage": str, "error": str|None}
+      {"task_id": str, "phase": "done"|"dead"|"audited", "stage": str, "error": str|None}
 
     流程:
       1. queue = SQLiteQueue(paths.sqlite_db)        # 子进程内独立连接
@@ -658,7 +674,8 @@ def collect_tasks(queue: SQLiteQueue) -> dict[str, object]:
 
     返回:
       {
-        "phases": {"pending": 0, "simulate": 0, "gdr": 0, "etl": 0, "done": 0, "dead": 0},
+        "phases": {"pending": 0, "simulate": 0, "gdr": 0, "etl": 0,
+                    "done": 0, "dead": 0, "audited": 0},
         "total": int,
         "last_updated": str,  # ISO8601
       }
