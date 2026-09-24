@@ -268,6 +268,81 @@ except Exception as exc:
 
 `get_client` 在 `enabled=False` / 缺凭据 / SDK 未装 三种场景都返回 None,业务零侵入。**不会**触发 `Langfuse()` 实例化。日志里若看到 Langfuse 相关条目,只能是别的代码(如直接调用 `langfuse.Langfuse()` 而不通过工厂)引出。
 
+### 5.6 Langfuse v4 events-only mode 下查不到 trace
+
+**症状**:Langfuse UI 看不到业务 trace;直接查 ClickHouse `observations` / `traces` 两张表都返回 `count()=0`,但 SDK 端 POST 已 200 OK、HTTP 抓包确认请求已发出。
+
+**根因**:`langfuse:4` 镜像默认 events-only mode。源表是 `events_core`(实时写入),`observations` / `traces` 是**异步物化视图**,需要 worker 后台刷新;在 v4 默认 stack 下这两张表通常**长期 count=0**。
+
+**自检方法**(查 ClickHouse HTTP 8123):
+
+```bash
+# 默认凭据来自 compose 的 CLICKHOUSE_USER/CLICKHOUSE_PASSWORD
+CH_AUTH=(auth default clickhouse:clickhouse)
+CH_URL=http://localhost:8123
+
+# 1) 看总行数
+curl -sS -m 5 -u \$CH_AUTH "\$CH_URL/?query=SELECT+count()+FROM+events_core+FORMAT+TabSeparatedWithNames"
+
+# 2) 看业务 trace 出现次数
+curl -sS -m 5 -u \$CH_AUTH \
+  "\$CH_URL/?query=SELECT+name,count()+AS+c+FROM+events_core+GROUP+BY+name+ORDER+BY+c+DESC+FORMAT+TabSeparatedWithNames"
+
+# 3) 按 task 过滤 (假设 T001)
+curl -sS -m 5 -u \$CH_AUTH \
+  "\$CH_URL/?query=SELECT+name,toString(start_time)+AS+ts,environment,environment,release+FROM+events_core+WHERE+name+LIKE+'simulate_serve%T001%25'+ORDER+BY+start_time+DESC+LIMIT+10+FORMAT+TabSeparatedWithNames"
+```
+
+**期望**:`simulate_serve:T001` 等业务 trace 在 `events_core` 应有行;若 `count()=0` 才算 SDK 端真的没写入。
+
+**修复路径**(若 `events_core` 也是 0):
+
+- 先按 §5.1 查 SDK 端 `logger.warning("langfuse start_observation failed")` / `Failed to export span batch`
+- 然后按 §5.7 看 Langfuse 容器是否在同一 docker network
+
+### 5.7 Langfuse compose 网络自检 (redis 孤儿)
+
+**症状**:SDK POST `/api/public/otel/v1/traces` HTTP 200,但 `events_core` 仍 0 行;`docker logs langfuse-web` 持续刷 `Redis error [dns]: getaddrinfo ENOTFOUND redis` / `Connection to redis lost. Retry attempt: N`。
+
+**根因**:Langfuse web / worker 容器在 `langfuse_default` 网络里查 hostname `redis`,但 `langfuse-redis-1` 容器没加入该网络(`docker inspect langfuse-redis-1 --format '{{json .NetworkSettings.Networks}}'` 返 `{}`)。web / worker 启动后所有 redis 调用永远 DNS 失败,ingest 任务无法 enqueue,数据不落 ClickHouse。
+
+**自检**:
+
+```bash
+# 1) 看 langfuse_default 网络里所有容器
+wsl docker network inspect langfuse_default \
+  --format '{{range .Containers}}{{.Name}} {{end}}'
+# 期望: langfuse-web langfuse-worker langfuse-postgres langfuse-clickhouse langfuse-minlangfuse-redis (6 个)
+
+# 2) 单容器归属
+wsl docker inspect langfuse-redis-1 --format '{{json .NetworkSettings.Networks}}'
+# 期望: {"langfuse_default": {...}}; 实际若 {} 即孤儿
+
+# 3) web 容器内 DNS
+wsl docker exec langfuse-langfuse-web-1 getent hosts redis
+# 期望: <ip> redis; 实际若空 即未填充
+```
+
+**修复**:
+
+```bash
+# 方案 A: 临时挂回去 (重启后失效)
+wsl docker network connect langfuse_default langfuse-redis-1
+
+# 方案 B: 重启整个 stack (推荐,持久化)
+wsl docker compose -f /path/to/docker-compose.yml restart
+
+# 方案 C: 修 compose 文件,给 redis service 显式 networks: 段
+# services.redis.networks:
+#   - langfuse_default
+# 然后 docker compose up -d
+```
+
+修复后:
+
+1. web 日志停止刷 `ENOTFOUND redis`
+2. SDK POST 写入会在 worker 异步 flush 到 ClickHouse,`events_core` 表里出现业务 trace
+
 ---
 
 ## 6. 性能与采样建议
@@ -299,7 +374,7 @@ except Exception as exc:
 
 ## 文档元信息
 
-- **状态**:已落地(2026-09-23,PR 6)
-- **总章节**:7 节(概述 / 启用 / 配置 / Span 名清单 / 故障排查 / 性能 / 链接)
-- **估算字数**:~3000 字(含表格)
-- **覆盖 PR**:1(工厂)+ 2(simulate_serve)+ 3(gdr)+ 4(etl/gdr 残余)+ 5(orchestration plumbing)+ 6(集成测试 + 收尾 + 文档整合)
+- **状态**:已落地(2026-09-24,新增 v4 events-only mode + compose 网络排查小节)
+- **总章节**:7 节(概述 / 启用 / 配置 / Span 名清单 / 故障排查 / 性能 / 链接);§5 故障排查 7 个小节(5.1 SDK 异常 / 5.2 flush 丢失 / 5.3 Pool socket / 5.4 session_id 不一致 / 5.5 enabled=false 误报 / **5.6 v4 events-only ClickHouse 自检 / 5.7 compose 网络自检 (redis 孤儿)**)
+- **估算字数**:~3700 字(含表格)
+- **覆盖 PR**:1(工厂)+ 2(simulate_serve)+ 3(gdr)+ 4(etl/gdr 残余)+ 5(orchestration plumbing)+ 6(集成测试 + 收尾 + 文档整合)+ 7(本节 docs 增量,无代码改动)

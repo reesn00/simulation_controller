@@ -313,6 +313,62 @@ def test_excluded_platform_validator_keeps_scanning_after_ambiguous_mention(sour
     assert result.verdict is Verdict.FAIL
     assert result.reason_code == "SOURCE_EXCLUDED"
 
+
+def test_excluded_platform_validator_flags_markdown_list_item_with_url(source_ref) -> None:
+    """回归 T001: 远端在「列表项 + URL」中推荐被排除平台必须判 FAIL.
+
+    此前 16 字符窗口把 'https' 截在窗口外, recommendations 词命中 0 个,
+    saw_ambiguous=True → 误判 INCONCLUSIVE / SOURCE_CONTEXT_AMBIGUOUS,
+    aggregate_results 推整体为 INCONCLUSIVE → run 走到 stop_inconclusive → dead.
+    扩窗到 64 后应直接判 violations → FAIL/SOURCE_EXCLUDED。
+    """
+    criterion = SimpleNamespace(
+        criterion_id="excluded",
+        parameters={"excluded_platforms": ["爱奇艺"]},
+    )
+    text = (
+        "## 📺 可以查看的渠道\n"
+        "**正版/相对正规的：**\n"
+        "- **爱奇艺**：有完整 81 集高清版本，[https://www.iqiyi.com/](https://www.iqiyi.com/) 搜\"武林外传\"\n"
+        "- **央视频**：https://www.yangshipin.cn/ 有全集\n"
+    )
+
+    result = ConstraintValidator().validate(criterion, text)
+
+    assert result.verdict is Verdict.FAIL
+    assert result.reason_code == "SOURCE_EXCLUDED"
+    assert "爱奇艺" in result.message
+
+
+def test_excluded_platform_validator_does_not_flag_paragraph_mention_without_recommend_signal(source_ref) -> None:
+    """回归断言: 扩窗后,「只在警告段提一次名字 + 后面没 URL」不应再误进 violations.
+
+    此前 16 字符窗同时看不到 recommendations 与 negation, 走 ambiguous;
+    扩窗后可能跨句看到 negation, 但只要 recommendations 仍为 False,
+    不应误判 FAIL/SOURCE_EXCLUDED. 目标命中: 不在 violations。
+    """
+    criterion = SimpleNamespace(
+        criterion_id="excluded",
+        parameters={"excluded_platforms": ["爱奇艺"]},
+    )
+    # 仅在版权提醒段提一次名字, 后接聚合站清单 (不含 '爱奇艺' 链接);
+    # 期待 FAIL 命中聚合/盗版推荐而不是远端在爱奇艺上.
+    text = (
+        "## ⚠️ 提醒\n"
+        "《武林外传》有版权, '免费全集' 大多是盗版.\n"
+        "**爱奇艺**等平台需要会员, 这里不展开.\n"
+        "## 免费第三方\n"
+        "- 努努影院 nnyy.in\n"
+        "- 爱壹帆 iyf.tv\n"
+    )
+
+    result = ConstraintValidator().validate(criterion, text)
+
+    # '爱奇艺' 周围 64 字符内 '需要会员' / '不展开' 都算 negation,
+    # recommendations 命中 http/网址/推荐/链接 都为 False → 应跳出 ambiguous 路径
+    # 而非 violations. 不应报 SOURCE_EXCLUDED.
+    assert result.reason_code != "SOURCE_EXCLUDED"
+
 # ── detect_barriers 共享函数测试 ──
 
 def test_detect_barriers_defaults_all_false_for_empty_text() -> None:
