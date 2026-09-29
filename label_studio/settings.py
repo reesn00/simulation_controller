@@ -137,7 +137,10 @@ class LabelStudioSettings:
     终��定位: Label Studio 是本项目**终点** —— 只推送, 不 fetch, 不回流。
     """
 
-    base_url: str = "http://127.0.0.1:8088"
+    #: 本机 LS 默认地址。**不是 8088** —— 8088 上是 QwenPaw 执行后端
+    #: (``simulate_serve.agent_endpoint``)。指错不报"连不上", 而是伪装成
+    #: "API key 无效", 把人引去查 key —— 实际连的是另一个服务。
+    base_url: str = "http://127.0.0.1:8099"
     api_key: str | None = None
     api_key_path: Path | None = None
 

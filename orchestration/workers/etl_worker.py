@@ -35,6 +35,10 @@ from orchestration.criterion_source import (
     inject_criterion_evaluation,
     load_criterion_evaluation,
 )
+from orchestration.fail_evaluator import (
+    evaluate_failed_run,
+    inject_fail_evaluation,
+)
 from orchestration.workers.base_worker import _output_filename
 
 _log = logging.getLogger(__name__)
@@ -107,6 +111,8 @@ def run_etl_once(
     attempt: int = 0,
     runs_dir: Path | None = None,
     run_id: str | None = None,
+    src_path: Path | None = None,
+    gdr_settings: Any = None,
 ) -> EtlOutputs:
     """单个 C2 refined Session JSON → 4 视图文件.
 
@@ -136,6 +142,13 @@ def run_etl_once(
         (旧调用兼容)。注入 fail-soft —— 读不到不影响主流程。
     run_id:
         已知 run_id 时省掉按 session_id 的全量扫描 (F2)；``None`` 时回退扫描。
+    src_path:
+        C1 trajectory 路径。提供时, 若本 run 验证未通过, 读 agent 最终回复做
+        LLM 失败归因, 注入 ``session.metadata["fail_evaluation"]``。
+        ``None`` 时跳过归因 (旧调用兼容)。
+    gdr_settings:
+        提供 LLM 端点/模型/超时。``None`` 时跳过失败归因 —— 评价是增强信息,
+        不是前置条件。
 
     Returns
     -------
@@ -199,6 +212,26 @@ def run_etl_once(
         session_id=session_id,
     )
     inject_criterion_evaluation(session, criterion_evaluation)
+    # ---- 失败归因注入 (2026-09-29) ----
+    # 验证不通过的轨迹不进死信 (task_pipeline._SIMULATE_FAIL_STATES), 但
+    # 「失败在哪」不能丢: 把验证原因 + agent 回复发给 LLM 做定性归因, 分数
+    # 恒为 0。fail-soft + 有条件: 仅 final_verdict != pass 且拿到 LLM 配置
+    # 才调, 否则静默跳过, 绝不让评价阻断 etl.
+    if criterion_evaluation and gdr_settings is not None:
+        try:
+            fail_evaluation = evaluate_failed_run(
+                run_id=run_id or session_id,
+                trajectory_path=src_path,
+                criterion_evaluation=criterion_evaluation,
+                gdr_settings=gdr_settings,
+            )
+        except Exception as exc:  # 双保险: evaluate_failed_run 自身已 fail-soft
+            _log.warning(
+                "etl_worker: 失败归因异常 (跳过注入) task=%s: %s: %s",
+                task_id, type(exc).__name__, exc,
+            )
+            fail_evaluation = None
+        inject_fail_evaluation(session, fail_evaluation)
     # ---- 渲染链 (F1, 2026-09-28) ----
     # gdr step 22 已做路径泛化 / system 裁剪 / tools 裁剪; etl 只需补
     # etl 专属的 qf_text 渲染, 把 openai_messages / tools / qf_text

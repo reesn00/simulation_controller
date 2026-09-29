@@ -50,6 +50,15 @@ from label_studio.task_exporter import (
         ("T001__sess-1_refined.openai.json", ("T001", "sess-1")),
         ("T001__sess-1_refined.qwenjina.txt", ("T001", "sess-1")),
         ("T001__useramulation-2026_refined", ("T001", "useramulation-2026")),
+        # 生产端实际形态: etl_worker 不加 _refined (2026-09-29 核实)。
+        # 契约写的是带 _refined, 读取方两种都收, 否则真实 C3 全被跳过。
+        ("T001__sess-1", ("T001", "sess-1")),
+        ("T001__sess-1.meta.json", ("T001", "sess-1")),
+        ("T001__sess-1.messages.json", ("T001", "sess-1")),
+        ("T001__sess-1.openai.json", ("T001", "sess-1")),
+        ("T001__sess-1.qwenjina.txt", ("T001", "sess-1")),
+        ("T001__useramulation-fb7baa7545144ed6a3db3d55b03e5ade",
+         ("T001", "useramulation-fb7baa7545144ed6a3db3d55b03e5ade")),
     ],
 )
 def test_parse_stem_variants(stem, expected):
@@ -65,6 +74,16 @@ def test_parse_stem_accepts_path():
 
 def test_parse_stem_keeps_double_underscore_in_session():
     assert parse_stem("T001__a__b_refined") == ("T001", "a__b")
+    assert parse_stem("T001__a__b") == ("T001", "a__b")
+
+
+def test_parse_stem_session_id_may_itself_end_with_refined():
+    """``_refined`` 是可选后缀, 不是 session_id 的一部分 —— 归属有歧义时
+    取**最短** session_id (``_refined`` 视作后缀), 保证同一 session 无论
+    磁盘上哪种形态都解析成同一个 id (``inner_id`` 去重依赖这一点)。"""
+    assert parse_stem("T001__s_refined") == ("T001", "s")
+    # 名字里更靠后的 _refined 无法与后缀区分 → 整体算 session_id
+    assert parse_stem("T001__s_refined_v2") == ("T001", "s_refined_v2")
 
 
 @pytest.mark.parametrize(
@@ -73,8 +92,8 @@ def test_parse_stem_keeps_double_underscore_in_session():
         "no_prefix_refined",        # 缺 [TE]\d{3} 前缀
         "X001__s_refined",          # 前缀字母不合法
         "T1__s_refined",            # 位数不足
-        "T001__s",                  # 缺 _refined 后缀
-        "T001__s_refined_v2",       # 后缀不对
+        "T001__",                   # session_id 为空
+        "_refined",                 # 缺 task 前缀
     ],
 )
 def test_parse_stem_rejects_bad_names(stem):

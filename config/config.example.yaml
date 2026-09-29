@@ -227,8 +227,16 @@ qf:
 # === label_studio (C3 轨迹 + 评分卡 → LS, 终点不回流) ===
 # 方案 docs/设计方案/label-studio-integration.md。凭据只走 env 占位符或 api_key_path,
 # **禁止**在本文件写真实 key (本文件是 commit 版本)。
+#
+# ⚠️ base_url 的端口别照抄本文件里的 8088 —— 那是 **QwenPaw 执行后端**
+# (见上方 simulate_serve.agent_endpoint), 不是 Label Studio。指错了不会报
+# "连不上", 而是伪装成"API key 无效", 把人引去查 key 而实际连错服务。
+# 本机 LS 跑在 WSL Docker, 暴露 **8099**; 换机器请用 `curl <url>/api/version`
+# 确认返回里有 "label-studio" 再填。
 label_studio:
-  base_url: "http://127.0.0.1:8088"
+  base_url: "http://127.0.0.1:8099"
+  # 拿 token: 浏览器开 <base_url>/user/login 登录 (首次先 /user/signup 建号),
+  # 再进 <base_url>/user/account 复制 Personal Access Token。
   api_key: "${LABEL_STUDIO_API_KEY}"     # 走 env; api_key_path 优先于本项
   api_key_path: null                     # 可选: 从文件读 key, 优先级高于 api_key
 
@@ -238,7 +246,7 @@ label_studio:
 
   # CLI 全量推送 (python -m label_studio upload)
   upload:
-    enabled: false
+    enabled: false                       # 默认关; 开了才走 `python -m label_studio upload`
     batch_size: 50
     include_predictions: true            # 风险提示预标注, 不做 accept/reject 预判
     filter_min_training_value_score: 0.0
@@ -269,6 +277,6 @@ label_studio:
 
   # orchestration task_pipeline step 10 自动 hook
   hook:
-    enabled: false
+    enabled: false                       # 默认关; 开了则每个 task 跑完自动推一条
     hook_timeout_seconds: 5
     on_failure: log_only                 # log_only | log_and_metric

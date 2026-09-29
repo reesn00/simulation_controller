@@ -60,8 +60,8 @@ def test_build_client_requires_credentials():
 
 
 def test_build_client_strips_trailing_slash():
-    s = LabelStudioSettings(base_url="http://ls:8088/", api_key="k")
-    assert build_client(s)._base_url == "http://ls:8088"
+    s = LabelStudioSettings(base_url="http://ls:8099/", api_key="k")
+    assert build_client(s)._base_url == "http://ls:8099"
 
 
 def test_constructor_rejects_empty_key():

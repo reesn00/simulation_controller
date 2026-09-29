@@ -69,12 +69,38 @@ def test_l0_from_criterion_results():
     dims = _by_id(build_scorecard(RICH_META))
     l0 = dims["criterion_coverage"]
     assert l0["source"] == "measured"
-    assert l0["score"] == 0.5          # 1 pass / 2
+    # fail-closed: final_verdict=fail → 本维记 0 分, 不按 1/2 的比例给分。
+    # 比例分会把"整体失败"显示成 0.5, 掩盖这条数据不可用的事实。
+    assert l0["score"] == 0.0
     assert l0["non_pass_count"] == 1
     assert l0["final_verdict"] == "fail"
     assert l0["rounds"] == 2
     assert l0["missing_items"] == ["未给出具体库存数字"]
     assert {e["criterion_id"] for e in l0["evidence"]} == {"C1", "C4"}
+
+
+def test_l0_score_is_ratio_only_when_validation_passed():
+    """只有 simulate 端整体判定 pass 才按比例给分。"""
+    meta = copy.deepcopy(RICH_META)
+    meta["criterion_results"]["final_verdict"] = "pass"
+    l0 = _by_id(build_scorecard(meta))["criterion_coverage"]
+    assert l0["score"] == 0.5          # 1 pass / 2
+    assert l0["final_verdict"] == "pass"
+
+
+def test_l0_carries_llm_fail_attribution():
+    """LLM 失败归因 (fail_evaluation) 要透到 L0 维度, 供人工复核定位。"""
+    meta = copy.deepcopy(RICH_META)
+    meta["fail_evaluation"] = {
+        "schema_version": "fail_evaluation.v1",
+        "score": 0.0,
+        "failure_category": "refusal",
+        "root_cause": "版权理由拒答",
+        "review_note": "任务本身不可判定",
+    }
+    l0 = _by_id(build_scorecard(meta))["criterion_coverage"]
+    assert l0["fail_evaluation"]["failure_category"] == "refusal"
+    assert l0["fail_evaluation"]["score"] == 0.0
 
 
 def test_l0_evidence_carries_rationale():
@@ -353,9 +379,38 @@ def test_hints_fall_back_to_neutral_message():
     meta = copy.deepcopy(RICH_META)
     for c in meta["criterion_results"]["criteria"]:
         c["verdict"] = "pass"
+    # 整体判定也要跟着过 —— 否则这条数据本身仍是"验证未通过（已记 0 分）",
+    # 中性提示不该出现。
+    meta["criterion_results"]["final_verdict"] = "pass"
     del meta["quality_scorer_components"]
     hints = build_risk_hints(build_scorecard(meta))
     assert hints == ["自动检查未见异常，仍需人工确认"]
+
+
+def test_hints_flag_validation_failed_sample_with_attribution():
+    """验证未通过的样本必须在人工复核界面显式提示, 且带上 LLM 归因。"""
+    meta = copy.deepcopy(RICH_META)
+    meta["fail_evaluation"] = {
+        "score": 0.0,
+        "failure_category": "refusal",
+        "root_cause": "版权理由拒答",
+        "review_note": "任务本身不可判定",
+    }
+    hints = build_risk_hints(build_scorecard(meta))
+    hit = next(h for h in hints if "验证未通过" in h)
+    assert "已记 0 分" in hit
+    assert "refusal" in hit
+    assert "版权理由拒答" in hit
+
+
+def test_hints_flag_inconclusive_criteria():
+    """inconclusive 同样是"没过", 只筛 fail 会让它在界面上完全隐身。"""
+    meta = copy.deepcopy(RICH_META)
+    for c in meta["criterion_results"]["criteria"]:
+        c["verdict"] = "inconclusive"
+    hints = build_risk_hints(build_scorecard(meta))
+    hit = next(h for h in hints if "判定待定" in h)
+    assert "C1" in hit and "C4" in hit
 
 
 def test_hints_empty_when_scorecard_disabled():

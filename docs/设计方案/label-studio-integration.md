@@ -2,7 +2,7 @@
 
 > **状态**: 设计中（架构已定向，2026-09-28 修订）
 > **范围**: 人工标注层 — 把 `output/refine_data/*` (C3) 候选样本 + **评分卡**推送至本地
-> Label Studio（`http://127.0.0.1:8088`）做 SFT 质量审核
+> Label Studio（`http://127.0.0.1:8099`）做 SFT 质量审核
 > **本项目终点是 Label Studio**：LS 标注完成后**不回流本项目**，本项目只负责
 > 把**明确的指令评分与评分依据**送进去
 > **不在范围**: 修改 C1/C2/C3 既有字段语义 / 修改 `simulate_serve / gdr` 业务逻辑
@@ -14,7 +14,7 @@
 |---|---|---|---|
 | 1 | 集成定位 | **终点层**：推送评分卡 → 人工核对 → LS 侧终结 | LS 标注结果不回流本项目（§17 架构前提） |
 | 2 | 交付物 | **评分卡 `scorecard.v1`**（§4.2） | 指令评分（L0–L5）+ 每维依据 + 来源可信度 |
-| 3 | Label Studio 实例 | 本地单实例 `http://127.0.0.1:8088` | 用户提供；非默认 8000 端口 |
+| 3 | Label Studio 实例 | 本地单实例 `http://127.0.0.1:8099` | 用户提供；非默认 8000 端口 |
 | 4 | 项目拓扑 | 单项目 `trajectory-sft-quality` | 按 `complexity_tier` 在 LS 端 Data Manager filter 分桶 |
 | 5 | 凭据管理 | `${LABEL_STUDIO_API_KEY}` env | gitignored；禁止硬编码 / 提交 / 测试 / 文档 |
 | 6 | label_config XML | `label_studio/label_configs/trajectory_review.xml` | Tabs：评分卡 / 指令核对 / 轨迹 / ChatML + 判定 Choices |
@@ -94,7 +94,7 @@ meta["meta_tag_contamination"] = ...         # ⟦⟧ 剥离统计
                               ▼
               ┌─────────────────────────┐
               │  Label Studio           │
-              │  http://127.0.0.1:8088  │
+              │  http://127.0.0.1:8099  │
               │  （本项目终点，不回流）   │
               └─────────────────────────┘
                      │ 人工核对（UI）
@@ -108,7 +108,7 @@ meta["meta_tag_contamination"] = ...         # ⟦⟧ 剥离统计
 ## 3. 项目拓扑（单项目）
 
 ```
-Label Studio @ http://127.0.0.1:8088
+Label Studio @ http://127.0.0.1:8099
 └── Project: "trajectory-sft-quality"   (auto-created by init-project)
     ├── label_config: trajectory_review.xml
     ├── tasks = 所有 C3（inner_id = session_id 去重）
@@ -389,7 +389,7 @@ training_value_score < 0.4 → reject          ← 已删
 
 ```yaml
 label_studio:
-  base_url: "http://127.0.0.1:8088"            # 本地 LS
+  base_url: "http://127.0.0.1:8099"            # 本地 LS
   api_key: "${LABEL_STUDIO_API_KEY}"           # 走 env；api_key_path 二者互斥
   api_key_path: null                           # 可选：从文件读，优先级高于 api_key
 
@@ -479,7 +479,7 @@ label_studio/
     ├── test_scorecard.py                      # L0–L5 构建 / source 标注 / 缺失维度 / derivation
     ├── test_config_loader.py                  # YAML 解析 + ${ENV} 占位 + 缺字段报错
     ├── test_label_config_xml.py               # XML 合法（POST /api/projects/{id}/validate/）
-    ├── test_e2e_with_real_ls.py               # 需本地 8088；@pytest.mark.integration 默认 skip
+    ├── test_e2e_with_real_ls.py               # 需本地 8099；@pytest.mark.integration 默认 skip
     └── fixtures/
         ├── sample_c3_messages.json
         ├── sample_c3_meta.json
@@ -650,10 +650,10 @@ CLAUDE.md 红线：不保存自由文本思维链、Cookie、Authorization Heade
 | `test_scorecard.py` | L0–L5 构建 / `source` 标注（measured vs estimated vs missing）/ `estimated_components` 收集 / derivation 可读性 / 缺字段不崩 |
 | `test_config_loader.py` | YAML 解析 + `${ENV}` 占位 + 缺字段报错 + `api_key`/`api_key_path` 优先级 |
 | `test_label_config_xml.py` | **XML 合法且 `toName` 全部有对应控件**（`POST /api/projects/{id}/validate/`） |
-| `test_e2e_with_real_ls.py` | 可选；需本地 8088；`@pytest.mark.integration` 默认 skip |
+| `test_e2e_with_real_ls.py` | 可选；需本地 8099；`@pytest.mark.integration` 默认 skip |
 | `orchestration/tests/test_ls_hook.py` | 成功 / 失败不阻塞 / 超时生效 / 并行不干扰 |
 
-默认不访问 8088（类似 `simulate_serve --check-tools`，离线可跑）。
+默认不访问 8099（类似 `simulate_serve --check-tools`，离线可跑）。
 
 ## 12. 前置依赖与实施分阶段
 
@@ -873,7 +873,7 @@ docs/
    - 验证：`meta.json` 含 `criterion_results`
 
 3. **P1 环境准备**（半天）
-   - 本地启动 Label Studio（`pip install label-studio` + `label-studio start --port 8088`）
+   - 本地启动 Label Studio（`pip install label-studio` + `label-studio start --port 8099`）
    - 生成 `LABEL_STUDIO_API_KEY`（Settings → API Token），设 `$env:LABEL_STUDIO_API_KEY`
    - `python -m label_studio status` 验证连通性
 

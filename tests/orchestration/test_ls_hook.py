@@ -45,7 +45,7 @@ def meta_file(tmp_path: Path) -> Path:
 
 def _settings(*, hook=True, upload=False) -> LabelStudioSettings:
     return LabelStudioSettings(
-        base_url="http://127.0.0.1:8088",
+        base_url="http://127.0.0.1:8099",
         api_key="placeholder",
         hook=HookSettings(enabled=hook, hook_timeout_seconds=1.0),
         upload=UploadSettings(enabled=upload),

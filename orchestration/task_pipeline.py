@@ -55,6 +55,13 @@ def _worker_init(paths: Paths) -> None:
 # 哪些 RunState 算 simulate 失败 (不入 gdr 阶段)
 # 参考 simulate_serve.domain.state_machine.TERMINAL_STATES — 但 SUCCESS 应进 gdr
 # 所以这里排除 SUCCESS。
+#
+# 判据是 CLAUDE.md "数据保留原则", 不是验证通过与否:
+# 远端 Agent 验证不通过 (guide_exhausted / inconclusive) ≠ 数据不可用。
+# 这类轨迹结构完整、含 assistant 实质回复 (含拒答), 是有价值的 SFT 素材,
+# 必须继续走 gdr -> etl; 其质量信号由「验证不通过原因 + agent 回复内容」
+# 交 LLM 评价后自动记 0 分承载 (见 docs/设计方案/simulate-fail-scoring.md)。
+# 真正进死信的只剩基础设施故障 / 人为中断 / 完成度截断这三类:
 _SIMULATE_FAIL_STATES: frozenset[str] = frozenset({
     "validation_error",
     "executor_error",
@@ -62,8 +69,6 @@ _SIMULATE_FAIL_STATES: frozenset[str] = frozenset({
     "cancelled",
     "interrupted",
     "completion_incomplete",
-    "inconclusive",
-    "guide_exhausted",
 })
 
 
@@ -166,6 +171,8 @@ def _safe_run_etl(
     session_id: str, max_retry: int, queue: Any,
     runs_dir: Path | None = None,
     run_id: str | None = None,
+    src_path: Path | None = None,
+    gdr_settings: Any = None,
 ) -> tuple[Path, Path, Path | None, Path] | None:
     """etl 阶段重试循环 (契约 §3.4).
 
@@ -189,6 +196,8 @@ def _safe_run_etl(
                 attempt=attempt,
                 runs_dir=runs_dir,
                 run_id=run_id,
+                src_path=src_path,
+                gdr_settings=gdr_settings,
             )
             return (
                 outputs.messages_path,
@@ -416,6 +425,9 @@ def _run_one_task_pipeline(
             # F2: 把 simulate 端 Criterion 验证结果带进 C3
             runs_dir=paths.runs_dir,
             run_id=run_id,
+            # 验证不通过时: 读 agent 回复做 LLM 归因, 分数恒为 0
+            src_path=src_path,
+            gdr_settings=gdr_settings,
         )
         if etl_outputs is None:
             result["error"] = "etl failed"

@@ -187,6 +187,21 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 [docs/设计方案/pipeline-contracts.md](docs/设计方案/pipeline-contracts.md) §2
 phase 表 + `mark_audited` 定义。
 
+**实施状态 (2026-09-29)**: simulate 端判据已从「验证是否通过」改为「**数据
+结构是否可用**」。`guide_exhausted` / `inconclusive` (远端拒答、引导耗尽、
+语义待定) 的轨迹**不再进死信**, 继续走 gdr → etl, 终态由 gdr 判定 (`audited`
+旁路 / `done` C3 制品)。真正的死信只剩 `validation_error` / `executor_error` /
+`actor_error` / `cancelled` / `interrupted` / `completion_incomplete` 六类。
+
+「验证不通过」这个信号改由 `orchestration/fail_evaluator.py` 承载: etl 阶段把
+**验证失败原因** + **agent 轨迹结果内容**发给 LLM 做一次定性归因, 写入 C3
+meta.json 顶层 `fail_evaluation`, **分数恒为 0**(`score_source:
+simulate_validation`, LLM 不参与打分)。Label Studio 评分卡 L0
+`criterion_coverage` 在 `final_verdict != "pass"` 时记 0 分并透出归因。
+**raw CoT 红线**: 该模块在调 LLM 前剥离 C1 text block 内嵌的 `<think>` 链
+(含未闭合的情形)。设计见
+[docs/设计方案/simulate-fail-scoring.md](docs/设计方案/simulate-fail-scoring.md)。
+
 ## 文档
 
 - `docs/orchestration-design.md` — orchestration 三阶段流水线设计基线（2026-09-22 重写；§6.8 Label Studio 旁路推送）

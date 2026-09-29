@@ -177,7 +177,7 @@ orchestration 侧的自动推送走**另一个开关**：在 `config/config.yaml
 
 ```yaml
 label_studio:
-  base_url: "http://127.0.0.1:8088"
+  base_url: "http://127.0.0.1:8099"
   api_key: "${LABEL_STUDIO_API_KEY}"
   project_title: "trajectory-sft-quality"
   upload:

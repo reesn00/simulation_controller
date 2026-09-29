@@ -70,6 +70,6 @@ def settings():
     from label_studio.settings import LabelStudioSettings
 
     return LabelStudioSettings(
-        base_url="http://127.0.0.1:8088",
+        base_url="http://127.0.0.1:8099",
         api_key="placeholder-not-a-real-credential",
     )

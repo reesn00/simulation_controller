@@ -24,7 +24,7 @@ def config_file(tmp_path: Path) -> Path:
     path.write_text(
         yaml.safe_dump(
             {"label_studio": {
-                "base_url": "http://127.0.0.1:8088",
+                "base_url": "http://127.0.0.1:8099",
                 "api_key": "${LABEL_STUDIO_CLI_TEST_KEY}",
                 "upload": {"enabled": True, "batch_size": 2},
             }},
@@ -240,7 +240,7 @@ def test_upload_threshold_requires_force(
     config_file.write_text(
         yaml.safe_dump(
             {"label_studio": {
-                "base_url": "http://127.0.0.1:8088",
+                "base_url": "http://127.0.0.1:8099",
                 "api_key": "${LABEL_STUDIO_CLI_TEST_KEY}",
                 "upload": {"enabled": True, "dry_run_skip_threshold": 1},
             }},
@@ -263,7 +263,7 @@ def test_upload_threshold_force_overrides(tmp_path, config_file, with_key, fake_
     config_file.write_text(
         yaml.safe_dump(
             {"label_studio": {
-                "base_url": "http://127.0.0.1:8088",
+                "base_url": "http://127.0.0.1:8099",
                 "api_key": "${LABEL_STUDIO_CLI_TEST_KEY}",
                 "upload": {"enabled": True, "dry_run_skip_threshold": 1},
             }},

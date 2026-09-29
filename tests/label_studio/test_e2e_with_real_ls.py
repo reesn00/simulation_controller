@@ -1,12 +1,14 @@
 """label_studio 端到端 (需真实本地 Label Studio, 默认 skip).
 
 运行前提:
-  1. 本地 LS 已在 ``127.0.0.1:8088`` 起来
+  1. 本地 LS 已在 ``127.0.0.1:8099`` 起来 (端口不同用
+     ``LABEL_STUDIO_BASE_URL`` 覆盖; **不是 8088** —— 那是 QwenPaw 后端)
   2. env ``LABEL_STUDIO_API_KEY`` 已设置
   3. 显式加 ``-m integration`` (或设 ``LS_E2E=1``)
 
 跑法::
 
+    $env:LS_E2E = "1"
     uv run python -m pytest tests/label_studio/test_e2e_with_real_ls.py \\
         -m integration --allow-hosts=127.0.0.1
 
@@ -25,7 +27,10 @@ from conftest import write_c3
 
 pytestmark = pytest.mark.integration
 
-LS_BASE_URL = os.environ.get("LABEL_STUDIO_BASE_URL", "http://127.0.0.1:8088")
+#: 端口与 ``label_studio.settings.LabelStudioSettings.base_url`` 默认值一致。
+#: 8088 上是 QwenPaw Console —— 连过去报的是"认证失败", 不是"连不上",
+#: 极容易被误判成 API key 配错。
+LS_BASE_URL = os.environ.get("LABEL_STUDIO_BASE_URL", "http://127.0.0.1:8099")
 API_KEY_ENV = "LABEL_STUDIO_API_KEY"
 
 pytest.importorskip("httpx")
@@ -33,7 +38,7 @@ pytest.importorskip("httpx")
 
 def _require_ls():
     if os.environ.get("LS_E2E") != "1":
-        pytest.skip("设 LS_E2E=1 且本地 8088 有 LS 才跑")
+        pytest.skip(f"设 LS_E2E=1 且 {LS_BASE_URL} 上有 LS 才跑")
     if not os.environ.get(API_KEY_ENV):
         pytest.skip(f"未设 {API_KEY_ENV}")
 

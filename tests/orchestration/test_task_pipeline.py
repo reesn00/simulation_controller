@@ -204,6 +204,7 @@ def _patch_pipeline(
         *, c2_path, etl_outputs_dir, task_id, session_id,
         attempt=0,
         runs_dir=None, run_id=None,   # F2: Criterion 注入参数
+        src_path=None, gdr_settings=None,   # 失败归因评价参数
     ):
         counts["etl"] += 1
         if etl_nonretryable and counts["etl"] == 1:
@@ -293,6 +294,66 @@ def test_simulate_failure_skips_gdr(tmp_path: Path, monkeypatch) -> None:
 
     task = queue.get_task("T1")
     assert task is not None and task.phase == PHASE_DEAD
+
+
+@pytest.mark.parametrize("run_state", ["guide_exhausted", "inconclusive"])
+def test_validation_failed_trajectory_still_reaches_gdr(
+    tmp_path: Path, monkeypatch, run_state: str,
+) -> None:
+    """验证不通过 ≠ 数据不可用: 轨迹必须继续走 gdr -> etl, 不进 dead.
+
+    CLAUDE.md "数据保留原则": 结构完整的轨迹不进死信. 远端 Agent 拒答
+    (guide_exhausted) 或语义判定不确定 (inconclusive) 都是有价值的素材,
+    其质量信号由「验证不通过原因 + agent 回复内容」交 LLM 评价承载,
+    不靠丢弃数据表达 (T001 历史回归: 拒答轨迹曾被判 dead 导致无法审查).
+    """
+    paths = _make_paths(tmp_path)
+    queue = SQLiteQueue(paths.sqlite_db)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    counts = _patch_pipeline(monkeypatch, simulate_state=run_state)
+    result = _run_one_task_pipeline("T1", paths, gdr_settings, settings)
+
+    # 三阶段都跑了, 终态是 done
+    assert result["phase"] == PHASE_DONE, result
+    assert counts["gdr"] == 1
+    assert counts["etl"] == 1
+
+    task = queue.get_task("T1")
+    assert task is not None and task.phase == PHASE_DONE
+    # 产物路径齐全 — 人工审查要能顺着这些路径找到 C1/C2/C3
+    assert task.src_path is not None
+    assert task.gdr_refined_path is not None
+    assert task.etl_messages_path is not None
+
+
+def test_validation_failed_trajectory_reaches_gdr_audit_sidepath(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """验证不通过的轨迹若在 gdr 被判评分低, 走 audited 而非 dead.
+
+    与 ``test_gdr_audited_*`` 的区别: 前者 simulate 是 SUCCESS, 这里
+    simulate 验证就没过. 两条路径的终态必须是同一个 —— 数据保留优先.
+    """
+    paths = _make_paths(tmp_path)
+    queue = SQLiteQueue(paths.sqlite_db)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    counts = _patch_pipeline(
+        monkeypatch, simulate_state="guide_exhausted", gdr_audited="scoring_reject",
+    )
+    result = _run_one_task_pipeline("T1", paths, gdr_settings, settings)
+
+    assert result["phase"] == PHASE_AUDITED
+    assert result["stage"] == "gdr"
+    assert counts["etl"] == 0
+
+    task = queue.get_task("T1")
+    assert task is not None and task.phase == PHASE_AUDITED
+    # src_path 保留 — 数据留在原地供人工复核, 不 move 进 dead_dir
+    assert task.src_path is not None
 
 
 def test_simulate_exception_marks_dead(tmp_path: Path, monkeypatch) -> None:

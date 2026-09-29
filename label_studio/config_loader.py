@@ -162,7 +162,7 @@ def build_settings(raw: dict[str, Any] | None) -> LabelStudioSettings:
 
     label_config = _resolve_path(section.get("label_config_path"))
     return LabelStudioSettings(
-        base_url=str(section.get("base_url") or "http://127.0.0.1:8088").rstrip("/"),
+        base_url=str(section.get("base_url") or "http://127.0.0.1:8099").rstrip("/"),
         api_key=section.get("api_key") or None,
         api_key_path=_resolve_path(section.get("api_key_path")),
         project_title=str(section.get("project_title") or "trajectory-sft-quality"),

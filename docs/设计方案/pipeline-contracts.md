@@ -546,7 +546,13 @@ def _run_one_task_pipeline(
       2. queue.upsert_task(task_id, phase="pending") # 兜底:若已被另一个 worker 标 done 不重复跑
       3. queue.mark_phase(task_id, new_phase="simulate")
       4. run = producer_simulate.run_one_task(task_id, config_path=paths.simulate_serve_config)
-      5. 若 run.state ∈ TERMINAL_FAIL_STATES: queue.mark_failed(...); return dead
+      5. 若 run.state ∈ _SIMULATE_FAIL_STATES: queue.mark_failed(...); return dead
+         _SIMULATE_FAIL_STATES = {validation_error, executor_error, actor_error,
+                                  cancelled, interrupted, completion_incomplete}
+         —— 判据是「数据结构是否可用」而非「验证是否通过」.
+         guide_exhausted / inconclusive 不在其中: 轨迹结构完整、含 assistant
+         实质回复(含拒答), 属有价值的 SFT 素材, 必须继续走 gdr/etl.
+         质量信号由 LLM 评价自动记 0 分承载, 不靠丢弃数据表达.
       6. queue.mark_phase(task_id, new_phase="gdr", run_id=run.run_id, session_id=run.remote_session_id, src_path=...)
       7. 重试循环(max_retry_gdr 次):
            调 run_gdr_once(...)

@@ -35,7 +35,7 @@ LS 是这条链的**终点**：你在那里逐条核对、给出最终判定。*
 
 ### 3.1 准备
 
-1. 本机跑起 Label Studio（默认 `http://127.0.0.1:8088`）
+1. 本机跑起 Label Studio（默认 `http://127.0.0.1:8099`）
 2. 在 `config/config.yaml` 里填 `label_studio:` 段，API key 走环境变量：
 
    ```powershell

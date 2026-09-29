@@ -123,16 +123,23 @@ def _dimension_criterion_coverage(meta: dict[str, Any]) -> dict[str, Any]:
         if isinstance(c, dict)
     ]
     non_pass = [e for e in evidence if e["verdict"] != "pass"]
+    final_verdict = evaluation.get("final_verdict")
+    # fail-closed: simulate 端整体判定没过 → 本维直接 0 分, 不按比例给分。
+    # 比例分会把「3/5 条通过但任务整体失败」显示成 0.6, 掩盖"这条数据不可用"
+    # 的事实 (CLAUDE.md 数据保留原则: 分数表达质量, 不表达"还在讨论中")。
+    validated = final_verdict == "pass"
     return {
         "id": "criterion_coverage",
         "label": "指令项达成",
-        "score": _round(pass_count / len(criteria)),
+        "score": _round(pass_count / len(criteria)) if validated else 0.0,
         "score_kind": "ratio",
         "source": "measured",
-        "final_verdict": evaluation.get("final_verdict"),
+        "final_verdict": final_verdict,
         "rounds": evaluation.get("rounds"),
         "missing_items": evaluation.get("missing_items") or [],
         "non_pass_count": len(non_pass),
+        # LLM 失败归因 (orchestration.fail_evaluator); 未评价时为 None
+        "fail_evaluation": meta.get("fail_evaluation"),
         "evidence": evidence,
     }
 
@@ -551,10 +558,32 @@ def build_risk_hints(scorecard: dict[str, Any]) -> list[str]:
             for e in coverage.get("evidence") or []
             if e.get("verdict") == "fail"
         ]
+        # inconclusive 也要提示: 它同样是"没过", 只筛 fail 会让语义待定项
+        # 在人工复核界面上完全隐身 (scorecard 唯一提示入口就是这里)。
+        inconclusive = [
+            e.get("criterion_id")
+            for e in coverage.get("evidence") or []
+            if e.get("verdict") in ("inconclusive", "error")
+        ]
         if failed:
             hints.append(
                 "指令未完全达成，请核对: " + ", ".join(str(c) for c in failed)
             )
+        if inconclusive:
+            hints.append(
+                "指令判定待定，请核对: " + ", ".join(str(c) for c in inconclusive)
+            )
+        # 验证未通过 → 本维已按 fail-closed 记 0 分, 附上 LLM 归因方便定位
+        if coverage.get("final_verdict") not in (None, "pass"):
+            attribution = coverage.get("fail_evaluation")
+            if isinstance(attribution, dict):
+                hints.append(
+                    f"该样本验证未通过（已记 0 分）｜归因 "
+                    f"{attribution.get('failure_category')}："
+                    f"{attribution.get('root_cause') or attribution.get('review_note')}"
+                )
+            else:
+                hints.append("该样本验证未通过（已记 0 分）")
 
     redline = by_id.get("redline")
     if redline and redline.get("source") != "missing" and redline.get("score"):

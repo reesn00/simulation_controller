@@ -39,7 +39,7 @@ def test_missing_config_returns_all_off():
                                  {"label_studio": "oops"}])
 def test_absent_or_malformed_section_yields_defaults(raw):
     s = build_settings(raw)
-    assert s.base_url == "http://127.0.0.1:8088"
+    assert s.base_url == "http://127.0.0.1:8099"
     assert s.upload.enabled is False
     assert s.hook.enabled is False
     assert s.scorecard.enabled is True       # 评分卡默认开 —— 它不推送, 只是构造
@@ -57,13 +57,13 @@ def test_label_config_defaults_to_repo_path():
 
 def test_reads_core_fields(tmp_path: Path):
     path = _write(tmp_path, {SECTION_KEY: {
-        "base_url": "http://ls:8088/",
+        "base_url": "http://ls:8099/",
         "api_key": "placeholder",
         "project_title": "my-tasks",
         "project_id": 12,
     }})
     s = load_label_studio_config(path)
-    assert s.base_url == "http://ls:8088"      # 尾斜杠被去掉
+    assert s.base_url == "http://ls:8099"      # 尾斜杠被去掉
     assert s.project_title == "my-tasks"
     assert s.project_id == 12
     assert s.resolve_api_key() == "placeholder"

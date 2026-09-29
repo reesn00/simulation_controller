@@ -3,7 +3,8 @@
 方案 §4.1 的字段映射在这里落地。三点实施要点:
 
 1. **``task_id`` 不在 meta.json 里** —— 只能从文件名 stem 解析
-   (``T001__useramulation-xxx_refined``)。
+   (``T001__useramulation-xxx`` , 契约里的 ``_refined`` 后缀可选, 见
+   :data:`STEM_PATTERN`)。
 2. **不持有 raw trajectory** —— C3 已是脱敏产物, 本模块只读 ``*.messages.json`` /
    ``*.openai.json`` / ``*.qwenjina.txt`` / ``*.meta.json`` 四份**视图文件**,
    绝不碰 C1 trajectory。
@@ -34,10 +35,19 @@ from label_studio.settings import (
 
 log = logging.getLogger(__name__)
 
-#: C3 文件 stem 形态: ``<TXXX|EXXX>__<session_id>_refined``。
-#: ``session_id`` 本身可能含 ``__``, 所以用贪婪匹配 + 尾部锚定。
+#: C3 文件 stem 形态: ``<TXXX|EXXX>__<session_id>`` , ``_refined`` 后缀可选。
+#:
+#: 契约 (CLAUDE.md / docs/contracts) 写的是带 ``_refined``, 但**生产端
+#: ``etl_worker._output_filename(task_id, session_id, suffix="")`` 并不加这个
+#: 后缀** —— 磁盘上真实的 C3 是 ``T001__<session_id>.meta.json``。原先这里强制
+#: 匹配 ``_refined``, 结果上传器把每个真实 C3 都当坏名跳过, ``upload`` 恒推 0 条。
+#:
+#: 这里做成**两种形态都收**: 生产端改名会波及训练侧 glob 与已落盘的 C3, 属于
+#: 契约变更, 不该由读取方单方面决定; 读取方保持兼容则新旧文件都能推。
+#: ``session_id`` 本身可能含 ``__``, 故用非贪婪 + 尾部锚定; 结尾的 ``_refined``
+#: 在匹配后剥掉 (见 :func:`parse_stem`)。
 STEM_PATTERN = re.compile(
-    r"^(?P<task_id>[TE]\d{3})__(?P<session_id>.+?)_refined$"
+    r"^(?P<task_id>[TE]\d{3})__(?P<session_id>.+?)(?:_refined)?$"
 )
 
 #: 4 视图文件名后缀（``save_session_v2`` 产出）。

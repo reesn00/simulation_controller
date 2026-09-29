@@ -498,7 +498,7 @@ paths:
 
 ```yaml
 label_studio:
-  base_url: "http://127.0.0.1:8088"
+  base_url: "http://127.0.0.1:8099"
   api_key: "${LABEL_STUDIO_API_KEY}"     # 或用 api_key_path 指向存 key 的文件
   project_title: "trajectory-sft-quality"
 
