@@ -5,7 +5,7 @@
 ## 入口
 
 - `from_trajectory(path: Path) -> Session`：把 trajectory JSONL 解析为 `gdr.domain.Session`
-- 详细契约见 [docs/contracts/C1-trajectory-events.md](../../contracts/C1-trajectory-events.md)
+- 详细契约见 [docs/contracts/C1-trajectory-events.md](../../docs/contracts/C1-trajectory-events.md)
 
 ## 约定
 

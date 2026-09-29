@@ -1,0 +1,71 @@
+<View>
+  <Header value="Task $task_id · Session $session_id"/>
+  <Header value="质量分 $training_value_score（$complexity_tier）｜建议 $scorecard.overall.suggested_decision ｜置信 $scorecard.overall.confidence"/>
+
+  <Tabs>
+    <Tab value="评分卡">
+      <Header value="自动评分与依据。source=estimated / missing 的维度不可全信，核对后填「指令核对」页。"/>
+      <TextArea name="overall_derivation" value="$scorecard.overall.derivation" editable="false" maxSubmissions="1"/>
+      <Table name="scorecard_view" value="$scorecard" editable="false"/>
+    </Tab>
+
+    <Tab value="指令核对">
+      <Header value="逐条核对自动判定；不认同必填理由。"/>
+      <!-- perItem 对象定义：name="criterion" toName="criterion" perItem="true"
+           是 LS 里逐条列表的锚点。缺它，下面三条 toName="criterion" 全部悬空，
+           LS 加载 label_config 即报 "toName references missing tag"。
+           绑 $criteria（task_exporter._flatten_criteria 摊平的扁平列表），
+           不用 $scorecard.dimensions[?(...)] —— 那种过滤语法各版本行为不一致。 -->
+      <TextArea name="criterion" toName="criterion" perItem="true"
+                value="$criteria" editable="false"/>
+      <Filter toName="criterion" minlength="1"/>
+      <Choices name="criterion_verdict" toName="criterion" choice="single"
+               perItem="true" required="true">
+        <Choice value="agree"    hint="认同自动判定"/>
+        <Choice value="disagree" hint="不认同，右侧写明理由"/>
+      </Choices>
+      <TextArea name="criterion_note" toName="criterion" perItem="true"
+                placeholder="不同意时写明：应达成什么 / 实际达成了什么"/>
+    </Tab>
+
+    <Tab value="轨迹">
+      <TextArea name="messages_view" value="$messages" editable="false"/>
+    </Tab>
+
+    <Tab value="ChatML">
+      <TextEditor name="qf_text_view" value="$qf_text" editable="false"/>
+    </Tab>
+
+    <Tab value="元数据">
+      <TextArea name="metadata_view" value="$metadata" editable="false"/>
+    </Tab>
+  </Tabs>
+
+  <!-- toName 锚点：必须存在。下方 overall_decision / failure_mode 都 toName="task"，
+       若无任何 name="task" 的控件，LS 加载 label_config 即报
+       "toName references missing tag"，项目建不起来。visible=false 让它不占版面。 -->
+  <TextArea name="task" value="$messages" maxSubmissions="1" visible="false"/>
+
+  <Header value="最终判定（必选）"/>
+  <Choices name="overall_decision" toName="task" choice="single" required="true">
+    <Choice value="accept"  hint="该轨迹质量达标"/>
+    <Choice value="revise"  hint="需修改，备注修复方向"/>
+    <Choice value="reject"  hint="拒绝，废弃该样本"/>
+  </Choices>
+
+  <Header value="失败模式（选填，选了 reject 建议填）"/>
+  <Choices name="failure_mode" toName="task" choice="multiple" required="false">
+    <Choice value="reasoning_error"/>
+    <Choice value="tool_use_error"/>
+    <Choice value="formatting_error"/>
+    <Choice value="hallucination"/>
+    <Choice value="policy_violation"/>
+    <Choice value="incomplete_response"/>
+    <Choice value="other"/>
+  </Choices>
+
+  <!-- 注意：TextArea 是直接输入控件（name + maxSubmissions），
+       toName 是 Choices/Text 的参数，用在这里是错误用法。 -->
+  <TextArea name="revise_notes" maxSubmissions="1"
+            placeholder="修复方向 / 修改建议（选填）"/>
+</View>

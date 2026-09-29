@@ -11,23 +11,26 @@ simulate_serve（模拟采集 Run/审计 JSON）
        ├── task_pipeline._run_one_task_pipeline：单 task 三阶段严格串行
        ├── producer_simulate.run_one_task：simulate_serve in-process 入口
        ├── workers.gdr_worker.run_gdr_once：C1 trajectory → C2 refined Session
-       └── workers.etl_worker.run_etl_once：C2 refined Session → C3 4 视图
+       ├── workers.etl_worker.run_etl_once：C2 refined Session → C3 4 视图
+       └── ls_hook.run_hook（step 11）：C3 + 评分卡 → Label Studio 旁路推送，终点不回流
   → data_refiner（规则剪裁合成数据）
   → etl/pawsession（QwenPaw 会话 → OpenAI SFT 格式）
   → etl/qwenformat（trajectory → Session 解析；gdr.parsers 唯一调用入口）
   → scripts/model_train（unsloth LoRA 微调 Qwen3.5-9B + 推理验证）
   → gdr（平行的 LLM 驱动三级精修流水线）
+  → label_studio（C3 + 评分卡 → Label Studio 单向推送，**终点不回流**；step 11 旁路 / CLI 全量）
 ```
 
 - `simulate_serve/`：主应用，六边形/分层架构。`configuration/` 加载严格 Schema v2 Catalog；`domain/` + `application/` 编译任务、维护异步运行状态机、编排远端会话；`interaction/` 生成首轮请求和针对验证缺口的自然追问，不拥有验证工具；`validation/` + `tools/` 负责确定性规则、语义 Judge、工具取证和四态结果聚合；`infrastructure/` 提供 QwenPaw HTTP、CAMEL 模型和 JSON v2 持久化。产出 Run/审计/蒸馏 JSON，是下游数据加工的源头。入口 `python -m simulate_serve`。
-- `orchestration/`：顶层流水线调度器（2026-09-22 重写），把 `simulate_serve → gdr → etl` 三个独立子系统串成 `simulation server → gdr → etl` 单 task 三阶段流水线（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)，契约见 [`docs/设计方案/pipeline-contracts.md`](docs/设计方案/pipeline-contracts.md)）。`master.py` 只持有配置 / queue / `stop_event`，按 `--parallelism N` 起 `PipelineExecutor` 调 `multiprocessing.Pool` 子进程池；`pipeline_executor.py` 维护 `in_flight: dict[AsyncResult, str]` 槽位填充（详见 [`orchestration/pipeline_executor.py:_dispatch`](orchestration/pipeline_executor.py)），`task_pipeline._run_one_task_pipeline` 是子进程顶层入口（picklable），每个子进程完整跑单个 task 的 simulate → gdr → etl 三阶段；`settings.py` 拆 `PipelineSettings` + `Paths` 两个 frozen dataclass；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → simulate → gdr → etl → done`，超限入 `dead`，见 [`docs/设计方案/pipeline-contracts.md` §2](docs/设计方案/pipeline-contracts.md)）；`workers/{base,gdr,etl}_worker.py` 把旧 class 改为模块顶层函数 `run_gdr_once` / `run_etl_once`，分别调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（C1 trajectory → C2 refined Session）和 [`etl/parsers.py::load_refined_session`](etl/parsers/__init__.py) + [`gdr/domain/schema.py::save_session_v2`](gdr/domain/schema.py)（C2 → C3 4 视图）；`producer_simulate.run_one_task` 是 simulate_serve 的 in-process 单 task 入口；`failure_handler.py` 把 `phase=dead` 的 task 产物移到 `output/orchestration/dead/` 并追加 `dead.log`（删 batch_id 字段）；`health.py` 走 `collect_tasks` 直读 SQLite 6 个 phase 计数；`daemon.py` 处理 PID file + STOP 哨兵文件（Windows detach 子进程无控制台，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令（`--parallelism N` 控并行度，`--tasks T1,T2` 子集过滤，`--all-tasks` 拉全 catalog，`--dry-run` 只打印计划）；`run.bat` 是 Windows wrapper。所有阶段产物与运行时状态统一收在 `output/` 下。gdr 阶段把精修完的 Session 单文件写到 `output/refined/<TXXX>__<session_id>.json`（C2 契约，`schema_version: refined_session.v1`），etl 阶段沿用同一 stem 拆 4 视图到 `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json`（C3 契约）；低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `output/orchestration/dead/`。入口 `python -m orchestration`。
+- `orchestration/`：顶层流水线调度器（2026-09-22 重写），把 `simulate_serve → gdr → etl` 三个独立子系统串成 `simulation server → gdr → etl` 单 task 三阶段流水线（设计见 [`docs/orchestration-design.md`](docs/orchestration-design.md)，契约见 [`docs/设计方案/pipeline-contracts.md`](docs/设计方案/pipeline-contracts.md)）。`master.py` 只持有配置 / queue / `stop_event`，按 `--parallelism N` 起 `PipelineExecutor` 调 `multiprocessing.Pool` 子进程池；`pipeline_executor.py` 维护 `in_flight: dict[AsyncResult, str]` 槽位填充（详见 [`orchestration/pipeline_executor.py:_dispatch`](orchestration/pipeline_executor.py)），`task_pipeline._run_one_task_pipeline` 是子进程顶层入口（picklable），每个子进程完整跑单个 task 的 simulate → gdr → etl 三阶段；`settings.py` 拆 `PipelineSettings` + `Paths` 两个 frozen dataclass；`queue/sqlite_queue.py` 用单文件 SQLite 提供事务安全的状态机（`pending → simulate → gdr → etl → done`，超限入 `dead`，见 [`docs/设计方案/pipeline-contracts.md` §2](docs/设计方案/pipeline-contracts.md)）；`workers/{base,gdr,etl}_worker.py` 把旧 class 改为模块顶层函数 `run_gdr_once` / `run_etl_once`，分别调 [`gdr/pipeline/runner.py`](gdr/pipeline/runner.py) 的 `_process_one_file`（C1 trajectory → C2 refined Session）和 [`etl/parsers.py::load_refined_session`](etl/parsers/__init__.py) + [`gdr/domain/schema.py::save_session_v2`](gdr/domain/schema.py)（C2 → C3 4 视图）；`producer_simulate.run_one_task` 是 simulate_serve 的 in-process 单 task 入口；`failure_handler.py` 把 `phase=dead` 的 task 产物移到 `output/orchestration/dead/` 并追加 `dead.log`（删 batch_id 字段）；`health.py` 走 `collect_tasks` 直读 SQLite 6 个 phase 计数；`daemon.py` 处理 PID file + STOP 哨兵文件（Windows detach 子进程无控制台，靠哨兵文件兜底）+ 日志重定向；`__main__.py` 提供 `start / status / stop / replay` 四个子命令（`--parallelism N` 控并行度，`--tasks T1,T2` 子集过滤，`--all-tasks` 拉全 catalog，`--dry-run` 只打印计划）；`run.bat` 是 Windows wrapper。所有阶段产物与运行时状态统一收在 `output/` 下。gdr 阶段把精修完的 Session 单文件写到 `output/refined/<TXXX>__<session_id>.json`（C2 契约，`schema_version: refined_session.v1`），etl 阶段沿用同一 stem 拆 4 视图到 `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json`（C3 契约）；低分但结构可用的 session 走 `output/refine_data/judge_low.jsonl` 审核通道（见 [`gdr/pipeline/runner.py:584-610`](gdr/pipeline/runner.py#L584-L610)）；多次失败的死信进 `output/orchestration/dead/`；`mark_phase(done)` 之后由 `ls_hook.py` 旁路推一条到 Label Studio（终点层，默认关闭，失败不改终态、不写 SQLite）；`criterion_source.py` 在 etl 阶段把 simulate 端 `ValidationReport.criteria` 注入 C3 metadata，供评分卡 L0 指令覆盖维度使用。入口 `python -m orchestration`。
 - `data_refiner/`：合成会话数据的轻量规则清洗，只标注不删除。依次执行无效文件判定（R3）、连续工具调用失败段剪裁（R1）、thinking 长度标注（R2），并输出轨迹块状态报告（R5）。入口 `python -m data_refiner --input ... --output ...`。
 - `etl/`：SFT 训练格式转换。`pawsession/` 按 extract/transform/load 把 QwenPaw origindata 转为 OpenAI function-calling 格式 `sft_openai.jsonl`，并附每会话审计与 `stats.json`（入口 `etl/pawsession/run_etl.py`）；`qwenformat/` 提供 trajectory 重放（`load.parse_trajectory`，新架构下被 [`gdr.parsers.from_trajectory`](gdr/parsers/__init__.py) 局部导入调用，C1 契约重放唯一入口）+ 训练格式转换（`transform.trajectory_to_session_with_openai_metadata` / `chat_template.jinja`，etl 阶段 C2 → C3 时复用，写 `metadata.openai_messages` / `qf_text` / `qf_rendered_at`）。`parsers/` 包是 C2 契约入口（[`etl/parsers.load_refined_session`](etl/parsers/__init__.py)），`writers/` 包是 C3 写入入口（[`etl.writers.render_to_4_views`](etl/writers/__init__.py)）。
 - `gdr/`：独立的 uv workspace 成员（gdr-agent），对 QwenPaw Agent 轨迹做"脏数据入、干净数据出"的自动缺陷检测与精修。Session → Message → Block 三级数据模型，13 种缺陷标签（规则层 + LLM 三票投票），含 obs_denoiser/thought_refactor/tool_fixer 精修器、L1/L2/L3 三级验证、模型路由与评估闭环。入口 `gdr-pipeline`（编排）与 `gdr-evaluator`（评估）。
 - `scripts/`：迁移与训练脚本。`migrate_catalog_v2.py` 为 v1 → v2 Task Catalog 的一次性确定性迁移；`model_train/main.py` 用 unsloth + LoRA 在 WSL2 下微调 Qwen3.5-9B（数据指向 `etl/qwenformat` 产物）；`model_train/infer.py` 做训练后推理验证。
 - `tool_runtime/`：Node 侧工具运行时，当前仅包含 Playwright MCP（`@playwright/mcp`）依赖，打包时并入 `simulate_serve/tool_runtime/`，默认禁用。
-- `tests/`：主应用离线测试套件（pytest-socket 限本机），分 `unit/`、`contract/`、`functional/` 三层；`tests/orchestration/` 覆盖 master / pipeline_executor / task_pipeline / queue / workers / failure_handler / health / CLI 等子模块，含离线 3-task 端到端冒烟与失败注入。
-- `docs/`：实施基线、phase0–6 系列报告、Catalog v2 优化说明、QwenPaw HTTP API 定义、`orchestration-design.md`（orchestration 设计基线）等 20 余篇文档。
+- `tests/`：主应用离线测试套件（pytest-socket 限本机），分 `unit/`、`contract/`、`functional/` 三层；`tests/orchestration/` 覆盖 master / pipeline_executor / task_pipeline / queue / workers / failure_handler / health / CLI 等子模块，含离线 3-task 端到端冒烟与失败注入；`tests/label_studio/` 覆盖评分卡 / task_exporter / client / project_manager / label_config XML / CLI（真实 LS 端到端用 `@pytest.mark.integration` + `LS_E2E=1` 显式开启）。
+- `label_studio/`：**流水线终点**，把 C3 4 视图 + 一张 `scorecard.v1` 分层评分卡推到本机 Label Studio 供人工逐条判定，**标注结果不回流**（不实现 fetch / 不落 `output/labeled/` / `orchestration/queue/` 零修改）。`scorecard.py` 产 L0–L5 分层指令评分，每维强制带 `source`（`measured` / `partly_estimated` / `estimated` / `missing`）与推导依据——因为训练价值分里权重 0.25 的 `health` 分量是 `gdr/core/quality_scorer.py::_avg_health_score` 自承的粗估，不标出来标注员会在假精度上做决策；数据缺失给"不可用"而**非 0**。`task_exporter.py` 做 C3 → LS `task.data` 映射与 R11 凭据扫描（命中 **fail-closed 整条拒推**，不静默脱敏——脱敏后标的样本与训练样本不一致，结论不可用）。`client.py` 是 httpx REST 封装，**零 `label-studio-sdk` 依赖**。入口 `python -m label_studio`（`init-project` / `status` / `upload` / `purge`）。设计见 [`docs/设计方案/label-studio-integration.md`](docs/设计方案/label-studio-integration.md)，契约见 [`docs/contracts/C4-scorecard.md`](docs/contracts/C4-scorecard.md)，用法见 [`docs/observability-label-studio.md`](docs/observability-label-studio.md)。
+- `docs/`：实施基线、phase0–6 系列报告、Catalog v2 优化说明、QwenPaw HTTP API 定义、`orchestration-design.md`（orchestration 设计基线）、`observability-label-studio.md`（终点推送用户视角）等 20 余篇文档。
 
 ## orchestration 三阶段流水线
 
@@ -40,21 +43,22 @@ simulate_serve（模拟采集 Run/审计 JSON）
 | `stop` | 写 STOP 哨兵文件让 master 优雅 shutdown；超时后 `taskkill /F /T`（Windows）或 `SIGKILL`（POSIX）兜底 |
 | `replay` | `phase=dead` 的 task 重置回 `pending` 重新入队（无 `--batch` 选项，新架构无 batch 概念） |
 
-进程模型：master 主线程跑一次 `PipelineExecutor.run(task_ids)`，由 [`orchestration/pipeline_executor.py`](orchestration/pipeline_executor.py) 起 `multiprocessing.Pool(processes=max_parallelism)` 并维护 `in_flight` 槽位填充；每个子进程内由 [`orchestration/task_pipeline.py::_run_one_task_pipeline`](orchestration/task_pipeline.py) 完整跑单个 task 的 `simulate → gdr → etl` 三阶段；三阶段顺序由 `_run_one_task_pipeline` 函数体 step 1–10 顺序保证，不依赖外部调度。stop 通道为 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险（Windows detach 子进程无控制台，靠哨兵文件兜底）。子进程不响应 stop_event（跑完一个 task 自然退出）；master 主线程 `shutdown()` 仅 set stop_event 提前退出 wait loop。
+进程模型：master 主线程跑一次 `PipelineExecutor.run(task_ids)`，由 [`orchestration/pipeline_executor.py`](orchestration/pipeline_executor.py) 起 `multiprocessing.Pool(processes=max_parallelism)` 并维护 `in_flight` 槽位填充；每个子进程内由 [`orchestration/task_pipeline.py::_run_one_task_pipeline`](orchestration/task_pipeline.py) 完整跑单个 task 的 `simulate → gdr → etl` 三阶段；三阶段顺序由 `_run_one_task_pipeline` 函数体 step 1–10 顺序保证，不依赖外部调度（step 11 是 `mark_phase(done)` 之后的 Label Studio 旁路推送，不参与状态机）。stop 通道为 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险（Windows detach 子进程无控制台，靠哨兵文件兜底）。子进程不响应 stop_event（跑完一个 task 自然退出）；master 主线程 `shutdown()` 仅 set stop_event 提前退出 wait loop。
 
 ## 数据格式与三阶段产物（2026-09-22 新架构 `simulation server → gdr → etl`）
 
 | 阶段 | 入口模块 | 产物文件 | 数据形态 |
 |---|---|---|---|
-| 模拟采集（C1） | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（独立事件流形态，见 docs/agent-trajectory-format.md） |
+| 模拟采集（C1） | `simulate_serve` | `output/agent_trajectory/run_<session>.json` | QwenPaw trajectory JSONL 事件流（独立事件流形态，见 docs/设计方案/agent-trajectory-format.md） |
 | 精修（C2） | `gdr` | `output/refined/<TXXX>__<session_id>.json` | 单 Session JSON，`schema_version: refined_session.v1`，含 `messages[*].blocks` + `metadata.refine_history` |
 | 4 视图（C3） | `etl` | `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json` | 训练框架 / audit 用的 4 视图文件 |
+| 评分卡（C4） | `label_studio` | **无落盘文件** —— 挂在 Label Studio `task.data["scorecard"]` | `scorecard.v1` 分层指令评分（L0–L5）+ 每维依据 + `source` 可信度标注，供人工判定；终点契约，不回流 |
 
 GDR 直接消费 trajectory C1 契约（[`gdr/parsers.from_trajectory`](gdr/parsers/__init__.py)），不再走 `etl/qwenformat` 的中间转换；`output/refined/` 是 `gdr → etl` 之间的唯一交接面（C2 契约）。etl 通过 [`etl/parsers.load_refined_session`](etl/parsers/__init__.py) 校验 C2 后调用 [`gdr/domain/schema.py::save_session_v2`](gdr/domain/schema.py) 拆 4 视图（C3 契约）。
 
 ### trajectory（独立事件流形态，2026-09-18 确认）
 
-完整格式定义见 [`docs/agent-trajectory-format.md`](docs/agent-trajectory-format.md)。每类事件只有一个职责，冗余源一律跳过：
+完整格式定义见 [`docs/设计方案/agent-trajectory-format.md`](docs/设计方案/agent-trajectory-format.md)。每类事件只有一个职责，冗余源一律跳过：
 
 - `turn_start` → user message（`payload.input_text`）。
 - `model_request` → 首个事件提取 system prompt；`payload.tools` 是工具定义权威来源。
@@ -122,19 +126,28 @@ GDR 精修（C2）通过后，etl 在尾部做格式整理（`usage_prune` + `tr
 - refined `metadata.tools`：27（含完整 description + parameters）。
 - refine_data 4 视图：`<stem>.messages.json` / `<stem>.openai.json` / `<stem>.qwenjina.txt` / `<stem>.meta.json`；`batch_id=32 runs=1 drained=True dead=0`。
 
-## 可选观测（Langfuse）
+## 终点标注（Label Studio）
 
-三阶段流水线每个 task 产生 3 个相互独立的 Langfuse trace，由同一个 `session_id` 串联（**不是**父子跨进程 trace），用于在 UI 里按时间轴对比观察"原始 trajectory → 每步精修 → 最终训练视图"的演化。**默认关闭**——`config/config.yaml` 里 `langfuse.enabled: false` 时工厂 `get_client()` 返回 `None`，业务零侵入；`langfuse` 本身也是 optional dependency（`uv sync --extra observability` 才装 SDK）。
+三阶段跑完后，C3 4 视图 + 一张**分层评分卡**（C4 契约）一起推到本机 Label Studio，供人工逐条核对并给出最终判定。**LS 是本项目终点，标注结果不回流** —— 本项目不会因为标注改变任何行为，也不维护"哪些已标过"的状态；去重靠 LS 原生 `inner_id = session_id`。
 
-| 阶段 | Trace 名 | 子 span | 触发点 |
-|---|---|---|---|
-| simulate_serve | `simulate_serve:<task_id>` | 0（一个 stage trace） | `trajectory_archiver.archive()` 的 `finally` 块；多轮按 turn 触发，最终覆盖到终态 |
-| gdr | `gdr.process_one` | 25（21 step + 3 reassemble generation + 1 retry_loop_clip judge generation） | `gdr/pipeline/runner.py::process_one` body 起 |
-| etl | `etl:<task_id>` | 2（`etl.load_refined_session` + `etl.save_c3_4views`） | `orchestration/workers/etl_worker.py::run_etl_once` |
+推的是**明确的指令评分 + 评分依据**，不是单一标量。评分卡把"这个分有多可信"摊开：每个维度标 `source`（`measured` 实测 / `partly_estimated` 部分估算 / `estimated` 整体推断 / `missing` 数据缺失不可评分），并写清为什么是估算的。**数据缺失时给"不可用"而绝不给 0** —— 0 是一个很具体的数，"没测过"不是 0。
 
-隐私边界：观测副本是**独立 Langfuse 项目**，`session_id` 是与 `output/` 制品的唯一共享字段（用于 Langfuse 端聚合），二者数据流互不替代——若 Langfuse 端被攻破，泄露的是观测副本而非训练数据。`os` 的脱敏策略继续适用于 `output/`。
+`最终判定` 控件**没有预填值**，这是故意的：系统只做风险提示（有指令项没达成 / 触发红线 / 有高权重估算分量），不替你判"这条该收还是该扔"。
 
-启用 / 关闭 / 字段白名单 / 各阶段 span 名 / 故障排查 / 采样建议见 [`docs/observability-langfuse.md`](docs/observability-langfuse.md)；编排侧接入点（`_worker_init` 的 `_reset_for_fork` + atexit `_lf_shutdown` + fork-safe client）见 [`docs/orchestration-design.md`](docs/orchestration-design.md) §6.6；设计意图与 13 + 1 字段 schema 见 [`docs/observability-langfuse-plan.md`](docs/observability-langfuse-plan.md)。
+```powershell
+# 建项目（幂等，重复跑不会建出第二个）
+uv run python -m label_studio init-project
+# 自检：LS 通不通 / 配置全不全 / 凭据在不在（不打印凭据内容）
+uv run python -m label_studio status
+# 批量推送（可加 --dry-run / --task-id T007 / --min-score 0.5 / --complexity-tier hard）
+uv run python -m label_studio upload
+```
+
+orchestration 侧另有**自动推送**开关 `label_studio.hook.enabled`（默认关），每个 task 跑完自动推一条。它与 CLI 的 `upload.enabled` 互不串。凭据只经 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path` 解析。
+
+**推送前跑 R11 凭据扫描**：`tool_call.input` 可能含用户传进 Agent 的凭据，命中**整条拒推**并报出是哪个视图、哪个模式命中。不自动脱敏后照推——那样你在 LS 里标的样本与训练样本不一致，评出来的结论没法用。
+
+推送是**旁路**：LS 挂了 / 慢 / 认证失败，task 仍标 `done`；有独立超时（默认 5 秒）。详见 [`docs/observability-label-studio.md`](docs/observability-label-studio.md)（用户视角）、[`docs/设计方案/label-studio-integration.md`](docs/设计方案/label-studio-integration.md)（设计基线）、[`docs/contracts/C4-scorecard.md`](docs/contracts/C4-scorecard.md)（字段级 schema）。
 
 ## 架构
 
@@ -160,6 +173,13 @@ python -m orchestration start --all-tasks --parallelism 1 --stay      # 单进�
 python -m orchestration status                                       # 队列 6 phase 计数 + 最近 task
 python -m orchestration stop --timeout 15                            # 优雅停，超时强杀
 python -m orchestration replay                                       # 重放全部 phase=dead 的 task
+
+# Label Studio 终点推送（默认关闭，需在 config/config.yaml 开 upload.enabled）
+python -m label_studio init-project                                  # 建 LS 项目（幂等）
+python -m label_studio status                                        # LS 连通性 / 配置 / 凭据自检
+python -m label_studio upload --dry-run                              # 只打印计划，不推
+python -m label_studio upload                                        # 真推
+
 # Windows wrapper 等价于：
 scripts\run.bat start --tasks T001,T002
 
@@ -167,14 +187,15 @@ scripts\run.bat start --tasks T001,T002
 python -m pytest -q
 ```
 
-Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或下载。安装方式见 `docs/phase4-playwright-setup.md` 和 `docs/phase5-camoufox-setup.md`。
+Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或下载。用 `python -m simulate_serve --check-tools` 查看完整状态。
 
 ## 关键保证
 
 - 本地模拟端拥有最终验收权；远端 Validation Agent 不能直接判成功。
 - 必选准则只有全部 `PASS` 才能成功；工具缺失为 `INCONCLUSIVE`，异常为 `ERROR`。
 - POST 结果不明且远端没有幂等键时不会自动重复提交。
-- 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。Langfuse 观测副本（2026-09-23 起的可选可观测性，见 [`docs/observability-langfuse.md`](docs/observability-langfuse.md)）按设计上传完整 trajectory / refined Session / 4 视图内容用于对比观察，**不入训练集**（独立 Langfuse 项目），不替代 `output/` 制品的脱敏策略。完整字段级 schema 与 13 + 1 个白名单字段见 [`docs/observability-langfuse-plan.md`](docs/observability-langfuse-plan.md) §3；启用方式见 [`docs/observability-langfuse.md`](docs/observability-langfuse.md) §2。
+- 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
+- 红线有一个受控例外：**Label Studio 终点副本**（2026-09-28 起）—— 推 C3（refined CoT，属训练制品，不受 raw CoT 红线约束）与评分卡 `scorecard.v1`，推送前跑 R11 凭据扫描，命中 fail-closed 拒推。红线约束的是 **raw CoT 的外传**；refined CoT 是 CoT SFT 的必要输入，**不要**把它剥掉。
 - 审计数据保存所有 Run；蒸馏数据只导出干净的成功对话。
 - 内置 Catalog 使用 Schema v2：68 个训练任务加 30 个分布外评估任务（E001-E030），共 98 个 Task 全部关联 10 个对话策略 Scenario。
 - `test_fixture` 仅用于本地离线用例，不进入远端首轮请求、交互 Prompt 或 Semantic Judge。
@@ -186,7 +207,7 @@ Playwright 和 Camoufox 默认禁用，不会在应用启动时自动安装或�
 ## orchestration 边界
 
 - `master.py` 仅持有配置 / `SQLiteQueue` / `stop_event`，不直接起 worker 线程；调度全部由 [`PipelineExecutor`](orchestration/pipeline_executor.py) 的 `multiprocessing.Pool` 完成。
-- 单 task 三阶段 `simulate → gdr → etl` 在子进程内严格串行（[`task_pipeline._run_one_task_pipeline`](orchestration/task_pipeline.py) 函数体 step 1–10），不依赖外部调度；不同 task 之间可任意阶段重叠，由 `max_parallelism` 槽位控制并发度。
+- 单 task 三阶段 `simulate → gdr → etl` 在子进程内严格串行（[`task_pipeline._run_one_task_pipeline`](orchestration/task_pipeline.py) 函数体 step 1–10），不依赖外部调度；不同 task 之间可任意阶段重叠，由 `max_parallelism` 槽位控制并发度。step 11 的 Label Studio 推送在 `mark_phase(done)` **之后**、**不写 SQLite**，是终点层旁路，不改 `queue/` 契约。
 - 子进程内未捕获异常被顶层 try/except 兜底 → `queue.mark_failed(stage=<current_stage>)` + 返回 `{"phase": "dead"}`，**不抛异常给主进程**；主进程通过 `future.get()` 拿到 dict，按 `phase` 计入 `done/dead`。
 - 子进程崩溃（pool 进程异常退出）由 `future.get()` 抛 `Exception`，主进程捕获后 `dead++` + 兜底 `mark_failed(stage="simulate")`，**继续下一个**。
 - 优雅停止走 SIGINT/SIGTERM/SIGBREAK + STOP 哨兵文件双保险；Windows detach 子进程无控制台、CTRL_BREAK_EVENT 不可达，哨兵文件是唯一可靠通道。
@@ -225,4 +246,6 @@ orchestration 的 `start → PipelineExecutor (multiprocessing.Pool) → task_pi
 
 > **编排侧依赖清单基于** `orchestration/__main__.py`、`master.py`、`pipeline_executor.py`、`task_pipeline.py`、`producer_simulate.py`、`workers/base_worker.py`、`workers/gdr_worker.py`、`workers/etl_worker.py` 的静态 `import` 扫描结果。
 
-Catalog v2 字段、迁移决策和本地验收矩阵见 `docs/catalog-v2-optimization.md`。orchestration 设计与决策见 `docs/orchestration-design.md`。
+Catalog v2 字段与迁移决策见 `simulate_serve/config/` 下的内置 YAML 与
+[`docs/设计方案/pipeline-contracts.md`](docs/设计方案/pipeline-contracts.md) §1。
+orchestration 设计与决策见 [`docs/orchestration-design.md`](docs/orchestration-design.md)。

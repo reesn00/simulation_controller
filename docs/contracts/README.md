@@ -53,12 +53,17 @@ pending  ──►  gdr_processing  ──►  pending_etl  ──►  etl_proce
 | C1 | trajectory_events | simulation server | gdr | `output/agent_trajectory/<run_id>__<session_id>.json`（JSONL 事件流） |
 | C2 | refined_session | gdr | etl | `output/refined/<TXXX>__<session_id>.json`（单 Session 对象） |
 | C3 | final_sft_views | etl | 训练 / 审计 | `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json` |
+| C4 | scorecard | `label_studio/scorecard.py` | Label Studio UI | 无独立文件，挂在 LS `task.data["scorecard"]` |
+
+> C4 是**终点契约**（方案 [`../设计方案/label-studio-integration.md`](../设计方案/label-studio-integration.md)）：
+> 标注结果不回流本项目，故无 C4 落盘文件。
 
 | 契约 | 详解 |
 |---|---|
 | C1 trajectory 事件流 | [C1-trajectory-events.md](C1-trajectory-events.md) |
 | C2 精修后 Session | [C2-refined-session.md](C2-refined-session.md) |
 | C3 最终 4 视图 | [C3-final-sft-views.md](C3-final-sft-views.md) |
+| C4 评分卡 | [C4-scorecard.md](C4-scorecard.md) |
 | 调整方案 | [migration-plan.md](migration-plan.md) |
 
 ## 3. 跨契约约束

@@ -45,12 +45,18 @@ CLI / Bootstrap
 - ToolRegistry 是工具创建、健康检查、能力选择和关闭的唯一 owner。
 - 所有必选 Criterion 必须 PASS 才能成功；工具缺失不能 fail-open。
 - 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
-  *例外*:Langfuse 观测副本(2026-09-23 起的可选可观测性,见
-  [`docs/observability-langfuse.md`](docs/observability-langfuse.md) 用户视角总览 /
-  [`docs/observability-langfuse-plan.md`](docs/observability-langfuse-plan.md) 设计基线)
-  按设计上传完整 trajectory / refined Session / 4 视图内容用于对比观察,
-  **不入训练集**(独立 Langfuse 项目),不替代 `output/` 制品的脱敏策略。
-  完整字段级 schema 与 13 + 1 个白名单字段见基线 §3;启用方式见用户视角 §2。
+  *定义*:「思维链」按**加工状态**分两类 —— **raw CoT**(QwenPaw 原始输出,未经 gdr
+  精修)与 **refined CoT**(经 `thought_refactor` 精修后)。本红线约束 **raw CoT 的
+  外传**;refined CoT 属训练制品,不受此限(C3 保留 thinking 是 CoT SFT 的必要输入,
+  见 MEMORY「ETL drops structured thinking」的修复决策 —— 不要"修复"掉它)。
+  *落盘约定*:C1 trajectory 落 raw CoT 供重放;C2/C3 落 refined CoT。
+  *外部副本例外*(2026-09-28 已实施):Label Studio 推送 C3(refined CoT)
+  与**评分卡 `scorecard.v1`**(L0–L5 指令评分 + 每维依据 + `source` 可信度标注);
+  LS 是本项目**终点**,标注结果不回流(不实现 fetch / 不落 `output/labeled/`,
+  `orchestration/queue/` 零修改)。推送前跑 R11 凭据扫描,命中 **fail-closed 拒推**。
+  设计见 [`docs/设计方案/label-studio-integration.md`](docs/设计方案/label-studio-integration.md),
+  契约见 [`docs/contracts/C4-scorecard.md`](docs/contracts/C4-scorecard.md),
+  用法见 [`docs/observability-label-studio.md`](docs/observability-label-studio.md)。
 - `gdr/reassembly/reassembler.py` 工具配对扫描必须**跨 toolcall 连续扫描**——并行调用（call, call, result, result）下"在下一个 toolcall 处截断"会把成功调用误判为失败删除。
 
 ## 数据格式约定
@@ -110,6 +116,7 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 | `gdr/parsers/` | C1 契约入口：`from_trajectory` |
 | `gdr/domain/` | Session / Message / Block pydantic 类型 + `save_session_v2` / `save_refined_session` |
 | `gdr/{refiners,validators,core,reassembly,routing,config,prompts}/` | gdr 内部模块（详见 [docs/设计方案/gdr-plan.md](docs/设计方案/gdr-plan.md)） |
+| `label_studio/` | C3 + 评分卡 → Label Studio 单向推送（终点，不回流）；CLI `init-project`/`status`/`upload`/`purge`；R11 凭据扫描 |
 | `orchestration/` | 顶层调度（master / pipeline_executor / task_pipeline / producer / workers / queue / failure_handler；2026-09-22 起删 watcher / batch_tracker / qf_worker） |
 | `tests/` | unit、contract、functional；默认不访问公网 |
 
@@ -117,7 +124,7 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 
 - Python 配置代码位于 `simulate_serve/config.py` 和 `configuration/`。
 - 内置 YAML 只位于 `simulate_serve/config/`，采用文件级 `schema_version: "2"`；v1/v0 仅作为兼容输入。
-- 58 个内置 Task 全部关联 11 个对话策略 Scenario；公开 `initial_request` 与本地 `test_fixture` 严格隔离。
+- 98 个内置 Task（T001–T068 训练集 + E001–E030 分布外泛化评估集）全部关联 10 个对话策略 Scenario；公开 `initial_request` 与本地 `test_fixture` 严格隔离。
 - `initial_request` 原样作为首轮远端消息；本地模型不得改写或削弱请求。
 - Criterion 的 `remediation` 决定失败责任、自然反馈和是否允许继续引导；只有可重试的 executor-owned FAIL 可以触发追问。
 - 追问必须要求远端保留已满足内容并返回包含全部要求的完整修订结果，避免只验最新回复时发生准则振荡。
@@ -125,6 +132,7 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 - Playwright/Camoufox 默认 disabled，启动不自动安装。使用 `--check-tools` 查看完整状态。
 - 使用 `--readiness` 在不连接 QwenPaw 的情况下汇总 Judge/Provider 缺口及受影响 Task；该命令不创建 Run 日志。
 - 全项目统一配置入口：仓库根 `config/config.yaml`（gitignored，含真实凭据；提交版模板 `config/config.example.yaml`）。四个模块（simulate_serve / orchestration / gdr / etl.qwenformat）的配置收纳于对应 section，`llm:` 共享段提供端点/密钥/模型缺省，支持 `${VAR}` 环境变量占位符。模块级配置文件已删除，根配置缺失直接报错、无兜底。定位可用 `SIMCTL_CONFIG`（gdr 用 `GDR_CONFIG_FILE`）重定向。凭据不得提交、打包、复制到测试、文档或日志。
+- Label Studio 段（`label_studio:`，2026-09-28 已实施，两个开关默认关闭）：本项目**终点**是 Label Studio —— 推送 C3 与评分卡，不做回流；凭据走 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path`。`upload.enabled` 只管 `python -m label_studio upload`（全量），`hook.enabled` 只管 orchestration step 11 自动推送（单条），两者互不串。`credential_scan` 默认开且 **fail-closed 拒推**。
 
 ## 输出
 
@@ -181,7 +189,8 @@ phase 表 + `mark_audited` 定义。
 
 ## 文档
 
-- `docs/orchestration-design.md` — orchestration 三阶段流水线设计基线（2026-09-22 重写）
+- `docs/orchestration-design.md` — orchestration 三阶段流水线设计基线（2026-09-22 重写；§6.8 Label Studio 旁路推送）
+- `docs/observability-label-studio.md` — Label Studio 推送的用户视角（评分卡为什么标 `source` / 哪类样本会被拒推）
 - `docs/refactor-development-progress.md` — gdr SFT 数据质量修复迭代日志（含 2026-09-19 六件套 F1/F2/F3-C + Fix A/B/C + F3-D/E）
 - `docs/执行agent资料/`、`docs/任务合集/`、`docs/设计方案/` — 项目历史档案
-- 框架与策略长文：`docs/gdr-context-understanding-and-policy.md`、`docs/gdr-module-functional-overview.md`、`docs/gdr-mvp-design.md`、`docs/incremental-state-tracking-plan.md`
+- 框架与策略长文：`gdr/docs/gdr-context-understanding-and-policy.md`、`gdr/docs/gdr-module-functional-overview.md`、`gdr/docs/gdr-mvp-design.md`、`gdr/docs/incremental-state-tracking-plan.md`

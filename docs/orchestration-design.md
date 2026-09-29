@@ -1,6 +1,6 @@
-# Orchestration 三阶段 Pipeline · 设计文档（2026-09-22 重写）
+# Orchestration 三阶段 Pipeline · 设计文档（2026-09-22 重写，2026-09-28 增补 Label Studio 终点层）
 
-> **状态**：已实施（第 1 轮 + 第 2 轮文档同步完成）
+> **状态**：已实施（第 1 轮 + 第 2 轮文档同步完成；2026-09-28 增补 §3.2 / §4 / §6.8 / §7 的 Label Studio 旁路推送，同日整块删除 Langfuse 横切观测层，§3.1 / §6.6 转为「（删除）」占位）
 > **范围**：`simulate_serve / gdr / etl` 三个独立模块的流水线串联层
 > **不在范围**：`simulate_serve` 内部重构、`data_refiner` 接入（明确跳过）、`etl/pawsession` 接入（明确跳过）
 
@@ -18,7 +18,7 @@
 | 中间态 `gdr_processing` / `etl_processing` | 需要 `reap_stale` 周期回退卡死任务 | 用 `multiprocessing.Pool` 的 future + 内存 `in_flight: dict[AsyncResult, str]` 替代，无中间态 |
 | `batch_tracker.wait_for_terminal` | 凑批等待逻辑复杂 | 子进程内 `producer_simulate.run_one_task` 同步阻塞，跑完直接 mark_phase |
 
-详细删除清单与新机制映射见 [`docs/设计方案/pipeline-serial-parallel-refactor.md`](设计方案/pipeline-serial-parallel-refactor.md) 与 [`docs/contracts/migration-plan.md`](../contracts/migration-plan.md)；模块接口级契约见 [`docs/设计方案/pipeline-contracts.md`](设计方案/pipeline-contracts.md)。
+详细删除清单与新机制映射见 [`docs/设计方案/pipeline-serial-parallel-refactor.md`](设计方案/pipeline-serial-parallel-refactor.md) 与 [`docs/contracts/migration-plan.md`](contracts/migration-plan.md)；模块接口级契约见 [`docs/设计方案/pipeline-contracts.md`](设计方案/pipeline-contracts.md)。
 
 ## 2. 设计决策汇总
 
@@ -26,7 +26,7 @@
 |---|---|---|---|
 | 1 | 跳过 `data_refiner` | gdr 直接吃 trajectory | trajectory 已是 gdr 期待的 Session JSON 形态 |
 | 2 | 跳过 `etl/pawsession` | orchestration 不再调 pawsession | pawsession 是独立 ETL，与主链路平行 |
-| 3 | 跳过 `qf` 中间阶段 | 直接 `simulation server → gdr → etl` | 旧 qf 转换已并入 etl 阶段（见 [`etl/qwenformat/transform`](etl/qwenformat/transform.py)） |
+| 3 | 跳过 `qf` 中间阶段 | 直接 `simulation server → gdr → etl` | 旧 qf 转换已并入 etl 阶段（见 [`etl/qwenformat/transform`](../etl/qwenformat/transform.py)） |
 | 4 | 处理顺序 | simulation server → gdr → etl | 单 task 严格串行 |
 | 5 | 并行语义 | 任务级并行 + 阶段内顺序 | 同一 task 内 simulate→gdr→etl 严格串行；不同 task 可任意阶段重叠 |
 | 6 | 并行实现 | `multiprocessing.Pool` 子进程池 | 避免 GIL；子进程间唯一共享资源是 SQLite（自身 serializes 写） |
@@ -38,6 +38,7 @@
 | 12 | 死信恢复 | `python -m orchestration replay` | 把 `phase=dead` 全部重置为 `phase=pending` |
 | 13 | 生命周期 | daemon 服务（`start` / `status` / `stop` / `replay` CLI） | PID file + STOP 哨兵文件（Windows 不可达 SIGBREAK） |
 | 14 | 汇聚产出 | 不要 | 每个 trajectory 一份 4 视图，不聚合 |
+| 15 | 流水线终点 | C3 之后单向推 Label Studio，**不回流** | LS 是人工标注终点；标注结果对本项目无消费者，故不实现 fetch / 不落 `output/labeled/` / `queue/` 零修改。去重靠 LS 原生 `inner_id`（§6.8） |
 
 ## 3. 完整数据流
 
@@ -64,8 +65,10 @@
 │         │   │     │      └─> etl/parsers.load_refined_session         │
 │         │   │     │            └─> gdr/domain/save_session_v2         │
 │         │   │     │                  └─> out/refine_data/<T>__<sid>_refined.{messages,openai,qwenjina.txt,meta}.json │
-│         │   │     ├─ 9. mark_phase(done, etl_*_path=...)              │
-│         │   │     └─ 10. return {"phase": "done", "stage": "done"}    │
+│         │   │     ├─ 10. mark_phase(done, etl_*_path=...)             │
+│         │   │     ├─ 11. _push_to_label_studio(paths, meta_path)     │
+│         │   │     │      └─> orchestration/ls_hook (旁路, 失败不影响 done)
+│         │   │     └─>  return {"phase": "done", "stage": "done"}     │
 │         │   │                                                         │
 │         │   └─> in_flight: dict[AsyncResult, str] 槽位填充            │
 │         │         ├─> future.ready() 时 future.get() 取结果           │
@@ -77,27 +80,31 @@
 
 跨进程共享：唯一资源是 SQLite（`output/orchestration/orchestration.db`）；SQLite 自身 serializes 写，多子进程并发安全。文件系统产物各子进程独立写。
 
-### 3.1 横切观测层（Langfuse，可选）
+### 3.1 （删除）横切观测层（Langfuse）
 
-三阶段产生 3 个相互独立的 trace，由同一个 `session_id` 串联（**不强制父子跨进程**）：
+原 §3.1 描述的三条独立 trace（`simulate_serve:<task_id>` / `gdr.process_one` /
+`etl:<task_id>`）已随 Langfuse 集成于 2026-09-28 整块删除，详见 §6.6。
+
+### 3.2 终点层（Label Studio，可选）
+
+三阶段跑完后，C3 的 4 视图与一张**分层评分卡**（C4 契约）一起推到本机 Label Studio，供人工逐条判定：
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
-│ trace 1: simulate_serve:<task_id>                                     │
-│   └─ stage_trace (input=None, output=C1 trajectory dict)             │
-│       └─ 触发:trajectory_archiver.archive() 的 finally 块             │
-│                                                                      │
-│ trace 2: gdr.process_one                                              │
-│   └─ 25 子 span(21 step + 3 reassemble generation + 1 judge gen)     │
-│       └─ 触发:gdr/pipeline/runner.py::process_one body 起             │
-│                                                                      │
-│ trace 3: etl:<task_id>                                                │
-│   └─ 2 子 span(etl.load_refined_session + etl.save_c3_4views)        │
-│       └─ 触发:orchestration/workers/etl_worker.py::run_etl_once      │
+│ Label Studio（终点，不回流）                                          │
+│   task.data = { messages, qf_text, metadata, criteria,              │
+│                  training_value_score, complexity_tier,              │
+│                  scorecard }                                          │
+│   └─> task.data["scorecard"] : scorecard.v1 (L0–L5 分层 + 依据)     │
+│         每维必带 source : measured|partly_estimated|estimated|missing│
+│   └─> 触发:orchestration.task_pipeline._push_to_label_studio         │
+│         (= orchestration/ls_hook.run_hook, 仅 hook.enabled=true 时)  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-默认关闭:`langfuse.enabled=false` 时工厂 `get_client()` 返回 None,业务零侵入;启用时由 `orchestration.task_pipeline._run_one_task_pipeline` 入口一次性 `load_langfuse_config()` + `get_client(cfg)` 装配 client,子阶段 `run_gdr_once` / `run_etl_once` 接收 `langfuse_cfg` / `langfuse_client` 双轨参数。`multiprocessing.Pool` 子进程 fork 后 SDK 不 fork-safe(socket 失效),`_worker_init` 调用 `_reset_for_fork()` 清旧 `_client`,子进程下次 `get_client()` 重新 init 一份(主进程 / 子进程各持一份);atexit `_lf_shutdown`(仅当 enabled)确保退出前 flush。详见 §6.6 与用户视角 [`docs/observability-langfuse.md`](observability-langfuse.md)。
+推的是**明确的指令评分 + 评分依据**，不是单一标量：`scorecard.v1` 把"这个分有多可信"和"为什么是这个分"一起交出去（详见 [`contracts/C4-scorecard.md`](contracts/C4-scorecard.md)）。
+
+**LS 是单向终点**，标注结果不回本项目 —— 不实现 fetch、不落 `output/labeled/`、`orchestration/queue/` 零修改。已 `mark_phase(done)` 之后推送，推送成败**不改变 task 终态**。凭据只经 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path` 解析；推送前跑 R11 凭据扫描，命中 fail-closed 拒推。详细约束见 §6.8，用法见 [`observability-label-studio.md`](observability-label-studio.md)。
 
 ## 4. 模块划分
 
@@ -106,7 +113,7 @@
 | `orchestration/__main__.py` | CLI 入口：`start` / `status` / `stop` / `replay` 四个子命令 | [`orchestration/__main__.py`](../orchestration/__main__.py) |
 | `orchestration.master` | `Master` 类：持有 cfg / queue / stop_event；`run()` 调 PipelineExecutor，`shutdown()` set stop_event，`status()` 走 `count_by_phase()` | [`orchestration/master.py`](../orchestration/master.py) |
 | `orchestration.pipeline_executor` | `PipelineExecutor`：起 `multiprocessing.Pool`，维护 `in_flight: dict[AsyncResult, str]` 槽位填充 | [`orchestration/pipeline_executor.py`](../orchestration/pipeline_executor.py) |
-| `orchestration.task_pipeline` | `_worker_init`(fork-safe:`_reset_for_fork()` + atexit `_lf_shutdown`)+ `_run_one_task_pipeline`:子进程入口,完整跑 simulate → gdr → etl + Langfuse client 装配(`load_langfuse_config` + `get_client`)+ `_safe_run_gdr` / `_safe_run_etl` 双轨传 `langfuse_cfg` / `langfuse_client` | [`orchestration/task_pipeline.py`](../orchestration/task_pipeline.py) |
+| `orchestration.task_pipeline` | `_worker_init`(进程内 LLM 并发信号量重建)+ `_run_one_task_pipeline`:子进程入口,完整跑 simulate → gdr → etl；step 11 调 `_push_to_label_studio`（旁路） | [`orchestration/task_pipeline.py`](../orchestration/task_pipeline.py) |
 | `orchestration.settings` | `PipelineSettings` + `Paths`（frozen dataclass） | [`orchestration/settings.py`](../orchestration/settings.py) |
 | `orchestration.config_loader` | `load_config`：从 YAML 解析为 `OrchestrationConfig` | [`orchestration/config_loader.py`](../orchestration/config_loader.py) |
 | `orchestration.queue.sqlite_queue` | `SQLiteQueue`：upsert_task / mark_phase / mark_failed / requeue_dead / list_tasks / count_by_phase | [`orchestration/queue/sqlite_queue.py`](../orchestration/queue/sqlite_queue.py) |
@@ -118,6 +125,14 @@
 | `orchestration.health` | `collect_tasks(queue)` + `write_health(queue, log_dir)`：phase 分布 + `health.json` 落盘 | [`orchestration/health.py`](../orchestration/health.py) |
 | `orchestration.daemon` | `start_detached` / `start_foreground` / `daemon_stop` + PID file + STOP 哨兵文件 + 日志重定向 | [`orchestration/daemon.py`](../orchestration/daemon.py) |
 | `orchestration.errors` | `OrchestrationError` 等异常类型 | [`orchestration/errors.py`](../orchestration/errors.py) |
+| `orchestration.ls_hook` | `load_hook_settings` / `push_with_timeout` / `run_hook` + 进程级 `METRICS`：C3 + 评分卡 → Label Studio 单条推送。**全函数不抛异常**，超时用 `ThreadPoolExecutor` + 显式 `shutdown(wait=False)` | [`orchestration/ls_hook.py`](../orchestration/ls_hook.py) |
+| `orchestration.criterion_source` | `load_criterion_results`：只读侧从 `output/runs/<run_id>/` 取最后一轮 `ValidationReport.criteria`，在 etl 阶段注入 C3 metadata 供评分卡 L0 用。fail-soft，缺失只让 L0 标 `missing` | [`orchestration/criterion_source.py`](../orchestration/criterion_source.py) |
+
+**链路外的终点模块**（不被 orchestration 主链路 import，只被 `ls_hook` 调）：
+
+| 模块 | 角色 |
+|---|---|
+| `label_studio/` | C3 + `scorecard.v1` → Label Studio 单向推送。`scorecard`（L0–L5 评分卡）/ `client`（httpx REST，零 `label-studio-sdk` 依赖）/ `task_exporter`（C3 → `task.data` + R11 凭据扫描）/ `project_manager` / `__main__`（`init-project`/`status`/`upload`/`purge`）。见 §6.8 |
 
 **删除**（2026-09-22 起）：
 - `orchestration/batch_tracker.py` —— 批次追踪概念删除
@@ -328,6 +343,11 @@ def _run_one_task_pipeline(
                          etl_openai_path=openai_path,
                          etl_qwenjina_path=qwenjina_path,
                          etl_meta_path=meta_path)
+
+        # step 11: Label Studio 旁路推送 (2026-09-28, 方案 §9)。
+        # 刻意在 mark_phase(done) 之后: 推送是旁路, 成败不改 task 终态。
+        # ls_hook 内部永不抛异常, 失败只记日志 + 进程级指标。
+        _push_to_label_studio(paths, meta_path)
         return {"task_id": task_id, "phase": "done", "stage": "done"}
 
     except Exception as exc:
@@ -374,63 +394,20 @@ def _run_one_task_pipeline(
 - `_run_one_task_pipeline` 在子进程内同步阻塞，跑完直接 `mark_phase(gdr)`。
 - 无跨批次凑批等待逻辑。
 
-### 6.6 Langfuse 横切观测层接入点（2026-09-23，PR 1–6）
+### 6.6 （删除）Langfuse 横切观测层
 
-Langfuse 集成是**横切观测层**，**不**改变三阶段数据契约（`simulation server → gdr → etl` 的 C1/C2/C3 文件格式不变），仅在三阶段的关键节点开 trace 供 UI 对比观察。
+旧版的 Langfuse 集成（2026-09-23 起的可选可观测性）已于 2026-09-28 **整块删除**：
+- 工厂 `simulate_serve/observability/langfuse_client.py`、`orchestration/observability/langfuse_config.py`、
+  `gdr/observability/`（`llm_hook` / `runner_helpers`）全部删文件；
+- 三阶段入口的 `stage_trace` / `step_span` 包裹层与 `langfuse_cfg` / `langfuse_client`
+  双轨传参、`_worker_init` 的 `_reset_for_fork()` + atexit `_lf_shutdown` 全部移除
+  （`_worker_init` 现在只做进程内 LLM 并发信号量重建）；
+- 根 `config/config.yaml` 的 `langfuse:` 段、gdr 扁平 `langfuse_*` 字段、
+  `observability` optional extra 与 `langfuse_real` pytest marker 一并删除。
 
-#### 6.6.1 装配点（`_run_one_task_pipeline` 入口）
-
-子进程入口一次性 `load_langfuse_config()` + `get_client(cfg)`，仅当 `enabled=True` 构造 client，否则 `langfuse_client=None`，所有下游 `_safe_run_gdr` / `_safe_run_etl` 拿到 `None` 时业务零侵入：
-
-```python
-langfuse_cfg = load_langfuse_config()  # 从根 config/config.yaml 的 langfuse: 段
-langfuse_client = get_client(langfuse_cfg) if langfuse_cfg.enabled else None
-refined_path = _safe_run_gdr(
-    task_id=task_id, src_path=src_path, ..., langfuse_cfg=langfuse_cfg, langfuse_client=langfuse_client,
-)
-etl_outputs = _safe_run_etl(
-    task_id=task_id, c2_path=refined_path, ..., langfuse_cfg=langfuse_cfg, langfuse_client=langfuse_client,
-)
-```
-
-子阶段 worker（`run_gdr_once` / `run_etl_once`）接收双轨参数，**优先级**：显式 `langfuse_client` > 显式 `langfuse_cfg` > 旧 `gdr_settings` / `etl_settings` 兜底。这样 PR 5 引入的 orchestration 入口不影响 PR 3 阶段直接调 worker 的旧路径（gdr 进程内 `pipeline/runner.py::_process_one_file` 仍走 `gdr.config.settings.langfuse_*` flat 字段）。
-
-#### 6.6.2 fork-safe 客户端（`_worker_init`）
-
-`multiprocessing.Pool` 默认 fork 模型下，主进程的 Langfuse SDK client（含 HTTPS socket / 内部 queue）在子进程里**不可用**——`file descriptor` 失效导致 `ConnectionError` / `Bad file descriptor`。
-
-[`orchestration/task_pipeline.py::_worker_init`](../orchestration/task_pipeline.py) 在 `Pool(initializer=_worker_init)` 触发时：
-
-1. 调工厂 `_reset_for_fork()` 把主进程 `_client` 单例清空（idempotent）；
-2. 当 `langfuse_cfg.enabled=True` 时 `atexit.register(_lf_shutdown)` 兜底退出前 `client.flush()`，避免 SIGKILL/OOM 丢批次。
-
-子进程下次 `get_client(cfg)` 触发重新 init 一份（主进程 / 子进程各持一份，互不污染）。
-
-**注**：`Pool` 必须显式传 `initializer=_worker_init, initargs=(paths,)`，不能只传 `processes=N`。旧版只传 `processes=N` 会跳过 worker init → `_reset_for_fork()` 不被调用 → 偶发 `ConnectionError` 但 trace 仍能写出（业务不挂，观测丢数据）。
-
-#### 6.6.3 三阶段 trace 名与签出位置
-
-| 阶段 | Trace 名 | 触发点 | 子 span |
-|---|---|---|---|
-| simulate_serve | `simulate_serve:<task_id>` | `trajectory_archiver.archive()` finally 块（每 turn 调用一次，最终覆盖到终态） | 0（一个 stage trace） |
-| gdr | `gdr.process_one`（在 `pipeline/runner.py::process_one` body 起；`run_gdr_once` 不再起 outer） | 同左 | 25 个（21 step + 3 reassemble generation + 1 retry_loop_clip judge generation） |
-| etl | `etl:<task_id>`（`stage_trace` 外层；`metadata.attempt:N` 标记重试） | `etl_worker.run_etl_once` body | 2 个（`etl.load_refined_session` + `etl.save_c3_4views`） |
-
-**session_id 串联三阶段**：simulate_serve 用 `trajectory_archiver.set_run_context(run_ctx)` 注入 `session_id = run.remote_session_id`；gdr 从 C1 → C2 保留 `Session.session_id`；etl 入口用 `run_etl_once(session_id=...)` 入参。三阶段必须用**同一个** `session_id`，否则 Langfuse UI 看到 3 个独立 trace 不串起来。`_run_one_task_pipeline` 函数体内 step 5/7 把 `session_id` 传下去，**不要**在 worker 内重派生。
-
-#### 6.6.4 payload 模式与 fork-safe 关闭
-
-`upload_payload: full | summary | none` 三态（默认 full）。`max_payload_bytes` 触发降级：单 span payload 超过阈值时降级到 summary（仅保留 keys + byte 数），避免大 session（1000+ block）OOM。
-
-`enabled=false` 时：
-
-- 工厂 `get_client()` 返回 None，`step_span` / `stage_trace` 都是空 no-op；
-- `_worker_init` 不会注册 atexit；
-- 业务路径零侵入（已验证 678 passed + 3 skipped with `enabled=false`）。
-
-**基线**：三阶段数据契约（C1/C2/C3）字段、文件路径、SSE 事件流、QwenPaw 交互协议 — 全部不受 Langfuse 影响。`output/` 的脱敏策略继续适用；Langfuse 端是独立项目，独立数据流。
-
-详见用户视角 [`docs/observability-langfuse.md`](observability-langfuse.md)（启用 / 关闭 / 字段白名单 / 故障排查 / 采样建议）· 设计基线 [`docs/observability-langfuse-plan.md`](observability-langfuse-plan.md)（13 字段 schema + 风险与回退）· 模块级实施参考 [`docs/langfuse-simulate-server.md`](langfuse-simulate-server.md) · [`docs/langfuse-gdr.md`](langfuse-gdr.md) · [`docs/langfuse-etl.md`](langfuse-etl.md)。
+**不改变三阶段数据契约**（C1/C2/C3 字段、文件路径、SSE 事件流）。`session_id` 仍
+由 `_run_one_task_pipeline` 往下传，但只用于文件名 / LS `inner_id` 去重，不再承担
+跨进程 trace 串联职责。观测能力改由 Label Studio 终点层（§3.2 / §6.8）承担。
 
 ### 6.7 Windows 控制台窗口抑制（2026-09-23）
 
@@ -467,6 +444,31 @@ etl_outputs = _safe_run_etl(
 
 **非 Windows 平台**：`_winapi.CreateProcess` 不存在，`install_no_window_policy()` 直接标记 `_INSTALLED=True` 返回 False（no-op）；不抛错。
 
+### 6.8 Label Studio 旁路推送（2026-09-28）
+
+`orchestration/ls_hook.py`。C3 写完后自动把轨迹 + 评分卡推到本机 Label Studio。
+
+**三条硬约束**（[`设计方案/label-studio-integration.md`](设计方案/label-studio-integration.md) §9）：
+
+1. **绝不阻塞主流程**：LS 挂了 / 慢了 / 认证失败，task 仍标 `done`。推送是旁路，
+   不是流水线的一环。`ls_hook` 全函数不抛异常。
+2. **独立超时**：`ThreadPoolExecutor` + `future.result(timeout=hook_timeout_seconds)`。
+   **不用 `with`** —— `with` 退出时会 join，超时就白设了；显式 `shutdown(wait=False)`。
+3. **默认关闭**：只看 `label_studio.hook.enabled`，不看 `upload.enabled` ——
+   两个开关交叉会让 hook 静默空转。
+
+**队列零修改**：hook 在 `mark_phase(done)` 之后运行，不写 SQLite，7 个 phase
+状态机与 `tasks` 表结构全部不动。去重靠 LS 原生 `inner_id = session_id`。
+
+**凭据**：`api_key` 只经 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path` 解析。
+`ls_hook` 自身不读凭据，只把 settings 透传给 `label_studio`；异常消息由
+`label_studio/errors.py::redact` 统一脱敏。
+
+进程级指标（`ls_hook.METRICS`）：`attempted` / `succeeded` / `failed` /
+`timed_out` / `skipped`。注意 LS 侧**自己**抛的 `TimeoutError` 与"我们等超时"
+共用同一个异常类型，代码用 `future.done()` 区分 —— 否则 `failed` / `timed_out`
+两个指标会互相污染。
+
 ## 7. 配置（`config/config.yaml`）
 
 ```yaml
@@ -490,6 +492,37 @@ paths:
   pid_file: output/orchestration/orchestration.pid
   log_dir: output/orchestration/logs
 ```
+
+终点层是**独立的顶层 section**（`orchestration` 的 config_loader 不解析它，由
+`label_studio` / `orchestration.ls_hook` 各自按 `SIMCTL_CONFIG` 解析同一个根配置）：
+
+```yaml
+label_studio:
+  base_url: "http://127.0.0.1:8088"
+  api_key: "${LABEL_STUDIO_API_KEY}"     # 或用 api_key_path 指向存 key 的文件
+  project_title: "trajectory-sft-quality"
+
+  upload:          # 只管 `python -m label_studio upload`（全量批推）
+    enabled: false                      # 默认关
+    batch_size: 50
+    include_predictions: true
+  hook:             # 只管 step 11 自动推送（单条）
+    enabled: false                      # 默认关;与 upload.enabled 互不串
+    hook_timeout_seconds: 5.0
+    on_failure: log_only
+  scorecard:
+    enabled: true
+  credential_scan:  # R11: 推送前扫凭据, 命中 fail-closed 拒推
+    enabled: true
+    on_hit: reject_task
+    # 注意: 含正则的模式必须用**单引号** —— YAML 双引号下 `\s` 是非法转义序列,
+    # 整个 config.yaml 会 ScannerError 加载失败。
+    patterns: ['Bearer\s', 'password\s*=', '-----BEGIN .*PRIVATE KEY-----']
+```
+
+> 凭据不得提交、打包、复制到测试、文档或日志；只经 `${LABEL_STUDIO_API_KEY}` env
+> 或 `api_key_path` 解析。`upload.enabled` 与 `hook.enabled` 各管一段，交叉配置
+> 会让 hook 静默空转。
 
 **删除字段**（与旧批次概念不再兼容）：
 - `orchestration.batch_size` / `gdr_workers` / `qf_workers` / `gdr_wait_seconds`
@@ -630,8 +663,8 @@ python -m orchestration start --all-tasks --parallelism 4
 | 警告 | 98 task × 4 并行 = 大量产物；需要磁盘空间 + LLM 调用配额 |
 |---|---|
 
-如实际跑不动（磁盘/配额），降级跑 catalog 子集并记录到
-[`docs/设计方案/agent-smoke_design_adjustments.md`](设计方案/agent-smoke_design_adjustments.md)。
+如实际跑不动（磁盘/配额），降级跑 catalog 子集（如 `--tasks T001,T002` 或
+`--parallelism 1`）并在运行日志里记录实际跑过的范围。
 
 ### 10.6 集成 verify（由 agent-verify 组负责）
 
@@ -642,8 +675,8 @@ python -m orchestration start --all-tasks --parallelism 4
 
 ## 11. 与现有文档的关系
 
-- **不重复**：[`docs/gdr-context-understanding-and-policy.md`](gdr-context-understanding-and-policy.md) /
-  [`docs/gdr-module-functional-overview.md`](gdr-module-functional-overview.md)
+- **不重复**：[`docs/gdr-context-understanding-and-policy.md`](../gdr/docs/gdr-context-understanding-and-policy.md) /
+  [`docs/gdr-module-functional-overview.md`](../gdr/docs/gdr-module-functional-overview.md)
   描述 gdr 内部策略与模块结构；本设计文档描述 simulate_serve 之上的**跨子系统流水线**，
   层级更高。
 - **不冲突**：[`CLAUDE.md`](../CLAUDE.md) 的"Pipeline 流程"段定义了 simulation server →
@@ -654,9 +687,10 @@ python -m orchestration start --all-tasks --parallelism 4
   schema；本设计文档描述 orchestration 如何把它们串起来。
 - **设计基线**：[`docs/设计方案/pipeline-serial-parallel-refactor.md`](设计方案/pipeline-serial-parallel-refactor.md) /
   [`docs/设计方案/pipeline-contracts.md`](设计方案/pipeline-contracts.md) /
-  [`docs/contracts/migration-plan.md`](../contracts/migration-plan.md) 是本次重写的方案、契约与实施汇总。
-- **横切观测（Langfuse，2026-09-23）**：[`docs/observability-langfuse.md`](observability-langfuse.md)（用户视角总览：启用 / 关闭 / 字段白名单 / 各阶段 span 名 / 故障排查 / 采样建议）/ [`docs/observability-langfuse-plan.md`](observability-langfuse-plan.md)（设计基线：13 字段 schema + 风险与回退）/ [`docs/langfuse-simulate-server.md`](langfuse-simulate-server.md) · [`docs/langfuse-gdr.md`](langfuse-gdr.md) · [`docs/langfuse-etl.md`](langfuse-etl.md)（模块级实施参考）。本设计文档的 §3.1 / §6.6 / §4 `task_pipeline` 行涵盖其在 orchestration 侧的接入点；观测层**不**改变三阶段数据契约（C1/C2/C3 字段、文件路径、SSE 事件流）。
+  [`docs/contracts/migration-plan.md`](contracts/migration-plan.md) 是本次重写的方案、契约与实施汇总。
+- **横切观测层已删除（2026-09-28）**：Langfuse 集成整块移除（工厂 / 阶段 span / 双轨传参 / `_reset_for_fork` / 配置段 / optional extra / pytest marker 全部清理），详见本文 §3.1 / §6.6。观测与人工判定能力现由 Label Studio 终点层承担（§3.2 / §6.8）。
 - **Windows 控制台窗口抑制（2026-09-23）**：§6.7 + [`orchestration/_windows.py`](../orchestration/_windows.py) `install_no_window_policy()`：幂等 monkey-patch `_winapi.CreateProcess`，对 `multiprocessing.Pool` worker（cmd 含 `--multiprocessing-fork` 指纹）强制补 `CREATE_NO_WINDOW`；`daemon.start_detached` 的 `creationflags` 显式 OR 上 `CREATE_NO_WINDOW`。避免 pytest / IDE 测试运行器在 Windows 上弹 cmd 窗口。`tests/orchestration/test_no_window_policy.py` 7 项验证全过。
+- **终点标注（Label Studio，2026-09-28）**：[`docs/设计方案/label-studio-integration.md`](设计方案/label-studio-integration.md)（设计基线，含架构转向记录）/ [`docs/contracts/C4-scorecard.md`](contracts/C4-scorecard.md)（`scorecard.v1` 字段级 schema）/ [`docs/observability-label-studio.md`](observability-label-studio.md)（用户视角：为什么每维标 `source` / 哪类样本被拒推）。本设计文档的 §3.2 / §4 / §6.8 / §7 涵盖其在 orchestration 侧的接入点；终点层**不**改变三阶段数据契约（C1/C2/C3 字段、文件路径、SSE 事件流），也不改 phase 状态机。
 
 ## 12. 后续步骤
 
@@ -668,8 +702,9 @@ python -m orchestration start --all-tasks --parallelism 4
 | B（agent-smoke） | 真实 catalog smoke：单 task / 3 task / 全 catalog（parallelism=1 与 =4 各一次） |
 | C（agent-verify） | 集成 verify：status 子命令 / 死信归档 / replay 全流程 + 新增 `test_integration_smoke.py` |
 
-详见 [`docs/设计方案/round-2-execution-plan.md`](设计方案/round-2-execution-plan.md)
-与 [`docs/设计方案/round-2-summary.md`](设计方案/round-2-summary.md)（汇总待写）。
+> 本节的原始执行计划与汇总文档（`round-2-execution-plan.md` / `round-2-summary.md`）
+> 未随仓库保留，选项 A 的产出即本文件与三份 README 的同步更新。后续增补：
+> 2026-09-28 落地 Label Studio 终点层（§3.2 / §6.8）。
 
 ## 附录 A：术语对照
 
@@ -678,7 +713,9 @@ python -m orchestration start --all-tasks --parallelism 4
 | trajectory | `output/agent_trajectory/<run_id>__<session_id>.json` | simulate_serve 从 QwenPaw 拷贝过来的原始 session JSON |
 | refined Session | `output/refined/<TXXX>__<session_id>.json` | gdr 裁剪调整后的产物（C2 契约） |
 | 4 视图 | `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json` | etl 拆出的训练框架 / audit 视图（C3 契约） |
+| 评分卡（C4） | Label Studio `task.data["scorecard"]` | `scorecard.v1` 分层指令评分 + 依据 + `source` 可信度；**无落盘文件**（终点契约，见 [`contracts/C4-scorecard.md`](contracts/C4-scorecard.md)） |
+| 旁路推送 | `orchestration/ls_hook.py` | step 11，`mark_phase(done)` 之后；失败不改终态，不写 SQLite（§6.8） |
 | task | simulate_serve catalog 中的单个 `task_id`（如 T001 / E005） | 流水线最小调度单位 |
-| `phase` | SQLite `tasks.phase` ∈ {pending, simulate, gdr, etl, done, dead} | 子进程推进 + 终态判定 |
+| `phase` | SQLite `tasks.phase` ∈ {pending, simulate, gdr, etl, done, dead, audited} | 子进程推进 + 终态判定 |
 | dead | `output/orchestration/dead/<rowid>__<src_basename>` | 重试 max_retry 次仍失败的 task 产物 |
 | batch（已删除） | n/a | 旧版的批次切分；新架构无此概念，直接 `--parallelism N` 并发 task |

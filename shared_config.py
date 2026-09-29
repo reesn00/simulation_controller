@@ -25,7 +25,14 @@ ROOT_CONFIG_ENV = "SIMCTL_CONFIG"
 ROOT_CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
 
 # 根配置的已知顶层 section (用于识别"根格式"文件)
-ROOT_SECTION_KEYS = ("llm", "simulate_serve", "orchestration", "gdr", "qf")
+ROOT_SECTION_KEYS = (
+    "llm",
+    "simulate_serve",
+    "orchestration",
+    "gdr",
+    "qf",
+    "label_studio",
+)
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 

@@ -75,7 +75,7 @@ pip install ".[sft]"
 | `GDR_OUTPUT_PATH` | `./refine_data/output.json` | 输出精修 JSON |
 | `GDR_LOG_DIR` | `./logs` | 日志目录 |
 
-完整字段见 [config/settings.py](config/settings.py) 和 [.env.example](.env.example)。
+完整字段见 [config/settings.py](config/settings.py)。
 
 ## 使用
 

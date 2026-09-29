@@ -23,6 +23,11 @@
 哨兵文件双保险（Windows detach 子进程无控制台，CTRL_BREAK_EVENT 不可达，哨兵文件
 是唯一可靠通道）。
 
+2026-09-28 起，`mark_phase(done)` 之后多一步 **step 11：Label Studio 旁路推送**
+（[`ls_hook.py`](ls_hook.py)）。它是流水线的**终点层**——推的是 C3 4 视图 + 一张
+`scorecard.v1` 分层评分卡，标注结果**不回流**本项目。默认关闭；推送失败不改变
+task 终态、不写 SQLite。详见下文「终点标注（Label Studio）」。
+
 旧版 `watcher.py` / `batch_tracker.py` / `qf_worker` 概念已全部删除，新架构下
 trajectory 不再单独入队，由子进程内 `_run_one_task_pipeline` 直接走
 `producer_simulate.run_one_task` → 模拟消费者拿 `run_id/session_id` → 子进程拼
@@ -65,8 +70,8 @@ scripts\run.bat replay
 
 - `--config PATH` 配置 yaml 路径。默认仓库根 `config/config.yaml`，也可用
   `SIMCTL_CONFIG` 环境变量重定向。配置缺失直接报错，无兜底。
-  详见 [`docs/refactor-implementation-plan.md`](../docs/refactor-implementation-plan.md)
-  与 `CLAUDE.md` 的"配置和工具"章节。
+  详见 [`CLAUDE.md`](../CLAUDE.md) 的"配置和工具"章节与
+  [`config/config.example.yaml`](../config/config.example.yaml)。
 
 ### `start` 子命令选项
 
@@ -106,13 +111,13 @@ scripts\run.bat replay
 ## 配置字段（`config/config.yaml` 的 `orchestration:` section）
 
 `config_loader.load_config` 把 YAML 解析成
-[`OrchestrationConfig`](orchestration/config_loader.py)（含
-[`PipelineSettings`](orchestration/settings.py) +
-[`Paths`](orchestration/settings.py) +
+[`OrchestrationConfig`](config_loader.py)（含
+[`PipelineSettings`](settings.py) +
+[`Paths`](settings.py) +
 `gdr_settings: gdr.Settings`）。详细契约见
 [`docs/设计方案/pipeline-contracts.md` §1](../docs/设计方案/pipeline-contracts.md)。
 
-### `pipeline.*`（[`PipelineSettings`](orchestration/settings.py)）
+### `pipeline.*`（[`PipelineSettings`](settings.py)）
 
 | 字段 | 类型 | 默认 | 约束 |
 |---|---|---|---|
@@ -126,7 +131,7 @@ scripts\run.bat replay
 `watcher_idle_backoff_max_seconds` / `batch_drain_poll_seconds` /
 `batch_drain_timeout_seconds` / `reap_stale_interval_seconds`。
 
-### `paths.*`（[`Paths`](orchestration/settings.py)）
+### `paths.*`（[`Paths`](settings.py)）
 
 | 字段 | 默认值 | 用途 |
 |---|---|---|
@@ -145,59 +150,66 @@ scripts\run.bat replay
 
 `load_config` 不创建任何目录（契约 §1.5），由调用方按需 `mkdir`。
 
-## 可选观测（Langfuse）
+## 终点标注（Label Studio，2026-09-28）
 
-`run.bat` / `python -m orchestration` **不**新增 Langfuse CLI 参数；观测启用完全由
-`config/config.yaml` 顶层 `langfuse:` 段控制。`enabled=false`（默认）时工厂
-`get_client()` 返回 None，业务零侵入。
-
-启用步骤：
+`_run_one_task_pipeline` 的 step 11 把 C3 4 视图 + 一张 `scorecard.v1` 分层评分卡
+推给本机 Label Studio 供人工判定。**LS 是本项目终点，标注结果不回流** —— 不实现
+fetch、不落 `output/labeled/`、**`queue/` 零修改**（`tasks` 表不新增 `ls_task_id`
+列；去重靠 LS 原生 `inner_id = session_id`）。
 
 ```powershell
-# 1. 装 SDK（optional dependency）
-uv sync --extra observability
+# 1. 注入凭据（不写进 yaml / 不提交）
+$env:LABEL_STUDIO_API_KEY = "<your ls api token>"
 
-# 2. 注入凭据（避免写进 yaml / 提交）
-$env:LANGFUSE_PUBLIC_KEY = "pk-lf-..."
-$env:LANGFUSE_SECRET_KEY = "sk-lf-..."
+# 2. 建项目（幂等，重复跑不会建出第二个）+ 灌 label_config
+uv run python -m label_studio init-project
 
-# 3. 打开 config/config.yaml（gitignored），新增 langfuse: 段
-#    langfuse:
-#      enabled: true
-#      public_key: "${LANGFUSE_PUBLIC_KEY}"
-#      secret_key: "${LANGFUSE_SECRET_KEY}"
-#      base_url: "https://cloud.langfuse.com"  # 自部署改 host
-#      environment: "dev"                       # 生产改 "prod"
-#      release: "${LANGFUSE_RELEASE:-local}"
-#      sample_rate: 1.0                         # 大规模任务降到 0.1
-#      upload_payload: full                     # full | summary | none
+# 3. 自检：LS 通不通 / 配置全不全 / 凭据在不在（不打印凭据内容）
+uv run python -m label_studio status
 
-# 4. 启动（行为完全不变，只是多了观测副本）
-scripts\run.bat start --all-tasks --parallelism 4
+# 4. 全量或单条推送（CLI 走 upload.enabled，与 hook.enabled 互不串）
+uv run python -m label_studio upload --dry-run
+uv run python -m label_studio upload --task-id T007
 ```
 
-三阶段各产生一个独立 trace（`simulate_serve:<task_id>` / `gdr.process_one` /
-`etl:<task_id>`），用同一个 `session_id` 在 Langfuse 端按时间轴串联。`multiprocessing.Pool`
-子进程由 `_reset_for_fork()` 处理 fork-safe（socket 失效问题）。
+orchestration 侧的自动推送走**另一个开关**：在 `config/config.yaml` 顶层
+`label_studio.hook.enabled: true` 打开（默认关），每个 task 跑完自动推一条。
+
+```yaml
+label_studio:
+  base_url: "http://127.0.0.1:8088"
+  api_key: "${LABEL_STUDIO_API_KEY}"
+  project_title: "trajectory-sft-quality"
+  upload:
+    enabled: false          # 只管 `python -m label_studio upload`（全量）
+  hook:
+    enabled: false          # 只管 step 11 自动推送（单条）
+    hook_timeout_seconds: 5.0
+  credential_scan:
+    enabled: true
+    on_hit: reject_task     # R11 命中 → fail-closed 整条拒推, 不静默脱敏
+```
+
+| 约束 | 说明 |
+|---|---|
+| 绝不阻塞主流程 | LS 挂了 / 认证失败 / 超时，task 仍标 `done`。`ls_hook` 全函数不抛异常 |
+| 独立超时 | `ThreadPoolExecutor` + `future.result(timeout=)` + **显式 `shutdown(wait=False)`**。用 `with` 会在退出时 join，超时白设 |
+| 默认关闭 | 只看 `hook.enabled`，不看 `upload.enabled`——两个开关交叉会让 hook 静默空转 |
+| 指标不互相污染 | LS 侧**自己**抛的 `TimeoutError` 与"我们等超时"共用同一异常类型，代码用 `future.done()` 区分 `ls_hook_failed` / `ls_hook_timed_out` |
+| 凭据不外泄 | `api_key` 只经 env 或 `api_key_path` 解析；异常消息由 `label_studio/errors.py::redact` 脱敏；R11 扫描命中只记位置不记原文 |
 
 | 关注点 | 文档 |
 |---|---|
-| 用户视角总览（启用 / 关闭 / 字段白名单 / span 名清单 / 故障排查 / 采样建议） | [`docs/observability-langfuse.md`](../docs/observability-langfuse.md) |
-| 设计基线（13 字段 schema + 风险与回退） | [`docs/observability-langfuse-plan.md`](../docs/observability-langfuse-plan.md) |
-| orchestration 侧接入点（`_worker_init` fork-safe + atexit + 双轨传参） | [`docs/orchestration-design.md`](../docs/orchestration-design.md) §3.1 / §6.6 / §4 `task_pipeline` 行 |
-| 模块级实施参考 | [`docs/langfuse-simulate-server.md`](../docs/langfuse-simulate-server.md) · [`docs/langfuse-gdr.md`](../docs/langfuse-gdr.md) · [`docs/langfuse-etl.md`](../docs/langfuse-etl.md) |
-
-隐私边界：观测副本是**独立 Langfuse 项目**，`session_id` 是与 `output/` 制品的
-唯一共享字段（用于 Langfuse 端聚合）。`output/` 制品的脱敏策略继续适用 CLAUDE.md
-"不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile"——Langfuse
-观测副本按设计上传完整 trajectory / refined Session / 4 视图内容用于对比观察，
-**不入训练集**，不替代 `output/` 制品的脱敏策略。
+| 用户视角（评分卡为什么标 `source` / 哪类样本被拒推 / 常见问题） | [`docs/observability-label-studio.md`](../docs/observability-label-studio.md) |
+| 设计基线（架构转向、评分卡设计、模糊点处理） | [`docs/设计方案/label-studio-integration.md`](../docs/设计方案/label-studio-integration.md) |
+| `scorecard.v1` 字段级 schema（C4 契约） | [`docs/contracts/C4-scorecard.md`](../docs/contracts/C4-scorecard.md) |
+| orchestration 侧接入点 | [`docs/orchestration-design.md`](../docs/orchestration-design.md) §3.2 / §6.8 |
 
 ## Windows 控制台窗口抑制（2026-09-23）
 
 pytest / IDE 测试运行器在 Windows 上跑 `multiprocessing.Pool` worker 或
 `daemon.start_detached` 子进程时，会弹一个 cmd 终端窗口挤占桌面。
-[`orchestration/_windows.py`](orchestration/_windows.py) 提供幂等的
+[`orchestration/_windows.py`](_windows.py) 提供幂等的
 `install_no_window_policy()`，自动安装于：
 
 - `orchestration.daemon` module 加载时 → `start_detached` 的 `creationflags`
@@ -266,5 +278,10 @@ orchestration/
 ├── failure_handler.py   dead task 归档（reap_dead，删 batch_id）
 ├── health.py            collect_tasks + write_health
 ├── daemon.py            pid_file + STOP 哨兵 + 日志（start_detached / start_foreground / stop）
+├── ls_hook.py           step 11: C3 + 评分卡 → Label Studio 旁路推送（全函数不抛异常）
+├── criterion_source.py  只读取 output/runs/<run_id>/ 的 ValidationReport.criteria，etl 阶段注入 C3
 ├── errors.py            OrchestrationError 等
 ```
+
+终点模块 [`label_studio/`](../label_studio/) **不在上表** —— 它不被 orchestration
+主链路 import，只由 `ls_hook` 调用。

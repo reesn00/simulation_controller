@@ -1,6 +1,8 @@
 # Refactor Development Progress
 
-> 本文档记录 `gdr` 精修流水线在 SFT 数据质量提升方向的迭代修复。配套实施基线 [refactor-implementation-plan.md](refactor-implementation-plan.md) 与最终验证 [phase6-final-validation-report.md](phase6-final-validation-report.md)。本文档按修复编号倒序追加，每条修复包含背景、改动、测试、效果。
+> 本文档记录 `gdr` 精修流水线在 SFT 数据质量提升方向的迭代修复。本文档按修复编号倒序追加，每条修复包含背景、改动、测试、效果。
+>
+> 早期的配套实施基线（`refactor-implementation-plan.md`）与最终验证报告（`phase6-final-validation-report.md`）未随仓库保留；下方条目保留当时的记录原文，其中部分被测代码与测试文件已在后续重构中移除（相关条目会就地标注）。
 
 最近一次重大质量提升：**2026-09-19**（F1/F2/F3-A/B/C/D/E）。
 
@@ -38,7 +40,7 @@ T001 任务三次重跑均进入 `incomplete` 或 `discard` 死信通道：
 
 **改动**：
 - [gdr/domain/schema.py:223+](../gdr/domain/schema.py#L223) — `save_session` 提取 `metadata["tools"]`，写入 `messages.json` 和 `openai.json` 顶层
-- [gdr/etl/qwenformat/usage_prune.py](../gdr/etl/qwenformat/usage_prune.py) — `write_refined_session` 同步写两份
+- [gdr/etl/qwenformat/usage_prune.py](../etl/qwenformat/usage_prune.py) — `write_refined_session` 同步写两份
 - 引入 `_extract_tools_payload` 辅助；`tools_payload_max` 控制 schema 数量上限（默认 64）
 
 **测试**：[gdr/tests/test_save_session_tools.py](../gdr/tests/test_save_session_tools.py) — 18 个测试通过
@@ -64,7 +66,7 @@ T001 任务三次重跑均进入 `incomplete` 或 `discard` 死信通道：
 **问题**：远端 agent 在 thinking 模型下不输出 reasoning block，导致 trajectory 进入 SFT 后早期 assistant 缺失 reasoning 字段。
 
 **改动**：
-- [gdr/etl/qwenformat/system_prompt.py](../gdr/etl/qwenformat/system_prompt.py) — `_REASONING_REQUIREMENT_SECTION` 常量；`render_cleaned_system` 增加 `append_reasoning_requirement=True` 参数，默认开启
+- [gdr/etl/qwenformat/system_prompt.py](../etl/qwenformat/system_prompt.py) — `_REASONING_REQUIREMENT_SECTION` 常量；`render_cleaned_system` 增加 `append_reasoning_requirement=True` 参数，默认开启
 - 段内容：要求每轮 assistant 必须先输出 `thinking` 块再 content/tool_call，并明示缺 thinking 会触发 incomplete 判定
 
 **测试**：[tests/orchestration/test_system_prompt.py::TestReasoningRequirementSection](../tests/orchestration/test_system_prompt.py) — 5 个测试通过
@@ -120,7 +122,10 @@ T001 任务三次重跑均进入 `incomplete` 或 `discard` 死信通道：
   - 新增 `dead_index_path` 参数写 `INDEX.jsonl`，含 `gdr_status / score / reason`（从 error_msg 解析）
 - 新增模块级函数 `reprocess_dead(dead_dir, qf_out_target, dead_index_path, filter_score_lt, filter_gdr_status)` 按 score/status 过滤回灌
 
-**测试**：[tests/orchestration/test_failure_handler_qfout_preserve.py](../tests/orchestration/test_failure_handler_qfout_preserve.py) — 12 个测试通过
+**测试**：`tests/orchestration/test_failure_handler_qfout_preserve.py` — 12 个测试通过
+（⚠️ 该测试文件与其被测的 `failure_handler.reprocess_dead` 已在 commit `fe37926`
+「工作流程重构调整」中删除；`reprocess_dead` 现在整个代码库内已无定义。保留本条
+作为当时的记录，不再是当前可运行项。）
 
 **效果**：调整 gdr 配置后可直接调用 `reprocess_dead` 把死信 qf_out 拷回 `output/qf_out/`，避免重跑 simulate_serve。
 

@@ -258,7 +258,7 @@ L2 模块缺失 + L3 disabled → return False
 
 ---
 
-## 8.5 上下文理解（[context_understanding.py](../context_understanding.py)）
+## 8.5 上下文理解（[context_understanding.py](../core/context_understanding.py)）
 
 **P0 新增模块**。为决策层提供"对话级上下文感知"，取代 `pipeline/runner.py:_build_context` 旧的 ±2 block 局部视图。
 
@@ -336,7 +336,7 @@ archive_text = cu.render_archive()   # 供 prompt 注入
 
 ---
 
-## 8.6 决策层（[policy.py](../policy.py)）
+## 8.6 决策层（[policy.py](../core/policy.py)）
 
 **P0 新增模块**。基于 `defect × BlockContextView` 选择三级响应策略（替代 refiner 二元的"通过/丢弃"）。
 

@@ -1,8 +1,12 @@
-# Pipeline 重构 — 模块对接契约与函数签名(2026-09-22)
+# Pipeline 重构 — 模块对接契约与函数签名(2026-09-22，2026-09-28 增补 step 11 旁路)
 
 > 本文件是 `pipeline-serial-parallel-refactor.md` 的**实施级补充**:
 > 每个模块的**边界 / 对外接口 / 函数签名 / 数据契约 / 错误语义**都写死,
 > 子任务 ST-1 ~ ST-7 实施时直接对照本文件落地。
+>
+> **2026-09-28 增补**：`_run_one_task_pipeline` 末尾多了一步 Label Studio 旁路推送
+> （step 11，见 §5.4 后的说明）。它是**终点层**，不属于本契约定义的状态机 ——
+> §2 的 phase 常量、`tasks` 表结构与全部公开接口保持零修改。
 
 ## 文档约定
 
@@ -550,7 +554,8 @@ def _run_one_task_pipeline(
       8. queue.mark_phase(task_id, new_phase="etl", gdr_refined_path=...)
       9. 重试循环(max_retry_etl 次): 类似 gdr 阶段
      10. queue.mark_phase(task_id, new_phase="done", etl_*_path=...)
-     11. return {"phase": "done", ...}
+     11. _push_to_label_studio(paths, meta_path)   # 旁路, 失败不影响 done
+     12. return {"phase": "done", ...}
 
     任何未捕获异常:
       - 顶层 try/except 兜底
@@ -559,6 +564,15 @@ def _run_one_task_pipeline(
 
     子进程不抛异常给主进程(主进程只看 future.get() 返回 dict)。
     """
+```
+
+> **step 11 是终点层旁路（2026-09-28 增补，不属本契约的状态机）**：
+> `orchestration.ls_hook` 把 C3 + 评分卡推给 Label Studio。它跑在
+> `mark_phase(done)` **之后**、**不写 SQLite**、**全函数不抛异常** ——
+> §2 的 7 个 phase 常量、`tasks` 表结构与 §2.5 的全部公开接口**零修改**。
+> 去重靠 Label Studio 原生 `inner_id = session_id`，不新增 `ls_task_id` 列。
+> 未启用（`label_studio.hook.enabled=false`，默认）时该 step 是空操作。
+> 详见 [`docs/orchestration-design.md` §6.8](../orchestration-design.md)。
 ```
 
 ### 5.5 子进程约束

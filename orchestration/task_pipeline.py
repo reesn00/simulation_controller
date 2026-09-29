@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import atexit
 import logging
 import traceback
 from pathlib import Path
@@ -38,50 +37,15 @@ _log = logging.getLogger(__name__)
 # 子进程全局:paths 仅用于子进程内可重连的 SQLite db / refined_dir / etc.
 _WORKER_PATHS: Paths | None = None
 
-# 子进程全局:Langfuse 客户端 (PR 5 上提到主进程入口构造, 注入子进程复用)
-# 共享于 simulate_serve.observability.langfuse_client 进程级 singleton:
-# 子进程 fork 后 _reset_for_fork() 已清旧 _client, get_client(langfuse_cfg) 会重建.
-_WORKER_LANGFUSE_CLIENT: Any | None = None
-
 
 def _worker_init(paths: Paths) -> None:
     """子进程初始化:把 ``paths`` 写入子进程模块全局,便于异常日志引用.
-
-    PR 5 Langfuse 接入:
-      - ``_reset_for_fork()`` 强制清旧 singleton, fork 后子进程下次 ``get_client``
-        时重建 (Langfuse SDK 不 fork-safe)。
-      - 注册 ``atexit`` handler,worker 退出时再 ``shutdown()`` 一次
-        (覆盖 SIGTERM 优雅关闭; SIGKILL / OOM 不可避免)。
 
     **不要**在此处读 SQLite / 起 logging handler (logging 多进程不安全,
     子进程用默认 stderr 即可,handler 在 Pool 父级初始化)。
     """
     global _WORKER_PATHS
     _WORKER_PATHS = paths
-
-    # PR 5: Langfuse fork-safe reset + atexit shutdown. 仅在 enabled 时注册
-    # atexit (默认关闭时无开销); reset 永远幂等, 双调用安全。
-    try:
-        from simulate_serve.observability.langfuse_client import (
-            _reset_for_fork,
-            shutdown as _lf_shutdown,
-        )
-
-        _reset_for_fork()
-
-        # 仅当 langfuse 启用时注册 atexit (避免无 op worker 多余 sys hook)。
-        try:
-            from orchestration.observability.langfuse_config import (
-                load_langfuse_config,
-            )
-
-            _cfg = load_langfuse_config()
-            if _cfg.enabled:
-                atexit.register(_lf_shutdown)
-        except Exception:  # pragma: no cover - config loader 自己 fail-safe
-            pass
-    except Exception:  # pragma: no cover - SDK 未装时安全跳过
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -133,17 +97,8 @@ def _safe_run_gdr(
     *, task_id: str, src_path: Path, refined_dir: Path,
     session_id: str, gdr_settings: GdrSettings,
     max_retry: int, queue: Any,
-    langfuse_cfg: Any | None = None,
-    langfuse_client: Any | None = None,
 ) -> tuple[Path | None, str]:
     """gdr 阶段重试循环 (契约 §3.3).
-
-    PR 5 接入:
-      - ``langfuse_cfg`` / ``langfuse_client`` 透传 ``run_gdr_once``;
-        gdr worker 内 client 解析优先级: 显式 client > cfg > gdr_settings。
-      - 注意:gdr 端 retry 不会重建 outer trace (outer span 仅包整个 body,
-        attempt 区别由 metadata 标记, 不开 attempt 级 span; 失败重试时
-        外层 stage_trace 已被标 ERROR, 第二次是新的 stage_trace)。
 
     返回: (refined_path, status) 元组:
         - (path, "success")  → C2 已写, 进 etl 阶段
@@ -170,8 +125,6 @@ def _safe_run_gdr(
                 gdr_settings=gdr_settings,
                 task_id=task_id,
                 session_id=session_id,
-                langfuse_client=langfuse_client,
-                langfuse_cfg=langfuse_cfg,
             )
             return result.refined_path, "success"
         except GdrAuditedError as exc:
@@ -211,18 +164,10 @@ def _safe_run_gdr(
 def _safe_run_etl(
     *, task_id: str, c2_path: Path, etl_outputs_dir: Path,
     session_id: str, max_retry: int, queue: Any,
-    langfuse_cfg: Any | None = None,
-    langfuse_client: Any | None = None,
+    runs_dir: Path | None = None,
+    run_id: str | None = None,
 ) -> tuple[Path, Path, Path | None, Path] | None:
     """etl 阶段重试循环 (契约 §3.4).
-
-    PR 5 接入:
-      - ``langfuse_cfg``: 主进程入口构造的 ``LangfuseConfig`` dataclass;
-        ``None`` 时 ``run_etl_once`` 内部走懒加载 (``get_client(None)``)。
-      - ``langfuse_client``: 显式注入的 Langfuse SDK client (优先于 cfg),
-        复用主进程进程级 singleton。
-      - 每次 attempt 都创建独立 outer ``stage_trace`` (PR 4 设计);
-        metadata + tags 内含 ``attempt:N``。
 
     返回: (messages_path, openai_path, qwenjina_path, meta_path) 成功;None 失败。
     """
@@ -242,7 +187,8 @@ def _safe_run_etl(
                 task_id=task_id,
                 session_id=session_id,
                 attempt=attempt,
-                langfuse_cfg=langfuse_cfg,
+                runs_dir=runs_dir,
+                run_id=run_id,
             )
             return (
                 outputs.messages_path,
@@ -296,14 +242,6 @@ def _run_one_task_pipeline(
        10. queue.mark_phase(done, etl_*_path=...)
        11. return {"phase": "done", ...}
 
-    PR 5 Langfuse 接入:
-      - 入口处构造 ``langfuse_cfg = load_langfuse_config()`` (懒加载根配置);
-      - 仅当 ``cfg.enabled`` 时构造 ``langfuse_client = get_client(cfg)``;
-      - 把 ``langfuse_cfg`` / ``langfuse_client`` 透传给 ``_safe_run_gdr`` /
-        ``_safe_run_etl`` → ``run_gdr_once`` / ``run_etl_once``。
-      - 客户端实例复用 ``simulate_serve.observability.langfuse_client``
-        进程级 singleton;``None`` 时业务路径零变更。
-
     返回:
         {"task_id": str, "phase": "done"|"dead", "stage": str, "error": str|None}
 
@@ -320,24 +258,6 @@ def _run_one_task_pipeline(
         SQLiteQueue,
         TaskAlreadyTerminal,
     )
-
-    # PR 5: 入口处构造 Langfuse cfg + client, 透传 gdr / etl 阶段.
-    # load_langfuse_config 已 fail-safe (根配置缺失时返 enabled=False 默认值).
-    langfuse_cfg: Any = None
-    langfuse_client: Any = None
-    try:
-        from orchestration.observability.langfuse_config import (
-            load_langfuse_config,
-        )
-        from simulate_serve.observability.langfuse_client import (
-            get_client as _lf_get_client,
-        )
-
-        langfuse_cfg = load_langfuse_config()
-        if getattr(langfuse_cfg, "enabled", False):
-            langfuse_client = _lf_get_client(langfuse_cfg)
-    except Exception:  # pragma: no cover - loader / get_client 自身 fail-safe
-        pass
 
     queue = SQLiteQueue(paths.sqlite_db)
     result: dict[str, Any] = {
@@ -465,8 +385,6 @@ def _run_one_task_pipeline(
             gdr_settings=gdr_settings,
             max_retry=orchestration_settings.max_retry_gdr,
             queue=queue,
-            langfuse_cfg=langfuse_cfg,
-            langfuse_client=langfuse_client,
         )
         if gdr_status == "audited":
             # 评分低 (judge_discard / scoring_reject) → audited 终态,
@@ -495,8 +413,9 @@ def _run_one_task_pipeline(
             session_id=session_id,
             max_retry=orchestration_settings.max_retry_etl,
             queue=queue,
-            langfuse_cfg=langfuse_cfg,
-            langfuse_client=langfuse_client,
+            # F2: 把 simulate 端 Criterion 验证结果带进 C3
+            runs_dir=paths.runs_dir,
+            run_id=run_id,
         )
         if etl_outputs is None:
             result["error"] = "etl failed"
@@ -515,6 +434,11 @@ def _run_one_task_pipeline(
         result["phase"] = PHASE_DONE
         result["stage"] = "done"
         result["error"] = None
+
+        # 11. Label Studio 自动 hook (方案 §9)。
+        #     刻意放在 mark_phase(done) **之后**: 推送是旁路, 它的成败不影响
+        #     task 的终态。ls_hook 内部永不抛异常, 失败只记日志 + 指标。
+        _push_to_label_studio(paths, meta_path)
         return result
 
     except Exception as exc:
@@ -533,6 +457,43 @@ def _run_one_task_pipeline(
 # ---------------------------------------------------------------------------
 # 工具
 # ---------------------------------------------------------------------------
+
+def _push_to_label_studio(paths: Paths, meta_path: Path) -> None:
+    """step 11: C3 → Label Studio 旁路推送。**永不抛、永不影响 task 终态。**
+
+    开关只看 ``label_studio.hook.enabled``（由 :func:`ls_hook.load_hook_settings`
+    判定后以 ``None`` 表达"未启用"), 不看 ``upload.enabled`` —— 两个开关交叉
+    会让 hook 静默空转（配了 upload 就以为 hook 也开了）。
+    """
+    try:
+        from orchestration.ls_hook import load_hook_settings, run_hook
+        from label_studio.config_loader import load_label_studio_config
+
+        # 根配置定位口径: SIMCTL_CONFIG env → 仓库根 config/
+        hook_settings = load_hook_settings()
+        if hook_settings is None:
+            return
+        settings = load_label_studio_config()
+
+        def _resolve(s: Any) -> int:
+            from label_studio.client import build_client
+            from label_studio.project_manager import resolve_project_id
+
+            return resolve_project_id(build_client(s), s)
+
+        outcome = run_hook(
+            settings, project_id=None, meta_path=meta_path,
+            resolve_project_id=_resolve,
+        )
+        if not outcome["ok"] and not outcome.get("skipped"):
+            _log.warning(
+                "task_pipeline: Label Studio 推送未成功 (%s); "
+                "task 仍标记 done —— 推送是旁路",
+                outcome.get("reason"),
+            )
+    except Exception as exc:  # pragma: no cover - hook 自身已 fail-safe
+        _log.warning("task_pipeline: Label Studio hook 异常, 已忽略: %s", exc)
+
 
 def _safe_filename_part(s: str) -> str:
     """把任意字符串清成文件名安全字符 (复用 simulate_serve 的实现)."""
