@@ -66,11 +66,18 @@ class GdrAuditedError(Exception):
     CLAUDE.md "数据保留原则": judge_discard / scoring_reject 的 session 数据
     保留在原 src_path + 旁路 jsonl, 不进 dead_dir, 供后期人工复核 / 任务调优 /
     质量问题归因. error_msg 含 audit_reason 供 master 决策.
+
+    ``refined_path``: judge_discard 时 C2 **已经落盘**（gdr 精修完成、只是
+    评分没过），下游还能照常跑 etl 出 C3 并推 Label Studio，所以把路径带走。
+    scoring_reject 时 C2 刻意不写（C2 即为待训练产物，拒收样本不该占用
+    训练目录），这里恒为 None —— 该支推不了 LS，是设计上的硬墙，不是 bug。
     """
 
-    def __init__(self, message: str, *, audit_reason: str) -> None:
+    def __init__(self, message: str, *, audit_reason: str,
+                 refined_path: Path | None = None) -> None:
         super().__init__(message)
         self.audit_reason = audit_reason
+        self.refined_path = refined_path
 
 
 class RetryableGdrError(Exception):
@@ -197,9 +204,14 @@ def run_gdr_once(
     # scoring_reject: C2 不写 (C2 即为待训练产物, 拒收不写) +
     #                 audit/scoring_reject.jsonl 已落.
     if status in ("judge_discard", "scoring_reject"):
+        # judge_discard 的 C2 已落盘 → 把路径带走, 下游能继续跑 etl 出 C3
+        # 并推 Label Studio（打低分标签）。scoring_reject 的 C2 刻意没写,
+        # exists() 为 False → refined_path=None, 该支止步于 audited。
+        written = Path(result.get("output") or out_path)
         raise GdrAuditedError(
             f"run_gdr_once: gdr status={status!r} (task={task_id}) {err}",
             audit_reason=status,
+            refined_path=written if written.exists() else None,
         )
     # save_error / 其他未分类 → 可重试.
     raise RetryableGdrError(

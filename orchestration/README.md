@@ -184,7 +184,7 @@ label_studio:
     enabled: false          # 只管 `python -m label_studio upload`（全量）
   hook:
     enabled: false          # 只管 step 11 自动推送（单条）
-    hook_timeout_seconds: 5.0
+    hook_timeout_seconds: 30.0   # PAT refresh + PATCH label_config + 建 task + 预标注
   credential_scan:
     enabled: true
     on_hit: reject_task     # R11 命中 → fail-closed 整条拒推, 不静默脱敏
@@ -192,11 +192,23 @@ label_studio:
 
 | 约束 | 说明 |
 |---|---|
-| 绝不阻塞主流程 | LS 挂了 / 认证失败 / 超时，task 仍标 `done`。`ls_hook` 全函数不抛异常 |
-| 独立超时 | `ThreadPoolExecutor` + `future.result(timeout=)` + **显式 `shutdown(wait=False)`**。用 `with` 会在退出时 join，超时白设 |
+| 绝不阻塞主流程 | LS 挂了 / 认证失败 / 超时，task 终态照常落库。`ls_hook` 全函数不抛异常 |
+| 独立超时 | `ThreadPoolExecutor` + `future.result(timeout=)` + **显式 `shutdown(wait=False)`**。用 `with` 会在退出时 join，超时白设。默认 **30s**——一次推送串完 PAT 刷新 + 查项目 + PATCH label_config + 建 task + 预标注 |
+| 超时不丢样本 | `push_single_c3` **先拿 LS task id 再写台账**，所以「台账没有」严格等价于「LS 上没建成」。批次后 `scripts/label_studio.bat upload` 幂等补推 |
+| project 只解析一次 | 进程级缓存 `(base_url, project_title) → project_id`。`resolve_project_id(sync=True)` 会 PATCH label_config —— 那是**覆盖不是同步**，每 task 调一次会把标注员在 LS 上的调整冲掉 |
+| 台账并发写有锁 | `--parallelism ≥2` 时 N 个 Pool worker 写同一 jsonl。锁加在 `<台账>.lock` 上（不污染 jsonl）。实测无锁时 4 进程 × 40 条只落 66/161 行 |
 | 默认关闭 | 只看 `hook.enabled`，不看 `upload.enabled`——两个开关交叉会让 hook 静默空转 |
 | 指标不互相污染 | LS 侧**自己**抛的 `TimeoutError` 与"我们等超时"共用同一异常类型，代码用 `future.done()` 区分 `ls_hook_failed` / `ls_hook_timed_out` |
 | 凭据不外泄 | `api_key` 只经 env 或 `api_key_path` 解析；异常消息由 `label_studio/errors.py::redact` 脱敏；R11 扫描命中只记位置不记原文 |
+
+**低分样本也会推**（2026-09-29）：gdr 判 `judge_discard` 的 session 结构合格、
+只是评分低，按 CLAUDE.md「数据保留原则」仍走完 etl 出 C3 并推 LS 供人工复核。
+终态仍是 `PHASE_AUDITED` —— 产出了 C3 不等于洗成 `done`，否则 status 统计会
+把低分样本算成正常样本。`audit_reason` 一路透传进 C3 meta，评分卡据此打低分
+标记（label_config 最上方的只读块 + 风险提示第一条）。
+
+`scoring_reject` 推不了：gdr 那一支刻意不写 C2（「C2 即为待训练产物，拒收样本
+不该占训练目录」），没有 C2 就走不到 etl。设计硬墙，不是遗漏。
 
 | 关注点 | 文档 |
 |---|---|

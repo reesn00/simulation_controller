@@ -34,6 +34,14 @@ log = logging.getLogger(__name__)
 #: 注入 ``session.metadata`` 的键名 (C3 meta.json 里的字段)。
 CRITERION_METADATA_KEY = "criterion_results"
 
+#: 同一位置的第二个键 (C3 meta.json 顶层字段)。
+#:
+#: gdr 判低分的理由。**这是"为什么这条样本分数低"的唯一解释** —— 少了它,
+#: 标注员看到 L0=0 / 整体分低只会当成正常波动, 会照常标一条"可用", 等于
+#: 把 gdr 拒收过的样本又标回训练集。结构合格但评分低的轨迹按 CLAUDE.md
+#: "数据保留原则" 仍然推 LS 供人工复核, 所以这个字段是复核的前提, 不是装饰。
+AUDIT_METADATA_KEY = "audit_reason"
+
 #: ``ValidationReport`` → ``ValidationResult.verdict`` 聚合顺序 (fail-closed):
 #: 与 ``simulate_serve.domain.validation.aggregate_results`` 保持一致。
 _VERDICT_SEVERITY = ("fail", "error", "inconclusive", "pass")
@@ -221,8 +229,39 @@ def inject_criterion_evaluation(session: Any, evaluation: dict[str, Any] | None)
     return True
 
 
+def inject_audit_reason(session: Any, audit_reason: str | None) -> bool:
+    """把 gdr 的低分理由写进 ``session.metadata``。返回是否真的注入。
+
+    ``audit_reason`` 为 None / 空串 / 纯空白时**返回 False 且不写键** ——
+    正常通过的 session 不该留一个空的 ``audit_reason`` 键, 评分卡和
+    label_config 都靠「键是否存在」判断这条要不要打低分标记, 空串会让两者
+    都误判。空白一并 strip 是为了与 :func:`label_studio.scorecard.build_audit_marker`
+    的口径一致 —— 两边对 "什么算没有理由" 判断不同, metadata 里就会留下一个
+    评分卡看不见的脏键。
+
+    与 :func:`inject_criterion_evaluation` 不同, 这里 ``None`` 的含义是
+    "没有拒收理由"而非"读取失败", 所以是**真的不写**而不是保留原值。
+    """
+    if not audit_reason:
+        return False
+    reason = audit_reason.strip() if isinstance(audit_reason, str) else audit_reason
+    if not reason:
+        return False
+    meta = session.metadata if session.metadata is not None else {}
+    meta[AUDIT_METADATA_KEY] = reason
+    session.metadata = meta
+    log.info(
+        "audit_inject: session=%s reason=%s",
+        getattr(session, "session_id", "?"),
+        audit_reason,
+    )
+    return True
+
+
 __all__ = [
+    "AUDIT_METADATA_KEY",
     "CRITERION_METADATA_KEY",
+    "inject_audit_reason",
     "load_criterion_evaluation",
     "inject_criterion_evaluation",
 ]

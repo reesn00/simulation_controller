@@ -468,6 +468,38 @@ def derive_overall(dimensions: list[dict[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+#: ``meta["audit_reason"]`` → 人话。gdr 是判分方, 标注员不认识这些内部状态名。
+_AUDIT_REASON_LABELS = {
+    "judge_discard": "精修质量评分未达标, gdr 已拒收",
+    "scoring_reject": "评分拒收, gdr 已拒收",
+}
+
+_AUDIT_NOTE = (
+    "本样本结构合格、但被 gdr 以质量评分拒收, 按项目「数据保留原则」仍推上来"
+    "供人工复核 —— 结构合格的低分轨迹是有用素材, 不是废数据。请重点复核"
+    "「精修质量」维度, 判断拒收是否恰当; 其余维度的低分不代表样本本身不可用。"
+)
+
+
+def build_audit_marker(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """C3 meta 的 ``audit_reason`` → 低分标记。**没有就返回 None**。
+
+    与 :func:`orchestration.criterion_source.inject_audit_reason` 配套: 那边
+    ``None`` 时不写键, 这边就靠「键存在」判断要不要打标。空串 / 未知值都
+    当没有 —— 宁可漏标也不能把正常样本误标成拒收样本。
+    """
+    reason = meta.get("audit_reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    reason = reason.strip()
+    return {
+        "audited": True,
+        "reason": reason,
+        "label": _AUDIT_REASON_LABELS.get(reason, f"gdr 拒收 ({reason})"),
+        "note": _AUDIT_NOTE,
+    }
+
+
 def build_scorecard(
     meta: dict[str, Any] | None,
     *,
@@ -521,7 +553,7 @@ def build_scorecard(
                     "estimated_because", {"_": "source 字段异常, 按估算处理"}
                 )
 
-    return {
+    scorecard: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "task_id": task_id,
         "session_id": session_id or str(meta.get("session_id") or ""),
@@ -538,6 +570,12 @@ def build_scorecard(
             "missing": sum(1 for d in dimensions if d.get("source") == "missing"),
         },
     }
+    # 低分标记。**没有就不写这个键** —— 靠键存在与否判断, 不塞 audited=false,
+    # 免得下游"这个字段恒在"就当成每条都拒收。
+    audit = build_audit_marker(meta)
+    if audit is not None:
+        scorecard["audit"] = audit
+    return scorecard
 
 
 def build_risk_hints(scorecard: dict[str, Any]) -> list[str]:
@@ -550,6 +588,13 @@ def build_risk_hints(scorecard: dict[str, Any]) -> list[str]:
         return []
     hints: list[str] = []
     by_id = {d.get("id"): d for d in scorecard.get("dimensions") or [] if d.get("id")}
+
+    # 低分样本必须排第一: 它解释了后面所有低分维度的成因, 藏在末尾等于没说。
+    audit = scorecard.get("audit")
+    if isinstance(audit, dict) and audit.get("audited"):
+        hints.append(
+            f"低分样本（{audit.get('label')}）｜{audit.get('note')}"
+        )
 
     coverage = by_id.get("criterion_coverage")
     if coverage and coverage.get("source") != "missing":

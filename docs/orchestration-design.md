@@ -38,7 +38,7 @@
 | 12 | 死信恢复 | `python -m orchestration replay` | 把 `phase=dead` 全部重置为 `phase=pending` |
 | 13 | 生命周期 | daemon 服务（`start` / `status` / `stop` / `replay` CLI） | PID file + STOP 哨兵文件（Windows 不可达 SIGBREAK） |
 | 14 | 汇聚产出 | 不要 | 每个 trajectory 一份 4 视图，不聚合 |
-| 15 | 流水线终点 | C3 之后单向推 Label Studio，**不回流** | LS 是人工标注终点；标注结果对本项目无消费者，故不实现 fetch / 不落 `output/labeled/` / `queue/` 零修改。去重靠 LS 原生 `inner_id`（§6.8） |
+| 15 | 流水线终点 | C3 之后单向推 Label Studio，**不回流** | LS 是人工标注终点；标注结果对本项目无消费者，故不实现 fetch / 不落 `output/labeled/` / `queue/` 零修改。去重靠本地台账（LS 1.23 无原生去重，§6.8） |
 
 ## 3. 完整数据流
 
@@ -406,7 +406,7 @@ def _run_one_task_pipeline(
   `observability` optional extra 与 `langfuse_real` pytest marker 一并删除。
 
 **不改变三阶段数据契约**（C1/C2/C3 字段、文件路径、SSE 事件流）。`session_id` 仍
-由 `_run_one_task_pipeline` 往下传，但只用于文件名 / LS `inner_id` 去重，不再承担
+由 `_run_one_task_pipeline` 往下传，但只用于文件名 / LS 推送台账判重，不再承担
 跨进程 trace 串联职责。观测能力改由 Label Studio 终点层（§3.2 / §6.8）承担。
 
 ### 6.7 Windows 控制台窗口抑制（2026-09-23）
@@ -458,7 +458,10 @@ def _run_one_task_pipeline(
    两个开关交叉会让 hook 静默空转。
 
 **队列零修改**：hook 在 `mark_phase(done)` 之后运行，不写 SQLite，7 个 phase
-状态机与 `tasks` 表结构全部不动。去重靠 LS 原生 `inner_id = session_id`。
+状态机与 `tasks` 表结构全部不动。去重靠 append-only 的本地台账
+`output/label_studio/push_index__<project_id>.jsonl` —— LS 1.23 不提供任何原生
+去重（`Task.inner_id` 是整数字段、批量 import 静默丢弃、重复导入照样新建），
+详见 [label-studio-integration.md §16 R7](设计方案/label-studio-integration.md)。
 
 **凭据**：`api_key` 只经 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path` 解析。
 `ls_hook` 自身不读凭据，只把 settings 透传给 `label_studio`；异常消息由
@@ -508,8 +511,7 @@ label_studio:
     include_predictions: true
   hook:             # 只管 step 11 自动推送（单条）
     enabled: false                      # 默认关;与 upload.enabled 互不串
-    hook_timeout_seconds: 5.0
-    on_failure: log_only
+    hook_timeout_seconds: 30.0          # PAT refresh + PATCH label_config + 建 task + 预标注
   scorecard:
     enabled: true
   credential_scan:  # R11: 推送前扫凭据, 命中 fail-closed 拒推

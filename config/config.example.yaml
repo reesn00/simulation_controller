@@ -244,6 +244,12 @@ label_studio:
   label_config_path: "label_studio/label_configs/trajectory_review.xml"
   project_id: null                       # null 时按 title 精确查找
 
+  # 推送台账的落盘根。台账记 session_id → LS task id, 用来判重 + 给预标注
+  # 提供 LS 侧的数字 task id。**必须留着**: LS 1.23 没有任何原生去重
+  # (inner_id 是整数字段且不去重), 删掉台账等于每次 upload 都推重复样本。
+  # purge 项目后请一并删掉对应文件, 否则新项目 id 变了台账自然失效。
+  output_root: "output"
+
   # CLI 全量推送 (python -m label_studio upload)
   upload:
     enabled: false                       # 默认关; 开了才走 `python -m label_studio upload`
@@ -275,8 +281,10 @@ label_studio:
     retry_attempts: 3
     retry_backoff_seconds: 2.0
 
-  # orchestration task_pipeline step 10 自动 hook
+  # orchestration task_pipeline step 11 自动 hook —— 真正的「自动上传」开关
   hook:
     enabled: false                       # 默认关; 开了则每个 task 跑完自动推一条
-    hook_timeout_seconds: 5
-    on_failure: log_only                 # log_only | log_and_metric
+    # 一次推送的完整预算: PAT refresh + 建连 + 查项目 + PATCH label_config +
+    # create task + 预标注 POST。调太小必超, 超时即丢样本(台账来不及写,
+    # 下次 upload 又补推一遍)。
+    hook_timeout_seconds: 30

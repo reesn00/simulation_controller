@@ -1,4 +1,4 @@
-"""orchestration.ls_hook: task_pipeline step 10 的 Label Studio 自动推送.
+"""orchestration.ls_hook: task_pipeline step 11 的 Label Studio 自动推送.
 
 三条硬约束（方案 §9 / §16）:
 
@@ -8,6 +8,11 @@
    ``future.result(timeout=)``; 超时后线程继续跑完就被回收（daemon 线程不会
    阻止进程退出), 但**不再等它**。注意 ``with ThreadPoolExecutor(...)`` 的
    退出时会 join, 所以这里**不用 with**, 显式 ``shutdown(wait=False)``。
+
+   超时 / 进程被杀**不等于丢样本**: ``push_single_c3`` 是先拿到 LS task id
+   再写台账, 所以「台账里没有」严格等价于「LS 上没建成」。批次后跑一次
+   ``python -m label_studio upload`` 全量补推, 缺的会补上 —— 因为 LS 1.23
+   不去重, 台账就是唯一防线, 这个补推是幂等的。
 3. **默认关闭**。只看 ``hook.enabled``, 不看 ``upload.enabled`` —— 两个开关
    交叉会导致 hook 静默空转（配了 upload.enabled 就以为 hook 也开了）。
 
@@ -25,8 +30,8 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-#: 进程级指标（P2 的 ``on_failure=log_and_metric`` 落点）。
-#: 刻意放模块级而不是 settings —— 指标是**观测**, 不该影响配置语义。
+#: 进程级指标。刻意放模块级而不是 settings —— 指标是**观测**, 不该影响
+#: 配置语义。
 METRICS: dict[str, int] = {
     "ls_hook_attempted": 0,
     "ls_hook_succeeded": 0,
@@ -35,10 +40,25 @@ METRICS: dict[str, int] = {
     "ls_hook_skipped": 0,
 }
 
+#: 默认 hook 超时（秒）。**不是 5** —— 一次推送要串完: PAT refresh + 建连 +
+#: 查项目 + PATCH label_config + create task + 预标注 POST, 首次跑还要多
+#: 付一次 TLS/进程冷启动。5s 下首次必超, 超时即丢样本（台账来不及写,
+#: 下次 upload 又补推一遍）。留足余量比"快速失败"划算: 推送本来就是旁路,
+#: 多等 25s 不占任何主流程时间。
+DEFAULT_HOOK_TIMEOUT_SECONDS = 30.0
+
+#: 进程级 project_id 缓存, key = ``(base_url, project_title)``。
+#: 每个 task 跑完都调一次 ``resolve_project_id`` = 每 task 一次「查项目 +
+#: PATCH label_config」, 98 个 task 就是 98 次 PATCH。PATCH 会**覆盖 LS 上
+#: 人工调整过的配置**, 且批次跑一半时把标注员的修改冲掉 —— 这不是性能问题
+#: 是正确性问题。同批次内 label_config 文件不会变, 第一次解析后直接复用。
+_PROJECT_CACHE: dict[tuple[str, str], int] = {}
+
 
 def reset_metrics() -> None:
     for key in METRICS:
         METRICS[key] = 0
+    _PROJECT_CACHE.clear()
 
 
 def load_hook_settings(config_path: Path | str | None = None) -> Any:
@@ -90,7 +110,7 @@ def _default_timeout(settings: Any) -> float:
         value = getattr(holder, "hook_timeout_seconds", None)
         if value:
             return float(value)
-    return 5.0
+    return DEFAULT_HOOK_TIMEOUT_SECONDS
 
 
 def push_with_timeout(
@@ -169,7 +189,7 @@ def run_hook(
     meta_path: Path | None,
     resolve_project_id: Any = None,
 ) -> dict[str, Any]:
-    """step 10 的完整入口: 判定开关 → 解析 project → 带超时推送。
+    """step 11 的完整入口: 判定开关 → 解析 project → 带超时推送。
 
     Args:
         settings: :class:`label_studio.settings.LabelStudioSettings`（非 HookSettings,
@@ -184,10 +204,22 @@ def run_hook(
 
     try:
         if project_id is None:
-            if resolve_project_id is None:
-                return {"ok": False, "skipped": True, "reason": "no_project_id",
-                        "error": None}
-            project_id = resolve_project_id(settings)
+            # 进程级缓存: 同批次只解析一次。resolve_project_id(sync=True) 会
+            # PATCH label_config 进 LS, 每 task 调一次 = 每 task 覆盖一次
+            # 标注员在 LS 上做的调整。
+            cache_key = (
+                str(getattr(settings, "base_url", "")),
+                str(getattr(settings, "project_title", "")),
+            )
+            cached = _PROJECT_CACHE.get(cache_key)
+            if cached is not None:
+                project_id = cached
+            else:
+                if resolve_project_id is None:
+                    return {"ok": False, "skipped": True, "reason": "no_project_id",
+                            "error": None}
+                project_id = resolve_project_id(settings)
+                _PROJECT_CACHE[cache_key] = int(project_id)
     except Exception as exc:
         METRICS["ls_hook_failed"] += 1
         _log.error("ls_hook: 项目解析失败, 跳过推送: %s", exc)
@@ -198,7 +230,8 @@ def run_hook(
         settings,
         project_id=int(project_id),
         meta_path=Path(meta_path) if meta_path else Path(""),
-        timeout_seconds=getattr(hook, "hook_timeout_seconds", 5.0),
+        timeout_seconds=getattr(hook, "hook_timeout_seconds",
+                                DEFAULT_HOOK_TIMEOUT_SECONDS),
     )
 
 

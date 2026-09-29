@@ -16,6 +16,7 @@ uv run python -m orchestration start --all-tasks --parallelism 4 --dry-run
 uv run python -m orchestration status
 uv run python -m orchestration replay
 uv run python -m pytest -q
+.\scripts\label_studio.bat            # C3 + 评分卡 → Label Studio (init → status → upload)
 ```
 
 > `python -m simulate_serve --tasks / --rerun-task / --limit / --include-offline` 已于 2026-09-22 删除（任务运行入口移交 `orchestration`）；`simulate_serve` 仅保留只读开关。orchestration 默认 `max_parallelism=1` 严格串行，≥2 启用 `multiprocessing.Pool` 并发。
@@ -116,7 +117,7 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 | `gdr/parsers/` | C1 契约入口：`from_trajectory` |
 | `gdr/domain/` | Session / Message / Block pydantic 类型 + `save_session_v2` / `save_refined_session` |
 | `gdr/{refiners,validators,core,reassembly,routing,config,prompts}/` | gdr 内部模块（详见 [docs/设计方案/gdr-plan.md](docs/设计方案/gdr-plan.md)） |
-| `label_studio/` | C3 + 评分卡 → Label Studio 单向推送（终点，不回流）；CLI `init-project`/`status`/`upload`/`purge`；R11 凭据扫描 |
+| `label_studio/` | C3 + 评分卡 → Label Studio 单向推送（终点，不回流）；CLI `init-project`/`status`/`upload`/`purge`；R11 凭据扫描；`push_index.py` 推送台账（LS 1.23 无原生去重，见下） |
 | `orchestration/` | 顶层调度（master / pipeline_executor / task_pipeline / producer / workers / queue / failure_handler；2026-09-22 起删 watcher / batch_tracker / qf_worker） |
 | `tests/` | unit、contract、functional；默认不访问公网 |
 
@@ -132,7 +133,10 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 - Playwright/Camoufox 默认 disabled，启动不自动安装。使用 `--check-tools` 查看完整状态。
 - 使用 `--readiness` 在不连接 QwenPaw 的情况下汇总 Judge/Provider 缺口及受影响 Task；该命令不创建 Run 日志。
 - 全项目统一配置入口：仓库根 `config/config.yaml`（gitignored，含真实凭据；提交版模板 `config/config.example.yaml`）。四个模块（simulate_serve / orchestration / gdr / etl.qwenformat）的配置收纳于对应 section，`llm:` 共享段提供端点/密钥/模型缺省，支持 `${VAR}` 环境变量占位符。模块级配置文件已删除，根配置缺失直接报错、无兜底。定位可用 `SIMCTL_CONFIG`（gdr 用 `GDR_CONFIG_FILE`）重定向。凭据不得提交、打包、复制到测试、文档或日志。
-- Label Studio 段（`label_studio:`，2026-09-28 已实施，两个开关默认关闭）：本项目**终点**是 Label Studio —— 推送 C3 与评分卡，不做回流；凭据走 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path`。`upload.enabled` 只管 `python -m label_studio upload`（全量），`hook.enabled` 只管 orchestration step 11 自动推送（单条），两者互不串。`credential_scan` 默认开且 **fail-closed 拒推**。
+- Label Studio 段（`label_studio:`，2026-09-28 已实施，两个开关默认关闭）：本项目**终点**是 Label Studio —— 推送 C3 与评分卡，不做回流；凭据走 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path`。`upload.enabled` 只管 `python -m label_studio upload`（全量），`hook.enabled` 只管 orchestration step 11 自动推送（单条），两者互不串。`credential_scan` 默认开且 **fail-closed 拒推**。**LS 1.23 没有原生去重**（`Task.inner_id` 是整数字段、批量 import 静默丢弃、重复导入照样新建），所以判重与预标注要的数字 task id 都靠本地台账 `output/label_studio/push_index__<project_id>.jsonl`（`session_id → LS task id`，append-only）—— 删掉它等于每次 upload 都推重复样本。`init-project` / `upload` 每次都会把本地 label_config `PATCH` 进项目：LS 端存的是建项目那刻的 XML，不同步就会出现「校验报绿、import 却 400 `data['xxx']`」。
+  - **推送只有 etl 之后一个时点**（C3）。simulate 后的 C1 含 raw CoT，外推撞 CLAUDE.md 思维链红线；gdr 后的 C2 会被后续改写，标注等于标中间态。设计依据见 `docs/设计方案/label-studio-integration.md`。
+  - **hook 超时 30s 而非 5s**：一次推送串完 PAT 刷新 + 查项目 + PATCH label_config + 建 task + 预标注。超时不丢样本 —— `push_single_c3` 先拿 LS task id 再写台账，「台账没有」严格等价于「LS 上没建成」，批次后 `scripts/label_studio.bat upload` 补推幂等。project 解析在 `ls_hook` 里进程级缓存，**每个 task 都 PATCH label_config 会覆盖标注员的改动**。
+  - **低分样本（`judge_discard`）也推**：走完 etl 出 C3，终态仍是 `PHASE_AUDITED`（不洗成 done，否则 status 统计会骗人）。C3 meta 顶层 `audit_reason` → 评分卡 `audit` 标记 → label_config 最上方「低分标记」只读块 + 风险提示第一条。`scoring_reject` 推不了（C2 刻意不写），是设计硬墙。
 
 ## 输出
 

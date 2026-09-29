@@ -125,7 +125,9 @@ def test_end_to_end_push_with_scorecard(client, ls_settings, tmp_path: Path):
         data = next(t["data"] for t in items if t.get("inner_id", "").startswith("useramulation"))
         assert data["task_id"] == "T001"
         assert data["scorecard"]["schema_version"] == "scorecard.v1"
-        assert data["criteria"][0]["criterion_id"] == "C1"
+        # criteria 是摊平的**字符串**列表（LS perItem 文本控件只吃字符串）
+        assert isinstance(data["criteria"][0], str)
+        assert "C1" in data["criteria"][0]
     finally:
         client.delete_project(project_id)
 

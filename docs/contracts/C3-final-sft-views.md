@@ -126,7 +126,11 @@ OpenAI tool_call id 形态：trajectory 里是 `toolu_xxx`，etl transform 统�
   "qf_stats": {"total_chars": 12345, "render_seconds": 0.42, ...},
   "tools": [ToolDef, ...],
   "system_prompt_partitions": {"role": "...", "constraints": [...],
-                                "framework": "...", "unknown": [...]}
+                                "framework": "...", "unknown": [...]},
+
+  "criterion_results": {...},
+  "fail_evaluation": {...},
+  "audit_reason": "judge_discard"
 }
 ```
 
@@ -136,11 +140,34 @@ OpenAI tool_call id 形态：trajectory 里是 `toolu_xxx`，etl transform 统�
 - 后半（qf_rendered_at / qf_stats / tools / system_prompt_partitions）——
   etl transform / usage_prune / system_prompt 阶段新增
 
+### 6.1 orchestration 注入的三个键（2026-09-28 / 09-29）
+
+这三个键**不是 etl transform 产的**，由 orchestration 在 `run_etl_once` 里
+经 `orchestration.criterion_source` / `orchestration.fail_evaluator` 写进
+`session.metadata`，随 `save_session_v2` 落到本文件。**只增不改**，不影响
+C1/C2 既有字段语义。
+
+| 键 | 何时写 | 含义 |
+|---|---|---|
+| `criterion_results` | simulate 端产出过 `ValidationReport` 时 | 逐条 criterion 的 PASS/FAIL/INCONCLUSIVE，评分卡 L0 的唯一数据源 |
+| `fail_evaluation` | `final_verdict != pass` 且拿到 LLM 配置时 | LLM 定性归因（失败类别 + 根因）。**分数恒为 0**，LLM 不参与打分 |
+| `audit_reason` | gdr 判 `judge_discard` 时 | 低分理由（`judge_discard` / `scoring_reject`）。**键不存在 = 该样本未被拒收** |
+
+`audit_reason` 值得单说：gdr 拒收的样本按 CLAUDE.md「数据保留原则」
+**仍然出 C3、仍然推 Label Studio** 供人工复核。没有这个字段，标注员看到
+的只是一条 L0=0 的样本，会照常标「可用」——等于把 gdr 拒收过的样本又标回
+训练集。它是**复核的前提**，不是装饰。
+
+只由 `judge_discard` 一支产生：`scoring_reject` 的 C2 是刻意不写的
+（「C2 即为待训练产物，拒收样本不该占训练目录」），没有 C2 就走不到 etl，
+也就不会有 C3。这是设计上的硬墙，不是遗漏。
+
 ## 7. 与 C2 的一致性约束
 
 1. C3 不修改 refine 阶段产出的任何字段（refine_history / validation_summary /
    policy_decisions / judge_discard / user_intent / training_value_score 等）
 2. C3 只新增以下字段：`qf_rendered_at` / `qf_stats` / `system_prompt_partitions`
+   以及 §6.1 的三个 orchestration 注入键
 3. C3 可能修改 `messages` / `tools` / `system_prompt`（usage_prune 裁剪），
    这些修改是 etl 的职责
 4. `meta_tag_contamination` 字段由 gdr 写入，C3 不修改（已剥离的 ⟦⟧ 不会被

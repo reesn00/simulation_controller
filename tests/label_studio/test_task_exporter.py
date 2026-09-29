@@ -21,6 +21,8 @@ from label_studio.settings import (
     UploadSettings,
 )
 from label_studio.task_exporter import (
+    RISK_HINTS_CONTROL,
+    TASK_ANCHOR_CONTROL,
     build_prediction,
     build_task,
     build_task_data,
@@ -31,6 +33,7 @@ from label_studio.task_exporter import (
     parse_stem,
     push_batch,
     push_single_c3,
+    render_risk_hints,
     scan_for_credentials,
 )
 
@@ -118,6 +121,57 @@ def test_build_task_data_maps_all_fields(rich_c3: Path):
     assert data["scorecard"]["schema_version"] == "scorecard.v1"
 
 
+def test_criteria_are_flattened_to_strings(rich_c3: Path):
+    """``criteria`` 必须是**字符串列表**。
+
+    LS 的 perItem 文本控件只接受字符串, 传 dict 列表在 import 阶段就
+    ``data['criteria']=...`` 400。所以这里从结构化 criterion 摊成人读的
+    ``[VERDICT] id (REASON) — message`` 一行。
+    """
+    data, _ = build_task_data(rich_c3)
+    criteria = data["criteria"]
+    assert criteria and all(isinstance(row, str) for row in criteria)
+    assert "C1" in criteria[0]
+    assert "PASS" in criteria[0].upper()
+
+
+def test_criteria_empty_when_meta_has_no_evaluation(rich_c3: Path):
+    data, _ = build_task_data(rich_c3)
+    assert isinstance(data["criteria"], list)
+
+
+def test_display_twin_fields_are_strings(rich_c3: Path):
+    """``*_text`` 孪生字段是给 LS 文本标签看的, 必须是 JSON 字符串。
+
+    结构化原值保留 (``messages`` / ``metadata`` / ``scorecard``), 但 label_config
+    一律绑孪生字段 —— LS 1.23 的 Text/TextEditor 碰到 dict/list 直接 400。
+    """
+    data, _ = build_task_data(rich_c3)
+    for key, structured in (
+        ("messages_text", data["messages"]),
+        ("metadata_text", data["metadata"]),
+        ("scorecard_text", data["scorecard"]),
+    ):
+        text = data[key]
+        assert isinstance(text, str), key
+        assert json.loads(text) == structured, key
+
+
+def test_display_twins_keep_chinese_readable(rich_c3: Path):
+    """``ensure_ascii=False`` —— 默认 True 会把中文转成 ``\\uXXXX``,
+    标注员在 LS 里看到的是一串转义码。"""
+    data, _ = build_task_data(rich_c3)
+    assert "\\u" not in data["metadata_text"]
+
+
+def test_scorecard_disabled_omits_text_twin(rich_c3: Path):
+    data, _ = build_task_data(
+        rich_c3, scorecard_settings=ScorecardSettings(enabled=False)
+    )
+    assert "scorecard" not in data
+    assert "scorecard_text" not in data
+
+
 def test_task_id_only_from_filename_not_meta(rich_c3: Path):
     """task_id 不在 meta.json 里 —— 只能从文件名解析。"""
     data, _ = build_task_data(rich_c3)
@@ -169,19 +223,70 @@ def test_scorecard_disabled_omits_key(rich_c3: Path):
 # ---------------------------------------------------------------------------
 
 
+def test_prediction_result_is_a_region_list(rich_c3: Path):
+    """``result`` 必须是 region **列表**。
+
+    原实现发的是 dict, LS 1.23.0 实测回 ``201 {"created": 0}`` —— 201、零条
+    prediction, 而上报当时还按 sent 兜底显示"推了 1 条"。一次假成功。
+    """
+    pred = build_prediction(*build_task_data(rich_c3))
+    assert isinstance(pred["result"], list)
+    for region in pred["result"]:
+        assert set(region) >= {"from_name", "to_name", "type", "value"}, region
+
+
+def test_prediction_regions_name_real_controls(rich_c3: Path):
+    """``from_name`` 命中不了 label_config 里的控件 → 整条预测被静默丢弃。
+
+    与 :class:`~tests.label_studio.test_label_config_xml` 里的
+    ``test_prediction_control_matches_label_config`` 配对: 那边查 XML 里有这个
+    控件, 这边查预测指向它, 两边都过才推得进去。
+    """
+    pred = build_prediction(*build_task_data(rich_c3))
+    (region,) = pred["result"]
+    assert region["from_name"] == RISK_HINTS_CONTROL
+    assert region["to_name"] == TASK_ANCHOR_CONTROL
+    assert region["type"] == "textarea"
+    assert isinstance(region["value"]["text"], list)
+    assert all(isinstance(line, str) for line in region["value"]["text"])
+
+
 def test_prediction_never_sets_overall_decision(rich_c3: Path):
     data, card = build_task_data(rich_c3)
     pred = build_prediction(data, card)
-    assert "overall_decision" not in pred["result"]
+    assert "overall_decision" not in str(pred)
     assert "suggested_accept" not in str(pred)
+    assert all(r["from_name"] != "overall_decision" for r in pred["result"])
 
 
 def test_prediction_carries_risk_hints(rich_c3: Path):
     data, card = build_task_data(rich_c3)
     pred = build_prediction(data, card)
-    assert any("C4" in h for h in pred["result"]["risk_hints"])
+    (region,) = pred["result"]
+    text = "\n".join(region["value"]["text"])
+    assert "C4" in text
     assert pred["task"] == data["session_id"]
     assert pred["model_version"].startswith("scorecard/")
+
+
+def test_prediction_text_matches_task_data(rich_c3: Path):
+    """预标注的文本与展示块绑的 ``$risk_hints_text`` 同源 —— 两条路都得有值,
+    少一条标注员就看不到"机器已经查过什么"。"""
+    data, _ = build_task_data(rich_c3)
+    (region,) = build_prediction(data, data["scorecard"])["result"]
+    assert "\n".join(region["value"]["text"]) == data["risk_hints_text"]
+
+
+def test_risk_hints_never_blank(rich_c3: Path):
+    """无命中时也必须有文案 —— 空块会被读成"推送失败"。
+
+    兜底文案由 ``scorecard.build_risk_hints`` 独家负责 (它自己补「自动检查未见
+    异常」那条); 本模块**不复制第二份**, 复制必然漂移。
+    """
+    assert render_risk_hints(None) == ""
+    assert render_risk_hints({"enabled": True, "dimensions": []}).strip()
+    data, _ = build_task_data(rich_c3)
+    assert data["risk_hints_text"].strip()
 
 
 def test_prediction_scores_by_confidence(rich_c3: Path):
@@ -369,14 +474,30 @@ def test_empty_dir_yields_empty_plan(tmp_path: Path):
 
 
 class FakeClient:
+    """模拟 LS 1.23 的两个关键行为:
+
+    1. ``/import`` **只回计数**, 不回 task id —— 所以调用方得回头查。
+    2. ``import/predictions`` 的 ``task`` 只认数字 id, 且**不去重** ——
+       推几次就是几条。
+    """
+
     def __init__(self) -> None:
         self.imported: list[list] = []
         self.predicted: list[list] = []
+        self._next_id = 100
+        self._tasks: list[dict] = []
 
     def import_tasks(self, project_id, tasks):
         batch = list(tasks)
         self.imported.append(batch)
+        for task in batch:
+            self._next_id += 1
+            self._tasks.append({"id": self._next_id, "data": task.get("data", {})})
         return len(batch)
+
+    def list_recent_tasks(self, project_id, *, limit=100):
+        # LS 1.23 的 /api/projects/{id}/tasks 是**倒序**的
+        return list(reversed(self._tasks))[:limit]
 
     def import_predictions(self, project_id, preds):
         batch = list(preds)
@@ -395,6 +516,39 @@ def test_push_single_c3_roundtrip(rich_c3: Path, settings):
     assert client.imported[0][0]["data"]["scorecard"]["dimensions"]
 
 
+def test_push_single_c3_records_ls_task_id(rich_c3: Path, settings):
+    """台账要记下 LS 侧的数字 id —— 预标注的 ``task`` 字段只认它。"""
+    from label_studio.push_index import PushIndex
+
+    client = FakeClient()
+    push_single_c3(rich_c3, settings=settings, project_id=7, client_factory=lambda: client)
+    index = PushIndex.load(PushIndex.default_path(7, settings.output_root))
+    ls_task_id = index.task_id(result_session(rich_c3))
+    assert isinstance(ls_task_id, int)
+    assert client.predicted[0][0]["task"] == ls_task_id
+
+
+def result_session(meta_path: Path) -> str:
+    from label_studio.task_exporter import build_task_data
+
+    data, _ = build_task_data(meta_path)
+    return str(data["session_id"])
+
+
+def test_push_single_c3_skips_already_pushed(rich_c3: Path, settings):
+    """重跑 hook 不推重复 —— LS 1.23 那边没有任何去重挡板。"""
+    client = FakeClient()
+    first = push_single_c3(
+        rich_c3, settings=settings, project_id=7, client_factory=lambda: client
+    )
+    second = push_single_c3(
+        rich_c3, settings=settings, project_id=7, client_factory=lambda: client
+    )
+    assert first["pushed"] == 1
+    assert second["pushed"] == 0
+    assert len(client.imported) == 1
+
+
 def test_push_single_c3_can_skip_prediction(rich_c3: Path, settings):
     client = FakeClient()
     push_single_c3(
@@ -404,11 +558,13 @@ def test_push_single_c3_can_skip_prediction(rich_c3: Path, settings):
     assert client.predicted == []
 
 
-def test_push_batch_respects_batch_size(c3_dir: Path):
+def test_push_batch_respects_batch_size(c3_dir: Path, tmp_path: Path):
     for i in range(5):
         write_c3(c3_dir, task_id="T001", session_id=f"s{i}")
     client = FakeClient()
-    settings = LabelStudioSettings(upload=UploadSettings(batch_size=2))
+    settings = LabelStudioSettings(
+        upload=UploadSettings(batch_size=2), output_root=tmp_path / "output"
+    )
     plan = export_batch(c3_dir, settings=settings)
     result = push_batch(plan, settings=settings, project_id=1,
                         client_factory=lambda: client)
@@ -419,10 +575,49 @@ def test_push_batch_respects_batch_size(c3_dir: Path):
     assert [len(b) for b in client.predicted] == [2, 2, 1]
 
 
-def test_push_batch_reports_progress(c3_dir: Path):
+def test_push_batch_dedupes_against_index(c3_dir: Path, tmp_path: Path):
+    """同一批推两次, 第二次全跳过。
+
+    LS 1.23 既不认字符串 inner_id 也不按它去重 (实测 inner_id=42 推三次 →
+    id 7/8/9), 所以本地台账是唯一的挡板。
+    """
     for i in range(3):
         write_c3(c3_dir, session_id=f"s{i}")
-    settings = LabelStudioSettings(upload=UploadSettings(batch_size=1))
+    settings = LabelStudioSettings(output_root=tmp_path / "output")
+    first = FakeClient()
+    second = FakeClient()
+    push_batch(export_batch(c3_dir, settings=settings), settings=settings,
+               project_id=1, client_factory=lambda: first)
+    result = push_batch(export_batch(c3_dir, settings=settings), settings=settings,
+                        project_id=1, client_factory=lambda: second)
+    assert result["tasks_pushed"] == 0
+    assert result["skipped_duplicate"] == 3
+    assert second.imported == []
+
+
+def test_push_batch_survives_unresolvable_task_ids(c3_dir: Path, tmp_path: Path):
+    """取不回 id 时 task 照样推成功 —— 只是没有预标注。"""
+    for i in range(2):
+        write_c3(c3_dir, session_id=f"s{i}")
+
+    class NoIds(FakeClient):
+        def list_recent_tasks(self, project_id, *, limit=100):
+            raise RuntimeError("LS 抽风")
+
+    client = NoIds()
+    settings = LabelStudioSettings(output_root=tmp_path / "output")
+    result = push_batch(export_batch(c3_dir, settings=settings), settings=settings,
+                        project_id=1, client_factory=lambda: client)
+    assert result["tasks_pushed"] == 2
+    assert result["predictions_pushed"] == 0
+
+
+def test_push_batch_reports_progress(c3_dir: Path, tmp_path: Path):
+    for i in range(3):
+        write_c3(c3_dir, session_id=f"s{i}")
+    settings = LabelStudioSettings(
+        upload=UploadSettings(batch_size=1), output_root=tmp_path / "output"
+    )
     plan = export_batch(c3_dir, settings=settings)
     seen: list[tuple[int, int]] = []
     push_batch(plan, settings=settings, project_id=1,
@@ -434,6 +629,41 @@ def test_push_batch_reports_progress(c3_dir: Path):
 def test_push_batch_on_empty_plan_is_noop(tmp_path: Path):
     result = push_batch(
         export_batch(tmp_path, settings=LabelStudioSettings()),
-        settings=LabelStudioSettings(), project_id=1,
+        settings=LabelStudioSettings(output_root=tmp_path / "output"), project_id=1,
     )
-    assert result == {"tasks_pushed": 0, "predictions_pushed": 0, "batches": 0}
+    assert result == {
+        "tasks_pushed": 0,
+        "predictions_pushed": 0,
+        "batches": 0,
+        "skipped_duplicate": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 低分标记字段 (audit_text)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_text_always_present(rich_c3: Path):
+    """正常样本也必须有 audit_text。
+
+    label_config 的 ``$audit_text`` 是**无条件绑定**的: 字段缺失时 LS 把那块
+    渲染成空白框, 标注员分不清是"没被拒收"还是"渲染坏了"。所以这里显式
+    写「（无）」, 用一行噪音换掉一整类误解。
+    """
+    data, scorecard = build_task_data(rich_c3)
+    assert scorecard["enabled"] is True
+    assert data["audit_text"] == "（无）"
+
+
+def test_audit_text_carries_reason_and_note(rich_c3: Path):
+    meta_path = Path(rich_c3)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["audit_reason"] = "judge_discard"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    data, scorecard = build_task_data(meta_path)
+    assert scorecard["audit"]["reason"] == "judge_discard"
+    assert "【低分样本】" in data["audit_text"]
+    assert "judge_discard" not in data["audit_text"]   # 翻成了人话
+    assert "结构合格" in data["audit_text"]

@@ -459,3 +459,59 @@ def test_derive_overall_is_pure():
     overall = derive_overall(dims)
     assert overall["suggested_decision"] == "accept"
     assert dims == snapshot
+
+
+# ---------------------------------------------------------------------------
+# 低分标记 (audit marker)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_absent_on_normal_sample():
+    """正常样本**不带 audit 键** —— 靠键存在与否判断, 不塞 audited=false。
+
+    下游若按"这个字段恒在"处理, 会把每一条都当成被拒收样本打标。
+    """
+    assert "audit" not in build_scorecard(RICH_META)
+
+
+def test_audit_marker_from_judge_discard():
+    meta = copy.deepcopy(RICH_META)
+    meta["audit_reason"] = "judge_discard"
+    audit = build_scorecard(meta)["audit"]
+    assert audit["audited"] is True
+    assert audit["reason"] == "judge_discard"
+    # gdr 是判分方, 标注员不认识这些内部状态名, 必须翻成人话
+    assert "judge_discard" not in audit["label"]
+    assert "拒收" in audit["label"]
+    # note 要说清"低分≠废数据", 否则标注员会直接 reject 掉
+    assert "结构合格" in audit["note"]
+
+
+def test_audit_marker_keeps_unknown_reason_visible():
+    """新增的 audit_reason 不该被静默吞掉 —— 原样透出, 别假装没发生。"""
+    meta = copy.deepcopy(RICH_META)
+    meta["audit_reason"] = "brand_new_reason"
+    assert build_scorecard(meta)["audit"]["reason"] == "brand_new_reason"
+
+
+@pytest.mark.parametrize("raw", [None, "", "   ", 5, [], {}])
+def test_junk_audit_reason_means_no_marker(raw):
+    """空串/非字符串 → 不打标。宁可漏标也不能把正常样本误标成拒收样本。"""
+    meta = copy.deepcopy(RICH_META)
+    meta["audit_reason"] = raw
+    assert "audit" not in build_scorecard(meta)
+
+
+def test_audit_hint_comes_first():
+    """低分标记排第一 —— 它解释了后面所有低分维度的成因, 藏在末尾等于没说。"""
+    meta = copy.deepcopy(RICH_META)
+    meta["trajectory_free"]["redline"]["violation"] = True  # 制造多条 hint
+    meta["audit_reason"] = "judge_discard"
+    hints = build_risk_hints(build_scorecard(meta))
+    assert len(hints) > 1
+    assert "低分样本" in hints[0]
+
+
+def test_audit_hint_absent_for_normal_sample():
+    hints = build_risk_hints(build_scorecard(RICH_META))
+    assert not any("低分样本" in h for h in hints)

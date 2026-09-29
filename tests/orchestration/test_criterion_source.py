@@ -234,3 +234,41 @@ def test_injection_does_not_touch_other_metadata(tmp_path: Path):
     inject_criterion_evaluation(session, evaluation)
     assert session.metadata["training_value_score"] == 0.8
     assert session.metadata["validation_summary"] == {"total_blocks": 9}
+
+
+# ---------------------------------------------------------------------------
+# audit_reason 注入 (低分标记)
+# ---------------------------------------------------------------------------
+
+
+def test_inject_audit_reason_writes_key():
+    from orchestration.criterion_source import AUDIT_METADATA_KEY, inject_audit_reason
+
+    class _S:
+        metadata = {}
+        session_id = "s1"
+
+    session = _S()
+    assert inject_audit_reason(session, "judge_discard") is True
+    assert session.metadata[AUDIT_METADATA_KEY] == "judge_discard"
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_inject_audit_reason_skips_blank(raw):
+    """None/空串 → 不写键。
+
+    与 inject_criterion_evaluation 语义**相反**: 那边 None 是"读取失败, 别
+    抹掉已有值", 这边 None 是"这条没被拒收" —— 正常样本的 metadata 里不该
+    留一个空 audit_reason, 评分卡和 label_config 都靠"键存在"判断要不要
+    打低分标记, 空串会让两边都误判。
+    """
+    from orchestration.criterion_source import AUDIT_METADATA_KEY, inject_audit_reason
+
+    class _S:
+        metadata = {"keep": "me"}
+        session_id = "s1"
+
+    session = _S()
+    assert inject_audit_reason(session, raw) is False
+    assert AUDIT_METADATA_KEY not in session.metadata
+    assert session.metadata["keep"] == "me"

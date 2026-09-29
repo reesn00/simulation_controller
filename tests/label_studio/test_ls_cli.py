@@ -26,6 +26,9 @@ def config_file(tmp_path: Path) -> Path:
             {"label_studio": {
                 "base_url": "http://127.0.0.1:8099",
                 "api_key": "${LABEL_STUDIO_CLI_TEST_KEY}",
+                # 推送台账必须隔离到 tmp_path: 默认 output/ 是真实目录, 第一次
+                # 跑就把样本记成"已推过", 第二次跑会静默跳过, 测试变成假绿。
+                "output_root": str(tmp_path / "output"),
                 "upload": {"enabled": True, "batch_size": 2},
             }},
             allow_unicode=True,
@@ -45,7 +48,10 @@ class FakeClient:
         self.imported: list = []
         self.predicted: list = []
         self.deleted: list = []
+        self.updated: list = []
         self.calls: list[str] = []
+        self._next_id = 200
+        self._tasks: list[dict] = []
 
     def health_check(self):
         self.calls.append("health")
@@ -60,6 +66,10 @@ class FakeClient:
     def create_project(self, *, title, label_config, project_type="x"):
         return {"id": 77, "title": title}
 
+    def update_project(self, project_id, *, label_config=None, title=None):
+        self.updated.append({"id": project_id, "label_config": label_config})
+        return {"id": project_id, "title": title or "trajectory-sft-quality"}
+
     def delete_project(self, project_id):
         self.deleted.append(project_id)
 
@@ -69,7 +79,14 @@ class FakeClient:
     def import_tasks(self, project_id, tasks):
         batch = list(tasks)
         self.imported.append(batch)
+        for task in batch:
+            self._next_id += 1
+            self._tasks.append({"id": self._next_id, "data": task.get("data", {})})
         return len(batch)
+
+    def list_recent_tasks(self, project_id, *, limit=100):
+        # LS 1.23 的 /api/projects/{id}/tasks 是倒序的
+        return list(reversed(self._tasks))[:limit]
 
     def import_predictions(self, project_id, preds):
         batch = list(preds)
@@ -242,6 +259,8 @@ def test_upload_threshold_requires_force(
             {"label_studio": {
                 "base_url": "http://127.0.0.1:8099",
                 "api_key": "${LABEL_STUDIO_CLI_TEST_KEY}",
+                # 覆盖配置时不能漏掉 output_root, 否则台账会写进真实 output/
+                "output_root": str(tmp_path / "output"),
                 "upload": {"enabled": True, "dry_run_skip_threshold": 1},
             }},
             allow_unicode=True,
@@ -265,6 +284,8 @@ def test_upload_threshold_force_overrides(tmp_path, config_file, with_key, fake_
             {"label_studio": {
                 "base_url": "http://127.0.0.1:8099",
                 "api_key": "${LABEL_STUDIO_CLI_TEST_KEY}",
+                # 覆盖配置时不能漏掉 output_root, 否则台账会写进真实 output/
+                "output_root": str(tmp_path / "output"),
                 "upload": {"enabled": True, "dry_run_skip_threshold": 1},
             }},
             allow_unicode=True,

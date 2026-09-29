@@ -81,6 +81,27 @@
 从 `output/runs/<run_id>/` 注入 —— `gdr/parsers/` 对 validation 零引用，验证
 结果原本只存在于 simulate 端产物里。
 
+### 4.1 `audit` 低分标记（2026-09-29）
+
+L0–L5 表达的是**这条轨迹本身怎么样**；`audit` 表达的是**gdr 有没有拒收它**。
+两者独立：被拒收的样本各维度分可能都不低，但它终究没进训练集。
+
+`audit` 是**条件字段** —— meta 里没有 `audit_reason` 就没有 `audit`，不做
+`audited: false` 的常态占位（下游若按"这键恒在"处理，会把每条都当拒收样本）。
+
+```json
+"audit": {
+  "audited": true,
+  "reason": "judge_discard",
+  "label": "精修质量评分未达标, gdr 已拒收",
+  "note": "本样本结构合格、但被 gdr 以质量评分拒收, 按项目「数据保留原则」仍推上来供人工复核..."
+}
+```
+
+它同时进两处：`build_risk_hints()` 的**第一条**（排在所有低分维度提示之前 ——
+它解释了后面那些 0 分的成因，藏在末尾等于没说），以及 `task.data["audit_text"]`
+（label_config 最上方的只读展示块）。
+
 ## 5. 评分依据（`evidence`）
 
 每个维度的依据是**结构化的**，不是字符串：
@@ -102,10 +123,16 @@
 评分卡经 `label_studio/task_exporter.py::build_task_data` 挂在
 `task.data["scorecard"]`。相关的另外两个字段：
 
-- `task.data["criteria"]` —— `criterion_results.criteria` 摊平的列表，绑
-  label_config 的 perItem 控件（用扁平列表而非 LS 的 data path 过滤语法，
-  后者各版本行为不一致）
-- `task.data["inner_id"]` = `session_id` —— LS 原生去重键
+- `task.data["criteria"]` —— `criterion_results.criteria` 摊平成
+  `[VERDICT] criterion_id (REASON) — message` 的**字符串列表**（LS 的 perItem
+  文本控件只收字符串，喂 list[dict] 在 import 阶段就 400），绑 label_config 的
+  perItem 控件。用扁平列表而非 LS 的 data path 过滤语法，后者各版本行为不一致
+- `task.data["messages_text"]` / `metadata_text` / `scorecard_text` —— 上述结构化
+  值的 JSON 字符串孪生字段。LS 1.23 的 `Text` / `TextArea` / `TextEditor` 绑到
+  dict / list 时 import 直接 400 `data['xxx']=...`，label_config 一律绑孪生字段
+- `task.data["inner_id"]` = `session_id` —— 仍然随 import 发出，但 **LS 1.23 会
+  丢弃它**（`Task.inner_id` 是整数字段）。去重实际靠本地台账
+  `output/label_studio/push_index__<project_id>.jsonl`，见方案 §16 R7
 
 ## 7. 预标注：只做风险提示
 

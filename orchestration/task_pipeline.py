@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from gdr.config.settings import Settings as GdrSettings
 
@@ -98,20 +98,37 @@ def _mark_audited(
                      task_id, stage, exc)
 
 
+class GdrOutcome(NamedTuple):
+    """gdr 阶段的产出。
+
+    ``refined_path`` 与 ``status`` **不是独立的** —— path 只在两种情况非
+    None: ``success`` (C2 已写), 或 ``audited`` 且 C2 恰好已落盘
+    (``judge_discard``)。``scoring_reject`` 的 C2 是刻意不写的, path 为
+    None, 该 task 就此止步于 audited。
+
+    ``audit_reason`` 只在 ``audited`` 时非 None, 一路带进 C3 meta 供评分卡
+    打低分标签 —— 不带的话标注员只看到一堆 0 分, 不知道为什么。
+    """
+
+    refined_path: Path | None
+    status: str
+    audit_reason: str | None = None
+
+
 def _safe_run_gdr(
     *, task_id: str, src_path: Path, refined_dir: Path,
     session_id: str, gdr_settings: GdrSettings,
     max_retry: int, queue: Any,
-) -> tuple[Path | None, str]:
+) -> GdrOutcome:
     """gdr 阶段重试循环 (契约 §3.3).
 
-    返回: (refined_path, status) 元组:
-        - (path, "success")  → C2 已写, 进 etl 阶段
-        - (None, "dead")     → 结构性问题 (load_error/discard/incomplete),
-                                已 mark_failed, 任务终止
-        - (None, "audited")  → 评分低 (judge_discard/scoring_reject),
-                                已 mark_audited, 任务终止但**不进 dead**
-                                (CLAUDE.md "数据保留原则")
+    返回 :class:`GdrOutcome`:
+        - (path, "success")           → C2 已写, 进 etl 阶段
+        - (None, "dead")              → 结构性问题 (load_error/discard/
+                                        incomplete), 已 mark_failed
+        - (path?, "audited", reason)  → 评分低, 已 mark_audited, **不进
+                                        dead** (CLAUDE.md "数据保留原则")。
+                                        path 非 None 时下游照常跑 etl 推 LS。
     """
     # 延迟 import,避免父进程触发 gdr / httpx / asyncio 初始化
     from orchestration.workers.gdr_worker import (
@@ -131,7 +148,7 @@ def _safe_run_gdr(
                 task_id=task_id,
                 session_id=session_id,
             )
-            return result.refined_path, "success"
+            return GdrOutcome(result.refined_path, "success")
         except GdrAuditedError as exc:
             # 评分低 (judge_discard / scoring_reject) → audited 终态,
             # 不进 dead (CLAUDE.md "数据保留原则"). 单次判定, 不重试
@@ -140,13 +157,15 @@ def _safe_run_gdr(
                 queue, task_id, stage="gdr",
                 error_msg=f"[audited:{exc.audit_reason}] {exc}",
             )
-            return None, "audited"
+            # exc.refined_path: judge_discard 时 C2 已落盘 → 调用方继续跑
+            # etl 出 C3 并推 LS; scoring_reject 为 None → 调用方早退。
+            return GdrOutcome(exc.refined_path, "audited", exc.audit_reason)
         except GdrNonRetryableError as exc:
             _mark_dead(
                 queue, task_id, stage="gdr",
                 error_msg=f"[non-retryable] {type(exc).__name__}: {exc}",
             )
-            return None, "dead"
+            return GdrOutcome(None, "dead")
         except Exception as exc:
             last_exc = exc
             _log.warning(
@@ -163,7 +182,7 @@ def _safe_run_gdr(
             f"{last_exc}"
         ),
     )
-    return None, "dead"
+    return GdrOutcome(None, "dead")
 
 
 def _safe_run_etl(
@@ -173,8 +192,14 @@ def _safe_run_etl(
     run_id: str | None = None,
     src_path: Path | None = None,
     gdr_settings: Any = None,
+    audit_reason: str | None = None,
 ) -> tuple[Path, Path, Path | None, Path] | None:
     """etl 阶段重试循环 (契约 §3.4).
+
+    Args:
+        audit_reason: gdr 判低分的理由 (``judge_discard``)。透传进 C3 meta
+            的顶层 ``audit_reason``, 评分卡据此打低分标签 —— 不带的话标注员
+            只看到一堆 0 分, 不知道为什么, 会当成正常样本去标。
 
     返回: (messages_path, openai_path, qwenjina_path, meta_path) 成功;None 失败。
     """
@@ -198,6 +223,7 @@ def _safe_run_etl(
                 run_id=run_id,
                 src_path=src_path,
                 gdr_settings=gdr_settings,
+                audit_reason=audit_reason,
             )
             return (
                 outputs.messages_path,
@@ -386,7 +412,7 @@ def _run_one_task_pipeline(
         result["stage"] = "gdr"
 
         # 7. gdr 重试循环
-        refined_path, gdr_status = _safe_run_gdr(
+        gdr = _safe_run_gdr(
             task_id=task_id,
             src_path=src_path,
             refined_dir=paths.refined_dir,
@@ -395,15 +421,27 @@ def _run_one_task_pipeline(
             max_retry=orchestration_settings.max_retry_gdr,
             queue=queue,
         )
+        refined_path, gdr_status, audit_reason = gdr
         if gdr_status == "audited":
             # 评分低 (judge_discard / scoring_reject) → audited 终态,
             # 数据已在旁路 jsonl, src_path 保留, 不进 dead
-            # (CLAUDE.md "数据保留原则"). task 终止于此.
-            result["phase"] = PHASE_AUDITED
-            result["stage"] = "gdr"
-            result["error"] = None
-            return result
-        if gdr_status == "dead" or refined_path is None:
+            # (CLAUDE.md "数据保留原则").
+            #
+            # judge_discard 的 C2 **已经落盘** (精修做完了, 只是评分没过) →
+            # 继续跑 etl 出 C3 并推 LS, 让标注员也能审低分样本; 评分卡带
+            # audit_reason 低分标签, 不会被误读成正常样本。
+            # scoring_reject 的 C2 是刻意不写的 (C2 即为待训练产物) →
+            # refined_path is None, 止步于此, 推不了 LS 是设计而非缺陷。
+            if refined_path is None:
+                result["phase"] = PHASE_AUDITED
+                result["stage"] = "gdr"
+                result["error"] = None
+                return result
+            _log.info(
+                "task_pipeline: %s audited (%s) 但 C2 已落盘, 继续 etl 并推 LS",
+                task_id, audit_reason,
+            )
+        elif gdr_status == "dead" or refined_path is None:
             result["error"] = "gdr failed"
             return result
 
@@ -428,6 +466,8 @@ def _run_one_task_pipeline(
             # 验证不通过时: 读 agent 回复做 LLM 归因, 分数恒为 0
             src_path=src_path,
             gdr_settings=gdr_settings,
+            # audited 样本的低分标签 (judge_discard / scoring_reject)
+            audit_reason=audit_reason,
         )
         if etl_outputs is None:
             result["error"] = "etl failed"
@@ -435,15 +475,19 @@ def _run_one_task_pipeline(
 
         messages_path, openai_path, qwenjina_path, meta_path = etl_outputs
 
-        # 10. 标记 done + 写 etl 输出路径
+        # 10. 标记终态 + 写 etl 输出路径。
+        #     audited 走完 etl **仍然是 audited** —— 结构合格但评分低, 不能
+        #     因为"产出了 C3"就洗成 done, 那会骗过数据保留原则的审计口径
+        #     (status 统计会把低分样本算成正常 done)。
+        terminal_phase = PHASE_AUDITED if gdr_status == "audited" else PHASE_DONE
         queue.mark_phase(
-            task_id, new_phase=PHASE_DONE,
+            task_id, new_phase=terminal_phase,
             etl_messages_path=messages_path,
             etl_openai_path=openai_path,
             etl_qwenjina_path=qwenjina_path,
             etl_meta_path=meta_path,
         )
-        result["phase"] = PHASE_DONE
+        result["phase"] = terminal_phase
         result["stage"] = "done"
         result["error"] = None
 

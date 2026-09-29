@@ -115,26 +115,31 @@ class HealthCheckSettings:
 
 @dataclass(frozen=True)
 class HookSettings:
-    """orchestration task_pipeline step 10 的行为。"""
+    """orchestration task_pipeline step 11 的行为。
+
+    刻意只有两个字段。原先还有一个 ``on_failure``（log_only / log_and_metric）
+    —— 它被解析、被校验、被写进示例配置, 但 ``ls_hook`` 从未读取过, 两个值
+    行为完全相同。推送是旁路: 失败既不重试也不抛异常, 所以"失败后怎么办"
+    本来就没有可配置的分叉。留着一个不生效的开关比没有它更糟 —— 配了
+    ``log_and_metric`` 的人会以为指标是特意打开的。已删除。
+    """
 
     enabled: bool = False
-    hook_timeout_seconds: float = 5.0
-    on_failure: str = "log_only"
+
+    #: 一次推送的完整预算: PAT refresh + 建连 + 查项目 + PATCH label_config
+    #: + create task + 预标注 POST。5s 下首次必超, 超时即丢样本。
+    hook_timeout_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if self.hook_timeout_seconds <= 0:
             raise SettingsError("hook.hook_timeout_seconds 必须 > 0")
-        if self.on_failure not in ("log_only", "log_and_metric"):
-            raise SettingsError(
-                f"hook.on_failure 只支持 log_only / log_and_metric, got {self.on_failure!r}"
-            )
 
 
 @dataclass(frozen=True)
 class LabelStudioSettings:
     """``config/config.yaml`` 顶层 ``label_studio:`` 段。
 
-    终��定位: Label Studio 是本项目**终点** —— 只推送, 不 fetch, 不回流。
+    终点定位: Label Studio 是本项目**终点** —— 只推送, 不 fetch, 不回流。
     """
 
     #: 本机 LS 默认地址。**不是 8088** —— 8088 上是 QwenPaw 执行后端
@@ -147,6 +152,9 @@ class LabelStudioSettings:
     project_title: str = "trajectory-sft-quality"
     label_config_path: Path | None = None
     project_id: int | None = None
+
+    #: 推送台账（``output/label_studio/``）的落盘根。测试用 ``tmp_path`` 覆盖。
+    output_root: Path = Path("output")
 
     upload: UploadSettings = field(default_factory=UploadSettings)
     scorecard: ScorecardSettings = field(default_factory=ScorecardSettings)

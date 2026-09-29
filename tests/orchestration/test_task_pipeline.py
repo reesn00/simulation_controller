@@ -168,12 +168,14 @@ def _patch_pipeline(
         """评分低 → audited 终态, 不进 dead (CLAUDE.md "数据保留原则").
 
         对应 orchestration.workers.gdr_worker.GdrAuditedError 的契约:
-        message 字符串 + audit_reason kwarg.
+        message 字符串 + audit_reason / refined_path 两个 kwarg。
         """
 
-        def __init__(self, message: str, *, audit_reason: str) -> None:
+        def __init__(self, message: str, *, audit_reason: str,
+                     refined_path: Path | None = None) -> None:
             super().__init__(message)
             self.audit_reason = audit_reason
+            self.refined_path = refined_path
 
     class _EtlNonRetryableError(Exception):
         pass
@@ -183,10 +185,19 @@ def _patch_pipeline(
     ):
         counts["gdr"] += 1
         if gdr_audited and counts["gdr"] == 1:
-            # 评分低 → audited, 抛 GdrAuditedError (单次判定, 不重试)
+            # 评分低 → audited, 抛 GdrAuditedError (单次判定, 不重试).
+            # judge_discard 的 C2 在真实实现里**已经落盘** (精修做完只是评分
+            # 不过), 所以带 refined_path, 下游继续跑 etl 推 LS;
+            # scoring_reject 的 C2 是刻意不写的 → None, 止步于 audited。
+            audited_refined = None
+            if gdr_audited == "judge_discard":
+                refined_dir.mkdir(parents=True, exist_ok=True)
+                audited_refined = refined_dir / f"{task_id}__refined.json"
+                audited_refined.write_text("{}", encoding="utf-8")
             raise _GdrAuditedError(
                 f"gdr status={gdr_audited!r} (task={task_id})",
                 audit_reason=gdr_audited,
+                refined_path=audited_refined,
             )
         if gdr_nonretryable and counts["gdr"] == 1:
             raise _GdrNonRetryableError("gdr permanent fail")
@@ -205,7 +216,9 @@ def _patch_pipeline(
         attempt=0,
         runs_dir=None, run_id=None,   # F2: Criterion 注入参数
         src_path=None, gdr_settings=None,   # 失败归因评价参数
+        audit_reason=None,   # 低分标记注入参数
     ):
+        counts["etl_audit_reason"] = audit_reason
         counts["etl"] += 1
         if etl_nonretryable and counts["etl"] == 1:
             raise _EtlNonRetryableError("etl permanent fail")
@@ -509,10 +522,15 @@ def test_etl_nonretryable_direct_dead(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_gdr_judge_discard_marks_audited(tmp_path: Path, monkeypatch) -> None:
-    """judge 评分低 (judge_discard) → audited, 不进 dead.
+    """judge 评分低 (judge_discard) → audited, 不进 dead, **但 C3 照出**.
 
     与 gdr_nonretryable 走 dead 不同: 评分低是质量决策, 不是结构失败.
     data 保留在 src_path + 旁路 jsonl, failure_handler 不归档.
+
+    2026-09-29: judge_discard 的 C2 **已经落盘** (精修做完, 只是评分没过),
+    所以照常跑 etl 出 C3 并推 LS —— 结构合格但评分低的轨迹是有用素材,
+    让标注员复核"gdr 拒收得对不对"。终态仍是 audited: 产出了 C3 不等于
+    洗成 done, 否则 status 统计会把低分样本算成正常样本。
     """
     paths = _make_paths(tmp_path)
     queue = SQLiteQueue(paths.sqlite_db)
@@ -525,9 +543,11 @@ def test_gdr_judge_discard_marks_audited(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert result["phase"] == PHASE_AUDITED
-    assert result["stage"] == "gdr"
+    assert result["stage"] == "done"
     # 单次判定, 不重试 (拒收是确定性结果, 重试无意义)
     assert counts["gdr"] == 1
+    # C2 已落盘 → 继续跑 etl 出 C3
+    assert counts["etl"] == 1
 
     task = queue.get_task("T1")
     assert task is not None
@@ -535,6 +555,8 @@ def test_gdr_judge_discard_marks_audited(tmp_path: Path, monkeypatch) -> None:
     # error_msg 含 audit_reason 便于审计
     assert task.error_msg is not None
     assert "judge_discard" in task.error_msg
+    # C3 路径已写 —— 推 LS 要用它
+    assert task.etl_meta_path is not None
 
 
 def test_gdr_scoring_reject_marks_audited(tmp_path: Path, monkeypatch) -> None:
@@ -560,14 +582,19 @@ def test_gdr_scoring_reject_marks_audited(tmp_path: Path, monkeypatch) -> None:
     assert "scoring_reject" in task.error_msg
 
 
-def test_audited_does_not_invoke_etl(tmp_path: Path, monkeypatch) -> None:
-    """audited 终态后 etl 不跑 (C2 可能没写, 即便写了也不进训练集)."""
+def test_scoring_reject_does_not_invoke_etl(tmp_path: Path, monkeypatch) -> None:
+    """scoring_reject → audited 且 **etl 不跑** (C2 刻意没写, 推不了 LS).
+
+    与 judge_discard 分道扬镳的地方: 后者的 C2 已经落盘, 前者的没有 ——
+    gdr 侧的理由是「C2 即为待训练产物, 拒收样本不该占训练目录」。没有 C2
+    就跑不出 C3, 也就没有可推 LS 的东西。这是设计上的硬墙, 不是遗漏。
+    """
     paths = _make_paths(tmp_path)
     queue = SQLiteQueue(paths.sqlite_db)
     settings = _make_pipeline_settings()
     gdr_settings = _make_gdr_settings(paths)
 
-    counts = _patch_pipeline(monkeypatch, gdr_audited="judge_discard")
+    counts = _patch_pipeline(monkeypatch, gdr_audited="scoring_reject")
     _run_one_task_pipeline("T1", paths, gdr_settings, settings)
 
     assert counts["gdr"] == 1
@@ -579,6 +606,36 @@ def test_audited_does_not_invoke_etl(tmp_path: Path, monkeypatch) -> None:
     assert task.etl_messages_path is None
     assert task.etl_openai_path is None
     assert task.etl_meta_path is None
+
+
+def test_audited_forwards_audit_reason_to_etl(tmp_path: Path, monkeypatch) -> None:
+    """audit_reason 必须一路透传到 etl —— 丢了就没人打低分标签.
+
+    链路: gdr → _safe_run_gdr → task_pipeline → _safe_run_etl → run_etl_once
+    → session.metadata["audit_reason"] → C3 meta → 评分卡 audit 标记 →
+    label_config 展示块。中间任一环漏传, 标注员就只看到一堆 0 分却不知道为什么,
+    会照常标"可用", 等于把 gdr 拒收过的样本又标回训练集。
+    """
+    paths = _make_paths(tmp_path)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    seen = _patch_pipeline(monkeypatch, gdr_audited="judge_discard")
+    _run_one_task_pipeline("T1", paths, gdr_settings, settings)
+
+    assert seen["etl_audit_reason"] == "judge_discard"
+
+
+def test_normal_path_sends_no_audit_reason(tmp_path: Path, monkeypatch) -> None:
+    """正常通过的 task 不该带 audit_reason —— 评分卡靠键存在与否判断打标."""
+    paths = _make_paths(tmp_path)
+    settings = _make_pipeline_settings()
+    gdr_settings = _make_gdr_settings(paths)
+
+    seen = _patch_pipeline(monkeypatch)
+    _run_one_task_pipeline("T1", paths, gdr_settings, settings)
+
+    assert seen["etl_audit_reason"] is None
 
 
 # ---------------------------------------------------------------------------

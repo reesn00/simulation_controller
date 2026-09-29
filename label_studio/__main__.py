@@ -216,7 +216,7 @@ def _cmd_purge(args: argparse.Namespace) -> int:
 
     settings = load_label_studio_config(Path(args.config) if args.config else None)
     client = _build_client(settings)
-    project_id = args.project_id or resolve_project_id(client, settings)
+    project_id = args.project_id or resolve_project_id(client, settings, sync=False)
     result = purge_tasks(client, project_id, confirm=args.confirm)
     _print_json(result)
     return 0 if result.get("purged") or not args.confirm else 1

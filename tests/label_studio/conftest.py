@@ -66,10 +66,13 @@ def rich_c3(c3_dir: Path) -> Path:
 
 
 @pytest.fixture
-def settings():
+def settings(tmp_path: Path):
     from label_studio.settings import LabelStudioSettings
 
     return LabelStudioSettings(
         base_url="http://127.0.0.1:8099",
         api_key="placeholder-not-a-real-credential",
+        # 台账必须落 tmp_path: 默认的 output/ 是真实目录, 测试往里写会让
+        # 第二次跑把所有样本判成"已推过"而静默跳过。
+        output_root=tmp_path / "output",
     )

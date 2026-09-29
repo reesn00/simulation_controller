@@ -209,13 +209,44 @@ def test_list_projects_shapes(monkeypatch, payload, expected):
         ({"task_count": 3}, 3),
         ({"tasks": [1, 2]}, 2),
         ([1, 2, 3], 3),
-        ({"weird": 1}, 0),
+        # 服务端一个计数键都没给 —— 才按"发了 N 条"兜底
+        ({"weird": 1}, 1),
     ],
 )
 def test_import_task_count_shapes(monkeypatch, payload, expected):
     handler = lambda r: httpx.Response(200, json=payload)  # noqa: E731
     _patch_transport(monkeypatch, handler)
     assert _client().import_tasks(1, [{"data": {}}]) == expected
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        # 1.23.0 实际返回的键是 created, 不是 task_count —— 漏读会报 0
+        ({"created": 2}, 2),
+        ({"task_count": 2}, 2),
+        # 服务端明说"建成了 0 条"时, 0 就是答案, 不能被 sent 覆盖
+        ({"created": 0}, 0),
+        ({"task_count": 0, "prediction_count": 0}, 0),
+        # 真的没给计数才兜底
+        ({"weird": 1}, 1),
+    ],
+)
+def test_import_predictions_count_shapes(monkeypatch, payload, expected):
+    handler = lambda r: httpx.Response(201, json=payload)  # noqa: E731
+    _patch_transport(monkeypatch, handler)
+    assert _client().import_predictions(1, [{"task": 1, "result": []}]) == expected
+
+
+def test_server_side_zero_is_not_overwritten(monkeypatch):
+    """``created: 0`` 是**真的 0 条** —— 预测格式不对时 LS 照样回 201。
+
+    这里要是按 sent 兜底, 报告就会显示 ``predictions_pushed: 1``, 而 LS 里
+    一条 prediction 都没有。假成功比假失败难查得多。
+    """
+    handler = lambda r: httpx.Response(201, json={"created": 0})  # noqa: E731
+    _patch_transport(monkeypatch, handler)
+    assert _client().import_predictions(1, [{"task": 1, "result": {}}]) == 0
 
 
 def test_validate_label_config_returns_error_list(monkeypatch):

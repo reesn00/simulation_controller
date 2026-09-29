@@ -32,6 +32,7 @@ from etl.parsers import load_refined_session
 from etl.writers import RenderChainError, apply_render_chain
 
 from orchestration.criterion_source import (
+    inject_audit_reason,
     inject_criterion_evaluation,
     load_criterion_evaluation,
 )
@@ -113,6 +114,7 @@ def run_etl_once(
     run_id: str | None = None,
     src_path: Path | None = None,
     gdr_settings: Any = None,
+    audit_reason: str | None = None,
 ) -> EtlOutputs:
     """单个 C2 refined Session JSON → 4 视图文件.
 
@@ -149,6 +151,10 @@ def run_etl_once(
     gdr_settings:
         提供 LLM 端点/模型/超时。``None`` 时跳过失败归因 —— 评价是增强信息,
         不是前置条件。
+    audit_reason:
+        gdr 判低分的理由 (``judge_discard``)。非 ``None`` 时注入
+        ``session.metadata["audit_reason"]``, 评分卡据此打低分标签, 标注员
+        不会把被拒收的样本误当成正常样本去标。``None`` 表示正常通过。
 
     Returns
     -------
@@ -232,6 +238,13 @@ def run_etl_once(
             )
             fail_evaluation = None
         inject_fail_evaluation(session, fail_evaluation)
+    # ---- 低分理由注入 (2026-09-29) ----
+    # gdr 判 judge_discard 的 session 结构合格、只因评分低被拒收, 按 CLAUDE.md
+    # "数据保留原则" 仍然推 LS 供人工复核。带上 audit_reason, 评分卡和
+    # label_config 才知道要给这条打低分标记 —— 否则标注员看到一堆 0 分却
+    # 不知道为什么, 会照常标"可用", 等于把 gdr 拒收过的样本又标回训练集。
+    # 正常通过时 audit_reason 是 None, 不写键。
+    inject_audit_reason(session, audit_reason)
     # ---- 渲染链 (F1, 2026-09-28) ----
     # gdr step 22 已做路径泛化 / system 裁剪 / tools 裁剪; etl 只需补
     # etl 专属的 qf_text 渲染, 把 openai_messages / tools / qf_text

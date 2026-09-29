@@ -19,6 +19,7 @@ from label_studio.project_manager import (
     list_existing_projects,
     purge_tasks,
     resolve_project_id,
+    sync_label_config,
     validate_label_config,
 )
 from label_studio.settings import LabelStudioSettings
@@ -31,6 +32,7 @@ class FakeClient:
         self.projects = list(projects or [])
         self.config_errors = list(config_errors or [])
         self.created: list[dict] = []
+        self.updated: list[dict] = []
         self.deleted: list[int] = []
         self.validated: list[tuple[int, str]] = []
 
@@ -44,9 +46,20 @@ class FakeClient:
         raise LabelStudioError(f"project {project_id} 不存在")
 
     def create_project(self, *, title, label_config, project_type="DocumentClassification"):
-        project = {"id": 100 + len(self.projects), "title": title}
+        project = {"id": 100 + len(self.projects), "title": title,
+                   "label_config": label_config}
         self.projects.append(project)
         self.created.append({"title": title, "label_config": label_config})
+        return project
+
+    def update_project(self, project_id, *, label_config=None, title=None):
+        project = self.get_project(project_id)
+        self.updated.append({"id": int(project_id),
+                             "label_config": label_config, "title": title})
+        if label_config is not None:
+            project["label_config"] = label_config
+        if title is not None:
+            project["title"] = title
         return project
 
     def delete_project(self, project_id):
@@ -170,6 +183,48 @@ def test_init_project_is_idempotent(ls_settings):
     assert first["project_id"] == second["project_id"]
     assert second["created"] is False
     assert len(client.created) == 1
+    # 配置没变就不该白跑一趟 PATCH
+    assert second["label_config_synced"] is False
+    assert client.updated == []
+
+
+def test_init_project_syncs_drifted_label_config(ls_settings):
+    """复用项目时本地 XML 变了必须推过去。
+
+    不推的后果很隐蔽: ``validate/`` 校验的是你递过去的 XML 文本、不是项目里
+    存的那份, 所以 ``init-project`` 照样报绿, 而 upload 拿着旧配置渲染,
+    import 才 400 ``data['xxx']=...``。
+    """
+    client = FakeClient([{"id": 7, "title": ls_settings.project_title,
+                          "label_config": "<View><Text name='old'/></View>"}])
+    result = init_project(client, ls_settings)
+    assert result["created"] is False
+    assert result["label_config_synced"] is True
+    assert client.updated[0]["id"] == 7
+    assert "$messages" in client.updated[0]["label_config"]
+
+
+def test_init_project_does_not_sync_just_created(ls_settings):
+    """新建项目时 label_config 已经是本地那份, 再 PATCH 一次是白跑。"""
+    client = FakeClient()
+    result = init_project(client, ls_settings)
+    assert result["label_config_synced"] is False
+    assert client.updated == []
+
+
+def test_sync_ignores_whitespace_only_drift(ls_settings):
+    """换行/缩进差异不该触发 PATCH —— LS 渲染结果完全一样。"""
+    spaced = "<View>\n  <Text name='a'/>\n</View>"
+    client = FakeClient([{"id": 8, "title": ls_settings.project_title,
+                          "label_config": "<View><Text name='a'/></View>"}])
+    settings = LabelStudioSettings(
+        base_url=ls_settings.base_url,
+        api_key=ls_settings.api_key,
+        label_config_path=ls_settings.label_config_path,
+        project_title=ls_settings.project_title,
+    )
+    assert sync_label_config(client, 8, spaced) is False
+    assert client.updated == []
 
 
 def test_init_project_validates_after_create(ls_settings):
@@ -220,6 +275,41 @@ def test_resolve_does_not_create(ls_settings):
     with pytest.raises(LabelStudioProjectError, match="init-project"):
         resolve_project_id(client, ls_settings)
     assert client.created == []
+
+
+def test_resolve_syncs_label_config(ls_settings):
+    """推送路径也必须同步 —— 否则改完 XML 直接 upload 会撞上旧配置。
+
+    ``upload`` 与 ``init-project`` 的唯一交汇点就是这里; 不同步的话 400
+    ``data['messages']=...`` 的报错和本地代码完全对不上, 极难定位。
+    """
+    client = FakeClient([{"id": 5, "title": ls_settings.project_title,
+                          "label_config": "<View><Text name='old'/></View>"}])
+    assert resolve_project_id(client, ls_settings) == 5
+    assert client.updated and client.updated[0]["id"] == 5
+
+
+def test_resolve_sync_false_skips_update(ls_settings):
+    """purge 马上就删项目, 同步纯属浪费请求。"""
+    client = FakeClient([{"id": 5, "title": ls_settings.project_title,
+                          "label_config": "<View><Text name='old'/></View>"}])
+    assert resolve_project_id(client, ls_settings, sync=False) == 5
+    assert client.updated == []
+
+
+def test_resolve_survives_sync_failure(ls_settings):
+    """同步失败不该拦住推送 —— 项目可能正被人工编辑。
+
+    真因会在 import 阶段以更具体的 ``data[...]`` 报出来, 提前拦反而掩盖它。
+    """
+
+    class PickyClient(FakeClient):
+        def update_project(self, project_id, *, label_config=None, title=None):
+            raise LabelStudioError("项目正被编辑, 拒绝 PATCH")
+
+    client = PickyClient([{"id": 5, "title": ls_settings.project_title,
+                           "label_config": "<View><Text name='old'/></View>"}])
+    assert resolve_project_id(client, ls_settings) == 5
 
 
 # ---------------------------------------------------------------------------

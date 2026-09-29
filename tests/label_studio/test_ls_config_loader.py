@@ -186,16 +186,25 @@ def test_scorecard_settings(tmp_path: Path):
 
 def test_hook_settings(tmp_path: Path):
     path = _write(tmp_path, {SECTION_KEY: {"hook": {
-        "enabled": True, "hook_timeout_seconds": 12.5, "on_failure": "log_and_metric",
+        "enabled": True, "hook_timeout_seconds": 12.5,
     }}})
     h = load_label_studio_config(path).hook
-    assert (h.enabled, h.hook_timeout_seconds, h.on_failure) == (True, 12.5, "log_and_metric")
+    assert (h.enabled, h.hook_timeout_seconds) == (True, 12.5)
 
 
-def test_hook_bad_on_failure_rejected(tmp_path: Path):
-    path = _write(tmp_path, {SECTION_KEY: {"hook": {"on_failure": "explode"}}})
-    with pytest.raises(SettingsError, match="on_failure"):
-        load_label_studio_config(path)
+def test_hook_ignores_legacy_on_failure_key(tmp_path: Path):
+    """``on_failure`` 已删除 —— 老配置里留着不能炸, 也必须不生效。
+
+    它是被解析、被校验、被写进示例配置, 但 ls_hook 从未读取过; 推送是旁路,
+    失败既不重试也不抛, 本来就没有可配置的分叉。留着一个不生效的开关比
+    没有更糟 —— 配了 log_and_metric 的人会以为指标是特意打开的。
+    """
+    path = _write(tmp_path, {SECTION_KEY: {"hook": {
+        "enabled": True, "on_failure": "log_and_metric",
+    }}})
+    h = load_label_studio_config(path).hook
+    assert h.enabled is True
+    assert not hasattr(h, "on_failure")
 
 
 def test_hook_zero_timeout_rejected(tmp_path: Path):

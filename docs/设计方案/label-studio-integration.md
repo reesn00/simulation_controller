@@ -21,7 +21,7 @@
 | 7 | 预标注（predictions） | **只做风险提示，不做 accept/reject 预判** | 原阈值规则与 §3 自相矛盾，已反转（§5.2） |
 | 8 | C4 契约 | `docs/contracts/C4-scorecard.md` | 取代原 `C4-labeled-annotations.md` |
 | 9 | orchestration 集成 | 自动 hook（task done 后推送） | `task_pipeline.py` step 11（在 `mark_phase(done)` 之后）；线程化 + 独立超时；失败不阻塞 |
-| 10 | 推送去重 | LS 原生 `inner_id = session_id` | 零维护；不引入本地索引文件 |
+| 10 | 推送去重 | **本地台账** `output/label_studio/push_index__<project_id>.jsonl` | LS 1.23 根本不去重（§16 R7 已按实测推翻）；台账同时供给预标注要的数字 task id |
 | 11 | SQLite | **不改** | 推送状态不回写队列（§4.4 说明理由） |
 | 12 | 隐私边界 | 沿用 CLAUDE.md 红线（raw CoT 约束） | LS 推送的 C3 含 **refined CoT**，不受思维链红线约束（CLAUDE.md 定义段）+ R11 凭据扫描 |
 | 13 | fork-safe | hook 内 client **用完即弃**（不建单例） | 规避 `multiprocessing.Pool` 跨平台 fork/spawn 差异 |
@@ -138,13 +138,15 @@ Label Studio @ http://127.0.0.1:8099
 |---|---|---|---|
 | `messages` | obj | `*.messages.json` **原生 dict** | 块视图（LS 自动 pretty-print） |
 | `qf_text` | str | `*.qwenjina.txt` 全文 | Qwen3 ChatML 渲染 |
-| `metadata` | obj | `*.meta.json` **原生 dict** | audit 元数据 |
-| `scorecard` | obj | `scorecard.py` 生成 | **评分卡**（§4.2），含依据 |
+| `metadata` | obj | `*.meta.json` **原生 dict** | audit 元数据；`label_config` 绑 `metadata_text` 孪生字段（§5 R5） |
+| `scorecard` | obj | `scorecard.py` 生成 | **评分卡**（§4.2），含依据；`label_config` 绑 `scorecard_text` |
+| `messages_text` / `metadata_text` / `scorecard_text` | str | 上述结构化值的 JSON 序列化 | **LS 1.23 只吃字符串**（§5 R5），label_config 一律绑这些 |
 | `task_id` | str | **文件名 stem 前缀** `^(T\d{3}\|E\d{3})__` | 反向追溯 |
-| `session_id` | str | `meta.json:session_id`（或 stem 后缀） | 反向追溯 + LS 去重键 |
+| `session_id` | str | `meta.json:session_id`（或 stem 后缀） | 反向追溯 + **去重键**（§16 R7） |
+| `criteria` | list[str] | `criterion_results.criteria` 摊平成 `[PASS] id (REASON) — message` | LS perItem 文本控件**只接受字符串列表**（§5 R5） |
 | `training_value_score` | float | `meta["training_value_score"]` | LS 端排序/筛选 |
 | `complexity_tier` | str | `meta["complexity_tier"]` | LS 端 filter |
-| `inner_id` | str | `session_id` | **LS 原生去重**（§16 R7） |
+| `inner_id` | str | `session_id` | 仍随 import 发出，但 **LS 1.23 会丢弃**（§16 R7） |
 
 `task_exporter` 实现约束：
 
@@ -285,8 +287,9 @@ LS task 不持有 raw trajectory / cookies / authorization；**C3 已是脱敏�
 3. **单列无法表达多 session**——C4/评分卡以 `<TXXX>__<session_id>` 为粒度，
    同一 `task_id` 可有多个 C3，单个 INTEGER 列无处安放
 
-去重改用 LS 原生 `inner_id = session_id`（§4.1），零维护成本。
-`orchestration/queue/` 保持零修改，§13.3 的状态机不变量得以完整保留。
+去重改用本地台账 `output/label_studio/push_index__<project_id>.jsonl`（§16 R7，
+2026-09-29 按 LS 1.23 实测推翻原方案）。`orchestration/queue/` 仍保持零修改，
+§13.3 的状态机不变量得以完整保留 —— 台账是 append-only 的纯文件，不进状态机。
 
 ## 5. Label Config 设计（标注界面）
 
@@ -383,6 +386,15 @@ training_value_score < 0.4 → reject          ← 已删
 `overall_decision` **一律留空，强制人工选择**。这同时消解了"0.7/0.4 阈值
 从哪来"的模糊——不再需要阈值。
 
+> ⚠️ **落地约束（2026-09-29 实测，R14）**：LS 的 `result` 必须是
+> `[{from_name, to_name, type, value}]` 列表，且 `from_name` 要命中 label_config
+> 里的真实控件，**否则整条预测被静默丢弃**（`201 {"created": 0}`）。所以风险提示
+> 文本不能当自由键塞进去，必须有控件承接：label_config 里的
+> `<TextArea name="risk_hints" toName="task_anchor" editable="false"
+> value="$risk_hints_text"/>`，预标注以 `type: "textarea"` 往这个块里填
+> `value.text`。该块 `editable="false"` —— 风险提示是机器的判断，标注员改它等于
+> 抹掉审计痕迹，要表达异议走 `criterion_verdict` / `revise_notes`。
+
 ## 6. 配置层
 
 根 `config/config.yaml` 新增顶层 `label_studio:` 段：
@@ -434,13 +446,21 @@ label_studio:
   # orchestration 自动 hook（task_pipeline step 11 引用）
   hook:
     enabled: false                              # 默认关闭
-    hook_timeout_seconds: 5                     # 线程内 future 超时即放弃
-    on_failure: log_only                        # log_only | log_and_metric
+    hook_timeout_seconds: 30                    # 线程内 future 超时即放弃
 ```
 
 **开关语义明确**：`upload.enabled` 只管 CLI 全量推送；`hook.enabled` 只管
 orchestration step 11 自动推送。hook 的判定**只看 `hook.enabled`**，
 `push_single_c3` 内部不再查 `upload.enabled`——避免两开关交叉导致 hook 静默空转。
+
+**2026-09-29 修订（启用自动推送前必须先修的四个坑）**：
+
+| 坑 | 原状 | 修法 |
+|---|---|---|
+| 超时预算塞不下 | `5s` 要串完 PAT refresh + 建连 + 查项目 + PATCH label_config + 建 task + 预标注 | 提到 `30s`。超时即丢样本（台账来不及写，下次 `upload` 又补推一遍） |
+| 每 task 都 PATCH label_config | `task_pipeline` 传 `project_id=None`，每个 task 触发一次「查项目 + PATCH」。PATCH 是**覆盖**不是同步，会把标注员在 LS 上做的调整冲掉 | `ls_hook` 加进程级缓存 `(base_url, project_title) → project_id`，同批次只解析一次 |
+| 台账多进程并发写 | `--parallelism ≥2` 时 N 个 Pool worker 写同一 jsonl，无锁。**实测无锁丢 59% 的行**（4 进程 × 40 条 → 只落 66/161 行） | `push_index.append` 加跨平台排他锁，锁加在 `<台账>.lock` 上，不污染 jsonl |
+| `on_failure` 是死配置 | 定义、解析、校验、示例配置里都有，但 `ls_hook` **从未读取**，两个值行为完全相同 | 删除。推送是旁路，失败既不重试也不抛，本来就没有可配置的分叉；留着一个不生效的开关比没有更糟 |
 
 凭据解析：`api_key_path` 优先于 `api_key`；两者都为空时 `status` / `init-project`
 报清晰错误（不打印任何凭据内容）。yaml 中填真实 key 违反 §10 红线。
@@ -828,14 +848,17 @@ docs/
 | R2 | LS 宕机让 task 进 dead | hook 强制 `try/except` 吞所有异常，`phase=done` 不变，日志告警 |
 | R3 | hook 阻塞慢 task 跑完 | `ThreadPoolExecutor` + `future.result(timeout=hook_timeout_seconds)`（§9.3）；线程内不碰 SQLite |
 | R4 | 批量上传超过 LS 250K / 200MB 上限 | `upload.batch_size=50`；多 C3 文件分批 import |
-| R5 | C3 meta.json 字段扩展破坏 label_config | 未知键原样并入 `metadata`（原生 dict），LS 自动忽略未引用键；不转字符串，规避转义层 |
+| R5 | C3 meta.json 字段扩展破坏 label_config | 未知键原样并入 `metadata`（原生 dict），LS 自动忽略未引用键。**但 LS 1.23 的 `Text` / `TextArea` / `TextEditor` 绑定到结构化值（dict / list）时 import 直接 400 `data['xxx']=...`** —— 所以 `task_exporter` 额外产出 `messages_text` / `metadata_text` / `scorecard_text` 三个 JSON 字符串孪生字段，`criteria` 也从 list[dict] 摊成 list[str]（perItem 文本控件只收字符串）。label_config 一律绑孪生字段，结构化原值保留给下游脚本 |
 | R6 | 标注员跳过"指令核对"直接给判定 | `criterion_verdict` 设 `required="true"` + `perItem="true"`；Tab 上标未核对数 |
-| R7 | 推送重复 task（同一 session 跑多次） | LS 原生 `inner_id = session_id` 去重。**不引入** `pushed_tasks.json` 索引（多一份状态要维护） |
-| R8 | 标注员误删 / 误改 label_config | `init-project` 标题匹配即复用，不主动覆盖；`purge` 必须 `--confirm` |
+| R7 | 推送重复 task（同一 session 跑多次） | ~~LS 原生 `inner_id = session_id` 去重。**不引入** `pushed_tasks.json` 索引~~ **2026-09-29 按 LS 1.23.0 实测推翻**：`Task.inner_id` 是**整数字段**（发字符串 400 `A valid integer is required.`），批量 `/import` 直接**静默丢弃**；整数 inner_id 重复导入**照样每次新建**（实测 42 推三次 → id 7/8/9）；`?inner_id=` 过滤被忽略；`fields=` 参数被忽略（永远回全量 data）。结论：**LS 侧没有任何可用的原生去重**，必须靠本地台账。台账同时解决第二个问题 —— `import/predictions` 的 `task` 字段只认 LS 侧数字 id，而 `/import` 返回体只有计数。格式见 `label_studio/push_index.py` |
+| R8 | 标注员误删 / 误改 label_config | 标题匹配即复用项目，但**每次 `init-project` / `upload` 都把本地 XML 同步进项目**（`PATCH /api/projects/{id}`）。原设计"不主动覆盖"是错的：LS 端存的是**建项目那一刻**的 XML，而 `POST .../validate/` 校验的是递过去的 XML 文本、不是项目里存的那份 —— 不同步就会出现"`init-project` 报绿、`upload` 却 400 `data['xxx']`"这种对不上的现象。`purge` 仍必须 `--confirm` |
 | R9 | 凭据泄露到日志 / 异常信息 | `errors.py` 统一脱敏（`client.__repr__` 不打印 api_key）；错误信息只报类型不报参数 |
 | R10 | 评分卡暗示不存在的精度 | 每维强制 `source` 字段；`estimated_components` 显式列出；UI 必须可见。**这是本方案最容易做错的地方** |
 | R11 | `tool_call.input` 是 Agent 自由文本，可能含用户传入的凭据字符串（协议级"trajectory 不存 Cookie/Auth"只保证框架不**主动**存，挡不住 Agent 自主写入） | P1 起 `task_exporter` 推送前对 `messages` / `qf_text` / `openai` / `metadata` 做敏感模式扫描（`Bearer ` / `password=` / 私钥头 / 常见 token 前缀），命中则**拒绝推送该 task**（fail-closed，不静默脱敏以免污染标注语义）。**实施改为结构化报告**（CLI 输出 `rejected[]` + `log.error`），不另开 `ls_push_failures.log` —— 那个文件本身就是一份要维护的状态，且多进程写同一文件没有好处。命中记录**只存位置**（view / pattern 序号 / 字符偏移），不存原文，避免凭据经由日志二次泄露 |
 | R12 | 前置 F1/F2 未完成就开工 P1 | 评分卡只有 L1–L5、ChatML Tab 空白。**F1/F2 是 P1 的准入条件**，不并行开工 |
+| R13 | label_config 的标签规则踩坑（2026-09-29 实测补） | ⚠️ **服务端校验不可信**：`POST /api/projects/{id}/validate/` 会为一份浏览器根本解析不了的 label_config 返回 **200**，`/import` 也照样 **201** —— task 推上去了，标注页打开是一屏 `Tag with name X is not registered`。**"服务端校验通过"不是证据。** 唯一可信的静态信号是标签白名单，由 `test_only_registered_tags_used` 守。已知规则：① `<Tabs>` / `<Tab>` / `<TextEditor>` **在本机 LS 1.23 未注册**（`<TextEditor>` 根本不是 LS 的合法标签名），分区改用 `<Header>`、只读展示改用 `<TextArea editable="false">`；② `<Filter>` 必须带 `name`，否则报 `Attribute name is required for FilterModel`；③ `<TextArea>` **恒需 `toName`**（与 `editable` / `visible` 无关），缺了报 `'toName' is a required property` 且**不告诉你是哪个标签**；④ perItem 锚点必须是 `<Text name="x" value="$list"/>` + 控件 `toName="x" perItem="true"`，**不能**自引用（import 必 400） |
+| R14 | 预标注**一条都建不成而上报说成功了**（2026-09-29 实测发现，原诊断已推翻） | `POST .../import/predictions` 对格式错的预测照样回 **201**，而计数键是 `created` 不是 `task_count` → 原实现漏读该键、`predictions_pushed` 恒报 0。**当时据此推断"预标注其实建成了，只是报少了"，是错的**：回查 `/api/tasks/{id}` 实为 **0 条**。三格式实测：`result` 是 dict → `{"created": 0}`；`result` 是 region 列表且 `from_name` 命中控件 → `{"created": 1}`；`result` 是 region 列表但 `from_name` 不在 label_config → `{"created": 0}`。根因有二：① `result` 必须是 `[{from_name,to_name,type,value}]` 列表，原实现发的是 dict；② **LS 按 `from_name` 匹配控件，匹配不上整条静默丢弃** —— 所以"自由文本风险提示原样存下来供审计"（原 `build_prediction` docstring）**不成立**，风险提示必须有控件可落。已加 `<TextArea name="risk_hints">` 只读展示块 + 预标注指向它，`test_prediction_control_matches_label_config` 把两侧名字钉在一起。计数修正：`_task_count_from` 读 `created`，且**服务端给了计数就照抄（含 0）**，只有"一个计数键都没给"才按 sent 兜底 —— 把诚实的 0 覆盖成 sent 才是**假成功**，比假失败难查 |
+| R15 | 标注页控件渲染出来但**不可交互**（2026-09-29，待定性） | 服务端侧已排除：项目存的 label_config 与本地一致（`init-project` 的 sync 生效）、task.data 字段齐全且类型正确、annotation 数 0（非"已提交"导致的只读）、`project_type` 为 null。**服务端给不出信号，只能靠标注页实际点**。已搭对照实验：一次性项目 `zz-probe-A-canonical`（LS 官方最小模板）vs `zz-probe-B-ourconfig`（本配置原样），A 通 B 不通即定位到配置 |
 
 ## 17. 不在本方案范围（明确划清）
 

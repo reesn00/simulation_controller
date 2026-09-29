@@ -127,14 +127,16 @@ def test_slow_but_within_timeout_succeeds(meta_file: Path, monkeypatch):
 
 
 def test_default_timeout_comes_from_settings(meta_file: Path, monkeypatch):
-    """不显式传 timeout 时从 settings.hook 取 —— 不静默落到 5s 默认。"""
-    from orchestration.ls_hook import _default_timeout
+    """不显式传 timeout 时从 settings.hook 取 —— 不静默落到内置默认值。"""
+    from orchestration.ls_hook import DEFAULT_HOOK_TIMEOUT_SECONDS, _default_timeout
 
     settings = _settings()
     assert _default_timeout(settings) == 1.0
     # 兼容直接传 HookSettings 的调用方
     assert _default_timeout(HookSettings(enabled=True, hook_timeout_seconds=3.0)) == 3.0
-    assert _default_timeout(object()) == 5.0
+    # 兜底值必须够走完 PAT refresh + PATCH label_config + 建 task + 预标注
+    assert _default_timeout(object()) == DEFAULT_HOOK_TIMEOUT_SECONDS
+    assert DEFAULT_HOOK_TIMEOUT_SECONDS >= 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +215,81 @@ def test_project_resolver_failure_is_swallowed(meta_file: Path):
     assert out["ok"] is False
     assert out["reason"] == "project_resolve_failed"
     assert METRICS["ls_hook_failed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# project_id 进程级缓存
+# ---------------------------------------------------------------------------
+
+
+def test_project_resolved_once_per_process(meta_file: Path, monkeypatch):
+    """同批次只解析一次 project, 但**每条照样推**。
+
+    ``resolve_project_id(sync=True)`` 会把本地 XML PATCH 进 LS —— 那是覆盖,
+    不是同步。98 个 task 各 PATCH 一次, 批次跑到一半就把标注员在 LS 上做的
+    调整冲掉了。同批次内 label_config 文件不会变, 第一次解析后必须复用。
+    """
+    calls: list[LabelStudioSettings] = []
+    monkeypatch.setattr("orchestration.ls_hook._push",
+                        lambda *a, **k: {"task_id": "T001", "session_id": "s1"})
+
+    def resolve(s):
+        calls.append(s)
+        return 7
+
+    settings = _settings()
+    for _ in range(3):
+        out = run_hook(settings, project_id=None, meta_path=meta_file,
+                       resolve_project_id=resolve)
+        assert out["ok"] is True
+
+    assert len(calls) == 1, "project 被重复解析 = label_config 被重复 PATCH"
+    assert METRICS["ls_hook_succeeded"] == 3, "缓存不能把推送本身也跳过"
+
+
+def test_project_cache_is_keyed_by_url_and_title(meta_file: Path, monkeypatch):
+    """换项目 / 换实例必须重新解析, 不能命中上一个的缓存。"""
+    calls: list[str] = []
+    monkeypatch.setattr("orchestration.ls_hook._push",
+                        lambda *a, **k: {"task_id": "T001", "session_id": "s1"})
+
+    def resolve(s):
+        calls.append(s.project_title)
+        return 7
+
+    run_hook(_settings(), project_id=None, meta_path=meta_file,
+             resolve_project_id=resolve)
+    other = LabelStudioSettings(
+        base_url="http://127.0.0.1:8099",
+        api_key="x",
+        project_title="another-project",
+        hook=HookSettings(enabled=True, hook_timeout_seconds=1.0),
+    )
+    run_hook(other, project_id=None, meta_path=meta_file,
+             resolve_project_id=resolve)
+
+    assert calls == ["trajectory-sft-quality", "another-project"]
+
+
+def test_failed_resolve_is_not_cached(meta_file: Path, monkeypatch):
+    """解析失败不能进缓存 —— 否则一次偶发网络抖动就永久跳过项目定位。"""
+    monkeypatch.setattr("orchestration.ls_hook._push",
+                        lambda *a, **k: {"task_id": "T001", "session_id": "s1"})
+    attempts = {"n": 0}
+
+    def resolve(_s):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("transient")
+        return 7
+
+    first = run_hook(_settings(), project_id=None, meta_path=meta_file,
+                     resolve_project_id=resolve)
+    assert first["reason"] == "project_resolve_failed"
+    second = run_hook(_settings(), project_id=None, meta_path=meta_file,
+                      resolve_project_id=resolve)
+    assert second["ok"] is True
+    assert attempts["n"] == 2
 
 
 # ---------------------------------------------------------------------------

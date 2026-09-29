@@ -1,6 +1,9 @@
 # 统一配置入口（含真实凭据; 模板见 config/config.example.yaml）
 config/config.yaml
 
+# Label Studio API token (scripts/label_studio.bat 的备用 key 来源)
+config/label_studio_api_key.txt
+
 # Python virtual environments
 .venv/
 venv/

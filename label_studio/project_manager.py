@@ -75,36 +75,91 @@ def get_or_create_project(
     return project, True
 
 
+def _normalize_xml(xml: str) -> str:
+    """比 XML 时先抹掉所有空白 —— 换行/缩进差异不该被当成"配置变了"。
+
+    代价是属性间的空格也一并抹掉, 但这只影响**比较**, 不影响写入 LS 的原文。
+    """
+    return "".join((xml or "").split())
+
+
+def sync_label_config(
+    client: LabelStudioClient, project_id: int, label_config: str
+) -> bool:
+    """把本地 label_config 写进已存在的项目。返回是否真发生了改动。
+
+    **必须做**这一步: 复用同名项目时 LS 端存的是建项目那一刻的 XML。本地改了
+    不推过去, 项目就一直按旧配置渲染, 而 ``POST .../validate/`` 校验的是递过去
+    的 XML 文本、不是项目里存的那份 —— 于是 ``init-project`` 报绿、``upload``
+    却 400 ``data['xxx']=...``, 两边对不上且毫无提示。
+    """
+    remote = str(client.get_project(project_id).get("label_config") or "")
+    if _normalize_xml(remote) == _normalize_xml(label_config):
+        return False
+    client.update_project(project_id, label_config=label_config)
+    log.info("sync_label_config: 项目 %s 的 label_config 已更新", project_id)
+    return True
+
+
 def init_project(
     client: LabelStudioClient, settings: LabelStudioSettings
 ) -> dict[str, Any]:
-    """``python -m label_studio init-project`` 的实现。幂等。"""
+    """``python -m label_studio init-project`` 的实现。幂等。
+
+    幂等指的是**项目**不重复建；label_config 每次都以本地文件为准同步。
+    """
     label_config = read_label_config(settings.label_config_file())
     project, created = get_or_create_project(client, settings)
     project_id = int(project["id"])
     validate_label_config(client, project_id, label_config)
+    synced = False if created else sync_label_config(client, project_id, label_config)
     return {
         "project_id": project_id,
         "title": project.get("title", settings.project_title),
         "created": created,
+        "label_config_synced": synced,
         "label_config_path": str(settings.label_config_file()),
         "label_config_valid": True,
     }
 
 
 def resolve_project_id(
-    client: LabelStudioClient, settings: LabelStudioSettings
+    client: LabelStudioClient, settings: LabelStudioSettings, *, sync: bool = True
 ) -> int:
-    """推送前的项目定位：显式 id 优先，否则按标题查（**不新建**）。"""
+    """推送前的项目定位：显式 id 优先，否则按标题查（**不新建**）。
+
+    Args:
+        sync: 定位到项目后把本地 label_config 推过去。**推送路径必须为真** ——
+            这是 `upload` / orchestration hook 与 ``init-project`` 唯一的交汇点,
+            不在这里同步, 改完 XML 直接 upload 就会撞上项目里那份旧配置,
+            报一个和本地代码对不上的 ``data['xxx']=...`` 400。
+            ``purge`` 传 False —— 马上就删了, 同步纯属浪费请求。
+    """
     if settings.project_id:
-        return int(settings.project_id)
-    existing = find_project_by_title(client, settings.project_title)
-    if existing is None:
-        raise LabelStudioProjectError(
-            f"未找到 LS 项目 {settings.project_title!r}; "
-            f"先跑 `python -m label_studio init-project` 或在 config 里设 project_id"
-        )
-    return int(existing["id"])
+        project_id = int(settings.project_id)
+    else:
+        existing = find_project_by_title(client, settings.project_title)
+        if existing is None:
+            raise LabelStudioProjectError(
+                f"未找到 LS 项目 {settings.project_title!r}; "
+                f"先跑 `python -m label_studio init-project` 或在 config 里设 project_id"
+            )
+        project_id = int(existing["id"])
+    if sync:
+        try:
+            sync_label_config(
+                client, project_id, read_label_config(settings.label_config_file())
+            )
+        except LabelStudioError:
+            # 同步失败不该拦住推送: 项目可能正被人工编辑, 或者 LS 恰好拒绝
+            # PATCH。import 阶段的报错更具体也更晚, 提前拦反而掩盖真因。
+            log.warning(
+                "resolve_project_id: 项目 %s 的 label_config 未能同步, "
+                "若 import 报 data[...] 400 请手动核对 LS 端配置",
+                project_id,
+                exc_info=True,
+            )
+    return project_id
 
 
 def purge_tasks(
@@ -176,5 +231,6 @@ __all__ = [
     "list_existing_projects",
     "purge_tasks",
     "resolve_project_id",
+    "sync_label_config",
     "validate_label_config",
 ]

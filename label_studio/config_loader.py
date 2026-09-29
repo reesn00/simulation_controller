@@ -145,8 +145,7 @@ def _build_hook(raw: Any) -> HookSettings:
     raw = raw if isinstance(raw, dict) else {}
     return HookSettings(
         enabled=_as_bool(raw.get("enabled"), False),
-        hook_timeout_seconds=_as_float(raw.get("hook_timeout_seconds"), 5.0),
-        on_failure=str(raw.get("on_failure") or "log_only"),
+        hook_timeout_seconds=_as_float(raw.get("hook_timeout_seconds"), 30.0),
     )
 
 
@@ -168,6 +167,9 @@ def build_settings(raw: dict[str, Any] | None) -> LabelStudioSettings:
         project_title=str(section.get("project_title") or "trajectory-sft-quality"),
         label_config_path=label_config or (_repo_root() / DEFAULT_LABEL_CONFIG),
         project_id=_as_int(section.get("project_id"), 0) or None,
+        output_root=Path(
+            str(section.get("output_root") or "output")
+        ),
         upload=_build_upload(section.get("upload")),
         scorecard=_build_scorecard(section.get("scorecard")),
         credential_scan=_build_credential_scan(section.get("credential_scan")),

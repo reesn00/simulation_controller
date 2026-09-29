@@ -179,31 +179,42 @@ def _load_json(path: Path, view: str) -> Any:
         raise C3ParseError(f"C3 {view} 解析失败 {path.name}: {exc}") from exc
 
 
-def _flatten_criteria(meta: dict[str, Any]) -> list[dict[str, Any]]:
-    """把 ``criterion_results.criteria`` 摊成 label_config 可逐条渲染的列表。
+def _as_text(value: Any) -> str:
+    """结构化值 → 给 LS 文本标签看的可读字符串（缩进 2, 保留中文）。
 
-    字段名对齐 LS 逐条控件要显示的内容: 编号 / 判定 / 原因码 / 说明 / 证据。
-    判定值统一**大写** —— 标注员看到的是 "PASS" / "FAIL", 与本项目内部的
-    小写枚举区分开, 避免两边对同一字符串理解不一致。
+    ``ensure_ascii=False`` 是必须的: 默认 True 会把中文转成 ``\\uXXXX``,
+    标注员在 LS 里看到的是一串转义码。
+    """
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+
+def _flatten_criteria(meta: dict[str, Any]) -> list[str]:
+    """把 ``criterion_results.criteria`` 摊成 label_config 可逐条渲染的**字符串列表**。
+
+    必须逐条是**字符串**（不是 dict）: LS 1.23 的 perItem 文本控件只接受字符串
+    列表, 传 dict 列表在 import 阶段报 ``data['criteria']=...``。判定值统一
+    **大写** —— 标注员看到的是 "PASS" / "FAIL", 与本项目内部的小写枚举区分开,
+    避免两边对同一字符串理解不一致。
     """
     evaluation = meta.get("criterion_results")
     criteria = (evaluation or {}).get("criteria") if isinstance(evaluation, dict) else None
     if not isinstance(criteria, list):
         return []
-    rows: list[dict[str, Any]] = []
+    rows: list[str] = []
     for item in criteria:
         if not isinstance(item, dict) or not item.get("criterion_id"):
             continue
         verdict = str(item.get("verdict") or "").upper()
-        rows.append(
-            {
-                "criterion_id": item.get("criterion_id"),
-                "verdict": verdict,
-                "reason_code": item.get("reason_code", ""),
-                "message": item.get("message", ""),
-                "evidence_ids": item.get("evidence_ids") or [],
-            }
-        )
+        reason = str(item.get("reason_code") or "").strip()
+        message = str(item.get("message") or "").strip()
+        parts = [f"[{verdict}]", str(item.get("criterion_id"))]
+        if reason:
+            parts.append(f"({reason})")
+        if message:
+            parts.append(f"— {message}")
+        rows.append(" ".join(parts))
     return rows
 
 
@@ -251,16 +262,57 @@ def build_task_data(
         "metadata": meta,
         "training_value_score": meta.get("training_value_score"),
         "complexity_tier": meta.get("complexity_tier"),
-        # label_config 的 perItem 控件直接绑这个扁平列表: LS 的 data path
+        # label_config 的 perItem 控件直接绑这个字符串列表: LS 的 data path
         # 过滤语法 ($scorecard.dimensions[?(...)]) 在各版本行为不一致,
         # 扁平化后绑定是稳定的。
         "criteria": _flatten_criteria(meta),
     }
+    # 展示用字符串孪生字段。LS 1.23 的 Text/TextArea/TextEditor 绑定到结构化
+    # 值 (dict / list) 时 import 直接 400 ``data['messages']=...`` —— 只有
+    # <Table> 之类结构感知标签能吃结构化数据。结构化原值保留给下游脚本用,
+    # label_config 一律绑这些 *_text 孪生字段。
+    data["messages_text"] = _as_text(messages)
+    data["metadata_text"] = _as_text(meta)
     if openai is not None:
         data["openai"] = openai
+    # 低分标记。**恒存在** —— label_config 的 $audit_text 无条件绑定这个字段,
+    # 让它有时无时会踩两条路: 字段缺失时 LS 把那一块渲染成空白框, 标注员
+    # 分不清是"没被拒收"还是"渲染坏了"。所以正常样本显式写"（无）"。
+    audit = scorecard.get("audit")
+    data["audit_text"] = (
+        f"【低分样本】{audit.get('label')}\n{audit.get('note')}"
+        if isinstance(audit, dict) and audit.get("audited")
+        else "（无）"
+    )
     if scorecard.get("enabled"):
         data["scorecard"] = scorecard
+        data["scorecard_text"] = _as_text(scorecard)
+        # 风险提示既进 label_config 的只读展示块, 也进 predictions 预标注 ——
+        # 两条路都得有值, 少一条标注员就看不到"机器已经查过什么"。
+        data["risk_hints_text"] = render_risk_hints(scorecard)
     return data, scorecard
+
+
+#: 预标注落地的控件名。**必须与 label_config 里的 name 逐字一致** —— LS 按
+#: ``from_name`` 匹配控件, 对不上就静默丢弃整条预测 (实测 201 + created:0)。
+#: 由 ``tests/label_studio/test_label_config_xml.py`` 守住两侧一致。
+RISK_HINTS_CONTROL = "risk_hints"
+TASK_ANCHOR_CONTROL = "task_anchor"
+
+
+def render_risk_hints(scorecard: dict[str, Any] | None) -> str:
+    """风险提示 → 给 label_config 只读展示块 / prediction 预标注的**单段字符串**。
+
+    :func:`label_studio.scorecard.build_risk_hints` 产出 ``list[str]``（方案
+    §5.2 的四行提示表），并**保证非空** —— 无命中时它自己补「自动检查未见异常」
+    那一条。这里只做「列表 → 一段文本」的收敛, 不再兜底: 兜底文案留一份就够,
+    复制两份必然漂移 (第一版就在这栽了)。
+
+    LS 的 TextArea 只吃字符串, 预标注的 ``value.text`` 也要求字符串列表。
+    """
+    if not scorecard:
+        return ""
+    return "\n".join(f"· {h}" for h in build_risk_hints(scorecard))
 
 
 def build_task(
@@ -287,20 +339,35 @@ def build_prediction(
     ``overall_decision`` 留空强制人工选择: 自动 accept/reject 预判会把
     最该看的 hard 样本自动 reject 掉, 与方案 §3 自相矛盾。
 
-    ``result`` 里的键**都不在 label_config 的控件名里** —— LS 只渲染被
-    控件引用的键, 其余原样保存在 annotation 记录中供事后审计。
+    ⚠️ ``result`` 必须是 ``[{from_name, to_name, type, value}]`` **region 列表**,
+    且 ``from_name`` 必须是 label_config 里**真实存在**的控件名。这两条都是
+    LS 1.23.0 实测 (2026-09-29), 而且**违反时 LS 一声不吭**:
+    ``POST .../import/predictions`` 照样回 ``201 {"created": 0}``。
+
+    实测三种 payload 的结果 (一次性项目, 推完查 ``/api/tasks/{id}``)::
+
+        result 是 dict                       → {"created": 0}  建了 0 条
+        result 是 region 列表, from_name 命中 → {"created": 1}  建了 1 条 ✓
+        result 是 region 列表, from_name 没命中 → {"created": 0}  建了 0 条
+
+    原实现把 risk_hints 塞进 ``result`` 的自由键里, 想着"不在控件名里也照样
+    存下来供审计" —— **那是不成立的**: LS 按 ``from_name`` 逐条匹配控件, 匹配
+    不上就整条丢弃。所以风险提示必须有控件可落, 即 label_config 里的
+    ``<TextArea name="risk_hints" ...>``。
     """
     if scorecard is None or not scorecard.get("enabled"):
         return None
     overall = scorecard.get("overall") or {}
     return {
         "task": data["session_id"],
-        "result": {
-            "risk_hints": build_risk_hints(scorecard),
-            "auto_suggestion": overall.get("suggested_decision"),
-            "auto_confidence": overall.get("confidence"),
-            "auto_derivation": overall.get("derivation"),
-        },
+        "result": [
+            {
+                "from_name": RISK_HINTS_CONTROL,
+                "to_name": TASK_ANCHOR_CONTROL,
+                "type": "textarea",
+                "value": {"text": render_risk_hints(scorecard).splitlines()},
+            }
+        ],
         "model_version": f"scorecard/{scorecard.get('schema_version', 'scorecard.v1')}",
         "score": _CONFIDENCE_TO_SCORE.get(str(overall.get("confidence")), 0.5),
     }
@@ -452,15 +519,47 @@ def push_single_c3(
     else:
         client = client_factory()
 
+    from label_studio.push_index import PushIndex
+
+    index = PushIndex.load(
+        PushIndex.default_path(project_id, settings.output_root)
+    )
+    session_id = str(task["inner_id"])
+    if index.has(session_id):
+        # 重跑 hook 会推重复 —— LS 1.23 既不认字符串 inner_id 也不按它去重,
+        # 所以本地台账是唯一的挡板。
+        return {
+            "pushed": 0,
+            "rejected": False,
+            "reason": "已推送过, 跳过",
+            "task_id": task_id,
+            "session_id": session_id,
+        }
+
     pushed = client.import_tasks(project_id, [task])
-    if include_prediction and prediction:
-        client.import_predictions(project_id, [prediction])
+    ls_task_id: int | None = None
+    try:
+        recent = client.list_recent_tasks(project_id, limit=1)
+        for item in recent:
+            if str((item.get("data") or {}).get("session_id") or "") == session_id:
+                candidate = item.get("id")
+                if isinstance(candidate, int):
+                    ls_task_id = candidate
+                break
+    except Exception as exc:  # noqa: BLE001 - 取不到 id 不该让 task 推送算失败
+        log.warning("push_single_c3: 取不回 LS task id, 预标注跳过: %s", exc)
+    if ls_task_id is not None:
+        index.record(session_id, ls_task_id, task_ref=task_id)
+        if include_prediction and prediction:
+            client.import_predictions(
+                project_id, [{**prediction, "task": ls_task_id}]
+            )
     return {
         "pushed": pushed,
         "rejected": False,
         "reason": None,
         "task_id": task_id,
-        "session_id": task["inner_id"],
+        "session_id": session_id,
     }
 
 
@@ -471,10 +570,29 @@ def push_batch(
     project_id: int,
     client_factory: Callable[[], Any] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    index: Any | None = None,
 ) -> dict[str, Any]:
-    """按 ``upload.batch_size`` 分批推送。``plan`` 为空时直接返回。"""
+    """按 ``upload.batch_size`` 分批推送。``plan`` 为空时直接返回。
+
+    Args:
+        index: :class:`~label_studio.push_index.PushIndex`, 记录
+            ``session_id → LS task id``。**不传就退化成不判重**（推重复）,
+            所以生产路径必须传。
+
+    去重说明: LS 1.23 **既不认字符串 inner_id、也不按 inner_id 去重**
+    （实测 inner_id=42 连推三次得到 id 7/8/9), 所以判重只能靠本地台账。
+    推完一批回头捞 LS 刚建的那批 id 存进台账 —— 同一份数据同时供判重和
+    预标注 (``import/predictions`` 的 ``task`` 只认数字 id) 使用。
+    """
+    from label_studio.push_index import PushIndex
+
     if not plan.tasks:
-        return {"tasks_pushed": 0, "predictions_pushed": 0, "batches": 0}
+        return {
+            "tasks_pushed": 0,
+            "predictions_pushed": 0,
+            "batches": 0,
+            "skipped_duplicate": 0,
+        }
 
     if client_factory is None:
         from label_studio.client import build_client as _build_client
@@ -483,30 +601,84 @@ def push_batch(
     else:
         client = client_factory()
 
+    if index is None:
+        index = PushIndex.load(
+            PushIndex.default_path(project_id, settings.output_root)
+        )
+
     size = max(1, settings.upload.batch_size)
     tasks_pushed = 0
     predictions_pushed = 0
     batches = 0
-    # predictions 按 inner_id 对齐到 task 批次 —— LS 要求 task 已存在。
-    pred_by_id = {p["task"]: p for p in plan.predictions}
+    skipped_duplicate = 0
+    # predictions 按 session_id 对齐到 task 批次 —— LS 要求 task 已存在。
+    pred_by_session = {p["task"]: p for p in plan.predictions}
 
-    for start in range(0, len(plan.tasks), size):
-        batch = plan.tasks[start : start + size]
+    # 判重: 台账里有的一律不再推。LS 侧那份被删干净时台账会过期,
+    # 但**宁可不推也不推重复** —— 重复样本会污染标注统计, 少推一条补一次
+    # ``purge`` 索引就能找回。
+    fresh: list[dict[str, Any]] = []
+    for task in plan.tasks:
+        session_id = str(task.get("inner_id") or "")
+        if session_id and index.has(session_id):
+            skipped_duplicate += 1
+            continue
+        fresh.append(task)
+    if skipped_duplicate:
+        log.info(
+            "push_batch: %d 条已推过, 本次跳过 (LS 端不按 inner_id 去重)",
+            skipped_duplicate,
+        )
+
+    for start in range(0, len(fresh), size):
+        batch = fresh[start : start + size]
         tasks_pushed += client.import_tasks(project_id, batch)
-        preds = [
-            pred_by_id[t["inner_id"]]
-            for t in batch
-            if t.get("inner_id") in pred_by_id
-        ]
+
+        # 解析这批刚建出来的 LS task id。import 的返回体只有计数不带 id。
+        pairs: list[tuple[str, int]] = []
+        try:
+            recent = client.list_recent_tasks(project_id, limit=len(batch))
+        except Exception as exc:  # noqa: BLE001 - 预标注不该拖垮 task 推送
+            log.warning(
+                "push_batch: 取不回刚推送的 task id, 预标注将跳过: %s", exc
+            )
+            recent = []
+        id_by_session = {
+            str((item.get("data") or {}).get("session_id") or ""): item.get("id")
+            for item in recent
+        }
+        for task in batch:
+            session_id = str(task.get("inner_id") or "")
+            ls_task_id = id_by_session.get(session_id)
+            if isinstance(ls_task_id, int):
+                pairs.append((session_id, ls_task_id))
+        if pairs:
+            index.record_many(
+                pairs,
+                task_refs={
+                    str(t.get("inner_id") or ""): str(
+                        (t.get("data") or {}).get("task_id") or ""
+                    )
+                    for t in batch
+                },
+            )
+
+        preds = []
+        for session_id, ls_task_id in pairs:
+            pred = pred_by_session.get(session_id)
+            if pred is not None:
+                preds.append({**pred, "task": ls_task_id})
         if preds:
             predictions_pushed += client.import_predictions(project_id, preds)
         batches += 1
         if on_progress:
-            on_progress(min(start + size, len(plan.tasks)), len(plan.tasks))
+            on_progress(min(start + size, len(fresh)), len(fresh))
+
     return {
         "tasks_pushed": tasks_pushed,
         "predictions_pushed": predictions_pushed,
         "batches": batches,
+        "skipped_duplicate": skipped_duplicate,
     }
 
 

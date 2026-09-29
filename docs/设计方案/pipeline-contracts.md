@@ -576,7 +576,8 @@ def _run_one_task_pipeline(
 > `orchestration.ls_hook` 把 C3 + 评分卡推给 Label Studio。它跑在
 > `mark_phase(done)` **之后**、**不写 SQLite**、**全函数不抛异常** ——
 > §2 的 7 个 phase 常量、`tasks` 表结构与 §2.5 的全部公开接口**零修改**。
-> 去重靠 Label Studio 原生 `inner_id = session_id`，不新增 `ls_task_id` 列。
+> 去重靠 append-only 的本地台账 `output/label_studio/push_index__<project_id>.jsonl`，
+> 不新增 `ls_task_id` 列（LS 1.23 无原生去重，见 label-studio-integration.md §16 R7）。
 > 未启用（`label_studio.hook.enabled=false`，默认）时该 step 是空操作。
 > 详见 [`docs/orchestration-design.md` §6.8](../orchestration-design.md)。
 ```
