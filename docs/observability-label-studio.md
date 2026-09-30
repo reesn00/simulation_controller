@@ -98,6 +98,13 @@ uv run python -m label_studio upload
 一个 task 的界面是**平铺的分区**，从上到下依次是（`<Tabs>` 在本机 LS 1.23 没注册，
 所以用分隔标题而不是页签）：
 
+顶部信息行是 **Task · Session · 质量分 · 时间** 四行。时间行（2026-09-30 起）
+格式：`轨迹 <起> → <止> · C3 渲染 <t> · 推送 <t>` —— 轨迹起止取 user 轮的
+`created_at`（C3 里 assistant / system 轮不带时间），轨迹时间缺失时明确写
+「轨迹时间缺失」。结构化时间在 `session_started_at` / `session_ended_at` /
+`c3_rendered_at` / `pushed_at` 四个字段里，导出按列取（见
+[label-studio-annotation-export.md](label-studio-annotation-export.md)）。
+
 | 分区 | 内容 | 可否修改 |
 |---|---|---|
 | **低分标记** | 被 gdr 拒收过的样本，在这里写明理由 | 可改 |
@@ -105,8 +112,15 @@ uv run python -m label_studio upload
 | **风险提示** | 机器已经查过什么（预标注，会自动填一条） | 可改 |
 | **指令核对** | 逐条列出每条指令的自动判定（PASS/FAIL + 原因），每条一行。**整体认不认同**必选；选了「有哪几条不认同」要在下面点名 | 必答 |
 | **轨迹** | 结构化的消息与工具调用（C3 messages 视图） | 可改 |
-| **ChatML** | 渲染成 Qwen3 格式的纯文本，训练框架实际吃的就是这个 | 可改 |
-| **元数据** | 审计用的全量 metadata（C3 meta.json） | 可改 |
+| **OpenAI 视图** | openai_messages 训练视图的人读渲染（function-calling 形态，结尾附工具清单） | 可改 |
+| **元数据** | 审计 metadata（C3 meta.json 剥掉视图载荷后的部分） | 可改 |
+
+> **ChatML 区已于 2026-09-30 换成 OpenAI 视图。** `*.qwenjina.txt` 不再上传：
+> ChatML 全文曾同时躺在「ChatML」块和「元数据」块里（meta.json 内嵌 `qf_text`
+> 留底，占其体积约一半），等于同一内容推两遍。现在训练视图由 openai_messages
+> 的人读渲染承载，元数据块也剥掉了与视图文件重复的载荷（`openai_messages` /
+> `tools` / `qf_text` / `qf_stats` / `qf_rendered_at`）。**C3 磁盘文件不变**，
+> 要 ChatML 原文直接读 `output/refine_data/*.qwenjina.txt`。
 
 最下面四个控件：
 
@@ -171,7 +185,7 @@ uv run python -m label_studio upload
 这件事有两个后果，都要知道：
 
 **一、标注里的数据是你的修正稿，不是训练稿。** 从 LS 导出的 `messages_view` /
-`qf_text_view` / `metadata_view` 是**你改过之后的内容**。要拿训练制品，永远读
+`openai_view` / `metadata_view` 是**你改过之后的内容**。要拿训练制品，永远读
 `output/refine_data/` 下的 C3 文件，不要拿标注里的副本顶替——那是你改的版本。
 这跟本文件 §6 讲的是同一件事的两个方向：那里是我们不改你的样本让你来判断，
 这里是标注结果不假装是原始数据。
@@ -195,10 +209,11 @@ uv run python -m label_studio upload
 改掉了就再也读不出"机器当初判的是什么"。（能改 ≠ 该改。）
 
 > 顺带说一句：这些块**结构上也可以做成只读**，办法是换成 `<Text>` 标签（非控件，
-> LS 挂不上 submission），配 `<Style>.htx-text { white-space: pre-wrap; }</Style>`
-> 保住缩进——2026-09-30 在探针上实测过，两半都成立。**目前不做**：展示块可改是
-> 设计决定，不是被工具能力卡住的。唯一的例外是「风险提示」换不了，它是预标注的
-> 唯一落点。
+> LS 挂不上 submission）。**目前不做**：展示块可改是设计决定，不是被工具能力卡住
+> 的。唯一的例外是「风险提示」换不了，它是预标注的唯一落点。
+>
+> ⚠️ 别照抄「配 `<Style>` 保住缩进」这条旧配方：2026-09-30 实测 `.htx-text` 这个
+> 类名在标注页上根本选不中（见 playbook §3.5），它从来没生效过。
 
 ## 4. 为什么"最终判定"不自动填
 
@@ -299,14 +314,14 @@ Cookie / Authorization，但**挡不住 Agent 自己往里写**。
 台账丢了或想重推：`scripts\label_studio.bat purge --confirm`（**会连标注一起
 删**）后重新 `upload`，或者直接删掉那个 jsonl —— 删掉只会导致重推重复。
 
-**Q：`upload` 报 `data['messages']=...` 400 / `data['qf_text']=...` 400**
+**Q：`upload` 报 `data['messages']=...` 400 / `data['openai_text']=...` 400**
 多半是 LS 项目里的 `label_config` 与本地 XML 不一致。LS 端存的是**建项目那一刻**
 的 XML，而校验接口查的是你递过去的文本，两者不同步时"`init-project` 报绿、
 upload 却 400"。
 
 这类 400 的根因是 LS 的文本标签只吃字符串，喂 dict / list 会被拒；所以
-`task_exporter` 给每个展示块都准备了字符串孪生字段（`messages_text` /
-`qf_text` / `metadata_text` / `criteria_text` / `scorecard_text`）。
+`task_exporter` 给每个展示块都准备了字符串字段（`messages_text` /
+`openai_text` / `metadata_text` / `criteria_text` / `scorecard_text`）。
 **如果你看到报的是 `data['criteria']=...`**，那是老版本的事了——`criteria` 原来
 是列表，2026-09-30 已改成换行分隔的 `criteria_text` 字符串。
 

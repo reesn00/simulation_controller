@@ -9,6 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
+#: ChatML 渲染样本（``*.qwenjina.txt`` 全文）。2026-09-30 起 LS 不再上传它,
+#: 但 parse_stem 兼容测试与 RICH_META 的留底键仍要它。
+QF_TEXT = (
+    "<|im_start|>system\n# Tools\n\nYou have access to the following functions:…<|im_end|>\n"
+    "<|im_start|>user\n帮我推荐三款高性价比耳机<|im_end|>\n"
+)
+
 #: 一份"信息完整"的 meta —— L0–L5 六个维度全部有数据源。
 RICH_META: dict[str, Any] = {
     "session_id": "useramulation-20260928-abc",
@@ -81,20 +88,28 @@ RICH_META: dict[str, Any] = {
     # L5：精修编辑状态分布
     "edit_status_summary": {"EDIT": 2, "KEEP": 6, "REWRITE": 1},
     "meta_tag_contamination": {"has_meta_tag": False, "total_count": 0},
+    # 4 视图载荷留底 —— 真实 meta.json 里嵌着这些键（save_session_v2 写入）。
+    # task_exporter 推送前剥离（_META_VIEW_PAYLOAD_KEYS）, 测试守住
+    # 「视图载荷不上传 LS」；C3 磁盘文件本身仍带（契约不动）。
+    "openai_messages": [{"role": "user", "content": "帮我推荐三款高性价比耳机"}],
+    "tools": [{"type": "function", "function": {"name": "search"}}],
+    "qf_text": QF_TEXT,
+    "qf_stats": {"openai_messages": 2, "tools": 1},
+    "qf_rendered_at": "2026-09-30T00:00:00.000000Z",
 }
 
 RICH_MESSAGES: dict[str, Any] = {
     "messages": [
-        {"role": "user", "content": "帮我推荐三款高性价比耳机"},
+        {
+            "role": "user",
+            "content": "帮我推荐三款高性价比耳机",
+            # 真实 C3 里只有 user 消息带 created_at（system/assistant 恒空串）
+            "created_at": "2026-09-30T04:50:12.972292+00:00",
+        },
         {"role": "assistant", "content": "好的，推荐如下…"},
     ],
     "tools": [{"type": "function", "function": {"name": "search"}}],
 }
-
-QF_TEXT = (
-    "<|im_start|>system\n# Tools\n\nYou have access to the following functions:…<|im_end|>\n"
-    "<|im_start|>user\n帮我推荐三款高性价比耳机<|im_end|>\n"
-)
 
 #: 一个"干净"但缺 C4 的 meta，用于 source=missing 分支。
 SPARSE_META: dict[str, Any] = {

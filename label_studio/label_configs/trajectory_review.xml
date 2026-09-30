@@ -1,6 +1,12 @@
 <View>
   <Header value="Task $task_id · Session $session_id"/>
   <Header value="质量分 $training_value_score（$complexity_tier）"/>
+  <!-- 时间线（2026-09-30 起）。轨迹起止 = messages 的非空 created_at（只有
+       user 轮带时间）; C3 渲染 = meta.qf_rendered_at; 推送 = 导出时刻。
+       只是展示, 不进 annotation; 结构化时间在 task.data 的
+       session_started_at / session_ended_at / c3_rendered_at / pushed_at
+       四个字段里, JSON_MIN 导出按列取。 -->
+  <Header value="时间  $timeline_text"/>
 
   <!-- 隐藏锚点。**两个, 各有分工, 都必须带 value**。
 
@@ -15,9 +21,34 @@
           实测症状: 点完 annotations / drafts / results 全是 0, 什么都没存下。
 
        name 仍是 "task", 标注结果 JSON 的 to_name 不变, 已有的标注数据不受影响。
-       $task_id 是纯字符串且恒在, visible=false 不占版面。 -->
-  <Text name="task_anchor" value="$task_id" visible="false"/>
-  <Text name="task" value="$task_id" visible="false"/>
+
+       ═══ 隐藏方式: 只能靠**容器**, 属性写在 <Text> 上是无声无效的 ═══
+
+       曾经这里写的是 `<Text ... visible="false"/>`, 页面上两个 T001 原样露出来。
+       2026-09-30 在 LS 1.23 标注页实测(探针 project 47/49), 下面这些**全部无效**:
+
+         · `<Text visible="false">`    服务端 parsed_label_config 里 <Text> 只解析出
+                                       type / valueType / value 三个字段, 压根没有
+                                       visible 这个属性 → 被静默丢弃
+         · `<Text style="...">`        写上去不渲染
+         · `<Text className="...">`     同上
+         · CSS `.htx-text {display:none}`  类名对不上, 一行都没藏住
+                                       (标签页 §「只读展示块」曾引用过这条配方, 已作废)
+
+       真正生效的是**容器**上的属性 —— 同一轮探针里 D/E 两块都消失了:
+
+         · `<View style="display:none">`            ✓
+         · `<View className="x">` + `<Style>` 规则   ✓
+
+       这里选行内 style: 不引 `<Style>`、不依赖任何全局类名, 作用域正好是这两个锚点。
+
+       ⚠️ 动这里之前先读 docs/label-studio-playbook.md §3.5 —— 改完必须在**标注页**
+       点一次并提交, 确认 Choices 的 region source 没被 display:none 掐断。这里出过一次
+       "点一下整个标注区崩成空白页"(2026-09-29), 而那次的 validate/ 是报绿的。 -->
+  <View style="display:none">
+    <Text name="task_anchor" value="$task_id"/>
+    <Text name="task" value="$task_id"/>
+  </View>
 
   <!-- 分区。**原设计用 <Tabs>/<Tab> 分页, 实测这两个标签在本机 LS 1.23 里
        没注册**, 标注页直接报 "Tag with name tabs is not registered"。
@@ -28,8 +59,10 @@
   <!-- ═══ 展示块可改, 这是设计决定 (2026-09-29 复核) ═══
        标注页上这几块是**审查工作区**, 不是只读回显: 核对到错处就地改, 提交后
        这份**修正稿**会存进 annotation。所以 annotation 里的 messages_view /
-       qf_text_view / metadata_view **不是训练稿** —— 训练制品永远以
+       openai_view / metadata_view **不是训练稿** —— 训练制品永远以
        output/refine_data/ 下的 C3 为准, 两者不要混用。
+       (openai_view 原是 qf_text_view, 2026-09-30 起 qwenjina.txt 不再上传,
+       训练视图展示块换成 openai_messages 的人读渲染, 见下方该块的注释。)
 
        ⚠️ `editable` 只管"加完之后能不能再改", 不管能不能提交。真正决定能不能提交
        的是 **Add 按钮**, 而 Add 按钮默认在 `rows > 1` 时可见, 下面这些块 rows
@@ -48,9 +81,10 @@
 
        ── 如果将来要改成"结构上只读" ──
        唯一的办法是换成 `<Text>` 标签(非控件, LS 挂不上 submission)。但 `<Text>`
-       默认 trim 空白, 缩进会丢; 解法是配 `<Style>`(2026-09-30 探针 37 实测本机
-       可用, 且 **`.htx-text` 类名是对的**):
-           <Style>.htx-text { white-space: pre-wrap; }</Style>
+       会 trim 掉首尾空白, 多行缩进会丢; 本来打算配 `<Style>` 保缩进, 可
+       **2026-09-30 探针把这条路否了**: `.htx-text` 这个类名在标注页上根本选不中
+       (见上面「隐藏锚点」那段 —— 同一条 CSS 规则一行都没藏住)。所以要么接受缩进
+       丢失直接换 `<Text>`, 要么重新探针定位真实类名, 别再照抄这条配方。
        ⚠️ risk_hints 换不了 —— 它是 predictions 预标注的唯一落点, 换成 <Text>
        会让整条预测被静默丢弃(201 {"created": 0})。所以最多 7 块里 6 块。
        **目前不做**: 展示块可改是上面的设计决定, 不是被工具能力卡住的。 -->
@@ -71,7 +105,7 @@
        这一遍", 但它**不是** accept/reject 预判 (见 build_risk_hints)。
        可改 (理由见顶部「展示块可改」), 但要表达对机器判断的异议请走
        criterion_verdict / revise_notes, 别改写这里。 -->
-  <Header value="══ 风险提示 ══  由评分卡自动生成（方案 §5.2），只做风险提示、不做 accept/reject 预判。"/>
+  <Header value="══ 风险提示 ══  由评分卡自动生成，只做风险提示、不做 accept/reject 预判。"/>
   <TextArea name="risk_hints" toName="task_anchor" editable="true" rows="3"
             value="$risk_hints_text"/>
 
@@ -132,11 +166,20 @@
   <TextArea name="messages_view" toName="task_anchor" editable="true" rows="16"
             value="$messages_text"/>
 
-  <Header value="══ ChatML ══  qwenjina 训练视图（可改，同上）"/>
-  <TextArea name="qf_text_view" toName="task_anchor" editable="true" rows="16"
-            value="$qf_text"/>
+  <!-- 为什么是 TextArea 而不是 <Chat>（官方标签文档 labelstud.io/tags）:
+       Chat 的导入消息 "not selectable for annotation"，其 editable 管的是
+       标注员**新增**消息、改不了导入消息 —— 与「展示块是可改的审查工作区」
+       冲突；且本机 LS 1.23 已实测 Tabs / List / TextEditor 未注册，Chat 是否
+       注册未探针。按 playbook，换标签形态前必须标注页实测，所以沿用与其余
+       展示块同款的 TextArea，可读性由 exporter 侧渲染保证（render_openai_text:
+       按消息分节 + tool_call arguments 缩进 + 结尾工具清单）。
+       2026-09-30 起 qwenjina.txt（ChatML 全文）不再上传 —— 它曾同时躺在
+       这个块和下面 metadata 块里（meta.json 内嵌 qf_text 留底），两处一起剥。 -->
+  <Header value="══ OpenAI 视图 ══  openai_messages 训练视图（可改，同上）"/>
+  <TextArea name="openai_view" toName="task_anchor" editable="true" rows="16"
+            value="$openai_text"/>
 
-  <Header value="══ 元数据 ══  C3 meta.json（可改，同上）"/>
+  <Header value="══ 元数据 ══  C3 审计元数据（视图载荷已剥离：openai_messages / tools / qf_text 全文留在 C3 文件里，不进 LS）"/>
   <TextArea name="metadata_view" toName="task_anchor" editable="true" rows="10"
             value="$metadata_text"/>
 

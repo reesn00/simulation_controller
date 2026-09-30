@@ -21,6 +21,8 @@ from label_studio.settings import (
     UploadSettings,
 )
 from label_studio.task_exporter import (
+    _NO_OPENAI_TEXT,
+    _fmt_ts,
     RISK_HINTS_CONTROL,
     TASK_ANCHOR_CONTROL,
     build_prediction,
@@ -33,6 +35,7 @@ from label_studio.task_exporter import (
     parse_stem,
     push_batch,
     push_single_c3,
+    render_openai_text,
     render_risk_hints,
     scan_for_credentials,
 )
@@ -114,11 +117,27 @@ def test_build_task_data_maps_all_fields(rich_c3: Path):
     assert data["task_id"] == "T001"
     assert data["session_id"] == RICH_META["session_id"]
     assert data["messages"]["messages"] == RICH_MESSAGES["messages"]
-    assert data["qf_text"] == QF_TEXT
+    assert "qf_text" not in data, "qwenjina 内容不再上传 LS（2026-09-30 起）"
     assert data["openai"]["openai_messages"]
     assert data["training_value_score"] == 0.58
     assert data["complexity_tier"] == "medium"
     assert data["scorecard"]["schema_version"] == "scorecard.v1"
+
+
+def test_timeline_fields_present(rich_c3: Path):
+    """时间记录四字段 + 展示串。之前 task.data 没有任何时间, 标注员分不清
+    轨迹是哪天跑的; 2026-09-30 起补齐（用户要求）。"""
+    data, _ = build_task_data(rich_c3)
+    # 只有 user 消息带 created_at → 起止同点, 收敛成一个时间
+    assert data["session_started_at"] == "2026-09-30 04:50:12 UTC"
+    assert data["session_ended_at"] == "2026-09-30 04:50:12 UTC"
+    # RICH_META 带了视图载荷留底键（上一轮加的）, qf_rendered_at 提为顶层字段
+    assert data["c3_rendered_at"] == "2026-09-30 00:00:00 UTC"
+    assert data["pushed_at"].endswith(" UTC")
+    text = data["timeline_text"]
+    assert "轨迹 2026-09-30 04:50:12 UTC" in text, "同点起止收敛, 不渲染 t → t"
+    assert "C3 渲染" in text
+    assert "推送" in text and "轨迹时间缺失" not in text
 
 
 def test_criteria_text_is_newline_separated(rich_c3: Path):
@@ -275,17 +294,160 @@ def test_inner_id_is_session_id(rich_c3: Path):
     assert task["inner_id"] == RICH_META["session_id"]
 
 
-def test_missing_qwenjina_is_tolerated(c3_dir: Path):
-    """qf_text 本就可能不存在 (F1 前的存量产物 / 无 user 轮)。"""
-    path = write_c3(c3_dir, qf_text=None)
+def test_qwenjina_is_never_uploaded(c3_dir: Path):
+    """qwenjina.txt 即使在磁盘上也**不进 task.data**（2026-09-30 起不上传）。
+
+    旧版会把 ``*.qwenjina.txt`` 全文读进 ``data["qf_text"]``, 且 meta.json
+    内嵌的 ``qf_text`` 留底还经 ``metadata`` 二次上传 —— ChatML 全文等于推了
+    两遍。现在展示块换成 openai 视图, 两处一起剥; C3 磁盘文件本身不变。
+    """
+    path = write_c3(c3_dir, qf_text=QF_TEXT)
     data, _ = build_task_data(path)
-    assert data["qf_text"] == ""
+    assert "qf_text" not in data
+    assert "qf_text" not in data["metadata"]
+    assert "qf_text" not in json.loads(data["metadata_text"])
+
+
+def test_metadata_view_payload_keys_are_pruned(rich_c3: Path):
+    """meta.json 里的 4 视图载荷不进 LS —— task.data 只留**审计元数据**。
+
+    ``openai_messages`` / ``tools`` 与对应视图文件完全重复, ``qf_text`` 全文
+    曾占 meta 体积约一半; 留在 metadata 里等于同一内容双重上传。审计键
+    （criterion_results 等）必须原样保留。
+    """
+    data, _ = build_task_data(rich_c3)
+    for key in ("openai_messages", "tools", "qf_text", "qf_stats", "qf_rendered_at"):
+        assert key not in data["metadata"], key
+        assert key not in json.loads(data["metadata_text"]), key
+    assert data["metadata"]["criterion_results"]
+    assert data["metadata"]["session_id"]
 
 
 def test_missing_openai_is_tolerated(c3_dir: Path):
     path = write_c3(c3_dir, with_openai=False)
     data, _ = build_task_data(path)
     assert "openai" not in data
+    # 展示块恒有值, 不给空白框（与 criteria_text / audit_text 同一原则）
+    assert data["openai_text"].strip()
+
+
+def test_openai_text_is_readable_not_json(rich_c3: Path):
+    """``openai_text`` 是**人读渲染**, 不是 JSON 孪生 —— 同 scorecard_text 的理由。
+
+    ``json.dumps(indent=2)`` 的话 role/正文埋在引号里扫不出对话流。结构化
+    原值仍在 ``data["openai"]``。
+    """
+    data, _ = build_task_data(rich_c3)
+    text = data["openai_text"]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+    assert data["openai"]["openai_messages"]
+    # 消息分节头可扫
+    assert "── [1] user" in text
+    assert "hi" in text
+
+
+def test_render_openai_text_message_shapes():
+    """五种消息形态全接：system / user / assistant(+reasoning+tool_calls) /
+    tool / 收尾 assistant。"""
+    openai = {
+        "openai_messages": [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "U"},
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "先想一步",
+                "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "Skill", "arguments": {"skill": "x"}},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "Skill", "content": "OUT"},
+            {"role": "assistant", "content": "FINAL"},
+        ],
+        "tools": [{"type": "function", "function": {"name": "Skill", "description": "d"}}],
+    }
+    text = render_openai_text(openai)
+    assert "── [1] system" in text and "S" in text
+    assert "── [2] user" in text
+    assert "── [3] assistant · tool_calls=1" in text
+    assert "[reasoning]" in text and "先想一步" in text
+    assert "（无文本内容）" in text, "content=None 的 assistant 要有明确字样"
+    assert "→ tool_call call_1 name=Skill" in text
+    assert '"skill": "x"' in text, "dict arguments 应 pretty-print"
+    assert "── [4] tool · name=Skill · call=call_1" in text and "OUT" in text
+    assert "FINAL" in text
+    assert "── tools (1) ──" in text and "· Skill — d" in text
+
+
+def test_render_openai_text_handles_argument_variants():
+    """arguments 三态：JSON 字符串 → pretty；坏 JSON → 原样；其他 → str()。"""
+    openai = {
+        "openai_messages": [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "A", "arguments": '{"a": 1}'}},
+                {"id": "c2", "type": "function",
+                 "function": {"name": "B", "arguments": "not json"}},
+            ]},
+        ],
+        "tools": [],
+    }
+    text = render_openai_text(openai)
+    assert '"a": 1' in text, "JSON 字符串 arguments 反序列化后 pretty-print"
+    assert "not json" in text, "解析失败的裸串原样放行, 不抛"
+    assert "── tools (0) ──" in text
+
+
+def test_render_openai_text_never_blank():
+    """缺失 / 空消息列表都给明确字样 —— 不给空白框（与 criteria_text 同一原则）。"""
+    assert render_openai_text(None) == _NO_OPENAI_TEXT
+    assert render_openai_text({"openai_messages": [], "tools": []}).strip()
+    assert render_openai_text({"no_messages_key": 1}) == _NO_OPENAI_TEXT
+
+
+# ---------------------------------------------------------------------------
+# 时间记录
+# ---------------------------------------------------------------------------
+
+
+def test_timeline_span_from_first_and_last_user_message(c3_dir: Path):
+    """轨迹起止取**非空** created_at 的首尾 —— 只有 user 轮带时间（真实形态）。"""
+    messages = {"messages": [
+        {"role": "system", "content": "S", "created_at": ""},
+        {"role": "user", "content": "U1", "created_at": "2026-09-30T04:50:12.972292+00:00"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "U2", "created_at": "2026-09-30T04:55:42+00:00"},
+    ]}
+    path = write_c3(c3_dir, messages=messages, meta={
+        **RICH_META, "qf_rendered_at": "2026-09-30T04:51:45.490758Z",
+    })
+    data, _ = build_task_data(path)
+    assert data["session_started_at"] == "2026-09-30 04:50:12 UTC"
+    assert data["session_ended_at"] == "2026-09-30 04:55:42 UTC"
+    # 两种源格式（+00:00 / Z）归一到同一展示格式, 微秒去掉
+    assert data["c3_rendered_at"] == "2026-09-30 04:51:45 UTC"
+    text = data["timeline_text"]
+    assert "轨迹 2026-09-30 04:50:12 UTC → 2026-09-30 04:55:42 UTC" in text
+    assert "C3 渲染" in text
+
+
+def test_timeline_missing_times_say_so(c3_dir: Path):
+    """消息全无 created_at 时给明确字样, 但推送时间恒在 —— 不给空白框。"""
+    messages = {"messages": [{"role": "user", "content": "U"}]}
+    path = write_c3(c3_dir, messages=messages)
+    data, _ = build_task_data(path)
+    assert data["session_started_at"] == "" and data["session_ended_at"] == ""
+    assert "轨迹时间缺失" in data["timeline_text"]
+    assert "推送" in data["timeline_text"]
+
+
+def test_fmt_ts_keeps_unparseable_and_naive():
+    """解析失败原样放行（展示层不做校验器）; 无时区的裸时间不加 UTC 后缀。"""
+    assert _fmt_ts("") == ""
+    assert _fmt_ts("not-a-date") == "not-a-date"
+    assert _fmt_ts("2026-09-30T04:50:12") == "2026-09-30 04:50:12"
 
 
 def test_missing_messages_is_fatal(c3_dir: Path):
@@ -428,7 +590,10 @@ def test_scan_disabled_is_noop():
 
 def test_scan_clean_payload_returns_empty():
     scan = CredentialScanSettings()
-    payload = {"messages": [{"content": "推荐三款耳机"}], "qf_text": QF_TEXT}
+    payload = {
+        "messages": [{"content": "推荐三款耳机"}],
+        "openai": {"openai_messages": [{"role": "user", "content": "hi"}]},
+    }
     assert scan_for_credentials(payload, view="m", settings=scan) == []
 
 
@@ -460,7 +625,7 @@ def test_export_batch_rejects_credential_task_but_keeps_clean_one(c3_dir: Path):
     plan = export_batch(c3_dir, settings=LabelStudioSettings())
     assert [t["data"]["task_id"] for t in plan.tasks] == ["T002"]
     assert [stem for stem, _ in plan.rejected] == ["T001__bad-1_refined"]
-    assert plan.rejected[0][1][0].view in ("messages", "qf_text", "openai", "metadata")
+    assert plan.rejected[0][1][0].view in ("messages", "openai", "metadata")
 
 
 def test_push_single_c3_raises_on_credential_hit(c3_dir: Path, settings):

@@ -51,6 +51,14 @@ Label Studio 的属性名基本不能按字面猜语义。这是本项目被同�
 | `perItem` / `perRegion` | 渲染 N 份控件 | `perRegion="true"` = 「**当前选中的那个 region** 适用此控件」，前提是锚点先产生 N 个 region |
 | `inner_id` | 自定义主键 | **整数**字段；批量 import 静默丢弃，重复导入照样新建（LS 1.23 无原生去重） |
 | `List` | 官方推荐的逐项渲染 | **本机什么都不渲染**——不报 not-registered 也不出内容，比报错更隐蔽 |
+| `visible` / `style` / `className`（写在 `<Text>` 上） | 隐藏 / 改样式 | **全部被静默忽略**。`visible="false"` 写了一个月，页面上两个 `T001` 原样露着。服务端 `parsed_label_config` 里 `<Text>` 只有 `type` / `valueType` / `value` 三个字段——**属性根本不存在**。见 §3.5 |
+
+> **`visible` 这条的教训比"属性名骗人"更重一档**：上面多数是「名字对、语义不对」，
+> 这条是**属性压根不存在**。区别在于——名字对但语义不对的，你看到效果不对会怀疑；
+> 属性不存在的，连一个可供怀疑的信号都没有，页面上就是原样显示，一眼看过去
+> 「好像也没什么问题」。**一个从没生效过的写法，可以靠读代码自我感觉良好地传很久**
+> （`trajectory_review.xml` 顶部那句「`visible=false` 不占版面」就是这么来的）。
+> 改完配置记得问一句：*这个属性我是什么时候、拿什么证据确认它生效的？*
 
 **通用做法**：拿不准就去翻官方 tag 文档的参数说明（ctx7），但**翻完仍要实测**——
 本机行为和文档不一致是常态，`inner_id`、`perItem`、`<List>` 三处都是。
@@ -121,6 +129,40 @@ httpx.post(f"{base}/api/tasks/{tid}/annotations/", headers=client._headers(),
 探针结论成立后，**不要直接把探针配置搬过去**——把结论翻译成生产配置，
 更新测试守护（`tests/label_studio/test_label_config_xml.py`），
 再 `PATCH /api/projects/{id}`（见 §5.2 的停手条件）。
+
+### 3.5 案例：怎么把两个隐藏锚点藏起来（2026-09-30）
+
+起因是标注页顶部露出两行 `T001`。一轮探针（project 47/49）测完，结论：
+
+| 写法 | 标注页实测 |
+|---|---|
+| `<Text visible="false">` | ❌ 照旧显示（服务端 `parsed_label_config` 里没这个属性） |
+| `<Text style="display:none">` | ❌ 不渲染 |
+| `<Text className="...">` | ❌ 不渲染 |
+| `<Style>` 里 `.htx-text { display: none }` | ❌ **一行都没藏住**，类名对不上 |
+| `<Style>` 里 `.htx-text[name='tX'] { outline: … }` | ❌ 无红框 → DOM 里没有 `name` 属性 |
+| `<View className="x">` + `<Style>` 规则 | ✅ 消失 |
+| `<View style="display:none">` | ✅ 消失 |
+
+**有效的只有容器上的属性。** 生产取 `<View style="display:none">`：不引
+`<Style>`、不依赖任何全局类名，作用域正好是那两个锚点。
+
+> ⚠️ 这轮**推翻了本项目自己的一条结论**：`trajectory_review.xml` 曾写「探针 37
+> 实测 `.htx-text` 类名是对的」。那次探针没有对照组——缩进本来可能就是默认值，
+> 于是「CSS 好像生效了」和「CSS 根本没生效」被混为一谈。**探针没有对照组，
+> 结论就是猜的**（§3.2②）。
+
+**连带一个机器就能验的坑**：LS 的 `Label config contains non-unique names`
+是对**整份 XML 文本**的朴素扫描，连 `<Style>` 的 CSS 正文一起扫。纯 CSS 里的
+`.htx-text[name="tX"]` 撞上后面一个 `name="tX"` 的标签 → 建项目直接 400。
+要按名字选元素就写单引号 `[name='tX']`（那条校验扫的是 `name="` 这个字面量，
+不是真的 AST）。已由 `test_style_block_cannot_duplicate_a_tag_name` 守住。
+
+**验收还差一步机器验**：`display:none` 会不会掐断 `<Choices toName="task">` 的
+region source？会的话就是 2026-09-29 那个「点一下整页崩成空白」的重演。所以
+全保真探针（生产配置原样 + 真实样本）里让人点一次提交，再用 API 把 annotation
+读回来核对 `from_name` / `to_name` / 值——**12 条 result 全部对上才算过**。
+
 
 ---
 
@@ -204,7 +246,7 @@ LS 端存的是**建项目那一刻**的 XML。`validate/` 校验的是你递过
 
 | 想查 | 去哪 |
 |---|---|
-| 某个设计决策的来龙去脉 | [`设计方案/label-studio-integration.md`](设计方案/label-studio-integration.md) §16 风险登记 R1–R17 |
+| 某个设计决策的来龙去脉 | [`设计方案/label-studio-integration.md`](设计方案/label-studio-integration.md) §16 风险登记 R1–R18 |
 | 标注页每一块填什么、后果是什么 | [`observability-label-studio.md`](observability-label-studio.md) §3.4–3.5 |
 | 导出后怎么按字段取数据 | [`label-studio-annotation-export.md`](label-studio-annotation-export.md) |
 | 评分卡字段级 schema | [`contracts/C4-scorecard.md`](contracts/C4-scorecard.md) |

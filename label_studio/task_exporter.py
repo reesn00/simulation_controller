@@ -6,8 +6,10 @@
    (``T001__useramulation-xxx`` , 契约里的 ``_refined`` 后缀可选, 见
    :data:`STEM_PATTERN`)。
 2. **不持有 raw trajectory** —— C3 已是脱敏产物, 本模块只读 ``*.messages.json`` /
-   ``*.openai.json`` / ``*.qwenjina.txt`` / ``*.meta.json`` 四份**视图文件**,
-   绝不碰 C1 trajectory。
+   ``*.openai.json`` / ``*.meta.json`` 三份**视图文件**, 绝不碰 C1 trajectory。
+   ``*.qwenjina.txt`` **不再读取**（2026-09-30 起 ChatML 渲染产物不上传 LS,
+   展示块换成 openai 视图的人读渲染; meta.json 里内嵌的 ``qf_text`` 留底
+   也一并剥离, 见 :data:`_META_VIEW_PAYLOAD_KEYS`）。
 3. **R11 凭据扫描 fail-closed** —— 命中即 :class:`CredentialLeakDetected`,
    **不静默脱敏**。静默脱敏会让标注员看到的样本与训练用样本不一致, 污染标注
    语义; 宁可拒推让人来决定。
@@ -21,6 +23,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -224,6 +227,9 @@ def _flatten_criteria(meta: dict[str, Any]) -> list[str]:
 #: 空白框分不清是"没跑验证"还是"渲染坏了", 与 audit_text 同一个道理。
 _NO_CRITERIA_TEXT = "（本样本没有 criterion_results —— simulate 端未产出或未注入 C3）"
 
+#: 没有 openai 视图时显示的字样。同一原则 —— 恒有值, 不给空白框。
+_NO_OPENAI_TEXT = "（本样本没有 openai 视图 —— F1 前的旧 C3 产物或渲染失败）"
+
 
 def _criteria_text(meta: dict[str, Any]) -> str:
     """criterion 逐条清单 → **一个换行分隔的字符串**（给 TextArea 展示块）。
@@ -236,6 +242,171 @@ def _criteria_text(meta: dict[str, Any]) -> str:
     return "\n".join(rows) if rows else _NO_CRITERIA_TEXT
 
 
+def _render_openai_arguments(arguments: Any) -> str:
+    """tool_call 的 ``function.arguments`` → 可读的多行文本。
+
+    transform 之后 arguments 通常是**反序列化过的 dict**, 但旧产物可能是 JSON
+    字符串, 甚至解析失败的裸串 —— 三种都接: dict 直接 pretty-print, 字符串先试
+    ``json.loads`` 再 pretty, 失败就原样放行（展示块不是解析器, 别在这里抛）。
+    """
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (json.JSONDecodeError, ValueError):
+            return arguments
+    if isinstance(arguments, (dict, list)):
+        return json.dumps(arguments, ensure_ascii=False, indent=2, default=str)
+    return str(arguments)
+
+
+def _render_openai_message(index: int, msg: dict[str, Any]) -> list[str]:
+    """单条 openai message → 渲染行。消息头 ``[n] role · 附加信息`` 一行扫得出。"""
+    role = str(msg.get("role") or "?")
+    extras: list[str] = []
+    if role == "tool":
+        if msg.get("name"):
+            extras.append(f"name={msg['name']}")
+        if msg.get("tool_call_id"):
+            extras.append(f"call={msg['tool_call_id']}")
+    tool_calls = msg.get("tool_calls") or []
+    if tool_calls:
+        extras.append(f"tool_calls={len(tool_calls)}")
+    head = f"── [{index}] {role}" + (f" · {' · '.join(extras)}" if extras else "")
+
+    lines = [head]
+    reasoning = msg.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        lines.append("   [reasoning]")
+        lines.append(reasoning)
+    content = msg.get("content")
+    if isinstance(content, str) and content.strip():
+        lines.append(content)
+    else:
+        lines.append("（无文本内容）")
+    for tc in tool_calls:
+        func = tc.get("function") if isinstance(tc, dict) else None
+        if not isinstance(func, dict):
+            continue
+        lines.append(f"   → tool_call {tc.get('id') or '?'} name={func.get('name') or '?'}")
+        lines.append(_indent(_render_openai_arguments(func.get("arguments"))))
+    return lines
+
+
+def _indent(text: str, prefix: str = "     ") -> str:
+    return "\n".join(f"{prefix}{ln}" if ln else ln for ln in text.splitlines())
+
+
+def render_openai_text(openai: dict[str, Any] | None) -> str:
+    """openai.json → 给「OpenAI 视图」展示块的**人读文本**（不是 JSON 孪生）。
+
+    与 ``scorecard_text`` 同一理由: ``json.dumps(indent=2)`` 的引号括号占掉
+    一半字符, role/正文/工具调用的结构全埋在 ``"role": "assistant",`` 里,
+    标注员扫不出对话流。这里按消息分节 ``── [n] role ──``, tool_call 的
+    arguments 缩进挂在消息下面, 结尾附工具清单（name + 截断的 description）。
+
+    **不截断消息正文** —— 展示块是审查工作区, 截断等于让标注员审一半。
+    完整结构化原值仍在 ``task.data["openai"]``（含 tools 完整 schema）。
+    """
+    if not isinstance(openai, dict):
+        return _NO_OPENAI_TEXT
+    messages = openai.get("openai_messages")
+    if not isinstance(messages, list):
+        return _NO_OPENAI_TEXT
+
+    lines: list[str] = []
+    for index, msg in enumerate(messages, start=1):
+        if not isinstance(msg, dict):
+            continue
+        lines.extend(_render_openai_message(index, msg))
+        lines.append("")
+
+    tools = openai.get("tools") or []
+    lines.append(f"── tools ({len(tools)}) ──")
+    if not tools:
+        lines.append("（无）")
+    for tool in tools:
+        func = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(func, dict):
+            continue
+        desc = _clip(str(func.get("description") or ""))
+        lines.append(f"· {func.get('name') or '?'}" + (f" — {desc}" if desc else ""))
+    return "\n".join(lines).rstrip()
+
+
+#: meta.json 里与 4 视图文件内容**重复**的载荷键（2026-09-30 起 LS 推送前剥离）。
+#:
+#: ``qf_text`` 全文曾占 meta 体积约一半（ChatML 渲染留底）, ``openai_messages`` /
+#: ``tools`` 与 openai.json、messages.json 完全重复 —— 它们已由专属展示块
+#: （messages_view / openai_view）承载, 留在 metadata 里等于同一内容双重上传。
+#: task.data 只保留**审计元数据**; **C3 磁盘文件不动**（契约不变, 只剥 LS 副本）,
+#: ChatML 原文要看直接读 ``output/refine_data/*.qwenjina.txt``。
+_META_VIEW_PAYLOAD_KEYS = frozenset(
+    {"openai_messages", "tools", "qf_text", "qf_stats", "qf_rendered_at"}
+)
+
+
+def _fmt_ts(value: str) -> str:
+    """ISO 时间戳 → 统一的人读格式 ``YYYY-MM-DD HH:MM:SS UTC``（去微秒）。
+
+    源数据两种形态混用（messages 的 ``+00:00`` / meta 的 ``Z``）, 展示与导出
+    都归一到同一格式。无时区的裸时间按原样保留（不知道时区就不假装知道）;
+    解析失败原样放行 —— 展示层不做校验器。
+    """
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if dt.tzinfo is None:
+        return dt.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    dt = dt.astimezone(timezone.utc).replace(microsecond=0)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _session_time_span(messages: dict[str, Any] | None) -> tuple[str, str]:
+    """从 messages 视图取轨迹起止时间（首 / 末个**非空** ``created_at``）。
+
+    只有 user 消息带 created_at（system / assistant 恒为空串, 2026-09-30 实测）,
+    所以取非空值的首尾 —— 恰好覆盖第一轮提问到最后一轮追问。
+    """
+    times = [
+        str(msg.get("created_at") or "")
+        for msg in (messages or {}).get("messages") or []
+        if isinstance(msg, dict)
+    ]
+    times = [t for t in times if t.strip()]
+    return (
+        _fmt_ts(times[0]) if times else "",
+        _fmt_ts(times[-1]) if times else "",
+    )
+
+
+def _render_timeline(
+    session_started_at: str,
+    session_ended_at: str,
+    c3_rendered_at: str,
+    pushed_at: str,
+) -> str:
+    """时间线 → 标注页顶部 Header 的单行人读文本。**恒非空**（推送时间总在）。
+
+    起止相同（只有一轮提问）时收敛成一个时间点, 不渲染成 ``t → t``。
+    轨迹时间整体缺失时给明确字样 —— 与「不给空白框」原则一致。
+    """
+    parts: list[str] = []
+    if session_started_at and session_started_at == session_ended_at:
+        parts.append(f"轨迹 {session_started_at}")
+    elif session_started_at or session_ended_at:
+        span = " → ".join(t or "?" for t in (session_started_at, session_ended_at))
+        parts.append(f"轨迹 {span}")
+    else:
+        parts.append("轨迹时间缺失（消息无 created_at）")
+    if c3_rendered_at:
+        parts.append(f"C3 渲染 {c3_rendered_at}")
+    parts.append(f"推送 {pushed_at}")
+    return " · ".join(parts)
+
+
 def build_task_data(
     meta_path: Path,
     *,
@@ -243,8 +414,9 @@ def build_task_data(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """C3 meta.json → ``(task.data, scorecard)``。
 
-    4 视图中缺哪份都不阻断 —— ``qf_text`` 本就可能不存在（F1 前的旧产物
-    或无 user 轮的 session）, ``messages`` 缺失才是硬错误。
+    视图文件缺哪份都不阻断 —— ``openai.json`` 本就可能不存在（F1 前的旧产物
+    或无 user 轮的 session, 此时 ``openai_text`` 给明确字样）, ``messages``
+    缺失才是硬错误。
 
     Raises:
         C3ParseError: meta 或 messages 缺失 / 损坏。
@@ -258,26 +430,27 @@ def build_task_data(
     base = meta_path.name[: -len(_SUFFIX_META)]
     messages_path = meta_path.with_name(base + _SUFFIX_MESSAGES)
     openai_path = meta_path.with_name(base + _SUFFIX_OPENAI)
-    qwenjina_path = meta_path.with_name(base + _SUFFIX_QWENJINA)
 
     messages = _load_json(messages_path, "messages")
     openai = _load_json(openai_path, "openai") if openai_path.exists() else None
-    qf_text = (
-        qwenjina_path.read_text(encoding="utf-8")
-        if qwenjina_path.exists() else None
-    )
 
     session_id = str(meta.get("session_id") or stem_session)
     scorecard = build_scorecard(
         meta, task_id=task_id, session_id=session_id, settings=scorecard_settings
     )
 
+    # 视图载荷留底不进 LS（见 _META_VIEW_PAYLOAD_KEYS）—— scorecard 先在
+    # **完整** meta 上构建, 再剥副本, 评分卡读数不受影响。
+    meta_for_task = {
+        key: value for key, value in meta.items()
+        if key not in _META_VIEW_PAYLOAD_KEYS
+    }
+
     data: dict[str, Any] = {
         "task_id": task_id,
         "session_id": session_id,
         "messages": messages,
-        "qf_text": qf_text or "",
-        "metadata": meta,
+        "metadata": meta_for_task,
         "training_value_score": meta.get("training_value_score"),
         "complexity_tier": meta.get("complexity_tier"),
         # 指令核对区的展示块。**换行分隔的单串, 不是列表** —— 理由见
@@ -290,9 +463,28 @@ def build_task_data(
     # <Table> 之类结构感知标签能吃结构化数据。结构化原值保留给下游脚本用,
     # label_config 一律绑这些 *_text 孪生字段。
     data["messages_text"] = _as_text(messages)
-    data["metadata_text"] = _as_text(meta)
+    data["metadata_text"] = _as_text(meta_for_task)
     if openai is not None:
         data["openai"] = openai
+    # ⚠️ 与 scorecard_text 同款: **人读渲染, 不是 JSON 孪生**（openai 消息
+    # 压成 JSON 后 role/正文埋在引号里, 扫不出对话流）。qf_text_view 时代
+    # 上传的是 ChatML 全文, 2026-09-30 起换成这份渲染（qwenjina.txt 不上传）。
+    data["openai_text"] = render_openai_text(openai)
+    # 时间记录（2026-09-30 起）: 之前 task.data 里没有任何时间, 标注员分不清
+    # 轨迹是哪天跑的、样本是新是旧。轨迹起止取 messages 的非空 created_at
+    # （只有 user 轮带）, C3 渲染时间从 meta 的 qf_rendered_at 提为顶层字段
+    # （该键已从 metadata 剥离, 见 _META_VIEW_PAYLOAD_KEYS）, 推送时间为当下。
+    # 单独字段供 JSON_MIN 导出按列取值, timeline_text 给 Header 展示。
+    session_started_at, session_ended_at = _session_time_span(messages)
+    data["session_started_at"] = session_started_at
+    data["session_ended_at"] = session_ended_at
+    data["c3_rendered_at"] = _fmt_ts(str(meta.get("qf_rendered_at") or ""))
+    data["pushed_at"] = datetime.now(timezone.utc).replace(
+        microsecond=0
+    ).strftime("%Y-%m-%d %H:%M:%S UTC")
+    data["timeline_text"] = _render_timeline(
+        session_started_at, session_ended_at, data["c3_rendered_at"], data["pushed_at"]
+    )
     # 低分标记。**恒存在** —— label_config 的 $audit_text 无条件绑定这个字段,
     # 让它有时无时会踩两条路: 字段缺失时 LS 把那一块渲染成空白框, 标注员
     # 分不清是"没被拒收"还是"渲染坏了"。所以正常样本显式写"（无）"。
@@ -523,7 +715,7 @@ def export_one(
     scan = scan_settings or CredentialScanSettings()
 
     hits: list[ScanHit] = []
-    for view in ("messages", "qf_text", "openai", "metadata"):
+    for view in ("messages", "openai", "metadata"):
         if view in data and data[view]:
             hits.extend(scan_for_credentials(data[view], view=view, settings=scan))
     if hits:
@@ -588,7 +780,7 @@ def export_batch(
             continue
 
         hits: list[ScanHit] = []
-        for view in ("messages", "qf_text", "openai", "metadata"):
+        for view in ("messages", "openai", "metadata"):
             if data.get(view):
                 hits.extend(
                     scan_for_credentials(

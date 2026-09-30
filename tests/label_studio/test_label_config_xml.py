@@ -30,6 +30,10 @@ task 推上去了, 标注页打开是一片红。所以"服务端校验通过"**
 7. ``<Choice>`` 的**显示标签走 html=**, 不写就显示机器键。**``alias=`` 是
    陷阱** —— 它会把 LS 认的选项标识从 value 换成 alias, 前端提交上去的就是
    alias, 等于静默改掉契约键。
+8. **隐藏一个标签, 属性写在它自己身上是没用的**, 得写在**容器**上。
+   ``<Text>`` 上的 ``visible`` / ``style`` / ``className`` 实测全部被静默忽略
+   (标注页原样显示), 真正生效的只有 ``<View style="display:none">`` 与
+   ``<View className>`` + ``<Style>``(2026-09-30 探针 project 47/49)。
 """
 
 from __future__ import annotations
@@ -106,7 +110,7 @@ def test_every_toname_has_a_matching_control(tree):
 
 
 def test_task_anchor_exists(tree):
-    """``<Text name="task" value="$task_id" visible="false"/>`` 锚点。
+    """``<Text name="task" value="$task_id"/>`` 锚点, 且必须**藏在隐藏容器里**。
 
     **标签类型必须是 ``<Text>`` 且带 value**（2026-09-29 修）。这里原来是个
     ``<TextArea name="task" toName="task_anchor" maxSubmissions="1"/>`` ——
@@ -117,14 +121,72 @@ def test_task_anchor_exists(tree):
 
     这就是本项目踩过的 "validate/ 会说谎" 的又一层: 服务端给的是"配得进去",
     不是"标注页能用"。见 test_choice_toname_points_at_real_data_source。
+
+    隐藏方式另有一条硬约束: **属性写在 ``<Text>`` 上是无声无效的**,
+    见 :func:`test_anchors_are_hidden_by_container_not_by_attribute`。
     """
-    anchors = [
-        el for el in tree.iter()
-        if el.get("name") == "task" and el.get("visible") == "false"
-    ]
+    anchors = [el for el in tree.iter() if el.get("name") == "task"]
     assert len(anchors) == 1
     assert anchors[0].tag == "Text"
     assert anchors[0].get("value") == "$task_id"
+
+
+def test_anchors_are_hidden_by_container_not_by_attribute(tree):
+    """两个锚点必须被一个**隐藏容器**裹住 —— 属性写法一律无效。
+
+    2026-09-30 在 LS 1.23 标注页实测（探针 project 47/49）::
+
+        <Text visible="false">     照旧显示。服务端 parsed_label_config 里 <Text>
+                                   只解析出 type/valueType/value, 没有 visible
+        <Text style="...">         不渲染
+        <Text className="...">      不渲染
+        .htx-text{display:none}    一行都没藏住 —— 类名对不上
+        <View style="display:none">  ✓ 消失
+        <View className> + <Style>   ✓ 消失
+
+    也就是说 ``visible="false"`` 从来没生效过, 标注页顶部那两个 T001 就是它。
+    这条测试原来**反过来把这个无效写法钉住了**（断言 ``visible == "false"``）,
+    等于把 bug 写成了规范 —— 属性名会骗人, 属性不存在则更彻底。
+
+    写死 ``<View style="display:none">`` 这一种形态而不是"任意隐藏": 生效的只有
+    容器属性, 而 ``<Style>`` 方案要额外依赖一个全局类名, 那个类名已经被证伪。
+    """
+    hidden = [
+        el for el in tree.iter("View")
+        if "display:none" in (el.get("style") or "").replace(" ", "")
+    ]
+    assert len(hidden) == 1, "锚点必须且只能裹在唯一一个隐藏容器里"
+    contained = {el.get("name") for el in hidden[0].iter() if el.get("name")}
+    assert {"task_anchor", "task"} <= contained, (
+        f"隐藏容器里没包住两个锚点: {contained}"
+    )
+
+    # 三个被证伪的写法, 任何一个回来都直接退回"页面上露出 task_id"
+    for el in tree.iter("Text"):
+        for attr in ("visible", "style", "className"):
+            assert el.get(attr) is None, (
+                f"<Text name={el.get('name')!r}> 上的 {attr}= 在 LS 1.23 无效, "
+                "隐藏请用 <View style=\"display:none\">"
+            )
+
+
+def test_style_block_cannot_duplicate_a_tag_name(tree):
+    """``<Style>`` 里不许出现 ``name="X"``, X 与某个标签同名。
+
+    LS 的 "Label config contains non-unique names" 是对**整份 XML 文本**的朴素
+    扫描, 连 ``<Style>`` 的 CSS 正文一起扫(2026-09-30 探针实测: 纯 CSS 里的
+    ``.htx-text[name="tX"]`` + 后面一个 ``name="tX"`` 的标签 → 建项目直接 400)。
+
+    写按名字选元素的 CSS 选择器时改用**单引号** ``[name='tX']`` 即可绕过 ——
+    这条同时说明那份校验扫描的是 ``name="`` 这个字面量, 而非真正的 AST。
+    """
+    names = {el.get("name") for el in tree.iter() if el.get("name")}
+    for style in tree.iter("Style"):
+        text = "".join(style.itertext())
+        for name in names:
+            assert f'name="{name}"' not in text, (
+                f"<Style> 里出现 name=\"{name}\", 会与同名标签撞上 LS 的重名校验 → 400"
+            )
 
 
 def test_choice_toname_points_at_real_data_source(tree):
@@ -227,7 +289,7 @@ def test_textarea_anchor_controls_carry_no_value(tree):
         "scorecard_view",
         "risk_hints",
         "messages_view",
-        "qf_text_view",
+        "openai_view",
         "metadata_view",
     }
     for name in display:
@@ -307,7 +369,7 @@ def test_display_controls_are_textareas_on_the_anchor(tree):
     见 label_config 注释; 目前不做, 因为可改本身就是决定。
     """
     for name in ("scorecard_view", "risk_hints", "messages_view",
-                 "qf_text_view", "metadata_view"):
+                 "openai_view", "metadata_view"):
         control = next(el for el in tree.iter() if el.get("name") == name)
         assert control.tag == "TextArea", name
         assert control.get("toName") == "task_anchor", name
@@ -546,5 +608,5 @@ def test_all_four_sections_present(tree):
     headers = " ".join(
         (el.get("value") or "") for el in tree.iter("Header")
     )
-    for section in ("评分卡", "风险提示", "指令核对", "轨迹", "ChatML", "元数据"):
+    for section in ("评分卡", "风险提示", "指令核对", "轨迹", "OpenAI 视图", "元数据"):
         assert section in headers, f"缺展示区: {section}"

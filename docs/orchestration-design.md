@@ -92,9 +92,10 @@
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Label Studio（终点，不回流）                                          │
-│   task.data = { messages, qf_text, metadata, criteria,              │
-│                  training_value_score, complexity_tier,              │
-│                  scorecard }                                          │
+│   task.data = { messages, openai, openai_text, metadata,            │
+│                  criteria_text, training_value_score,                │
+│                  complexity_tier, scorecard }                        │
+│   （2026-09-30 起 qf_text 不再上传；metadata 剥视图载荷键）           │
 │   └─> task.data["scorecard"] : scorecard.v1 (L0–L5 分层 + 依据)     │
 │         每维必带 source : measured|partly_estimated|estimated|missing│
 │   └─> 触发:orchestration.task_pipeline._push_to_label_studio         │

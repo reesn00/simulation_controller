@@ -67,13 +67,21 @@ JSON: 1 行, annotations 数组 2 条
    ```
    annotation_id, annotator, created_at, updated_at, id, lead_time,
    task_id, session_id, complexity_tier, training_value_score, criteria_text,
-   messages, messages_text, messages_view, qf_text, qf_text_view,
-   metadata, metadata_text, metadata_view, openai,
+   timeline_text, session_started_at, session_ended_at, c3_rendered_at,
+   pushed_at,
+   messages, messages_text, messages_view, openai, openai_text, openai_view,
+   metadata, metadata_text, metadata_view,
    scorecard, scorecard_text, scorecard_view,
    audit_text, audit_view, risk_hints_text, risk_hints,
    criterion_verdict, criterion_note, overall_decision, failure_mode,
    revise_notes, content_revision
    ```
+
+   （2026-09-30 起 `qf_text` / `qf_text_view` 两列被 `openai_text` /
+   `openai_view` 取代——qwenjina.txt 不再上传，见
+   [observability §3.4](observability-label-studio.md)；时间四字段 +
+   `timeline_text` 同日新增，时间格式统一 `YYYY-MM-DD HH:MM:SS UTC`；
+   旧项目里推送的样本导出仍是旧列名。）
 
    实际效果比文章描述的**更省事**——不用解析嵌套区间，直接按列名取。
 
@@ -115,7 +123,7 @@ latest = rows[-1]
 | `criterion_verdict` | `criterion_verdict` | 字符串 | 无值则该行不可用 | `all_agree` / `some_disagree` / `none_agree`，**必选**。⚠️ 整块判定，**不含 criterion_id**（见 §5.3） |
 | `criterion_note` | `criterion_note` | 字符串 | 列可能整个不存在 | `some_disagree` 时点名 `criterion_id: 理由` |
 | `risk_hints` | `risk_hints` | **dict** `{"text": [...]}` | 恒有（预标注） | 机器提示，见 §5.2 |
-| 展示块 | `messages_view` / `qf_text_view` / `metadata_view` / `scorecard_view` / `audit_view` / `criteria_view` | dict `{"text": [str]}` | 恒有 | 标注员**修正稿** |
+| 展示块 | `messages_view` / `openai_view` / `metadata_view` / `scorecard_view` / `audit_view` / `criteria_view` | dict `{"text": [str]}` | 恒有 | 标注员**修正稿** |
 
 ### 4.0 选项的显示文本与导出键是**两套**
 
@@ -168,6 +176,11 @@ notes = row.get("revise_notes", "")   # ← 必须用 .get()
         audit_text (     3) vs audit_view (     3)        完全相同
     risk_hints_text (    36) vs risk_hints (        73)   不同 ← 多了一条 submission
 ```
+
+> 上表是 2026-09-30 之前的实测（project 27）。当天起 `qf_text` /
+> `qf_text_view` 被 `openai_text` / `openai_view` 取代，且 `metadata_text`
+> 剥掉了视图载荷（原 262K 主要是内嵌的 qf_text / openai_messages / tools
+> 重复载荷），比对逻辑不变。
 
 `*_text` 列来自 `task.data`（机器原值），`*_view` 列来自标注结果（标注员提交
 的值）。**所以下游不必只信 `content_revision` 那个开关，两列直接比对也是独立
