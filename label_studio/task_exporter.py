@@ -191,12 +191,14 @@ def _as_text(value: Any) -> str:
 
 
 def _flatten_criteria(meta: dict[str, Any]) -> list[str]:
-    """把 ``criterion_results.criteria`` 摊成 label_config 可逐条渲染的**字符串列表**。
+    """把 ``criterion_results.criteria`` 摊成给人读的一行一条字符串。
 
-    必须逐条是**字符串**（不是 dict）: LS 1.23 的 perItem 文本控件只接受字符串
-    列表, 传 dict 列表在 import 阶段报 ``data['criteria']=...``。判定值统一
-    **大写** —— 标注员看到的是 "PASS" / "FAIL", 与本项目内部的小写枚举区分开,
-    避免两边对同一字符串理解不一致。
+    判定值统一**大写** —— 标注员看到的是 "PASS" / "FAIL", 与本项目内部的小写
+    枚举区分开, 避免两边对同一字符串理解不一致。
+
+    ⚠️ 曾经返回的是 list 并直接绑给 perItem 控件的 ``<Text>`` 锚点, **实测行不通**
+    （见 label_config 里「指令核对」段的说明）。现在只作为
+    :func:`_criteria_text` 的中间产物, 不再进 ``task.data``。
     """
     evaluation = meta.get("criterion_results")
     criteria = (evaluation or {}).get("criteria") if isinstance(evaluation, dict) else None
@@ -216,6 +218,22 @@ def _flatten_criteria(meta: dict[str, Any]) -> list[str]:
             parts.append(f"— {message}")
         rows.append(" ".join(parts))
     return rows
+
+
+#: 没有 criterion_results 时显示的字样。**恒给这句话, 不给空白框** ——
+#: 空白框分不清是"没跑验证"还是"渲染坏了", 与 audit_text 同一个道理。
+_NO_CRITERIA_TEXT = "（本样本没有 criterion_results —— simulate 端未产出或未注入 C3）"
+
+
+def _criteria_text(meta: dict[str, Any]) -> str:
+    """criterion 逐条清单 → **一个换行分隔的字符串**（给 TextArea 展示块）。
+
+    必须是字符串而不是字符串列表: LS 把 list 绑给 ``<Text>`` 会用 ``,`` 连成
+    一整段（实测 6 条 criterion 在标注页上是**一行**逗号连文, 逐条核对无从下手）,
+    绑给文本控件又直接 400 ``data['criteria']=...``。换行分隔的字符串两头都对。
+    """
+    rows = _flatten_criteria(meta)
+    return "\n".join(rows) if rows else _NO_CRITERIA_TEXT
 
 
 def build_task_data(
@@ -262,10 +280,10 @@ def build_task_data(
         "metadata": meta,
         "training_value_score": meta.get("training_value_score"),
         "complexity_tier": meta.get("complexity_tier"),
-        # label_config 的 perItem 控件直接绑这个字符串列表: LS 的 data path
-        # 过滤语法 ($scorecard.dimensions[?(...)]) 在各版本行为不一致,
-        # 扁平化后绑定是稳定的。
-        "criteria": _flatten_criteria(meta),
+        # 指令核对区的展示块。**换行分隔的单串, 不是列表** —— 理由见
+        # _criteria_text 的 docstring。结构化 criterion 原值仍在
+        # data["metadata"]["criterion_results"]["criteria"]。
+        "criteria_text": _criteria_text(meta),
     }
     # 展示用字符串孪生字段。LS 1.23 的 Text/TextArea/TextEditor 绑定到结构化
     # 值 (dict / list) 时 import 直接 400 ``data['messages']=...`` —— 只有
@@ -286,7 +304,9 @@ def build_task_data(
     )
     if scorecard.get("enabled"):
         data["scorecard"] = scorecard
-        data["scorecard_text"] = _as_text(scorecard)
+        # ⚠️ 唯一**不是** JSON 孪生的 *_text 字段 —— 评分卡压成 JSON 不可读
+        # (实测 5679 字符, 打开停在 evidence 中段)。见 render_scorecard_text。
+        data["scorecard_text"] = render_scorecard_text(scorecard)
         # 风险提示既进 label_config 的只读展示块, 也进 predictions 预标注 ——
         # 两条路都得有值, 少一条标注员就看不到"机器已经查过什么"。
         data["risk_hints_text"] = render_risk_hints(scorecard)
@@ -313,6 +333,121 @@ def render_risk_hints(scorecard: dict[str, Any] | None) -> str:
     if not scorecard:
         return ""
     return "\n".join(f"· {h}" for h in build_risk_hints(scorecard))
+
+
+#: 单个字段 / 单条依据的渲染上限。超了截断标 "…" —— 完整内容在
+#: ``task.data["scorecard"]`` 结构化列里, 展示块不复述。
+_RENDER_LIMIT = 240
+
+#: 维度 dict 里这些键当表头单独排版, 不混进字段列表。
+_SCORECARD_HEAD_KEYS = frozenset(
+    {"id", "label", "score", "score_kind", "source", "evidence"}
+)
+
+
+def _clip(text: str, limit: int = _RENDER_LIMIT) -> str:
+    """折行压成一行再截断。JSON 里的换行会在 TextArea 里变成多行, 把
+    维度列表冲散, 标注员就看不出哪条依据属于哪一维。"""
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[:limit] + " …"
+
+
+def _fmt(value: Any) -> str:
+    """任意值 → 人读的一小段文本。``None`` / 空串统一显示 ``—``。
+
+    布尔走中文 (``是`` / ``否``) —— ``score=False`` 与 ``score=0`` 在评分卡里
+    含义完全不同 (红线"没违规" vs 覆盖率 0), 印成 ``False`` 容易被扫成"没分"。
+
+    容器**不整体 JSON 化**: L0 的 ``fail_evaluation`` 有十几个键, L4 的
+    ``components`` 是七维分量表, ``json.dumps`` 出来都是一坨带引号括号的
+    字符串, 标注员要读的 ``failure_category`` / ``health`` 埋在中间。拆成
+    ``k=v · k=v`` 才扫得出来; 只有嵌套容器才退回紧凑 JSON 并截断。
+    """
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, str):
+        return _clip(value)
+    if isinstance(value, dict):
+        parts = [
+            f"{key}={_fmt(item)}"
+            for key, item in value.items()
+            if item not in (None, "", [], {})
+        ]
+        return _clip(" · ".join(parts) if parts else "—")
+    if isinstance(value, (list, tuple)):
+        parts = [_fmt(item) for item in value if item not in (None, "", [], {})]
+        if parts and all(not isinstance(item, (dict, list, tuple)) for item in value):
+            return _clip("、".join(parts))
+        return _clip(json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":")))
+    return _clip(value)
+
+
+def render_scorecard_text(scorecard: dict[str, Any] | None) -> str:
+    """评分卡 → 给标注页展示块看的**人读文本**（不是 JSON 孪生）。
+
+    ⚠️ 这与 ``messages_text`` / ``metadata_text`` 不同: 那两个是纯 JSON 孪生
+    （内容本来就是 JSON, 换个排版就没法还原), 而评分卡是**有结构的判定**,
+    压成 ``json.dumps(indent=2)`` 之后 5679 个字符里有一半是括号和引号 ——
+    实测 2026-09-30 在标注页上打开, TextArea 直接停在 evidence 数组中段,
+    标注员第一眼看到的是半行 ``should_revise_task": false,``, 而最该先看的
+    ``overall.suggested_decision`` 在几百行之上。这里改成「结论先行 + 维度
+    分行 + 依据逐条」。
+
+    **不丢信息**: 结构化原值仍完整保留在 ``task.data["scorecard"]``
+    (JSON_MIN 导出里是独立的 ``scorecard`` 列), 展示块只是它的可读投影。
+    超长字段截断标 ``…``, 就是提示"完整内容在那儿"。
+
+    通用渲染, 不按维度 id 写分支 —— 六个维度各写一套必然随 builder 漂移。
+    """
+    if not scorecard:
+        return ""
+
+    lines: list[str] = []
+    overall = scorecard.get("overall")
+    if isinstance(overall, dict):
+        lines.append(
+            f"建议判定  {_fmt(overall.get('suggested_decision'))}"
+            f"（置信度 {_fmt(overall.get('confidence'))}）"
+        )
+        for key in ("derivation", "note"):
+            text = overall.get(key)
+            if text:
+                lines.append(f"          {text}")
+    summary = scorecard.get("dimension_summary")
+    if isinstance(summary, dict) and summary:
+        lines.append(
+            "维度覆盖  "
+            + " · ".join(f"{k}={_fmt(v)}" for k, v in summary.items())
+        )
+    lines.append("")
+
+    dimensions = scorecard.get("dimensions")
+    for index, dim in enumerate(dimensions or []):
+        if not isinstance(dim, dict):
+            continue
+        head = f"L{index} {dim.get('label') or dim.get('id') or '?'}"
+        lines.append(
+            f"── {head} ──  {_fmt(dim.get('score'))} {dim.get('score_kind') or ''}"
+            f" · source={_fmt(dim.get('source'))}"
+        )
+        extra = [
+            f"{key}={_fmt(value)}"
+            for key, value in dim.items()
+            if key not in _SCORECARD_HEAD_KEYS and value not in (None, "", [], {})
+        ]
+        if extra:
+            lines.append("   " + " · ".join(extra))
+        evidence = dim.get("evidence") or []
+        if evidence:
+            lines.append(f"   依据 {len(evidence)} 条：")
+            lines.extend(f"     · {_fmt(item)}" for item in evidence)
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def build_task(

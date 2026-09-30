@@ -121,23 +121,51 @@ def test_build_task_data_maps_all_fields(rich_c3: Path):
     assert data["scorecard"]["schema_version"] == "scorecard.v1"
 
 
-def test_criteria_are_flattened_to_strings(rich_c3: Path):
-    """``criteria`` 必须是**字符串列表**。
+def test_criteria_text_is_newline_separated(rich_c3: Path):
+    """``criteria_text`` 是**换行分隔的单串**, 每行一条 ``[VERDICT] id (REASON) — message``。
 
-    LS 的 perItem 文本控件只接受字符串, 传 dict 列表在 import 阶段就
-    ``data['criteria']=...`` 400。所以这里从结构化 criterion 摊成人读的
-    ``[VERDICT] id (REASON) — message`` 一行。
+    曾经是字符串列表绑给 perItem 锚点, 现在改成单串有两个原因, 都是实测:
+      * LS 把 list 绑给 ``<Text>`` 会用 ``,`` 连成一整段 —— 6 条 criterion 在
+        标注页上是**一行**逗号连文, 逐条核对连读都读不下去
+      * 绑给文本控件又会 ``data['criteria']=...`` 400
+    换行分隔的字符串两头都对。
     """
     data, _ = build_task_data(rich_c3)
-    criteria = data["criteria"]
-    assert criteria and all(isinstance(row, str) for row in criteria)
-    assert "C1" in criteria[0]
-    assert "PASS" in criteria[0].upper()
+    text = data["criteria_text"]
+    assert isinstance(text, str)
+    rows = text.splitlines()
+    assert len(rows) >= 2, "多条 criterion 必须各占一行"
+    assert "C1" in rows[0]
+    assert "PASS" in rows[0].upper()
+    assert "," not in text, "行内不该出现逗号分隔(那是 LS 拼 list 的方式)"
 
 
-def test_criteria_empty_when_meta_has_no_evaluation(rich_c3: Path):
+def test_criteria_text_never_blank_when_absent(tmp_path: Path):
+    """没有 criterion_results 时给**明确字样**, 不给空白框。
+
+    空白框分不清是"没跑验证"还是"渲染坏了" —— 与 ``audit_text`` 同一个道理。
+    """
+    from c3_fixtures import RICH_MESSAGES, RICH_META
+    from conftest import write_c3
+
+    meta = {k: v for k, v in RICH_META.items() if k != "criterion_results"}
+    meta_path = write_c3(
+        tmp_path / "refine_data", meta=meta, messages=RICH_MESSAGES
+    )
+    data, _ = build_task_data(meta_path)
+    assert data["criteria_text"].strip()
+    assert "criterion_results" in data["criteria_text"]
+
+
+def test_criteria_list_no_longer_in_task_data(rich_c3: Path):
+    """``criteria`` 列表已下线 —— 它只服务于失效的 perItem 锚点。
+
+    结构化 criterion 原值仍在 ``data["metadata"]["criterion_results"]``,
+    留着这个扁平列表只会多一份可能漂移的副本。
+    """
     data, _ = build_task_data(rich_c3)
-    assert isinstance(data["criteria"], list)
+    assert "criteria" not in data
+    assert data["metadata"]["criterion_results"]["criteria"]
 
 
 def test_display_twin_fields_are_strings(rich_c3: Path):
@@ -145,16 +173,78 @@ def test_display_twin_fields_are_strings(rich_c3: Path):
 
     结构化原值保留 (``messages`` / ``metadata`` / ``scorecard``), 但 label_config
     一律绑孪生字段 —— LS 1.23 的 Text/TextEditor 碰到 dict/list 直接 400。
+
+    ⚠️ ``scorecard_text`` **不在这个列表里** —— 它是唯一渲染成人读文本的
+    ``*_text`` 字段 (见 test_scorecard_text_is_readable_not_json)。
     """
     data, _ = build_task_data(rich_c3)
     for key, structured in (
         ("messages_text", data["messages"]),
         ("metadata_text", data["metadata"]),
-        ("scorecard_text", data["scorecard"]),
     ):
         text = data[key]
         assert isinstance(text, str), key
         assert json.loads(text) == structured, key
+
+
+def test_scorecard_text_is_readable_not_json(rich_c3: Path):
+    """``scorecard_text`` 是**可读投影**, 不是 JSON 孪生。
+
+    实测 (2026-09-30, project 30 task 9): 压成 ``json.dumps(indent=2)`` 是
+    5679 字符, 标注页 TextArea 打开直接停在 evidence 数组中段, 第一眼是半行
+    ``should_revise_task": false,`` —— 而最该先看的 suggested_decision 在
+    几百行之上。所以结论必须排在最前, 维度分行, 依据逐条。
+    """
+    data, _ = build_task_data(rich_c3)
+    text = data["scorecard_text"]
+
+    # 不是 JSON 了 —— 完整结构化原值仍在 data["scorecard"]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+    assert json.loads(json.dumps(data["scorecard"])) == data["scorecard"]
+
+    # 结论先行
+    head = text.splitlines()[0]
+    assert head.startswith("建议判定")
+    assert "accept" in head or "revise" in head or "reject" in head
+
+    # 六个维度都在, 且带 L 编号与 source
+    for index, dim in enumerate(data["scorecard"]["dimensions"]):
+        assert f"L{index} {dim['label']}" in text, dim["id"]
+    assert text.count("source=") == len(data["scorecard"]["dimensions"])
+
+    # 依据逐条展开, 不是塞在一行 JSON 里
+    assert "依据 6 条：" in text or "依据" in text
+    assert "{" not in text.splitlines()[0]
+
+
+def test_scorecard_text_keeps_missing_dimensions_explicit(rich_c3: Path):
+    """``source=missing`` 的维度也要占一行并写出不可用原因。
+
+    静默丢掉会让标注员以为"没有这一项", 而实际是"跑不了" —— 两者对
+    accept/reject 的含义完全相反。
+    """
+    data, _ = build_task_data(rich_c3)
+    text = data["scorecard_text"]
+    missing = [
+        d for d in data["scorecard"]["dimensions"] if d.get("source") == "missing"
+    ]
+    for dim in missing:
+        assert f"L{data['scorecard']['dimensions'].index(dim)} {dim['label']}" in text
+        assert dim["unavailable_because"] in text
+
+
+def test_scorecard_text_renders_booleans_in_chinese(rich_c3: Path):
+    """``False`` 印成 ``否`` 而不是 ``False``。
+
+    红线维的 ``score=False`` 是"没违规"(好), 与覆盖率 ``0`` (全灭) 在
+    评分卡里含义相反; 印成英文 ``False`` 容易被扫成"没分"。
+    """
+    data, _ = build_task_data(rich_c3)
+    text = data["scorecard_text"]
+    # 依据里的 retryable 是布尔
+    assert "retryable=否" in text or "retryable=是" in text
+    assert "retryable=False" not in text
 
 
 def test_display_twins_keep_chinese_readable(rich_c3: Path):

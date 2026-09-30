@@ -136,7 +136,8 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 - Label Studio 段（`label_studio:`，2026-09-28 已实施，两个开关默认关闭）：本项目**终点**是 Label Studio —— 推送 C3 与评分卡，不做回流；凭据走 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path`。`upload.enabled` 只管 `python -m label_studio upload`（全量），`hook.enabled` 只管 orchestration step 11 自动推送（单条），两者互不串。`credential_scan` 默认开且 **fail-closed 拒推**。**LS 1.23 没有原生去重**（`Task.inner_id` 是整数字段、批量 import 静默丢弃、重复导入照样新建），所以判重与预标注要的数字 task id 都靠本地台账 `output/label_studio/push_index__<project_id>.jsonl`（`session_id → LS task id`，append-only）—— 删掉它等于每次 upload 都推重复样本。`init-project` / `upload` 每次都会把本地 label_config `PATCH` 进项目：LS 端存的是建项目那刻的 XML，不同步就会出现「校验报绿、import 却 400 `data['xxx']`」。
   - **推送只有 etl 之后一个时点**（C3）。simulate 后的 C1 含 raw CoT，外推撞 CLAUDE.md 思维链红线；gdr 后的 C2 会被后续改写，标注等于标中间态。设计依据见 `docs/设计方案/label-studio-integration.md`。
   - **hook 超时 30s 而非 5s**：一次推送串完 PAT 刷新 + 查项目 + PATCH label_config + 建 task + 预标注。超时不丢样本 —— `push_single_c3` 先拿 LS task id 再写台账，「台账没有」严格等价于「LS 上没建成」，批次后 `scripts/label_studio.bat upload` 补推幂等。project 解析在 `ls_hook` 里进程级缓存，**每个 task 都 PATCH label_config 会覆盖标注员的改动**。
-  - **低分样本（`judge_discard`）也推**：走完 etl 出 C3，终态仍是 `PHASE_AUDITED`（不洗成 done，否则 status 统计会骗人）。C3 meta 顶层 `audit_reason` → 评分卡 `audit` 标记 → label_config 最上方「低分标记」只读块 + 风险提示第一条。`scoring_reject` 推不了（C2 刻意不写），是设计硬墙。
+  - **低分样本（`judge_discard`）也推**：走完 etl 出 C3，终态仍是 `PHASE_AUDITED`（不洗成 done，否则 status 统计会骗人）。C3 meta 顶层 `audit_reason` → 评分卡 `audit` 标记 → label_config 最上方「低分标记」展示块 + 风险提示第一条。`scoring_reject` 推不了（C2 刻意不写），是设计硬墙。
+  - **标注页的展示块是「可改的审查工作区」，不是只读回显**（2026-09-29 实测）。`editable` **只管「加完之后能不能再改」，不管能不能提交**——能否提交取决于 **Add 按钮**，而 Add 按钮在 `rows > 1` 时默认可见（本项目展示块 rows 全 > 1）。实测标注员删改 `messages_view` 后提交，修改原样进了 annotation。**后果**：annotation 里的 `messages_view` / `qf_text_view` / `metadata_view` 是**标注员的修正稿，不是训练稿**，训练制品永远以 `output/refine_data/` 的 C3 为准。2026-09-30 起展示块改 `editable="true"`（探针实测：提交后**能就地改**，不必为修错字再点一次 Add 多存一条重复 submission；`rows > 1` 因此成为必须保留的约束）。机器判定（低分标记/评分卡/风险提示）与人工判定分开放，异议走 `criterion_verdict` / `revise_notes`——**能改 ≠ 该改**。结构上做成只读也可行（`<Text>` 非控件 + `<Style>.htx-text{white-space:pre-wrap}</Style>` 已被探针验过能保住缩进），但「可改」是设计决定而非能力限制，故不做；唯一例外是 `risk_hints` 不能换，它是预标注的唯一落点。见 `docs/observability-label-studio.md` §3.5 与设计文档 R16。
 
 ## 输出
 
@@ -210,6 +211,9 @@ simulate_validation`, LLM 不参与打分)。Label Studio 评分卡 L0
 
 - `docs/orchestration-design.md` — orchestration 三阶段流水线设计基线（2026-09-22 重写；§6.8 Label Studio 旁路推送）
 - `docs/observability-label-studio.md` — Label Studio 推送的用户视角（评分卡为什么标 `source` / 哪类样本会被拒推）
+- `docs/label-studio-playbook.md` — **改 label_config 的方法论**：三种信号可信度递增（`validate/` 绿灯**不算数**，只有标注页算数）、属性名会骗人对照表、探针法（一次问完 / 必须带对照组 / 机器能验的自己验）、动生产配置前的停手条件与重置顺序。踩坑细节在设计文档 R13–R17
+- `docs/label-studio-annotation-export.md` — 标注**导出**怎么读：`JSON` vs `JSON_MIN` 本机实测差异、控件→下游字段映射、原值与修正稿分列、清洗点（⚠️ 逐条归属是自由文本不是结构化字段）
+- `docs/todolist.md` — Label Studio 集成的**未完成项**（标注界面待验证项、存储规模、待清理的 probe 项目）；每项含「为什么没动 / 怎么验」
 - `docs/refactor-development-progress.md` — gdr SFT 数据质量修复迭代日志（含 2026-09-19 六件套 F1/F2/F3-C + Fix A/B/C + F3-D/E）
 - `docs/执行agent资料/`、`docs/任务合集/`、`docs/设计方案/` — 项目历史档案
 - 框架与策略长文：`gdr/docs/gdr-context-understanding-and-policy.md`、`gdr/docs/gdr-module-functional-overview.md`、`gdr/docs/gdr-mvp-design.md`、`gdr/docs/incremental-state-tracking-plan.md`

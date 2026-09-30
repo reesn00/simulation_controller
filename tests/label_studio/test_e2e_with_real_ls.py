@@ -125,9 +125,10 @@ def test_end_to_end_push_with_scorecard(client, ls_settings, tmp_path: Path):
         data = next(t["data"] for t in items if t.get("inner_id", "").startswith("useramulation"))
         assert data["task_id"] == "T001"
         assert data["scorecard"]["schema_version"] == "scorecard.v1"
-        # criteria 是摊平的**字符串**列表（LS perItem 文本控件只吃字符串）
-        assert isinstance(data["criteria"][0], str)
-        assert "C1" in data["criteria"][0]
+        # criteria_text 是换行分隔的单串（LS 绑 list 给文本标签会 400，
+        # 绑 list 给 <Text> 会被 "," 连成一整段 —— 见 _criteria_text）
+        assert isinstance(data["criteria_text"], str)
+        assert "C1" in data["criteria_text"].splitlines()[0]
     finally:
         client.delete_project(project_id)
 

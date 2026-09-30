@@ -143,7 +143,7 @@ Label Studio @ http://127.0.0.1:8099
 | `messages_text` / `metadata_text` / `scorecard_text` | str | 上述结构化值的 JSON 序列化 | **LS 1.23 只吃字符串**（§5 R5），label_config 一律绑这些 |
 | `task_id` | str | **文件名 stem 前缀** `^(T\d{3}\|E\d{3})__` | 反向追溯 |
 | `session_id` | str | `meta.json:session_id`（或 stem 后缀） | 反向追溯 + **去重键**（§16 R7） |
-| `criteria` | list[str] | `criterion_results.criteria` 摊平成 `[PASS] id (REASON) — message` | LS perItem 文本控件**只接受字符串列表**（§5 R5） |
+| `criteria_text` | str | `criterion_results.criteria` 摊平成 `[PASS] id (REASON) — message`，**换行分隔的单串** | LS 只吃字符串（§5 R5）；绑 list 给 `<Text>` 会被 `,` 连成一段（2026-09-30 实测） |
 | `training_value_score` | float | `meta["training_value_score"]` | LS 端排序/筛选 |
 | `complexity_tier` | str | `meta["complexity_tier"]` | LS 端 filter |
 | `inner_id` | str | `session_id` | 仍随 import 发出，但 **LS 1.23 会丢弃**（§16 R7） |
@@ -295,6 +295,15 @@ LS task 不持有 raw trajectory / cookies / authorization；**C3 已是脱敏�
 
 ### 5.1 XML 模板
 
+> ⚠️ **以下是 2026-09-28 的原设计，保留作记录，不是实装。**
+> 落地时被 LS 1.23 实测推翻的地方至少三处：`<Tabs>` / `<Tab>` **本机没注册**
+> （标注页整页红，改用 `<Header>` 分隔）；`<Table>` 绑定结构化值表现不稳，改用
+> `<TextArea>`；**`perItem` 逐项控件在本机只出 1 组单选**，指令核对已改成
+> 「`<TextArea>` 清单 + 整块三选一 + 自由文本点名」。
+> **以 `label_studio/label_configs/trajectory_review.xml` 为准**，
+> 每处偏离的原因都写在该文件的注释里。逐条记录见 §16 R13–R16 与
+> [`todolist.md`](../todolist.md) 已完成的 P0 第 2 项。
+
 ```xml
 <View>
   <Header value="Task: $task_id | Session: $session_id"/>
@@ -390,10 +399,21 @@ training_value_score < 0.4 → reject          ← 已删
 > `[{from_name, to_name, type, value}]` 列表，且 `from_name` 要命中 label_config
 > 里的真实控件，**否则整条预测被静默丢弃**（`201 {"created": 0}`）。所以风险提示
 > 文本不能当自由键塞进去，必须有控件承接：label_config 里的
-> `<TextArea name="risk_hints" toName="task_anchor" editable="false"
+> `<TextArea name="risk_hints" toName="task_anchor" editable="true"
 > value="$risk_hints_text"/>`，预标注以 `type: "textarea"` 往这个块里填
-> `value.text`。该块 `editable="false"` —— 风险提示是机器的判断，标注员改它等于
-> 抹掉审计痕迹，要表达异议走 `criterion_verdict` / `revise_notes`。
+> `value.text`。
+>
+> 该块**可提交、可修改**（2026-09-29 复核推翻原设计）。⚠️ `editable`
+> **只管「加完之后能不能再改」，不管能不能提交**——LS 1.23 官方文档对它的定义是
+> "是否显示一个图标让标注员在**添加之后**再编辑这段文字"；真正决定能否提交的是
+> **Add 按钮**，而 Add 按钮默认在 `rows > 1` 时可见，本块 `rows="3"`。
+> 实测：标注员删掉 `messages_view` 里 168 个字符后提交，那段删除原样进了
+> annotation。**annotation 里的展示块内容是标注员的修正稿，不是训练稿**，
+> 训练制品仍以 `output/refine_data/` 下的 C3 为准。2026-09-30 起展示块由
+> `editable="false"` 改 `editable="true"`：探针实测提交后**能就地改**，不必为
+> 修一个错字再点一次 Add 多存一条重复 submission。详见
+> [`observability-label-studio.md` §3.5](../observability-label-studio.md)。
+> 对机器判定有异议走 `criterion_verdict` / `revise_notes`，不要改写展示块。
 
 ## 6. 配置层
 
@@ -800,7 +820,7 @@ docs/
 
 - ✅ `status` LS 不可达时优雅报错，无 traceback
 - ✅ `init-project` 幂等（同名复用 / 无则创建）+ label_config 校验失败带 LS 逐条消息
-- ✅ label_config XML 静态校验：所有 `toName` 有锚点（`task` 与 `criterion` 两个 perItem 锚点）
+- ✅ label_config XML 静态校验：所有 `toName` 有锚点（`task_anchor` 与 `task` 两个隐藏锚点）
 - ✅ `upload --dry-run` 不建任何 client 连接，只打印计划 + 评分卡摘要
 - ⬜ `upload` 真推送后 LS UI 可见 task + 评分卡 + 轨迹 + ChatML **四者皆有内容**
 - ✅ 评分卡 `source` 语义：`health` 标 `partly_estimated` + `estimated_components` +
@@ -848,17 +868,19 @@ docs/
 | R2 | LS 宕机让 task 进 dead | hook 强制 `try/except` 吞所有异常，`phase=done` 不变，日志告警 |
 | R3 | hook 阻塞慢 task 跑完 | `ThreadPoolExecutor` + `future.result(timeout=hook_timeout_seconds)`（§9.3）；线程内不碰 SQLite |
 | R4 | 批量上传超过 LS 250K / 200MB 上限 | `upload.batch_size=50`；多 C3 文件分批 import |
-| R5 | C3 meta.json 字段扩展破坏 label_config | 未知键原样并入 `metadata`（原生 dict），LS 自动忽略未引用键。**但 LS 1.23 的 `Text` / `TextArea` / `TextEditor` 绑定到结构化值（dict / list）时 import 直接 400 `data['xxx']=...`** —— 所以 `task_exporter` 额外产出 `messages_text` / `metadata_text` / `scorecard_text` 三个 JSON 字符串孪生字段，`criteria` 也从 list[dict] 摊成 list[str]（perItem 文本控件只收字符串）。label_config 一律绑孪生字段，结构化原值保留给下游脚本 |
-| R6 | 标注员跳过"指令核对"直接给判定 | `criterion_verdict` 设 `required="true"` + `perItem="true"`；Tab 上标未核对数 |
+| R5 | C3 meta.json 字段扩展破坏 label_config | 未知键原样并入 `metadata`（原生 dict），LS 自动忽略未引用键。**但 LS 1.23 的 `Text` / `TextArea` / `TextEditor` 绑定到结构化值（dict / list）时 import 直接 400 `data['xxx']=...`** —— 所以 `task_exporter` 额外产出 `messages_text` / `metadata_text` 两个 JSON 字符串孪生字段，`criteria_text` 是换行分隔的单串，`scorecard_text` 是渲染后的人读文本（R17）。label_config 一律绑字符串字段，结构化原值保留给下游脚本 |
+| R6 | 标注员跳过"指令核对"直接给判定 | `criterion_verdict` 设 `required="true"`（原设计的 `perItem="true"` 已随 R17 下线） |
 | R7 | 推送重复 task（同一 session 跑多次） | ~~LS 原生 `inner_id = session_id` 去重。**不引入** `pushed_tasks.json` 索引~~ **2026-09-29 按 LS 1.23.0 实测推翻**：`Task.inner_id` 是**整数字段**（发字符串 400 `A valid integer is required.`），批量 `/import` 直接**静默丢弃**；整数 inner_id 重复导入**照样每次新建**（实测 42 推三次 → id 7/8/9）；`?inner_id=` 过滤被忽略；`fields=` 参数被忽略（永远回全量 data）。结论：**LS 侧没有任何可用的原生去重**，必须靠本地台账。台账同时解决第二个问题 —— `import/predictions` 的 `task` 字段只认 LS 侧数字 id，而 `/import` 返回体只有计数。格式见 `label_studio/push_index.py` |
 | R8 | 标注员误删 / 误改 label_config | 标题匹配即复用项目，但**每次 `init-project` / `upload` 都把本地 XML 同步进项目**（`PATCH /api/projects/{id}`）。原设计"不主动覆盖"是错的：LS 端存的是**建项目那一刻**的 XML，而 `POST .../validate/` 校验的是递过去的 XML 文本、不是项目里存的那份 —— 不同步就会出现"`init-project` 报绿、`upload` 却 400 `data['xxx']`"这种对不上的现象。`purge` 仍必须 `--confirm` |
 | R9 | 凭据泄露到日志 / 异常信息 | `errors.py` 统一脱敏（`client.__repr__` 不打印 api_key）；错误信息只报类型不报参数 |
 | R10 | 评分卡暗示不存在的精度 | 每维强制 `source` 字段；`estimated_components` 显式列出；UI 必须可见。**这是本方案最容易做错的地方** |
 | R11 | `tool_call.input` 是 Agent 自由文本，可能含用户传入的凭据字符串（协议级"trajectory 不存 Cookie/Auth"只保证框架不**主动**存，挡不住 Agent 自主写入） | P1 起 `task_exporter` 推送前对 `messages` / `qf_text` / `openai` / `metadata` 做敏感模式扫描（`Bearer ` / `password=` / 私钥头 / 常见 token 前缀），命中则**拒绝推送该 task**（fail-closed，不静默脱敏以免污染标注语义）。**实施改为结构化报告**（CLI 输出 `rejected[]` + `log.error`），不另开 `ls_push_failures.log` —— 那个文件本身就是一份要维护的状态，且多进程写同一文件没有好处。命中记录**只存位置**（view / pattern 序号 / 字符偏移），不存原文，避免凭据经由日志二次泄露 |
 | R12 | 前置 F1/F2 未完成就开工 P1 | 评分卡只有 L1–L5、ChatML Tab 空白。**F1/F2 是 P1 的准入条件**，不并行开工 |
-| R13 | label_config 的标签规则踩坑（2026-09-29 实测补） | ⚠️ **服务端校验不可信**：`POST /api/projects/{id}/validate/` 会为一份浏览器根本解析不了的 label_config 返回 **200**，`/import` 也照样 **201** —— task 推上去了，标注页打开是一屏 `Tag with name X is not registered`。**"服务端校验通过"不是证据。** 唯一可信的静态信号是标签白名单，由 `test_only_registered_tags_used` 守。已知规则：① `<Tabs>` / `<Tab>` / `<TextEditor>` **在本机 LS 1.23 未注册**（`<TextEditor>` 根本不是 LS 的合法标签名），分区改用 `<Header>`、只读展示改用 `<TextArea editable="false">`；② `<Filter>` 必须带 `name`，否则报 `Attribute name is required for FilterModel`；③ `<TextArea>` **恒需 `toName`**（与 `editable` / `visible` 无关），缺了报 `'toName' is a required property` 且**不告诉你是哪个标签**；④ perItem 锚点必须是 `<Text name="x" value="$list"/>` + 控件 `toName="x" perItem="true"`，**不能**自引用（import 必 400） |
-| R14 | 预标注**一条都建不成而上报说成功了**（2026-09-29 实测发现，原诊断已推翻） | `POST .../import/predictions` 对格式错的预测照样回 **201**，而计数键是 `created` 不是 `task_count` → 原实现漏读该键、`predictions_pushed` 恒报 0。**当时据此推断"预标注其实建成了，只是报少了"，是错的**：回查 `/api/tasks/{id}` 实为 **0 条**。三格式实测：`result` 是 dict → `{"created": 0}`；`result` 是 region 列表且 `from_name` 命中控件 → `{"created": 1}`；`result` 是 region 列表但 `from_name` 不在 label_config → `{"created": 0}`。根因有二：① `result` 必须是 `[{from_name,to_name,type,value}]` 列表，原实现发的是 dict；② **LS 按 `from_name` 匹配控件，匹配不上整条静默丢弃** —— 所以"自由文本风险提示原样存下来供审计"（原 `build_prediction` docstring）**不成立**，风险提示必须有控件可落。已加 `<TextArea name="risk_hints">` 只读展示块 + 预标注指向它，`test_prediction_control_matches_label_config` 把两侧名字钉在一起。计数修正：`_task_count_from` 读 `created`，且**服务端给了计数就照抄（含 0）**，只有"一个计数键都没给"才按 sent 兜底 —— 把诚实的 0 覆盖成 sent 才是**假成功**，比假失败难查 |
-| R15 | 标注页控件渲染出来但**不可交互**（2026-09-29，待定性） | 服务端侧已排除：项目存的 label_config 与本地一致（`init-project` 的 sync 生效）、task.data 字段齐全且类型正确、annotation 数 0（非"已提交"导致的只读）、`project_type` 为 null。**服务端给不出信号，只能靠标注页实际点**。已搭对照实验：一次性项目 `zz-probe-A-canonical`（LS 官方最小模板）vs `zz-probe-B-ourconfig`（本配置原样），A 通 B 不通即定位到配置 |
+| R13 | label_config 的标签规则踩坑（2026-09-29 实测补） | ⚠️ **服务端校验不可信**：`POST /api/projects/{id}/validate/` 会为一份浏览器根本解析不了的 label_config 返回 **200**，`/import` 也照样 **201** —— task 推上去了，标注页打开是一屏 `Tag with name X is not registered`。**"服务端校验通过"不是证据。** 唯一可信的静态信号是标签白名单，由 `test_only_registered_tags_used` 守。已知规则：① `<Tabs>` / `<Tab>` / `<TextEditor>` **在本机 LS 1.23 未注册**（`<TextEditor>` 根本不是 LS 的合法标签名），分区改用 `<Header>`、展示块改用 `<TextArea>`；② `<Filter>` 必须带 `name`，否则报 `Attribute name is required for FilterModel`；③ `<TextArea>` **恒需 `toName`**（与 `editable` / `visible` 无关），缺了报 `'toName' is a required property` 且**不告诉你是哪个标签**；④ **`<List>` 在本机 1.23 什么都不渲染**（不报 not registered 也不出列表，比报错更隐蔽，见 R17）；⑤ `<Choices>` 的 `toName` 必须指向**带 value 的数据标签**，指向无 value 的纯控件时 validate 报绿但标注页一点就崩 |
+| R17 | **「指令核对」逐条判定在 LS 1.23 上做不到**（2026-09-30 三轮探针定性） | 原设计 `<Text name="criterion" value="$criteria"/>` + 控件 `perItem="true"`，想拿 6 组独立单选。**实测只出 1 组**，提交进 annotation 也没有 `result` 数组，只有一句无归属的 `agree` —— 而 L0 指令项达成是评分卡主维度、也是判据校准的唯一来源。排查（探针项目 31–35，已全删）：`perRegion` 无 Filter = 1 组、`perItem` 无 Filter = 1 组 → **属性名不是原因、`<Filter>` 洗清**；ctx7 查到的官方定义是 `perRegion="true"` **不是「渲染 N 份控件」而是「当前选中的那个 region 适用此控件」**，前提是锚点先产生 6 个 region，而 `<Text value="$列表">` 只产生**一个**（6 条被 `,` 连成一整段）；`<Chat>` 官方文档明说 import 进去的消息**不可选**；`<List>`（对象数组，本该正好对路）**什么都不渲染**。**处置**：放弃逐项控件，改成「`<TextArea>` 清单（换行可读）+ `all_agree` / `some_disagree` / `none_agree` 整块三选一 + `criterion_note` 自由文本点名 `criterion_id: 理由`」。**代价**：归属变成自由文本，机器没法按 criterion_id 自动聚合，判据校准改为人工汇总。`task.data["criteria"]`（list）随之改为 `criteria_text`（换行分隔单串） |
+| R14 | 预标注**一条都建不成而上报说成功了**（2026-09-29 实测发现，原诊断已推翻） | `POST .../import/predictions` 对格式错的预测照样回 **201**，而计数键是 `created` 不是 `task_count` → 原实现漏读该键、`predictions_pushed` 恒报 0。**当时据此推断"预标注其实建成了，只是报少了"，是错的**：回查 `/api/tasks/{id}` 实为 **0 条**。三格式实测：`result` 是 dict → `{"created": 0}`；`result` 是 region 列表且 `from_name` 命中控件 → `{"created": 1}`；`result` 是 region 列表但 `from_name` 不在 label_config → `{"created": 0}`。根因有二：① `result` 必须是 `[{from_name,to_name,type,value}]` 列表，原实现发的是 dict；② **LS 按 `from_name` 匹配控件，匹配不上整条静默丢弃** —— 所以"自由文本风险提示原样存下来供审计"（原 `build_prediction` docstring）**不成立**，风险提示必须有控件可落。已加 `<TextArea name="risk_hints">` 展示块 + 预标注指向它，`test_prediction_control_matches_label_config` 把两侧名字钉在一起。计数修正：`_task_count_from` 读 `created`，且**服务端给了计数就照抄（含 0）**，只有"一个计数键都没给"才按 sent 兜底 —— 把诚实的 0 覆盖成 sent 才是**假成功**，比假失败难查 |
+| R15 | 标注页控件渲染出来但**不可交互**（2026-09-29，已定性 → 根因见 R16） | 服务端侧已排除：项目存的 label_config 与本地一致（`init-project` 的 sync 生效）、task.data 字段齐全且类型正确、annotation 数 0（非"已提交"导致的只读）、`project_type` 为 null。**服务端给不出信号，只能靠标注页实际点**。已搭对照实验：一次性项目 `zz-probe-A-canonical`（LS 官方最小模板）vs `zz-probe-B-ourconfig`（本配置原样），A 通 B 不通即定位到配置 |
+| R16 | **`editable` 被误当成只读开关**（2026-09-29 实测推翻，2026-09-30 续） | LS 1.23 官方文档（`tags/textarea.md`）对 `editable` 的定义是"是否显示一个图标让标注员在**添加之后**再编辑这段文字"——只管加完后能不能改，**不管能不能提交**。真正决定能否提交的是 **Add 按钮**，而同页文档写明 Add 按钮"在 `rows="1"` 时隐藏，`rows>1` 时可见"。本项目所有展示块 `rows` 为 3/4/10/12/16，**Add 按钮全部默认可见**。原设计的注释"标注员改它等于抹掉审计痕迹"因此在 LS 侧**一道锁都没有**。实测（probe 项目 task 6）：标注员删掉 `messages_view` 里 168 个字符后提交，该删除原样进 annotation，与 `task.data` 不再一致；`risk_hints` 存了两条一模一样的 submission（预标注一条 + 标注员补一条）。**处置：接受可改**（2026-09-29 复核——审查本就要纠错，只读反而是错的），改为在文档里讲清后果：① annotation 里的展示块是**标注员的修正稿，不是训练稿**，训练制品仍以 `output/refine_data/` 的 C3 为准；② 改完不要再点一次 Add，否则多一条重复 submission。**2026-09-30 续（探针 project 37 实测）**：`editable="true"` 能让提交后的值**就地再编辑**，上面第 ② 条约束因此从"必须小心"变成"有第二条路"——展示块全部由 `false` 改 `true`，`rows > 1` 同时成为必须保留的约束。**结构性只读的配方已验通但不做**：`<Text>` 是非控件（`parsed_label_config` 里根本不出现，即挂不上 submission），默认 trim 空白，探针实测配 `<Style>.htx-text{white-space: pre-wrap}</Style>` **能保住缩进**——**`<Style>` 在本机 1.23 可用且该类名正确**，原先"未验证"的顾虑解除。不做的理由是「可改」本来就是设计决定，不是能力不足；`risk_hints` 无论如何换不了（预标注唯一落点，换 `<Text>` 会让预测被静默丢弃），所以即使要做也只到 6/7 块 |
 
 ## 17. 不在本方案范围（明确划清）
 
@@ -875,6 +897,7 @@ docs/
 
 | 既有文档 | 关系 |
 |---|---|
+| `docs/label-studio-playbook.md` | **方法论**：§16 记「会出什么问题」，本文件记「怎么改、怎么验、怎么回滚」。改 label_config 前先读它 |
 | `CLAUDE.md` | 修改（「配置和工具」段 + 「外部副本例外 2」措辞；**不加** `output/labeled/`） |
 | `docs/orchestration-design.md` | 修改（§3 / §6.2 加 step 11 + 新 §6.8 Label Studio 接入） |
 | `docs/contracts/C1-trajectory-events.md` | 引用，不变 |

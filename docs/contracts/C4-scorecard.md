@@ -100,7 +100,9 @@ L0–L5 表达的是**这条轨迹本身怎么样**；`audit` 表达的是**gdr 
 
 它同时进两处：`build_risk_hints()` 的**第一条**（排在所有低分维度提示之前 ——
 它解释了后面那些 0 分的成因，藏在末尾等于没说），以及 `task.data["audit_text"]`
-（label_config 最上方的只读展示块）。
+（label_config 最上方的展示块 `audit_view`）。该块**可改**——展示块是审查工作区，
+标注员就地修正后提交的内容会存进 annotation，所以它不是只读回显；机器判定的
+原值以 `output/refine_data/` 下的 C3 meta 为准。
 
 ## 5. 评分依据（`evidence`）
 
@@ -123,13 +125,19 @@ L0–L5 表达的是**这条轨迹本身怎么样**；`audit` 表达的是**gdr 
 评分卡经 `label_studio/task_exporter.py::build_task_data` 挂在
 `task.data["scorecard"]`。相关的另外两个字段：
 
-- `task.data["criteria"]` —— `criterion_results.criteria` 摊平成
-  `[VERDICT] criterion_id (REASON) — message` 的**字符串列表**（LS 的 perItem
-  文本控件只收字符串，喂 list[dict] 在 import 阶段就 400），绑 label_config 的
-  perItem 控件。用扁平列表而非 LS 的 data path 过滤语法，后者各版本行为不一致
-- `task.data["messages_text"]` / `metadata_text` / `scorecard_text` —— 上述结构化
-  值的 JSON 字符串孪生字段。LS 1.23 的 `Text` / `TextArea` / `TextEditor` 绑到
-  dict / list 时 import 直接 400 `data['xxx']=...`，label_config 一律绑孪生字段
+- `task.data["criteria_text"]` —— `criterion_results.criteria` 摊平成
+  `[VERDICT] criterion_id (REASON) — message`，每条一行、**换行分隔的单串**。
+  用扁平形式而非 LS 的 data path 过滤语法，后者各版本行为不一致。
+  **曾经是字符串列表**（绑 perItem 控件），2026-09-30 改掉：`perItem` /
+  `perRegion` 在 LS 1.23 上都只产生 1 组单选（`perRegion` 的语义是"当前选中的
+  那个 region 适用此控件"，前提是列表项能各自被选中，而 `<Text>` 只产生一个
+  region），且 LS 把列表绑给 `<Text>` 会用 `,` 连成一整段。结构化原值仍在
+  `task.data["metadata"]["criterion_results"]["criteria"]`
+- `task.data["messages_text"]` / `metadata_text` —— 上述结构化值的 JSON 字符串
+  孪生字段。LS 1.23 的 `Text` / `TextArea` / `TextEditor` 绑到 dict / list 时
+  import 直接 400 `data['xxx']=...`，label_config 一律绑孪生字段。
+  ⚠️ `scorecard_text` **不是** JSON 孪生，是渲染给人读的文本（结论先行 +
+  维度分行 + 依据逐条）——需要结构化评分卡就取 `scorecard` 列
 - `task.data["inner_id"]` = `session_id` —— 仍然随 import 发出，但 **LS 1.23 会
   丢弃它**（`Task.inner_id` 是整数字段）。去重实际靠本地台账
   `output/label_studio/push_index__<project_id>.jsonl`，见方案 §16 R7

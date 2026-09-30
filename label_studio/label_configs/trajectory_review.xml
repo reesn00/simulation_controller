@@ -2,31 +2,64 @@
   <Header value="Task $task_id · Session $session_id"/>
   <Header value="质量分 $training_value_score（$complexity_tier）"/>
 
-  <!-- 隐藏锚点。LS 1.23 的 <TextArea> 是**控件**标签, 强制要求 toName 指向一个
-       真实存在的 tag, 缺了直接 "Validation failed on : 'toName' is a required
-       property"(且不告诉你是哪一个, 只能逐个试)。下面所有只读展示块、task /
-       revise_notes 都挂在它身上。$task_id 是纯字符串且恒在, visible=false 不
-       占版面。 -->
+  <!-- 隐藏锚点。**两个, 各有分工, 都必须带 value**。
+
+       ① task_anchor —— <TextArea> 是**控件**标签, 强制要求 toName 指向一个
+          真实存在的 tag, 缺了直接 "Validation failed on : 'toName' is a required
+          property"(且不告诉你是哪一个, 只能逐个试)。所有展示块 + criterion_note
+          / revise_notes 挂在它身上。
+       ② task —— 给 <Choices> 用。**必须是带 value 的 <Text> 数据标签**。原来
+          这里放的是 <TextArea name="task" toName="task_anchor" maxSubmissions="1">,
+          它自己绑在 task_anchor 上、**自身没有 value**, 是个纯控件而不是数据源。
+          Choices 拿不到 region source → 点一下整个标注区前端崩成空白页。
+          实测症状: 点完 annotations / drafts / results 全是 0, 什么都没存下。
+
+       name 仍是 "task", 标注结果 JSON 的 to_name 不变, 已有的标注数据不受影响。
+       $task_id 是纯字符串且恒在, visible=false 不占版面。 -->
   <Text name="task_anchor" value="$task_id" visible="false"/>
+  <Text name="task" value="$task_id" visible="false"/>
 
   <!-- 分区。**原设计用 <Tabs>/<Tab> 分页, 实测这两个标签在本机 LS 1.23 里
        没注册**, 标注页直接报 "Tag with name tabs is not registered"。
        改成 <Header> 分隔, 平铺但一定渲染得出来。
-       同理 <TextEditor> 也不是合法的 LS 标签名 —— 只读展示一律用
-       <TextArea editable="false">。这两条由 test_only_registered_tags_used
-       静态守住, 不要改回去。 -->
+       同理 <TextEditor> 也不是合法的 LS 标签名 —— 展示块一律用 <TextArea>。
+       这两条由 test_only_registered_tags_used 静态守住, 不要改回去。 -->
 
-  <!-- 低分标记。排在最前面: 它解释了后面所有低分维度的成因, 藏在末尾等于
-       没写。$audit_text 由 task_exporter 恒提供 (未拒收时写「（无）」), 所以这
-       块永远不会是空白框 —— 空白框分不清是"没被拒收"还是"渲染坏了"。
-       editable=false: 机器的判定, 标注员改它等于抹掉审计痕迹; 要表达异议
-       走下面的 overall_decision / revise_notes。 -->
+  <!-- ═══ 展示块可改, 这是设计决定 (2026-09-29 复核) ═══
+       标注页上这几块是**审查工作区**, 不是只读回显: 核对到错处就地改, 提交后
+       这份**修正稿**会存进 annotation。所以 annotation 里的 messages_view /
+       qf_text_view / metadata_view **不是训练稿** —— 训练制品永远以
+       output/refine_data/ 下的 C3 为准, 两者不要混用。
+
+       ⚠️ `editable` 只管"加完之后能不能再改", 不管能不能提交。真正决定能不能提交
+       的是 **Add 按钮**, 而 Add 按钮默认在 `rows > 1` 时可见, 下面这些块 rows
+       全部 > 1。实测(2026-09-29, probe 项目 task 6): 标注员删掉 messages_view 里
+       168 个字符后提交, 那段删除原样进了 annotation, 与 task.data 不再一致。
+
+       下面所有块都写 `editable="true"`(2026-09-30 改, 原为 "false"): 探针
+       project 37 实测, 写 "true" 之后**提交完还能就地改**, 不用为了修一个错字
+       再点一次 Add 多存一条重复 submission。这解掉了下面第 1 条约束 —— 以前
+       没有第二个入口, 改完只能再 Add 一次。
+
+       仍然成立的一条操作约束:
+         机器的判断(低分标记 / 评分卡 / 风险提示)与人工的判定分开放: 对机器
+         判定有异议走 criterion_verdict / revise_notes, 不要直接改写那几块,
+         否则"机器判了什么"就再也读不出来了。
+
+       ── 如果将来要改成"结构上只读" ──
+       唯一的办法是换成 `<Text>` 标签(非控件, LS 挂不上 submission)。但 `<Text>`
+       默认 trim 空白, 缩进会丢; 解法是配 `<Style>`(2026-09-30 探针 37 实测本机
+       可用, 且 **`.htx-text` 类名是对的**):
+           <Style>.htx-text { white-space: pre-wrap; }</Style>
+       ⚠️ risk_hints 换不了 —— 它是 predictions 预标注的唯一落点, 换成 <Text>
+       会让整条预测被静默丢弃(201 {"created": 0})。所以最多 7 块里 6 块。
+       **目前不做**: 展示块可改是上面的设计决定, 不是被工具能力卡住的。 -->
   <Header value="══ 低分标记 ══  本样本被 gdr 拒收过则显示理由，请重点复核「精修质量」维度。"/>
-  <TextArea name="audit_view" toName="task_anchor" editable="false" rows="4"
+  <TextArea name="audit_view" toName="task_anchor" editable="true" rows="4"
             value="$audit_text"/>
 
   <Header value="══ 评分卡 ══  自动评分与依据。source=estimated / missing 的维度不可全信，核对后填「指令核对」区。"/>
-  <TextArea name="scorecard_view" toName="task_anchor" editable="false" rows="12"
+  <TextArea name="scorecard_view" toName="task_anchor" editable="true" rows="12"
             value="$scorecard_text"/>
 
   <!-- 风险提示。**这块不只是展示, 它还是 predictions 预标注的唯一落点**:
@@ -34,77 +67,125 @@
        import/predictions 回 201 {"created": 0})。控件名与
        task_exporter.RISK_HINTS_CONTROL 必须逐字一致, 由
        test_prediction_control_matches_label_config 守。
-       editable=false: 风险提示是机器的判断, 标注员改它等于抹掉审计痕迹 ——
-       要表达异议走下面的 criterion_verdict / revise_notes。 -->
+       预标注会把机器提示填成第一条 submission —— 看到它就说明"机器已经查过
+       这一遍", 但它**不是** accept/reject 预判 (见 build_risk_hints)。
+       可改 (理由见顶部「展示块可改」), 但要表达对机器判断的异议请走
+       criterion_verdict / revise_notes, 别改写这里。 -->
   <Header value="══ 风险提示 ══  由评分卡自动生成（方案 §5.2），只做风险提示、不做 accept/reject 预判。"/>
-  <TextArea name="risk_hints" toName="task_anchor" editable="false" rows="3"
+  <TextArea name="risk_hints" toName="task_anchor" editable="true" rows="3"
             value="$risk_hints_text"/>
 
-  <Header value="══ 指令核对 ══  逐条核对自动判定；不认同必填理由。"/>
-  <!-- 逐条列表的锚点是 <Text> 而不是 <TextArea>: 控件标签不能自引用
-       (name="criterion" toName="criterion"), 那样 import 必失败
-       data['criteria']=...。$criteria 是 task_exporter._flatten_criteria 摊平的
-       **字符串列表** —— LS 的 perItem 文本控件只接受字符串列表, 传 dict 列表
-       必挂。也因此不用 $scorecard.dimensions[?(...)] 过滤语法, 那玩意儿各版本
-       行为不一致。 -->
-  <Text name="criterion" value="$criteria"/>
-  <Filter toName="criterion" name="criterion_filter" minlength="1"/>
-  <Choices name="criterion_verdict" toName="criterion" choice="single"
-           perItem="true" required="true">
-    <Choice value="agree"    hint="认同自动判定"/>
-    <Choice value="disagree" hint="不认同，右侧写明理由"/>
-  </Choices>
-  <TextArea name="criterion_note" toName="criterion" perItem="true"
-            placeholder="不同意时写明：应达成什么 / 实际达成了什么"/>
+  <!-- ═══ 指令核对: 为什么是「整块判定 + 点名」而不是「逐条单选」 ═══
+       这一段改过两次, 根因值得写下来 (2026-09-30 逐条实测):
 
-  <Header value="══ 轨迹 ══  C3 messages 视图（只读）"/>
-  <TextArea name="messages_view" toName="task_anchor" editable="false" rows="16"
+       原设计是 `<Text name="criterion" value="$criteria"/>` 当锚点, 配
+       `<Choices perItem="true">` + `<TextArea perItem="true">`, 想拿到 6 组
+       独立单选。**实测只出 1 组**, 提交进 annotation 的也没有 result 数组 ——
+       只有一句无归属的 "agree", 下游不知道认同的是哪几条。而 L0 指令项达成是
+       评分卡主维度, 也是判据校准的唯一来源, 这条不算数整个第四种用途就废了。
+
+       排查走了三轮一次性探针项目, 结论是**逐项控件这条路在 LS 1.23 上走不通**:
+         · perRegion 无 Filter = 1 组, perItem 无 Filter = 1 组
+           → 属性名不是原因, <Filter> 也洗清
+         · perRegion 的官方语义**不是「渲染 N 份控件」, 是「当前选中的那个
+           region 适用此控件」** —— 前提是锚点得先产生 6 个 region。
+           <Text value="$列表"> 只产生**一个**, 6 条被 "," 连成一整段文本
+           (这同时让「逐条核对」连读都读不下去)。
+         · <Chat> 官方文档明说: 直接 import 进 chat 数组的消息**不可选**,
+           只有标注员新加的或走 prediction 格式的才可用于评分 → 不适用
+         · <List> (对象数组, 本该正好对路) 在本机 1.23 上**什么都不渲染**
+           —— 不报 "not registered", 也不出列表
+
+       所以不再逐项控件, 改成**能工作的形态**: 清单照旧逐条列出(换行可读),
+       但判定收到整块 —— 认同全部 / 有几条不认同 / 整体不可信, 选了第二条就在
+       下面的框里点名 criterion_id。代价是归属变成自由文本, 机器没法直接按
+       criterion_id 聚合; 换来的是这一区**真的留得下痕**, 而人工校准本来也是
+       人对着这几行看。 -->
+  <Header value="══ 指令核对 ══  逐条核对自动判定；有不认同的必填理由。"/>
+  <TextArea name="criteria_view" toName="task_anchor" editable="true" rows="7"
+            value="$criteria_text"/>
+
+  <!-- 下面每个 <Choice> 的 html= 是**给人看的标签**, value= 是**存进标注的键**。
+       2026-09-30 实测: 不写 html 时 LS 直接把 value 当标签显示, 标注页上就是
+       `all_agree[1]` / `accept[2]` 这种机器键, 角标是 hint 渲染成的脚注编号。
+
+       ⚠️ **不要用 alias=**。服务端 parsed_label_config 实测: 写
+       `<Choice value="KEY_C" alias="显示C"/>` 之后, LS 认的选项标识会从 KEY_C
+       **变成** "显示C"(control_weights 里也是), 前端点一下提交上去的就是中文,
+       等于把契约键静默换掉。html= 则只进 labels_attrs, 标识仍是 value。
+
+       hint= 只在标签说不清时才写: 它渲染成标签后面的角标 [n], 悬停才看得到。
+       criterion_verdict 这三条的 hint 曾经和 html 文字几乎一字不差, 等于白挂
+       三个角标, 已删。content_revision / overall_decision 的 hint 带的是标签里
+       没有的信息(下游该怎么用), 保留。 -->
+  <Choices name="criterion_verdict" toName="task" choice="single" required="true">
+    <Choice value="all_agree"     html="每一条都认同"/>
+    <Choice value="some_disagree" html="有哪几条不认同"/>
+    <Choice value="none_agree"    html="自动判定整体不可信"/>
+  </Choices>
+  <!-- maxSubmissions=1: 改完点一次 Add 就够, 防止点第二次多存一条重复
+       (风险提示区实测因此存了两条一模一样的)。 -->
+  <TextArea name="criterion_note" toName="task_anchor" maxSubmissions="1" rows="3"
+            placeholder="选了「有哪几条不认同」时必填：criterion_id + 理由，例如 media.playable：实际给了可播放链接"/>
+
+  <Header value="══ 轨迹 ══  C3 messages 视图（可改，提交后这份修正稿会存入标注）"/>
+  <TextArea name="messages_view" toName="task_anchor" editable="true" rows="16"
             value="$messages_text"/>
 
-  <Header value="══ ChatML ══  qwenjina 训练视图（只读）"/>
-  <TextArea name="qf_text_view" toName="task_anchor" editable="false" rows="16"
+  <Header value="══ ChatML ══  qwenjina 训练视图（可改，同上）"/>
+  <TextArea name="qf_text_view" toName="task_anchor" editable="true" rows="16"
             value="$qf_text"/>
 
-  <Header value="══ 元数据 ══  C3 meta.json（只读）"/>
-  <TextArea name="metadata_view" toName="task_anchor" editable="false" rows="10"
+  <Header value="══ 元数据 ══  C3 meta.json（可改，同上）"/>
+  <TextArea name="metadata_view" toName="task_anchor" editable="true" rows="10"
             value="$metadata_text"/>
 
-  <!-- overall_decision / failure_mode 的锚点。
+  <!-- 展示区到此为止。下面这个控件回答下游唯一无法从数据本身推断的问题:
+       **这份展示内容被标注员改过没有。**
+       加它的理由很具体: 展示块可改 (见顶部「展示块可改」), 所以 annotation 里
+       存的是**修正稿**。而修正稿和机器原值在结构上**完全一样** —— 都是
+       `value.text` 里的一个字符串, 没有任何字段能区分"原样"和"改过"。下游
+       拿到一条 accept 的样本, 无从判断该用 task.data 里的原文, 还是该用标注里
+       那份。这个开关把缺失的信息显式补上。
 
-       **必须是带 value 的 <Text> 数据标签。** <Choices> 要靠 toName 指向的标签
-       生成 region; 原来这里是
-       <TextArea name="task" toName="task_anchor" maxSubmissions="1" .../>,
-       它自己绑在 task_anchor 上、**自身没有 value**, 是个纯控件而不是数据源。
-       Choices 拿不到 region source → 点一下整个标注区前端崩成空白页。
-       实测症状: 点完 annotations / drafts / results 全是 0, 什么都没存下,
-       所以不是"提交后跳到下一条"(那样至少会留下一条标注)。
+       三个取值:
+         unchanged —— 展示内容原样, 下游用 task.data 里的原文即可
+         corrected —— 改过, **以标注里的修正稿为准**
+         unusable  —— 内容本身不可用 (读不懂 / 截断 / 串了), 无论判定是什么都
+                      不要拿它训练
+       required: 下游按"选训练集"的口径消费时, 缺这个值的样本无法归类, 不如
+       提交时就不让漏。 -->
+  <Header value="══ 展示内容核对（必选）══  上面几块你改过没有？下游靠它判断该用原文还是修正稿。"/>
+  <Choices name="content_revision" toName="task" choice="single" required="true">
+    <Choice value="unchanged" html="原样未改" hint="原样未改，下游用 task.data 原文"/>
+    <Choice value="corrected" html="已修正"   hint="已修正，以标注里的修正稿为准"/>
+    <Choice value="unusable"  html="内容不可用" hint="内容本身不可用，不要拿它训练"/>
+  </Choices>
 
-       对照组是上面的 criterion_verdict —— 它绑的 criterion 是
-       <Text value="$criteria">, 有数据源, 工作正常。
-
-       name 仍是 "task", 标注结果 JSON 的 to_name 不变, 已有的标注数据不受影响。
-       maxSubmissions 只对 TextArea 有意义, 换成 Text 后没有这个属性。 -->
-  <Text name="task" value="$task_id" visible="false"/>
-
+  <!-- overall_decision / failure_mode 用的是文件顶部那个 <Text name="task"> -->
   <Header value="══ 最终判定（必选）══"/>
   <Choices name="overall_decision" toName="task" choice="single" required="true">
-    <Choice value="accept"  hint="该轨迹质量达标"/>
-    <Choice value="revise"  hint="需修改，备注修复方向"/>
-    <Choice value="reject"  hint="拒绝，废弃该样本"/>
+    <Choice value="accept"  html="通过"   hint="该轨迹质量达标"/>
+    <Choice value="revise"  html="需修改" hint="需修改，备注修复方向"/>
+    <Choice value="reject"  html="拒绝"   hint="拒绝，废弃该样本"/>
   </Choices>
 
   <Header value="══ 失败模式（选填，选了 reject 建议填）══"/>
   <Choices name="failure_mode" toName="task" choice="multiple" required="false">
-    <Choice value="reasoning_error"/>
-    <Choice value="tool_use_error"/>
-    <Choice value="formatting_error"/>
-    <Choice value="hallucination"/>
-    <Choice value="policy_violation"/>
-    <Choice value="incomplete_response"/>
-    <Choice value="other"/>
+    <Choice value="reasoning_error"     html="推理错误"/>
+    <Choice value="tool_use_error"     html="工具调用错误"/>
+    <Choice value="formatting_error"   html="格式错误"/>
+    <Choice value="hallucination"      html="幻觉"/>
+    <Choice value="policy_violation"   html="违规"/>
+    <Choice value="incomplete_response" html="回复不完整"/>
+    <Choice value="other"              html="其他"/>
   </Choices>
 
-  <Header value="══ 修订意见（选填）══"/>
+  <!-- 修订意见标"选填"是 LS 做不到条件必填的妥协: overall_decision 选 revise
+       时它事实上必填, 但 LS 1.23 没有"当某个 Choice 等于 X 时这个字段必填"的
+       机制(required 是静态的)。所以退而求其次 —— 把条件写进标题和 placeholder,
+       让它在一眼可扫的位置上, 而不是靠事后统计空备注的 revise 样本。 -->
+  <Header value="══ 修订意见（选填；最终判定选了 revise 时必填）══"/>
   <TextArea name="revise_notes" toName="task_anchor" maxSubmissions="1"
-            placeholder="修复方向 / 修改建议（选填）"/>
+            placeholder="修复方向 / 修改建议（最终判定选 revise 时必填）"/>
 </View>
