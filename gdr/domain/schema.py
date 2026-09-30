@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -226,6 +227,25 @@ class SessionOutputs:
     meta: Path
 
 
+#: ``session.metadata`` 里**与 3 份视图文件内容重复**的键（2026-09-30 起不落 meta）。
+#:
+#: - ``openai_messages`` → ``<base>.openai.json`` 顶层
+#: - ``tools``           → ``<base>.messages.json`` / ``.openai.json`` 顶层
+#: - ``qf_text``         → ``<base>.qwenjina.txt`` 全文
+#:
+#: 实测单样本约 72KB / 142KB（**-52%**）。meta 原本是「源 + 副本」双份存储：
+#: 视图文件是 metadata 字段的派生副本，meta.json 又把字段本身原样写了一遍。
+#:
+#: 刻意**不在**此列表内:
+#: - ``qf_stats`` / ``qf_rendered_at`` —— 各几十字节，且 ``qf_rendered_at`` 是
+#:   Label Studio 标注页 ``c3_rendered_at`` 时间线的唯一数据源
+#:   (``label_studio/task_exporter.py``)，删了时间线就空。
+#:
+#: 审计能力由两个新字段接替: ``tools_declared``（未截断工具名清单）+ ``views``
+#: （各视图的尺寸 + sha256 指针）。
+_VIEW_PAYLOAD_KEYS = ("openai_messages", "tools", "qf_text")
+
+
 def save_refined_session(session: Session, path: Path) -> Path:
     """把 refined Session 写成单 C2 文件 (新架构 gdr 末端产出).
 
@@ -264,7 +284,7 @@ def save_session_v2(session: Session, base_path: Path) -> SessionOutputs:
     * ``<base>.openai.json``    — OpenAI function-calling 视图（顶层带 ``tools``）
     * ``<base>.qwenjina.txt``   — Qwen3 chat_template 纯文本（qf_text 已含 tools
                                   文本化，渲染阶段传入）；qf_text 缺失则不写
-    * ``<base>.meta.json``      — 审计 metadata 全量 + session_id
+    * ``<base>.meta.json``      — 审计 metadata（**不含**三份视图的内容副本）
 
     F1 fix: tools 字段同时写入 messages.json 与 openai.json 顶层, 受
     ``include_tools_in_payloads`` 与 ``tools_payload_max`` 控制. qwenjina.txt
@@ -273,6 +293,11 @@ def save_session_v2(session: Session, base_path: Path) -> SessionOutputs:
     F3-D 强化: 对 ``messages.json`` / ``openai.json`` / ``qwenjina.txt`` 三份
     训练数据落地文件做 ⟦...⟧ 元注释剥离; ``meta.json`` 额外记录
     ``meta_tag_contamination`` 字段供观测 (出现次数与路径).
+
+    2026-09-30 去重: meta.json 不再内嵌 ``_VIEW_PAYLOAD_KEYS`` 里的三份视图内容
+    （实测占 meta 体积约一半）。改由 ``tools_declared``（未截断工具名清单）+
+    ``views``（各视图 file/bytes/sha256 指针）承担审计。⟦⟧ 污染证据不受影响 ——
+    ``meta_tag_contamination`` 扫的是内存 payload 而非 meta，且污染原文仍在 C2。
     """
     # 局部导入避免循环依赖 (schema 是 gdr.domain 的最底层)
     from gdr.refiners.meta_tag_strip import (
@@ -328,6 +353,21 @@ def save_session_v2(session: Session, base_path: Path) -> SessionOutputs:
         cleaned_qf_text if qf_text else "",
         session.model_dump(mode="json", exclude_none=True),
     )
+    # 4b. 剥掉 3 份视图的内容副本（见 _VIEW_PAYLOAD_KEYS）。此时三份视图
+    # 已全部落盘, 删 meta 里的副本不影响任何视图文件。
+    # tools_declared 取的是 **未截断** 全量名清单（gdr step 22 裁剪后的），
+    # 绕过 tools_payload_max —— 这正是原 meta["tools"] 的审计价值所在。
+    meta["tools_declared"] = [
+        _tool_name(t) for t in (session.metadata or {}).get("tools") or []
+    ]
+    meta["views"] = {
+        "messages": _view_pointer(messages_path),
+        "openai": _view_pointer(openai_path),
+    }
+    if qwenjina_path is not None:
+        meta["views"]["qwenjina"] = _view_pointer(qwenjina_path)
+    for key in _VIEW_PAYLOAD_KEYS:
+        meta.pop(key, None)
     meta_path = Path(str(base_path) + ".meta.json")
     meta_path.write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8",
@@ -339,6 +379,35 @@ def save_session_v2(session: Session, base_path: Path) -> SessionOutputs:
         qwenjina=qwenjina_path,
         meta=meta_path,
     )
+
+
+def _tool_name(tdef: Any) -> str:
+    """工具名提取（与 ``gdr.refiners.usage_prune._tool_name`` 行为一致）。
+
+    兼容两种形态: OpenAI function-calling 的 ``{"function": {"name": ...}}``
+    与裸的 ``{"name": ...}``; 两者都取不到时返回空串（保位置, 不静默丢条目）。
+    """
+    if not isinstance(tdef, dict):
+        return ""
+    func = tdef.get("function")
+    if not isinstance(func, dict):
+        func = {}
+    return func.get("name") or tdef.get("name") or ""
+
+
+def _view_pointer(path: Path) -> dict[str, Any]:
+    """已落盘的视图文件 → ``{"file", "bytes", "sha256"}`` 指针（~120B）。
+
+    替代原先把视图**内容**塞进 meta 的做法: 审计仍能回答「这份 meta 描述的
+    产物是哪一个文件、多大、内容是否被改过」，但不再双份存储。sha256 让
+    「meta 与视图是否配对」可离线校验。
+    """
+    data = path.read_bytes()
+    return {
+        "file": path.name,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
 
 
 def _extract_tools_payload(session: Session) -> Optional[list[dict[str, Any]]]:

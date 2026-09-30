@@ -48,9 +48,9 @@ trajectory 文件名反推。
                   "tool_execution", "final_reply"],
 
   "messages": [Message, ...],
-  "tools": [ToolDef, ...],
 
   "metadata": {
+    "tools": [ToolDef, ...],
     "refine_history": [...],
     "validation_summary": {...},
     "policy_decisions": [...],
@@ -78,7 +78,7 @@ trajectory 文件名反推。
 - `schema_version` —— `"refined_session.v1"`
 - `session_id`, `run_id`, `task_id`, `source_file`
 - `messages[]` —— refined blocks；empty session 仍写出
-- `tools[]` —— refined 后保留的工具 schema；可能为空
+- `metadata.tools[]` —— refined 后保留的工具 schema；可能为空，也可能**没有这个键**
 - `metadata.refine_history[]` —— 每次精修的 `[module, attempts, model_used, result, reason, block_id]`
 - `metadata.validation_summary` —— `total_blocks / modified_blocks / passed_L{1,2,3} / failed_L{1,2,3}`
 
@@ -95,6 +95,7 @@ trajectory 文件名反推。
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
+| `tools` | list[ToolDef] | 否 | **工具 schema 在本仓的归属地就是 `metadata.tools`，顶层没有 `tools` 字段**（见下方说明） |
 | `refine_history` | list[dict] | ✓ | 每个被精修的 block 一条记录 |
 | `validation_summary` | dict | ✓ | 三层校验聚合 |
 | `policy_decisions` | list[dict] | 否 | 决策层五选一的输出 |
@@ -112,6 +113,21 @@ trajectory 文件名反推。
 | `health_score` | float | 否 | routing.health 输出 |
 | `intent_achievement` | float | 否 | judge 终评输出 |
 | `unrecognized_event_types` | list[str] | 否 | 解析时跳过的未知事件类型 |
+
+> **为什么 tools 在 metadata 里**（2026-09-30 定案）
+>
+> C1 解析器 `etl.qwenformat.load.SessionRecord.to_session_dict()` 出的 dict 把
+> `tools` 放在**顶层**，而 `gdr.domain.schema.Session` 没有显式 `tools` 字段
+> （`extra="allow"` 会把它兜成一个没人读的 extra）。`gdr.parsers.from_trajectory`
+> 因此在 `model_validate` 之前把它归一到 `metadata["tools"]`。
+>
+> 下游三处**全部**按 metadata 读 —— 归一之前它们一致地读到空：
+> `usage_prune`（`tools_before=0`，**工具裁剪全程空转**）、
+> `schema._extract_tools_payload`（C3 视图 tools 缺失）、
+> `save_session_v2` 的 `tools_declared`（**恒空**）。
+>
+> 归一点集中在生产者而不是让 3 个消费者各写一遍 fallback：只有一个生产者。
+> C1 无 tools 时 `metadata` 里**不出现** `tools` 键，下游一律 `.get("tools") or []`。
 
 ## 4. Message 形态
 
@@ -217,20 +233,22 @@ trajectory 文件名反推。
 
 ## 8. 与 C3 的关系
 
-etl 通过 `etl.parsers.refined_session.load_refined_session(path) -> Session` 接收 C2；
+etl 通过 `etl.parsers.load_refined_session(path) -> Session` 接收 C2；
 然后按顺序调用：
 
-1. `etl.qwenformat.usage_prune.collect_usage(session)` —— 取真实调用的 tools/skills
-2. `etl.qwenformat.usage_prune.prune_session_in_place(session, ...)` —— 裁
-   system/tools + 重渲染 `metadata.qf_text`
-3. `etl.qwenformat.transform.trajectory_to_session_with_openai_metadata(...)`
-   —— 写 `metadata.openai_messages` / `metadata.tools` / `metadata.qf_rendered_at`
-   / `metadata.qf_stats`
-4. `etl.writers.split_4_views(session, base_path)` —— 拆 4 视图落盘（详见 C3）
+1. `etl.writers.apply_render_chain(session)` —— 渲染 `metadata.openai_messages` /
+   `metadata.tools` / `metadata.qf_text` / `metadata.qf_rendered_at` /
+   `metadata.qf_stats`（qf_text 用 etl 专属的 `chat_template.jinja`）
+2. `gdr.domain.save_session_v2(session, base_path)` —— 拆 4 视图落盘（详见 C3）
+
+> system/tools 裁剪与路径泛化由 **gdr step 22**（`gdr.refiners.usage_prune`）在
+> C1→C2 阶段完成，etl **不重跑**。
+> 2026-09-30 删除 `etl.qwenformat.usage_prune`（4 视图 I/O 兼容层）—— 生产链路
+> 本就不经过它，唯一使用方是存量重跑脚本，已随「存量不兼容」一并删除。
 
 约定：etl 通过 `gdr.parsers` 借用 `Session` / `Message` / `Block` 的 pydantic
 类型 + `save_session_v2` 拆分写入函数；**etl 不直接构造 Session**，只读取
-C2 后 mutate 其 `metadata` / `messages` / `tools`，再调用 gdr domain 暴露的
+C2 后 mutate 其 `messages` / `metadata`，再调用 gdr domain 暴露的
 4-视图写入函数。
 
 ## 9. 失败模式

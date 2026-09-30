@@ -19,7 +19,9 @@ import json
 import logging
 import random
 import re
-from typing import Any, Optional
+from typing import Any, Optional, get_args, get_origin
+
+from pydantic import BaseModel
 
 from domain import Message, Session
 
@@ -398,6 +400,29 @@ def _current_usage_prune_cfg() -> Any:
 # 主入口
 # ---------------------------------------------------------------------------
 
+def _message_class_of(session: Any) -> type:
+    """反解 session 自己的 ``Message`` 类 (与 session 同一模块身份).
+
+    为什么不直接用本模块顶部的 ``Message``: gdr 有两套并存的导入姿势
+    (顶层 ``domain.*`` 与带前缀 ``gdr.domain.*``), 同一份源码会加载成两个
+    类对象。本模块的 ``Message`` 只在顶层姿势下与调用方的 session 同源;
+    带前缀姿势 (orchestration 走的就是这套) 下必须从 session 反解, 否则写回
+    的是"外乡" Message 实例。
+
+    ``Session.messages`` 的注解形如 ``list[Message]``; 取 ``[0]`` 即可。
+    解析不出来就退回本模块的 ``Message`` —— 那说明 session 不是 gdr 的
+    Session, 属于调用方的误用, 但不该在这里炸掉整个裁剪流程。
+    """
+    try:
+        ann = type(session).model_fields["messages"].annotation
+        item = get_args(ann)[0] if get_origin(ann) is list else ann
+        if isinstance(item, type) and issubclass(item, BaseModel):
+            return item
+    except Exception:
+        pass
+    return Message
+
+
 def prune_session_in_place(
     session: Session | dict[str, Any],
     cfg: Any | None = None,
@@ -417,7 +442,27 @@ def prune_session_in_place(
     stats: dict[str, Any] = {}
 
     # 1. 转 dict 统一操作 (pydantic Session → dict)
-    if isinstance(session, Session):
+    #
+    # 刻意用 duck typing (``hasattr(model_dump)``) 而非 ``isinstance(session, Session)``:
+    # 本仓 gdr 有**两套并存**的导入姿势, 同一份源码可被加载成两个不同的类对象 ——
+    #   - 顶层:     ``from domain import Session``        (gdr 的 setuptools 把
+    #               config/domain/pipeline/refiners 装成**顶层包**; `cd gdr` 跑
+    #               pytest 时也是这一套)
+    #   - 带前缀:   ``from gdr.domain import Session``   (orchestration 的
+    #               gdr_worker / etl 走的这一套)
+    # 于是 ``gdr.refiners.usage_prune`` 里的 ``Session`` 恒为 ``domain.schema.Session``,
+    # 而 ``gdr.parsers.from_trajectory`` 产出的是 ``gdr.domain.schema.Session``,
+    # **isinstance 判 False** → 落到 ``dict(session)``: pydantic 的 ``__iter__``
+    # 只吐 (字段名, 字段值), 值仍是 Message 等**模型对象而非 dict**, 于是
+    # ``collect_usage`` 里 ``msg.get("blocks")`` 抛
+    # ``AttributeError: 'Message' object has no attribute 'get'``。
+    #
+    # 后果不是报错而是**静默失效**: runner step 22 用 ``except Exception`` 兜住只
+    # warning, 于是 usage_prune 在生产里**从未真正跑过** —— 系统段不裁、工具不裁,
+    # 最要紧的是 ``generalize_local_paths`` (CLAUDE.md 本机路径泛化红线) 没跑,
+    # 本机路径会原样进 C2/C3 训练数据。duck typing 对两套姿势都成立, 且不引入
+    # 新的导入耦合。
+    if hasattr(session, "model_dump"):
         session_dict: dict[str, Any] = session.model_dump(mode="json")
     else:
         session_dict = dict(session)
@@ -477,9 +522,17 @@ def prune_session_in_place(
     assert not missing, f"called tools missing after prune: {missing}"
 
     # 7. 写回 Session (若 pydantic 输入)
-    if isinstance(session, Session):
-        # 仅更新受影响的字段; messages 用 Message 解析自动转 pydantic
-        session.messages = [Message.model_validate(m) for m in messages]
+    #
+    # 与第 1 步同一个坑: 这里原本也是 ``isinstance(session, Session)``, 在
+    # gdr.-前缀 姿势下恒 False → **裁剪结果只改了局部 dict, 从没写回 Session**。
+    # 症状极具迷惑性: metadata.usage_prune 里 system_chars_after 已经是裁后长度,
+    # 但落盘 C2 的 system 文本纹丝不动 (裁剪"看起来成功"却完全没生效)。
+    if hasattr(session, "model_dump"):
+        # Message 类必须取 **session 自己的** —— 本模块顶部的 ``from domain
+        # import Message`` 在另一套姿势下是另一个类对象, 塞进去会被 pydantic
+        # 当成 extra 字段或直接校验失败。从 session 的字段注解反解, 天然同源。
+        msg_cls = _message_class_of(session)
+        session.messages = [msg_cls.model_validate(m) for m in messages]
         session.metadata = metadata
         session.summary = session_dict.get("summary", "")
 

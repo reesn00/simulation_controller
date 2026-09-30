@@ -7,7 +7,8 @@
     - 路径泛化覆盖 1/2/4 反斜杠形态 (CLAUDE.md 红线级别隐私脱敏)
     - P0-R fix: deterministic strategy 保留 unused 工具
     - Session (pydantic) 输入自动转 dict 操作后写回
-    - etl.qwenformat.usage_prune 与 system_prompt 通过 import 转发到 gdr 实现
+    - etl.qwenformat.system_prompt 通过 import 转发到 gdr 实现
+    - etl.qwenformat.usage_prune (4 视图 I/O 兼容层) 已于 2026-09-30 删除
 """
 from __future__ import annotations
 
@@ -360,29 +361,28 @@ class TestPruneSessionInPlace:
 
 
 # ============================================================
-# etl 兼容性 (etl.qwenformat.usage_prune 通过转发使用 gdr 实现)
+# etl 兼容性 (etl.qwenformat.system_prompt 通过转发使用 gdr 实现)
 # ============================================================
 
 class TestEtlCompat:
-    """验证 etl.qwenformat.usage_prune 与 system_prompt 通过 import 转发到 gdr."""
+    """验证 etl.qwenformat.system_prompt 通过 import 转发到 gdr."""
 
     def test_etl_partition_imports_from_gdr(self):
         from etl.qwenformat import system_prompt
         assert system_prompt.partition_system_prompt.__module__ == "gdr.refiners.system_prompt"
         assert system_prompt.SystemSection.__module__ == "gdr.refiners.system_prompt"
 
-    def test_etl_submodules_import_from_gdr(self):
-        from etl.qwenformat import usage_prune
-        assert usage_prune.collect_usage.__module__ == "gdr.refiners.usage_prune"
-        assert usage_prune.prune_system_text.__module__ == "gdr.refiners.usage_prune"
-        assert usage_prune.prune_tools.__module__ == "gdr.refiners.usage_prune"
-        assert usage_prune.generalize_local_paths.__module__ == "gdr.refiners.usage_prune"
+    def test_etl_usage_prune_module_removed(self):
+        """2026-09-30: 4 视图 I/O 兼容层整体删除, 生产链路本就不经过它.
 
-    def test_etl_io_functions_preserved(self):
-        """load_refined_session / write_refined_session 仍在 etl 包 (4 视图 I/O)."""
-        from etl.qwenformat import usage_prune
-        assert hasattr(usage_prune, "load_refined_session")
-        assert hasattr(usage_prune, "write_refined_session")
+        etl_worker 直接 load C2 单文件 → apply_render_chain → save_session_v2,
+        「从 4 视图反读 meta 当真值源」的唯一使用方是存量重跑脚本
+        (scripts/prune_refined_system.py), 已随存量不兼容一并删除。
+        """
+        import importlib
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("etl.qwenformat.usage_prune")
 
     def test_etl_render_functions_preserved(self):
         """etl 的 qf_text 渲染能力 (render_cleaned_system) 保留."""

@@ -1,30 +1,12 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-# 让 ``gdr.config`` 包内 ``from config.settings import Settings`` 这种
-# 顶级包导入可解析：gdr 在 uv workspace 下不一定被 install 到 site-packages，
-# 但其 ``config/__init__.py`` 期望 ``config.settings`` 是顶级模块可导入。
-# 把 ``gdr/`` 加进 sys.path 后即可。
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_PROJECT_ROOT / "gdr"))
-
-# pytest session 启动时立即安装 Windows no-window 策略 (幂等)。
-# 影响范围:本 pytest 进程内 multiprocessing.Pool spawn worker / 后续
-# 通过 _winapi.CreateProcess 启动的 Python 子进程。其他 _winapi.CreateProcess
-# 用途 (非 ``--multiprocessing-fork`` 指纹) 不动。
-#
-# 注:生产代码 orchestration.daemon / orchestration.pipeline_executor module
-# 加载时已自带 install;此处显式再调是为 pytest 在子目录场景下 (未 import
-# orchestration.* 直接起 multiprocessing.Pool) 也覆盖。
-try:
-    from orchestration._windows import install_no_window_policy
-    install_no_window_policy()
-except Exception:  # pragma: no cover - 兜底,绝不阻塞测试启动
-    pass
+# ``gdr/`` 的 sys.path 前置与 Windows no-window 策略已上提到仓库根
+# ``conftest.py`` (2026-09-30)。原先这两段只写在这里, 导致 ``pytest gdr/tests/``
+# 单独跑与 ``pytest`` 跑全量时 gdr 的导入姿势不同 —— 详见根 conftest 的说明。
 
 from simulate_serve.domain.provenance import SourceRef, TaskProvenance
 from simulate_serve.domain.task import AcceptanceCriterion, CompiledTask, InteractionPolicy, PersonaSpec, ValidationPolicy

@@ -60,7 +60,13 @@ browser-camoufox = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# gdr/tests 自 2026-09-30 起并入默认门禁。此前它不在 testpaths 里, 导致
+# CLAUDE.md 写的 `uv run python -m pytest -q` 跑不到那 360+ 个用例, 而那里
+# 藏着 3 处「save_session 已被 save_session_v2 取代」的 ImportError、
+# 2 处还在按已删除的 qf_out 嵌套格式造 fixture, 以及 2 个**生产代码**里
+# 静默失效的 isinstance (gdr 两套导入姿势 → usage_prune 从未真正执行,
+# 含 CLAUDE.md 隐私红线的本机路径泛化)。门禁漏掉一棵树 = 这些全部看不见。
+testpaths = ["tests", "gdr/tests"]
 addopts = "-ra --strict-markers --allow-hosts=127.0.0.1,::1 --basetemp=.pytest-tmp"
 asyncio_mode = "auto"
 markers = [

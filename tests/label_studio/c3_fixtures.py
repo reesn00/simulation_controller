@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 #: ChatML 渲染样本（``*.qwenjina.txt`` 全文）。2026-09-30 起 LS 不再上传它,
-#: 但 parse_stem 兼容测试与 RICH_META 的留底键仍要它。
+#: 但 ``conftest.write_c3`` 落盘与 :data:`LEGACY_RICH_META` 仍要它。
 QF_TEXT = (
     "<|im_start|>system\n# Tools\n\nYou have access to the following functions:…<|im_end|>\n"
     "<|im_start|>user\n帮我推荐三款高性价比耳机<|im_end|>\n"
@@ -88,14 +88,32 @@ RICH_META: dict[str, Any] = {
     # L5：精修编辑状态分布
     "edit_status_summary": {"EDIT": 2, "KEEP": 6, "REWRITE": 1},
     "meta_tag_contamination": {"has_meta_tag": False, "total_count": 0},
-    # 4 视图载荷留底 —— 真实 meta.json 里嵌着这些键（save_session_v2 写入）。
-    # task_exporter 推送前剥离（_META_VIEW_PAYLOAD_KEYS）, 测试守住
-    # 「视图载荷不上传 LS」；C3 磁盘文件本身仍带（契约不动）。
+    # 2026-09-30 起 C3 磁盘 meta.json **不再**内嵌 4 视图内容副本
+    # （save_session_v2 的 _VIEW_PAYLOAD_KEYS）。审计由 tools_declared
+    # （未截断工具名）+ views（尺寸 + sha256）承担。
+    "tools_declared": ["search"],
+    "views": {
+        "messages": {"file": "T001__x_refined.messages.json", "bytes": 74188,
+                     "sha256": "a" * 64},
+        "openai": {"file": "T001__x_refined.openai.json", "bytes": 73473,
+                   "sha256": "b" * 64},
+        "qwenjina": {"file": "T001__x_refined.qwenjina.txt", "bytes": 59964,
+                     "sha256": "c" * 64},
+    },
+    # qf_stats / qf_rendered_at 刻意保留: qf_rendered_at 是标注页
+    # c3_rendered_at 时间线的唯一数据源 (task_exporter)。
+    "qf_stats": {"openai_messages": 2, "tools": 1},
+    "qf_rendered_at": "2026-09-30T00:00:00.000000Z",
+}
+
+#: 2026-09-30 之前的 meta 形态 —— 磁盘上仍可能存在（存量产物），且推送侧
+#: ``_META_VIEW_PAYLOAD_KEYS`` 剥离逻辑保留为防御。仅供「旧形态也能正确剥离」
+#: 的测试用，不代表新 C3 的形状。RICH_META 里刻意不嵌视图载荷。
+LEGACY_RICH_META: dict[str, Any] = {
+    **RICH_META,
     "openai_messages": [{"role": "user", "content": "帮我推荐三款高性价比耳机"}],
     "tools": [{"type": "function", "function": {"name": "search"}}],
     "qf_text": QF_TEXT,
-    "qf_stats": {"openai_messages": 2, "tools": 1},
-    "qf_rendered_at": "2026-09-30T00:00:00.000000Z",
 }
 
 RICH_MESSAGES: dict[str, Any] = {

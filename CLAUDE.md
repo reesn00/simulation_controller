@@ -19,6 +19,10 @@ uv run python -m pytest -q
 .\scripts\label_studio.bat            # C3 + 评分卡 → Label Studio (init → status → upload)
 ```
 
+> **门禁覆盖 `tests/` + `gdr/tests/` 两棵树**（2026-09-30 起并入 `testpaths`，约 1400 条）。此前 `testpaths = ["tests"]` 漏掉 gdr 的 360+ 条，代价是那里藏了 3 处陈旧 `save_session` 导入、2 处按已删除的 qf_out 格式造的 fixture，以及 2 个**生产代码静默失效**（gdr 双导入姿势导致 `usage_prune` 从未真正执行，含本机路径泛化红线）。**改 `gdr/` 下的代码时 `pytest -q` 现在会真的覆盖到，别再只跑 `tests/`。**
+>
+> 仓库根 `conftest.py` 负责把 `gdr/` 插到 `sys.path` 最前（否则根目录的 `config/` 命名空间包会遮蔽 `gdr/config`，`from config import Settings` 直接 load_error）并装 Windows no-window 策略。gdr 的包内导入是**顶层**风格（`from config import ...` / `from domain import ...`，见 `gdr/pyproject.toml` 的 `tool.setuptools.packages.find`），而 orchestration / etl 走 `gdr.` 前缀风格 —— **同一份 gdr 源码因此会被加载成两套类对象**，跨边界的 `isinstance` 会静默判 False。写跨边界代码时不要用 `isinstance` 认类型。
+
 > `python -m simulate_serve --tasks / --rerun-task / --limit / --include-offline` 已于 2026-09-22 删除（任务运行入口移交 `orchestration`）；`simulate_serve` 仅保留只读开关。orchestration 默认 `max_parallelism=1` 严格串行，≥2 启用 `multiprocessing.Pool` 并发。
 
 远端执行 Agent 的 LLM 功能已可用（2026-09 确认，此前"未启用"记录已失效）。完整链路验证为可执行项：真实模型输出的端到端批次应当实际运行并记录结果，不再标记为待验证；日常回归仍以单元、合约和离线功能测试为默认门禁。
@@ -138,7 +142,8 @@ output/agent_trajectory/      output/refined/          output/refine_data/
   - **hook 超时 30s 而非 5s**：一次推送串完 PAT 刷新 + 查项目 + PATCH label_config + 建 task + 预标注。超时不丢样本 —— `push_single_c3` 先拿 LS task id 再写台账，「台账没有」严格等价于「LS 上没建成」，批次后 `scripts/label_studio.bat upload` 补推幂等。project 解析在 `ls_hook` 里进程级缓存，**每个 task 都 PATCH label_config 会覆盖标注员的改动**。
   - **低分样本（`judge_discard`）也推**：走完 etl 出 C3，终态仍是 `PHASE_AUDITED`（不洗成 done，否则 status 统计会骗人）。C3 meta 顶层 `audit_reason` → 评分卡 `audit` 标记 → label_config 最上方「低分标记」展示块 + 风险提示第一条。`scoring_reject` 推不了（C2 刻意不写），是设计硬墙。
   - **标注页的展示块是「可改的审查工作区」，不是只读回显**（2026-09-29 实测）。`editable` **只管「加完之后能不能再改」，不管能不能提交**——能否提交取决于 **Add 按钮**，而 Add 按钮在 `rows > 1` 时默认可见（本项目展示块 rows 全 > 1）。实测标注员删改 `messages_view` 后提交，修改原样进了 annotation。**后果**：annotation 里的 `messages_view` / `openai_view` / `metadata_view` 是**标注员的修正稿，不是训练稿**，训练制品永远以 `output/refine_data/` 的 C3 为准。2026-09-30 起展示块改 `editable="true"`（探针实测：提交后**能就地改**，不必为修错字再点一次 Add 多存一条重复 submission；`rows > 1` 因此成为必须保留的约束）。机器判定（低分标记/评分卡/风险提示）与人工判定分开放，异议走 `criterion_verdict` / `revise_notes`——**能改 ≠ 该改**。结构上做成只读也可行（`<Text>` 非控件挂不上 submission），但 `<Text>` 会 trim 掉缩进，而保住缩进的配方 `<Style>.htx-text{white-space:pre-wrap}</Style>` **2026-09-30 已被实测证伪**（`.htx-text` 这个类名在标注页上根本选不中）；「可改」是设计决定而非能力限制，故不做；唯一例外是 `risk_hints` 不能换，它是预标注的唯一落点。见 `docs/observability-label-studio.md` §3.5 与设计文档 R16。
-  - **qwenjina.txt 不上传（2026-09-30 起）**：ChatML 全文曾走两条路上 LS —— `task.data["qf_text"]`（qf_text_view 展示块）+ meta.json 内嵌 `qf_text` 留底（经 metadata/metadata_text 二次上传）。现展示块换成 `openai_view`（openai.json 的人读渲染 `render_openai_text`，非 JSON 孪生），推送前从 meta 副本剥掉视图载荷键 `openai_messages/tools/qf_text/qf_stats/qf_rendered_at`（task.data 只留审计元数据）。**C3 磁盘文件不变**（契约不动，只剥 LS 副本）；展示块仍用 TextArea 而非 `<Chat>`（官方文档：导入消息不可选，editable 只管标注员新增消息，与「可改审查工作区」冲突）。
+  - **qwenjina.txt 不上传 + C3 meta 不再内嵌视图副本（2026-09-30 起）**：ChatML 全文曾走两条路上 LS —— `task.data["qf_text"]`（qf_text_view 展示块）+ meta.json 内嵌 `qf_text` 留底（经 metadata/metadata_text 二次上传）。现展示块换成 `openai_view`（openai.json 的人读渲染 `render_openai_text`，非 JSON 孪生），task.data 只留审计元数据；展示块仍用 TextArea 而非 `<Chat>`（官方文档：导入消息不可选，editable 只管标注员新增消息，与「可改审查工作区」冲突）。
+  - **C3 meta.json 去掉 `openai_messages` / `tools` / `qf_text`（2026-09-30）**：这三个键是另外 3 份视图文件的**内容副本**（`save_session_v2` 的 `_VIEW_PAYLOAD_KEYS`），meta 原本是「源 + 副本」双份存储，实测占 meta 体积约一半（142KB → 68KB，-52%）。审计改由 `tools_declared`（**未截断**工具名清单，绕过 `tools_payload_max`）+ `views`（各视图 file/bytes/sha256 指针）承担。**`qf_stats` / `qf_rendered_at` 刻意保留** —— 后者是 LS 标注页 `c3_rendered_at` 时间线的唯一数据源。⟦⟧ 污染证据不受影响（`meta_tag_contamination` 扫内存 payload 而非 meta，原文在 C2）。⚠️ **存量不兼容**：旧 meta.json 仍带这三键，读取方需自行判断；LS 推送侧 `_META_VIEW_PAYLOAD_KEYS` 保留为防御。**「4 视图反读 meta 当真值源」的唯一使用方（`etl.qwenformat.usage_prune` 4 视图 I/O 兼容层 + `scripts/prune_refined_system.py` 存量重跑脚本）已整体删除** —— 生产链路 `etl_worker` 本就走「load C2 单文件 → apply_render_chain → save_session_v2」，不经过它。
 
 ## 输出
 
@@ -147,7 +152,7 @@ output/agent_trajectory/      output/refined/          output/refine_data/
 - `output/runs|artifacts|reports` —— simulate_serve 自洽（run 元数据 / content-addressed 制品 / 聚合统计）
 - `output/agent_trajectory/` —— C1 trajectory 事件流（simulate_serve → gdr 交接面）
 - `output/refined/` —— C2 单 refined Session（gdr → etl 交接面）
-- `output/refine_data/` —— C3 4 视图文件（etl → 训练 / audit）；旁路 jsonl（incomplete / judge_low / deferred / routing_low）也在此
+- `output/refine_data/` —— C3 4 视图文件（etl → 训练 / audit；meta.json 不含另外 3 份的内容副本，见上）；旁路 jsonl（incomplete / judge_low / deferred / routing_low）也在此
 
 审计保存所有 Run；非终态启动恢复时标记 `INTERRUPTED`，绝不自动重复远端任务。
 `simulate_serve` 不再导出 `output/datasets/all_runs.v2.jsonl` / `distill_dataset.v2.jsonl`

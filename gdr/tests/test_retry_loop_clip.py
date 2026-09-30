@@ -494,20 +494,20 @@ class TestClipSession:
 
 
 # ---------------------------------------------------------------------------
-# 集成: 集成 clip_session 与 save_session, 验证 4 后缀文件无 ⟦⟧ 且 retry loop 被剪
+# 集成: 集成 clip_session 与 save_session_v2, 验证 4 后缀文件无 ⟦⟧ 且 retry loop 被剪
 # ---------------------------------------------------------------------------
 
 
 def test_clip_then_save_session_roundtrip(tmp_path: Path):
-    """clip_session 后调 save_session, 4 后缀文件均反映剪枝结果."""
-    from gdr.domain.schema import save_session
+    """clip_session 后调 save_session_v2, 4 后缀文件均反映剪枝结果."""
+    from gdr.domain.schema import save_session_v2
 
     client = _make_mock_client(json.dumps({
         "is_retry_loop": True,
         "keep_indices": [0, 4],
     }))
     sess = _make_session_with_retry_loop()
-    # 先初始化 metadata (qf_text / openai_messages 是 save_session 必需字段)
+    # 先初始化 metadata (qf_text / openai_messages 是 save_session_v2 必需字段)
     sess.metadata = {
         "qf_text": "<dummy>\nuser\nhi\nassistant\nsearched\n<|im_end|>",
         "openai_messages": [{"role": "user", "content": "hi"}],
@@ -517,7 +517,7 @@ def test_clip_then_save_session_roundtrip(tmp_path: Path):
     assert removed > 0
 
     base = tmp_path / "sess_rl_refined"
-    save_session(sess, base)
+    save_session_v2(sess, base)
 
     # 4 后缀文件都写出
     assert (tmp_path / "sess_rl_refined.messages.json").exists()

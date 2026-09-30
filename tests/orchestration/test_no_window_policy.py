@@ -2,7 +2,9 @@
 
 验证 ``install_no_window_policy()`` 在 Windows 上 monkey-patch
 ``_winapi.CreateProcess``、强制 multiprocessing spawn worker 使用
-``CREATE_NO_WINDOW`` (0x08000000);非 Windows 平台是 no-op;多次调用幂等。
+``CREATE_NO_WINDOW`` (0x08000000);``install_subprocess_no_window_policy()``
+覆盖普通 ``subprocess.Popen`` (不带 multiprocessing 指纹的调用);
+非 Windows 平台是 no-op;多次调用幂等。
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import pytest
 from orchestration._windows import (
     CREATE_NO_WINDOW,
     install_no_window_policy,
+    install_subprocess_no_window_policy,
     is_no_window_policy_installed,
 )
 
@@ -256,3 +259,74 @@ def test_daemon_start_detached_creationflags_have_no_window(
         if handle.is_alive():
             handle.proc.kill()
             handle.proc.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# install_subprocess_no_window_policy: 普通 subprocess.Popen 也要不弹窗
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessNoWindowPolicy:
+    """``python -c`` 这类**不带 multiprocessing 指纹**的子进程也必须被覆盖。
+
+    背景: 第一层策略只认 ``--multiprocessing-fork``, 拦不住测试里手写的
+    ``subprocess.Popen([sys.executable, "-c", ...])`` —— 实测
+    ``test_push_index.py`` 一次弹 4 个黑窗。
+
+    断言方式用 spy ``_winapi.CreateProcess``(与上面 multiprocessing 那组同一
+    手法) 而不是 spy ``Popen.__init__`` 的 kwargs: wrap 补 flag 发生在 kwargs
+    传下去的路上, 挂在外层的 spy 只能看到调用方原始 kwargs(永远 0);而
+    CPython 3.12 的 ``Popen`` 也不保留 ``_creationflags`` 属性。
+    """
+
+    @pytest.fixture
+    def created_flags(self, monkeypatch):
+        """记录本测试期间 ``_winapi.CreateProcess`` 实收的 dwCreationFlags."""
+        flags_seen: list[int] = []
+        real_createprocess = _winapi.CreateProcess
+
+        def _spy(app, cmd, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if len(args) >= 6:
+                flags_seen.append(int(args[3]))
+            else:
+                flags_seen.append(int(kwargs.get("dwCreationFlags", 0)))
+            return real_createprocess(app, cmd, *args, **kwargs)
+
+        monkeypatch.setattr(_winapi, "CreateProcess", _spy)
+        return flags_seen
+
+    def test_popen_gets_create_no_window_when_flag_absent(self, created_flags):
+        if sys.platform != "win32":
+            pytest.skip("Windows-only: CREATE_NO_WINDOW 不存在于其他平台")
+        install_subprocess_no_window_policy()
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "pass"], stdout=subprocess.DEVNULL
+        )
+        proc.wait(timeout=30)
+
+        assert created_flags, "Popen 未走到 _winapi.CreateProcess"
+        assert created_flags[-1] & CREATE_NO_WINDOW, (
+            f"普通 Popen 未拿到 CREATE_NO_WINDOW, 实际 flags={created_flags[-1]:#x}"
+        )
+
+    def test_explicit_creationflags_are_respected(self, created_flags):
+        """已显式带 flag 的调用方 (daemon.start_detached) 行为不得被改."""
+        if sys.platform != "win32":
+            pytest.skip("Windows-only")
+        install_subprocess_no_window_policy()
+
+        explicit = 0x00000008  # DETACHED_PROCESS
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            creationflags=explicit,
+            stdout=subprocess.DEVNULL,
+        )
+        proc.wait(timeout=30)
+
+        assert created_flags[-1] == explicit, (
+            f"wrap 覆盖了调用方显式的 creationflags: {created_flags[-1]:#x}"
+        )
+
+    def test_idempotent(self):
+        assert install_subprocess_no_window_policy() is False, "第二次调用应是 no-op"

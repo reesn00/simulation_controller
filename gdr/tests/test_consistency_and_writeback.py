@@ -403,35 +403,38 @@ def test_structural_unusable_discarded_before_any_llm(cfg):
     assert not mock_llm.get.called, "结构过滤应在任何 LLM 调用之前短路"
 
 
-def test_judge_low_session_exported_to_review_channel(cfg, tmp_path):
-    """judge 低分: 主输出不落盘, 但完整 session 写入 judge_low.jsonl (数据不丢)。"""
+def test_judge_low_session_exported_to_review_channel(cfg, tmp_path, c1_trajectory):
+    """judge 低分: 主输出不落盘, 但完整 session 写入 judge_low.jsonl (数据不丢)。
+
+    ⚠️ 输入是 **C1 trajectory 事件流**, 不是嵌套 Session JSON —— 本用例此前
+    直接 dump 一个 Session 当输入, 在 C1 单路径契约下会直接 load_error
+    (``trajectory events yielded no messages``)。
+    """
     import json
     from unittest.mock import patch
-    from domain import Session, Message
     from pipeline.runner import _process_one_file
 
     cfg.judge_low_output_path = tmp_path / "judge_low.jsonl"
-    input_path = tmp_path / "in.json"
-    output_base = tmp_path / "out"
-    session = Session(session_id="low-score-file", messages=[
-        Message(role="user", id="u1", blocks=[]),
-        Message(role="assistant", id="a1", blocks=[
-            {"type": "thinking", "id": "th1", "thinking": "a" * 600},
-            {"type": "toolcall", "id": "tc1", "name": "browser", "input": '{"q": "x"}', "state": "finished"},
-            {"type": "toolresult", "id": "tc1", "name": "browser", "output_text": "ok", "state": "success"},
-        ]),
-    ])
-    input_path.write_text(
-        json.dumps(session.model_dump(mode="json", exclude_none=True), ensure_ascii=False),
-        encoding="utf-8",
+    # 文件名走契约模板 <run_id>__<session_id>.json, session_id 由 parse_filename 取
+    input_path = c1_trajectory(
+        tmp_path / "T001__low-score-file.json",
+        session_id="low-score-file",
+        user_text="hi",
+        thinking_text="a" * 600,
+        tool_calls=[("tc1", "browser", '{"q": "x"}', "ok")],
+        assistant_text="",
     )
+    output_base = tmp_path / "out"
     with patch("infrastructure.LlamaCppClient") as mock_llm:
         mock_llm.get.return_value.chat.return_value = ('{"score": 2}', None)
         status = _process_one_file(input_path, output_base, cfg)
 
-    assert status["status"] == "discard"
-    for suffix in (".messages.json", ".openai.json", ".qwenjina.txt", ".meta.json"):
-        assert not Path(str(output_base) + suffix).exists(), "低分 session 不得进入主输出"
+    # 2026-09-24 起 status 是 "judge_discard" (不是 "discard"): 评分低但结构合格
+    # → audited 终态 + judge_low 旁路, 不进 dead (CLAUDE.md 数据保留原则)。
+    assert status["status"] == "judge_discard"
+    # judge 判死时 process_one 返 None, C2 根本不写; 4 视图拆分已归 etl 阶段,
+    # gdr 不再产 .messages.json/.openai.json/.qwenjina.txt/.meta.json
+    assert not output_base.exists(), "低分 session 不得进入主输出"
     record = json.loads(cfg.judge_low_output_path.read_text(encoding="utf-8").splitlines()[0])
     assert record["session_id"] == "low-score-file"
     assert record["judge"]["score"] == 2

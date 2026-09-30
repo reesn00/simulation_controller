@@ -8,8 +8,9 @@
 2. **不持有 raw trajectory** —— C3 已是脱敏产物, 本模块只读 ``*.messages.json`` /
    ``*.openai.json`` / ``*.meta.json`` 三份**视图文件**, 绝不碰 C1 trajectory。
    ``*.qwenjina.txt`` **不再读取**（2026-09-30 起 ChatML 渲染产物不上传 LS,
-   展示块换成 openai 视图的人读渲染; meta.json 里内嵌的 ``qf_text`` 留底
-   也一并剥离, 见 :data:`_META_VIEW_PAYLOAD_KEYS`）。
+   展示块换成 openai 视图的人读渲染; 新生成的 meta.json 也不再内嵌
+   ``qf_text`` 留底, 存量 meta 里的那份一并剥离, 见
+   :data:`_META_VIEW_PAYLOAD_KEYS`）。
 3. **R11 凭据扫描 fail-closed** —— 命中即 :class:`CredentialLeakDetected`,
    **不静默脱敏**。静默脱敏会让标注员看到的样本与训练用样本不一致, 污染标注
    语义; 宁可拒推让人来决定。
@@ -333,13 +334,22 @@ def render_openai_text(openai: dict[str, Any] | None) -> str:
     return "\n".join(lines).rstrip()
 
 
-#: meta.json 里与 4 视图文件内容**重复**的载荷键（2026-09-30 起 LS 推送前剥离）。
+#: meta.json 里与 4 视图文件内容**重复**的载荷键（LS 推送前剥离）。
 #:
 #: ``qf_text`` 全文曾占 meta 体积约一半（ChatML 渲染留底）, ``openai_messages`` /
 #: ``tools`` 与 openai.json、messages.json 完全重复 —— 它们已由专属展示块
 #: （messages_view / openai_view）承载, 留在 metadata 里等于同一内容双重上传。
-#: task.data 只保留**审计元数据**; **C3 磁盘文件不动**（契约不变, 只剥 LS 副本）,
-#: ChatML 原文要看直接读 ``output/refine_data/*.qwenjina.txt``。
+#: task.data 只保留**审计元数据**; ChatML 原文要看直接读
+#: ``output/refine_data/*.qwenjina.txt``。
+#:
+#: 2026-09-30 起这份清单变成**存量防御**: ``save_session_v2`` 的
+#: ``_VIEW_PAYLOAD_KEYS`` 已让**新生成**的 C3 磁盘 meta 不再带
+#: ``openai_messages`` / ``tools`` / ``qf_text``, 审计改由
+#: ``tools_declared`` + ``views`` 承担（这两个键**要**上传）。
+#: 但存量产物仍在磁盘上, 且外部补写的 meta 不受 schema 约束 —— 保留剥离。
+#:
+#: 注意 ``qf_rendered_at`` 在此列表内**只影响上传副本**, 不影响
+#: :func:`_build_task_data` 读它算 ``c3_rendered_at``（读的是剥离前的 meta）。
 _META_VIEW_PAYLOAD_KEYS = frozenset(
     {"openai_messages", "tools", "qf_text", "qf_stats", "qf_rendered_at"}
 )

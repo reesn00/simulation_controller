@@ -29,6 +29,11 @@ Pytest / IDE 测试运行器在 Windows 上跑 ``multiprocessing.Pool`` worker �
 - 非 Windows 平台:no-op。
 - 多次调用:幂等,后续是 no-op。
 
+另提供 ``install_subprocess_no_window_policy()`` 覆盖**普通** ``subprocess``
+调用 (不带 multiprocessing 指纹, 上面那层拦不住)。见该函数 docstring。
+两者都**只在测试进程 (conftest) 里装** —— 生产代码的 Popen 调用点都显式
+带了 creationflags, 装它们只会增加无谓的全局副作用。
+
 副作用
 ----
 
@@ -47,6 +52,7 @@ import sys
 __all__ = [
     "CREATE_NO_WINDOW",
     "install_no_window_policy",
+    "install_subprocess_no_window_policy",
     "is_no_window_policy_installed",
 ]
 
@@ -63,6 +69,10 @@ _MP_FORK_FLAG: str = "--multiprocessing-fork"
 
 # 哨兵:幂等标记。模块级 state 即可,进程内单例语义。
 _INSTALLED: bool = False
+
+#: :func:`install_subprocess_no_window_policy` 的幂等标记 (与上面独立,
+#: 允许只装其中一个)。
+_SUBPROCESS_INSTALLED: bool = False
 
 
 def is_no_window_policy_installed() -> bool:
@@ -95,6 +105,64 @@ def install_no_window_policy() -> bool:
 
     _patch_winapi_createprocess()
     _INSTALLED = True
+    return True
+
+
+def install_subprocess_no_window_policy() -> bool:
+    """在**本进程内**给所有 ``subprocess`` 子进程补上 ``CREATE_NO_WINDOW``。
+
+    与 :func:`install_no_window_policy` 的分工:
+
+    - ``install_no_window_policy`` 拦 ``_winapi.CreateProcess``,只认
+      ``--multiprocessing-fork`` 指纹 → 覆盖 multiprocessing.Pool worker。
+    - 本函数拦 ``subprocess.Popen.__init__``,覆盖**任意** argv → 覆盖测试里
+      手写的 ``subprocess.Popen([sys.executable, "-c", ...])``。
+      这类调用不带 multiprocessing 指纹,上一层的策略拦不住,实测每次跑
+      ``tests/label_studio/test_push_index.py`` 弹 4 个黑窗。
+
+    **只补不覆盖**:调用方已显式传了非零 ``creationflags`` 的
+    (``daemon.start_detached`` 的 DETACHED_PROCESS 等) 一律尊重,不改其行为。
+
+    调用方限定: **仅测试进程** (conftest)。生产代码里所有 Popen 调用点都
+    已显式带 creationflags, 装它只会增加无谓的全局副作用。
+
+    Returns:
+        True 表示本次**新安装**(Windows 平台); False 表示已安装或非 Windows。
+    """
+    global _SUBPROCESS_INSTALLED
+
+    if _SUBPROCESS_INSTALLED:
+        return False
+
+    if sys.platform != "win32":
+        _SUBPROCESS_INSTALLED = True
+        return False
+
+    import subprocess
+
+    if getattr(subprocess.Popen.__init__, "_no_window_wrapped", False):
+        _SUBPROCESS_INSTALLED = True
+        return False
+
+    original_init = subprocess.Popen.__init__
+
+    @functools.wraps(original_init)
+    def _wrapped_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # Popen 签名: creationflags 是纯 keyword-only(Python 3.7+),但防御性
+        # 地在位置参数里也找一遍,避免将来签名变动后静默失效。
+        if not kwargs.get("creationflags"):
+            if len(args) >= 10:
+                args = list(args)
+                if not args[9]:
+                    args[9] = CREATE_NO_WINDOW
+                args = tuple(args)
+            else:
+                kwargs["creationflags"] = CREATE_NO_WINDOW
+        return original_init(self, *args, **kwargs)
+
+    _wrapped_init._no_window_wrapped = True  # type: ignore[attr-defined]
+    subprocess.Popen.__init__ = _wrapped_init  # type: ignore[method-assign]
+    _SUBPROCESS_INSTALLED = True
     return True
 
 

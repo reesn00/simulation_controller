@@ -121,6 +121,10 @@ def test_concurrent_processes_do_not_lose_records(tmp_path: Path):
     用独立 ``python -c`` 子进程而不是 in-process stub: 线程共享 GIL 且单次
     ``write`` 通常原子, 根本测不出无锁的交错。worker 代码写成字符串是刻意
     的 —— ``tests/`` 不是包, 模块级函数没法被 spawn 重新 import。
+
+    ``creationflags``: Windows 上 ``python.exe`` 是 console application,
+    不带 flag 起就是 4 个黑窗。这里显式带而非只靠 conftest 全局策略 ——
+    弹窗是可见的用户体验, 值得在调用点写明。
     """
     import subprocess
     import sys
@@ -129,6 +133,8 @@ def test_concurrent_processes_do_not_lose_records(tmp_path: Path):
     PushIndex.load(path).record("seed", 0)  # 先落一条, 让文件非空
 
     repo_root = Path(__file__).resolve().parents[2]
+    # CREATE_NO_WINDOW 仅 Windows 存在; 其他平台 Popen 不接受该 kwarg
+    no_window = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
     procs = []
     for worker in range(4):
         src = (
@@ -139,7 +145,7 @@ def test_concurrent_processes_do_not_lose_records(tmp_path: Path):
             "for i in range(40):\n"
             f"    idx.record('p{worker}-' + str(i), i)\n"
         )
-        procs.append(subprocess.Popen([sys.executable, "-c", src]))
+        procs.append(subprocess.Popen([sys.executable, "-c", src], **no_window))
 
     for proc in procs:
         assert proc.wait(timeout=120) == 0, "worker 非零退出 = 锁或写坏了"

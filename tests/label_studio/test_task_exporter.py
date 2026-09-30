@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
-from c3_fixtures import QF_TEXT, RICH_MESSAGES, RICH_META
+from c3_fixtures import LEGACY_RICH_META, QF_TEXT, RICH_MESSAGES, RICH_META
 from conftest import write_c3
 
 from label_studio.errors import C3ParseError, CredentialLeakDetected
@@ -131,7 +131,8 @@ def test_timeline_fields_present(rich_c3: Path):
     # 只有 user 消息带 created_at → 起止同点, 收敛成一个时间
     assert data["session_started_at"] == "2026-09-30 04:50:12 UTC"
     assert data["session_ended_at"] == "2026-09-30 04:50:12 UTC"
-    # RICH_META 带了视图载荷留底键（上一轮加的）, qf_rendered_at 提为顶层字段
+    # qf_rendered_at 提为顶层字段（该键刻意不随视图载荷一起剥掉 ——
+    # 它是 C3 渲染时间的唯一来源, 剥了标注页时间线就空）
     assert data["c3_rendered_at"] == "2026-09-30 00:00:00 UTC"
     assert data["pushed_at"].endswith(" UTC")
     text = data["timeline_text"]
@@ -299,28 +300,45 @@ def test_qwenjina_is_never_uploaded(c3_dir: Path):
 
     旧版会把 ``*.qwenjina.txt`` 全文读进 ``data["qf_text"]``, 且 meta.json
     内嵌的 ``qf_text`` 留底还经 ``metadata`` 二次上传 —— ChatML 全文等于推了
-    两遍。现在展示块换成 openai 视图, 两处一起剥; C3 磁盘文件本身不变。
+    两遍。现在展示块换成 openai 视图, 两处一起剥。
+
+    用 :data:`LEGACY_RICH_META`（meta 内嵌 qf_text 的旧形态）才能真正测到
+    剥离: 新形态的 meta 压根没有这个键, 断言会空转。磁盘上仍可能存在
+    存量产物, 剥离逻辑作为防御保留。
     """
-    path = write_c3(c3_dir, qf_text=QF_TEXT)
+    path = write_c3(c3_dir, qf_text=QF_TEXT, meta=LEGACY_RICH_META)
     data, _ = build_task_data(path)
     assert "qf_text" not in data
     assert "qf_text" not in data["metadata"]
     assert "qf_text" not in json.loads(data["metadata_text"])
 
 
-def test_metadata_view_payload_keys_are_pruned(rich_c3: Path):
-    """meta.json 里的 4 视图载荷不进 LS —— task.data 只留**审计元数据**。
+def test_metadata_view_payload_keys_are_pruned(c3_dir: Path):
+    """旧形态 meta.json 里的 4 视图载荷仍不进 LS —— 存量防御。
 
-    ``openai_messages`` / ``tools`` 与对应视图文件完全重复, ``qf_text`` 全文
-    曾占 meta 体积约一半; 留在 metadata 里等于同一内容双重上传。审计键
-    （criterion_results 等）必须原样保留。
+    2026-09-30 起 C3 磁盘 meta 已不含这些键（``_VIEW_PAYLOAD_KEYS``）,
+    但存量产物仍带; 推送侧 ``_META_VIEW_PAYLOAD_KEYS`` 保留为防御。
+    审计键（criterion_results 等）必须原样保留。
     """
-    data, _ = build_task_data(rich_c3)
+    path = write_c3(c3_dir, meta=LEGACY_RICH_META)
+    data, _ = build_task_data(path)
     for key in ("openai_messages", "tools", "qf_text", "qf_stats", "qf_rendered_at"):
         assert key not in data["metadata"], key
         assert key not in json.loads(data["metadata_text"]), key
     assert data["metadata"]["criterion_results"]
     assert data["metadata"]["session_id"]
+
+
+def test_new_format_meta_audit_keys_are_uploaded(rich_c3: Path):
+    """新格式 meta 的审计替代键 (``tools_declared`` / ``views``) **要**上传。
+
+    它们是 meta 承担审计能力的凭据 —— 未截断工具名清单 + 各视图的尺寸 /
+    sha256。剥离清单只针对视图**内容**, 不能顺手把审计指针也剥掉。
+    """
+    data, _ = build_task_data(rich_c3)
+    assert data["metadata"]["tools_declared"] == ["search"]
+    assert set(data["metadata"]["views"]) == {"messages", "openai", "qwenjina"}
+    assert "tools_declared" in json.loads(data["metadata_text"])
 
 
 def test_missing_openai_is_tolerated(c3_dir: Path):

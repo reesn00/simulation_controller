@@ -19,7 +19,7 @@ from gdr.domain.schema import (
     Session,
     TextBlock,
     ThinkingBlock,
-    save_session,
+    save_session_v2,
 )
 
 
@@ -149,12 +149,12 @@ def test_strip_session_payload_empty():
 
 
 # ---------------------------------------------------------------------------
-# 集成: save_session 必须对所有 4 个后缀文件做剥离 / 标注
+# 集成: save_session_v2 必须对所有 4 个后缀文件做剥离 / 标注
 # ---------------------------------------------------------------------------
 
 
 def _build_session_with_meta_tag(tmp_path: Path) -> Path:
-    """构造一个含 ⟦⟧ 的 session 并通过 save_session 写出 4 个后缀文件."""
+    """构造一个含 ⟦⟧ 的 session 并通过 save_session_v2 写出 4 个后缀文件."""
     base_path = Path(tmp_path) / "test_refined"
 
     msg = Message(
@@ -175,7 +175,7 @@ def _build_session_with_meta_tag(tmp_path: Path) -> Path:
             ],
         },
     )
-    save_session(sess, base_path)
+    save_session_v2(sess, base_path)
     return base_path
 
 
@@ -231,7 +231,7 @@ def test_save_session_clean_session_no_annotation(tmp_path: Path):
         ])],
         metadata={"qf_text": "无任何标签的干净文本。"},
     )
-    save_session(sess, tmp_path / "clean_refined")
+    save_session_v2(sess, tmp_path / "clean_refined")
     meta = json.loads((tmp_path / "clean_refined.meta.json").read_text(encoding="utf-8"))
     ann = meta["meta_tag_contamination"]
     assert ann["has_meta_tag"] is False

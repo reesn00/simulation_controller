@@ -132,7 +132,13 @@ class SessionRecord:
             ], "source_file", "run_id", "tools": [ToolDef, ...]}
 
         ``tools`` 字段透传 SessionRecord.tools (model_request.payload.tools).
-        qf transform 优先用 trajectory["tools"]; 没有时再由 toolcall 推导.
+
+        ⚠️ 这里出的 ``tools`` 在**顶层**, 而 gdr Session 的 tools 归属地是
+        ``metadata["tools"]`` (见 ``gdr.parsers._normalize_tools``: 顶层那份会变成
+        没人读的 extra 字段, 导致工具裁剪与 ``tools_declared`` 空转)。
+        ``to_session_dict()`` 目前**只有** ``gdr.parsers.from_trajectory`` 一个调用方,
+        由它做归一; 直接把本 dict 喂给 transform 的路径不存在, 因为
+        transform 的唯一调用方 ``etl.writers.render_chain`` 自己从 metadata 提升。
         """
         out_messages: list[dict[str, Any]] = []
         for m in self.messages:

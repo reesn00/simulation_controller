@@ -10,18 +10,18 @@
 
 - 输入：C2 refined Session（路径 `output/refined/<TXXX>__<session_id>.json`）
 - 处理链：
-  1. `etl.parsers.refined_session.load_refined_session(path)` —— 读 C2
-  2. `etl.qwenformat.usage_prune.collect_usage(session)` —— 取真实调用的 tools/skills
-  3. `etl.qwenformat.usage_prune.prune_session_in_place(session, ...)` —— 裁
-     system/tools + 重渲染 `metadata.qf_text`
-  4. `etl.qwenformat.transform.trajectory_to_session_with_openai_metadata(...)`
-     —— 写 `metadata.openai_messages` / `metadata.tools` / `metadata.qf_rendered_at`
-     / `metadata.qf_stats`
-  5. `etl.qwenformat.system_prompt.partition_system_prompt(...)` —— 切分 system 段落
-  6. `etl.qwenformat.tool_templates.save_tool_templates(...)` —— tool schema 持久化
-  7. 可选 `etl.qwenformat.tool_output_summarizer.summarize_record(...)` —— tool
-     result 精简（L0 规则 + 可选 L1 LLM 锚点）
-  8. `etl.writers.split_4_views(session, base_path)` —— 拆 4 视图落盘
+  1. `etl.parsers.load_refined_session(path)` —— 读 C2
+  2. `etl.writers.apply_render_chain(session)` —— 渲染 `metadata.openai_messages` /
+     `metadata.tools` / `metadata.qf_text` / `metadata.qf_rendered_at` /
+     `metadata.qf_stats`（qf_text 用 etl 专属的 `chat_template.jinja`）
+  3. `gdr.domain.save_session_v2(session, base_path)` —— 拆 4 视图落盘
+
+  > system/tools 裁剪与路径泛化由 **gdr step 22**（`gdr.refiners.usage_prune`）
+  > 在 C1→C2 阶段完成，etl **不重跑**；`etl.qwenformat.system_prompt.partition_system_prompt` /
+  > `tool_templates.save_tool_templates` / `tool_output_summarizer` 三个步骤**未接线**
+  > （见 `etl/writers/render_chain.py` 的 NOTE_* 注释）。
+  > 2026-09-30 删除 `etl.qwenformat.usage_prune`（4 视图 I/O 兼容层）—— 生产链路
+  > 本就不经过它，唯一使用方是存量重跑脚本，已随「存量不兼容」一并删除。
 - 输出：4 份文件写到 `output/refine_data/<stem>_refined.{messages,openai,qwenjina.txt,meta}.json`
 
 ## 2. 文件清单（4 视图）
@@ -30,7 +30,7 @@
 output/refine_data/<TXXX>__<session_id>_refined.messages.json   ← 块视图（refined blocks）
 output/refine_data/<TXXX>__<session_id>_refined.openai.json     ← OpenAI function-calling 视图
 output/refine_data/<TXXX>__<session_id>_refined.qwenjina.txt    ← Qwen3 chat_template 纯文本（qf_text）
-output/refine_data/<TXXX>__<session_id>_refined.meta.json       ← 全量 metadata + audit + 渲染附属
+output/refine_data/<TXXX>__<session_id>_refined.meta.json       ← 审计 metadata（不含前 3 份的内容副本，见 §6.0）
 ```
 
 `<TXXX>` 沿用 C2 写入的 `task_id`；`<session_id>` 沿用 C2 写入的 `session_id`。
@@ -52,7 +52,7 @@ output/refine_data/<TXXX>__<session_id>_refined.meta.json       ← 全量 metad
 | `schema_version` | str | 固定 `"sft_views.v1"` |
 | `session_id` | str | 取自 C2 |
 | `messages` | list[Message] | 与 C2 `session.messages` 一致（post usage_prune） |
-| `tools` | list[ToolDef] | 与 C2 `session.tools` 一致（post usage_prune） |
+| `tools` | list[ToolDef] | 与 C2 `metadata.tools` 一致（post usage_prune）；C1 无工具时为空列表 |
 
 Message / Block 形态与 C2 §4 §5 一致；唯一的差异是 message 经过
 usage_prune 后 system message 的内容可能更紧凑（移除未被调用的 tool 列表
@@ -83,7 +83,7 @@ usage_prune 后 system message 的内容可能更紧凑（移除未被调用的 
 | `schema_version` | str | 固定 `"sft_views.v1"` |
 | `session_id` | str | 取自 C2 |
 | `openai_messages` | list[dict] | etl transform 渲染后写入 |
-| `tools` | list[ToolDef] | 末次 `model_request.payload.tools` 形态（OpenAI function 定义） |
+| `tools` | list[ToolDef] | C2 `metadata.tools` 的 OpenAI function 定义形态（源自末次 `model_request.payload.tools`） |
 
 OpenAI tool_call id 形态：trajectory 里是 `toolu_xxx`，etl transform 统一加
 `call_` 前缀变 `call_xxx`（与 `agent-trajectory-format.md §9` 一致）。
@@ -98,7 +98,7 @@ OpenAI tool_call id 形态：trajectory 里是 `toolu_xxx`，etl transform 统�
   `agent-trajectory-format.md §8`（ChatML 标签 + `<think>` 块 + tool_call /
   tool_response 配对）
 
-## 6. `<base>.meta.json` —— 全量 metadata
+## 6. `<base>.meta.json` —— 审计 metadata（**不含视图内容副本**）
 
 ```json
 {
@@ -124,7 +124,12 @@ OpenAI tool_call id 形态：trajectory 里是 `toolu_xxx`，etl transform 统�
 
   "qf_rendered_at": "2026-09-22T...Z",
   "qf_stats": {"total_chars": 12345, "render_seconds": 0.42, ...},
-  "tools": [ToolDef, ...],
+  "tools_declared": ["web_search", "browser", ...],
+  "views": {
+    "messages":  {"file": "<stem>.messages.json", "bytes": 74188, "sha256": "…"},
+    "openai":    {"file": "<stem>.openai.json",   "bytes": 73473, "sha256": "…"},
+    "qwenjina":  {"file": "<stem>.qwenjina.txt",  "bytes": 59964, "sha256": "…"}
+  },
   "system_prompt_partitions": {"role": "...", "constraints": [...],
                                 "framework": "...", "unknown": [...]},
 
@@ -137,8 +142,34 @@ OpenAI tool_call id 形态：trajectory 里是 `toolu_xxx`，etl transform 统�
 字段来源：
 - 前半（refine_history → training_value_score 等）—— **直接复制自 C2 metadata**，
   etl 不修改；保留 audit 完整性
-- 后半（qf_rendered_at / qf_stats / tools / system_prompt_partitions）——
-  etl transform / usage_prune / system_prompt 阶段新增
+- 后半（qf_rendered_at / qf_stats / tools_declared / views / system_prompt_partitions）——
+  `save_session_v2` 与 etl transform / system_prompt 阶段新增
+
+### 6.0 meta 不再内嵌视图内容（2026-09-30）
+
+`save_session_v2` 落 meta 前剥掉三个键（实现见 `gdr/domain/schema.py::_VIEW_PAYLOAD_KEYS`）：
+
+| 键 | 原重复对象 | 替代 |
+|---|---|---|
+| `openai_messages` | `<base>.openai.json` 顶层 | `views.openai.sha256` |
+| `tools` | `<base>.messages.json` + `.openai.json` 顶层 | `tools_declared`（**未截断**名清单）+ `views.*.sha256` |
+| `qf_text` | `<base>.qwenjina.txt` 全文 | `views.qwenjina.sha256` |
+
+实测单样本 141,762 B → 约 68 KB（**-52%**）。原先 meta 是「源 + 副本」双份存储：
+三份视图是 metadata 字段的派生副本，meta.json 又把字段本身原样写了一遍。
+
+三个细节：
+
+1. **`tools_declared` 是未截断全量名**（绕过 `tools_payload_max`），因为这正是
+   原 `meta["tools"]` 的审计价值所在 —— 视图侧的 `tools` 受截断开关影响。
+2. **`qf_stats` / `qf_rendered_at` 刻意保留**（各几十字节）。后者是 Label Studio
+   标注页 `c3_rendered_at` 时间线的**唯一数据源**，剥了时间线就空。
+3. **⟦⟧ 污染证据不丢**：`meta_tag_contamination` 扫的是内存里的 payload 变量而非
+   meta，污染原文仍在 C2（`output/refined/*.json`）。
+
+> **存量不兼容**：2026-09-30 之前生成的 meta.json 仍带这三个键，读取方需自行判断。
+> Label Studio 推送侧（`label_studio/task_exporter.py::_META_VIEW_PAYLOAD_KEYS`）
+> 保留剥离逻辑作为防御。
 
 ### 6.1 orchestration 注入的三个键（2026-09-28 / 09-29）
 
@@ -166,8 +197,9 @@ C1/C2 既有字段语义。
 
 1. C3 不修改 refine 阶段产出的任何字段（refine_history / validation_summary /
    policy_decisions / judge_discard / user_intent / training_value_score 等）
-2. C3 只新增以下字段：`qf_rendered_at` / `qf_stats` / `system_prompt_partitions`
-   以及 §6.1 的三个 orchestration 注入键
+2. C3 只新增以下字段：`qf_rendered_at` / `qf_stats` / `tools_declared` / `views` /
+   `system_prompt_partitions` 以及 §6.1 的三个 orchestration 注入键；
+   并剥掉 §6.0 的三个视图副本键
 3. C3 可能修改 `messages` / `tools` / `system_prompt`（usage_prune 裁剪），
    这些修改是 etl 的职责
 4. `meta_tag_contamination` 字段由 gdr 写入，C3 不修改（已剥离的 ⟦⟧ 不会被
