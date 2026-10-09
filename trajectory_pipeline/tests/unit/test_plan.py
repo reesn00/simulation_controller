@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -168,6 +169,118 @@ class TestProvenanceReachesArchive:
                         provenance=prov)
         prov["genre"] = "改过了"
         assert rec.to_json()["provenance"]["genre"] == "喜剧"
+
+
+class TestUserPrompt:
+    """用户原话必须一路走到 ``RunRecord.to_json()``。
+
+    它曾经只活在计划文件里，于是 **P2 六件套第 ③ 件恒为空**——
+    而存档里看不出任何异常：字段不存在与「用户什么都没说」长得一样。
+    模型于是拿一句检索式当用户轮次去学「怎么回应这句检索式」，
+    那是 persona 制造偏差的地方，恰恰最不该被学成输入分布。
+    """
+
+    def test_进存档顶层(self):
+        rec = RunRecord(task_id="T001", title="功夫", query="功夫 在线观看",
+                        search_url="https://x",
+                        user_prompt="哥 有没有能看正片的 给个链接呗")
+        assert rec.to_json()["user_prompt"] == "哥 有没有能看正片的 给个链接呗"
+
+    def test_空串而非缺字段(self):
+        """手工路径没有 persona 渲染的提问。空串 = 「不是 taskgen 跑的」，
+        与 ``provenance`` 空 dict 同款约定——缺字段会被切片脚本读成"未知"。"""
+        js = RunRecord(task_id="T001", title="x", query="q", search_url="u").to_json()
+        assert js["user_prompt"] == ""
+
+    def test_与检索式是两件事不能互相顶替(self):
+        """``query`` 是拿去搜的字符串，``user_prompt`` 是用户开口的那句。
+        两者混用＝让模型从关键词反推意图。"""
+        rec = RunRecord(task_id="T001", title="功夫", query="功夫 在线观看",
+                        search_url="https://x", user_prompt="功夫在哪看啊")
+        js = rec.to_json()
+        assert js["query"] != js["user_prompt"]
+
+    def test_老存档缺这个键也能被消费(self, tmp_path):
+        """字段引入之前跑的存档全都没有它，而那批存档正是唯一的真实证据。"""
+        from trajectory_pipeline.executor.review_queue import collect
+
+        old = {"task_id": "T001", "search_blocked": "",
+               "ledger": {"total_sites": 1, "by_branch": {"unresolved": 1},
+                          "missing_branches": []},
+               "outcomes": [{"url": "https://a.test/x", "branch": "unresolved",
+                             "evidence": "e", "reached_play_page": False}],
+               "visits": [{"url": "https://a.test/x", "landed_url": "https://a.test/x",
+                           "success": False, "notes": [], "site_obs": None,
+                           "player_obs": None}]}
+        (tmp_path / "T001__old.json").write_text(
+            json.dumps(old, ensure_ascii=False), encoding="utf-8")
+        assert len(collect(tmp_path)) == 1, "老存档在复核队列这一步整批消失了"
+
+
+class TestPlanCliWiring:
+    """**CLI 那一行**必须真的把计划里的字段传下去。
+
+    上面那两个类测的是 ``RunRecord.to_json()``——而
+    ``RunRecord(user_prompt=...)`` 一直是对的，错的可能是
+    ``_run_plan`` 忘了传（或者重构时被当成冗余参数删掉）。
+    那种错误没有任何单元测试能看见：字段合法、存档合法、报表正常，
+    只是每一条样本的用户轮次都成了空串。所以这里跑真的 ``_run_plan``。
+    """
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, rows):
+        from trajectory_pipeline.executor import cli
+
+        class _Info:
+            name, version, tool_count = "fake", "0", 0
+
+        class _Client:
+            info = _Info()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            @staticmethod
+            def from_env():
+                return _Client()
+
+        class _Driver:
+            def __init__(self, client):
+                pass
+
+        monkeypatch.setattr(cli.McpClient, "from_env", staticmethod(lambda: _Client()))
+        monkeypatch.setattr(cli, "ObscuraDriver", _Driver)
+
+        plan = tmp_path / "plan.json"
+        plan.write_text(json.dumps(_plan(*rows), ensure_ascii=False), encoding="utf-8")
+        out = tmp_path / "out"
+        args = _ns(plan=plan, out=str(out), limit=0, title=None,
+                   include_unrewritten=False, engine="bing",
+                   max_candidates=5, max_chars=None, stop_after_success=0)
+        assert asyncio.run(cli._run_plan(args)) == 0
+        return list(out.glob("*.json"))
+
+    def test_用户原话与检索式都进存档(self, tmp_path, monkeypatch):
+        files = self._run(tmp_path, monkeypatch, [_row()])
+        assert len(files) == 1
+        js = json.loads(files[0].read_text(encoding="utf-8"))
+        assert js["user_prompt"] == _row()["prompt_text"], (
+            "用户轮次没进存档：P2 六件套第 ③ 件会恒为空，且存档看不出异常")
+        assert js["query"] == _row()["search_query"]
+        assert js["provenance"]["genre"] == "喜剧", "provenance 也没跟着走"
+
+
+def _ns(**kw):
+    import argparse
+
+    base = dict(plan=None, out=None, limit=0, title=None, dry_run=False,
+                include_unrewritten=False, engine="bing",
+                max_candidates=5, max_chars=None, stop_after_success=0)
+    base.update(kw)
+    return argparse.Namespace(**base)
 
 
 class TestPlanJsonRoundTrip:

@@ -29,9 +29,21 @@ from trajectory_pipeline.perception.rule_perceptor import (
     is_trailer_only,
     is_trailer_suspect,
 )
+from trajectory_pipeline.tests.fakes import llm_perceptor
 
-#: 契约适用的实现。W3 加 LLMPerceptor 时在此追加。
-IMPLEMENTATIONS = [pytest.param(RulePerceptor, id="rule")]
+#: 契约适用的实现。
+#:
+#: LLM 版接的是**假后端**（``tests/fakes.py``）——契约测试绝不打真网络：
+#: 它要的是七不变式**每次都成立**，而真后端会超时、限流、换版本漂输出，
+#: 那些都会让门禁变成随机失败。LLM 的语义能力由真实验证负责，
+#: 见 ``output/pipeline/llm_probe.py``。
+#:
+#: 注意 ``functools.partial`` 而不是裸类：契约测试用 ``impl()`` 无参构造，
+#: 而 ``LLMPerceptor`` 需要一个 client。
+IMPLEMENTATIONS = [
+    pytest.param(RulePerceptor, id="rule"),
+    pytest.param(lambda: llm_perceptor(), id="llm"),
+]
 
 ALL_QUESTIONS = list(questions.REGISTRY)
 

@@ -141,11 +141,20 @@ class Candidate:
 
     ``rank`` 是**引擎排定的顺序**，不是本项目的相关性判断——
     留这个字段是为了落盘时可复核「我们是不是把第 1 名跳过了」。
+
+    ``source_href`` 是它在**搜索页观察里**的原始 href，与 :attr:`url`
+    可能不同（百度结果页大量用 ``/link?url=`` 包裹，见 :func:`_unwrap_redirect`）。
+
+    为什么两个都要：感知层读的是**观察**（:attr:`source_href`），而遍历
+    用的是解包后的 :attr:`url`。判断点 ① 回传的 url 是前者，控制器要
+    拿它对上后者才能过滤候选——少记这个字段就得靠字符串猜测，
+    而百度链接一旦解码失败就是「整个站点集丢失」。
     """
 
     url: str
     text: str
     rank: int
+    source_href: str = ""
 
     @property
     def host(self) -> str:
@@ -268,7 +277,8 @@ def extract_candidates(
             bump("duplicate_host")
             continue
         seen_hosts.add(host)
-        out.append(Candidate(url=raw, text=link.text, rank=len(out) + 1))
+        out.append(Candidate(url=raw, text=link.text, rank=len(out) + 1,
+                            source_href=link.href))
         if len(out) >= limit:
             bump("over_limit")
             break

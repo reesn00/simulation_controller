@@ -148,7 +148,7 @@ def is_trailer_suspect(label: str) -> bool:
     return classify_trailer(label) == "suspect"
 
 
-def _is_play_control(label: str) -> bool:
+def is_play_control(label: str) -> bool:
     """控件是否像播放入口。
 
     顺序有讲究：**先看否定信号，再看是不是预告片控件，最后才走词表**。
@@ -156,6 +156,10 @@ def _is_play_control(label: str) -> bool:
     业务规则要处理的那种播放控件（用户原话：「播放按钮或者剧集按钮上的
     文本是'预告片'」）。漏掉这一步，预告片按钮会先被判成
     ``no_play_control``，``trailer_only`` 这条负分支永远不会触发。
+
+    **公开**是因为 :class:`~trajectory_pipeline.perception.llm_perceptor.LLMPerceptor`
+    复用这张表做候选筛选。两份词表不同步的后果是「W3 判 False、
+    W1 判 True」——同一批素材两个结论，且两个都看着像对的。
     """
     text = _norm(label)
     if not text:
@@ -249,7 +253,7 @@ class RulePerceptor:
                 ),
                 started=started, fallback=True,
             )
-        candidates = [e for e in obs.interactive_elements if _is_play_control(e.label)]
+        candidates = [e for e in obs.interactive_elements if is_play_control(e.label)]
         if not candidates:
             if obs.video_tag_count >= 1:
                 # 观察**自己**否定了「没有播放控件」这句话：页面上已经有 <video>，

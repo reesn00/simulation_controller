@@ -21,10 +21,10 @@
 ``run`` 的两条路径
 ----------------
 - ``run --task-id T001 --title 功夫``：手工路径。存档的 ``provenance``
-  为空，含义是「不是 taskgen 跑的」。
+  与 ``user_prompt`` 均为空，含义是「不是 taskgen 跑的」。
 - ``run --plan gen_out.json``：计划路径。消费 :mod:`plan` 里那份
-  **按文件格式读**的计划（不 import taskgen），检索式与 provenance 都来自计划，
-  原样进存档供 persona 切片。控制流一行没变。
+  **按文件格式读**的计划（不 import taskgen），检索式、**用户原话**与
+  provenance 都来自计划，原样进存档供 persona 切片。控制流一行没变。
 
 建议长批先 ``--dry-run``：真实浏览器每条约几十秒，跑之前值得先看一眼
 "到底会跑哪些条目、跳过了哪些、为什么跳"。
@@ -65,7 +65,7 @@ from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.taskgen.sampler import W1_DEGENERATE_DIMS
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.base import Q
-from trajectory_pipeline.perception.rule_perceptor import RulePerceptor
+from trajectory_pipeline.perception.factory import build_perceptor, describe
 
 
 def _reconfigure_stdio() -> None:
@@ -76,6 +76,17 @@ def _reconfigure_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
+
+
+def _make_perceptor(args: argparse.Namespace, title: str):
+    """构造该 task 的感知器。**每个 task 一个**。
+
+    ``title`` 进构造参数是因为判断点 ① 需要目标片名——它是**任务的属性**，
+    不在 ``Observation`` 里（那是页面的属性）。塞进 Observation 会污染事实层
+    （P1 存档的观察字段会多出不属于页面的东西）。
+    """
+    return build_perceptor(mode=getattr(args, "perceptor", None),
+                           target_title=title)
 
 
 async def cmd_run(args: argparse.Namespace) -> int:
@@ -104,16 +115,21 @@ async def _run_manual(args: argparse.Namespace) -> int:
         stop_after_success=args.stop_after_success,
     )
     archive = P1Archive(Path(args.out) if args.out else None)
-    perceptor = RulePerceptor()
     records = []
 
     async with client:
         driver = ObscuraDriver(client)
         print(f"server = {client.info.name} {client.info.version} "
               f"({client.info.tool_count} tools)")
-        orch = Orchestrator(driver, perceptor, cfg)
         for title in titles:
+            # **每个 task 一个 perceptor**：LLM 版的判断点 ① 需要目标片名，
+            # 而片名是任务的属性不是页面的属性，靠构造注入。
+            perceptor = _make_perceptor(args, title)
+            print(f"perceptor = {describe(perceptor)}")
+            orch = Orchestrator(driver, perceptor, cfg)
             print(f"\n[{args.task_id}] {title}")
+            # 不传 user_prompt：手工路径没有 persona 渲染的提问，
+            # 存档里留空串（含义与 provenance 空 dict 相同）。
             rec = await orch.run(args.task_id, title)
             records.append(rec)
             path = archive.write(rec, task_id=args.task_id)
@@ -126,9 +142,13 @@ async def _run_manual(args: argparse.Namespace) -> int:
 async def _run_plan(args: argparse.Namespace) -> int:
     """计划路径：消费 ``gen --out`` 的产物。
 
-    与手工路径的差别**只有两处**：检索式来自计划、provenance 随存档落盘。
+    与手工路径的差别**只有三处**：检索式、用户原话、provenance 都来自计划。
     控制流一行没变——这是「可替换插件」纪律的验收点：
     换掉数据来源不应该让执行端变形。
+
+    ⚠️ 三处里 ``user_prompt`` 最容易在重构中被当成冗余参数删掉
+    （它看着像 ``search_query`` 的重复），而删掉的后果是**静默**的：
+    P2 六件套第 ③ 件恒为空，P1 里看不出任何异常。
     """
     if args.title:
         print("[FAIL] --plan 与 --title 互斥：计划里的检索式与片名是配套的，"
@@ -166,20 +186,22 @@ async def _run_plan(args: argparse.Namespace) -> int:
         stop_after_success=args.stop_after_success,
     )
     archive = P1Archive(Path(args.out) if args.out else None)
-    perceptor = RulePerceptor()
     records = []
 
     async with client:
         driver = ObscuraDriver(client)
         print(f"server = {client.info.name} {client.info.version} "
               f"({client.info.tool_count} tools)")
-        orch = Orchestrator(driver, perceptor, cfg)
         for n, task in enumerate(tasks, 1):
+            title = task.title or task.task_id
+            # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
+            orch = Orchestrator(driver, _make_perceptor(args, title), cfg)
             print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
                   f"| {task.title or task.search_query}")
             rec = await orch.run(
                 task.task_id, task.title or task.task_id,
                 search_query=task.search_query,
+                user_prompt=task.prompt_text,
                 provenance=dict(task.provenance),
             )
             records.append(rec)
@@ -281,17 +303,39 @@ def _print_summary(rec, path: Path) -> None:
 
 async def cmd_check(args: argparse.Namespace) -> int:
     print("== Perceptor 能力边界 ==")
-    p = RulePerceptor()
-    ready, reason = p.health()
-    print(f"  rule: ready={ready} — {reason}")
-    print("  W1 可判的题:")
+    for mode in ("rule", "llm"):
+        try:
+            p = build_perceptor(mode=mode)
+        except Exception as exc:
+            # 显式 llm 未配置后端时会抛——那是配置问题，报出来而不是崩掉整条 check
+            print(f"  {mode}: 不可用 — {type(exc).__name__}: {exc}")
+            continue
+        ready, reason = p.health()
+        print(f"  {mode}: ready={ready} — {reason}")
+
+    rule = build_perceptor(mode="rule")
+    print("\n  规则版（W1）可判的题:")
     print("    FIND_PLAY_CONTROL — 播放控件词表 + 预告片判定")
     print("    PLAYER_OK        — <video>/<audio> 标签**存在性**（非「能播」）")
     print("                        iframe 数量不作判据：导航站满屏 iframe，"
           "实测会把 hao123 判成播放页")
-    print("  W1 必然 None 的题（fail-closed）:")
+    print("  规则版（W1）必然 None 的题（fail-closed）:")
     for qid in (Q.SELECT_PLAY_SITES, Q.IS_REACHABLE):
         print(f"    {qid}")
+
+    try:
+        build_perceptor(mode="llm")
+    except Exception:
+        print("  LLM 版（W3）: 未配置后端，四题全部走语义判定")
+    else:
+        from trajectory_pipeline.perception.llm_perceptor import CONFIDENCE_JUDGED
+
+        print("  LLM 版（W3）四题全走语义判定，但有三条代码层守卫不可绕过:")
+        print("    采集充分性预检 — 正文与元素皆空时不问模型（实测模型会判否）")
+        print("    确定性事实优先 — <video> 存在性不问模型")
+        print("    ref 白名单校验 — 模型回传的 ref 必须真的在观察里")
+        print(f"    置信度先验 = {CONFIDENCE_JUDGED}（未校准，**不是模型自报**）")
+
     print(f"\n  失败分支全集（{len(questions.all_branches())} 条）: "
           f"{sorted(questions.all_branches())}")
     print(f"  不计入负样本的分支: {sorted({'unresolved', 'trailer_suspect'})}")
@@ -806,6 +850,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     run.add_argument("--stop-after-success", type=int, default=0)
     run.add_argument("--out", default=None, help="P1 输出目录")
+    run.add_argument("--perceptor", choices=("rule", "llm", "auto"), default=None,
+                     help="感知实现。默认读 TRAJECTORY_PERCEPTOR，再默认 auto"
+                          "（配了 LLM 后端就用 LLM 版，否则规则版）")
     # ── 计划路径（模块 1 → 执行端）──────────────────────────────
     run.add_argument("--plan", default=None,
                      help="消费 gen --out 的执行计划 JSON（与 --title 互斥）")

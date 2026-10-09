@@ -24,12 +24,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from trajectory_pipeline.executor import actions
+from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger, validate_observation_for_decision
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.executor.steps import visit as visit_step
 from trajectory_pipeline.executor.steps.search import Candidate
-from trajectory_pipeline.perception.base import Observation, Perceptor
+from trajectory_pipeline.perception.base import Decision, Observation, Perceptor, Q
 
 
 @dataclass
@@ -54,6 +56,18 @@ class RunRecord:
     title: str
     query: str
     search_url: str
+    #: **用户实际说的那句话**（persona 渲染后的原文）。空串 = 手工路径，
+    #: 与 ``provenance`` 空 dict 同款约定：「不是 taskgen 跑的」。
+    #:
+    #: ⚠️ 与 :attr:`query` 是两件事，别混：``query`` 是拿去搜的检索串，
+    #: ``user_prompt`` 是用户开口的那句。P2 六件套第 ③ 件要的是后者——
+    #: 模型学的是「**用户这么说，我该怎么回**」，喂检索式等于让它学
+    #: 从关键词反推意图，而那正是 persona 要制造的偏差。
+    #:
+    #: 它曾经只活在计划文件（``PlanEntry.prompt_text``）里，于是 **P2 拿不到
+    #: 用户轮次**——而计划文件不是存档，批次跑完散在各处的计划文件对不上
+    #: 存档就是一条**静默失配**（跟 provenance 那条同源，理由见本字段上方）。
+    user_prompt: str = ""
     search_obs: Observation | None = None
     candidates: list[Candidate] = field(default_factory=list)
     visits: list[visit_step.VisitResult] = field(default_factory=list)
@@ -89,6 +103,11 @@ class RunRecord:
     #: 候选过滤记账：``{原因: 条数}``。静默剔除会让"引擎给了 50 个链接、
     #: 我们只跑了 11 个"这类损失不可见。
     candidate_filter: dict[str, int] = field(default_factory=dict)
+    #: **搜索阶段**的动作流。站点级动作在各 ``VisitResult.steps`` 里——
+    #: 拆开是因为搜索与遍历是两种不同的决策单元（P2 切成两条样本）。
+    #:
+    #: 语义见 :mod:`trajectory_pipeline.executor.actions`。同样**不参与判定**。
+    steps: StepLog = field(default_factory=StepLog)
 
     def __post_init__(self) -> None:
         """拷一份 provenance，不留对入参的引用。
@@ -114,6 +133,7 @@ class RunRecord:
             "task_id": self.task_id,
             "title": self.title,
             "query": self.query,
+            "user_prompt": self.user_prompt,
             "search_url": self.search_url,
             "perceptor": self.perceptor,
             "candidate_source": self.candidate_source,
@@ -123,6 +143,7 @@ class RunRecord:
             "elapsed_ms": self.elapsed_ms,
             "warnings": list(self.warnings),
             "search_observation": _obs_json(self.search_obs),
+            "steps": [s.to_json(_obs_json) for s in self.steps.steps],
             "candidates": [
                 {"url": c.url, "text": c.text, "rank": c.rank, "host": c.host}
                 for c in self.candidates
@@ -133,6 +154,7 @@ class RunRecord:
                     "landed_url": v.landed_url,
                     "success": v.success,
                     "notes": list(v.notes or []),
+                    "steps": [s.to_json(_obs_json) for s in v.steps.steps],
                     "site_obs": _obs_json(v.site_obs),
                     "player_obs": _obs_json(v.player_obs),
                 }
@@ -185,6 +207,64 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
     }
 
 
+def _apply_selection(
+    record: RunRecord,
+    selection: Decision,
+    ledger: RunLedger,
+) -> list[Candidate]:
+    """按判断点 ① 的结论过滤候选，**并把落选的记成 ``not_play_site``**。
+
+    落选必须记账，这是 CLAUDE.md「**每条分支都必须有对应样本入库**」
+    的直接要求：负样本不是副产品。反过来「只记选中的」会让
+    ``not_play_site`` 永远是 0，而报表上分部数字齐全，没人看得出这支空了。
+
+    **匹配按 :attr:`Candidate.source_href`**（观察里的原始 href），而遍历用
+    ``Candidate.url``（解包后）。感知层读的是观察，所以它回传的是前者。
+    两个字段对不上时按后者兜底——百度 ``/link?url=`` 包裹的链接一旦
+    匹配不上，表现是「整个站点集丢失」，且看不出是匹配问题。
+
+    顺序保持**引擎原序**（``rank``），不按 selected 数组的顺序重排——
+    重排等于用模型的判断覆盖引擎的相关性排序，那是没有依据的。
+    """
+    selected_rows = [
+        r for r in (selection.payload.get("selected") or [])
+        if isinstance(r, dict)
+    ]
+    reasons: dict[str, str] = {}
+    for row in selected_rows:
+        url = str(row.get("url") or "").strip()
+        if url:
+            reasons[url] = str(row.get("why") or selection.evidence)
+
+    rejected = {
+        str(r.get("url") or "").strip(): str(r.get("reason") or "")
+        for r in (selection.payload.get("rejected") or [])
+        if isinstance(r, dict)
+    }
+
+    kept: list[Candidate] = []
+    dropped = 0
+    for candidate in record.candidates:
+        key = candidate.source_href or candidate.url
+        if candidate.url in reasons or key in reasons:
+            kept.append(candidate)
+            continue
+        dropped += 1
+        why = (rejected.get(key) or rejected.get(candidate.url) or "").strip()
+        ledger.record(
+            candidate.url,
+            "not_play_site",
+            f"判断点 ① 未选中该站点。{why}" if why
+            else "判断点 ① 未选中该站点（模型未给出排除理由）",
+            decision=selection,
+        )
+    record.warnings.append(
+        f"判断点 ① 选出 {len(kept)}/{len(record.candidates)} 个候选，"
+        f"{dropped} 个记 not_play_site"
+    )
+    return kept
+
+
 class Orchestrator:
     """主控制流。一个实例跑一个 task。"""
 
@@ -205,6 +285,7 @@ class Orchestrator:
         *,
         persona: object | None = None,
         search_query: str | None = None,
+        user_prompt: str = "",
         provenance: Mapping[str, Any] | None = None,
     ) -> RunRecord:
         """跑完一个 task 的全部环节。**不抛异常**——异常折算进 warnings。
@@ -214,6 +295,11 @@ class Orchestrator:
         ``search_query`` 有两种来源，而它们**不该被混为一谈**：
         taskgen 给的是「按 persona 的指代方式渲染出的用户表述所对应的检索」，
         启发式给的是「按片名硬拼」。前者带 provenance，后者不带。
+
+        ``user_prompt`` 是**用户实际说的那句话**（persona 渲染后的原文），
+        与 ``search_query`` 是两回事：后者是拿去搜的字符串。
+        P2 六件套的第 ③ 件要的是前者，而它在存档里无处可寻——
+        原因与修法见 :attr:`RunRecord.user_prompt`。
 
         ``provenance`` 原样进存档（见 :class:`RunRecord` 的说明）。
         **本方法不读它的内容**——它是切片轴，不是控制流输入。
@@ -228,18 +314,25 @@ class Orchestrator:
         ledger = RunLedger(task_id=task_id)
         record = RunRecord(
             task_id=task_id, title=title, query=query, search_url=url,
+            user_prompt=user_prompt,
             ledger=ledger, perceptor=getattr(self._perceptor, "name", "?"),
             provenance=dict(provenance or {}),
         )
 
         # ── 环节 0：搜索页 ──────────────────────────────────────────
+        step_search = record.steps.act(actions.goto(url))
         try:
             await self._driver.goto(url)
             record.search_obs = await self._driver.observe(max_chars=self._cfg.max_chars)
         except Exception as exc:
+            # 搜索页拿不到时整条 run 提前返回，动作流里必须留下这一步：
+            # 「搜都没搜成」与「搜了但没素材」在报表上是两回事，
+            # 而动作流是这个区分在样本层的落点。
+            record.steps.settle(step_search, error=f"{type(exc).__name__}: {exc}")
             record.warnings.append(f"搜索页采集失败: {type(exc).__name__}: {exc}")
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record
+        record.steps.settle(step_search, record.search_obs)
 
         # ── 环节 0.5：反爬拦截 ─────────────────────────────────────
         # 必须在取候选**之前**判：验证码页的表现是"正文短 + 零链接"，
@@ -277,6 +370,52 @@ class Orchestrator:
                 f"搜索页未提取到候选（links={len(record.search_obs.links)}, "
                 f"degraded={list(record.search_obs.degraded)}，"
                 f"过滤掉 {record.candidate_filter}）"
+            )
+            record.elapsed_ms = int((time.monotonic() - started) * 1000)
+            return record
+
+        # ── 环节 ①.5：判断点 ①（语义层）──────────────────────────
+        # 「这个链接是不是能看《功夫》的站」是语义判断，代码做不了
+        # （URL 里的 iqiyi.com 只说明它是爱奇艺）。取候选是代码层的
+        # **结构性**过滤（搜索引擎自家、gov.cn、help 页），判断点 ①
+        # 在它之后：先剔掉根本不是内容站的，再问「哪些是这个作品的播放站」。
+        #
+        # ⚠️ **None 时不中断**（fail-closed 管的是「结论」不是「采集」）。
+        # W1 的规则版对 ① 只会返回 None，若据此中断，候选一个都不跑，
+        # 负样本池永远空。同 IS_REACHABLE 的处理。
+        selection = self._perceptor.decide(Q.SELECT_PLAY_SITES, record.search_obs)
+        if selection.answer is True:
+            record.candidates = _apply_selection(record, selection, ledger)
+            record.candidate_source = "perceptor"
+        elif selection.answer is False:
+            # False 是货真价实的结论（「这页没有该片的可看站点」），
+            # 与 IS_REACHABLE 的处理一致：**中断遍历**，后续判断无从谈起。
+            # 但每个候选仍要记 not_play_site——中断若不记账，这批结论
+            # 就没有任何样本，而报表上只会看到「这批没跑出东西」。
+            #
+            # 判错的代价由人工复核承担：evidence 带着模型给的理由，
+            # 重跑一次即可，不是不可逆。
+            record.warnings.append(
+                f"判断点 ① 判 False：搜索结果里没有《{record.title}》的可看站点 "
+                f"（{selection.evidence}）；{len(record.candidates)} 个候选全部"
+                f"记 not_play_site，不访问"
+            )
+            for candidate in record.candidates:
+                ledger.record(candidate.url, "not_play_site",
+                              f"判断点 ① 判 False：{selection.evidence}",
+                              decision=selection)
+            record.candidates = []
+            record.candidate_source = "perceptor"
+        else:
+            record.candidate_source = "heuristic"
+            record.warnings.append(
+                f"判断点 ① 未取得结论（{selection.evidence}）——"
+                f"候选仍按代码启发式全遍历，不中断采集"
+            )
+
+        if not record.candidates:
+            record.warnings.append(
+                f"判断点 ① 过滤后无候选（原有 {len(record.candidates)} 个）"
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record

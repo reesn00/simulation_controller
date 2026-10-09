@@ -17,9 +17,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from trajectory_pipeline.executor import actions
+from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.browser.page_driver import DriverError, PageDriver
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.steps import reachability
@@ -37,6 +39,11 @@ class VisitResult:
     player_obs: Observation | None = None
     success: bool = False
     notes: list[str] | None = None
+    #: 动作流。P2 六件套第 ④⑤ 件的唯一数据源，语义见
+    #: :mod:`trajectory_pipeline.executor.actions`。**不参与任何判定**——
+    #: 本文件对「点了什么」的行动仍只看 ``control.payload['ref']``，
+    #: 动作流是**记录**，不是控制输入（两者一旦耦合，改记录方式就改控制流）。
+    steps: StepLog = field(default_factory=StepLog)
 
     def note(self, text: str) -> None:
         if self.notes is None:
@@ -63,7 +70,11 @@ async def visit_site(
 
     # ── ① 导航：唯一的硬事实 ──────────────────────────────────────
     reach = await reachability.probe(driver, url)
+    step_goto = result.steps.act(actions.goto(url))
     if not reach.reachable:
+        # 记「试过且失败」。unreachable_hard 在动作流里若整段消失，
+        # 负样本池里那条就会变成一条没有动作的判决，说不清模型该学什么。
+        result.steps.settle(step_goto, error=reach.reason)
         ledger.record(url, "unreachable_hard", reach.reason)
         result.note(f"导航失败: {reach.reason}")
         return result
@@ -72,9 +83,11 @@ async def visit_site(
     try:
         result.site_obs = await driver.observe(max_chars=max_chars)
     except DriverError as exc:
+        result.steps.settle(step_goto, error=f"快照失败: {exc}")
         ledger.record(url, "unreachable_hard", f"导航成功但取不到快照: {exc}")
         result.note(f"快照失败: {exc}")
         return result
+    result.steps.settle(step_goto, result.site_obs)
 
     landing = reachability.check_landing(result.site_obs, url)
     result.landed_url = landing.landed_url or url
@@ -147,10 +160,20 @@ async def visit_site(
         return result
 
     # ── ⑤ 点击：每站点一个 tab，隔离会话 ─────────────────────────
+    # 语义化目标在**点击之前**解析：它来自站点页观察（``site_obs``），
+    # 不是点击后的观察。解析不出来也要照实记 ``target=None`` 并继续点——
+    # 那说明 I6 被违反（ref 溯源不到 interactive_elements），是**要留证的现场**，
+    # 而 fail-closed 在这里的表现是「不编一个目标」，不是「不点」。
+    target = actions.target_of(ref, result.site_obs.interactive_elements)
+    if target is None:
+        result.note(f"ref={ref} 未在 interactive_elements 中找到（I6 存疑），"
+                    f"动作流按 target=None 记录")
     await _open_tab(driver, url, result)
+    step_click = result.steps.act(actions.click(target))
     try:
         await driver.click(ref=ref)
     except DriverError as exc:
+        result.steps.settle(step_click, error=f"点击失败: {exc}")
         ledger.record(
             result.landed_url, "component_unverified",
             f"点击 ref={ref} 失败: {exc}", decision=control,
@@ -162,12 +185,14 @@ async def visit_site(
     try:
         result.player_obs = await driver.observe(max_chars=max_chars)
     except DriverError as exc:
+        result.steps.settle(step_click, error=f"点击后快照失败: {exc}")
         ledger.record(
             result.landed_url, "component_unverified",
             f"点击后取不到页面快照: {exc}", decision=control, reached=True,
         )
         result.note(f"点击后快照失败: {exc}")
         return result
+    result.steps.settle(step_click, result.player_obs)
 
     # ── ⑦ 判断点 ④：播放页是否可用 ─────────────────────────────
     player = perceptor.decide(Q.PLAYER_OK, result.player_obs)
@@ -194,6 +219,7 @@ async def _open_tab(driver: PageDriver, url: str, result: VisitResult) -> None:
     """
     try:
         await driver.new_tab(url)
+        result.steps.act(actions.new_tab(url))
         result.note("已开独立 tab")
     except Exception as exc:
         result.note(f"开 tab 失败（继续用当前页）: {type(exc).__name__}: {exc}")

@@ -7,11 +7,15 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from trajectory_pipeline.executor import actions
+from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.browser.page_driver import DriverError
-from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig
+from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig, RunRecord
 from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.executor.steps.visit import visit_site
 from trajectory_pipeline.perception.base import (
@@ -457,6 +461,141 @@ class TestOrchestrator:
         assert len(rec.visits) == 2
 
 
+class TestSelectPlaySitesWiring:
+    """判断点 ① 的控制流接线——**它此前没有调用方**。
+
+    W1 之前环节 ① 之后直接 ``extract_candidates`` 全遍历，感知层的
+    ``SELECT_PLAY_SITES`` 无人问。后果不只是「少一个判断点」：
+    ``not_play_site`` 这条负分支**在真实链路上永远触发不了**，
+    而报表上分部数字齐全，没人会看得出这支空了。
+    """
+
+    SEARCH = ("https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B")
+
+    def _search_page(self, *links):
+        return Observation(
+            url=self.SEARCH, page_title="百度", body_text="搜索结果",
+            links=tuple(LinkItem(text=t, href=h) for t, h in links),
+        )
+
+    def _pages(self, *links):
+        pages = {self.SEARCH: self._search_page(*links)}
+        for _, href in links:
+            if href.startswith("https://") and "baidu" not in href:
+                pages[href] = obs_at(href, elements=(("e1", "button", "播放"),))
+                pages["https://x.test/play/e1"] = obs_at(
+                    "https://x.test/play/e1", video=1)
+        return pages
+
+    async def test_选中后才遍历(self):
+        pages = self._pages(("a站", "https://www.a.test/movie"),
+                           ("b站", "https://www.b.test/movie"))
+        script = {
+            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
+                "selected": [{"url": "https://www.a.test/movie", "why": "标题含片名"}],
+                "rejected": [{"url": "https://www.b.test/movie", "reason": "只有影评"}],
+            }),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        d = FakeDriver(pages)
+        rec = await Orchestrator(d, ScriptedPerceptor(script), RunConfig()).run("T001", "功夫")
+
+        assert [c.url for c in rec.candidates] == ["https://www.a.test/movie"]
+        assert rec.candidate_source == "perceptor"
+        assert len(rec.visits) == 1
+
+    async def test_落选站点记not_play_site(self):
+        """**每条分支都必须有对应样本入库**——负样本不是副产品。"""
+        pages = self._pages(("a站", "https://www.a.test/movie"),
+                           ("b站", "https://www.b.test/movie"))
+        script = {
+            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
+                "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
+                "rejected": [{"url": "https://www.b.test/movie", "reason": "只有影评无播放"}],
+            }),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+
+        dropped = [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
+        assert len(dropped) == 1
+        assert dropped[0].url == "https://www.b.test/movie"
+        assert "只有影评无播放" in dropped[0].evidence
+
+    async def test_未取得结论不中断采集(self):
+        """fail-closed 管的是「结论」不是「采集」。W1 的规则版对 ① 只会
+        返回 None，若据此中断，候选一个都不跑，负样本池永远空。"""
+        pages = self._pages(("a站", "https://www.a.test/movie"),
+                           ("b站", "https://www.b.test/movie"))
+        script = {Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "W1 无语义能力")}
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+
+        assert len(rec.candidates) == 2
+        assert rec.candidate_source == "heuristic"
+        assert rec.candidates and any("不中断" in w for w in rec.warnings)
+
+    async def test_判False时不遍历(self):
+        """判 False 是货真价实的结论：「这页没有该片的可看站点」。"""
+        pages = self._pages(("a站", "https://www.a.test/movie"))
+        script = {Q.SELECT_PLAY_SITES: no(Q.SELECT_PLAY_SITES, "全是资讯站")}
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+        assert rec.visits == []
+        assert any("判断点 ① 判 False" in w for w in rec.warnings)
+
+    async def test_选中顺序保持引擎原序(self):
+        """重排等于用模型的判断覆盖引擎的相关性排序，那是没有依据的。"""
+        pages = self._pages(*[(f"站{i}", f"https://www.s{i}.test/movie")
+                              for i in range(3)])
+        script = {
+            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
+                # 模型把第 3 个排第一——控制流不该照它重排
+                "selected": [{"url": "https://www.s2.test/movie", "why": "最像"},
+                             {"url": "https://www.s0.test/movie", "why": "也行"},
+                             {"url": "https://www.s1.test/movie", "why": "可以"}],
+                "rejected": [],
+            }),
+        }
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+        assert [c.rank for c in rec.candidates] == [1, 2, 3]
+
+    async def test_按原始href匹配而非解包后(self):
+        """百度结果页大量用 ``/link?url=`` 包裹。感知层读的是观察，
+        回传的是**原始 href**；匹配不上就是「整个站点集丢失」，
+        且表现上看不出是匹配问题。"""
+        wrapped = ("https://www.baidu.com/link?url=https%3A%2F%2Fwww.a.test%2Fmovie")
+        pages = {
+            self.SEARCH: self._search_page(("a站", wrapped)),
+            "https://www.a.test/movie": obs_at(
+                "https://www.a.test/movie", elements=(("e1", "button", "播放"),)),
+        }
+        script = {
+            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
+                "selected": [{"url": wrapped, "why": "w"}], "rejected": []}),
+        }
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+        assert [c.url for c in rec.candidates] == ["https://www.a.test/movie"]
+
+    async def test_规则版批次行为不变(self):
+        """W1 回归：``RulePerceptor`` 对 ① 返回 None → 全遍历。
+        这是既有能力，新插件上线不能让既有批次报废。"""
+        from trajectory_pipeline.perception.rule_perceptor import RulePerceptor
+
+        pages = self._pages(("a站", "https://www.a.test/movie"))
+        rec = await Orchestrator(FakeDriver(pages), RulePerceptor(),
+                                 RunConfig()).run("T001", "功夫")
+        assert len(rec.candidates) == 1
+        assert rec.candidate_source == "heuristic"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 审计字段
 # ═══════════════════════════════════════════════════════════════════════
@@ -873,3 +1012,251 @@ class TestDomainReach:
                    (tmp_path / "negative.jsonl").read_text(encoding="utf-8").splitlines())}
         assert pooled == {"https://a.test/1", "https://b.test/1"}
         assert "负 1 · 未判 2" in _report(tmp_path)   # a.test：1 负 2 未判
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 动作流（executor.actions）——P2 六件套第 ④⑤ 件的数据源
+#
+# 锁的是**会静默失效**的性质：动作少记一步、分支分错家、ref 漏进训练
+# 数据，在报表上一个数都不变。放在本文件而不是单开一个模块，是因为
+# fake driver 住在这儿——复制一份 fixture 就是「规则和 fixture 一起错」
+# 那个坑（见本文件开头）。
+# ═══════════════════════════════════════════════════════════════════════
+
+
+EL = (InteractiveElement(ref="e5", tag="button", label="立即播放"),)
+
+
+class TestTargetOf:
+    def test_解出tag与label(self):
+        t = actions.target_of("e5", EL)
+        assert (t.tag, t.label) == ("button", "立即播放")
+
+    def test_解不出返回None(self):
+        """fail-closed：ref 溯源不到就承认溯源不到，不拿第一个元素顶上。"""
+        assert actions.target_of("e99", EL) is None
+
+    def test_空ref返回None(self):
+        assert actions.target_of("", EL) is None
+        assert actions.target_of("e5", ()) is None
+
+    def test_目标里没有ref(self):
+        """结构保证，不是过滤规则——``ActionTarget`` 没有可放 ref 的字段。
+
+        写成「序列化时把 ref 滤掉」的话，将来加字段时就会漏。
+        """
+        assert actions.target_of("e5", EL).to_json() == {"tag": "button",
+                                                         "label": "立即播放"}
+
+
+class TestStepLog:
+    def test_先记动作再回填观察(self):
+        log = StepLog()
+        i = log.act(actions.goto("https://x.test"))
+        assert log.steps[i].observation is None
+        obs = obs_at("https://x.test")
+        log.settle(i, obs)
+        assert log.steps[i].observation is obs
+
+    def test_动作失败与没观察是两回事(self):
+        """``observation=None`` 且 ``error=""`` 是「还没 observe」，
+        而 ``error`` 非空是「试过且失败」。合成一种就丢了区分。"""
+        log = StepLog()
+        log.settle(log.act(actions.goto("u")), error="导航失败")
+        assert log.steps[0].observation is None
+        assert log.steps[0].error == "导航失败"
+
+
+def _play_script(ref="e5"):
+    return ScriptedPerceptor({
+        Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+        Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": ref}),
+        Q.PLAYER_OK: ok(Q.PLAYER_OK, {"media_count": 1}),
+    })
+
+
+_PLAY_PAGES = {
+    "https://x.test/movie": obs_at("https://x.test/movie",
+                                   elements=(("e5", "button", "立即播放"),)),
+    "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
+}
+
+
+class TestVisitSteps:
+    async def test_成功路径三步(self):
+        d = FakeDriver(dict(_PLAY_PAGES))
+        r = await visit_site(d, _play_script(), RunLedger("T001"), CAND)
+        assert [s.action.tool for s in r.steps.steps] == ["goto", "new_tab", "click"]
+        assert all(s.error == "" for s in r.steps.steps)
+
+    async def test_观察挂在动作上而不是自己成步(self):
+        """``observe`` 是环境对上一个动作的回执。记成动作的话，
+        训练集里每步都多一个模型**不该选**的选项。"""
+        d = FakeDriver(dict(_PLAY_PAGES))
+        r = await visit_site(d, _play_script(), RunLedger("T001"), CAND)
+        got, _, click = r.steps.steps
+        assert got.observation is r.site_obs
+        assert click.observation is r.player_obs, "点击后的观察没挂到 click 上"
+
+    async def test_点击目标是语义化的(self):
+        d = FakeDriver(dict(_PLAY_PAGES))
+        r = await visit_site(d, _play_script(), RunLedger("T001"), CAND)
+        click = r.steps.steps[-1].action
+        assert click.tool == "click"
+        assert click.target.to_json() == {"tag": "button", "label": "立即播放"}
+
+    async def test_new_tab标为infrastructure(self):
+        """会话隔离是执行器自己做的，模型永远不该输出它——
+        但它是真发生过的动作，删掉 P1 就无法回放。"""
+        d = FakeDriver(dict(_PLAY_PAGES))
+        r = await visit_site(d, _play_script(), RunLedger("T001"), CAND)
+        assert [s.action.origin for s in r.steps.steps] == [
+            "model", "infrastructure", "model"]
+
+    async def test_导航失败仍留下动作(self):
+        """``unreachable_hard`` 在动作流里整段消失的话，
+        负样本池里那条就成了没有动作的判决，说不清该学什么。"""
+        r = await visit_site(FakeDriver(), ScriptedPerceptor({}),
+                             RunLedger("T001"), CAND)
+        assert len(r.steps.steps) == 1
+        assert r.steps.steps[0].action.tool == "goto"
+        assert r.steps.steps[0].observation is None
+        assert "导航失败" in r.steps.steps[0].error
+
+    async def test_无播放控件时不记点击(self):
+        """控制流在判断点 ③ 就返回了，动作流不该凭空多出一次点击——
+        多出来会让「模型在没控件时点了什么」变成一个有答案的问题。"""
+        d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
+        p = ScriptedPerceptor({Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                               Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL)})
+        r = await visit_site(d, p, RunLedger("T001"), CAND)
+        assert [s.action.tool for s in r.steps.steps] == ["goto"]
+
+    async def test_点击失败留下动作与原因(self):
+        class Boom(FakeDriver):
+            async def click(self, *, ref=None, selector=None):
+                raise DriverError("元素已失效")
+
+        d = Boom({"https://x.test/movie": _PLAY_PAGES["https://x.test/movie"]})
+        r = await visit_site(d, _play_script(), RunLedger("T001"), CAND)
+        click = r.steps.steps[-1]
+        assert click.action.tool == "click"
+        assert "元素已失效" in click.error
+
+    async def test_ref溯源不到时按target为None记录(self):
+        """I6 存疑的现场要**留证**，不是编一个目标补上——fail-closed 管的是
+        「不猜」，不是「不点」：点不点仍由控制流决定，不由记录方式决定。"""
+        d = FakeDriver({
+            "https://x.test/movie": obs_at("https://x.test/movie"),  # 无元素
+            "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
+        })
+        r = await visit_site(d, _play_script("e5"), RunLedger("T001"), CAND)
+        assert r.steps.steps[-1].action.target is None
+        assert d.clicked == ["e5"], "记录方式不该改变点击行为"
+        assert any("I6" in n for n in (r.notes or []))
+
+
+class TestArchivedSteps:
+    def test_搜索与站点各有动作流(self):
+        rec = RunRecord(task_id="T001", title="功夫", query="q",
+                        search_url="https://s.test?q=1")
+        i = rec.steps.act(actions.goto("https://s.test?q=1"))
+        rec.steps.settle(i, obs_at("https://s.test?q=1"))
+        data = rec.to_json()
+        assert [s["action"]["tool"] for s in data["steps"]] == ["goto"]
+        assert data["steps"][0]["observation"]["url"] == "https://s.test?q=1"
+
+    def test_visit动作流随存档落盘(self):
+        from trajectory_pipeline.executor.steps.visit import VisitResult
+
+        rec = RunRecord(task_id="T001", title="功夫", query="q", search_url="u")
+        log = StepLog()
+        j = log.act(actions.click(actions.ActionTarget("button", "立即播放")))
+        log.settle(j, obs_at("https://x.test/play", video=1))
+        rec.visits.append(VisitResult(candidate=CAND, steps=log))
+        visit = rec.to_json()["visits"][0]
+        assert visit["steps"][0]["action"]["tool"] == "click"
+        assert visit["steps"][0]["action"]["target"]["label"] == "立即播放"
+
+    def test_存档可json序列化(self):
+        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
+        rec.steps.act(actions.goto("u"))
+        json.dumps(rec.to_json(), ensure_ascii=False)   # 契约要求可序列化
+
+    async def test_动作参数里没有ref(self):
+        """``ref`` 是会话内句柄，换个 session 就失效，进训练数据等于让
+        模型学一个随机数，样本还永远不可回放。
+
+        锁的是「不引入」而非「移除」：实测 4 份真实存档里 ``ref=`` 出现 0
+        次——它从来没进过 P1（成功路径只记 ``PLAYER_OK`` 的 evidence，
+        带 ref 的 ``FIND_PLAY_CONTROL`` 结论在成功时不记账）。所以
+        ``tag`` + ``label`` 比 P1 原来有的**更多**：原来「点了哪个元素」
+        在存档里根本没留。
+
+        用真 :class:`RulePerceptor`：``ScriptedPerceptor`` 的 evidence 是
+        占位串，拿它断言等于什么都没断言。
+        """
+        d = FakeDriver(dict(_PLAY_PAGES))
+        r = await visit_site(d, RulePerceptor(), RunLedger("T001"), CAND)
+        assert r.success, "这条链路本该跑通，否则下面的断言没有意义"
+        blob = json.dumps([s.to_json(lambda o: None) for s in r.steps.steps],
+                          ensure_ascii=False)
+        assert "e5" not in blob, "动作流里漏了会话句柄"
+        assert "立即播放" in blob, "点了哪个元素必须留下语义化记录"
+
+    async def test_老存档没有steps也能被消费(self, tmp_path):
+        """动作流是新加的键。**字段引入之前跑的存档全都没有它**，
+        而那批存档正是最该留着的（唯一的真实运行证据）。
+
+        消费方一律用 ``.get(...) or []`` 取——这里显式钉住：改 P1 形状时
+        很容易顺手把 ``archive["visits"][i]["steps"]`` 写成直取，
+        而那会让老存档在复核队列那一步整批消失。
+        """
+        from trajectory_pipeline.executor.review_queue import collect
+
+        old = {"task_id": "T001", "search_blocked": "",
+               "ledger": {"total_sites": 1, "by_branch": {"unresolved": 1},
+                          "missing_branches": []},
+               "outcomes": [{"url": "https://a.test/x", "branch": "unresolved",
+                             "evidence": "e", "reached_play_page": False}],
+               "visits": [{"url": "https://a.test/x", "landed_url": "https://a.test/x",
+                           "success": False, "notes": [],
+                           "site_obs": {"url": "https://a.test/x", "page_title": "T",
+                                        "body_text": "正文", "video_tag_count": 0,
+                                        "iframe_count": 0},
+                           "player_obs": None}]}
+        (tmp_path / "T001__old.json").write_text(
+            json.dumps(old, ensure_ascii=False), encoding="utf-8")
+        items = collect(tmp_path)
+        assert len(items) == 1, "老存档在复核队列这一步整批消失了"
+        assert items[0].url == "https://a.test/x"
+
+    async def test_动作流不参与控制流(self):
+        """记录方式与判定彻底解耦：动作流里有 ``target=None`` 的点击，
+        控制流照常按 ``control.payload['ref']`` 决定点哪个。
+
+        两者一旦耦合，改「记什么」就会改「做什么」——而 P2 落地后必然要改
+        动作流的记法（要喂训练视图了），那时就会发现改记录等于改行为。
+        """
+        d = FakeDriver({
+            "https://x.test/movie": obs_at("https://x.test/movie"),  # 无元素 → target=None
+            "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
+        })
+        r = await visit_site(d, _play_script("e5"), RunLedger("T001"), CAND)
+        assert r.steps.steps[-1].action.target is None
+        assert d.clicked == ["e5"], "点击行为被记录方式改变了"
+
+    async def test_动作名都在声明的原语表内(self):
+        """P2 会拿 ``actions.TOOLS`` 当**训练动作空间**。
+
+        表里列了执行流从未产生过的动作，就等于训出一批永远不会被真实运行
+        验证的样本——而那种样本在离线评测里是绿的。控制流哪天发了新原语，
+        这里再跟着加（那时它才有真实存档兜底）。
+        """
+        d = FakeDriver(dict(_PLAY_PAGES))
+        r = await visit_site(d, RulePerceptor(), RunLedger("T001"), CAND)
+        used = {s.action.tool for s in r.steps.steps}
+        assert used <= set(actions.TOOLS), f"未登记的原语: {used - set(actions.TOOLS)}"
+        # 反向：表里不该有「设计上不会成为动作」的 observe
+        assert "observe" not in actions.TOOLS
+

@@ -39,9 +39,10 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 uv sync --group dev
 
 # ── 新树：执行层 ────────────────────────────────────────
-uv run python -m trajectory_pipeline.executor.cli check              # 探 obscura 能力（唯一需真实浏览器的自检）
+uv run python -m trajectory_pipeline.executor.cli check              # 探 obscura 能力 + 报两个感知实现的边界（唯一需真实浏览器的自检）
 uv run python -m trajectory_pipeline.executor.cli run --task-id T001 --title 功夫
 uv run python -m trajectory_pipeline.executor.cli run --plan <plan.json> --limit 20 --dry-run
+uv run python -m trajectory_pipeline.executor.cli run --plan <plan.json> --limit 5 --perceptor llm   # 指定实现，覆盖 TRAJECTORY_PERCEPTOR
 
 # ── 新树：任务生成层（不联网）──────────────────────────
 uv run python -m trajectory_pipeline.executor.cli gen -n 20 --seed 7 --out <plan.json>
@@ -62,6 +63,16 @@ uv run python -m pytest -q
 setx OBSCURA_EXE "C:\Users\klpc\workspace\tool\obscura-x86_64-windows-stealth\obscura.exe"
 ```
 
+`--perceptor llm` / `TRAJECTORY_PERCEPTOR=llm` 另外需要 LLM 后端，**同样缺失即报错不猜**：
+
+```powershell
+setx TRAJECTORY_LLM_BASE_URL "http://<host>/v1"
+setx TRAJECTORY_LLM_MODEL "<model>"
+setx TRAJECTORY_LLM_API_KEY "<key>"    # 本机 vLLM 不校验时可留空
+```
+
+**key 只走环境变量**：代码里没有任何凭据字面量，`LLMConfig.__repr__` 刻意不吐 key，`test_llm.py::TestNoCredentialInSource` 盯着源码里不许出现 `sk-` / `bgw_` 这类前缀。
+
 > 门禁 `testpaths = ["tests", "gdr/tests", "trajectory_pipeline/tests"]`，**三棵树都跑**。
 > 漏掉任何一棵树 = 静默失效不可见（存量 gdr 那次漏掉 360+ 条，掩盖了 2 处生产代码从未执行）。
 > 改新树代码时**别只跑 `trajectory_pipeline/tests`**。
@@ -76,12 +87,12 @@ setx OBSCURA_EXE "C:\Users\klpc\workspace\tool\obscura-x86_64-windows-stealth\ob
 trajectory_pipeline/
 ├─ taskgen/       模块 1  任务生成 + persona 画像库
 ├─ executor/      模块 2  代码执行循环（控制流在这里，不在任何 LLM 里）
-├─ perception/    模块 3  语义感知（可替换插件）
+├─ perception/    模块 3  语义感知（可替换插件：rule / llm + 注入工厂）
 ├─ rationale/     模块 4  rationale 边写边生成 + 一致性闸门三查      [待建]
-├─ assembler/     模块 5  组装与切分                                [待建]
+├─ assembler/     模块 5  组装与切分（schema + 观察视图已建，落盘待建）
 ├─ evaluation/    模块 6  评估体系（黄金集 + 三层瀑布 + LS 双向）    [待建]
 ├─ common/        跨模块地基（无业务逻辑）
-├─ llm/           LLM 客户端（全树唯一出口）
+├─ llm/           LLM 客户端 + 结构化输出解析（全树唯一出口）
 ├─ storage/       P1/P2/P3 契约读写                                [待建]
 ├─ docs/          设计方案 00/01/02 + contracts/
 └─ output/pipeline/   全部产物（D8，gitignored）
@@ -131,7 +142,9 @@ common ← llm ← {taskgen, perception, rationale}
 | ③ | `FIND_PLAY_CONTROL` | 站点页观察 | `{has_control, ref, trailer_only}` | **拿 ref 去点** |
 | ④ | `PLAYER_OK` | 播放页观察 + **代码测的 media_count** | 是否正常播放、有无组件 | 成功 or 标记未验证 |
 
-W1 的诚实说明：`RulePerceptor` 对 ① `SELECT_PLAY_SITES` / ② `IS_REACHABLE` **只能返回 `None`**（搜索链接筛选与「是否登录墙」都不是规则能判的），所以 W1 批次这两环全是 `unresolved`。这不是缺陷，是 fail-closed 的正常表现；W3 接上 `LLMPerceptor` 后同一份代码不需要改动一行。
+W1 的诚实说明：`RulePerceptor` 对 ① `SELECT_PLAY_SITES` / ② `IS_REACHABLE` **只能返回 `None`**（搜索链接筛选与「是否登录墙」都不是规则能判的），所以 W1 批次这两环全是 `unresolved`。这不是缺陷，是 fail-closed 的正常表现；W3 的 `LLMPerceptor` 已接上，同一份控制流不需要改动一行。
+
+**四个判断点现在全部有调用方**（2026-10-09 前 ① 是死的——`orchestrator` 环节 ① 之后直接 `extract_candidates` 全遍历，感知层无人问，`not_play_site` 这条负分支在真实链路上永远触发不了，而报表上分部数字齐全，没人会看得出这支空了）。① 的接线口径与 ② 同款：**None 时不中断采集**，候选仍按代码启发式全跑；判 True 才按 `source_href` 过滤；判 False 则**中断遍历且逐条记 `not_play_site`**（中断若不记账，这批结论就没有任何样本）。
 
 ### 失败分支全集（`executor/branches.py`）
 
@@ -155,7 +168,7 @@ W1 的诚实说明：`RulePerceptor` 对 ① `SELECT_PLAY_SITES` / ② `IS_REACH
 | 契约 | 落点 | 内容 | 产出方 |
 |---|---|---|---|
 | **P1 观察存档** | `output/pipeline/<task_id>__<hash>.json` | 动作 + 工具参数 + **观察原文全文**（真实回放，非 LLM 转述） | `executor/archive.py` |
-| **P2 单条样本** | `output/pipeline/samples/<id>.json` | 六件套 + provenance + gate 标记 | `assembler/builder.py` [待建] |
+| **P2 单条样本** | `output/pipeline/samples/<id>.json` | 六件套 + provenance + gate 标记 | `assembler/builder.py` [待建]（形状与切条已在 `assembler/schema.py`） |
 | **P3 训练视图** | `output/pipeline/views/<id>_{messages,openai,meta}.json` | 训练框架可读形态 | `assembler/views.py` [待建] |
 | 负样本池 | `output/pipeline/negative.jsonl` | 失败分支样本（带 `branch`） | `executor/branches.py` |
 | 复核队列 | `output/pipeline/review_*.jsonl` | 人工裁定（`verdict` + `reviewed_by`） | `executor/review_queue.py` |
@@ -164,7 +177,26 @@ W1 的诚实说明：`RulePerceptor` 对 ① `SELECT_PLAY_SITES` / ② `IS_REACH
 
 **正文 `body_text` 落盘全文，不落摘要。** 早期只留前 400 字符，理由「体积失控、需要时重抓」——站不住：站点会下线改版（重抓拿到的是另一个页面）、被反爬时根本重抓不回来、rationale 的实体核查会把落在摘要外的实体判成幻觉（那不是幻觉，是**没存**）。P1 是批次唯一真值源，证据链断裂不可逆，体积只是磁盘（D8 已隔离产物路径）。
 
+**动作 + 工具参数落在 `steps[]`**（顶层是搜索阶段，`visits[i]` 里是站点阶段），语义见 [executor/actions.py](trajectory_pipeline/executor/actions.py)。三条口径：
+
+- **`observe` 不是动作**，是上一个动作的观察回执。一次动作 + 紧随的 observe = 一个 step。记成动作会让模型学出「调用 observe」这种它不该发出的动作。
+- **动作里没有 `ref`**——它是 obscura 的会话内句柄（导航前有效），进训练数据等于让模型学随机数。点击目标一律语义化为 `{tag, label}`，这是**结构保证**（`Action` 没有可放 ref 的字段），不是序列化时过滤。实测 ref 从来没进过 P1（成功路径只记 `PLAYER_OK` 的 evidence，带 ref 的 `FIND_PLAY_CONTROL` 结论不记账），所以 `steps[]` 比 P1 原来有的**更多**。
+- **`origin` 区分「模型会选」与「执行器自己做的」**——会话隔离用的 `new_tab` 标 `infrastructure`：模型永不输出它，但它是真发生过的动作，删掉 P1 就无法回放。
+
+另有一个容易漏的字段：**`user_prompt` = 用户开口说的那句**（persona 渲染后的原文），与 `query`（拿去搜的检索串）是两件事。六件套第 ③ 件要的是前者——它曾只活在计划文件里，于是 P2 拿不到用户轮次，而存档里看不出任何异常。空串 = 手工路径（与 `provenance` 空 dict 同款约定）。
+
 **观察是真实回放，不是 LLM 转述**——这条一旦破，rationale 就没有锚。
+
+## 模块 5 · 组装（`assembler/`，形状已建，落盘待建）
+
+[assembler/schema.py](trajectory_pipeline/assembler/schema.py) 定义六件套值对象并**按文件格式**读 P1 切成样本；[assembler/observation_view.py](trajectory_pipeline/assembler/observation_view.py) 渲染训练态观察（纯代码，不用 LLM）。**`builder.py` / `views.py` 尚未写**，所以现在还不产出 P2/P3 文件。
+
+四条口径：
+
+- **一条 = 一个决策单元**（搜索阶段一条 / 每个站点一条）。设计方案 §3.5 早期同时写了「各自独立成条」与「前几步走摘要」，两者矛盾；按决策单元切唯一确定，且不把「选哪个站」与「这个站行不行」压进同一次预测。
+- **读 P1 不 import `executor`**——与 `executor/plan.py` 不 import taskgen 同一条纪律。理由是 **P1 贵、P2 便宜**：重建一批 P2 必须独立于 executor 的当前版本，否则老 P1 切不出样本。由 `tests/contract/test_p2_contract.py::TestNoExecutorImport` 用 AST 强制。
+- **训练动作空间在 assembler 侧冻结**，既不从 P1 反推（反推会让每条样本各带各的动作空间），也不从 `executor.actions.TOOLS` import。漂移由契约测试 AST 读那个字面量来查。
+- **缺件必须看得见**：闸门三值 `passed` / `failed` / **`not_run`**——模块 4 未落地，一律 `not_run`；「没跑」渲染成「通过」会让批次上线时看起来像过了闸。老存档缺的键（`steps` / `user_prompt` / 全文正文）逐条记进 `degraded_from`，不与新样本混用。
 
 ## 执行层：obscura（决策 D7）
 
@@ -182,9 +214,9 @@ Rust 无头浏览器引擎，内置反检测，**经标准 MCP 协议 stdio 直�
 
 ## 感知层（模块 3，可替换插件）
 
-`perception/base.py` 定协议，`questions.py` 定判断题注册表，`rule_perceptor.py` 是 W1 实现，`factory.py` 做注入与灰度（**待建**）。
+`perception/base.py` 定协议，`questions.py` 定判断题注册表，`rule_perceptor.py` 是 W1 实现，`llm_perceptor.py` 是 W3 实现，`factory.py` 做注入与灰度。
 
-输入是 DOM 预处理后的结构化观察（`Observation`），不是原始 HTML；输出必须是 schema。**七不变式由契约测试强制**（`tests/contract/test_perception.py`）：
+输入是 DOM 预处理后的结构化观察（`Observation`），不是原始 HTML；输出必须是 schema。**七不变式由契约测试强制**（`tests/contract/test_perception.py`，`IMPLEMENTATIONS` 一行一个实现，两个实现跑同一套）：
 
 | | 不变式 |
 |---|---|
@@ -195,6 +227,20 @@ Rust 无头浏览器引擎，内置反检测，**经标准 MCP 协议 stdio 直�
 | I5 | 无副作用——只读 `obs`，不触网、不持页面句柄 |
 | I6 | decision 型题 payload 完整，`ref` 可溯源到 `obs.interactive_elements` |
 | I7 | `answer=True` 时 payload 不得为空 |
+
+### W3 的 `LLMPerceptor` 是混合体，不是纯 LLM
+
+「LLM 是传感器不是驾驶员」在实现层是三条可检查的落法，缺一条就会把采集故障写成业务结论：
+
+1. **确定性事实优先，LLM 只做语义补位。** `<video>` 标签存在性是代码事实（`video_tag_count`），**不问模型**；预告片词表是**本项目的业务规则**，模型不知道也不该猜——它只在模型选中某个 ref 时用来**复核**。
+2. **采集充分性在代码层预检，在问模型之前**（`_sufficiency`）。这条是实测逼出来的，也是 W3 最贵的一条：**模型不会替你 fail-closed。** 实测 iqiyi 播放页 `video=1` 被判「否」，模型的分析是「`body_text` 为空、`interactive_elements` 为空，说明未渲染或采集失败」——它把**采集失败**讲成了一条通顺的错结论。规则版早就防住这条（哨兵返回分不清「没渲染完」与「确实为空」），换成 LLM 就丢了那层保护，而它恰恰是最需要的地方。
+3. **ref 白名单校验。** 模型回传的 ref 必须**真的存在于** `obs.interactive_elements`，否则 fail-closed。模型会编 ref（会话内句柄看着就像可生成的字符串），而代码拿它去 click——**点错不可逆**。
+
+另外：**不采信模型自报的 confidence**（`llm/__init__.py` 记着「自报普遍虚高」）。给的是未校准先验 `CONFIDENCE_JUDGED = 0.8`，evidence 里写明「非模型自报」，拿到标注集后按题校准。
+
+**灰度只在构造期**（`factory.build_perceptor`），不做运行期切换：运行期切换会让 `Decision.source` 分不清「LLM 判的」与「LLM 挂了所以规则版顶上来的」，而后者不是 fail-closed，是拿不确定的输入驱动确定的输出。要对比两条链就跑两批——`RunRecord.perceptor` 字段已经把两者分开。
+
+配置：`TRAJECTORY_PERCEPTOR=rule|llm|auto`（默认 `auto`，配了 LLM 后端就用 LLM 版，否则退回规则版**且不报错**，W1 批次必须在没有后端的机器上能跑通；`run --perceptor` 可临时覆盖）。显式 `llm` 而未配置则**报错**——静默退回会让人以为跑的是 LLM 版。后端配置见 [`llm/__init__.py`](trajectory_pipeline/llm/__init__.py)：`TRAJECTORY_LLM_BASE_URL` / `_MODEL` / `_API_KEY` / `_TIMEOUT_S`，**缺失即报错不猜**（与 `OBSCURA_EXE` 同纪律）。
 
 ## persona 六维（模块 1）
 
@@ -217,15 +263,17 @@ Rust 无头浏览器引擎，内置反检测，**经标准 MCP 协议 stdio 直�
 
 ## 现状（2026-10-09）
 
-**已跑通**：执行层端到端（真实 bing/baidu 站点）、模块 1 采样与 `run --plan` 接线、反爬拦截识别与单独记账、候选域名过滤、persona 渲染、复核队列与 `review --apply`、**成功站点域名分布报告（D7 验收）**。
+**已跑通**：执行层端到端（真实 bing/baidu 站点）、模块 1 采样与 `run --plan` 接线、反爬拦截识别与单独记账、候选域名过滤、persona 渲染、复核队列与 `review --apply`、**成功站点域名分布报告（D7 验收）**、**P1 动作流（`steps[]`）与 `user_prompt` 落盘**、**P2 六件套形状 + 按决策单元切条（不落盘）**、**W3 `LLMPerceptor` + `factory` + 判断点 ① 接线**（637 passed / 1 skipped）。
 
 **待办**：
 
+- **W3 只跑通了离线验证，真实端点还没跑过一批。** `llm/client.py` 对着本机 `/v1/models` 探过活，但判断点 ①④ 的完整链路**尚未在真实站点上跑过**——跑之前需先导出 `TRAJECTORY_LLM_BASE_URL` / `_MODEL` / `_API_KEY`（`OBSCURA_EXE` 也还没在本机设）。**先跑 `check`**（它会报 LLM 版 ready 与否），再跑 `run --perceptor llm`：模型名写错时每道题都返回 `None`，症状像「LLM 判不了」实则 404。
 - **规则版 `PLAYER_OK` 对真实视频站的正样本召回仍是 0**——只认 `<video>`/`<audio>`，真实视频站全是 iframe/JS 播放器，判断点 ④ 对它们一律 `None` → `unresolved`。`report` 的实测数据：20 站 / 成功 3 / **3 条全是 `fallback_used` 存在性判定**（其中一条是导航首页 hao123 的假阳性，该批存档早于「iframe 不作判据」的修正）。**W1 正样本靠人工复核**（`review --write` → 人工填 `verdict` → `--apply`，报表会按 `source` 把人工确认的成功与规则判定分开列）。这是 W3 `LLMPerceptor` 的直接输入，不是 W1 缺口。
-- `trailer_only` 词表覆盖率与误杀边界（真实站点上只跑到 `trailer_suspect`，`trailer_only` 一次都没触发）。
-- `rationale/` / `assembler/` / `evaluation/` / `storage/` 四个模块（包骨架已建，业务代码待写）。
+- **`CONFIDENCE_JUDGED = 0.8` 是未校准先验，不是实测值。** 拿到标注集后要按题校准，否则阈值判断全是在拿一个常数当概率用。
+- **`trailer_only` 词表覆盖率与误杀边界**（真实站点上只跑到 `trailer_suspect`，`trailer_only` 一次都没触发）。
+- **现有 4 份真实存档全部跑在 `steps[]` 落地之前**——它们切出来的 P2 全带 `degraded_from: [steps, user_prompt, body_preview_only]`，动作流与训练态正文只能靠新跑的一批补。契约测试 `test_p2_contract.py::TestToolSpaceDrift::test_存档里出现过的动作都在声明内` 现在是 skip，重跑一批后自动生效。
+- `assembler/builder.py`（落 P2）+ `views.py`（P3）+ `splitter.py`（切分已并入 `schema.split_archive`，是否仍单列待定）；`rationale/` / `evaluation/` / `storage/` 三个模块。
 - `docs/contracts/` 下 P1/P2/P3 三份字段级契约。
-- `perception/llm_perceptor.py` + `factory.py`（W3）。
 
 **每次真实运行后都要逐条打开存档读 evidence 核对**——这是固定动作不是可选项。设计上五类缺陷全部是离线测试测不出来的（fixture 是我们自己造的，规则和 fixture 一起错，测试照样绿），只有把真实站点喂进去、逐条读存档，才会看见「结论」和「证据」在打架。踩坑全记录在 [`trajectory_pipeline/docs/02-避坑指南.md`](trajectory_pipeline/docs/02-避坑指南.md)。
 
