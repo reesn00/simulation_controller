@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Final, Mapping, Sequence
 
 from trajectory_pipeline.taskgen import normalizer as nz
 from trajectory_pipeline.taskgen.persona import renderer
@@ -276,6 +276,32 @@ def sample_tasks(
     return SampleBatch(tuple(instances), report)
 
 
+#: **切片分母必须用这一套字段**，不能用 persona 的维度字段。
+#:
+#: persona 六维里 ``task_specificity`` 在 W1 下**会降级**（见
+#: :mod:`~trajectory_pipeline.taskgen.persona.renderer`）：半指代降级为指名、
+#: 无片名骨架上指名降级为半指代，而 ``provenance`` 里
+#: ``requested_specificity`` 记的是**请求**、``actual_specificity`` 记的是
+#: **实际落地**。
+#:
+#: 用 requested 算分母，得到的是「半指代维度表现正常」——一个**根本没发生**
+#: 的实验有了结论，且比没有这个维度更糟（它让退化的那一维看起来被验证过）。
+SLICE_AXIS_FIELDS: Final = ("genre", "popularity", "urgency", "verbal_style",
+                            "persona_presence", "actual_specificity")
+
+#: 这些维度在 W1 下**必然退化**，报健康度时必须显式点名。
+#:
+#: 不是「覆盖度不足」而是「结构上表达不出来」：W1 的查表渲染器读不懂骨架，
+#: 只能给出与指名等价的措辞。分清这两种退化很重要——前者补画像库能解决，
+#: 后者只能等 W3 的 LLM 改写器。
+#:
+#: ⚠️ 键名用 :data:`SLICE_AXIS_FIELDS` 的口径（``actual_specificity``），
+#: **不是** persona 的字段名（``task_specificity``）——这张表是按
+#: ``dimension_spread`` 的键去查的，写成字段名会一个都匹配不上，
+#: 于是所有退化都被误报成「稀疏」，而处置恰好相反（加采样量 vs 等 W3）。
+W1_DEGENERATE_DIMS: Final = frozenset({"actual_specificity"})
+
+
 def probe_skeletons(
     library: PersonaLibrary,
     skeletons: Sequence[TaskSkeleton] | None = None,
@@ -290,13 +316,18 @@ def probe_skeletons(
     离线单测用的是自造样本，覆盖不到真实措辞的边角——那些边角
     （例如「注明可观看的集数范围」这种嵌套要求）恰恰是探针最容易
     误判的地方。
+
+    额外报 ``dimension_spread``：**实际落地**的维度分布。
+    画像库的 ``coverage()`` 答的是「库里有没有这一档」，而这里答的是
+    「这批样本真正落到了几档」——两者会在降级维度上分叉，
+    而只有后者能预警「切片表里那一维会退化成单行」。
     """
     skels = tuple(skeletons) if skeletons is not None else load_skeletons()
     if limit is not None:
         skels = skels[:limit]
 
     triples: list[tuple[TaskSkeleton, PersonaProfile, str]] = []
-    rng = random.Random(f"{SALT}|probe")
+    rendered: list[tuple[TaskSkeleton, PersonaProfile, str, renderer.RenderResult]] = []
     runnable = [s for s in skels if s.runnable_in_w1]
     for s in runnable:
         for p in library.profiles:
@@ -304,9 +335,62 @@ def probe_skeletons(
                 continue
             res = renderer.render(s, p, seed=0)
             triples.append((s, p, res.prompt_text))
+            rendered.append((s, p, res.prompt_text, res))
             if len(triples) >= (limit or len(runnable)) * 4:
                 break
 
     report = nz.probe_report(triples)
     report["mode_distribution"] = mode_distribution(skels)
+    report["dimension_spread"] = _dimension_spread(rendered)
     return report
+
+
+def _dimension_spread(
+    rendered: Sequence[tuple[TaskSkeleton, PersonaProfile, str, Any]],
+) -> dict[str, Any]:
+    """**实际落地**的维度分布，以及各维度的降级率。
+
+    每维报三个数，缺一不可：
+
+    ``requested`` 画像请求的取值分布
+    ``actual``    渲染后真正落地的取值分布（切片分母只能用这个）
+    ``downgraded`` 请求与落地不一致的**条数**
+
+    退化维度会在这张表里显形：``requested`` 有三档而 ``actual`` 几乎全落一档，
+    且 ``downgraded`` 占了大头。
+
+    ⚠️ 退化判定看的是**最小档占比**而不是绝对档数：实测
+    ``actual_specificity`` 落在「188 指名 + 1 半指代」——形式上有 2 档，
+    但那一档只有 1 个样本，切片表里那一行的任何结论都是噪声。
+    只按「档数 ≤1」判定会让它蒙混过关，而它恰恰是最该被点名的那一维。
+    """
+    out: dict[str, Any] = {}
+    for dim in SLICE_AXIS_FIELDS:
+        # ``actual_specificity`` 刻意不是画像字段——它只在渲染后存在。
+        # 其余五维 requested 与 actual 同源（渲染不改写它们）。
+        is_specificity = dim == "actual_specificity"
+        requested: dict[str, int] = {}
+        actual: dict[str, int] = {}
+        downgraded = 0
+        for skeleton, profile, _text, res in rendered:
+            req = (str(profile.task_specificity) if is_specificity
+                   else str(getattr(profile, dim)))
+            act = str(res.applied_specificity) if is_specificity else req
+            requested[req] = requested.get(req, 0) + 1
+            actual[act] = actual.get(act, 0) + 1
+            if act != req:
+                downgraded += 1
+        total = len(rendered)
+        smallest = min(actual.values()) if actual else 0
+        out[dim] = {
+            "requested": dict(sorted(requested.items())),
+            "actual": dict(sorted(actual.items())),
+            "downgraded": downgraded,
+            "total": total,
+            # 退化 = 有一档小到切不出分母（<5%），或压根只有一档。
+            # 5% 取的是「这一行至少要有几个样本才谈得上比较」的经验线，
+            # 低于它时切片表给出的数字是噪声而不是结论。
+            "degenerate": len(actual) <= 1 or smallest / max(1, total) < 0.05,
+            "smallest_share": round(smallest / max(1, total), 4),
+        }
+    return out

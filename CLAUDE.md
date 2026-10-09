@@ -50,7 +50,7 @@ uv run python -m trajectory_pipeline.executor.cli check-persona      # 画像覆
 # ── 新树：人工复核与报表 ───────────────────────────────
 uv run python -m trajectory_pipeline.executor.cli review --write <queue.jsonl> --show 3
 uv run python -m trajectory_pipeline.executor.cli review --verdicts <queue.jsonl> --apply
-uv run python -m trajectory_pipeline.executor.cli report --out trajectory_pipeline/output/pipeline
+uv run python -m trajectory_pipeline.executor.cli report --out trajectory_pipeline/output/pipeline   # 分支分布 + 成功站点域名分布（D7 验收）
 
 # ── 门禁 ───────────────────────────────────────────────
 uv run python -m pytest -q
@@ -154,13 +154,15 @@ W1 的诚实说明：`RulePerceptor` 对 ① `SELECT_PLAY_SITES` / ② `IS_REACH
 
 | 契约 | 落点 | 内容 | 产出方 |
 |---|---|---|---|
-| **P1 观察存档** | `output/pipeline/<task_id>__<hash>.json` | 动作 + 工具参数 + **观察原文**（真实回放，非 LLM 转述） | `executor/archive.py` |
+| **P1 观察存档** | `output/pipeline/<task_id>__<hash>.json` | 动作 + 工具参数 + **观察原文全文**（真实回放，非 LLM 转述） | `executor/archive.py` |
 | **P2 单条样本** | `output/pipeline/samples/<id>.json` | 六件套 + provenance + gate 标记 | `assembler/builder.py` [待建] |
 | **P3 训练视图** | `output/pipeline/views/<id>_{messages,openai,meta}.json` | 训练框架可读形态 | `assembler/views.py` [待建] |
 | 负样本池 | `output/pipeline/negative.jsonl` | 失败分支样本（带 `branch`） | `executor/branches.py` |
 | 复核队列 | `output/pipeline/review_*.jsonl` | 人工裁定（`verdict` + `reviewed_by`） | `executor/review_queue.py` |
 
-字段级契约文档在 `trajectory_pipeline/docs/contracts/`（**目录已建，P1/P2/P3 三份待写**）。P1 的实际形状以 `RunRecord.to_json()` 为准。
+字段级契约文档在 `trajectory_pipeline/docs/contracts/`（**目录已建，P1/P2/P3 三份待写**）。P1 的实际形状以 `RunRecord.to_json()` 为准，路径形状以 `archive.DEFAULT_ROOT` 为准（**平铺单文件，不是 `observations/<run_id>/` 目录**——那是设计方案早期为动作流分片预留的形状，实现从未采用，文档已对齐）。
+
+**正文 `body_text` 落盘全文，不落摘要。** 早期只留前 400 字符，理由「体积失控、需要时重抓」——站不住：站点会下线改版（重抓拿到的是另一个页面）、被反爬时根本重抓不回来、rationale 的实体核查会把落在摘要外的实体判成幻觉（那不是幻觉，是**没存**）。P1 是批次唯一真值源，证据链断裂不可逆，体积只是磁盘（D8 已隔离产物路径）。
 
 **观察是真实回放，不是 LLM 转述**——这条一旦破，rationale 就没有锚。
 
@@ -211,15 +213,15 @@ Rust 无头浏览器引擎，内置反检测，**经标准 MCP 协议 stdio 直�
 
 **铁律：persona 与改写只改表述，不改判分标准。** 归一失败即丢弃该改写，退回骨架原文。
 
-存量 98 个 task **不是同一种任务**：能提片名的 81 个（`single_title`）、集合型 15 个（`aggregate`）、片名未知型 2 个（`unknown_title`）。W1 只跑 `single_title`——**判分标准与判据不匹配比跑不了更糟**。
+存量 98 个 task **不是同一种任务**：能提片名的 80 个（`single_title`）、集合型 16 个（`aggregate`）、片名未知型 2 个（`unknown_title`）。W1 只跑 `single_title`——**判分标准与判据不匹配比跑不了更糟**。（T041「那个周星驰的片子」原本被 `extract_title` 提成片名、归进 `single_title`，检索式变成 `那个周星驰的片子 在线观看`——哪个引擎都搜不到，且失败形态与「站上没有播放控件」不可区分。已修：指代前缀**与**类别词同时命中才算指代短语，否则《那个杀手不太冷》这类真片名会被误杀。）
 
 ## 现状（2026-10-09）
 
-**已跑通**：执行层端到端（真实 bing/baidu 站点）、模块 1 采样与 `run --plan` 接线、反爬拦截识别与单独记账、候选域名过滤、persona 渲染、复核队列与 `review --apply`。
+**已跑通**：执行层端到端（真实 bing/baidu 站点）、模块 1 采样与 `run --plan` 接线、反爬拦截识别与单独记账、候选域名过滤、persona 渲染、复核队列与 `review --apply`、**成功站点域名分布报告（D7 验收）**。
 
 **待办**：
 
-- **成功站点域名分布报告（D7 验收）挂起**——规则版 `PLAYER_OK` 只认 `<video>`/`<audio>`，真实视频站全是 iframe/JS 播放器，判断点 ④ 对它们一律 `None` → `unresolved`。**W1 正样本靠人工复核**（`review --write` → 人工填 `verdict` → `--apply`）。
+- **规则版 `PLAYER_OK` 对真实视频站的正样本召回仍是 0**——只认 `<video>`/`<audio>`，真实视频站全是 iframe/JS 播放器，判断点 ④ 对它们一律 `None` → `unresolved`。`report` 的实测数据：20 站 / 成功 3 / **3 条全是 `fallback_used` 存在性判定**（其中一条是导航首页 hao123 的假阳性，该批存档早于「iframe 不作判据」的修正）。**W1 正样本靠人工复核**（`review --write` → 人工填 `verdict` → `--apply`，报表会按 `source` 把人工确认的成功与规则判定分开列）。这是 W3 `LLMPerceptor` 的直接输入，不是 W1 缺口。
 - `trailer_only` 词表覆盖率与误杀边界（真实站点上只跑到 `trailer_suspect`，`trailer_only` 一次都没触发）。
 - `rationale/` / `assembler/` / `evaluation/` / `storage/` 四个模块（包骨架已建，业务代码待写）。
 - `docs/contracts/` 下 P1/P2/P3 三份字段级契约。

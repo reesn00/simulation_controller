@@ -76,6 +76,10 @@ class ReviewItem:
     page_title: str
     video_tag_count: int
     iframe_count: int
+    #: 正文的**展示摘要**（前 200 字符）——P1 存档存的是全文，
+    #: 这里只给人眼看，所以刻意截断以免复核页被长正文淹没。
+    #: 字段名保持 ``body_preview``：它描述的是**这个队列项**的形态，
+    #: 不是 P1 存档的字段名。存档侧那个字段叫 ``body_text``（全文）。
     body_preview: str
     degraded: tuple[str, ...]
     elements: tuple[Mapping[str, str], ...] = ()
@@ -156,7 +160,7 @@ def extract_items(archive: Mapping[str, Any]) -> list[ReviewItem]:
             page_title=str(obs.get("page_title") or ""),
             video_tag_count=int(obs.get("video_tag_count") or 0),
             iframe_count=int(obs.get("iframe_count") or 0),
-            body_preview=str(obs.get("body_preview") or "")[:200],
+            body_preview=str(obs.get("body_text") or obs.get("body_preview") or "")[:200],
             degraded=tuple(str(d) for d in (obs.get("degraded") or [])),
             elements=elements,
         ))

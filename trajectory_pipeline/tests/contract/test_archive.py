@@ -128,3 +128,190 @@ class TestCandidateSourceAudit:
         arc = P1Archive(tmp_path)
         path = arc.write(rec, task_id="T001")
         assert json.loads(path.read_text(encoding="utf-8"))["candidate_source"] == "heuristic"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 负样本池
+#
+# 「每条失败分支都必须有对应样本入库」是硬要求，所以并池与 P1 同出口
+# （见 P1Archive.write）。这里锁的是三条会静默失效的性质。
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _ledger(*outcomes):
+    """造一个最小 ledger。只要有 ``negative_samples()`` 即可。"""
+    class _L:
+        pass
+    led = _L()
+    led.negative_samples = lambda: list(outcomes)
+    return led
+
+
+def _outcome(url: str, branch: str | None, **kw):
+    from trajectory_pipeline.executor.branches import SiteOutcome
+
+    return SiteOutcome(
+        url=url, branch=branch, evidence=kw.pop("evidence", "证据"),
+        question=kw.pop("question", ""), source=kw.pop("source", "rule"),
+        reached=kw.pop("reached", False),
+    )
+
+
+def _record(outcomes, provenance=None):
+    class _R:
+        def to_json(self):
+            return {"task_id": "T001", "outcomes": [o.to_json() for o in outcomes]}
+
+    rec = _R()
+    rec.ledger = _ledger(*outcomes)
+    rec.provenance = provenance or {}
+    return rec
+
+
+def _pool_rows(tmp_path) -> list[dict]:
+    """读池。坏行**跳过**——与生产侧 ``_load_negative_keys`` 同一处置。"""
+    path = tmp_path / "negative.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+class TestNegativePool:
+    def test_真负样本入池(self, tmp_path):
+        arc = P1Archive(tmp_path)
+        arc.write(_record([_outcome("https://a.test/x", "no_play_control")]),
+                  task_id="T001")
+        rows = _pool_rows(tmp_path)
+        assert len(rows) == 1
+        assert rows[0]["branch"] == "no_play_control"
+        assert rows[0]["branch_label"] == "页面上没有播放控件"
+        assert rows[0]["task_id"] == "T001"
+
+    def test_unresolved不入池(self, tmp_path):
+        """``unresolved`` 是「没判出来」，混进池子会毁掉
+        「这里真的看不了」这条信号——负样本池的全部价值就在这句话上。"""
+        arc = P1Archive(tmp_path)
+        arc.write(_record([
+            _outcome("https://a.test/x", "unresolved"),
+            _outcome("https://b.test/x", "trailer_suspect"),
+            _outcome("https://c.test/x", "no_play_control"),
+        ]), task_id="T001")
+        rows = _pool_rows(tmp_path)
+        assert [r["url"] for r in rows] == ["https://c.test/x"]
+
+    def test_成功不入池(self, tmp_path):
+        arc = P1Archive(tmp_path)
+        arc.write(_record([_outcome("https://a.test/x", None)]), task_id="T001")
+        assert _pool_rows(tmp_path) == []
+
+    def test_跨run累积不覆盖(self, tmp_path):
+        """追加而非覆盖：覆盖会让「这批比上批少」这个信息一起消失。"""
+        arc = P1Archive(tmp_path)
+        arc.write(_record([_outcome("https://a.test/1", "no_play_control")]),
+                  task_id="T001", run_id="r1")
+        arc.write(_record([_outcome("https://a.test/2", "unreachable_hard")]),
+                  task_id="T002", run_id="r2")
+        assert len(_pool_rows(tmp_path)) == 2
+        # 两个 P1 存档也都在
+        assert len(arc.list_runs("T001")) == 1
+        assert len(arc.list_runs("T002")) == 1
+
+    def test_同task同站同分支不重复(self, tmp_path):
+        """重跑产生同样结论时是**一条**，不是两条。"""
+        arc = P1Archive(tmp_path)
+        out = _outcome("https://a.test/x", "no_play_control")
+        arc.write(_record([out]), task_id="T001", run_id="r1")
+        arc.write(_record([out]), task_id="T001", run_id="r2")
+        assert len(_pool_rows(tmp_path)) == 1
+
+    def test_同站不同task是两条(self, tmp_path):
+        """⚠️ 去重键含 task_id：同一站在不同 task 下失败，判分上下文不同，
+        是**两条**训练信号。用 url 单键会误合并，按 task 切片时少样本。"""
+        arc = P1Archive(tmp_path)
+        out = _outcome("https://a.test/x", "no_play_control")
+        arc.write(_record([out]), task_id="T001", run_id="r1")
+        arc.write(_record([out]), task_id="T002", run_id="r2")
+        rows = _pool_rows(tmp_path)
+        assert len(rows) == 2
+        assert {r["task_id"] for r in rows} == {"T001", "T002"}
+
+    def test_同站同task不同分支是两条(self, tmp_path):
+        arc = P1Archive(tmp_path)
+        arc.write(_record([_outcome("https://a.test/x", "no_play_control")]),
+                  task_id="T001", run_id="r1")
+        arc.write(_record([_outcome("https://a.test/x", "component_unverified")]),
+                  task_id="T001", run_id="r2")
+        assert len(_pool_rows(tmp_path)) == 2
+
+    def test_切片轴随样本落盘(self, tmp_path):
+        """负样本池是**按切片消费**的，只存 url + branch 等于把
+        就在手边的 provenance 丢掉。"""
+        arc = P1Archive(tmp_path)
+        arc.write(
+            _record([_outcome("https://a.test/x", "no_play_control")],
+                    provenance={"persona_id": "office-正式", "content_tier": "B",
+                                "popularity": "腰部", "genre": "喜剧"}),
+            task_id="T001",
+        )
+        row = _pool_rows(tmp_path)[0]
+        assert row["persona_id"] == "office-正式"
+        assert row["content_tier"] == "B"
+        assert row["genre"] == "喜剧"
+
+    def test_无真负样本时池不被创建(self, tmp_path):
+        """全是 unresolved 的一批不该凭空建出池文件——空文件会被
+        下游读成「跑过了，一条负样本都没有」。"""
+        arc = P1Archive(tmp_path)
+        arc.write(_record([_outcome("https://a.test/x", "unresolved")]),
+                  task_id="T001")
+        assert not (tmp_path / "negative.jsonl").exists()
+
+    def test_凭据命中时池也不被写(self, tmp_path):
+        """并池与 P1 同属一个出口，红线不能只守 P1——负样本池是要推给
+        Label Studio 的。"""
+        arc = P1Archive(tmp_path)
+        bad = _outcome("https://a.test/x", "no_play_control",
+                       evidence="Authorization: Bearer sk-abcdefghijklmnopqrst")
+        with pytest.raises(CredentialLeak):
+            arc.write(_record([bad]), task_id="T001")
+        assert _pool_rows(tmp_path) == []
+
+    def test_池内截断行被丢弃(self, tmp_path):
+        """文件被写坏时末行可能是半截 JSON。丢弃而非补全——
+        补全会造出一条**不存在的**负样本。"""
+        arc = P1Archive(tmp_path)
+        arc.write(_record([_outcome("https://a.test/1", "no_play_control")]),
+                  task_id="T001", run_id="r1")
+        pool = tmp_path / "negative.jsonl"
+        with pool.open("a", encoding="utf-8") as fh:
+            fh.write('{"task_id": "T002", "url": "https://b.test')   # 无换行结尾
+        # 坏行在末尾；新条目仍能并入，且不会因坏行崩溃
+        arc.write(_record([_outcome("https://c.test/3", "unreachable_hard")]),
+                  task_id="T003", run_id="r3")
+        urls = {r["url"] for r in _pool_rows(tmp_path)}
+        assert "https://a.test/1" in urls
+        assert "https://c.test/3" in urls, "新并入的负样本被坏行粘连后一起读不出来"
+
+    def test_截断行不粘连新条目(self, tmp_path):
+        """无换行的坏行必须与后写的条目**分行**，否则一坏俱坏。
+
+        追加前不补换行时，新 blob 会直接接在半截 JSON 后面，于是
+        「坏行只丢 1 条」退化成「刚跑出来的那条也一起丢」——
+        而负样本池少条目没人会发现。
+        """
+        arc = P1Archive(tmp_path)
+        pool = tmp_path / "negative.jsonl"
+        pool.write_text('{"task_id": "T000", "url": "https://x.test', encoding="utf-8")
+        arc.write(_record([_outcome("https://c.test/3", "no_play_control")]),
+                  task_id="T003", run_id="r3")
+        lines = pool.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2, "坏行与新条目没有被分行"
+        assert json.loads(lines[1])["url"] == "https://c.test/3"

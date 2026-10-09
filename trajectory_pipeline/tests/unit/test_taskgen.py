@@ -38,7 +38,12 @@ from trajectory_pipeline.taskgen.normalizer import (
     normalize,
     probe_report,
 )
-from trajectory_pipeline.taskgen.sampler import probe_skeletons, sample_tasks
+from trajectory_pipeline.taskgen.sampler import (
+    SLICE_AXIS_FIELDS,
+    W1_DEGENERATE_DIMS,
+    probe_skeletons,
+    sample_tasks,
+)
 from trajectory_pipeline.taskgen.skeleton import (
     SkeletonError,
     TaskSkeleton,
@@ -112,9 +117,30 @@ class TestSkeleton:
         assert extract_title("我想找\"电影\"在线观看") is None
         assert extract_title("周星驰执导的所有电影") is None
 
+    def test_指代短语不是片名(self):
+        """T041 实测：「那个周星驰的片子」被当成片名 → 检索式
+        「那个周星驰的片子 在线观看」在引擎里根本不存在，而这条轨迹在
+        分支分布里长得跟「这站没有播放控件」一模一样。"""
+        assert extract_title('我想搜索"那个周星驰的片子"合法在线资源') is None
+        assert extract_title('找"这个剧"的在线播放') is None
+
+    def test_指代前缀单独出现不判否(self):
+        """⚠️ 判据必须是指代前缀 **且** 品类词的合取——
+        「《那个杀手不太冷》」是真实存在的电影，只看前缀会误杀它。"""
+        assert extract_title("看《那个杀手不太冷》在线播放") == "那个杀手不太冷"
+        assert extract_title("看《这个杀手不太冷》在线播放") == "这个杀手不太冷"
+
+    def test_T041已落到aggregate(self, skeletons):
+        t41 = next(s for s in skeletons if s.task_id == "T041")
+        assert t41.title is None
+        assert t41.retrieval_mode == "aggregate"
+        assert not t41.runnable_in_w1
+
     def test_三种检索模式(self, skeletons):
+        # 80/16/2：T041 由 single_title 归入 aggregate（指代短语修复后）。
+        # 那个 15→16 的差值就是这条——它此前产出的检索式在引擎里不存在。
         dist = mode_distribution(skeletons)
-        assert dist == {"single_title": 81, "aggregate": 15, "unknown_title": 2}
+        assert dist == {"single_title": 80, "aggregate": 16, "unknown_title": 2}
 
     def test_聚合型不带单数信号(self, skeletons):
         # 「梁朝伟参演的文艺片」没有片名也没有"找一部"→ 集合，不是单片
@@ -620,16 +646,16 @@ class TestSampler:
     def test_排除被记账(self, library, skeletons):
         """静默排除会让报告看起来覆盖良好。
 
-        ⚠️ 排除数是 **17**（aggregate 15 + unknown_title 2），不是 98——
-        那 81 个 single_title 是被**用上**的。字段名说 excluded，
+        ⚠️ 排除数是 **18**（aggregate 16 + unknown_title 2），不是 98——
+        那 80 个 single_title 是被**用上**的。字段名说 excluded，
         值里就不能含未排除项：否则读的人得自己减一遍才知道真相。
         """
         b = sample_tasks(10, library=library, skeletons=skeletons, seed=1)
         r = b.report
         assert r.skeletons_seen == 98
-        assert r.skeletons_w1_runnable == 81
-        assert r.excluded_by_skeleton_mode == {"aggregate": 15, "unknown_title": 2}
-        assert sum(r.excluded_by_skeleton_mode.values()) == 98 - 81
+        assert r.skeletons_w1_runnable == 80
+        assert r.excluded_by_skeleton_mode == {"aggregate": 16, "unknown_title": 2}
+        assert sum(r.excluded_by_skeleton_mode.values()) == 98 - 80
         assert any("不在 W1 范围内" in w for w in r.warnings())
 
     def test_排除数与可跑数互补(self, library, skeletons):
@@ -644,7 +670,7 @@ class TestSampler:
             r = sample_tasks(6, library=library, skeletons=skeletons,
                              seed=1, w1_only=w1_only).report
             assert r.mode_distribution == {
-                "single_title": 81, "aggregate": 15, "unknown_title": 2}, w1_only
+                "single_title": 80, "aggregate": 16, "unknown_title": 2}, w1_only
 
     def test_全模式采样不谎报排除(self, library, skeletons):
         """``--all-modes`` 下**一个都没排除**。计数说谎比不计数更坏：
@@ -709,6 +735,30 @@ class TestSampler:
         """renderer 不该丢判分要求。掉 0 条是这里的期望值。"""
         rep = probe_skeletons(library, skeletons, limit=20)
         assert rep["accept_rate"] == 1.0, rep["samples"][:3]
+
+    def test_切片轴报的是实际落地而非请求(self, library, skeletons):
+        """``dimension_spread`` 必须同时报 requested 与 actual。
+
+        只报 requested 会让人以为半指代维度被覆盖了；而实际落地 188/1，
+        用 requested 算分母会得出「该维度表现正常」——一个没发生的实验
+        有了结论，比没有这个维度更糟。
+        """
+        rep = probe_skeletons(library, skeletons, limit=20)
+        sp = rep["dimension_spread"]
+        assert set(sp) == set(SLICE_AXIS_FIELDS)
+        spec = sp["actual_specificity"]
+        assert len(spec["requested"]) > 1          # 库里三档齐全
+        assert spec["downgraded"] > 0               # 但渲染时降级了
+        assert spec["degenerate"] is True
+
+    def test_切片轴用actual键而非persona字段名(self, library, skeletons):
+        """⚠️ 这条锁的是一次真实的失效：``W1_DEGENERATE_DIMS`` 曾写成
+        persona 字段名 ``task_specificity``，而 ``dimension_spread`` 的键是
+        ``actual_specificity``，于是**一个都匹配不上**——所有退化都被
+        误报成「稀疏」，处置恰好相反（该等 W3 的结果被报成加采样量即可）。"""
+        assert "actual_specificity" in W1_DEGENERATE_DIMS
+        assert "task_specificity" not in W1_DEGENERATE_DIMS
+        assert W1_DEGENERATE_DIMS <= set(SLICE_AXIS_FIELDS)
 
     def test_被排除的task在provenance可见(self, library, skeletons):
         """模式分布要跟着样本走，否则切片表看不到"这三类没跑"。"""

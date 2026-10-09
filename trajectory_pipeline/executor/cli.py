@@ -38,10 +38,16 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+from urllib.parse import urlsplit
 
-from trajectory_pipeline.executor.archive import DEFAULT_ROOT, P1Archive
+from trajectory_pipeline.executor.archive import (
+    DEFAULT_ROOT,
+    REVIEWED_SUFFIX,
+    P1Archive,
+)
 from trajectory_pipeline.executor.browser.mcp_client import EXE_ENV_VAR, McpClient
+from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
 from trajectory_pipeline.executor.browser.obscura_driver import (
     FORBIDDEN_TOOLS,
     ObscuraDriver,
@@ -56,6 +62,7 @@ from trajectory_pipeline.executor.review_queue import (
     write_queue as write_review_queue,
 )
 from trajectory_pipeline.executor.steps import search as search_step
+from trajectory_pipeline.taskgen.sampler import W1_DEGENERATE_DIMS
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.base import Q
 from trajectory_pipeline.perception.rule_perceptor import RulePerceptor
@@ -425,7 +432,66 @@ def cmd_check_persona(args: argparse.Namespace) -> int:
         print(f"    {row['task_id']} {row['fail_kind']}: {row['reason']}")
         print(f"      渲染→{row['text'][:70]}")
         print(f"      原文→{row['origin'][:70]}")
+
+    _print_dimension_spread(rep.get("dimension_spread") or {})
     return 1 if missing else 0
+
+
+def _print_dimension_spread(spread: Mapping[str, Any]) -> None:
+    """报「**实际落地**的维度分布」——与上面的「库覆盖度」不是一回事。
+
+    覆盖度答「库里有没有这一档」，这里答「这批样本真正落到了几档」。
+    两者会在降级维度上分叉：库里 ``task_specificity`` 三档齐全，
+    而渲染后可能全是指名。**只有后者能预警切片表里那一维会退化成单行。**
+
+    单开一节而不是并进覆盖度：合成一个数字的话，「探针 100% 通过」
+    会被读成「画像库健康」——那两件事回答的根本不是同一个问题。
+    """
+    if not spread:
+        return
+    print("\n== 实际落地的维度分布（切片分母看这一节）==")
+    # 两种退化**成因不同、处置也不同**，必须分开报：
+    #   结构性 —— 渲染器在 W1 下表达不出这一维，补画像库也没用，只能等 W3；
+    #   稀疏性 —— 维度是好的，只是最小档样本太少，加采样量或调配比即可。
+    # 合成一个「退化维度」列表会把后者说成前者，而处置恰好相反。
+    structural: list[str] = []
+    sparse: list[str] = []
+    for dim, d in spread.items():
+        total = d["total"] or 1
+        down_rate = d["downgraded"] / total
+        # 分类**不看** ``degenerate`` 标志：那是「最小档够不够大」的判据，
+        # 而结构性退化是「渲染器有没有表达出来」的判据——两者正交。
+        # 实测 actual_specificity 正是交叉情形：降级率 28%（结构性），
+        # 同时最小档 0.5%（稀疏）。按 degenerate 归类会把它报成
+        # 「加采样量即可」，而真实原因是渲染器——加了也白加。
+        if dim in W1_DEGENERATE_DIMS and down_rate > 0:
+            mark = "  ⚠️ 结构性退化"
+            structural.append(dim)
+        elif d["degenerate"]:
+            mark = "  ⚠️ 最小档过稀"
+            sparse.append(dim)
+        else:
+            mark = ""
+        print(f"  {dim:20s} actual={d['actual']}"
+              f"  降级 {d['downgraded']}/{total} ({down_rate:.0%})"
+              f"  最小档 {d.get('smallest_share', 0):.1%}{mark}")
+
+    if not structural and not sparse:
+        print("\n  各维度均落到 ≥2 档且最小档 ≥5%，切片表不会退化成单行")
+        return
+    if structural:
+        print(f"\n  ⚠️ **结构性退化维度：{structural}**")
+        print("     这些维度在 W1 下**渲染器结构上表达不出来**——不是画像库缺档，"
+              "补画像库解决不了，只能等 W3 的 LLM 改写器。")
+        print("     切片分母**必须**用 actual_*：用 persona 的 requested 值算分母"
+              "会得出「该维度表现正常」，")
+        print("     那是**一个根本没发生的实验有了结论**，比没有这个维度更糟。")
+    if sparse:
+        print(f"\n  ⚠️ **最小档过稀：{sparse}**")
+        print("     这些维度本身是好的（渲染器能表达），只是某一档样本占比 <5%，"
+              "切片表里那一行的结论是噪声。")
+        print("     处置：加大 -n、调整 --strata 配比，或合并该档——"
+              "**不是**渲染器的问题。")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -498,7 +564,7 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
                            "skipped", "unreviewed", "ignored"], 0)
     written = 0
     for path in sorted(root.glob("*.json")):
-        if path.name.endswith(".reviewed.json"):
+        if path.name.endswith(REVIEWED_SUFFIX):
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -509,7 +575,7 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
         merged, stats = apply_verdicts(data, verdicts)
         for k, v in stats.items():
             total[k] = total.get(k, 0) + v
-        dst = path.with_suffix(".reviewed.json")
+        dst = path.with_suffix(REVIEWED_SUFFIX)
         dst.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
                        encoding="utf-8")
         written += 1
@@ -527,15 +593,20 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     root = Path(args.out) if args.out else DEFAULT_ROOT
-    files = sorted(root.glob("*.json"))
-    if not files:
+    # 只认真存档（同目录的探针取证不参与），人工复核档取代原档。
+    # 分母错的报表比没有报表更坏，理由见 archive.select_archives。
+    picked = P1Archive(root).select_archives()
+    if not picked:
         print(f"{root} 下没有 P1 存档")
         return 0
+    files = [p for p, _reviewed in picked]
+    reviewed_n = sum(1 for _p, rev in picked if rev)
     counts: Counter = Counter()
     missing: Counter = Counter()
     blocked: Counter = Counter()
     filters: Counter = Counter()
     legacy_recomputed: list[str] = []
+    outcomes: list[Mapping[str, Any]] = []
     total_sites = 0
     usable = 0
     for f in files:
@@ -548,6 +619,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         counts.update(data.get("ledger", {}).get("by_branch", {}))
         for b in data.get("ledger", {}).get("missing_branches", []):
             missing[b] += 1
+        outcomes.extend(o for o in (data.get("outcomes") or []) if isinstance(o, Mapping))
         reason = str(data.get("search_blocked") or "")
         recomputed = False
         if "search_blocked" not in data:
@@ -556,10 +628,15 @@ def cmd_report(args: argparse.Namespace) -> int:
             # 不重算的话，这些存档会被算成「可跑」——而其中被验证码页拦下的
             # 恰恰是最不该被算作可跑的。与 provenance 那条同款：**缺字段 ≠ 空值**。
             # 判定用的是同一个 :func:`detect_block`，不是第二套逻辑。
+            #
+            # 正文取 ``body_text``（全文）优先、``body_preview`` 兜底：
+            # 限流词（"访问过于频繁"）完全可能落在摘要之外，用摘要判会漏，
+            # 而漏掉的结果是「被拦的存档被算成可跑」。``body_preview`` 分支
+            # 服务的是摘要时代落的老存档——那些存档本来就只剩摘要可用。
             o = data.get("search_observation") or {}
             reason = detect_block(
                 str(o.get("url") or ""), str(o.get("page_title") or ""),
-                str(o.get("body_preview") or ""),
+                str(o.get("body_text") or o.get("body_preview") or ""),
             )
             recomputed = bool(reason)
         if reason:
@@ -570,7 +647,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             usable += 1
         filters.update(data.get("candidate_filter") or {})
 
-    print(f"存档 {len(files)} 个，站点合计 {total_sites}")
+    head = f"存档 {len(files)} 个，站点合计 {total_sites}"
+    print(head + (f"（其中 {reviewed_n} 个已过人工复核）" if reviewed_n else ""))
 
     # 被反爬拦掉的**必须排在分支分布之前**。理由：它是运行级的，
     # 一次拦截会让后面所有分支分布都偏小，先看分支会被带着往下读。
@@ -598,7 +676,122 @@ def cmd_report(args: argparse.Namespace) -> int:
     if absent:
         print(f"\n**全程未出现的分支（{len(absent)}）**: {absent}")
         print("   这些不是「样本少」，是「这条路径没接上」——先查控制流。")
+
+    _print_domain_reach(outcomes)
     return 0
+
+
+#: 「零成功域名」进候选黑名单的最低访问次数。
+#:
+#: 1 次访问 1 次失败说明不了任何问题——可能是这个片没有、可能是这一次
+#: 网络抖动。低于这个数就报出来，只会让黑名单里塞满一次性噪音。
+_ZERO_SUCCESS_MIN_VISITS = 2
+
+
+def _site_domain(url: str) -> str:
+    """存档里一条 outcome 的站点域名。
+
+    **只剥 ``www.``，不做 eTLD+1 归并**：``v.youku.com`` 与 ``www.youku.com``
+    在反检测这件事上是**两个不同的入口**（跳转链、指纹、TLS 都不一样），
+    归并掉就看不见「一个入口通一个不通」这种最该看到的信号。
+    真要归并得用公共后缀表，离线环境没有，而两段式启发式会在
+    ``.com.cn`` / ``.co.uk`` 上错切——错切出来的域名分布是**假的**。
+    """
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _print_domain_reach(outcomes: list[Mapping[str, Any]]) -> None:
+    """成功站点域名分布——**D7 验收项**（设计方案里标 ❌ 未做的那条）。
+
+    它回答的是一个别处问不出来的问题：**obscura 的反检测实际通过率是多少**。
+    分支分布答不了——``unresolved`` 有九成是「页面拿到了但判不出播放器」，
+    那既可能是被拦了，也可能是页面本身没播放器，两者在那一列里长一样。
+
+    成功还要按来源拆开报，因为「规则版找到了播放页」和「人工看完截图
+    确认这站能看」是**两回事**：规则版只认 ``<video>`` 标签，真实视频站
+    几乎全是 JS/canvas 播放器，W1 的一条都不该由它判成功。合成一个
+    「成功 N」会把这两件事一起说出去，而结论只站得住其中一种。
+
+    分类**从 ``branch`` 现算**，不读存档里那份冗余的 ``is_negative_sample``：
+    它是 ``branch`` 的纯函数（见
+    :attr:`~trajectory_pipeline.executor.branches.SiteOutcome.is_negative_sample`），
+    而 ``branch not in NON_SAMPLE_BRANCHES`` 这条规则必须与负样本池
+    （:meth:`~trajectory_pipeline.executor.archive.P1Archive._append_negatives`）
+    **完全一致**——报表说「负」而池里没有、或反过来，两边一比就发现是口径分叉。
+    老存档缺这个字段时，读它会把真负样本静默掉进「未判」桶。
+    """
+    print("\n== 成功站点域名分布（D7 验收：反检测实际通过率）==")
+    stats: dict[str, Counter] = {}
+    by_source: Counter = Counter()
+    fallback_success = 0
+    for o in outcomes:
+        domain = _site_domain(str(o.get("url") or ""))
+        if not domain:
+            continue
+        bucket = stats.setdefault(domain, Counter())
+        bucket["visited"] += 1
+        branch = o.get("branch")
+        if branch is None:
+            bucket["success"] += 1
+            source = str(o.get("source") or "")
+            by_source[source or "?"] += 1
+            if o.get("fallback_used"):
+                fallback_success += 1
+        elif branch not in NON_SAMPLE_BRANCHES:
+            bucket["negative"] += 1
+        else:
+            # unresolved / trailer_suspect：判不出来，**不是负样本**。
+            bucket["unresolved"] += 1
+
+    if not stats:
+        print("  存档里没有 outcomes——先跑 run（不是 review 那步的产物）。")
+        return
+
+    visited = sum(b["visited"] for b in stats.values())
+    success = sum(b["success"] for b in stats.values())
+    rate = success / max(1, visited)
+    print(f"  访问 {visited} 站 / 成功 {success} 站（{rate:.1%}），"
+          f"落在 {len(stats)} 个域名上")
+
+    winners = sorted(((d, b) for d, b in stats.items() if b["success"]),
+                     key=lambda kv: (-kv[1]["success"], kv[0]))
+    for domain, b in winners:
+        print(f"    {domain:32s} 成功 {b['success']} / 访问 {b['visited']}"
+              f"    负 {b['negative']} · 未判 {b['unresolved']}")
+
+    if not winners:
+        print("    **本批零成功**。规则版只认 <video>/<audio>，真实视频站"
+              "（JS/canvas/iframe 播放器）一条都判不出来，这是设计上的预期。")
+        print("    W1 正样本走人工复核：review --write → 人工填 verdict → "
+              "review --verdicts … --apply，然后重跑本命令。")
+
+    src = " / ".join(f"{k} {v}" for k, v in by_source.most_common())
+    print(f"  成功来源：{src or '（无）'}"
+          + (f"，其中走 fallback {fallback_success}" if fallback_success else ""))
+    if fallback_success:
+        print(f"    ⚠️ {fallback_success}/{success} 成功是 **fallback** 判出来的，"
+              "不是语义判定。")
+        print("       存在性 ≠ 能正常播放，也 ≠ 播的是这部片子——"
+              "正样本基线被它抬高，成功率会虚高。")
+
+    dead = sorted(((d, b) for d, b in stats.items()
+                   if not b["success"] and b["visited"] >= _ZERO_SUCCESS_MIN_VISITS),
+                  key=lambda kv: (-kv[1]["visited"], kv[0]))
+    if dead:
+        # 带上 负/未判 拆分，不只是访问数。**零成功是 W1 的常态**，
+        # 而「零成功」有两种成因——全是真负样本（这站没这部片）还是
+        # 全是 unresolved（页面拿到了但判不出播放器）——处置完全相反：
+        # 前者该拉黑，后者该换感知层。只报访问数会把它们混成一条。
+        detail = " · ".join(
+            f"{d} {b['visited']}（负 {b['negative']} · 未判 {b['unresolved']}）"
+            for d, b in dead)
+        print(f"  零成功域名（累计访问 ≥2，可进候选黑名单）：{detail}")
+        print("    注意：这是**候选**不是判决——同站不同片结果可能不同，"
+              "拉黑前先看 negative.jsonl 里那几条的证据。")
 
 
 def build_parser() -> argparse.ArgumentParser:

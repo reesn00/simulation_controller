@@ -471,14 +471,32 @@ class TestRunRecordAudit:
                         search_url="u", candidate_source="heuristic")
         assert rec.to_json()["candidate_source"] == "heuristic"
 
-    async def test_观察序列化_只留摘要不留全文(self):
+    async def test_观察序列化_正文全文落盘(self):
+        """P1 是批次唯一的真值源，正文必须全文留存。
+
+        早期版本只留前 400 字符，理由是「体积失控、需要时按 url 重抓」。
+        那条理由站不住：站点会下线改版（重抓拿到的是另一个页面）、
+        被反爬时根本重抓不回来、rationale 的实体核查会把落在
+        摘要外的实体判成幻觉——而那不是幻觉，是**没存**。
+        """
         from trajectory_pipeline.executor.orchestrator import RunRecord
         big = obs_at("https://x.test/", body="x" * 100_000)
         rec = RunRecord(task_id="T001", title="t", query="q", search_url="u",
                         search_obs=big)
         j = rec.to_json()["search_observation"]
         assert j["body_len"] == 100_000
-        assert len(j["body_preview"]) == 400
+        assert j["body_text"] == big.body_text
+        assert "body_preview" not in j      # 摘要字段已退役
+
+    async def test_序列化_正文尾部内容可取回(self):
+        """反例保护：正文**尾部**的内容必须在存档里。
+        rationale 引用的实体落在 400 字符之后是常态。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+        marker = "《武林外传》第39集"
+        body = ("填充" * 300) + marker
+        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u",
+                        search_obs=obs_at("https://x.test/", body=body))
+        assert marker in rec.to_json()["search_observation"]["body_text"]
 
     async def test_序列化不含页面句柄(self):
         from trajectory_pipeline.executor.orchestrator import RunRecord
@@ -619,3 +637,239 @@ class TestAntiScraping:
         assert "T001__a.json" in out
         # 显式记了空串的那条**不算**重算，且仍算可跑
         assert "可跑 1 个" in out
+
+    async def test_报告重算用正文全文而非摘要(self):
+        """限流词完全可能落在 400 字符摘要之外。
+
+        正文改全文落盘后，若重算仍读摘要，这条会被判成「可跑」——
+        而它一次搜索都没搜成。**漏判的方向正好是报表最不该放过的那批。**
+        """
+        import json
+        from trajectory_pipeline.executor.cli import cmd_report
+        import argparse
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "T001__a.json").write_text(json.dumps({
+                "task_id": "T001", "query": "q",
+                "ledger": {"total_sites": 0, "by_branch": {}, "missing_branches": []},
+                # 新格式：正文全文，且限流词落在第 500 个字符之后
+                "search_observation": {
+                    "url": "https://www.baidu.com/s?wd=x",
+                    "page_title": "功夫_百度搜索",
+                    "body_text": "正常搜索结果" + "填充" * 300 + "访问过于频繁，请稍后再试",
+                    "body_len": 615,
+                },
+            }, ensure_ascii=False), encoding="utf-8")
+
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cmd_report(argparse.Namespace(out=str(root)))
+            out = buf.getvalue()
+        assert "被反爬拦截 1/1" in out
+        assert "rate_limit" in out
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# report 的存档选取 + 成功域名分布（D7 验收）
+#
+# 这一节锁的都是**分母**与**归因**——报表上错这两样，结论直接反过来，
+# 而错的那一栏还长得跟对的完全一样。
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _report(root):
+    """跑一次 report 并返回它的输出。"""
+    import argparse
+    import contextlib
+    import io
+    from trajectory_pipeline.executor.cli import cmd_report
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cmd_report(argparse.Namespace(out=str(root)))
+    return buf.getvalue()
+
+
+def _arch(tmp_path, name, *, outcomes, blocked="", total=None, **kw):
+    """造一份存档。``by_branch`` **从 outcomes 现推**，不手填——
+
+    手填就会造出「分支表说有 unresolved、outcomes 里没有」的存档，
+    而 report 的两张表各读各的字段，那种存档测出来的东西是假的。
+    """
+    import json
+
+    total = len(outcomes) if total is None else total
+    by_branch: dict[str, int] = {}
+    for o in outcomes:
+        if o.get("branch"):
+            by_branch[o["branch"]] = by_branch.get(o["branch"], 0) + 1
+    (tmp_path / name).write_text(json.dumps({
+        "task_id": name.split("__")[0], "search_blocked": blocked,
+        "ledger": {"total_sites": total, "by_branch": by_branch,
+                   "missing_branches": []},
+        "outcomes": outcomes, **kw,
+    }, ensure_ascii=False), encoding="utf-8")
+
+
+def _o(url, branch=None, *, source="rule", fallback=False):
+    return {"url": url, "branch": branch, "source": source, "fallback_used": fallback}
+
+
+class TestReportArchiveSelection:
+    def test_探针取证不算存档(self, tmp_path):
+        """同目录还躺着 obscura_tools.json / probe_observe.json。按 ``*.json`` 收
+        会把它们算成存档，于是「被拦 X/N」的分母偏大、拦截率被稀释。"""
+        _arch(tmp_path, "T001__a.json", outcomes=[_o("https://a.test/x", "no_play_control")])
+        (tmp_path / "obscura_tools.json").write_text('{"tools": []}', encoding="utf-8")
+        (tmp_path / "probe_observe.json").write_text('{"seen": 1}', encoding="utf-8")
+        out = _report(tmp_path)
+        assert "存档 1 个" in out
+
+    def test_复核档取代原档不重复计数(self, tmp_path):
+        """回填是覆盖式的，两份一起数等于同一批站点数两遍——
+        成功数与分母同时翻倍。"""
+        import json
+
+        o = [_o("https://a.test/x", "unresolved")]
+        _arch(tmp_path, "T001__a.json", outcomes=o)
+        _arch(tmp_path, "T001__a.reviewed.json",
+              outcomes=[{**o[0], "branch": None, "source": "human",
+                         "is_negative_sample": False}])
+        out = _report(tmp_path)
+        assert "存档 1 个" in out
+        assert "已过人工复核" in out
+        assert "访问 1 站 / 成功 1 站" in out, "人工确认的成功没被统计进来"
+
+    def test_复核档是唯一被读的那份(self, tmp_path):
+        """复核档说成功、原档说 unresolved 时，只能读出一个成功。
+
+        读成两份就等于「未裁定时按原判、裁定时按裁定」各算一次，
+        而同一批站点不能既是成功又不是失败。"""
+        import json
+
+        _arch(tmp_path, "T001__a.json", outcomes=[_o("https://a.test/x", "unresolved")])
+        _arch(tmp_path, "T001__a.reviewed.json",
+              outcomes=[_o("https://a.test/x", None, source="human")])
+        out = _report(tmp_path)
+        assert "成功 1 站" in out
+        # 若原档也读了，同一站会既算成功又算「未判 1」
+        assert "未判 0" in out and "未判 1" not in out
+
+
+class TestDomainReach:
+    def test_成功按来源拆开(self, tmp_path):
+        """「规则版找到了播放页」与「人工确认这站能看」是两件事。
+        合起来报一个「成功 N」，结论只站得住其中一种。"""
+        _arch(tmp_path, "T001__a.json", outcomes=[
+            _o("https://v.youku.com/a", None, source="rule", fallback=True),
+            _o("https://v.iqiyi.com/b", None, source="human"),
+        ])
+        out = _report(tmp_path)
+        assert "rule 1" in out and "human 1" in out
+
+    def test_fallback成功单独点名(self, tmp_path):
+        """存在性判定 ≠ 语义判定。fallback 判出的成功会虚高正样本基线，
+        而报表不点破的话没人看得出来。"""
+        _arch(tmp_path, "T001__a.json", outcomes=[
+            _o("https://www.hao123.com/", None, fallback=True)])
+        out = _report(tmp_path)
+        assert "fallback" in out
+        assert "虚高" in out
+
+    def test_零成功给出人工复核路径(self, tmp_path):
+        """W1 的常态就是零成功（真实视频站没 <video> 标签）。
+        报表不能只显示「成功 0」——得告诉人下一步走哪条路。"""
+        _arch(tmp_path, "T001__a.json", outcomes=[
+            _o("https://a.test/x", "unresolved"), _o("https://b.test/x", "unresolved")])
+        out = _report(tmp_path)
+        assert "本批零成功" in out
+        assert "review --write" in out
+
+    def test_单次访问不进黑名单候选(self, tmp_path):
+        """1 次访问 1 次失败说明不了任何事（这片可能没有、可能网络抖）。
+        报出来只会让黑名单塞满一次性噪音。"""
+        _arch(tmp_path, "T001__a.json", outcomes=[
+            _o("https://rare.test/x", "no_play_control"),
+            _o("https://common.test/1", "no_play_control"),
+            _o("https://common.test/2", "unresolved")])
+        out = _report(tmp_path)
+        assert "common.test 2" in out
+        assert "rare.test" not in out.split("黑名单")[-1]
+
+    def test_未判不进黑名单候选的分母混淆(self, tmp_path):
+        """``unresolved`` 既不是成功也不是负样本，但它是**访问过**——
+        分母里必须算它，否则通过率被虚高。"""
+        _arch(tmp_path, "T001__a.json", outcomes=[
+            _o("https://a.test/1", "unresolved"),
+            _o("https://a.test/2", "unresolved"),
+            _o("https://a.test/3", "unresolved")])
+        out = _report(tmp_path)
+        assert "访问 3 站 / 成功 0 站" in out
+        assert "未判 3" in out
+
+    def test_域名只剥www(self, tmp_path):
+        """``v.youku.com`` 与 ``www.youku.com`` 在反检测上是两个入口，
+        归并掉就看不见「一个通一个不通」。"""
+        from trajectory_pipeline.executor.cli import _site_domain
+
+        assert _site_domain("https://www.iqiyi.com/v_x.html?a=1") == "iqiyi.com"
+        assert _site_domain("https://v.youku.com/v_show/id_1.html") == "v.youku.com"
+        assert _site_domain("不是 url") == ""
+
+    def test_不读冗余的is_negative_sample(self, tmp_path):
+        """分类从 ``branch`` 现算。
+
+        存档里那份 ``is_negative_sample`` 是冗余字段，老存档可能压根没有；
+        读它的话真负样本会静默掉进「未判」桶，而那一栏读起来仍然合理。
+        """
+        _arch(tmp_path, "T001__a.json", outcomes=[
+            {"url": "https://a.test/1", "branch": "no_play_control"},      # 无该字段
+            {"url": "https://a.test/2", "branch": "unresolved"},
+        ])
+        out = _report(tmp_path)
+        assert "负 1 · 未判 1" in out   # 真负样本没被掉进「未判」
+
+    def test_口径与负样本池一致(self, tmp_path):
+        """报表说「负」的那几条，负样本池里必须一条不少、一条不多。
+
+        两边分叉的代价是**静默**的：报表和池子都看着正常，只是从某个切片
+        开始少样本——而那是评估结论的输入。这条断言把「负」的判定锁死在
+        同一个 ``NON_SAMPLE_BRANCHES`` 上。
+        """
+        import json
+
+        from trajectory_pipeline.executor.archive import P1Archive
+        from trajectory_pipeline.executor.branches import SiteOutcome
+
+        outcomes = [
+            {"url": "https://a.test/1", "branch": "no_play_control", "evidence": "e"},
+            {"url": "https://a.test/2", "branch": "unresolved", "evidence": "e"},
+            {"url": "https://a.test/3", "branch": "trailer_suspect", "evidence": "e"},
+            {"url": "https://b.test/1", "branch": "component_unverified", "evidence": "e"},
+            {"url": "https://b.test/2", "branch": None, "evidence": "e"},
+        ]
+
+        class _Rec:
+            def __init__(self):
+                self.ledger = type("L", (), {"negative_samples": staticmethod(
+                    lambda: [SiteOutcome(url=o["url"], branch=o["branch"], evidence="e")
+                             for o in outcomes])})()
+                self.provenance = {}
+
+            def to_json(self):
+                return {"task_id": "T001", "search_blocked": "",
+                        "ledger": {"total_sites": len(outcomes), "by_branch": {},
+                                   "missing_branches": []},
+                        "outcomes": outcomes}
+
+        P1Archive(tmp_path).write(_Rec(), task_id="T001")
+        pooled = {r["url"] for r in
+                  (json.loads(l) for l in
+                   (tmp_path / "negative.jsonl").read_text(encoding="utf-8").splitlines())}
+        assert pooled == {"https://a.test/1", "https://b.test/1"}
+        assert "负 1 · 未判 2" in _report(tmp_path)   # a.test：1 负 2 未判

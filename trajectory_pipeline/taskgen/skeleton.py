@@ -76,6 +76,22 @@ _TITLE_STOPWORDS: Final[tuple[str, ...]] = (
     "在线播放", "在线观看", "高清", "免费", "全集",
 )
 
+#: **指代前缀**——引号里的串以这些词开头，说明用户是在**指**一部作品，
+#: 而不是在**命名**它。存量实测只命中一条：T041
+#: 「我想搜索"那个周星驰的片子"合法在线资源」。
+#:
+#: ⚠️ **只凭指代前缀不能判否**：《那个杀手不太冷》是真实存在的电影。
+#: 所以判据必须是「指代前缀 **且** 含品类词」的**合取**——
+#: 「那个周星驰的**片子**」两段都占，而「那个杀手不太冷」只占前一段。
+#: 与 :data:`_TITLE_STOPWORDS` 的关系是**超集关系**：那个是「整体由品类词构成」，
+#: 这个是「含指代前缀 + 含品类词」，后者覆盖前者。
+_TITLE_REFERRING_PREFIXES: Final[tuple[str, ...]] = (
+    "那个", "这个", "那部", "这部", "某部", "某片", "一部",
+)
+#: 品类词在串**任意位置**出现即算数（不要求整体等于）——
+#: 「那个周星驰的片子」整体不等于任何 stopword，靠的就是这条。
+_TITLE_NOUN_MARKERS: Final[tuple[str, ...]] = _TITLE_STOPWORDS
+
 
 def _is_title_word(text: str) -> bool:
     """整体由品类/功能词构成的短串 → 不是片名。"""
@@ -84,6 +100,27 @@ def _is_title_word(text: str) -> bool:
         return True
     return any(norm == w or norm == w + "片" or norm == w + "剧"
                for w in _TITLE_STOPWORDS)
+
+
+def _is_referring_phrase(text: str) -> bool:
+    """引号里的是**指代短语**（指一部片却说不出名字）→ 不是片名。
+
+    命中后果与 :func:`_is_title_word` 完全一致，且更严重：
+    「那个周星驰的片子」被当成片名后，生成的检索式是
+    **「那个周星驰的片子 在线观看」**——引擎里根本没有这个条目，
+    搜出来的是一堆无关页面（或什么都没有）。而这条轨迹在分支分布里
+    长得与「这站没有播放控件」一模一样，失败归因会指错方向。
+
+    判为指代后 :func:`_detect_mode` 会把它落到 ``aggregate``（无片名、
+    无单数信号），于是 W1 批次自然排除它——**这正是它该去的地方**：
+    「周星驰的片子」是集合任务，用户自己也不知道要看哪一部。
+    """
+    norm = text.strip().strip("!！?？。，,")
+    if not norm:
+        return True
+    if not any(norm.startswith(p) for p in _TITLE_REFERRING_PREFIXES):
+        return False
+    return any(marker in norm for marker in _TITLE_NOUN_MARKERS)
 
 #: 集合信号——出现即「目标是多个源」。
 #:
@@ -204,12 +241,18 @@ def extract_title(text: str) -> str | None:
 
     抽不到不是失败：存量里 17/98 个 task 本来就没有具体片名
     （按导演/榜单/场景检索），那些走 :data:`RetrievalMode` 的另两档。
+
+    两种「不是片名」都要挡，且**理由不同**：
+
+    - :func:`_is_title_word` —— 整体由品类词构成（「"电影"」）
+    - :func:`_is_referring_phrase` —— 指代短语（「"那个周星驰的片子"」）
     """
     for pattern in _TITLE_PATTERNS:
         m = pattern.search(text)
         if m:
             title = m.group(1).strip()
-            if title and not _is_title_word(title):
+            if title and not _is_title_word(title) \
+                    and not _is_referring_phrase(title):
                 return title
     return None
 

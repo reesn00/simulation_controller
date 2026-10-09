@@ -144,19 +144,31 @@ class RunRecord:
 
 
 def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
-    """Observation → JSON。**只保留审计必需的字段**。
+    """Observation → JSON。落**可归因的证据**，不是给人眼看的摘要。
 
-    ``body_text`` 全量落盘会让 P1 体积失控（25 万字符的页面很常见），
-    而它对复核的价值有限——真正的复核入口是 ``url`` + ``page_title`` +
-    ``interactive_elements``。正文只留**前若干字符的摘要 + 长度 + 污染率**，
-    需要全文时按 url 重抓。
+    ⚠️ **正文全文落盘**（``body_text``），早期版本只留 ``body_preview`` 前 400
+    字符，理由是「体积失控、需要时按 url 重抓」。那个理由在真实运行里
+    站不住：
+
+        - 站点会失效、下线、改版，重抓拿到的是**另一个页面**，
+          而存档里那条结论的证据已经不存在了；
+        - 被反爬拦截时根本重抓不回来；
+        - rationale 的实体核查（模块 4，待建）要拿 rationale 引用的实体
+          去对观察存档——只有摘要时，落在 400 字符之后的实体一律判成幻觉，
+          而那**不是幻觉，是没存**。
+
+    P1 是批次唯一的真值源，证据链一旦断就是**不可逆**的；体积只是磁盘。
+    D8 已把产物隔离在 ``output/pipeline/``，这条与存量不共享磁盘预算。
+
+    ``body_len`` / ``body_source`` / ``truncated`` 一并保留——它们是
+    「这份正文可不可信」的判据，与正文本身同等重要。
     """
     if obs is None:
         return None
     return {
         "url": obs.url,
         "page_title": obs.page_title,
-        "body_preview": obs.body_text[:400],
+        "body_text": obs.body_text,
         "body_len": len(obs.body_text),
         "body_source": obs.body_source,
         "truncated": obs.truncated,
