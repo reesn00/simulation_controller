@@ -15,7 +15,7 @@ observe 返回的是未过滤的原始交互元素。
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from trajectory_pipeline.executor.dom import CleanedLink, CleanedSnapshot
 from trajectory_pipeline.perception.base import InteractiveElement, Observation
@@ -65,6 +65,21 @@ class PageDriver(Protocol):
 
     async def count(self, selector: str) -> int:
         """计数匹配 CSS selector 的元素数。探测失败返回 0。"""
+        ...
+
+    async def extract(self, fields: Mapping[str, str]) -> Mapping[str, Any]:
+        """按 ``{字段名: CSS selector}`` 抽取结构化内容。**原子原语。**
+
+        ``'a@href'`` 取属性，字段名加 ``[]`` 取全部匹配（值为数组）。
+        抽不到 / 选择器失效返回空映射，**不抛异常**——那是页面事实，
+        由上层决定是 fail-closed 还是换判据。
+
+        存在的理由：``links()`` 的 ``text`` 对搜索结果页往往**不是标题**
+        （实测 bing 只给面包屑 ``qq.com https://v.qq.com › cover``），
+        而「标题 ↔ URL 的对应」正是判断点 ① 的全部判据。本原语不含任何
+        业务语义——**选哪个 selector 是 :mod:`~trajectory_pipeline.executor.steps.search`
+        的事**，驱动层只负责按 selector 取。
+        """
         ...
 
     async def evaluate(self, expression: str) -> Any:

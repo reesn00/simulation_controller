@@ -324,7 +324,7 @@ class P1Archive:
             if not line:
                 continue
             try:
-                row = _json.loads(line)
+                row = json.loads(line)
             except ValueError:
                 continue
             if not isinstance(row, dict):
@@ -353,3 +353,154 @@ class P1Archive:
     def select_archives(self) -> list[tuple[Path, bool]]:
         """本目录下的全部存档（人工复核后取复核档）。见 :func:`select_archives`。"""
         return select_archives(self._root)
+
+    # ── 回滚 ────────────────────────────────────────────────────────
+
+    def purge_run(self, run_id: str) -> tuple[tuple[Path, ...], tuple[dict[str, Any], ...]]:
+        """回滚一个 run：**存档与它并进池的负样本一起删**。
+
+        返回 ``(删掉的存档路径, 删掉的池行)``。**先返回再删**——调用方
+        要先看清要动什么，确认了才 ``--apply``。
+
+        ## 为什么必须成对删
+        负样本池是**跨 run 累积**的 append-only 文件。只删存档会留下一批
+        「没有来源的标签」：它们出现在的 task 在池里挂着，但翻遍存档找不到
+        依据，而 :func:`~trajectory_pipeline.executor.integrity.check_root`
+        的横向矛盾检查正是**靠存档去推翻池行**的——存档没了，那批行
+        再也无人能证伪，就此常驻。
+
+        ## 为什么需要这个命令
+        实测（2026-10-09）：``run`` 少给 ``--title``，拿 ``T001`` 当片名，
+        搜成「轮胎 T001」，产出 6 条 ``not_play_site``。这些标签**对
+        实际检索式是真的**（那几个站确实不是 T001 轮胎的观看页），
+        但它们要表达的是「这里看不了《功夫》」——片名错了，
+        标签的前提就整个塌了，而**存档里看不出任何异常**。
+
+        同一批的行还有第二种回滚理由：判断点 ① 的输入缺陷曾产出
+        与同一 URL 成功记录直接矛盾的 ``not_play_site``。
+        那类不必删干净——``check-archives`` 会指出来，由人按 URL 逐条定。
+
+        ## 键从哪来
+        ``run_id`` 是**存档文件名里的那一段**（``T001__b3a3548a.json``），
+        池行里也带着同名字段——两者由 :meth:`write` 同时写下，
+        所以它是唯一能把两边对上的键。
+        """
+        run_id = (run_id or "").strip()
+        if not run_id:
+            raise ValueError("run_id 为空")
+
+        archives: list[Path] = []
+        for path, _reviewed in select_archives(self._root):
+            if _run_id_of(path.name) == run_id:
+                archives.append(path)
+        # 复核档与原档成对存在：删一份留一份会让 select_archives 的
+        # 「复核档取代原档」配对落空，下一个同名原档凭空多出一次复核。
+        for path in self._root.glob(f"*{run_id}*"):
+            if path not in archives and path.suffix == ".json":
+                archives.append(path)
+
+        rows = [row for row in self._load_pool_rows()
+                if str(row.get("run_id") or "") == run_id]
+        return tuple(sorted(set(archives))), tuple(rows)
+
+    def apply_purge(
+        self,
+        archives: tuple[Path, ...],
+        rows: tuple[dict[str, Any], ...],
+    ) -> tuple[int, int]:
+        """真正执行 :meth:`purge_run` 的删除。返回 ``(存档数, 池行数)``。
+
+        只按 ``run_id`` 过滤，不按去重键——而去重键
+        ``(task_id, url, branch)`` 是**跨 run 全局**的（见
+        :meth:`_append_negatives`），所以同一个 task 的两个 run 撞上同一个
+        ``url + branch`` 时池里只会有一行、``run_id`` 记的是**先写的那批**。
+        回滚先写的那批会连带删掉后写那批也认同的这条标签。
+
+        这个代价是有意接受的：那一行的 ``task_id`` / ``url`` / ``branch``
+        与被回滚的完全相同，而回滚的前提正是「这批 task 的结论整体不成立」——
+        同 task 同 URL 的另一条标签同样不成立。与其为这个保留一条已经
+        不成立的标签，不如让池干净。
+
+        这两个「顺手」实测都出过事，所以都堵上了：
+
+        1. **按身份删，不按 ``run_id`` 删。** 早先的写法是「取所有行的
+           ``run_id`` 集合，删掉命中集合的行」——于是调用方一旦传进一行
+           别的 run 的行（拼错、复用别人的 ``rows``），爆炸半径就静默扩大。
+           签名说的是「删这些行」，实现说的却是「删这些 run_id 的所有行」。
+        2. **重写时保留坏行原文。** 池子会被回滚整体重写一遍，而读的时候
+           坏行是跳过的——不保留就等于**每回滚一次顺手清掉全池的坏行**。
+           那是另一件事（且坏行可能是被人手工截断、正等人查的），
+           不该由一个 run 级回滚顺手决定。空行照旧丢弃。
+
+        返回的 ``池行数`` 是**实际删掉**的行数，与传入 ``rows`` 条数不等
+        时说明调用方传了库里没有的行。
+        """
+        # 按行的 JSON 文本配对记账：同一 ``url + branch`` 被两个 run 并过时
+        # 池里只有一行，用计数而不是集合才不会「删一行少一行」。
+        budget: dict[str, int] = {}
+        for row in rows:
+            key = json.dumps(row, ensure_ascii=False, sort_keys=True)
+            budget[key] = budget.get(key, 0) + 1
+
+        kept: list[str] = []
+        deleted = 0
+        for raw, row in self._load_pool_lines():
+            if row is not None:
+                key = json.dumps(row, ensure_ascii=False, sort_keys=True)
+                if budget.get(key):
+                    budget[key] -= 1
+                    deleted += 1
+                    continue
+            kept.append(raw)
+
+        payload = "".join(raw + "\n" for raw in kept)
+        self._write_text(self.negative_pool_path, payload)
+        for path in archives:
+            path.unlink(missing_ok=True)
+        return len(archives), deleted
+
+    def _load_pool_lines(self) -> list[tuple[str, dict[str, Any] | None]]:
+        """读池子，**坏行原样带出**（第二项为 ``None``）。
+
+        重写整份文件时要用它而不是 :meth:`_load_pool_rows`：只经过后者
+        的行会被原样丢弃，等于回滚顺手清了坏行。
+        """
+        path = self.negative_pool_path
+        if not path.exists():
+            return []
+        out: list[tuple[str, dict[str, Any] | None]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                out.append((line, None))
+                continue
+            out.append((line, row if isinstance(row, dict) else None))
+        return out
+
+    def _load_pool_rows(self) -> list[dict[str, Any]]:
+        """读池子里的**好行**。坏行不在返回里（要保留原文走
+        :meth:`_load_pool_lines`）——一次回滚不该顺手把别人的坏行清掉，
+        而把坏行塞进返回值只会让调用方不小心把它写回去。"""
+        return [row for _, row in self._load_pool_lines() if row is not None]
+
+def _run_id_of(filename: str) -> str:
+    """从存档文件名里取 ``run_id``，取不到返回空串。
+
+    ``T001__b3a3548a.json`` → ``b3a3548a``；``T001__b3a3548a.reviewed.json``
+    同样 → ``b3a3548a``——**复核后缀要剥掉**，否则 :meth:`P1Archive.purge_run`
+    只能认出原档、漏掉复核档，删一半留一半（见那里的说明）。
+
+    判定依据与 :func:`select_archives` 一致（都有 ``__``、都以 ``.json`` 结尾），
+    两处口径不同就会出现「有的地方找得到、有的地方找不到」。
+    """
+    name = filename
+    if name.endswith(REVIEWED_SUFFIX):
+        name = name[: -len(REVIEWED_SUFFIX)] + ".json"
+    stem = name[: -len(".json")] if name.endswith(".json") else name
+    if "__" not in stem:
+        return ""
+    return stem.rsplit("__", 1)[1]

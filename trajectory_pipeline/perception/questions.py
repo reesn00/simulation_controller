@@ -90,13 +90,20 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
 #: 不属于任何一道 Question 的分支——它们由**代码**判定或兜底，不经 LLM。
 #: 挂在注册表里是为了让「失败分支全集」有唯一出处（``executor/branches.py`` 校验）。
 #:
-#: 四类来源：
+#: 五类来源：
 #:   ``unreachable_hard``  导航失败，代码直接判（``DriverError`` → I4）
 #:   ``trailer_only``      预告片词表命中，代码判
 #:   ``trailer_suspect``   疑似预告但词表判不准，**留给人工兜底**
 #:   ``unresolved``        能力不可用，fail-closed 的落点（I4）
+#:   ``player_unverified`` 判断点④ 判不出来，**但控件点了、播放页在眼前**
+#:                         ——它与 ``unresolved`` 都「不是负样本」，
+#:                         成因却不同（页面证据不足 vs 代码能力不足），
+#:                         混在一支里复核队列就没法分工。详见
+#:                         ``executor/branches.py`` 的
+#:                         :meth:`RunLedger.record_unresolved_reached`
 CODE_ONLY_BRANCHES = frozenset({
     "unreachable_hard", "trailer_only", "trailer_suspect", "unresolved",
+    "player_unverified",
 })
 
 
@@ -115,7 +122,7 @@ def negative_branch_of(question_id: str) -> str:
 
 
 def all_branches() -> frozenset[str]:
-    """失败分支全集（8 条）。
+    """失败分支全集（9 条）。
 
     这是契约的一部分：``executor/branches.py`` 落盘时按这个集合校验，
     出现集合外的分支名即报错，避免「分支静默消失」。

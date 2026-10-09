@@ -45,6 +45,7 @@ from trajectory_pipeline.taskgen.sampler import (
     sample_tasks,
 )
 from trajectory_pipeline.taskgen.skeleton import (
+    DEFAULT_TASKS_YAML,
     SkeletonError,
     TaskSkeleton,
     extract_title,
@@ -53,7 +54,7 @@ from trajectory_pipeline.taskgen.skeleton import (
     parse_skeleton,
 )
 
-TASKS_YAML = "simulate_serve/config/tasks.yaml"
+TASKS_YAML = DEFAULT_TASKS_YAML
 
 
 # ══════════════════════════════════════════════════════════════════════

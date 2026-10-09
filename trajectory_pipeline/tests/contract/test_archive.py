@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -128,6 +129,56 @@ class TestCandidateSourceAudit:
         arc = P1Archive(tmp_path)
         path = arc.write(rec, task_id="T001")
         assert json.loads(path.read_text(encoding="utf-8"))["candidate_source"] == "heuristic"
+
+    def test_运行参数随存档落盘(self, tmp_path):
+        """**落盘才算数**：进程内设了不写进去，读档的人拿到的仍是残缺档。
+        B-2 的分母（``max_candidates``）取自这里，缺了整批覆盖完整性无从评。"""
+        from trajectory_pipeline.executor.orchestrator import RunConfig, RunRecord
+
+        rec = RunRecord(task_id="T001", title="功夫", query="q", search_url="u")
+        rec.run_config = dataclasses.asdict(RunConfig(engine="bing",
+                                                      max_candidates=7))
+        blob = json.loads(
+            P1Archive(tmp_path).write(rec, task_id="T001").read_text(encoding="utf-8"))
+        assert blob["run_config"]["max_candidates"] == 7
+        assert blob["run_config"]["engine"] == "bing"
+
+    def test_未跑时运行参数为空对象而非缺键(self, tmp_path):
+        """键必须**在**：读档方按 ``archive.get("run_config")`` 判降级，
+        缺键与空 dict 都判降级，但缺键在「这字段是新增的」时会让人
+        误以为读的是老版本存档。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+
+        rec = RunRecord(task_id="T001", title="功夫", query="q", search_url="u")
+        blob = json.loads(
+            P1Archive(tmp_path).write(rec, task_id="T001").read_text(encoding="utf-8"))
+        assert blob["run_config"] == {}
+
+    def test_元素总量随观察落盘(self, tmp_path):
+        """D-2 的分母。落盘条数上限 80，页面若有 300 个控件，
+        只留「80 条」的话「被裁掉」与「不存在」在数据上完全同形。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+        from trajectory_pipeline.perception.base import (
+            InteractiveElement, LinkItem, Observation,
+        )
+
+        obs = Observation(
+            url="https://x.test/", page_title="T", body_text="正文",
+            interactive_elements=tuple(
+                InteractiveElement(ref=f"e{i}", tag="a", label=f"链接{i}")
+                for i in range(100)),
+            links=tuple(LinkItem(text=f"t{i}", href=f"https://x.test/{i}")
+                        for i in range(70)),
+            elements_total=100, links_total=70,
+        )
+        rec = RunRecord(task_id="T001", title="功夫", query="q",
+                        search_url="u", search_obs=obs)
+        j = json.loads(
+            P1Archive(tmp_path).write(rec, task_id="T001").read_text(
+                encoding="utf-8"))["search_observation"]
+        assert j["elements_total"] == 100
+        assert j["links_total"] == 70
+        assert j["elements_total"] > len(j["interactive_elements"])
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -315,3 +366,96 @@ class TestNegativePool:
         lines = pool.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2, "坏行与新条目没有被分行"
         assert json.loads(lines[1])["url"] == "https://c.test/3"
+
+class TestPurgeRun:
+    """回滚必须**成对**删存档与池行，且只删指定 run 的。
+
+    这组测试是补写的——``purge_run``/``apply_purge`` 写完时**一条测试都没有**，
+    于是 ``--apply`` 路径上的一处 ``self.negative_pool_path()``（多了对括号）
+    一直活着：预演路径 ``purge_run`` 走的是正确的无括号写法，所以**预演永远
+    正常**，只有真正执行删除时才抛 ``'WindowsPath' object is not callable``。
+    实测 2026-10-09 第一次 ``--apply`` 就是这么炸的。
+
+    教训落在测试形状上：**预演与执行是两条路径，只测预演等于没测**。
+    """
+
+    def _batch(self, tmp_path, run_id: str, urls, task_id="T001"):
+        arc = P1Archive(tmp_path)
+        outcomes = [_outcome(u, "not_play_site") for u in urls]
+        arc.write(_record(outcomes), task_id=task_id, run_id=run_id)
+        return arc
+
+    def test_apply_同时删存档与池行(self, tmp_path):
+        arc = self._batch(tmp_path, "bad1", ["https://a.test/1", "https://a.test/2"])
+        archives, rows = arc.purge_run("bad1")
+        assert len(archives) == 1 and len(rows) == 2
+
+        n_arch, n_row = arc.apply_purge(archives, rows)
+        assert (n_arch, n_row) == (1, 2)
+        assert _pool_rows(tmp_path) == [], "池行没删干净"
+        assert not list(tmp_path.glob("*.json")), "存档没删掉"
+
+    def test_apply_不动别的_run(self, tmp_path):
+        """回滚一批**不能**连坐同目录里的其他批次。"""
+        arc = self._batch(tmp_path, "bad1", ["https://a.test/1"])
+        self._batch(tmp_path, "good1", ["https://g.test/1"])
+        keep = (tmp_path / "T001__good1.json")
+
+        archives, rows = arc.purge_run("bad1")
+        arc.apply_purge(archives, rows)
+
+        assert keep.exists(), "回滚 bad1 把 good1 的存档一起删了"
+        remaining = _pool_rows(tmp_path)
+        assert [r["url"] for r in remaining] == ["https://g.test/1"]
+
+    def test_apply_保留坏行(self, tmp_path):
+        """坏行（半截 JSON）不能被回滚顺手清掉——那是另一件事。"""
+        pool = tmp_path / "negative.jsonl"
+        pool.write_text('{"task_id": "T000", "url": "https://x.test', encoding="utf-8")
+        arc = self._batch(tmp_path, "bad1", ["https://a.test/1"])
+
+        archives, rows = arc.purge_run("bad1")
+        arc.apply_purge(archives, rows)
+
+        text = pool.read_text(encoding="utf-8")
+        assert "https://x.test" in text, "回滚把别人的坏行清了"
+
+    def test_apply_删复核档且不留孤儿(self, tmp_path):
+        """复核档必须与原档成对删——只删一份会让「复核档取代原档」的配对落空。"""
+        arc = self._batch(tmp_path, "bad1", ["https://a.test/1"])
+        reviewed = tmp_path / "T001__bad1.reviewed.json"
+        reviewed.write_text("{}", encoding="utf-8")
+
+        archives, rows = arc.purge_run("bad1")
+        arc.apply_purge(archives, rows)
+        assert not reviewed.exists(), "复核档成了孤儿"
+        assert not list(tmp_path.glob("*.json"))
+
+    def test_purge_run_空run_id报错(self, tmp_path):
+        """空 run_id 不报错的话会静默删掉**零条**——命令看起来成功了。"""
+        arc = self._batch(tmp_path, "bad1", ["https://a.test/1"])
+        with pytest.raises(ValueError):
+            arc.purge_run("   ")
+
+    def test_apply_传入库里没有的行不误删(self, tmp_path):
+        """传入 ``rows`` 里有一行**库里根本不存在**时，不能拿它去扩大删除范围。
+
+        早先的写法是「取所有传入行的 ``run_id`` 集合，删掉命中集合的行」——
+        于是一行混进来的、带着**别的 run 的 run_id** 的 ``rows`` 就能把那个
+        run 连坐掉。签名说的是「删这些行」，实现说的却是「删这些 run_id 的
+        所有行」，两者在正常路径上完全等价，只有这个场景才分辨得出来。
+
+        ⚠️ 构造这行时 ``run_id`` **必须换掉**：只改 ``url`` 的话它仍带着
+        ``bad1``，爆炸半径一点没变，两种实现给出的结果完全一样——
+        写这条断言时第一版就踩了这个坑，变异打下来是绿的。
+        """
+        arc = self._batch(tmp_path, "bad1", ["https://a.test/1"])
+        self._batch(tmp_path, "good1", ["https://g.test/1"])
+
+        archives, rows = arc.purge_run("bad1")
+        absent = rows[0] | {"run_id": "good1", "url": "https://nowhere.test/9"}
+        _, n_row = arc.apply_purge(archives, rows + (absent,))
+
+        assert n_row == 1, "删掉的行数不等于实际命中数——返回值在说谎"
+        remaining = [r["url"] for r in _pool_rows(tmp_path)]
+        assert remaining == ["https://g.test/1"], f"连坐了 good1：{remaining}"

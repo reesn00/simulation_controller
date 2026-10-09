@@ -254,9 +254,11 @@ P1 存档 ──▶ review --write queue.jsonl（带 video/iframe 计数、元�
 
 ---
 
-## 存量架构（v1，冻结只读）
+## 存量架构（v1，冻结只读，已归档）
 
-`simulation server → gdr → etl` 三阶段，每段一道边界，交接面写契约（C1 trajectory / C2 refined Session / C3 4 视图 / C4 评分卡）。产物落根 `output/`。**细节按需查阅各目录代码注释与 `docs/`，本文不再展开。**
+> **2026-10-09 起 v1 全量归档至 [`archive/v1/`](archive/v1/)**——下表目录名均指 `archive/v1/` 下同名目录；归档说明、依赖与手动跑法见 [`archive/v1/README.md`](archive/v1/README.md)。
+
+`simulation server → gdr → etl` 三阶段，每段一道边界，交接面写契约（C1 trajectory / C2 refined Session / C3 4 视图 / C4 评分卡）。产物落根 `output/`（数据未随档，原地冻结）。**细节按需查阅各目录代码注释与 `archive/v1/docs/`，本文不再展开。**
 
 | 目录 | 职责 |
 |---|---|
@@ -268,7 +270,7 @@ P1 存档 ──▶ review --write queue.jsonl（带 video/iframe 计数、元�
 | `tool_runtime/` | Node 侧 Playwright MCP 依赖，默认禁用 |
 | `data_refiner/` | 合成数据轻量规则清洗，只标注不删除（不在主链路） |
 | `scripts/` | 迁移脚本 + `model_train/` 独立 LoRA 训练脚本 |
-| `tests/` `gdr/tests/` | 存量测试两棵树，与 `trajectory_pipeline/tests/` 一起构成全量门禁 |
+| `tests/` `gdr/tests/` | 存量测试两棵树，2026-10-09 起退役出默认门禁（手动跑法见 `archive/v1/README.md`） |
 
 ---
 
@@ -280,4 +282,4 @@ P1 存档 ──▶ review --write queue.jsonl（带 video/iframe 计数、元�
 - [`trajectory_pipeline/docs/设计方案/01-模块3-可替换感知层.md`](trajectory_pipeline/docs/设计方案/01-模块3-可替换感知层.md) —— 插件化机制完整规格 + 七不变式
 - [`trajectory_pipeline/docs/02-避坑指南.md`](trajectory_pipeline/docs/02-避坑指南.md) —— **8 类 35 条**，症状写成终端里真正会看到的那句话，可全文搜索
 
-**存量**（按需查阅）：`docs/orchestration-design.md`、`docs/observability-label-studio.md`、`docs/label-studio-playbook.md`、`docs/label-studio-annotation-export.md`、`docs/设计方案/`、`docs/contracts/`、`gdr/docs/`。
+**存量**（按需查阅，均在 `archive/v1/` 下）：`docs/orchestration-design.md`、`docs/observability-label-studio.md`、`docs/label-studio-playbook.md`、`docs/label-studio-annotation-export.md`、`docs/设计方案/`、`docs/contracts/`、`gdr/docs/`。

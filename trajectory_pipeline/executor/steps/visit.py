@@ -75,7 +75,7 @@ async def visit_site(
         # 记「试过且失败」。unreachable_hard 在动作流里若整段消失，
         # 负样本池里那条就会变成一条没有动作的判决，说不清模型该学什么。
         result.steps.settle(step_goto, error=reach.reason)
-        ledger.record(url, "unreachable_hard", reach.reason)
+        ledger.record(url, "unreachable_hard", reach.reason, site_url=url)
         result.note(f"导航失败: {reach.reason}")
         return result
 
@@ -84,7 +84,8 @@ async def visit_site(
         result.site_obs = await driver.observe(max_chars=max_chars)
     except DriverError as exc:
         result.steps.settle(step_goto, error=f"快照失败: {exc}")
-        ledger.record(url, "unreachable_hard", f"导航成功但取不到快照: {exc}")
+        ledger.record(url, "unreachable_hard", f"导航成功但取不到快照: {exc}",
+                      site_url=url)
         result.note(f"快照失败: {exc}")
         return result
     result.steps.settle(step_goto, result.site_obs)
@@ -108,7 +109,7 @@ async def visit_site(
     #    本来就可由 evidence 区分。
     reachable = perceptor.decide(Q.IS_REACHABLE, result.site_obs)
     if reachable.answer is False:
-        ledger.record_from(result.landed_url, reachable)
+        ledger.record_from(result.landed_url, reachable, site_url=url)
         result.note("IS_REACHABLE=False")
         return result
     if reachable.answer is None:
@@ -131,14 +132,14 @@ async def visit_site(
         ledger.record(
             result.landed_url, "trailer_suspect",
             f"候选控件疑似预告，词表判不准: {suspects}",
-            decision=control,
+            decision=control, site_url=url,
         )
         result.note(f"trailer_suspect: {suspects}")
         return result
     if control.payload.get("trailer_only"):
         ledger.record(
             result.landed_url, "trailer_only",
-            control.evidence, decision=control,
+            control.evidence, decision=control, site_url=url,
         )
         result.note("候选控件全为预告片")
         return result
@@ -146,7 +147,8 @@ async def visit_site(
     ref = str(control.payload.get("ref") or "")
     if control.answer is not True:
         # FIND_PLAY_CONTROL 拿不到确定性结论 → unresolved，负样本到此为止
-        ledger.record_from(result.landed_url, control)
+        ledger.record_from(result.landed_url, control, obs=result.site_obs,
+                           site_url=url)
         result.note(f"FIND_PLAY_CONTROL={control.answer}")
         return result
     if not ref:
@@ -154,7 +156,7 @@ async def visit_site(
         ledger.record(
             result.landed_url, "component_unverified",
             f"判定说有播放控件但未回传 ref（违反 I6）: {control.evidence}",
-            decision=control,
+            decision=control, site_url=url,
         )
         result.note("answer=True 但无 ref——契约违规，按 fail-closed 记账")
         return result
@@ -176,7 +178,7 @@ async def visit_site(
         result.steps.settle(step_click, error=f"点击失败: {exc}")
         ledger.record(
             result.landed_url, "component_unverified",
-            f"点击 ref={ref} 失败: {exc}", decision=control,
+            f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,
         )
         result.note(f"点击失败: {exc}")
         return result
@@ -189,6 +191,10 @@ async def visit_site(
         ledger.record(
             result.landed_url, "component_unverified",
             f"点击后取不到页面快照: {exc}", decision=control, reached=True,
+            site_url=url,
+            # play_page_url 留空：点击了但快照取不到，我们**不知道**那是
+            # 不是播放页。按 D-6 的口径，「播放页 URL」在没到达播放页时
+            # 不适用、不扣分——编一个出来才是把猜测写成事实。
         )
         result.note(f"点击后快照失败: {exc}")
         return result
@@ -196,13 +202,29 @@ async def visit_site(
 
     # ── ⑦ 判断点 ④：播放页是否可用 ─────────────────────────────
     player = perceptor.decide(Q.PLAYER_OK, result.player_obs)
+    play_url = result.player_obs.url or result.landed_url
     if player.answer is True:
-        ledger.record(result.player_obs.url or url, None,
-                      player.evidence, decision=player, reached=True)
+        ledger.record(play_url, None, player.evidence, decision=player,
+                      reached=True, site_url=url, play_page_url=play_url)
         result.success = True
         return result
 
-    ledger.record_from(result.player_obs.url or result.landed_url, player, reached=True)
+    if player.answer is None:
+        # 判不出来，**且播放页就在眼前** → player_unverified，不是 unresolved。
+        # 两者都不是负样本，但成因不同：这里不确定的是「组件能不能用」
+        # （页面证据不足），环节①–④ 的 unresolved 不确定的是「能不能到」
+        # （代码能力不足）。分开的理由见 RunLedger.record_unresolved_reached。
+        #
+        # ⚠️ 必须在 record_from **之前**分流：record_from 会把 None 一律
+        # 记成 unresolved，而这条恰好是它管不到的情形。
+        ledger.record_unresolved_reached(
+            play_url, player, site_url=url, play_page_url=play_url,
+        )
+        result.note("PLAYER_OK=None（有播放组件，确认不了能不能用）")
+        return result
+
+    ledger.record_from(play_url, player, reached=True, obs=result.player_obs,
+                       site_url=url, play_page_url=play_url)
     result.note(f"PLAYER_OK={player.answer}")
     return result
 

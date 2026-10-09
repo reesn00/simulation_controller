@@ -49,6 +49,12 @@ def _arc(**over):
         "user_prompt": "有没有能看正片的", "search_url": "https://s.test",
         "search_observation": _obs("https://s.test"), "search_blocked": "",
         "steps": [], "provenance": {"genre": "喜剧"},
+        # 健康存档**有**运行参数快照：批次级断言 B-2（覆盖完整性）的分母
+        # 取自 run_config.max_candidates。缺它会被 ``run_config_missing``
+        # 判 DEGRADED，测试里要模拟降级就显式 pop 掉。
+        "run_config": {"engine": "baidu", "max_candidates": 20,
+                       "max_chars": None, "stop_after_success": 0,
+                       "per_site_timeout_s": 90.0},
         "candidates": [], "visits": [], "outcomes": [], "ledger": None,
         "warnings": [],
     }
@@ -195,6 +201,15 @@ class TestDegradedMarkers:
         arc = _arc(search_observation={"url": "u", "body_text": ""})
         assert "no_body" in \
             schema.split_archive(_write(tmp_path, arc))[0].degraded_from
+
+    def test_缺运行参数要留痕(self, tmp_path):
+        """缺 ``run_config`` 时批次级断言 B-2 的分母不可知。
+        样本本身仍然可用，所以**不是**丢弃——但降级标记必须跟着它走，
+        否则评分器会把「不知道分母」当成「分母是 0」。"""
+        arc = _arc()
+        arc.pop("run_config")
+        for s in schema.split_archive(_write(tmp_path, arc)):
+            assert "run_config" in s.degraded_from
 
     def test_标记去重且有序(self, tmp_path):
         arc = _arc(visits=[_visit("https://a.test/")])

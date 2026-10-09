@@ -22,6 +22,7 @@ import json
 import pytest
 
 from trajectory_pipeline.perception import questions
+from trajectory_pipeline.perception import llm_perceptor as lp
 from trajectory_pipeline.perception.base import Decision, InteractiveElement, Observation, Q
 from trajectory_pipeline.perception.rule_perceptor import (
     RulePerceptor,
@@ -29,7 +30,7 @@ from trajectory_pipeline.perception.rule_perceptor import (
     is_trailer_only,
     is_trailer_suspect,
 )
-from trajectory_pipeline.tests.fakes import llm_perceptor
+from trajectory_pipeline.tests.fakes import FakeLLM, llm_perceptor
 
 #: 契约适用的实现。
 #:
@@ -71,12 +72,14 @@ class TestRegistry:
             assert spec.negative_branch, f"{qid} 未绑定 negative_branch"
             assert spec.id == qid, f"注册表 key 与 Question.id 不一致: {qid}"
 
-    def test_失败分支全集是八条(self):
+    def test_失败分支全集是九条(self):
         assert questions.all_branches() == {
             "not_play_site", "login_wall_or_blocked", "no_play_control",
             "component_unverified",                       # 四道题各一支
             "unreachable_hard", "trailer_only",           # 代码判定
             "trailer_suspect", "unresolved",              # 兜底
+            "player_unverified",                          # 判断点④ 判不出来，
+                                                       # 但播放页就在眼前
         }
 
     def test_未知_id_抛_KeyError(self):
@@ -409,3 +412,202 @@ class TestW1CapabilityBoundary:
             ("e1", "a", "播放"))))
         json.dumps({"answer": d.answer, "payload": dict(d.payload),
                     "evidence": d.evidence}, ensure_ascii=False)
+
+
+class TestTitleLinkSufficiency:
+    """① 的**判别力**预检：链接文本里没有片名，就别问模型。
+
+    实测（2026-10-09，bing 搜索页）：``links[].text`` 只有面包屑
+    （``qq.com https://v.qq.com › cover``），32 条链接**无一条**含片名；
+    片名在 ``body_text`` 里（一份观察含「功夫」16 次）却与 URL 无对应。
+    模型在这种输入下答「检索摘要未显示作品标题」是**对输入的准确描述**，
+    但它随后按契约 fail-closed 成 ``False``，而 ``not_play_site`` 是
+    负样本分支——**错标签就进了池子**，且实测已与同 URL 的成功记录矛盾。
+
+    ``fail-closed`` 的 ``None`` 不入池而 ``False`` 入池，区别不在模型，
+    在**有没有能力判**——而 fail-closed 的定义正是「没能力判就返�� ``None``」。
+    """
+
+    def _obs_links(self, *texts):
+        from trajectory_pipeline.perception.base import LinkItem
+
+        return obs(links=tuple(
+            LinkItem(t, f"https://s{i}.test/x") for i, t in enumerate(texts)))
+
+    def test_链接全无片名时fail_closed(self):
+        p = llm_perceptor()
+        d = p.decide(Q.SELECT_PLAY_SITES,
+                     self._obs_links("qq.com https://v.qq.com › cover",
+                                     "iqiyi.com https://www.iqiyi.com"))
+        assert d.answer is None, "输入不支持本题时判 False = 往池里写错标签"
+        assert not p._client.calls, "预检就该拦住，不该发请求"
+        assert "功夫" in d.evidence
+
+    def test_链接含片名时照常问(self):
+        """预检不能把 ① 一刀切死——有判别力时它必须还能用。"""
+        p = llm_perceptor()
+        d = p.decide(Q.SELECT_PLAY_SITES,
+                     self._obs_links("功夫 (普通话版)_高清完整版_腾讯视频"))
+        assert d.answer is True
+        assert p._client.calls, "有判别力时不该被预检拦住"
+
+    def test_有片名与没片名混存时照常问(self):
+        """只要有一条能对上就够了——引擎结果里常混着导航链接。"""
+        p = llm_perceptor()
+        d = p.decide(Q.SELECT_PLAY_SITES,
+                     self._obs_links("Privacy and Cookies", "功夫 在线观看"))
+        assert d.answer is True
+        assert p._client.calls
+
+    def test_没绑片名时不问(self):
+        """没目标片名就无从匹配——这不是「判为否」，是问错了题。"""
+        p = llm_perceptor(title="")
+        d = p.decide(Q.SELECT_PLAY_SITES, self._obs_links("随便什么"))
+        assert d.answer is None
+        assert not p._client.calls
+        assert "片名" in d.evidence
+
+    def test_预检只对第一题生效(self):
+        """②③④ 的判据不是「URL↔片名」，别让这条预检误伤它们。"""
+        p = llm_perceptor()
+        d = p.decide(Q.IS_REACHABLE, self._obs_links("没有任何片名"))
+        assert d.answer is not None or p._client.calls
+
+
+class TestNoHardcodedBudget:
+    """生产调用点**不得自带** ``max_tokens``。
+
+    这条不是洁癖，是一个已经踩过的坑：``_ask`` 曾写死 600，而本机后端
+    是推理模型——**思考与正文共用同一个预算**，600 全花在思考上，正文
+    一个字没吐（``content: null`` + ``finish_reason=length``）。客户端按
+    红线不读 ``reasoning_content``，于是每一道题都只表现为一句
+    ``shape:ValueError``，症状像「LLM 判不了」，实则预算不够——没人会
+    顺着这条线索去改那个数字。
+
+    预算归 :class:`LLMConfig` 管；生产调用点各写各的，就等于把这件事
+    又散回每个文件。
+    """
+
+    def test_每道题都不带预算(self):
+        p = llm_perceptor()
+        for qid in ALL_QUESTIONS:
+            p.decide(qid, obs(interactive_elements=elements(("e1", "a", "播放"))))
+        assert p._client.calls, "没有任何请求，这条测试是空的"
+        assert p._client.budgets == [None] * len(p._client.calls)
+
+    def test_预算用尽时原因可行动(self):
+        """假后端回「预算用尽」，evidence 里必须能看出该调哪个变量。
+
+        问的是 ``IS_REACHABLE``：``PLAYER_OK`` 在 ``video_tag_count>0`` 时
+        走代码事实短路，根本不发请求（确定性事实优先），拿它来试这条
+        会得到一个「压根没问」的假绿。
+        """
+        p = llm_perceptor(budget_exhausted=True)
+        d = p.decide(Q.IS_REACHABLE, obs())
+        assert p._client.calls, "没有发出请求，这条测试是空的"
+        assert d.answer is None
+        assert "TRAJECTORY_LLM_MAX_TOKENS" in d.evidence
+
+
+class TestNullIsNotMalformed:
+    """提示词要求「证据不足时 answer 给 null」——**合规的 null 不是格式错误**。
+
+    两者落到同一个分支（``unresolved``）、采集结果完全一样，但下一步动作
+    完全不同：合规 null 说明模型判不出来（补采集 / 换模型 / 调提示词），
+    格式坏说明模型想答没答对（调解析容错）。曾经两者都写成一句
+    「无法解析为布尔」，于是人工复核一律当成后者去调解析层。
+    """
+
+    @pytest.mark.parametrize("qid", [Q.IS_REACHABLE, Q.PLAYER_OK])
+    def test_合规null说清是契约(self, qid):
+        p = llm_perceptor(answer_null=True)
+        d = p.decide(qid, obs(video_tag_count=0))
+        assert d.answer is None
+        assert "按契约" in d.evidence
+        assert "格式偏离" not in d.evidence
+
+    @pytest.mark.parametrize("qid", [Q.IS_REACHABLE, Q.PLAYER_OK])
+    def test_缺字段也说清是契约(self, qid):
+        p = llm_perceptor(answer_missing=True)
+        d = p.decide(qid, obs(video_tag_count=0))
+        assert d.answer is None
+        assert "按契约" in d.evidence
+        assert "格式偏离" not in d.evidence
+
+    @pytest.mark.parametrize("qid", [Q.IS_REACHABLE, Q.PLAYER_OK])
+    def test_格式偏离说清是格式(self, qid):
+        p = llm_perceptor(answer_garbage="大概是吧")
+        d = p.decide(qid, obs(video_tag_count=0))
+        assert d.answer is None
+        assert "格式偏离" in d.evidence
+        assert "按契约" not in d.evidence
+
+    def test_判不出来时保留模型自述(self):
+        """模型说「我判不了」时通常仍说得出**为什么**。丢掉它，
+        这一站就彻底没有依据了——人工复核只剩一个光秃秃的 null。"""
+        p = llm_perceptor(answer_null=True)
+        d = p.decide(Q.IS_REACHABLE, obs())
+        assert "模型自述" in d.evidence
+        assert "页面主体为空" in d.evidence
+
+    def test_格式偏离也保留模型自述(self):
+        p = llm_perceptor(answer_garbage="42")
+        d = p.decide(Q.PLAYER_OK, obs(video_tag_count=0))
+        assert "模型自述" in d.evidence
+
+    def test_判得出来时不受影响(self):
+        """这条改动只碰 fail-closed 路径——正常的 True/False 不许被改。"""
+        p = llm_perceptor(answers={Q.IS_REACHABLE: True})
+        d = p.decide(Q.IS_REACHABLE, obs())
+        assert d.answer is True
+        assert "LLM 判 True" in d.evidence
+
+class TestZeroElementsBothImplementations:
+    """**两个实现必须同一口径**：0 个交互元素时都不判 False。
+
+    实测（2026-10-09 m.ixigua.com/video/6582085495839261192）：正文 100
+    字符、元素 0 个，LLM 版判 False、理由「未提供任何可交互控件 ref」，
+    于是记成 ``no_play_control`` **负样本**——而页面正文里就写着
+    「立即播放」，西瓜视频上有这条片子。
+
+    规则版当时**已经**防住了（``not obs.interactive_elements`` → None），
+    只有 LLM 版漏。两版口径不一致的后果不是「LLM 版差」，
+    而是「换 ``--perceptor`` 就换一批标签」，而报表上完全看不出来。
+
+    ⚠️ **别拿「有正文」当「渲染完了」的证据**：正文与元素来自两个独立的
+    tool，前者成功不代表后者也成功。这条测试就是钉住这个错误的推论。
+    """
+
+    @pytest.mark.parametrize("make", IMPLEMENTATIONS)
+    def test_有正文但0元素时fail_closed(self, make):
+        d = make().decide(Q.FIND_PLAY_CONTROL,
+                          obs(interactive_elements=(), body_text="立即播放"))
+        assert d.answer is None, "0 元素被当成了「页面确实没有播放控件」"
+
+    @pytest.mark.parametrize("make", IMPLEMENTATIONS)
+    def test_理由要指出正文与元素的矛盾(self, make):
+        """证据得让人看出这是采集问题而不是业务判断——
+        只写「未找到播放控件」的话，读的人会去调词表，而词表没问题。"""
+        d = make().decide(Q.FIND_PLAY_CONTROL,
+                          obs(interactive_elements=(), body_text="立即播放"))
+        assert "0 个交互元素" in d.evidence
+
+    @pytest.mark.parametrize("make", IMPLEMENTATIONS)
+    def test_采到元素时照旧能判(self, make):
+        """反例护栏：守卫不是封死这条分支。采到了元素、只是没命中，
+        那才是货真价实的 no_play_control。"""
+        d = make().decide(Q.FIND_PLAY_CONTROL,
+                          obs(interactive_elements=elements(("e1", "a", "登录")),
+                              body_text="请登录"))
+        assert d.answer is False
+
+
+class TestSufficiencyRunsBeforeTheModel:
+    """预检必须**在请求发出之前**——否则它只是给结论换了个说法。"""
+
+    def test_0元素时不发请求(self):
+        fake = FakeLLM()
+        lp.LLMPerceptor(fake).decide(Q.FIND_PLAY_CONTROL,
+                                     obs(interactive_elements=(),
+                                         body_text="立即播放"))
+        assert fake.calls == [], "0 元素还去问模型，等于花钱买一个猜"

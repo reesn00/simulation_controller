@@ -53,10 +53,19 @@ VERDICTS: Final[dict[str, str]] = {
 
 #: 进入复核队列的分支。只有这三类需要人看。
 #:
-#: - ``unresolved``：代码判不出来（含判断点 ④ 的 ``None``）
+#: - ``unresolved``：代码判不出来（环节①–④，还没到播放页）
+#: - ``player_unverified``：判断点④ 判不出来，**但控件点了、播放页在眼前**
+#:   ——这一支是 W1 正样本的**主要来源**：规则版对真实视频站一律返 ``None``，
+#:   而这些站点全都走到了播放页，人看一眼就能定
 #: - ``trailer_suspect``：词表判不准，需要语义判断（方案里本来就设计了人工兜底）
 #: - 真负样本**不进队列**：代码已给出确定性结论，复核它们属于抽检（另一件事）。
-REVIEW_BRANCHES: Final = frozenset({"unresolved", "trailer_suspect"})
+#:
+#: ⚠️ ``player_unverified`` 必须在队列里：它拆出来是为了让复核员知道
+#: 「不确定的是组件能不能用」而不是「代码什么都判不出」，
+#: 而拆出去却不进队列 = 这批待办凭空消失，而它正是 W1 唯一的正样本来源。
+REVIEW_BRANCHES: Final = frozenset({
+    "unresolved", "trailer_suspect", "player_unverified",
+})
 
 #: 交互元素样本条数。复核员判断"有没有播放按钮"主要看这个，
 #: 太多会淹没人眼（实测单页常有 80+ 元素），太少会漏掉唯一那个。

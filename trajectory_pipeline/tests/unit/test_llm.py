@@ -192,6 +192,142 @@ class TestConfig:
         assert "secret-value" not in dump_for_debug(c)
 
 
+class _Resp:
+    """极简响应替身——只需 status_code 与 json()。"""
+
+    def __init__(self, payload, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+class _Transport:
+    """替掉 httpx 客户端，记账 ``max_tokens`` 并回放固定响应。"""
+
+    def __init__(self, payload, status_code: int = 200) -> None:
+        self.payload = payload
+        self.status_code = status_code
+        self.budgets: list = []
+        self.closed = False
+
+    def post(self, url, *, json, headers):
+        self.budgets.append(json["max_tokens"])
+        return _Resp(self.payload, self.status_code)
+
+    def close(self):
+        self.closed = True
+
+
+def _client(payload, **kw):
+    """造一个真 :class:`LLMClient`，只把传输层换成替身。"""
+    from trajectory_pipeline.llm.client import LLMClient
+
+    c = LLMClient(LLMConfig(base_url="http://x", model="m", **kw))
+    c._client = _Transport(payload)
+    return c
+
+
+def _ok(content, finish: str = "stop") -> dict:
+    return {"choices": [{"message": {"content": content},
+                         "finish_reason": finish}]}
+
+
+class TestMaxTokens:
+    """输出预算。**每个断言都对着一条实测形态**，不是「理论上」。
+
+    实测（本机推理模型，同一个判断点 ① 的请求，只改 ``max_tokens``）::
+
+        600  -> finish_reason=length  content=null   （599 tok 全在思考上）
+        2048 -> finish_reason=length  content 截断
+        8192 -> finish_reason=stop    content 干净（2096 tok）
+
+    写死 600 时的症状是**正文为空**，而客户端按红线不读
+    ``reasoning_content``，于是整条链每道题都只表现为一句
+    ``shape:ValueError``——看上去像「LLM 判不了」，实则预算不够。
+    """
+
+    def test_默认按推理模型定(self):
+        from trajectory_pipeline.llm.client import DEFAULT_MAX_TOKENS
+
+        assert DEFAULT_MAX_TOKENS >= 8192
+        assert LLMConfig(base_url="http://x", model="m").max_tokens \
+            == DEFAULT_MAX_TOKENS
+
+    def test_环境变量可调(self):
+        c = LLMConfig.from_env(env={
+            "TRAJECTORY_LLM_BASE_URL": "http://x", "TRAJECTORY_LLM_MODEL": "m",
+            "TRAJECTORY_LLM_MAX_TOKENS": "16384",
+        })
+        assert c.max_tokens == 16384
+
+    def test_预算非法报错(self):
+        with pytest.raises(LLMUnavailable, match="不是整数"):
+            LLMConfig.from_env(env={
+                "TRAJECTORY_LLM_BASE_URL": "http://x",
+                "TRAJECTORY_LLM_MODEL": "m",
+                "TRAJECTORY_LLM_MAX_TOKENS": "很多",
+            })
+
+    def test_预算应为正(self):
+        with pytest.raises(LLMUnavailable, match="必须为正"):
+            LLMConfig.from_env(env={
+                "TRAJECTORY_LLM_BASE_URL": "http://x",
+                "TRAJECTORY_LLM_MODEL": "m",
+                "TRAJECTORY_LLM_MAX_TOKENS": "0",
+            })
+
+    def test_不带参数时走config(self):
+        """签名默认值是 ``None`` 而不是数字——给了数字调用点就会各写各的。"""
+        from trajectory_pipeline.llm.client import DEFAULT_MAX_TOKENS
+
+        c = _client(_ok("hi"))
+        assert c.chat("s", "u") == "hi"
+        assert c._client.budgets == [DEFAULT_MAX_TOKENS]
+
+    def test_显式参数可覆盖(self):
+        """排查用量边界时才用；生产调用点不该带它（见 _ask 的注释）。"""
+        c = _client(_ok("hi"))
+        c.chat("s", "u", max_tokens=256)
+        assert c._client.budgets == [256]
+
+    def test_预算用尽报可行动的原因(self):
+        """**关键断言。** 这一条把「预算不够」与「后端结构不对」分开——
+        两者在原始响应上都是「200 且拿不到正文」，混成一句话时
+        谁也不知道该改环境变量还是该查后端。"""
+        c = _client(_ok(None, finish="length"))
+        assert c.chat("s", "u") is None
+        assert c.last_error.startswith("budget:")
+        assert "TRAJECTORY_LLM_MAX_TOKENS" in c.last_error
+        # 不重试：重发一次还是同一个预算，还是空。
+        assert c._client.budgets == [c.cfg.max_tokens]
+
+    def test_预算用尽但有正文时照常返回(self):
+        """截断但拿到了正文，仍要交给解析层判断——它可能已经完整了。"""
+        c = _client(_ok('{"answer": tr', finish="length"))
+        assert c.chat("s", "u") == '{"answer": tr'
+
+    def test_非预算原因的空正文仍算shape(self):
+        """``finish_reason=stop`` 却没正文，那是后端的事，不是预算的事。"""
+        c = _client(_ok(None, finish="stop"))
+        assert c.chat("s", "u") is None
+        assert c.last_error.startswith("shape:")
+
+    def test_默认不读reasoning_content(self):
+        """红线：思考内容是 raw CoT，取它等于把思维链送进训练数据。
+
+        这里刻意用「只有 reasoning_content」的响应：宁可返回 None，
+        也不能退回去读它。
+        """
+        payload = {"choices": [{"message": {
+            "content": None, "reasoning_content": "思考过程……",
+        }, "finish_reason": "stop"}]}
+        c = _client(payload)
+        assert c.chat("s", "u") is None
+        assert "思考过程" not in c.last_error
+
+
 class TestNoCredentialInSource:
     """仓库级红线：源码里不得出现任何看起来像凭据的字面量。
 

@@ -74,6 +74,26 @@ class Observation:
     video_tag_count: int = 0
     iframe_count: int = 0    # browser_count 接受任意 CSS selector，直接用 "iframe"
 
+    #: **采集到的**交互元素 / 链接条数（已被驱动层 ``limit`` 截断）。
+    #:
+    #: **这两个字段是 D-2 打分的前提**，不是可选元数据。存档序列化时
+    #: ``interactive_elements`` 与 ``links`` 各自截到 80 / 50 条，
+    #: 而落盘的量不落盘就会让**两种相反的错误在数据上同形**：
+    #:
+    #:     目标真的存在于第 81 个元素之后   → 查不到
+    #:     目标根本不存在（模型幻觉出来的） → 查不到
+    #:
+    #: 两者产出同一个「查不到」，评分器于是把采集器的取舍
+    #: 记成轨迹的缺陷（rubric v1.1 D-2 边界：应判「不可判定（存档裁剪）」）。
+    #:
+    #: ⚠️ **不是页面上的真实总数**，是驱动层 ``DEFAULT_LIMIT`` 截断后
+    #: 实际采到的条数。对 D-2 够用：判据是「total > 保留条数 ⇒ 不可判定」，
+    #: 而真实总数只会让这个判据更保守，不会让它出错。
+    #: 要真实总数得额外调一次 ``browser_count``——它只认 CSS selector，
+    #: 数不出「可交互元素」，为此多一轮 MCP 往返不划算。
+    elements_total: int = 0
+    links_total: int = 0
+
     # ── 截断与污染诊断（元数据，不参与语义判断）─────────────────────
     max_chars: int | None = None
     truncated: bool = False

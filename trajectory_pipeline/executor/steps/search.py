@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
 from trajectory_pipeline.perception.base import Observation
@@ -232,11 +233,69 @@ def _unwrap_redirect(url: str) -> str:
     return url
 
 
+#: 每个引擎的「结果条目」选择器——用于把**结果标题**与 URL 对上。
+#:
+#: **为什么需要这一张表**：``links()`` 的 ``text`` 对搜索结果页往往不是标题。
+#: 实测 bing 每条结果只给面包屑（``qq.com https://v.qq.com › cover``），
+#: 32 条链接**没有一条**写着片名；而判断点 ① 的全部职责就是把 URL 与
+#: 目标片名对上。没有这张表，① 拿到的输入根本不支持它那道题
+#: （见 ``perception/llm_perceptor.py`` 的 ``_title_link_sufficiency``）。
+#:
+#: ``@href`` 是 obscura ``browser_extract`` 的属性语法，``[]`` 表示取全部
+#: 匹配。两个字段**平行数组**，一一对应关系由本模块在长度相等时才认。
+#:
+#: ⚠️ **``[]`` 只在入参里，**返回的 JSON 键**不带它**——实测 obscura
+#: ``0.2.4`` 对 ``{"titles[]": ..., "urls[]": ...}`` 回的是
+#: ``{"titles": [...], "urls": [...]}``。按 ``titles[]`` 去读会永远读到
+#: ``None``，于是 :func:`result_titles` 恒返回空字典，① 恒 fail-closed：
+#: 症状是「选择器失效」，而选择器是好的。这条只能靠
+#: ``executor/browser/probe_result_titles.py`` 取证。
+#:
+#: ⚠️ **选择器会随引擎改版失效**。失效时抽不到，返回空 → 退回
+#: :func:`extract_candidates` 原有的面包屑路径 → ① 退回 fail-closed。
+#: 换句话说，**这张表坏了只会让 ① 变哑，不会让它变错**——这正是要的。
+RESULT_SELECTORS: dict[str, dict[str, str]] = {
+    "bing": {"titles[]": "li.b_algo h2 a", "urls[]": "li.b_algo h2 a@href"},
+    "baidu": {"titles[]": "div.result h3 a", "urls[]": "div.result h3 a@href"},
+}
+
+#: :func:`result_titles` 读的键名。**刻意不写 ``[]``**——见
+#: :data:`RESULT_SELECTORS` 的注释：那不是排版，是上游的真实返回形状。
+TITLE_FIELD = "titles"
+URL_FIELD = "urls"
+
+
+def result_titles(extracted: Mapping[str, Any]) -> dict[str, str]:
+    """``{url: title}``。**只在两个数组等长时才认。**
+
+    长度不等 = 上游只对其中一个字段有匹配（选择器漂移、引擎改版）。
+    这时返回空字典而不是 ``zip``——``zip`` 会静默截短，
+    配出来的「标题 ↔ URL」会是一条查无出处的假对应，
+    而 ① 正准备拿它当**唯一判据**。
+
+    同一个 URL 出现多次时保留**第一次**：同一 host 的多个入口在
+    :func:`extract_candidates` 里本来也只留第一个，两边口径一致。
+    """
+    titles = extracted.get(TITLE_FIELD)
+    urls = extracted.get(URL_FIELD)
+    if not isinstance(titles, list) or not isinstance(urls, list):
+        return {}
+    if len(titles) != len(urls) or not urls:
+        return {}
+    out: dict[str, str] = {}
+    for title, url in zip(titles, urls):
+        t, u = str(title or "").strip(), str(url or "").strip()
+        if t and u and u not in out:
+            out[u] = t
+    return out
+
+
 def extract_candidates(
     obs: Observation, *,
     engine: str = DEFAULT_ENGINE,
     limit: int = 20,
     stats: dict[str, int] | None = None,
+    titles: Mapping[str, str] | None = None,
 ) -> list[Candidate]:
     """从搜索结果页提取候选站点。
 
@@ -277,7 +336,10 @@ def extract_candidates(
             bump("duplicate_host")
             continue
         seen_hosts.add(host)
-        out.append(Candidate(url=raw, text=link.text, rank=len(out) + 1,
+        # 标题优先：结果标题才是判断点 ① 的判据，面包屑不是。
+        # 取不到就留原样——**不猜**，让 ① 照旧 fail-closed。
+        text = (titles or {}).get(link.href) or (titles or {}).get(raw) or link.text
+        out.append(Candidate(url=raw, text=text, rank=len(out) + 1,
                             source_href=link.href))
         if len(out) >= limit:
             bump("over_limit")

@@ -1,8 +1,14 @@
-# 统一配置入口（含真实凭据; 模板见 config/config.example.yaml）
+# 统一配置入口（含真实凭据; 模板见 archive/v1/config/config.example.yaml）
+# 2026-10-09 v1 归档至 archive/v1/：ignore 规则先行更新到新路径，再搬目录——
+# 顺序反了凭据文件会立刻出现在 git status 待提交区。
 config/config.yaml
+config/config_bak.yaml
+archive/v1/config/config.yaml
+archive/v1/config/config_bak.yaml
 
-# Label Studio API token (scripts/label_studio.bat 的备用 key 来源)
+# Label Studio API token (v1 scripts 的备用 key 来源)
 config/label_studio_api_key.txt
+archive/v1/config/label_studio_api_key.txt
 
 # Python virtual environments
 .venv/
@@ -63,27 +69,29 @@ output/
 # v2 轨迹合成管线的产物（决策 D8：收在新树下，不污染根 output/）
 trajectory_pipeline/output/
 dist/
-gdr/origindata/
-gdr/refine_data
-data_refiner/input_data/
-data_refiner/output_data/cleaned/
-data_refiner/output_data/trajectory
-data_refiner/output_data/summary.json
-data_refiner/logs
 refine_data/
-scripts/export_qf_sft/output
+
+# ── v1 归档（2026-10-09 → archive/v1/）：运行时产物路径随档更新 ──
+archive/v1/gdr/origindata/
+archive/v1/gdr/refine_data
+archive/v1/data_refiner/input_data/
+archive/v1/data_refiner/output_data/cleaned/
+archive/v1/data_refiner/output_data/trajectory
+archive/v1/data_refiner/output_data/summary.json
+archive/v1/data_refiner/logs
+archive/v1/scripts/export_qf_sft/output
 
 # Other
 .wheel-test/
-tool_runtime/playwright/node_modules/
-etl/pawsession/origindata/useramulation_*
-etl/pawsession/output
-etl/pawsession/origindata
+archive/v1/tool_runtime/playwright/node_modules/
+archive/v1/etl/pawsession/origindata/useramulation_*
+archive/v1/etl/pawsession/output
+archive/v1/etl/pawsession/origindata
 
 # qwenformat 运行时提取的 system prompt / tool 模板（可由用户本地维护，不提交）
-etl/qwenformat/templates/
+archive/v1/etl/qwenformat/templates/
 
-# orchestration 运行时数据已在 output/ 统一管理（见第 58 行 output/）
+# v1 orchestration 运行时数据在根 output/ 统一管理（output/ 留在原地未归档）
 
 # qwenformat LLM 摘要缓存（运行时生成，不提交）
-etl/qwenformat/cache/
+archive/v1/etl/qwenformat/cache/

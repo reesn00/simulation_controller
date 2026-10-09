@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 # ═══════════════════════════════════════════════════════════════════════
 # 常量
@@ -350,6 +350,30 @@ def parse_count(text: str) -> int:
     except ValueError:
         return 0
     return max(0, int(value))
+
+
+def parse_extract(text: str) -> dict[str, Any]:
+    """解析 ``browser_extract`` 的返回——单个 JSON 对象。
+
+    实测上游语义（写在 driver 接入处，这里只做解析）：
+    ``'a@href'`` 取属性、字段名加 ``[]`` 取全部匹配（值为数组）。
+
+    **返回值原样透传，不做补齐也不做截断。** 刻意不把 ``titles[]`` 与
+    ``urls[]`` 配成对——那是在解析层猜「这两条数组一一对应」，而上游
+    完全可能只对其中一个字段有匹配（改版、选择器漂移），配出来的
+    「标题 ↔ URL」会是一条查无出处的假对应。**对齐由调用方在能看见
+    长度时做**，长度不等就该认「取不到」，而不是硬配。
+    """
+    import json
+
+    raw = text.strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def looks_like_error(text: str, is_error: bool) -> bool:

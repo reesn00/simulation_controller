@@ -408,6 +408,15 @@ def split_archive(path: str | Path) -> list[Sample]:
     base_degraded: list[str] = []
     if not archive.get("user_prompt"):
         base_degraded.append("user_prompt")
+    if not archive.get("run_config"):
+        # 与 ``executor.integrity`` 的 ``run_config_missing`` 同码——
+        # 两张表由 ``tests/unit/test_integrity.py::TestDegradedMarkersMatchSplit``
+        # 双向盯着，谁先改谁就红。
+        #
+        # 它不进 P2 的训练视图（那六件套里没有运行参数），
+        # 但样本仍要知道「这份数据是降级重建的」，
+        # 否则老批次与新批次会被当成同等样本混着用。
+        base_degraded.append("run_config")
 
     steps = archive.get("steps") or []
     if not steps:

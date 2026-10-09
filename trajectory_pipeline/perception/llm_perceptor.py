@@ -118,7 +118,7 @@ class LLMPerceptor:
         spec = questions.get(question)
 
         try:
-            guard = _sufficiency(question, obs)
+            guard = _sufficiency(question, obs, target_title=self._target_title)
             if guard:
                 return self._unresolved_answer(spec, guard, started)
 
@@ -167,6 +167,14 @@ class LLMPerceptor:
         **URL 必须来自观察，模型不能编。** 被选中的 url 逐个校验存在性，
         认不出的整条丢弃——编出来的 url 会让控制流去访问不存在的站点，
         而那次访问会以「不可达」入负样本池，污染出一个并不存在的失败原因。
+
+        **问模型之前先问「这个输入支持这道题吗」**（见 :func:`_sufficiency`）。
+        ① 的全部职责是「把 URL 与目标片名对上」，而 bing 结果的
+        ``links[].text`` 只有面包屑（实测 ``qq.com https://v.qq.com › cover``），
+        32 条链接没有一条写着片名——片名在 ``body_text`` 里，却与 URL
+        无对应关系。这种输入下模型答「检索摘要未显示作品标题」是**对输入的
+        准确描述**，随后按契约 fail-closed 成 ``False``，而 ``not_play_site``
+        是负样本分支——错标签就进了池子。
         """
         raw, why = self._ask(spec, _render(obs, target_title=self._target_title))
         if raw is None:
@@ -208,10 +216,9 @@ class LLMPerceptor:
         data, why = self._ask_json(spec, _render(obs))
         if data is None:
             return self._unresolved_answer(spec, why, started)
-        answer = schema_parse.as_bool(schema_parse.field(data, "answer"))
+        answer, why_null = _bool_or_reason(data)
         if answer is None:
-            return self._unresolved_answer(
-                spec, "answer 字段缺失或无法解析为布尔", started)
+            return self._unresolved_answer(spec, why_null, started)
         return self._answer(
             spec, answer,
             evidence=_evidence(data, spec, answer),
@@ -305,9 +312,9 @@ class LLMPerceptor:
         data, why = self._ask_json(spec, _render(obs))
         if data is None:
             return self._unresolved_answer(spec, why, started)
-        answer = schema_parse.as_bool(schema_parse.field(data, "answer"))
+        answer, why_null = _bool_or_reason(data)
         if answer is None:
-            return self._unresolved_answer(spec, "answer 字段无法解析为布尔", started)
+            return self._unresolved_answer(spec, why_null, started)
         return self._answer(
             spec, answer,
             evidence=_evidence(data, spec, answer),
@@ -331,6 +338,12 @@ class LLMPerceptor:
         失败原因**必须区分**「后端不可用」与「输出不像 JSON」——前者是
         基础设施问题（该重跑/该配 key），后者是模型格式问题（该改提示词）。
         两者混成一句话，evidence 就没法指导下一步动作。
+
+        **这里不传 ``max_tokens``**。曾经写死 600，于是推理模型把预算全花在
+        思考上、正文一个字没吐，而客户端按红线不读 ``reasoning_content``，
+        整条链上每一道题都只表现为一句 ``shape:ValueError``——看不出要调
+        预算。预算归 :class:`~trajectory_pipeline.llm.client.LLMConfig` 管，
+        生产调用点不各写各的。
         """
         system = (
             spec.prompt
@@ -340,7 +353,7 @@ class LLMPerceptor:
         )
         user = json.dumps({"question": spec.id, "observation": rendered},
                          ensure_ascii=False)
-        got = self._client.chat(system, user, max_tokens=600)
+        got = self._client.chat(system, user)
         if got is None:
             return None, f"LLM 不可用（{self._client.last_error or '未知原因'}）"
         return got, ""
@@ -389,7 +402,8 @@ class LLMPerceptor:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _sufficiency(question: str, obs: Observation) -> str:
+def _sufficiency(question: str, obs: Observation, *,
+                 target_title: str = "") -> str:
     """问模型**之前**先判这份观察够不够。返回空串 = 够。
 
     这是 LLM 版最要紧的一段。实测：iqiyi 的 PLAYER_OK 被判「否」，
@@ -398,13 +412,51 @@ def _sufficiency(question: str, obs: Observation) -> str:
     它只看到空的，于是按常识推理「空的 = 页面没内容」。
     而规则版早就知道哨兵返回分不清「没渲染完」与「真的没控件」
     （``obscura`` 的空元素返回哨兵文本，不是错误）。
+
+    **两条守卫守的是两种不同的「能力不可用」**：
+
+    1. 采集没拿到东西（``degraded`` / 正文与元素皆空）——原有那条。
+    2. **采集拿到了，但这道题要的那种对应关系不在里面**（① 的片名↔URL）。
+       实测 bing 结果的 ``links[].text`` 只有面包屑，32 条链接没有一条
+       写着片名，片名在 ``body_text`` 里却与 URL 无对应——模型在这种输入下
+       答「检索摘要未显示作品标题」是**对输入的准确描述**，但它随后按契约
+       fail-closed 成 ``False``，而 ``not_play_site`` 是负样本分支：
+       **错标签就进了池子**。``None`` 不入池而 ``False`` 入池，
+       区别不在模型，在**有没有能力判**——而 fail-closed 的定义正是
+       「没能力判就返回 ``None``」。
+
+    第 2 条比第 1 条更隐蔽：第 1 条时模型看到的是明显的空，
+    证据里写「采集降级」；第 2 条时页面内容丰富、看着一切正常，
+    **没有任何东西提示判据缺失**，只有反查 URL 归属才能发现标签是错的。
     """
     if obs.degraded:
         return f"采集降级（{list(obs.degraded)}），证据不完整，不判"
     if question == Q.SELECT_PLAY_SITES:
         if not obs.links:
             return "搜索页未采到链接，无从选择站点，不判"
-        return ""
+        return _title_link_sufficiency(obs, target_title)
+    if question == Q.FIND_PLAY_CONTROL and not obs.interactive_elements:
+        # 这道题**唯一的输入就是元素表**。表是空的，模型看到的是
+        # 「这页一个控件都没有」——而正文里可能明明白白写着「立即播放」。
+        #
+        # 实测（2026-10-09 m.ixigua.com/video/6582085495839261192）：
+        # 正文 100 字符、元素 0 个，模型判 False，理由「未提供任何可交互
+        # 控件 ref」——于是记成 ``no_play_control`` **负样本**。
+        # 而西瓜视频上有这条片子，页面还写着「立即播放」。
+        #
+        # ⚠️ **规则版早就防住了这条**（``rule_perceptor`` 里
+        # ``not obs.interactive_elements`` → None），LLM 版漏了。
+        # 两版口径必须一致，否则换 ``--perceptor`` 就换一批标签，
+        # 而「规则版对、LLM 版错」在报表上完全看不出来。
+        #
+        # 关键在于**别拿「有正文」当「渲染完了」的证据**：
+        # 正文与元素来自两个独立的 tool，前者成功不代表后者也成功。
+        return (
+            f"采到 0 个交互元素（正文 {len(obs.body_text)} 字符）——"
+            f"哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，"
+            f"不判（正文里写着「立即播放」而元素 0 个，判 False 就是"
+            f"把采集失败写成业务负样本）"
+        )
     if not obs.body_text and not obs.interactive_elements:
         # 两者皆空 = 这不是「页面没内容」，是采集没拿到东西。
         # 实测三站（iqiyi / ixigua / sohu）都走到这里：正文 0 字符、
@@ -414,6 +466,32 @@ def _sufficiency(question: str, obs: Observation) -> str:
             f"不判（哨兵返回分不清「未渲染」与「确实为空」）"
         )
     return ""
+
+
+def _title_link_sufficiency(obs: Observation, target_title: str) -> str:
+    """① 的判别力检查：链接文本里有没有片名。
+
+    判据**只用链接自身的文本**，不看 ``body_text``。body_text 里当然有
+    片名（实测一份观察含「功夫」16 次），但它是一条无结构的文本流，
+    里面的片名与 ``links[]`` 的 URL **没有任何对应关系**——模型无从把
+    「这条标题」和「那个 URL」配上，对不上就是猜。猜出来的 ``not_play_site``
+    是负样本，而实测已经出现过它与同一 URL 的**成功记录直接矛盾**。
+
+    真正的修法是让采集层把标题带进 ``links[]``（见 ``steps/search.py``
+    的 ``RESULT_SELECTORS``）；在那之前，这道题只能在输入有判别力时才问。
+    """
+    title = (target_title or "").strip()
+    if not title:
+        # 没有目标片名就无从匹配。这不是「判为否」，是问错了题。
+        return "未绑定目标片名，① 无法匹配，不判"
+    hits = sum(1 for link in obs.links if title in (link.text or ""))
+    if hits:
+        return ""
+    return (
+        f"{len(obs.links)} 个候选链接的文本里没有一个含《{title}》"
+        f"（实测 bing 只给面包屑，片名在 body_text 里但与 URL 无对应）"
+        f"——输入不支持本题，不判"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -491,3 +569,31 @@ def _evidence(data: Mapping[str, Any], spec: Question, answer: bool) -> str:
     why = schema_parse.as_str(schema_parse.field(data, "evidence")) or spec.prompt[:40]
     tail = f"（置信度 {CONFIDENCE_JUDGED} 为代码层先验，非模型自报）"
     return f"LLM 判 {answer}：{why}{tail}"
+
+
+def _bool_or_reason(data: Mapping[str, Any]) -> tuple[bool | None, str]:
+    """读 ``answer``，并**说清为什么读不出来**。
+
+    提示词里明写着「证据不足时 answer 给 null」——所以 ``null``（或缺字段）
+    是**模型照契约作答**，不是它坏了。两种情况都落到 ``answer=None``、
+    都记 ``unresolved`` 分支，**采集结果完全一样**，但证据必须分开说：
+
+    - 契约式 null = 模型承认「这条我判不了」→ 该补采集 / 换模型 / 调提示词；
+    - 格式坏      = 模型想答但没按格式答 → 该调解析容错。
+
+    混成一句「无法解析为布尔」时，人工复核读到的是「模型坏了」，
+    于是所有人都去调解析层，而真正该做的是让模型判得出来。
+    """
+    raw = schema_parse.field(data, "answer")
+    answer = schema_parse.as_bool(raw)
+    if answer is not None:
+        return answer, ""
+    # 两条 fail-closed 路径**都要**保留模型自述：模型说「我判不了」时
+    # 通常仍说得出**为什么**，那是人工复核唯一能用的线索。丢掉它等于
+    # 让这一站彻底没有依据——而这恰恰是本该交给人的那些站。
+    why = schema_parse.as_str(schema_parse.field(data, "evidence"))
+    tail = f"；模型自述：{why}" if why else ""
+    # 合法的「我判不了」：显式 null / 字段缺失 / 空串
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None, f"模型按契约给出 null（证据不足），不是输出格式问题{tail}"
+    return None, f"answer={raw!r} 既不是布尔也不是 null（格式偏离）{tail}"

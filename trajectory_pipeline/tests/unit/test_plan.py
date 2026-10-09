@@ -277,8 +277,9 @@ def _ns(**kw):
     import argparse
 
     base = dict(plan=None, out=None, limit=0, title=None, dry_run=False,
-                include_unrewritten=False, engine="bing",
-                max_candidates=5, max_chars=None, stop_after_success=0)
+                include_unrewritten=False, engine="bing", task_id="T001",
+                perceptor=None, max_candidates=5, max_chars=None,
+                stop_after_success=0)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -293,3 +294,50 @@ class TestPlanJsonRoundTrip:
         assert again.skip_summary() == {}       # 跳过的已单独成列，不在 tasks 里
         assert len(again.skips) == 0
         assert len(plan.skips) == 1             # 原对象仍记得自己跳过了一条
+
+class TestRunRequiresTitle:
+    """CLI 两条入口都**不得**用 ``--task-id`` 顶替片名。
+
+    实测（2026-10-09）：手工路径少给 ``--title`` 就跑成 ``T001 在线观看``，
+    搜回来的是轮胎 T001，判断点 ① 交出 6 条理由通顺的 ``not_play_site``，
+    零异常零空转。守卫放在 CLI 层的意义是**在开浏览器之前**就退掉——
+    浏览器起来一次要几秒，真跑完才发现片名错了，那批已经落进 pools。
+    """
+
+    async def test_手工路径缺title即报错(self, capsys):
+        from trajectory_pipeline.executor.cli import cmd_run
+
+        assert await cmd_run(_ns(title=None)) == 2
+        out = capsys.readouterr().out
+        assert "缺 --title" in out
+        assert "T001" in out, "错误串要指名道姓说明 task-id 不是片名"
+
+    async def test_手工路径不连浏览器就退(self, capsys):
+        """反例护栏：守卫不是「一律拒绝」。给了片名就该往前走——
+        本机没配 OBSCURA_EXE，正好停在连接那一步，而不是停在片名那一步。"""
+        from trajectory_pipeline.executor.cli import cmd_run
+
+        assert await cmd_run(_ns(title=["功夫"])) == 2
+        out = capsys.readouterr().out
+        assert "缺 --title" not in out
+        assert "OBSCURA_EXE" in out, f"应该停在连浏览器那一步，实际输出：{out}"
+
+    async def test_计划路径有没片名的条目即报错(self, capsys, tmp_path):
+        from trajectory_pipeline.executor.cli import cmd_run
+
+        path = tmp_path / "plan.json"
+        path.write_text(json.dumps(_plan(_row(title=""), _row(task_id="T002", title=""))),
+                        encoding="utf-8")
+        assert await cmd_run(_ns(plan=str(path))) == 2
+        out = capsys.readouterr().out
+        assert "没有片名" in out
+        assert "T001" in out and "T002" in out, "要**逐条**列出来，一份坏计划通常不止一条坏"
+
+    async def test_计划路径片名齐全不误伤(self, capsys, tmp_path):
+        from trajectory_pipeline.executor.cli import cmd_run
+
+        path = tmp_path / "plan.json"
+        path.write_text(json.dumps(_plan(_row(), _row(task_id="T002"))), encoding="utf-8")
+        # dry-run 让它读完计划就停，不必连浏览器
+        assert await cmd_run(_ns(plan=str(path), dry_run=True)) == 0
+        assert "没有片名" not in capsys.readouterr().out

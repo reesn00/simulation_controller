@@ -20,6 +20,7 @@ W1 的诚实说明：``RulePerceptor`` 对 ``SELECT_PLAY_SITES`` / ``IS_REACHABL
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -32,6 +33,14 @@ from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.executor.steps import visit as visit_step
 from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.perception.base import Decision, Observation, Perceptor, Q
+
+#: 存档里保留的交互元素 / 链接条数上限。**提取成常量不是为了省字**，
+#: 是因为「落盘裁到几条」这件事现在有了判据意义——
+#: D-2 的评分器靠 ``len(观察里存的)`` 与 ``elements_total`` 的差判断
+#: 「目标是不是可能被裁掉了」，而这个差**只有在两处截断对齐时才有意义**。
+#: 哪天这里改成 100 而别处还按 80 判断，D-2 会静默地把裁剪当成不存在。
+OBS_ELEMENT_LIMIT = 80
+OBS_LINK_LIMIT = 50
 
 
 @dataclass
@@ -79,6 +88,13 @@ class RunRecord:
     #: 不是任何 Perceptor 的判断。读档的人若不知道这一点，会把
     #: 「W1 选出的站点」误读成「规则版能选出正确站点」——它不能。
     candidate_source: str = "heuristic"
+    #: 取到的**搜索结果标题条数**。0 = 没取到，判断点 ① 会 fail-closed。
+    #:
+    #: 这是审计项，不是统计项：判断点 ① 要判的是「URL ↔ 片名」，
+    #: 而 ``links()`` 的 text 对搜索结果页往往只有面包屑（实测 bing
+    #: 32 条链接无一条含片名）。所以「① 为什么恒为 unresolved」这个问题，
+    #: 答案是 0，而**光看分支统计看不出来**——它长得像「模型判不了」。
+    result_titles: int = 0
     #: 模块 1（taskgen）的切片轴：persona 六维、检索模式、归一结论。
     #:
     #: ⚠️ **空 dict 的含义是「不是 taskgen 跑的」，不是「taskgen 没生效」**
@@ -103,6 +119,25 @@ class RunRecord:
     #: 候选过滤记账：``{原因: 条数}``。静默剔除会让"引擎给了 50 个链接、
     #: 我们只跑了 11 个"这类损失不可见。
     candidate_filter: dict[str, int] = field(default_factory=dict)
+    #: **本次运行的 :class:`RunConfig` 快照。**
+    #:
+    #: 这是评分维度 **B-2（检索覆盖完整性）** 的分母来源。缺它的话
+    #: ``--max-candidates 5`` 跑出的「5/5 全处置」与默认上限跑出的
+    #: 「5/20」在存档里**长得一模一样**——两个批次的覆盖率差 4 倍，
+    #: 而读档的人无从分辨，那是任务标准还是覆盖率退化。
+    #:
+    #: 落盘里必须有的四项：
+    #:   ``max_candidates``      候选上限，决定覆盖完整性分母
+    #:   ``stop_after_success``  提前停止阈值，**改的是分子**
+    #:   ``per_site_timeout_s``  单站超时——⚠️ **CLI 不设它**，走
+    #:                          :class:`RunConfig` 默认值，所以它连
+    #:                          ``--help`` 都查不到，只在源码里。
+    #:                          而它是 B-4（异常处置）唯一的时限判据。
+    #:   ``engine``             搜索引擎。不同引擎的候选分布差异很大，
+    #:                          混在一起算覆盖率没有意义。
+    #:
+    #: 空 dict = 手工路径（与 ``provenance``、``user_prompt`` 同款约定）。
+    run_config: dict[str, Any] = field(default_factory=dict)
     #: **搜索阶段**的动作流。站点级动作在各 ``VisitResult.steps`` 里——
     #: 拆开是因为搜索与遍历是两种不同的决策单元（P2 切成两条样本）。
     #:
@@ -122,6 +157,7 @@ class RunRecord:
         防御放在**值对象自己的边界**上，而不是靠每个调用点自觉。
         """
         self.provenance = dict(self.provenance or {})
+        self.run_config = dict(self.run_config or {})
 
     @property
     def succeeded(self) -> bool:
@@ -137,8 +173,10 @@ class RunRecord:
             "search_url": self.search_url,
             "perceptor": self.perceptor,
             "candidate_source": self.candidate_source,
+            "result_titles": self.result_titles,
             "search_blocked": self.search_blocked,
             "candidate_filter": dict(self.candidate_filter),
+            "run_config": dict(self.run_config),
             "provenance": dict(self.provenance),
             "elapsed_ms": self.elapsed_ms,
             "warnings": list(self.warnings),
@@ -199,11 +237,18 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
         "degraded": list(obs.degraded),
         "video_tag_count": obs.video_tag_count,
         "iframe_count": obs.iframe_count,
+        # 落盘的条数（可能被裁）与**采到的条数**（可能被驱动层 limit 截断）
+        # 成对落盘。D-2 评分器靠两者的差判断「目标是不是可能落在裁剪区外」
+        # —— 详见 Observation.elements_total 的说明，那条规则在 v1.1 里
+        # 是唯一一条不补数据就必然产生反向错判的边界规则。
+        "elements_total": obs.elements_total or len(obs.interactive_elements),
+        "links_total": obs.links_total or len(obs.links),
         "interactive_elements": [
             {"ref": e.ref, "tag": e.tag, "label": e.label[:120]}
-            for e in obs.interactive_elements[:80]
+            for e in obs.interactive_elements[:OBS_ELEMENT_LIMIT]
         ],
-        "links": [{"text": l.text[:80], "href": l.href} for l in obs.links[:50]],
+        "links": [{"text": l.text[:80], "href": l.href}
+                  for l in obs.links[:OBS_LINK_LIMIT]],
     }
 
 
@@ -256,7 +301,7 @@ def _apply_selection(
             "not_play_site",
             f"判断点 ① 未选中该站点。{why}" if why
             else "判断点 ① 未选中该站点（模型未给出排除理由）",
-            decision=selection,
+            decision=selection, site_url=candidate.url,
         )
     record.warnings.append(
         f"判断点 ① 选出 {len(kept)}/{len(record.candidates)} 个候选，"
@@ -307,7 +352,27 @@ class Orchestrator:
         采样与执行就耦合了，而那样的批次无法归因（分不清是 persona 的
         问题还是采样规则的问题）。要跳过的条目在
         :mod:`trajectory_pipeline.executor.plan` 里跳，不在这里跳。
+
+        Raises:
+            ValueError: ``title`` 为空。**这是全流程唯一允许抛出的情形**，
+                因为它不是采集故障，是**调用方把必填项漏了**。
+                其余一切（网络、渲染、站点结构、后端超时）都折算进
+                warnings——那些是真采集，采不到就该留痕而不是中断。
+
+                为什么要为这一条破例：片名是判断点 ① 的**唯一判据来源**
+                （``llm_perceptor._title_link_sufficiency`` 靠它核对链接
+                文本）。没有片名时 ① 的正确行为是 fail-closed，而调用方
+                通常会在自己那一层先拿 task_id 顶上——实测 T001 顶上去
+                就搜成了「轮胎 T001」，产出 6 条理由通顺的假负样本，
+                **零异常、零空转、一条都看不出坏**。让它在调用方那层
+                静默发生，比让它在这里炸掉贵得多。
         """
+        if not (title or "").strip():
+            raise ValueError(
+                f"task {task_id!r} 没有片名。片名是判断点 ① 的唯一判据来源，"
+                f"拿 task_id 顶替会产出一整批自洽而全错的素材且不报错——"
+                f"请传真实片名。"
+            )
         started = time.monotonic()
         query = search_query or search_step.build_query(title, persona=persona)
         url = search_step.search_url(query, self._cfg.engine)
@@ -317,6 +382,9 @@ class Orchestrator:
             user_prompt=user_prompt,
             ledger=ledger, perceptor=getattr(self._perceptor, "name", "?"),
             provenance=dict(provenance or {}),
+            # 运行参数进存档：覆盖完整性（B-2）与异常处置（B-4）
+            # 两项断言的分母/判据都在这里，见 RunRecord.run_config。
+            run_config=dataclasses.asdict(self._cfg),
         )
 
         # ── 环节 0：搜索页 ──────────────────────────────────────────
@@ -361,9 +429,31 @@ class Orchestrator:
 
         # ── 环节 ①：取候选（代码层，非感知层）─────────────────────
         record.candidate_filter = {}
+        # 先把结果标题取回来。links() 的 text 对 bing 只有面包屑，
+        # 而判断点 ① 要的就是「URL ↔ 片名」——取不到时它会 fail-closed，
+        # **但这件事必须留在 warnings 里**：否则报表上只会看到
+        # 「① 恒为 unresolved」，没人知道是采集层少给了判据。
+        titles, title_why = await self._result_titles()
+        if titles:
+            record.result_titles = len(titles)
+            # **把标题写回观察**。判断点 ① 拿到的就是这份 Observation，
+            # 只改 candidates 不改它，等于修了下游却没修上游——
+            # 而存档里存的也是这份观察，不改它就等于**存档与实际判定依据脱节**。
+            record.search_obs = dataclasses.replace(
+                record.search_obs,
+                links=tuple(
+                    dataclasses.replace(link, text=titles.get(link.href) or link.text)
+                    for link in record.search_obs.links
+                ),
+            )
+        else:
+            record.warnings.append(
+                f"未取到 {self._cfg.engine} 的结果标题（{title_why}）"
+                f"——判断点 ① 将因输入不含片名而 fail-closed"
+            )
         record.candidates = search_step.extract_candidates(
             record.search_obs, engine=self._cfg.engine, limit=self._cfg.max_candidates,
-            stats=record.candidate_filter,
+            stats=record.candidate_filter, titles=titles,
         )
         if not record.candidates:
             record.warnings.append(
@@ -434,6 +524,34 @@ class Orchestrator:
         record.elapsed_ms = int((time.monotonic() - started) * 1000)
         return record
 
+    async def _result_titles(self) -> tuple[Mapping[str, str], str]:
+        """取当前搜索页的「结果标题 ↔ URL」。返回 ``(映射, 失败原因)``。
+
+        **引擎选择器会随改版失效，所以这里只认「抽到了就是抽到了」**：
+        选择器失效、字段不等长、tool 报错，一律返回空映射 + 原因，
+        由调用方决定后果（判断点 ① 退回 fail-closed）。反过来做——
+        抽到了就信——才危险：一条错误对应关系会直接变成 ① 的唯一判据。
+
+        单次 tool 失败**不重跑**：重试同一个选择器只会再失败一次。
+
+        失败原因随返回值走，**不挂在实例属性上**：orchestrator 会跑多个
+        task，挂在实例上前一个 task 的失败会渗进后一个 task 的存档。
+        """
+        fields = search_step.RESULT_SELECTORS.get(self._cfg.engine)
+        if not fields:
+            return {}, f"{self._cfg.engine} 未登记结果标题选择器"
+        try:
+            extracted = await self._driver.extract(fields)
+        except Exception as exc:
+            return {}, f"browser_extract 失败 {type(exc).__name__}: {exc}"
+        titles = search_step.result_titles(extracted)
+        if not titles:
+            # 字段名写上游**真实返回**的那两个（不带 `[]`）——
+            # 这条串是给人读的，照着入参写会让人去查一个不存在的键。
+            return {}, (f"{search_step.TITLE_FIELD}/{search_step.URL_FIELD} "
+                        f"长度不等或为空（抽到字段 {sorted(extracted)}）")
+        return titles, ""
+
     async def _visit_guarded(
         self,
         candidate: Candidate,
@@ -456,13 +574,15 @@ class Orchestrator:
             )
         except asyncio.TimeoutError:
             ledger.record(candidate.url, "unresolved",
-                          f"站点遍历超时（>{self._cfg.per_site_timeout_s}s）")
+                          f"站点遍历超时（>{self._cfg.per_site_timeout_s}s）",
+                          site_url=candidate.url)
             result.note("超时")
             record.warnings.append(f"{candidate.url} 超时")
             return result
         except Exception as exc:
             ledger.record(candidate.url, "unresolved",
-                          f"站点遍历异常: {type(exc).__name__}: {exc}")
+                          f"站点遍历异常: {type(exc).__name__}: {exc}",
+                          site_url=candidate.url)
             result.note(f"异常: {exc}")
             record.warnings.append(f"{candidate.url} 异常: {exc}")
             return result

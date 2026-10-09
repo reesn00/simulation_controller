@@ -31,4 +31,9 @@ LLM 是传感器不是驾驶员：输入是 DOM 预处理后的结构化观察�
 
 契约测试对三者跑同一套不变式：``IMPLEMENTATIONS`` 里加一行即可，
 所以**切实现时 executor 的 git diff 必须为空**。
+
+第四个模块 :mod:`~trajectory_pipeline.perception.replay` 不是实现，是**回放**：
+把 P1 存档里的真实观察原样喂给上面几个实现，不开浏览器。它把 P1 当
+**数据文件**读（``json.load``），因此不 import executor——「插件退化成耦合」
+的第一步就是让感知层知道控制流的存在。
 """

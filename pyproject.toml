@@ -1,7 +1,7 @@
 [project]
 name = "useramulation"
 version = "0.2.0"
-description = "用户模拟与数据蒸馏工具：通过 CAMEL-AI 模拟真实用户，与目标 AI Agent 进行多轮对话，产出蒸馏数据集"
+description = "Agent 轨迹合成管线（trajectory_pipeline）：代码执行循环 + 可替换感知层，采集可归因的训练轨迹"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
@@ -9,40 +9,21 @@ authors = [
 ]
 
 dependencies = [
-    "camel-ai>=0.2.0",
     "httpx>=0.27.0",
+    "mcp>=1.28",
     "pyyaml>=6.0",
     "pydantic>=2.0",
-    "jinja2>=3.0",
 ]
-
-[project.scripts]
-useramulation = "simulate_serve.__main__:main"
-orchestration = "orchestration.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["simulate_serve", "orchestration", "trajectory_pipeline"]
+packages = ["trajectory_pipeline"]
 exclude = [
-    "simulate_serve/config/config copy.yaml",
-    "simulate_serve/**/__pycache__/**",
-    "orchestration/**/__pycache__/**",
-    "output/orchestration/**",
+    "**/__pycache__/**",
 ]
-
-[tool.hatch.build.targets.wheel.force-include]
-# shared_config: 根配置 config/config.yaml 的读取工具 (orchestration /
-# simulate_serve / etl.qwenformat 共用); 根配置本身含真实凭据不入包。
-# 模块级配置文件已删除, 所有配置统一由根 config/config.yaml 提供。
-"shared_config.py" = "shared_config.py"
-"simulate_serve/config/tasks.yaml" = "simulate_serve/config/tasks.yaml"
-"simulate_serve/config/scenarios.yaml" = "simulate_serve/config/scenarios.yaml"
-"tool_runtime/playwright/package.json" = "simulate_serve/tool_runtime/playwright/package.json"
-"tool_runtime/playwright/package-lock.json" = "simulate_serve/tool_runtime/playwright/package-lock.json"
-"orchestration/queue/schema.sql" = "orchestration/queue/schema.sql"
 
 [dependency-groups]
 dev = [
@@ -55,18 +36,21 @@ dev = [
 ]
 
 [project.optional-dependencies]
-browser-camoufox = [
+# v1 归档代码（archive/v1/）手动运行所需；主环境默认不装（uv sync --extra legacy）。
+legacy = [
+    "camel-ai>=0.2.0",
+    "jinja2>=3.0",
     "cloverlabs-camoufox==0.6.0",
 ]
 
 [tool.pytest.ini_options]
-# gdr/tests 自 2026-09-30 起并入默认门禁。此前它不在 testpaths 里, 导致
-# CLAUDE.md 写的 `uv run python -m pytest -q` 跑不到那 360+ 个用例, 而那里
-# 藏着 3 处「save_session 已被 save_session_v2 取代」的 ImportError、
-# 2 处还在按已删除的 qf_out 嵌套格式造 fixture, 以及 2 个**生产代码**里
-# 静默失效的 isinstance (gdr 两套导入姿势 → usage_prune 从未真正执行,
-# 含 CLAUDE.md 隐私红线的本机路径泛化)。门禁漏掉一棵树 = 这些全部看不见。
-testpaths = ["tests", "gdr/tests", "trajectory_pipeline/tests"]
+# v1（simulate_serve / orchestration / gdr / etl / label_studio / tool_runtime /
+# data_refiner）已于 2026-10-09 归档至 archive/v1/，其测试随之退役出默认门禁——
+# 门禁保护「会被修改的代码」，冻结树无从回归。手动跑法见 archive/v1/README.md。
+# 历史教训（为什么 gate 必须显式枚举每一棵**在开发**的树）：gdr/tests 曾长期
+# 不在 testpaths 里，360+ 用例不跑，掩盖了 3 处 ImportError、2 处过期 fixture、
+# 2 处生产代码静默失效（双导入 → isinstance 恒 False，usage_prune 从未执行）。
+testpaths = ["trajectory_pipeline/tests"]
 addopts = "-ra --strict-markers --allow-hosts=127.0.0.1,::1 --basetemp=.pytest-tmp"
 asyncio_mode = "auto"
 markers = [
@@ -79,10 +63,7 @@ markers = [
     "integration: requires a live external service (e.g. local Label Studio on 127.0.0.1:8088); not run on default CI",
 ]
 
-[tool.uv.workspace]
-# trajectory_pipeline 刻意**不进** workspace：gdr 成为 workspace 成员后，
-# 它同时以顶层风格（from domain import ...）和 gdr. 前缀风格被加载，
-# 同一份源码产生两套类对象，跨边界 isinstance 静默判 False，
-# usage_prune 因此从未真正执行过。新树一律 trajectory_pipeline.xxx 绝对导入，
-# 作为主包一部分管理，不制造第二套导入姿势。
-members = ["gdr"]
+# [tool.uv.workspace] 刻意不存在：trajectory_pipeline 以主包管理（hatch packages）。
+# 任何 workspace 成员身份都会制造第二套导入姿势——gdr 曾身为成员，同源码被
+# 加载成两套类对象，跨边界 isinstance 静默判 False，usage_prune 从未真正执行
+# （详见 CLAUDE.md 开发纪律与 00-总体方案 §0）。

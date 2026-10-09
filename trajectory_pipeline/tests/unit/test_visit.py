@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -304,14 +305,107 @@ class TestVisitFlow:
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "login_wall_or_blocked"   # 走到了判断环节
 
-    async def test_感知层返回_none_一律记_unresolved(self):
-        """fail-closed：没判出来不是失败。"""
-        for q in (Q.IS_REACHABLE, Q.FIND_PLAY_CONTROL, Q.PLAYER_OK):
+    async def test_前置环节的_none_记_unresolved(self):
+        """fail-closed：没判出来不是失败。
+
+        范围是**环节①–④**（IS_REACHABLE / FIND_PLAY_CONTROL）——这三处没走到
+        播放页。环节⑦ 是另一回事，见 ``TestPlayerUnverifiedAtStep7``。
+        """
+        for q in (Q.IS_REACHABLE, Q.FIND_PLAY_CONTROL):
             d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
             ledger = RunLedger("T001")
             await visit_site(d, ScriptedPerceptor({}), ledger, CAND)
             assert ledger.outcomes[0].branch == "unresolved", q
             assert ledger.negative_samples() == []
+
+    async def test_每条outcome都带候选地址(self):
+        """D-6「站点 URL」必填的机械前提：控制流任何一条分支都不许漏。
+
+        漏了不会炸，只会在存档里少一个字段——而读档的人无从知道
+        「这个空是没记」还是「这个空是本来就没有」。"""
+        cases = {
+            "unreachable_hard": (FakeDriver(), ScriptedPerceptor({})),
+            "login_wall_or_blocked": (
+                FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")}),
+                ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)})),
+            "no_play_control": (
+                FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")}),
+                ScriptedPerceptor({Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                                   Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL)})),
+        }
+        for branch, (d, p) in cases.items():
+            ledger = RunLedger("T001")
+            await visit_site(d, p, ledger, CAND)
+            assert ledger.outcomes[0].site_url == "https://x.test/movie", branch
+
+    async def test_未到播放页时不编播放页地址(self):
+        """空是正确值——D-6 口径是「不适用、不扣分」。
+        填一个 `url` 进去看着齐整，实际是把猜测写成事实。"""
+        d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
+        p = ScriptedPerceptor({Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                               Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL)})
+        ledger = RunLedger("T001")
+        await visit_site(d, p, ledger, CAND)
+        assert ledger.outcomes[0].play_page_url == ""
+
+
+class TestPlayerUnverifiedAtStep7:
+    """环节⑦：控件点了、播放页就在眼前，感知层却判不了能不能播。
+
+    这三支（success / player_unverified / component_unverified）都必须带
+    **播放页地址**：D-6 要求它必填，而这三支恰恰是唯一确定自己到了播放页的
+    情形。少了它，人工复核时手上只有「候选链接」，
+    根本不知道该去看哪个页面——这一批人工复核就会白白浪费。
+    """
+
+    PAGES = {
+        "https://x.test/movie": obs_at(
+            "https://x.test/movie", elements=(("e5", "button", "播放"),)),
+        "https://x.test/play/e5": obs_at(
+            "https://x.test/play/e5", title="播放器", video=1),
+    }
+
+    async def _run(self, player_decision):
+        ledger = RunLedger("T001")
+        p = ScriptedPerceptor({
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+            Q.PLAYER_OK: player_decision,
+        })
+        await visit_site(FakeDriver(self.PAGES), p, ledger, CAND)
+        return ledger.outcomes[0]
+
+    async def test_none落player_unverified(self):
+        out = await self._run(none(Q.PLAYER_OK))
+        assert out.branch == "player_unverified"
+
+    async def test_none时仍算访问过(self):
+        """报成「没到播放页」就把这一条从最有价值的复核样本里划走了——
+        而页面就在存档里躺着。"""
+        out = await self._run(none(Q.PLAYER_OK))
+        assert out.reached is True
+        assert out.url == "https://x.test/play/e5"
+
+    async def test_none不是负样本(self):
+        assert (await self._run(none(Q.PLAYER_OK))).is_negative_sample is False
+
+    async def test_success分支也带播放页地址(self):
+        out = await self._run(ok(Q.PLAYER_OK, {"media_count": 1}))
+        assert out.branch is None
+        assert out.play_page_url == "https://x.test/play/e5"
+
+    async def test_false分支也带播放页地址(self):
+        """反例护栏：分流不能把带地址的那一支漏掉。
+        （page 有 video 标签，``component_unverified`` 的前置事实成立。）"""
+        out = await self._run(no(Q.PLAYER_OK))
+        assert out.branch == "component_unverified"
+        assert out.play_page_url == "https://x.test/play/e5"
+
+    async def test_三支都带候选地址与播放页地址(self):
+        for dec_ in (ok(Q.PLAYER_OK), none(Q.PLAYER_OK), no(Q.PLAYER_OK)):
+            out = await self._run(dec_)
+            assert out.site_url == "https://x.test/movie", dec_.answer
+            assert out.play_page_url == "https://x.test/play/e5", dec_.answer
 
     async def test_前置_none_不中断_继续收集证据(self):
         """**fail-closed 管结论不管采集**。
@@ -459,6 +553,25 @@ class TestOrchestrator:
         orch = Orchestrator(d, ScriptedPerceptor(script), RunConfig(stop_after_success=2))
         rec = await orch.run("T001", "功夫")
         assert len(rec.visits) == 2
+
+    async def test_运行参数由_run_自己填(self):
+        """**不能只在序列化时现填**——那样手写存档、
+        `review --write` 产出的复核档、以及未来任何不走 ``run()`` 的入口
+        都会留下空快照，而 B-2 的分母不可知不会在存档里显形。
+
+        这条测的是「填在 ``run()`` 里」，不是「落盘时有这个键」：
+        后者由 :class:`TestRunRecordAudit` 盯。
+        """
+        pages = {
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
+                self._search_page(("a", "https://a.test/movie")),
+            "https://a.test/movie": obs_at("https://a.test/movie"),
+        }
+        cfg = RunConfig(max_candidates=3, per_site_timeout_s=12.5)
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor({}), cfg).run("T001", "功夫")
+        assert rec.run_config["max_candidates"] == 3
+        assert rec.run_config["per_site_timeout_s"] == 12.5
 
 
 class TestSelectPlaySitesWiring:
@@ -644,6 +757,60 @@ class TestRunRecordAudit:
         blob = repr(rec.to_json())
         for token in ("page_driver", "McpClient", "obscura", "_driver"):
             assert token not in blob
+
+    async def test_元素落盘被裁时总量字段仍在(self):
+        """D-2 的机械前提：落盘条数上限 80、链接上限 50，
+        而 ``elements_total`` 记的是**裁之前**的量。
+
+        没它就是「两种相反的错误同形」：页面真有 300 个控件而采了 80，
+        与页面只有 80 个控件，都落成 80 条——前者该判不可判定，后者不该。"""
+        from trajectory_pipeline.executor.orchestrator import (
+            OBS_ELEMENT_LIMIT, OBS_LINK_LIMIT, RunRecord,
+        )
+        elements = tuple(("e%d" % i, "a", "链接%d" % i) for i in range(120))
+        links = tuple(("t%d" % i, "https://x.test/%d" % i) for i in range(90))
+        obs = Observation(
+            url="https://x.test/", page_title="T", body_text="正文",
+            interactive_elements=tuple(
+                InteractiveElement(ref=r, tag=t, label=l) for r, t, l in elements),
+            links=tuple(LinkItem(text=t_, href=h) for t_, h in links),
+            elements_total=120, links_total=90,
+        )
+        j = RunRecord(task_id="T001", title="t", query="q", search_url="u",
+                      search_obs=obs).to_json()["search_observation"]
+        assert len(j["interactive_elements"]) == OBS_ELEMENT_LIMIT
+        assert len(j["links"]) == OBS_LINK_LIMIT
+        assert j["elements_total"] == 120 > OBS_ELEMENT_LIMIT
+        assert j["links_total"] == 90 > OBS_LINK_LIMIT
+
+    async def test_没设总量时按落盘条数兜底(self):
+        """老观察对象（手工构造、第三方传入）没有这两个字段。
+        兜底成 0 会让 D-2 判成「整页都不可信」，宁可等于实际条数。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+        obs = obs_at("https://x.test/", elements=(("e1", "a", "甲"), ("e2", "a", "乙")))
+        j = RunRecord(task_id="T001", title="t", query="q", search_url="u",
+                      search_obs=obs).to_json()["search_observation"]
+        assert j["elements_total"] == 2
+
+    async def test_运行参数进存档(self):
+        """B-2（覆盖完整性）的分母是 ``max_candidates``、B-4（时间限制）
+        判的是 ``per_site_timeout_s``。两者不落盘的话，
+        ``max_candidates`` 取 20 与取 5 的两批数据**长得一模一样**，
+        而它们的采集完整度根本不是一回事。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+        cfg = RunConfig(engine="bing", max_candidates=5,
+                        per_site_timeout_s=30.0)
+        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
+        rec.run_config = dataclasses.asdict(cfg)
+        assert rec.to_json()["run_config"]["max_candidates"] == 5
+        assert rec.to_json()["run_config"]["per_site_timeout_s"] == 30.0
+
+    async def test_没跑时运行参数为空对象(self):
+        """空 dict 而不是 ``None``：assembler 侧判「缺件」用的是
+        「为假」，两种空值会让那条判断在两边不一致。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
+        assert rec.to_json()["run_config"] == {}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1260,3 +1427,52 @@ class TestArchivedSteps:
         # 反向：表里不该有「设计上不会成为动作」的 observe
         assert "observe" not in actions.TOOLS
 
+
+
+class TestTitleIsRequired:
+    """片名为空必须**炸**，不得拿 task_id 顶替。
+
+    实测（2026-10-09）：``run`` 少了 ``--title`` 就拿 ``T001`` 当片名，
+    搜回来的是**轮胎** T001（泰坦途 Turanza 胎压监测），于是判断点 ①
+    交出 6 条 ``not_play_site``，每条理由都写得通顺——「T001（泰坦途）
+    轮胎商品详情页，非影视作品观看页」。整批零成功、零异常，
+    **每一条都是垃圾**。
+
+    这是本文件里唯一一个「整批作废但零报错」的失败模式，
+    也是最该在结构上堵死的那一种：读存档时看到的只是一份
+    「模型很有道理的拒绝记录」，没人会去怀疑片名。
+    """
+
+    @pytest.mark.parametrize("title", ["", "   ", "\n"])
+    async def test_空片名抛错(self, title):
+        orch = Orchestrator(FakeDriver({}), ScriptedPerceptor({}), RunConfig())
+        with pytest.raises(ValueError, match="片名"):
+            await orch.run("T001", title)
+
+    async def test_错误信息点明task_id不能顶替(self):
+        """错误串要能指导下一步——光说「片名缺失」，读的人不知道
+        该检查计划还是该检查命令行。"""
+        orch = Orchestrator(FakeDriver({}), ScriptedPerceptor({}), RunConfig())
+        with pytest.raises(ValueError) as ei:
+            await orch.run("T001", "")
+        assert "task_id" in str(ei.value)
+
+    async def test_抛错前没有发出任何动作(self):
+        """守卫必须在**建记录与导航之前**：一旦已经搜了、已经点了，
+        半批产物已经落进 pools，抛错也来不及了。"""
+        d = FakeDriver({})
+        with pytest.raises(ValueError):
+            await Orchestrator(d, ScriptedPerceptor({}), RunConfig()).run("T001", "")
+        assert d.visited == [], f"抛错前已经导航过：{d.visited}"
+        assert d.clicked == [] and d.observe_calls == 0
+
+    async def test_正常片名不受影响(self):
+        search = ("https://www.bing.com/search?q=%E5%8A%9F%E5%A4%AB+"
+                  "%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B")
+        pages = {search: Observation(
+            url=search, page_title="搜索", body_text="结果",
+            links=(LinkItem(text="功夫 在线观看", href="https://www.a.test/m"),),
+        )}
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor({}),
+                                 RunConfig()).run("T001", "功夫")
+        assert rec.title == "功夫"

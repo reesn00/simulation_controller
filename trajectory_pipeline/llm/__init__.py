@@ -20,13 +20,18 @@ json_schema**，模型会漂字段名、套 think、首轮跑偏。``schema_pars
   - 自报 confidence 普遍虚高，须经验校准后才可用于阈值判断
   - 大输入会超时——实测正文从 1200 降到 600 字符后，原本直接 ``None``
     的请求恢复正常（见 ``llm_perceptor.LLM_BODY_CHARS``）
+  - **是推理模型：思考与正文共用 ``max_tokens`` 一个预算。** 预算小了正文
+    一个字都吐不出来（``content: null`` + ``finish_reason: length``），而
+    客户端按红线不读 ``reasoning_content``，于是表面上只是「拿不到内容」。
+    详见 ``client.DEFAULT_MAX_TOKENS`` 的实测表。
 
 环境变量（**刻意带 ``TRAJECTORY_`` 前缀**，不与存量 v1 的 ``LLM_*`` 撞名）::
 
-    TRAJECTORY_LLM_BASE_URL    必填，缺失即报错不猜
-    TRAJECTORY_LLM_MODEL       必填，同上
-    TRAJECTORY_LLM_API_KEY     可选，本机 vLLM 不校验时留空
-    TRAJECTORY_LLM_TIMEOUT_S   可选，默认 30
+    TRAJECTORY_LLM_BASE_URL      必填，缺失即报错不猜
+    TRAJECTORY_LLM_MODEL         必填，同上
+    TRAJECTORY_LLM_API_KEY       可选，本机 vLLM 不校验时留空
+    TRAJECTORY_LLM_TIMEOUT_S     可选，默认 30
+    TRAJECTORY_LLM_MAX_TOKENS    可选，默认 8192（照推理模型定的，见上）
 
 端点与模型名可用 :func:`~trajectory_pipeline.llm.client.probe` 一次性探测——
 **模型名写错时的症状是每道题都返回 None**，看起来像「LLM 判不了」，

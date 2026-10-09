@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from trajectory_pipeline.executor.browser.mcp_client import McpClient, McpError
 from trajectory_pipeline.executor.browser.page_driver import DriverError
@@ -31,6 +31,7 @@ from trajectory_pipeline.executor.dom import (
     looks_like_error,
     parse_body_text,
     parse_count,
+    parse_extract,
     parse_interactive_elements,
     parse_links,
     parse_snapshot,
@@ -185,6 +186,30 @@ class ObscuraDriver:
         text = await self._call("browser_count", {"selector": selector}, on_error="zero")
         return parse_count(text or "")
 
+    async def extract(self, fields: Mapping[str, str]) -> Mapping[str, Any]:
+        """``browser_extract`` 接入。
+
+        obscura 的字段名带 ``[]`` 表示「取全部匹配，值为数组」，
+        且 ``'a@href'`` 表示取属性而非文本——这两条都是上游既有语义，
+        这里原样透传，**不重命名也不解释**：重命名等于把上游约定
+        抄一份，抄的那份迟早与上游漂移。
+
+        ⚠️ **上游的入参键叫 ``schema``，不叫 ``fields``。**
+        写成 ``fields`` 时上游回 ``Error: Missing schema object``，
+        而 :meth:`_call` 的 ``on_error="empty"`` 会把它吞成空字典——
+        于是症状是「抽不到标题」，和「选择器失效」「页面没渲染」
+        「选择器名写错了」长得一模一样。obscura 的
+        ``tools/list`` **不给 inputSchema**（实测四个采集 tool 全是
+        ``null``，它把 schema 放在自定义的 ``input_schema`` 键里），
+        所以这个键名只能靠 ``probe_returns.py`` 取证，不能靠猜。
+        """
+        if not fields:
+            return {}
+        text = await self._call(
+            "browser_extract", {"schema": dict(fields)}, on_error="empty",
+        )
+        return parse_extract(text or "")
+
     async def evaluate(self, expression: str) -> Any:
         text = await self._call("browser_evaluate", {"expression": expression}, on_error="empty")
         raw = (text or "").strip()
@@ -269,6 +294,11 @@ class ObscuraDriver:
             body_text=snap.body,
             interactive_elements=elements,
             links=tuple(LinkItem(text=l.text, href=l.href) for l in links),
+            # 采到的条数（已被 DEFAULT_LIMIT 截断）——存档侧还会再截到
+            # 80/50，落盘的量必须能对上，否则 D-2 分不清「被裁掉」与
+            # 「不存在」。理由见 Observation.elements_total 的说明。
+            elements_total=len(elements),
+            links_total=len(links),
             video_tag_count=video_count,
             iframe_count=iframe_count,
             max_chars=snap.max_chars,

@@ -42,6 +42,10 @@ class FakeLLM:
         lie_about_ref: str = "",
         invent_urls: bool = False,
         answers: dict[str, bool] | None = None,
+        budget_exhausted: bool = False,
+        answer_null: bool = False,
+        answer_missing: bool = False,
+        answer_garbage: Any = None,
     ) -> None:
         #: 后端整体不可用（连接失败/超时）
         self.down = down
@@ -57,15 +61,34 @@ class FakeLLM:
         self.invent_urls = invent_urls
         #: 逐题强制答案（键为 question id）
         self.answers = answers or {}
+        #: **推理模型的实测形态**：预算被思考吃光，正文为空。
+        #: 报 ``budget:`` 而不是 ``shape:``——两者的下一步动作完全不同，
+        #: 而混起来时症状只是「拿不到内容」。
+        self.budget_exhausted = budget_exhausted
+        #: ``answer`` 显式给 null——**这是提示词里写明的合规答法**
+        #: （「证据不足时 answer 给 null」），不是输出坏了。两者都落
+        #: ``unresolved``，但人工复核该采取的动作不同，故要能分别模拟。
+        self.answer_null = answer_null
+        #: ``answer`` 整个字段不出现
+        self.answer_missing = answer_missing
+        #: ``answer`` 给了个既非布尔也非 null 的东西
+        self.answer_garbage = answer_garbage
         #: 记录每次请求，供断言「问了几次、system 里带了什么」
         self.calls: list[tuple[str, str]] = []
+        #: 每次请求实际带的 ``max_tokens``（None = 走 config）
+        self.budgets: list[int | None] = []
         #: 与真客户端同名字段：失败原因
         self.last_error = ""
 
     # ── 接口 ──────────────────────────────────────────────────────
 
-    def chat(self, system: str, user: str, *, max_tokens: int = 1024) -> str | None:
+    def chat(self, system: str, user: str, *, max_tokens: int | None = None) -> str | None:
+        #: 记下**每次调用实际带的预算**。签名与真客户端一致（默认 None），
+        #: 于是「生产调用点是否还在自带数字」这件事可以被断言——
+        #: 曾经写死 600，而那个数字的错误症状是「正文为空」，
+        #: 看着像模型判不了，谁也不会想到去改它。
         self.calls.append((system, user))
+        self.budgets.append(max_tokens)
         if self.down:
             self.last_error = "transport:ConnectError"
             return None
@@ -73,7 +96,14 @@ class FakeLLM:
         if qid is None:
             self.last_error = "shape:KeyError"
             return None
+        if self.budget_exhausted:
+            self.last_error = (
+                "budget:max_tokens 用尽（finish_reason=length，content 为空）；"
+                "调大 TRAJECTORY_LLM_MAX_TOKENS"
+            )
+            return None
         payload = self._build(qid, obs)
+        payload = self._shape_answer(payload)
         if self.prose:
             return _prose_for(qid)
         raw = json.dumps(payload, ensure_ascii=False)
@@ -87,6 +117,27 @@ class FakeLLM:
         return (not self.down), "fake 后端"
 
     # ── 各题应答 ──────────────────────────────────────────────────
+
+    def _shape_answer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """按开关把 ``answer`` 改成 null / 删掉 / 换成非布尔值。
+
+        只作用于 bool 型输出（``IS_REACHABLE`` / ``PLAYER_OK``）——
+        ``SELECT_PLAY_SITES`` 与 ``FIND_PLAY_CONTROL`` 的契约里没有 answer。
+        判不出来时补一句可辨认的自述，用来验证**模型的 rationale 没有
+        在 fail-closed 路径上被丢掉**。
+        """
+        if self.answer_garbage is not None:
+            payload["answer"] = self.answer_garbage
+            payload["evidence"] = "页面主体为空"
+            return payload
+        if self.answer_null:
+            payload["answer"] = None
+            payload["evidence"] = "页面主体为空"
+            return payload
+        if self.answer_missing:
+            payload.pop("answer", None)
+            return payload
+        return payload
 
     def _build(self, qid: str, obs: dict[str, Any]) -> dict[str, Any]:
         if qid == lp.Q.SELECT_PLAY_SITES:
@@ -141,6 +192,11 @@ def _prose_for(qid: str) -> str:
     )
 
 
-def llm_perceptor(**kwargs: Any) -> lp.LLMPerceptor:
-    """构造一个接假后端的 :class:`LLMPerceptor`（契约测试用）。"""
-    return lp.LLMPerceptor(FakeLLM(**kwargs))
+def llm_perceptor(*, title: str = "功夫", **kwargs: Any) -> lp.LLMPerceptor:
+    """构造一个接假后端的 :class:`LLMPerceptor`（契约测试用）。
+
+    ``title`` 默认绑「功夫」——判断点 ① 的充分性预检要拿目标片名去匹配
+    链接文本，没绑片名时 ① 恒为 None，于是**测 ① 的其他分支的测试会先撞上
+    预检而不是自己要测的东西**。需要覆盖「没绑片名」那条的测试显式传 ``""``。
+    """
+    return lp.LLMPerceptor(FakeLLM(**kwargs), target_title=title)

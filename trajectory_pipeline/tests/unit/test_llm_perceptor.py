@@ -181,10 +181,18 @@ class TestUnavailable:
 class TestSelectSites:
     def test_编造的url被拒(self):
         """编造的 url 会让控制流去访问不存在的站点，而那次访问会以
-        「不可达」入负样本池——**污染出一个并不存在的失败原因**。"""
+        「不可达」入负样本池——**污染出一个并不存在的失败原因**。
+
+        ⚠️ 这里**必须给一条真实链接**且文本含片名。空链接会先撞上
+        「搜索页未采到链接」的早退分支，测试照样绿，但测的已经不是
+        url 校验了（避坑指南 §7.3）。"""
+        from trajectory_pipeline.perception.base import LinkItem
+
         d = llm_perceptor(invent_urls=True).decide(
-            Q.SELECT_PLAY_SITES, _obs(links=(), ))
+            Q.SELECT_PLAY_SITES,
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
         assert d.answer is None
+        assert "编造.test" not in str(d.payload)
 
     def test_真实url被采纳(self):
         from trajectory_pipeline.perception.base import LinkItem
@@ -201,7 +209,8 @@ class TestSelectSites:
         from trajectory_pipeline.perception.base import LinkItem
 
         d = llm_perceptor(invent_urls=True).decide(
-            Q.SELECT_PLAY_SITES, _obs(links=(LinkItem("x", "https://www.a.test/gg"),)))
+            Q.SELECT_PLAY_SITES,
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
         assert d.answer is None
         assert "不在观察" in d.evidence
 

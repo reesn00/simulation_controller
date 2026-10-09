@@ -2,10 +2,14 @@
 
 纪律
 ----
-**只读参考，不 import。** 存量 ``tasks.yaml`` 通过 ``yaml.safe_load``
+**只读参考，不 import。** 任务骨架通过 ``yaml.safe_load``
 按文件读取，绝不 ``import configuration.*``。理由与新树整体纪律一致：
 存量的 ``config`` 与 ``gdr/config`` 是顶层同名命名空间包，
 一旦 import 就会出现双加载（详见方案 §0）。
+
+2026-10-09 起 v1 代码归档至 ``archive/v1/``，本模块的输入改为**随新树携带的
+冻结快照** ``taskgen/data/tasks.yaml``（字节级复制自 v1 原件，原件随档保留）。
+快照是输入资产，勿手改；v1 已冻结不再变更，两侧永不漂移。
 
 骨架里**什么不可改**
 --------------------
@@ -50,9 +54,11 @@ from trajectory_pipeline.taskgen.persona.lexicon import CONSTRAINT_PROBES
 
 RetrievalMode = Literal["single_title", "aggregate", "unknown_title"]
 
-#: 存量 task 库的位置。**刻意写成相对仓库根的路径**而不是 import 配置常量——
-#: 新树不 import 存量，路径自己声明一份。找不到时由调用方显式处理。
-DEFAULT_TASKS_YAML: Final = Path("simulate_serve/config/tasks.yaml")
+#: task 骨架库的位置：随新树携带的**冻结快照**（字节级复制自 v1 的
+#: ``simulate_serve/config/tasks.yaml``，原件随 v1 归档于 ``archive/v1/``）。
+#: 用 ``__file__`` 相对定位——CWD 相对路径换个目录跑就断。
+#: 找不到时由调用方显式处理，不猜默认位置。
+DEFAULT_TASKS_YAML: Final = Path(__file__).resolve().parent / "data" / "tasks.yaml"
 
 #: 片名抽取。书名号是主形态（81 个里的绝大多数），
 #: 直/弯引号是次形态（英文片名与部分国语片名用的是直角引号）。

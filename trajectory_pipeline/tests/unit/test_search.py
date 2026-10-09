@@ -283,3 +283,101 @@ class TestFilterAccounting:
     def test_不给stats不报错(self):
         obs = obs_with(("a", "https://a.test/x"))
         assert len(search.extract_candidates(obs)) == 1
+
+
+class TestResultTitles:
+    """``result_titles``——**实测踩过的坑在这里**。
+
+    踩坑经过：obscura 的 ``browser_extract`` 对 ``{"titles[]": …}``
+    回的是 ``{"titles": […]}``——``[]`` 只是**入参**约定，返回键不带它。
+    按 ``titles[]`` 读会永远读到 ``None``，于是本函数恒返回空字典、
+    判断点 ① 恒 fail-closed，而**症状是「选择器失效」，选择器却是好的**。
+    这个错没有任何离线测试能自己发现（fixture 是照着入参写的），
+    只有 ``probe_result_titles.py`` 对着真实页面能看见。
+
+    所以下面第一条测试的形状必须与**上游真实返回**一致，
+    不是与本项目的入参一致——两者不一样，而只有前者能锁住这个坑。
+    """
+
+    def test_按上游真实返回的键名读取(self):
+        """⚠️ 键是 ``titles`` / ``urls``，**不带 ``[]``**。改这里之前
+        先读 ``search.RESULT_SELECTORS`` 的注释。"""
+        got = search.result_titles({
+            "titles": ["功夫 在线观看", "功夫 优酷"],
+            "urls": ["https://a.test/x", "https://b.test/y"],
+        })
+        assert got == {"https://a.test/x": "功夫 在线观看",
+                       "https://b.test/y": "功夫 优酷"}
+
+    def test_带方括号的键读不到(self):
+        """反例护栏：证明上一条不是碰巧。若哪天把键改成 ``titles[]``，
+        这里会红——而那正是最初那个 bug。"""
+        assert search.result_titles({
+            "titles[]": ["功夫"], "urls[]": ["https://a.test/x"],
+        }) == {}
+
+    def test_长度不等时整份作废(self):
+        """长度不等 = 上游只对其中一个字段有匹配。此时返回空而不是 ``zip``——
+        ``zip`` 会静默截短，配出「查无出处的假对应」，而 ① 拿它当唯一判据。"""
+        assert search.result_titles({"titles": ["a", "b"], "urls": ["u"]}) == {}
+
+    def test_非列表时作废(self):
+        assert search.result_titles({"titles": "a", "urls": ["u"]}) == {}
+        assert search.result_titles({"titles": ["a"], "urls": None}) == {}
+
+    def test_空数组作废(self):
+        assert search.result_titles({"titles": [], "urls": []}) == {}
+
+    def test_缺键作废(self):
+        assert search.result_titles({}) == {}
+        assert search.result_titles({"titles": ["a"]}) == {}
+
+    def test_同url保留第一次(self):
+        """同一 URL 重复出现时取第一次，与 ``extract_candidates``
+        的 host 去重口径一致；否则两边的「第一条」不是同一条。"""
+        got = search.result_titles({
+            "titles": ["第一条", "第二条"],
+            "urls": ["https://a.test/x", "https://a.test/x"],
+        })
+        assert got == {"https://a.test/x": "第一条"}
+
+    def test_空标题或空url的条目跳过(self):
+        got = search.result_titles({
+            "titles": ["", "有标题", "标题在但没url"],
+            "urls": ["https://a.test/x", "", "https://c.test/z"],
+        })
+        assert got == {"https://c.test/z": "标题在但没url"}
+
+
+class TestTitleInjection:
+    """标题注入候选——**判断点 ① 的输入就是从这里来的**。"""
+
+    def test_标题覆盖面包屑(self):
+        titles = {"https://a.test/x": "功夫 在线观看"}
+        obs = obs_with(("a.test https://a.test › cover", "https://a.test/x"))
+        got = search.extract_candidates(obs, titles=titles)
+        assert got[0].text == "功夫 在线观看"
+
+    def test_按原始href也能对上(self):
+        """百度结果大量用 ``/link?url=`` 包裹：``urls[]`` 给的是**真实地址**，
+        而 ``links[]`` 里是**中转地址**。两个键名不同但指的是同一条，
+        少了后一条兜底，baidu 上的标题就一条都对不上。"""
+        obs = obs_with(("中转", "https://www.baidu.com/link?url=https%3A%2F%2Fa.test%2Fx"))
+        got = search.extract_candidates(
+            obs, engine="baidu", titles={"https://a.test/x": "功夫 在线观看"})
+        assert got[0].text == "功夫 在线观看"
+
+    def test_取不到标题时保留面包屑不猜(self):
+        """静默换成空串会让 ① 的证据说「这条候选没有文本」，
+        而真相是「没抽到标题」——两者的下一步动作不同。"""
+        obs = obs_with(("a.test https://a.test › cover", "https://a.test/x"))
+        got = search.extract_candidates(obs, titles={})
+        assert got[0].text == "a.test https://a.test › cover"
+
+    def test_source_href保留原始值(self):
+        """标题注入不得改写 ``source_href``——判断点 ① 回传的是它。"""
+        obs = obs_with(("中转", "https://www.baidu.com/link?url=https%3A%2F%2Fa.test%2Fx"))
+        got = search.extract_candidates(
+            obs, engine="baidu", titles={"https://a.test/x": "功夫 在线观看"})
+        assert got[0].source_href == "https://www.baidu.com/link?url=https%3A%2F%2Fa.test%2Fx"
+        assert got[0].url == "https://a.test/x"

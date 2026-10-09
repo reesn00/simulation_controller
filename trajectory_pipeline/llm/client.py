@@ -37,6 +37,7 @@ ENV_BASE_URL = "TRAJECTORY_LLM_BASE_URL"
 ENV_MODEL = "TRAJECTORY_LLM_MODEL"
 ENV_API_KEY = "TRAJECTORY_LLM_API_KEY"
 ENV_TIMEOUT_S = "TRAJECTORY_LLM_TIMEOUT_S"
+ENV_MAX_TOKENS = "TRAJECTORY_LLM_MAX_TOKENS"
 
 #: 默认超时。刻意小于 executor 的单站超时（见 ``RunConfig.per_site_timeout_s``）：
 #: 一次站点遍历里可能问四道题，LLM 每道都占满 40s 的话整站必然超时，
@@ -46,12 +47,44 @@ DEFAULT_TIMEOUT_S = 30.0
 #: 本机 vLLM / llama.cpp 不校验 key 时占位用。**不是**真实凭据。
 NO_KEY = "not-needed"
 
+#: 单次请求的输出预算。**默认值是照着推理模型定的，不是照着非推理模型**。
+#:
+#: 实测（2026-10-09，本机 `MiniMax-M3.1-Flash-Preview`）同一个判断点 ①
+#: 的请求，只改这一个数：
+#:
+#:     max_tokens= 600  finish_reason=length  content=null    （599 tok 全花在思考上）
+#:     max_tokens=2048  finish_reason=length  content 有但被截断
+#:     max_tokens=8192  finish_reason=stop    content 干净（2096 tok）
+#:
+#: 原来的 600 是按「回一个几百字的 JSON」估的，而**推理模型的思考与正文
+#: 共用同一个预算**：思考没跑完，正文就一个字都吐不出来。而客户端按红线
+#: **故意不读** ``reasoning_content``（那是 raw CoT），于是正文为空这件事
+#: 最终只表现为一句 ``shape:ValueError``——看不出是「预算不够」还是
+#: 「后端坏了」，两者要采取的动作完全不同。
+#:
+#: 非推理模型用这个值只是白花点额度，不会有别的坏处。
+DEFAULT_MAX_TOKENS = 8192
+
 
 class LLMUnavailable(RuntimeError):
     """后端不可达或配置缺失。
 
     只在**构造**阶段抛出（配置问题，改环境变量即可）。
     请求期的失败不走异常，见 :meth:`LLMClient.complete` 的契约。
+    """
+
+
+class _BudgetExhausted(ValueError):
+    """输出预算用尽：``finish_reason == "length"`` 且正文为空。
+
+    **单独一个异常类型，因为处置动作完全不同。** 同一现象在
+    ``_BudgetExhausted`` 下要调大 :data:`ENV_MAX_TOKENS`，在普通
+    ``ValueError`` 下要去查后端——而混成一句 ``shape:ValueError``
+    时，两者看起来一模一样（都是「调用成功、拿不到内容」），
+    于是每道题都返回 ``None``，症状像「LLM 判不了」实则预算不够。
+
+    继承 ``ValueError`` 是为了不改动 :meth:`LLMClient.chat` 既有的
+    兜底 ``except`` 列表；但 :meth:`chat` **先**接这一类。
     """
 
 
@@ -65,6 +98,7 @@ class LLMConfig:
     timeout_s: float = DEFAULT_TIMEOUT_S
     max_retries: int = 2
     temperature: float = 0.0
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
     def __repr__(self) -> str:
         # 覆盖 dataclass 生成的 repr：它会把 api_key 打进 repr，
@@ -110,11 +144,21 @@ class LLMConfig:
             ) from exc
         if timeout <= 0:
             raise LLMUnavailable(f"{ENV_TIMEOUT_S}={timeout} 必须为正")
+        raw_tokens = (e.get(ENV_MAX_TOKENS) or "").strip()
+        try:
+            tokens = int(raw_tokens) if raw_tokens else DEFAULT_MAX_TOKENS
+        except ValueError as exc:
+            raise LLMUnavailable(
+                f"{ENV_MAX_TOKENS}={raw_tokens!r} 不是整数"
+            ) from exc
+        if tokens <= 0:
+            raise LLMUnavailable(f"{ENV_MAX_TOKENS}={tokens} 必须为正")
         return cls(
             base_url=base_url,
             model=model,
             api_key=(e.get(ENV_API_KEY) or "").strip() or NO_KEY,
             timeout_s=timeout,
+            max_tokens=tokens,
         )
 
 
@@ -153,13 +197,19 @@ class LLMClient:
         system: str,
         user: str,
         *,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
     ) -> str | None:
         """发一轮对话，返回**模型原文**，或 ``None``（不可用）。
 
         返回原文而不是解析后的结构体：本模块不懂「什么是 judgment」，
         那是 :mod:`~trajectory_pipeline.llm.schema_parse` 与感知层的事。
         中间这层一旦替调用方猜结构，解析失败就会退化成「悄悄少一个字段」。
+
+        ``max_tokens`` **默认走 :attr:`LLMConfig.max_tokens`，不给函数签名
+        一个数字默认值**。给了的话调用点就会各写各的（本项目就曾写死 600），
+        而推理模型思考与正文共用这一个预算，写死的数字必然在某个后端上
+        不够——症状是「正文为空」，不是「这个数小了」，所以没人会去改它。
+        传 ``None`` 之外的整数只为**排查**用（量边界），生产调用点不该带它。
         """
         payload = {
             "model": self.cfg.model,
@@ -168,7 +218,7 @@ class LLMClient:
                 {"role": "user", "content": user},
             ],
             "temperature": self.cfg.temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": self.cfg.max_tokens if max_tokens is None else max_tokens,
         }
         headers = {"Content-Type": "application/json"}
         if self.cfg.api_key and self.cfg.api_key != NO_KEY:
@@ -196,6 +246,12 @@ class LLMClient:
                 else:
                     try:
                         return _content_of(resp.json())
+                    except _BudgetExhausted as exc:
+                        # 预算用尽：**换参数就能好**，所以不重试同一请求
+                        # （重发一次还是同一个预算、还是空）。给的是能照着
+                        # 做的提示，不是异常类名。
+                        self.last_error = f"budget:{exc}"
+                        return None
                     except (ValueError, KeyError, IndexError, TypeError) as exc:
                         # 后端回了 200 但内容结构不对。**不重试**：
                         # 解析失败几乎总是源于模型稳定输出的某种坏格式，
@@ -232,10 +288,21 @@ def _content_of(data: Any) -> str:
     刻意**不兜底到 ``choices[0].text`` 或 ``message.reasoning_content``**：
     后者是要被丢掉的 raw CoT（CLAUDE.md 红线），取它等于把思维链
     送进训练数据。
+
+    正文为空时按 ``finish_reason`` 分两类：``"length"`` 说明预算被
+    ``max_tokens`` 吃光（推理模型的思考也走这个预算，见
+    :data:`DEFAULT_MAX_TOKENS`），抛 :class:`_BudgetExhausted`；
+    其余按结构不对处理。
     """
     choice = data["choices"][0]
+    finish = choice.get("finish_reason")
     content = choice["message"]["content"]
     if not isinstance(content, str) or not content.strip():
+        if finish == "length":
+            raise _BudgetExhausted(
+                f"max_tokens 用尽（finish_reason=length，content 为空）；"
+                f"调大 {ENV_MAX_TOKENS}"
+            )
         raise ValueError("content 为空")
     return content
 

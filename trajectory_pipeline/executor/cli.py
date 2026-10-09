@@ -53,6 +53,9 @@ from trajectory_pipeline.executor.browser.obscura_driver import (
     ObscuraDriver,
 )
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
+from trajectory_pipeline.executor.integrity import (
+    Severity, check_root, format_report,
+)
 from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig
 from trajectory_pipeline.executor.plan import PlanError, load_plan
 from trajectory_pipeline.executor.review_queue import (
@@ -64,18 +67,44 @@ from trajectory_pipeline.executor.review_queue import (
 from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.taskgen.sampler import W1_DEGENERATE_DIMS
 from trajectory_pipeline.perception import questions
+from trajectory_pipeline.perception.replay import (
+    format_divergences, format_summary, replay_archive, summarize,
+)
 from trajectory_pipeline.perception.base import Q
 from trajectory_pipeline.perception.factory import build_perceptor, describe
 
 
 def _reconfigure_stdio() -> None:
-    """Windows 控制台默认 GBK——探针上的 ✅/⚠️ 曾把整条链带崩。
-    只放宽 ``errors`` 不改 ``encoding``：PowerShell 下当前编码本就正常，
-    不该被改掉。
+    """放宽 ``errors``，并在**非 tty** 时强制 UTF-8。
+
+    两件事分开做，各有各的理由：
+
+    ``errors="replace"``
+        Windows 控制台默认 GBK——探针上的 ✅/⚠️ 曾把整条链带崩。
+
+    ``encoding="utf-8"``（**仅非 tty**）
+        重定向或走管道时 Python 按 locale 编码输出，也就是 cp936。实测
+        ``cli check-archives > out.txt`` 写出的首字节是 ``0xB4 0xE6``
+        （GBK 的「存」），按 UTF-8 读直接报错——**CI 日志、重定向文件、
+        任何下游读档的脚本全是坏的**，而这些恰恰是没有控制台代码页、
+        消费方是程序的场合。UTF-8 是那类场合唯一说得通的编码。
+
+        tty 时**不改**：交互式 PowerShell 的当前编码本就正常，
+        强行换掉会改变用户看到的渲染结果，那是他们的选择不是我们的。
+
+    实测这条正是 :mod:`trajectory_pipeline.executor.integrity` 要区分的那
+    类假象的来源之一：**终端渲染乱码 ≠ 存档内容坏了**，两者必须分开。
     """
     for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(errors="replace")
+        if not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            piped = not stream.isatty()
+        except (AttributeError, ValueError):      # 被 pytest 等换成无 isatty 的对象
+            piped = True
+        stream.reconfigure(
+            errors="replace", **({"encoding": "utf-8"} if piped else {})
+        )
 
 
 def _make_perceptor(args: argparse.Namespace, title: str):
@@ -100,14 +129,35 @@ async def _run_manual(args: argparse.Namespace) -> int:
 
     这条路径的存档 ``provenance`` 为空——含义是「不是 taskgen 跑的」。
     要切片出分就得走 ``--plan``。
+
+    ⚠️ **``--title`` 缺失即报错，不拿 ``--task-id`` 顶替。**
+    实测踩过的坑（2026-10-09）：少了 ``--title`` 就跑 ``T001 在线观看``，
+    搜回来的是**轮胎** T001（泰坦途 Turanza 的胎压监测系统），
+    于是判断点 ① 交出 6 条 ``not_play_site``，每条理由都写得
+    像模像样——「T001（泰坦途）轮胎商品详情页，非影视作品观看页」。
+    整批 6 条负样本、0 条成功、**一条异常日志都没有**，而每一条都是垃圾。
+
+    这是**最贵的一种静默**：它不报错、不空转、产出的每条记录自身自洽，
+    读存档时看到的只是一份「模型很有道理」的拒绝记录。
+    片名是判断点 ① 的唯一判据来源（见 ``llm_perceptor`` 的
+    ``_title_link_sufficiency``），拿编号冒充片名等于让这道题
+    在一个错误的前提上自信作答——与 ``OBSCURA_EXE``、LLM 后端配置
+    同一条纪律：**缺件即报错，不猜**。
     """
+    if not args.title:
+        print(f"[FAIL] 缺 --title。{args.task_id} 是**任务编号**不是作品名，"
+              f"拿它当片名会搜到编号里的词（实测：T001 → 轮胎 T001），"
+              f"而每一批错误素材都不会报错。"
+              f"要么 --title <作品名>（可重复），要么 --plan <plan.json>。")
+        return 2
+
     try:
         client = McpClient.from_env()
     except RuntimeError as exc:
         print(f"[FAIL] {exc}")
         return 2
 
-    titles = [t.strip() for t in args.title] if args.title else [args.task_id]
+    titles = [t.strip() for t in args.title]
     cfg = RunConfig(
         engine=args.engine,
         max_candidates=args.max_candidates,
@@ -173,6 +223,18 @@ async def _run_plan(args: argparse.Namespace) -> int:
               "读成「这批跑过了」。")
         return 1
 
+    # 片名为空的条目**在开浏览器之前**挡掉。与手工路径同一条理由
+    # （见 _run_manual 的注释）：顶替成 task_id 会产出一整批自洽而
+    # 全错的素材，且不报任何错。这里把坏条目全列出来而不是第一个就退——
+    # 一份坏计划通常不止一条坏，逐条报清楚比反复试省事。
+    untitled = [t.task_id for t in tasks if not (t.title or "").strip()]
+    if untitled:
+        print(f"[FAIL] 计划里有 {len(untitled)} 条没有片名："
+              f"{', '.join(untitled)}。"
+              f"片名是判断点 ① 的唯一判据来源，拿 task_id 顶替会产出"
+              f"自洽而全错的负样本，且不报错。重跑 gen 生成计划。")
+        return 2
+
     try:
         client = McpClient.from_env()
     except RuntimeError as exc:
@@ -193,13 +255,14 @@ async def _run_plan(args: argparse.Namespace) -> int:
         print(f"server = {client.info.name} {client.info.version} "
               f"({client.info.tool_count} tools)")
         for n, task in enumerate(tasks, 1):
-            title = task.title or task.task_id
+            # 上面的检查已保证 title 非空，这里直接取
+            title = task.title
             # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
             orch = Orchestrator(driver, _make_perceptor(args, title), cfg)
             print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
-                  f"| {task.title or task.search_query}")
+                  f"| {title}")
             rec = await orch.run(
-                task.task_id, task.title or task.task_id,
+                task.task_id, title,
                 search_query=task.search_query,
                 user_prompt=task.prompt_text,
                 provenance=dict(task.provenance),
@@ -635,6 +698,117 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    """感知层回放：在存档里的真实观察上跑感知实现，**不开浏览器**。
+
+    选档案走 ``archive.select_archives``——与 ``report`` / ``check-archives``
+    同一口径。:mod:`~trajectory_pipeline.perception.replay` 本身不 import
+    executor（它只把 P1 当数据文件读），挑档案这件事留在这里做。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    picked = [p for p, _reviewed in P1Archive(root).select_archives()]
+    if not picked:
+        print(f"{root} 下没有 P1 存档")
+        return 0
+
+    files = picked[: args.limit] if args.limit else picked
+    wanted = ("rule", "llm") if args.perceptor == "both" else (args.perceptor,)
+
+    comparisons: list[Any] = []
+    names: list[str] = []
+    for path in files:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            print(f"[skip] {path.name} 不是合法 JSON：{exc}")
+            continue
+        # **逐档构造**：判断点 ① 要目标片名，而片名是**任务的属性**。
+        # 取全库第一个非空值是错的——T001 的「功夫」问不到 T018 的片名，
+        # 而这种错法不会报错，只会让 ① 选出错的站。
+        title = str(doc.get("title") or "")
+        built: dict[str, Any] = {}
+        for mode in wanted:
+            try:
+                built[mode] = build_perceptor(mode=mode, target_title=title)
+            except Exception as exc:        # 缺后端等：说清缺什么，不静默退回
+                print(f"[skip] {path.name} 的 {mode} 版没起来：{exc}")
+        if not built:
+            continue
+        comparisons.extend(replay_archive(path, built))
+        names = [m for m in wanted if m in built]
+
+    if not comparisons:
+        print("没有可回放的单元——存档里既无搜索观察也无访问记录，"
+              "或整批都被反爬拦了")
+        return 0
+    print(format_summary(summarize(comparisons), names))
+    print(format_divergences(comparisons, limit=args.show))
+    return 0
+
+
+def cmd_check_archives(args: argparse.Namespace) -> int:
+    """存档完整性体检。
+
+    与 ``report`` 的分工：``report`` 说「这批有多少条分支结论」，
+    这里说「那些结论背后有没有东西」。两者共用
+    :func:`~trajectory_pipeline.executor.archive.select_archives` 挑档案，
+    所以不会出现「体检说 4 个档全过、报表说 9 个档里 5 个有问题」。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    report = check_root(root)
+    print(format_report(report))
+    if args.fail_on_degraded and report.by_severity(Severity.DEGRADED):
+        return 1
+    return 0 if report.ok else 1
+
+
+def cmd_purge_run(args: argparse.Namespace) -> int:
+    """回滚一个 run——**存档与它并进池的负样本一起删**。
+
+    默认**只列不删**（``--apply`` 才真删）。这条命令动的是负样本池，
+    而池是训练数据的直接输入，删错了不可逆——所以默认口径必须是
+    「先看清楚」。
+
+    什么时候该用：某个 run 的**前提**错了，于是它整批结论都不成立。
+    实测（2026-10-09）：``run`` 少给 ``--title`` 就拿 ``T001`` 当片名，
+    搜成「轮胎 T001」，产出 6 条 ``not_play_site``——那些站确实不是
+    T001 轮胎的观看页（标签对检索式是真的），但它们要表达的是
+    「这里看不了《功夫》」，而**存档里看不出任何异常**。
+
+    什么时候**不该**用：个别几条标签被证明错了（``check-archives``
+    的 ``negative_contradicted_by_success`` 会指出来）。那种按 URL
+    逐条定，不要整批回滚——同 run 里可能有完全正确的结论。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    store = P1Archive(root)
+    try:
+        archives, rows = store.purge_run(args.run_id)
+    except ValueError as exc:
+        print(f"[FAIL] {exc}")
+        return 2
+
+    print(f"run_id = {args.run_id}   根目录 = {root}")
+    print(f"\n存档（{len(archives)}）:")
+    for path in archives:
+        print(f"  {path.name}")
+    print(f"\n负样本池行（{len(rows)}）:")
+    for row in rows:
+        print(f"  [{row.get('branch')}] {str(row.get('url'))[:78]}")
+        print(f"      {str(row.get('evidence'))[:110]}")
+    if not archives and not rows:
+        print("\n这个 run_id 下没有东西。run_id 是存档文件名里 __ 后半段"
+              "（T001__b3a3548a.json → b3a3548a），别把整条 task_id 填进来。")
+        return 1
+
+    if not args.apply:
+        print("\n以上为**预演**。确认无误后加 --apply 执行。")
+        return 0
+    n_arc, n_rows = store.apply_purge(archives, rows)
+    print(f"\n已删除：存档 {n_arc} 个，池行 {n_rows} 条。"
+          f"建议接着跑 check-archives 看池与全库是否还自相矛盾。")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     root = Path(args.out) if args.out else DEFAULT_ROOT
     # 只认真存档（同目录的探针取证不参与），人工复核档取代原档。
@@ -844,7 +1018,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="跑一个 task 并落 P1")
     run.add_argument("--task-id", default="T001")
-    run.add_argument("--title", action="append", help="作品名，可重复；默认与 task-id 同名")
+    run.add_argument("--title", action="append",
+                     help="作品名，可重复。**不给即报错**——task-id 是编号不是片名，"
+                          "拿它顶替会搜到编号里的词并产出整批假负样本")
     run.add_argument("--engine", default=search_step.DEFAULT_ENGINE)
     run.add_argument("--max-candidates", type=int, default=20)
     run.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
@@ -870,7 +1046,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--library", default=str(
         Path(__file__).resolve().parents[1] / "taskgen" / "persona" / "library.yaml"))
     gen.add_argument("--tasks", default=str(
-        Path(__file__).resolve().parents[2] / "simulate_serve" / "config" / "tasks.yaml"))
+        Path(__file__).resolve().parents[1] / "taskgen" / "data" / "tasks.yaml"))
     gen.add_argument("--strata", action="append",
                      default=["genre", "verbal_style", "urgency"],
                      help="分层维度，可重复")
@@ -884,7 +1060,7 @@ def build_parser() -> argparse.ArgumentParser:
     chk_p.add_argument("--library", default=str(
         Path(__file__).resolve().parents[1] / "taskgen" / "persona" / "library.yaml"))
     chk_p.add_argument("--tasks", default=str(
-        Path(__file__).resolve().parents[2] / "simulate_serve" / "config" / "tasks.yaml"))
+        Path(__file__).resolve().parents[1] / "taskgen" / "data" / "tasks.yaml"))
     chk_p.add_argument("--probe-limit", type=int, default=40,
                        help="探针抽多少个骨架")
     chk_p.set_defaults(func=cmd_check_persona)
@@ -904,6 +1080,34 @@ def build_parser() -> argparse.ArgumentParser:
     rep = sub.add_parser("report", help="汇总 P1 分支分布")
     rep.add_argument("--out", default=None)
     rep.set_defaults(func=cmd_report)
+
+    # 命名不叫 check：那已经是「查 obscura 能力」了，两个都叫 check
+    # 会让人以为 check-archives 也要浏览器。它不联网、不要 OBSCURA_EXE。
+    ck_a = sub.add_parser("check-archives", help="P1 存档完整性体检（不联网）")
+    ck_a.add_argument("--out", default=None, help="P1 存档目录")
+    ck_a.add_argument("--fail-on-degraded", action="store_true",
+                      help="把 DEGRADED 也算失败。默认只拦 FATAL——"
+                           "降级样本仍可用，只是不能直接当训练数据")
+    ck_a.set_defaults(func=cmd_check_archives)
+
+    rp = sub.add_parser("replay", help="感知层回放：在存档的真实观察上跑感知实现（不联网）")
+    rp.add_argument("--out", default=None, help="P1 存档目录")
+    rp.add_argument("--perceptor", choices=("rule", "llm", "both"), default="rule",
+                    help="默认只跑规则版（**不需要任何 LLM 后端**，"
+                         "于是「W1 在真实数据上答得出来几道」完全离线可测）")
+    rp.add_argument("--limit", type=int, default=0, help="只回放前 N 份存档；0 = 全部")
+    rp.add_argument("--show", type=int, default=20, help="列出前 N 条分歧")
+    rp.set_defaults(func=cmd_replay)
+
+    pg = sub.add_parser(
+        "purge-run",
+        help="回滚一个 run：删它的存档 + 它并进 negative.jsonl 的行")
+    pg.add_argument("--run-id", required=True,
+                    help="存档文件名里 __ 后半段（T001__b3a3548a.json → b3a3548a）")
+    pg.add_argument("--out", default=None, help="P1 存档目录")
+    pg.add_argument("--apply", action="store_true",
+                    help="**默认只列不删**。池是训练数据的直接输入，删错不可逆")
+    pg.set_defaults(func=cmd_purge_run)
     return p
 
 
@@ -912,7 +1116,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # 需要真实浏览器的命令才走 asyncio；gen / check-persona / review / report
     # 都不联网，让它们也走 asyncio 只会多一层没必要的 loop。
-    if args.cmd in ("report", "gen", "check-persona", "review"):
+    if args.cmd in ("report", "gen", "check-persona", "review", "check-archives",
+                    "replay", "purge-run"):
         if args.cmd == "review" and getattr(args, "apply", False):
             return cmd_apply_review(args)
         return args.func(args)
