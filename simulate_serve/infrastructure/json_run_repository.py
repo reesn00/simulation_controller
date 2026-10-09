@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from datetime import UTC, datetime
@@ -13,6 +14,8 @@ from simulate_serve.domain.evidence import Evidence
 from simulate_serve.domain.run import RunEvent, TaskRun
 from simulate_serve.domain.state_machine import RunState, TERMINAL_STATES
 from simulate_serve.domain.validation import ValidationReport
+
+_log = logging.getLogger(__name__)
 
 
 class RepositoryError(RepositoryPortError):
@@ -27,6 +30,10 @@ class JsonRunRepository:
     - SFT 蒸馏 / 训练数据由 gdr + etl 末端产出 (C2 → C3 契约, 见
       ``docs/contracts/``); 本类不再写 ``datasets/`` 或 ``reports/stats.json``.
     """
+
+    #: 重投时需要清盘的 append-only 文件 (链条校验对象).
+    #: 与 ``_reconcile_append_only_records`` 读取的文件一一对应.
+    _RESET_ON_RETRY_FILES: tuple[str, ...] = ("events.jsonl", "validations.jsonl")
 
     def __init__(
         self,
@@ -66,6 +73,32 @@ class JsonRunRepository:
         value = event.model_dump(mode="json") if hasattr(event, "model_dump") else event
         self._append_jsonl(path, value)
 
+    def reset_run_records(self, run_id: str) -> None:
+        """重置该 run 的 append-only 记录, 为「重投」清盘.
+
+        重投 (``reuse_run``) 会把内存 ``state_events`` / ``validation_rounds``
+        清空后从头再跑一轮, 而上面两个文件是 append-only 的 —— 不清盘的话,
+        上一 attempt 的事件会留在文件里, 与新一轮拼成一条**断链**
+        (``from_state`` 接不上 ``previous.to_state``)。
+        ``_reconcile_append_only_records`` 的连续性校验随即抛
+        ``RepositoryError: has a broken event transition chain``。
+
+        单个坏 run 的代价是**全盘不可读**: ``bootstrap`` 每次启动都跑
+        ``mark_interrupted()`` → ``load_runs()`` 遍历 ``runs/`` 下所有 run,
+        一个断链就让此后每个任务在 bootstrap 阶段直接死掉, 根本进不到
+        simulate (实测 98 任务里 94 个如此, 见 orchestration health.json)。
+
+        保留的审计: 上一 attempt 的 trajectory 已由 completion_checker 另存为
+        ``<run_id>.trajectory_attempt_<N>.json``, 且 ``run.retry_count`` 与
+        ``rerun_of`` 血缘字段在 ``run.json`` 中不受影响。
+        ``evidence.jsonl`` 不在链条校验范围内, 故不动。
+        """
+        run_dir = self.runs_dir / run_id
+        for name in self._RESET_ON_RETRY_FILES:
+            path = run_dir / name
+            if path.exists():
+                path.unlink()
+
     def save_evidence(self, run_id: str, evidence: Evidence) -> None:
         path = self.runs_dir / run_id / "evidence.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +117,16 @@ class JsonRunRepository:
         self._atomic_bytes(path, content)
         return str(path.relative_to(self.root)).replace("\\", "/")
 
-    def load_runs(self) -> list[TaskRun]:
+    def load_runs(self, *, skip_broken: bool = False) -> list[TaskRun]:
+        """读回 ``runs/`` 下所有 run, 并与 append-only 记录对账.
+
+        Args:
+            skip_broken: True 时跳过损坏的 run (记 warning) 而非抛错。
+                用于「全盘扫描」类调用 (如 ``mark_interrupted``) —— 单个
+                坏 run 不应让整个目录不可读, 否则它会毒化此后**每一个**
+                任务的 bootstrap。默认 False 保持严格语义, 让显式按
+                run_id 读取的调用方照常报错。
+        """
         result: list[TaskRun] = []
         for path in sorted(self.runs_dir.glob("*/run.json")):
             try:
@@ -92,6 +134,14 @@ class JsonRunRepository:
                 self._reconcile_append_only_records(run, path.parent)
                 result.append(run)
             except Exception as exc:
+                if skip_broken:
+                    _log.warning(
+                        "load_runs: 跳过损坏的 run checkpoint %s: %s: %s",
+                        path,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    continue
                 if isinstance(exc, RepositoryError):
                     raise
                 raise RepositoryError(f"Invalid run checkpoint: {path}: {exc}") from exc
@@ -99,7 +149,9 @@ class JsonRunRepository:
 
     def mark_interrupted(self) -> list[TaskRun]:
         interrupted: list[TaskRun] = []
-        for run in self.load_runs():
+        # skip_broken: 恢复扫描是「尽力而为」的维护动作, 一个坏 run
+        # 跳过后其余 run 仍能正常标记; 严格抛错会让整个 bootstrap 失败。
+        for run in self.load_runs(skip_broken=True):
             if run.state in TERMINAL_STATES:
                 continue
             previous = run.state

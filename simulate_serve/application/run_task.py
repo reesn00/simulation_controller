@@ -87,6 +87,11 @@ class TaskRuntime:
             run.remote_task_ids = []
             run.remote_agent_id = ""
             run.evidence_ids = []
+            # 内存事件链已清空, 磁盘的 append-only 记录必须同步清盘,
+            # 否则两轮 attempt 拼成断链, 该 run 之后 load 必炸
+            # (且会连带毒化整个 runs/ 目录)。见 JsonRunRepository.reset_run_records。
+            if self.repository:
+                self.repository.reset_run_records(run.run_id)
         else:
             run = TaskRun(
                 run_id=f"run_{uuid.uuid4().hex}",

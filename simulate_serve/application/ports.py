@@ -50,6 +50,8 @@ class RunRepositoryPort(Protocol):
 
     def append_event(self, run_id: str, event: object) -> None: ...
 
+    def reset_run_records(self, run_id: str) -> None: ...
+
 
 class TrajectoryArchivePort(Protocol):
     """Archive the remote agent's session trajectory for one run.

@@ -12,6 +12,7 @@ from simulate_serve.application.run_task import TaskRuntime
 from simulate_serve.domain.state_machine import RunState
 from simulate_serve.domain.task import CompiledTask
 from simulate_serve.domain.validation import CriterionResult, ValidationReport, Verdict
+from simulate_serve.infrastructure.json_run_repository import JsonRunRepository
 from simulate_serve.interaction.actor import DeterministicInteractionActor
 
 
@@ -299,6 +300,35 @@ async def test_task_runtime_reuse_run_preserves_run_id_and_started_at(tmp_path: 
     second = await runtime.run(task, reuse_run=first)
     assert second.run_id == original_run_id
     assert second.started_at == original_started_at
+
+
+@pytest.mark.asyncio
+async def test_task_runtime_reuse_run_leaves_loadable_event_chain(tmp_path: Path) -> None:
+    """重投后该 run 仍能以**严格模式** load_runs 读回.
+
+    回归 2026-10-03: 重投只清内存 ``state_events``, 而 ``events.jsonl``
+    是 append-only —— 两轮 attempt 拼成断链, ``_reconcile`` 抛
+    "broken event transition chain"。由于 ``bootstrap`` 每次启动都
+    ``mark_interrupted() → load_runs()`` 遍历全盘, 一个断链 run 会让此后
+    **每个**任务都死在启动阶段 (实测 98 个任务里 94 个如此)。
+
+    修法: 重投入口同步清盘 (见 ``JsonRunRepository.reset_run_records``)。
+    """
+    repository = JsonRunRepository(tmp_path)
+    runtime = _runtime(ScriptedExecutor(["x", "x"]), AlwaysPassValidator(), repository=repository)
+    task = _make_task(tmp_path, max_run_retries=3)
+
+    first = await runtime.run(task)
+    assert first.state is RunState.SUCCESS
+    second = await runtime.run(task, reuse_run=first)
+
+    # 严格模式 (skip_broken 默认 False) 也能读回, 说明断链已不复存在
+    reloaded = JsonRunRepository(tmp_path).load_runs()
+    assert [item.run_id for item in reloaded] == [second.run_id]
+
+    # 磁盘事件只剩本 attempt 的一段, 与内存 state_events 一一对应
+    lines = (tmp_path / "runs" / second.run_id / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == len(second.state_events)
 
 
 def test_completion_incomplete_is_terminal() -> None:

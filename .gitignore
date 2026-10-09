@@ -60,6 +60,8 @@ htmlcov/
 
 # Project outputs
 output/
+# v2 轨迹合成管线的产物（决策 D8：收在新树下，不污染根 output/）
+trajectory_pipeline/output/
 dist/
 gdr/origindata/
 gdr/refine_data

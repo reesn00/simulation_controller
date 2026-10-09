@@ -2,224 +2,265 @@
 
 ## 项目概述
 
-本项目是基于 CAMEL-AI 的 Agent 用户模拟端。它把 Persona、Scenario、Task 编译为 `CompiledTask`，以用户身份驱动远端 QwenPaw 执行 Agent，多轮验证结果并生成追问，最终输出可审计 Run 和清洁蒸馏数据。
+仓库里有**两代架构并存**：
+
+| | 位置 | 状态 |
+|---|---|---|
+| **v2 轨迹合成管线** | `trajectory_pipeline/` | **当前唯一开发目标**。全部新功能、新修复写在这里 |
+| **v1 存量管线** | `simulate_serve/` `orchestration/` `gdr/` `etl/` `label_studio/` `tool_runtime/` `data_refiner/` | **冻结**。只读参考：可读代码抄思路，**不可 import、不可修改** |
+
+一句话区别：v1 是「**远端 QwenPaw agent 当驾驶员**，本地只当模拟用户 + 裁判」；
+v2 把那颗心脏换掉——「**本地代码当驾驶员、obscura 当浏览器、Perceptor 当可插拔感知器**」。
+v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述后锚会被削弱。
+
+---
+
+## ⚠️ 开发纪律（先读这一节，违反即视为架构回退）
+
+1. **新代码一律写入 `trajectory_pipeline/`。** 任何新模块、新 CLI、新测试、新文档都落在新树内。
+2. **存量仅供功能参考——禁止 import、禁止修改。** 需要存量某个能力时的正确姿势是**照着读一遍然后在新树重写**，而不是 `from simulate_serve.x import y`。
+3. **两处例外（不是破例）**：仓库根 `pyproject.toml`（`testpaths` 必须含 `trajectory_pipeline/tests`）与 `.gitignore`（`trajectory_pipeline/output/`）。这两处是构建/门禁接线，改它们是为了让新树能被门禁覆盖、产物不入库。
+4. **跨树/外部能力走进程边界**：MCP 协议 / HTTP，与 Python 导入边无关。这条让「不 import 存量」与「能复用外部能力」同时成立。
+5. **产物隔离**：新树**禁止读取仓库根 `output/`**，产物全部落 `trajectory_pipeline/output/pipeline/`（决策 D8）。读了根 `output/` 就继承了存量那套隐性耦合。
+6. **导入姿势唯一**：新树一律 `trajectory_pipeline.<模块>` 绝对导入，禁止顶层裸导入；`trajectory_pipeline` **刻意不进** `[tool.uv.workspace]`。理由是存量事故——gdr 成为 workspace 成员后同时以顶层风格和 `gdr.` 前缀风格被加载，同一份源码产生两套类对象，跨边界 `isinstance` 静默判 `False`，`usage_prune` 从未真正执行。
+
+### 跨两棵树的红线
+
+- **凭据不得提交、打包、复制到测试、文档或日志。**
+- **不保存 raw CoT / Cookie / Authorization Header / 浏览器 Profile。**「思维链」按加工状态分两类：**raw CoT**（未经 gdr 精修的原始输出，受此红线约束）与 **refined CoT**（经 `thought_refactor` 精修的训练制品，**不受限**——CoT SFT 需要它，不要「修复」掉）。新树的落地方式是在 `executor/browser/obscura_driver.py` 里写死 `FORBIDDEN_TOOLS` + `_assert_tool_allowed` 闸门，所有 tool 调用统一走 `_call`，这是唯一入口。
+- **fail-closed（I4）**：能力不可用时返回 `answer=None`，**绝不猜**；且 **`None` 不中断采集，只有 `False` 才中断**——fail-closed 管的是「结论」不是「采集」。
+- **禁止投票/集成**（生产链上），分歧必须暴露给人看。
+
+---
 
 ## 常用命令
 
 ```powershell
 uv sync --group dev
-uv run python -m simulate_serve --validate-config
-uv run python -m simulate_serve --check-tools
-uv run python -m simulate_serve --readiness
-uv run python -m orchestration start --tasks T001,T003 --parallelism 1
-uv run python -m orchestration start --all-tasks --parallelism 4 --dry-run
-uv run python -m orchestration status
-uv run python -m orchestration replay
+
+# ── 新树：执行层 ────────────────────────────────────────
+uv run python -m trajectory_pipeline.executor.cli check              # 探 obscura 能力（唯一需真实浏览器的自检）
+uv run python -m trajectory_pipeline.executor.cli run --task-id T001 --title 功夫
+uv run python -m trajectory_pipeline.executor.cli run --plan <plan.json> --limit 20 --dry-run
+
+# ── 新树：任务生成层（不联网）──────────────────────────
+uv run python -m trajectory_pipeline.executor.cli gen -n 20 --seed 7 --out <plan.json>
+uv run python -m trajectory_pipeline.executor.cli check-persona      # 画像覆盖度 + 判分保真探针，分开报
+
+# ── 新树：人工复核与报表 ───────────────────────────────
+uv run python -m trajectory_pipeline.executor.cli review --write <queue.jsonl> --show 3
+uv run python -m trajectory_pipeline.executor.cli review --verdicts <queue.jsonl> --apply
+uv run python -m trajectory_pipeline.executor.cli report --out trajectory_pipeline/output/pipeline
+
+# ── 门禁 ───────────────────────────────────────────────
 uv run python -m pytest -q
-.\scripts\label_studio.bat            # C3 + 评分卡 → Label Studio (init → status → upload)
 ```
 
-> **门禁覆盖 `tests/` + `gdr/tests/` 两棵树**（2026-09-30 起并入 `testpaths`，约 1400 条）。此前 `testpaths = ["tests"]` 漏掉 gdr 的 360+ 条，代价是那里藏了 3 处陈旧 `save_session` 导入、2 处按已删除的 qf_out 格式造的 fixture，以及 2 个**生产代码静默失效**（gdr 双导入姿势导致 `usage_prune` 从未真正执行，含本机路径泛化红线）。**改 `gdr/` 下的代码时 `pytest -q` 现在会真的覆盖到，别再只跑 `tests/`。**
->
-> 仓库根 `conftest.py` 负责把 `gdr/` 插到 `sys.path` 最前（否则根目录的 `config/` 命名空间包会遮蔽 `gdr/config`，`from config import Settings` 直接 load_error）并装 Windows no-window 策略。gdr 的包内导入是**顶层**风格（`from config import ...` / `from domain import ...`，见 `gdr/pyproject.toml` 的 `tool.setuptools.packages.find`），而 orchestration / etl 走 `gdr.` 前缀风格 —— **同一份 gdr 源码因此会被加载成两套类对象**，跨边界的 `isinstance` 会静默判 False。写跨边界代码时不要用 `isinstance` 认类型。
+`run` / `check` 需要 `OBSCURA_EXE` 指向 obscura 可执行文件，**缺失即报错，不猜路径**：
 
-> `python -m simulate_serve --tasks / --rerun-task / --limit / --include-offline` 已于 2026-09-22 删除（任务运行入口移交 `orchestration`）；`simulate_serve` 仅保留只读开关。orchestration 默认 `max_parallelism=1` 严格串行，≥2 启用 `multiprocessing.Pool` 并发。
+```powershell
+setx OBSCURA_EXE "C:\Users\klpc\workspace\tool\obscura-x86_64-windows-stealth\obscura.exe"
+```
 
-远端执行 Agent 的 LLM 功能已可用（2026-09 确认，此前"未启用"记录已失效）。完整链路验证为可执行项：真实模型输出的端到端批次应当实际运行并记录结果，不再标记为待验证；日常回归仍以单元、合约和离线功能测试为默认门禁。
+> 门禁 `testpaths = ["tests", "gdr/tests", "trajectory_pipeline/tests"]`，**三棵树都跑**。
+> 漏掉任何一棵树 = 静默失效不可见（存量 gdr 那次漏掉 360+ 条，掩盖了 2 处生产代码从未执行）。
+> 改新树代码时**别只跑 `trajectory_pipeline/tests`**。
 
-## 当前架构
+---
+
+# 新架构（`trajectory_pipeline/`）
+
+## 模块地图
 
 ```text
-CLI / Bootstrap
-  -> CatalogLoader -> TaskCompiler -> CompiledTask
-  -> BatchRunner -> TaskRuntime / RunStateMachine
-       -> InteractionActor
-       -> AsyncQwenPawExecutor
-       -> ValidationPipeline
-            -> deterministic validators
-            -> ToolRegistry / BrowserEvidenceProvider
-            -> local Semantic Judge
-       -> JsonRunRepository
+trajectory_pipeline/
+├─ taskgen/       模块 1  任务生成 + persona 画像库
+├─ executor/      模块 2  代码执行循环（控制流在这里，不在任何 LLM 里）
+├─ perception/    模块 3  语义感知（可替换插件）
+├─ rationale/     模块 4  rationale 边写边生成 + 一致性闸门三查      [待建]
+├─ assembler/     模块 5  组装与切分                                [待建]
+├─ evaluation/    模块 6  评估体系（黄金集 + 三层瀑布 + LS 双向）    [待建]
+├─ common/        跨模块地基（无业务逻辑）
+├─ llm/           LLM 客户端（全树唯一出口）
+├─ storage/       P1/P2/P3 契约读写                                [待建]
+├─ docs/          设计方案 00/01/02 + contracts/
+└─ output/pipeline/   全部产物（D8，gitignored）
 ```
 
-边界要求：
-
-- Interaction Actor 只负责自然表达，不拥有验证工具、不决定成功。
-- TaskRuntime 使用普通 Python 状态机，不让 LLM 控制状态和重试。
-- 本地 ValidationPipeline 拥有最终验收权，聚合为 `FAIL > ERROR > INCONCLUSIVE > PASS`。
-- ToolRegistry 是工具创建、健康检查、能力选择和关闭的唯一 owner。
-- 所有必选 Criterion 必须 PASS 才能成功；工具缺失不能 fail-open。
-- 不保存自由文本思维链、Cookie、Authorization Header 或浏览器 Profile。
-  *定义*:「思维链」按**加工状态**分两类 —— **raw CoT**(QwenPaw 原始输出,未经 gdr
-  精修)与 **refined CoT**(经 `thought_refactor` 精修后)。本红线约束 **raw CoT 的
-  外传**;refined CoT 属训练制品,不受此限(C3 保留 thinking 是 CoT SFT 的必要输入,
-  见 MEMORY「ETL drops structured thinking」的修复决策 —— 不要"修复"掉它)。
-  *落盘约定*:C1 trajectory 落 raw CoT 供重放;C2/C3 落 refined CoT。
-  *外部副本例外*(2026-09-28 已实施):Label Studio 推送 C3(refined CoT)
-  与**评分卡 `scorecard.v1`**(L0–L5 指令评分 + 每维依据 + `source` 可信度标注);
-  LS 是本项目**终点**,标注结果不回流(不实现 fetch / 不落 `output/labeled/`,
-  `orchestration/queue/` 零修改)。推送前跑 R11 凭据扫描,命中 **fail-closed 拒推**。
-  设计见 [`docs/设计方案/label-studio-integration.md`](docs/设计方案/label-studio-integration.md),
-  契约见 [`docs/contracts/C4-scorecard.md`](docs/contracts/C4-scorecard.md),
-  用法见 [`docs/observability-label-studio.md`](docs/observability-label-studio.md)。
-- `gdr/reassembly/reassembler.py` 工具配对扫描必须**跨 toolcall 连续扫描**——并行调用（call, call, result, result）下"在下一个 toolcall 处截断"会把成功调用误判为失败删除。
-
-## 数据格式约定
-
-QwenPaw trajectory 形态（2026-09-18 起，单路径事件流）：重放唯一入口 `etl/qwenformat/load.py::parse_trajectory`（被 `gdr/parsers.from_trajectory` 薄包装），每轮一个 assistant message（含全部 thinking / tool_call / tool_result / 最终 text）。
-
-事件约定：
-- `model_response.payload.content` 携带模型输出块：`thinking`（独立结构化块）/ `tool_call`（state=pending）/ `text`
-- `tool_call_request` 独立事件回归但冗余（与 model_response 重复），重放跳过
-- `tool_execution` 是工具结果唯一事件源（state 在 `metadata.end_state`）
-- `final_reply.payload.content` 是冗余快照，只取 `metadata.usage`
-
-格式演化历史与早期 AI SDK 内嵌快照路径见 `docs/project-notes.md`。
-
-## Pipeline 流程（2026-09-22 起新架构）
-
-`simulation server → gdr → etl`。三阶段各守一道边界，每段交接面写一份契约文件。
+依赖方向**单向、禁止回指**：
 
 ```text
-┌──────────────────┐         ┌──────────────┐         ┌──────────────────┐
-│ simulation       │  C1     │     gdr      │  C2     │       etl        │
-│ server           │ ──────► │ (refine)     │ ──────► │ (format convert) │ ─► 训练
-└──────────────────┘         └──────────────┘         └──────────────────┘
-output/agent_trajectory/      output/refined/          output/refine_data/
+common ← llm ← {taskgen, perception, rationale}
+              ↑
+           executor  ──→ storage
+              ↓
+          assembler ──→ storage
+              ↓
+          evaluation ──→ storage
 ```
 
-| 阶段 | 输入 | 输出 | 职责 |
+两条不可破的依赖约束：
+1. `executor` 只依赖 `perception` 的**协议**（`perception/base.py`），不依赖任何实现——这是 W1 规则版与 W3 LLM 版能无痛替换的唯一保证。
+2. `perception` **不得 import `executor`**。感知层的输入只有 `Observation` 值对象，不持页面句柄、不回调控制流。
+
+## 三层分工铁律
+
+**代码管事实层 / LLM 管语言层 / persona 管输入分布。**
+
+> **LLM 是传感器不是驾驶员**：决策权在控制流（代码），感知内容由 `Perceptor.decide` 给。
+> 遍历谁、按什么顺序、点哪个、记什么、何时终止、失败样本是否入池——**全部是代码，LLM 无否决权**。
+
+## 控制流与四个判断点
+
+`executor/orchestrator.py` 里有 `if`，但**没有一句在判断业务语义**——「这是不是播放站 / 有没有播放控件 / 是不是播放页」全在 `Perceptor` 里，控制流只负责按答案分流：
+
+```text
+环节 0    构造查询 + 检索          → 搜索页观察
+环节 0.5  反爬拦截判定            ← 必须在取候选【之前】短路
+环节 ①    取候选（代码层启发式）  → ▸ 判断点 ① SELECT_PLAY_SITES
+          for 每个候选:
+            可达性预检（代码）    → ▸ 判断点 ② IS_REACHABLE
+            找播放控件            → ▸ 判断点 ③ FIND_PLAY_CONTROL（拿 ref 去点）
+            进播放页 + 媒体探测    → ▸ 判断点 ④ PLAYER_OK
+```
+
+| # | 判断题 | 输入 | 输出 | 代码拿它做什么 |
+|---|---|---|---|---|
+| ① | `SELECT_PLAY_SITES` | 搜索结果观察 + 目标片名 | 链接列表 + 选中/排除理由 | 决定遍历哪些站 |
+| ② | `IS_REACHABLE` | 站点页观察 | 是否正常访问 | 跳过登录墙 / 地区限制 / 错误页 |
+| ③ | `FIND_PLAY_CONTROL` | 站点页观察 | `{has_control, ref, trailer_only}` | **拿 ref 去点** |
+| ④ | `PLAYER_OK` | 播放页观察 + **代码测的 media_count** | 是否正常播放、有无组件 | 成功 or 标记未验证 |
+
+W1 的诚实说明：`RulePerceptor` 对 ① `SELECT_PLAY_SITES` / ② `IS_REACHABLE` **只能返回 `None`**（搜索链接筛选与「是否登录墙」都不是规则能判的），所以 W1 批次这两环全是 `unresolved`。这不是缺陷，是 fail-closed 的正常表现；W3 接上 `LLMPerceptor` 后同一份代码不需要改动一行。
+
+### 失败分支全集（`executor/branches.py`）
+
+| 判断点 | 分支 id | 语义 | 需 LLM |
 |---|---|---|---|
-| **simulation server** | Persona + Scenario + Task | C1 trajectory 事件流 | 驱动远端 Agent，多轮验证 + 追问；落 run 元数据 + 轨迹 |
-| **gdr** | C1 trajectory | C2 refined Session（单文件） | 块级精修：硬过滤 + 健康分 + CU + fold + retry_loop_clip + router + policy + refiners + validators + reassemble + meta_tag_strip |
-| **etl** | C2 refined Session | C3 4 视图文件 | 格式整理：usage_prune + transform + system_prompt partition + tool_templates + tool_output_summarizer → save_session_v2 拆 4 视图 |
+| ① | `not_play_site` | 搜索结果非该片可观看站 | ✅ |
+| ② | `unreachable_hard` | 状态码/超时/空白页 | ❌ 代码判定 |
+| ② | `login_wall_or_blocked` | 登录墙 / 地区限制 / 错误页 | ✅ |
+| ③ | `no_play_control` | 无剧集也无播放控件 | ✅ |
+| ③ | `trailer_only` | 只有预告片，无正片资源 | ❌ 代码判定（词表） |
+| ③ | `trailer_suspect` | 疑似预告但词表未覆盖 | ➖ 人工兜底（**不入负样本池**） |
+| ④ | `component_unverified` | 有 video 标签但播放器未正常加载 | ✅ |
+| ④ | `unresolved` | 置信度不足且重采样耗尽 | ➖ 人工复核（**不入负样本池**） |
 
-### 关键契约
+**每条分支都必须有对应样本入库**——负样本不是副产品，是强制产出。反过来，`unresolved` / `trailer_suspect` **不是负样本**：把它们混进负样本池会污染它，「这里真的看不了」这条训练信号就此失真。
 
-| 编号 | 路径 | 入口 | 出口 |
+**反爬拦截刻意不进这套分支体系**：拦截发生在**取候选之前**，根本没有 outcome 可记。它单开运行级字段 `RunRecord.search_blocked`——代价是 `report` 要多统计一次，换来的是「被拦」与「没素材」在报表上永远分得开。
+
+## 数据契约（P1/P2/P3，与存量 C1/C2/C3 目录、命名、schema 全不重叠）
+
+| 契约 | 落点 | 内容 | 产出方 |
 |---|---|---|---|
-| C1 | `output/agent_trajectory/<run_id>__<session_id>.json` | simulate_serve archiver | `gdr/parsers.from_trajectory` |
-| C2 | `output/refined/<TXXX>__<session_id>.json` | `gdr/pipeline/runner.py::_process_one_file` | `etl/parsers.load_refined_session` |
-| C3 | `output/refine_data/<TXXX>__<session_id>_refined.{messages,openai,qwenjina.txt,meta}.json` | `etl/writers/render_to_4_views` → `gdr.domain.schema.save_session_v2` | 训练框架 / audit |
+| **P1 观察存档** | `output/pipeline/<task_id>__<hash>.json` | 动作 + 工具参数 + **观察原文**（真实回放，非 LLM 转述） | `executor/archive.py` |
+| **P2 单条样本** | `output/pipeline/samples/<id>.json` | 六件套 + provenance + gate 标记 | `assembler/builder.py` [待建] |
+| **P3 训练视图** | `output/pipeline/views/<id>_{messages,openai,meta}.json` | 训练框架可读形态 | `assembler/views.py` [待建] |
+| 负样本池 | `output/pipeline/negative.jsonl` | 失败分支样本（带 `branch`） | `executor/branches.py` |
+| 复核队列 | `output/pipeline/review_*.jsonl` | 人工裁定（`verdict` + `reviewed_by`） | `executor/review_queue.py` |
 
-完整契约字段级 schema 见 [docs/contracts/](docs/contracts/)。
+字段级契约文档在 `trajectory_pipeline/docs/contracts/`（**目录已建，P1/P2/P3 三份待写**）。P1 的实际形状以 `RunRecord.to_json()` 为准。
 
-## 目录索引
+**观察是真实回放，不是 LLM 转述**——这条一旦破，rationale 就没有锚。
+
+## 执行层：obscura（决策 D7）
+
+Rust 无头浏览器引擎，内置反检测，**经标准 MCP 协议 stdio 直调**（`obscura mcp --stealth`，协议 2024-11-05，37 个 tool，会话式）。放弃 Playwright MCP + Camoufox。
+
+`executor/browser/` 分三层：
+
+| 文件 | 角色 |
+|---|---|
+| `page_driver.py` | **协议，全树唯一稳定契约**。只暴露原子原语（`goto`/`snapshot`/`click`/`type`/`evaluate`/`interactive_elements`/`links`/`media_probe`），**不封装任何业务语义** |
+| `mcp_client.py` | 传输层。JSON-RPC 进、文本出，**不认识任何 tool 名** |
+| `obscura_driver.py` | obscura 接入（`PageDriver` 实现）+ `FORBIDDEN_TOOLS` 闸门 |
+
+`mcp_probe.py` / `probe_returns.py` / `probe_observe.py` 是**可重跑探针**，取 tool 清单、返回格式取证、端到端 `observe` 契约取证——上游版本漂移时先重跑它们。
+
+## 感知层（模块 3，可替换插件）
+
+`perception/base.py` 定协议，`questions.py` 定判断题注册表，`rule_perceptor.py` 是 W1 实现，`factory.py` 做注入与灰度（**待建**）。
+
+输入是 DOM 预处理后的结构化观察（`Observation`），不是原始 HTML；输出必须是 schema。**七不变式由契约测试强制**（`tests/contract/test_perception.py`）：
+
+| | 不变式 |
+|---|---|
+| I1 | evidence 可溯源到 `Observation` |
+| I2 | `confidence ∈ [0,1]` |
+| I3 | 幂等——同一 `(question, obs)` 重复调用返回相同答案 |
+| I4 | fail-closed——能力不可用返 `None`，**绝不猜** |
+| I5 | 无副作用——只读 `obs`，不触网、不持页面句柄 |
+| I6 | decision 型题 payload 完整，`ref` 可溯源到 `obs.interactive_elements` |
+| I7 | `answer=True` 时 payload 不得为空 |
+
+## persona 六维（模块 1）
+
+`taskgen/persona/schema.py` 的 `PersonaProfile`：六维度 + 2 标记。每条都对应一个**可观察的语言特征**：
+
+| 维度 | 影响的语言现象 |
+|---|---|
+| `genre` | 领域词汇 |
+| `popularity` | 是否用站点名/别名/译名 |
+| `urgency` | 催促语、首轮长度 |
+| `verbal_style` | 句长、语气词、网络用语、错别字 |
+| `persona_presence` | 身份线索句 |
+| `task_specificity` | 指名 vs 指代 |
+| + `has_standard` | 70% True / 30% False（防「等标准才行动」） |
+| + `content_tier` | 切片用来源档位，**不得由 LLM 自评**，必须来自骨架客观属性 |
+
+**铁律：persona 与改写只改表述，不改判分标准。** 归一失败即丢弃该改写，退回骨架原文。
+
+存量 98 个 task **不是同一种任务**：能提片名的 81 个（`single_title`）、集合型 15 个（`aggregate`）、片名未知型 2 个（`unknown_title`）。W1 只跑 `single_title`——**判分标准与判据不匹配比跑不了更糟**。
+
+## 现状（2026-10-09）
+
+**已跑通**：执行层端到端（真实 bing/baidu 站点）、模块 1 采样与 `run --plan` 接线、反爬拦截识别与单独记账、候选域名过滤、persona 渲染、复核队列与 `review --apply`。
+
+**待办**：
+
+- **成功站点域名分布报告（D7 验收）挂起**——规则版 `PLAYER_OK` 只认 `<video>`/`<audio>`，真实视频站全是 iframe/JS 播放器，判断点 ④ 对它们一律 `None` → `unresolved`。**W1 正样本靠人工复核**（`review --write` → 人工填 `verdict` → `--apply`）。
+- `trailer_only` 词表覆盖率与误杀边界（真实站点上只跑到 `trailer_suspect`，`trailer_only` 一次都没触发）。
+- `rationale/` / `assembler/` / `evaluation/` / `storage/` 四个模块（包骨架已建，业务代码待写）。
+- `docs/contracts/` 下 P1/P2/P3 三份字段级契约。
+- `perception/llm_perceptor.py` + `factory.py`（W3）。
+
+**每次真实运行后都要逐条打开存档读 evidence 核对**——这是固定动作不是可选项。设计上五类缺陷全部是离线测试测不出来的（fixture 是我们自己造的，规则和 fixture 一起错，测试照样绿），只有把真实站点喂进去、逐条读存档，才会看见「结论」和「证据」在打架。踩坑全记录在 [`trajectory_pipeline/docs/02-避坑指南.md`](trajectory_pipeline/docs/02-避坑指南.md)。
+
+---
+
+# 存量架构（`simulate_serve` / `orchestration` / `gdr` / `etl` / `label_studio`，冻结只读）
+
+`simulation server → gdr → etl` 三阶段，每段一道边界，交接面写契约（C1/C2/C3/C4）。产物落根 `output/`。
 
 | 目录 | 职责 |
 |---|---|
-| `configuration/` | 严格 Raw Catalog Schema、加载和诊断 |
-| `domain/` | Persona、CompiledTask、Run、Validation、Evidence、状态机 |
-| `application/` | TaskCompiler、TaskRuntime、BatchRunner、端口 |
-| `interaction/` | Prompt、InteractionActor、GuidancePolicy |
-| `validation/` | 确定性校验、Claim、Evidence、Semantic Judge、聚合 |
-| `tools/` | Registry、health、CAMEL adapter、Playwright/Camoufox |
-| `infrastructure/` | 异步 QwenPaw、CAMEL model、v2 Repository/Exporter |
-| `etl/qwenformat/` | trajectory 重放 + transform + system_prompt partition + tool_output_summarizer + usage_prune + chat_template |
-| `etl/parsers/` | C2 契约入口：`load_refined_session` |
-| `etl/writers/` | C3 4 视图写入：`render_to_4_views` → `gdr.domain.schema.save_session_v2` |
-| `gdr/parsers/` | C1 契约入口：`from_trajectory` |
-| `gdr/domain/` | Session / Message / Block pydantic 类型 + `save_session_v2` / `save_refined_session` |
-| `gdr/{refiners,validators,core,reassembly,routing,config,prompts}/` | gdr 内部模块（详见 [docs/设计方案/gdr-plan.md](docs/设计方案/gdr-plan.md)） |
-| `label_studio/` | C3 + 评分卡 → Label Studio 单向推送（终点，不回流）；CLI `init-project`/`status`/`upload`/`purge`；R11 凭据扫描；`push_index.py` 推送台账（LS 1.23 无原生去重，见下） |
-| `orchestration/` | 顶层调度（master / pipeline_executor / task_pipeline / producer / workers / queue / failure_handler；2026-09-22 起删 watcher / batch_tracker / qf_worker） |
-| `tests/` | unit、contract、functional；默认不访问公网 |
+| `simulate_serve/` | v1 模拟采集端。`configuration/` 严格 Schema v2 Catalog；`domain/`+`application/` 编译任务与异步状态机；`interaction/` 生成首轮请求与追问（不拥有验证工具）；`validation/`+`tools/` 确定性规则 + 语义 Judge + 工具取证；`infrastructure/` QwenPaw HTTP + JSON v2 持久化。入口 `python -m simulate_serve` |
+| `orchestration/` | 顶层调度。`master` → `PipelineExecutor`（`multiprocessing.Pool` 槽位填充）→ `task_pipeline` 单 task 三阶段串行；`queue/sqlite_queue.py` 状态机 `pending → simulate → gdr → etl → done`，超限入 `dead`；`workers/{gdr,etl}_worker.py` 分别调 gdr / etl 公开入口。入口 `python -m orchestration` |
+| `gdr/` | C1→C2 精修。Session/Message/Block 三级模型、13 种缺陷标签（规则 + LLM 三票投票）、obs_denoiser/thought_refactor/tool_fixer、L1/L2/L3 三级验证。⚠️ 双导入姿势（顶层风格 + `gdr.` 前缀）导致同源码产生两套类对象，跨边界**不要用 `isinstance` 认类型** |
+| `etl/` | C2→C3 格式转换。`qwenformat/`（trajectory 重放 `load.parse_trajectory` + transform + chat_template）、`parsers/`（C2 入口 `load_refined_session`）、`writers/`（C3 入口 `render_to_4_views`）、`pawsession/`（平行旧路，**不在 orchestration 主链路**） |
+| `label_studio/` | **流水线终点**，单向推送不回流。`scorecard.v1` 分层评分卡（L0–L5，每维带 `source` 与依据）；R11 凭据扫描 fail-closed 拒推；`push_index.py` 本地台账（LS 1.23 无原生去重，删台账等于每次推重复样本）。入口 `python -m label_studio` |
+| `tool_runtime/` | Node 侧 Playwright MCP 依赖，打包时并入 `simulate_serve/tools/browser/`，默认禁用 |
+| `data_refiner/` | 合成数据轻量规则清洗，**只标注不删除**。入口 `python -m data_refiner`（不在主链路） |
+| `scripts/` | 迁移脚本 + `model_train/`（unsloth LoRA 独立训练脚本，不在主依赖里） |
+| `tests/` `gdr/tests/` | 存量测试两棵树，与 `trajectory_pipeline/tests/` 一起构成全量门禁 |
 
-## 配置和工具
+存量**设计细节**（LS 标注页坑位、C3 meta 瘦身、gdr 双导入、死信/旁路判据等）留在各目录代码注释与 `docs/` 里按需查阅，**不再在本文件展开**。
 
-- Python 配置代码位于 `simulate_serve/config.py` 和 `configuration/`。
-- 内置 YAML 只位于 `simulate_serve/config/`，采用文件级 `schema_version: "2"`；v1/v0 仅作为兼容输入。
-- 98 个内置 Task（T001–T068 训练集 + E001–E030 分布外泛化评估集）全部关联 10 个对话策略 Scenario；公开 `initial_request` 与本地 `test_fixture` 严格隔离。
-- `initial_request` 原样作为首轮远端消息；本地模型不得改写或削弱请求。
-- Criterion 的 `remediation` 决定失败责任、自然反馈和是否允许继续引导；只有可重试的 executor-owned FAIL 可以触发追问。
-- 追问必须要求远端保留已满足内容并返回包含全部要求的完整修订结果，避免只验最新回复时发生准则振荡。
-- Runtime 会识别“此前 PASS、本轮非 PASS”的回退准则，并在追问和 `FOLLOWUP_CREATED` 事件中明确记录。
-- Playwright/Camoufox 默认 disabled，启动不自动安装。使用 `--check-tools` 查看完整状态。
-- 使用 `--readiness` 在不连接 QwenPaw 的情况下汇总 Judge/Provider 缺口及受影响 Task；该命令不创建 Run 日志。
-- 全项目统一配置入口：仓库根 `config/config.yaml`（gitignored，含真实凭据；提交版模板 `config/config.example.yaml`）。四个模块（simulate_serve / orchestration / gdr / etl.qwenformat）的配置收纳于对应 section，`llm:` 共享段提供端点/密钥/模型缺省，支持 `${VAR}` 环境变量占位符。模块级配置文件已删除，根配置缺失直接报错、无兜底。定位可用 `SIMCTL_CONFIG`（gdr 用 `GDR_CONFIG_FILE`）重定向。凭据不得提交、打包、复制到测试、文档或日志。
-- Label Studio 段（`label_studio:`，2026-09-28 已实施，两个开关默认关闭）：本项目**终点**是 Label Studio —— 推送 C3 与评分卡，不做回流；凭据走 `${LABEL_STUDIO_API_KEY}` env 或 `api_key_path`。`upload.enabled` 只管 `python -m label_studio upload`（全量），`hook.enabled` 只管 orchestration step 11 自动推送（单条），两者互不串。`credential_scan` 默认开且 **fail-closed 拒推**。**LS 1.23 没有原生去重**（`Task.inner_id` 是整数字段、批量 import 静默丢弃、重复导入照样新建），所以判重与预标注要的数字 task id 都靠本地台账 `output/label_studio/push_index__<project_id>.jsonl`（`session_id → LS task id`，append-only）—— 删掉它等于每次 upload 都推重复样本。`init-project` / `upload` 每次都会把本地 label_config `PATCH` 进项目：LS 端存的是建项目那刻的 XML，不同步就会出现「校验报绿、import 却 400 `data['xxx']`」。
-  - **推送只有 etl 之后一个时点**（C3）。simulate 后的 C1 含 raw CoT，外推撞 CLAUDE.md 思维链红线；gdr 后的 C2 会被后续改写，标注等于标中间态。设计依据见 `docs/设计方案/label-studio-integration.md`。
-  - **hook 超时 30s 而非 5s**：一次推送串完 PAT 刷新 + 查项目 + PATCH label_config + 建 task + 预标注。超时不丢样本 —— `push_single_c3` 先拿 LS task id 再写台账，「台账没有」严格等价于「LS 上没建成」，批次后 `scripts/label_studio.bat upload` 补推幂等。project 解析在 `ls_hook` 里进程级缓存，**每个 task 都 PATCH label_config 会覆盖标注员的改动**。
-  - **低分样本（`judge_discard`）也推**：走完 etl 出 C3，终态仍是 `PHASE_AUDITED`（不洗成 done，否则 status 统计会骗人）。C3 meta 顶层 `audit_reason` → 评分卡 `audit` 标记 → label_config 最上方「低分标记」展示块 + 风险提示第一条。`scoring_reject` 推不了（C2 刻意不写），是设计硬墙。
-  - **标注页的展示块是「可改的审查工作区」，不是只读回显**（2026-09-29 实测）。`editable` **只管「加完之后能不能再改」，不管能不能提交**——能否提交取决于 **Add 按钮**，而 Add 按钮在 `rows > 1` 时默认可见（本项目展示块 rows 全 > 1）。实测标注员删改 `messages_view` 后提交，修改原样进了 annotation。**后果**：annotation 里的 `messages_view` / `openai_view` / `metadata_view` 是**标注员的修正稿，不是训练稿**，训练制品永远以 `output/refine_data/` 的 C3 为准。2026-09-30 起展示块改 `editable="true"`（探针实测：提交后**能就地改**，不必为修错字再点一次 Add 多存一条重复 submission；`rows > 1` 因此成为必须保留的约束）。机器判定（低分标记/评分卡/风险提示）与人工判定分开放，异议走 `criterion_verdict` / `revise_notes`——**能改 ≠ 该改**。结构上做成只读也可行（`<Text>` 非控件挂不上 submission），但 `<Text>` 会 trim 掉缩进，而保住缩进的配方 `<Style>.htx-text{white-space:pre-wrap}</Style>` **2026-09-30 已被实测证伪**（`.htx-text` 这个类名在标注页上根本选不中）；「可改」是设计决定而非能力限制，故不做；唯一例外是 `risk_hints` 不能换，它是预标注的唯一落点。见 `docs/observability-label-studio.md` §3.5 与设计文档 R16。
-  - **qwenjina.txt 不上传 + C3 meta 不再内嵌视图副本（2026-09-30 起）**：ChatML 全文曾走两条路上 LS —— `task.data["qf_text"]`（qf_text_view 展示块）+ meta.json 内嵌 `qf_text` 留底（经 metadata/metadata_text 二次上传）。现展示块换成 `openai_view`（openai.json 的人读渲染 `render_openai_text`，非 JSON 孪生），task.data 只留审计元数据；展示块仍用 TextArea 而非 `<Chat>`（官方文档：导入消息不可选，editable 只管标注员新增消息，与「可改审查工作区」冲突）。
-  - **C3 meta.json 去掉 `openai_messages` / `tools` / `qf_text`（2026-09-30）**：这三个键是另外 3 份视图文件的**内容副本**（`save_session_v2` 的 `_VIEW_PAYLOAD_KEYS`），meta 原本是「源 + 副本」双份存储，实测占 meta 体积约一半（142KB → 68KB，-52%）。审计改由 `tools_declared`（**未截断**工具名清单，绕过 `tools_payload_max`）+ `views`（各视图 file/bytes/sha256 指针）承担。**`qf_stats` / `qf_rendered_at` 刻意保留** —— 后者是 LS 标注页 `c3_rendered_at` 时间线的唯一数据源。⟦⟧ 污染证据不受影响（`meta_tag_contamination` 扫内存 payload 而非 meta，原文在 C2）。⚠️ **存量不兼容**：旧 meta.json 仍带这三键，读取方需自行判断；LS 推送侧 `_META_VIEW_PAYLOAD_KEYS` 保留为防御。**「4 视图反读 meta 当真值源」的唯一使用方（`etl.qwenformat.usage_prune` 4 视图 I/O 兼容层 + `scripts/prune_refined_system.py` 存量重跑脚本）已整体删除** —— 生产链路 `etl_worker` 本就走「load C2 单文件 → apply_render_chain → save_session_v2」，不经过它。
+---
 
-## 输出
+## 输出目录
 
-按阶段分目录（新架构，2026-09-22 起）：
-
-- `output/runs|artifacts|reports` —— simulate_serve 自洽（run 元数据 / content-addressed 制品 / 聚合统计）
-- `output/agent_trajectory/` —— C1 trajectory 事件流（simulate_serve → gdr 交接面）
-- `output/refined/` —— C2 单 refined Session（gdr → etl 交接面）
-- `output/refine_data/` —— C3 4 视图文件（etl → 训练 / audit；meta.json 不含另外 3 份的内容副本，见上）；旁路 jsonl（incomplete / judge_low / deferred / routing_low）也在此
-
-审计保存所有 Run；非终态启动恢复时标记 `INTERRUPTED`，绝不自动重复远端任务。
-`simulate_serve` 不再导出 `output/datasets/all_runs.v2.jsonl` / `distill_dataset.v2.jsonl`
-（已被 C3 取代）。
-
-## 数据保留原则
-
-本项目的核心场景目标是**生成 agent 轨迹数据**,不仅用于 SFT 训练,还需为
-任务调优、修改与质量问题分析提供输入。**结构合格但评分低**的轨迹与高质量
-轨迹同等重要,不能因为评分低就丢入死信。
-
-### 死信判定的边界
-
-仅当数据**结构严重不可用**时才进死信（`output/orchestration/dead/`）:
-
-1. 轨迹不完整 —— 尾部 toolcall 缺 toolresult / 配对缺失 / 末段截断
-2. 仅有用户内容无 assistant 内容 —— 全程 agent 未产生任何回复
-3. 没有明确的模型总结回复 —— 末尾 text 被启发式判截断,或末段仅 thinking
-   无 final text
-
-凡**结构合格 + 含 assistant 回复**的轨迹一律**不**进死信:
-
-- 评分低（judge / free_quality 子分未达）但结构完整 → 走旁路审计
-  `refine_data/judge_low.jsonl` / `audit/scoring_reject.jsonl`,供后期人工复核
-  与质量问题归因
-- 评审层弃权（LLM 投票解析失败）→ `refine_data/routing_abstain.jsonl`,仅
-  丢单 block 不丢整 session
-
-### 双轨归档
-
-- **死信** = `output/orchestration/dead/<task_id>__<filename>`(src_path 物理
-  move)
-- **旁路** = `refine_data/{incomplete,judge_low,deferred,routing_low}.jsonl`
-  / `audit/scoring_reject.jsonl`(完整 session dump 或仅 metadata)
-
-死信与旁路互为兜底:所有原始 trajectory 在当前架构下均可经 `requeue_dead()`
-复活,或经旁路 jsonl 直接读取完整 session。**无永久丢失路径**。改动丢弃
-逻辑前必须先 grep `phase='dead'` / `_append_*_queue` / `GdrNonRetryableError`
-/ `GdrAuditedError` 确认无遗漏。
-
-**实施状态 (2026-09-24)**: 评分低 (judge_discard / scoring_reject) 已走
-`PHASE_AUDITED` 终态 + `mark_audited` 队列方法, 不再进 dead。详见
-[docs/设计方案/pipeline-contracts.md](docs/设计方案/pipeline-contracts.md) §2
-phase 表 + `mark_audited` 定义。
-
-**实施状态 (2026-09-29)**: simulate 端判据已从「验证是否通过」改为「**数据
-结构是否可用**」。`guide_exhausted` / `inconclusive` (远端拒答、引导耗尽、
-语义待定) 的轨迹**不再进死信**, 继续走 gdr → etl, 终态由 gdr 判定 (`audited`
-旁路 / `done` C3 制品)。真正的死信只剩 `validation_error` / `executor_error` /
-`actor_error` / `cancelled` / `interrupted` / `completion_incomplete` 六类。
-
-「验证不通过」这个信号改由 `orchestration/fail_evaluator.py` 承载: etl 阶段把
-**验证失败原因** + **agent 轨迹结果内容**发给 LLM 做一次定性归因, 写入 C3
-meta.json 顶层 `fail_evaluation`, **分数恒为 0**(`score_source:
-simulate_validation`, LLM 不参与打分)。Label Studio 评分卡 L0
-`criterion_coverage` 在 `final_verdict != "pass"` 时记 0 分并透出归因。
-**raw CoT 红线**: 该模块在调 LLM 前剥离 C1 text block 内嵌的 `<think>` 链
-(含未闭合的情形)。设计见
-[docs/设计方案/simulate-fail-scoring.md](docs/设计方案/simulate-fail-scoring.md)。
+- **`trajectory_pipeline/output/pipeline/`** —— 新树全部产物（D8，gitignored）：P1 存档、复核队列、`obscura_tools.json` 等探针取证
+- `output/agent_trajectory|refined|refine_data/` —— 存量 C1/C2/C3（冻结，不迁移、不双写）
+- `output/orchestration/dead/` —— 存量死信；`refine_data/*.jsonl` —— 存量旁路审计通道
 
 ## 文档
 
-- `docs/orchestration-design.md` — orchestration 三阶段流水线设计基线（2026-09-22 重写；§6.8 Label Studio 旁路推送）
-- `docs/observability-label-studio.md` — Label Studio 推送的用户视角（评分卡为什么标 `source` / 哪类样本会被拒推）
-- `docs/label-studio-playbook.md` — **改 label_config 的方法论**：三种信号可信度递增（`validate/` 绿灯**不算数**，只有标注页算数）、属性名会骗人对照表、探针法（一次问完 / 必须带对照组 / 机器能验的自己验）、动生产配置前的停手条件与重置顺序。踩坑细节在设计文档 R13–R17
-- `docs/label-studio-annotation-export.md` — 标注**导出**怎么读：`JSON` vs `JSON_MIN` 本机实测差异、控件→下游字段映射、原值与修正稿分列、清洗点（⚠️ 逐条归属是自由文本不是结构化字段）
-- `docs/todolist.md` — Label Studio 集成的**未完成项**（标注界面待验证项、存储规模、待清理的 probe 项目）；每项含「为什么没动 / 怎么验」
-- `docs/refactor-development-progress.md` — gdr SFT 数据质量修复迭代日志（含 2026-09-19 六件套 F1/F2/F3-C + Fix A/B/C + F3-D/E）
-- `docs/执行agent资料/`、`docs/任务合集/`、`docs/设计方案/` — 项目历史档案
-- 框架与策略长文：`gdr/docs/gdr-context-understanding-and-policy.md`、`gdr/docs/gdr-module-functional-overview.md`、`gdr/docs/gdr-mvp-design.md`、`gdr/docs/incremental-state-tracking-plan.md`
+**新树（先看这里）**：
+
+- [`trajectory_pipeline/docs/设计方案/00-总体方案.md`](trajectory_pipeline/docs/设计方案/00-总体方案.md) —— v2 设计基线：决策 D1–D10、模块设计、四个判断点、失败分支、契约、里程碑、风险
+- [`trajectory_pipeline/docs/设计方案/01-模块3-可替换感知层.md`](trajectory_pipeline/docs/设计方案/01-模块3-可替换感知层.md) —— 插件化机制完整规格 + 七不变式
+- [`trajectory_pipeline/docs/02-避坑指南.md`](trajectory_pipeline/docs/02-避坑指南.md) —— **8 类 35 条**，症状写成终端里真正会看到的那句话，可全文搜索
+
+**存量**（按需查阅）：`docs/orchestration-design.md`、`docs/observability-label-studio.md`、`docs/label-studio-playbook.md`、`docs/label-studio-annotation-export.md`、`docs/设计方案/`、`docs/contracts/`、`gdr/docs/`。

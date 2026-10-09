@@ -25,7 +25,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["simulate_serve", "orchestration"]
+packages = ["simulate_serve", "orchestration", "trajectory_pipeline"]
 exclude = [
     "simulate_serve/config/config copy.yaml",
     "simulate_serve/**/__pycache__/**",
@@ -66,7 +66,7 @@ browser-camoufox = [
 # 2 处还在按已删除的 qf_out 嵌套格式造 fixture, 以及 2 个**生产代码**里
 # 静默失效的 isinstance (gdr 两套导入姿势 → usage_prune 从未真正执行,
 # 含 CLAUDE.md 隐私红线的本机路径泛化)。门禁漏掉一棵树 = 这些全部看不见。
-testpaths = ["tests", "gdr/tests"]
+testpaths = ["tests", "gdr/tests", "trajectory_pipeline/tests"]
 addopts = "-ra --strict-markers --allow-hosts=127.0.0.1,::1 --basetemp=.pytest-tmp"
 asyncio_mode = "auto"
 markers = [
@@ -80,4 +80,9 @@ markers = [
 ]
 
 [tool.uv.workspace]
+# trajectory_pipeline 刻意**不进** workspace：gdr 成为 workspace 成员后，
+# 它同时以顶层风格（from domain import ...）和 gdr. 前缀风格被加载，
+# 同一份源码产生两套类对象，跨边界 isinstance 静默判 False，
+# usage_prune 因此从未真正执行过。新树一律 trajectory_pipeline.xxx 绝对导入，
+# 作为主包一部分管理，不制造第二套导入姿势。
 members = ["gdr"]
