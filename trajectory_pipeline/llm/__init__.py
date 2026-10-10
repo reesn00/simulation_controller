@@ -17,6 +17,25 @@ json_schema**，模型会漂字段名、套 think、首轮跑偏。``schema_pars
 已知的本机后端行为（写在这里以免各处重复踩）：
   - 不强制 json_schema，字段名会漂
   - 可能输出 ``<think>`` 包裹（送 LLM 前须剥离 raw CoT，见 CLAUDE.md 红线）
+  - **同产品族里两种行为都有**——实测（2026-10-10，同一端点、同一提示词、
+    同一 ``max_tokens``）：``MiniMax-M3`` / ``MiniMax-M2.7`` **返**内联
+    ``<think>``（正文 2286 / 2320 字符），而 ``MiniMax-M3.1-Flash-Preview`` /
+    ``deepseek-v4.1-flash`` / ``qwen3.8-flash`` / ``qwen3.8-27b`` /
+    ``GLM-5.3-Flash`` **不返**（209–490 字符）。
+    **换一次配置就可能换到一个会返的**，所以 ``strip_think`` 是必要的
+    而不是多余的，且**逐次都可能不同**。
+  - **会写未转义的 ASCII 双引号**（第三种漂移，实测 ``deepseek-v4.1-flash``
+    4 次里坏 2 次、``MiniMax-M3`` 4 次里坏 1 次）：形如
+    ``{"thinking": "标题只是笼统的"腾讯视频"，正文…"}``。它的可怕之处是
+    **大括号配平**——``_balanced`` 取出来那段看起来完全正常，只有
+    ``json.loads`` 知道它坏了（报 ``Expecting ',' delimiter``）。共享解析层
+    已做**报错位置驱动**的转义修复
+    （:func:`~trajectory_pipeline.llm.schema_parse.extract_json_reporting`），
+    修复记录随结果返回，由调用方写进 ``degraded_from``——**修可以，账要记**。
+  - **模型名大小写敏感，且 403 与 503 是两种失败**：实测
+    ``deepseek-V4.1-Flash`` → **403**（名字未注册）、
+    ``DeepSeek-V4.1-Flash`` → **503**（已注册但服务过载）、
+    ``deepseek-v4.1-flash`` → OK。
   - 自报 confidence 普遍虚高，须经验校准后才可用于阈值判断
   - 大输入会超时——实测正文从 1200 降到 600 字符后，原本直接 ``None``
     的请求恢复正常（见 ``llm_perceptor.LLM_BODY_CHARS``）

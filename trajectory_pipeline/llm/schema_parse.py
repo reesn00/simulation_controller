@@ -106,10 +106,89 @@ def extract_json(text: str) -> dict[str, Any] | None:
     契约测试当时没抓到：只有判断点 ① 的 payload 是嵌套的，其余三题都是
     扁平单层 JSON——**从后往前照样能取对**。所以「一个能跑的解析器」
     不等于「对所有形态都对」。
+
+    畸形 JSON 的容错与修复见 :func:`extract_json_reporting`；本函数是它的
+    薄封装，**丢弃修复记录**。需要知道「这条 JSON 被修过」的调用方
+    （:mod:`trajectory_pipeline.rationale.writer`）改用那个。
+    """
+    data, _repairs = extract_json_reporting(text)
+    return data
+
+
+#: 单条 JSON 最多修几轮未转义引号。**有上限**：无上限的修复循环在
+#: 「怎么都解析不出来」时会变成一个吃满 CPU 的死循环，而最终症状
+#: 仍然是「解析失败」——与不修一样，只是更慢。
+#:
+#: 8 不是随便取的：实测一条含两个坏引号的响应要修 2 轮，而
+#: **从任意位置截断的输入一律修不出来**（见测试里那条「截断不得被
+#: 修成假对象」的性质断言）。也就是说真正干活的是下面那句
+#: 「解析器指着的位置恰好是一个引号」，轮数上限只兜住病态输入。
+MAX_REPAIR_ROUNDS = 8
+
+
+def _load_tolerant(raw: str) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    """``json.loads`` + **由报错位置驱动的**引号转义修复。
+
+    修的**唯一**判据：**解析器报错的位置恰好是一个双引号**。
+    满足就说明「解析器在这里把字符串提前收尾了，而后面紧跟的不是
+    ``,`` / ``}`` / ``]`` / ``:``」——那正是未转义引号的定义。
+
+    ⚠️ **不要加「按错误类型白名单」的第二道门。** 加过（``Expecting ','``
+    白名单），实测发现它是**死守卫**：删掉它 13 条测试照样全绿，
+    而枚举 17 种畸形输入 + 从 58 个位置截断，**没有一种**会被它救回来。
+    死守卫比没守卫更坏——它看起来在限定修复范围，于是没人再去验证
+    真正起作用的那条。判据就是上面那一句，不要加第二个。
+
+    **为什么不用「引号后面跟的是不是逗号」那种局部规则**——
+    那个规则在实测那条上就是错的：``只是笼统的"腾讯视频"，正文`` 里
+    **两个**引号后面都不是 ASCII 逗号（一个是中文逗号，一个是真正
+    的结束引号），局部规则会把结束引号也转义掉，于是永远解析不出来；
+    而每轮又「成功」修掉一个，症状变成另一种失败。
+
+    为什么**截断不会被修成假对象**：``json.loads`` 遇到没写完的字符串
+    报的位置指向**开引号**，把它转义后下一轮报的是「对象开头缺键名」，
+    那个位置不是引号，于是 ``at is None`` 直接放弃。测试里有一条
+    覆盖全部截断位置的性质断言钉住这条。
+
+    Returns:
+        ``(data, repairs)``；``repairs`` 逐条记做了什么，供上层记账。
+        修不了时 ``data`` 为 ``None``、``repairs`` 为空——
+        **绝不返回「修了一半」的对象**。
+    """
+    repairs: list[str] = []
+    text = raw
+    for _ in range(MAX_REPAIR_ROUNDS):
+        try:
+            got = json.loads(text)
+        except json.JSONDecodeError as exc:
+            # ``pos`` 是「读完一个 token 之后」的位置，所以坏引号可能
+            # 落在 pos，也可能落在 pos-1。两个都试，先试 pos。
+            at = exc.pos if exc.pos < len(text) and text[exc.pos] == '"' else None
+            if at is None and 0 < exc.pos <= len(text) and text[exc.pos - 1] == '"':
+                at = exc.pos - 1
+            if at is None:
+                return None, ()
+            repairs.append(f"第 {at} 个字符处的双引号未转义，按字符串值转义")
+            text = text[:at] + '\\"' + text[at + 1:]
+            continue
+        except ValueError:
+            return None, ()
+        return (got, tuple(repairs)) if isinstance(got, dict) else (None, ())
+    return None, ()
+
+
+def extract_json_reporting(text: str) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    """同 :func:`extract_json`，但**把修复记录一并返回**。
+
+    为什么要报告而不是静默修：被修过的那一条与原样解析出来的那一条，
+    形状一样、可信度不同。感知层那边解析失败会 fail-closed 成 ``None``
+    （可接受，因为整道题退回不可判定），而 rationale 那边解析失败就
+    **这一条没有思考**——两者都不该靠「静默修好」蒙过去。
+    所以修可以，**账要记**，由调用方写进 ``degraded_from``。
     """
     clean = strip_think(text)
     if not clean:
-        return None
+        return None, ()
 
     candidates: list[str] = []
     fenced = _FENCE.findall(clean)
@@ -125,13 +204,10 @@ def extract_json(text: str) -> dict[str, Any] | None:
     candidates.append(clean.strip())
 
     for raw in candidates:
-        try:
-            got = json.loads(raw)
-        except ValueError:
-            continue
-        if isinstance(got, dict):
-            return got
-    return None
+        data, repairs = _load_tolerant(raw)
+        if data is not None:
+            return data, repairs
+    return None, ()
 
 
 # ═══════════════════════════════════════════════════════════════════════

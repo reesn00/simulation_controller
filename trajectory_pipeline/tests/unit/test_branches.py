@@ -254,14 +254,19 @@ class TestOutcomeUrls:
 
 
 class TestBranchPrecondition:
-    """负分支的**前置事实**——贴标签之前页面上必须真有那个东西。
+    """负分支的**前置事实**——贴标签之前页面状态必须满足分支定义的前提。
+
+    ``component_unverified`` 的前提（2026-10-10 rubric 口径裁定的侧 A）：
+    「**到了播放页**，且页面上没有可验证的播放组件」。守卫核的判据是
+    「点击有没有把页面带进播放页」（点击前后是否同页），**不是**
+    ``video_tag_count``——真实视频站全是 iframe/JS 播放器，真播放页上
+    video=0 是常态，拿它当信号会把合法排除一起杀掉。
 
     实测（2026-10-09 www.mgtvtv.com/tv/32080/）：点击前后两次观察完全
     相同（390 字正文 / 37 元素 / video=0），说明点击没把页面带进播放页；
     模型判 False 的原话是「仍显示影片详情和『立即播放』按钮，并非实际
     播放页」。映射只看「模型说了 False」，于是贴上 ``component_unverified``
-    ——一条**货真价实的负样本**，说的是「这个站看不了《功夫》」。
-    而它有、有播放按钮，只是我们没点进去。
+    ——而它有片、有播放按钮，只是我们没点进去。
     """
 
     def _dec(self, answer):
@@ -279,14 +284,17 @@ class TestBranchPrecondition:
         base.update(kw)
         return Observation(**base)
 
-    def test_无媒体标签时降级为unresolved(self):
+    def test_点击前后同页时降级为unresolved(self):
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
-        out = led.record_from("https://x.test/p", self._dec(False),
-                              obs=self._obs(video_tag_count=0))
-        assert out.branch == "unresolved", "没有 media 就不该贴 component_unverified"
-        assert "前置事实不成立" in out.evidence
+        out = led.record_from(
+            "https://x.test/p", self._dec(False),
+            obs=self._obs(url="https://x.test/p", video_tag_count=0),
+            pre_obs=self._obs(url="https://x.test/p"),
+        )
+        assert out.branch == "unresolved", "点击没换页就不该贴 component_unverified"
+        assert "同一个页面" in out.evidence
 
     def test_原始证据保留(self):
         """降级不是改写结论——模型的原话必须留在证据里，
@@ -294,18 +302,25 @@ class TestBranchPrecondition:
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
-        out = led.record_from("https://x.test/p", self._dec(False),
-                              obs=self._obs(video_tag_count=0))
+        out = led.record_from(
+            "https://x.test/p", self._dec(False),
+            obs=self._obs(url="https://x.test/p", video_tag_count=0),
+            pre_obs=self._obs(url="https://x.test/p"),
+        )
         assert "并非实际播放页" in out.evidence
 
-    def test_有媒体标签时照旧贴分支(self):
-        """反例护栏：守卫不是封死这条路。页面真的有 <video> 而播放器没起来，
-        那正是 ``component_unverified`` 的定义。"""
+    def test_换页后video为0也照贴(self):
+        """裁定后的核心场景：到了播放页（点击换了页）但没有组件——
+        那正是决策树第四行的合法排除。旧守卫（video_tag_count<1 降级）
+        会把它错杀成 unresolved。"""
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
-        out = led.record_from("https://x.test/p", self._dec(False),
-                              obs=self._obs(video_tag_count=1))
+        out = led.record_from(
+            "https://x.test/play", self._dec(False),
+            obs=self._obs(url="https://x.test/play", video_tag_count=0),
+            pre_obs=self._obs(url="https://x.test/site"),
+        )
         assert out.branch == "component_unverified"
 
     def test_没传观察时照旧(self):
@@ -315,6 +330,16 @@ class TestBranchPrecondition:
 
         led = RunLedger(task_id="T001")
         out = led.record_from("https://x.test/p", self._dec(False))
+        assert out.branch == "component_unverified"
+
+    def test_没传点击前观察时放行(self):
+        """obs 有、pre_obs 没有（调用点未接线）同样放行——
+        守卫缺一边就缺判据，缺判据时不做第二次猜测。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from("https://x.test/p", self._dec(False),
+                              obs=self._obs(video_tag_count=0))
         assert out.branch == "component_unverified"
 
     def test_answer为None不受影响(self):
@@ -332,3 +357,27 @@ class TestBranchPrecondition:
         from trajectory_pipeline.executor.branches import BRANCH_PRECONDITION
 
         assert set(BRANCH_PRECONDITION) == {"component_unverified"}
+
+    def test_同页判定与评分器同源(self):
+        """executor 与 evaluation 各有一份 ``_same_page``（executor 不
+        import evaluation，见 branches.py）。两处漂移会让「守卫拦的」
+        与「评分器扣的」变成两套标准——D-5 映射表与注册表不同源的
+        教训（避坑指南 §1.1）。"""
+        from trajectory_pipeline.evaluation.scorers import d4_scorer
+        from trajectory_pipeline.executor.branches import _same_page as exec_same
+
+        def as_dict(o):
+            if o is None:
+                return None
+            return {"url": o.url,
+                    "interactive_elements": o.interactive_elements,
+                    "body_text": o.body_text}
+
+        a = self._obs(url="https://x.test/p", body_text="同页")
+        b = self._obs(url="https://x.test/p", body_text="同页")
+        c = self._obs(url="https://x.test/p2", body_text="同页")
+        d = self._obs(url="https://x.test/p", body_text="不同")
+        for x, y in ((a, b), (a, c), (a, d), (a, None), (None, b)):
+            assert exec_same(x, y) == d4_scorer._same_page(as_dict(x), as_dict(y)), \
+                f"两份 _same_page 漂移：exec={exec_same(x, y)} " \
+                f"scorer={d4_scorer._same_page(as_dict(x), as_dict(y))}"

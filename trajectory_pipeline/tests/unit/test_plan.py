@@ -312,11 +312,20 @@ class TestRunRequiresTitle:
         assert "缺 --title" in out
         assert "T001" in out, "错误串要指名道姓说明 task-id 不是片名"
 
-    async def test_手工路径不连浏览器就退(self, capsys):
+    async def test_手工路径不连浏览器就退(self, capsys, monkeypatch):
         """反例护栏：守卫不是「一律拒绝」。给了片名就该往前走——
-        本机没配 OBSCURA_EXE，正好停在连接那一步，而不是停在片名那一步。"""
+        **显式清掉 ``OBSCURA_EXE``**，让它停在连接那一步，而不是停在片名那一步。
+
+        ⚠️ **必须 monkeypatch，不能靠「本机恰好没配」**。早一版把这句话
+        写进 docstring 就当隔离了，于是配置好 ``OBSCURA_EXE`` 的机器上
+        这条测试会**真的跑完整条链**（实测真跑出 T001 一份存档、
+        返回 0 而非 2），把一次单测变成一次真实采集——慢、脏，
+        还会往 ``output/pipeline/`` 里落一份与断言无关的产物。
+        """
+        from trajectory_pipeline.executor.browser.mcp_client import EXE_ENV_VAR
         from trajectory_pipeline.executor.cli import cmd_run
 
+        monkeypatch.delenv(EXE_ENV_VAR, raising=False)
         assert await cmd_run(_ns(title=["功夫"])) == 2
         out = capsys.readouterr().out
         assert "缺 --title" not in out

@@ -160,6 +160,7 @@ class RunLedger:
         *,
         reached: bool = False,
         obs: Observation | None = None,
+        pre_obs: Observation | None = None,
         site_url: str = "",
         play_page_url: str = "",
     ) -> SiteOutcome:
@@ -169,24 +170,36 @@ class RunLedger:
         这条映射写在 :func:`decision_branch` 里而不是散在控制流，
         是为了让「判 false 归哪支」只有一处定义。
 
-        ## ``obs`` 存在的理由：负分支的**前置事实**要核
+        ## ``obs`` / ``pre_obs`` 存在的理由：负分支的**前置事实**要核
         分支名是**结论的标签**，而每条负分支的定义里都带着一个前置事实
-        ——``component_unverified`` 的定义是「**有 video 标签**但播放器未正常
-        加载」。映射只看「模型说了 False」，于是前置事实不成立时照样贴标签。
+        ——``component_unverified`` 的前提是「**到了播放页**，且播放页上
+        没有可验证的播放组件」（2026-10-10 rubric 口径裁定：按决策树
+        第四行「播放页无 video/组件 → 排除」理解，不按「有 video 标签
+        但播放器未正常加载」）。``pre_obs`` 是点击**前**的站点页观察，
+        ``obs`` 是点击后的观察——守卫核的是「点击到底有没有把页面
+        带进播放页」。
+
+        ⚠️ 判据刻意**不是** ``video_tag_count``。真实视频站普遍全是
+        iframe/JS 播放器，真播放页上 ``video=0`` 是常态——拿它当
+        「不在播放页」的信号，会把「到了播放页确实没组件」的合法排除
+        一起杀掉。
 
         实测（2026-10-09 www.mgtvtv.com/tv/32080/）：点击前后两次观察的
         正文与元素数**完全相同**（390 字 / 37 元素 / video=0），说明点击
         根本没把页面带进播放页；模型判 False 的原话是「仍显示影片详情和
-        『立即播放』按钮，并非实际播放页」。于是贴上 ``component_unverified``
-        ——一条**货真价实的负样本**，说的是「这个站看不了《功夫》」。
-        而它有、有播放按钮，只是我们没点进去。
+        『立即播放』按钮，并非实际播放页」。映射只看「模型说了 False」，
+        于是贴上 ``component_unverified``——而它有片、有播放按钮，
+        只是我们没点进去。
 
         负样本池的全部价值是「这里真的看不了」。贴错标签不是噪声小一点，
         是**把可看的站写成看不了的**——而这类样本一旦进池，
         人工也未必再看得出它是错的（理由写得通顺、结论看着专业）。
 
         所以：**前置事实不成立就降级为 ``unresolved``**，交人工，
-        而不是硬贴一条负分支。
+        而不是硬贴一条负分支。``obs`` / ``pre_obs`` 为 ``None``
+        （调用方没传）一律放行——守卫不反向把老调用方的记账打成
+        unresolved，那种「忘了传」的错误由本 docstring 提醒，
+        不在守卫里做第二次猜测。
 
         ⚠️ **环节⑦ 的 ``answer=None`` 不用本方法**，走
         :meth:`record_unresolved_reached`。那里的 ``None`` 说的是
@@ -196,7 +209,7 @@ class RunLedger:
             branch = "unresolved"
         else:
             branch = questions.negative_branch_of(decision.question)
-            reason = _precondition_failed(branch, obs)
+            reason = _precondition_failed(branch, obs, pre_obs)
             if reason:
                 return self.record(
                     url, "unresolved",
@@ -294,10 +307,12 @@ class RunLedger:
         }
 
 
-#: 负分支的**前置事实**：贴这条标签之前，页面上必须真的有这个东西。
+#: 负分支的**前置事实**：贴这条标签之前，页面状态必须真的满足它的前提。
 #:
-#: 「有 video 标签但播放器未正常加载」这句话在没有 video 标签的页面上
-#: 是**语法通顺、语义空洞**的——而空洞的负标签比没有标签坏得多：
+#: ``component_unverified`` 的前提是「**到了播放页**，且页面上没有可验证的
+#: 播放组件」（rubric 决策树第四行，2026-10-10 口径裁定）。点击前后
+#: 同一个页面时，前提里「到了播放页」那半句不成立——这次点击没有产生
+#: 新证据，结论是「语法通顺、语义空洞」的，而空洞的负标签比没有标签坏得多：
 #: 它进了池，看着像一条正经的失败样本，人也未必再看得出它是空的。
 #:
 #: 值是「不成立时的说明」，用在 :meth:`RunLedger.record_from` 的降级路径里。
@@ -305,25 +320,49 @@ class RunLedger:
 #: 长得跟分支表一样长就没人维护了。
 BRANCH_PRECONDITION: Mapping[str, str] = {
     "component_unverified": (
-        "「播放器未正常加载」说的是一个**存在但没起来**的播放器，"
-        "而这一页连播放器都不存在"
+        "「播放页上没有可验证的播放组件」说的是**到了播放页**之后没有组件，"
+        "而这次点击没有把页面带进播放页，结论没有新证据支撑"
     ),
 }
 
 
-def _precondition_failed(branch: str | None, obs: Observation | None) -> str:
+def _same_page(a: Observation | None, b: Observation | None) -> bool:
+    """这两份观察是不是**同一个页面**——rubric D-4 边界规则的可机械形态。
+
+    与 :mod:`evaluation.scorers.d4_scorer` 的同名判定**同源同规则**
+    （url / 元素数 / 正文三个粗粒度特征），但**不 import**——executor
+    不依赖 evaluation，两处漂移由 test_branches 的对照测试钉住。
+
+    只比三个粗粒度特征而不是逐字段：网址会从 http 跳 https、
+    正文会因懒加载微调，逐字段比对会把「同一页的两次快照」判成不同页。
+    """
+    if a is None or b is None:
+        return False
+    if a.url != b.url:
+        return False
+    if len(a.interactive_elements) != len(b.interactive_elements):
+        return False
+    return a.body_text == b.body_text
+
+
+def _precondition_failed(branch: str | None, obs: Observation | None,
+                         pre_obs: Observation | None = None) -> str:
     """这条分支的前置事实成立吗？不成立返回说明串，成立返回空串。
 
-    ``obs`` 为 ``None``（调用方没传观察）一律放行——**这是有意的**：
+    ``obs`` / ``pre_obs`` 为 ``None``（调用方没传）一律放行——**这是有意的**：
     降级逻辑不能反过来把老调用方的记账打成 unresolved，
     而那种「忘了传 obs」的错误由 :meth:`RunLedger.record_from` 的
-    ``obs`` 形参文档提醒，不在这里做第二次猜测。
+    形参文档提醒，不在这里做第二次猜测。
     """
     if obs is None or branch is None:
         return ""
-    if branch == "component_unverified" and obs.video_tag_count < 1:
-        return f"页面上一个媒体标签都没有（video_tag_count={obs.video_tag_count}）——" \
-               f"{BRANCH_PRECONDITION[branch]}"
+    if branch == "component_unverified":
+        if pre_obs is None:
+            return ""
+        if _same_page(pre_obs, obs):
+            return (f"点击播放控件前后是同一个页面"
+                    f"（url={obs.url}，元素数 / 正文也全同）——"
+                    f"{BRANCH_PRECONDITION[branch]}")
     return ""
 
 

@@ -223,7 +223,10 @@ async def visit_site(
         result.note("PLAYER_OK=None（有播放组件，确认不了能不能用）")
         return result
 
+    # pre_obs = 点击前的站点页观察：component_unverified 的前置事实是
+    # 「到了播放页」，守卫靠「点击前后是否换页」核它（branches._same_page）。
     ledger.record_from(play_url, player, reached=True, obs=result.player_obs,
+                       pre_obs=result.site_obs,
                        site_url=url, play_page_url=play_url)
     result.note(f"PLAYER_OK={player.answer}")
     return result

@@ -396,7 +396,7 @@ class TestPlayerUnverifiedAtStep7:
 
     async def test_false分支也带播放页地址(self):
         """反例护栏：分流不能把带地址的那一支漏掉。
-        （page 有 video 标签，``component_unverified`` 的前置事实成立。）"""
+        （点击后换了页 movie → play/e5，前置事实「到了播放页」成立。）"""
         out = await self._run(no(Q.PLAYER_OK))
         assert out.branch == "component_unverified"
         assert out.play_page_url == "https://x.test/play/e5"
@@ -442,6 +442,52 @@ class TestPlayerUnverifiedAtStep7:
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "login_wall_or_blocked"
         assert d.clicked == []          # 登录墙上不该点播放
+
+
+class TestComponentUnverifiedRequiresNewPage:
+    """判断点④ False + **点击前后同页** → 降级 unresolved（前置事实不成立）。
+
+    mgtvtv 现场（避坑指南 §5.14）：点击没把页面带进播放页，直接贴
+    ``component_unverified`` 会把可看的站写成看不了的。FakeDriver 的
+    PAGES 不登记 play 页即模拟这个场景——点击后 ``current`` 不变，
+    点击后的观察与点击前是同一个页面（url / 元素数 / 正文全同）。
+    """
+
+    async def _run(self, pages):
+        ledger = RunLedger("T001")
+        p = ScriptedPerceptor({
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+            Q.PLAYER_OK: no(Q.PLAYER_OK, evidence="LLM 判 False：并非实际播放页"),
+        })
+        await visit_site(FakeDriver(pages), p, ledger, CAND)
+        return ledger.outcomes[0]
+
+    async def test_点击后同页降级unresolved(self):
+        out = await self._run({
+            "https://x.test/movie": obs_at(
+                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
+        })
+        assert out.branch == "unresolved"
+        assert "同一个页面" in out.evidence
+
+    async def test_同页降级时模型原话保留(self):
+        out = await self._run({
+            "https://x.test/movie": obs_at(
+                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
+        })
+        assert "并非实际播放页" in out.evidence
+
+    async def test_点击后换页照贴component_unverified(self):
+        """反例护栏：守卫只拦「没换页」，不拦合法排除——
+        哪怕播放页上 video=0（真实视频站的常态）。"""
+        out = await self._run({
+            "https://x.test/movie": obs_at(
+                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
+            "https://x.test/play/e5": obs_at(
+                "https://x.test/play/e5", title="播放器", video=0),
+        })
+        assert out.branch == "component_unverified"
 
 
 # ═══════════════════════════════════════════════════════════════════════

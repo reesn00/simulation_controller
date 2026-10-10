@@ -165,6 +165,15 @@ class OutcomeRef:
     :attr:`succeeded` 取自 ``visits[i].success``，是另一个独立来源。
     两者对不上时（本模块实测不到，但契约上允许）写 ``degraded_from``，
     因为「成功」直接决定这条样本进不进训练集，而它必须只有一个来源说了算。
+
+    2026-10-10 补四个字段（``question`` / ``reached_play_page`` /
+    ``site_url`` / ``play_page_url``）：D-5「记录/排除决策正确性」是
+    **代码断言层**的一票否决维度，它的判据链要核「这条结论是**哪个判断点**
+    在**有没有到播放页**的前提下得出的」——而这两个信息此前只活在 P1，
+    P2 侧拿不到，于是评分器要么读 P1（违背「交接面是格式」，
+    且让 P2 的可重建性打折），要么只能判最终结论、判不了过程。
+    同 P1 的 ``run_config`` / ``elements_total``：**缺了不是精度下降，
+    是那个维度根本没法在样本级判**。
     """
 
     url: str
@@ -172,10 +181,39 @@ class OutcomeRef:
     source: str = ""
     fallback_used: bool = False
     succeeded: bool = False
+    #: 产出这条结论的判断题 id（``perception.base.Q`` 的四个之一）。
+    question: str = ""
+    #: 是否走到了播放页。D-5 的锚点 1「跳步结论（看 URL 直接记录）」就是
+    #: 「``branch is None``（记成功）但 ``reached_play_page`` 为假」。
+    reached_play_page: bool = False
+    #: 候选链接。D-6「站点 URL」必填字段。
+    site_url: str = ""
+    #: 播放页地址。**未走到播放页时为空**，此时 D-6 的该项不适用、不扣分
+    #: （rubric v1.1 D-6 边界规则）。
+    play_page_url: str = ""
+    #: P1 的 outcome 里**压根没有** ``site_url`` / ``play_page_url`` 这两个键
+    #: （2026-10-10 之前切的存档）。逐条记，不靠「值为空」推断。
+    #:
+    #: **这条不能省**：缺字段与字段为空在 :meth:`to_json` 之后同形
+    #: （都渲染成 ``""``），于是 D-6 分不出「老存档没这个字段」与
+    #: 「采集时确实没落」——前者该判不可判定（先重跑），后者才是缺失。
+    #: 实测那样判出 20 条假 3 分，而它们的结论本身是对的。
+    #: 通用形态见避坑指南 §2.3「缺字段 ≠ 空值」。
+    p1_missing_fields: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
-        return {"url": self.url, "branch": self.branch, "source": self.source,
-                "fallback_used": self.fallback_used, "succeeded": self.succeeded}
+        out = {"url": self.url, "branch": self.branch, "source": self.source,
+               "fallback_used": self.fallback_used, "succeeded": self.succeeded,
+               "question": self.question,
+               "reached_play_page": self.reached_play_page}
+        # 这两个键**按存在与否**输出，不按值。老存档缺它们时，
+        # ``p1_missing_fields`` 会记下「P1 里没有」，而下游据此判不可判定。
+        if "site_url" not in self.p1_missing_fields:
+            out["site_url"] = self.site_url
+        if "play_page_url" not in self.p1_missing_fields:
+            out["play_page_url"] = self.play_page_url
+        out["p1_missing_fields"] = list(self.p1_missing_fields)
+        return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,11 +388,19 @@ def _outcome_for(
             continue
         for o in outcomes or ():
             if o.get("url") == want:
+                # 「键不存在」逐条记，不靠值推断（避坑指南 §2.3）。
+                missing = tuple(k for k in ("site_url", "play_page_url")
+                                if k not in o)
                 return OutcomeRef(
                     url=str(o.get("url")),
                     branch=o.get("branch"),
                     source=str(o.get("source") or ""),
                     fallback_used=bool(o.get("fallback_used")),
+                    question=str(o.get("question") or ""),
+                    reached_play_page=bool(o.get("reached_play_page")),
+                    site_url=str(o.get("site_url") or ""),
+                    play_page_url=str(o.get("play_page_url") or ""),
+                    p1_missing_fields=missing,
                 )
     return None
 

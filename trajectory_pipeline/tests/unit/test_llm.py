@@ -79,6 +79,100 @@ class TestExtractJson:
         assert sp.extract_json("[1,2,3]") is None
 
 
+class TestUnescapedQuoteRepair:
+    """**实测形态**：模型在 JSON 字符串值里写未转义的 ASCII 双引号。
+
+    2026-10-10 后端 ``deepseek-v4.1-flash``，同一提示词**时好时坏**
+    （4 次里坏 2 次）。可怕之处是**大括号配平**——``_balanced`` 取出来
+    那一段看起来完全正常，只有 ``json.loads`` 知道它坏了。
+    而坏掉的症状是「解析失败」，在感知层就是**整道题 fail-closed 成
+    ``None``**：把解析故障记成「模型判不出来」。
+    """
+
+    #: 实测那条的缩微版：中文逗号跟在引号后面。
+    REAL = '{"thinking": "标题只是笼统的"腾讯视频"，正文只有导航。", "conclusion": "无法确认"}'
+
+    def test_修好后语义不变(self):
+        got = sp.extract_json(self.REAL)
+        assert got["thinking"] == "标题只是笼统的\"腾讯视频\"，正文只有导航。"
+        assert got["conclusion"] == "无法确认"
+
+    def test_修的动作被记账(self):
+        got, repairs = sp.extract_json_reporting(self.REAL)
+        assert got is not None
+        assert len(repairs) == 2, "两个坏引号要记两笔，不能合并成一条"
+        assert all("未转义" in x for x in repairs)
+
+    def test_本就合法时不记账(self):
+        """合法 JSON 的修复记录必须为空——否则「被修过」这个信号会失效。"""
+        got, repairs = sp.extract_json_reporting('{"a":"他说\\"播放\\"","n":1}')
+        assert got["a"] == '他说"播放"'
+        assert repairs == ()
+
+    def test_旧入口照旧返回对象(self):
+        """``extract_json`` 保持签名与返回值，感知层那边不用改。"""
+        assert sp.extract_json(self.REAL) == sp.extract_json_reporting(self.REAL)[0]
+
+    @pytest.mark.parametrize("raw", [
+        '{"a": 1,}',                          # 尾逗号
+        '{"a": "没写完',                      # 未闭合（max_tokens 用尽）
+        "{'a': 1}",                           # 单引号键
+        '{"a" 1}',                            # 缺冒号
+        '{"a": "x\ty"}',                      # 未转义控制字符
+        "完全不是 JSON 的一段话",
+    ])
+    def test_别的畸形一律不修(self, raw):
+        """**刻意窄。** 尾逗号、单引号键、缺冒号的「正确修法」要靠猜字段结构，
+        而猜出来的字段名会被当成模型的结论用——感知层猜错的是 ref，
+        而 ref 拿它去点，**点错不可逆**。
+
+        未闭合（截断）尤其不能修：把它接上就是凭空补内容。
+        """
+        assert sp.extract_json(raw) is None
+
+    def test_任意位置截断都不得被修成假对象(self):
+        """**性质断言**，不是样例断言。
+
+        修复的判据是「解析器报错的位置恰好是一个引号」。这条断言覆盖
+        **把一条真含未转义引号的合法 JSON 从每个位置砍断**——也就是
+        ``max_tokens`` 用尽的全部形态。它证明截断不会被「修」成
+        凭空补出来的对象：转义掉那个**开**引号之后，下一轮报的是
+        「对象开头缺键名」，那个位置不是引号，于是放弃。
+
+        ⚠️ 曾经给修复加过一道「按错误类型白名单」的第二道门，它看着在
+        限定范围，删掉它本测试与上面全部用例**照样全绿**——枚举 17 种
+        畸形输入没有一种靠它救回来。它是死守卫，已删。这条性质断言
+        才是真正起作用的那道。
+        """
+        src = ('{"thinking": "标题只是笼统的"腾讯视频"，正文只有导航。",'
+               ' "conclusion": "无法确认"}')
+        for i in range(1, len(src)):
+            assert sp.extract_json(src[:i]) is None, f"截断在第 {i} 字处被修成了对象"
+
+    def test_修不好时返回None而不是半成品(self):
+        """坏引号超过上限时必须**放弃**，绝不能返回「修了一半」的对象。"""
+        raw = '{"a": "' + '"'.join(f"片段{i}" for i in range(40)) + '"}'
+        assert sp.extract_json(raw) is None
+
+    def test_只修引号不碰其他字符(self):
+        """修复只能动引号——动别的字符就是**改内容**而不是修格式。"""
+        raw = '{"a": "未闭合, 尾逗号: },"b": 2}'
+        assert sp.extract_json(raw) is None
+
+    def test_嵌套结构修复后仍取外层(self):
+        """修复不能破坏「从头往后取第一个 ``{``」这条口径（见 TestExtractJson）。"""
+        raw = ('{"selected":[{"url":"https://a.test","why":"见"首页"处"}],'
+               '"rejected":[]}')
+        got = sp.extract_json(raw)
+        assert got["selected"][0]["why"] == '见"首页"处'
+        assert got["rejected"] == []
+
+    def test_修复上限本身有界(self):
+        """上限必须是常量而不是无限循环——无上限的修复在「怎么都修不好」
+        时会吃满 CPU，而症状与不修一样，只是更慢。"""
+        assert 0 < sp.MAX_REPAIR_ROUNDS <= 32
+
+
 class TestAsBool:
     @pytest.mark.parametrize("raw,want", [
         (True, True), (False, False),

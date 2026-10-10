@@ -65,6 +65,7 @@ from trajectory_pipeline.executor.review_queue import (
     write_queue as write_review_queue,
 )
 from trajectory_pipeline.executor.steps import search as search_step
+from trajectory_pipeline.assembler import builder, views
 from trajectory_pipeline.taskgen.sampler import W1_DEGENERATE_DIMS
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.replay import (
@@ -762,6 +763,63 @@ def cmd_check_archives(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_build(args: argparse.Namespace) -> int:
+    """P1 → P2 → P3 组装。**全离线，不开浏览器。**
+
+    两段可分别跑（``--stage p2`` / ``--stage p3``），因为它们的输入不同：
+    ``p2`` 读 P1 存档，``p3`` 读 P2 样本。P1 变了只需重跑 ``p2``；
+    只是视图渲染口径改了只需重跑 ``p3``——而 P1 贵、P2 便宜。
+
+    **默认不覆盖已落盘的产物**（同 ``--apply`` 那条纪律：重建批次不该
+    悄悄抹掉别人标好的东西）。要重建整批给 ``--overwrite``。
+
+    返回码：0 = 全部写出；1 = 有跳过（已存在或写失败）。跳过的条数与
+    原因逐条印出——**「跳过」必须看得见**，否则批次看起来只是少了几条。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    stage = args.stage
+
+    if stage in ("p2", "all"):
+        rep = builder.build_all(source_root=root, target_root=root,
+                                overwrite=args.overwrite)
+        print(f"P1 → P2：{len(rep.archives)} 份存档，"
+              f"切出 {rep.total_samples} 条样本，写出 {rep.total_written} 条")
+        degraded = sum(a.degraded for a in rep.archives)
+        negatives = sum(a.negatives for a in rep.archives)
+        print(f"  降级样本 {degraded} 条（degraded_from 非空，缺件但仍是真实数据）")
+        print(f"  真负样本 {negatives} 条（branch ∈ 真负样本分支）")
+        bad = [a for a in rep.archives if a.sample_count == 0]
+        if bad:
+            print(f"\n切不出样本的存档 {len(bad)} 份"
+                  f"（坏档或被反爬拦下——后者是正常形态）：")
+            for a in bad[:10]:
+                why = a.skipped[0] if a.skipped else "无 outcome"
+                print(f"  {a.archive}：{why}")
+            if len(bad) > 10:
+                print(f"  …另有 {len(bad) - 10} 份")
+        print(f"  → {rep.sample_dir}")
+
+    if stage in ("p3", "all"):
+        vrep = views.build_views_from_dir(root=root, overwrite=args.overwrite)
+        print(f"\nP2 → P3：{len(vrep.samples)} 条样本，"
+              f"写出 {vrep.total_written} 份视图（每条 {len(views.VIEW_NAMES)} 份）")
+        if vrep.total_skipped:
+            # 按视图名归组，**不逐条印**。实测二次跑（默认不覆盖）会跳过
+            # 196×3 = 588 条，逐条印就是 588 行噪声——门禁一旦天天报同一批
+            # 已知项，人就开始整体跳过它，那它存在的意义也没了
+            # （同 integrity.py 的 DEGRADED 归组）。
+            by_view: Counter = Counter()
+            for r in vrep.samples:
+                for s in r.skipped:
+                    name = s.split("_")[-1].split(" ")[0] or "?"
+                    by_view[name] += 1
+            for name, n in by_view.most_common():
+                print(f"  {name} 跳过 {n} 份（已存在或写失败；要重建加 --overwrite）")
+        print(f"  → {vrep.views_dir}")
+
+    return 0
+
+
 def cmd_purge_run(args: argparse.Namespace) -> int:
     """回滚一个 run——**存档与它并进池的负样本一起删**。
 
@@ -1099,6 +1157,15 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--show", type=int, default=20, help="列出前 N 条分歧")
     rp.set_defaults(func=cmd_replay)
 
+    bd = sub.add_parser("build", help="P1 → P2 → P3 组装（不联网，不开浏览器）")
+    bd.add_argument("--out", default=None, help="P1 存档目录")
+    bd.add_argument("--stage", choices=("p2", "p3", "all"), default="all",
+                    help="只跑 P2（读 P1）/ 只跑 P3（读 P2）/ 两段都跑")
+    bd.add_argument("--overwrite", action="store_true",
+                    help="覆盖已落盘的产物。**默认不覆盖**——重建批次不该"
+                         "悄悄抹掉别人标好的样本")
+    bd.set_defaults(func=cmd_build)
+
     pg = sub.add_parser(
         "purge-run",
         help="回滚一个 run：删它的存档 + 它并进 negative.jsonl 的行")
@@ -1117,7 +1184,7 @@ def main(argv: list[str] | None = None) -> int:
     # 需要真实浏览器的命令才走 asyncio；gen / check-persona / review / report
     # 都不联网，让它们也走 asyncio 只会多一层没必要的 loop。
     if args.cmd in ("report", "gen", "check-persona", "review", "check-archives",
-                    "replay", "purge-run"):
+                    "replay", "purge-run", "build"):
         if args.cmd == "review" and getattr(args, "apply", False):
             return cmd_apply_review(args)
         return args.func(args)
