@@ -70,7 +70,7 @@ def _sample(*actions: ActionView, observations=(), **kw) -> Sample:
         title="功夫", system_prompt=schema.SYSTEM_PROMPT, tools=schema.TOOL_SPECS,
         user_prompt="有没有能看正片的", provenance={"genre": "喜剧"},
         actions=tuple(actions), observations=tuple(observations),
-        rationale=None, gate=GateMark(status="not_run", reasons=("未跑",)),
+        gate=GateMark(status="not_run", reasons=("未跑",)),
         outcome=None,
     )
     base.update(kw)

@@ -1,7 +1,7 @@
 """结构化输出解析——本项目 LLM 后端的共享容错层。
 
 **每一层容错都来自实测**，不是想象的（取证见
-``output/pipeline/llm_probe.py`` 与本模块各函数 docstring）。后端不强制
+``trajectory_pipeline/perception/probe_llm.py`` 与本模块各函数 docstring）。后端不强制
 ``json_schema``，所以「模型会漂」不是风险而是**已观测事实**：
 
 - 会套 ``<think>...</think>``（``llm/__init__.py`` 已记；raw CoT 受

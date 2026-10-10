@@ -80,6 +80,31 @@ TRAILER_KEYWORDS: tuple[str, ...] = (
     "official trailer", "official teaser", "trailer only",
 )
 
+#: 付费墙词表（2026-10-10 口径裁定）。
+#:
+#: **业务规则，模型不该猜**：页面明确要求订阅/付费才能播放时，
+#: 这条结论是「**有播放页但看不了**」——它**不是成功**（用户看不到正片），
+#: 也不是「页面上没有播放控件」（控件是有的，卡在付费）。
+#: 两种混在一起记，训练信号就失真了。
+#:
+#: 与 :data:`TRAILER_WORDS` 同款定位：**确定性事实归代码**，
+#: 模型只在选中某个 ref 时用它复核（口径一「确定性事实优先」）。
+#:
+#: ⚠️ **「免费观看」「在线观看」不在表里**：它们出现在**导航栏**里的
+#: 频率远高于出现在付费提示里（实测百度页正文就有），把它们当付费信号
+#: 会把大批正常站点判成付费墙。
+PAYWALL_WORDS: tuple[str, ...] = (
+    # 中文
+    "开通会员", "开通vip", "开通VIP", "购买会员", "会员专享",
+    "付费观看", "付费解锁", "订阅后观看", "订阅即可", "续费",
+    "充值", "购买单集", "单集购买", "立即购买", "开通连续包月",
+    # 英文
+    "subscribe to watch", "subscription required", "purchase to watch",
+    "rent for", "buy this episode", "premium required", "sign in to watch",
+    "members only", "vip required", "unlock with",
+)
+
+
 #: 「预告片」的反义旁证——出现这些词时，即使文本含「预告」也多半是正片
 #: （如「预告 · 第 1 季正片」）。命中则**不**判 trailer_only。
 TRAILER_DISQUALIFIERS: tuple[str, ...] = (
@@ -97,6 +122,23 @@ _STRUCTURAL_RE = re.compile(
 
 def _norm(label: str) -> str:
     return " ".join(label.split()).lower()
+
+
+def classify_paywall(text: str) -> str:
+    """正文里有没有付费墙信号。返回命中的词（没有则空串）。
+
+    **判据是「页面明确要求付费」，不是「页面提到会员」**——所以只收
+    祈使性/条件性的短语（开通会员、订阅后观看），不收「VIP」「会员」这类
+    光杆名词：它们在正常播放页的导航与角标里也到处都是。
+
+    :func:`PAYWALL_WORDS` 的每一条都写成**完整短语**而不是关键词，
+    理由同上——「续费」「充值」单独出现可能是侧栏广告。
+    """
+    norm = _norm(text)
+    for word in PAYWALL_WORDS:
+        if _norm(word) in norm:
+            return word
+    return ""
 
 
 def classify_trailer(label: str) -> str:

@@ -42,6 +42,7 @@ from trajectory_pipeline.llm.client import LLMClient
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.base import Decision, Observation, Q, Question
 from trajectory_pipeline.perception.rule_perceptor import (
+    classify_paywall,
     classify_trailer,
     is_play_control,
 )
@@ -176,7 +177,8 @@ class LLMPerceptor:
         准确描述**，随后按契约 fail-closed 成 ``False``，而 ``not_play_site``
         是负样本分支——错标签就进了池子。
         """
-        raw, why = self._ask(spec, _render(obs, target_title=self._target_title))
+        raw, why = self._ask(spec, _render(obs, target_title=self._target_title,
+                                        question=spec.id))
         if raw is None:
             return self._unresolved_answer(spec, why, started)
         data = schema_parse.extract_json(raw)
@@ -198,6 +200,22 @@ class LLMPerceptor:
                 spec,
                 f"模型给出的 {len(raw_selected)} 个 selected / {len(raw_rejected)}"
                 f" 个 rejected 全部不在观察的 {len(known)} 个链接里，无法采信",
+                started,
+            )
+        if not selected:
+            # ⚠️ **判 True 的语义是「我选出了站」**。只排除、零选中说明模型
+            # 给不出选站结论——那不是「这页没有可看站点」（那是 False 的意思），
+            # 而是**没能力答完这道题**。
+            #
+            # 放它过去的后果实测过（2026-10-10 T001）：控制流按 True 走
+            # 过滤，``kept`` 为空 → 0 候选 → **一个站都没访问**，
+            # 整批只留下一堆 ``unresolved``，什么素材都没采到。
+            # 而 fail-closed 的定义正是「没能力判就返回 None」。
+            return self._unresolved_answer(
+                spec,
+                f"模型排除了 {len(rejected)} 个链接但一个都没选中——"
+                f"**这不是「这页没有可看站点」**（那是 False），"
+                f"而是没给出选站结论，不判",
                 started,
             )
         return self._answer(
@@ -308,19 +326,39 @@ class LLMPerceptor:
 
     def _player_ok(self, spec: Question, obs: Observation,
                    started: float) -> Decision:
-        """判断点 ④：播放页是否可用。``<video>`` 存在性已在主入口处理。"""
+        """判断点 ④：播放页是否可用。``<video>`` 存在性已在主入口处理。
+
+        **付费墙在代码层先判**（口径一「确定性事实优先」）：页面上写着
+        「开通会员 / 订阅后观看」是**本项目的业务规则**，模型不知道也不该猜——
+        它多半会答 True（页面确实有播放器）。而用户裁定「有播放页但要付费
+        **不算成功**」，所以这一支必须落 :data:`questions.PAY_WALL` 而不是
+        笼统的 ``component_unverified``。
+
+        **只在模型也判 False 时才升级为付费墙**：模型判 True 说明它认为页面
+        可用，此时词表命中多半是导航栏文案（实测百度页正文就有「免费观看」）。
+        两边一致才落细分分支——**任何一边不一致都按未定的那个结论记**。
+        """
         data, why = self._ask_json(spec, _render(obs))
         if data is None:
             return self._unresolved_answer(spec, why, started)
         answer, why_null = _bool_or_reason(data)
         if answer is None:
             return self._unresolved_answer(spec, why_null, started)
+
+        hit = classify_paywall(obs.body_text)
+        paywall = bool(answer is False and hit)
+        evidence = _evidence(data, spec, answer)
+        if paywall:
+            evidence += (f"；页面含付费墙信号「{hit}」——按 2026-10-10 口径，"
+                         f"**有播放页但需订阅/付费不算成功**")
         return self._answer(
             spec, answer,
-            evidence=_evidence(data, spec, answer),
+            evidence=evidence,
             started=started,
             payload={"media_count": obs.video_tag_count,
-                     "iframe_count": obs.iframe_count},
+                     "iframe_count": obs.iframe_count,
+                     "paywall": paywall,
+                     **({"paywall_word": hit} if paywall else {})},
         )
 
     # ── 内部 ────────────────────────────────────────────────────────
@@ -468,6 +506,39 @@ def _sufficiency(question: str, obs: Observation, *,
     return ""
 
 
+def _ordered_links(obs: Observation, question: str,
+                   target_title: str) -> list:
+    """① 题把「链接文本含目标片名」的链接提到最前，其余保持原序。
+
+    **为什么必须有这一步**：预检（:func:`_title_link_sufficiency`）与渲染
+    （:func:`_render`）原先看的是**两个不同的窗口**——预检扫全量
+    ``obs.links``，渲染只送前 ``LLM_LINKS`` 条。
+
+    实测（2026-10-10，baidu 搜「功夫 在线观看」，123 条链接）暴露了这个错位：
+    百度结果页的链接顺序是**导航在前、结果在后**——前 12 条是
+    「登录 / 抗击肺炎 / 新闻 / hao123 / 地图 / 视频 / 贴吧 / 学术 / 设置」，
+    真正写着「《功夫》电影完整版-爱奇艺」的结果标题排在它们之后。
+    于是预检数到 3 条命中就放行，而模型收到的前 20 条**全是导航**——
+    它没有一次机会看到片名，于是判 True 且 selected/rejected 全空，
+    5 个候选全部落进 ``not_play_site`` 负样本池，evidence 写着
+    「模型未给出排除理由」。
+
+    **这是「预检说有判别力」与「模型真的看得到判别力」两句话说的不是同一件事。**
+    错位只在「链接顺序随引擎改版而变」时才显形，因此不能靠调阈值补——
+    两处改成同源之后，它们是同一条判据在同一批链接上的两个说法。
+
+    排序是**确定性**操作（子串匹配），不是语义判断——控制流只负责按答案分流，
+    「哪些链接写着片名」是字符串事实，交给 LLM 反而不可靠。
+    """
+    links = list(obs.links)
+    if question != Q.SELECT_PLAY_SITES or not target_title.strip():
+        return links
+    hit, miss = [], []
+    for link in links:
+        (hit if target_title in (link.text or "") else miss).append(link)
+    return hit + miss
+
+
 def _title_link_sufficiency(obs: Observation, target_title: str) -> str:
     """① 的判别力检查：链接文本里有没有片名。
 
@@ -479,18 +550,38 @@ def _title_link_sufficiency(obs: Observation, target_title: str) -> str:
 
     真正的修法是让采集层把标题带进 ``links[]``（见 ``steps/search.py``
     的 ``RESULT_SELECTORS``）；在那之前，这道题只能在输入有判别力时才问。
+
+    ⚠️ **判据用的链接集合必须与 :func:`_render` 送给模型的完全相同**，
+    即 :func:`_ordered_links` 的输出**再截到 ``LLM_LINKS``**。
+
+    .. note::
+       **这一层当前不改变行为，别为它写行为断言。**
+       前置排序已经保证「只要全量里有命中，重排后命中项必在前
+       ``LLM_LINKS`` 内」，所以扫窗口与扫全量结果恒等——变异测试证过：
+       把这一行改回扫全量，**34 条测试照样全绿**（等价变异）。
+       它留在这里是**结构性防漂移**：将来有人改 :func:`_render` 的排序
+       或截断长度，两处仍在同一批链接上，判据不会悄悄退化成
+       「全集 vs 前缀」。
+
+       真正让 5 个候选落进 ``not_play_site`` 的是 :func:`_render`——
+       拿掉那里的 :func:`_ordered_links`，3 条测试变红。
+       **不要把这一层当防线来依赖，也不要给它配假断言**：
+       「死守卫比没守卫更坏」（它看起来在限定范围，于是没人再去验证
+       真正起作用的那道）。
     """
     title = (target_title or "").strip()
     if not title:
         # 没有目标片名就无从匹配。这不是「判为否」，是问错了题。
         return "未绑定目标片名，① 无法匹配，不判"
-    hits = sum(1 for link in obs.links if title in (link.text or ""))
+    window = _ordered_links(obs, Q.SELECT_PLAY_SITES, title)[:LLM_LINKS]
+    hits = sum(1 for link in window if title in (link.text or ""))
     if hits:
         return ""
     return (
-        f"{len(obs.links)} 个候选链接的文本里没有一个含《{title}》"
-        f"（实测 bing 只给面包屑，片名在 body_text 里但与 URL 无对应）"
-        f"——输入不支持本题，不判"
+        f"{len(obs.links)} 个候选链接里，送进模型的 {len(window)} 条中"
+        f"没有一条含《{title}》"
+        f"（实测 bing 只给面包屑、baidu 把导航栏排在结果之前，"
+        f"片名在 body_text 里但与 URL 无对应）——输入不支持本题，不判"
     )
 
 
@@ -499,7 +590,8 @@ def _title_link_sufficiency(obs: Observation, target_title: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _render(obs: Observation, *, target_title: str = "") -> dict[str, Any]:
+def _render(obs: Observation, *, target_title: str = "",
+            question: str = "") -> dict[str, Any]:
     """把观察转成喂给模型的 dict。**纯裁剪，不加工。**
 
     刻意**不做**摘要、不改写、不截 link 到域名——那些是语义加工，
@@ -521,9 +613,11 @@ def _render(obs: Observation, *, target_title: str = "") -> dict[str, Any]:
         "iframe_count": obs.iframe_count,
     }
     if obs.links:
+        # 与 :func:`_title_link_sufficiency` 同源：同一批链接、同一个顺序、
+        # 同一个截断长度。两处不同源就是「预检放行了模型答不了的题」。
         out["links"] = [
             {"text": l.text[:60], "href": l.href}
-            for l in obs.links[:LLM_LINKS]
+            for l in _ordered_links(obs, question, target_title)[:LLM_LINKS]
         ]
         out["links_total"] = len(obs.links)
     if target_title:

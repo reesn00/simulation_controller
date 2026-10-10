@@ -77,7 +77,12 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
             id=Q.PLAYER_OK,
             prompt=(
                 "这是点击播放控件后到达的页面。"
-                "结合代码测得的媒体元素数量，判断它**是不是一个能正常播放的播放器页**。"
+                "结合代码测得的媒体元素数量，判断它**是不是一个能正常播放的播放器页**。\n"
+                "⚠️ **播放器存在 ≠ 能看**。页面明确要求订阅/付费才能播放时"
+                "（开通会员、订阅后观看、购买单集…），"
+                "**判否**——本项目的口径是「有播放页但需付费不算成功」。\n"
+                "反之，页面只是**导航栏**里挂着「免费观看」「VIP」字样而并未"
+                "挡住播放的，不要因此判否。"
             ),
             answer_type="bool",
             confidence_threshold=0.7,
@@ -95,6 +100,8 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
 #:   ``trailer_only``      预告片词表命中，代码判
 #:   ``trailer_suspect``   疑似预告但词表判不准，**留给人工兜底**
 #:   ``unresolved``        能力不可用，fail-closed 的落点（I4）
+#:   ``subscription_wall``  ④ 的细分：**有播放页但需订阅/付费**（2026-10-10
+#:                         口径裁定，用户看不到正片 → 不算成功）
 #:   ``player_unverified`` 判断点④ 判不出来，**但控件点了、播放页在眼前**
 #:                         ——它与 ``unresolved`` 都「不是负样本」，
 #:                         成因却不同（页面证据不足 vs 代码能力不足），
@@ -103,8 +110,18 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
 #:                         :meth:`RunLedger.record_unresolved_reached`
 CODE_ONLY_BRANCHES = frozenset({
     "unreachable_hard", "trailer_only", "trailer_suspect", "unresolved",
-    "player_unverified",
+    "player_unverified", "subscription_wall",
 })
+
+#: ④ ``PLAYER_OK`` 判 False 时的**细分分支**——由 ``Decision.payload``
+#: 里的 ``paywall`` 标记选用，不走 ``negative_branch``（那条是
+#: ``component_unverified``，即「点了但没组件」）。
+#:
+#: **为什么单独一支**（2026-10-10 口径裁定）：「有播放页但要付费」既不是
+#: 成功（用户看不到正片），也不是「页面上没有播放控件」（控件是有的，
+#: 卡在付费）。混进 ``component_unverified`` 就丢掉了这个区别，而两者
+#: 训练出来的东西完全不同——一个学「识别付费墙并退出」，一个学「控件没渲染」。
+PAY_WALL = "subscription_wall"
 
 
 def get(question_id: str) -> Question:

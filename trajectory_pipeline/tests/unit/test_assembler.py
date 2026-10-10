@@ -313,3 +313,120 @@ class TestToolSpec:
 
     def test_参数名可序列化(self):
         assert schema.TOOL_SPECS[0].to_json()["params"] == ["url"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 模块 4 接线：P1 的 steps[i].rationale → 第 ⑥ 件 → 闸门
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _step(tool, rationale=None, url="u"):
+    """一条 P1 的 step，形状对齐 executor.actions.ActionStep.to_json。"""
+    return {
+        "action": {"tool": tool, "params": {"url": url}, "origin": "model"},
+        "observation": _obs(url),
+        "error": "",
+        "rationale": rationale,
+    }
+
+
+def _written(text, conclusion=""):
+    return {"status": "written",
+            "rationale": {"text": text, "conclusion": conclusion}}
+
+
+class TestRationale对齐:
+    """第 ⑥ 件**与动作逐步对齐**（2026-10-10 改，原为整条一条）。"""
+
+    def _site_sample(self, tmp_path, vsteps):
+        arc = _arc(visits=[dict(_visit("https://a.test/"), steps=vsteps)],
+                   outcomes=[_outcome("https://a.test/", "no_play_control")])
+        samples = schema.split_archive(_write(tmp_path, arc))
+        # [0] 是搜索单元、[1] 是 site-1——**取错单元是这里最容易踩的坑**，
+        # 而症状是「rationale 一条都没有」（搜索单元的 steps 本来就是空的）。
+        return samples[1]
+
+    def test_逐条对齐不压成一条(self, tmp_path):
+        s = self._site_sample(tmp_path, [
+            _step("goto", _written("先打开候选站"), "https://a.test/"),
+            _step("click", _written("页面里有播放按钮，点它")),
+        ])
+        assert [r.step_index for r in s.rationales] == [0, 1]
+        assert s.rationales[1].text == "页面里有播放按钮，点它"
+        assert s.rationale_missing is False
+
+    def test_缺一条不挪位(self, tmp_path):
+        """中间缺一条时**不得按出现顺序猜**——猜出来会整体错位，
+        而错位的 rationale 会被时序核查当成凭空引入的实体。"""
+        s = self._site_sample(tmp_path, [
+            _step("goto", _written("第 0 步")),
+            _step("click", None),
+            _step("type", _written("第 2 步")),
+        ])
+        got = {r.step_index: r.text for r in s.rationales}
+        assert got == {0: "第 0 步", 2: "第 2 步"}
+
+    def test_未写成的步骤三态透传(self, tmp_path):
+        s = self._site_sample(tmp_path, [
+            _step("goto", {"status": "unavailable",
+                           "reason": "LLM 不可用（连不上）"}),
+        ])
+        r = s.rationales[0]
+        assert r.status == "unavailable"
+        assert r.text == ""                 # 文本位留空，不合成占位
+        assert "连不上" in r.reason
+        assert s.rationale_missing is True
+
+    def test_空元组即缺失(self, tmp_path):
+        s = self._site_sample(tmp_path, [_step("goto", None)])
+        assert s.rationales == ()
+        assert s.rationale_missing is True
+        assert s.to_json()["six"]["rationales"] == []
+
+
+class Test闸门真跑:
+    """闸门在**组装期**跑（2026-10-10 接线），不再是恒 ``not_run``。"""
+
+    def _sample(self, tmp_path, rationale, obs_text="正文"):
+        arc = _arc(
+            search_observation=_obs("https://s.test", body=obs_text),
+            steps=[_step("goto", rationale)],
+        )
+        return schema.split_archive(_write(tmp_path, arc))[0]
+
+    def test_写了且无硬发现判通过(self, tmp_path):
+        s = self._sample(tmp_path, _written("打开搜索结果页看看有哪些站点"))
+        assert s.gate.status == "passed", s.gate.reasons
+        assert s.gate.reasons
+
+    def test_一条都没写仍记not_run(self, tmp_path):
+        """⚠️ 绝不渲染成「通过」——批次上线时它看起来像过了闸。"""
+        s = self._sample(tmp_path, None)
+        assert s.gate.status == "not_run"
+        assert s.gate.reasons
+
+    def test_全部未写成也是not_run而非passed(self, tmp_path):
+        s = self._sample(tmp_path, {"status": "empty", "reason": "模型没说话"})
+        assert s.gate.status == "not_run"
+
+    def test_有硬发现判失败且定位到步(self, tmp_path):
+        """实体核查命中：rationale 提到一个观察里没有的 URL。"""
+        s = self._sample(
+            tmp_path,
+            _written("页面上写着「详见 https://evil.test/x」这个入口"),
+        )
+        assert s.gate.status == "failed"
+        assert any("第 0 步" in r for r in s.gate.reasons)
+
+    def test_片名是豁免域不判幻觉(self, tmp_path):
+        """rationale 提到片名而观察里没有它，**不是幻觉**——
+        片名来自任务。把任务给的词当「模型引入的实体」去核，
+        会把每一条提到片名的 rationale 都判成失败。"""
+        s = self._sample(tmp_path, _written("这是《功夫》的搜索结果页"))
+        assert s.gate.status == "passed", s.gate.reasons
+
+    def test_理由不是模块未落地(self, tmp_path):
+        """2026-10-10 前的错理由：这批存档没写「rationale 模块未落地」。
+        模块 4 早就落地了，真实理由只能是「这批存档没有 rationale 字段」。"""
+        s = self._sample(tmp_path, None)
+        assert not any("模块未落地" in r for r in s.gate.reasons)

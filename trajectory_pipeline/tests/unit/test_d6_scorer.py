@@ -44,7 +44,7 @@ def _sample(outcome=None, observations=(), title="功夫", unit="site-1"):
     return Sample(
         sample_id=f"T001__a1__{unit}", task_id="T001", unit=unit, title=title,
         system_prompt="s", tools=(), user_prompt="u", provenance={},
-        actions=(), observations=tuple(observations), rationale=None,
+        actions=(), observations=tuple(observations),
         gate=GateMark("not_run"),
         outcome=outcome if outcome is not None else OutcomeRef(
             url="https://x.test", branch=None,

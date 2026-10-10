@@ -38,7 +38,7 @@ def _sample(outcome: dict | None, unit: str = "site-1") -> Sample:
     return Sample(
         sample_id=f"T001__a1__{unit}", task_id="T001", unit=unit, title="功夫",
         system_prompt="s", tools=(), user_prompt="u", provenance={},
-        actions=(), observations=(), rationale=None,
+        actions=(), observations=(),
         gate=__import__("trajectory_pipeline.assembler.schema",
                         fromlist=["GateMark"]).GateMark("not_run"),
         outcome=OutcomeRef(**outcome) if outcome else None,

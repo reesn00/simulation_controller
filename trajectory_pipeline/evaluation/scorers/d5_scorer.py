@@ -99,7 +99,16 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
     - ``player_unverified`` —— 走 ``record_unresolved_reached``，**不经过**
       ``record_from``，所以压根不查 ``negative_branch``；
     - ``component_unverified`` 在 ``find_play_control`` 侧 —— 环节④
-      「answer=True 却无 ref」的 I6 违约记账，显式指定分支。
+      「answer=True 却无 ref」的 I6 违约记账，显式指定分支；
+    - ``subscription_wall``（2026-10-10）—— ④ 的**细分结论**，
+      由 ``Decision.payload["paywall"]`` 选用而不是题绑定，
+      所以它同样不出现在 ``negative_branch`` 里（口径见
+      :data:`trajectory_pipeline.perception.questions.PAY_WALL`）。
+
+    ⚠️ **这张表漏一条的代价与当年一样**：第一版手写字面量漏了
+    ``unresolved``，**54 条正确结论被判成「分支走错」**。新增分支时
+    必须同步这里——``tests/unit/test_d5_scorer.py::Test同源`` 盯着
+    真实存档里出现的每个 (question, branch) 组合。
     """
     from trajectory_pipeline.perception import questions
 
@@ -111,6 +120,7 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
         allowed.add(UNRESOLVED)                      # 通用 fail-closed 出口
         if qid == questions.Q.PLAYER_OK:
             allowed.add("player_unverified")         # record_unresolved_reached
+            allowed.add(questions.PAY_WALL)           # payload 选用的细分结论
         if qid == questions.Q.FIND_PLAY_CONTROL:
             allowed.add("component_unverified")      # I6 违约记账
         out[qid] = allowed
@@ -140,6 +150,9 @@ REQUIRES_PLAY_PAGE_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("component_unverified", "player.ok"),
     ("unresolved", "player.ok"),
     ("player_unverified", "player.ok"),
+    # 「有播放页但需付费」同样要求**确实到了播放页**——
+    # 站点页上的「开通会员」是导航栏文案，不是付费墙。
+    ("subscription_wall", "player.ok"),
 })
 
 #: 三处检查的节点名。**用常量而不在调用点硬编码**——下面按节点名

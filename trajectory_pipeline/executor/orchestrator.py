@@ -289,23 +289,43 @@ def _apply_selection(
 
     kept: list[Candidate] = []
     dropped = 0
+    undecided = 0
     for candidate in record.candidates:
         key = candidate.source_href or candidate.url
         if candidate.url in reasons or key in reasons:
             kept.append(candidate)
+            continue
+        # 判据是「模型**点名**了这个候选」，不是「模型给了理由」——
+        # 理由可以为空，点名与否才是「它考虑过并否决了」与「它压根没看见」
+        # 的唯一区别。
+        named = key in rejected or candidate.url in rejected
+        if not named:
+            undecided += 1
+            ledger.record(
+                candidate.url,
+                "unresolved",
+                f"判断点 ① 未选中该站点，而模型未把它列入 rejected——"
+                f"它多半压根没看到这条链接（送进模型的是排序后的前 "
+                f"{len(record.search_obs.links)} 条里的一小段）。"
+                f"**无证据不记负样本**：判成 not_play_site 就是把"
+                f"「模型没答」写成「这个站看不了」。",
+                decision=selection, site_url=candidate.url,
+            )
             continue
         dropped += 1
         why = (rejected.get(key) or rejected.get(candidate.url) or "").strip()
         ledger.record(
             candidate.url,
             "not_play_site",
-            f"判断点 ① 未选中该站点。{why}" if why
-            else "判断点 ① 未选中该站点（模型未给出排除理由）",
+            f"判断点 ① 排除该站点。{why}" if why
+            else "判断点 ① 排除该站点（模型点名了但未给出理由）",
             decision=selection, site_url=candidate.url,
         )
     record.warnings.append(
         f"判断点 ① 选出 {len(kept)}/{len(record.candidates)} 个候选，"
         f"{dropped} 个记 not_play_site"
+        + (f"，{undecided} 个模型未点名，记 unresolved（**不入负样本池**）"
+           if undecided else "")
     )
     return kept
 
@@ -318,10 +338,19 @@ class Orchestrator:
         driver: Any,
         perceptor: Perceptor,
         config: RunConfig | None = None,
+        *,
+        rationale_writer: Any = None,
     ) -> None:
         self._driver = driver
         self._perceptor = perceptor
         self._cfg = config or RunConfig()
+        #: 模块 4 的 writer。**可调用对象，不是类型**——``executor``
+        #: 不 import ``rationale``（依赖方向：llm ← {taskgen, perception,
+        #: rationale}，executor 只依赖 perception 的协议）。构造它的是
+        #: :mod:`trajectory_pipeline.executor.cli`，那一层可以 import 任何模块。
+        #: 留 ``None``（W1 规则版批次）时全部步骤没有 rationale，
+        #: 闸门记 ``not_run``——**这与「闸门跑过且通过」不是一回事**。
+        self._writer = rationale_writer
 
     async def run(
         self,
@@ -439,10 +468,19 @@ class Orchestrator:
             # **把标题写回观察**。判断点 ① 拿到的就是这份 Observation，
             # 只改 candidates 不改它，等于修了下游却没修上游——
             # 而存档里存的也是这份观察，不改它就等于**存档与实际判定依据脱节**。
+            #
+            # 取标题必须走 ``search_step.title_for``：它同时试原始 href 与
+            # 解包后的 URL，而百度结果页的 ``links[].href`` 是
+            # ``/link?url=`` 包裹形态、``browser_extract`` 给的却是解包后的
+            # 目标 URL。只按原始 href 查会**一条都命不中**，
+            # 于是这里静默失败、存档的 links 仍是导航栏，而 ① 读的就是
+            # 它——结果就是 ① 永远看不到片名、恒 fail-closed，
+            # 症状却像「选择器失效」。
             record.search_obs = dataclasses.replace(
                 record.search_obs,
                 links=tuple(
-                    dataclasses.replace(link, text=titles.get(link.href) or link.text)
+                    dataclasses.replace(link, text=search_step.title_for(titles, link.href)
+                                        or link.text)
                     for link in record.search_obs.links
                 ),
             )
@@ -474,6 +512,10 @@ class Orchestrator:
         # W1 的规则版对 ① 只会返回 None，若据此中断，候选一个都不跑，
         # 负样本池永远空。同 IS_REACHABLE 的处理。
         selection = self._perceptor.decide(Q.SELECT_PLAY_SITES, record.search_obs)
+        #: **过滤前**的候选数。三条分支都要用它，而 ``record.candidates``
+        #: 在过滤后就被覆盖了——用它打消息会得到「过滤后无候选（原有 0 个）」
+        #: 这种自相矛盾的句子（实测踩过：明明原有 6 个却报 0 个）。
+        n_candidates = len(record.candidates)
         if selection.answer is True:
             record.candidates = _apply_selection(record, selection, ledger)
             record.candidate_source = "perceptor"
@@ -487,13 +529,36 @@ class Orchestrator:
             # 重跑一次即可，不是不可逆。
             record.warnings.append(
                 f"判断点 ① 判 False：搜索结果里没有《{record.title}》的可看站点 "
-                f"（{selection.evidence}）；{len(record.candidates)} 个候选全部"
-                f"记 not_play_site，不访问"
+                f"（{selection.evidence}）；{len(record.candidates)} 个候选"
+                f"不访问，**其中被模型点名的记 not_play_site、未点名的记 unresolved**"
             )
+            rejected = {
+                str(r.get("url") or "").strip()
+                for r in (selection.payload.get("rejected") or [])
+                if isinstance(r, dict)
+            }
+            unnamed = 0
             for candidate in record.candidates:
-                ledger.record(candidate.url, "not_play_site",
-                              f"判断点 ① 判 False：{selection.evidence}",
-                              decision=selection)
+                key = candidate.source_href or candidate.url
+                # 同款判据：判 False 只说明「整体没有可看站点」，逐条
+                # **被否决**仍需要模型点名。没有点名就没有证据，
+                # 而 not_play_site 是负样本分支——无证据的负样本就是
+                # §5.13 那种「理由通顺的假负样本」，只是形态更隐蔽。
+                if key in rejected or candidate.url in rejected:
+                    ledger.record(candidate.url, "not_play_site",
+                                  f"判断点 ① 判 False：{selection.evidence}",
+                                  decision=selection, site_url=candidate.url)
+                else:
+                    unnamed += 1
+                    ledger.record(candidate.url, "unresolved",
+                                  f"判断点 ① 判 False，但模型未把该候选列入 "
+                                  f"rejected——**无证据不记负样本**，"
+                                  f"转人工复核。整体判据：{selection.evidence}",
+                                  decision=selection, site_url=candidate.url)
+            if unnamed:
+                record.warnings.append(
+                    f"  其中 {unnamed} 个模型未点名，记 unresolved（**不入负样本池**）"
+                )
             record.candidates = []
             record.candidate_source = "perceptor"
         else:
@@ -505,7 +570,8 @@ class Orchestrator:
 
         if not record.candidates:
             record.warnings.append(
-                f"判断点 ① 过滤后无候选（原有 {len(record.candidates)} 个）"
+                f"判断点 ① 过滤后无候选（原有 {n_candidates} 个，"
+                f"来源 {record.candidate_source}）"
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record
@@ -516,6 +582,7 @@ class Orchestrator:
             if self._cfg.stop_after_success and successes >= self._cfg.stop_after_success:
                 break
             result = await self._visit_guarded(candidate, ledger, record)
+            await self._write_rationales(result, record)
             record.visits.append(result)
             if result.success:
                 successes += 1
@@ -523,6 +590,46 @@ class Orchestrator:
         record.ledger = ledger
         record.elapsed_ms = int((time.monotonic() - started) * 1000)
         return record
+
+    async def _write_rationales(self, result: Any, record: RunRecord) -> None:
+        """为本次访问的**每一步**生成 rationale（模块 4，D2「边写边生成」）。
+
+        **为什么在这里而不是 visit_site 里**：动作流是**记录**、rationale 是
+        **补记**，两者在一次访问结束时才都完整。放进 ``visit_site`` 会让
+        执行层直接依赖 LLM 模块——而依赖方向是 executor → perception，
+        writer 属于 rationale/llm 那一侧。CLI 注入可调用对象，
+        :mod:`trajectory_pipeline.executor.steps.visit` 因此完全不知道
+        rationale 的存在。
+
+        **D2 的实质是「生成时能看到那一步的动作与观察」，而不是
+        「必须在线程内即时生成」**：两者在同一份数据上等价。而事后补记
+        换来的是——writer 挂掉只少一段 rationale，不影响采集。
+
+        **失败一律记账不抛异常**：rationale 缺失不该让一次真实访问整段作废。
+        三种状态（``written`` / ``unavailable`` / ``empty``）原样落进 P1，
+        由组装期决定闸门与 ``rationale_missing``——**别在这里判**。
+        """
+        if self._writer is None:
+            return
+        steps = result.steps.steps
+        for index, step in enumerate(steps):
+            try:
+                payload = self._writer(
+                    action=step.action.to_json(),
+                    observation=_obs_json(step.observation),
+                    error=step.error,
+                    user_prompt=record.user_prompt,
+                    target_title=record.title,
+                    # 只给**动作**不给观察——见 rationale.writer.render_history
+                    history=[s.action.to_json() for s in steps[:index]],
+                )
+            except Exception as exc:            # noqa: BLE001 — 见上方口径
+                record.warnings.append(
+                    f"rationale 生成异常（{result.candidate.url[:60]} 第 {index} 步）："
+                    f"{type(exc).__name__}: {exc}——该步无 rationale，闸门记 not_run"
+                )
+                continue
+            result.steps.attach_rationale(index, payload)
 
     async def _result_titles(self) -> tuple[Mapping[str, str], str]:
         """取当前搜索页的「结果标题 ↔ URL」。返回 ``(映射, 失败原因)``。

@@ -290,6 +290,29 @@ def result_titles(extracted: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
+def title_for(titles: Mapping[str, str] | None, href: str) -> str:
+    """按 ``href`` 取结果标题，**取不到返回空串**（不猜）。
+
+    ⚠️ **两个查找键必须一起试**：``titles`` 的键来自
+    ``browser_extract`` 的 ``urls[]``，而百度结果页里它给的是**解包后**
+    的目标 URL（``https://www.iqiyi.com/...``），而 ``links[].href`` 是
+    **包裹形态**（``https://www.baidu.com/link?url=...``）。
+
+    实测（2026-10-10 T001，baidu 抓到 8 条结果标题）：只按原始 href 查
+    **一条都命不中**，于是 orchestrator 把标题写回 ``search_obs.links``
+    静默失败——存档里 links 仍是导航栏，而判断点 ① **读的就是这份
+    links**，于是它永远看不到片名、恒 fail-closed。症状是「选择器失效」，
+    而选择器是好的：``result_titles`` 返回了 8 条，只是没人按对的键去取。
+
+    这两处（写回 ``obs.links`` 与 :func:`extract_candidates` 取候选 text）
+    **必须共用这一个函数**——口径一旦分叉，失败的是其中一处而另一处照常
+    工作，没有任何报错。
+    """
+    if not titles:
+        return ""
+    return titles.get(href) or titles.get(_unwrap_redirect(href)) or ""
+
+
 def extract_candidates(
     obs: Observation, *,
     engine: str = DEFAULT_ENGINE,
@@ -338,7 +361,7 @@ def extract_candidates(
         seen_hosts.add(host)
         # 标题优先：结果标题才是判断点 ① 的判据，面包屑不是。
         # 取不到就留原样——**不猜**，让 ① 照旧 fail-closed。
-        text = (titles or {}).get(link.href) or (titles or {}).get(raw) or link.text
+        text = title_for(titles, link.href) or link.text
         out.append(Candidate(url=raw, text=text, rank=len(out) + 1,
                             source_href=link.href))
         if len(out) >= limit:

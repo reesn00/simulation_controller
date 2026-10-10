@@ -51,10 +51,12 @@
    ``degraded_from`` 非空的样本是真实数据，只是缺件；因为降级就
    拒绝渲染等于把一半数据扔了，因为降级就静默渲染等于让缺件不可见。
 
-6. **``rationale`` 缺失时 assistant 消息没有思考段，meta 记
-   ``rationale_missing``。** 模块 4 未落地时它恒为真——这是
-   「流水线没长出来」而不是「模型这轮没说话」，两者的区分靠这个标记
-   （与 :class:`GateMark` 的 ``not_run`` 同一思路）。
+6. **``rationales`` 与动作逐步对齐，缺失就是缺失。**
+   第 ``i`` 条只配第 ``i`` 个动作（2026-10-10 改，原为「整条一条、
+   只挂第一步」）。某一步没写成时**该步没有思考段**，而整条一条都没写成时
+   meta 记 ``rationale_missing``——「流水线没长出来」与「模型这轮没说话」
+   的区分靠这个标记（与 :class:`GateMark` 的 ``not_run`` 同一思路）。
+   **绝不补占位文字**：编一段思考会直接污染 CoT SFT。
 """
 
 from __future__ import annotations
@@ -217,12 +219,10 @@ def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     actions = list(six.get("actions") or ())
     observations = list(six.get("observations") or [])
+    rationales = list(six.get("rationales") or ())
     # 动作与观察一一配对；观察可能比动作少（末步失败没取到观察）
     for i, act in enumerate(actions):
-        rationale = (six.get("rationale") or {})
-        content = ""
-        if i == 0 and isinstance(rationale, Mapping) and rationale.get("text"):
-            content = f"{rationale['text']}\n"
+        content = _rationale_text(rationales, i)
         msgs.append({
             "role": "assistant",
             "content": content + _action_line(act),
@@ -235,6 +235,29 @@ def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     for obs in observations[len(actions):]:
         msgs.append({"role": "user", "content": render_observation(obs)})
     return msgs
+
+
+def _rationale_text(rationales: Sequence[Any], index: int) -> str:
+    """第 ``index`` 步的思考+结论，渲染成 assistant 消息的**前缀**。
+
+    2026-10-10 起逐步对齐（原实现只给第 0 步取那条单值）：
+    执行期是**逐���**生成的，只渲染第一步等于把后面的思考全丢掉。
+
+    **缺一条不补空串**：``status != "written"`` 时返回空串，
+    于是该步的 assistant 消息只有动作——「模型这轮没说话」与
+    「压根没生成」在训练文本里同形是**刻意的**：后者用
+    ``meta`` 视图的 ``rationale_missing`` 单独可见，
+    而在这里编一段占位思考会直接污染 CoT SFT。
+    """
+    if index >= len(rationales):
+        return ""
+    r = rationales[index]
+    if not isinstance(r, Mapping) or r.get("status") != "written":
+        return ""
+    text = str(r.get("text") or "").strip()
+    conclusion = str(r.get("conclusion") or "").strip()
+    parts = [p for p in (text, conclusion) if p]
+    return ("\n".join(parts) + "\n") if parts else ""
 
 
 def _action_line(act: Mapping[str, Any]) -> str:
@@ -272,14 +295,15 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     actions = list(six.get("actions") or ())
     observations = list(six.get("observations") or [])
-    rationale = six.get("rationale") or {}
-    rationale_text = (str(rationale.get("text") or "")
-                      if isinstance(rationale, Mapping) else "")
+    rationales = list(six.get("rationales") or ())
 
     for i, act in enumerate(actions):
         # 思考段只挂在**第一步**上：它解释的是「为什么开始找」，
         # 而后续每步的思考在模块 4 落地后会逐步生成。
-        text = rationale_text if (i == 0 and rationale_text) else None
+        # 思考段**逐步对齐**（2026-10-10 改，原实现只挂第一步）。
+        # 少一步就想清一步——只挂第一步等于把后面的思考全丢掉，而模型
+        # 要学的恰恰是「上一步看到什么，才决定这一步做什么」。
+        text = _rationale_text(rationales, i).strip() or None
         msgs.append({
             "role": "assistant",
             "content": text,
@@ -361,6 +385,15 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         # 成对性自查：动作多于观察说明末步没取到观察，训练侧会看到
         # 一个「发出去但没回音」的动作——那是真实轨迹的一部分，不修。
         "observation_complete": len(observations) >= len(actions),
+        # 思考的覆盖：``rationale_missing`` 只说「一条都没有」，
+        # 而「写了 2/3 步」在批次筛选时同样要看得见——**逐条列出来**，
+        # 别合成一个计数：合成之后就分不出「缺中间那步」与「缺最后那步」，
+        # 而两者的处置不同（前者会让后面的时序核查失去上下文）。
+        "rationale_steps": [
+            {"step_index": i, "status": str(r.get("status") or "")}
+            for i, r in enumerate(six.get("rationales") or ())
+            if isinstance(r, Mapping)
+        ],
     }
 
 

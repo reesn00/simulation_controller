@@ -205,7 +205,9 @@ SYSTEM = (
     "2. 如果观察不完整（页面还没渲染完、正文或元素被截断），"
     "就明说你无法确认，不要编一个听起来合理的解释。\n"
     "3. 写你**当时**的判断依据，不要用事后才知道的说法。\n"
-    "4. 简明，200 字以内。\n"
+    "4. 如果这一步的动作本身失败了（this_action_failed 给了原因），"
+    "就说明这次尝试为什么没成，**不要**假装看到了页面内容。\n"
+    "5. 简明，200 字以内。\n"
     "输出 JSON：{\"thinking\": \"...\", \"conclusion\": \"...\"}，"
     "thinking 是上述思考，conclusion 是一句话结论。"
 )
@@ -309,6 +311,7 @@ def write_one(
     user_prompt: str = "",
     target_title: str = "",
     history: Sequence[Mapping[str, Any]] = (),
+    error: str = "",
 ) -> WriteResult:
     """为**一步**生成 rationale。失败一律是返回值，不是异常。
 
@@ -321,6 +324,12 @@ def write_one(
         target_title: 目标片名。**任务给的，不该由模型从页面上找**。
         history: 前置步的动作（只要动作，不要观察，见
             :func:`render_history`）。
+        error: **本步动作本身的失败原因**（导航不通 / 点击报错 / 快照取不到）。
+            非空时它会进提示词——不给的话，模型会拿着一个空观察去解释
+            「我看到了什么」，而真相是这一步压根没拿到观察。
+            这是「采集失败必须让模型知道」那条纪律在 writer 侧的落点，
+            与 :func:`shortfall` 说的是两件事：那个讲观察**不完整**，
+            这个讲动作**没成功**。
 
     Returns:
         :class:`WriteResult`。``status="unavailable"`` 时 ``draft is None``。
@@ -341,6 +350,11 @@ def write_one(
         f"不完整：{gap}——不要据此断定页面上没有该内容"
         if gap else "完整"
     )
+    if error:
+        # 动作本身失败：观察压根不存在。与上面的「不完整」分开说，
+        # 因为处置不同——这一步的正确行为是**解释失败**，
+        # 而「不完整」时该说的是「不足以判断」。
+        payload["this_action_failed"] = error
 
     import json
 

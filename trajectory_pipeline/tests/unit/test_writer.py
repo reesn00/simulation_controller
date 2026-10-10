@@ -395,3 +395,35 @@ class TestNoUpstreamImport:
                 assert "executor" not in m, f"writer 不该 import {m}"
                 assert "assembler" not in m, f"writer 不该 import {m}"
                 assert "perception" not in m, f"writer 不该 import {m}"
+
+
+class Test动作失败进提示词:
+    """动作本身失败时，**必须让模型知道**——否则它拿着空观察
+    去解释「我看到了什么」，而真相是这一步压根没拿到观察。
+
+    与「观察不完整」是**两件事**：那个讲证据不足以判断，
+    这个讲动作压根没成功，处置完全不同。
+    """
+
+    def _payload(self, observation=None, **kw):
+        import json as _json
+        from trajectory_pipeline.tests.fakes import FakeLLM
+        from trajectory_pipeline.rationale import writer as rw
+        fake = FakeLLM()
+        rw.write_one(fake, action={"tool": "goto", "params": {"url": "u"}},
+                     observation=observation, **kw)
+        return _json.loads(fake.calls[0][1])
+
+    def test_失败原因进提示词(self):
+        got = self._payload(error="导航失败: 连接超时")
+        assert got["this_action_failed"] == "导航失败: 连接超时"
+
+    def test_没失败时不带这个键(self):
+        assert "this_action_failed" not in self._payload()
+
+    def test_失败与不完整是两条独立信息(self):
+        """两条同时出现时都必须在——它们处置不同，不能互相顶掉。"""
+        got = self._payload(error="快照失败",
+                            observation={"body_text": "", "degraded": ["body_text"]})
+        assert got["this_action_failed"] == "快照失败"
+        assert got["observation_completeness"].startswith("不完整")

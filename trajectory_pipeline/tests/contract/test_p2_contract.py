@@ -69,7 +69,7 @@ class TestNoExecutorImport:
 
 class TestSixPieceShape:
     SIX = ("system_prompt", "tools", "user_prompt", "provenance",
-           "actions", "observations", "rationale")
+           "actions", "observations", "rationales")
 
     @pytest.fixture
     def sample(self, tmp_path):
@@ -88,15 +88,25 @@ class TestSixPieceShape:
         assert sample.to_json()["six"]["system_prompt"] == schema.SYSTEM_PROMPT
 
     def test_闸门不是passed(self, sample):
-        """W1 的闸门**没跑过**。渲染成 ``passed`` 会让批次上线时
-        看起来像过了闸，而它根本没被检查过。"""
+        """夹具是**老存档**（跑在模块 4 接线之前），闸门必然是 ``not_run``。
+
+        渲染成 ``passed`` 会让批次上线时看起来像过了闸，而它根本没被检查过。
+        新存档走的是真闸门——那是 :func:`schema.gate_of` 的职责，
+        这里只钉住「没有 rationale 时不得渲染成通过」。
+        """
         assert sample.gate.status == "not_run"
         assert sample.gate.reasons, "not_run 必须带理由，否则与「通过」无法区分"
 
     def test_rationale缺失有独立标记(self, sample):
-        """``rationale=None`` 与「模型这轮没说话」同形，所以另有标记。"""
-        assert sample.rationale is None
+        """空元组与「模型这轮没说话」同形，所以另有标记。
+
+        2026-10-10 起第 ⑥ 件是**与动作对齐的元组**（原为单条 ``Rationale | None``）：
+        逐步生成的东西不该压成一条——压了就对不上动作，
+        时序核查也拿不到 ``step_index``。
+        """
+        assert sample.rationales == ()
         assert sample.rationale_missing is True
+        assert sample.to_json()["six"]["rationales"] == []
 
 
 # ── A3：动作里没有会话句柄 ──────────────────────────────────────────
@@ -323,3 +333,74 @@ def _real_archives() -> list[Path]:
     if not found:
         pytest.skip("没有真实 P1 存档（output/pipeline/ 是产物目录，未入库）")
     return found
+
+
+# ── P2 契约文档 ↔ 代码 双向核对 ───────────────────────────────────
+
+
+DOC = PKG.parent / "docs" / "contracts" / "P2-sample.md"
+
+
+class Test契约文档不是摆设:
+    """与 ``test_p1_contract.py`` 的同名类同款：**两个方向都要能被发现**。
+
+    - 方向一（代码有文档没有）：文档漏字段 ⇒ 读文档的人以为没这回事；
+    - 方向二（文档写了代码没有）：文档写了实现没有 ⇒ 读文档的人按错的
+      形状写消费代码，而样本本身完全正常、**没有任何报错**。
+
+    ⚠️ 2026-10-10 之前 P2 **没有字段级契约文档**，而 `six` 的第 ⑥ 件
+    在那天从单值 ``rationale`` 改成了 ``rationales`` 元组——那次变更
+    如果没有文档兜底，就是「改了一处、文档与消费方各自漂移」。
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def doc_text():
+        assert DOC.exists(), f"{DOC} 不存在——P2 字段级契约是模块 5 的交付物之一"
+        return DOC.read_text(encoding="utf-8")
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def code_text():
+        return "\n".join(p.read_text(encoding="utf-8") for p in _sources())
+
+    def test_文档非空且不是占位(self, doc_text):
+        assert len(doc_text) > 1500, "契约文档短得不像话——多半是占位"
+        assert "待写" not in doc_text
+
+    @pytest.mark.parametrize("field", [
+        "sample_id", "task_id", "unit", "title", "source_archive",
+        "six", "gate", "rationale_missing", "outcome", "degraded_from",
+    ])
+    def test_代码有字段文档没写(self, doc_text, field):
+        """方向一：代码产出的字段必须在文档里点名。"""
+        assert f"`{field}`" in doc_text, f"P2 字段 {field!r} 没写进契约"
+
+    @pytest.mark.parametrize("key", [
+        "system_prompt", "tools", "user_prompt", "provenance",
+        "actions", "observations", "rationales",
+    ])
+    def test_七件套每件都在文档里(self, doc_text, key):
+        assert f"`{key}`" in doc_text, f"六件套第 {key!r} 件没写进契约"
+
+    def test_第六件写的是与动作对齐(self, doc_text):
+        """这条最容易被漏：文档若仍写「一条 rationale」，
+        消费方会按单值去读，而代码给的是元组——**读到 None 且不报错**。"""
+        assert "rationales" in doc_text
+        assert "对齐" in doc_text
+        assert "step_index" in doc_text
+
+    def test_闸门三档都在文档里(self, doc_text):
+        for s in ("passed", "failed", "not_run"):
+            assert f"`{s}`" in doc_text, f"闸门状态 {s} 没写进契约"
+        assert "not_run" in doc_text and "不是「通过」" in doc_text
+
+    def test_代码里的字段名都在文档里(self, code_text, doc_text):
+        """方向二：文档提到的字段必须在源码里真的存在。"""
+        import re
+        for name in set(re.findall(r"`([a-z_]{4,})`", doc_text)):
+            if name.startswith(("sample_", "p1_")):
+                continue
+            assert name in code_text, (
+                f"P2 契约文档提到 {name!r}，但 assembler 源码里找不到它——"
+                f"文档写了实现没有的东西")

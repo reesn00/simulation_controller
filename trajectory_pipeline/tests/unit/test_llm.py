@@ -435,7 +435,7 @@ class TestNoCredentialInSource:
         "trajectory_pipeline/perception/llm_perceptor.py",
         "trajectory_pipeline/perception/factory.py",
         "trajectory_pipeline/tests/fakes.py",
-        "trajectory_pipeline/output/pipeline/llm_probe.py",
+        "trajectory_pipeline/perception/probe_llm.py",
     ])
     def test_无硬编码key(self, rel):
         from pathlib import Path

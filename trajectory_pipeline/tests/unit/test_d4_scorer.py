@@ -63,7 +63,7 @@ def _sample(outcome, observations=()):
         sample_id="T001__a1__site-1", task_id="T001", unit="site-1",
         title="功夫", system_prompt="s", tools=(), user_prompt="u",
         provenance={}, actions=(), observations=tuple(observations),
-        rationale=None, gate=GateMark("not_run"),
+        gate=GateMark("not_run"),
         outcome=OutcomeRef(**{k: v for k, v in outcome.items()
                               if k != "p1_missing_fields"})
         if outcome else None,

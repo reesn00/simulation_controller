@@ -1,7 +1,7 @@
 """W3 ``LLMPerceptor`` 的单元测试——**三条铁律各一组守卫**。
 
 不重复契约测试已覆盖的七不变式。这里只测 LLM 版**特有**的东西，
-且每条都对应一个**实测踩过的坑**（见 ``output/pipeline/llm_probe.py``）：
+且每条都对应一个**实测踩过的坑**（见 ``trajectory_pipeline/perception/probe_llm.py``）：
 
 1. **采集充分性在代码层预检**（铁律 2）。实测 iqiyi 被判「否」，
    模型原话「body 为空、元素为 0，说明未渲染」——它把采集失败
@@ -18,7 +18,12 @@ from __future__ import annotations
 import pytest
 
 from trajectory_pipeline.perception import llm_perceptor as lp
-from trajectory_pipeline.perception.base import InteractiveElement, Observation, Q
+from trajectory_pipeline.perception.base import (
+    InteractiveElement,
+    LinkItem,
+    Observation,
+    Q,
+)
 from trajectory_pipeline.tests.fakes import FakeLLM, llm_perceptor
 
 
@@ -250,3 +255,205 @@ class TestDecisionShape:
         lp.LLMPerceptor(fake).decide(Q.FIND_PLAY_CONTROL,
                                      _obs(interactive_elements=_els(("e1", "a", "播放"))))
         assert json.loads(fake.calls[0][1])["question"] == Q.FIND_PLAY_CONTROL
+
+
+#: 百度结果页的导航条——**实测形态**：它排在搜索结果**之前**。
+#: 2026-10-10 跑 T001「功夫 在线观看」时，前 12 条依次是
+#: 「登录 / 抗击肺炎 / 新闻 / hao123 / 地图 / 视频 / 贴吧 / 学术 /
+#: 设置 / 更多产品」，共 123 条链接里只有 3 条文本写着片名，且排在后面。
+_NAV_LINKS = [
+    ("登录", "https://passport.baidu.com/"),
+    ("抗击肺炎", "https://voice.baidu.com/"),
+    ("新闻", "http://news.baidu.com/"),
+    ("hao123", "https://www.hao123.com/"),
+    ("地图", "http://map.baidu.com/"),
+    ("视频", "http://v.baidu.com/"),
+    ("贴吧", "http://tie.baidu.com/"),
+    ("学术", "http://xueshu.baidu.com/"),
+    ("设置", "https://www.baidu.com/gaoji/preferences.html"),
+    ("更多产品", "https://www.baidu.com/more/"),
+]
+
+_RESULT_LINKS = [
+    ("《功夫》电影完整版-高清正版在线观看-爱奇艺",
+     "https://www.iqiyi.com/v_19rrk40at8.html"),
+    ("功夫 (普通话版)_电影_高清完整版视频在线观看_腾讯视频",
+     "https://v.qq.com/x/cover/abc.html"),
+]
+
+
+def _baidu_result_page() -> Observation:
+    """25 条导航在前、2 条结果标题在后——与实测顺序一致。
+
+    25 > ``LLM_LINKS``(20)，所以只截前 N 条时结果标题**必然被截掉**。
+    这不是构造出来的边角，是实测：修复前的那批 5 个候选全被记成
+    ``not_play_site``，因为模型收到的 20 条链接里一条片名都没有。
+    """
+    nav = [(t, h) for t, h in _NAV_LINKS] * 3          # 30 条，够长
+    return Observation(
+        url="https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB",
+        page_title="功夫_百度搜索",
+        body_text="搜索结果页正文，含有片名但与 URL 无对应关系。" * 20,
+        links=tuple(
+            LinkItem(text=t, href=h) for t, h in (nav[:25] + _RESULT_LINKS)
+        ),
+    )
+
+
+class Test预检与渲染同源:
+    """① 的判别力预检与模型实际看到的链接**必须是同一批**。
+
+    实测形态（2026-10-10，baidu 搜《功夫》）：预检扫全量 123 条，
+    数到 3 条文本含片名就放行；而 :func:`_render` 只送前 20 条，
+    那 20 条**全是导航栏**。于是模型没有一次机会看到片名，判 True 且
+    selected/rejected 全空，5 个候选全落进 ``not_play_site`` 负样本池。
+
+    这类错位只在「链接顺序随引擎改版而变」时才显形，所以不能靠调阈值补。
+    """
+
+    def test_渲染窗口里含片名的链接排在最前(self):
+        out = lp._render(_baidu_result_page(), target_title="功夫",
+                         question=Q.SELECT_PLAY_SITES)
+        assert out["links"][0]["text"].startswith("《功夫》电影完整版")
+
+    def test_命中项前置保证不落在窗口外(self):
+        """「预检放行 ⇒ 模型看得到」成立的原因就在这条恒等式上。
+
+        只断「重排后第一条是结果标题」不够——有人日后把重排去掉而
+        保留其余改动，那条仍会绿。真正要钉的是**全量命中数 == 窗口内
+        命中数**：不重排时窗口内命中 0 而全量 2，这条立刻红。
+        """
+        obs = _baidu_result_page()
+        ordered = lp._ordered_links(obs, Q.SELECT_PLAY_SITES, "功夫")
+        in_window = sum(1 for l in ordered[:lp.LLM_LINKS]
+                        if "功夫" in (l.text or ""))
+        whole = sum(1 for l in obs.links if "功夫" in (l.text or ""))
+        assert whole == 2
+        assert in_window == whole
+        # 且预检在这个恒等式下确实放行
+        assert lp._title_link_sufficiency(obs, "功夫") == ""
+
+    def test_整批链接都无片名时fail_closed(self):
+        """预检**不能被这次修复放水**：真没有片名时仍须 fail-closed。"""
+        obs = Observation(
+            url="https://www.baidu.com/s?wd=x", page_title="百度",
+            body_text="正文",
+            links=tuple(LinkItem(text=t, href=h) for t, h in _NAV_LINKS),
+        )
+        assert "不判" in lp._title_link_sufficiency(obs, "功夫")
+        assert llm_perceptor().decide(Q.SELECT_PLAY_SITES, obs).answer is None
+
+    def test_非选择题不重排(self):
+        """重排只服务于 ① 的片名↔URL配对；其他题的链接顺序是页面原序，
+        改了就是拿我们的加工覆盖观察。"""
+        obs = _baidu_result_page()
+        assert [l.href for l in lp._ordered_links(obs, Q.IS_REACHABLE, "功夫")] == [
+            l.href for l in obs.links]
+
+    def test_端到端模型看到的第一条就是结果标题(self):
+        """FakeLLM 对 ① 的模拟是「选它看到的第一条链接」——
+        与真实模型同形。所以修复前它会选中导航栏（进而产出假
+        ``not_play_site``），修复后选中结果标题。"""
+        import json
+
+        fake = FakeLLM()
+        # 显式绑片名：① 的预检要拿它匹配链接文本，没绑时恒 None，
+        # 测试会先撞上预检而不是要走的那条路径。
+        d = lp.LLMPerceptor(fake, target_title="功夫").decide(
+            Q.SELECT_PLAY_SITES, _baidu_result_page())
+        assert d.answer is True
+        sent = json.loads(fake.calls[0][1])["observation"]["links"]
+        assert sent[0]["href"] == "https://www.iqiyi.com/v_19rrk40at8.html"
+        assert dict(d.payload)["selected"][0]["url"] == sent[0]["href"]
+
+class Test选中为空不算答完:
+    """① **判 True 的语义是「我选出了站」**。只排除、零选中不是 True。
+
+    实测（2026-10-10 T001）：模型排除了 6 个链接却一个没选，
+    代码放它过→控制流按 True 过滤→``kept`` 空→0 候选→
+    **一个站都没访问**，整批只剩一堆 ``unresolved``。
+    """
+
+    def test_全排除零选中判None(self):
+        d = llm_perceptor(reject_all=True).decide(
+            Q.SELECT_PLAY_SITES, _baidu_result_page())
+        assert d.answer is None
+        assert "一个都没选中" in d.evidence
+
+    def test_真选中一个仍是True(self):
+        """反例护栏：不能把「零选中」判成 None 就完事——
+        正常选中必须照常给结论，否则 ① 恒 None、筛选形同虚设。
+
+        ``FakeLLM`` 对 ① 的模拟正是「选它看到的第一条」，重排后
+        第一条是结果标题，所以它给出的是**真选中**形态。
+        """
+        d = llm_perceptor().decide(Q.SELECT_PLAY_SITES, _baidu_result_page())
+        assert d.answer is True
+        assert len(dict(d.payload)["selected"]) == 1
+        assert dict(d.payload)["rejected"] == []
+
+
+class Test付费墙不算成功:
+    """2026-10-10 口径裁定：**有播放页但需订阅/付费不算成功**。
+
+    但它也不是「页面上没有播放控件」——控件是有的，卡在付费。
+    混进 ``component_unverified`` 就丢掉这个区别，而两者训练出来的
+    东西完全不同：一个学「识别付费墙并退出」，一个学「控件没渲染」。
+    所以单开 ``subscription_wall`` 一支。
+    """
+
+    PAYWALL_BODY = "《功夫》 正片 立即播放 开通会员观看更多"
+
+    def test_模型判否且有付费信号_落付费墙(self):
+        d = llm_perceptor(down=True).decide(Q.PLAYER_OK, _obs())
+        assert d.answer is None                     # 后端挂着，先确认夹具正常
+        fake = FakeLLM(answers={Q.PLAYER_OK: False})
+        d = lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY))
+        assert d.answer is False
+        assert d.payload["paywall"] is True
+        assert "开通会员" in d.evidence
+
+    def test_模型判否但无付费信号_不落付费墙(self):
+        fake = FakeLLM(answers={Q.PLAYER_OK: False})
+        d = lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(body_text="页面只有导航，无播放器"))
+        assert d.payload.get("paywall") is False
+
+    def test_模型判真时不因词表升级(self):
+        """**两边一致才落细分分支。** 模型判 True 说明它认为页面可用，
+        此时词表命中多半是导航栏文案（实测百度页正文就有「免费观看」）。
+        强行升级会把正常站点判成付费墙。"""
+        fake = FakeLLM(answers={Q.PLAYER_OK: True})
+        d = lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY))
+        assert d.answer is True
+        assert d.payload.get("paywall") is False
+
+    def test_导航栏的免费观看不算付费信号(self):
+        """⚠️ 「免费观看」「在线观看」**不在词表里**——
+        它们在导航栏里的频率远高于付费提示（实测百度页正文就有）。"""
+        assert lp.classify_paywall("首页 电影 电视剧 免费观看 在线观看") == ""
+
+    def test_词表命中的是完整短语(self):
+        assert lp.classify_paywall("请订阅后观看完整版") == "订阅后观看"
+        assert lp.classify_paywall("Buy this episode now") == "buy this episode"
+
+
+class Test付费墙记账:
+    def test_payload决定分支(self):
+        """同一道题（④）要能落两支：payload 优先于题绑定。"""
+        from trajectory_pipeline.executor.branches import decision_branch
+        from trajectory_pipeline.perception.base import Decision
+
+        paid = Decision(Q.PLAYER_OK, False, 0.8, "需付费", "llm",
+                        {"paywall": True})
+        plain = Decision(Q.PLAYER_OK, False, 0.8, "没组件", "llm", {})
+        assert decision_branch(paid) == "subscription_wall"
+        assert decision_branch(plain) == "component_unverified"
+
+    def test_不入非样本集合(self):
+        """付费墙是**判出来了的业务结论**，不是「没判出来」——
+        它教模型「识别付费墙并退出」，是该进训练集的负样本。"""
+        from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+        assert "subscription_wall" not in NON_SAMPLE_BRANCHES

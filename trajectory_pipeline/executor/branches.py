@@ -36,6 +36,7 @@ BRANCH_LABELS: Mapping[str, str] = {
     "trailer_suspect": "疑似预告（词表判不准，待人工）",
     "component_unverified": "点开后没有可验证的播放组件",
     "player_unverified": "有播放组件，但确认不了能不能用",
+    "subscription_wall": "Subscription-based playback（有播放页，但需订阅/付费）",
     "unresolved": "感知层未给出结论（fail-closed）",
 }
 
@@ -207,8 +208,19 @@ class RunLedger:
         """
         if decision.answer is None:
             branch = "unresolved"
+        elif decision.answer is True:
+            # **成功不是失败分支**（``decision_branch`` 的同一条口径）。
+            # 原先这里落到 ``negative_branch_of(question)``，
+            # 于是 ``answer=True`` 会把一条成功记成 ``component_unverified``——
+            # 而没有测试断言 branch，那条错分支一直没被发现
+            # （``test_决策来源透传`` 只断言 source/fallback_used）。
+            branch = None
         else:
-            branch = questions.negative_branch_of(decision.question)
+            # **走 decision_branch 而不是自己推导**——同一道题要能落不同分支
+            # （④ 的「点了没组件」与「卡在付费」都由 PLAYER_OK 问出），
+            # 两处各推一次的话，payload 里那个标记就只在一半路径上生效。
+            # D-5 的映射表与注册表不同源已经吃过一次亏（避坑指南 §1.1）。
+            branch = decision_branch(decision)
             reason = _precondition_failed(branch, obs, pre_obs)
             if reason:
                 return self.record(
@@ -323,6 +335,11 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
         "「播放页上没有可验证的播放组件」说的是**到了播放页**之后没有组件，"
         "而这次点击没有把页面带进播放页，结论没有新证据支撑"
     ),
+    "subscription_wall": (
+        "「有播放页但需订阅/付费」同样要求**确实到了播放页**——"
+        "站点页上的「开通会员」是导航栏文案，不是付费墙。"
+        "这次点击没把页面带进播放页，就没有新证据支撑这条结论"
+    ),
 }
 
 
@@ -356,7 +373,7 @@ def _precondition_failed(branch: str | None, obs: Observation | None,
     """
     if obs is None or branch is None:
         return ""
-    if branch == "component_unverified":
+    if branch in ("component_unverified", "subscription_wall"):
         if pre_obs is None:
             return ""
         if _same_page(pre_obs, obs):
@@ -375,6 +392,11 @@ def decision_branch(decision: Decision) -> str:
         return ""
     if decision.answer is None:
         return "unresolved"
+    # 付费墙是 ④ 的细分结论（见 questions.PAY_WALL）。payload 优先于题绑定
+    # ——同一个 question 下要能区分「点了没组件」与「卡在付费」，
+    # 而两者都由 PLAYER_OK 问出。
+    if decision.payload.get("paywall"):
+        return questions.PAY_WALL
     return questions.negative_branch_of(decision.question)
 
 

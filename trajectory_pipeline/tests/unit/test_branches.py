@@ -131,6 +131,19 @@ class TestSerialization:
         assert out.source == "rule"
         assert out.fallback_used is True
 
+    def test_成功不记负分支(self):
+        """``answer=True`` 曾被记成 ``component_unverified``——
+        而 ``test_决策来源透传`` 只断言 source/fallback_used，
+        **没有一条断言看 branch**，所以这条错分支一直没被发现。
+
+        症状很重：一条真成功会带着「点了但没组件」的标签进负样本池，
+        而报告上它是「成功」——两份记录互相矛盾。
+        """
+        ledger = RunLedger("T001")
+        out = ledger.record_from("https://x.test/", dec(Q.PLAYER_OK, True))
+        assert out.branch is None
+        assert out.to_json()["branch_label"] == "成功"
+
 
 class TestObservationWarning:
     def test_降级与截断都提示(self):
@@ -350,13 +363,49 @@ class TestBranchPrecondition:
                               obs=self._obs(video_tag_count=0))
         assert out.branch == "unresolved"
 
-    def test_只有一条分支有前置事实(self):
+    def test_只有两条分支有前置事实(self):
         """这张表要短。长得跟分支表一样长就没人维护了——
         一旦要求给每条分支都填前置事实，没人填的会变成空串，
-        而空串与「不需要前置事实」长得一模一样。"""
+        而空串与「不需要前置事实」长得一模一样。
+
+        2026-10-10 加了 ``subscription_wall``（第二条）。**继续加之前
+        先问「它真的需要前置事实吗」**——本测试的上限是 **3 条**，
+        到了就该停下来重新想这张表，而不是改数字。
+        """
         from trajectory_pipeline.executor.branches import BRANCH_PRECONDITION
 
-        assert set(BRANCH_PRECONDITION) == {"component_unverified"}
+        assert set(BRANCH_PRECONDITION) == {
+            "component_unverified", "subscription_wall"}
+        assert len(BRANCH_PRECONDITION) <= 3, (
+            "前置事实表超过 3 条了——这张表的价值在于短，"
+            "每加一条都要有人维护它")
+
+    def test_付费墙前置事实不成立时降级(self):
+        """「有播放页但需付费」要求**确实到了播放页**。站点页上的
+        「开通会员」是导航栏文案，不是付费墙——所以同页守卫适用。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        pre = self._obs(video_tag_count=0, body_text="开通会员观看")
+        same = self._obs(video_tag_count=0, body_text="开通会员观看")
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision("player.ok", False, 0.8, "需付费", "llm",
+                     {"paywall": True}),
+            obs=same, pre_obs=pre)
+        assert out.branch == "unresolved", "点击前后同页却记了付费墙"
+
+    def test_付费墙到了播放页才成立(self):
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision("player.ok", False, 0.8, "需付费", "llm",
+                     {"paywall": True}),
+            obs=self._obs(video_tag_count=0, body_text="开通会员观看"),
+            pre_obs=self._obs(video_tag_count=0, body_text="站点首页"))
+        assert out.branch == "subscription_wall"
 
     def test_同页判定与评分器同源(self):
         """executor 与 evaluation 各有一份 ``_same_page``（executor 不

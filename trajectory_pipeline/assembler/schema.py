@@ -119,17 +119,142 @@ class ActionView:
 
 @dataclass(frozen=True, slots=True)
 class Rationale:
-    """⑥ 思考+结论（模块 4，W1 尚未落地）。
+    """⑥ 思考+结论（模块 4）——**与动作对齐的一条**。
 
     ``text`` 是 **refined CoT 的位点**，不是 raw CoT：raw CoT 受红线约束不得落盘，
-    而训练需要 CoT SFT。这里留的是**结构**——模块 4 落地时照此填。
+    而训练需要 CoT SFT。这里留的是**结构**。
+
+    ⚠️ **一条样本可能有多个动作，也就可能有多条 rationale**（2026-10-10 改）。
+    原设计是「整条样本一条」，而执行期是**逐步**生成的
+    （P1 的 ``steps[i].rationale``），两者对不上。改成按
+    :attr:`step_index` 与 :class:`ActionView` 一一对齐后：
+
+    - 训练态的思考与动作**逐步对应**，模型学到的是「这一步为什么这么做」；
+    - 闸门能逐条核（时序核查本来就需要 ``step_index``）；
+    - 长度对不上本身就是**要看得见的信号**（见 :func:`align_rationales`）。
+
+    ``status`` 原样带 P1 的三态（``written`` / ``unavailable`` / ``empty``）。
+    **不合成占位文本**：缺一条与写错一条在训练里不是同一件事。
     """
 
+    step_index: int
     text: str
     conclusion: str = ""
+    status: str = "written"
+    reason: str = ""
 
     def to_json(self) -> dict[str, Any]:
-        return {"text": self.text, "conclusion": self.conclusion}
+        return {
+            "step_index": self.step_index,
+            "text": self.text,
+            "conclusion": self.conclusion,
+            "status": self.status,
+            "reason": self.reason,
+        }
+
+
+def align_rationales(
+    actions: tuple[ActionView, ...],
+    raw: Sequence[Mapping[str, Any] | None],
+) -> tuple[Rationale, ...]:
+    """把 P1 的 ``steps[i].rationale`` 按动作对齐。
+
+    **缺失就是缺失**——不补空串、不挪位、不按出现顺序猜。理由：
+
+    - 补空串会让「模型没说话」与「有话说但没落」同形（§「三个状态而不是两个」）；
+    - 按出现顺序猜会在中间缺一条时**整体错位**，而错位的 rationale
+      会被时序核查当成幻觉——**凭空造出负样本**。
+
+    ``raw[i]`` 按下标对应 ``actions[i]``；P1 里的 ``rationale`` 缺键或为
+    ``None`` 时产出空元组，那一步就没有 rationale。
+    """
+    out: list[Rationale] = []
+    for i, row in enumerate(raw[: len(actions)]):
+        if not isinstance(row, Mapping):
+            continue
+        payload = row.get("rationale")
+        if not isinstance(payload, Mapping):
+            continue
+        # P1 里落的是 ``WriteResult.to_json()`` 的形状——文本在
+        # **``rationale`` 子对象**里，``status``/``reason`` 与它同级。
+        # 这层不能拍平成 ``payload["text"]``：那样读出来恒为空，
+        # 而症状是「模型什么都没写」，不是「读错了字段」。
+        if payload.get("status") != "written":
+            # 三态原样带下来：unavailable/empty 的文本位留空
+            out.append(Rationale(
+                step_index=i, text="", conclusion="",
+                status=str(payload.get("status") or "unavailable"),
+                reason=str(payload.get("reason") or ""),
+            ))
+            continue
+        draft = payload.get("rationale")
+        draft = draft if isinstance(draft, Mapping) else {}
+        out.append(Rationale(
+            step_index=i,
+            text=str(draft.get("text") or ""),
+            conclusion=str(draft.get("conclusion") or ""),
+            status="written",
+        ))
+    return tuple(out)
+
+
+def gate_of(
+    rationales: Sequence[Rationale],
+    *,
+    action_tools: Sequence[str] = (),
+    observations: Sequence[Mapping[str, Any]] = (),
+    exempt: str = "",
+) -> GateMark:
+    """跑闸门并汇总成**一条**标记。
+
+    汇总口径（与 :func:`trajectory_pipeline.rationale.gates.gate` 的
+    单步口径不同，这一层是新增的）：
+
+    - 任一步 ``failed`` → 整条 ``failed``，**理由逐条列出**（定位到第几步）；
+    - 有 ``written`` 且无 hard 发现 → ``passed``；
+    - **一条 ``written`` 都没有** → ``not_run``。
+
+    最后一条是关键：**「没生成」绝不能渲染成「通过」**。而
+    「生成了一部分」是 ``passed``/``failed`` 的一部分判定，
+    没生成的那几步会通过 ``rationale_missing`` 单独可见——
+    两个信号分开，别合成一个。
+    """
+    from trajectory_pipeline.rationale import gates
+
+    if not rationales:
+        return GateMark("not_run", ("本样本没有 rationale——闸门未运行",))
+    statuses = [r.status for r in rationales]
+    if "written" not in statuses:
+        return GateMark(
+            "not_run",
+            ("rationale 一条都没写成（状态："
+             + "、".join(sorted(set(statuses))) + "）——闸门未运行",),
+        )
+
+    failed: list[str] = []
+    passed_steps = 0
+    for i, r in enumerate(rationales):
+        if r.status != "written":
+            continue
+        res = gates.gate(
+            r.text,
+            action_tool=action_tools[i] if i < len(action_tools) else "",
+            observations=observations,
+            step_index=i,
+            exempt=exempt,
+        )
+        if res.status == "failed":
+            for f in res.hard_findings:
+                failed.append(f"第 {i} 步·{f.kind}：{f.detail}")
+        else:
+            passed_steps += 1
+    if failed:
+        return GateMark("failed", tuple(failed))
+    reasons = [f"逐条核查 {passed_steps}/{len(rationales)} 步通过"]
+    missing = [str(i) for i, r in enumerate(rationales) if r.status != "written"]
+    if missing:
+        reasons.append(f"第 {', '.join(missing)} 步没写成（未参与核查）")
+    return GateMark("passed", tuple(reasons))
 
 
 #: 闸门状态。三值而非两值：**「没跑」不是「通过」**。
@@ -231,12 +356,22 @@ class Sample:
     provenance: Mapping[str, Any]
     actions: tuple[ActionView, ...]
     observations: tuple[Mapping[str, Any], ...]
-    rationale: Rationale | None
-    gate: GateMark
-    outcome: OutcomeRef | None
+    #: ⑥ 与 :attr:`actions` **按 ``step_index`` 对齐**（2026-10-10 改，
+    #: 原为「整条一条」）。逐条对得上才有训练意义，也才够闸门逐条核。
+    #:
+    #: **三个字段带默认值**：评分器与打分测试构造 ``Sample`` 时只关心
+    #: outcome 与观察，并不关心思考怎么写。默认值让「没接模块 4」
+    #: 成为一个可以显式表达的状态（``rationales=()`` + ``rationale_missing=True``），
+    #: 而不是让每个调用方都必须传两个与它无关的参数。
+    rationales: tuple[Rationale, ...] = ()
+    #: 默认 ``not_run`` 而非 ``passed``——**「没跑」不是「通过」**。
+    #: 这个模块级的实例是 frozen 的，可安全作默认值。
+    gate: GateMark = GateMark("not_run", ("闸门未运行",))
+    outcome: OutcomeRef | None = None
 
-    #: 模块 4 还没建 → 第 ⑥ 件整个拿不到。**与「模型这轮没说话」是两回事**，
-    #: 前者是流水线没长出来，后者是数据事实。
+    #: **一条 rationale 都没写成**（模块 4 未落地 / 后端不可用 / 全被拒写）。
+    #: 与「闸门跑过」分开记：闸门过了但这里为 True，说明样本只有动作没有思考——
+    #: 训练 CoT SFT 时会缺一整块，而报告上「gate=passed」看不出来。
     rationale_missing: bool = True
 
     #: 本条样本据以生成的 P1（文件名，不含目录）。批次可回溯到源存档。
@@ -260,7 +395,7 @@ class Sample:
                 "provenance": dict(self.provenance),
                 "actions": [a.to_json() for a in self.actions],
                 "observations": [dict(o) for o in self.observations],
-                "rationale": self.rationale.to_json() if self.rationale else None,
+                "rationales": [r.to_json() for r in self.rationales],
             },
             "gate": self.gate.to_json(),
             "rationale_missing": self.rationale_missing,
@@ -414,8 +549,20 @@ def _sample(
     observations: tuple[Mapping[str, Any], ...],
     outcome: OutcomeRef | None,
     degraded: list[str],
+    raw_steps: Sequence[Mapping[str, Any]] = (),
 ) -> Sample:
     task_id = str(archive.get("task_id"))
+    rationales = align_rationales(actions_, raw_steps)
+    written = [r for r in rationales if r.status == "written"]
+    gate = gate_of(
+        rationales,
+        action_tools=[a.tool for a in actions_],
+        observations=observations,
+        # 片名 + 用户原话是**任务给的**，不是模型从页面上看的。
+        # 拿它们当「模型引入的实体」去核，会把每一条提到片名的
+        # rationale 都判成幻觉（rationale 的豁免域，见 gates 口径二）。
+        exempt=f"{archive.get('title') or ''} {archive.get('user_prompt') or ''}".strip(),
+    )
     return Sample(
         sample_id=sample_id(task_id, run_id_of(source_name), unit),
         task_id=task_id,
@@ -427,12 +574,10 @@ def _sample(
         provenance=dict(archive.get("provenance") or {}),
         actions=actions_,
         observations=observations,
-        rationale=None,
-        # 模块 4 未落地 → 闸门**没跑过**，不是「通过」。
-        gate=GateMark(status="not_run",
-                      reasons=("rationale 模块未落地，一致性闸门未运行",)),
+        rationales=rationales,
+        gate=gate,
         outcome=outcome,
-        rationale_missing=True,
+        rationale_missing=not written,
         source_archive=source_name,
         degraded_from=tuple(dict.fromkeys(degraded)),
     )
@@ -483,6 +628,7 @@ def split_archive(path: str | Path) -> list[Sample]:
             observations=(dict(search_obs),),
             outcome=None,             # 搜索阶段不记站点级 outcome
             degraded=degraded,
+            raw_steps=steps,
         ))
 
     # ── 单元 2..N：每个站点 ────────────────────────────────────────
@@ -519,6 +665,7 @@ def split_archive(path: str | Path) -> list[Sample]:
             ),
             outcome=outcome,
             degraded=degraded,
+            raw_steps=vsteps,
         ))
 
     if not out and archive.get("search_blocked"):

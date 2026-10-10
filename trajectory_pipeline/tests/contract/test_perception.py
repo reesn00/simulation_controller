@@ -37,7 +37,7 @@ from trajectory_pipeline.tests.fakes import FakeLLM, llm_perceptor
 #: LLM 版接的是**假后端**（``tests/fakes.py``）——契约测试绝不打真网络：
 #: 它要的是七不变式**每次都成立**，而真后端会超时、限流、换版本漂输出，
 #: 那些都会让门禁变成随机失败。LLM 的语义能力由真实验证负责，
-#: 见 ``output/pipeline/llm_probe.py``。
+#: 见 ``trajectory_pipeline/perception/probe_llm.py``。
 #:
 #: 注意 ``functools.partial`` 而不是裸类：契约测试用 ``impl()`` 无参构造，
 #: 而 ``LLMPerceptor`` 需要一个 client。
@@ -72,7 +72,7 @@ class TestRegistry:
             assert spec.negative_branch, f"{qid} 未绑定 negative_branch"
             assert spec.id == qid, f"注册表 key 与 Question.id 不一致: {qid}"
 
-    def test_失败分支全集是九条(self):
+    def test_失败分支全集是十条(self):
         assert questions.all_branches() == {
             "not_play_site", "login_wall_or_blocked", "no_play_control",
             "component_unverified",                       # 四道题各一支
@@ -80,6 +80,9 @@ class TestRegistry:
             "trailer_suspect", "unresolved",              # 兜底
             "player_unverified",                          # 判断点④ 判不出来，
                                                        # 但播放页就在眼前
+            "subscription_wall",                          # 判断点④ 的细分：
+                                                       # 有播放页但需付费
+                                                       # （2026-10-10 口径裁定）
         }
 
     def test_未知_id_抛_KeyError(self):

@@ -128,11 +128,21 @@ class ActionStep:
     ``observation`` 为空且 ``error`` 非空 = 动作本身失败了（导航不通、
     点击报错、快照取不到）。这两种「空」必须能分开：前一种是证据，
     后一种是采集失败，混成 ``None`` 就丢了区分。
+
+    ``rationale`` 是本步的思考+结论（模块 4）。**一步是它的天然对齐单位**
+    ——而 P2 六件套第 ⑥ 件「与动作对齐的一条」就是这一端的另一半。
+    **生成在执行期、核查在组装期**：这里只落生成结果，
+    一致性由 :mod:`trajectory_pipeline.assembler` 在切条后跑闸门。
+
+    值是 ``dict`` 而不是某个 ``Rationale`` 类型：``executor`` 不得 import
+    ``assembler``（依赖方向单向），形状由
+    ``docs/contracts/P1-observation.md`` 钉住。
     """
 
     action: Action
     observation: Observation | None = None
     error: str = ""
+    rationale: Mapping[str, Any] | None = None
 
     def to_json(
         self, obs_json: Callable[[Observation | None], dict[str, Any] | None]
@@ -141,6 +151,7 @@ class ActionStep:
             "action": self.action.to_json(),
             "observation": obs_json(self.observation),
             "error": self.error,
+            "rationale": dict(self.rationale) if self.rationale else None,
         }
 
 
@@ -174,6 +185,17 @@ class StepLog:
         self.steps[index] = replace(
             self.steps[index], observation=observation, error=error
         )
+
+    def attach_rationale(self, index: int, rationale: Mapping[str, Any] | None) -> None:
+        """挂第 ``index`` 步的 rationale。
+
+        **刻意与 :meth:`settle` 分开**：``settle`` 是采集的结果（执行器
+        拿到的硬事实），``attach_rationale`` 是生成的产物（LLM 写的）。
+        两者混在一个方法里，调用方就会以为「挂上就说明这一步成功」——
+        而 writer 的三种状态（``written`` / ``unavailable`` / ``empty``）
+        与这一步有没有错无关。
+        """
+        self.steps[index] = replace(self.steps[index], rationale=rationale)
 
 
 def goto(url: str) -> Action:

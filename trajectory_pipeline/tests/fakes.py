@@ -16,7 +16,7 @@
 与七不变式无关，且会掩盖真正要测的东西。
 
 **真实的坏行为由独立开关模拟**，见各 ``mode`` 参数——它们不是「让 fake
-变傻」，而是复现 ``output/pipeline/llm_probe.py`` 里实测到的后端行为：
+变傻」，而是复现 ``trajectory_pipeline/perception/probe_llm.py`` 里实测到的后端行为：
 套 ``<think>``、套 markdown fence、输出散文、编造 ref。
 """
 
@@ -41,6 +41,7 @@ class FakeLLM:
         prose: bool = False,
         lie_about_ref: str = "",
         invent_urls: bool = False,
+        reject_all: bool = False,
         answers: dict[str, bool] | None = None,
         budget_exhausted: bool = False,
         answer_null: bool = False,
@@ -59,6 +60,7 @@ class FakeLLM:
         self.lie_about_ref = lie_about_ref
         #: ① 里编造不在观察中的 url
         self.invent_urls = invent_urls
+        self.reject_all = reject_all
         #: 逐题强制答案（键为 question id）
         self.answers = answers or {}
         #: **推理模型的实测形态**：预算被思考吃光，正文为空。
@@ -146,6 +148,11 @@ class FakeLLM:
                 return {"selected": [{"url": "https://编造.test/x",
                                       "title": "编的", "why": "看着像"}],
                         "rejected": []}
+            if self.reject_all:
+                return {"selected": [],
+                        "rejected": [{"url": l.get("href", ""),
+                                      "reason": "不是这个作品的播放站"}
+                                     for l in links[:3]]}
             return {"selected": [{"url": links[0].get("href", ""),
                                   "title": links[0].get("text", ""),
                                   "why": "标题含目标片名"}] if links else [],

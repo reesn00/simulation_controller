@@ -119,6 +119,58 @@ def _make_perceptor(args: argparse.Namespace, title: str):
                            target_title=title)
 
 
+def _make_rationale_writer():
+    """构造 rationale 生成器。**没有可用后端时返回 ``(None, 原因)``。**
+
+    ``None`` 的含义是「这一步没长出来」，不是「跑过了且没问题」——
+    组装期据此把闸门记 ``not_run``。**绝不静默合成一段占位文字**：
+    那会让闸门跑在一段没人写过的文本上，结论全部失真。
+
+    这里 ``return None`` 而 ``raise`` 是刻意的，与 ``--perceptor auto``
+    的口径一致：W1 规则版批次必须在没有后端的机器上能跑通。
+    **但原因必须带回来**——只返回 ``None`` 而不说是为什么，
+    就会重现「能力不可用」那个症状：报表上只看到闸门全批
+    ``not_run``，没人知道是没配后端还是代码坏了。
+    """
+    try:
+        from trajectory_pipeline.llm.client import LLMClient, LLMConfig
+        from trajectory_pipeline.rationale import writer as rationale_writer
+    except ImportError as exc:
+        return None, f"import 失败 {type(exc).__name__}: {exc}"
+    try:
+        cfg = LLMConfig.from_env()
+    except Exception as exc:                     # 未配齐或配置不合法
+        return None, f"LLM 后端不可用 {type(exc).__name__}: {exc}"
+
+    client = LLMClient(cfg)
+
+    def write(**kw):
+        """薄适配：把 :class:`WriteResult` 折成 P1 里落盘的形状。
+
+        **三态原样透传**（靠 ``WriteResult.to_json``）：``written`` 带
+        ``rationale`` 文本；``unavailable`` / ``empty`` 的 ``rationale`` 是
+        ``None`` 并带 ``reason``——**文本位置留空**，因为「模型这轮没说话」
+        与「有文本但被红线拒写」在下游必须分得开（前者不该进负样本池，
+        后者更不该）。这里不做任何判定：**闸门在组装期跑**。
+        """
+        return rationale_writer.write_one(client, **kw).to_json()
+
+    write.close = client.close          # type: ignore[attr-defined]
+    write.model = cfg.model             # type: ignore[attr-defined]
+    return write, ""
+
+
+def _describe_rationale(writer, why: str) -> str:
+    """把 writer 的有无**连同原因**明写出来。
+
+    没有它时闸门是 ``not_run``，而报表上「没跑」与「跑过且通过」长得很像——
+    这条口径与判断点 ① 的 fail-closed 是同一个道理：**能力不可用要说出来**。
+    """
+    if writer is None:
+        return f"不可用（{why}）—— **不生成 rationale**，闸门记 not_run（≠ 通过）"
+    return f"已接上（{writer.model}）"
+
+
 async def cmd_run(args: argparse.Namespace) -> int:
     if args.plan:
         return await _run_plan(args)
@@ -167,6 +219,8 @@ async def _run_manual(args: argparse.Namespace) -> int:
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
+    writer, why = _make_rationale_writer()
+    print(f"rationale = {_describe_rationale(writer, why)}")
 
     async with client:
         driver = ObscuraDriver(client)
@@ -177,7 +231,8 @@ async def _run_manual(args: argparse.Namespace) -> int:
             # 而片名是任务的属性不是页面的属性，靠构造注入。
             perceptor = _make_perceptor(args, title)
             print(f"perceptor = {describe(perceptor)}")
-            orch = Orchestrator(driver, perceptor, cfg)
+            orch = Orchestrator(driver, perceptor, cfg,
+                                rationale_writer=writer)
             print(f"\n[{args.task_id}] {title}")
             # 不传 user_prompt：手工路径没有 persona 渲染的提问，
             # 存档里留空串（含义与 provenance 空 dict 相同）。
@@ -250,6 +305,8 @@ async def _run_plan(args: argparse.Namespace) -> int:
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
+    writer, why = _make_rationale_writer()
+    print(f"rationale = {_describe_rationale(writer, why)}")
 
     async with client:
         driver = ObscuraDriver(client)
@@ -259,7 +316,8 @@ async def _run_plan(args: argparse.Namespace) -> int:
             # 上面的检查已保证 title 非空，这里直接取
             title = task.title
             # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
-            orch = Orchestrator(driver, _make_perceptor(args, title), cfg)
+            orch = Orchestrator(driver, _make_perceptor(args, title), cfg,
+                                rationale_writer=writer)
             print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
                   f"| {title}")
             rec = await orch.run(

@@ -249,7 +249,7 @@ class TestOnRealArchives:
         assert six is not None, "一份样本都切不出来——档全坏了？"
         assert set(six) == {
             "system_prompt", "tools", "user_prompt", "provenance",
-            "actions", "observations", "rationale",
+            "actions", "observations", "rationales",
         }, f"六件套形状与契约不符：{sorted(six)}"
 
     def test_真实存档的观察能过训练态渲染(self):
