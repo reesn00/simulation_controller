@@ -65,7 +65,7 @@ htmlcov/
 .claude/
 
 # Project outputs
-output/
+/output/
 # v2 轨迹合成管线的产物（决策 D8：收在新树下，不污染根 output/）
 trajectory_pipeline/output/
 dist/
