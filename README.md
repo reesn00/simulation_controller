@@ -116,10 +116,12 @@ uv run python -m pytest -q
 | 文档 | 内容 |
 |---|---|
 | [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图、控制流与四个判断点、失败分支全集、执行层、感知层、persona 六维 |
-| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 52 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
+| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 60 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3 契约表、`steps[]` 三条口径 |
 | [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 命令全表 + 联网与否、环境变量、门禁与输出目录 |
-| [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | 已跑通什么、待办什么、实测数据 |
+| [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | **跑到哪儿了、接下来做什么**（不含历史） |
+| [06-端到端流程.md](trajectory_pipeline/docs/06-端到端流程.md) | 一条数据从骨架走到训练样本的完整路径 |
+| [07-增量档案.md](trajectory_pipeline/docs/07-增量档案.md) | 增量一~十一的编年史——动守卫之前读它 |
 
 ### 设计方案
 

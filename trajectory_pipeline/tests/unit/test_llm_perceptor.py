@@ -100,6 +100,160 @@ class TestRefWhitelist:
                          ) is not None
 
 
+class TestRef由代码取回:
+    """实测（2026-10-11）：v.qq.com 页面上有播放控件，模型却没回 ref。
+
+    旧行为是 fail-closed 判 ``None`` → 控制流不点击 → 没有 ``player_obs``
+    → 判断点 ④ 无从判起 → **整批 D-2 全是 undetermined**。代价是这一站
+    的轨迹作废，而更糟的是它离「假负样本」只差一步：把「模型忘了填
+    字段」写成「这个站看不了」，负样本池就再也答不出「为什么看不了」。
+    """
+
+    def test_模型不回ref时代码按词表取回(self):
+        d = llm_perceptor(forget_ref=True).decide(
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e1", "a", "登录"),
+                                           ("e5", "button", "立即播放"))))
+        assert d.answer is True
+        assert d.payload["ref"] == "e5"
+        assert d.payload["trailer_only"] is False
+
+    def test_取回的ref必须能点得到(self):
+        """ref 的用途就是 click。取回来却不属于观察，那是造出来的东西——
+        和模型编造 ref 一样不可用。"""
+        from trajectory_pipeline.executor.actions import target_of
+
+        obs = _obs(interactive_elements=_els(("e1", "a", "登录"),
+                                             ("e5", "button", "立即播放")))
+        d = llm_perceptor(forget_ref=True).decide(Q.FIND_PLAY_CONTROL, obs)
+        assert target_of(str(d.payload["ref"]),
+                         obs.interactive_elements) is not None
+
+    def test_evidence写明ref是代码取回的(self):
+        """人读存档时要能分清 ref 是模型给的还是代码补的——两者是
+        不同的证据强度，不标出来就分不出来了。"""
+        d = llm_perceptor(forget_ref=True).decide(
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e5", "button", "立即播放"))))
+        assert "未回传 ref" in d.evidence and "词表" in d.evidence
+
+    def test_词表为空时仍然判否(self):
+        """反向护栏：取回不是「一律判 True」。页面上真的没有播放控件
+        时必须判 False，否则每个页面都会变成「找到了播放控件」。"""
+        d = llm_perceptor(forget_ref=True).decide(
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e1", "a", "登录"),
+                                           ("e2", "a", "设置"))))
+        assert d.answer is False
+        assert d.payload["ref"] == ""
+
+    def test_只有预告控件时落trailer_only而非判否(self):
+        """「有控件但全是预告片」与「压根没有控件」是两条不同的负分支。
+
+        W1 一直落 ``trailer_only``，W3 原来直落 False——同一批素材两个
+        结论，且都看着像对的。"""
+        d = llm_perceptor(forget_ref=True).decide(
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e1", "a", "预告片"))))
+        assert d.answer is True
+        assert d.payload["trailer_only"] is True
+        assert d.payload["ref"] == ""
+
+    def test_预告控件不会被当成可点的ref(self):
+        """取回 ref 只取非预告的：点了预告片，采样采到的是预告资源。"""
+        from trajectory_pipeline.perception.rule_perceptor import (
+            play_control_candidates,
+            trailer_only_candidates,
+        )
+
+        obs = _obs(interactive_elements=_els(("e1", "a", "预告片"),
+                                            ("e2", "button", "正片第1集")))
+        assert [e.ref for e in play_control_candidates(obs)] == ["e2"]
+        assert [e.ref for e in trailer_only_candidates(obs)] == ["e1"]
+
+    def test_编造ref仍被白名单拦住(self):
+        """取回 ref 不等于放开白名单：模型**给了** ref 而它不存在，
+        那是编造，照旧 fail-closed。"""
+        d = llm_perceptor(lie_about_ref="e999").decide(
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e5", "button", "立即播放"))))
+        assert d.answer is None
+        assert "不在观察" in d.evidence
+
+    def test_模型给的ref未命中词表时留痕(self):
+        """图标按钮（纯 SVG / 文本在 aria-label 上）常常过不了词表，
+        而模型看得懂它的视觉语义——所以**标注**而不是否决。但分歧必须
+        留痕：禁止投票意味着暴露给人，而不是由代码悄悄择一。"""
+        d = llm_perceptor(lie_about_ref="e1").decide(
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e1", "button", "▷"),
+                                           ("e5", "button", "立即播放"))))
+        assert d.answer is True
+        assert d.payload["ref"] == "e1"
+        assert "未命中播放控件词表" in d.evidence
+
+
+class Test不落rawCoT:
+    """CLAUDE.md 红线：**不保存 raw CoT**。
+
+    ``_why_unparsable`` 是这条红线的**落盘点**——它把模型原文截前 120 字
+    写进 ``evidence``，而 ``evidence`` 是 :class:`SiteOutcome` 的持久字段，
+    直接落 P1。漏了 ``strip_think`` 就等于把推理模型的思考段落存档。
+
+    这条漏了很久而门禁全绿，根因不在生产代码而在 **fake**：
+    ``prose=True`` 在套 think 之前就 return，``think=True, prose=True``
+    **组合不出这个形态**，于是没有任何测试造得出它。fake 造不出的形态
+    等于不存在的守卫——这次一并修掉。
+    """
+
+    THINK = "模型内部推理：逐条比较了链接1、链接2、链接3 的标题"
+
+    def test_剥掉思考后才截前N字(self):
+        out = lp._why_unparsable(
+            f"<think>{self.THINK}</think>\n根据页面观察，我无法确定。")
+        assert self.THINK not in out
+        assert "根据页面观察" in out
+
+    def test_未闭合的思考也剥(self):
+        """实测形态：思考段没有闭合标签，一直吃到文末。"""
+        out = lp._why_unparsable(f"<think>{self.THINK}")
+        assert self.THINK not in out
+
+    def test_剥完为空时说得出来(self):
+        """「只吐了思考、没有正文」与「预算被思考吃光」症状同源而成因不同，
+        要能从 evidence 里认出来——它们的下一步动作不一样。"""
+        out = lp._why_unparsable(f"<think>{self.THINK}</think>")
+        assert "为空" in out and self.THINK not in out
+
+    def test_无思考时原样保留(self):
+        """剥 think 不是「把内容都删掉」——没有 think 的解析失败仍然要
+        留下原文，否则这条诊断能力自己没了。"""
+        assert "无法解析" in lp._why_unparsable("这不是 JSON")
+
+    def test_端到端_evidence不含思考(self):
+        """走完整条 decide → evidence 的路，不直接调内部函数。"""
+        d = llm_perceptor(think=True, prose=True,
+                          think_text=self.THINK).decide(
+            Q.IS_REACHABLE, _obs(body_text="页面主体可见"))
+        assert d.answer is None
+        assert self.THINK not in d.evidence
+        assert "<think>" not in d.evidence
+
+    def test_端到端_evidence落进存档字段(self):
+        """红线的落点是**持久化字段**，所以断言必须打到 outcome 上，
+        而不是停在 Decision——中间隔着 ledger 转换。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        d = llm_perceptor(think=True, prose=True,
+                          think_text=self.THINK).decide(
+            Q.IS_REACHABLE, _obs(body_text="页面主体可见"))
+        outcome = RunLedger("T001").record("https://x.test/", None, d.evidence,
+                                           decision=d,
+                                           site_url="https://x.test/")
+        assert self.THINK not in outcome.to_json()["evidence"]
+        assert "<think>" not in outcome.to_json()["evidence"]
+
+
 class TestDeterministicFirst:
     """铁律 1：确定性事实不问模型。"""
 
@@ -218,6 +372,124 @@ class TestSelectSites:
             _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
         assert d.answer is None
         assert "不在观察" in d.evidence
+
+
+class TestNoConclusionVsUnmatched:
+    """「模型没作答」与「作答了但地址全对不上」是**两件事**，不得合成一句。
+
+    实测（2026-10-11 T035 / E001）连续两个判断点①返回**空的**两个数组，
+    而当时的 evidence 写的是「全部不在观察的 107 个链接里」——字面为真
+    （0 个里的 0 个不在其中），语义却在说「模型给了地址但都错」。
+    这句话把排查引向了「URL 为什么不匹配」，而真正的问题是「它为什么
+    一个都不给」。合成一句的代价不是措辞，是**把诊断指错方向**。
+    """
+
+    def test_两个都空时说的是没作答(self):
+        from trajectory_pipeline.perception.base import LinkItem
+
+        d = llm_perceptor(no_conclusion=True).decide(
+            Q.SELECT_PLAY_SITES,
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
+        assert d.answer is None
+        assert "未给出任何" in d.evidence
+        # 反向护栏：这句话**不能**同时说「不在观察」——两者指的不是一回事
+        assert "不在观察" not in d.evidence
+
+    def test_地址全对不上时说的是对不上(self):
+        from trajectory_pipeline.perception.base import LinkItem
+
+        d = llm_perceptor(invent_urls=True).decide(
+            Q.SELECT_PLAY_SITES,
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
+        assert d.answer is None
+        assert "全部不在观察" in d.evidence
+        assert "未给出任何" not in d.evidence
+
+    def test_没作答时evidence带上送进模型的链接数(self):
+        """复盘要能判断「是输入不足还是模型偷懒」，光看「未作答」不够。"""
+        from trajectory_pipeline.perception.base import LinkItem
+
+        links = tuple(LinkItem(f"功夫 第{i}集", f"https://www.a.test/{i}")
+                      for i in range(3))
+        d = llm_perceptor(no_conclusion=True).decide(
+            Q.SELECT_PLAY_SITES, _obs(links=links))
+        assert "3 条链接" in d.evidence
+
+
+class Test回指编号而不是url:
+    """① 让模型回**编号 i**，代码回指成 href——回长 URL 是记忆任务。
+
+    模型会顺手改写 scheme、吞掉 www、丢掉 query 尾巴，于是「选的 URL
+    压根不在观察里」整批作废。编号把它降级成复制任务，而 href 由代码
+    从窗口里取，模型碰不到字符串。
+    """
+
+    def _links(self):
+        from trajectory_pipeline.perception.base import LinkItem
+
+        return (LinkItem("功夫 在线观看", "https://www.a.test/gg"),
+                LinkItem("百度首页", "https://www.baidu.com/"))
+
+    def test_渲染时每条链接带编号(self):
+        rows = lp._render(_obs(links=self._links()),
+                          target_title="功夫",
+                          question=Q.SELECT_PLAY_SITES)["links"]
+        assert [r["i"] for r in rows] == [0, 1]
+
+    def test_非一号题不带编号(self):
+        """编号是 ① 的契约。别的题带上它等于凭空多一个字段，
+        而模型会顺着编造出编号语义。"""
+        rows = lp._render(_obs(links=self._links()),
+                          question=Q.PLAYER_OK)["links"]
+        assert all("i" not in r for r in rows)
+
+    def test_编号回指到窗口里的href(self):
+        d = llm_perceptor(by_index=True).decide(
+            Q.SELECT_PLAY_SITES, _obs(links=self._links()))
+        assert d.answer is True
+        # 回传的 i=0 → 第一条链接的 href，且 payload 里带 url 供下游记账
+        assert d.payload["selected"][0]["url"] == "https://www.a.test/gg"
+
+    def test_字符串编号也认(self):
+        """模型爱给整数加引号。真后端两种形态都出现过。"""
+        assert lp._as_index("3") == 3
+        assert lp._as_index(3) == 3
+        assert lp._as_index(True) is None      # bool 是 int 的子类
+        assert lp._as_index("abc") is None
+        assert lp._as_index(None) is None
+
+    def test_编号越界时退回url匹配(self):
+        """越界说明模型在编。退回 URL 匹配而不是当命中——
+        否则 i=999 会指向窗口外的东西，而控制流会去访问它。"""
+        rows = [{"i": 999, "url": "https://www.a.test/gg"}]
+        out = lp._resolve_rows(rows, lp._link_window(
+            _obs(links=self._links()), Q.SELECT_PLAY_SITES, "功夫"),
+            {"https://www.a.test/gg"})
+        assert [r["url"] for r in out] == ["https://www.a.test/gg"]
+
+    def test_三处窗口同源(self):
+        """预检、渲染、回指必须看**同一批**链接**且顺序一致**。
+
+        这三处曾各拼一遍 ``_ordered_links(...)[:LLM_LINKS]``，而预检与渲染
+        错位过一次——预检数到 3 条命中就放行，模型收到的前 20 条却全是
+        导航栏，于是判 True 且 selected/rejected 全空。
+
+        ⚠️ **fixture 必须顺序敏感**：含片名的链接放在**第二条**，
+        排序会把它提到最前，于是「用排序后的窗口」与「用 obs.links 原序」
+        给出不同结果。片名放在第一条时两种窗口完全相同，这条断言就成了
+        永远为真的死断言（避坑指南 §7.3 同款）。"""
+        from trajectory_pipeline.perception.base import LinkItem
+
+        obs = _obs(links=(LinkItem("百度首页", "https://www.baidu.com/"),
+                          LinkItem("功夫 在线观看", "https://www.a.test/gg")))
+        window = lp._link_window(obs, Q.SELECT_PLAY_SITES, "功夫")
+        # 先确认 fixture 真的有顺序差异，否则这条断言测不出任何东西
+        assert [l.href for l in window] != [l.href for l in obs.links]
+
+        rendered = lp._render(obs, target_title="功夫",
+                              question=Q.SELECT_PLAY_SITES)["links"]
+        assert [r["href"] for r in rendered] == [l.href for l in window]
+        assert lp._title_link_sufficiency(obs, "功夫") == ""
 
 
 class TestDecisionShape:

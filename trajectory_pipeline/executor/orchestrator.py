@@ -24,6 +24,7 @@ import dataclasses
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
@@ -357,6 +358,65 @@ def _apply_selection(
     return kept
 
 
+def _is_site_homepage(url: str) -> bool:
+    """URL 是否指向**站点首页**（path 为空或 ``/``）。
+
+    只看 path，不看 host——path 为 ``/`` 的 URL 一定是首页，而 query 与
+    fragment 不参与：``https://www.hao123.com/?from=baidu`` 仍是首页。
+    解析失败（畸形 URL）返回 ``False``：拿不准时**不判**，交给后面
+    的环节用真实观察去判——这条判据的价值全在「确定」，不确定就不算。
+    """
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return False
+    return path in ("", "/")
+
+
+def _drop_site_homepages(record: RunRecord, ledger: RunLedger) -> None:
+    """把**站点首页**候选记成 ``not_play_site`` 并剔出候选集（原地改写）。
+
+    这是**代码层的确定性事实核**，不是语义判断——搜索结果里 path 为
+    ``/`` 的 URL 就是该站首页，而首页结构上不可能是某部作品的播放页。
+    用得着它的是实测那批：hao123 被搜索引擎当成《功夫》的结果返回，
+    访问后按「页面上没有播放控件」入负样本池。**结论方向碰巧对了，
+    理由全错**——那个站根本不是内容站，问题是「压根不是搜索结果该
+    返回的东西」，不是「去了发现看不了」。这两类混成一条，负样本池就
+    再也答不出「为什么看不了」，而那正是它存在的唯一理由。
+
+    **为什么不加进** ``EXCLUDED_HOST_ROOTS``：那样首页压根不成为候选，
+    ``not_play_site`` 永远 0 条——而「每条分支都必须有对应样本入库」是
+    硬要求。这条分支的样本只能从这里来，删掉就再也长不出来。
+
+    **为什么落在判断点 ① 之后**：① 的 True / False / None 三条路径都要
+    过这道核，而 :func:`_apply_selection` 只在 True 时被调，挂在它里面
+    就只能覆盖三分之一。首页的否定不依赖模型是否作答，所以位置在
+    「① 处理完、开始遍历之前」——对三条路径都生效的唯一位置。
+    """
+    kept: list[Candidate] = []
+    dropped: list[Candidate] = []
+    for candidate in record.candidates:
+        (dropped if _is_site_homepage(candidate.url) else kept).append(candidate)
+    if not dropped:
+        return
+    for candidate in dropped:
+        ledger.record(
+            candidate.url,
+            "not_play_site",
+            f"候选 URL 的 path 为空或 `/`（{candidate.url}）——是站点首页，"
+            f"结构上不可能是某部作品的播放页。搜索引擎把导航站首页当搜索"
+            f"结果是常见形态（实测 hao123）；这是**找错站**，不是「去了"
+            f"发现看不了」，故不记 no_play_control。",
+            site_url=candidate.url,
+        )
+    record.candidates = kept
+    record.warnings.append(
+        f"{len(dropped)} 个候选是站点首页（path 为 `/`），记 not_play_site 不访问："
+        + "、".join(c.url for c in dropped[:3])
+        + ("…" if len(dropped) > 3 else "")
+    )
+
+
 class Orchestrator:
     """主控制流。一个实例跑一个 task。"""
 
@@ -594,6 +654,11 @@ class Orchestrator:
                 f"判断点 ① 未取得结论（{selection.evidence}）——"
                 f"候选仍按代码启发式全遍历，不中断采集"
             )
+
+        # ── 环节 ①.6：站点首页核（代码层确定性事实，与 ① 的答案无关）──
+        # 位置在 ① 之后而不是里面：① 判 True / False / None 三条路径
+        # 都要过这道核，而 _apply_selection 只在 True 时被调。
+        _drop_site_homepages(record, ledger)
 
         if not record.candidates:
             record.warnings.append(

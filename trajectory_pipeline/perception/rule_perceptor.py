@@ -27,7 +27,12 @@ import time
 from types import MappingProxyType
 from typing import Mapping, Any
 
-from trajectory_pipeline.perception.base import Decision, Observation, Q
+from trajectory_pipeline.perception.base import (
+    Decision,
+    InteractiveElement,
+    Observation,
+    Q,
+)
 from trajectory_pipeline.perception import questions
 
 # ── 控件识别词表 ────────────────────────────────────────────────────────
@@ -215,6 +220,33 @@ def is_play_control(label: str) -> bool:
     return any(p.search(text) for p in EPISODE_PATTERNS)
 
 
+def play_control_candidates(obs: Observation) -> list[InteractiveElement]:
+    """页面上的**非预告**播放控件候选，按观察原序。
+
+    词表与顺序规则的唯一所有者在这里，W1 自己判 ③ 与 W3 兜底取 ref
+    都调它——两份实现不同步的后果是「同一批素材两个结论，且都像对的」。
+
+    **预告控件被排除在外**：预告片是「有播放控件但资源不对」，
+    与「没有播放控件」是两条不同的负分支，混在一起会同时毁掉两条。
+    需要保留预告控件时用 :func:`is_play_control` 自己筛。
+    """
+    return [e for e in obs.interactive_elements
+            if is_play_control(e.label) and classify_trailer(e.label) == "none"]
+
+
+def trailer_only_candidates(obs: Observation) -> list[InteractiveElement]:
+    """**预告**播放控件——与 :func:`play_control_candidates` 互补，两者并起来
+    就是 :func:`is_play_control` 筛出的全部候选。
+
+    「有播放控件但全是预告片」与「压根没有播放控件」是**两条不同的负分支**
+    （``trailer_only`` vs ``no_play_control``），所以判据必须同源：W1 在这里
+    落 ``trailer_only``、W3 落 ``no_play_control``，同一批素材会出两个结论，
+    且两个都看着像对的——这正是词表复制的代价。
+    """
+    return [e for e in obs.interactive_elements
+            if is_play_control(e.label) and classify_trailer(e.label) != "none"]
+
+
 class RulePerceptor:
     """确定性 Perceptor。W1 的唯一实现。"""
 
@@ -318,7 +350,7 @@ class RulePerceptor:
                 evidence=f"{len(obs.interactive_elements)} 个交互元素中无一命中播放控件词表",
                 started=started,
             )
-        real = [e for e in candidates if classify_trailer(e.label) == "none"]
+        real = play_control_candidates(obs)
         if real:
             suspects = [e for e in candidates if classify_trailer(e.label) == "suspect"]
             return self._answer(

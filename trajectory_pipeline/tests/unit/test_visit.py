@@ -1805,3 +1805,134 @@ class TestRationale接线:
         assert rec.visits and rec.visits[0].success
         assert rec.visits[0].steps.steps[0].rationale is None
         assert any("rationale 生成异常" in w for w in rec.warnings)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 环节 ①.6：站点首页核（代码层确定性事实）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class Test站点首页核:
+    """实测（2026-10-11）：hao123 被搜索引擎当成《功夫》的搜索结果返回。
+
+    访问后它按「页面上没有播放控件」入负样本池——**结论方向碰巧对了，
+    理由全错**。那个站根本不是内容站，问题是「压根不是搜索结果该返回的
+    东西」，不是「去了发现看不了」。两类混成一条，负样本池就再也答不出
+    「为什么看不了」，而那正是它存在的唯一理由。
+
+    **为什么不是加进** ``EXCLUDED_HOST_ROOTS``：那样它压根不成为候选，
+    ``not_play_site`` 永远 0 条——而「每条分支都必须有对应样本入库」是
+    硬要求，删掉就再也长不出来。
+    """
+
+    SEARCH = "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B"
+
+    def _search_page(self, *links):
+        return Observation(
+            url=self.SEARCH, page_title="百度", body_text="搜索结果",
+            links=tuple(LinkItem(text=t, href=h) for t, h in links),
+        )
+
+    def _pages(self, *links):
+        pages = {self.SEARCH: self._search_page(*links)}
+        for _, href in links:
+            if href.startswith("https://") and "baidu" not in href:
+                pages[href] = obs_at(href, elements=(("e1", "button", "播放"),))
+                pages["https://x.test/play/e1"] = obs_at(
+                    "https://x.test/play/e1", video=1)
+        return pages
+
+    async def test_首页记not_play_site(self):
+        pages = self._pages(("导航站首页", "https://www.hao123.com/"),
+                            ("a站", "https://www.a.test/movie"))
+        script = {
+            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
+                "selected": [{"url": "https://www.hao123.com/", "why": "看着像"},
+                             {"url": "https://www.a.test/movie", "why": "标题含片名"}],
+                "rejected": []}),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+
+        dropped = [o for o in rec.ledger.outcomes if o.url == "https://www.hao123.com/"]
+        assert len(dropped) == 1
+        assert dropped[0].branch == "not_play_site"
+
+    async def test_首页不被访问(self):
+        """访问它只会得出「这页没有播放控件」——那是导航站的属性，
+        与《功夫》能不能看毫无关系。访问它本身就是浪费一次浏览器往返。"""
+        pages = self._pages(("导航站首页", "https://www.hao123.com/"),
+                            ("a站", "https://www.a.test/movie"))
+        script = {
+            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
+                "selected": [{"url": "https://www.hao123.com/", "why": "看着像"},
+                             {"url": "https://www.a.test/movie", "why": "标题含片名"}],
+                "rejected": []}),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+
+        assert "https://www.hao123.com/" not in [c.url for c in rec.candidates]
+        assert [v.candidate.url for v in rec.visits] == ["https://www.a.test/movie"]
+
+    async def test_判断点无结论时照样剔除(self):
+        """**实测那批走的正是这条路**：① 判 None → 候选全部保留遍历。
+
+        挂在 `_apply_selection` 里就覆盖不到它，而那恰好是首页混进
+        负样本池的实际路径。"""
+        pages = self._pages(("导航站首页", "https://www.hao123.com/"),
+                            ("a站", "https://www.a.test/movie"))
+        script = {
+            Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "模型未作答"),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+
+        dropped = [o for o in rec.ledger.outcomes if o.url == "https://www.hao123.com/"]
+        assert [o.branch for o in dropped] == ["not_play_site"]
+        assert [v.candidate.url for v in rec.visits] == ["https://www.a.test/movie"]
+
+    async def test_内容页不受影响(self):
+        """反向护栏：别把带路径的内容页一起剔掉。path 不为空的
+        一律不算首页——判据窄是刻意的，判宽了会误伤正样本。"""
+        pages = self._pages(("a站", "https://www.a.test/movie"),
+                            ("根路径站", "https://b.test/x"))
+        script = {
+            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
+                "selected": [{"url": "https://www.a.test/movie", "why": "w"},
+                             {"url": "https://b.test/x", "why": "w"}],
+                "rejected": []}),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
+                                 RunConfig()).run("T001", "功夫")
+        assert len(rec.visits) == 2
+
+    def test_首页判据只认path(self):
+        """带 query 的仍是首页——``?from=baidu`` 不改变它是首页这件事。"""
+        from trajectory_pipeline.executor.orchestrator import _is_site_homepage
+
+        assert _is_site_homepage("https://www.hao123.com/") is True
+        assert _is_site_homepage("https://www.hao123.com") is True
+        assert _is_site_homepage("https://www.hao123.com/?from=baidu") is True
+        assert _is_site_homepage("https://www.hao123.com/#top") is True
+        assert _is_site_homepage("https://www.hao123.com/movie") is False
+        assert _is_site_homepage("https://v.qq.com/x/cover/abc.html") is False
+
+    def test_畸形url不判首页(self):
+        """拿不准时**不判**。这条判据的全部价值在「确定」，
+        不确定就不该用它去剔候选。"""
+        from trajectory_pipeline.executor.orchestrator import _is_site_homepage
+
+        assert _is_site_homepage("https://[::1") is False

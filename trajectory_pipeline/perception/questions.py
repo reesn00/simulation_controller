@@ -28,15 +28,19 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
         Q.SELECT_PLAY_SITES: Question(
             id=Q.SELECT_PLAY_SITES,
             prompt=(
-                "以下是从搜索结果页取回的链接。"
-                "选出其中**提供在线观看该作品**的站点，"
+                "以下是从搜索结果页取回的链接，每条带编号 i。"
+                "选出其中**提供在线观看该作品**的站点（回 i），"
                 "并说明选择理由；不选的要说明排除理由。"
+                "**selected 与 rejected 至少要有一条**："
+                "哪怕一个都选不出来，也要把最像的几个放进 rejected 并写明为什么。"
+                "两个都留空表示「没作答」，会被判为无法采信，整页候选原样保留——"
+                "那等于这批什么素材都没采到。"
             ),
             answer_type="decision",
             schema_hint=MappingProxyType(
                 {
-                    "selected": [{"url": "str", "title": "str", "why": "str"}],
-                    "rejected": [{"url": "str", "reason": "str"}],
+                    "selected": [{"i": "int", "title": "str", "why": "str"}],
+                    "rejected": [{"i": "int", "reason": "str"}],
                 }
             ),
             # selected **和** rejected 都要落盘——只存 selected 就无法复核

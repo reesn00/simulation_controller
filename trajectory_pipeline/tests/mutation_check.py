@@ -116,8 +116,8 @@ MUTATIONS = [
     (
         "①渲染窗口前置命中链接",
         "trajectory_pipeline/perception/llm_perceptor.py",
-        "            for l in _ordered_links(obs, question, target_title)[:LLM_LINKS]",
-        "            for l in obs.links[:LLM_LINKS]",
+        "        window = _link_window(obs, question, target_title)\n",
+        "        window = list(obs.links)\n",
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::Test预检与渲染同源",
     ),
     (
@@ -240,6 +240,97 @@ MUTATIONS = [
         '    if list(obs.get("degraded") or ()):',
         "    if False:",
         "trajectory_pipeline/tests/unit/test_mojibake.py::Test闸门侧联动",
+    ),
+    (
+        # 括号里的隐式字符串拼接少一个尾逗号——四个评分器里**只有这一处**漏过，
+        # 其余三处有，所以任何逐个确认的读法都不可靠，测试改成跨四个的性质断言。
+        "D-2 无 click 路径的理由退化成字符串",
+        "trajectory_pipeline/evaluation/scorers/code_scorer.py",
+        '"「没有可校验项」不等于「全部可找到」",))',
+        '"「没有可校验项」不等于「全部可找到」"))',
+        "trajectory_pipeline/tests/unit/test_code_scorer.py::TestReasons结构",
+    ),
+    (
+        # 2026-10-11：模型看得到按钮却不回 ref 时，旧代码 fail-closed 成 None
+        # → 不点击 → 没有 player_obs → 整批 D-2 全是 undetermined。
+        "③ ref 缺失时不由词表取回",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        "        picked = play_control_candidates(obs)\n        if picked:",
+        "        picked = play_control_candidates(obs)\n        if False:",
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestRef由代码取回",
+    ),
+    (
+        # 反向守卫：取回不是「一律判 True」。判据删掉后每个页面都会
+        # 变成「找到了播放控件」，负样本池直接被稀释。
+        "③ 无控件时不再判否",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        '        return self._answer(\n            spec, False,\n            evidence=(\n                f"{len(obs.interactive_elements)} 个交互元素中，"',
+        '        return self._answer(\n            spec, True,\n            evidence=(\n                f"{len(obs.interactive_elements)} 个交互元素中，"',
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestRef由代码取回",
+    ),
+    (
+        # W1 落 trailer_only、W3 落 no_play_control 的那条缝。
+        "③ 纯预告控件不再落trailer_only",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        "        trailers = trailer_only_candidates(obs)\n        if trailers:",
+        "        trailers = trailer_only_candidates(obs)\n        if False:",
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestRef由代码取回",
+    ),
+    (
+        # 白名单不能因为「兜底取回」而放松——模型给了不存在的 ref
+        # 仍然是编造，点错不可逆。
+        "③ 编造ref的白名单被取回逻辑架空",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        "        if ref and ref not in known:",
+        "        if False and ref and ref not in known:",
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestRef由代码取回",
+    ),
+    (
+        # 「没作答」与「地址全对不上」合成一句时，evidence 指错方向：
+        # 排查会奔着 URL 匹配去，而真正的问题是模型一个都没给。
+        "① 没作答与地址对不上共用一句话",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        '            if not raw_selected and not raw_rejected:',
+        "            if False:",
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestNoConclusionVsUnmatched",
+    ),
+    (
+        # 编号是 ① 的回指契约。去掉之后模型回 i 就全落空，
+        # 而失败形态是「整批 unresolved」——正是 2026-10-11 那批的形状。
+        "① 不再给链接编号",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        '        numbered = question == Q.SELECT_PLAY_SITES',
+        "        numbered = False",
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::Test回指编号而不是url",
+    ),
+    (
+        # 三处窗口必须同源。改 `_render` 用回全量排序前的 obs.links，
+        # 预检与渲染就又错位一次（实测：预检放行、模型收到全是导航）。
+        "① 渲染窗口不再同源",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        "        window = _link_window(obs, question, target_title)\n        # ① 题给每条链接编号",
+        "        window = list(obs.links)\n        # ① 题给每条链接编号",
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::Test回指编号而不是url",
+    ),
+    (
+        # 站点首页核：删掉之后 hao123 又会走完整条访问链，
+        # 落进 no_play_control——「找错站」与「站看不了」混成一条。
+        "① 站点首页不再剔除",
+        "trajectory_pipeline/executor/orchestrator.py",
+        "    kept: list[Candidate] = []\n    dropped: list[Candidate] = []\n    for candidate in record.candidates:\n        (dropped if _is_site_homepage(candidate.url) else kept).append(candidate)",
+        "    kept: list[Candidate] = []\n    dropped: list[Candidate] = []\n    kept = list(record.candidates)",
+        "trajectory_pipeline/tests/unit/test_visit.py::Test站点首页核",
+    ),
+    (
+        # 红线「不保存 raw CoT」的落盘点。去掉 strip_think，推理模型的
+        # 思考段落就写进 evidence——那是 SiteOutcome 的持久字段，直落 P1。
+        # 这条曾经漏了很久而门禁全绿，因为 fake 的 think 与 prose 组合
+        # 不出这个形态（已一并修好 fake，否则这条守不住）。
+        "raw CoT 不再从evidence剥掉",
+        "trajectory_pipeline/perception/llm_perceptor.py",
+        "    clean = schema_parse.strip_think(raw).strip()",
+        "    clean = raw.strip()",
+        "trajectory_pipeline/tests/unit/test_llm_perceptor.py::Test不落rawCoT",
     ),
 ]
 

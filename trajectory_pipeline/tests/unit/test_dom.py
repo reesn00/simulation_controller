@@ -30,7 +30,18 @@ ARCHIVE_DIR = Path(__file__).resolve().parents[2] / "output" / "pipeline"
 def _load(name: str) -> dict:
     path = ARCHIVE_DIR / name
     if not path.exists():
-        pytest.skip(f"实测存档不存在: {name}（先跑 probe_returns.py）")
+        pytest.skip(
+            f"实测存档不存在: {name}\n"
+            f"  生成（**必须带 --url 和 --json**，脚本默认值只写一份 "
+            f"obscura_returns.json，测试要的是两个分文件）：\n"
+            f"    uv run python trajectory_pipeline/executor/browser/"
+            f"probe_returns.py --url https://www.baidu.com/s?wd=test "
+            f"--json trajectory_pipeline/output/pipeline/obscura_returns_baidu.json\n"
+            f"    uv run python trajectory_pipeline/executor/browser/"
+            f"probe_returns.py --url https://example.com/ "
+            f"--json trajectory_pipeline/output/pipeline/"
+            f"obscura_returns_example.json"
+        )
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -286,8 +297,26 @@ class TestParseInteractive:
 
 class TestParseCount:
     def test_实测返回_json_数字(self):
-        report = _load("obscura_returns_baidu.json")
-        assert parse_count(_text(report, "count_anchor")) == 70
+        """验**形状**（obscura 的 ``browser_count`` 回的是 JSON 数字），
+        不验那天的具体数值。
+
+        第一版写的是 ``== 70``——硬编码了当年那份存档里 baidu 结果页的
+        元素总数。**那是会漂移的外部数据**：同一页换一个查询词、
+        换一天、换个地区，元素数就变，于是这条测试在 2026-10-11 重跑
+        存档时红了（实测 209），而 ``parse_count`` 一直是对的。
+
+        漂移的等值断言有个坏处：它**把数据变化报成代码变化**——
+        读的人会去改解析器，而解析器没错。
+        """
+        raw = _text(_load("obscura_returns_baidu.json"), "count_anchor")
+        value = parse_count(raw)
+        assert isinstance(value, int) and not isinstance(value, bool)
+        # 真实 count 是正数；返回 0 会同时兼容「页面上真的 0 个」与
+        # 「解析失败」，而这两种在存在性探测上不冲突——所以这里只断言
+        # 「解析器确实读懂了这个形状」，不替 obscura 保证任何具体数字。
+        assert value > 0
+        # 原始返回就是纯数字：钉住「obscura 不加引号、不带单位」这个形状。
+        assert raw.strip().isdigit()
 
     def test_零(self):
         assert parse_count("0") == 0

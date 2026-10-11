@@ -285,9 +285,17 @@ def score_d2(sample: Sample | Any) -> D2Verdict:
     """
     actions = _click_actions(sample)
     if not actions:
+        # ⚠️ **末尾的逗号不能省**：`("a" "b")` 是隐式拼接出来的**字符串**，
+        # 不是单元素 tuple。下游 `evaluation/cli` 的 json 出口对它做
+        # `list(verdict.reasons)`，于是把整句话拆成**单字符列表**——
+        # 终端上不可判定原因打印成「D-2 本」「D-2 条」，读不出任何信息。
+        #
+        # 为什么离线测试没抓到：夹具样本都带 click 动作，这条「无 click」
+        # 路径只在**真实批次**上被走到（2026-10-11 实测：那一批
+        # `FIND_PLAY_CONTROL` 一条 ref 都没回传，于是 5 条样本全落这里）。
         return D2Verdict(None, "undetermined", (),
                          ("本条样本没有模型可见的 click 动作，无引用可校验；"
-                          "「没有可校验项」不等于「全部可找到」"))
+                          "「没有可校验项」不等于「全部可找到」",))
 
     observations = list(getattr(sample, "observations", ()) or ())
     refs = tuple(judge_ref(_label_of(a), _tag_of(a), observations) for a in actions)

@@ -122,9 +122,10 @@ uv run python -m pytest -q
 | [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图 + 依赖方向、控制流与四个判断点、失败分支全集、obscura 执行层、感知层七不变式、persona 六维、模块 5/6、**存量 v1 各目录职责** |
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3 契约表、`steps[]` 三条口径、P1 三处「不给就不可判定」的字段 |
 | [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 命令全表 + 联网与否、环境变量、门禁与输出目录、`replay` 口径 |
-| [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | **已跑通什么、待办什么、实测数据**（会过时，用前先重跑命令核对） |
+| [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | **跑到哪儿了、接下来做什么**（会过时，用前先重跑命令核对；**不含历史**） |
 | [06-端到端流程.md](trajectory_pipeline/docs/06-端到端流程.md) | **一条数据从骨架走到训练样本的完整路径**：四条命令线、P1/P2/P3 流转、模块边界、执行时序 |
-| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 57 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
+| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 60 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
+| [07-增量档案.md](trajectory_pipeline/docs/07-增量档案.md) | **增量一~十一的编年史**——想知道某条设计为什么长成现在这样、或**要动守卫之前**，读它 |
 
 ### 设计方案（`trajectory_pipeline/docs/设计方案/`）
 

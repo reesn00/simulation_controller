@@ -37,11 +37,16 @@ class FakeLLM:
         *,
         down: bool = False,
         think: bool = False,
+        think_text: str = "让我看看页面上有什么",
+        think_only: bool = False,
         fence: bool = False,
         prose: bool = False,
         lie_about_ref: str = "",
         invent_urls: bool = False,
         reject_all: bool = False,
+        no_conclusion: bool = False,
+        by_index: bool = False,
+        forget_ref: bool = False,
         answers: dict[str, bool] | None = None,
         budget_exhausted: bool = False,
         answer_null: bool = False,
@@ -52,6 +57,11 @@ class FakeLLM:
         self.down = down
         #: 输出套 ``<think>`` 包裹（**raw CoT 红线的实测形态**）
         self.think = think
+        #: think 段的内容。**断言时要认得出它**——默认那句太通用，
+        #: 「evidence 里没有『让我看看』」这种断言可能被别的路径误满足。
+        self.think_text = think_text
+        #: **只输出思考、没有正文**——推理模型的另一种实测形态
+        self.think_only = think_only
         #: 输出套 ```json 代码块
         self.fence = fence
         #: 输出散文而非 JSON
@@ -61,6 +71,16 @@ class FakeLLM:
         #: ① 里编造不在观察中的 url
         self.invent_urls = invent_urls
         self.reject_all = reject_all
+        #: ① 的**实测形态**：selected 与 rejected **都留空**。
+        #: 实测（2026-10-10 T035、2026-10-11 E001）两个判断点①连续两次
+        #: 返回空数组，而**此前所有 fixture 都不产生这个形态**——
+        #: 于是「没作答」这条路径从未被断言过，evidence 才会写成
+        #: 「全部不在观察的 N 个链接里」这种字面为真、语义指错的句子。
+        self.no_conclusion = no_conclusion
+        #: ① 按新契约**回编号 i** 而不是回 URL（2026-10-11 起的主路径）
+        self.by_index = by_index
+        #: ③ **看得到控件却不回 ref**——实测 v.qq.com 就是这样丢掉整条轨迹的
+        self.forget_ref = forget_ref
         #: 逐题强制答案（键为 question id）
         self.answers = answers or {}
         #: **推理模型的实测形态**：预算被思考吃光，正文为空。
@@ -106,11 +126,16 @@ class FakeLLM:
             return None
         payload = self._build(qid, obs)
         payload = self._shape_answer(payload)
-        if self.prose:
-            return _prose_for(qid)
-        raw = json.dumps(payload, ensure_ascii=False)
+        # ⚠️ **think 包装必须在 prose 之后统一套，不能在 prose 分支提前
+        # return**。原来的写法让 ``think=True, prose=True`` 造不出
+        # 「带思考且正文不是 JSON」的形态，于是 `_why_unparsable` 里那处
+        # **raw CoT 落盘**的红线破口测试了几个月都没人发现——
+        # 不是没有测试守着，是**测试造不出这个形态**。
+        raw = _prose_for(qid) if self.prose else json.dumps(payload, ensure_ascii=False)
         if self.think:
-            raw = f"<think>让我看看页面上有什么</think>\n{raw}"
+            raw = f"<think>{self.think_text}</think>\n{raw}"
+        if self.think_only:
+            return f"<think>{self.think_text}</think>"
         if self.fence:
             raw = f"```json\n{raw}\n```"
         return raw
@@ -148,18 +173,36 @@ class FakeLLM:
                 return {"selected": [{"url": "https://编造.test/x",
                                       "title": "编的", "why": "看着像"}],
                         "rejected": []}
+            if self.no_conclusion:
+                # 实测形态：两个数组都空。**排在 invent_urls 之前也要分清
+                # 「没作答」与「作答了但地址全是编的」**——判据不同。
+                return {"selected": [], "rejected": []}
             if self.reject_all:
                 return {"selected": [],
                         "rejected": [{"url": l.get("href", ""),
                                       "reason": "不是这个作品的播放站"}
                                      for l in links[:3]]}
+            if not links:
+                return {"selected": [], "rejected": []}
+            if self.by_index:
+                # 新契约：回编号 i，不回 URL。字符串形态一并覆盖
+                # （模型爱给整数加引号）。
+                return {"selected": [{"i": str(0), "title": links[0].get("text", ""),
+                                      "why": "标题含目标片名"}],
+                        "rejected": [{"i": 1, "reason": "导航链接"}]}
             return {"selected": [{"url": links[0].get("href", ""),
                                   "title": links[0].get("text", ""),
-                                  "why": "标题含目标片名"}] if links else [],
+                                  "why": "标题含目标片名"}],
                     "rejected": []}
         if qid == lp.Q.FIND_PLAY_CONTROL:
             if self.lie_about_ref:
                 return {"ref": self.lie_about_ref, "trailer_only": False}
+            if self.forget_ref:
+                # 实测形态：页面上有控件，模型却回空 ref。**必须在
+                # 「扫元素找控件」之前返回**，否则这个形态造不出来——
+                # 而它正是 2026-10-11 丢掉 v.qq.com 整条轨迹的那个形态。
+                return {"ref": None, "trailer_only": False,
+                        "why": "页面上有播放按钮，但我没回传 ref"}
             for e in obs.get("interactive_elements") or []:
                 if is_play_control(e.get("label", "")):
                     return {"ref": e.get("ref", ""), "trailer_only": False,

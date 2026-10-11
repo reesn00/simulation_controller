@@ -44,7 +44,8 @@ from trajectory_pipeline.perception.base import Decision, Observation, Q, Questi
 from trajectory_pipeline.perception.rule_perceptor import (
     classify_paywall,
     classify_trailer,
-    is_play_control,
+    play_control_candidates,
+    trailer_only_candidates,
 )
 
 #: 本实现的置信度先验——**不是模型自报值**。取 0.8 是因为代码层已经
@@ -186,16 +187,27 @@ class LLMPerceptor:
             return self._unresolved_answer(spec, _why_unparsable(raw), started)
 
         known = {link.href for link in obs.links}
+        window = _link_window(obs, spec.id, self._target_title)
         raw_selected = _rows(schema_parse.field(data, "selected", []))
         raw_rejected = _rows(schema_parse.field(data, "rejected", []))
-        selected = [row for row in raw_selected
-                    if schema_parse.as_str(row.get("url")) in known]
-        rejected = [row for row in raw_rejected
-                    if schema_parse.as_str(row.get("url")) in known]
+        # 优先按编号回指（:func:`_render` 送给模型的每条都带 ``i``），
+        # 回不到再退回 URL 匹配——旧后端按旧契约回 url 也不至于整批作废。
+        selected = _resolve_rows(raw_selected, window, known)
+        rejected = _resolve_rows(raw_rejected, window, known)
 
         if not selected and not rejected:
-            # 全被 URL 校验刷掉 = 模型说的与我们给的候选无关。
-            # 判 False 等于说「这页一个可看站点都没有」，而输入可能只是没给全。
+            # 「模型给了条目但全对不上」与「模型压根没作答」是**两件事**，
+            # 合成一句会把复盘引向错误的方向——实测踩过：evidence 写成
+            # 「全部不在观察的 107 个链接里」，实际是模型返回了**空的**
+            # 两个数组。字面为真而语义在说别的事，排查因此绕了远路。
+            if not raw_selected and not raw_rejected:
+                return self._unresolved_answer(
+                    spec,
+                    f"模型未给出任何 selected/rejected（送进模型 "
+                    f"{len(window)} 条链接）——它**没答这道题**，"
+                    f"不是答「这页没有可看站点」",
+                    started,
+                )
             return self._unresolved_answer(
                 spec,
                 f"模型给出的 {len(raw_selected)} 个 selected / {len(raw_rejected)}"
@@ -252,6 +264,21 @@ class LLMPerceptor:
         明确的业务规则（「播放按钮或剧集按钮文本是预告片即无正片」），
         模型只能作为交叉印证。反过来做的话，一个把「预告·第1季正片」
         判成 only 的模型会把正片站点写进负样本池——**不可逆**。
+
+        **ref 同理以词表为准——模型给不给都给代码核实，缺了就由词表取回。**
+        判据有两道，缺一不可：
+
+        - 模型给的 ref **必须在观察里**（白名单），编造的 ref 直接判
+          ``None``——点了不存在的元素，报错会掩盖真实原因；
+        - 模型**没**给 ref 时不是「判不了」，而是**由代码从词表取回第一个
+          非预告控件**。实测 v.qq.com 就是这样丢掉的：模型看得到按钮却
+          忘了回传字段，于是判 ``None`` → 不点击 → 没有 ``player_obs``
+          → 判断点 ④ 无从判起 → **整批 D-2 全是 undetermined**。
+          采集链在这里断掉，代价是**这一站整条轨迹作废**，而不点就等于
+          把「模型忘了填字段」写成「这个站看不了」。
+
+        这里**绝不判 False**：负样本不可逆，而「模型没回字段」与
+        「页面没有播放控件」是两件事，前者没有任何证据支撑后者。
         """
         raw, why = self._ask(spec, _render(obs))
         if raw is None:
@@ -292,7 +319,8 @@ class LLMPerceptor:
                 suspects = [label]
             return self._answer(
                 spec, True,
-                evidence=f"选定 ref={ref} 文本 {label!r}；{_evidence(data, spec, True)}",
+                evidence=f"选定 ref={ref} 文本 {label!r}；{_evidence(data, spec, True)}"
+                         + _wordlist_note(ref, label, obs),
                 started=started,
                 payload={"ref": ref, "trailer_only": False,
                          "trailer_suspect": suspects,
@@ -300,11 +328,45 @@ class LLMPerceptor:
                              schema_parse.field(data, "evidence"))},
             )
 
-        # 无 ref：若词表在页面上确实找不到任何非预告播放控件，判 False；
-        # 否则是模型没选出来，fail-closed。
-        if _has_play_control(obs):
-            return self._unresolved_answer(
-                spec, "模型未回传 ref，但词表在本页有非预告播放控件", started)
+        # ── 无 ref：代码把 ref 取回来，不让采集链在这里断掉 ──────
+        # 词表是确定性事实层，「模型回传了哪个 ref」只是它的读数。
+        picked = play_control_candidates(obs)
+        if picked:
+            first = picked[0]
+            return self._answer(
+                spec, True,
+                evidence=(
+                    f"模型未回传 ref；代码按词表从本页 {len(picked)} 个非预告"
+                    f"播放控件中取 ref={first.ref}（文本 {first.label!r}）——"
+                    f"**词表说了算**，不以模型是否回传字段为准"
+                ),
+                started=started,
+                payload={"ref": first.ref, "trailer_only": False,
+                         "trailer_suspect": suspects,
+                         "why": schema_parse.as_str(
+                             schema_parse.field(data, "why"))
+                              or "模型未回传 ref，代码按词表取回"},
+            )
+        # ── 词表里只剩预告控件：这是 trailer_only，不是「没有控件」────
+        # 口径必须与 :meth:`RulePerceptor._find_play_control` 一致。原来
+        # LLM 版没有这一支，直落 False，于是同一个页面 W1 记
+        # ``trailer_only``、W3 记 ``no_play_control``——两条不同的负分支，
+        # 而「该站只有预告片」与「该站压根没有播放控件」在训练里是两件事。
+        trailers = trailer_only_candidates(obs)
+        if trailers:
+            trailer_suspects = [e.label for e in trailers
+                                if classify_trailer(e.label) == "suspect"]
+            if not trailer_suspects:
+                trailer_suspects = suspects
+            return self._answer(
+                spec, True,
+                evidence=(f"{len(trailers)} 个候选控件全为预告："
+                          f"{[e.label for e in trailers][:3]}"),
+                started=started,
+                payload={"ref": "", "trailer_only": not trailer_suspects,
+                         "trailer_suspect": trailer_suspects,
+                         "why": "候选控件文本均命中预告片词表"},
+            )
         if suspects:
             return self._answer(
                 spec, True,
@@ -539,6 +601,19 @@ def _ordered_links(obs: Observation, question: str,
     return hit + miss
 
 
+def _link_window(obs: Observation, question: str,
+                 target_title: str) -> list:
+    """**送给模型的那批链接**——排序后再截断，全树唯一的定义。
+
+    三处都要它，且必须三处同源：:func:`_render`（渲染）、:func:`_sufficiency`
+    的 ① 判别力检查（预检）、:func:`_select_play_sites`（把模型的 ``i``
+    映射回 href）。任何一处自己再拼一遍 ``_ordered_links(...)[:LLM_LINKS]``，
+    就多一个能悄悄错位的点——预检与渲染曾经就是这么错位过一次，
+    后果是模型收到的前 20 条全是导航栏（见 :func:`_ordered_links`）。
+    """
+    return _ordered_links(obs, question, target_title)[:LLM_LINKS]
+
+
 def _title_link_sufficiency(obs: Observation, target_title: str) -> str:
     """① 的判别力检查：链接文本里有没有片名。
 
@@ -573,7 +648,7 @@ def _title_link_sufficiency(obs: Observation, target_title: str) -> str:
     if not title:
         # 没有目标片名就无从匹配。这不是「判为否」，是问错了题。
         return "未绑定目标片名，① 无法匹配，不判"
-    window = _ordered_links(obs, Q.SELECT_PLAY_SITES, title)[:LLM_LINKS]
+    window = _link_window(obs, Q.SELECT_PLAY_SITES, title)
     hits = sum(1 for link in window if title in (link.text or ""))
     if hits:
         return ""
@@ -614,11 +689,19 @@ def _render(obs: Observation, *, target_title: str = "",
     }
     if obs.links:
         # 与 :func:`_title_link_sufficiency` 同源：同一批链接、同一个顺序、
-        # 同一个截断长度。两处不同源就是「预检放行了模型答不了的题」。
-        out["links"] = [
-            {"text": l.text[:60], "href": l.href}
-            for l in _ordered_links(obs, question, target_title)[:LLM_LINKS]
-        ]
+        # 同一个截断长度（:func:`_link_window`）。不同源就是「预检放行了
+        # 模型答不了的题」——那正是 2026-10-10 踩过的坑。
+        window = _link_window(obs, question, target_title)
+        # ① 题给每条链接编号，并要求模型回编号而不是回 URL：
+        # **回长 URL 是记忆任务，回编号是复制任务**，出错率差一个量级——
+        # 模型会顺手改写 scheme、吞掉 www、丢掉 query 尾巴，于是
+        # 「选的 URL 压根不在观察里」整批作废。编号把它降级成纯复制，
+        # 而回传后的 href 由代码从窗口里取，模型碰不到字符串。
+        numbered = question == Q.SELECT_PLAY_SITES
+        links = [{"text": l.text[:60], "href": l.href} for l in window]
+        if numbered:
+            links = [{"i": n, **row} for n, row in enumerate(links)]
+        out["links"] = links
         out["links_total"] = len(obs.links)
     if target_title:
         out["target_title"] = target_title
@@ -628,14 +711,78 @@ def _render(obs: Observation, *, target_title: str = "",
 
 
 def _why_unparsable(raw: str) -> str:
-    """解析失败的原因串。**带上模型实际说了什么**。
+    """解析失败的原因串。**带上模型实际说了什么——但剥掉思考过程。**
 
     只写「无法解析为 JSON」的话，模型输出格式漂移这件事没法从存档里
     看见——而它恰恰是最该按批次统计的东西（某个后端版本开始套 markdown
     fence，是从存档里一眼看出来的，不是从报错里）。
+
+    ⚠️ **必须先** :func:`~trajectory_pipeline.llm.schema_parse.strip_think`
+    再截前 120 字，否则 :meth:`LLMPerceptor.decide` 会把 **raw CoT**
+    写进 ``evidence``——那是 CLAUDE.md 红线「不保存 raw CoT」的一条真实
+    破口：``evidence`` 是 :class:`SiteOutcome` 的持久字段，直接落 P1。
+
+    实测形态确凿（2026-10-11 核对时构造）::
+
+        <think>模型内部推理：链接里有 5 条像结果…</think>根据页面观察，我无法确定。
+
+    前 120 字**全是思考**。而这不是罕见分支——解析失败本身在真实批次里
+    是常态（散文、格式漂移、markdown fence），推理模型又恰好人人带 think，
+    两件事撞上就漏。
+
+    剥完为空是另一件事，单独说：那是「模型只吐了思考、没有正文」，
+    症状与 :class:`~trajectory_pipeline.llm.client.LLMClient` 报的预算耗尽
+    同源但不同因（那个压根没返回正文），所以要能从 evidence 里认出来。
     """
-    head = raw[:120].replace("\n", " ")
+    clean = schema_parse.strip_think(raw).strip()
+    if not clean:
+        return ("模型输出剥掉思考过程后为空——只输出了 reasoning，"
+                "没有正文（推理模型形态；查 max_tokens 预算或后端行为）")
+    head = clean[:120].replace("\n", " ")
     return f"LLM 有输出但无法解析为 JSON（前 120 字）：{head}"
+
+
+def _resolve_rows(rows: list[dict[str, Any]], window: list,
+                  known: set[str]) -> list[dict[str, Any]]:
+    """把模型回的行落到**观察里真实存在**的链接上。
+
+    两条路径，先编号后 URL：编号 ``i`` 是渲染时送给模型的那批的序号
+    （见 :func:`_render`），回指它等于把「记忆一个长 URL」降级成
+    「复制一个整数」；回不到编号再退回 URL 匹配，好让按旧契约回
+    ``url`` 的后端不至于整批作废。
+
+    命中的行补上 ``url`` 字段：下游（:func:`_apply_selection` 与记账）
+    只认 ``url``，而它要的是**观察里的原始 href**，也就是
+    ``Candidate.source_href`` 那一侧。
+
+    对不上的行整条丢掉——留着会让控制流去访问模型编的地址，
+    而那次访问会以「不可达」入负样本池，污染出一个并不存在的失败原因。
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        idx = _as_index(row.get("i"))
+        if idx is not None and 0 <= idx < len(window):
+            href = window[idx].href
+        else:
+            href = schema_parse.as_str(row.get("url"))
+        if href in known:
+            out.append({**row, "url": href})
+    return out
+
+
+def _as_index(value: Any) -> int | None:
+    """把模型回的编号读成 :class:`int`，读不出返回 ``None``。
+
+    JSON 里的编号可能是 int 也可能是 str（模型爱给整数加引号）；
+    ``bool`` 是 ``int`` 的子类，不排除的话 ``true`` 会被当成 1 号链接。
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
 
 
 def _rows(value: Any) -> list[dict[str, Any]]:
@@ -647,15 +794,20 @@ def _rows(value: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _has_play_control(obs: Observation) -> bool:
-    """页面上是否**确有**非预告播放控件（词表判据，复用 W1 的表）。
+def _wordlist_note(ref: str, label: str, obs: Observation) -> str:
+    """模型给的 ref 未命中播放控件词表时的**标注**——标注，不是否决。
 
-    import 而不是复制：两份词表迟早不同步，而不同步的后果是
-    「W3 判 False、W1 判 True」——同一批素材两个结论，且都像对的。
+    图标按钮（纯 SVG / 文本挂在 ``aria-label`` 上 / ``<span>`` 套 ``<i>``）
+    常过不了词表，而模型看得懂它的视觉语义，所以这里只留痕不改结论。
+    但**必须留痕**：模型与词表不一致时，人得知道该信哪边——而禁止投票
+    意味着分歧必须暴露给人看，不能由代码悄悄择一。
+
+    命中词表时返回空串，不给 evidence 添噪音。
     """
-    return any(is_play_control(e.label)
-               for e in obs.interactive_elements
-               if classify_trailer(e.label) == "none")
+    if any(e.ref == ref for e in play_control_candidates(obs)):
+        return ""
+    return (f"；⚠️ 该 ref 未命中播放控件词表（模型与词表不一致，"
+            f"可能是图标按钮）——留痕待人工复核")
 
 
 def _evidence(data: Mapping[str, Any], spec: Question, answer: bool) -> str:

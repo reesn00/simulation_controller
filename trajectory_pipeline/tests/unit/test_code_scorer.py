@@ -332,6 +332,65 @@ def self_obs():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# ``reasons`` 的**结构**（不是内容）
+#
+# 真实批次撞出来的（2026-10-11）：一条没有 click 动作的样本上，
+# ``score_d2`` 传进 ``D2Verdict`` 的第 4 个位置是
+# ``("文字一" "文字二")`` —— 隐式拼接出来的**字符串**，不是 tuple。
+# 下游 ``evaluation/cli`` 的 json 出口对它做 ``list(verdict.reasons)``，
+# 于是整句话被拆成**单字符列表**，终端上不可判定原因打印成
+# 「D-2 本」「D-2 条」——报表唯一的那句解释变成噪声。
+#
+# 离线测试为什么没抓到：夹具样本都带 click 动作，
+# 这条路径只在真实批次上被走到（那一批 ``FIND_PLAY_CONTROL``
+# 一条 ref 都没回传，5 条样本全落这里）。
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestReasons结构:
+    def test_无click路径的理由是完整字符串(self):
+        v = score_d2(_sample(
+            ActionView(tool="goto", params={"url": "https://x.test/m"}),
+            observations=[_obs()]))
+        assert v.reasons == (
+            "本条样本没有模型可见的 click 动作，无引用可校验；"
+            "「没有可校验项」不等于「全部可找到」",)
+
+    def test_所有评分器的理由都不是被拆过的字符(self):
+        """性质断言：``list(verdict.reasons)`` 的每个元素都得是**整句**。
+
+        写成「跨四个评分器」而不是「给 D-2 补一条」，是因为这个形态
+        （括号里写字符串忘了尾逗号）在四处构造点里**只有一处漏了**——
+        其余三处靠肉眼很难逐个确认。性质断言一次盖住所有评分器，
+        且它在任何 scorer 上复发都会变红。
+        """
+        from trajectory_pipeline.evaluation.scorers import (
+            d4_scorer, d5_scorer, d6_scorer,
+        )
+
+        samples = [
+            # 无 click → 走「没有可校验项」那条路径（本次修复的那条）
+            _sample(ActionView(tool="goto", params={"url": "https://x/"}),
+                    observations=[_obs()]),
+            # 有 click → 正常出分路径
+            _sample(_click("立即播放"), observations=[self_obs()]),
+        ]
+        for fn in (score_d2, d4_scorer.score_d4,
+                   d5_scorer.score_d5, d6_scorer.score_d6):
+            for s in samples:
+                v = fn(s)
+                assert isinstance(v.reasons, tuple), (
+                    f"{fn.__name__}: reasons 不是 tuple（隐式拼接字符串？）")
+                for r in v.reasons:
+                    assert isinstance(r, str), f"{fn.__name__}: 元素不是 str"
+                    assert len(r) > 1, (
+                        f"{fn.__name__}: 理由被拆成单字符了——"
+                        f"{r!r}；入口处少了一个尾逗号")
+                    assert not r.startswith(" ") and not r.endswith(" "), (
+                        f"{fn.__name__}: 理由首尾带空白——同样是被拆过的形态")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 真实存档
 #
 # 离线 fixture 是我们自己造的，规则和 fixture 一起错，测试照样绿
