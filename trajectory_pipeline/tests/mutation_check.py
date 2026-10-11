@@ -107,10 +107,11 @@ MUTATIONS = [
         "trajectory_pipeline/tests/unit/test_factory.py::TestModeSelection",
     ),
     (
+        # 2026-10-11：json.dumps 拆行 + ensure_ascii=False 后旧锚点漂移成 SKIP
         "题目写进请求正文",
         "trajectory_pipeline/perception/llm_perceptor.py",
-        '        user = json.dumps({"question": spec.id, "observation": rendered},',
-        '        user = json.dumps({"observation": rendered},',
+        '        user = json.dumps(\n            {"question": spec.id, "observation": rendered}, ensure_ascii=False\n        )',
+        '        user = json.dumps(\n            {"observation": rendered}, ensure_ascii=False\n        )',
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py",
     ),
     (
@@ -269,10 +270,11 @@ MUTATIONS = [
     (
         # 反向守卫：取回不是「一律判 True」。判据删掉后每个页面都会
         # 变成「找到了播放控件」，负样本池直接被稀释。
+        # 2026-10-11：_answer 参数拆行后旧锚点漂移成 SKIP
         "③ 无控件时不再判否",
         "trajectory_pipeline/perception/llm_perceptor.py",
-        '        return self._answer(\n            spec, False,\n            evidence=(\n                f"{len(obs.interactive_elements)} 个交互元素中，"',
-        '        return self._answer(\n            spec, True,\n            evidence=(\n                f"{len(obs.interactive_elements)} 个交互元素中，"',
+        '        return self._answer(\n            spec,\n            False,\n            evidence=(\n                f"{len(obs.interactive_elements)} 个交互元素中，"',
+        '        return self._answer(\n            spec,\n            True,\n            evidence=(\n                f"{len(obs.interactive_elements)} 个交互元素中，"',
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestRef由代码取回",
     ),
     (
@@ -333,10 +335,14 @@ MUTATIONS = [
         # 思考段落就写进 evidence——那是 SiteOutcome 的持久字段，直落 P1。
         # 这条曾经漏了很久而门禁全绿，因为 fake 的 think 与 prose 组合
         # 不出这个形态（已一并修好 fake，否则这条守不住）。
+        # 2026-10-11：strip_think 在 _excerpt 与 _why_unparsable 各一处，无上下文
+        # 的锚点会被 replace(...,1) 打在第一处 _excerpt，而测试打的是
+        # _why_unparsable——变异落不到靶心，整条 ALIVE。锚点用 `return (`
+        # 唯一锁定 _why_unparsable。
         "raw CoT 不再从evidence剥掉",
         "trajectory_pipeline/perception/llm_perceptor.py",
-        "    clean = schema_parse.strip_think(raw).strip()",
-        "    clean = raw.strip()",
+        "    clean = schema_parse.strip_think(raw).strip()\n    if not clean:\n        return (",
+        "    clean = raw.strip()\n    if not clean:\n        return (",
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::Test不落rawCoT",
     ),
 ]

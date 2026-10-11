@@ -24,38 +24,73 @@ from trajectory_pipeline.assembler.schema import P1ShapeError
 
 
 def _obs(url="u", **kw):
-    base = {"url": url, "page_title": "T", "body_text": "正文", "truncated": False,
-            "degraded": [], "video_tag_count": 0, "iframe_count": 0,
-            "interactive_elements": [], "links": []}
+    base = {
+        "url": url,
+        "page_title": "T",
+        "body_text": "正文",
+        "truncated": False,
+        "degraded": [],
+        "video_tag_count": 0,
+        "iframe_count": 0,
+        "interactive_elements": [],
+        "links": [],
+    }
     base.update(kw)
     return base
 
 
 def _visit(url, landed=None, success=False, **over):
-    return {"url": url, "landed_url": landed or url, "success": success,
-            "notes": [], "steps": [], "site_obs": _obs(landed or url),
-            "player_obs": None, **over}
+    return {
+        "url": url,
+        "landed_url": landed or url,
+        "success": success,
+        "notes": [],
+        "steps": [],
+        "site_obs": _obs(landed or url),
+        "player_obs": None,
+        **over,
+    }
 
 
 def _outcome(url, branch):
-    return {"url": url, "branch": branch, "branch_label": "", "evidence": "e",
-            "question": "player.ok", "source": "rule", "fallback_used": False,
-            "reached_play_page": True, "is_negative_sample": False}
+    return {
+        "url": url,
+        "branch": branch,
+        "branch_label": "",
+        "evidence": "e",
+        "question": "player.ok",
+        "source": "rule",
+        "fallback_used": False,
+        "reached_play_page": True,
+        "is_negative_sample": False,
+    }
 
 
 def _arc(**over):
     base = {
-        "task_id": "T001", "title": "功夫", "query": "功夫 在线观看",
-        "user_prompt": "有没有能看正片的", "search_url": "https://s.test",
-        "search_observation": _obs("https://s.test"), "search_blocked": "",
-        "steps": [], "provenance": {"genre": "喜剧"},
+        "task_id": "T001",
+        "title": "功夫",
+        "query": "功夫 在线观看",
+        "user_prompt": "有没有能看正片的",
+        "search_url": "https://s.test",
+        "search_observation": _obs("https://s.test"),
+        "search_blocked": "",
+        "steps": [],
+        "provenance": {"genre": "喜剧"},
         # 健康存档**有**运行参数快照：批次级断言 B-2（覆盖完整性）的分母
         # 取自 run_config.max_candidates。缺它会被 ``run_config_missing``
         # 判 DEGRADED，测试里要模拟降级就显式 pop 掉。
-        "run_config": {"engine": "baidu", "max_candidates": 20,
-                       "max_chars": None, "stop_after_success": 0,
-                       "per_site_timeout_s": 90.0},
-        "candidates": [], "visits": [], "outcomes": [], "ledger": None,
+        "run_config": {
+            "engine": "baidu",
+            "max_candidates": 20,
+            "max_chars": None,
+            "stop_after_success": 0,
+            "per_site_timeout_s": 90.0,
+        },
+        "candidates": [],
+        "visits": [],
+        "outcomes": [],
+        "ledger": None,
         "warnings": [],
     }
     base.update(over)
@@ -86,14 +121,16 @@ class TestSchemaVersion:
         后者说「这份数据是旧的」——后者是猜的。补一个默认值等于
         凭空断言，于是所有历史存档会被静默归进「旧版」那一档。"""
         arc = _arc(visits=[_visit("https://a.test/")])
-        assert "schema_version" not in arc          # 模拟 2026-10-10 之前的存档
+        assert "schema_version" not in arc  # 模拟 2026-10-10 之前的存档
         for s in schema.split_archive(_write(tmp_path, arc)):
             assert s.schema_version == ""
 
     def test_进P2(self, tmp_path):
         arc = _arc(schema_version="2", visits=[_visit("https://a.test/")])
-        assert schema.split_archive(_write(tmp_path, arc))[0].to_json()[
-            "schema_version"] == "2"
+        assert (
+            schema.split_archive(_write(tmp_path, arc))[0].to_json()["schema_version"]
+            == "2"
+        )
 
 
 class TestGranularity:
@@ -108,12 +145,21 @@ class TestGranularity:
         assert schema.split_archive(_write(tmp_path, arc))[0].unit == "search"
 
     def test_站点单元带落地前后两个观察(self, tmp_path):
-        arc = _arc(visits=[_visit("https://a.test/", "https://a.test/play",
-                                  site_obs=_obs("https://a.test"),
-                                  player_obs=_obs("https://a.test/play", video_tag_count=1))])
+        arc = _arc(
+            visits=[
+                _visit(
+                    "https://a.test/",
+                    "https://a.test/play",
+                    site_obs=_obs("https://a.test"),
+                    player_obs=_obs("https://a.test/play", video_tag_count=1),
+                )
+            ]
+        )
         site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert [o["url"] for o in site.observations] == \
-            ["https://a.test", "https://a.test/play"]
+        assert [o["url"] for o in site.observations] == [
+            "https://a.test",
+            "https://a.test/play",
+        ]
 
     def test_没有观察的单元不产出(self, tmp_path):
         """两者皆空 → 切不出东西。抛出来而不是给一条空样本。"""
@@ -141,10 +187,14 @@ class TestOutcomePairing:
         assert site.outcome.branch == "no_play_control"
 
     def test_候选地址也能配(self, tmp_path):
-        arc = _arc(visits=[_visit("https://x.test/movie")],
-                   outcomes=[_outcome("https://x.test/movie", "no_play_control")])
-        assert schema.split_archive(_write(tmp_path, arc))[1].outcome.branch \
+        arc = _arc(
+            visits=[_visit("https://x.test/movie")],
+            outcomes=[_outcome("https://x.test/movie", "no_play_control")],
+        )
+        assert (
+            schema.split_archive(_write(tmp_path, arc))[1].outcome.branch
             == "no_play_control"
+        )
 
     def test_配不上要留痕(self, tmp_path):
         """静默 None 与「搜索阶段本来就没有 outcome」同形。"""
@@ -156,16 +206,20 @@ class TestOutcomePairing:
     def test_成功即无分支(self, tmp_path):
         """``ledger`` 只记失败分支，成功的访问不记账——
         所以 ``branch=None`` 是**成功**，不是「没结论」。"""
-        arc = _arc(visits=[_visit("https://x.test/", success=True)],
-                   outcomes=[_outcome("https://x.test/", None)])
+        arc = _arc(
+            visits=[_visit("https://x.test/", success=True)],
+            outcomes=[_outcome("https://x.test/", None)],
+        )
         site = schema.split_archive(_write(tmp_path, arc))[1]
         assert site.outcome.succeeded is True
 
     def test_成功与分支对不上要留痕(self, tmp_path):
         """「成功」直接决定样本进不进训练集，而它必须只有一个来源说了算。
         两个来源打架时标记出来，而不是挑一个——挑一个就是在猜。"""
-        arc = _arc(visits=[_visit("https://x.test/", success=True)],
-                   outcomes=[_outcome("https://x.test/", "no_play_control")])
+        arc = _arc(
+            visits=[_visit("https://x.test/", success=True)],
+            outcomes=[_outcome("https://x.test/", "no_play_control")],
+        )
         site = schema.split_archive(_write(tmp_path, arc))[1]
         assert "success_branch_mismatch" in site.degraded_from
 
@@ -190,10 +244,37 @@ class TestBlockedRun:
 
     def test_被拦但还有访问记录时站点仍成条(self, tmp_path):
         """拦截的是搜索页，已访问的站点不受影响。"""
-        arc = _arc(search_blocked="captcha",
-                   visits=[_visit("https://a.test/")],
-                   outcomes=[_outcome("https://a.test/", "unresolved")])
-        assert [s.unit for s in schema.split_archive(_write(tmp_path, arc))] == ["site-1"]
+        arc = _arc(
+            search_blocked="captcha",
+            visits=[_visit("https://a.test/")],
+            outcomes=[_outcome("https://a.test/", "unresolved")],
+        )
+        assert [s.unit for s in schema.split_archive(_write(tmp_path, arc))] == [
+            "site-1"
+        ]
+
+    def test_搜索页采集失败时不切搜索单元(self, tmp_path):
+        """T048 这类坏档：``search_blocked`` 为空，但 warnings 记了
+        「搜索页采集失败」（网络错误），同样没有进入决策——零条是
+        正常形态，不能抛。"""
+        arc = _arc(
+            search_observation=None,
+            visits=[],
+            warnings=["搜索页采集失败: DriverError: Network error"],
+        )
+        assert schema.split_archive(_write(tmp_path, arc)) == []
+
+    def test_采集失败但还有访问记录时站点仍成条(self, tmp_path):
+        """失败的只是搜索页，已访问过的站点不受影响。"""
+        arc = _arc(
+            search_observation=None,
+            visits=[_visit("https://a.test/")],
+            outcomes=[_outcome("https://a.test/", "unresolved")],
+            warnings=["搜索页采集失败: DriverError: Network error"],
+        )
+        assert [s.unit for s in schema.split_archive(_write(tmp_path, arc))] == [
+            "site-1"
+        ]
 
 
 class TestDegradedMarkers:
@@ -203,32 +284,60 @@ class TestDegradedMarkers:
             assert "steps" in s.degraded_from
 
     def test_有steps时不留痕(self, tmp_path):
-        arc = _arc(steps=[{"action": {"tool": "goto", "params": {"url": "u"},
-                                      "origin": "model", "target": None},
-                          "observation": None, "error": ""}],
-                   visits=[dict(_visit("https://a.test/"), steps=[
-                       {"action": {"tool": "goto", "params": {"url": "u"},
-                                   "origin": "model", "target": None},
-                        "observation": None, "error": ""}])])
+        arc = _arc(
+            steps=[
+                {
+                    "action": {
+                        "tool": "goto",
+                        "params": {"url": "u"},
+                        "origin": "model",
+                        "target": None,
+                    },
+                    "observation": None,
+                    "error": "",
+                }
+            ],
+            visits=[
+                dict(
+                    _visit("https://a.test/"),
+                    steps=[
+                        {
+                            "action": {
+                                "tool": "goto",
+                                "params": {"url": "u"},
+                                "origin": "model",
+                                "target": None,
+                            },
+                            "observation": None,
+                            "error": "",
+                        }
+                    ],
+                )
+            ],
+        )
         for s in schema.split_archive(_write(tmp_path, arc)):
             assert "steps" not in s.degraded_from
 
     def test_缺用户轮次要留痕(self, tmp_path):
         arc = _arc()
         arc.pop("user_prompt")
-        assert "user_prompt" in schema.split_archive(_write(tmp_path, arc))[0].degraded_from
+        assert (
+            "user_prompt"
+            in schema.split_archive(_write(tmp_path, arc))[0].degraded_from
+        )
 
     def test_只有预览正文标preview_only(self, tmp_path):
         """400 字符冒充全文 → rationale 的实体核查会把落在预览外的实体
         判成幻觉。那不是幻觉，是**没存**。"""
         arc = _arc(search_observation={"url": "u", "body_preview": "前四百字"})
-        assert "body_preview_only" in \
-            schema.split_archive(_write(tmp_path, arc))[0].degraded_from
+        assert (
+            "body_preview_only"
+            in schema.split_archive(_write(tmp_path, arc))[0].degraded_from
+        )
 
     def test_完全没正文标no_body(self, tmp_path):
         arc = _arc(search_observation={"url": "u", "body_text": ""})
-        assert "no_body" in \
-            schema.split_archive(_write(tmp_path, arc))[0].degraded_from
+        assert "no_body" in schema.split_archive(_write(tmp_path, arc))[0].degraded_from
 
     def test_缺运行参数要留痕(self, tmp_path):
         """缺 ``run_config`` 时批次级断言 B-2 的分母不可知。
@@ -246,13 +355,37 @@ class TestDegradedMarkers:
 
     def test_新存档零降级(self, tmp_path):
         """一条干净的样本必须能一眼认出来。标记若总在，整条标记就失效了。"""
-        arc = _arc(steps=[{"action": {"tool": "goto", "params": {"url": "u"},
-                                      "origin": "model", "target": None},
-                          "observation": None, "error": ""}],
-                   visits=[dict(_visit("https://a.test/"), steps=[
-                       {"action": {"tool": "goto", "params": {"url": "u"},
-                                   "origin": "model", "target": None},
-                        "observation": None, "error": ""}])])
+        arc = _arc(
+            steps=[
+                {
+                    "action": {
+                        "tool": "goto",
+                        "params": {"url": "u"},
+                        "origin": "model",
+                        "target": None,
+                    },
+                    "observation": None,
+                    "error": "",
+                }
+            ],
+            visits=[
+                dict(
+                    _visit("https://a.test/"),
+                    steps=[
+                        {
+                            "action": {
+                                "tool": "goto",
+                                "params": {"url": "u"},
+                                "origin": "model",
+                                "target": None,
+                            },
+                            "observation": None,
+                            "error": "",
+                        }
+                    ],
+                )
+            ],
+        )
         assert schema.split_archive(_write(tmp_path, arc))[0].degraded_from == ()
 
 
@@ -266,7 +399,10 @@ class TestSampleId:
 
     def test_同批次内按unit单调(self, tmp_path):
         arc = _arc(visits=[_visit(f"https://a{i}.test/") for i in range(12)])
-        units = [s.sample_id.split("__")[2] for s in schema.split_archive(_write(tmp_path, arc))]
+        units = [
+            s.sample_id.split("__")[2]
+            for s in schema.split_archive(_write(tmp_path, arc))
+        ]
         assert units == ["search"] + [f"site-{i}" for i in range(1, 13)]
 
     def test_取run_id(self):
@@ -290,8 +426,9 @@ class TestIterSamples:
         这里再选一次就会同一条跑两遍，而两遍的复核结论可能不同。"""
         _write(tmp_path, _arc(), "T001__a1.json")
         _write(tmp_path, _arc(), "T001__a1.reviewed.json")
-        assert [s.sample_id for s in schema.iter_samples(tmp_path)] == \
-            ["T001__a1__search"]
+        assert [s.sample_id for s in schema.iter_samples(tmp_path)] == [
+            "T001__a1__search"
+        ]
 
     def test_按文件名排序(self, tmp_path):
         _write(tmp_path, _arc(task_id="T002"), "T002__b1.json")
@@ -301,8 +438,32 @@ class TestIterSamples:
     def test_被拦的run不打断整批(self, tmp_path):
         """一批里混进几个被反爬拦的 run 是常态（executor 的警告里就写着
         「直接重跑同一引擎大概率仍是验证码页」）。抛出去等于整批陪葬。"""
-        _write(tmp_path, _arc(task_id="T001", search_blocked="captcha",
-                              search_observation=None, visits=[]), "T001__a1.json")
+        _write(
+            tmp_path,
+            _arc(
+                task_id="T001",
+                search_blocked="captcha",
+                search_observation=None,
+                visits=[],
+            ),
+            "T001__a1.json",
+        )
+        _write(tmp_path, _arc(task_id="T002"), "T002__a1.json")
+        assert [s.task_id for s in schema.iter_samples(tmp_path)] == ["T002"]
+
+    def test_采集失败的run不打断整批(self, tmp_path):
+        """一批里混进一个搜索页采集失败的 run（T048 坏档形态）不能
+        打断整批，后续正常 run 仍要产出。"""
+        _write(
+            tmp_path,
+            _arc(
+                task_id="T001",
+                search_observation=None,
+                visits=[],
+                warnings=["搜索页采集失败: DriverError: Network error"],
+            ),
+            "T001__a1.json",
+        )
         _write(tmp_path, _arc(task_id="T002"), "T002__a1.json")
         assert [s.task_id for s in schema.iter_samples(tmp_path)] == ["T002"]
 
@@ -336,8 +497,10 @@ class TestReadArchive:
 
 class TestToolSpec:
     def test_可见动作排除执行器内部动作(self):
-        assert {t.name for t in schema.TOOL_SPECS if t.visible_to_model()} == \
-            {"goto", "click"}
+        assert {t.name for t in schema.TOOL_SPECS if t.visible_to_model()} == {
+            "goto",
+            "click",
+        }
 
     def test_参数名可序列化(self):
         assert schema.TOOL_SPECS[0].to_json()["params"] == ["url"]
@@ -359,26 +522,30 @@ def _step(tool, rationale=None, url="u"):
 
 
 def _written(text, conclusion=""):
-    return {"status": "written",
-            "rationale": {"text": text, "conclusion": conclusion}}
+    return {"status": "written", "rationale": {"text": text, "conclusion": conclusion}}
 
 
 class TestRationale对齐:
     """第 ⑥ 件**与动作逐步对齐**（2026-10-10 改，原为整条一条）。"""
 
     def _site_sample(self, tmp_path, vsteps):
-        arc = _arc(visits=[dict(_visit("https://a.test/"), steps=vsteps)],
-                   outcomes=[_outcome("https://a.test/", "no_play_control")])
+        arc = _arc(
+            visits=[dict(_visit("https://a.test/"), steps=vsteps)],
+            outcomes=[_outcome("https://a.test/", "no_play_control")],
+        )
         samples = schema.split_archive(_write(tmp_path, arc))
         # [0] 是搜索单元、[1] 是 site-1——**取错单元是这里最容易踩的坑**，
         # 而症状是「rationale 一条都没有」（搜索单元的 steps 本来就是空的）。
         return samples[1]
 
     def test_逐条对齐不压成一条(self, tmp_path):
-        s = self._site_sample(tmp_path, [
-            _step("goto", _written("先打开候选站"), "https://a.test/"),
-            _step("click", _written("页面里有播放按钮，点它")),
-        ])
+        s = self._site_sample(
+            tmp_path,
+            [
+                _step("goto", _written("先打开候选站"), "https://a.test/"),
+                _step("click", _written("页面里有播放按钮，点它")),
+            ],
+        )
         assert [r.step_index for r in s.rationales] == [0, 1]
         assert s.rationales[1].text == "页面里有播放按钮，点它"
         assert s.rationale_missing is False
@@ -386,22 +553,29 @@ class TestRationale对齐:
     def test_缺一条不挪位(self, tmp_path):
         """中间缺一条时**不得按出现顺序猜**——猜出来会整体错位，
         而错位的 rationale 会被时序核查当成凭空引入的实体。"""
-        s = self._site_sample(tmp_path, [
-            _step("goto", _written("第 0 步")),
-            _step("click", None),
-            _step("type", _written("第 2 步")),
-        ])
+        s = self._site_sample(
+            tmp_path,
+            [
+                _step("goto", _written("第 0 步")),
+                _step("click", None),
+                _step("type", _written("第 2 步")),
+            ],
+        )
         got = {r.step_index: r.text for r in s.rationales}
         assert got == {0: "第 0 步", 2: "第 2 步"}
 
     def test_未写成的步骤三态透传(self, tmp_path):
-        s = self._site_sample(tmp_path, [
-            _step("goto", {"status": "unavailable",
-                           "reason": "LLM 不可用（连不上）"}),
-        ])
+        s = self._site_sample(
+            tmp_path,
+            [
+                _step(
+                    "goto", {"status": "unavailable", "reason": "LLM 不可用（连不上）"}
+                ),
+            ],
+        )
         r = s.rationales[0]
         assert r.status == "unavailable"
-        assert r.text == ""                 # 文本位留空，不合成占位
+        assert r.text == ""  # 文本位留空，不合成占位
         assert "连不上" in r.reason
         assert s.rationale_missing is True
 

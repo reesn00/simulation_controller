@@ -496,6 +496,20 @@ def read_archive(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def _search_collection_failed(archive: Mapping[str, Any]) -> bool:
+    """搜索页采集是否因异常失败（网络错误等），而非正常搜到再被拦。
+
+    与 :data:`search_blocked` 一样是「采集/决策**尚未发生**」的形态：
+    executor 在搜索页 ``goto``/``observe`` 抛异常时提前 return，只留一条
+    ``搜索页采集失败: <ExcType>: <exc>`` warning，没有任何搜索观察或访问
+    记录。此时切不出样本**不是错误**——被 :func:`iter_samples` 遍历时
+    抛出会让整批陪葬（同 :data:`search_blocked` 的豁免逻辑）。
+    """
+    return any(
+        str(w).startswith("搜索页采集失败") for w in archive.get("warnings") or ()
+    )
+
+
 def _obs_missing(obs: Mapping[str, Any]) -> str | None:
     """这条观察缺了什么，返回可写进 ``degraded_from`` 的标记；不缺返回 ``None``。
 
@@ -635,9 +649,10 @@ def split_archive(path: str | Path) -> list[Sample]:
     """把一份 P1 存档切成若干条样本（一个决策单元一条）。
 
     产出条数 = 1（搜索阶段）+ N（每个访问过的站点）。搜索阶段在
-    ``search_blocked`` 非空时**不产出**——被反爬拦住的 run 压根没进入
-    决策，那一步的观察是验证码页，切成「模型该怎么做」的样本只会教它
-    学会对着验证码页编答案。这与 executor 把反爬单开字段、不进分支体系
+    ``search_blocked`` 非空或搜索页采集失败（网络错误）时**不产出**——
+    被反爬拦 / 没搜到任何东西的 run 压根没进入决策：前者那一步的观察
+    是验证码页，切成「模型该怎么做」的样本只会教它对着验证码页编答案；
+    后者连搜索观察都没有。这与 executor 把反爬单开字段、不进分支体系
     是同一条纪律的延续。
     """
     p = Path(path)
@@ -665,7 +680,11 @@ def split_archive(path: str | Path) -> list[Sample]:
 
     # ── 单元 1：搜索阶段 ────────────────────────────────────────────
     search_obs = archive.get("search_observation")
-    if search_obs and not archive.get("search_blocked"):
+    if (
+        search_obs
+        and not archive.get("search_blocked")
+        and not _search_collection_failed(archive)
+    ):
         degraded = list(base_degraded)
         miss = _obs_missing(search_obs)
         if miss:
@@ -726,11 +745,15 @@ def split_archive(path: str | Path) -> list[Sample]:
             )
         )
 
-    if not out and archive.get("search_blocked"):
-        # 被反爬拦的 run 产出零条**是正常形态**，不是错误。抛出去会让
-        # :func:`iter_samples` 在遍历目录时整批中断——而一批里混进几个
-        # 被拦的 run 是常态（见 executor 里「直接重跑同一引擎大概率仍是
-        # 验证码页」那条警告）。
+    if not out and (
+        archive.get("search_blocked") or _search_collection_failed(archive)
+    ):
+        # 搜索阶段没进决策的 run 产出零条**是正常形态**，不是错误：
+        # 要么被反爬拦（观察是验证码页），要么搜索页采集失败（网络错误，
+        # T048 这类坏档连搜索观察都没有）。抛出去会让 :func:`iter_samples`
+        # 在遍历目录时整批中断——而一批里混进几个这样的 run 是常态
+        # （反爬见 executor 里「直接重跑同一引擎大概率仍是验证码页」那条
+        # 警告，网络错误见真实存档 ``T048__5aa34cf7.json``）。
         return []
     if not out:
         raise P1ShapeError(
@@ -748,7 +771,8 @@ def iter_samples(root: str | Path, pattern: str = "*.json") -> Iterable[Sample]:
       ``task_id``，会直接抛 :class:`P1ShapeError` 把整批打断。
     - **复核档跳过**：由 executor 侧 :func:`~trajectory_pipeline.executor.archive.select_archives`
       统一挑选。这里再选一次，同一条就会跑两遍，而两遍的复核结论可能不同。
-    - **被反爬拦的 run 产出零条**，不算错误（见 :func:`split_archive`）。
+    - **被反爬拦 / 搜索页采集失败的 run 产出零条**，不算错误（见
+      :func:`split_archive`）。
     - **存档本身损坏则抛出，不吞**。坏档静默变成「零样本」的话，
       批次看起来只是少了几条，没人会去查。异常消息里带文件名。
     """

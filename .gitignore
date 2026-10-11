@@ -71,6 +71,9 @@ trajectory_pipeline/output/
 dist/
 refine_data/
 
+# v1 时代遗留的 merkle 完整性快照（历史遗留，不做跟踪）
+.merkle-snapshot.json
+
 # ── v1 归档（2026-10-09 → archive/v1/）：运行时产物路径随档更新 ──
 archive/v1/gdr/origindata/
 archive/v1/gdr/refine_data
