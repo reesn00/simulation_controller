@@ -42,6 +42,19 @@ from trajectory_pipeline.perception.base import Decision, Observation, Perceptor
 OBS_ELEMENT_LIMIT = 80
 OBS_LINK_LIMIT = 50
 
+#: **P1 存档格式版本**。每份新存档写入时记下这个值，于是「这批数据是哪一批」
+#: 能从存档本身读出来，而不用猜。
+#:
+#: ⚠️ **改这个值等于宣告一批存档与另一批不可比**——所以它只在**破坏性**
+#: 变更时加：字段语义变了、键改名了、老键删了。加字段、补可选字段
+#: **不动它**（下游对多出来的键本就容错，``split_archive`` 逐键判存在性）。
+#:
+#: 现状：``"2"`` = 2026-10-10 补齐 ``run_config`` / ``elements_total`` /
+#: ``site_url`` / ``play_page_url`` / ``question`` / ``reached_play_page`` 之后。
+#: **此前跑的那 38 份没有这个键**，它们不是「v1」——是**未标注**。
+#: 没回填是因为回填即猜（见 :attr:`RunRecord.schema_version`）。
+SCHEMA_VERSION = "2"
+
 
 @dataclass
 class RunConfig:
@@ -143,6 +156,19 @@ class RunRecord:
     #:
     #: 语义见 :mod:`trajectory_pipeline.executor.actions`。同样**不参与判定**。
     steps: StepLog = field(default_factory=StepLog)
+    #: **P1 存档格式版本**，写入时记录（见 :data:`SCHEMA_VERSION`）。
+    #:
+    #: 这个字段存在的理由是**批次身份必须能从存档本身读出来**。此前做不到：
+    #: 「这批数据跑在字段补齐之前没有」只能靠 ``run_config`` 缺失去猜，
+    #: 而那是**缺件代理不是身份**——将来某次 run 因崩溃漏写 ``run_config``，
+    #: 同样被判成旧批次，报表上多出一条看不懂的数据，而**误分是静默的**。
+    #:
+    #: ⚠️ **历史存档不回填**。回填就是猜：凭什么断定一份存档「是 v2 的」？
+    #: 凭什么断定一份没 ``schema_version`` 的「是 v1 的」？没有依据，
+    #: 而猜错的代价是一个错误的批次归属。缺这个键 = **不知道是哪一批**，
+    #: 由 :func:`~trajectory_pipeline.evaluation.cli.evaluate` 归入「未标注」
+    #: 并退回到缺件代理——**代理明确标注为代理**，不冒充身份。
+    schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         """拷一份 provenance，不留对入参的引用。
@@ -166,6 +192,7 @@ class RunRecord:
     def to_json(self) -> dict[str, Any]:
         """序列化。刻意只保留**可审计**的字段，不留页面句柄。"""
         return {
+            "schema_version": self.schema_version,
             "task_id": self.task_id,
             "title": self.title,
             "query": self.query,

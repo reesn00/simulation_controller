@@ -170,6 +170,56 @@ class TestDegradedAccounting:
         assert list(obs.degraded).count("browser_count") == 1
 
 
+class TestMojibakeAccounting:
+    """解码损坏的记账。**与「没采到」分开**——见 :mod:`test_mojibake`。
+
+    实测成因（2026-10-10 复核）：``tv.sohu.com`` 响应头不带 charset，
+    编码只由 ``<meta charset=GBK">`` 声明，实际字节也确实是 GBK——
+    **声明与实际一致**，损坏发生在内容经 MCP 传出时被按 UTF-8 处理。
+    损坏是**局部**的（同一段里中文与 ASCII 都好），所以「整页写错编码」
+    这个直觉判断在这里是错的。
+    """
+
+    # 真实的局部损坏形态（片名完好，中间一小片烂掉）
+    BAD = "爱奇艺视频\n首页 电视剧 ���影 纪录片\n全部影视在线观看"
+
+    async def test_正文乱码要记_body_mojibake(self):
+        obs = await driver_for(browser_evaluate=self.BAD).observe()
+        assert "body_mojibake" in obs.degraded
+
+    async def test_正文完好时不记(self):
+        obs = await driver_for().observe()
+        assert "body_mojibake" not in obs.degraded
+
+    async def test_标题乱码单独记(self):
+        """标题烂掉而正文完好是可分的形态（实测坏站 tv.sohu.com 就是
+        只有标题与正文中间那段坏）。合成一个标记就分不出是哪部分不可读，
+        而两者的处置范围不同。"""
+        fake = FakeMcp(full_script(browser_snapshot=(
+            "URL: https://x.test/\nTitle: 搜狐���频 - 功夫\nSnapshot:\n<body>正文</body>"
+        )))
+        obs = await ObscuraDriver(fake).observe()
+        assert "title_mojibake" in obs.degraded
+        assert "body_mojibake" not in obs.degraded
+
+    async def test_乱码不与正文缺失混为一谈(self):
+        """两者都在 ``degraded`` 里，但**不是同一个标记**：
+        ``body_text`` = 没采到，``body_mojibake`` = 采到了但不可读。
+        前者无据可依，后者最危险——它看起来有内容。"""
+        obs = await driver_for(
+            browser_evaluate="",
+            browser_snapshot="URL: https://x.test/\nTitle: T\nSnapshot:\n",
+        ).observe()
+        assert "body_text" in obs.degraded
+        assert "body_mojibake" not in obs.degraded
+
+    async def test_snapshot_不带degraded参数时不崩(self):
+        """``snapshot()`` 在协议上是公开原语，``degraded=None`` 是合法调用。
+        乱码检测挂在 degraded 上，所以这条不许崩。"""
+        snap = await driver_for(browser_evaluate=self.BAD).snapshot()
+        assert snap.body == self.BAD        # 正文照常返回，不被篡改
+
+
 class TestSnapshotContract:
     async def test_snapshot_缺参数不报错(self):
         """``snapshot()`` 单独用（不带 degraded list）时不能崩——

@@ -12,6 +12,27 @@
 > `TestDegradedMarkersMatchSplit` 全绿（它只盯**缺件标记**），
 > 契约文档却还是空的——**那张表盯不住新增字段**。
 
+### `schema_version`：为什么这一栏是「缺了会怎样」而不是「是什么」
+
+它是**写入时**记录的格式版本，于是「这批数据是哪一批」能从存档本身读出来。
+
+⚠️ **历史存档不回填**，这是刻意的：没有依据断定一份没版本号的存档属于哪一批，
+而回填就是猜——猜错的代价是一个**静默错误**的批次归属。
+现存 38 份全都没有这个键，它们是**未标注**，不是「v1」。
+评估侧据此分档：认得版本就按版本分，认不出来才退回 `run_config` 缺件代理，
+**并把那份代理标注为代理**（见 `evaluation.cli._batch_basis`）。
+
+⚠️ **代理标注了，但它切的那一轴是「字段齐不齐」不是批次**（2026-10-10
+实测：现存 38 份全无版本号，其中 16 份缺 `run_config`，而那 16 份的 74 个
+`outcome` 一个都没有 `site_url` / `play_page_url` 键，另 22 份的 131 个
+全都有——相关性 100%）。所以无版本号时的档名按判据起
+（`未标版本·缺 run_config` / `未标版本`），**不叫「旧批次 / 当前批次」**。
+「为什么不可判定」另有一张事实表 `evaluation.cli._print_markers`——
+它读 `p1_missing_fields`，那是键在不在 P1 里，不需要推断。
+
+改这个值等于宣告一批存档与另一批不可比，所以**只在破坏性变更时加**：
+加字段、补可选字段不动它。
+
 ---
 
 ## 三条总口径
@@ -35,6 +56,7 @@
 
 | 字段 | 类型 | 缺了会怎样 |
 |---|---|---|
+| `schema_version` | `str` | **P1 格式版本**（写入时记，见 `orchestrator.SCHEMA_VERSION`）。缺它 ⇒ 这份存档**没有版本身份**——不是「旧版」，是「不知道是哪一批」 |
 | `task_id` | `str` | **缺即 FATAL**，无法归组也无法回查任务定义 |
 | `title` | `str` | 判断点 ① 的**唯一判据来源**。空/编号会让 ① 在错误前提上自信作答 |
 | `query` | `str` | 实际拿去搜的检索串。与 `user_prompt` 是两件事 |
@@ -93,7 +115,7 @@
 | `truncated` | `bool` | 上游 `max_chars` 预算用尽。**必须显式**——不然会把「实体落在截断外」误判成幻觉 |
 | `raw_len` | `int` | 预处理前的正文长度 |
 | `stripped_ratio` | `float` | 剥离 CSS/JS 后的保留比例；`<0.5` 说明页面脏 |
-| `degraded` | `list[str]` | 本次**没采到**的项。**fail-closed 的前提**：没有它，「没采到交互元素」与「页面上确实没有」在数据里完全一样 |
+| `degraded` | `list[str]` | 本次**没采到**的项。**fail-closed 的前提**：没有它，「没采到交互元素」与「页面上确实没有」在数据里完全一样。另含**采到了但不可读**的两项 `body_mojibake` / `title_mojibake`（解码损坏，见下） |
 | `video_tag_count` | `int` | 覆盖 `<video>` + `<audio>`。规则版 `PLAYER_OK` 的**唯一**判据 |
 | `iframe_count` | `int` | **不作判据**，只作排查线索 |
 | `elements_total` | `int` | **采到的**交互元素条数（驱动层 limit 截断后）。落盘条数被裁到 80；两者成对落盘 |
@@ -162,9 +184,29 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 | `fallback_used` | 走了降级路径。⚠️ 存在性判定带这个标记，**成功率高不代表能正常播放** |
 | `reached_play_page` | 是否走到了播放页 |
 | `is_negative_sample` | `branch` 非空且 ∉ `NON_SAMPLE_BRANCHES` |
+| `branch_before_downgrade` | 人工降级前的分支。**只有被 `cli downgrade` 处置过的记录才有** |
+| `success_downgraded_by` | `visits[]` 上的降级留痕，见下 |
 
 > 三个 URL 字段**不合并**是刻意的：合并后读档的人必须回查控制流才知道
 > 它指哪一层，而丢了其中任何一个，另一个再也恢复不了。
+
+### 人工降级的两个留痕（`cli downgrade` 写）
+
+降级**改的是结论**，所以它必须留下「原来是什么」与「凭什么改」：
+
+| 位置 | 形状 | 谁读它 |
+|---|---|---|
+| `outcomes[].branch_before_downgrade` | `"no_play_control"` 这样的原分支 | 读档的人、回测 |
+| `outcomes[].evidence` | `[原判 <分支>] <原正文>\n\n<降级理由>` | 读档的人 |
+| `visits[].success_downgraded_by` | 落款 | `check-archives` 的 `success_branch_mismatch` |
+
+**「成功」在存档里记在两处**：`outcome.branch is None` 与 `visits[i].success`。
+降级必须同时翻这两处——只翻一处就留下 `success=True 但 branch=unresolved`，
+而门禁 `check-archives` 的 `success_branch_mismatch` 正查这个。
+
+> ⚠️ **`evidence` 的 `[原判 …]` 前缀是幂等判据**：`base_evidence()` 剥掉前缀
+> 与 `\n\n` 之后的一切，所以「已处置过的记录」按**戳**识别，不按 `branch` 值。
+> 现有 38 份原档大多是本命令落地之前处置的，**没有**这个前缀。
 
 ---
 
@@ -201,6 +243,18 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 DEGRADED 码与 P2 的 `degraded_from` 标记由
 [`integrity.degraded_marker_map()`](../../executor/integrity.py) 映射，
 两张表由 `tests/unit/test_integrity.py::TestDegradedMarkersMatchSplit` 双向盯着。
+
+> ⚠️ **`mojibake` 刻意不在那张映射表里**（有测试钉住）。该表答的是
+> 「P1 里**没有的键**」，而解码损坏是「键在、内容坏了」——混进去会让
+> 「正文被截短」与「正文是烂的」在 `degraded_from` 里长得一样，
+> 而后者更糟（整段正文都不可信，不只是截断区外）。
+>
+> 损坏的记录路径在**采集期**：`Observation.degraded` 里的
+> `body_mojibake` / `title_mojibake`，由
+> [`executor/dom.py::is_mojibake`](../../executor/dom.py) 判定。
+> 两者**分开记**是因为可只坏其一（实测坏站 tv.sohu.com 就是标题与
+> 正文中间一段坏）。
+> 成因实测见[避坑指南 §6.5](../02-避坑指南.md)。
 
 ---
 

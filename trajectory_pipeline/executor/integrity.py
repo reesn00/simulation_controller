@@ -96,6 +96,19 @@ def degraded_marker_map() -> dict[str, str]:
         "outcome_missing": "outcome_missing",
         "success_branch_mismatch": "success_branch_mismatch",
     }
+    # ⚠️ **``mojibake`` 刻意不在这张表里**（有测试盯住，见
+    # ``test_integrity.py::TestDegradedMarkersMatchSplit::test_损坏不进degraded_from词表``）。
+    # 本表的语义是「P1 里**没有的键**」，而损坏是「键在、内容坏了」——
+    # 混进去会让「正文被截短」与「正文是烂的」在 ``degraded_from``
+    # 里长得一样，而后者更糟：截短只影响落在截断外的实体，
+    # 乱码让**整段正文都不可信**。那张表是平铺的，扛不住这个轻重之分。
+    #
+    # 乱码的记录路径在**采集期**：``executor.dom.is_mojibake`` 判定后
+    # 记进 ``Observation.degraded``，随 P1 落盘（``observation.degraded``），
+    # 闸门侧由 ``gates.observation_shortfall`` 消费——它见到 ``degraded``
+    # 非空就拒绝判幻觉。**那条路径已经足够**，不需要在这里再记一次。
+    # 存档体检报 ``mojibake`` 是给人看的门禁信号，与 P2 的
+    # ``degraded_from`` 是两套东西，不要合并。
 
 
 @dataclass(frozen=True, slots=True)

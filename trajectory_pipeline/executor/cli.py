@@ -34,7 +34,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
+import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -48,6 +51,7 @@ from trajectory_pipeline.executor.archive import (
 )
 from trajectory_pipeline.executor.browser.mcp_client import EXE_ENV_VAR, McpClient
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+from trajectory_pipeline.executor import downgrade as downgrade_mod
 from trajectory_pipeline.executor.browser.obscura_driver import (
     FORBIDDEN_TOOLS,
     ObscuraDriver,
@@ -60,8 +64,11 @@ from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig
 from trajectory_pipeline.executor.plan import PlanError, load_plan
 from trajectory_pipeline.executor.review_queue import (
     VERDICTS,
+    ReviewQueueError,
     apply_verdicts,
     collect as collect_reviews,
+    prefill as rq_prefill,
+    settle_same_site as rq_settle,
     write_queue as write_review_queue,
 )
 from trajectory_pipeline.executor.steps import search as search_step
@@ -493,6 +500,120 @@ def _env_ok() -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 取证探针（联网）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 为什么不写成一次性脚本
+# ----------------------
+# 存档里两边的证据互相矛盾时，**唯一能分清的是现场**。这个动作在
+# 2026-10-10 一天里发生了三次（youku id_XNDE / id_XMTQ / bilibili），
+# 每次都是手写一个一次性脚本——而其中一次因为「一半看存档、一半看现场」
+# 判错了一笔（两个优酷 URL 强度不一致）。
+#
+# **混用两套取证强度是最容易犯也最难发现的错**：两笔都写进报告，
+# 笔迹一样，只有回看代码才知道哪笔没开浏览器。所以这个动作必须是
+# 一个**只有一个模式**的入口：要么全现场，要么都不现场。
+
+#: 正文里出现即「**这一项与站点性质有关**」的词。刻意只列这类，
+#: 不列「免费观看」——它在导航栏里的频率远高于付费提示
+#: （实测优酷导航栏首词就是「续费」）。
+_SITATION_MARKS = ("完整", "正片", "未删减", "无删减", "全片", "高清",
+                   "会员", "开通", "续费", "立即播放", "播放")
+
+
+async def _probe_one(client: McpClient, url: str, *,
+                     preview: int, max_chars: int | None) -> None:
+    """取一次现场事实并打印。**只报事实，不下结论。**
+
+    不下结论是关键：这个命令的用途就是给两边的争议**摆事实**，
+    它一旦开始输出「所以这是付费墙」，就把取证变成了表态——
+    而表态会顺着人的倾向走（当初 id_XMTQ 就是只看存档就判了付费墙，
+    补了现场才发现判对了，但**那次是运气**）。
+    """
+    driver = ObscuraDriver(client)
+    try:
+        await driver.goto(url)
+        obs = await driver.observe(max_chars=max_chars)
+    except Exception as exc:
+        print(f"  [FAIL] {type(exc).__name__}: {exc}")
+        return
+    finally:
+        await driver.close_tab()
+
+    body = obs.body_text or ""
+    print(f"  落地 URL   : {obs.url}")
+    print(f"  页面标题   : {obs.page_title}")
+    print(f"  video={obs.video_tag_count}  iframe={obs.iframe_count}  "
+          f"元素={len(obs.interactive_elements)}  正文={len(body)}字  "
+          f"降级={list(obs.degraded)}")
+
+    from trajectory_pipeline.perception.rule_perceptor import (
+        classify_paywall, is_play_control,
+    )
+
+    pw = classify_paywall(body)
+    print(f"  付费墙词表 : 「{pw or '（未命中）'}」")
+    hits = [e.label for e in obs.interactive_elements if is_play_control(e.label)]
+    print(f"  播放控件词表命中 {len(hits)} 个: {hits[:8]}")
+    marks = [w for w in _SITATION_MARKS if w in body]
+    print(f"  正文出现   : {marks}")
+    if preview > 0:
+        print(f"  正文前 {preview}: {body[:preview]!r}")
+    # 「采集失败」与「页面真没有」在存档里同形，现场能分开：
+    # 三项全空 + 有降级项 = 采集失败；元素 0 但正文长 = 页面确实这样。
+    if obs.degraded and not obs.interactive_elements and not body.strip():
+        print(f"  ⚠ 三项全空且有降级项 —— 这是**采集失败**，"
+              f"不能据此判「页面没有播放控件」")
+
+
+async def cmd_probe(args: argparse.Namespace) -> int:
+    urls: list[str] = list(args.url or [])
+    if args.from_archive:
+        urls += _urls_of(args.from_archive, limit=args.limit)
+    # 去重但**保持命令行给的顺序**：取证是一次性动作，
+    # 顺序颠倒会让「先看的那笔」被后面的覆盖掉。
+    urls = list(dict.fromkeys(urls))
+    if not urls:
+        print("没给 URL：传位置参数，或用 --from-archive 读存档里的",
+              file=sys.stderr)
+        return 2
+
+    try:
+        client = McpClient.from_env()
+    except RuntimeError as exc:
+        print(f"  [SKIP] {exc}", file=sys.stderr)
+        return 2
+
+    print(f"== 取证探针 · {len(urls)} 个 URL（全部走现场，"
+          f"不读存档证据）==")
+    async with client:
+        print(f"  server = {client.info.name} {client.info.version}")
+        for url in urls:
+            print(f"\n── {url}")
+            await _probe_one(client, url, preview=args.preview,
+                             max_chars=DEFAULT_MAX_CHARS)
+    print("\n⚠ 上面是**事实**，不是结论。贴标签仍需人工裁定"
+          "（review --verdicts ... --apply）")
+    return 0
+
+
+def _urls_of(archive: str, *, limit: int | None) -> list[str]:
+    """从 P1 存档里取待复核的 URL。
+
+    存在的意义是**不用手打 URL**：当初那个一次性脚本把 3 个 URL
+    硬编码在源码里，抄错一个字符就探到别的页面，而报告上完全看不出来。
+    """
+    try:
+        items = collect_reviews(Path(archive))
+    except Exception as exc:
+        print(f"  [SKIP] 读 {archive} 失败：{type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return []
+    urls = [i.landed_url or i.url for i in items if (i.landed_url or i.url)]
+    return urls[:limit] if limit else urls
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 模块 1：采样（不联网）
 # ══════════════════════════════════════════════════════════════════════
 
@@ -703,17 +824,142 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_apply_review(args: argparse.Namespace) -> int:
-    """把人工裁定回填进 P1 存档。
+def cmd_downgrade(args: argparse.Namespace) -> int:
+    """把**判定不成立**的 outcome 降为 ``unresolved``（取证后的处置）。
 
-    **写新文件，不原地改**（``<name>.reviewed.json``）。原因与
-    :mod:`trajectory_pipeline.executor.archive` 的原子写同源：
-    回填是基于一份判断，可能整批作废；覆盖原档就没有回头路了。
+    ⚠️ **默认 dry-run。** 降级改的是结论，而 ``purge-run`` 之外没有
+    反向操作——先看清单，确认了再 ``--apply``。
+
+    判据与动作是分开的：**动作**在 :mod:`downgrade`（证据戳、ledger
+    记账、``visits[].success`` 同步），**判据**在命令行。这么分是因为
+    三批数据三种判据而处置动作只有一份——2026-10-10 那三个一次性脚本
+    各自实现了一遍处置，于是其中一份的匹配条件一放宽就多降了 8 条。
     """
     root = Path(args.out) if args.out else DEFAULT_ROOT
+    patterns: list[re.Pattern[str]] = []
+    for raw in args.evidence or ():
+        try:
+            patterns.append(re.compile(raw))
+        except re.error as exc:
+            print(f"[stop] --evidence 正则不合法 {raw!r}：{exc}", file=sys.stderr)
+            return 2
+    if args.url and patterns:
+        print("[stop] --url 与 --evidence **不要同时给**：两个条件是 OR 还是 "
+              "AND 取决于实现，而这种含糊正是那 8 条误伤的入口。"
+              "\n       要按 URL 挑就只用 --url；要按判定正文挑就只用 "
+              "--evidence（它已足够精确）。", file=sys.stderr)
+        return 2
+    if not args.url and not patterns:
+        print("[stop] 得给 --url 或 --evidence 之一", file=sys.stderr)
+        return 2
+    # ⚠️ **必须在碰盘之前校验**。理由必填这条原先落在
+    # ``apply_downgrades`` 里，于是它要**先把整个存档目录走一遍**、
+    # 撞上第一条命中才抛——而抛出来是裸 traceback，看起来像崩溃，
+    # 实际上只是一次参数写漏。参数校验全在这一段里做完。
+    if not (args.reason or "").strip():
+        print("[stop] 降级必须给 --reason：它是这条日后唯一的依据",
+              file=sys.stderr)
+        return 2
+
+    select = (downgrade_mod.select_by_url(*args.url) if args.url
+              else downgrade_mod.select_by_evidence(
+                  patterns, branches=args.branch or None))
+    summaries = downgrade_mod.apply_to_root(
+        root, select=select, reason=args.reason or "", dry_run=not args.apply)
+
+    if not summaries:
+        print("没有匹配的 outcome —— 归档可能已被降过（幂等），或判据不匹配")
+        return 0
+    total = sum(s["downgraded"] for s in summaries)
+    verb = "降级" if args.apply else "**将**降级"
+    print(f"== {verb} {total} 条 outcome → "
+          f"{downgrade_mod.TARGET_BRANCH}（{len(summaries)} 份存档）==")
+    for s in summaries:
+        branches = " ".join(f"{k}×{v}" for k, v in sorted(s["branches"].items()))
+        extra = (f" 同步 visits[].success {s['visits']} 处"
+                 if s.get("visits") else "")
+        print(f"  {s['archive']:32s} {s['downgraded']:>3d} 条  {branches}{extra}")
+    if not args.apply:
+        print("\n⚠ 这是 dry-run。加 --apply 才落盘。")
+        print("  顺序：本命令 → review --verdicts ... --apply"
+              "（复核档是重新合并出来的，不受本命令影响）")
+    else:
+        print("\n⚠ 只动了原档。复核档要重跑 review --apply 才会同步——"
+              "在本命令里改它是**白改**，下一次合并就被覆盖回去。")
+    return 0
+
+
+def cmd_review_queue(args: argparse.Namespace) -> int:
+    """改**复核队列文件**本身（预填 / 收敛），不动 P1。
+
+    ⚠️ **为什么不并进 ``review``**：``review --apply`` 会写
+    ``.reviewed.json``，那是**基于人的判断**、不可回退的动作；
+    而预填与收敛只动一份还没提交裁定的工作稿。把两类动作放同一个
+    子命令下，误加一个 ``--apply`` 就把「按形态预填」变成
+    「把自动判定提交成人工结论」——而后者记的是 ``auto:`` 来源，
+    **冒充人看过证据**。
+    """
+    if not (args.prefill or args.settle):
+        print("没指定动作：用 --prefill 和/或 --settle", file=sys.stderr)
+        return 2
+    path = Path(args.queue)
+    if not path.exists():
+        print(f"{path} 不存在——先 review --write 导出队列", file=sys.stderr)
+        return 2
+
+    rows = [json.loads(line) for line in
+            path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    if args.prefill:
+        stats = rq_prefill(rows)
+        print(f"预填 {path}")
+        for k, n in stats.items():
+            if n:
+                print(f"    {k:24s} {n}")
+        left = sum(1 for r in rows if not str(r.get("verdict") or "").strip())
+        print(f"    → 仍留空 {left} 条（有元素，证据够，留给人看）")
+
+    if args.settle:
+        n = rq_settle(rows)
+        print(f"同 URL 裁定收敛：改动 {n} 行"
+              f"（「没证据」档让位于结论档）")
+
+    # 原子替换。**先写同目录的 .tmp 再 replace**：直接就地改时，
+    # 中途崩了会留下半截 JSON，而下次读它的人看不出是崩了还是格式坏了。
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+    print(f"已写回 {path}")
+    print("  提交裁定：review --verdicts <queue> --apply")
+    return 0
+
+
+def _load_verdicts(path: str | Path) -> tuple[dict[str, dict[str, Any]],
+                                              list[tuple[str, set[str]]]]:
+    """读人工裁定，返回 ``({url: 裁定}, 冲突列表)``。
+
+    ⚠️ **同 URL 的多条裁定必须一致，否则当场中止**。
+
+    队列是**逐存档导出的**，而同一个站点会在多份存档里各出现一次——
+    实测 106 行只对应 **21 个唯一 URL**（爱奇艺那一个 URL 就占 20 行）。
+    而裁定是按 URL 应用的,于是 ``dict[key] = ...`` 天然是**后者覆盖前者**：
+    复核员在第 2 行认真裁了 ``confirm_success``，第 40 行没填或随手填了别的，
+    他的判断就被**静默吃掉**，而回填照常成功、一行报错都没有。
+
+    这正是 CLAUDE.md「分歧必须暴露给人看」要挡的那类静默合并。
+    取「最后一个」不是策略——它只是文件顺序的副产物。
+
+    顺带把未知裁定在这里就挡掉：:func:`apply_verdicts` 虽然也会抛，
+    但那是**逐存档**抛的，抛之前已经有别的存档写完 ``.reviewed.json`` 了，
+    留下一半新一半旧。**先全查一遍再动任何文件**。
+    """
     verdicts: dict[str, dict[str, Any]] = {}
-    with Path(args.verdicts).open("r", encoding="utf-8") as fh:
-        for line in fh:
+    seen: dict[str, set[str]] = {}
+    bad: list[tuple[str, str]] = []
+    with Path(path).open("r", encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
                 continue
@@ -722,12 +968,43 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
             if not v:
                 continue
             key = str(row.get("landed_url") or row.get("url") or "")
+            if v not in VERDICTS:
+                bad.append((key, v))
+                continue
+            seen.setdefault(key, set()).add(v)
             verdicts[key] = {"verdict": v,
                              "reviewed_by": str(row.get("reviewed_by") or ""),
                              "note": str(row.get("note") or "")}
+    if bad:
+        raise ReviewQueueError(
+            f"第 {','.join(str(b[0]) for b in bad[:3])}… 行等处出现未知裁定 "
+            f"{sorted({b[1] for b in bad})}；可选：{sorted(VERDICTS)}"
+        )
+    conflicts = [(k, s) for k, s in seen.items() if len(s) > 1]
+    return verdicts, conflicts
 
-    total = dict.fromkeys(["confirm_success", "confirm_negative", "trailer",
-                           "skipped", "unreviewed", "ignored"], 0)
+
+def cmd_apply_review(args: argparse.Namespace) -> int:
+    """把人工裁定回填进 P1 存档。
+
+    **写新文件，不原地改**（``<name>.reviewed.json``）。原因与
+    :mod:`trajectory_pipeline.executor.archive` 的原子写同源：
+    回填是基于一份判断，可能整批作废；覆盖原档就没有回头路了。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    verdicts, conflicts = _load_verdicts(args.verdicts)
+    if conflicts:
+        print(f"[stop] 同一 URL 出现了**互相冲突**的人工裁定 {len(conflicts)} 处。"
+              f"\n       下面这些必须先定成同一个值——一个站点只有一个结论：")
+        for key, seen in conflicts:
+            print(f"         {key}\n           取值：{sorted(seen)}")
+        print("\n       已中止，**未写任何 .reviewed.json**。")
+        return 2
+
+    total = dict.fromkeys(["confirm_success", "confirm_negative",
+                           "confirm_not_play_site", "confirm_paywall",
+                           "trailer", "skipped", "unreviewed", "ignored",
+                           "off_question", "branch_written"], 0)
     written = 0
     for path in sorted(root.glob("*.json")):
         if path.name.endswith(REVIEWED_SUFFIX):
@@ -747,9 +1024,23 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
         written += 1
 
     print(f"回填 {written} 个存档，合计 {dict(total)}")
+    if total["off_question"]:
+        # **这一段必须先说**：裁定数 ≠ 写进分支的数。跨判断点的裁定没写
+        # branch，只落在 site_verdict 上。不先讲清楚，后面那句
+        # 「人工确认的正样本 N 条」会被读成「N 条成了成功样本」。
+        print(f"  ⚠ {total['off_question']} 条裁定**跨判断点**，未写 branch，"
+              f"结论落在 site_verdict 上。\n"
+              f"    人工给的是**站点级**事实，outcome 是**决策单元级**的；"
+              f"硬贴会造出决策树（rubric D-5）里不存在的组合，"
+              f"实测 15 条因此被 D-5 判成一票否决、门禁 Test同源 当场红。")
     if total["confirm_success"]:
-        print(f"  → 人工确认的正样本 {total['confirm_success']} 条"
-              f"（source=human，branch_before_review 保留了代码原判）")
+        print(f"  → 人工确认「这站能看」{total['confirm_success']} 条，"
+              f"其中 **{total['branch_written']} 条写成了成功样本**"
+              f"（source=human，branch_before_review 保留了代码原判）"
+              f"，其余降级为 site_verdict")
+    if total["confirm_not_play_site"] or total["confirm_paywall"]:
+        print(f"  → 人工判定「不是播放站」{total['confirm_not_play_site']} 条、"
+              f"「需订阅/付费」{total['confirm_paywall']} 条")
     if total["ignored"]:
         print(f"  [warn] {total['ignored']} 条裁定落在**非复核分支**的记录上，"
               f"已原样保留未改。真负样本/成功样本不在复核范围内，"
@@ -1189,9 +1480,41 @@ def build_parser() -> argparse.ArgumentParser:
     rev.add_argument("--show", type=int, default=0, help="打印前 N 条详情")
     rev.set_defaults(func=cmd_review)
 
+    rq = sub.add_parser(
+        "review-queue",
+        help="改复核队列工作稿：按形态预填 / 同 URL 裁定收敛（**不动 P1**）")
+    rq.add_argument("queue", help="review --write 导出的 jsonl")
+    rq.add_argument("--prefill", action="store_true",
+                    help="门户站→not_play_site；零元素→need_browser（**只填空行**）")
+    rq.add_argument("--settle", action="store_true",
+                    help="同 URL 收敛成一个裁定，「没证据」档让位于结论档")
+    rq.set_defaults(func=cmd_review_queue)
+
+    dg = sub.add_parser(
+        "downgrade", help="取证后把判定不成立的 outcome 降为 unresolved（**默认 dry-run**）")
+    dg.add_argument("--out", default=None, help="P1 存档目录（默认 output/pipeline）")
+    dg.add_argument("--url", nargs="+", default=None,
+                    help="按 URL 片段挑（**不要**与 --evidence 同用）")
+    dg.add_argument("--evidence", nargs="+", default=None,
+                    help="按**原始判定正文**是否命中正则来挑（只看第一段）")
+    dg.add_argument("--branch", nargs="+", default=None,
+                    help="限定分支（不受理 unresolved）")
+    dg.add_argument("--reason", default=None, help="降级理由，**必填**，原样进 evidence")
+    dg.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
+    dg.set_defaults(func=cmd_downgrade)
+
     chk = sub.add_parser("check", help="查能力，不跑任务")
     chk.add_argument("--probe-url", default="https://example.com/")
     chk.set_defaults(func=cmd_check)
+
+    prb = sub.add_parser(
+        "probe", help="取证探针：开浏览器看现场事实，用于分清存档里两边矛盾的证据")
+    prb.add_argument("url", nargs="*", help="要探的 URL")
+    prb.add_argument("--from-archive", default=None,
+                     help="P1 存档目录：从该目录待复核项里取 URL（不用手打）")
+    prb.add_argument("--limit", type=int, default=None, help="--from-archive 时取前 N 个")
+    prb.add_argument("--preview", type=int, default=400, help="打印正文前 N 字")
+    prb.set_defaults(func=cmd_probe)
 
     rep = sub.add_parser("report", help="汇总 P1 分支分布")
     rep.add_argument("--out", default=None)
@@ -1239,14 +1562,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     _reconfigure_stdio()
     args = build_parser().parse_args(argv)
-    # 需要真实浏览器的命令才走 asyncio；gen / check-persona / review / report
-    # 都不联网，让它们也走 asyncio 只会多一层没必要的 loop。
-    if args.cmd in ("report", "gen", "check-persona", "review", "check-archives",
-                    "replay", "purge-run", "build"):
-        if args.cmd == "review" and getattr(args, "apply", False):
-            return cmd_apply_review(args)
-        return args.func(args)
-    return asyncio.run(args.func(args))
+    if args.cmd == "review" and getattr(args, "apply", False):
+        return cmd_apply_review(args)
+    # 要不要走 asyncio **从函数本身推，不从命令名查表**。
+    #
+    # 原来是一份手写的命令名清单，于是每加一个子命令都得记得改它——
+    # 漏改的后果是 `asyncio.run(0)`：`ValueError: a coroutine was
+    # expected`，**而且崩在所有输出之后**。清单看起来干完了活，
+    # 退出码却是非零，``--apply`` 那类命令尤其吓人：输出打完了，
+    # 像是执行过，其实整条命令被判失败。
+    #
+    # 两份东西必须一致时，**别让第二份存在**——它和第一份不同源，
+    # 而不同源的后果是安静地不一致（见避坑指南 §一）。
+    if inspect.iscoroutinefunction(args.func):
+        return asyncio.run(args.func(args))
+    return args.func(args)
 
 
 if __name__ == "__main__":

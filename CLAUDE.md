@@ -74,13 +74,24 @@ uv run python -m trajectory_pipeline.executor.cli build --overwrite   # 重建�
 # ── 人工复核与报表 ─────────────────────────────────────
 uv run python -m trajectory_pipeline.executor.cli review --write <queue.jsonl> --show 3
 uv run python -m trajectory_pipeline.executor.cli review --verdicts <queue.jsonl> --apply
+uv run python -m trajectory_pipeline.executor.cli review-queue <queue.jsonl> --prefill --settle   # 改队列工作稿（**不动 P1**）
 uv run python -m trajectory_pipeline.executor.cli report --out trajectory_pipeline/output/pipeline
 uv run python -m trajectory_pipeline.executor.cli check-archives          # 存档完整性门禁（不联网）
 uv run python -m trajectory_pipeline.executor.cli replay --perceptor rule   # 感知层回放（不开浏览器）
 
+# ── 取证探针与取证后处置（两个都改结论，先看清单）────
+uv run python -m trajectory_pipeline.executor.cli probe <url> [<url> …]   # 开浏览器看现场事实
+uv run python -m trajectory_pipeline.executor.cli downgrade --url <片段> --reason "…"         # **默认 dry-run**
+uv run python -m trajectory_pipeline.executor.cli downgrade --evidence '<正则>' --reason "…" --apply
+
 # ── 整批回滚（默认只列不删）────────────────────────────
 uv run python -m trajectory_pipeline.executor.cli purge-run --run-id <run_id>
 uv run python -m trajectory_pipeline.executor.cli purge-run --run-id <run_id> --apply
+
+# ── 评估（不联网；单独入口，不挂进 executor.cli）────────
+uv run python -m trajectory_pipeline.evaluation.cli                     # D-2/D-4/D-5/D-6 汇总
+uv run python -m trajectory_pipeline.evaluation.cli --only-undetermined
+uv run python -m trajectory_pipeline.evaluation.cli --json <out.json>
 
 # ── 门禁 ───────────────────────────────────────────────
 uv run python -m pytest -q
@@ -112,7 +123,8 @@ uv run python -m pytest -q
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3 契约表、`steps[]` 三条口径、P1 三处「不给就不可判定」的字段 |
 | [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 命令全表 + 联网与否、环境变量、门禁与输出目录、`replay` 口径 |
 | [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | **已跑通什么、待办什么、实测数据**（会过时，用前先重跑命令核对） |
-| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 52 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
+| [06-端到端流程.md](trajectory_pipeline/docs/06-端到端流程.md) | **一条数据从骨架走到训练样本的完整路径**：四条命令线、P1/P2/P3 流转、模块边界、执行时序 |
+| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 57 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
 
 ### 设计方案（`trajectory_pipeline/docs/设计方案/`）
 

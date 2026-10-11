@@ -27,7 +27,8 @@ W1 的 ``RulePerceptor`` 对 ``PLAYER_OK`` 只认 ``<video>`` / ``<audio>`` 标�
 闭环
 ----
 :func:`apply_verdicts` 把人工结论回填进 P1 存档：确认成功的改 ``branch=None``，
-确认不行的落到真负样本分支（``component_unverified`` 或 ``no_play_control``，
+确认不行的落到真负样本分支（``confirm_not_play_site`` → ``not_play_site``；
+``confirm_negative`` → ``component_unverified`` 或 ``no_play_control``，
 按 ``reached`` 区分）。**回填保留 ``reviewed_by`` 与原始 branch**，
 不覆盖——人工判定要能追溯，且将来能测"人工与代码的分歧率"（D 的下钻）。
 """
@@ -40,16 +41,52 @@ from pathlib import Path
 from typing import Any, Final, Iterable, Mapping
 
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+from trajectory_pipeline.perception import questions
 
 #: 人工可给的裁定。**枚举值定死**是因为下游要按它分派，
 #: 自由文本裁定会退化成"复核员写什么算什么"，无法统计也无法回填。
 VERDICTS: Final[dict[str, str]] = {
     "confirm_success": "人工确认：这里确实能看（记为成功样本）",
     "confirm_negative": "人工确认：这里确实看不了（记为负样本）",
+    "confirm_not_play_site": (
+        "人工确认：这压根不是该片的可观看站（记 not_play_site 负样本）"
+    ),
+    "confirm_paywall": (
+        "人工确认：有播放页但需订阅/付费（记 subscription_wall 负样本）"
+    ),
     "trailer": "人工确认：只有预告片（记为 trailer_only 负样本）",
     "need_browser": "存档证据不足，需人工开浏览器再看（暂不裁定）",
     "skip": "跳过（不可复核，如已失效页面）",
 }
+
+#: ``confirm_negative`` 与 ``confirm_not_play_site`` 为什么分开（2026-10-10）
+#:
+#: 队列里混着**压根不是播放站**的候选——实测队首就是 ``hao123.com`` 首页
+#: （导航站）与 ``trtag.com``，它们压根没有那部片子。而
+#: ``confirm_negative`` 只有两个出口，按 ``reached`` 分岔成
+#: ``component_unverified`` / ``no_play_control``：导航站首页往往
+#: ``reached_play_page=True``（点了个导航项，页面没换），于是被贴成
+#: 「到了播放页但没有可验证的播放组件」——**一个语义完全相反的标签**，
+#: 而且它是**真负样本**，会直接进池。
+#:
+#: 两支的结论说的不是一件事，训练出来的东西也不同：``not_play_site``
+#: 学「这个结果根本不该点」，``no_play_control`` 学「点了但这里没控件」。
+#: 合成一支就把这个区别训没了。
+#:
+#: ⚠️ 这一支**没有同页守卫**：``BRANCH_PRECONDITION`` 里的前提是给**代码判定**
+#: 用的，而这里是人已经看过页面下的结论——人说不是播放站就是不是，
+#: 再拿「点击前后是否同页」去否决它只会把正确裁定退回 unresolved。
+#:
+#: ``confirm_paywall`` 同理补上（2026-10-10）——用户已裁定「**有播放页但要付费
+#: 不算成功**」，而 ``confirm_negative`` 的两个出口都装不下它：优酷《功夫》
+#: 页有控件、有播放器，只卡在「立即购买 / 最低6元/月升SVIP」，
+#: 贴 ``component_unverified`` 会说成「控件没渲染」，贴
+#: ``not_play_site`` 更是反的——优酷**就是**《功夫》的可观看站。
+#: 没有这一档时复核员只剩 ``need_browser`` 可选，一个已经判明的结论
+#: 被白丢，而 ``subscription_wall`` 这条分支永远攒不到样本。
+#:
+#: ⚠️ 与 :data:`branches.BRANCH_PRECONDITION` 里那条同页守卫**不冲突**：
+#: 那张表只作用于 ``decision_branch``（代码判定路径），回填不经过它。
 
 #: 进入复核队列的分支。只有这三类需要人看。
 #:
@@ -66,6 +103,51 @@ VERDICTS: Final[dict[str, str]] = {
 REVIEW_BRANCHES: Final = frozenset({
     "unresolved", "trailer_suspect", "player_unverified",
 })
+
+#: **裁定 → 想贴的分支**。``None`` 的键表示「不动分支」。
+#:
+#: ⚠️ ``confirm_success`` 的 ``None`` 是**「成功」**（成功样本的 branch 恒为
+#: None），不是「不处理」——真不处理的是 ``need_browser`` / ``skip``，
+#: 它们不在这张表里。
+_WANTED_BRANCH: Final[dict[str, str | None]] = {
+    "confirm_success": None,                 # 成功 = branch 为 None
+    "confirm_negative": None,                # 按 reached 分岔，见 _wanted
+    "confirm_not_play_site": "not_play_site",      # ①
+    "confirm_paywall": questions.PAY_WALL,         # ④
+    "trailer": "trailer_only",                     # ③
+}
+
+
+def _wanted(verdict: str, rec: Mapping[str, Any]) -> str | None:
+    """这个裁定想贴的分支。``confirm_negative`` 按 ``reached`` 分岔。"""
+    if verdict != "confirm_negative":
+        return _WANTED_BRANCH[verdict]
+    return ("component_unverified" if rec.get("reached_play_page")
+            else "no_play_control")
+
+
+def _fits(want: str | None, question: str, belongs: str) -> bool:
+    """这个分支能不能贴在这条 outcome 上。
+
+    ⚠️ **成功（``want is None``）也要核归属**，且只能落在④ ``player.ok`` 上。
+    这条一开始写的是「成功一律可以」——**错的**，实测被 D-5 当场否掉 15 条：
+    ``branch=None`` 的含义是「**这次访问成功了**」，而一次成功的访问必然
+    走完 ①→②→③→④。outcome 记的却是②或③，意味着控制流在③就停了
+    （原判是 ``unresolved``：找不到控件、没走到④）。
+
+    那种情况下人说「这站确实能看」，给出的不是「这次访问成功了」，
+    而是「**代码漏判了一个正样本**」——两件事。写进 ``branch=None``
+    会把一条「代码判不出」记成「模型判对了」，
+    而训练信号正好反了。所以它同样降级为 ``site_verdict``。
+
+    ⚠️ **``question`` 为空时一律拒绝**：老存档压根没记是哪个判断点，
+    「无法核对」不等于「可以贴」。
+    """
+    if want == "unresolved":
+        return True                          # 通用 fail-closed 出口
+    if want is None:
+        return question == questions.Q.PLAYER_OK
+    return bool(belongs) and belongs == question
 
 #: 交互元素样本条数。复核员判断"有没有播放按钮"主要看这个，
 #: 太多会淹没人眼（实测单页常有 80+ 元素），太少会漏掉唯一那个。
@@ -210,6 +292,38 @@ def write_queue(path: Path | str, items: Iterable[ReviewItem]) -> int:
     return n
 
 
+def _sync_visit_success(out: dict[str, Any], urls: set[str]) -> int:
+    """人工确认成功后，把对应 ``visits[]`` 的 ``success`` 也翻成 True。
+
+    **为什么必须一起翻**：存档里「成功」记在两个地方——
+    ``outcome.branch is None`` 与 ``visits[i].success``。控制流一次只写两处，
+    而 :func:`apply_verdicts` 只改了 outcome，于是留下
+    ``success=False 但 branch=None``。
+
+    后果不是「多一个不一致的字段」：``visits[].success`` 是
+    **assembler 切样本时判定该决策单元是否终止的依据**，它没翻，
+    切出来的样本就带着一条「失败」的 outcome，而 D-5 会把它读成
+    「分支走错」——实测 15 条一票否决全部由此而来，
+    ``check-archives`` 的 ``success_branch_mismatch`` 记 16 条。
+
+    按 ``url`` 与 ``landed_url`` 双键匹配：outcome 的 ``url`` 记的是
+    **结论形成处**，而 visit 的 ``url`` 是候选地址，两者在重定向后不同。
+    """
+    n = 0
+    visits = out.get("visits")
+    if not isinstance(visits, list):
+        return 0
+    for visit in visits:
+        if not isinstance(visit, dict) or visit.get("success"):
+            continue
+        keys = {str(visit.get("url") or ""), str(visit.get("landed_url") or "")}
+        if keys & urls:
+            visit["success"] = True
+            visit["success_by_review"] = "人工确认（review --apply）"
+            n += 1
+    return n
+
+
 def apply_verdicts(
     archive: Mapping[str, Any],
     verdicts: Mapping[str, Mapping[str, Any]],
@@ -233,12 +347,34 @@ def apply_verdicts(
     另加 ``review_*`` 字段记录人工怎么裁的。这样"人工与代码的分歧率"
     仍然可测——覆盖掉之后就永远测不出来了。
 
+    ⚠️ **只写「归属同一个判断点」的分支**（2026-10-10 口径裁定）
+    ------------------------------------------------------------
+    人工复核给出的其实是**站点级**结论——「这不是播放站」「这站付费墙」，
+    而 outcome 是**决策单元级**的：它带着某个判断点的 ``question``。
+    跨判断点贴分支会造出决策树里不存在的组合，且**破坏是静默的**：
+
+    * ``(site.find_play_control, not_play_site)``——①的结论贴在③上
+    * ``(site.is_reachable, subscription_wall)``——④的结论贴在②上
+
+    实测 14 条，其中 15 条触发 D-5 一票否决（``branch=None`` 与
+    ``question`` 非④ 组合，被读成「分支走错」），门禁
+    ``test_d5_scorer::Test同源`` 当场红。
+
+    所以**归属不对就不改 ``branch``**，改记 ``site_verdict`` +
+    ``site_verdict_mismatch``，人工结论照样留下、照样可统计，
+    决策树保持它该有的样子。归属用
+    :func:`~trajectory_pipeline.perception.questions.question_of_branch` 核。
+
     未裁定的项**保持原样**并计入 ``unreviewed``，不默认成成功也不默认丢弃。
     """
     out = dict(archive)
-    stats = {"confirm_success": 0, "confirm_negative": 0,
-             "trailer": 0, "skipped": 0, "unreviewed": 0, "ignored": 0}
+    # 计数键**从 VERDICTS 派生**，不手写——手写过一次就漏了 `need_browser`
+    # 与 `skip`，末尾那句 `stats[verdict] += 1` 对它们直接 KeyError。
+    stats: dict[str, int] = {v: 0 for v in VERDICTS}
+    stats.update(unreviewed=0, ignored=0, off_question=0, skipped=0,
+                 branch_written=0)
     new_outcomes: list[Mapping[str, Any]] = []
+    confirmed: set[str] = set()
 
     for outcome in out.get("outcomes") or []:
         if not isinstance(outcome, Mapping):
@@ -269,33 +405,169 @@ def apply_verdicts(
         rec["review_note"] = str((v or {}).get("note") or "")
         rec["branch_before_review"] = outcome.get("branch")
 
-        if verdict == "confirm_success":
-            rec["branch"] = None
-            rec["is_negative_sample"] = False
+        # 这个裁定想要贴上去的分支。``None`` 表示「成功」。
+        if verdict in _WANTED_BRANCH:
+            # 只有这五个裁定会碰 branch；need_browser / skip 走下面的 pending 分支
+            want = _wanted(verdict, rec)
+            question = str(outcome.get("question") or "")
+            belongs = questions.question_of_branch(want)
+            if not _fits(want, question, belongs):
+                # 跨判断点：**不动 branch**，人工结论降级为站点级记录。
+                # 成功写成字面量 "success" 而不是 None——落盘后 JSON null
+                # 与「字段不存在」在下游完全同形，报表读到 null 时
+                # 分不出「这是成功结论」与「这里什么都没记」。
+                rec["site_verdict"] = "success" if want is None else want
+                rec["site_verdict_verdict"] = verdict
+                rec["site_verdict_mismatch"] = (
+                    f"{want!r} 归属判断点 {belongs!r}，"
+                    f"而本条记的是 {question!r}")
+                stats["off_question"] += 1
+                stats[verdict] += 1
+                new_outcomes.append(rec)
+                continue
+            rec["branch"] = want
+            rec["is_negative_sample"] = want is not None
             rec["source"] = "human"
-            stats["confirm_success"] += 1
-        elif verdict == "confirm_negative":
-            rec["branch"] = (
-                "component_unverified" if rec.get("reached_play_page")
-                else "no_play_control"
-            )
-            rec["is_negative_sample"] = True
-            rec["source"] = "human"
-            stats["confirm_negative"] += 1
-        elif verdict == "trailer":
-            rec["branch"] = "trailer_only"
-            rec["is_negative_sample"] = True
-            rec["source"] = "human"
-            stats["trailer"] += 1
-        else:                     # need_browser / skip：不动分支，只记状态
+            stats["branch_written"] += 1
+            if want is None:
+                confirmed.add(url)
+        elif verdict in ("need_browser", "skip"):
+            # 「没裁」与「裁了但没结论」是两种状态，各记各的：
+            # ``skipped`` 是给报表看的合计数（两种加在一起），
+            # ``stats[verdict]`` 是分开看的——分不开就会把
+            # 「页面已失效」与「证据不足」当成同一件事。
             rec["review_pending"] = True
             stats["skipped"] += 1
+        stats[verdict] += 1
         new_outcomes.append(rec)
 
     out["outcomes"] = new_outcomes
+    if confirmed:
+        _sync_visit_success(out, confirmed)
     out["review_stats"] = stats
     out["review_note"] = (
         "人工裁定已回填。branch_before_review 保留代码原始判定，"
         "source=human 标记人工来源——两者都留着才能测人工与代码的分歧率。"
+        "跨判断点的裁定不写 branch，改记 site_verdict——"
+        "见 review_queue.apply_verdicts 的 docstring。"
     )
     return out, stats
+
+# ══════════════════════════════════════════════════════════════════════
+# 队列预填与收敛（2026-10-10 从一次性脚本提炼）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 提炼的是**机制**，不是那批数据的判据。判据留在
+# :data:`PORTAL_HOSTS` 里——它是「哪些站点压根没有逐片播放页这种页面形态」
+# 这一条知识，会随站点变化而更新，不该变成命令行参数。
+
+#: 门户 / 导航 / 追踪站。**它们没有「逐片播放页」这种页面形态**——
+#: 域名本身就是结论，与「采没采到元素」无关。
+PORTAL_HOSTS: Final[tuple[str, ...]] = (
+    "hao123.com",      # 导航站
+    "trtag.com",       # 追踪 / 标签站
+)
+
+#: 写进 ``reviewed_by`` 的标记。**刻意不写人名**——这些行是按形态
+#: 推出的，记成人名等于**伪造「人看过证据」**，而复核档是人工裁定
+#: 的正式载体。
+AUTO_BY_PORTAL: Final = "auto:portal-domain"
+AUTO_BY_INSUFFICIENT: Final = "auto:insufficient-evidence"
+
+#: 「没证据」类裁定。**它不对站点下结论**，所以同 URL 出现真结论时
+#: 应当让位（见 :func:`settle_same_site`）。
+NO_CLAIM: Final[frozenset[str]] = frozenset({"need_browser", "skip"})
+
+PORTAL_NOTE: Final = (
+    "门户 / 导航 / 追踪站首页：不存在「该片播放页」这种页面形态，"
+    "站点形态本身即结论，与采集完整性无关。"
+)
+INSUFFICIENT_NOTE: Final = (
+    "零交互元素：存档里没有可看的东西，**判不了**。"
+    "这不是「这里看不了」——按 fail-closed（I4）与避坑指南 §5.15，"
+    "应开浏览器复看后再裁。"
+)
+
+
+def prefill(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """按**证据形态**给空行填裁定，**一个字都不改已填的行**。
+
+    两条硬规矩：
+
+    1. **只填空行。** 人的裁定一律不覆盖——``fill`` 逐行判
+       ``verdict`` 非空就跳过。
+    2. **零交互元素填 ``need_browser``，不是任何负分支。**
+
+    第 2 条不是洁癖，有硬反证：实测 58 条零元素里 **24 条
+    ``video_tag_count=1``**（页面上有 ``<video>`` 标签，这是「它是播放页」
+    的**正证据**，恰好与要贴的标签相反）、**14 条 ``page_title`` 就是
+    「功夫 - 电影 - 高清完整版在线观看 - 西瓜视频」**。
+
+    把它们贴成 ``not_play_site`` 就是把**采集失败**写成业务负样本，
+    而那是个**真负样本**，会直接进池污染它——理由通顺、零报错。
+
+    返回各类计数，供报表用。
+    """
+    stats: dict[str, int] = {"confirm_not_play_site": 0, "need_browser": 0,
+                             "（有元素，留给人判）": 0, "（已填，未动）": 0}
+    for row in rows:
+        if str(row.get("verdict") or "").strip():
+            stats["（已填，未动）"] += 1
+            continue
+        if row.get("elements"):
+            stats["（有元素，留给人判）"] += 1
+            continue
+        host = str(row.get("landed_url") or row.get("url") or "")
+        if any(h in host for h in PORTAL_HOSTS):
+            row["verdict"] = "confirm_not_play_site"
+            row["reviewed_by"] = AUTO_BY_PORTAL
+            row["note"] = PORTAL_NOTE
+            stats["confirm_not_play_site"] += 1
+        else:
+            row["verdict"] = "need_browser"
+            row["reviewed_by"] = AUTO_BY_INSUFFICIENT
+            row["note"] = INSUFFICIENT_NOTE
+            stats["need_browser"] += 1
+    return stats
+
+
+def settle_same_site(rows: list[dict[str, Any]]) -> int:
+    """同 URL 只保留一个裁定：**结论档压过「没证据」档**。返回改动行数。
+
+    同一站点在多份存档里各出现一次，元素完整性逐次不同——实测某个
+    《功夫》页 8 行里 1 行零元素（被填成 ``need_browser``）、7 行有元素
+    （证据指向付费墙）。裁定按 URL 应用，两档并存就是
+    **后一行静默吃掉前一行**，而 ``apply --apply`` 之后无从分辨。
+
+    判据不是「哪个在后」，而是**哪个在说话**：
+    ``need_browser`` / ``skip`` 的含义是「**这一行没取到证据**」，
+    不是「这个站点如何」——所以它不能压过一条基于证据的结论。
+    """
+    import collections
+
+    by_url: dict[str, set[str]] = collections.defaultdict(set)
+    for row in rows:
+        v = str(row.get("verdict") or "").strip()
+        if v:
+            by_url[str(row.get("landed_url") or row.get("url") or "")].add(v)
+
+    winner: dict[str, str] = {}
+    for url, seen in by_url.items():
+        claims = seen - NO_CLAIM
+        if len(claims) == 1:                # 有且只有一条结论档 → 它说了算
+            winner[url] = claims.pop()
+        elif not claims and len(seen) > 1:  # 两档都是「没证据」，取任一
+            winner[url] = next(iter(seen))
+
+    n = 0
+    for row in rows:
+        url = str(row.get("landed_url") or row.get("url") or "")
+        w = winner.get(url)
+        if w and row.get("verdict") != w:
+            row["note"] = ((row.get("note") or "")
+                           + f" ｜ 随同 URL 的其他行同步为 {w}"
+                             f"（本行零元素，「没证据」不压过有证据的结论）"
+                           ).strip(" ｜")
+            row["verdict"] = w
+            n += 1
+    return n

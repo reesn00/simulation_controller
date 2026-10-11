@@ -68,6 +68,34 @@ def _write(tmp_path, arc, name="T001__abc123.json"):
     return p
 
 
+class TestSchemaVersion:
+    """P1 版本身份在 P2 侧的三条口径。
+
+    这个字段解决的是「这批数据是哪一批」，而**回填历史存档就是猜**：
+    没有依据断定一份没版本号的存档属于哪一批，猜错的代价是一个
+    **静默错误**的批次归属（报表上只多出一条看不懂的数据）。
+    """
+
+    def test_有版本号原样带出(self, tmp_path):
+        arc = _arc(schema_version="2", visits=[_visit("https://a.test/")])
+        for s in schema.split_archive(_write(tmp_path, arc)):
+            assert s.schema_version == "2"
+
+    def test_缺版本号是空串而不是默认版本(self, tmp_path):
+        """**空串 ≠「v1」**。前者说「这份数据没有版本身份」，
+        后者说「这份数据是旧的」——后者是猜的。补一个默认值等于
+        凭空断言，于是所有历史存档会被静默归进「旧版」那一档。"""
+        arc = _arc(visits=[_visit("https://a.test/")])
+        assert "schema_version" not in arc          # 模拟 2026-10-10 之前的存档
+        for s in schema.split_archive(_write(tmp_path, arc)):
+            assert s.schema_version == ""
+
+    def test_进P2(self, tmp_path):
+        arc = _arc(schema_version="2", visits=[_visit("https://a.test/")])
+        assert schema.split_archive(_write(tmp_path, arc))[0].to_json()[
+            "schema_version"] == "2"
+
+
 class TestGranularity:
     def test_搜索与每个站点各自成条(self, tmp_path):
         arc = _arc(visits=[_visit("https://a.test/"), _visit("https://b.test/")])

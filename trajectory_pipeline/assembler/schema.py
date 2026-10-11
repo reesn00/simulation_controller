@@ -381,6 +381,15 @@ class Sample:
     #: 非空即表示这条样本是**降级重建**的，别当成与新存档同等的样本混着用。
     degraded_from: tuple[str, ...] = ()
 
+    #: 源 P1 的 :data:`~trajectory_pipeline.executor.orchestrator.SCHEMA_VERSION`。
+    #:
+    #: **空串 = 那份存档压根没有这个键**，不是「v1」也不是「未知版本 1」——
+    #: 38 份历史存档都落在这。两种读法在报表上差很远：前者说「这份数据
+    #: 没有版本身份」，后者说「这份数据是旧的」，而后者是**猜的**。
+    #: 评估侧据它分档：认得版本就按版本分，认不���就退回缺件代理，
+    #: 并把那份代理**标注为代理**（见 ``evaluation.cli``）。
+    schema_version: str = ""
+
     def to_json(self) -> dict[str, Any]:
         return {
             "sample_id": self.sample_id,
@@ -388,6 +397,7 @@ class Sample:
             "unit": self.unit,
             "title": self.title,
             "source_archive": self.source_archive,
+            "schema_version": self.schema_version,
             "six": {
                 "system_prompt": self.system_prompt,
                 "tools": [t.to_json() for t in self.tools],
@@ -471,6 +481,15 @@ def _obs_missing(obs: Mapping[str, Any]) -> str | None:
       否则 rationale 的实体核查会把落在预览之外的实体判成幻觉——那不是
       幻觉，是**没存**。悄悄拿 400 字符当全文喂进去，等于凭空造出一批
       假幻觉，而闸门会把它们当成真的模型错误记进负样本池。
+
+    ⚠️ **本函数答的是「P1 里没有哪个键」，不是「这份观察哪里不可信」。**
+    所以「有键但内容是烂的」（``body_mojibake`` / ``title_mojibake``）
+    **不在这里判**——它在**采集期**就记进了 ``Observation.degraded``，
+    随 P1 落盘，由闸门侧 ``gates.observation_shortfall`` 消费
+    （见到 ``degraded`` 非空即拒绝判幻觉）。理由与
+    ``executor.integrity.degraded_marker_map`` 刻意不收 ``mojibake``
+    是同一条：``degraded_from`` 是平铺的标记列表，
+    「正文被截短」与「正文是烂的」轻重不同，混进同一张表就分不出。
     """
     if not obs:
         return None
@@ -580,6 +599,9 @@ def _sample(
         rationale_missing=not written,
         source_archive=source_name,
         degraded_from=tuple(dict.fromkeys(degraded)),
+        # 键不存在 → 空串（**不是** ``"1"``）：没有版本身份就是没有版本身份，
+        # 补一个默认值等于凭空断言这份存档属于哪一批。
+        schema_version=str(archive.get("schema_version") or ""),
     )
 
 

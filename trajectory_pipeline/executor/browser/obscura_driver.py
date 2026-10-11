@@ -28,6 +28,7 @@ from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.dom import (
     CleanedLink,
     CleanedSnapshot,
+    is_mojibake,
     looks_like_error,
     parse_body_text,
     parse_count,
@@ -167,7 +168,21 @@ class ObscuraDriver:
             # 以及 tool 成功但返回空串——JS 页面还没渲染时正是后者，
             # **不是错误**所以 _call 不会记，得在这里补。
             degraded.append("body_text")
-        return parse_snapshot(text or "", max_chars=max_chars, body=body or None)
+        elif body is not None and degraded is not None and is_mojibake(body):
+            # 乱码正文**不是「没采到」，是「采到了但不可读」**——两者对
+            # 下游的影响不同：前者无据可依，后者最危险，因为它看起来
+            # 有内容，rationale 闸门的实体核查会把「模型引用了页面上
+            # 真实存在但已损坏的实体」判成幻觉（凭空造出负样本）。
+            degraded.append("body_mojibake")
+        snap = parse_snapshot(text or "", max_chars=max_chars, body=body or None)
+        # 标题单独记，且**与正文分开**——两者可以只坏一个。
+        # 标题是 P1 里「不给就不可判定」的字段之一（判断点 ② 的判据
+        # 之一就是「标题是否与目标影片一致」），标题烂掉时那条判断
+        # 根本没法做，而正文可能完好——合成一个标记就分不出是哪部分
+        # 不可读，降级范围也会被错误地放大到整个观察。
+        if degraded is not None and snap.title and is_mojibake(snap.title):
+            degraded.append("title_mojibake")
+        return snap
 
     async def links(self, *, limit: int = DEFAULT_LIMIT) -> tuple[CleanedLink, ...]:
         text = await self._call("browser_links", {"limit": limit}, on_error="empty")

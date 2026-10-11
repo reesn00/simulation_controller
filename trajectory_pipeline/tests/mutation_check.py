@@ -206,6 +206,41 @@ MUTATIONS = [
         '    if False:',
         "trajectory_pipeline/tests/unit/test_writer.py::Test动作失败进提示词",
     ),
+    (
+        "乱码检测恒假",
+        "trajectory_pipeline/executor/dom.py",
+        "    return count_mojibake(text) >= threshold",
+        "    return False",
+        "trajectory_pipeline/tests/unit/test_mojibake.py::Test检测函数",
+    ),
+    (
+        "乱码阈值降到个位数",
+        "trajectory_pipeline/executor/dom.py",
+        "MOJIBAKE_MIN_COUNT = 3",
+        "MOJIBAKE_MIN_COUNT = 1",
+        "trajectory_pipeline/tests/unit/test_mojibake.py::Test检测函数",
+    ),
+    (
+        "正文乱码不记降级",
+        "trajectory_pipeline/executor/browser/obscura_driver.py",
+        '        elif body is not None and degraded is not None and is_mojibake(body):',
+        "        elif False:",
+        "trajectory_pipeline/tests/unit/test_obscura_driver.py::TestMojibakeAccounting",
+    ),
+    (
+        "标题乱码不记降级",
+        "trajectory_pipeline/executor/browser/obscura_driver.py",
+        '        if degraded is not None and snap.title and is_mojibake(snap.title):',
+        "        if False:",
+        "trajectory_pipeline/tests/unit/test_obscura_driver.py::TestMojibakeAccounting",
+    ),
+    (
+        "乱码标记闸门不认",
+        "trajectory_pipeline/rationale/gates.py",
+        '    if list(obs.get("degraded") or ()):',
+        "    if False:",
+        "trajectory_pipeline/tests/unit/test_mojibake.py::Test闸门侧联动",
+    ),
 ]
 
 

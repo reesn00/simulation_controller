@@ -11,13 +11,18 @@ import json
 
 import pytest
 
+from trajectory_pipeline.executor.cli import _load_verdicts
 from trajectory_pipeline.executor.review_queue import (
+    AUTO_BY_INSUFFICIENT,
+    AUTO_BY_PORTAL,
     REVIEW_BRANCHES,
     VERDICTS,
     ReviewQueueError,
     apply_verdicts,
     collect,
     extract_items,
+    prefill,
+    settle_same_site,
     write_queue,
 )
 
@@ -115,6 +120,7 @@ class TestExtract:
 class TestApplyVerdicts:
     def test_确认成功改为成功样本(self):
         arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "player.ok",
                           "evidence": "e", "reached_play_page": True}])
         out, st = apply_verdicts(arch, {"a.com": {"verdict": "confirm_success",
                                                   "reviewed_by": "张"}})
@@ -133,9 +139,9 @@ class TestApplyVerdicts:
     def test_确认失败按是否到达播放页分岔(self):
         arch = _archive([
             {"url": "reached.com", "branch": "unresolved", "evidence": "e",
-             "reached_play_page": True},
+             "question": "player.ok", "reached_play_page": True},
             {"url": "site.com", "branch": "unresolved", "evidence": "e",
-             "reached_play_page": False},
+             "question": "site.find_play_control", "reached_play_page": False},
         ])
         out, _ = apply_verdicts(arch, {
             "reached.com": {"verdict": "confirm_negative"},
@@ -146,6 +152,7 @@ class TestApplyVerdicts:
 
     def test_裁定为预告片(self):
         arch = _archive([{"url": "a.com", "branch": "trailer_suspect",
+                          "question": "site.find_play_control",
                           "evidence": "e"}])
         out, st = apply_verdicts(arch, {"a.com": {"verdict": "trailer"}})
         assert out["outcomes"][0]["branch"] == "trailer_only"
@@ -195,7 +202,226 @@ class TestApplyVerdicts:
 
     def test_verdicts枚举是闭合的(self):
         assert set(VERDICTS) == {"confirm_success", "confirm_negative",
+                                 "confirm_not_play_site", "confirm_paywall",
                                  "trailer", "need_browser", "skip"}
+
+    def test_不是播放站与确认看不了是两个分支(self):
+        """**这一支存在的理由**。导航站首页（hao123.com）点了导航项也是
+        「到了播放页」，若按 ``confirm_negative`` 的 ``reached`` 分岔就会被
+        贴成 ``component_unverified``——语义相反，且它是真负样本会进池。"""
+        arch = _archive([
+            {"url": "hao123.com", "branch": "unresolved", "evidence": "e",
+             "question": "select.play_sites", "reached_play_page": True},
+            {"url": "iqiyi.com", "branch": "unresolved", "evidence": "e",
+             "question": "player.ok", "reached_play_page": True},
+        ])
+        out, st = apply_verdicts(arch, {
+            "hao123.com": {"verdict": "confirm_not_play_site"},
+            "iqiyi.com": {"verdict": "confirm_negative"},
+        })
+        assert out["outcomes"][0]["branch"] == "not_play_site"
+        assert out["outcomes"][0]["is_negative_sample"] is True
+        assert out["outcomes"][0]["source"] == "human"
+        assert out["outcomes"][1]["branch"] == "component_unverified"
+        assert st["confirm_not_play_site"] == 1
+
+    def test_不是播放站是真负样本(self):
+        """``not_play_site`` 不在 ``NON_SAMPLE_BRANCHES`` 里，所以这一档
+        入池。守卫写死，避免将来有人把它挪进「没判出来」那三支。"""
+        from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+        assert "not_play_site" not in NON_SAMPLE_BRANCHES
+
+    def test_付费墙单独成支(self):
+        """优酷《功夫》页**有控件有播放器**，只卡在「立即购买/升SVIP」。
+        贴 ``component_unverified`` 会说成「控件没渲染」，贴
+        ``not_play_site`` 更是反的——优酷**就是**《功夫》的可观看站。"""
+        from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+        arch = _archive([
+            {"url": "youku.com", "branch": "unresolved", "evidence": "e",
+             "question": "player.ok", "reached_play_page": True},
+        ])
+        out, st = apply_verdicts(
+            arch, {"youku.com": {"verdict": "confirm_paywall"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "subscription_wall"
+        assert rec["is_negative_sample"] is True
+        assert rec["source"] == "human"
+        assert st["confirm_paywall"] == 1
+        assert "subscription_wall" not in NON_SAMPLE_BRANCHES
+
+    def test_付费墙分支名在注册表里(self):
+        """分支 id 必须与 :data:`branches.BRANCH_LABELS` 一致，否则
+        ``report`` 渲染成空白、``ledger.by_branch`` 与报表对不上。"""
+        from trajectory_pipeline.executor.branches import BRANCH_LABELS
+        assert "subscription_wall" in BRANCH_LABELS
+
+
+class Test跨判断点:
+    """**B 口径**：人工给的是**站点级**结论，outcome 是**决策单元级**的。
+
+    跨判断点贴分支会造出决策树里不存在的 ``(question, branch)`` 组合，
+    且破坏是静默的——实测 14 条触发 15 条 D-5 一票否决，
+    门禁 ``test_d5_scorer::Test同源`` 当场红。
+    """
+
+    def test_归属不对就不动branch(self):
+        arch = _archive([{"url": "youku.com", "branch": "unresolved",
+                          "question": "site.find_play_control",
+                          "evidence": "e"}])
+        out, st = apply_verdicts(arch, {"youku.com": {"verdict": "confirm_paywall"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "unresolved"            # ← 分支没动
+        assert rec["site_verdict"] == "subscription_wall"
+        assert "player.ok" in rec["site_verdict_mismatch"]
+        assert "site.find_play_control" in rec["site_verdict_mismatch"]
+        assert st["off_question"] == 1
+        assert st["confirm_paywall"] == 1
+
+    def test_人工结论仍然留得住可统计(self):
+        """不改 branch 不等于丢掉结论——``review_verdict`` 照记。"""
+        arch = _archive([{"url": "hao123.com", "branch": "unresolved",
+                          "question": "site.is_reachable", "evidence": "e"}])
+        out, _ = apply_verdicts(
+            arch, {"hao123.com": {"verdict": "confirm_not_play_site"}})
+        rec = out["outcomes"][0]
+        assert rec["review_verdict"] == "confirm_not_play_site"
+        assert rec["site_verdict"] == "not_play_site"
+        assert rec["branch_before_review"] == "unresolved"
+
+    def test_归属对了就照贴(self):
+        arch = _archive([{"url": "youku.com", "branch": "unresolved",
+                          "question": "player.ok", "evidence": "e"}])
+        out, st = apply_verdicts(arch, {"youku.com": {"verdict": "confirm_paywall"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "subscription_wall"
+        assert "site_verdict" not in rec
+        assert st["off_question"] == 0
+
+    def test_成功也核归属只能落player_ok(self):
+        """**曾经写错的一条**：以为「成功」不归属任何判断点，于是无条件放行。
+        实测被 D-5 否掉 15 条——``branch=None`` 的含义是「这次访问成功了」，
+        而 outcome 记的是②/③ 就说明控制流在③停了（没走到④）。
+        人确认「这站能看」给出的是「**代码漏判了正样本**」，不是「访问成功」。
+        """
+        off = _archive([{"url": "a.com", "branch": "unresolved",
+                         "question": "site.is_reachable", "evidence": "e"}])
+        rec = apply_verdicts(off, {"a.com": {"verdict": "confirm_success"}})[0][
+            "outcomes"][0]
+        assert rec["branch"] == "unresolved"
+        assert rec["site_verdict"] == "success"
+
+        on = _archive([{"url": "a.com", "branch": "unresolved",
+                        "question": "player.ok", "evidence": "e"}])
+        out, st = apply_verdicts(on, {"a.com": {"verdict": "confirm_success"}})
+        assert out["outcomes"][0]["branch"] is None
+        assert "site_verdict" not in out["outcomes"][0]
+        assert st["off_question"] == 0
+
+    def test_question为空时拒绝贴(self):
+        """老存档压根没记是哪个判断点。「无法核对」不等于「可以贴」。"""
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "", "evidence": "e"}])
+        out, _ = apply_verdicts(arch, {"a.com": {"verdict": "confirm_paywall"}})
+        assert out["outcomes"][0]["branch"] == "unresolved"
+        assert out["outcomes"][0]["site_verdict"] == "subscription_wall"
+
+
+class Test同步访问成功:
+    def test_确认成功翻visits的success(self):
+        """outcome.branch=None 与 visits[].success 是同一件事的两个副本。
+        只翻一处就留下 ``success=False 但 branch=None``——assembler 切样本
+        时按 visits 判终止，于是切出来的样本带着一条「失败」outcome，
+        D-5 把它读成「分支走错」（实测 15 条一票否决）。"""
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "player.ok", "evidence": "e"}],
+                        [_visit("a.com")])
+        assert arch["visits"][0]["success"] is False
+        out, _ = apply_verdicts(arch, {"a.com": {"verdict": "confirm_success"}})
+        assert out["outcomes"][0]["branch"] is None
+        assert out["visits"][0]["success"] is True
+        assert "review --apply" in out["visits"][0]["success_by_review"]
+
+    def test_按landed_url也认(self):
+        """outcome 的 url 记的是**结论形成处**，visit 的 url 是候选地址，
+        重定向后两者不同。只按 url 匹配会一条都翻不到。"""
+        arch = _archive([{"url": "landed.com", "branch": "unresolved",
+                          "question": "player.ok", "evidence": "e"}],
+                        [_visit("origin.com", landed="landed.com")])
+        out, _ = apply_verdicts(arch, {"landed.com": {"verdict": "confirm_success"}})
+        assert out["visits"][0]["success"] is True
+
+    def test_不翻无关的visit(self):
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "player.ok", "evidence": "e"}],
+                        [_visit("a.com"), _visit("b.com")])
+        out, _ = apply_verdicts(arch, {"a.com": {"verdict": "confirm_success"}})
+        assert out["visits"][0]["success"] is True
+        assert out["visits"][1]["success"] is False
+
+    def test_非成功裁定不翻(self):
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "player.ok", "evidence": "e"}],
+                        [_visit("a.com")])
+        out, _ = apply_verdicts(arch, {"a.com": {"verdict": "confirm_paywall"}})
+        assert out["visits"][0]["success"] is False
+
+
+class Test载入裁定:
+    """``_load_verdicts``——**静默覆盖是这里存在的唯一理由**。
+
+    队列逐存档导出，同一站点在多份存档里各出现一次（实测 106 行只对应
+    21 个唯一 URL，爱奇艺那一个 URL 占 20 行）。而 ``dict[key]=…`` 是
+    后者覆盖前者：复核员的判断被下一行悄悄吃掉，回填照常成功、零报错。
+    """
+
+    @staticmethod
+    def _q(tmp_path, rows):
+        p = tmp_path / "q.jsonl"
+        p.write_text("\n".join(json.dumps(r, ensure_ascii=False)
+                               for r in rows) + "\n", encoding="utf-8")
+        return p
+
+    def test_同URL同裁定不算冲突(self, tmp_path):
+        p = self._q(tmp_path, [
+            {"url": "a.com", "verdict": "confirm_success", "reviewed_by": "张"},
+            {"url": "a.com", "verdict": "confirm_success", "reviewed_by": "张"},
+        ])
+        verdicts, conflicts = _load_verdicts(p)
+        assert conflicts == []
+        assert verdicts["a.com"]["verdict"] == "confirm_success"
+
+    def test_同URL不同裁定当场报冲突(self, tmp_path):
+        """实测事故：第 2 行裁 ``confirm_success``，第 6/16/40/80 行是
+        ``need_browser``——预演显示 confirm_success 落 0 条，无任何报错。"""
+        p = self._q(tmp_path, [
+            {"url": "a.com", "verdict": "confirm_success", "reviewed_by": "张"},
+            {"url": "a.com", "verdict": "need_browser", "reviewed_by": "auto:x"},
+        ])
+        _verdicts, conflicts = _load_verdicts(p)
+        assert len(conflicts) == 1
+        assert conflicts[0][0] == "a.com"
+        assert conflicts[0][1] == {"confirm_success", "need_browser"}
+
+    def test_空裁定不参与冲突判定(self, tmp_path):
+        p = self._q(tmp_path, [
+            {"url": "a.com", "verdict": "confirm_success"},
+            {"url": "a.com", "verdict": ""},
+        ])
+        _verdicts, conflicts = _load_verdicts(p)
+        assert conflicts == []
+
+    def test_未知裁定在这里就抛(self, tmp_path):
+        """不能等到 :func:`apply_verdicts` 抛——那是**逐存档**抛的，
+        抛之前已经有别的存档写完 ``.reviewed.json``，留下一半新一半旧。"""
+        p = self._q(tmp_path, [{"url": "a.com", "verdict": "not_play_site"}])
+        with pytest.raises(ReviewQueueError, match="未知裁定"):
+            _load_verdicts(p)
+
+    def test_按landed_url优先取键(self, tmp_path):
+        p = self._q(tmp_path, [{"url": "u", "landed_url": "L",
+                                "verdict": "skip"}])
+        verdicts, _ = _load_verdicts(p)
+        assert "L" in verdicts and "u" not in verdicts
 
 
 class TestIO:
@@ -225,3 +451,122 @@ class TestIO:
     def test_目录不存在显式抛(self, tmp_path):
         with pytest.raises(ReviewQueueError, match="不是目录"):
             collect(tmp_path / "nope")
+
+def _row(url, *, elements=0, verdict="", **over):
+    row = {"url": url, "landed_url": url, "elements": elements,
+           "verdict": verdict, "reviewed_by": "", "note": ""}
+    row.update(over)
+    return row
+
+
+class Test预填:
+    """按证据形态预填，**只填空行**。
+
+    这套规则是从一批 58 条零交互元素的复核里提炼的，那批的教训
+    有硬反证：58 条里 24 条 ``video_tag_count=1``（页面上有 ``<video>``
+    标签——这是「它是播放页」的**正证据**）、14 条标题逐字就是
+    「功夫 - 电影 - 高清完整版在线观看 - 西瓜视频」。把它们贴成
+    ``not_play_site`` 就是把**采集失败**写成业务负样本，而那会直接
+    进池污染它——理由通顺、零报错。
+    """
+
+    def test_零元素进need_browser不是负分支(self):
+        """``need_browser`` 的含义是「**暂不裁定**」，不是「这里看不了」。
+
+        它与四个会落分支的裁定（``confirm_negative`` /
+        ``confirm_not_play_site`` / ``confirm_paywall`` / ``trailer``）
+        的区别是**唯一要紧的**区别：前三个直接进负样本池，池被污染
+        之后没人会回头查是哪一批进去的。
+        """
+        rows = [_row("https://www.iqiyi.com/v_19rrk40ajc.html")]
+        prefill(rows)
+        assert rows[0]["verdict"] == "need_browser"
+        landing = {v for v in VERDICTS if "负样本" in VERDICTS[v]}
+        assert landing, "VERDICTS 应当有落负样本池的裁定作为对照"
+        assert rows[0]["verdict"] not in landing
+
+    def test_门户站进not_play_site(self):
+        """域名本身就是结论，与采没采到元素无关。"""
+        rows = [_row("https://www.hao123.com/", elements=0)]
+        prefill(rows)
+        assert rows[0]["verdict"] == "confirm_not_play_site"
+
+    def test_有元素一个字都不改(self):
+        rows = [_row("https://www.iqiyi.com/v_x.html", elements=30)]
+        prefill(rows)
+        assert rows[0]["verdict"] == "" and rows[0]["note"] == ""
+
+    def test_不覆盖人的裁定(self):
+        rows = [_row("https://a.com", verdict="confirm_success")]
+        stats = prefill(rows)
+        assert rows[0]["verdict"] == "confirm_success"
+        assert rows[0]["reviewed_by"] == ""
+        assert stats["（已填，未动）"] == 1
+
+    def test_来源标auto不写人名(self):
+        """复核档是人工裁定的正式载体。记成人名等于**伪造
+        「人看过证据」**，而这批行一个都没人看过。"""
+        rows = [_row("https://www.hao123.com/", elements=0),
+                _row("https://www.iqiyi.com/v_x.html", elements=0)]
+        prefill(rows)
+        assert rows[0]["reviewed_by"] == AUTO_BY_PORTAL
+        assert rows[1]["reviewed_by"] == AUTO_BY_INSUFFICIENT
+        for r in rows:
+            assert not any(ch.isalpha() and ord(ch) < 128 and ch.isupper()
+                           for ch in r["reviewed_by"].split(":")[-1])
+
+
+class Test同URL收敛:
+    """同 URL 多行必须收敛成一个裁定。
+
+    实测某个《功夫》页 8 行里 1 行零元素（被填成 ``need_browser``）、
+    7 行有元素（证据指向付费墙）。裁定按 URL 应用，两档并存就是
+    **后一行静默吃掉前一行**，而 ``--apply`` 照常成功、一行报错都没有。
+    """
+
+    def test_结论档压过没证据档(self):
+        url = "https://www.iqiyi.com/v_19rrk40ajc.html"
+        rows = [_row(url, elements=0, verdict="need_browser"),
+                _row(url, elements=40, verdict="confirm_paywall")]
+        assert settle_same_site(rows) == 1
+        assert {r["verdict"] for r in rows} == {"confirm_paywall"}
+
+    def test_反向顺序同样收敛(self):
+        """判据不是「哪个在后」——那是文件顺序的副产物。"""
+        url = "https://www.iqiyi.com/v_19rrk40ajc.html"
+        rows = [_row(url, elements=40, verdict="confirm_paywall"),
+                _row(url, elements=0, verdict="need_browser")]
+        assert settle_same_site(rows) == 1
+        assert {r["verdict"] for r in rows} == {"confirm_paywall"}
+
+    def test_两个结论档冲突时不动(self):
+        """分歧必须暴露给人看（CLAUDE.md 红线）。**不替人选一个**——
+        挑一个就是猜，而这条裁定决定样本进不进训练集。"""
+        url = "https://a.com"
+        rows = [_row(url, verdict="confirm_success"),
+                _row(url, verdict="confirm_paywall")]
+        assert settle_same_site(rows) == 0
+        assert rows[0]["verdict"] == "confirm_success"
+        assert rows[1]["verdict"] == "confirm_paywall"
+
+    def test_两个都没证据时取任一(self):
+        url = "https://a.com"
+        rows = [_row(url, verdict="need_browser"),
+                _row(url, verdict="skip")]
+        settle_same_site(rows)
+        assert len({r["verdict"] for r in rows}) == 1
+
+    def test_不同URL互不影响(self):
+        rows = [_row("https://a.com", verdict="need_browser"),
+                _row("https://b.com", verdict="confirm_success")]
+        assert settle_same_site(rows) == 0
+        assert rows[0]["verdict"] == "need_browser"
+
+    def test_同步那行留痕(self):
+        """被改过的那行必须写清为什么变——否则复核员看到自己的
+        裁定变了，却查不出是谁按什么规则改的。"""
+        url = "https://a.com"
+        rows = [_row(url, verdict="need_browser", note="零交互元素"),
+                _row(url, verdict="confirm_success")]
+        settle_same_site(rows)
+        assert "同步为 confirm_success" in rows[0]["note"]

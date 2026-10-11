@@ -1,0 +1,275 @@
+"""``executor.downgrade`` 的测试。
+
+盯的是**那些真的咬过人的坑**，不是「函数能不能跑」：
+处置范围静默扩大、自己写的降级理由被当成判据、``visits[].success``
+漏翻导致 ``success_branch_mismatch``。
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from trajectory_pipeline.executor import downgrade as dg
+
+
+def _arch(outcomes, visits=None):
+    return {
+        "task_id": "T001", "title": "功夫",
+        "ledger": {"by_branch": {"no_play_control": 2, "not_play_site": 1},
+                   "negative_samples": 3, "missing_branches": []},
+        "visits": visits if visits is not None else [],
+        "outcomes": outcomes,
+    }
+
+
+def _o(url, branch, evidence="判定正文", **over):
+    rec = {"url": url, "branch": branch, "evidence": evidence,
+           "is_negative_sample": branch is not None}
+    rec.update(over)
+    return rec
+
+
+def _write(tmp_path, arch, name="T001__r1.json"):
+    p = tmp_path / name
+    p.write_text(json.dumps(arch, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+def _read(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+class Test判定正文:
+    def test_只取第一段(self):
+        """**追加的降级理由里也含判据关键词**——全文匹配会把自己
+        刚降的记录再降一次。这个 bug 真发生过：第二版改用正则却仍
+        全文匹配，把刚恢复的 5 条又降了级。"""
+        ev = "原判正文\n\n人工降级：否定依据是「0 个交互元素」"
+        assert dg.base_evidence(ev) == "原判正文"
+
+    def test_剥掉原判前缀(self):
+        assert dg.base_evidence("[原判 no_play_control] 正文") == " 正文"
+
+    def test_200个不算0个(self):
+        """负向前视。``"0 个交互元素" in "200 个交互元素"`` 是 True。
+
+        走**真实的 selector**，不为这条另写一个谓词——判据的第二份
+        实现正是今天两次漂移的成因（见模块里 ``ZERO_ELEMENTS`` 的注释）。
+        """
+        arch = _arch([_o("a.com", "no_play_control",
+                         evidence="200 个交互元素中命中播放控件")])
+        assert dg.select_by_evidence([dg.ZERO_ELEMENTS])(arch) == []
+
+    def test_真0个命中(self):
+        arch = _arch([_o("a.com", "no_play_control",
+                         evidence="0 个交互元素中无一命中播放控件词表")])
+        assert len(dg.select_by_evidence([dg.ZERO_ELEMENTS])(arch)) == 1
+
+    def test_理由段里的不算(self):
+        arch = _arch([_o("a.com", "no_play_control",
+                         evidence="判定正文\n\n理由提到 0 个交互元素")])
+        assert dg.select_by_evidence([dg.ZERO_ELEMENTS])(arch) == []
+
+
+class Test选择器:
+    def test_不受理unresolved(self):
+        """它已经是降级后的状态。把它算进来正是那 8 条误伤的起因——
+        幂等判断该看「有没有处置戳」，不靠 branch 值。"""
+        with pytest.raises(ValueError, match="不该含"):
+            dg.select_by_evidence([dg.ZERO_ELEMENTS], branches=[dg.TARGET_BRANCH])
+
+    def test_不给分支参数也不受理unresolved(self):
+        """**这条盯的是沉成子命令后长出来的那次复发。**
+
+        守卫原先挂在「调用方显式传了 ``branches``」上，于是
+        ``--evidence``（走 ``branches=None``）把 9 条**已经 unresolved**
+        的记录整整齐齐选了出来，每行还印着 ``unresolved×1``。
+
+        「不受理目标态」是**处置动作的定义**，不是可选的过滤规则——
+        挂到调用方给什么参数上，就等于给同一个 bug 留了第二个入口。
+        """
+        arch = _arch([_o("a.com", dg.TARGET_BRANCH,
+                         evidence="0 个交互元素中无一命中播放控件词表")])
+        assert dg.select_by_evidence([dg.ZERO_ELEMENTS])(arch) == []
+
+    def test_select_by_url同样不受理unresolved(self):
+        arch = _arch([_o("a.com", dg.TARGET_BRANCH)])
+        assert dg.select_by_url("a.com")(arch) == []
+
+    def test_已打过戳的跳过(self):
+        arch = _arch([_o("a.com", "no_play_control",
+                         evidence="[原判 no_play_control] 正文\n\n已降级")])
+        assert dg.select_by_url("a.com")(arch) == []
+
+    def test_按evidence只认原始正文(self):
+        arch = _arch([_o("a.com", "no_play_control", evidence="0 个交互元素")])
+        arch["outcomes"][0]["evidence"] += "\n\n补：这里也是 0 个交互元素"
+        sel = dg.select_by_evidence([dg.ZERO_ELEMENTS])
+        assert len(sel(arch)) == 1
+
+    def test_空片段与空正则都拒(self):
+        with pytest.raises(ValueError):
+            dg.select_by_url()
+        with pytest.raises(ValueError):
+            dg.select_by_evidence([])
+
+
+class Test处置:
+    def test_改的是传入的那个对象(self, tmp_path):
+        """``apply_downgrades`` **只改内存对象**。传进去的 archive 必须
+        真的变了——它不读盘也不写盘，收了路径却没落盘这种事必须
+        结构上不可能（见函数 docstring）。"""
+        arch = _arch([_o("a.com", "no_play_control")])
+        p = _write(tmp_path, arch)
+        s = dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                                name=p.name, dry_run=False)
+        assert s["downgraded"] == 1
+        assert arch["outcomes"][0]["branch"] == dg.TARGET_BRANCH
+
+    def test_报告说降了就真落盘了(self, tmp_path):
+        """**这条盯的是一次真的静默失败。**
+
+        第一版 ``apply_downgrades`` 收路径、内部自己重读一份再写盘，
+        而调用方传的 ``hits`` 来自它自己读的那份：改的是 A、写的是 B，
+        **什么都没落盘而返回值说「降级 N 条」**。
+
+        它长得极像成功——清单整整齐齐，下一次读存档发现一条没变，
+        而没有任何东西提示要查。所以端到端这条（走 ``apply_to_root``、
+        断言**文件**变了）必须与上面那条分开写，不合并。
+        """
+        p = _write(tmp_path, _arch([_o("a.com", "no_play_control")]))
+        out = dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                               reason="r", dry_run=False)
+        assert out[0]["downgraded"] == 1
+        assert _read(p)["outcomes"][0]["branch"] == dg.TARGET_BRANCH
+
+    def test_dry_run不落盘(self, tmp_path):
+        p = _write(tmp_path, _arch([_o("a.com", "no_play_control")]))
+        before = p.read_text(encoding="utf-8")
+        dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                         reason="理由", dry_run=True)
+        assert p.read_text(encoding="utf-8") == before
+
+    def test_理由必填(self, tmp_path):
+        arch = _arch([_o("a.com", "no_play_control")])
+        with pytest.raises(ValueError, match="--reason"):
+            dg.apply_downgrades(arch, hits=arch["outcomes"], reason="  ")
+
+    def test_留痕可还原(self, tmp_path):
+        p = _write(tmp_path, _arch([_o("a.com", "no_play_control",
+                                       evidence="原正文")]))
+        arch = _read(p)
+        dg.apply_downgrades(arch, hits=arch["outcomes"], reason="取证依据",
+                            name=p.name, dry_run=False)
+        rec = arch["outcomes"][0]
+        assert rec["branch"] == dg.TARGET_BRANCH
+        assert rec["branch_before_downgrade"] == "no_play_control"
+        assert "原正文" in rec["evidence"] and "取证依据" in rec["evidence"]
+        # 幂等：再跑一次选不中它
+        assert dg.select_by_url("a.com")(arch) == []
+
+    def test_摘掉负样本标记(self, tmp_path):
+        """它是「这条是否进池」的判据，而 unresolved 不进池。"""
+        arch = _arch([_o("a.com", "not_play_site")])
+        p = _write(tmp_path, arch)
+        dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                            name=p.name, dry_run=False)
+        assert "is_negative_sample" not in arch["outcomes"][0]
+
+    def test_同步visits成功位(self, tmp_path):
+        """「成功」在存档里记在两处：``outcome.branch is None`` 与
+        ``visits[i].success``。只改一处就留下 ``success=True 但
+        branch=unresolved``——``check-archives`` 的
+        ``success_branch_mismatch`` 正查这个。"""
+        arch = _arch([_o("a.com", "no_play_control")],
+                     visits=[{"url": "a.com", "landed_url": "a.com",
+                              "success": True}])
+        p = _write(tmp_path, arch)
+        s = dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                                name=p.name, dry_run=False)
+        assert s["visits"] == 1
+        v = arch["visits"][0]
+        assert v["success"] is False and "success_downgraded_by" in v
+
+    def test_不同URL的visits不动(self, tmp_path):
+        arch = _arch([_o("a.com", "no_play_control")],
+                     visits=[{"url": "b.com", "landed_url": "b.com",
+                              "success": True}])
+        p = _write(tmp_path, arch)
+        assert dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                                   name=p.name,
+                                   dry_run=False)["visits"] == 0
+
+    def test_不动reached_play_page(self, tmp_path):
+        """它记的是**采集事实**（控制流到没到过播放页 URL）。
+        为了让 D-5 判 5 分而改成 False，等于**改写采集事实去迎合结论**。"""
+        arch = _arch([_o("a.com", "no_play_control", reached_play_page=True)])
+        p = _write(tmp_path, arch)
+        dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                            name=p.name, dry_run=False)
+        assert arch["outcomes"][0]["reached_play_page"] is True
+
+    def test_ledger记账(self, tmp_path):
+        arch = _arch([_o("a.com", "no_play_control"),
+                      _o("b.com", "no_play_control")])
+        p = _write(tmp_path, arch)
+        dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                            name=p.name, dry_run=False)
+        led = arch["ledger"]
+        assert led["by_branch"][dg.TARGET_BRANCH] == 2
+        assert "no_play_control" not in led["by_branch"]   # 归零则删键
+        assert led["negative_samples"] == 1               # 3 - 2
+        assert dg.TARGET_BRANCH in led["missing_branches"]
+
+    def test_判成功的不从池子里减(self, tmp_path):
+        """``branch=None`` 是「这条判成功」，**本来就不在池里**。
+
+        按 ``len(hits)`` 减会把 ``negative_samples`` 减成比实际小，
+        而报表只看这一个数——池子少了，训练数据就少了一条，而报告
+        看不出是哪条减的。
+        """
+        arch = _arch([_o("a.com", None)])
+        p = _write(tmp_path, arch)
+        dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                            name=p.name, dry_run=False)
+        assert arch["ledger"]["negative_samples"] == 3    # 原样不动
+
+
+class Test目录遍历:
+    def test_不动复核档(self, tmp_path):
+        """复核档是 ``review --apply`` 从原档合并出来的，在它上面改会被
+        下一次 ``--apply`` **静默覆盖回去**——降级看起来做了，跑一次
+        review 就没了。"""
+        for name in ("T001__a.json", "T001__a.reviewed.json"):
+            _write(tmp_path, _arch([_o("a.com", "no_play_control")]), name)
+        out = dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                               reason="r", dry_run=False)
+        assert len(out) == 1
+        assert out[0]["archive"] == "T001__a.json"
+        # 复核档仍是旧分支
+        rev = json.loads((tmp_path / "T001__a.reviewed.json")
+                         .read_text(encoding="utf-8"))
+        assert rev["outcomes"][0]["branch"] == "no_play_control"
+
+    def test_选择器就是处置判据(self, tmp_path):
+        """**筛选与处置必须同一份判据**。
+
+        第一版让 ``apply_downgrades`` 自己按参数重筛，而遍历函数另外用
+        ``predicate`` 预筛「有没有命中」——于是 predicate 说「不算」的
+        记录照样被降级，**处置范围静默扩大**，而跑完只报一个总数。
+        """
+        arch = _arch([_o("a.com", "no_play_control", evidence="命中判据"),
+                      _o("b.com", "no_play_control", evidence="无关正文")])
+        p = _write(tmp_path, arch)
+
+        def select(a):
+            return [r for r in a["outcomes"] if "命中判据" in r["evidence"]]
+
+        out = dg.apply_to_root(tmp_path, select=select, reason="r",
+                               dry_run=False)
+        assert out[0]["downgraded"] == 1
+        after = {r["url"]: r["branch"] for r in _read(p)["outcomes"]}
+        assert after["a.com"] == dg.TARGET_BRANCH
+        assert after["b.com"] == "no_play_control"      # **没被动**

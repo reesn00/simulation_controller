@@ -70,6 +70,7 @@ class Test字段集一致:
         读的人就会漏看它；少一个则说明文档写了不存在的东西。"""
         actual = _keys_of(ORCH_SRC, "to_json")
         expected = {
+            "schema_version",
             "task_id", "title", "query", "user_prompt", "search_url",
             "perceptor", "candidate_source", "result_titles", "search_blocked",
             "candidate_filter", "run_config", "provenance", "elapsed_ms",

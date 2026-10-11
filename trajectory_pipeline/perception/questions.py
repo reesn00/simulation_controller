@@ -146,3 +146,42 @@ def all_branches() -> frozenset[str]:
     """
     from_question = {q.negative_branch for q in REGISTRY.values() if q.negative_branch}
     return frozenset(from_question | CODE_ONLY_BRANCHES)
+
+
+#: **分支 → 判断点**的反向映射。与 :data:`REGISTRY` 同源推导，
+#: 不另手写字面量（手写漏一条的代价见
+#: ``evaluation/scorers/d5_scorer.py::_build_question_to_branches`` 的 docstring）。
+#:
+#: ⚠️ **放在这里而不是 d5_scorer**：``executor.review_queue`` 也要用它，
+#: 而 ``executor`` 不能 import ``evaluation``（反向依赖）。``questions`` 是
+#: 两者的公共上游，放这儿它才真的只有一个出处。
+#:
+#: 值是**单个** question_id 而非集合——每个分支都归属唯一一个判断点
+#: （``subscription_wall`` 与 ``component_unverified`` 同属④但不是同一支）。
+#: ``unresolved`` 归 ``""``：它是 :func:`executor.branches.record_from` 的
+#: **通用** fail-closed 出口，任何判断点判 ``None`` 都走它，因此谈不上归属。
+_BRANCH_QUESTION: dict[str, str] = {
+    **{q.negative_branch: qid
+       for qid, q in REGISTRY.items() if q.negative_branch},
+    "subscription_wall": Q.PLAYER_OK,        # ④ 的细分，见 PAY_WALL
+    "player_unverified": Q.PLAYER_OK,        # record_unresolved_reached
+    "trailer_only": Q.FIND_PLAY_CONTROL,     # ③ 的词表分支
+    "trailer_suspect": Q.FIND_PLAY_CONTROL,   # ③，词表判不准待人工
+    "unreachable_hard": Q.IS_REACHABLE,       # ② 导航失败，代码判
+    "unresolved": "",
+}
+
+
+def question_of_branch(branch: str) -> str:
+    """这个分支归属哪个判断点。未知分支返回 ``""``。
+
+    **用途是「贴标签前核归属」**：人工复核给一条 outcome 换分支时，
+    换上去的分支若不属于它**当前那个判断点**，那条记录就不再是
+    「这个判断点上判出了这个结论」——决策树（rubric D-5 判的就是它）
+    会被塞进一对映射外的 (question, branch) 组合。
+
+    实测踩过（2026-10-10）：``review --apply`` 把「这不是播放站」（①的结论）
+    贴到 ``question=site.find_play_control``（③）的 outcome 上，共 14 条，
+    其中 15 条触发 D-5 一票否决，且门禁 ``test_d5_scorer::Test同源`` 直接红。
+    """
+    return _BRANCH_QUESTION.get(branch, "")

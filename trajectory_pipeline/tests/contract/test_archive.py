@@ -118,6 +118,36 @@ class TestAtomicWrite:
         assert root.parent.parent.name == "trajectory_pipeline"
 
 
+class TestSchemaVersion落盘:
+    def test_版本号随存档落盘(self, tmp_path):
+        """**落盘才算数**：进程里有、存档里没有，读档方拿到的仍是残缺档。
+
+        这条盯的洞是 ``test_p1_contract.py::Test字段集一致`` 盯不到的——
+        那边只核 ``to_json`` 的**键集合**里有 ``schema_version``，
+        值取错、写空、或者压根没写，那张表照样全绿。
+        """
+        from trajectory_pipeline.executor.orchestrator import SCHEMA_VERSION, RunRecord
+
+        rec = RunRecord(task_id="T001", title="功夫", query="q", search_url="u")
+        blob = json.loads(
+            P1Archive(tmp_path).write(rec, task_id="T001")
+            .read_text(encoding="utf-8"))
+        assert blob["schema_version"] == SCHEMA_VERSION
+        assert blob["schema_version"]               # 非空
+
+    def test_键存在而不是值为空(self, tmp_path):
+        """缺键与空串在 ``archive.get(...)`` 下同形（都取到空），
+        但它们在说两件事：「没这个字段」与「这个字段是空的」。
+        批次身份属于前者，必须能分开。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+
+        rec = RunRecord(task_id="T001", title="功夫", query="q", search_url="u")
+        blob = json.loads(
+            P1Archive(tmp_path).write(rec, task_id="T001")
+            .read_text(encoding="utf-8"))
+        assert "schema_version" in blob
+
+
 class TestCandidateSourceAudit:
     def test_候选来源标注进存档(self, tmp_path):
         """存档里必须能分辨候选是启发式取的还是感知层选的——
