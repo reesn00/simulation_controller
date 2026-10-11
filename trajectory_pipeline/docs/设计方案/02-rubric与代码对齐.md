@@ -1,7 +1,7 @@
 # Rubric 与代码对齐报告
 
 **Rubric**: [`RUB-VID-PLAY-001` v1.0](在线视频场景rubric.md)（在线视频播放网址检索记录 Agent 轨迹）
-**对照对象**: `trajectory_pipeline/` v2 新树（截至 2026-10-09）
+**对照对象**: `trajectory_pipeline/` v2 新树（截至 2026-10-11；§2.8 于 2026-10-11 修订为已接线）
 **性质**: **边界文档，本轮不改码**。它只回答两个问题：
 
 1. 每个评分维度的判据，靠**哪一份已落盘的数据**支撑？
@@ -85,7 +85,7 @@ G-2 不会被触发。
 | **D-6** | 记录字段完整性 | 代码 | `outcomes[].{url, evidence, question, source, reached_play_page}` | `outcome.url` 一字段三语义 → §2.5 |
 | **D-7** | 检索覆盖完整性 | 代码 | `candidates[]` + `ledger.outcomes[]` + `candidate_filter{原因:条数}` | **①** `RunConfig` 不落盘；**②** 结构过滤只留计数 → §2.6 |
 | **D-8** | 终止与止损正确性 | LLM | 全链零重试 | 锚定与代码形态不匹配 + 管辖层分错 → §2.7 |
-| **D-9** | 思考真实性 | LLM+闸门 | **无** | 闸门与 writer 已建，**未接线**到 P1/P2，`gate=not_run` → §2.8 |
+| **D-9** | 思考真实性 | LLM+闸门 | `steps[].rationale`（P1 已落盘）+ 组装期 `gate{status, reasons}` | **已闭环（2026-10-11）**：搜索步补生成 rationale，不再恒 `null` → §2.8 |
 | **D-10** ★ | 结论正确性 | 代码 | `review_queue` 人工裁定（`reviewed_by` / `branch_before_review`） | `REVIEW_BRANCHES` 只收 2 支分支，成不了金标准 → §2.9 |
 
 ---
@@ -319,24 +319,51 @@ rubric 把 D-8 派给 LLM 裁判，判据是「每个异常分支的**重试次�
 
 ### 2.8 D-9 思考真实性
 
-**2026-10-10 更新：整维仍不存在，但「模块未落地」这个原因已经换了。**
+**2026-10-11 更新：全链路已接通，本节从「缺口」改为「现状 + 遗留收口」。**
+（此前写「剩接线」的版本已过期——接线发生在 2026-10-10 之后，见 docs/05-现状与验收.md。
+「剩余问题」两条已于 2026-10-11 全部闭环，见下。）
 
-`rationale/` 下现在有三个实现：`lexicon.py`（实体抽取 + 词典）、
+`rationale/` 下三个实现已全部投入使用：`lexicon.py`（实体抽取 + 词典）、
 `gates.py`（三查 + 两个软信号，**纯代码零 LLM**）、`writer.py`（LLM 生成，
 真实后端已跑通）。**D-9 的判据侧是齐的**——三查正是 rubric 那三条锚点的
 机械形态，且实体核查是「100% 覆盖」的那一条。
 
-**仍然缺的是接线**：writer 还没被 executor 逐步调用，rationale 还没进 P1，
-所以 P2 侧依旧 `Sample.rationale = None`、`rationale_missing = True`、
-`gate.status = "not_run"`。
+**接线现状（实测存档核对）**：执行期 [`orchestrator.py`](../../executor/orchestrator.py)
+的 `_write_rationales` 逐步调 writer，rationale 已进 P1 的 `steps[].rationale`；
+组装期 [`schema.py`](../../assembler/schema.py) 的 `gate_of` 逐条跑三查，
+汇成 P2 的 `gate{status, reasons}`。首批真实存档（2026-10-11 实测）：
+3 条站点样本 `gate=passed`（「逐条核查 1/1 步通过」）、`rationale_missing=false`。
+**2026-10-11 起顶层搜索步也补记 rationale**（见下「剩余问题 1 已闭环」），
+`gate=not_run` 不再出现在正常搜索样本上。
 
-⚠️ **`reasons = ("rationale 模块未落地，一致性闸门未运行",)` 这句话现在是错的**——
-模块 4 已落地。真实理由是「这批存档的 `steps[]` 里没有 rationale 字段」。
-理由本身是**数据**：写成一句已不成立的话，读样本的人会以为闸门没实现，
-而真实情况是实现了但这批数据跑在接线之前——两者的下一步动作完全不同。
+**剩余问题（2026-10-11 两条均已闭环）**：
 
-**「没跑」没被渲染成「通过」——这一点与 rubric 无关但值得记在这里**：
-将来 D-9 上线时，若闸门状态渲染错了，D-9 就会给整批样本发一个它没测过的分数。
+1. **顶层搜索步的 `rationale` 恒 `null`**（`docs/05-现状与验收.md` 同记，
+   是否设计如此**未核实**）——因此搜索类样本永远 `gate=not_run`。
+   若属有意（搜索步无实体可核查），应在闸门处显式豁免而非留成 `not_run`；
+   若属漏生成，那是在采集侧丢数据。两条路下一步动作不同，值得先裁定。
+   👉 **2026-10-11 已裁定：是漏生成，非设计使然**。证据：① `StepLog.attach_rationale`
+   是通用方法，顶层 `record.steps` 与访问步 `result.steps` 同为 `StepLog`；
+   ② P2 契约把搜索阶段定为正式决策单元（`schema.py` L641 起切 `unit="search"` 样本），
+   豁免会让搜索样本永远进不了 D-9 可判定集；③ writer 接口参数对搜索步完全适用；
+   ④ 增量档案原文「看着像缺口，未核实是不是设计如此」——从未被记录为设计决定。
+   处置：`orchestrator._write_rationales` 泛化为 `(steps_log, record, label)`，
+   搜索步 settle 成功后也走它补记（模型从 `TRAJECTORY_LLM_*` 环境变量取）。
+   封测：`tests/unit/test_visit.py` 接线测试 4 例全绿 +
+   `tests/mutation_check.py` 含「搜索步不补记」变异，41/41 全红。
+2. **`not_run` 不得被渲染成「通过」**——这一点与 rubric 无关但值得记在这里：
+   将来 D-9 打分器读 `gate.status` 时必须把 `not_run` 当「没测过」，
+   不能当「通过」；否则 D-9 会给整批未测样本发一个它没测过的分数。
+   👉 **2026-10-11 已确认守卫全链路，共三层**：
+   - **渲染层**（`assembler/views.py`）：`_rationale_text` 对 `status != "written"`
+     返回空串（L240-246）；`to_meta` 透传 `gate.status` 并记 `rationale_missing`——渲染侧
+     `not_run` 不可能变成「通过」；
+   - **meta 层**：`test_views.py::TestMeta::test_闸门状态带进meta` 断言
+     `not_run`（L253-256）不被改写；
+   - **组装/契约层**：`test_assembler.py` L430-438 钉死「一条都没写仍记
+     `not_run`」「全部未写成也是 `not_run` 而非 `passed`」；`test_p2_contract.py`
+     L97 断言老存档 `not_run` 必须带理由、L394-396 断言契约文档写死
+     「`not_run` 不是「通过」」（`P2-sample.md` L73）。
 
 ---
 
@@ -460,7 +487,7 @@ rubric D-6 必填「目标内容标识（剧名+集数）」，
 | **P2** | §2.1 步骤目的字段 | D-1 的 4/3 档无判据来源 |
 | **P2** | §2.9 黄金集覆盖全分支 | D-10 只能评 2/8 分支 |
 | **P3** | §2.7 D-8 锚定重写 | 死维度（恒 4–5），不扣错分但无区分力 |
-| **P3** | §2.8 rationale 模块 | D-9 整维不存在（已在总待办内）。**2026-10-10：闸门与 writer 已建，剩接线** |
+| **P3** | §2.8 顶层搜索步 rationale 恒 null | **已闭环（2026-10-11）**：裁定为漏生成，`_write_rationales` 泛化后搜索步也补记 → §2.8 |
 
 ---
 

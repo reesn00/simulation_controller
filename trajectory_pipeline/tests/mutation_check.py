@@ -30,7 +30,7 @@ MUTATIONS = [
         "铁律2·采集预检",
         "trajectory_pipeline/perception/llm_perceptor.py",
         "            guard = _sufficiency(question, obs, target_title=self._target_title)\n            if guard:",
-        "            guard = \"\"\n            if guard:",
+        '            guard = ""\n            if guard:',
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestSufficiencyGuard",
     ),
     (
@@ -50,15 +50,15 @@ MUTATIONS = [
     (
         "预告判定以词表为准",
         "trajectory_pipeline/perception/llm_perceptor.py",
-        "            verdict = classify_trailer(label)\n            if verdict == \"only\":",
-        "            verdict = \"none\"\n            if verdict == \"only\":",
+        '            verdict = classify_trailer(label)\n            if verdict == "only":',
+        '            verdict = "none"\n            if verdict == "only":',
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestTrailerRuleWins",
     ),
     (
         "解析取外层不取内层",
         "trajectory_pipeline/llm/schema_parse.py",
-        "    for i, ch in enumerate(clean):\n        if ch != \"{\":",
-        "    for i, ch in reversed(list(enumerate(clean))):\n        if ch != \"{\":",
+        '    for i, ch in enumerate(clean):\n        if ch != "{":',
+        '    for i, ch in reversed(list(enumerate(clean))):\n        if ch != "{":',
         "trajectory_pipeline/tests/unit/test_llm.py::TestExtractJson",
     ),
     (
@@ -71,11 +71,11 @@ MUTATIONS = [
     (
         "①None不中断采集",
         "trajectory_pipeline/executor/orchestrator.py",
-        "            record.candidate_source = \"heuristic\"\n            record.warnings.append(\n"
-        "                f\"判断点 ① 未取得结论（{selection.evidence}）——\"\n"
-        "                f\"候选仍按代码启发式全遍历，不中断采集\"\n            )",
-        "            record.candidate_source = \"heuristic\"\n            record.candidates = []\n            record.warnings.append(\n"
-        "                f\"判断点 ① 未取得结论（{selection.evidence}）——已中断\"\n            )",
+        '            record.candidate_source = "heuristic"\n            record.warnings.append(\n'
+        '                f"判断点 ① 未取得结论（{selection.evidence}）——"\n'
+        '                f"候选仍按代码启发式全遍历，不中断采集"\n            )',
+        '            record.candidate_source = "heuristic"\n            record.candidates = []\n            record.warnings.append(\n'
+        '                f"判断点 ① 未取得结论（{selection.evidence}）——已中断"\n            )',
         "trajectory_pipeline/tests/unit/test_visit.py::TestSelectPlaySitesWiring::test_未取得结论不中断采集",
     ),
     (
@@ -88,8 +88,8 @@ MUTATIONS = [
     (
         "①落选分支名正确",
         "trajectory_pipeline/executor/orchestrator.py",
-        "            \"not_play_site\",\n            f\"判断点 ① 排除该站点。{why}\" if why",
-        "            \"unreachable_hard\",\n            f\"判断点 ① 排除该站点。{why}\" if why",
+        '            "not_play_site",\n            f"判断点 ① 排除该站点。{why}"\n            if why',
+        '            "unreachable_hard",\n            f"判断点 ① 排除该站点。{why}"\n            if why',
         "trajectory_pipeline/tests/unit/test_visit.py::Test无证据不记负样本",
     ),
     (
@@ -123,8 +123,8 @@ MUTATIONS = [
     (
         "①写回标题用双键查找",
         "trajectory_pipeline/executor/orchestrator.py",
-        "                    dataclasses.replace(link, text=search_step.title_for(titles, link.href)\n                                        or link.text)",
-        "                    dataclasses.replace(link, text=titles.get(link.href)\n                                        or link.text)",
+        "dataclasses.replace(\n                        link, text=search_step.title_for(titles, link.href) or link.text\n                    )",
+        "dataclasses.replace(\n                        link, text=titles.get(link.href) or link.text\n                    )",
         "trajectory_pipeline/tests/unit/test_visit.py::Test无证据不记负样本",
     ),
     (
@@ -138,8 +138,15 @@ MUTATIONS = [
     (
         "编排器不挂writer",
         "trajectory_pipeline/executor/orchestrator.py",
-        "            result = await self._visit_guarded(candidate, ledger, record)\n            await self._write_rationales(result, record)",
+        "            result = await self._visit_guarded(candidate, ledger, record)\n            await self._write_rationales(\n                result.steps, record, result.candidate.url[:60]\n            )",
         "            result = await self._visit_guarded(candidate, ledger, record)",
+        "trajectory_pipeline/tests/unit/test_visit.py::TestRationale接线",
+    ),
+    (
+        "搜索步不补记",
+        "trajectory_pipeline/executor/orchestrator.py",
+        '        record.steps.settle(step_search, record.search_obs)\n        # 搜索步也补记 rationale——P2 按决策单元切条，搜索阶段是正式样本\n        # （"一条 = 一个决策单元：搜索阶段一条 / 每个站点一条"），它没有\n        # rationale 会让整条搜索样本恒 gate=not_run、D-9 永远不可判定。\n        # 失败路径（search_obs=None）不产 search 样本，无须补记。\n        await self._write_rationales(record.steps, record, "搜索页")',
+        "        record.steps.settle(step_search, record.search_obs)",
         "trajectory_pipeline/tests/unit/test_visit.py::TestRationale接线",
     ),
     (
@@ -153,14 +160,14 @@ MUTATIONS = [
         "对齐读错字段路径",
         "trajectory_pipeline/assembler/schema.py",
         '        draft = payload.get("rationale")',
-        '        draft = payload',
+        "        draft = payload",
         "trajectory_pipeline/tests/unit/test_assembler.py::TestRationale对齐",
     ),
     (
         "闸门全判通过",
         "trajectory_pipeline/assembler/schema.py",
         '        if res.status == "failed":',
-        '        if False:',
+        "        if False:",
         "trajectory_pipeline/tests/unit/test_assembler.py::Test闸门真跑",
     ),
     (
@@ -174,7 +181,7 @@ MUTATIONS = [
     (
         "付费墙payload优先于题绑定",
         "trajectory_pipeline/executor/branches.py",
-        "    if decision.payload.get(\"paywall\"):\n        return questions.PAY_WALL",
+        '    if decision.payload.get("paywall"):\n        return questions.PAY_WALL',
         "    if False:\n        return questions.PAY_WALL",
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::Test付费墙记账",
     ),
@@ -202,8 +209,8 @@ MUTATIONS = [
     (
         "失败原因不进提示词",
         "trajectory_pipeline/rationale/writer.py",
-        '    if error:',
-        '    if False:',
+        "    if error:",
+        "    if False:",
         "trajectory_pipeline/tests/unit/test_writer.py::Test动作失败进提示词",
     ),
     (
@@ -223,14 +230,14 @@ MUTATIONS = [
     (
         "正文乱码不记降级",
         "trajectory_pipeline/executor/browser/obscura_driver.py",
-        '        elif body is not None and degraded is not None and is_mojibake(body):',
+        "        elif body is not None and degraded is not None and is_mojibake(body):",
         "        elif False:",
         "trajectory_pipeline/tests/unit/test_obscura_driver.py::TestMojibakeAccounting",
     ),
     (
         "标题乱码不记降级",
         "trajectory_pipeline/executor/browser/obscura_driver.py",
-        '        if degraded is not None and snap.title and is_mojibake(snap.title):',
+        "        if degraded is not None and snap.title and is_mojibake(snap.title):",
         "        if False:",
         "trajectory_pipeline/tests/unit/test_obscura_driver.py::TestMojibakeAccounting",
     ),
@@ -290,7 +297,7 @@ MUTATIONS = [
         # 排查会奔着 URL 匹配去，而真正的问题是模型一个都没给。
         "① 没作答与地址对不上共用一句话",
         "trajectory_pipeline/perception/llm_perceptor.py",
-        '            if not raw_selected and not raw_rejected:',
+        "            if not raw_selected and not raw_rejected:",
         "            if False:",
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::TestNoConclusionVsUnmatched",
     ),
@@ -299,7 +306,7 @@ MUTATIONS = [
         # 而失败形态是「整批 unresolved」——正是 2026-10-11 那批的形状。
         "① 不再给链接编号",
         "trajectory_pipeline/perception/llm_perceptor.py",
-        '        numbered = question == Q.SELECT_PLAY_SITES',
+        "        numbered = question == Q.SELECT_PLAY_SITES",
         "        numbered = False",
         "trajectory_pipeline/tests/unit/test_llm_perceptor.py::Test回指编号而不是url",
     ),
@@ -338,7 +345,11 @@ MUTATIONS = [
 def run(selector: str) -> tuple[int, str]:
     r = subprocess.run(
         [sys.executable, "-m", "pytest", selector, "-q", "--no-header", "-x"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     tail = [ln for ln in (r.stdout or "").strip().splitlines() if ln.strip()]
     return r.returncode, (tail[-1] if tail else "")
@@ -401,8 +412,10 @@ def main() -> int:
         landed = apply(path, src, old, new)
         if not landed:
             path.write_text(src, encoding="utf-8")
-            print(f"[NOOP] {label}: 变异未落盘——**不算「守卫有效」，也不算"
-                  f"「守卫无效」，这条本次没验成**")
+            print(
+                f"[NOOP] {label}: 变异未落盘——**不算「守卫有效」，也不算"
+                f"「守卫无效」，这条本次没验成**"
+            )
             survivors.append(label)
             continue
         try:

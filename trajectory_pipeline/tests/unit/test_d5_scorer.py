@@ -36,28 +36,47 @@ from trajectory_pipeline.evaluation.scorers.d5_scorer import score_d5
 
 def _sample(outcome: dict | None, unit: str = "site-1") -> Sample:
     return Sample(
-        sample_id=f"T001__a1__{unit}", task_id="T001", unit=unit, title="功夫",
-        system_prompt="s", tools=(), user_prompt="u", provenance={},
-        actions=(), observations=(),
-        gate=__import__("trajectory_pipeline.assembler.schema",
-                        fromlist=["GateMark"]).GateMark("not_run"),
+        sample_id=f"T001__a1__{unit}",
+        task_id="T001",
+        unit=unit,
+        title="功夫",
+        system_prompt="s",
+        tools=(),
+        user_prompt="u",
+        provenance={},
+        actions=(),
+        observations=(),
+        gate=__import__(
+            "trajectory_pipeline.assembler.schema", fromlist=["GateMark"]
+        ).GateMark("not_run"),
         outcome=OutcomeRef(**outcome) if outcome else None,
     )
 
 
 def _out(branch, question="player.ok", reached=True, **kw):
-    base = {"url": "https://x.test", "branch": branch, "source": "rule",
-            "fallback_used": False, "succeeded": branch is None,
-            "question": question, "reached_play_page": reached,
-            "site_url": "https://x.test", "play_page_url": ""}
+    base = {
+        "url": "https://x.test",
+        "branch": branch,
+        "source": "rule",
+        "fallback_used": False,
+        "succeeded": branch is None,
+        "question": question,
+        "reached_play_page": reached,
+        "site_url": "https://x.test",
+        "play_page_url": "",
+    }
     base.update(kw)
     return base
 
 
 def _dict_sample(outcome: dict | None):
     """P2 落盘形态——**dict**，不是 dataclass。"""
-    return {"sample_id": "T001__a1__site-1", "task_id": "T001",
-            "unit": "site-1", "outcome": outcome}
+    return {
+        "sample_id": "T001__a1__site-1",
+        "task_id": "T001",
+        "unit": "site-1",
+        "outcome": outcome,
+    }
 
 
 # ── 1. 同源 ───────────────────────────────────────────────────────
@@ -71,13 +90,13 @@ class Test同源:
         """真值源是 :data:`questions.REGISTRY`。改注册表就改映射——
         不同源则两边安静地互相打架（避坑指南 §1.1）。"""
         from trajectory_pipeline.perception import questions
+
         for qid, q in questions.REGISTRY.items():
             assert qid in d5_scorer.QUESTION_TO_BRANCHES
             if q.negative_branch:
-                assert q.negative_branch in \
-                    d5_scorer.QUESTION_TO_BRANCHES[qid], (
-                    f"{qid} 的 negative_branch={q.negative_branch} "
-                    f"没进推导出的映射")
+                assert q.negative_branch in d5_scorer.QUESTION_TO_BRANCHES[qid], (
+                    f"{qid} 的 negative_branch={q.negative_branch} 没进推导出的映射"
+                )
 
     def test_每个判断点都含unresolved(self):
         """``record_from`` 在 ``answer is None`` 时**一律**记 unresolved，
@@ -88,8 +107,7 @@ class Test同源:
     def test_player_ok含player_unverified(self):
         """它走 ``record_unresolved_reached``，不经过 ``record_from``，
         所以查不到 ``negative_branch``——但它确实是合法产出。"""
-        assert "player_unverified" in \
-            d5_scorer.QUESTION_TO_BRANCHES["player.ok"]
+        assert "player_unverified" in d5_scorer.QUESTION_TO_BRANCHES["player.ok"]
 
     def test_代码判定分支不参与配对(self):
         """``unreachable_hard`` / ``trailer_only`` / ``trailer_suspect``
@@ -98,6 +116,16 @@ class Test同源:
         for br in ("unreachable_hard", "trailer_only", "trailer_suspect"):
             v = score_d5(_sample(_out(br, question="")))
             assert v.score == 5, f"{br} 是代码判定分支，不该被判错"
+
+    def test_站点首页核可判5分(self):
+        """``_drop_site_homepages`` 是**代码层确定性事实核**：path 为 `/`
+        的候选在任何判断点之前就被判 ``not_play_site``，question 恒为空。
+        判据全在代码/存档里，**应当正常评 5 分**——不能因为 question
+        为空就落成「老批次缺字段」的不可判定（那是 2026-10-10 之前的
+        旧 P2 才有的形态，两码事）。"""
+        v = score_d5(_sample(_out("not_play_site", question="", reached=False)))
+        assert v.score == 5, f"站点首页核应可判定，实际 {v!r}"
+        assert v.kind == "scored", "确定性事实核不该判不可判定"
 
     def test_覆盖真实存档里的每一对(self):
         """把现存存档里的 ``(question, branch)`` 全跑一遍，
@@ -143,12 +171,14 @@ class Test前置事实:
         """``not_play_site`` / ``login_wall_or_blocked`` / ``no_play_control``
         本来就发生在到达播放页**之前**，``reached=False`` 是正确的。
         搞反的后果是整批负样本被判成跳步。"""
-        for br, q in (("not_play_site", "select.play_sites"),
-                      ("login_wall_or_blocked", "site.is_reachable"),
-                      ("unreachable_hard", "site.is_reachable"),
-                      ("no_play_control", "site.find_play_control"),
-                      ("trailer_only", "site.find_play_control"),
-                      ("trailer_suspect", "site.find_play_control")):
+        for br, q in (
+            ("not_play_site", "select.play_sites"),
+            ("login_wall_or_blocked", "site.is_reachable"),
+            ("unreachable_hard", "site.is_reachable"),
+            ("no_play_control", "site.find_play_control"),
+            ("trailer_only", "site.find_play_control"),
+            ("trailer_suspect", "site.find_play_control"),
+        ):
             v = score_d5(_sample(_out(br, question=q, reached=False)))
             assert v.score == 5, f"{br} 在到达播放页前判定，不该被判错"
 
@@ -156,27 +186,36 @@ class Test前置事实:
         """**这是本模块踩过的最深的一个坑**：``unresolved`` 是通用出口，
         环节③ 产出它时「不确定的是能不能到」，压根没到播放页。
         第一版把它整条标成要求播放页，61 条正确记账被判成 3 分。"""
-        v = score_d5(_sample(_out("unresolved",
-                                  question="site.find_play_control",
-                                  reached=False)))
+        v = score_d5(
+            _sample(
+                _out("unresolved", question="site.find_play_control", reached=False)
+            )
+        )
         assert v.score == 5, "环节③ 的 unresolved 是正常的 fail-closed 记账"
 
     def test_环节四的unresolved要求到播放页(self):
-        v = score_d5(_sample(_out("unresolved", question="player.ok",
-                                  reached=False)))
-        assert v.score is not None and v.score < 5, \
+        v = score_d5(_sample(_out("unresolved", question="player.ok", reached=False)))
+        assert v.score is not None and v.score < 5, (
             "环节④ 的 unresolved 却没到播放页——前提不成立"
+        )
 
     def test_find_play_control的component_unverified不要求播放页(self):
         """I6 违约记账发生在**点击之前**，到不了播放页。"""
-        v = score_d5(_sample(_out("component_unverified",
-                                  question="site.find_play_control",
-                                  reached=False)))
+        v = score_d5(
+            _sample(
+                _out(
+                    "component_unverified",
+                    question="site.find_play_control",
+                    reached=False,
+                )
+            )
+        )
         assert v.score == 5, "I6 违约记账在点击前发生，不该被判错"
 
     def test_player_unverified要求播放页(self):
-        v = score_d5(_sample(_out("player_unverified", question="player.ok",
-                                  reached=False)))
+        v = score_d5(
+            _sample(_out("player_unverified", question="player.ok", reached=False))
+        )
         assert v.score is not None and v.score < 5
 
 
@@ -194,8 +233,7 @@ class Test输入形态:
         assert v.score == 5, "P2 字典形态没被判出来——取值路径漏了 Mapping"
 
     def test_两形态结论一致(self):
-        o = _out("no_play_control", question="site.find_play_control",
-                 reached=False)
+        o = _out("no_play_control", question="site.find_play_control", reached=False)
         assert score_d5(_sample(o)).score == score_d5(_dict_sample(o)).score
 
     def test_搜索单元无outcome判不可判定(self):
@@ -225,21 +263,24 @@ class Test跳步:
         assert v.is_veto is True, "1 分触发 G-1 样本级一票否决"
 
     def test_三步全对判5分(self):
-        v = score_d5(_sample(_out("component_unverified",
-                                  question="player.ok", reached=True)))
+        v = score_d5(
+            _sample(_out("component_unverified", question="player.ok", reached=True))
+        )
         assert v.score == 5 and v.is_veto is False
 
     def test_单处分支走错判3分(self):
         """``login_wall_or_blocked`` 只能由判断点 ② 产出。"""
-        v = score_d5(_sample(_out("login_wall_or_blocked",
-                                  question="player.ok", reached=True)))
+        v = score_d5(
+            _sample(_out("login_wall_or_blocked", question="player.ok", reached=True))
+        )
         assert v.score == 3
         assert v.is_veto is False, "3 分不触发一票否决（G-1 只认 1 分）"
 
     def test_不一致的why写清依据(self):
         """读报告的人只有看到理由才知道该改哪一处。"""
-        v = score_d5(_sample(_out("login_wall_or_blocked",
-                                  question="player.ok", reached=True)))
+        v = score_d5(
+            _sample(_out("login_wall_or_blocked", question="player.ok", reached=True))
+        )
         assert any("决策树" in c.why for c in v.wrong_nodes)
 
 
@@ -247,18 +288,28 @@ class Test跳步:
 
 
 class Test不抛异常:
-    @pytest.mark.parametrize("branch", [None, "unresolved", "player_unverified",
-                                        "no_play_control", "component_unverified",
-                                        "trailer_suspect", "unreachable_hard"])
-    @pytest.mark.parametrize("question", ["", "player.ok",
-                                          "site.find_play_control",
-                                          "不存在的题"])
+    @pytest.mark.parametrize(
+        "branch",
+        [
+            None,
+            "unresolved",
+            "player_unverified",
+            "no_play_control",
+            "component_unverified",
+            "trailer_suspect",
+            "unreachable_hard",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "question", ["", "player.ok", "site.find_play_control", "不存在的题"]
+    )
     def test_任意组合不抛(self, branch, question):
         """按节点名反查却找不到时 ``next()`` 会抛 ``StopIteration``，
         而那异常冒到调用方时症状是「本条样本评不出来」——
         看起来像数据问题，不像代码问题（实测踩过一次）。"""
-        v = score_d5(_sample(_out(branch, question=question,
-                                  reached=(question == "player.ok"))))
+        v = score_d5(
+            _sample(_out(branch, question=question, reached=(question == "player.ok")))
+        )
         assert v.score is None or 1 <= v.score <= 5
 
     def test_未知判断点判skipped而不是wrong(self):
@@ -286,7 +337,8 @@ class TestOnRealSamples:
                 low.append((p.stem, v.score))
         assert not low, (
             f"{len(low)} 条真实样本判了低分。若这是真问题请逐条人工确认；"
-            f"若是评分器判反（历史上出现过 3 次），先核映射表")
+            f"若是评分器判反（历史上出现过 3 次），先核映射表"
+        )
 
     def test_真实样本上不可判定数与预期一致(self):
         """不可判定 = 搜索单元（无 outcome）+ 老批次（缺 question）。
@@ -295,9 +347,12 @@ class TestOnRealSamples:
         files = sorted(root.glob("*.json"))
         if not files:
             pytest.skip("没有 P2 样本（先跑 cli build）")
-        und = [p.stem for p in files
-               if score_d5(json.loads(p.read_text(encoding="utf-8"))).kind
-               == "undetermined"]
+        und = [
+            p.stem
+            for p in files
+            if score_d5(json.loads(p.read_text(encoding="utf-8"))).kind
+            == "undetermined"
+        ]
         assert all("search" in name or True for name in und)
         assert len(und) < len(files), "不应**全部**不可判定"
 

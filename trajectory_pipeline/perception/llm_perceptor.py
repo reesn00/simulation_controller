@@ -61,22 +61,24 @@ CONFIDENCE_NONE = 0.0
 #: 只给一句「输出 JSON」模型会回散文或 markdown 列表（已实测）。
 #: 这里给的是 :mod:`~trajectory_pipeline.llm.schema_parse` 的容错层
 #: 能对齐的形状；别名表是容错层的事，这里只保证「键名列全」。
-CONTRACTS: Mapping[str, str] = MappingProxyType({
-    Q.SELECT_PLAY_SITES: (
-        '{"selected":[{"url":"候选链接的url","title":"站点标题","why":"选中理由"}],'
-        '"rejected":[{"url":"候选链接的url","reason":"排除理由"}]}'
-    ),
-    Q.IS_REACHABLE: (
-        '{"answer":true|false,"evidence":"一句话，指出页面上的具体证据"}'
-    ),
-    Q.FIND_PLAY_CONTROL: (
-        '{"ref":"控件ref或null","trailer_only":true|false,'
-        '"trailer_suspect":["标签文本"],"why":"一句话，指出控件原文"}'
-    ),
-    Q.PLAYER_OK: (
-        '{"answer":true|false,"evidence":"一句话，指出页面上的具体证据"}'
-    ),
-})
+CONTRACTS: Mapping[str, str] = MappingProxyType(
+    {
+        Q.SELECT_PLAY_SITES: (
+            '{"selected":[{"url":"候选链接的url","title":"站点标题","why":"选中理由"}],'
+            '"rejected":[{"url":"候选链接的url","reason":"排除理由"}]}'
+        ),
+        Q.IS_REACHABLE: (
+            '{"answer":true|false,"evidence":"一句话，指出页面上的具体证据"}'
+        ),
+        Q.FIND_PLAY_CONTROL: (
+            '{"ref":"控件ref或null","trailer_only":true|false,'
+            '"trailer_suspect":["标签文本"],"why":"一句话，指出控件原文"}'
+        ),
+        Q.PLAYER_OK: (
+            '{"answer":true|false,"evidence":"一句话，指出页面上的具体证据"}'
+        ),
+    }
+)
 
 #: 喂给模型的观察裁剪上限。实测：把正文从 1200 降到 600 字符后，
 #: 之前直接返回 ``None`` 的大输入请求恢复正常。裁剪必须与
@@ -134,18 +136,21 @@ class LLMPerceptor:
             # 确定性事实优先：video 标签存在性不进 LLM
             if question == Q.PLAYER_OK and obs.video_tag_count >= 1:
                 return self._answer(
-                    spec, True,
+                    spec,
+                    True,
                     evidence=(
                         f"存在 <video>/<audio> 标签 ×{obs.video_tag_count}"
                         f"（iframe={obs.iframe_count}）——代码层事实，不问 LLM"
                     ),
                     started=started,
-                    payload={"media_count": obs.video_tag_count,
-                             "iframe_count": obs.iframe_count},
+                    payload={
+                        "media_count": obs.video_tag_count,
+                        "iframe_count": obs.iframe_count,
+                    },
                     fallback=True,
                 )
             return handler(spec, obs, started)
-        except Exception as exc:                      # 兜底：契约禁止抛出去
+        except Exception as exc:  # 兜底：契约禁止抛出去
             return self._unresolved_answer(
                 spec, f"判定异常 {type(exc).__name__}: {exc}", started
             )
@@ -162,8 +167,9 @@ class LLMPerceptor:
 
     # ── 逐题实现 ────────────────────────────────────────────────────
 
-    def _select_play_sites(self, spec: Question, obs: Observation,
-                           started: float) -> Decision:
+    def _select_play_sites(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
         """判断点 ①：选出提供在线观看的站点。
 
         **URL 必须来自观察，模型不能编。** 被选中的 url 逐个校验存在性，
@@ -178,8 +184,9 @@ class LLMPerceptor:
         准确描述**，随后按契约 fail-closed 成 ``False``，而 ``not_play_site``
         是负样本分支——错标签就进了池子。
         """
-        raw, why = self._ask(spec, _render(obs, target_title=self._target_title,
-                                        question=spec.id))
+        raw, why = self._ask(
+            spec, _render(obs, target_title=self._target_title, question=spec.id)
+        )
         if raw is None:
             return self._unresolved_answer(spec, why, started)
         data = schema_parse.extract_json(raw)
@@ -205,7 +212,7 @@ class LLMPerceptor:
                     spec,
                     f"模型未给出任何 selected/rejected（送进模型 "
                     f"{len(window)} 条链接）——它**没答这道题**，"
-                    f"不是答「这页没有可看站点」",
+                    f"不是答「这页没有可看站点」；模型原文摘录：{_excerpt(raw)}",
                     started,
                 )
             return self._unresolved_answer(
@@ -231,7 +238,8 @@ class LLMPerceptor:
                 started,
             )
         return self._answer(
-            spec, True,
+            spec,
+            True,
             evidence=(
                 f"自 {len(known)} 个链接中选出 {len(selected)} 个可看站点"
                 f"（已剔除不在观察中的 url），{len(rejected)} 个排除"
@@ -240,8 +248,9 @@ class LLMPerceptor:
             payload={"selected": selected, "rejected": rejected},
         )
 
-    def _is_reachable(self, spec: Question, obs: Observation,
-                      started: float) -> Decision:
+    def _is_reachable(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
         """判断点 ②：页面是否正常打开内容。"""
         data, why = self._ask_json(spec, _render(obs))
         if data is None:
@@ -250,14 +259,16 @@ class LLMPerceptor:
         if answer is None:
             return self._unresolved_answer(spec, why_null, started)
         return self._answer(
-            spec, answer,
+            spec,
+            answer,
             evidence=_evidence(data, spec, answer),
             started=started,
             payload={"title": obs.page_title},
         )
 
-    def _find_play_control(self, spec: Question, obs: Observation,
-                           started: float) -> Decision:
+    def _find_play_control(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
         """判断点 ③：找播放控件 + 判是否仅预告。
 
         ``trailer_only`` **以代码词表为准，不以模型为准**：预告片是用户
@@ -299,33 +310,44 @@ class LLMPerceptor:
             )
 
         # ── 预告判定：词表说了算，模型只提供 suspect 线索 ────────────
-        suspects = [schema_parse.as_str(x)
-                    for x in _rows(schema_parse.field(data, "trailer_suspect"))]
+        suspects = [
+            schema_parse.as_str(x)
+            for x in _rows(schema_parse.field(data, "trailer_suspect"))
+        ]
         suspects = [s for s in suspects if s]
 
         if ref:
-            label = next((e.label for e in obs.interactive_elements
-                          if e.ref == ref), "")
+            label = next(
+                (e.label for e in obs.interactive_elements if e.ref == ref), ""
+            )
             verdict = classify_trailer(label)
             if verdict == "only":
                 return self._answer(
-                    spec, True,
+                    spec,
+                    True,
                     evidence=f"ref={ref} 文本 {label!r} 命中预告片词表",
                     started=started,
-                    payload={"ref": "", "trailer_only": True,
-                             "trailer_suspect": [], "why": "词表判定"},
+                    payload={
+                        "ref": "",
+                        "trailer_only": True,
+                        "trailer_suspect": [],
+                        "why": "词表判定",
+                    },
                 )
             if verdict == "suspect" and not suspects:
                 suspects = [label]
             return self._answer(
-                spec, True,
+                spec,
+                True,
                 evidence=f"选定 ref={ref} 文本 {label!r}；{_evidence(data, spec, True)}"
-                         + _wordlist_note(ref, label, obs),
+                + _wordlist_note(ref, label, obs),
                 started=started,
-                payload={"ref": ref, "trailer_only": False,
-                         "trailer_suspect": suspects,
-                         "why": schema_parse.as_str(
-                             schema_parse.field(data, "evidence"))},
+                payload={
+                    "ref": ref,
+                    "trailer_only": False,
+                    "trailer_suspect": suspects,
+                    "why": schema_parse.as_str(schema_parse.field(data, "evidence")),
+                },
             )
 
         # ── 无 ref：代码把 ref 取回来，不让采集链在这里断掉 ──────
@@ -334,18 +356,21 @@ class LLMPerceptor:
         if picked:
             first = picked[0]
             return self._answer(
-                spec, True,
+                spec,
+                True,
                 evidence=(
                     f"模型未回传 ref；代码按词表从本页 {len(picked)} 个非预告"
                     f"播放控件中取 ref={first.ref}（文本 {first.label!r}）——"
                     f"**词表说了算**，不以模型是否回传字段为准"
                 ),
                 started=started,
-                payload={"ref": first.ref, "trailer_only": False,
-                         "trailer_suspect": suspects,
-                         "why": schema_parse.as_str(
-                             schema_parse.field(data, "why"))
-                              or "模型未回传 ref，代码按词表取回"},
+                payload={
+                    "ref": first.ref,
+                    "trailer_only": False,
+                    "trailer_suspect": suspects,
+                    "why": schema_parse.as_str(schema_parse.field(data, "why"))
+                    or "模型未回传 ref，代码按词表取回",
+                },
             )
         # ── 词表里只剩预告控件：这是 trailer_only，不是「没有控件」────
         # 口径必须与 :meth:`RulePerceptor._find_play_control` 一致。原来
@@ -354,40 +379,56 @@ class LLMPerceptor:
         # 而「该站只有预告片」与「该站压根没有播放控件」在训练里是两件事。
         trailers = trailer_only_candidates(obs)
         if trailers:
-            trailer_suspects = [e.label for e in trailers
-                                if classify_trailer(e.label) == "suspect"]
+            trailer_suspects = [
+                e.label for e in trailers if classify_trailer(e.label) == "suspect"
+            ]
             if not trailer_suspects:
                 trailer_suspects = suspects
             return self._answer(
-                spec, True,
-                evidence=(f"{len(trailers)} 个候选控件全为预告："
-                          f"{[e.label for e in trailers][:3]}"),
+                spec,
+                True,
+                evidence=(
+                    f"{len(trailers)} 个候选控件全为预告："
+                    f"{[e.label for e in trailers][:3]}"
+                ),
                 started=started,
-                payload={"ref": "", "trailer_only": not trailer_suspects,
-                         "trailer_suspect": trailer_suspects,
-                         "why": "候选控件文本均命中预告片词表"},
+                payload={
+                    "ref": "",
+                    "trailer_only": not trailer_suspects,
+                    "trailer_suspect": trailer_suspects,
+                    "why": "候选控件文本均命中预告片词表",
+                },
             )
         if suspects:
             return self._answer(
-                spec, True,
+                spec,
+                True,
                 evidence=f"候选疑似预告：{suspects[:3]}",
                 started=started,
-                payload={"ref": "", "trailer_only": False,
-                         "trailer_suspect": suspects, "why": "模型线索"},
+                payload={
+                    "ref": "",
+                    "trailer_only": False,
+                    "trailer_suspect": suspects,
+                    "why": "模型线索",
+                },
             )
         return self._answer(
-            spec, False,
+            spec,
+            False,
             evidence=(
                 f"{len(obs.interactive_elements)} 个交互元素中，"
                 f"词表与模型均未找到非预告播放控件：{_evidence(data, spec, False)}"
             ),
             started=started,
-            payload={"ref": "", "trailer_only": False,
-                     "trailer_suspect": [], "why": "词表与模型一致"},
+            payload={
+                "ref": "",
+                "trailer_only": False,
+                "trailer_suspect": [],
+                "why": "词表与模型一致",
+            },
         )
 
-    def _player_ok(self, spec: Question, obs: Observation,
-                   started: float) -> Decision:
+    def _player_ok(self, spec: Question, obs: Observation, started: float) -> Decision:
         """判断点 ④：播放页是否可用。``<video>`` 存在性已在主入口处理。
 
         **付费墙在代码层先判**（口径一「确定性事实优先」）：页面上写着
@@ -411,21 +452,28 @@ class LLMPerceptor:
         paywall = bool(answer is False and hit)
         evidence = _evidence(data, spec, answer)
         if paywall:
-            evidence += (f"；页面含付费墙信号「{hit}」——按 2026-10-10 口径，"
-                         f"**有播放页但需订阅/付费不算成功**")
+            evidence += (
+                f"；页面含付费墙信号「{hit}」——按 2026-10-10 口径，"
+                f"**有播放页但需订阅/付费不算成功**"
+            )
         return self._answer(
-            spec, answer,
+            spec,
+            answer,
             evidence=evidence,
             started=started,
-            payload={"media_count": obs.video_tag_count,
-                     "iframe_count": obs.iframe_count,
-                     "paywall": paywall,
-                     **({"paywall_word": hit} if paywall else {})},
+            payload={
+                "media_count": obs.video_tag_count,
+                "iframe_count": obs.iframe_count,
+                "paywall": paywall,
+                **({"paywall_word": hit} if paywall else {}),
+            },
         )
 
     # ── 内部 ────────────────────────────────────────────────────────
 
-    def _ask(self, spec: Question, rendered: Mapping[str, Any]) -> tuple[str | None, str]:
+    def _ask(
+        self, spec: Question, rendered: Mapping[str, Any]
+    ) -> tuple[str | None, str]:
         """发一轮，返回 ``(原文, 失败原因)``。
 
         ``question`` **写进 user 正文**而不是只靠 system prompt 里的契约串
@@ -448,18 +496,21 @@ class LLMPerceptor:
         system = (
             spec.prompt
             + "\n\n只输出一个 JSON 对象，不要解释文字，不要 markdown 代码块。\n"
-            + "输出格式必须严格是：" + CONTRACTS[spec.id]
+            + "输出格式必须严格是："
+            + CONTRACTS[spec.id]
             + "\n证据不足时 answer 给 null，不要猜。"
         )
-        user = json.dumps({"question": spec.id, "observation": rendered},
-                         ensure_ascii=False)
+        user = json.dumps(
+            {"question": spec.id, "observation": rendered}, ensure_ascii=False
+        )
         got = self._client.chat(system, user)
         if got is None:
             return None, f"LLM 不可用（{self._client.last_error or '未知原因'}）"
         return got, ""
 
-    def _ask_json(self, spec: Question,
-                  rendered: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, str]:
+    def _ask_json(
+        self, spec: Question, rendered: Mapping[str, Any]
+    ) -> tuple[Mapping[str, Any] | None, str]:
         raw, why = self._ask(spec, rendered)
         if raw is None:
             self._unresolved.add(spec.id)
@@ -470,8 +521,9 @@ class LLMPerceptor:
             return None, _why_unparsable(raw)
         return data, ""
 
-    def _unresolved_answer(self, spec: Question, reason: str,
-                           started: float) -> Decision:
+    def _unresolved_answer(
+        self, spec: Question, reason: str, started: float
+    ) -> Decision:
         """fail-closed 的唯一出口。**evidence 里必须带上原因。**
 
         原因不能省：它解释了为什么这一站没有落到负样本池，是人工复核
@@ -479,19 +531,35 @@ class LLMPerceptor:
         """
         self._unresolved.add(spec.id)
         return Decision(
-            question=spec.id, answer=None, confidence=CONFIDENCE_NONE,
-            evidence=reason or "未取得结论", source="llm",
-            payload=MappingProxyType({}), latency_ms=int((time.monotonic() - started) * 1000),
+            question=spec.id,
+            answer=None,
+            confidence=CONFIDENCE_NONE,
+            evidence=reason or "未取得结论",
+            source="llm",
+            payload=MappingProxyType({}),
+            latency_ms=int((time.monotonic() - started) * 1000),
             fallback_used=True,
         )
 
-    def _answer(self, spec: Question, answer: bool | None, *, evidence: str,
-                started: float, payload: Mapping[str, Any] | None = None,
-                fallback: bool = False) -> Decision:
+    def _answer(
+        self,
+        spec: Question,
+        answer: bool | None,
+        *,
+        evidence: str,
+        started: float,
+        payload: Mapping[str, Any] | None = None,
+        fallback: bool = False,
+    ) -> Decision:
         return Decision(
-            question=spec.id, answer=answer, confidence=CONFIDENCE_JUDGED,
-            evidence=evidence, source="llm",
-            payload=MappingProxyType(dict(payload)) if payload else MappingProxyType({}),
+            question=spec.id,
+            answer=answer,
+            confidence=CONFIDENCE_JUDGED,
+            evidence=evidence,
+            source="llm",
+            payload=MappingProxyType(dict(payload))
+            if payload
+            else MappingProxyType({}),
             latency_ms=int((time.monotonic() - started) * 1000),
             fallback_used=fallback,
         )
@@ -502,8 +570,7 @@ class LLMPerceptor:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _sufficiency(question: str, obs: Observation, *,
-                 target_title: str = "") -> str:
+def _sufficiency(question: str, obs: Observation, *, target_title: str = "") -> str:
     """问模型**之前**先判这份观察够不够。返回空串 = 够。
 
     这是 LLM 版最要紧的一段。实测：iqiyi 的 PLAYER_OK 被判「否」，
@@ -568,8 +635,7 @@ def _sufficiency(question: str, obs: Observation, *,
     return ""
 
 
-def _ordered_links(obs: Observation, question: str,
-                   target_title: str) -> list:
+def _ordered_links(obs: Observation, question: str, target_title: str) -> list:
     """① 题把「链接文本含目标片名」的链接提到最前，其余保持原序。
 
     **为什么必须有这一步**：预检（:func:`_title_link_sufficiency`）与渲染
@@ -601,8 +667,7 @@ def _ordered_links(obs: Observation, question: str,
     return hit + miss
 
 
-def _link_window(obs: Observation, question: str,
-                 target_title: str) -> list:
+def _link_window(obs: Observation, question: str, target_title: str) -> list:
     """**送给模型的那批链接**——排序后再截断，全树唯一的定义。
 
     三处都要它，且必须三处同源：:func:`_render`（渲染）、:func:`_sufficiency`
@@ -665,8 +730,9 @@ def _title_link_sufficiency(obs: Observation, target_title: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _render(obs: Observation, *, target_title: str = "",
-            question: str = "") -> dict[str, Any]:
+def _render(
+    obs: Observation, *, target_title: str = "", question: str = ""
+) -> dict[str, Any]:
     """把观察转成喂给模型的 dict。**纯裁剪，不加工。**
 
     刻意**不做**摘要、不改写、不截 link 到域名——那些是语义加工，
@@ -710,6 +776,22 @@ def _render(obs: Observation, *, target_title: str = "",
     return out
 
 
+def _excerpt(raw: str, limit: int = 120) -> str:
+    """模型原文的诊断摘录——**先剥思考再截**（与 :func:`_why_unparsable`
+    同一条红线：``evidence`` 是 :class:`SiteOutcome` 的持久字段，raw CoT
+    不进任何持久化路径，见 CLAUDE.md）。
+
+    空回传分支（selected/rejected 全空）用它把「模型到底回了什么」留在
+    evidence 里，才能判断根因是「它认为没有够格的站 / 它偷懒 / 它输出
+    最省事的合规解」——三者的处置完全不同。剥完为空单独说：那是「只输
+    出思考没有正文」，与预算耗尽的症状同源但不同因。
+    """
+    clean = schema_parse.strip_think(raw).strip()
+    if not clean:
+        return "（模型输出剥掉思考后为空——只输出了 reasoning，没有正文）"
+    return clean[:limit].replace("\n", " ")
+
+
 def _why_unparsable(raw: str) -> str:
     """解析失败的原因串。**带上模型实际说了什么——但剥掉思考过程。**
 
@@ -736,14 +818,17 @@ def _why_unparsable(raw: str) -> str:
     """
     clean = schema_parse.strip_think(raw).strip()
     if not clean:
-        return ("模型输出剥掉思考过程后为空——只输出了 reasoning，"
-                "没有正文（推理模型形态；查 max_tokens 预算或后端行为）")
+        return (
+            "模型输出剥掉思考过程后为空——只输出了 reasoning，"
+            "没有正文（推理模型形态；查 max_tokens 预算或后端行为）"
+        )
     head = clean[:120].replace("\n", " ")
     return f"LLM 有输出但无法解析为 JSON（前 120 字）：{head}"
 
 
-def _resolve_rows(rows: list[dict[str, Any]], window: list,
-                  known: set[str]) -> list[dict[str, Any]]:
+def _resolve_rows(
+    rows: list[dict[str, Any]], window: list, known: set[str]
+) -> list[dict[str, Any]]:
     """把模型回的行落到**观察里真实存在**的链接上。
 
     两条路径，先编号后 URL：编号 ``i`` 是渲染时送给模型的那批的序号
@@ -806,8 +891,10 @@ def _wordlist_note(ref: str, label: str, obs: Observation) -> str:
     """
     if any(e.ref == ref for e in play_control_candidates(obs)):
         return ""
-    return (f"；⚠️ 该 ref 未命中播放控件词表（模型与词表不一致，"
-            f"可能是图标按钮）——留痕待人工复核")
+    return (
+        f"；⚠️ 该 ref 未命中播放控件词表（模型与词表不一致，"
+        f"可能是图标按钮）——留痕待人工复核"
+    )
 
 
 def _evidence(data: Mapping[str, Any], spec: Question, answer: bool) -> str:

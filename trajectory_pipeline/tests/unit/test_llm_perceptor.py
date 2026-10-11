@@ -28,7 +28,9 @@ from trajectory_pipeline.tests.fakes import FakeLLM, llm_perceptor
 
 
 def _obs(**kw) -> Observation:
-    base = dict(url="https://x.test/", page_title="功夫 - 某视频站", body_text="页面正文内容")
+    base = dict(
+        url="https://x.test/", page_title="功夫 - 某视频站", body_text="页面正文内容"
+    )
     base.update(kw)
     return Observation(**base)
 
@@ -42,7 +44,9 @@ class TestSufficiencyGuard:
 
     def test_正文与元素皆空时fail_closed(self):
         """实测形态：iqiyi/ixigua 站点页 body=0 元素=0（JS 未渲染完）。"""
-        d = llm_perceptor().decide(Q.PLAYER_OK, _obs(body_text="", interactive_elements=()))
+        d = llm_perceptor().decide(
+            Q.PLAYER_OK, _obs(body_text="", interactive_elements=())
+        )
         assert d.answer is None
         assert "采集未拿到内容" in d.evidence
 
@@ -50,13 +54,16 @@ class TestSufficiencyGuard:
         """守卫的意义在于**省钱与省时间**，也在于不把采集故障送去让
         模型编一个结论。请求数为 0 是可断言的硬证据。"""
         fake = FakeLLM()
-        lp.LLMPerceptor(fake).decide(Q.PLAYER_OK, _obs(body_text="", interactive_elements=()))
+        lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(body_text="", interactive_elements=())
+        )
         assert fake.calls == []
 
     def test_采集降级时不问模型(self):
         fake = FakeLLM()
         d = lp.LLMPerceptor(fake).decide(
-            Q.IS_REACHABLE, _obs(degraded=("browser_links",)))
+            Q.IS_REACHABLE, _obs(degraded=("browser_links",))
+        )
         assert d.answer is None
         assert fake.calls == []
 
@@ -79,13 +86,16 @@ class TestRefWhitelist:
     def test_编造的ref被拒(self):
         """编造的 ref 会让代码拿着它去 click——点错不可逆。"""
         d = llm_perceptor(lie_about_ref="e999").decide(
-            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "播放"))))
+            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "播放")))
+        )
         assert d.answer is None
         assert "不在观察" in d.evidence
 
     def test_合法ref被采纳(self):
         d = llm_perceptor().decide(
-            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "立即播放"))))
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e1", "a", "立即播放"))),
+        )
         assert d.answer is True
         assert d.payload["ref"] == "e1"
 
@@ -94,10 +104,18 @@ class TestRefWhitelist:
         from trajectory_pipeline.executor.actions import target_of
 
         d = llm_perceptor().decide(
-            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e7", "button", "播放"))))
-        assert target_of(str(d.payload["ref"]),
-                         _obs(interactive_elements=_els(("e7", "button", "播放"))).interactive_elements
-                         ) is not None
+            Q.FIND_PLAY_CONTROL,
+            _obs(interactive_elements=_els(("e7", "button", "播放"))),
+        )
+        assert (
+            target_of(
+                str(d.payload["ref"]),
+                _obs(
+                    interactive_elements=_els(("e7", "button", "播放"))
+                ).interactive_elements,
+            )
+            is not None
+        )
 
 
 class TestRef由代码取回:
@@ -112,8 +130,12 @@ class TestRef由代码取回:
     def test_模型不回ref时代码按词表取回(self):
         d = llm_perceptor(forget_ref=True).decide(
             Q.FIND_PLAY_CONTROL,
-            _obs(interactive_elements=_els(("e1", "a", "登录"),
-                                           ("e5", "button", "立即播放"))))
+            _obs(
+                interactive_elements=_els(
+                    ("e1", "a", "登录"), ("e5", "button", "立即播放")
+                )
+            ),
+        )
         assert d.answer is True
         assert d.payload["ref"] == "e5"
         assert d.payload["trailer_only"] is False
@@ -123,18 +145,19 @@ class TestRef由代码取回:
         和模型编造 ref 一样不可用。"""
         from trajectory_pipeline.executor.actions import target_of
 
-        obs = _obs(interactive_elements=_els(("e1", "a", "登录"),
-                                             ("e5", "button", "立即播放")))
+        obs = _obs(
+            interactive_elements=_els(("e1", "a", "登录"), ("e5", "button", "立即播放"))
+        )
         d = llm_perceptor(forget_ref=True).decide(Q.FIND_PLAY_CONTROL, obs)
-        assert target_of(str(d.payload["ref"]),
-                         obs.interactive_elements) is not None
+        assert target_of(str(d.payload["ref"]), obs.interactive_elements) is not None
 
     def test_evidence写明ref是代码取回的(self):
         """人读存档时要能分清 ref 是模型给的还是代码补的——两者是
         不同的证据强度，不标出来就分不出来了。"""
         d = llm_perceptor(forget_ref=True).decide(
             Q.FIND_PLAY_CONTROL,
-            _obs(interactive_elements=_els(("e5", "button", "立即播放"))))
+            _obs(interactive_elements=_els(("e5", "button", "立即播放"))),
+        )
         assert "未回传 ref" in d.evidence and "词表" in d.evidence
 
     def test_词表为空时仍然判否(self):
@@ -142,8 +165,8 @@ class TestRef由代码取回:
         时必须判 False，否则每个页面都会变成「找到了播放控件」。"""
         d = llm_perceptor(forget_ref=True).decide(
             Q.FIND_PLAY_CONTROL,
-            _obs(interactive_elements=_els(("e1", "a", "登录"),
-                                           ("e2", "a", "设置"))))
+            _obs(interactive_elements=_els(("e1", "a", "登录"), ("e2", "a", "设置"))),
+        )
         assert d.answer is False
         assert d.payload["ref"] == ""
 
@@ -153,8 +176,8 @@ class TestRef由代码取回:
         W1 一直落 ``trailer_only``，W3 原来直落 False——同一批素材两个
         结论，且都看着像对的。"""
         d = llm_perceptor(forget_ref=True).decide(
-            Q.FIND_PLAY_CONTROL,
-            _obs(interactive_elements=_els(("e1", "a", "预告片"))))
+            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "预告片")))
+        )
         assert d.answer is True
         assert d.payload["trailer_only"] is True
         assert d.payload["ref"] == ""
@@ -166,8 +189,11 @@ class TestRef由代码取回:
             trailer_only_candidates,
         )
 
-        obs = _obs(interactive_elements=_els(("e1", "a", "预告片"),
-                                            ("e2", "button", "正片第1集")))
+        obs = _obs(
+            interactive_elements=_els(
+                ("e1", "a", "预告片"), ("e2", "button", "正片第1集")
+            )
+        )
         assert [e.ref for e in play_control_candidates(obs)] == ["e2"]
         assert [e.ref for e in trailer_only_candidates(obs)] == ["e1"]
 
@@ -176,7 +202,8 @@ class TestRef由代码取回:
         那是编造，照旧 fail-closed。"""
         d = llm_perceptor(lie_about_ref="e999").decide(
             Q.FIND_PLAY_CONTROL,
-            _obs(interactive_elements=_els(("e5", "button", "立即播放"))))
+            _obs(interactive_elements=_els(("e5", "button", "立即播放"))),
+        )
         assert d.answer is None
         assert "不在观察" in d.evidence
 
@@ -186,8 +213,12 @@ class TestRef由代码取回:
         留痕：禁止投票意味着暴露给人，而不是由代码悄悄择一。"""
         d = llm_perceptor(lie_about_ref="e1").decide(
             Q.FIND_PLAY_CONTROL,
-            _obs(interactive_elements=_els(("e1", "button", "▷"),
-                                           ("e5", "button", "立即播放"))))
+            _obs(
+                interactive_elements=_els(
+                    ("e1", "button", "▷"), ("e5", "button", "立即播放")
+                )
+            ),
+        )
         assert d.answer is True
         assert d.payload["ref"] == "e1"
         assert "未命中播放控件词表" in d.evidence
@@ -210,7 +241,8 @@ class Test不落rawCoT:
 
     def test_剥掉思考后才截前N字(self):
         out = lp._why_unparsable(
-            f"<think>{self.THINK}</think>\n根据页面观察，我无法确定。")
+            f"<think>{self.THINK}</think>\n根据页面观察，我无法确定。"
+        )
         assert self.THINK not in out
         assert "根据页面观察" in out
 
@@ -232,9 +264,9 @@ class Test不落rawCoT:
 
     def test_端到端_evidence不含思考(self):
         """走完整条 decide → evidence 的路，不直接调内部函数。"""
-        d = llm_perceptor(think=True, prose=True,
-                          think_text=self.THINK).decide(
-            Q.IS_REACHABLE, _obs(body_text="页面主体可见"))
+        d = llm_perceptor(think=True, prose=True, think_text=self.THINK).decide(
+            Q.IS_REACHABLE, _obs(body_text="页面主体可见")
+        )
         assert d.answer is None
         assert self.THINK not in d.evidence
         assert "<think>" not in d.evidence
@@ -244,12 +276,12 @@ class Test不落rawCoT:
         而不是停在 Decision——中间隔着 ledger 转换。"""
         from trajectory_pipeline.executor.branches import RunLedger
 
-        d = llm_perceptor(think=True, prose=True,
-                          think_text=self.THINK).decide(
-            Q.IS_REACHABLE, _obs(body_text="页面主体可见"))
-        outcome = RunLedger("T001").record("https://x.test/", None, d.evidence,
-                                           decision=d,
-                                           site_url="https://x.test/")
+        d = llm_perceptor(think=True, prose=True, think_text=self.THINK).decide(
+            Q.IS_REACHABLE, _obs(body_text="页面主体可见")
+        )
+        outcome = RunLedger("T001").record(
+            "https://x.test/", None, d.evidence, decision=d, site_url="https://x.test/"
+        )
         assert self.THINK not in outcome.to_json()["evidence"]
         assert "<think>" not in outcome.to_json()["evidence"]
 
@@ -274,7 +306,9 @@ class TestDeterministicFirst:
     def test_无video标签时问模型(self):
         """优酷形态：video=0 iframe=1，正文有内容——这才是 LLM 的战场。"""
         fake = FakeLLM()
-        lp.LLMPerceptor(fake).decide(Q.PLAYER_OK, _obs(video_tag_count=0, iframe_count=1))
+        lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(video_tag_count=0, iframe_count=1)
+        )
         assert len(fake.calls) == 1
 
 
@@ -284,14 +318,16 @@ class TestTrailerRuleWins:
     def test_模型说能播但词表判预告则记trailer(self):
         """预告片是用户明确的业务规则。把正片站点写进负样本池不可逆。"""
         d = llm_perceptor().decide(
-            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "预告片"))))
+            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "预告片")))
+        )
         assert d.payload["trailer_only"] is True
         assert d.payload["ref"] == ""
 
     def test_预告时不留ref(self):
         """ref 指向的是正片入口；预告控件点了只会到预告页。"""
         d = llm_perceptor().decide(
-            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "抢先看"))))
+            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "抢先看")))
+        )
         assert d.payload.get("ref", "") == ""
 
 
@@ -332,7 +368,7 @@ class TestUnavailable:
         assert "LLM 不可用" in d.evidence
 
     def test_失败原因带后端诊断(self):
-        """"transport:ConnectError" 是排障第一手信息。"""
+        """ "transport:ConnectError" 是排障第一手信息。"""
         d = llm_perceptor(down=True).decide(Q.IS_REACHABLE, _obs())
         assert "transport" in d.evidence
 
@@ -349,7 +385,8 @@ class TestSelectSites:
 
         d = llm_perceptor(invent_urls=True).decide(
             Q.SELECT_PLAY_SITES,
-            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)),
+        )
         assert d.answer is None
         assert "编造.test" not in str(d.payload)
 
@@ -358,7 +395,8 @@ class TestSelectSites:
 
         d = llm_perceptor().decide(
             Q.SELECT_PLAY_SITES,
-            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)),
+        )
         assert d.answer is True
         assert d.payload["selected"][0]["url"] == "https://www.a.test/gg"
 
@@ -369,7 +407,8 @@ class TestSelectSites:
 
         d = llm_perceptor(invent_urls=True).decide(
             Q.SELECT_PLAY_SITES,
-            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)),
+        )
         assert d.answer is None
         assert "不在观察" in d.evidence
 
@@ -389,7 +428,8 @@ class TestNoConclusionVsUnmatched:
 
         d = llm_perceptor(no_conclusion=True).decide(
             Q.SELECT_PLAY_SITES,
-            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)),
+        )
         assert d.answer is None
         assert "未给出任何" in d.evidence
         # 反向护栏：这句话**不能**同时说「不在观察」——两者指的不是一回事
@@ -400,7 +440,8 @@ class TestNoConclusionVsUnmatched:
 
         d = llm_perceptor(invent_urls=True).decide(
             Q.SELECT_PLAY_SITES,
-            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)))
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)),
+        )
         assert d.answer is None
         assert "全部不在观察" in d.evidence
         assert "未给出任何" not in d.evidence
@@ -409,11 +450,31 @@ class TestNoConclusionVsUnmatched:
         """复盘要能判断「是输入不足还是模型偷懒」，光看「未作答」不够。"""
         from trajectory_pipeline.perception.base import LinkItem
 
-        links = tuple(LinkItem(f"功夫 第{i}集", f"https://www.a.test/{i}")
-                      for i in range(3))
+        links = tuple(
+            LinkItem(f"功夫 第{i}集", f"https://www.a.test/{i}") for i in range(3)
+        )
         d = llm_perceptor(no_conclusion=True).decide(
-            Q.SELECT_PLAY_SITES, _obs(links=links))
+            Q.SELECT_PLAY_SITES, _obs(links=links)
+        )
         assert "3 条链接" in d.evidence
+
+    def test_空回传时evidence带剥think后的模型原文(self):
+        """根因三分类（认为没有够格/偷懒/最省事合规解）靠原文区分——
+        evidence 必须留下模型到底回了什么。**但先 strip_think**：
+        evidence 是持久字段，raw CoT 不进（红线）。"""
+        from trajectory_pipeline.perception.base import LinkItem
+
+        d = llm_perceptor(
+            no_conclusion=True, think=True, think_text="这是内部推理不该落盘"
+        ).decide(
+            Q.SELECT_PLAY_SITES,
+            _obs(links=(LinkItem("功夫 在线观看", "https://www.a.test/gg"),)),
+        )
+        assert d.answer is None
+        # 剥 think 后的原文（selected/rejected 都是空数组的 JSON）要能看见
+        assert "selected" in d.evidence and "rejected" in d.evidence
+        # 反向护栏：思考过程本身不能进 evidence
+        assert "内部推理" not in d.evidence
 
 
 class Test回指编号而不是url:
@@ -427,25 +488,27 @@ class Test回指编号而不是url:
     def _links(self):
         from trajectory_pipeline.perception.base import LinkItem
 
-        return (LinkItem("功夫 在线观看", "https://www.a.test/gg"),
-                LinkItem("百度首页", "https://www.baidu.com/"))
+        return (
+            LinkItem("功夫 在线观看", "https://www.a.test/gg"),
+            LinkItem("百度首页", "https://www.baidu.com/"),
+        )
 
     def test_渲染时每条链接带编号(self):
-        rows = lp._render(_obs(links=self._links()),
-                          target_title="功夫",
-                          question=Q.SELECT_PLAY_SITES)["links"]
+        rows = lp._render(
+            _obs(links=self._links()), target_title="功夫", question=Q.SELECT_PLAY_SITES
+        )["links"]
         assert [r["i"] for r in rows] == [0, 1]
 
     def test_非一号题不带编号(self):
         """编号是 ① 的契约。别的题带上它等于凭空多一个字段，
         而模型会顺着编造出编号语义。"""
-        rows = lp._render(_obs(links=self._links()),
-                          question=Q.PLAYER_OK)["links"]
+        rows = lp._render(_obs(links=self._links()), question=Q.PLAYER_OK)["links"]
         assert all("i" not in r for r in rows)
 
     def test_编号回指到窗口里的href(self):
         d = llm_perceptor(by_index=True).decide(
-            Q.SELECT_PLAY_SITES, _obs(links=self._links()))
+            Q.SELECT_PLAY_SITES, _obs(links=self._links())
+        )
         assert d.answer is True
         # 回传的 i=0 → 第一条链接的 href，且 payload 里带 url 供下游记账
         assert d.payload["selected"][0]["url"] == "https://www.a.test/gg"
@@ -454,7 +517,7 @@ class Test回指编号而不是url:
         """模型爱给整数加引号。真后端两种形态都出现过。"""
         assert lp._as_index("3") == 3
         assert lp._as_index(3) == 3
-        assert lp._as_index(True) is None      # bool 是 int 的子类
+        assert lp._as_index(True) is None  # bool 是 int 的子类
         assert lp._as_index("abc") is None
         assert lp._as_index(None) is None
 
@@ -462,9 +525,11 @@ class Test回指编号而不是url:
         """越界说明模型在编。退回 URL 匹配而不是当命中——
         否则 i=999 会指向窗口外的东西，而控制流会去访问它。"""
         rows = [{"i": 999, "url": "https://www.a.test/gg"}]
-        out = lp._resolve_rows(rows, lp._link_window(
-            _obs(links=self._links()), Q.SELECT_PLAY_SITES, "功夫"),
-            {"https://www.a.test/gg"})
+        out = lp._resolve_rows(
+            rows,
+            lp._link_window(_obs(links=self._links()), Q.SELECT_PLAY_SITES, "功夫"),
+            {"https://www.a.test/gg"},
+        )
         assert [r["url"] for r in out] == ["https://www.a.test/gg"]
 
     def test_三处窗口同源(self):
@@ -480,14 +545,19 @@ class Test回指编号而不是url:
         永远为真的死断言（避坑指南 §7.3 同款）。"""
         from trajectory_pipeline.perception.base import LinkItem
 
-        obs = _obs(links=(LinkItem("百度首页", "https://www.baidu.com/"),
-                          LinkItem("功夫 在线观看", "https://www.a.test/gg")))
+        obs = _obs(
+            links=(
+                LinkItem("百度首页", "https://www.baidu.com/"),
+                LinkItem("功夫 在线观看", "https://www.a.test/gg"),
+            )
+        )
         window = lp._link_window(obs, Q.SELECT_PLAY_SITES, "功夫")
         # 先确认 fixture 真的有顺序差异，否则这条断言测不出任何东西
         assert [l.href for l in window] != [l.href for l in obs.links]
 
-        rendered = lp._render(obs, target_title="功夫",
-                              question=Q.SELECT_PLAY_SITES)["links"]
+        rendered = lp._render(obs, target_title="功夫", question=Q.SELECT_PLAY_SITES)[
+            "links"
+        ]
         assert [r["href"] for r in rendered] == [l.href for l in window]
         assert lp._title_link_sufficiency(obs, "功夫") == ""
 
@@ -515,8 +585,11 @@ class TestDecisionShape:
         import json
 
         d = llm_perceptor().decide(
-            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "播放"))))
-        assert json.loads(json.dumps(dict(d.payload), ensure_ascii=False))["ref"] == "e1"
+            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "播放")))
+        )
+        assert (
+            json.loads(json.dumps(dict(d.payload), ensure_ascii=False))["ref"] == "e1"
+        )
 
     def test_题目写进请求正文(self):
         """IS_REACHABLE 与 PLAYER_OK 的输出契约字面相同，
@@ -524,8 +597,9 @@ class TestDecisionShape:
         import json
 
         fake = FakeLLM()
-        lp.LLMPerceptor(fake).decide(Q.FIND_PLAY_CONTROL,
-                                     _obs(interactive_elements=_els(("e1", "a", "播放"))))
+        lp.LLMPerceptor(fake).decide(
+            Q.FIND_PLAY_CONTROL, _obs(interactive_elements=_els(("e1", "a", "播放")))
+        )
         assert json.loads(fake.calls[0][1])["question"] == Q.FIND_PLAY_CONTROL
 
 
@@ -547,10 +621,14 @@ _NAV_LINKS = [
 ]
 
 _RESULT_LINKS = [
-    ("《功夫》电影完整版-高清正版在线观看-爱奇艺",
-     "https://www.iqiyi.com/v_19rrk40at8.html"),
-    ("功夫 (普通话版)_电影_高清完整版视频在线观看_腾讯视频",
-     "https://v.qq.com/x/cover/abc.html"),
+    (
+        "《功夫》电影完整版-高清正版在线观看-爱奇艺",
+        "https://www.iqiyi.com/v_19rrk40at8.html",
+    ),
+    (
+        "功夫 (普通话版)_电影_高清完整版视频在线观看_腾讯视频",
+        "https://v.qq.com/x/cover/abc.html",
+    ),
 ]
 
 
@@ -561,14 +639,12 @@ def _baidu_result_page() -> Observation:
     这不是构造出来的边角，是实测：修复前的那批 5 个候选全被记成
     ``not_play_site``，因为模型收到的 20 条链接里一条片名都没有。
     """
-    nav = [(t, h) for t, h in _NAV_LINKS] * 3          # 30 条，够长
+    nav = [(t, h) for t, h in _NAV_LINKS] * 3  # 30 条，够长
     return Observation(
         url="https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB",
         page_title="功夫_百度搜索",
         body_text="搜索结果页正文，含有片名但与 URL 无对应关系。" * 20,
-        links=tuple(
-            LinkItem(text=t, href=h) for t, h in (nav[:25] + _RESULT_LINKS)
-        ),
+        links=tuple(LinkItem(text=t, href=h) for t, h in (nav[:25] + _RESULT_LINKS)),
     )
 
 
@@ -584,8 +660,9 @@ class Test预检与渲染同源:
     """
 
     def test_渲染窗口里含片名的链接排在最前(self):
-        out = lp._render(_baidu_result_page(), target_title="功夫",
-                         question=Q.SELECT_PLAY_SITES)
+        out = lp._render(
+            _baidu_result_page(), target_title="功夫", question=Q.SELECT_PLAY_SITES
+        )
         assert out["links"][0]["text"].startswith("《功夫》电影完整版")
 
     def test_命中项前置保证不落在窗口外(self):
@@ -597,8 +674,7 @@ class Test预检与渲染同源:
         """
         obs = _baidu_result_page()
         ordered = lp._ordered_links(obs, Q.SELECT_PLAY_SITES, "功夫")
-        in_window = sum(1 for l in ordered[:lp.LLM_LINKS]
-                        if "功夫" in (l.text or ""))
+        in_window = sum(1 for l in ordered[: lp.LLM_LINKS] if "功夫" in (l.text or ""))
         whole = sum(1 for l in obs.links if "功夫" in (l.text or ""))
         assert whole == 2
         assert in_window == whole
@@ -608,7 +684,8 @@ class Test预检与渲染同源:
     def test_整批链接都无片名时fail_closed(self):
         """预检**不能被这次修复放水**：真没有片名时仍须 fail-closed。"""
         obs = Observation(
-            url="https://www.baidu.com/s?wd=x", page_title="百度",
+            url="https://www.baidu.com/s?wd=x",
+            page_title="百度",
             body_text="正文",
             links=tuple(LinkItem(text=t, href=h) for t, h in _NAV_LINKS),
         )
@@ -620,7 +697,8 @@ class Test预检与渲染同源:
         改了就是拿我们的加工覆盖观察。"""
         obs = _baidu_result_page()
         assert [l.href for l in lp._ordered_links(obs, Q.IS_REACHABLE, "功夫")] == [
-            l.href for l in obs.links]
+            l.href for l in obs.links
+        ]
 
     def test_端到端模型看到的第一条就是结果标题(self):
         """FakeLLM 对 ① 的模拟是「选它看到的第一条链接」——
@@ -632,11 +710,13 @@ class Test预检与渲染同源:
         # 显式绑片名：① 的预检要拿它匹配链接文本，没绑时恒 None，
         # 测试会先撞上预检而不是要走的那条路径。
         d = lp.LLMPerceptor(fake, target_title="功夫").decide(
-            Q.SELECT_PLAY_SITES, _baidu_result_page())
+            Q.SELECT_PLAY_SITES, _baidu_result_page()
+        )
         assert d.answer is True
         sent = json.loads(fake.calls[0][1])["observation"]["links"]
         assert sent[0]["href"] == "https://www.iqiyi.com/v_19rrk40at8.html"
         assert dict(d.payload)["selected"][0]["url"] == sent[0]["href"]
+
 
 class Test选中为空不算答完:
     """① **判 True 的语义是「我选出了站」**。只排除、零选中不是 True。
@@ -648,7 +728,8 @@ class Test选中为空不算答完:
 
     def test_全排除零选中判None(self):
         d = llm_perceptor(reject_all=True).decide(
-            Q.SELECT_PLAY_SITES, _baidu_result_page())
+            Q.SELECT_PLAY_SITES, _baidu_result_page()
+        )
         assert d.answer is None
         assert "一个都没选中" in d.evidence
 
@@ -678,10 +759,9 @@ class Test付费墙不算成功:
 
     def test_模型判否且有付费信号_落付费墙(self):
         d = llm_perceptor(down=True).decide(Q.PLAYER_OK, _obs())
-        assert d.answer is None                     # 后端挂着，先确认夹具正常
+        assert d.answer is None  # 后端挂着，先确认夹具正常
         fake = FakeLLM(answers={Q.PLAYER_OK: False})
-        d = lp.LLMPerceptor(fake).decide(
-            Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY))
+        d = lp.LLMPerceptor(fake).decide(Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY))
         assert d.answer is False
         assert d.payload["paywall"] is True
         assert "开通会员" in d.evidence
@@ -689,7 +769,8 @@ class Test付费墙不算成功:
     def test_模型判否但无付费信号_不落付费墙(self):
         fake = FakeLLM(answers={Q.PLAYER_OK: False})
         d = lp.LLMPerceptor(fake).decide(
-            Q.PLAYER_OK, _obs(body_text="页面只有导航，无播放器"))
+            Q.PLAYER_OK, _obs(body_text="页面只有导航，无播放器")
+        )
         assert d.payload.get("paywall") is False
 
     def test_模型判真时不因词表升级(self):
@@ -697,8 +778,7 @@ class Test付费墙不算成功:
         此时词表命中多半是导航栏文案（实测百度页正文就有「免费观看」）。
         强行升级会把正常站点判成付费墙。"""
         fake = FakeLLM(answers={Q.PLAYER_OK: True})
-        d = lp.LLMPerceptor(fake).decide(
-            Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY))
+        d = lp.LLMPerceptor(fake).decide(Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY))
         assert d.answer is True
         assert d.payload.get("paywall") is False
 
@@ -718,8 +798,7 @@ class Test付费墙记账:
         from trajectory_pipeline.executor.branches import decision_branch
         from trajectory_pipeline.perception.base import Decision
 
-        paid = Decision(Q.PLAYER_OK, False, 0.8, "需付费", "llm",
-                        {"paywall": True})
+        paid = Decision(Q.PLAYER_OK, False, 0.8, "需付费", "llm", {"paywall": True})
         plain = Decision(Q.PLAYER_OK, False, 0.8, "没组件", "llm", {})
         assert decision_branch(paid) == "subscription_wall"
         assert decision_branch(plain) == "component_unverified"
@@ -728,4 +807,5 @@ class Test付费墙记账:
         """付费墙是**判出来了的业务结论**，不是「没判出来」——
         它教模型「识别付费墙并退出」，是该进训练集的负样本。"""
         from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+
         assert "subscription_wall" not in NON_SAMPLE_BRANCHES

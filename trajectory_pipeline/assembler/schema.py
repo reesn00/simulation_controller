@@ -7,7 +7,7 @@
     ③ 任务提示词      user_prompt + provenance
     ④ 动作+参数       actions: tuple[Action, ...]
     ⑤ 观察            observations: 训练态视图（见 observation_view）
-    ⑥ 思考+结论       rationale: Rationale | None
+    ⑥ 思考+结论       rationales: tuple[Rationale, ...]（与 actions 按 step_index 对齐）
 
 四条决定
 
@@ -78,8 +78,11 @@ class ToolSpec:
     instruction: str
 
     def to_json(self) -> dict[str, Any]:
-        return {"name": self.name, "params": list(self.params),
-                "instruction": self.instruction}
+        return {
+            "name": self.name,
+            "params": list(self.params),
+            "instruction": self.instruction,
+        }
 
     def visible_to_model(self) -> bool:
         """这条动作该不该出现在喂给模型的工具列表里。"""
@@ -87,12 +90,15 @@ class ToolSpec:
 
 
 TOOL_SPECS: tuple[ToolSpec, ...] = (
-    ToolSpec(name="goto", params=("url",),
-             instruction="打开一个网址。"),
-    ToolSpec(name="click", params=(),
-             instruction="点击页面上一个可交互元素（按元素类型与文字指定）。"),
-    ToolSpec(name="new_tab", params=("url",),
-             instruction="在新标签页打开网址。"),   # 不可见，见 visible_to_model
+    ToolSpec(name="goto", params=("url",), instruction="打开一个网址。"),
+    ToolSpec(
+        name="click",
+        params=(),
+        instruction="点击页面上一个可交互元素（按元素类型与文字指定）。",
+    ),
+    ToolSpec(
+        name="new_tab", params=("url",), instruction="在新标签页打开网址。"
+    ),  # 不可见，见 visible_to_model
 )
 
 
@@ -112,9 +118,12 @@ class ActionView:
     origin: str = "model"
 
     def to_json(self) -> dict[str, Any]:
-        return {"tool": self.tool, "params": dict(self.params),
-                "target": dict(self.target) if self.target else None,
-                "origin": self.origin}
+        return {
+            "tool": self.tool,
+            "params": dict(self.params),
+            "target": dict(self.target) if self.target else None,
+            "origin": self.origin,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,20 +190,26 @@ def align_rationales(
         # 而症状是「模型什么都没写」，不是「读错了字段」。
         if payload.get("status") != "written":
             # 三态原样带下来：unavailable/empty 的文本位留空
-            out.append(Rationale(
-                step_index=i, text="", conclusion="",
-                status=str(payload.get("status") or "unavailable"),
-                reason=str(payload.get("reason") or ""),
-            ))
+            out.append(
+                Rationale(
+                    step_index=i,
+                    text="",
+                    conclusion="",
+                    status=str(payload.get("status") or "unavailable"),
+                    reason=str(payload.get("reason") or ""),
+                )
+            )
             continue
         draft = payload.get("rationale")
         draft = draft if isinstance(draft, Mapping) else {}
-        out.append(Rationale(
-            step_index=i,
-            text=str(draft.get("text") or ""),
-            conclusion=str(draft.get("conclusion") or ""),
-            status="written",
-        ))
+        out.append(
+            Rationale(
+                step_index=i,
+                text=str(draft.get("text") or ""),
+                conclusion=str(draft.get("conclusion") or ""),
+                status="written",
+            )
+        )
     return tuple(out)
 
 
@@ -227,8 +242,11 @@ def gate_of(
     if "written" not in statuses:
         return GateMark(
             "not_run",
-            ("rationale 一条都没写成（状态："
-             + "、".join(sorted(set(statuses))) + "）——闸门未运行",),
+            (
+                "rationale 一条都没写成（状态："
+                + "、".join(sorted(set(statuses)))
+                + "）——闸门未运行",
+            ),
         )
 
     failed: list[str] = []
@@ -327,10 +345,15 @@ class OutcomeRef:
     p1_missing_fields: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
-        out = {"url": self.url, "branch": self.branch, "source": self.source,
-               "fallback_used": self.fallback_used, "succeeded": self.succeeded,
-               "question": self.question,
-               "reached_play_page": self.reached_play_page}
+        out = {
+            "url": self.url,
+            "branch": self.branch,
+            "source": self.source,
+            "fallback_used": self.fallback_used,
+            "succeeded": self.succeeded,
+            "question": self.question,
+            "reached_play_page": self.reached_play_page,
+        }
         # 这两个键**按存在与否**输出，不按值。老存档缺它们时，
         # ``p1_missing_fields`` 会记下「P1 里没有」，而下游据此判不可判定。
         if "site_url" not in self.p1_missing_fields:
@@ -347,7 +370,7 @@ class Sample:
 
     sample_id: str
     task_id: str
-    unit: str                      # "search" | 站点序（"site-3"）
+    unit: str  # "search" | 站点序（"site-3"）
     title: str
 
     system_prompt: str
@@ -416,6 +439,7 @@ class Sample:
 
 # ── sample_id ──────────────────────────────────────────────────────────
 
+
 def sample_id(task_id: str, run_id: str, unit: str) -> str:
     """``<task_id>__<run_id>__<unit>``。
 
@@ -438,6 +462,7 @@ def run_id_of(archive_name: str) -> str:
 
 
 # ── P1 读取器（按文件格式，不 import executor）─────────────────────────
+
 
 class P1ShapeError(ValueError):
     """存档缺到无法切成样本（没有 task_id / 没有 observations）。
@@ -506,12 +531,14 @@ def _actions_of(steps: Sequence[Mapping[str, Any]]) -> tuple[ActionView, ...]:
     out: list[ActionView] = []
     for st in steps or ():
         a = st.get("action") or {}
-        out.append(ActionView(
-            tool=str(a.get("tool", "")),
-            params=dict(a.get("params") or {}),
-            target=dict(a["target"]) if a.get("target") else None,
-            origin=str(a.get("origin") or "model"),
-        ))
+        out.append(
+            ActionView(
+                tool=str(a.get("tool", "")),
+                params=dict(a.get("params") or {}),
+                target=dict(a["target"]) if a.get("target") else None,
+                origin=str(a.get("origin") or "model"),
+            )
+        )
     return tuple(out)
 
 
@@ -543,8 +570,7 @@ def _outcome_for(
         for o in outcomes or ():
             if o.get("url") == want:
                 # 「键不存在」逐条记，不靠值推断（避坑指南 §2.3）。
-                missing = tuple(k for k in ("site_url", "play_page_url")
-                                if k not in o)
+                missing = tuple(k for k in ("site_url", "play_page_url") if k not in o)
                 return OutcomeRef(
                     url=str(o.get("url")),
                     branch=o.get("branch"),
@@ -644,14 +670,18 @@ def split_archive(path: str | Path) -> list[Sample]:
         miss = _obs_missing(search_obs)
         if miss:
             degraded.append(miss)
-        out.append(_sample(
-            archive=archive, source_name=source_name, unit="search",
-            actions_=_actions_of(steps),
-            observations=(dict(search_obs),),
-            outcome=None,             # 搜索阶段不记站点级 outcome
-            degraded=degraded,
-            raw_steps=steps,
-        ))
+        out.append(
+            _sample(
+                archive=archive,
+                source_name=source_name,
+                unit="search",
+                actions_=_actions_of(steps),
+                observations=(dict(search_obs),),
+                outcome=None,  # 搜索阶段不记站点级 outcome
+                degraded=degraded,
+                raw_steps=steps,
+            )
+        )
 
     # ── 单元 2..N：每个站点 ────────────────────────────────────────
     outcomes = archive.get("outcomes") or []
@@ -664,8 +694,9 @@ def split_archive(path: str | Path) -> list[Sample]:
             miss = _obs_missing(visit.get(key))
             if miss:
                 degraded.append(miss)
-        outcome = _outcome_for(outcomes, str(visit.get("url") or ""),
-                               str(visit.get("landed_url") or ""))
+        outcome = _outcome_for(
+            outcomes, str(visit.get("url") or ""), str(visit.get("landed_url") or "")
+        )
         if outcome is None:
             # 站点级样本查不到 outcome = 这条没有分支结论。它不能只是
             # ``None``：那与「搜索阶段本来就没有 outcome」同形。
@@ -678,17 +709,22 @@ def split_archive(path: str | Path) -> list[Sample]:
                 # 全看它。
                 degraded.append("success_branch_mismatch")
             outcome = replace(outcome, succeeded=succeeded)
-        out.append(_sample(
-            archive=archive, source_name=source_name, unit=f"site-{i}",
-            actions_=_actions_of(vsteps),
-            observations=tuple(
-                dict(o) for o in (visit.get("site_obs"), visit.get("player_obs"))
-                if o
-            ),
-            outcome=outcome,
-            degraded=degraded,
-            raw_steps=vsteps,
-        ))
+        out.append(
+            _sample(
+                archive=archive,
+                source_name=source_name,
+                unit=f"site-{i}",
+                actions_=_actions_of(vsteps),
+                observations=tuple(
+                    dict(o)
+                    for o in (visit.get("site_obs"), visit.get("player_obs"))
+                    if o
+                ),
+                outcome=outcome,
+                degraded=degraded,
+                raw_steps=vsteps,
+            )
+        )
 
     if not out and archive.get("search_blocked"):
         # 被反爬拦的 run 产出零条**是正常形态**，不是错误。抛出去会让
@@ -718,14 +754,26 @@ def iter_samples(root: str | Path, pattern: str = "*.json") -> Iterable[Sample]:
     """
     for path in sorted(Path(root).glob(pattern)):
         if path.name.endswith(".reviewed.json"):
-            continue                    # 复核档由 executor 侧挑选，不在这里重选
+            continue  # 复核档由 executor 侧挑选，不在这里重选
         if "__" not in path.stem:
-            continue                    # 探针取证，不是存档
+            continue  # 探针取证，不是存档
         yield from split_archive(path)
 
 
 __all__ = [
-    "SYSTEM_PROMPT", "TOOL_SPECS", "ToolSpec", "ActionView", "Rationale",
-    "GateStatus", "GateMark", "OutcomeRef", "Sample", "P1ShapeError",
-    "sample_id", "run_id_of", "read_archive", "split_archive", "iter_samples",
+    "SYSTEM_PROMPT",
+    "TOOL_SPECS",
+    "ToolSpec",
+    "ActionView",
+    "Rationale",
+    "GateStatus",
+    "GateMark",
+    "OutcomeRef",
+    "Sample",
+    "P1ShapeError",
+    "sample_id",
+    "run_id_of",
+    "read_archive",
+    "split_archive",
+    "iter_samples",
 ]

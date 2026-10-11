@@ -66,27 +66,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-#: 三份视图的文件后缀。与 :data:`trajectory_pipeline.assembler.schema.Sample`
-#: 的 ``sample_id`` 拼成 ``<sample_id>_<view>.json``。
-VIEW_NAMES: tuple[str, ...] = ("messages", "openai", "meta")
-
-DEFAULT_VIEWS_DIRNAME = "views"
+from trajectory_pipeline.storage import (
+    DEFAULT_VIEWS_DIRNAME,
+    VIEW_NAMES,
+    views_dir as stored_views_dir,
+)
+from trajectory_pipeline.storage.write_p3 import write_views as storage_write_views
 
 
 def views_dir(root: str | Path | None = None) -> Path:
-    """``views/`` 目录。``root=None`` 时与 :func:`trajectory_pipeline.assembler.builder.samples_dir`
-    同根（``output/pipeline/``）——同样自定字面量而不 import executor。
+    """``views/`` 目录的绝对路径。**转发到 storage**——存储布局的权威
+    在 :func:`trajectory_pipeline.storage.views_dir`，渲染侧不另定义路径
+    字面量（改了布局只动 storage 一处）。
 
-    ⚠️ **``parents[1]`` 不是 ``parents[2]``**：``__file__`` 在
-    ``trajectory_pipeline/assembler/views.py``，``parents[1]`` 才是
-    ``trajectory_pipeline/`` 包根。写成 ``parents[2]`` 会落到**仓库根**的
-    ``output/pipeline/``——那正是 CLAUDE.md 明令禁止碰的存量产物目录，
-    而且**不报错**：只是读不到任何 P2，看起来像「这批没有样本」。
-    由 ``tests/unit/test_views.py::Test产物根`` 盯住。
+    ⚠️ ``parents[1]`` 不是 ``parents[2]`` 的坑及 D8 产物隔离，见 storage
+    侧那条 docstring；``tests/unit/test_views.py::Test产物根`` 盯住的是
+    ``views.views_dir`` 这个名字能通向正确的目录。
     """
-    if root is None:
-        root = Path(__file__).resolve().parents[1] / "output" / "pipeline"
-    return Path(root) / DEFAULT_VIEWS_DIRNAME
+    return stored_views_dir(root)
 
 
 # ── 观察渲染成文本 ────────────────────────────────────────────────
@@ -121,16 +118,18 @@ def render_observation(obs: Mapping[str, Any]) -> str:
 
     elems = obs.get("interactive_elements") or []
     if elems:
-        lines = [f"  - <{e.get('tag', '')}> {e.get('label', '')}".rstrip()
-                 for e in elems]
+        lines = [
+            f"  - <{e.get('tag', '')}> {e.get('label', '')}".rstrip() for e in elems
+        ]
         parts.append("可交互元素：\n" + "\n".join(lines))
     else:
         parts.append("可交互元素：（空）")
 
     links = obs.get("links") or []
     if links:
-        lines = [f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip()
-                 for l in links]
+        lines = [
+            f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip() for l in links
+        ]
         parts.append("链接：\n" + "\n".join(lines))
 
     counts = f"video 标签 {obs.get('video_tag_count', 0)} 个，iframe {obs.get('iframe_count', 0)} 个"
@@ -223,16 +222,19 @@ def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     # 动作与观察一一配对；观察可能比动作少（末步失败没取到观察）
     for i, act in enumerate(actions):
         content = _rationale_text(rationales, i)
-        msgs.append({
-            "role": "assistant",
-            "content": content + _action_line(act),
-        })
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": content + _action_line(act),
+            }
+        )
         if i < len(observations):
-            msgs.append({"role": "user",
-                         "content": render_observation(observations[i])})
+            msgs.append(
+                {"role": "user", "content": render_observation(observations[i])}
+            )
     # 观察多于动作（理论上不该发生）时，多出来的照实补上——
     # 丢掉它们等于让模型看不到「动作发完了但观察还没回来」。
-    for obs in observations[len(actions):]:
+    for obs in observations[len(actions) :]:
         msgs.append({"role": "user", "content": render_observation(obs)})
     return msgs
 
@@ -304,28 +306,39 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
         # 少一步就想清一步——只挂第一步等于把后面的思考全丢掉，而模型
         # 要学的恰恰是「上一步看到什么，才决定这一步做什么」。
         text = _rationale_text(rationales, i).strip() or None
-        msgs.append({
-            "role": "assistant",
-            "content": text,
-            "tool_calls": [{
-                "id": f"call_{i}",
-                "type": "function",
-                "function": {
-                    "name": str(act.get("tool") or ""),
-                    # 平铺 target，见模块 docstring 第 3 条
-                    "arguments": _arguments(act),
-                },
-            }],
-        })
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": text,
+                "tool_calls": [
+                    {
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {
+                            "name": str(act.get("tool") or ""),
+                            # 平铺 target，见模块 docstring 第 3 条
+                            "arguments": _arguments(act),
+                        },
+                    }
+                ],
+            }
+        )
         if i < len(observations):
-            msgs.append({
+            msgs.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": render_observation(observations[i]),
+                }
+            )
+    for j, obs in enumerate(observations[len(actions) :], start=len(actions)):
+        msgs.append(
+            {
                 "role": "tool",
-                "tool_call_id": f"call_{i}",
-                "content": render_observation(observations[i]),
-            })
-    for j, obs in enumerate(observations[len(actions):], start=len(actions)):
-        msgs.append({"role": "tool", "tool_call_id": f"call_{j}",
-                     "content": render_observation(obs)})
+                "tool_call_id": f"call_{j}",
+                "content": render_observation(obs),
+            }
+        )
     return msgs
 
 
@@ -364,8 +377,9 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
     six = sample.get("six") or {}
     actions = list(six.get("actions") or ())
     observations = list(six.get("observations") or ())
-    infra = [str(a.get("tool") or "") for a in actions
-             if a.get("origin") == "infrastructure"]
+    infra = [
+        str(a.get("tool") or "") for a in actions if a.get("origin") == "infrastructure"
+    ]
 
     return {
         "sample_id": sample.get("sample_id", ""),
@@ -427,13 +441,16 @@ def build_views(
     root: str | Path | None = None,
     overwrite: bool = False,
 ) -> ViewResult:
-    """把一条 **P2 JSON** 渲染成三份 P3 并落盘。"""
-    out_dir = views_dir(root)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    """把一条 **P2 JSON** 渲染成三份 P3 并落盘。
+
+    渲染在 :mod:`assembler.views`、**落盘在 :mod:`trajectory_pipeline.storage`
+    （:func:`trajectory_pipeline.storage.write_p3.write_views`）**——原子写、
+    默认不覆盖、失败进 ``skipped`` 不抛出的语义都在 storage 一侧，这里只
+    把渲染好的 payload 交给它。改存储布局不动渲染，反之亦然。
+    """
     sid = str(sample.get("sample_id") or "")
     if not sid:
-        return ViewResult(sample_id="", written=0,
-                          skipped=("<no-sample_id>",))
+        return ViewResult(sample_id="", written=0, skipped=("<no-sample_id>",))
 
     payloads = {
         "messages": to_messages(sample),
@@ -444,22 +461,8 @@ def build_views(
         },
         "meta": to_meta(sample),
     }
-
-    written = 0
-    skipped: list[str] = []
-    for name, payload in payloads.items():
-        target = out_dir / f"{sid}_{name}.json"
-        if not overwrite and target.exists():
-            skipped.append(f"{sid}_{name}")
-            continue
-        try:
-            blob = json.dumps(payload, ensure_ascii=False, allow_nan=False)
-            target.write_text(blob, encoding="utf-8")
-        except (OSError, TypeError, ValueError) as exc:
-            skipped.append(f"{sid}_{name} ({type(exc).__name__}: {exc})")
-            continue
-        written += 1
-    return ViewResult(sample_id=sid, written=written, skipped=tuple(skipped))
+    rep = storage_write_views(payloads, sid, root=root, overwrite=overwrite)
+    return ViewResult(sample_id=rep.sample_id, written=rep.written, skipped=rep.skipped)
 
 
 def build_views_from_dir(
@@ -473,8 +476,11 @@ def build_views_from_dir(
     **坏样本不打断整批**——同 :func:`trajectory_pipeline.assembler.builder.build_all`：
     一条样本序列化失败只进 ``skipped``，其余继续。
     """
-    base = Path(samples_root) if samples_root is not None else \
-        views_dir(root).parent / "samples"
+    base = (
+        Path(samples_root)
+        if samples_root is not None
+        else views_dir(root).parent / "samples"
+    )
     results: list[ViewResult] = []
     total_written = 0
     total_skipped = 0
@@ -482,21 +488,32 @@ def build_views_from_dir(
         try:
             sample = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            results.append(ViewResult(sample_id=path.stem, written=0,
-                                      skipped=(f"{path.name} ({exc})",)))
+            results.append(
+                ViewResult(
+                    sample_id=path.stem, written=0, skipped=(f"{path.name} ({exc})",)
+                )
+            )
             total_skipped += 1
             continue
         res = build_views(sample, root=root, overwrite=overwrite)
         results.append(res)
         total_written += res.written
         total_skipped += len(res.skipped)
-    return ViewBuildReport(tuple(results), total_written, total_skipped,
-                           str(views_dir(root)))
+    return ViewBuildReport(
+        tuple(results), total_written, total_skipped, str(views_dir(root))
+    )
 
 
 __all__ = [
-    "VIEW_NAMES", "DEFAULT_VIEWS_DIRNAME", "views_dir",
-    "render_observation", "ViewResult", "ViewBuildReport",
-    "to_messages", "to_openai_messages", "to_meta",
-    "build_views", "build_views_from_dir",
+    "VIEW_NAMES",
+    "DEFAULT_VIEWS_DIRNAME",
+    "views_dir",
+    "render_observation",
+    "ViewResult",
+    "ViewBuildReport",
+    "to_messages",
+    "to_openai_messages",
+    "to_meta",
+    "build_views",
+    "build_views_from_dir",
 ]

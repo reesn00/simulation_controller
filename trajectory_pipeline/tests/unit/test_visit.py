@@ -70,11 +70,17 @@ class FakeDriver:
 
     async def snapshot(self, *, max_chars=None):
         from trajectory_pipeline.executor.dom import CleanedSnapshot
+
         c = self.current
         return CleanedSnapshot(
-            url=c.url, title=c.page_title, body=c.body_text,
-            raw_len=len(c.body_text), stripped_ratio=1.0, truncated=c.truncated,
-            max_chars=max_chars, body_source=c.body_source,
+            url=c.url,
+            title=c.page_title,
+            body=c.body_text,
+            raw_len=len(c.body_text),
+            stripped_ratio=1.0,
+            truncated=c.truncated,
+            max_chars=max_chars,
+            body_source=c.body_source,
         )
 
     async def links(self, *, limit=50):
@@ -144,11 +150,15 @@ def none(question, evidence="e"):
 
 def obs_at(url, *, title="T", elements=(), body="正文", video=0, iframe=0, **kw):
     return Observation(
-        url=url, page_title=title, body_text=body,
+        url=url,
+        page_title=title,
+        body_text=body,
         interactive_elements=tuple(
             InteractiveElement(ref=r, tag=t, label=l) for r, t, l in elements
         ),
-        video_tag_count=video, iframe_count=iframe, **kw,
+        video_tag_count=video,
+        iframe_count=iframe,
+        **kw,
     )
 
 
@@ -162,7 +172,7 @@ CAND = Candidate(url="https://x.test/movie", text="电影", rank=1)
 
 class TestVisitFlow:
     async def test_导航失败记_unreachable_hard(self):
-        d = FakeDriver()                          # 没有任何页面 → 全部导航失败
+        d = FakeDriver()  # 没有任何页面 → 全部导航失败
         ledger = RunLedger("T001")
         await visit_site(d, ScriptedPerceptor({}), ledger, CAND)
         assert ledger.outcomes[0].branch == "unreachable_hard"
@@ -176,26 +186,36 @@ class TestVisitFlow:
 
     async def test_无播放控件记_no_play_control(self):
         d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),
-        })
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),
+            }
+        )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "no_play_control"
 
     async def test_trailer_only_不进_播放页(self):
-        d = FakeDriver({"https://x.test/movie": obs_at(
-            "https://x.test/movie", elements=(("e1", "a", "预告片"),))})
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(
-                Q.FIND_PLAY_CONTROL, {"ref": "", "trailer_only": True}),
-        })
+        d = FakeDriver(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e1", "a", "预告片"),)
+                )
+            }
+        )
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(
+                    Q.FIND_PLAY_CONTROL, {"ref": "", "trailer_only": True}
+                ),
+            }
+        )
         ledger = RunLedger("T001")
         result = await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "trailer_only"
-        assert d.clicked == []            # 预告片不该被点——它不是播放控件
+        assert d.clicked == []  # 预告片不该被点——它不是播放控件
 
     async def test_trailer_suspect_交人工不自动判负(self):
         """误杀不可逆：样本没了且没人知道它曾存在。
@@ -206,14 +226,26 @@ class TestVisitFlow:
         控制流里那条分支却一次都走不到（疑似预告会掉进
         ``component_unverified``，变成一条货真价实的假负样本）。
         """
-        d = FakeDriver({"https://x.test/movie": obs_at(
-            "https://x.test/movie", elements=(("e1", "a", "预告"),))})
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(
-                Q.FIND_PLAY_CONTROL,
-                {"ref": "", "trailer_only": False, "trailer_suspect": ["观看 trailer 解析"]}),
-        })
+        d = FakeDriver(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e1", "a", "预告"),)
+                )
+            }
+        )
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(
+                    Q.FIND_PLAY_CONTROL,
+                    {
+                        "ref": "",
+                        "trailer_only": False,
+                        "trailer_suspect": ["观看 trailer 解析"],
+                    },
+                ),
+            }
+        )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "trailer_suspect"
@@ -222,8 +254,13 @@ class TestVisitFlow:
     async def test_suspect_优先于_trailer_only(self):
         """真·规则版产出的 payload 走一遍控制流——
         疑似预告必须落 ``trailer_suspect`` 而不是被当成「无 ref 契约违规」。"""
-        d = FakeDriver({"https://x.test/movie": obs_at(
-            "https://x.test/movie", elements=(("e1", "a", "观看 trailer 解析"),))})
+        d = FakeDriver(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e1", "a", "观看 trailer 解析"),)
+                )
+            }
+        )
         p = RulePerceptor()
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
@@ -233,10 +270,12 @@ class TestVisitFlow:
     async def test_answer_true_但无_ref_按_fail_closed_记账(self):
         """I6 被违反时不能硬点一个——ref 错会点到别的元素上。"""
         d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": ""}),
-        })
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": ""}),
+            }
+        )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "component_unverified"
@@ -246,16 +285,20 @@ class TestVisitFlow:
     async def test_成功路径记_success(self):
         pages = {
             "https://x.test/movie": obs_at(
-                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
+                "https://x.test/movie", elements=(("e5", "button", "播放"),)
+            ),
             "https://x.test/play/e5": obs_at(
-                "https://x.test/play/e5", title="播放器", video=1),
+                "https://x.test/play/e5", title="播放器", video=1
+            ),
         }
         d = FakeDriver(pages)
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
-            Q.PLAYER_OK: ok(Q.PLAYER_OK, {"media_count": 1}),
-        })
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+                Q.PLAYER_OK: ok(Q.PLAYER_OK, {"media_count": 1}),
+            }
+        )
         ledger = RunLedger("T001")
         result = await visit_site(d, p, ledger, CAND)
         assert result.success
@@ -268,16 +311,20 @@ class TestVisitFlow:
         等于判的是站点页，点击结果完全没参与判定。"""
         pages = {
             "https://x.test/movie": obs_at(
-                "https://x.test/movie", elements=(("e5", "button", "播放"),), video=0),
+                "https://x.test/movie", elements=(("e5", "button", "播放"),), video=0
+            ),
             "https://x.test/play/e5": obs_at(
-                "https://x.test/play/e5", title="播放器", video=3),
+                "https://x.test/play/e5", title="播放器", video=3
+            ),
         }
         d = FakeDriver(pages)
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
-            Q.PLAYER_OK: ok(Q.PLAYER_OK),
-        })
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+                Q.PLAYER_OK: ok(Q.PLAYER_OK),
+            }
+        )
         ledger = RunLedger("T001")
         result = await visit_site(d, p, ledger, CAND)
         assert d.observe_calls == 2, "站点页 + 播放页各一次"
@@ -286,18 +333,24 @@ class TestVisitFlow:
         assert result.player_obs.video_tag_count == 3
 
     async def test_点击失败记_component_unverified(self):
-        pages = {"https://x.test/movie": obs_at(
-            "https://x.test/movie", elements=(("e5", "button", "播放"),))}
+        pages = {
+            "https://x.test/movie": obs_at(
+                "https://x.test/movie", elements=(("e5", "button", "播放"),)
+            )
+        }
         d = FakeDriver(pages)
 
         async def boom(**kw):
             raise DriverError("click failed")
+
         d.click = boom
 
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
-        })
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+            }
+        )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "component_unverified"
@@ -308,12 +361,13 @@ class TestVisitFlow:
 
         async def boom(url=None):
             raise DriverError("tab failed")
+
         d.new_tab = boom
 
         p = ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)})
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
-        assert ledger.outcomes[0].branch == "login_wall_or_blocked"   # 走到了判断环节
+        assert ledger.outcomes[0].branch == "login_wall_or_blocked"  # 走到了判断环节
 
     async def test_前置环节的_none_记_unresolved(self):
         """fail-closed：没判出来不是失败。
@@ -337,11 +391,17 @@ class TestVisitFlow:
             "unreachable_hard": (FakeDriver(), ScriptedPerceptor({})),
             "login_wall_or_blocked": (
                 FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")}),
-                ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)})),
+                ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)}),
+            ),
             "no_play_control": (
                 FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")}),
-                ScriptedPerceptor({Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-                                   Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL)})),
+                ScriptedPerceptor(
+                    {
+                        Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                        Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),
+                    }
+                ),
+            ),
         }
         for branch, (d, p) in cases.items():
             ledger = RunLedger("T001")
@@ -352,8 +412,12 @@ class TestVisitFlow:
         """空是正确值——D-6 口径是「不适用、不扣分」。
         填一个 `url` 进去看着齐整，实际是把猜测写成事实。"""
         d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
-        p = ScriptedPerceptor({Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-                               Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL)})
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),
+            }
+        )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].play_page_url == ""
@@ -370,18 +434,22 @@ class TestPlayerUnverifiedAtStep7:
 
     PAGES = {
         "https://x.test/movie": obs_at(
-            "https://x.test/movie", elements=(("e5", "button", "播放"),)),
+            "https://x.test/movie", elements=(("e5", "button", "播放"),)
+        ),
         "https://x.test/play/e5": obs_at(
-            "https://x.test/play/e5", title="播放器", video=1),
+            "https://x.test/play/e5", title="播放器", video=1
+        ),
     }
 
     async def _run(self, player_decision):
         ledger = RunLedger("T001")
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
-            Q.PLAYER_OK: player_decision,
-        })
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+                Q.PLAYER_OK: player_decision,
+            }
+        )
         await visit_site(FakeDriver(self.PAGES), p, ledger, CAND)
         return ledger.outcomes[0]
 
@@ -427,12 +495,19 @@ class TestPlayerUnverifiedAtStep7:
         继续走**不等于**断言「页面可达」——分支仍按有没有得到
         确定性结论来定：拿到 False 就是货真价实的 no_play_control。
         """
-        d = FakeDriver({"https://x.test/movie": obs_at(
-            "https://x.test/movie", elements=(("e1", "a", "首页"),))})
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: none(Q.IS_REACHABLE),      # 前置判不出来
-            Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),   # 但这一题有确定结论
-        })
+        d = FakeDriver(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e1", "a", "首页"),)
+                )
+            }
+        )
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: none(Q.IS_REACHABLE),  # 前置判不出来
+                Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),  # 但这一题有确定结论
+            }
+        )
         ledger = RunLedger("T001")
         result = await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "no_play_control"
@@ -442,16 +517,23 @@ class TestPlayerUnverifiedAtStep7:
     async def test_前置_false_仍然中断(self):
         """None 不中断 ≠ 所有 None 都放过。**确定判 False 时必须停**——
         页面明明是登录墙还继续点控件，点出来的结论没有意义。"""
-        d = FakeDriver({"https://x.test/movie": obs_at(
-            "https://x.test/movie", elements=(("e1", "a", "播放"),))})
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: no(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
-        })
+        d = FakeDriver(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e1", "a", "播放"),)
+                )
+            }
+        )
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: no(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            }
+        )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
         assert ledger.outcomes[0].branch == "login_wall_or_blocked"
-        assert d.clicked == []          # 登录墙上不该点播放
+        assert d.clicked == []  # 登录墙上不该点播放
 
 
 class TestComponentUnverifiedRequiresNewPage:
@@ -465,38 +547,50 @@ class TestComponentUnverifiedRequiresNewPage:
 
     async def _run(self, pages):
         ledger = RunLedger("T001")
-        p = ScriptedPerceptor({
-            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
-            Q.PLAYER_OK: no(Q.PLAYER_OK, evidence="LLM 判 False：并非实际播放页"),
-        })
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+                Q.PLAYER_OK: no(Q.PLAYER_OK, evidence="LLM 判 False：并非实际播放页"),
+            }
+        )
         await visit_site(FakeDriver(pages), p, ledger, CAND)
         return ledger.outcomes[0]
 
     async def test_点击后同页降级unresolved(self):
-        out = await self._run({
-            "https://x.test/movie": obs_at(
-                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
-        })
+        out = await self._run(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e5", "button", "播放"),)
+                ),
+            }
+        )
         assert out.branch == "unresolved"
         assert "同一个页面" in out.evidence
 
     async def test_同页降级时模型原话保留(self):
-        out = await self._run({
-            "https://x.test/movie": obs_at(
-                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
-        })
+        out = await self._run(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e5", "button", "播放"),)
+                ),
+            }
+        )
         assert "并非实际播放页" in out.evidence
 
     async def test_点击后换页照贴component_unverified(self):
         """反例护栏：守卫只拦「没换页」，不拦合法排除——
         哪怕播放页上 video=0（真实视频站的常态）。"""
-        out = await self._run({
-            "https://x.test/movie": obs_at(
-                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
-            "https://x.test/play/e5": obs_at(
-                "https://x.test/play/e5", title="播放器", video=0),
-        })
+        out = await self._run(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie", elements=(("e5", "button", "播放"),)
+                ),
+                "https://x.test/play/e5": obs_at(
+                    "https://x.test/play/e5", title="播放器", video=0
+                ),
+            }
+        )
         assert out.branch == "component_unverified"
 
 
@@ -508,23 +602,25 @@ class TestComponentUnverifiedRequiresNewPage:
 class TestOrchestrator:
     def _search_page(self, *links):
         return Observation(
-            url="https://www.baidu.com/s?wd=x", page_title="百度",
+            url="https://www.baidu.com/s?wd=x",
+            page_title="百度",
             body_text="搜索结果",
             links=tuple(LinkItem(text=t, href=h) for t, h in links),
         )
 
     async def test_取候选并遍历(self):
         pages = {
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                self._search_page(
-                    ("功夫电影", "https://www.a.test/movie"),
-                    ("知乎讨论", "https://www.zhihu.com/question/1"),
-                ),
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": self._search_page(
+                ("功夫电影", "https://www.a.test/movie"),
+                ("知乎讨论", "https://www.zhihu.com/question/1"),
+            ),
             "https://www.a.test/movie": obs_at("https://www.a.test/movie"),
         }
         d = FakeDriver(pages)
         cfg = RunConfig(stop_after_success=1)
-        orch = Orchestrator(d, ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)}), cfg)
+        orch = Orchestrator(
+            d, ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)}), cfg
+        )
         rec = await orch.run("T001", "功夫")
 
         assert rec.title == "功夫"
@@ -543,8 +639,9 @@ class TestOrchestrator:
         「这是不是播放站」是 SELECT_PLAY_SITES 的语义职责。
         """
         pages = {
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                self._search_page(("新闻", "https://news.b.test/x")),
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": self._search_page(
+                ("新闻", "https://news.b.test/x")
+            ),
         }
         d = FakeDriver(pages)
         orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
@@ -552,7 +649,7 @@ class TestOrchestrator:
         assert [c.url for c in rec.candidates] == ["https://news.b.test/x"]
 
     async def test_搜索页_失败时提前返回且不崩(self):
-        d = FakeDriver()                       # 搜索页也不存在
+        d = FakeDriver()  # 搜索页也不存在
         orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
         rec = await orch.run("T001", "功夫")
         assert rec.candidates == []
@@ -564,8 +661,9 @@ class TestOrchestrator:
         import asyncio
 
         pages = {
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                self._search_page(("a", "https://slow.test/movie")),
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": self._search_page(
+                ("a", "https://slow.test/movie")
+            ),
             "https://slow.test/movie": obs_at("https://slow.test/movie"),
         }
         d = FakeDriver(pages)
@@ -591,14 +689,15 @@ class TestOrchestrator:
         base = ("{host}/movie", "")
         links = [(f"站{i}", f"https://s{i}.test/movie") for i in range(5)]
         pages = {
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                self._search_page(*links),
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": self._search_page(
+                *links
+            ),
         }
         for i in range(5):
             pages[f"https://s{i}.test/movie"] = obs_at(
-                f"https://s{i}.test/movie", elements=(("e1", "button", "播放"),))
-            pages[f"https://x.test/play/e1"] = obs_at(
-                "https://x.test/play/e1", video=1)
+                f"https://s{i}.test/movie", elements=(("e1", "button", "播放"),)
+            )
+            pages[f"https://x.test/play/e1"] = obs_at("https://x.test/play/e1", video=1)
 
         d = FakeDriver(pages)
         script = {
@@ -606,7 +705,9 @@ class TestOrchestrator:
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        orch = Orchestrator(d, ScriptedPerceptor(script), RunConfig(stop_after_success=2))
+        orch = Orchestrator(
+            d, ScriptedPerceptor(script), RunConfig(stop_after_success=2)
+        )
         rec = await orch.run("T001", "功夫")
         assert len(rec.visits) == 2
 
@@ -619,13 +720,15 @@ class TestOrchestrator:
         后者由 :class:`TestRunRecordAudit` 盯。
         """
         pages = {
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                self._search_page(("a", "https://a.test/movie")),
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": self._search_page(
+                ("a", "https://a.test/movie")
+            ),
             "https://a.test/movie": obs_at("https://a.test/movie"),
         }
         cfg = RunConfig(max_candidates=3, per_site_timeout_s=12.5)
-        rec = await Orchestrator(
-            FakeDriver(pages), ScriptedPerceptor({}), cfg).run("T001", "功夫")
+        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor({}), cfg).run(
+            "T001", "功夫"
+        )
         assert rec.run_config["max_candidates"] == 3
         assert rec.run_config["per_site_timeout_s"] == 12.5
 
@@ -639,11 +742,13 @@ class TestSelectPlaySitesWiring:
     而报表上分部数字齐全，没人会看得出这支空了。
     """
 
-    SEARCH = ("https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B")
+    SEARCH = "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B"
 
     def _search_page(self, *links):
         return Observation(
-            url=self.SEARCH, page_title="百度", body_text="搜索结果",
+            url=self.SEARCH,
+            page_title="百度",
+            body_text="搜索结果",
             links=tuple(LinkItem(text=t, href=h) for t, h in links),
         )
 
@@ -653,23 +758,34 @@ class TestSelectPlaySitesWiring:
             if href.startswith("https://") and "baidu" not in href:
                 pages[href] = obs_at(href, elements=(("e1", "button", "播放"),))
                 pages["https://x.test/play/e1"] = obs_at(
-                    "https://x.test/play/e1", video=1)
+                    "https://x.test/play/e1", video=1
+                )
         return pages
 
     async def test_选中后才遍历(self):
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                           ("b站", "https://www.b.test/movie"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.a.test/movie", "why": "标题含片名"}],
-                "rejected": [{"url": "https://www.b.test/movie", "reason": "只有影评"}],
-            }),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [
+                        {"url": "https://www.a.test/movie", "why": "标题含片名"}
+                    ],
+                    "rejected": [
+                        {"url": "https://www.b.test/movie", "reason": "只有影评"}
+                    ],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
         d = FakeDriver(pages)
-        rec = await Orchestrator(d, ScriptedPerceptor(script), RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(d, ScriptedPerceptor(script), RunConfig()).run(
+            "T001", "功夫"
+        )
 
         assert [c.url for c in rec.candidates] == ["https://www.a.test/movie"]
         assert rec.candidate_source == "perceptor"
@@ -677,19 +793,26 @@ class TestSelectPlaySitesWiring:
 
     async def test_落选站点记not_play_site(self):
         """**每条分支都必须有对应样本入库**——负样本不是副产品。"""
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                           ("b站", "https://www.b.test/movie"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
-                "rejected": [{"url": "https://www.b.test/movie", "reason": "只有影评无播放"}],
-            }),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
+                    "rejected": [
+                        {"url": "https://www.b.test/movie", "reason": "只有影评无播放"}
+                    ],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         dropped = [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
         assert len(dropped) == 1
@@ -699,11 +822,13 @@ class TestSelectPlaySitesWiring:
     async def test_未取得结论不中断采集(self):
         """fail-closed 管的是「结论」不是「采集」。W1 的规则版对 ① 只会
         返回 None，若据此中断，候选一个都不跑，负样本池永远空。"""
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                           ("b站", "https://www.b.test/movie"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
         script = {Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "W1 无语义能力")}
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         assert len(rec.candidates) == 2
         assert rec.candidate_source == "heuristic"
@@ -713,44 +838,56 @@ class TestSelectPlaySitesWiring:
         """判 False 是货真价实的结论：「这页没有该片的可看站点」。"""
         pages = self._pages(("a站", "https://www.a.test/movie"))
         script = {Q.SELECT_PLAY_SITES: no(Q.SELECT_PLAY_SITES, "全是资讯站")}
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
         assert rec.visits == []
         assert any("判断点 ① 判 False" in w for w in rec.warnings)
 
     async def test_选中顺序保持引擎原序(self):
         """重排等于用模型的判断覆盖引擎的相关性排序，那是没有依据的。"""
-        pages = self._pages(*[(f"站{i}", f"https://www.s{i}.test/movie")
-                              for i in range(3)])
+        pages = self._pages(
+            *[(f"站{i}", f"https://www.s{i}.test/movie") for i in range(3)]
+        )
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                # 模型把第 3 个排第一——控制流不该照它重排
-                "selected": [{"url": "https://www.s2.test/movie", "why": "最像"},
-                             {"url": "https://www.s0.test/movie", "why": "也行"},
-                             {"url": "https://www.s1.test/movie", "why": "可以"}],
-                "rejected": [],
-            }),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    # 模型把第 3 个排第一——控制流不该照它重排
+                    "selected": [
+                        {"url": "https://www.s2.test/movie", "why": "最像"},
+                        {"url": "https://www.s0.test/movie", "why": "也行"},
+                        {"url": "https://www.s1.test/movie", "why": "可以"},
+                    ],
+                    "rejected": [],
+                },
+            ),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
         assert [c.rank for c in rec.candidates] == [1, 2, 3]
 
     async def test_按原始href匹配而非解包后(self):
         """百度结果页大量用 ``/link?url=`` 包裹。感知层读的是观察，
         回传的是**原始 href**；匹配不上就是「整个站点集丢失」，
         且表现上看不出是匹配问题。"""
-        wrapped = ("https://www.baidu.com/link?url=https%3A%2F%2Fwww.a.test%2Fmovie")
+        wrapped = "https://www.baidu.com/link?url=https%3A%2F%2Fwww.a.test%2Fmovie"
         pages = {
             self.SEARCH: self._search_page(("a站", wrapped)),
             "https://www.a.test/movie": obs_at(
-                "https://www.a.test/movie", elements=(("e1", "button", "播放"),)),
+                "https://www.a.test/movie", elements=(("e1", "button", "播放"),)
+            ),
         }
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": wrapped, "why": "w"}], "rejected": []}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {"selected": [{"url": wrapped, "why": "w"}], "rejected": []},
+            ),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
         assert [c.url for c in rec.candidates] == ["https://www.a.test/movie"]
 
     async def test_规则版批次行为不变(self):
@@ -759,8 +896,9 @@ class TestSelectPlaySitesWiring:
         from trajectory_pipeline.perception.rule_perceptor import RulePerceptor
 
         pages = self._pages(("a站", "https://www.a.test/movie"))
-        rec = await Orchestrator(FakeDriver(pages), RulePerceptor(),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(FakeDriver(pages), RulePerceptor(), RunConfig()).run(
+            "T001", "功夫"
+        )
         assert len(rec.candidates) == 1
         assert rec.candidate_source == "heuristic"
 
@@ -804,10 +942,10 @@ class Test无证据不记负样本:
         """
         pages = self._pages(("导航", self.WRAPPED))
         d = FakeDriver(pages)
-        d.extracted = {"titles": ["《功夫》电影完整版-爱奇艺"],
-                       "urls": [self.REAL]}
+        d.extracted = {"titles": ["《功夫》电影完整版-爱奇艺"], "urls": [self.REAL]}
         rec = await Orchestrator(d, ScriptedPerceptor({}), RunConfig()).run(
-            "T001", "功夫")
+            "T001", "功夫"
+        )
 
         assert rec.result_titles == 1
         texts = [l.text for l in rec.search_obs.links]
@@ -820,37 +958,51 @@ class Test无证据不记负样本:
         让 ① 照旧 fail-closed。"""
         pages = self._pages(("导航", self.WRAPPED))
         d = FakeDriver(pages)
-        d.extracted = {"titles": [], "urls": []}      # 字段不等长 → 抽不到
+        d.extracted = {"titles": [], "urls": []}  # 字段不等长 → 抽不到
         rec = await Orchestrator(d, ScriptedPerceptor({}), RunConfig()).run(
-            "T001", "功夫")
+            "T001", "功夫"
+        )
 
         assert not rec.result_titles
         assert [l.text for l in rec.search_obs.links] == ["导航"]
         assert any("未取到" in w for w in rec.warnings)
 
     def _pages(self, *links):
-        pages = {self.SEARCH: Observation(
-            url=self.SEARCH, page_title="百度", body_text="搜索结果",
-            links=tuple(LinkItem(text=t, href=h) for t, h in links))}
+        pages = {
+            self.SEARCH: Observation(
+                url=self.SEARCH,
+                page_title="百度",
+                body_text="搜索结果",
+                links=tuple(LinkItem(text=t, href=h) for t, h in links),
+            )
+        }
         for _, href in links:
             if "baidu" not in href:
                 pages[href] = obs_at(href, elements=(("e1", "button", "播放"),))
                 pages["https://x.test/play/e1"] = obs_at(
-                    "https://x.test/play/e1", video=1)
+                    "https://x.test/play/e1", video=1
+                )
         return pages
 
     async def test_未点名的候选记unresolved(self):
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                            ("b站", "https://www.b.test/movie"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
         script = {
             # rejected 只点了模型自己看到的那条导航，与两个候选无关
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [],
-                "rejected": [{"url": "https://www.baidu.com/", "reason": "搜索引擎"}],
-            }),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [],
+                    "rejected": [
+                        {"url": "https://www.baidu.com/", "reason": "搜索引擎"}
+                    ],
+                },
+            ),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         assert not [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
         undec = [o for o in rec.ledger.outcomes if o.branch == "unresolved"]
@@ -861,19 +1013,26 @@ class Test无证据不记负样本:
     async def test_点名的候选仍记not_play_site(self):
         """反例护栏：口径不能放水到「一律 unresolved」——
         那样 ``not_play_site`` 永远空，而每条分支都必须有样本入库。"""
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                            ("b站", "https://www.b.test/movie"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.a.test/movie", "why": "含片名"}],
-                "rejected": [{"url": "https://www.b.test/movie", "reason": "只有影评"}],
-            }),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [{"url": "https://www.a.test/movie", "why": "含片名"}],
+                    "rejected": [
+                        {"url": "https://www.b.test/movie", "reason": "只有影评"}
+                    ],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         dropped = [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
         assert len(dropped) == 1
@@ -886,11 +1045,14 @@ class Test无证据不记负样本:
         模型点名了却没写理由，仍然是它考虑过并否决了。"""
         pages = self._pages(("a站", "https://www.a.test/movie"))
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [], "rejected": [{"url": "https://www.a.test/movie"}]}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {"selected": [], "rejected": [{"url": "https://www.a.test/movie"}]},
+            ),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         dropped = [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
         assert len(dropped) == 1
@@ -898,32 +1060,44 @@ class Test无证据不记负样本:
 
     async def test_判False时同样只记点名的(self):
         """False 分支与 True 分支是同一个坑：整体判否不等于逐条被否决。"""
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                            ("b站", "https://www.b.test/movie"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
         script = {
-            Q.SELECT_PLAY_SITES: no(Q.SELECT_PLAY_SITES, "搜索结果里没有该片的可看站点"),
+            Q.SELECT_PLAY_SITES: no(
+                Q.SELECT_PLAY_SITES, "搜索结果里没有该片的可看站点"
+            ),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         assert rec.visits == []
         assert not [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
         assert len([o for o in rec.ledger.outcomes if o.branch == "unresolved"]) == 2
 
     async def test_判False且模型点了名的仍记not_play_site(self):
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                            ("b站", "https://www.b.test/movie"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
         script = {
             Q.SELECT_PLAY_SITES: Decision(
-                question=Q.SELECT_PLAY_SITES, answer=False, confidence=0.8,
-                evidence="全是资讯站", source="llm",
-                payload={"selected": [],
-                         "rejected": [{"url": "https://www.b.test/movie",
-                                       "reason": "影评页"}]},
+                question=Q.SELECT_PLAY_SITES,
+                answer=False,
+                confidence=0.8,
+                evidence="全是资讯站",
+                source="llm",
+                payload={
+                    "selected": [],
+                    "rejected": [
+                        {"url": "https://www.b.test/movie", "reason": "影评页"}
+                    ],
+                },
             ),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         dropped = [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
         assert len(dropped) == 1
@@ -941,8 +1115,14 @@ class TestRunRecordAudit:
         """读档的人若不知道候选来自启发式，会把「W1 选出的站点」
         误读成「规则版能选出正确站点」——它不能。"""
         from trajectory_pipeline.executor.orchestrator import RunRecord
-        rec = RunRecord(task_id="T001", title="功夫", query="q",
-                        search_url="u", candidate_source="heuristic")
+
+        rec = RunRecord(
+            task_id="T001",
+            title="功夫",
+            query="q",
+            search_url="u",
+            candidate_source="heuristic",
+        )
         assert rec.to_json()["candidate_source"] == "heuristic"
 
     async def test_观察序列化_正文全文落盘(self):
@@ -954,28 +1134,42 @@ class TestRunRecordAudit:
         摘要外的实体判成幻觉——而那不是幻觉，是**没存**。
         """
         from trajectory_pipeline.executor.orchestrator import RunRecord
+
         big = obs_at("https://x.test/", body="x" * 100_000)
-        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u",
-                        search_obs=big)
+        rec = RunRecord(
+            task_id="T001", title="t", query="q", search_url="u", search_obs=big
+        )
         j = rec.to_json()["search_observation"]
         assert j["body_len"] == 100_000
         assert j["body_text"] == big.body_text
-        assert "body_preview" not in j      # 摘要字段已退役
+        assert "body_preview" not in j  # 摘要字段已退役
 
     async def test_序列化_正文尾部内容可取回(self):
         """反例保护：正文**尾部**的内容必须在存档里。
         rationale 引用的实体落在 400 字符之后是常态。"""
         from trajectory_pipeline.executor.orchestrator import RunRecord
+
         marker = "《武林外传》第39集"
         body = ("填充" * 300) + marker
-        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u",
-                        search_obs=obs_at("https://x.test/", body=body))
+        rec = RunRecord(
+            task_id="T001",
+            title="t",
+            query="q",
+            search_url="u",
+            search_obs=obs_at("https://x.test/", body=body),
+        )
         assert marker in rec.to_json()["search_observation"]["body_text"]
 
     async def test_序列化不含页面句柄(self):
         from trajectory_pipeline.executor.orchestrator import RunRecord
-        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u",
-                        search_obs=obs_at("https://x.test/"))
+
+        rec = RunRecord(
+            task_id="T001",
+            title="t",
+            query="q",
+            search_url="u",
+            search_obs=obs_at("https://x.test/"),
+        )
         blob = repr(rec.to_json())
         for token in ("page_driver", "McpClient", "obscura", "_driver"):
             assert token not in blob
@@ -987,19 +1181,27 @@ class TestRunRecordAudit:
         没它就是「两种相反的错误同形」：页面真有 300 个控件而采了 80，
         与页面只有 80 个控件，都落成 80 条——前者该判不可判定，后者不该。"""
         from trajectory_pipeline.executor.orchestrator import (
-            OBS_ELEMENT_LIMIT, OBS_LINK_LIMIT, RunRecord,
+            OBS_ELEMENT_LIMIT,
+            OBS_LINK_LIMIT,
+            RunRecord,
         )
+
         elements = tuple(("e%d" % i, "a", "链接%d" % i) for i in range(120))
         links = tuple(("t%d" % i, "https://x.test/%d" % i) for i in range(90))
         obs = Observation(
-            url="https://x.test/", page_title="T", body_text="正文",
+            url="https://x.test/",
+            page_title="T",
+            body_text="正文",
             interactive_elements=tuple(
-                InteractiveElement(ref=r, tag=t, label=l) for r, t, l in elements),
+                InteractiveElement(ref=r, tag=t, label=l) for r, t, l in elements
+            ),
             links=tuple(LinkItem(text=t_, href=h) for t_, h in links),
-            elements_total=120, links_total=90,
+            elements_total=120,
+            links_total=90,
         )
-        j = RunRecord(task_id="T001", title="t", query="q", search_url="u",
-                      search_obs=obs).to_json()["search_observation"]
+        j = RunRecord(
+            task_id="T001", title="t", query="q", search_url="u", search_obs=obs
+        ).to_json()["search_observation"]
         assert len(j["interactive_elements"]) == OBS_ELEMENT_LIMIT
         assert len(j["links"]) == OBS_LINK_LIMIT
         assert j["elements_total"] == 120 > OBS_ELEMENT_LIMIT
@@ -1009,9 +1211,11 @@ class TestRunRecordAudit:
         """老观察对象（手工构造、第三方传入）没有这两个字段。
         兜底成 0 会让 D-2 判成「整页都不可信」，宁可等于实际条数。"""
         from trajectory_pipeline.executor.orchestrator import RunRecord
+
         obs = obs_at("https://x.test/", elements=(("e1", "a", "甲"), ("e2", "a", "乙")))
-        j = RunRecord(task_id="T001", title="t", query="q", search_url="u",
-                      search_obs=obs).to_json()["search_observation"]
+        j = RunRecord(
+            task_id="T001", title="t", query="q", search_url="u", search_obs=obs
+        ).to_json()["search_observation"]
         assert j["elements_total"] == 2
 
     async def test_运行参数进存档(self):
@@ -1020,8 +1224,8 @@ class TestRunRecordAudit:
         ``max_candidates`` 取 20 与取 5 的两批数据**长得一模一样**，
         而它们的采集完整度根本不是一回事。"""
         from trajectory_pipeline.executor.orchestrator import RunRecord
-        cfg = RunConfig(engine="bing", max_candidates=5,
-                        per_site_timeout_s=30.0)
+
+        cfg = RunConfig(engine="bing", max_candidates=5, per_site_timeout_s=30.0)
         rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
         rec.run_config = dataclasses.asdict(cfg)
         assert rec.to_json()["run_config"]["max_candidates"] == 5
@@ -1031,6 +1235,7 @@ class TestRunRecordAudit:
         """空 dict 而不是 ``None``：assembler 侧判「缺件」用的是
         「为假」，两种空值会让那条判断在两边不一致。"""
         from trajectory_pipeline.executor.orchestrator import RunRecord
+
         rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
         assert rec.to_json()["run_config"] == {}
 
@@ -1050,11 +1255,15 @@ class TestAntiScraping:
     CAPTCHA_URL = "https://wappass.baidu.com/static/captcha/tuxing_v2.html?logid=1"
 
     async def test_被拦时短路且不产候选(self):
-        d = FakeDriver({
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                Observation(url=self.CAPTCHA_URL, page_title="百度安全验证",
-                            body_text="网络不给力，请稍后重试"),
-        })
+        d = FakeDriver(
+            {
+                "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                    url=self.CAPTCHA_URL,
+                    page_title="百度安全验证",
+                    body_text="网络不给力，请稍后重试",
+                ),
+            }
+        )
         orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
         rec = await orch.run("T001", "功夫")
         assert rec.search_blocked == "captcha"
@@ -1063,11 +1272,13 @@ class TestAntiScraping:
 
     async def test_告警必须否定素材质量说法(self):
         """措辞本身就是防线——读的人第一眼看到的就是它。"""
-        d = FakeDriver({
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                Observation(url=self.CAPTCHA_URL, page_title="百度安全验证",
-                            body_text="x"),
-        })
+        d = FakeDriver(
+            {
+                "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                    url=self.CAPTCHA_URL, page_title="百度安全验证", body_text="x"
+                ),
+            }
+        )
         orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
         rec = await orch.run("T001", "功夫")
         joined = " ".join(rec.warnings)
@@ -1077,11 +1288,13 @@ class TestAntiScraping:
     async def test_被拦不进负样本池(self):
         """⚠️ 拦截发生在**取候选之前**，根本没有 outcome——
         塞进 8 条分支会让负样本池混入连站点都没访问到的条目。"""
-        d = FakeDriver({
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                Observation(url=self.CAPTCHA_URL, page_title="百度安全验证",
-                            body_text="x"),
-        })
+        d = FakeDriver(
+            {
+                "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                    url=self.CAPTCHA_URL, page_title="百度安全验证", body_text="x"
+                ),
+            }
+        )
         orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
         rec = await orch.run("T001", "功夫")
         assert rec.ledger is not None and rec.ledger.outcomes == []
@@ -1089,31 +1302,47 @@ class TestAntiScraping:
 
     async def test_落盘带search_blocked(self):
         from trajectory_pipeline.executor.orchestrator import RunRecord
-        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u",
-                        search_blocked="captcha")
+
+        rec = RunRecord(
+            task_id="T001",
+            title="t",
+            query="q",
+            search_url="u",
+            search_blocked="captcha",
+        )
         assert rec.to_json()["search_blocked"] == "captcha"
 
     async def test_未被拦时字段为空(self):
-        d = FakeDriver({
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                Observation(url="https://www.baidu.com/s?wd=x", page_title="百度",
-                            body_text="结果",
-                            links=(LinkItem(text="a", href="https://a.test/x"),)),
-        })
+        d = FakeDriver(
+            {
+                "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                    url="https://www.baidu.com/s?wd=x",
+                    page_title="百度",
+                    body_text="结果",
+                    links=(LinkItem(text="a", href="https://a.test/x"),),
+                ),
+            }
+        )
         orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
         rec = await orch.run("T001", "功夫")
         assert rec.search_blocked == ""
 
     async def test_候选过滤落进存档(self):
         """「引擎给了 50 个链接、我们只跑了 11 个」中间那批去哪了要能查到。"""
-        d = FakeDriver({
-            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B":
-                Observation(url="https://www.baidu.com/s?wd=x", page_title="百度",
-                            body_text="结果",
-                            links=(LinkItem(text="备案", href="https://beian.miit.gov.cn/"),
-                                   LinkItem(text="腾讯", href="https://v.qq.com/x/1"),
-                                   LinkItem(text="百科", href="https://baike.baidu.com/x"))),
-        })
+        d = FakeDriver(
+            {
+                "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                    url="https://www.baidu.com/s?wd=x",
+                    page_title="百度",
+                    body_text="结果",
+                    links=(
+                        LinkItem(text="备案", href="https://beian.miit.gov.cn/"),
+                        LinkItem(text="腾讯", href="https://v.qq.com/x/1"),
+                        LinkItem(text="百科", href="https://baike.baidu.com/x"),
+                    ),
+                ),
+            }
+        )
         orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
         rec = await orch.run("T001", "功夫")
         assert "impossible_content:gov.cn" in rec.candidate_filter
@@ -1135,27 +1364,52 @@ class TestAntiScraping:
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "T001__a.json").write_text(json.dumps({
-                "task_id": "T001", "query": "q", "ledger": {"total_sites": 0,
-                                                          "by_branch": {}, "missing_branches": []},
-                # 旧格式：没有 search_blocked 键
-                "search_observation": {
-                    "url": "https://wappass.baidu.com/static/captcha/tuxing_v2.html?x=1",
-                    "page_title": "百度安全验证",
-                    "body_preview": "网络不给力，请稍后重试",
-                },
-            }, ensure_ascii=False), encoding="utf-8")
-            (root / "T018__b.json").write_text(json.dumps({
-                "task_id": "T018", "query": "q", "search_blocked": "",
-                "ledger": {"total_sites": 1, "by_branch": {"unresolved": 1},
-                           "missing_branches": []},
-                "search_observation": {
-                    "url": "https://www.baidu.com/s?wd=x", "page_title": "功夫_百度搜索",
-                    "body_preview": "功夫 在线观看"},
-            }, ensure_ascii=False), encoding="utf-8")
+            (root / "T001__a.json").write_text(
+                json.dumps(
+                    {
+                        "task_id": "T001",
+                        "query": "q",
+                        "ledger": {
+                            "total_sites": 0,
+                            "by_branch": {},
+                            "missing_branches": [],
+                        },
+                        # 旧格式：没有 search_blocked 键
+                        "search_observation": {
+                            "url": "https://wappass.baidu.com/static/captcha/tuxing_v2.html?x=1",
+                            "page_title": "百度安全验证",
+                            "body_preview": "网络不给力，请稍后重试",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "T018__b.json").write_text(
+                json.dumps(
+                    {
+                        "task_id": "T018",
+                        "query": "q",
+                        "search_blocked": "",
+                        "ledger": {
+                            "total_sites": 1,
+                            "by_branch": {"unresolved": 1},
+                            "missing_branches": [],
+                        },
+                        "search_observation": {
+                            "url": "https://www.baidu.com/s?wd=x",
+                            "page_title": "功夫_百度搜索",
+                            "body_preview": "功夫 在线观看",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
             import io
             import contextlib
+
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 cmd_report(argparse.Namespace(out=str(root)))
@@ -1180,20 +1434,34 @@ class TestAntiScraping:
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "T001__a.json").write_text(json.dumps({
-                "task_id": "T001", "query": "q",
-                "ledger": {"total_sites": 0, "by_branch": {}, "missing_branches": []},
-                # 新格式：正文全文，且限流词落在第 500 个字符之后
-                "search_observation": {
-                    "url": "https://www.baidu.com/s?wd=x",
-                    "page_title": "功夫_百度搜索",
-                    "body_text": "正常搜索结果" + "填充" * 300 + "访问过于频繁，请稍后再试",
-                    "body_len": 615,
-                },
-            }, ensure_ascii=False), encoding="utf-8")
+            (root / "T001__a.json").write_text(
+                json.dumps(
+                    {
+                        "task_id": "T001",
+                        "query": "q",
+                        "ledger": {
+                            "total_sites": 0,
+                            "by_branch": {},
+                            "missing_branches": [],
+                        },
+                        # 新格式：正文全文，且限流词落在第 500 个字符之后
+                        "search_observation": {
+                            "url": "https://www.baidu.com/s?wd=x",
+                            "page_title": "功夫_百度搜索",
+                            "body_text": "正常搜索结果"
+                            + "填充" * 300
+                            + "访问过于频繁，请稍后再试",
+                            "body_len": 615,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
 
             import io
             import contextlib
+
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 cmd_report(argparse.Namespace(out=str(root)))
@@ -1236,12 +1504,23 @@ def _arch(tmp_path, name, *, outcomes, blocked="", total=None, **kw):
     for o in outcomes:
         if o.get("branch"):
             by_branch[o["branch"]] = by_branch.get(o["branch"], 0) + 1
-    (tmp_path / name).write_text(json.dumps({
-        "task_id": name.split("__")[0], "search_blocked": blocked,
-        "ledger": {"total_sites": total, "by_branch": by_branch,
-                   "missing_branches": []},
-        "outcomes": outcomes, **kw,
-    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / name).write_text(
+        json.dumps(
+            {
+                "task_id": name.split("__")[0],
+                "search_blocked": blocked,
+                "ledger": {
+                    "total_sites": total,
+                    "by_branch": by_branch,
+                    "missing_branches": [],
+                },
+                "outcomes": outcomes,
+                **kw,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _o(url, branch=None, *, source="rule", fallback=False):
@@ -1252,7 +1531,11 @@ class TestReportArchiveSelection:
     def test_探针取证不算存档(self, tmp_path):
         """同目录还躺着 obscura_tools.json / probe_observe.json。按 ``*.json`` 收
         会把它们算成存档，于是「被拦 X/N」的分母偏大、拦截率被稀释。"""
-        _arch(tmp_path, "T001__a.json", outcomes=[_o("https://a.test/x", "no_play_control")])
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[_o("https://a.test/x", "no_play_control")],
+        )
         (tmp_path / "obscura_tools.json").write_text('{"tools": []}', encoding="utf-8")
         (tmp_path / "probe_observe.json").write_text('{"seen": 1}', encoding="utf-8")
         out = _report(tmp_path)
@@ -1265,9 +1548,13 @@ class TestReportArchiveSelection:
 
         o = [_o("https://a.test/x", "unresolved")]
         _arch(tmp_path, "T001__a.json", outcomes=o)
-        _arch(tmp_path, "T001__a.reviewed.json",
-              outcomes=[{**o[0], "branch": None, "source": "human",
-                         "is_negative_sample": False}])
+        _arch(
+            tmp_path,
+            "T001__a.reviewed.json",
+            outcomes=[
+                {**o[0], "branch": None, "source": "human", "is_negative_sample": False}
+            ],
+        )
         out = _report(tmp_path)
         assert "存档 1 个" in out
         assert "已过人工复核" in out
@@ -1281,8 +1568,11 @@ class TestReportArchiveSelection:
         import json
 
         _arch(tmp_path, "T001__a.json", outcomes=[_o("https://a.test/x", "unresolved")])
-        _arch(tmp_path, "T001__a.reviewed.json",
-              outcomes=[_o("https://a.test/x", None, source="human")])
+        _arch(
+            tmp_path,
+            "T001__a.reviewed.json",
+            outcomes=[_o("https://a.test/x", None, source="human")],
+        )
         out = _report(tmp_path)
         assert "成功 1 站" in out
         # 若原档也读了，同一站会既算成功又算「未判 1」
@@ -1293,18 +1583,25 @@ class TestDomainReach:
     def test_成功按来源拆开(self, tmp_path):
         """「规则版找到了播放页」与「人工确认这站能看」是两件事。
         合起来报一个「成功 N」，结论只站得住其中一种。"""
-        _arch(tmp_path, "T001__a.json", outcomes=[
-            _o("https://v.youku.com/a", None, source="rule", fallback=True),
-            _o("https://v.iqiyi.com/b", None, source="human"),
-        ])
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[
+                _o("https://v.youku.com/a", None, source="rule", fallback=True),
+                _o("https://v.iqiyi.com/b", None, source="human"),
+            ],
+        )
         out = _report(tmp_path)
         assert "rule 1" in out and "human 1" in out
 
     def test_fallback成功单独点名(self, tmp_path):
         """存在性判定 ≠ 语义判定。fallback 判出的成功会虚高正样本基线，
         而报表不点破的话没人看得出来。"""
-        _arch(tmp_path, "T001__a.json", outcomes=[
-            _o("https://www.hao123.com/", None, fallback=True)])
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[_o("https://www.hao123.com/", None, fallback=True)],
+        )
         out = _report(tmp_path)
         assert "fallback" in out
         assert "虚高" in out
@@ -1312,8 +1609,14 @@ class TestDomainReach:
     def test_零成功给出人工复核路径(self, tmp_path):
         """W1 的常态就是零成功（真实视频站没 <video> 标签）。
         报表不能只显示「成功 0」——得告诉人下一步走哪条路。"""
-        _arch(tmp_path, "T001__a.json", outcomes=[
-            _o("https://a.test/x", "unresolved"), _o("https://b.test/x", "unresolved")])
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[
+                _o("https://a.test/x", "unresolved"),
+                _o("https://b.test/x", "unresolved"),
+            ],
+        )
         out = _report(tmp_path)
         assert "本批零成功" in out
         assert "review --write" in out
@@ -1321,10 +1624,15 @@ class TestDomainReach:
     def test_单次访问不进黑名单候选(self, tmp_path):
         """1 次访问 1 次失败说明不了任何事（这片可能没有、可能网络抖）。
         报出来只会让黑名单塞满一次性噪音。"""
-        _arch(tmp_path, "T001__a.json", outcomes=[
-            _o("https://rare.test/x", "no_play_control"),
-            _o("https://common.test/1", "no_play_control"),
-            _o("https://common.test/2", "unresolved")])
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[
+                _o("https://rare.test/x", "no_play_control"),
+                _o("https://common.test/1", "no_play_control"),
+                _o("https://common.test/2", "unresolved"),
+            ],
+        )
         out = _report(tmp_path)
         assert "common.test 2" in out
         assert "rare.test" not in out.split("黑名单")[-1]
@@ -1332,10 +1640,15 @@ class TestDomainReach:
     def test_未判不进黑名单候选的分母混淆(self, tmp_path):
         """``unresolved`` 既不是成功也不是负样本，但它是**访问过**——
         分母里必须算它，否则通过率被虚高。"""
-        _arch(tmp_path, "T001__a.json", outcomes=[
-            _o("https://a.test/1", "unresolved"),
-            _o("https://a.test/2", "unresolved"),
-            _o("https://a.test/3", "unresolved")])
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[
+                _o("https://a.test/1", "unresolved"),
+                _o("https://a.test/2", "unresolved"),
+                _o("https://a.test/3", "unresolved"),
+            ],
+        )
         out = _report(tmp_path)
         assert "访问 3 站 / 成功 0 站" in out
         assert "未判 3" in out
@@ -1355,12 +1668,16 @@ class TestDomainReach:
         存档里那份 ``is_negative_sample`` 是冗余字段，老存档可能压根没有；
         读它的话真负样本会静默掉进「未判」桶，而那一栏读起来仍然合理。
         """
-        _arch(tmp_path, "T001__a.json", outcomes=[
-            {"url": "https://a.test/1", "branch": "no_play_control"},      # 无该字段
-            {"url": "https://a.test/2", "branch": "unresolved"},
-        ])
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[
+                {"url": "https://a.test/1", "branch": "no_play_control"},  # 无该字段
+                {"url": "https://a.test/2", "branch": "unresolved"},
+            ],
+        )
         out = _report(tmp_path)
-        assert "负 1 · 未判 1" in out   # 真负样本没被掉进「未判」
+        assert "负 1 · 未判 1" in out  # 真负样本没被掉进「未判」
 
     def test_口径与负样本池一致(self, tmp_path):
         """报表说「负」的那几条，负样本池里必须一条不少、一条不多。
@@ -1378,29 +1695,56 @@ class TestDomainReach:
             {"url": "https://a.test/1", "branch": "no_play_control", "evidence": "e"},
             {"url": "https://a.test/2", "branch": "unresolved", "evidence": "e"},
             {"url": "https://a.test/3", "branch": "trailer_suspect", "evidence": "e"},
-            {"url": "https://b.test/1", "branch": "component_unverified", "evidence": "e"},
+            {
+                "url": "https://b.test/1",
+                "branch": "component_unverified",
+                "evidence": "e",
+            },
             {"url": "https://b.test/2", "branch": None, "evidence": "e"},
         ]
 
         class _Rec:
             def __init__(self):
-                self.ledger = type("L", (), {"negative_samples": staticmethod(
-                    lambda: [SiteOutcome(url=o["url"], branch=o["branch"], evidence="e")
-                             for o in outcomes])})()
+                self.ledger = type(
+                    "L",
+                    (),
+                    {
+                        "negative_samples": staticmethod(
+                            lambda: [
+                                SiteOutcome(
+                                    url=o["url"], branch=o["branch"], evidence="e"
+                                )
+                                for o in outcomes
+                            ]
+                        )
+                    },
+                )()
                 self.provenance = {}
 
             def to_json(self):
-                return {"task_id": "T001", "search_blocked": "",
-                        "ledger": {"total_sites": len(outcomes), "by_branch": {},
-                                   "missing_branches": []},
-                        "outcomes": outcomes}
+                return {
+                    "task_id": "T001",
+                    "search_blocked": "",
+                    "ledger": {
+                        "total_sites": len(outcomes),
+                        "by_branch": {},
+                        "missing_branches": [],
+                    },
+                    "outcomes": outcomes,
+                }
 
         P1Archive(tmp_path).write(_Rec(), task_id="T001")
-        pooled = {r["url"] for r in
-                  (json.loads(l) for l in
-                   (tmp_path / "negative.jsonl").read_text(encoding="utf-8").splitlines())}
+        pooled = {
+            r["url"]
+            for r in (
+                json.loads(l)
+                for l in (tmp_path / "negative.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            )
+        }
         assert pooled == {"https://a.test/1", "https://b.test/1"}
-        assert "负 1 · 未判 2" in _report(tmp_path)   # a.test：1 负 2 未判
+        assert "负 1 · 未判 2" in _report(tmp_path)  # a.test：1 负 2 未判
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1434,8 +1778,10 @@ class TestTargetOf:
 
         写成「序列化时把 ref 滤掉」的话，将来加字段时就会漏。
         """
-        assert actions.target_of("e5", EL).to_json() == {"tag": "button",
-                                                         "label": "立即播放"}
+        assert actions.target_of("e5", EL).to_json() == {
+            "tag": "button",
+            "label": "立即播放",
+        }
 
 
 class TestStepLog:
@@ -1457,16 +1803,19 @@ class TestStepLog:
 
 
 def _play_script(ref="e5"):
-    return ScriptedPerceptor({
-        Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-        Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": ref}),
-        Q.PLAYER_OK: ok(Q.PLAYER_OK, {"media_count": 1}),
-    })
+    return ScriptedPerceptor(
+        {
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": ref}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK, {"media_count": 1}),
+        }
+    )
 
 
 _PLAY_PAGES = {
-    "https://x.test/movie": obs_at("https://x.test/movie",
-                                   elements=(("e5", "button", "立即播放"),)),
+    "https://x.test/movie": obs_at(
+        "https://x.test/movie", elements=(("e5", "button", "立即播放"),)
+    ),
     "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
 }
 
@@ -1500,13 +1849,17 @@ class TestVisitSteps:
         d = FakeDriver(dict(_PLAY_PAGES))
         r = await visit_site(d, _play_script(), RunLedger("T001"), CAND)
         assert [s.action.origin for s in r.steps.steps] == [
-            "model", "infrastructure", "model"]
+            "model",
+            "infrastructure",
+            "model",
+        ]
 
     async def test_导航失败仍留下动作(self):
         """``unreachable_hard`` 在动作流里整段消失的话，
         负样本池里那条就成了没有动作的判决，说不清该学什么。"""
-        r = await visit_site(FakeDriver(), ScriptedPerceptor({}),
-                             RunLedger("T001"), CAND)
+        r = await visit_site(
+            FakeDriver(), ScriptedPerceptor({}), RunLedger("T001"), CAND
+        )
         assert len(r.steps.steps) == 1
         assert r.steps.steps[0].action.tool == "goto"
         assert r.steps.steps[0].observation is None
@@ -1516,8 +1869,12 @@ class TestVisitSteps:
         """控制流在判断点 ③ 就返回了，动作流不该凭空多出一次点击——
         多出来会让「模型在没控件时点了什么」变成一个有答案的问题。"""
         d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
-        p = ScriptedPerceptor({Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
-                               Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL)})
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),
+            }
+        )
         r = await visit_site(d, p, RunLedger("T001"), CAND)
         assert [s.action.tool for s in r.steps.steps] == ["goto"]
 
@@ -1535,10 +1892,12 @@ class TestVisitSteps:
     async def test_ref溯源不到时按target为None记录(self):
         """I6 存疑的现场要**留证**，不是编一个目标补上——fail-closed 管的是
         「不猜」，不是「不点」：点不点仍由控制流决定，不由记录方式决定。"""
-        d = FakeDriver({
-            "https://x.test/movie": obs_at("https://x.test/movie"),  # 无元素
-            "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
-        })
+        d = FakeDriver(
+            {
+                "https://x.test/movie": obs_at("https://x.test/movie"),  # 无元素
+                "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
+            }
+        )
         r = await visit_site(d, _play_script("e5"), RunLedger("T001"), CAND)
         assert r.steps.steps[-1].action.target is None
         assert d.clicked == ["e5"], "记录方式不该改变点击行为"
@@ -1547,8 +1906,9 @@ class TestVisitSteps:
 
 class TestArchivedSteps:
     def test_搜索与站点各有动作流(self):
-        rec = RunRecord(task_id="T001", title="功夫", query="q",
-                        search_url="https://s.test?q=1")
+        rec = RunRecord(
+            task_id="T001", title="功夫", query="q", search_url="https://s.test?q=1"
+        )
         i = rec.steps.act(actions.goto("https://s.test?q=1"))
         rec.steps.settle(i, obs_at("https://s.test?q=1"))
         data = rec.to_json()
@@ -1570,7 +1930,7 @@ class TestArchivedSteps:
     def test_存档可json序列化(self):
         rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
         rec.steps.act(actions.goto("u"))
-        json.dumps(rec.to_json(), ensure_ascii=False)   # 契约要求可序列化
+        json.dumps(rec.to_json(), ensure_ascii=False)  # 契约要求可序列化
 
     async def test_动作参数里没有ref(self):
         """``ref`` 是会话内句柄，换个 session 就失效，进训练数据等于让
@@ -1588,8 +1948,9 @@ class TestArchivedSteps:
         d = FakeDriver(dict(_PLAY_PAGES))
         r = await visit_site(d, RulePerceptor(), RunLedger("T001"), CAND)
         assert r.success, "这条链路本该跑通，否则下面的断言没有意义"
-        blob = json.dumps([s.to_json(lambda o: None) for s in r.steps.steps],
-                          ensure_ascii=False)
+        blob = json.dumps(
+            [s.to_json(lambda o: None) for s in r.steps.steps], ensure_ascii=False
+        )
         assert "e5" not in blob, "动作流里漏了会话句柄"
         assert "立即播放" in blob, "点了哪个元素必须留下语义化记录"
 
@@ -1603,19 +1964,42 @@ class TestArchivedSteps:
         """
         from trajectory_pipeline.executor.review_queue import collect
 
-        old = {"task_id": "T001", "search_blocked": "",
-               "ledger": {"total_sites": 1, "by_branch": {"unresolved": 1},
-                          "missing_branches": []},
-               "outcomes": [{"url": "https://a.test/x", "branch": "unresolved",
-                             "evidence": "e", "reached_play_page": False}],
-               "visits": [{"url": "https://a.test/x", "landed_url": "https://a.test/x",
-                           "success": False, "notes": [],
-                           "site_obs": {"url": "https://a.test/x", "page_title": "T",
-                                        "body_text": "正文", "video_tag_count": 0,
-                                        "iframe_count": 0},
-                           "player_obs": None}]}
+        old = {
+            "task_id": "T001",
+            "search_blocked": "",
+            "ledger": {
+                "total_sites": 1,
+                "by_branch": {"unresolved": 1},
+                "missing_branches": [],
+            },
+            "outcomes": [
+                {
+                    "url": "https://a.test/x",
+                    "branch": "unresolved",
+                    "evidence": "e",
+                    "reached_play_page": False,
+                }
+            ],
+            "visits": [
+                {
+                    "url": "https://a.test/x",
+                    "landed_url": "https://a.test/x",
+                    "success": False,
+                    "notes": [],
+                    "site_obs": {
+                        "url": "https://a.test/x",
+                        "page_title": "T",
+                        "body_text": "正文",
+                        "video_tag_count": 0,
+                        "iframe_count": 0,
+                    },
+                    "player_obs": None,
+                }
+            ],
+        }
         (tmp_path / "T001__old.json").write_text(
-            json.dumps(old, ensure_ascii=False), encoding="utf-8")
+            json.dumps(old, ensure_ascii=False), encoding="utf-8"
+        )
         items = collect(tmp_path)
         assert len(items) == 1, "老存档在复核队列这一步整批消失了"
         assert items[0].url == "https://a.test/x"
@@ -1627,10 +2011,14 @@ class TestArchivedSteps:
         两者一旦耦合，改「记什么」就会改「做什么」——而 P2 落地后必然要改
         动作流的记法（要喂训练视图了），那时就会发现改记录等于改行为。
         """
-        d = FakeDriver({
-            "https://x.test/movie": obs_at("https://x.test/movie"),  # 无元素 → target=None
-            "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
-        })
+        d = FakeDriver(
+            {
+                "https://x.test/movie": obs_at(
+                    "https://x.test/movie"
+                ),  # 无元素 → target=None
+                "https://x.test/play/e5": obs_at("https://x.test/play/e5", video=1),
+            }
+        )
         r = await visit_site(d, _play_script("e5"), RunLedger("T001"), CAND)
         assert r.steps.steps[-1].action.target is None
         assert d.clicked == ["e5"], "点击行为被记录方式改变了"
@@ -1648,7 +2036,6 @@ class TestArchivedSteps:
         assert used <= set(actions.TOOLS), f"未登记的原语: {used - set(actions.TOOLS)}"
         # 反向：表里不该有「设计上不会成为动作」的 observe
         assert "observe" not in actions.TOOLS
-
 
 
 class TestTitleIsRequired:
@@ -1689,14 +2076,21 @@ class TestTitleIsRequired:
         assert d.clicked == [] and d.observe_calls == 0
 
     async def test_正常片名不受影响(self):
-        search = ("https://www.bing.com/search?q=%E5%8A%9F%E5%A4%AB+"
-                  "%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B")
-        pages = {search: Observation(
-            url=search, page_title="搜索", body_text="结果",
-            links=(LinkItem(text="功夫 在线观看", href="https://www.a.test/m"),),
-        )}
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor({}),
-                                 RunConfig()).run("T001", "功夫")
+        search = (
+            "https://www.bing.com/search?q=%E5%8A%9F%E5%A4%AB+"
+            "%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B"
+        )
+        pages = {
+            search: Observation(
+                url=search,
+                page_title="搜索",
+                body_text="结果",
+                links=(LinkItem(text="功夫 在线观看", href="https://www.a.test/m"),),
+            )
+        }
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor({}), RunConfig()
+        ).run("T001", "功夫")
         assert rec.title == "功夫"
 
 
@@ -1712,95 +2106,135 @@ class TestRationale接线:
     def _pages(self):
         return {
             self.SEARCH: Observation(
-                url=self.SEARCH, page_title="百度", body_text="搜索结果",
-                links=(LinkItem(text="a站", href="https://www.a.test/movie"),)),
+                url=self.SEARCH,
+                page_title="百度",
+                body_text="搜索结果",
+                links=(LinkItem(text="a站", href="https://www.a.test/movie"),),
+            ),
             "https://www.a.test/movie": obs_at(
-                "https://www.a.test/movie", elements=(("e1", "button", "播放"),)),
+                "https://www.a.test/movie", elements=(("e1", "button", "播放"),)
+            ),
             "https://x.test/play/e1": obs_at("https://x.test/play/e1", video=1),
         }
 
     def _writer(self, sink):
         def write(**kw):
             sink.append(kw)
-            return {"status": "written",
-                    "rationale": {"text": f"第 {len(sink)} 步的思考", "conclusion": ""},
-                    "reason": "", "degraded": []}
+            return {
+                "status": "written",
+                "rationale": {"text": f"第 {len(sink)} 步的思考", "conclusion": ""},
+                "reason": "",
+                "degraded": [],
+            }
+
         return write
 
     async def test_每一步都生成(self):
         sink: list = []
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.a.test/movie", "why": "含片名"}],
-                "rejected": []}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [{"url": "https://www.a.test/movie", "why": "含片名"}],
+                    "rejected": [],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(self._pages()), ScriptedPerceptor(script),
-                                 RunConfig(),
-                                 rationale_writer=self._writer(sink)).run(
-            "T001", "功夫", user_prompt="有能看的吗")
+        rec = await Orchestrator(
+            FakeDriver(self._pages()),
+            ScriptedPerceptor(script),
+            RunConfig(),
+            rationale_writer=self._writer(sink),
+        ).run("T001", "功夫", user_prompt="有能看的吗")
 
         steps = rec.visits[0].steps.steps
         tools = [s.action.tool for s in steps]
         # 步数不写死（执行器可能插入会话隔离动作）——只钉「每步都生成、
-        # 且拿到的是该步自己的东西」。
+        # 且拿到的是该步自己的东西」。搜索步（顶层 record.steps）也在补记
+        # 之列，所以 sink 数量 = 搜索步 + 访问步步数。
         assert tools[0] == "goto" and "click" in tools
-        assert len(sink) == len(steps)
-        assert all(s.rationale and s.rationale["status"] == "written"
-                   for s in steps)
+        assert len(sink) == 1 + len(steps)
+        assert all(s.rationale and s.rationale["status"] == "written" for s in steps)
+        # 搜索步本身也有 rationale（2026-10-11 补生成闭环）
+        assert (
+            rec.steps.steps[0].rationale
+            and rec.steps.steps[0].rationale["status"] == "written"
+        )
 
         by_tool = {kw["action"]["tool"]: kw for kw in sink}
         # 片名与用户原话都传下去了（豁免域靠它们）
         assert by_tool["goto"]["target_title"] == "功夫"
         assert by_tool["goto"]["user_prompt"] == "有能看的吗"
         # 点击步看得到前置步的**动作**，看不到它们的观察
-        assert [a["tool"] for a in by_tool["click"]["history"]] == \
-            tools[: tools.index("click")]
+        assert [a["tool"] for a in by_tool["click"]["history"]] == tools[
+            : tools.index("click")
+        ]
 
     async def test_落盘进存档(self):
         sink: list = []
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
-                "rejected": []}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
+                    "rejected": [],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(self._pages()), ScriptedPerceptor(script),
-                                 RunConfig(),
-                                 rationale_writer=self._writer(sink)).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(self._pages()),
+            ScriptedPerceptor(script),
+            RunConfig(),
+            rationale_writer=self._writer(sink),
+        ).run("T001", "功夫")
         js = rec.to_json()
+        # 搜索步与访问步都落盘进存档（搜索步在顶层 steps[0]，
+        # 2026-10-11 补生成闭环后不再恒 null）
+        assert js["steps"][0]["rationale"]["status"] == "written"
         got = js["visits"][0]["steps"][0]["rationale"]
         assert got["status"] == "written"
-        assert got["rationale"]["text"] == "第 1 步的思考"
+        assert got["rationale"]["text"] == "第 2 步的思考"
 
     async def test_没有writer时该字段为None(self):
         """W1 规则版批次（无后端）——**不生成占位**，
-        闸门据此记 not_run 而不是 passed。"""
+        闸门据此记 not_run 而不是 passed。搜索步同样不生成。"""
         script = {Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "W1 无语义能力")}
-        rec = await Orchestrator(FakeDriver(self._pages()), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(self._pages()), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
         assert rec.visits[0].steps.steps[0].rationale is None
+        assert rec.steps.steps[0].rationale is None
 
     async def test_writer抛异常不中断采集(self):
         """rationale 是产物，采集是主业——**绝不让它拖垮一次真实访问**。"""
+
         def boom(**kw):
             raise RuntimeError("后端炸了")
 
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
-                "rejected": []}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
+                    "rejected": [],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(self._pages()), ScriptedPerceptor(script),
-                                 RunConfig(),
-                                 rationale_writer=boom).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(self._pages()),
+            ScriptedPerceptor(script),
+            RunConfig(),
+            rationale_writer=boom,
+        ).run("T001", "功夫")
 
         assert rec.visits and rec.visits[0].success
         assert rec.visits[0].steps.steps[0].rationale is None
@@ -1829,7 +2263,9 @@ class Test站点首页核:
 
     def _search_page(self, *links):
         return Observation(
-            url=self.SEARCH, page_title="百度", body_text="搜索结果",
+            url=self.SEARCH,
+            page_title="百度",
+            body_text="搜索结果",
             links=tuple(LinkItem(text=t, href=h) for t, h in links),
         )
 
@@ -1839,23 +2275,33 @@ class Test站点首页核:
             if href.startswith("https://") and "baidu" not in href:
                 pages[href] = obs_at(href, elements=(("e1", "button", "播放"),))
                 pages["https://x.test/play/e1"] = obs_at(
-                    "https://x.test/play/e1", video=1)
+                    "https://x.test/play/e1", video=1
+                )
         return pages
 
     async def test_首页记not_play_site(self):
-        pages = self._pages(("导航站首页", "https://www.hao123.com/"),
-                            ("a站", "https://www.a.test/movie"))
+        pages = self._pages(
+            ("导航站首页", "https://www.hao123.com/"),
+            ("a站", "https://www.a.test/movie"),
+        )
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.hao123.com/", "why": "看着像"},
-                             {"url": "https://www.a.test/movie", "why": "标题含片名"}],
-                "rejected": []}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [
+                        {"url": "https://www.hao123.com/", "why": "看着像"},
+                        {"url": "https://www.a.test/movie", "why": "标题含片名"},
+                    ],
+                    "rejected": [],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         dropped = [o for o in rec.ledger.outcomes if o.url == "https://www.hao123.com/"]
         assert len(dropped) == 1
@@ -1864,19 +2310,28 @@ class Test站点首页核:
     async def test_首页不被访问(self):
         """访问它只会得出「这页没有播放控件」——那是导航站的属性，
         与《功夫》能不能看毫无关系。访问它本身就是浪费一次浏览器往返。"""
-        pages = self._pages(("导航站首页", "https://www.hao123.com/"),
-                            ("a站", "https://www.a.test/movie"))
+        pages = self._pages(
+            ("导航站首页", "https://www.hao123.com/"),
+            ("a站", "https://www.a.test/movie"),
+        )
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.hao123.com/", "why": "看着像"},
-                             {"url": "https://www.a.test/movie", "why": "标题含片名"}],
-                "rejected": []}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [
+                        {"url": "https://www.hao123.com/", "why": "看着像"},
+                        {"url": "https://www.a.test/movie", "why": "标题含片名"},
+                    ],
+                    "rejected": [],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         assert "https://www.hao123.com/" not in [c.url for c in rec.candidates]
         assert [v.candidate.url for v in rec.visits] == ["https://www.a.test/movie"]
@@ -1886,16 +2341,19 @@ class Test站点首页核:
 
         挂在 `_apply_selection` 里就覆盖不到它，而那恰好是首页混进
         负样本池的实际路径。"""
-        pages = self._pages(("导航站首页", "https://www.hao123.com/"),
-                            ("a站", "https://www.a.test/movie"))
+        pages = self._pages(
+            ("导航站首页", "https://www.hao123.com/"),
+            ("a站", "https://www.a.test/movie"),
+        )
         script = {
             Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "模型未作答"),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
 
         dropped = [o for o in rec.ledger.outcomes if o.url == "https://www.hao123.com/"]
         assert [o.branch for o in dropped] == ["not_play_site"]
@@ -1904,19 +2362,27 @@ class Test站点首页核:
     async def test_内容页不受影响(self):
         """反向护栏：别把带路径的内容页一起剔掉。path 不为空的
         一律不算首页——判据窄是刻意的，判宽了会误伤正样本。"""
-        pages = self._pages(("a站", "https://www.a.test/movie"),
-                            ("根路径站", "https://b.test/x"))
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("根路径站", "https://b.test/x")
+        )
         script = {
-            Q.SELECT_PLAY_SITES: ok(Q.SELECT_PLAY_SITES, {
-                "selected": [{"url": "https://www.a.test/movie", "why": "w"},
-                             {"url": "https://b.test/x", "why": "w"}],
-                "rejected": []}),
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {
+                    "selected": [
+                        {"url": "https://www.a.test/movie", "why": "w"},
+                        {"url": "https://b.test/x", "why": "w"},
+                    ],
+                    "rejected": [],
+                },
+            ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
         }
-        rec = await Orchestrator(FakeDriver(pages), ScriptedPerceptor(script),
-                                 RunConfig()).run("T001", "功夫")
+        rec = await Orchestrator(
+            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
+        ).run("T001", "功夫")
         assert len(rec.visits) == 2
 
     def test_首页判据只认path(self):

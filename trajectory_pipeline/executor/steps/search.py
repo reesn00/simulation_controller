@@ -23,10 +23,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 
-from trajectory_pipeline.perception.base import Observation
+from trajectory_pipeline.perception.base import LinkItem, Observation
 
 #: 搜索引擎。**默认值是实测可达的那个**（``probe_observe`` 跑过 baidu）。
 #: bing/duckduckgo 在国内网络下时通时不通，不能当默认。
@@ -58,15 +58,30 @@ ENGINE_TEMPLATES: dict[str, str] = {
 #: ``static.example.com`` / ``cdn.mysite.com`` 这种本身就是内容站的域名。
 EXCLUDED_HOST_ROOTS: tuple[str, ...] = (
     # 搜索引擎及其附属域
-    "baidu.com", "bdstatic.com", "bcebos.com",
+    "baidu.com",
+    "bdstatic.com",
+    "bcebos.com",
     # bing 的帮助中心走的是 **microsoft.com**，不是 bing.com
-    "bing.com", "microsoft.com", "msn.com", "live.com", "windows.net",
-    "duckduckgo.com", "duck.co",
-    "google.com", "gstatic.com", "googleapis.com", "fonts.googleapis.com",
-    "google-analytics.com", "w3.org",
+    "bing.com",
+    "microsoft.com",
+    "msn.com",
+    "live.com",
+    "windows.net",
+    "duckduckgo.com",
+    "duck.co",
+    "google.com",
+    "gstatic.com",
+    "googleapis.com",
+    "fonts.googleapis.com",
+    "google-analytics.com",
+    "w3.org",
     # 社交 / UGC（不会变成播放站）
-    "zhihu.com", "weibo.com", "douban.com",
-    "facebook.com", "twitter.com", "instagram.com",
+    "zhihu.com",
+    "weibo.com",
+    "douban.com",
+    "facebook.com",
+    "twitter.com",
+    "instagram.com",
 )
 
 #: **不可能**是影视资源站的注册域族。
@@ -88,9 +103,11 @@ IMPOSSIBLE_CONTENT_ROOTS: tuple[str, ...] = ("gov.cn",)
 _BROWSABLE_SCHEMES = ("http://", "https://")
 
 #: URL 里出现这些片段的多半是功能页而不是内容站（用户注册/反馈/协议）。
-_PATH_NOISE = re.compile(r"/(login|signup|register|help|feedback|about|"
-                         r"privacy|terms|agreement|contact|app|download)s?\b",
-                         re.IGNORECASE)
+_PATH_NOISE = re.compile(
+    r"/(login|signup|register|help|feedback|about|"
+    r"privacy|terms|agreement|contact|app|download)s?\b",
+    re.IGNORECASE,
+)
 
 
 def quote(query: str) -> str:
@@ -104,9 +121,7 @@ def search_url(query: str, engine: str = DEFAULT_ENGINE) -> str:
     """构造搜索页 URL。未知引擎抛错——不猜默认，避免静默走到错引擎。"""
     template = ENGINE_TEMPLATES.get(engine)
     if template is None:
-        raise ValueError(
-            f"未知搜索引擎 {engine!r}；可用：{sorted(ENGINE_TEMPLATES)}"
-        )
+        raise ValueError(f"未知搜索引擎 {engine!r}；可用：{sorted(ENGINE_TEMPLATES)}")
     return template.format(q=quote(query))
 
 
@@ -156,9 +171,15 @@ class Candidate:
     text: str
     rank: int
     source_href: str = ""
+    opaque_redirect: bool = False
 
     @property
     def host(self) -> str:
+        # 密文中转包裹（百度 /link?url=<密文>）：目标 host 未知，
+        # **不伪装成 baidu.com**（05 方案 §2.5）——空串 = 未知，
+        # 存档/报表读到的是「未知」而不是「引擎自家域」。
+        if self.opaque_redirect:
+            return ""
         try:
             return (urlparse(self.url).hostname or "").lower()
         except ValueError:
@@ -178,6 +199,52 @@ def _host_in(host: str, roots: tuple[str, ...]) -> str:
     return ""
 
 
+#: 每个引擎的「结果中转路由」形态：path 前缀 + query 键（纯结构事实）。
+#:
+#: 百度自然结果 100% 是 ``//www.baidu.com/link?url=<密文>`` 包裹——真实结果的
+#: href 不带目标站域名，而是百度服务端签名参数（**解不开**，不是 URL 编码）。
+#: 05 方案 §1.1/§1.2 的证据：TPIN01 存档 ``candidate_filter.engine_self=91``，
+#: 真实结果全部死于 :func:`exclusion_reason` 的 ``engine_self`` 判定——
+#: ``host == www.baidu.com`` 在走到 ``redirect_wrapper`` 之前就被当
+#: 「引擎自身页」剔掉，幸存候选只剩 text 无片名的聚合卡片裸链。
+#:
+#: 这里把「引擎中转结果」从「引擎自身功能页」拆出来：判定只看路由形态
+#: （path 前缀 + query 键存在性），**不猜密文内容**。bing 的 ``/ck/a?…&u=``
+#: 是明文 base64（本质不同），属后续独立一轮，刻意不进此表（05 方案 §6-1）。
+RESULT_REDIRECT_ROUTES: dict[str, tuple[str, ...]] = {
+    "baidu": ("/link",),  # http://www.baidu.com/link?url=<密文>
+}
+
+
+def _is_result_redirect(parsed: Any, engine: str) -> bool:
+    """parsed 是否引擎的「结果中转路由」（纯结构判断，不解密）。"""
+    route = RESULT_REDIRECT_ROUTES.get(engine)
+    if route is None:
+        return False
+    path = parsed.path or ""
+    return any(path == r or path.startswith(r + "/") for r in route) and (
+        "url" in parse_qs(parsed.query or "")
+    )
+
+
+def _is_undecodable_redirect(url: str, engine: str) -> bool:
+    """是否「密文中转」链接——中转路由上 url= 存在但值**不是**明文 http。
+
+    判断依据是 routing shape（path + 参数键存在）+ url= 值的可解性，
+    全是结构性事实。返回 True 意味着「目标 host 未知」——代码不给结论
+    （不断言它/不是内容站），放行为候选由语义层与落地检测兜底，fail-closed
+    管的是「结论」不是「采集」，见 CLAUDE.md I4。
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if not _is_result_redirect(parsed, engine):
+        return False
+    target = parse_qs(parsed.query or "").get("url")
+    return bool(target) and not target[0].startswith(_BROWSABLE_SCHEMES)
+
+
 def exclusion_reason(url: str, engine: str) -> str:
     """这个链接为什么被剔除。返回原因串，**空串 = 保留**。
 
@@ -194,6 +261,16 @@ def exclusion_reason(url: str, engine: str) -> str:
     host = (parsed.hostname or "").lower()
     if not host:
         return "no_host"
+    # 引擎「结果中转路由」在 host 类判定**之前**分流（05 方案 §2.2）：
+    # 百度真实结果 host 仍是 www.baidu.com，先走 engine_self 会被误杀成
+    # 「引擎自身页」。url= 值是明文 http → 维持 redirect_wrapper 原口径
+    # （可解，后续由 extract_candidates 对解包后 URL 重新判定）；
+    # 是密文（解不开）→ 目标 host 未知，放行——由感知层/落地检测兜底。
+    if _is_result_redirect(parsed, engine):
+        target = parse_qs(parsed.query or "").get("url")
+        if target and target[0].startswith(_BROWSABLE_SCHEMES):
+            return "redirect_wrapper"
+        return ""
     engine_host = urlparse(ENGINE_TEMPLATES[engine].split("{q}")[0]).hostname or ""
     if engine_host and host == engine_host:
         return "engine_self"
@@ -314,7 +391,8 @@ def title_for(titles: Mapping[str, str] | None, href: str) -> str:
 
 
 def extract_candidates(
-    obs: Observation, *,
+    obs: Observation,
+    *,
     engine: str = DEFAULT_ENGINE,
     limit: int = 20,
     stats: dict[str, int] | None = None,
@@ -333,6 +411,7 @@ def extract_candidates(
     功能链接），而**静默剔除会让损失不可见**——存档上写着 11 个候选，
     没人知道引擎原本给了 50 个链接、其中多少被规则扔掉、为什么扔。
     """
+
     def bump(reason: str) -> None:
         if stats is not None:
             stats[reason] = stats.get(reason, 0) + 1
@@ -355,16 +434,118 @@ def extract_candidates(
         if not host:
             bump("no_host")
             continue
-        if host in seen_hosts:
+        # 密文中转包裹：url= 是密文、目标 host 未知（05 方案 §2.3）。
+        # 若仍按 raw 的 host（www.baidu.com）去重，同批真实结果会
+        # 互相撞车只剩 1 条——降级为**不去重**（按原始链接各自保留），
+        # 由遍历期落地检测（判断点 ②）兜底。明文/裸链维持 host 去重。
+        opaque = _is_undecodable_redirect(raw, engine)
+        if not opaque and host in seen_hosts:
             bump("duplicate_host")
             continue
-        seen_hosts.add(host)
+        if not opaque:
+            seen_hosts.add(host)
         # 标题优先：结果标题才是判断点 ① 的判据，面包屑不是。
         # 取不到就留原样——**不猜**，让 ① 照旧 fail-closed。
         text = title_for(titles, link.href) or link.text
-        out.append(Candidate(url=raw, text=text, rank=len(out) + 1,
-                            source_href=link.href))
+        out.append(
+            Candidate(
+                url=raw, text=text, rank=len(out) + 1,
+                source_href=link.href, opaque_redirect=opaque,
+            )
+        )
         if len(out) >= limit:
             bump("over_limit")
             break
     return out
+
+
+def pin_candidates_first(
+    links: Sequence[LinkItem],
+    candidates: Sequence[Candidate],
+) -> tuple[LinkItem, ...]:
+    """把候选对应的链接钉到 ``links`` 最前，其余保持原序。
+
+    **这是「候选 ⊆ 窗口」同源修复的执行点**（05 文档 L118-121 的方向一）：
+
+    候选是代码从**全量** ``obs.links`` 里过滤出来的（实测 111 条 → 5 个），
+    而感知层 ``_link_window`` 只把 ``_ordered_links`` 的前 ``LLM_LINKS``（20）
+    条送给模型。百度把导航排在结果之前，真实候选落在 index≥50——模型连
+    看见候选的机会都没有，只能选窗口里的站内搜索链接，又被
+    ``excluded_host:baidu.com`` 剔出候选，于是「选中 ∩ 候选 = 空」、
+    ``kept=0``、5 个候选全 unresolved。
+
+    解法：重排后，候选对应的链接（text 已被 ``title_for`` 写回标题，含片名）
+    落在 ``_ordered_links`` 的 hit 区**最前**，窗口前 20 条必含全部候选。
+
+    顺序按候选 ``rank``（引擎排定的相关性序）——不按我们自己的启发式重排，
+    也不按候选在 links 里的原始位置。候选是去重后的（同一 host 只取一次），
+    数量 ≤ ``limit``；多余的本就进不了候选。
+    """
+    by_candidate = {cand.source_href or cand.url: cand.rank for cand in candidates}
+    pinned: list[LinkItem] = []
+    seen: set[str] = set()
+    for link in links:
+        key = link.href
+        if key in by_candidate and key not in seen:
+            pinned.append(link)
+            seen.add(key)
+    pinned.sort(key=lambda lnk: by_candidate[lnk.href])
+    rest = [lnk for lnk in links if lnk.href not in seen]
+    return tuple(pinned + rest)
+
+
+def candidates_outside_window(
+    links: Sequence[LinkItem],
+    candidates: Sequence[Candidate],
+    target_title: str,
+    window_size: int,
+) -> tuple[LinkItem, ...]:
+    """重放感知层 ``_ordered_links`` 排序，返回**不在前 ``window_size`` 条
+    窗口内**的候选链接。
+
+    **为什么 executor 要重放感知层的排序**：判断点 ① 的窗口是感知层的
+    ``_ordered_links(obs, SELECT_PLAY_SITES, target_title)[:LLM_LINKS]``——
+    executor 在协议边界之外**不允许触碰感知层实现**（01-架构总览 L49-50），
+    但「候选钉没钉进窗口」是 executor 该负责的事实。所以这里用同一套
+    确定性规则（text 含片名的进 hit 区、其余保原序、截前 ``window_size`` 条）
+    重放一遍，只做**校验**，不做任何改动。
+
+    返回的候选只有在以下情况出现：
+
+    - 候选数 > ``window_size``——窗口装不下（``max_candidates`` 大于
+      感知层 ``LLM_LINKS`` 时会发生）；
+    - 窗口被**其他含片名的链接**占满——感知层把含片名的链接排到 hit 区
+      最前，若候选 text **没有片名**（``title_for`` 未取到标题）而前面有
+      ≥ ``window_size`` 条含片名的链接，候选整批落在 miss 区被挤出。这是
+      「钉了也白钉」最隐蔽的形态，正是本校验要让它显形的；
+    - 注意：``target_title`` 为空**不会**触发本校验——感知层此时不排序、
+      直接取 ``links`` 前 ``window_size`` 条，而候选已被
+      :func:`pin_candidates_first` 钉到 links 最前，构造上仍在窗口内。
+      （空片名由感知层 ``_title_link_sufficiency`` 负责 fail-closed。）
+
+    调用方拿返回值记 warning / evidence 即可，**不中断采集**（fail-closed
+    管的是「结论」不是「采集」，见 CLAUDE.md I4）——校验的意义是让
+    「钉窗失败」从静默变成可见。
+    """
+    # 重放前提：只用于判断点 ①（SELECT_PLAY_SITES）场景。感知层
+    # ``_ordered_links`` 对非 ① 题**不排序直接返回**（问题句决定排序与否），
+    # 而钉窗修复只作用于 ①，所以这里按 ① 的规则重放即可。
+    #
+    # 与 ``_ordered_links`` 逐字节一致：**匹配用原样 target_title**，
+    # 只用 ``.strip()`` 判断「是否为空」——感知层就是这样做的，重放
+    # 若用 strip 后的标题匹配，片名带首尾空白时两侧窗口就错位了，
+    # 而防错位正是这个重放存在的原因。
+    raw = target_title or ""
+    title = raw.strip()
+    hit: list[LinkItem] = []
+    miss: list[LinkItem] = []
+    for link in links:
+        (hit if title and raw in (link.text or "") else miss).append(link)
+    window = (hit + miss)[:window_size]
+    window_keys = {lnk.href for lnk in window}
+    candidate_keys = {c.source_href or c.url for c in candidates}
+    return tuple(
+        lnk
+        for lnk in links
+        if lnk.href in candidate_keys and lnk.href not in window_keys
+    )

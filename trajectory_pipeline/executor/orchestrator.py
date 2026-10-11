@@ -28,7 +28,10 @@ from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
-from trajectory_pipeline.executor.branches import RunLedger, validate_observation_for_decision
+from trajectory_pipeline.executor.branches import (
+    RunLedger,
+    validate_observation_for_decision,
+)
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.executor.steps import visit as visit_step
@@ -42,6 +45,16 @@ from trajectory_pipeline.perception.base import Decision, Observation, Perceptor
 #: 哪天这里改成 100 而别处还按 80 判断，D-2 会静默地把裁剪当成不存在。
 OBS_ELEMENT_LIMIT = 80
 OBS_LINK_LIMIT = 50
+
+#: 感知层送模型的**链接窗口宽度**（= ``perception.llm_perceptor.LLM_LINKS``）。
+#: executor 不能 import 感知层实现（01-架构总览 L49-50：executor 只依赖
+#: ``perception/base.py`` 协议），所以这里复制一份，由单测断言与
+#: ``LLM_LINKS`` 相等（test_search_pin.py::test_窗口常量与感知层同步），
+#: 防止两侧漂移——漂移 = 钉窗校验按错的宽度算，钉了也白钉。
+#: 04 方案 §2.4-3 同时要求 ``max_candidates ≤ LLM_LINKS``：超出时候选装
+#: 不进窗口，钉窗必然失败，正是 :func:`candidates_outside_window` 要报警的
+#: 情形。
+PERCEPTION_LINK_WINDOW = 20
 
 #: **P1 存档格式版本**。每份新存档写入时记下这个值，于是「这批数据是哪一批」
 #: 能从存档本身读出来，而不用猜。
@@ -67,7 +80,7 @@ class RunConfig:
     engine: str = search_step.DEFAULT_ENGINE
     max_candidates: int = 20
     max_chars: int | None = DEFAULT_MAX_CHARS
-    stop_after_success: int = 0        # 0 = 跑满候选；>0 = 成功 N 个即停
+    stop_after_success: int = 0  # 0 = 跑满候选；>0 = 成功 N 个即停
     per_site_timeout_s: float = 90.0
 
 
@@ -227,7 +240,9 @@ class RunRecord:
                 for v in self.visits
             ],
             "ledger": self.ledger.summary() if self.ledger else None,
-            "outcomes": [o.to_json() for o in (self.ledger.outcomes if self.ledger else [])],
+            "outcomes": [
+                o.to_json() for o in (self.ledger.outcomes if self.ledger else [])
+            ],
         }
 
 
@@ -275,8 +290,9 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
             {"ref": e.ref, "tag": e.tag, "label": e.label[:120]}
             for e in obs.interactive_elements[:OBS_ELEMENT_LIMIT]
         ],
-        "links": [{"text": l.text[:80], "href": l.href}
-                  for l in obs.links[:OBS_LINK_LIMIT]],
+        "links": [
+            {"text": l.text[:80], "href": l.href} for l in obs.links[:OBS_LINK_LIMIT]
+        ],
     }
 
 
@@ -300,8 +316,7 @@ def _apply_selection(
     重排等于用模型的判断覆盖引擎的相关性排序，那是没有依据的。
     """
     selected_rows = [
-        r for r in (selection.payload.get("selected") or [])
-        if isinstance(r, dict)
+        r for r in (selection.payload.get("selected") or []) if isinstance(r, dict)
     ]
     reasons: dict[str, str] = {}
     for row in selected_rows:
@@ -337,7 +352,8 @@ def _apply_selection(
                 f"{len(record.search_obs.links)} 条里的一小段）。"
                 f"**无证据不记负样本**：判成 not_play_site 就是把"
                 f"「模型没答」写成「这个站看不了」。",
-                decision=selection, site_url=candidate.url,
+                decision=selection,
+                site_url=candidate.url,
             )
             continue
         dropped += 1
@@ -345,15 +361,20 @@ def _apply_selection(
         ledger.record(
             candidate.url,
             "not_play_site",
-            f"判断点 ① 排除该站点。{why}" if why
+            f"判断点 ① 排除该站点。{why}"
+            if why
             else "判断点 ① 排除该站点（模型点名了但未给出理由）",
-            decision=selection, site_url=candidate.url,
+            decision=selection,
+            site_url=candidate.url,
         )
     record.warnings.append(
         f"判断点 ① 选出 {len(kept)}/{len(record.candidates)} 个候选，"
         f"{dropped} 个记 not_play_site"
-        + (f"，{undecided} 个模型未点名，记 unresolved（**不入负样本池**）"
-           if undecided else "")
+        + (
+            f"，{undecided} 个模型未点名，记 unresolved（**不入负样本池**）"
+            if undecided
+            else ""
+        )
     )
     return kept
 
@@ -494,9 +515,13 @@ class Orchestrator:
         url = search_step.search_url(query, self._cfg.engine)
         ledger = RunLedger(task_id=task_id)
         record = RunRecord(
-            task_id=task_id, title=title, query=query, search_url=url,
+            task_id=task_id,
+            title=title,
+            query=query,
+            search_url=url,
             user_prompt=user_prompt,
-            ledger=ledger, perceptor=getattr(self._perceptor, "name", "?"),
+            ledger=ledger,
+            perceptor=getattr(self._perceptor, "name", "?"),
             provenance=dict(provenance or {}),
             # 运行参数进存档：覆盖完整性（B-2）与异常处置（B-4）
             # 两项断言的分母/判据都在这里，见 RunRecord.run_config。
@@ -507,7 +532,9 @@ class Orchestrator:
         step_search = record.steps.act(actions.goto(url))
         try:
             await self._driver.goto(url)
-            record.search_obs = await self._driver.observe(max_chars=self._cfg.max_chars)
+            record.search_obs = await self._driver.observe(
+                max_chars=self._cfg.max_chars
+            )
         except Exception as exc:
             # 搜索页拿不到时整条 run 提前返回，动作流里必须留下这一步：
             # 「搜都没搜成」与「搜了但没素材」在报表上是两回事，
@@ -517,6 +544,11 @@ class Orchestrator:
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record
         record.steps.settle(step_search, record.search_obs)
+        # 搜索步也补记 rationale——P2 按决策单元切条，搜索阶段是正式样本
+        # （"一条 = 一个决策单元：搜索阶段一条 / 每个站点一条"），它没有
+        # rationale 会让整条搜索样本恒 gate=not_run、D-9 永远不可判定。
+        # 失败路径（search_obs=None）不产 search 样本，无须补记。
+        await self._write_rationales(record.steps, record, "搜索页")
 
         # ── 环节 0.5：反爬拦截 ─────────────────────────────────────
         # 必须在取候选**之前**判：验证码页的表现是"正文短 + 零链接"，
@@ -524,7 +556,8 @@ class Orchestrator:
         # vs 换素材），而混在一起的代价是静默的——报表上只看得见
         # "这批搜索页质量差"，没人会想到去查反爬。
         blocked = detect_block(
-            record.search_obs.url, record.search_obs.page_title,
+            record.search_obs.url,
+            record.search_obs.page_title,
             record.search_obs.body_text,
         )
         if blocked:
@@ -566,8 +599,9 @@ class Orchestrator:
             record.search_obs = dataclasses.replace(
                 record.search_obs,
                 links=tuple(
-                    dataclasses.replace(link, text=search_step.title_for(titles, link.href)
-                                        or link.text)
+                    dataclasses.replace(
+                        link, text=search_step.title_for(titles, link.href) or link.text
+                    )
                     for link in record.search_obs.links
                 ),
             )
@@ -577,8 +611,11 @@ class Orchestrator:
                 f"——判断点 ① 将因输入不含片名而 fail-closed"
             )
         record.candidates = search_step.extract_candidates(
-            record.search_obs, engine=self._cfg.engine, limit=self._cfg.max_candidates,
-            stats=record.candidate_filter, titles=titles,
+            record.search_obs,
+            engine=self._cfg.engine,
+            limit=self._cfg.max_candidates,
+            stats=record.candidate_filter,
+            titles=titles,
         )
         if not record.candidates:
             record.warnings.append(
@@ -588,6 +625,39 @@ class Orchestrator:
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record
+
+        # ── 环节 ①.4.5：候选钉进窗口（同源修复，04 方案）────────────
+        # 根因（05 文档 L95-121）：候选从**全量** links 提取（111 条 → 5 个，
+        # 真实候选 index≥50），而感知层只看 _link_window=前 LLM_LINKS(20)
+        # 条。模型看不见候选，只能选窗口里的站内搜索链接，又被
+        # excluded_host:baidu.com 剔出候选 → 选中 ∩ 候选 = 空 → kept=0。
+        # 修复：把候选链接按 rank 钉到 links 最前（text 已含片名，落在
+        # _ordered_links 的 hit 区），其余保原序——「候选 ⊆ 窗口」由构造保证。
+        record.search_obs = dataclasses.replace(
+            record.search_obs,
+            links=search_step.pin_candidates_first(
+                record.search_obs.links, record.candidates
+            ),
+        )
+        # 「窗口 ⊇ 候选」强制校验（fail-closed：校验失败只记 warning、
+        # **不中断采集**）。重放感知层排序，凡是候选不在窗口内（target_title
+        # 为空 / 候选 text 无片名落 miss 区 / max_candidates 超窗）都必须在
+        # 存档里可归因——否则又会回到「kept=0 却查无实据」静默成一整批。
+        _out_of_window = search_step.candidates_outside_window(
+            record.search_obs.links,
+            record.candidates,
+            target_title=record.title,
+            window_size=PERCEPTION_LINK_WINDOW,
+        )
+        if _out_of_window:
+            record.warnings.append(
+                f"候选钉窗失败：{len(_out_of_window)}/{len(record.candidates)} "
+                f"个候选不在感知层窗口（前 {PERCEPTION_LINK_WINDOW} 条）内，"
+                f"模型将看不到它们，kept 可能仍为 0。"
+                f"（{'、'.join((c.text or '')[:20] or c.href for c in _out_of_window[:3])}"
+                f"{'…' if len(_out_of_window) > 3 else ''}）"
+                f"**不中断采集**：fail-closed 管的是结论不是采集。"
+            )
 
         # ── 环节 ①.5：判断点 ①（语义层）──────────────────────────
         # 「这个链接是不是能看《功夫》的站」是语义判断，代码做不了
@@ -632,16 +702,24 @@ class Orchestrator:
                 # 而 not_play_site 是负样本分支——无证据的负样本就是
                 # §5.13 那种「理由通顺的假负样本」，只是形态更隐蔽。
                 if key in rejected or candidate.url in rejected:
-                    ledger.record(candidate.url, "not_play_site",
-                                  f"判断点 ① 判 False：{selection.evidence}",
-                                  decision=selection, site_url=candidate.url)
+                    ledger.record(
+                        candidate.url,
+                        "not_play_site",
+                        f"判断点 ① 判 False：{selection.evidence}",
+                        decision=selection,
+                        site_url=candidate.url,
+                    )
                 else:
                     unnamed += 1
-                    ledger.record(candidate.url, "unresolved",
-                                  f"判断点 ① 判 False，但模型未把该候选列入 "
-                                  f"rejected——**无证据不记负样本**，"
-                                  f"转人工复核。整体判据：{selection.evidence}",
-                                  decision=selection, site_url=candidate.url)
+                    ledger.record(
+                        candidate.url,
+                        "unresolved",
+                        f"判断点 ① 判 False，但模型未把该候选列入 "
+                        f"rejected——**无证据不记负样本**，"
+                        f"转人工复核。整体判据：{selection.evidence}",
+                        decision=selection,
+                        site_url=candidate.url,
+                    )
             if unnamed:
                 record.warnings.append(
                     f"  其中 {unnamed} 个模型未点名，记 unresolved（**不入负样本池**）"
@@ -671,10 +749,15 @@ class Orchestrator:
         # ── 环节 ②：逐站点遍历 ────────────────────────────────────
         successes = 0
         for candidate in record.candidates:
-            if self._cfg.stop_after_success and successes >= self._cfg.stop_after_success:
+            if (
+                self._cfg.stop_after_success
+                and successes >= self._cfg.stop_after_success
+            ):
                 break
             result = await self._visit_guarded(candidate, ledger, record)
-            await self._write_rationales(result, record)
+            await self._write_rationales(
+                result.steps, record, result.candidate.url[:60]
+            )
             record.visits.append(result)
             if result.success:
                 successes += 1
@@ -683,8 +766,10 @@ class Orchestrator:
         record.elapsed_ms = int((time.monotonic() - started) * 1000)
         return record
 
-    async def _write_rationales(self, result: Any, record: RunRecord) -> None:
-        """为本次访问的**每一步**生成 rationale（模块 4，D2「边写边生成」）。
+    async def _write_rationales(
+        self, steps_log: Any, record: RunRecord, label: str
+    ) -> None:
+        """为一段动作流的**每一步**生成 rationale（模块 4，D2「边写边生成」）。
 
         **为什么在这里而不是 visit_site 里**：动作流是**记录**、rationale 是
         **补记**，两者在一次访问结束时才都完整。放进 ``visit_site`` 会让
@@ -692,6 +777,13 @@ class Orchestrator:
         writer 属于 rationale/llm 那一侧。CLI 注入可调用对象，
         :mod:`trajectory_pipeline.executor.steps.visit` 因此完全不知道
         rationale 的存在。
+
+        调用点有两处：**搜索步**（``record.steps``，label="搜索页"）与
+        **逐站点访问步**（``result.steps``，label=站点 URL 截断）。搜索步
+        也走同一 writer——P2 按决策单元切条，搜索阶段是正式的一条样本，
+        它没有 rationale 会让整条搜索样本恒 ``gate=not_run``、D-9 永远
+        不可判定（2026-10-11 裁定为漏生成而非设计豁免，见 rubric 对齐账）。
+        ``StepLog`` 是通用动作流，两个调用点都能 ``attach_rationale``。
 
         **D2 的实质是「生成时能看到那一步的动作与观察」，而不是
         「必须在线程内即时生成」**：两者在同一份数据上等价。而事后补记
@@ -703,7 +795,7 @@ class Orchestrator:
         """
         if self._writer is None:
             return
-        steps = result.steps.steps
+        steps = steps_log.steps
         for index, step in enumerate(steps):
             try:
                 payload = self._writer(
@@ -715,13 +807,13 @@ class Orchestrator:
                     # 只给**动作**不给观察——见 rationale.writer.render_history
                     history=[s.action.to_json() for s in steps[:index]],
                 )
-            except Exception as exc:            # noqa: BLE001 — 见上方口径
+            except Exception as exc:  # noqa: BLE001 — 见上方口径
                 record.warnings.append(
-                    f"rationale 生成异常（{result.candidate.url[:60]} 第 {index} 步）："
+                    f"rationale 生成异常（{label} 第 {index} 步）："
                     f"{type(exc).__name__}: {exc}——该步无 rationale，闸门记 not_run"
                 )
                 continue
-            result.steps.attach_rationale(index, payload)
+            steps_log.attach_rationale(index, payload)
 
     async def _result_titles(self) -> tuple[Mapping[str, str], str]:
         """取当前搜索页的「结果标题 ↔ URL」。返回 ``(映射, 失败原因)``。
@@ -747,8 +839,10 @@ class Orchestrator:
         if not titles:
             # 字段名写上游**真实返回**的那两个（不带 `[]`）——
             # 这条串是给人读的，照着入参写会让人去查一个不存在的键。
-            return {}, (f"{search_step.TITLE_FIELD}/{search_step.URL_FIELD} "
-                        f"长度不等或为空（抽到字段 {sorted(extracted)}）")
+            return {}, (
+                f"{search_step.TITLE_FIELD}/{search_step.URL_FIELD} "
+                f"长度不等或为空（抽到字段 {sorted(extracted)}）"
+            )
         return titles, ""
 
     async def _visit_guarded(
@@ -766,22 +860,31 @@ class Orchestrator:
         try:
             return await asyncio.wait_for(
                 visit_step.visit_site(
-                    self._driver, self._perceptor, ledger, candidate,
+                    self._driver,
+                    self._perceptor,
+                    ledger,
+                    candidate,
                     max_chars=self._cfg.max_chars,
                 ),
                 timeout=self._cfg.per_site_timeout_s,
             )
         except asyncio.TimeoutError:
-            ledger.record(candidate.url, "unresolved",
-                          f"站点遍历超时（>{self._cfg.per_site_timeout_s}s）",
-                          site_url=candidate.url)
+            ledger.record(
+                candidate.url,
+                "unresolved",
+                f"站点遍历超时（>{self._cfg.per_site_timeout_s}s）",
+                site_url=candidate.url,
+            )
             result.note("超时")
             record.warnings.append(f"{candidate.url} 超时")
             return result
         except Exception as exc:
-            ledger.record(candidate.url, "unresolved",
-                          f"站点遍历异常: {type(exc).__name__}: {exc}",
-                          site_url=candidate.url)
+            ledger.record(
+                candidate.url,
+                "unresolved",
+                f"站点遍历异常: {type(exc).__name__}: {exc}",
+                site_url=candidate.url,
+            )
             result.note(f"异常: {exc}")
             record.warnings.append(f"{candidate.url} 异常: {exc}")
             return result

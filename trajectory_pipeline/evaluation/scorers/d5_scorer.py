@@ -83,9 +83,33 @@ UNRESOLVED = "unresolved"
 #:   ``trailer_only`` 同样由代码在环节③ 分流（见避坑指南 §6.5 的
 #:   「两个判断并列，suspect 优先」）。它**不是**负样本，
 #:   所以也不在注册表的 ``negative_branch`` 里——那份表只登记负分支。
-CODE_ONLY_BRANCHES: frozenset[str] = frozenset({
-    "unreachable_hard", "trailer_only", "trailer_suspect",
-})
+CODE_ONLY_BRANCHES: frozenset[str] = frozenset(
+    {
+        "unreachable_hard",
+        "trailer_only",
+        "trailer_suspect",
+    }
+)
+
+#: 代码层**确定性事实核**（不经 LLM）产生的 ``(question, branch)`` 组合，
+#: 其中 ``question`` 恒为空——核的判据全部在代码里，没有判断题可配对。
+#:
+#: 与 :data:`CODE_ONLY_BRANCHES` 的分工：那组分支**只**由代码产生、名字
+#: 本身不与任何判断点冲突；这里的分支（``not_play_site``）**同名于**判断点
+#: ① 的负分支（``select.play_sites`` 判 False 时也记它），不能整条塞进
+#: ``CODE_ONLY_BRANCHES``——否则 ``("select.play_sites", "not_play_site")``
+#: 的配对检查会被跳过，而那一侧正是需要核「分支走错」的地方。
+#:
+#: 目前唯一成员来自 ``executor.orchestrator._drop_site_homepages``：搜索
+#: 结果里 path 为 ``/`` 的 URL 在**任何判断点之前**就被代码判定为站点
+#: 首页（结构上不可能是播放页），直接记 ``not_play_site`` 且不带
+#: ``question``。新增同类的确定性事实核时必须同步这里——
+#: ``tests/unit/test_d5_scorer.py::Test同源`` 盯着真实存档里出现的每一对。
+QUESTIONLESS_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("", "not_play_site"),
+    }
+)
 
 
 def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
@@ -117,13 +141,21 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
         allowed = set()
         if q.negative_branch:
             allowed.add(q.negative_branch)
-        allowed.add(UNRESOLVED)                      # 通用 fail-closed 出口
+        allowed.add(UNRESOLVED)  # 通用 fail-closed 出口
         if qid == questions.Q.PLAYER_OK:
-            allowed.add("player_unverified")         # record_unresolved_reached
-            allowed.add(questions.PAY_WALL)           # payload 选用的细分结论
+            allowed.add("player_unverified")  # record_unresolved_reached
+            allowed.add(questions.PAY_WALL)  # payload 选用的细分结论
         if qid == questions.Q.FIND_PLAY_CONTROL:
-            allowed.add("component_unverified")      # I6 违约记账
+            allowed.add("component_unverified")  # I6 违约记账
         out[qid] = allowed
+    # 代码层确定性事实核的分支：question 为空、不经 LLM，没有判断点可配对。
+    # 按 (question, branch) 组合放行——分支名可能与注册表负分支重名
+    # （``not_play_site`` 也由判断点① 判 False 产生），所以不能整条塞进
+    # :data:`CODE_ONLY_BRANCHES`，那样会把配对检查整个跳过。
+    for q, b in QUESTIONLESS_PAIRS:
+        allowed = out.setdefault(q, set())
+        allowed.add(b)
+        allowed.add(UNRESOLVED)  # 与注册表条目同口径的出口
     return {k: frozenset(v) for k, v in out.items()}
 
 
@@ -146,14 +178,16 @@ REQUIRES_PLAY_PAGE: frozenset[str] = frozenset({"player_unverified"})
 
 #: 仅当分支与判断点**同时**匹配时，才要求 ``reached_play_page=True``。
 #: 键是二元组 ``(branch, question)``。
-REQUIRES_PLAY_PAGE_PAIRS: frozenset[tuple[str, str]] = frozenset({
-    ("component_unverified", "player.ok"),
-    ("unresolved", "player.ok"),
-    ("player_unverified", "player.ok"),
-    # 「有播放页但需付费」同样要求**确实到了播放页**——
-    # 站点页上的「开通会员」是导航栏文案，不是付费墙。
-    ("subscription_wall", "player.ok"),
-})
+REQUIRES_PLAY_PAGE_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("component_unverified", "player.ok"),
+        ("unresolved", "player.ok"),
+        ("player_unverified", "player.ok"),
+        # 「有播放页但需付费」同样要求**确实到了播放页**——
+        # 站点页上的「开通会员」是导航栏文案，不是付费墙。
+        ("subscription_wall", "player.ok"),
+    }
+)
 
 #: 三处检查的节点名。**用常量而不在调用点硬编码**——下面按节点名
 #: 反查（``next(c for c in wrong if c.node == _NODE_NO_SKIP)``），
@@ -206,9 +240,14 @@ class D5Verdict:
         return self.score == 1
 
     def to_json(self) -> dict[str, Any]:
-        return {"dimension": "D-5", "score": self.score, "kind": self.kind,
-                "veto": self.is_veto, "checks": [c.to_json() for c in self.checks],
-                "reasons": list(self.reasons)}
+        return {
+            "dimension": "D-5",
+            "score": self.score,
+            "kind": self.kind,
+            "veto": self.is_veto,
+            "checks": [c.to_json() for c in self.checks],
+            "reasons": list(self.reasons),
+        }
 
 
 # ── 字段读取（兼容 dataclass 与 P2 字典）─────────────────────────
@@ -248,7 +287,7 @@ def _requires_play_page(branch: str | None, question: str) -> bool:
     而其中只有 ``player.ok`` 那侧发生在播放页上。
     """
     if branch is None:
-        return True                       # 记成功必然要求走到播放页
+        return True  # 记成功必然要求走到播放页
     return (branch, question) in REQUIRES_PLAY_PAGE_PAIRS
 
 
@@ -261,10 +300,12 @@ def _check_branch_matches_question(question: str, branch: str | None) -> TreeChe
     """
     if branch is None:
         if question == "player.ok":
-            return TreeCheck(_NODE_BRANCH, "ok",
-                             f"{question} 判 True → 记录成功（branch=null）")
+            return TreeCheck(
+                _NODE_BRANCH, "ok", f"{question} 判 True → 记录成功（branch=null）"
+            )
         return TreeCheck(
-            _NODE_BRANCH, "wrong",
+            _NODE_BRANCH,
+            "wrong",
             f"记成功（branch=null）的结论出自 {question or '（未知判断点）'}——"
             f"只有判断点 player.ok 能得出「记录成功」",
         )
@@ -272,26 +313,29 @@ def _check_branch_matches_question(question: str, branch: str | None) -> TreeChe
         # 代码判定分支**没有** question 可配对（不经 LLM）。不核它——
         # 拿一个本就不该存在的字段去比，得到的是「采集器没填」，
         # 不是「分支走错」。
-        return TreeCheck(_NODE_BRANCH, "ok",
-                         f"{branch} 由代码判定（不经 LLM），无 question 可配对")
+        return TreeCheck(
+            _NODE_BRANCH, "ok", f"{branch} 由代码判定（不经 LLM），无 question 可配对"
+        )
     allowed = QUESTION_TO_BRANCHES.get(question)
     if allowed is None:
         return TreeCheck(
-            _NODE_BRANCH, "skipped",
+            _NODE_BRANCH,
+            "skipped",
             f"判断点 {question or '（缺失）'} 不在决策树注册表里，无法核对分支",
         )
     if branch in allowed:
-        return TreeCheck(_NODE_BRANCH, "ok",
-                         f"{question} → {branch}（决策树允许）")
+        return TreeCheck(_NODE_BRANCH, "ok", f"{question} → {branch}（决策树允许）")
     return TreeCheck(
-        _NODE_BRANCH, "wrong",
+        _NODE_BRANCH,
+        "wrong",
         f"{question} 产出了 {branch}，而该判断点在决策树上只对应 "
         f"{sorted(allowed)}——分支走错",
     )
 
 
-def _check_reached_precondition(branch: str | None, question: str,
-                                reached: bool) -> TreeCheck:
+def _check_reached_precondition(
+    branch: str | None, question: str, reached: bool
+) -> TreeCheck:
     """检查 2：结论的前提是否成立。
 
     ``player_unverified`` 的整个意义是「有组件、确认不了能不能用」，
@@ -300,17 +344,20 @@ def _check_reached_precondition(branch: str | None, question: str,
     """
     if not _requires_play_page(branch, question):
         return TreeCheck(
-            _NODE_REACHED, "ok",
+            _NODE_REACHED,
+            "ok",
             f"{branch or '记录成功'} 在到达播放页**之前**判定，"
             f"reached_play_page={str(reached).lower()} 是正确的"
-            if not reached else
-            f"{branch} 已到播放页，且该分支的前置事实成立",
+            if not reached
+            else f"{branch} 已到播放页，且该分支的前置事实成立",
         )
     if reached:
-        return TreeCheck(_NODE_REACHED, "ok",
-                         f"{branch} 要求站在播放页上，而确实走到了")
+        return TreeCheck(
+            _NODE_REACHED, "ok", f"{branch} 要求站在播放页上，而确实走到了"
+        )
     return TreeCheck(
-        _NODE_REACHED, "wrong",
+        _NODE_REACHED,
+        "wrong",
         f"记了 {branch}，但没有到达播放页——该分支的定义以「已站在"
         f"播放页上」为前提（rubric D-5 边界规则）",
     )
@@ -325,7 +372,8 @@ def _check_no_skip(branch: str | None, reached: bool) -> TreeCheck:
     if branch is not None or reached:
         return TreeCheck(_NODE_NO_SKIP, "ok", "有中间过程，不是看 URL 直接下结论")
     return TreeCheck(
-        _NODE_NO_SKIP, "wrong",
+        _NODE_NO_SKIP,
+        "wrong",
         "判成功（branch=null）但从未到达播放页——rubric D-5 反例："
         "「首页见『立即观看』字样直接记录，未进播放页」",
     )
@@ -353,24 +401,40 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
     if outcome is None:
         # 搜索单元本来就没有 outcome（``split_archive`` 的口径）。
         # 那不是「决策错了」，是**这一条没有决策可判**——不可判定。
-        return D5Verdict(None, "undetermined", (), (
-            "本条样本没有 outcome（搜索阶段不记站点级结论）——无决策可判",
-        ))
+        return D5Verdict(
+            None,
+            "undetermined",
+            (),
+            ("本条样本没有 outcome（搜索阶段不记站点级结论）——无决策可判",),
+        )
 
     branch = _of(outcome, "branch", None)
     question = str(_of(outcome, "question", "") or "")
     reached = bool(_of(outcome, "reached_play_page", False))
 
     # 代码判定分支的 question 本就是空的——**先放它过去**。
-    # 顺序反了（先判 question 缺失）会让这三条全部落成「不可判定」，
+    # 顺序反了（先判 question 缺失）会让这几条全部落成「不可判定」，
     # 而它们是最该能判的几条：控制流自己判的，判据就在存档里。
-    if branch not in CODE_ONLY_BRANCHES and not question:
+    # ``not_play_site`` 的站点首页核（:data:`QUESTIONLESS_PAIRS`）同理：
+    # 它是代码层确定性事实核，question 恒为空，却**不能**整条塞进
+    # :data:`CODE_ONLY_BRANCHES`（否则同名判断点① 的配对检查会被跳过），
+    # 所以这里按组合额外放行——它与「老批次缺 question」是两回事。
+    if (
+        branch not in CODE_ONLY_BRANCHES
+        and (question, branch) not in QUESTIONLESS_PAIRS
+        and not question
+    ):
         # 老批次：P1 有 question 但 P2 侧的 OutcomeRef 是补字段之前切的。
         # 判 3 分会是**拿采集器的缺件当轨迹的错**——与 D-2 的口径一致。
-        return D5Verdict(None, "undetermined", (), (
-            "outcome 缺 question 字段（2026-10-10 之前切的样本）——"
-            "决策树无法核对分支与判断点的配套关系，先重跑 build 再判",
-        ))
+        return D5Verdict(
+            None,
+            "undetermined",
+            (),
+            (
+                "outcome 缺 question 字段（2026-10-10 之前切的样本）——"
+                "决策树无法核对分支与判断点的配套关系，先重跑 build 再判",
+            ),
+        )
 
     checks = (
         _check_branch_matches_question(question, branch),
@@ -399,7 +463,11 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
 
 
 __all__ = [
-    "VerdictKind", "CheckKind", "TreeCheck", "D5Verdict",
-    "QUESTION_TO_BRANCHES", "REQUIRES_PLAY_PAGE",
+    "VerdictKind",
+    "CheckKind",
+    "TreeCheck",
+    "D5Verdict",
+    "QUESTION_TO_BRANCHES",
+    "REQUIRES_PLAY_PAGE",
     "score_d5",
 ]

@@ -101,7 +101,7 @@ uv run python -m pytest -q
 > 实测：少了它就搜成 `T001 在线观看`（**轮胎** T001），产出整批理由通顺的
 > 假负样本且**零报错**。见避坑指南 §5.13。
 
-`run` / `check` 需要 `OBSCURA_EXE`，**缺失即报错，不猜路径**；`--perceptor llm` 另需 `TRAJECTORY_LLM_BASE_URL` / `_MODEL` / `_API_KEY`，**同样缺失即报错不猜**。`TRAJECTORY_LLM_TIMEOUT_S` 默认 30s 对判断点 ① 不够，跑真实批次先调到 90。`setx` 只对新终端生效。
+`run` / `check` 需要 `OBSCURA_EXE`，**缺失即报错，不猜路径**；`--perceptor llm` 另需 `TRAJECTORY_LLM_BASE_URL` / `_MODEL` / `_API_KEY`，**同样缺失即报错不猜**。`TRAJECTORY_LLM_TIMEOUT_S` **默认 90s**（2026-10-11 校准：30s 对判断点 ① 不够，实测 5 条里超时 3 条；90 已写进 `DEFAULT_TIMEOUT_S`，换机器不再踩）。`setx` 只对新终端生效。
 
 **key 只走环境变量**：代码里没有任何凭据字面量，`LLMConfig.__repr__` 刻意不吐 key，`test_llm.py::TestNoCredentialInSource` 盯着源码里不许出现 `sk-` / `bgw_` 这类前缀。
 

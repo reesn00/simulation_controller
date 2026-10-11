@@ -39,10 +39,17 @@ ENV_API_KEY = "TRAJECTORY_LLM_API_KEY"
 ENV_TIMEOUT_S = "TRAJECTORY_LLM_TIMEOUT_S"
 ENV_MAX_TOKENS = "TRAJECTORY_LLM_MAX_TOKENS"
 
-#: 默认超时。刻意小于 executor 的单站超时（见 ``RunConfig.per_site_timeout_s``）：
-#: 一次站点遍历里可能问四道题，LLM 每道都占满 40s 的话整站必然超时，
-#: 而超时会把站点记成 ``unresolved``——**采集故障写成业务结论**。
-DEFAULT_TIMEOUT_S = 30.0
+#: 默认超时。**跑批校准值，30 → 90**（2026-10-11）：
+#:
+#: 30s 对判断点 ① 不够——① 的请求送进模型的是整个搜索结果链接窗口
+#: （实测 5 条里超时 3 条，见 docs/04-运行手册.md），而 ① 发生在
+#: **搜索阶段**、不受 ``RunConfig.per_site_timeout_s`` 的单站遍历约束，
+#: 给 90s 不会拖垮整批。站点内的 ②③④ 每次只送一个页面，正常远快于
+#: 90s；万一异常拖满，由 ``per_site_timeout_s``（90s，``executor/
+#: orchestrator.py``）整体兜底记 ``unresolved``——止损优先，不猜。
+#:
+#: 环境变量 ``TRAJECTORY_LLM_TIMEOUT_S`` 仍可覆盖此默认值。
+DEFAULT_TIMEOUT_S = 90.0
 
 #: 本机 vLLM / llama.cpp 不校验 key 时占位用。**不是**真实凭据。
 NO_KEY = "not-needed"
@@ -128,7 +135,9 @@ class LLMConfig:
         e = os.environ if env is None else env
         base_url = (e.get(ENV_BASE_URL) or "").strip()
         model = (e.get(ENV_MODEL) or "").strip()
-        missing = [n for n, v in ((ENV_BASE_URL, base_url), (ENV_MODEL, model)) if not v]
+        missing = [
+            n for n, v in ((ENV_BASE_URL, base_url), (ENV_MODEL, model)) if not v
+        ]
         if missing:
             raise LLMUnavailable(
                 f"LLM 后端未配置：缺少环境变量 {'、'.join(missing)}。"
@@ -139,18 +148,14 @@ class LLMConfig:
         try:
             timeout = float(raw_timeout) if raw_timeout else DEFAULT_TIMEOUT_S
         except ValueError as exc:
-            raise LLMUnavailable(
-                f"{ENV_TIMEOUT_S}={raw_timeout!r} 不是数字"
-            ) from exc
+            raise LLMUnavailable(f"{ENV_TIMEOUT_S}={raw_timeout!r} 不是数字") from exc
         if timeout <= 0:
             raise LLMUnavailable(f"{ENV_TIMEOUT_S}={timeout} 必须为正")
         raw_tokens = (e.get(ENV_MAX_TOKENS) or "").strip()
         try:
             tokens = int(raw_tokens) if raw_tokens else DEFAULT_MAX_TOKENS
         except ValueError as exc:
-            raise LLMUnavailable(
-                f"{ENV_MAX_TOKENS}={raw_tokens!r} 不是整数"
-            ) from exc
+            raise LLMUnavailable(f"{ENV_MAX_TOKENS}={raw_tokens!r} 不是整数") from exc
         if tokens <= 0:
             raise LLMUnavailable(f"{ENV_MAX_TOKENS}={tokens} 必须为正")
         return cls(
@@ -172,7 +177,7 @@ class LLMClient:
 
     def __init__(self, cfg: LLMConfig) -> None:
         self.cfg = cfg
-        self._client: Any = None      # 懒建，见 _ensure_client
+        self._client: Any = None  # 懒建，见 _ensure_client
         #: 上一次失败的**简短原因**，供排障。不含响应体、不含 key——
         #: 后端回的错误正文偶尔带凭据片段，而异常与诊断都会进日志。
         self.last_error: str = ""
@@ -271,7 +276,7 @@ class LLMClient:
         if self._client is None:
             try:
                 import httpx
-            except ImportError as exc:      # pragma: no cover - 环境问题
+            except ImportError as exc:  # pragma: no cover - 环境问题
                 raise LLMUnavailable("需要 httpx>=0.27") from exc
             self._client = httpx.Client(timeout=self.cfg.timeout_s)
         return self._client

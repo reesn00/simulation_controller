@@ -94,7 +94,7 @@ class TestUnescapedQuoteRepair:
 
     def test_修好后语义不变(self):
         got = sp.extract_json(self.REAL)
-        assert got["thinking"] == "标题只是笼统的\"腾讯视频\"，正文只有导航。"
+        assert got["thinking"] == '标题只是笼统的"腾讯视频"，正文只有导航。'
         assert got["conclusion"] == "无法确认"
 
     def test_修的动作被记账(self):
@@ -113,14 +113,17 @@ class TestUnescapedQuoteRepair:
         """``extract_json`` 保持签名与返回值，感知层那边不用改。"""
         assert sp.extract_json(self.REAL) == sp.extract_json_reporting(self.REAL)[0]
 
-    @pytest.mark.parametrize("raw", [
-        '{"a": 1,}',                          # 尾逗号
-        '{"a": "没写完',                      # 未闭合（max_tokens 用尽）
-        "{'a': 1}",                           # 单引号键
-        '{"a" 1}',                            # 缺冒号
-        '{"a": "x\ty"}',                      # 未转义控制字符
-        "完全不是 JSON 的一段话",
-    ])
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            '{"a": 1,}',  # 尾逗号
+            '{"a": "没写完',  # 未闭合（max_tokens 用尽）
+            "{'a': 1}",  # 单引号键
+            '{"a" 1}',  # 缺冒号
+            '{"a": "x\ty"}',  # 未转义控制字符
+            "完全不是 JSON 的一段话",
+        ],
+    )
     def test_别的畸形一律不修(self, raw):
         """**刻意窄。** 尾逗号、单引号键、缺冒号的「正确修法」要靠猜字段结构，
         而猜出来的字段名会被当成模型的结论用——感知层猜错的是 ref，
@@ -144,8 +147,10 @@ class TestUnescapedQuoteRepair:
         畸形输入没有一种靠它救回来。它是死守卫，已删。这条性质断言
         才是真正起作用的那道。
         """
-        src = ('{"thinking": "标题只是笼统的"腾讯视频"，正文只有导航。",'
-               ' "conclusion": "无法确认"}')
+        src = (
+            '{"thinking": "标题只是笼统的"腾讯视频"，正文只有导航。",'
+            ' "conclusion": "无法确认"}'
+        )
         for i in range(1, len(src)):
             assert sp.extract_json(src[:i]) is None, f"截断在第 {i} 字处被修成了对象"
 
@@ -161,8 +166,7 @@ class TestUnescapedQuoteRepair:
 
     def test_嵌套结构修复后仍取外层(self):
         """修复不能破坏「从头往后取第一个 ``{``」这条口径（见 TestExtractJson）。"""
-        raw = ('{"selected":[{"url":"https://a.test","why":"见"首页"处"}],'
-               '"rejected":[]}')
+        raw = '{"selected":[{"url":"https://a.test","why":"见"首页"处"}],"rejected":[]}'
         got = sp.extract_json(raw)
         assert got["selected"][0]["why"] == '见"首页"处'
         assert got["rejected"] == []
@@ -174,12 +178,23 @@ class TestUnescapedQuoteRepair:
 
 
 class TestAsBool:
-    @pytest.mark.parametrize("raw,want", [
-        (True, True), (False, False),
-        ("true", True), ("True", True), ("是", True), ("1", True),
-        ("false", False), ("否", False), ("0", False),
-        (1, True), (0, False), (1.0, True),
-    ])
+    @pytest.mark.parametrize(
+        "raw,want",
+        [
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("True", True),
+            ("是", True),
+            ("1", True),
+            ("false", False),
+            ("否", False),
+            ("0", False),
+            (1, True),
+            (0, False),
+            (1.0, True),
+        ],
+    )
     def test_认得的写法(self, raw, want):
         assert sp.as_bool(raw) is want
 
@@ -205,7 +220,9 @@ class TestAsStr:
 
 
 class TestConfidence:
-    @pytest.mark.parametrize("raw,want", [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), ("0.7", 0.7)])
+    @pytest.mark.parametrize(
+        "raw,want", [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), ("0.7", 0.7)]
+    )
     def test_合法值(self, raw, want):
         assert sp.as_confidence(raw) == want
 
@@ -245,12 +262,18 @@ class TestConfig:
             LLMConfig.from_env(env={"TRAJECTORY_LLM_MODEL": "m"})
 
     def test_补全尾斜杠与缺v1(self):
-        assert LLMConfig(base_url="http://x/v1", model="m").endpoint \
+        assert (
+            LLMConfig(base_url="http://x/v1", model="m").endpoint
             == "http://x/v1/chat/completions"
-        assert LLMConfig(base_url="http://x", model="m").endpoint \
+        )
+        assert (
+            LLMConfig(base_url="http://x", model="m").endpoint
             == "http://x/v1/chat/completions"
-        assert LLMConfig(base_url="http://x/", model="m").endpoint \
+        )
+        assert (
+            LLMConfig(base_url="http://x/", model="m").endpoint
             == "http://x/v1/chat/completions"
+        )
 
     def test_repr不含key(self):
         """凭据红线：config 一旦被 log 或带进 traceback 就等于泄漏。"""
@@ -260,23 +283,46 @@ class TestConfig:
 
     def test_无key时用占位(self):
         """本机 vLLM 不校验 key。"""
-        assert LLMConfig.from_env(env={
-            "TRAJECTORY_LLM_BASE_URL": "http://x", "TRAJECTORY_LLM_MODEL": "m",
-        }).api_key == "not-needed"
+        assert (
+            LLMConfig.from_env(
+                env={
+                    "TRAJECTORY_LLM_BASE_URL": "http://x",
+                    "TRAJECTORY_LLM_MODEL": "m",
+                }
+            ).api_key
+            == "not-needed"
+        )
+
+    def test_默认超时为90(self):
+        """30s 对判断点 ① 不够（实测 5 条里超时 3 条），默认值校准到 90
+        （2026-10-11）。**换机器不设环境变量也不该再踩 30s。**"""
+        cfg = LLMConfig.from_env(
+            env={
+                "TRAJECTORY_LLM_BASE_URL": "http://x",
+                "TRAJECTORY_LLM_MODEL": "m",
+            }
+        )
+        assert cfg.timeout_s == 90.0
 
     def test_超时非法报错(self):
         with pytest.raises(LLMUnavailable, match="不是数字"):
-            LLMConfig.from_env(env={
-                "TRAJECTORY_LLM_BASE_URL": "http://x", "TRAJECTORY_LLM_MODEL": "m",
-                "TRAJECTORY_LLM_TIMEOUT_S": "abc",
-            })
+            LLMConfig.from_env(
+                env={
+                    "TRAJECTORY_LLM_BASE_URL": "http://x",
+                    "TRAJECTORY_LLM_MODEL": "m",
+                    "TRAJECTORY_LLM_TIMEOUT_S": "abc",
+                }
+            )
 
     def test_超时应为正(self):
         with pytest.raises(LLMUnavailable, match="必须为正"):
-            LLMConfig.from_env(env={
-                "TRAJECTORY_LLM_BASE_URL": "http://x", "TRAJECTORY_LLM_MODEL": "m",
-                "TRAJECTORY_LLM_TIMEOUT_S": "0",
-            })
+            LLMConfig.from_env(
+                env={
+                    "TRAJECTORY_LLM_BASE_URL": "http://x",
+                    "TRAJECTORY_LLM_MODEL": "m",
+                    "TRAJECTORY_LLM_TIMEOUT_S": "0",
+                }
+            )
 
     def test_可序列化不含key(self):
         """``dump_for_debug`` 进日志，故也不能含 key。"""
@@ -324,8 +370,7 @@ def _client(payload, **kw):
 
 
 def _ok(content, finish: str = "stop") -> dict:
-    return {"choices": [{"message": {"content": content},
-                         "finish_reason": finish}]}
+    return {"choices": [{"message": {"content": content}, "finish_reason": finish}]}
 
 
 class TestMaxTokens:
@@ -346,31 +391,39 @@ class TestMaxTokens:
         from trajectory_pipeline.llm.client import DEFAULT_MAX_TOKENS
 
         assert DEFAULT_MAX_TOKENS >= 8192
-        assert LLMConfig(base_url="http://x", model="m").max_tokens \
-            == DEFAULT_MAX_TOKENS
+        assert (
+            LLMConfig(base_url="http://x", model="m").max_tokens == DEFAULT_MAX_TOKENS
+        )
 
     def test_环境变量可调(self):
-        c = LLMConfig.from_env(env={
-            "TRAJECTORY_LLM_BASE_URL": "http://x", "TRAJECTORY_LLM_MODEL": "m",
-            "TRAJECTORY_LLM_MAX_TOKENS": "16384",
-        })
+        c = LLMConfig.from_env(
+            env={
+                "TRAJECTORY_LLM_BASE_URL": "http://x",
+                "TRAJECTORY_LLM_MODEL": "m",
+                "TRAJECTORY_LLM_MAX_TOKENS": "16384",
+            }
+        )
         assert c.max_tokens == 16384
 
     def test_预算非法报错(self):
         with pytest.raises(LLMUnavailable, match="不是整数"):
-            LLMConfig.from_env(env={
-                "TRAJECTORY_LLM_BASE_URL": "http://x",
-                "TRAJECTORY_LLM_MODEL": "m",
-                "TRAJECTORY_LLM_MAX_TOKENS": "很多",
-            })
+            LLMConfig.from_env(
+                env={
+                    "TRAJECTORY_LLM_BASE_URL": "http://x",
+                    "TRAJECTORY_LLM_MODEL": "m",
+                    "TRAJECTORY_LLM_MAX_TOKENS": "很多",
+                }
+            )
 
     def test_预算应为正(self):
         with pytest.raises(LLMUnavailable, match="必须为正"):
-            LLMConfig.from_env(env={
-                "TRAJECTORY_LLM_BASE_URL": "http://x",
-                "TRAJECTORY_LLM_MODEL": "m",
-                "TRAJECTORY_LLM_MAX_TOKENS": "0",
-            })
+            LLMConfig.from_env(
+                env={
+                    "TRAJECTORY_LLM_BASE_URL": "http://x",
+                    "TRAJECTORY_LLM_MODEL": "m",
+                    "TRAJECTORY_LLM_MAX_TOKENS": "0",
+                }
+            )
 
     def test_不带参数时走config(self):
         """签名默认值是 ``None`` 而不是数字——给了数字调用点就会各写各的。"""
@@ -414,9 +467,17 @@ class TestMaxTokens:
         这里刻意用「只有 reasoning_content」的响应：宁可返回 None，
         也不能退回去读它。
         """
-        payload = {"choices": [{"message": {
-            "content": None, "reasoning_content": "思考过程……",
-        }, "finish_reason": "stop"}]}
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "reasoning_content": "思考过程……",
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
         c = _client(payload)
         assert c.chat("s", "u") is None
         assert "思考过程" not in c.last_error
@@ -429,14 +490,17 @@ class TestNoCredentialInSource:
     这条测试不会。
     """
 
-    @pytest.mark.parametrize("rel", [
-        "trajectory_pipeline/llm/client.py",
-        "trajectory_pipeline/llm/schema_parse.py",
-        "trajectory_pipeline/perception/llm_perceptor.py",
-        "trajectory_pipeline/perception/factory.py",
-        "trajectory_pipeline/tests/fakes.py",
-        "trajectory_pipeline/perception/probe_llm.py",
-    ])
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "trajectory_pipeline/llm/client.py",
+            "trajectory_pipeline/llm/schema_parse.py",
+            "trajectory_pipeline/perception/llm_perceptor.py",
+            "trajectory_pipeline/perception/factory.py",
+            "trajectory_pipeline/tests/fakes.py",
+            "trajectory_pipeline/perception/probe_llm.py",
+        ],
+    )
     def test_无硬编码key(self, rel):
         from pathlib import Path
 
@@ -444,10 +508,13 @@ class TestNoCredentialInSource:
         for marker in ("bgw_", "sk-", "Bearer sk-"):
             assert marker not in src, f"{rel} 里出现了疑似凭据字面量 {marker!r}"
 
-    @pytest.mark.parametrize("rel", [
-        "trajectory_pipeline/llm/client.py",
-        "trajectory_pipeline/perception/factory.py",
-    ])
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "trajectory_pipeline/llm/client.py",
+            "trajectory_pipeline/perception/factory.py",
+        ],
+    )
     def test_凭据只从环境变量读(self, rel):
         """key 的来源必须唯一。否则迟早有人在某处硬编码一个「测试用」的 key。
 
