@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import inspect
 import json
 import os
 import re
 import sys
+import uuid
 from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
@@ -50,7 +52,7 @@ from trajectory_pipeline.executor.archive import (
     P1Archive,
 )
 from trajectory_pipeline.executor.browser.mcp_client import EXE_ENV_VAR, McpClient
-from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES, RunLedger
 from trajectory_pipeline.executor import downgrade as downgrade_mod
 from trajectory_pipeline.executor.browser.obscura_driver import (
     FORBIDDEN_TOOLS,
@@ -60,7 +62,7 @@ from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.integrity import (
     Severity, check_root, format_report,
 )
-from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig
+from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig, RunRecord
 from trajectory_pipeline.executor.plan import PlanError, load_plan
 from trajectory_pipeline.executor.review_queue import (
     VERDICTS,
@@ -72,6 +74,7 @@ from trajectory_pipeline.executor.review_queue import (
     write_queue as write_review_queue,
 )
 from trajectory_pipeline.executor.steps import search as search_step
+from trajectory_pipeline.executor.steps.visit import visit_site
 from trajectory_pipeline.assembler import builder, views
 from trajectory_pipeline.taskgen.sampler import W1_DEGENERATE_DIMS
 from trajectory_pipeline.perception import questions
@@ -597,6 +600,126 @@ async def cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_proberun(args: argparse.Namespace) -> int:
+    """P1 验证工具：直接对一组 URL 跑完整 visit，**绕过搜索引擎**。
+
+    2026-10-12 增量十三 → 阶段 1 验证工具。每 URL 走一遍完整控制流
+    （IS_REACHABLE → FIND_PLAY_CONTROL → PLAYER_OK 触发 decision_branch），
+    落 P1 存档，便于对照 ``decision_branch`` 对四个新分支
+    （``login_required`` / ``blocked`` / ``broken`` / ``partial_free``）的真实覆盖。
+
+    ⚠️ **生产链上不走这条路径**——W1 主链仍走 :func:`cli run` →
+    ``orchestrator.run`` → 搜索引擎 → search_step.extract_candidates → visit。
+    本命令仅供离线验证新分支触发条件；请勿把 ``proberun`` 的产物混入
+    训练批次（它们的 ``provenance.source = "proberun"`` 是标记）。
+
+    与 ``probe`` 不同点：``probe`` 只看 driver 现场事实、不下结论；
+    ``proberun`` 走完 visit 整链（perceptor → decision_branch → record），
+    落 13 活跃分支。这是「取证」与「判定」的本质区别，不要混用。
+    """
+    if not args.from_urls:
+        print("[FAIL] --from-urls <path> 是必填（每行一个 URL）", file=sys.stderr)
+        return 2
+    try:
+        urls = _load_url_lines(args.from_urls)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 2
+    if not args.title:
+        print("[FAIL] --title 是必填（visit 的目标片名，构造注入给 perceptor）",
+              file=sys.stderr)
+        return 2
+
+    try:
+        client = McpClient.from_env()
+    except RuntimeError as exc:
+        print(f"[FAIL] {exc}")
+        return 2
+
+    cfg = RunConfig(engine=args.engine, max_chars=args.max_chars)
+    # 写进 ``output/pipeline/proberun/`` ——验证工具的产物**不**混进生产
+    # 归档（``output/pipeline/*__*.json``）被训练批次 glob 收走（见
+    # :class:`P1Archive` ``subdir`` 注释）。
+    archive = P1Archive(Path(args.out) if args.out else None, subdir="proberun")
+    perceptor = _make_perceptor(args, args.title)
+    pname = getattr(perceptor, "name", "?")
+
+    print(f"== proberun：{len(urls)} 个 URL，每 URL 一个独立 mini-run ==")
+    print(f"  perceptor = {pname}")
+    print(f"  task_id   = {args.task_id}")
+    print(f"  title     = {args.title!r}")
+
+    async with client:
+        driver = ObscuraDriver(client)
+        print(f"  server    = {client.info.name} {client.info.version}"
+              f" ({client.info.tool_count} tools)")
+        from trajectory_pipeline.executor.steps.search import Candidate
+        for n, url in enumerate(urls, 1):
+            # 用 URL 自身作 run_id 后缀（hex 化），同 task 多 URL 不冲突
+            run_id = uuid.uuid4().hex[:8]
+            ledger = RunLedger(task_id=args.task_id)
+            record = RunRecord(
+                task_id=args.task_id,
+                title=args.title,
+                query="<proberun>",
+                search_url="<proberun>",
+                user_prompt="",
+                ledger=ledger,
+                perceptor=pname,
+                provenance={"source": "proberun", "url": url},
+                run_config=dataclasses.asdict(cfg),
+            )
+            candidate = Candidate(url=url, text=url, rank=0, source_href=url)
+            record.candidates = [candidate]
+            record.candidate_source = "direct"
+
+            print(f"\n[{n}/{len(urls)}] {url[:90]}")
+            try:
+                result = await visit_site(
+                    driver, perceptor, ledger, candidate,
+                    max_chars=cfg.max_chars,
+                )
+                record.visits.append(result)
+            except Exception as exc:  # 兜底：单站炸不该毁整批
+                record.warnings.append(
+                    f"visit 异常: {type(exc).__name__}: {exc}"
+                )
+
+            record.ledger = ledger
+            path = archive.write(record, task_id=args.task_id, run_id=run_id)
+            # 末段分支分布
+            branch_count: dict[str, int] = {}
+            for o in ledger.outcomes:
+                key = o.branch if o.branch else "success"
+                branch_count[key] = branch_count.get(key, 0) + 1
+            print(f"  branches = {json.dumps(branch_count, ensure_ascii=False)}")
+            print(f"  → {path}")
+    return 0
+
+
+def _load_url_lines(path: str) -> list[str]:
+    """读 URL 文件——每行一条；``#`` 开头视为注释。
+
+    失败的姿势：空文件抛 :class:`ValueError`，文件缺失抛
+    :class:`FileNotFoundError`——两者都让 ``cmd_proberun`` 显式 fail
+    不要「静默通过、跑 0 条」。空跑 0 条时终端上「proberun 完成」与
+    「proberun 没东西可跑」长得一模一样，而后者经常是 URL 文件路径
+    拼错的产物。
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"--from-urls 文件 {p} 不存在")
+    out: list[str] = []
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    if not out:
+        raise ValueError(f"--from-urls 文件 {p} 无 URL（除 # 注释外）")
+    return out
+
+
 def _urls_of(archive: str, *, limit: int | None) -> list[str]:
     """从 P1 存档里取待复核的 URL。
 
@@ -1041,6 +1164,14 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
     if total["confirm_not_play_site"] or total["confirm_paywall"]:
         print(f"  → 人工判定「不是播放站」{total['confirm_not_play_site']} 条、"
               f"「需订阅/付费」{total['confirm_paywall']} 条")
+    if any(total.get(k) for k in (
+            "confirm_login", "confirm_blocked", "confirm_broken",
+            "confirm_partial_free")):
+        print(f"  → 精细裁定「登录墙/阻断/损坏/部分免费」"
+              f"{total.get('confirm_login', 0)} / "
+              f"{total.get('confirm_blocked', 0)} / "
+              f"{total.get('confirm_broken', 0)} / "
+              f"{total.get('confirm_partial_free', 0)} 条")
     if total["ignored"]:
         print(f"  [warn] {total['ignored']} 条裁定落在**非复核分支**的记录上，"
               f"已原样保留未改。真负样本/成功样本不在复核范围内，"
@@ -1515,6 +1646,27 @@ def build_parser() -> argparse.ArgumentParser:
     prb.add_argument("--limit", type=int, default=None, help="--from-archive 时取前 N 个")
     prb.add_argument("--preview", type=int, default=400, help="打印正文前 N 字")
     prb.set_defaults(func=cmd_probe)
+
+    # 2026-10-12 增量十三配套：阶段 1 新分支 ground-truth 验证工具。
+    # 接受 URL 列表（每行一个），跳过搜索引擎、直接逐站 visit。
+    # 与 ``probe`` 是两种不同工具：probe 看不结论、proberun 走完 visit。
+    prn = sub.add_parser(
+        "proberun",
+        help="阶段 1 新分支验证：直接对一组 URL 走完整 visit（绕开搜索引擎，**不入主链**）",
+    )
+    prn.add_argument("--from-urls", default=None, metavar="PATH",
+                     help="每行一个 URL 的文本文件；# 开头的行视为注释")
+    prn.add_argument("--task-id", default="P001",
+                     help="归档用 task_id；每个 URL 一个独立 run_id")
+    prn.add_argument("--title", default=None,
+                     help="目标片名（构造注入给 perceptor；**必填**）")
+    prn.add_argument("--engine", default=search_step.DEFAULT_ENGINE,
+                     help="仅作 RunConfig 留痕；不实际驱动搜索引擎")
+    prn.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
+    prn.add_argument("--perceptor", choices=("rule", "llm", "auto"), default=None,
+                     help="感知层选择；与 cli run 一致")
+    prn.add_argument("--out", default=None, help="P1 输出目录")
+    prn.set_defaults(func=cmd_proberun)
 
     rep = sub.add_parser("report", help="汇总 P1 分支分布")
     rep.add_argument("--out", default=None)

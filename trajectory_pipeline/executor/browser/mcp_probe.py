@@ -48,7 +48,10 @@ EXPECTED_PRIMITIVES = {
     ),
     "media_probe": (
         ("count", "evaluate"),
-        "video 计数 + currentTime 推进探测（由 count/evaluate 组合自建，无单一 tool）",
+        "video 计数 + currentTime 推进探测（由 count/evaluate 组合自建，无单一 tool）"
+        "→ code.media_signal（L2 播放信号：play_started / timeupdate_progress / "
+        "current_time_sec / frames_decoded / black_screen / media_error；"
+        "阶段 4 落地实现，当前仅登记预期，对齐方案 §5.1）",
     ),
 }
 

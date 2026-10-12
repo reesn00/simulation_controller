@@ -23,7 +23,12 @@ import pytest
 
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception import llm_perceptor as lp
-from trajectory_pipeline.perception.base import Decision, InteractiveElement, Observation, Q
+from trajectory_pipeline.perception.base import (
+    Decision,
+    InteractiveElement,
+    Observation,
+    Q,
+)
 from trajectory_pipeline.perception.rule_perceptor import (
     RulePerceptor,
     classify_trailer,
@@ -72,17 +77,29 @@ class TestRegistry:
             assert spec.negative_branch, f"{qid} 未绑定 negative_branch"
             assert spec.id == qid, f"注册表 key 与 Question.id 不一致: {qid}"
 
-    def test_失败分支全集是十条(self):
+    def test_失败分支全集是十三条(self):
+        """2026-10-12 阶段 1：10 → 13（10 旧 − Login墙合并态 + 4 新）。
+        ``login_wall_or_blocked`` 已弃用，不进 ``all_branches()``——
+        它不再要求有产出，但 ``record()`` 按 ``DEPRECATED_BRANCHES``
+        单独放行历史路径（visit.py ② 不传 payload 仍落合并态）。"""
         assert questions.all_branches() == {
-            "not_play_site", "login_wall_or_blocked", "no_play_control",
-            "component_unverified",                       # 四道题各一支
-            "unreachable_hard", "trailer_only",           # 代码判定
-            "trailer_suspect", "unresolved",              # 兜底
-            "player_unverified",                          # 判断点④ 判不出来，
-                                                       # 但播放页就在眼前
-            "subscription_wall",                          # 判断点④ 的细分：
-                                                       # 有播放页但需付费
-                                                       # （2026-10-10 口径裁定）
+            "not_play_site",
+            "no_play_control",
+            "component_unverified",  # 四道题各一支
+            "unreachable_hard",
+            "trailer_only",  # 代码判定
+            "trailer_suspect",
+            "unresolved",  # 兜底
+            "player_unverified",  # 判断点④ 判不出来，
+            # 但播放页就在眼前
+            "subscription_wall",  # 判断点④ 的细分：
+            # 有播放页但需付费
+            # （2026-10-10 口径裁定）
+            # 2026-10-12 阶段 1 的 payload 细分四支：
+            "login_required",  # ②：登录后可免费看
+            "blocked",  # ②：地区/验证码/反爬
+            "broken",  # ②：404；媒体损坏见 media_signal
+            "partial_free",  # ④：试看/预告后付费
         }
 
     def test_未知_id_抛_KeyError(self):
@@ -107,8 +124,14 @@ class TestInvariants:
         """evidence 必须指向**具体判据**（ref / 数量 / 词表命中），
         而不是「我认为」。空 evidence 或复述答案的一律不合格。"""
         cases = [
-            (Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(("e1", "a", "播放")))),
-            (Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(("e1", "a", "首页")))),
+            (
+                Q.FIND_PLAY_CONTROL,
+                obs(interactive_elements=elements(("e1", "a", "播放"))),
+            ),
+            (
+                Q.FIND_PLAY_CONTROL,
+                obs(interactive_elements=elements(("e1", "a", "首页"))),
+            ),
             (Q.PLAYER_OK, obs(video_tag_count=1)),
             (Q.PLAYER_OK, obs(video_tag_count=0, iframe_count=0)),
         ]
@@ -119,8 +142,11 @@ class TestInvariants:
 
     def test_i2_confidence_在零一之间(self, impl):
         for qid in ALL_QUESTIONS:
-            for o in (obs(), obs(interactive_elements=elements(("e1", "a", "播放"))),
-                      obs(video_tag_count=3, iframe_count=1)):
+            for o in (
+                obs(),
+                obs(interactive_elements=elements(("e1", "a", "播放"))),
+                obs(video_tag_count=3, iframe_count=1),
+            ):
                 c = impl().decide(qid, o).confidence
                 assert 0.0 <= c <= 1.0, f"{qid} confidence 越界: {c}"
 
@@ -130,8 +156,14 @@ class TestInvariants:
         不幂等 = 判分不可复现 = 同一份素材两次评测两个结论。
         """
         cases = [
-            (Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(
-                ("e1", "a", "预告片"), ("e2", "a", "正片")))),
+            (
+                Q.FIND_PLAY_CONTROL,
+                obs(
+                    interactive_elements=elements(
+                        ("e1", "a", "预告片"), ("e2", "a", "正片")
+                    )
+                ),
+            ),
             (Q.PLAYER_OK, obs(video_tag_count=2)),
         ]
         for qid, o in cases:
@@ -160,7 +192,9 @@ class TestInvariants:
         强行返回 None 会让负样本池永远空——那不是 fail-closed，是躺平。"""
         d = impl().decide(
             Q.FIND_PLAY_CONTROL,
-            obs(interactive_elements=elements(("e1", "a", "首页"), ("e2", "a", "登录"))),
+            obs(
+                interactive_elements=elements(("e1", "a", "首页"), ("e2", "a", "登录"))
+            ),
         )
         assert d.answer is False
         assert questions.negative_branch_of(Q.FIND_PLAY_CONTROL) == "no_play_control"
@@ -168,8 +202,11 @@ class TestInvariants:
     def test_i5_无副作用(self, impl):
         """decide 不得改动传入的 obs（Observation 是 frozen，但内部对象
         仍可能被就地改）。"""
-        o = obs(interactive_elements=elements(("e1", "a", "播放")),
-                links=(), video_tag_count=1)
+        o = obs(
+            interactive_elements=elements(("e1", "a", "播放")),
+            links=(),
+            video_tag_count=1,
+        )
         before = copy.deepcopy(o)
         p = impl()
         for qid in ALL_QUESTIONS:
@@ -182,14 +219,17 @@ class TestInvariants:
         for qid, spec in questions.REGISTRY.items():
             if spec.answer_type != "decision":
                 continue
-            o = obs(interactive_elements=elements(
-                ("e1", "a", "首页"), ("e7", "button", "立即播放")))
+            o = obs(
+                interactive_elements=elements(
+                    ("e1", "a", "首页"), ("e7", "button", "立即播放")
+                )
+            )
             d = impl().decide(qid, o)
             if not d.answer:
                 continue
             ref = d.payload.get("ref", "")
             if not ref:
-                continue                       # trailer_only 场景本就无 ref
+                continue  # trailer_only 场景本就无 ref
             known = {e.ref for e in o.interactive_elements}
             assert ref in known, f"{qid} 回传的 ref={ref!r} 不在观察里（已知 {known}）"
 
@@ -197,8 +237,11 @@ class TestInvariants:
         """answer=True 必须带 payload——控制流要靠它行动
         （① 要 url 列表，③ 要 ref，④ 要 media_count）。"""
         for qid in ALL_QUESTIONS:
-            o = obs(interactive_elements=elements(("e7", "button", "立即播放")),
-                    video_tag_count=1, iframe_count=1)
+            o = obs(
+                interactive_elements=elements(("e7", "button", "立即播放")),
+                video_tag_count=1,
+                iframe_count=1,
+            )
             d = impl().decide(qid, o)
             if d.answer is True:
                 assert dict(d.payload), f"{qid} answer=True 但 payload 为空"
@@ -222,18 +265,43 @@ class TestTrailerRule:
     """用户业务规则原文：播放按钮或剧集按钮上的文本是「预告片」时，
     说明播放资源不存在。"""
 
-    @pytest.mark.parametrize("label", [
-        "预告片", "预告", "抢先看", "影视预告", "第 1 集 预告片",
-        "预告视频", "花絮", "片花", "Trailer", "official trailer",
-        "TEASER", "Preview", "先导片",
-    ])
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "预告片",
+            "预告",
+            "抢先看",
+            "影视预告",
+            "第 1 集 预告片",
+            "预告视频",
+            "花絮",
+            "片花",
+            "Trailer",
+            "official trailer",
+            "TEASER",
+            "Preview",
+            "先导片",
+        ],
+    )
     def test_命中(self, label):
         assert is_trailer_only(label) is True
 
-    @pytest.mark.parametrize("label", [
-        "播放", "立即播放", "正片", "第 3 集", "免费观看", "在线观看",
-        "高清", "抢先看正片", "预告 · 第 1 季 正片", "", "登录",
-    ])
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "播放",
+            "立即播放",
+            "正片",
+            "第 3 集",
+            "免费观看",
+            "在线观看",
+            "高清",
+            "抢先看正片",
+            "预告 · 第 1 季 正片",
+            "",
+            "登录",
+        ],
+    )
     def test_未命中(self, label):
         assert is_trailer_only(label) is False
 
@@ -258,31 +326,49 @@ class TestTrailerRule:
     def test_整体即预告词判_only(self):
         assert classify_trailer("预告片") == "only"
         assert classify_trailer("Trailer") == "only"
-        assert classify_trailer("第 1 集 预告片") == "only"     # 修饰词不算实义残留
+        assert classify_trailer("第 1 集 预告片") == "only"  # 修饰词不算实义残留
         assert classify_trailer("预告 · 正片") == "none"
 
     def test_全预告时返回_trailer_only_而不误杀(self):
         """候选里混着预告和正片时必须选正片——反过来会把好站点误杀。"""
         p = RulePerceptor()
-        d = p.decide(Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(
-            ("e1", "a", "预告片"), ("e2", "a", "第 1 季 正片"))))
+        d = p.decide(
+            Q.FIND_PLAY_CONTROL,
+            obs(
+                interactive_elements=elements(
+                    ("e1", "a", "预告片"), ("e2", "a", "第 1 季 正片")
+                )
+            ),
+        )
         assert d.answer is True
         assert d.payload["trailer_only"] is False
         assert d.payload["ref"] == "e2"
 
     def test_只有预告时标_trailer_only(self):
         p = RulePerceptor()
-        d = p.decide(Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(
-            ("e1", "a", "预告片"), ("e2", "button", "抢先看"))))
+        d = p.decide(
+            Q.FIND_PLAY_CONTROL,
+            obs(
+                interactive_elements=elements(
+                    ("e1", "a", "预告片"), ("e2", "button", "抢先看")
+                )
+            ),
+        )
         assert d.answer is True
         assert d.payload["trailer_only"] is True
-        assert d.payload["ref"] == ""       # 无正片控件，代码不该去点预告
+        assert d.payload["ref"] == ""  # 无正片控件，代码不该去点预告
 
     def test_播放历史不算播放控件(self):
         p = RulePerceptor()
-        d = p.decide(Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(
-            ("e1", "a", "播放历史"), ("e2", "a", "观看记录"))))
-        assert d.answer is False             # 这是真结论：页面确实没有播放入口
+        d = p.decide(
+            Q.FIND_PLAY_CONTROL,
+            obs(
+                interactive_elements=elements(
+                    ("e1", "a", "播放历史"), ("e2", "a", "观看记录")
+                )
+            ),
+        )
+        assert d.answer is False  # 这是真结论：页面确实没有播放入口
         assert questions.negative_branch_of(Q.FIND_PLAY_CONTROL) == "no_play_control"
 
 
@@ -306,19 +392,32 @@ class TestRealSiteRegressions:
         剧集项必须带结构——「第 N 集」或 ``EP01`` / ``S01E02`` 编号形态。"""
         for label in ("星期四", "每日期间", "对话", "机会", "返回首页"):
             p = RulePerceptor()
-            d = p.decide(Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(
-                ("e1", "a", label))))
+            d = p.decide(
+                Q.FIND_PLAY_CONTROL,
+                obs(interactive_elements=elements(("e1", "a", label))),
+            )
             assert d.answer is False, f"{label!r} 被误判成播放控件"
 
     def test_带结构的剧集项仍要命中(self):
         """收紧不是把召回一起砍掉——有编号形态的剧集项仍应命中。
         「全24集」与「全 24 集」两种写法都要过：UI 文案里都常见，
         正则里量词之间写死相邻会在带空格的那一半上直接漏掉。"""
-        for label in ("第 12 集", "第3话", "全 24 集", "全24集", "正片",
-                      "连载至 30 集", "第 1 季 正片", "EP05", "S01E02"):
+        for label in (
+            "第 12 集",
+            "第3话",
+            "全 24 集",
+            "全24集",
+            "正片",
+            "连载至 30 集",
+            "第 1 季 正片",
+            "EP05",
+            "S01E02",
+        ):
             p = RulePerceptor()
-            d = p.decide(Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(
-                ("e1", "a", label))))
+            d = p.decide(
+                Q.FIND_PLAY_CONTROL,
+                obs(interactive_elements=elements(("e1", "a", label))),
+            )
             assert d.answer is True, f"{label!r} 未命中播放控件"
 
     def test_导航站的满屏iframe_不算播放器(self):
@@ -328,7 +427,7 @@ class TestRealSiteRegressions:
         真要判得看 src 与尺寸，那是启发式阈值——拿不准的东西不该当判据。"""
         d = RulePerceptor().decide(Q.PLAYER_OK, obs(video_tag_count=0, iframe_count=15))
         assert d.answer is None, "只有 iframe 时判 True 就是把导航站当播放页"
-        assert d.payload["iframe_count"] == 15      # 诊断信息仍然留着
+        assert d.payload["iframe_count"] == 15  # 诊断信息仍然留着
         assert d.payload["media_count"] == 0
 
     def test_有video标签时判_true(self):
@@ -344,17 +443,22 @@ class TestRealSiteRegressions:
         情况是「页面还没渲染完」。把它判成 False，三站全被写成
         ``no_play_control`` 负样本——**采集失败被写成了业务结论**。
         """
-        d = RulePerceptor().decide(Q.FIND_PLAY_CONTROL, obs(
-            interactive_elements=(), body_text=""))
+        d = RulePerceptor().decide(
+            Q.FIND_PLAY_CONTROL, obs(interactive_elements=(), body_text="")
+        )
         assert d.answer is None, "0 个元素被当成了「页面确实没有播放控件」"
         assert d.fallback_used is True
 
     def test_有元素但没命中才是真负样本(self):
         """与上一条互为对照：不能把「判 False」这条路整个封死。
         采到了元素、只是都不像播放控件——那才是货真价实的 no_play_control。"""
-        d = RulePerceptor().decide(Q.FIND_PLAY_CONTROL, obs(
-            interactive_elements=elements(("e1", "a", "登录"), ("e2", "a", "注册")),
-            body_text="请登录"))
+        d = RulePerceptor().decide(
+            Q.FIND_PLAY_CONTROL,
+            obs(
+                interactive_elements=elements(("e1", "a", "登录"), ("e2", "a", "注册")),
+                body_text="请登录",
+            ),
+        )
         assert d.answer is False
 
     def test_页面已有video时不判无播放控件(self):
@@ -364,18 +468,27 @@ class TestRealSiteRegressions:
 
         负样本池的全部价值是「这里真的看不了」。页面自带 ``<video>`` 时，
         「没有播放控件」这句话与观察自相矛盾，只能说「按钮没认出来」。"""
-        d = RulePerceptor().decide(Q.FIND_PLAY_CONTROL, obs(
-            interactive_elements=elements(
-                ("e1", "a", "首页"), ("e2", "a", "登录"), ("e3", "a", "下载客户端")),
-            video_tag_count=1))
+        d = RulePerceptor().decide(
+            Q.FIND_PLAY_CONTROL,
+            obs(
+                interactive_elements=elements(
+                    ("e1", "a", "首页"), ("e2", "a", "登录"), ("e3", "a", "下载客户端")
+                ),
+                video_tag_count=1,
+            ),
+        )
         assert d.answer is None, "有 <video> 的页面被判成「没有播放控件」"
         assert d.fallback_used is True
 
     def test_没有video时_no_play_control_照旧(self):
         """与上一条互为对照：没有 video 佐证时，真负样本还得能出得来。"""
-        d = RulePerceptor().decide(Q.FIND_PLAY_CONTROL, obs(
-            interactive_elements=elements(("e1", "a", "首页"), ("e2", "a", "登录")),
-            video_tag_count=0))
+        d = RulePerceptor().decide(
+            Q.FIND_PLAY_CONTROL,
+            obs(
+                interactive_elements=elements(("e1", "a", "首页"), ("e2", "a", "登录")),
+                video_tag_count=0,
+            ),
+        )
         assert d.answer is False
         assert d.fallback_used is False
 
@@ -411,10 +524,13 @@ class TestW1CapabilityBoundary:
     def test_decision_可_json_序列化(self):
         """P1 存档要求 Decision 直落盘；不可序列化会在写盘时才炸。"""
         p = RulePerceptor()
-        d = p.decide(Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(
-            ("e1", "a", "播放"))))
-        json.dumps({"answer": d.answer, "payload": dict(d.payload),
-                    "evidence": d.evidence}, ensure_ascii=False)
+        d = p.decide(
+            Q.FIND_PLAY_CONTROL, obs(interactive_elements=elements(("e1", "a", "播放")))
+        )
+        json.dumps(
+            {"answer": d.answer, "payload": dict(d.payload), "evidence": d.evidence},
+            ensure_ascii=False,
+        )
 
 
 class TestTitleLinkSufficiency:
@@ -434,14 +550,20 @@ class TestTitleLinkSufficiency:
     def _obs_links(self, *texts):
         from trajectory_pipeline.perception.base import LinkItem
 
-        return obs(links=tuple(
-            LinkItem(t, f"https://s{i}.test/x") for i, t in enumerate(texts)))
+        return obs(
+            links=tuple(
+                LinkItem(t, f"https://s{i}.test/x") for i, t in enumerate(texts)
+            )
+        )
 
     def test_链接全无片名时fail_closed(self):
         p = llm_perceptor()
-        d = p.decide(Q.SELECT_PLAY_SITES,
-                     self._obs_links("qq.com https://v.qq.com › cover",
-                                     "iqiyi.com https://www.iqiyi.com"))
+        d = p.decide(
+            Q.SELECT_PLAY_SITES,
+            self._obs_links(
+                "qq.com https://v.qq.com › cover", "iqiyi.com https://www.iqiyi.com"
+            ),
+        )
         assert d.answer is None, "输入不支持本题时判 False = 往池里写错标签"
         assert not p._client.calls, "预检就该拦住，不该发请求"
         assert "功夫" in d.evidence
@@ -449,16 +571,18 @@ class TestTitleLinkSufficiency:
     def test_链接含片名时照常问(self):
         """预检不能把 ① 一刀切死——有判别力时它必须还能用。"""
         p = llm_perceptor()
-        d = p.decide(Q.SELECT_PLAY_SITES,
-                     self._obs_links("功夫 (普通话版)_高清完整版_腾讯视频"))
+        d = p.decide(
+            Q.SELECT_PLAY_SITES, self._obs_links("功夫 (普通话版)_高清完整版_腾讯视频")
+        )
         assert d.answer is True
         assert p._client.calls, "有判别力时不该被预检拦住"
 
     def test_有片名与没片名混存时照常问(self):
         """只要有一条能对上就够了——引擎结果里常混着导航链接。"""
         p = llm_perceptor()
-        d = p.decide(Q.SELECT_PLAY_SITES,
-                     self._obs_links("Privacy and Cookies", "功夫 在线观看"))
+        d = p.decide(
+            Q.SELECT_PLAY_SITES, self._obs_links("Privacy and Cookies", "功夫 在线观看")
+        )
         assert d.answer is True
         assert p._client.calls
 
@@ -565,6 +689,7 @@ class TestNullIsNotMalformed:
         assert d.answer is True
         assert "LLM 判 True" in d.evidence
 
+
 class TestZeroElementsBothImplementations:
     """**两个实现必须同一口径**：0 个交互元素时都不判 False。
 
@@ -583,25 +708,28 @@ class TestZeroElementsBothImplementations:
 
     @pytest.mark.parametrize("make", IMPLEMENTATIONS)
     def test_有正文但0元素时fail_closed(self, make):
-        d = make().decide(Q.FIND_PLAY_CONTROL,
-                          obs(interactive_elements=(), body_text="立即播放"))
+        d = make().decide(
+            Q.FIND_PLAY_CONTROL, obs(interactive_elements=(), body_text="立即播放")
+        )
         assert d.answer is None, "0 元素被当成了「页面确实没有播放控件」"
 
     @pytest.mark.parametrize("make", IMPLEMENTATIONS)
     def test_理由要指出正文与元素的矛盾(self, make):
         """证据得让人看出这是采集问题而不是业务判断——
         只写「未找到播放控件」的话，读的人会去调词表，而词表没问题。"""
-        d = make().decide(Q.FIND_PLAY_CONTROL,
-                          obs(interactive_elements=(), body_text="立即播放"))
+        d = make().decide(
+            Q.FIND_PLAY_CONTROL, obs(interactive_elements=(), body_text="立即播放")
+        )
         assert "0 个交互元素" in d.evidence
 
     @pytest.mark.parametrize("make", IMPLEMENTATIONS)
     def test_采到元素时照旧能判(self, make):
         """反例护栏：守卫不是封死这条分支。采到了元素、只是没命中，
         那才是货真价实的 no_play_control。"""
-        d = make().decide(Q.FIND_PLAY_CONTROL,
-                          obs(interactive_elements=elements(("e1", "a", "登录")),
-                              body_text="请登录"))
+        d = make().decide(
+            Q.FIND_PLAY_CONTROL,
+            obs(interactive_elements=elements(("e1", "a", "登录")), body_text="请登录"),
+        )
         assert d.answer is False
 
 
@@ -610,7 +738,7 @@ class TestSufficiencyRunsBeforeTheModel:
 
     def test_0元素时不发请求(self):
         fake = FakeLLM()
-        lp.LLMPerceptor(fake).decide(Q.FIND_PLAY_CONTROL,
-                                     obs(interactive_elements=(),
-                                         body_text="立即播放"))
+        lp.LLMPerceptor(fake).decide(
+            Q.FIND_PLAY_CONTROL, obs(interactive_elements=(), body_text="立即播放")
+        )
         assert fake.calls == [], "0 元素还去问模型，等于花钱买一个猜"

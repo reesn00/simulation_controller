@@ -21,9 +21,13 @@ from trajectory_pipeline.perception.base import Decision, Observation, Q
 
 def dec(question: str, answer: bool | None, **kw) -> Decision:
     return Decision(
-        question=question, answer=answer, confidence=1.0,
-        evidence=kw.pop("evidence", "e"), source="rule",
-        payload=kw.pop("payload", {}), fallback_used=kw.pop("fallback_used", False),
+        question=question,
+        answer=answer,
+        confidence=1.0,
+        evidence=kw.pop("evidence", "e"),
+        source="rule",
+        payload=kw.pop("payload", {}),
+        fallback_used=kw.pop("fallback_used", False),
     )
 
 
@@ -38,7 +42,7 @@ class TestLedgerValidation:
         ledger = RunLedger("T001")
         with pytest.raises(UnknownBranch):
             ledger.record("https://x.test/", "not_a_branch", "理由")
-        assert ledger.outcomes == []          # 抛错时不得留下半条记录
+        assert ledger.outcomes == []  # 抛错时不得留下半条记录
 
     def test_成功可记空分支(self):
         ledger = RunLedger("T001")
@@ -75,13 +79,17 @@ class TestSampleClassification:
 
 class TestSummary:
     def test_缺失分支可见(self):
-        """八条里有哪条没产出——这比「各分支数量」更能说明问题。
-        数量为 0 可能只是样本少，missing 会直接指向「这条路径没接上」。"""
+        """十三条里有哪条没产出——这比「各分支数量」更能说明问题。
+        数量为 0 可能只是样本少，missing 会直接指向「这条路径没接上」。
+
+        2026-10-12 阶段 1：``login_wall_or_blocked`` 已弃用、不进
+        ``all_branches()``，missing 断言改盯活跃新分支 ``login_required``
+        ——合并态由 ``record()`` 按 DEPRECATED_BRANCHES 放行，但不计缺。"""
         ledger = RunLedger("T001")
         ledger.record("https://x.test/", "no_play_control", "e")
         s = ledger.summary()
         assert "no_play_control" in s["by_branch"]
-        assert "login_wall_or_blocked" in s["missing_branches"]
+        assert "login_required" in s["missing_branches"]
         assert len(s["missing_branches"]) == len(questions.all_branches()) - 1
 
     def test_全分支覆盖时_missing_为空(self):
@@ -126,8 +134,9 @@ class TestSerialization:
 
     def test_决策来源透传(self):
         ledger = RunLedger("T001")
-        out = ledger.record_from("https://x.test/",
-                                 dec(Q.PLAYER_OK, True, fallback_used=True))
+        out = ledger.record_from(
+            "https://x.test/", dec(Q.PLAYER_OK, True, fallback_used=True)
+        )
         assert out.source == "rule"
         assert out.fallback_used is True
 
@@ -150,8 +159,14 @@ class TestObservationWarning:
         from trajectory_pipeline.executor.branches import (
             validate_observation_for_decision,
         )
-        obs = Observation(url="u", page_title="t", body_text="b",
-                          degraded=("browser_links",), truncated=True)
+
+        obs = Observation(
+            url="u",
+            page_title="t",
+            body_text="b",
+            degraded=("browser_links",),
+            truncated=True,
+        )
         msg = validate_observation_for_decision(obs, Q.SELECT_PLAY_SITES)
         assert "降级" in msg and "截断" in msg
 
@@ -159,6 +174,7 @@ class TestObservationWarning:
         from trajectory_pipeline.executor.branches import (
             validate_observation_for_decision,
         )
+
         obs = Observation(url="u", page_title="t", body_text="b")
         assert validate_observation_for_decision(obs, Q.SELECT_PLAY_SITES) == ""
 
@@ -191,8 +207,10 @@ class TestPlayerUnverified:
         """``reached`` 必须为 True——这条恰恰是「到了却没结论」，
         报成「没到」会把最有价值的复核样本（页面就在存档里）说没了。"""
         led = RunLedger("T001")
-        assert led.record_unresolved_reached(
-            "https://x.test/p", self._dec()).reached is True
+        assert (
+            led.record_unresolved_reached("https://x.test/p", self._dec()).reached
+            is True
+        )
 
     def test_不进负样本池(self):
         """同 I4：判不了 ≠ 失败。这条进池就是在说「这里看不了」，
@@ -205,13 +223,15 @@ class TestPlayerUnverified:
     def test_三支没判出来的成因分开统计(self):
         """报表按分支定位该修什么。合成一支后，
         「感知层该加能力」与「播放页证据不足」会长得一模一样。"""
-        assert {"unresolved", "player_unverified", "trailer_suspect"} \
-            <= NON_SAMPLE_BRANCHES
+        assert {
+            "unresolved",
+            "player_unverified",
+            "trailer_suspect",
+        } <= NON_SAMPLE_BRANCHES
         led = RunLedger("T001")
         led.record("https://a.test/", "unresolved", "e")
         led.record_unresolved_reached("https://b.test/p", self._dec())
-        assert led.summary()["by_branch"] == \
-            {"unresolved": 1, "player_unverified": 1}
+        assert led.summary()["by_branch"] == {"unresolved": 1, "player_unverified": 1}
 
     def test_拒收非None(self):
         """传了 True/False 进来会记错分支，而调用方拼错应该炸。"""
@@ -232,8 +252,7 @@ class TestPlayerUnverified:
         """反向护栏：环节①–④ 的入口。环节⑦ 若误接它，None 会退回
         unresolved——分类退化但不炸，属于最该被测试盯住的那类改动。"""
         led = RunLedger("T001")
-        assert led.record_from("https://x.test/p", self._dec()).branch \
-            == "unresolved"
+        assert led.record_from("https://x.test/p", self._dec()).branch == "unresolved"
 
 
 class TestOutcomeUrls:
@@ -242,8 +261,10 @@ class TestOutcomeUrls:
     def test_三个字段各自落盘(self):
         led = RunLedger("T001")
         out = led.record_unresolved_reached(
-            "https://x.test/play/e5", dec(Q.PLAYER_OK, None),
-            site_url="http://x.test/movie", play_page_url="https://x.test/play/e5",
+            "https://x.test/play/e5",
+            dec(Q.PLAYER_OK, None),
+            site_url="http://x.test/movie",
+            play_page_url="https://x.test/play/e5",
         )
         j = out.to_json()
         assert j["site_url"] == "http://x.test/movie"
@@ -254,16 +275,21 @@ class TestOutcomeUrls:
         """实测存档里 4 个 run 的候选 url 是 http、outcome url 是 https。
         只留一个字段的话，丢的那个就再也无法从存档恢复了。"""
         led = RunLedger("T001")
-        out = led.record_from("https://x.test/play/e5", dec(Q.PLAYER_OK, False),
-                              site_url="http://x.test/movie",
-                              play_page_url="https://x.test/play/e5")
+        out = led.record_from(
+            "https://x.test/play/e5",
+            dec(Q.PLAYER_OK, False),
+            site_url="http://x.test/movie",
+            play_page_url="https://x.test/play/e5",
+        )
         assert out.site_url != out.url
 
     def test_没到播放页时播放页地址为空(self):
         """空是**正确**的值：按 D-6 口径「不适用、不扣分」。
         编一个出来才是把猜测写成事实。"""
         led = RunLedger("T001")
-        assert led.record("https://x.test/m", "no_play_control", "e").play_page_url == ""
+        assert (
+            led.record("https://x.test/m", "no_play_control", "e").play_page_url == ""
+        )
 
 
 class TestBranchPrecondition:
@@ -285,15 +311,20 @@ class TestBranchPrecondition:
     def _dec(self, answer):
         from trajectory_pipeline.perception.base import Decision
 
-        return Decision(question=Q.PLAYER_OK, answer=answer, confidence=0.8,
-                        evidence="LLM 判 False：并非实际播放页",
-                        source="llm")
+        return Decision(
+            question=Q.PLAYER_OK,
+            answer=answer,
+            confidence=0.8,
+            evidence="LLM 判 False：并非实际播放页",
+            source="llm",
+        )
 
     def _obs(self, **kw):
         from trajectory_pipeline.perception.base import Observation
 
-        base = dict(url="https://x.test/p", page_title="功夫 - 某站",
-                    body_text="立即播放")
+        base = dict(
+            url="https://x.test/p", page_title="功夫 - 某站", body_text="立即播放"
+        )
         base.update(kw)
         return Observation(**base)
 
@@ -302,7 +333,8 @@ class TestBranchPrecondition:
 
         led = RunLedger(task_id="T001")
         out = led.record_from(
-            "https://x.test/p", self._dec(False),
+            "https://x.test/p",
+            self._dec(False),
             obs=self._obs(url="https://x.test/p", video_tag_count=0),
             pre_obs=self._obs(url="https://x.test/p"),
         )
@@ -316,7 +348,8 @@ class TestBranchPrecondition:
 
         led = RunLedger(task_id="T001")
         out = led.record_from(
-            "https://x.test/p", self._dec(False),
+            "https://x.test/p",
+            self._dec(False),
             obs=self._obs(url="https://x.test/p", video_tag_count=0),
             pre_obs=self._obs(url="https://x.test/p"),
         )
@@ -330,7 +363,8 @@ class TestBranchPrecondition:
 
         led = RunLedger(task_id="T001")
         out = led.record_from(
-            "https://x.test/play", self._dec(False),
+            "https://x.test/play",
+            self._dec(False),
             obs=self._obs(url="https://x.test/play", video_tag_count=0),
             pre_obs=self._obs(url="https://x.test/site"),
         )
@@ -351,34 +385,144 @@ class TestBranchPrecondition:
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
-        out = led.record_from("https://x.test/p", self._dec(False),
-                              obs=self._obs(video_tag_count=0))
+        out = led.record_from(
+            "https://x.test/p", self._dec(False), obs=self._obs(video_tag_count=0)
+        )
         assert out.branch == "component_unverified"
+
+    def test_login_required_同页时降级(self):
+        """② 拆分的 login_required 复用**同页守卫**（设计文档 §8 风险 5）：
+        站点页导航栏的「请登录」不是登录墙，点击没换页就没有新证据。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/site",
+            Decision(Q.IS_REACHABLE, False, 0.8, "需登录", "llm",
+                     {"access_control_type": "login"}),
+            obs=self._obs(url="https://x.test/site", body_text="请登录"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="请登录"),
+        )
+        assert out.branch == "unresolved", "同页却记了 login_required"
+        assert "同一个页面" in out.evidence
+
+    def test_login_required_到了目标页才成立(self):
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/login",
+            Decision(Q.IS_REACHABLE, False, 0.8, "需登录", "llm",
+                     {"access_control_type": "login"}),
+            obs=self._obs(url="https://x.test/login", body_text="登录后可免费观看"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="影片详情"),
+        )
+        assert out.branch == "login_required"
+
+    def test_blocked_同页时降级(self):
+        """blocked 同样复用同页守卫：站点入口页的弹窗/文案不是环境阻断。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/site",
+            Decision(Q.IS_REACHABLE, False, 0.8, "地区限制", "llm",
+                     {"access_control_type": "region"}),
+            obs=self._obs(url="https://x.test/site", body_text="仅限中国大陆"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="仅限中国大陆"),
+        )
+        assert out.branch == "unresolved", "同页却记了 blocked"
+
+    def test_blocked_到了目标页才成立(self):
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/play",
+            Decision(Q.IS_REACHABLE, False, 0.8, "验证码", "llm",
+                     {"access_control_type": "anti_bot"}),
+            obs=self._obs(url="https://x.test/play", body_text="验证码"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="影片详情"),
+        )
+        assert out.branch == "blocked"
+
+    def test_partial_free_同页时降级(self):
+        """④ 拆分的 partial_free 复用同页守卫：站点页的「会员抢先看」
+        是宣传文案，不是试看付费墙。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/site",
+            Decision(Q.PLAYER_OK, False, 0.8, "会员抢先看", "llm",
+                     {"paywall_type": "preview"}),
+            obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
+        )
+        assert out.branch == "unresolved", "同页却记了 partial_free"
+
+    def test_partial_free_到了播放页才成立(self):
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/play",
+            Decision(Q.PLAYER_OK, False, 0.8, "试看6分钟", "llm",
+                     {"paywall_type": "trial"}),
+            obs=self._obs(url="https://x.test/play", body_text="试看6分钟，完整需会员"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="影片详情"),
+        )
+        assert out.branch == "partial_free"
+
+    def test_broken_不受同页守卫影响(self):
+        """broken 是**条件式**：404 形态 URL 即证据、无需播放页前置，
+        因此不进 ``_precondition_failed`` 的守卫集合——同页也不降级。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/404",
+            Decision(Q.IS_REACHABLE, False, 0.8, "404", "llm",
+                     {"access_control_type": "not_found"}),
+            obs=self._obs(url="https://x.test/404", body_text="404"),
+            pre_obs=self._obs(url="https://x.test/404", body_text="404"),
+        )
+        assert out.branch == "broken", "broken 不适用同页守卫"
 
     def test_answer为None不受影响(self):
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
-        out = led.record_from("https://x.test/p", self._dec(None),
-                              obs=self._obs(video_tag_count=0))
+        out = led.record_from(
+            "https://x.test/p", self._dec(None), obs=self._obs(video_tag_count=0)
+        )
         assert out.branch == "unresolved"
 
-    def test_只有两条分支有前置事实(self):
+    def test_前置事实表_六条(self):
         """这张表要短。长得跟分支表一样长就没人维护了——
         一旦要求给每条分支都填前置事实，没人填的会变成空串，
         而空串与「不需要前置事实」长得一模一样。
 
-        2026-10-10 加了 ``subscription_wall``（第二条）。**继续加之前
-        先问「它真的需要前置事实吗」**——本测试的上限是 **3 条**，
-        到了就该停下来重新想这张表，而不是改数字。
+        2026-10-12 阶段 1：② 拆分（login_required/blocked）与 ④ 拆分
+        （partial_free）按设计文档 §8 风险 5 复用**同页守卫**，表从 2 涨到
+        6；``broken`` 是**条件式**——404 形态无需播放页前置（URL 即证据），
+        媒体损坏形态走 media_signal 暴露、不经 decision_branch 自动产出，
+        所以它登记口径但**不在** ``_precondition_failed`` 的守卫集合里。
+        上限随表同步到 **6 条**——到了就该停下来重新想这张表，而不是改数字。
         """
         from trajectory_pipeline.executor.branches import BRANCH_PRECONDITION
 
         assert set(BRANCH_PRECONDITION) == {
-            "component_unverified", "subscription_wall"}
-        assert len(BRANCH_PRECONDITION) <= 3, (
-            "前置事实表超过 3 条了——这张表的价值在于短，"
-            "每加一条都要有人维护它")
+            "component_unverified",
+            "subscription_wall",
+            "login_required",
+            "blocked",
+            "partial_free",
+            "broken",
+        }
+        assert len(BRANCH_PRECONDITION) <= 6, (
+            "前置事实表超过 6 条了——这张表的价值在于短，每加一条都要有人维护它"
+        )
 
     def test_付费墙前置事实不成立时降级(self):
         """「有播放页但需付费」要求**确实到了播放页**。站点页上的
@@ -390,9 +534,10 @@ class TestBranchPrecondition:
         led = RunLedger("T001")
         out = led.record_from(
             "https://x.test/movie",
-            Decision("player.ok", False, 0.8, "需付费", "llm",
-                     {"paywall": True}),
-            obs=same, pre_obs=pre)
+            Decision("player.ok", False, 0.8, "需付费", "llm", {"paywall": True}),
+            obs=same,
+            pre_obs=pre,
+        )
         assert out.branch == "unresolved", "点击前后同页却记了付费墙"
 
     def test_付费墙到了播放页才成立(self):
@@ -401,10 +546,10 @@ class TestBranchPrecondition:
         led = RunLedger("T001")
         out = led.record_from(
             "https://x.test/movie",
-            Decision("player.ok", False, 0.8, "需付费", "llm",
-                     {"paywall": True}),
+            Decision("player.ok", False, 0.8, "需付费", "llm", {"paywall": True}),
             obs=self._obs(video_tag_count=0, body_text="开通会员观看"),
-            pre_obs=self._obs(video_tag_count=0, body_text="站点首页"))
+            pre_obs=self._obs(video_tag_count=0, body_text="站点首页"),
+        )
         assert out.branch == "subscription_wall"
 
     def test_同页判定与评分器同源(self):
@@ -418,15 +563,18 @@ class TestBranchPrecondition:
         def as_dict(o):
             if o is None:
                 return None
-            return {"url": o.url,
-                    "interactive_elements": o.interactive_elements,
-                    "body_text": o.body_text}
+            return {
+                "url": o.url,
+                "interactive_elements": o.interactive_elements,
+                "body_text": o.body_text,
+            }
 
         a = self._obs(url="https://x.test/p", body_text="同页")
         b = self._obs(url="https://x.test/p", body_text="同页")
         c = self._obs(url="https://x.test/p2", body_text="同页")
         d = self._obs(url="https://x.test/p", body_text="不同")
         for x, y in ((a, b), (a, c), (a, d), (a, None), (None, b)):
-            assert exec_same(x, y) == d4_scorer._same_page(as_dict(x), as_dict(y)), \
-                f"两份 _same_page 漂移：exec={exec_same(x, y)} " \
+            assert exec_same(x, y) == d4_scorer._same_page(as_dict(x), as_dict(y)), (
+                f"两份 _same_page 漂移：exec={exec_same(x, y)} "
                 f"scorer={d4_scorer._same_page(as_dict(x), as_dict(y))}"
+            )

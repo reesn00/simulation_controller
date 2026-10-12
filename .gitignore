@@ -63,6 +63,7 @@ htmlcov/
 .codegraph/
 .codeartsdoer/
 .claude/
+.workbuddy/
 
 # Project outputs
 /output/

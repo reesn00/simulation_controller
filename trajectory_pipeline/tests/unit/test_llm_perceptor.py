@@ -809,3 +809,244 @@ class Test付费墙记账:
         from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
 
         assert "subscription_wall" not in NON_SAMPLE_BRANCHES
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 增量十五 · P3 code fallback 测试（evidence → 细分字段反推）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestCodeFallbackEvidence:
+    """2026-10-12 增量十五：LLM 没给 ``access_control_type`` /
+    ``paywall_type`` 时，code 从 evidence 关键词反推——避免被合态吞掉
+    真 partial_free / login_required 样本。
+
+    测试要钉两条线：
+    1. evidence 关键词全命中 → 返回对应合法值 + note 非空
+    2. evidence 无关键词 → 返回空串 + note 空（按现状落合态）
+
+    ⚠️ 同时测「**故意不做子串匹配**」：单字"登录"在 B 站普通 button 上
+    也常见，不应推断为 ``login``——保留窄口径。"""
+
+    def test_access_login_从登录后关键词(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        assert infer_access_from_evidence("页面要求登录后观看完整版") == "login"
+        assert infer_access_from_evidence("请先登录再继续") == "login"
+
+    def test_access_region_从70017001(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        assert infer_access_from_evidence("错误码 70017001 当前地区不支持") == "region"
+
+    def test_access_anti_bot(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        assert (
+            infer_access_from_evidence(
+                "Performing security verification (Cloudflare)"
+            )
+            == "anti_bot"
+        )
+
+    def test_access_not_found_从错误页(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        assert infer_access_from_evidence("视频不存在或已被删除") == "not_found"
+
+    def test_access_视频不存在_不命中_strict(self):
+        """⚠️ **P3 重构回归测试**（2026-10-12 增量十五）。
+
+        「视频不存在」/「内容不存在」**移除**自 not_found 关键词——
+        LLM evidence 是「结论+证据」混合文本，"目标视频已不存在"是模型
+        自述推断，code 不该把它当页面原文。留「已被删除/已下架/404 错误」
+        等更接近真实文案的短语。
+
+        v.qq.com/70017001 在引入本收紧前被错误地落 broken（regional → broken
+        regression），明确收紧后应不再命中。
+        """
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        # 这些是 LLM 推断常用短语，**不能**触发 not_found
+        for s in (
+            "目标视频已不存在",
+            "页面里看到这个视频不存在了",
+            "内容不存在，请重新搜索",
+        ):
+            assert infer_access_from_evidence(s) == "", s
+
+    def test_access_单字登录不命中(self):
+        """**故意不做模糊匹配**：「登录」单独出现在 B 站 button 上，
+        不应触发 login 推断。"""
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        assert infer_access_from_evidence("登录账号  注册  收藏  下载") == ""
+
+    def test_access_空evidence返空(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        assert infer_access_from_evidence("") == ""
+
+    def test_paywall_type_preview_从试看(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_paywall_type_from_evidence,
+        )
+        assert infer_paywall_type_from_evidence("试看 6 分钟，欢迎观看完整版") == "preview"
+        assert infer_paywall_type_from_evidence("限时免费，前几集抢先") == "preview"
+
+    def test_paywall_type_trial_从试用(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_paywall_type_from_evidence,
+        )
+        assert infer_paywall_type_from_evidence("新用户免费试用 7 天") == "trial"
+
+    def test_paywall_type_无关键词返空(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_paywall_type_from_evidence,
+        )
+        # 「大会员」单独出现不算 preview（避免与登录词表重叠）
+        assert infer_paywall_type_from_evidence("开通会员，本片 VIP 独占") == ""
+
+
+class TestResolveFieldHelper:
+    """``_resolve_field`` 是 LLM 给字段与 code fallback 之间的桥梁。
+    它不直接做归因,只做「合法值校验 + evidence fallback + note 拼装」三件
+    事——note 是给人工看的"这是 code 推断的"信号。"""
+
+    def test_llm给的合法值直接用(self):
+        from trajectory_pipeline.perception.llm_perceptor import _resolve_field
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        v, note = _resolve_field(
+            "region",
+            frozenset({"login", "region"}),
+            infer_access_from_evidence,
+            "随便什么 evidence",
+            label="access_control_type",
+        )
+        assert v == "region"
+        assert note == ""
+
+    def test_llm给非法值且evidence无关键词返空(self):
+        from trajectory_pipeline.perception.llm_perceptor import _resolve_field
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        v, note = _resolve_field(
+            "宇宙无敌机翻墙",  # 非法值
+            frozenset({"login", "region"}),
+            infer_access_from_evidence,
+            "完全无关的 evidence",
+            label="access_control_type",
+        )
+        assert v == ""
+        assert note == ""
+
+    def test_evidence反推生效时note必须非空(self):
+        """note 是给人工的「这是 code fallback」唯一信号——
+        它非空时，evidence 应可读出 code_fallback 字样与具体值。"""
+        from trajectory_pipeline.perception.llm_perceptor import _resolve_field
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        v, note = _resolve_field(
+            "",  # LLM 没给
+            frozenset({"login", "region"}),
+            infer_access_from_evidence,
+            "页面要求登录后观看",
+            label="access_control_type",
+        )
+        assert v == "login"
+        assert "code_fallback" in note
+        assert "login" in note
+
+
+class TestPageQuotes辅助:
+    """2026-10-12 增量十六 · P4a：page_quotes 字段是 LLM 单独回传的
+    页面原文短语——code fallback 用它，**不**用 evidence 自述文本。
+
+    这些 helper 是契约测试：拒 LLM 给畸形 ``page_quotes``（如 ``""`` 串、
+    null、混入非字符串元素）时不抛，按空处理。
+    """
+
+    def test_quote_text_normal(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quote_text
+        out = _quote_text({"page_quotes": ["请先登录再继续", "登录后观看"]})
+        assert "请先登录再继续" in out
+        assert "登录后观看" in out
+
+    def test_quote_text_忽略非字符串(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quote_text
+        out = _quote_text({"page_quotes": ["试看 6 分钟", 123, None, {}, "免费"]})
+        # 123 经 schema_parse.as_str 转 "123"；None/{} 转 "" 被过滤
+        # join 单空格分隔（schema_parse 已经规整化）
+        assert out == "试看 6 分钟 123 免费"
+
+    def test_quote_text_缺失返空(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quote_text
+        assert _quote_text({}) == ""
+        assert _quote_text({"page_quotes": None}) == ""
+        assert _quote_text({"page_quotes": "字符串不是 list"}) == ""
+
+    def test_quote_list_normal(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quote_list
+        out = _quote_list({"page_quotes": ["请登录", "登录后"]})
+        assert out == ["请登录", "登录后"]
+
+    def test_quote_list_丢失非str(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quote_list
+        out = _quote_list({"page_quotes": ["OK", 99, "", "继续"]})
+        # 99 经 schema_parse.as_str 转 "99" 入列；空串与 None/{} 被过滤
+        assert out == ["OK", "99", "继续"]
+
+
+class TestPageQuotes接入FieldeFallback:
+    """P4a 端到端：_resolve_field 用 page_quotes 而非 evidence 时，
+    evidence 里的 LLM 推断不再误触；page_quotes 里的页面原文才命中。
+
+    这是 P3 v1 → 修复 → P4a 的总检证：把 regression 的根因根除。
+    """
+
+    def test_quotes空时_fallback_不触发(self):
+        """P3 v1 regression 复现检验：
+        LLM 自述落在 evidence 时不应被 fallback 看到；page_quotes 为空时
+        fallback 必须返回空串、不写 note。
+        """
+        from trajectory_pipeline.perception.llm_perceptor import _resolve_field
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        v, note = _resolve_field(
+            "",
+            frozenset({"login", "region", "captcha", "anti_bot", "not_found"}),
+            infer_access_from_evidence,
+            "",  # page_quotes 为空——不触发
+            label="access_control_type",
+        )
+        assert v == ""
+        assert note == ""
+
+    def test_quotes命中_能触发(self):
+        """真实场景：B 站页面 LLM 给 page_quotes=["请先登录再继续"]，
+        不给 access 字段——code 应能推回 login。"""
+        from trajectory_pipeline.perception.llm_perceptor import _resolve_field
+        from trajectory_pipeline.perception.rule_perceptor import (
+            infer_access_from_evidence,
+        )
+        v, note = _resolve_field(
+            "",
+            frozenset({"login", "region", "captcha", "anti_bot", "not_found"}),
+            infer_access_from_evidence,
+            "请先登录再继续观看",
+            label="access_control_type",
+        )
+        assert v == "login"
+        assert "code_fallback" in note

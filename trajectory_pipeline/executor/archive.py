@@ -172,10 +172,18 @@ def scan_credentials(payload: str) -> list[str]:
 
 
 class P1Archive:
-    """P1 存档写入器。"""
+    """P1 存档写入器。
 
-    def __init__(self, root: Path | None = None) -> None:
+    ``subdir`` 把产物写进 ``<root>/<subdir>/``，用于把验证工具
+    （如 :mod:`executor.cli.cmd_proberun`）的产物与生产链归档隔开——
+    它们长得像 P1（schema 同源），**不应**被训练批次的 glob
+    （``output/pipeline/*__*.json``）一并收走。2026-10-12 增量十三配套。
+    """
+
+    def __init__(self, root: Path | None = None, subdir: str = "") -> None:
         self._root = Path(root or DEFAULT_ROOT)
+        if subdir:
+            self._root = self._root / subdir
 
     @property
     def root(self) -> Path:

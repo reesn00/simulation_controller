@@ -55,9 +55,43 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
                 "这个页面是否**正常打开了内容**？"
                 "登录墙、验证码、404、地区限制、空白页都算不可达。"
                 "注意：内容里**提到**「请登录」不代表不可达——"
-                "要判断的是页面主体是不是被挡住了。"
+                "要判断的是页面主体是不是被挡住了。\n\n"
+                "如果 **answer=false**，请**同时**给出 ``access_control_type`` 字段，"
+                "五个值之一：\n"
+                "- ``login``      — 提示登录后可继续看（如「请登录」「登录后观看完整版」"
+                "等可绕过的登录墙，agent 没登录态因此取不到正片）\n"
+                "- ``region``     — 地区限制（如海外 IP 限制、错误码 70017001 等"
+                "特定地区码）\n"
+                "- ``captcha``    — 图形/滑动/短信验证码\n"
+                "- ``anti_bot``   — Cloudflare 验证、机器人检测、JS challenge"
+                "（「Performing security verification」「Just a moment…」等）\n"
+                "- ``not_found``  — 404 页面、内容已被删除/下架\n"
+                "- ``null``       — 判 false 但不属于以上情形（兜底；宁可 null 也别猜）\n\n"
+                "依据：在 ``evidence`` 里直接贴出页面文案或错误码。"
+                "拿不准就 ``null``——细分是给人复核用的，猜错会被打回去。\n\n"
+                # 2026-10-12 增量十六 · P4a：让 LLM 单独回传 page_quotes
+                # 字段——这是**只装页面原文短语**的字段，与 evidence 分离。
+                # evidence 是 LLM 自述（含结论与推断），page_quotes 必须是**逐字
+                # 引用**（不写 "这是登录墙" 这种改写，**只写页面上看到的字符串**）。
+                # code 层用 page_quotes 反推细分字段，避免 evidence 自述误触关键字
+                # （P3 v1 v.qq.com 实证过 regression）。
+                "**再单独给出 ``page_quotes``**（array of str）——"
+                "把你看到的**页面上真实出现的**中文/英文短语逐字引用：\n"
+                "- 例：``[\"请先登录再继续\", \"登录后观看完整版\", \"您的 IP 不在服务区\"]``\n"
+                "- 例：``[\"404 Not Found\", \"视频不存在\"]``\n"
+                "- **不**改写、**不**翻译、**不**补前置后置文字（\"用户须\",\"页面含\"等）\n"
+                "- **不**写自己的推断（不写\"看起来是登录墙\"）\n"
+                "- 没看到明显短语就空数组 ``[]``——evidence 与 page_quotes 是两条独立证据"
             ),
             answer_type="bool",
+            schema_hint=MappingProxyType(
+                {
+                    "access_control_type": "login|region|captcha|anti_bot|not_found|null",
+                    # 2026-10-12 增量十六：page_quotes 是 P4a 的新增字段，
+                    # 必须是 str 数组，不能 string。
+                    "page_quotes": "array of str",
+                }
+            ),
             confidence_threshold=0.7,
             evidence_required=True,
             negative_branch="login_wall_or_blocked",
@@ -86,9 +120,38 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
                 "（开通会员、订阅后观看、购买单集…），"
                 "**判否**——本项目的口径是「有播放页但需付费不算成功」。\n"
                 "反之，页面只是**导航栏**里挂着「免费观看」「VIP」字样而并未"
-                "挡住播放的，不要因此判否。"
+                "挡住播放的，不要因此判否。\n\n"
+                "如果 **answer=false** 且页面**确实阻挡**播放（不是单纯提示），"
+                "请**同时**给出 ``paywall_type`` 字段，三个值之一：\n"
+                "- ``preview`` — 可看一部分（试看 6 分钟 / 前几集免费 / 限时免费 / 预告）；"
+                "agents 不消耗会员也能拿到非空播放\n"
+                "- ``trial``   — 试用 / 体验期（首次免、试用 N 天）\n"
+                "- ``null``    — 不是以上情形（实在付费墙但形态不属于 preview/trial，"
+                "或判 false 但阻挡原因不是付费，例如纯广告前贴片）\n\n"
+                "依据：在 ``evidence`` 里贴出页面文案关键字（试看/前几集/开通会员/购买"
+                "单集/VIP 等）；区分不了就 ``null``，别猜——细分会被复核队列校对。\n\n"
+                # 2026-10-12 增量十六 · P4a：要求 LLM 单独回 page_quotes——
+                # **只装页面原文**（如"开通会员后观看完整版"），evidence
+                # 是 LLM 自述、page_quotes 才是真原文。code 用 page_quotes 反推
+                # paywall_type / 审稿事件——避免 evidence 自述误触付费关键词
+                # 集合（P3 v1 实证过 regression）。
+                "**再单独给出 ``page_quotes``**（array of str）——"
+                "把你看到的**页面上真实出现的**付费提示短语逐字引用：\n"
+                "- 例：``[\"开通 VIP 后观看\", \"试看 6 分钟，订阅继续观看\", \"购买单集 ¥6\"]``\n"
+                "- 例：``[\"免费试用 7 天\", \"首月免费\", \"仅限会员\"]``\n"
+                "- **不**改写、**不**翻译（页面写「开通会员」就**只**写「开通会员」，"
+                "**不**写「提示用户付费」）\n"
+                "- **不**写自己的推断（不写\"看起来在催付费\"）\n"
+                "- 没看到明显短语就空数组 ``[]``"
             ),
             answer_type="bool",
+            schema_hint=MappingProxyType(
+                {
+                    "paywall_type": "preview|trial|null",
+                    # 2026-10-12 增量十六：P4a 新增字段，必须是 str 数组。
+                    "page_quotes": "array of str",
+                }
+            ),
             confidence_threshold=0.7,
             evidence_required=True,
             negative_branch="component_unverified",
@@ -96,35 +159,84 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
     }
 )
 
-#: 不属于任何一道 Question 的分支——它们由**代码**判定或兜底，不经 LLM。
+#: 不属于任何一道 Question 的 ``negative_branch`` 的分支——它们由**代码**
+#: 判定（含按 ``Decision.payload`` 选用细分）或兜底，不经 LLM。
 #: 挂在注册表里是为了让「失败分支全集」有唯一出处（``executor/branches.py`` 校验）。
 #:
-#: 五类来源：
+#: 来源分两类：
+#:
+#: **代码直判 / 兜底**：
 #:   ``unreachable_hard``  导航失败，代码直接判（``DriverError`` → I4）
 #:   ``trailer_only``      预告片词表命中，代码判
 #:   ``trailer_suspect``   疑似预告但词表判不准，**留给人工兜底**
 #:   ``unresolved``        能力不可用，fail-closed 的落点（I4）
-#:   ``subscription_wall``  ④ 的细分：**有播放页但需订阅/付费**（2026-10-10
-#:                         口径裁定，用户看不到正片 → 不算成功）
 #:   ``player_unverified`` 判断点④ 判不出来，**但控件点了、播放页在眼前**
 #:                         ——它与 ``unresolved`` 都「不是负样本」，
 #:                         成因却不同（页面证据不足 vs 代码能力不足），
 #:                         混在一支里复核队列就没法分工。详见
 #:                         ``executor/branches.py`` 的
 #:                         :meth:`RunLedger.record_unresolved_reached`
-CODE_ONLY_BRANCHES = frozenset({
-    "unreachable_hard", "trailer_only", "trailer_suspect", "unresolved",
-    "player_unverified", "subscription_wall",
-})
+#:
+#: **判断题的 payload 细分**（2026-10-12 阶段 1，Q1–Q4 口径冻结）：
+#: 题绑定仍是合并态（② ``login_wall_or_blocked``、④ ``component_unverified``），
+#: 细分分支由代码按 payload 选用——它们同样必须先出现在注册表里，
+#: 否则 ``executor/branches.py`` 落盘校验会当场炸：
+#:   ``subscription_wall``  ④ 的细分：**有播放页但需订阅/付费**（2026-10-10
+#:                         口径裁定，用户看不到正片 → 不算成功）
+#:   ``login_required``     ② 的细分（Q2）：登录后可免费看，agent 无登录态
+#:   ``blocked``            ② 的细分（Q4）：地区限制/验证码/反爬/robots 环境阻断
+#:   ``broken``             内容损坏（404/媒体不可解码/duration=0），与
+#:                         ``unreachable_hard``（环境导航失败）刻意分离
+#:   ``partial_free``       ④ 的细分（Q3）：有免费部分（试看/预告），
+#:                         完整内容需付费
+CODE_ONLY_BRANCHES = frozenset(
+    {
+        "unreachable_hard",
+        "trailer_only",
+        "trailer_suspect",
+        "unresolved",
+        "player_unverified",
+        "subscription_wall",
+        "login_required",
+        "blocked",
+        "broken",
+        "partial_free",
+    }
+)
 
-#: ④ ``PLAYER_OK`` 判 False 时的**细分分支**——由 ``Decision.payload``
-#: 里的 ``paywall`` 标记选用，不走 ``negative_branch``（那条是
-#: ``component_unverified``，即「点了但没组件」）。
+#: **已弃用**的分支（2026-10-12 阶段 1）：不再由新代码路径主动产生，
+#: 保留是为了**历史兼容**——旧存档合并态展示、以及 visit.py ② 未细分
+#: 的老路径（Decision 无 payload 时仍落合并态）都需要它合法。
+#:
+#: 处理规则与 :func:`all_branches` / ``executor/branches.py::record`` 配套：
+#:
+#: - ``all_branches()`` **排除**已弃用分支——覆盖追踪（``missing_branches``）
+#:   不再要求它产出，新增分支不会因为历史合并态「没产出」而误报；
+#: - ``record()`` 校验时**额外放行**——历史路径仍可能产出它，抛
+#:   ``UnknownBranch`` 会把旧调用点当场炸掉（test_visit.py 四处断言
+#:   会全红）。
+DEPRECATED_BRANCHES = frozenset(
+    {
+        # ② 的合并态：登录墙 / 验证码 / 地区限制。阶段 1 拆分为
+        # ``login_required`` / ``blocked`` / ``broken`` 后不再主动产出，
+        # 但 visit.py ② 不传 payload 的路径仍落它（决策口径见
+        # ``executor/branches.py::decision_branch`` 的「payload 缺失保持现状」）。
+        "login_wall_or_blocked",
+    }
+)
+
+#: ④ ``PLAYER_OK`` 判 False 时的**细分分支大类**——由 ``Decision.payload``
+#: 里的 ``paywall`` / ``paywall_type`` 标记选用，不走 ``negative_branch``
+#: （那条是 ``component_unverified``，即「点了但没组件」）。
 #:
 #: **为什么单独一支**（2026-10-10 口径裁定）：「有播放页但要付费」既不是
 #: 成功（用户看不到正片），也不是「页面上没有播放控件」（控件是有的，
 #: 卡在付费）。混进 ``component_unverified`` 就丢掉了这个区别，而两者
 #: 训练出来的东西完全不同——一个学「识别付费墙并退出」，一个学「控件没渲染」。
+#:
+#: 2026-10-12 阶段 1 起是**大类**而不是单支：``paywall_type=preview/trial``
+#: （试看/预告后付费）落 :data:`partial_free` 分支，其余（订阅/租赁/购买）
+#: 仍落本常量。选型见 ``executor/branches.py::decision_branch``。
 PAY_WALL = "subscription_wall"
 
 
@@ -143,13 +255,19 @@ def negative_branch_of(question_id: str) -> str:
 
 
 def all_branches() -> frozenset[str]:
-    """失败分支全集（9 条）。
+    """活跃失败分支全集（13 条，已排除 :data:`DEPRECATED_BRANCHES`）。
 
     这是契约的一部分：``executor/branches.py`` 落盘时按这个集合校验，
     出现集合外的分支名即报错，避免「分支静默消失」。
+
+    2026-10-12 阶段 1：10 → 13（10 旧 − ``login_wall_or_blocked``
+    deprecated + ``login_required`` / ``blocked`` / ``broken`` /
+    ``partial_free`` 四个新分支）。已弃用分支不进本集合——它不再要求
+    有产出（``missing_branches`` 追踪），但 ``record()`` 校验按
+    :data:`DEPRECATED_BRANCHES` 单独放行，见该常量说明。
     """
     from_question = {q.negative_branch for q in REGISTRY.values() if q.negative_branch}
-    return frozenset(from_question | CODE_ONLY_BRANCHES)
+    return frozenset((from_question | CODE_ONLY_BRANCHES) - DEPRECATED_BRANCHES)
 
 
 #: **分支 → 判断点**的反向映射。与 :data:`REGISTRY` 同源推导，
@@ -165,14 +283,19 @@ def all_branches() -> frozenset[str]:
 #: ``unresolved`` 归 ``""``：它是 :func:`executor.branches.record_from` 的
 #: **通用** fail-closed 出口，任何判断点判 ``None`` 都走它，因此谈不上归属。
 _BRANCH_QUESTION: dict[str, str] = {
-    **{q.negative_branch: qid
-       for qid, q in REGISTRY.items() if q.negative_branch},
-    "subscription_wall": Q.PLAYER_OK,        # ④ 的细分，见 PAY_WALL
-    "player_unverified": Q.PLAYER_OK,        # record_unresolved_reached
-    "trailer_only": Q.FIND_PLAY_CONTROL,     # ③ 的词表分支
-    "trailer_suspect": Q.FIND_PLAY_CONTROL,   # ③，词表判不准待人工
-    "unreachable_hard": Q.IS_REACHABLE,       # ② 导航失败，代码判
+    **{q.negative_branch: qid for qid, q in REGISTRY.items() if q.negative_branch},
+    "subscription_wall": Q.PLAYER_OK,  # ④ 的细分，见 PAY_WALL
+    "player_unverified": Q.PLAYER_OK,  # record_unresolved_reached
+    "trailer_only": Q.FIND_PLAY_CONTROL,  # ③ 的词表分支
+    "trailer_suspect": Q.FIND_PLAY_CONTROL,  # ③，词表判不准待人工
+    "unreachable_hard": Q.IS_REACHABLE,  # ② 导航失败，代码判
     "unresolved": "",
+    # 2026-10-12 阶段 1 的 payload 细分分支——同样先出现在注册表，
+    # 归属才不会被 :func:`question_of_branch` 判成「映射外组合」。
+    "login_required": Q.IS_REACHABLE,  # ② 的细分（Q2）：登录后可免费看
+    "blocked": Q.IS_REACHABLE,  # ② 的细分（Q4）：地区/验证码/反爬
+    "broken": Q.IS_REACHABLE,  # ② 的细分（404）；媒体损坏形态见 media_signal
+    "partial_free": Q.PLAYER_OK,  # ④ 的细分（Q3）：试看/预告后付费
 }
 
 

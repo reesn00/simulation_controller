@@ -105,6 +105,74 @@ class Test分发:
         assert "没有匹配" in capsys.readouterr().out
 
 
+class TestProberunURLLoader:
+    """2026-10-12 增量十三配套。``_load_url_lines`` 是纯 I/O 函数，
+    失败显式抛——不打入 ``cmd_proberun`` 内部逻辑一起测，免得错时
+    不知道是命令行解析坏还是文件加载坏。
+    """
+
+    def test_空文件抛错(self, tmp_path):
+        """空文件（除注释外无 URL）等同「跑 0 条」，终端长得像跑了，
+        实际上数据是 0——必须显式抛。"""
+        p = tmp_path / "empty.txt"
+        p.write_text("# only comment\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="无 URL"):
+            cli._load_url_lines(str(p))
+
+    def test_文件不存在抛错(self, tmp_path):
+        p = tmp_path / "no_such_file.txt"
+        with pytest.raises(FileNotFoundError, match="不存在"):
+            cli._load_url_lines(str(p))
+
+    def test_注释与空行跳过(self, tmp_path):
+        p = tmp_path / "urls.txt"
+        p.write_text(
+            "# 头注释\n"
+            "\n"
+            "https://example.com/a\n"
+            "  \n"
+            "# 行内注释也要跳过\n"
+            "https://example.com/b\n",
+            encoding="utf-8",
+        )
+        urls = cli._load_url_lines(str(p))
+        assert urls == ["https://example.com/a", "https://example.com/b"]
+
+    def test_前后空白被剥(self, tmp_path):
+        """手抄 URL 容易带尾空白；不剥将传到 obscura 当成不同页。"""
+        p = tmp_path / "u.txt"
+        p.write_text("  https://example.com/c  \n", encoding="utf-8")
+        assert cli._load_url_lines(str(p)) == ["https://example.com/c"]
+
+
+class TestProberun参数校验:
+    """``--from-urls`` / ``--title`` 是必须参数——漏了应当立刻拒，
+    而不是先开 obscura 连接再撞错。"""
+
+    def test_缺from_urls立即拒(self, capsys):
+        rc = cli.main(["proberun", "--title", "x"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--from-urls" in err
+
+    def test_缺title立即拒(self, tmp_path, capsys):
+        urls = tmp_path / "u.txt"
+        urls.write_text("https://example.com/\n", encoding="utf-8")
+        rc = cli.main(["proberun", "--from-urls", str(urls)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--title" in err
+
+    def test_URL文件空也拒(self, tmp_path, capsys):
+        """文件解析阶段就拒——不让它跑到 obscura 启动后才报错。"""
+        urls = tmp_path / "u.txt"
+        urls.write_text("# only comment\n", encoding="utf-8")
+        rc = cli.main(["proberun", "--from-urls", str(urls),
+                       "--title", "x"])
+        assert rc == 2
+        assert "无 URL" in capsys.readouterr().err
+
+
 class Test探针:
     def test_probe要浏览器(self):
         """``probe`` 必须是 async —— 它是唯一会开浏览器的新命令。

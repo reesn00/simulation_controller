@@ -4,8 +4,10 @@
 少一支」是**静默失效**——报表上分部数字都在，就是有一支永远是 0，
 没人知道是那支不产出还是那支没接。所以这里做两件事：
 
-1. **入池时校验**：分支名不在注册表的 9 条之内 → 抛错，不落盘。
+1. **入池时校验**：分支名不在注册表的 13 条之内 → 抛错，不落盘。
    新增分支忘了同步 ``perception/questions.py`` 会当场炸，而不是攒一批脏数据。
+   已弃用分支（``questions.DEPRECATED_BRANCHES``）**单独放行**——历史路径
+   仍可能产出合并态 ``login_wall_or_blocked``，不能把旧调用点当场炸掉。
 2. **入池时必带证据**：``Decision.evidence`` 是负样本的**唯一**解释。
    一条没有 evidence 的负样本，在人工复核时无法与「代码 bug 导致的失败」区分，
    等于把排查成本转嫁给标注员。
@@ -27,10 +29,15 @@ from trajectory_pipeline.perception.base import Decision, Observation
 
 #: 分支 → 人读标签。落进 P1 存档，Label Studio 与报表直接用，
 #: 不在下游做二次翻译（翻译一次就多一次走样的机会）。
+#:
+#: 2026-10-12 阶段 1：登录墙合并态拆为 ``login_required`` / ``blocked``
+#: （+ ``broken`` 承接 404）。原 ``login_wall_or_blocked`` **保留但弃用**
+#: ——历史存档要展示，故不删；新代码路径不再主动产出它。全部合法值
+#: （13 活跃 + 1 deprecated + success）= 15 类。
 BRANCH_LABELS: Mapping[str, str] = {
     "not_play_site": "不是播放站点",
     "unreachable_hard": "导航失败（网络/DNS/超时）",
-    "login_wall_or_blocked": "登录墙 / 验证码 / 地区限制",
+    "login_wall_or_blocked": "登录墙 / 验证码 / 地区限制（deprecated：已拆分为细分）",
     "no_play_control": "页面上没有播放控件",
     "trailer_only": "只有预告片，播放资源不存在",
     "trailer_suspect": "疑似预告（词表判不准，待人工）",
@@ -38,6 +45,10 @@ BRANCH_LABELS: Mapping[str, str] = {
     "player_unverified": "有播放组件，但确认不了能不能用",
     "subscription_wall": "Subscription-based playback（有播放页，但需订阅/付费）",
     "unresolved": "感知层未给出结论（fail-closed）",
+    "login_required": "登录后可免费观看（agent 无登录态）",
+    "blocked": "地区限制 / 验证码 / 反爬环境阻断",
+    "broken": "内容损坏（404 / 媒体不可解码 / duration=0）",
+    "partial_free": "有免费部分（试看/预告），完整内容需付费",
 }
 
 #: 这些分支**不是**真负样本，是「没判出来」。单独统计，不进负样本池。
@@ -47,9 +58,13 @@ BRANCH_LABELS: Mapping[str, str] = {
 #:   ``player_unverified`` 环节⑦ 判不出来，**但控件点了、播放页就在眼前**
 #:                         ——不确定的是「组件能不能用」，是页面证据不足
 #:   ``trailer_suspect``    词表判不准，需要语义判断
-NON_SAMPLE_BRANCHES = frozenset({
-    "unresolved", "trailer_suspect", "player_unverified",
-})
+NON_SAMPLE_BRANCHES = frozenset(
+    {
+        "unresolved",
+        "trailer_suspect",
+        "player_unverified",
+    }
+)
 
 
 class UnknownBranch(KeyError):
@@ -82,7 +97,7 @@ class SiteOutcome:
     question: str = ""
     source: str = "rule"
     fallback_used: bool = False
-    reached: bool = False          # 是否走到了播放页
+    reached: bool = False  # 是否走到了播放页
     site_url: str = ""
     play_page_url: str = ""
 
@@ -135,9 +150,15 @@ class RunLedger:
         play_page_url: str = "",
     ) -> SiteOutcome:
         """记一个站点结果并返回它。分支名非法时抛 :class:`UnknownBranch`。"""
-        if branch is not None and branch not in questions.all_branches():
+        if (
+            branch is not None
+            and branch not in questions.all_branches()
+            # 已弃用分支仍在历史路径产出（visit.py ② 不传 payload 时落
+            # 合并态 login_wall_or_blocked），**放行**而不是抛错。
+            and branch not in questions.DEPRECATED_BRANCHES
+        ):
             raise UnknownBranch(
-                f"未知失败分支 {branch!r}；注册表 9 条为 "
+                f"未知失败分支 {branch!r}；注册表 13 条为 "
                 f"{sorted(questions.all_branches())}"
             )
         outcome = SiteOutcome(
@@ -224,16 +245,25 @@ class RunLedger:
             reason = _precondition_failed(branch, obs, pre_obs)
             if reason:
                 return self.record(
-                    url, "unresolved",
+                    url,
+                    "unresolved",
                     f"{decision.evidence}\n"
                     f"[记账降级] 本该记 {branch}，但{reason}——"
                     f"该分支的前置事实不成立，不贴这条负标签",
-                    decision=decision, reached=reached,
-                    site_url=site_url, play_page_url=play_page_url,
+                    decision=decision,
+                    reached=reached,
+                    site_url=site_url,
+                    play_page_url=play_page_url,
                 )
-        return self.record(url, branch, decision.evidence, decision=decision,
-                           reached=reached, site_url=site_url,
-                           play_page_url=play_page_url)
+        return self.record(
+            url,
+            branch,
+            decision.evidence,
+            decision=decision,
+            reached=reached,
+            site_url=site_url,
+            play_page_url=play_page_url,
+        )
 
     def record_unresolved_reached(
         self,
@@ -272,9 +302,15 @@ class RunLedger:
                 f"record_unresolved_reached 只接受 answer=None，收到 "
                 f"{decision.answer!r}（question={decision.question}）"
             )
-        return self.record(url, "player_unverified", decision.evidence,
-                           decision=decision, reached=True,
-                           site_url=site_url, play_page_url=play_page_url)
+        return self.record(
+            url,
+            "player_unverified",
+            decision.evidence,
+            decision=decision,
+            reached=True,
+            site_url=site_url,
+            play_page_url=play_page_url,
+        )
 
     # ── 报表 ────────────────────────────────────────────────────────
 
@@ -295,9 +331,11 @@ class RunLedger:
     def summary(self) -> dict[str, Any]:
         """覆盖率报表。
 
-        ``missing_branches`` 是给**人**看的：九条里有哪条这一批一条都没产出。
+        ``missing_branches`` 是给**人**看的：十三条里有哪条这一批一条都没产出。
         它比「各分支数量」更能说明问题——数量为 0 可能只是样本少，
         而 missing 会直接指向「这条路径没接上」。
+        已弃用分支（``questions.DEPRECATED_BRANCHES``）**不在** missing 里：
+        它不再要求有产出，miss 会说成「没接上」，而那是设计好的。
 
         ⚠️ **跨批次比较分支分布前先看批次边界**：
         ``player_unverified`` 是 2026-10-09 新增的分支，历史存档里的
@@ -340,6 +378,33 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
         "站点页上的「开通会员」是导航栏文案，不是付费墙。"
         "这次点击没把页面带进播放页，就没有新证据支撑这条结论"
     ),
+    # 2026-10-12 阶段 1：② 拆分的 login_required / blocked 与 ④ 拆分的
+    # partial_free 同样要「确实到了目标页/播放页」，否则导航栏文案会被
+    # 当成墙（与 subscription_wall 同款坑，风险 5 明写必须复用同页守卫）。
+    "login_required": (
+        "「登录后可免费观看」要求**确实到了目标页**——站点页导航栏里的"
+        "「请登录」不是登录墙。这次点击没有产生新证据，"
+        "就没有依据贴这条标签"
+    ),
+    "blocked": (
+        "「地区限制/验证码/反爬」同样要求**确实到了目标页**——"
+        "站点入口页的弹窗不是环境阻断。这次点击没有产生新证据，"
+        "就没有依据贴这条标签"
+    ),
+    "partial_free": (
+        "「有免费部分需付费看完整」同样要求**确实到了播放页**——"
+        "站点页上的「会员抢先看」是宣传文案，不是试看付费墙。"
+        "这次点击没把页面带进播放页，就没有新证据支撑这条结论"
+    ),
+    # ``broken`` 是**条件式**，不进同页守卫集合：404 形态无需「到了
+    # 播放页」前置（URL 本身就是证据，页面即 404）；媒体损坏形态需要，
+    # 但阶段 1 由 media_signal 暴露给人工复核，不经 decision_branch
+    # 自动产出，这里只登记口径说明供复核参考。
+    "broken": (
+        "「内容损坏」分两种：404 形态无需播放页前置（URL 即证据）；"
+        "媒体不可解码/duration=0 形态需要，由 media_signal 暴露、"
+        "人工复核核验"
+    ),
 }
 
 
@@ -362,8 +427,9 @@ def _same_page(a: Observation | None, b: Observation | None) -> bool:
     return a.body_text == b.body_text
 
 
-def _precondition_failed(branch: str | None, obs: Observation | None,
-                         pre_obs: Observation | None = None) -> str:
+def _precondition_failed(
+    branch: str | None, obs: Observation | None, pre_obs: Observation | None = None
+) -> str:
     """这条分支的前置事实成立吗？不成立返回说明串，成立返回空串。
 
     ``obs`` / ``pre_obs`` 为 ``None``（调用方没传）一律放行——**这是有意的**：
@@ -373,13 +439,21 @@ def _precondition_failed(branch: str | None, obs: Observation | None,
     """
     if obs is None or branch is None:
         return ""
-    if branch in ("component_unverified", "subscription_wall"):
+    if branch in (
+        "component_unverified",
+        "subscription_wall",
+        "login_required",
+        "blocked",
+        "partial_free",
+    ):
         if pre_obs is None:
             return ""
         if _same_page(pre_obs, obs):
-            return (f"点击播放控件前后是同一个页面"
-                    f"（url={obs.url}，元素数 / 正文也全同）——"
-                    f"{BRANCH_PRECONDITION[branch]}")
+            return (
+                f"点击播放控件前后是同一个页面"
+                f"（url={obs.url}，元素数 / 正文也全同）——"
+                f"{BRANCH_PRECONDITION[branch]}"
+            )
     return ""
 
 
@@ -387,11 +461,36 @@ def decision_branch(decision: Decision) -> str:
     """Decision → 分支名。``None`` → ``unresolved``，否则取题绑定的负分支。
 
     ``answer=True`` 返回空串——成功不是失败分支。
+
+    2026-10-12 阶段 1 起，**payload 细分优先于题绑定**（设计文档 §3.3）：
+
+    - ② ``access_control_type``：``login`` → ``login_required``，
+      ``region``/``captcha``/``anti_bot`` → ``blocked``，
+      ``not_found`` → ``broken``；
+    - ④ ``paywall_type``：``preview``/``trial`` → ``partial_free``，
+      其余仍由 ``paywall`` 大类落在 ``subscription_wall``；
+    - payload 均缺失时**保持题绑定的合并态**（``login_wall_or_blocked`` /
+      ``component_unverified``）——visit.py ② 老路径不传 payload，
+      该行为不能因为阶段 1 而改变（deprecated 分支由 ``record()`` 放行）。
     """
     if decision.answer is True:
         return ""
     if decision.answer is None:
         return "unresolved"
+    # ② 的细分（见 questions._BRANCH_QUESTION 注释）：登录后可免费看、
+    # 地区/验证码/反爬、404，都与「环境导航失败」（unreachable_hard）分开。
+    access = decision.payload.get("access_control_type")
+    if access == "login":
+        return "login_required"
+    if access in ("region", "captcha", "anti_bot"):
+        return "blocked"
+    if access == "not_found":
+        return "broken"
+    # ④ 的细分（2026-10-12 阶段 1）：paywall_type 标明「有免费部分」时
+    # 走 partial_free——试看/预告能看一部分，与整段锁死的订阅墙
+    # （subscription_wall）成因不同，训练目标也不同。
+    if decision.payload.get("paywall_type") in ("preview", "trial"):
+        return "partial_free"
     # 付费墙是 ④ 的细分结论（见 questions.PAY_WALL）。payload 优先于题绑定
     # ——同一个 question 下要能区分「点了没组件」与「卡在付费」，
     # 而两者都由 PLAYER_OK 问出。

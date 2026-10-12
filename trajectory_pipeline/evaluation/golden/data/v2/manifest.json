@@ -1,0 +1,45 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "2",
+ "version": 2,
+ "frozen_at": "2026-10-12T07:21:29+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 277,
+  "annotated": 277,
+  "site": 272,
+  "trajectory": 5,
+  "calibration": 180,
+  "holdout": 97
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.6498,
+  "holdout_ratio": 0.3502,
+  "pp_diff_from_target": 0.0002
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.9,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 48,
+  "success": 36,
+  "subscription_wall": 35,
+  "not_play_site": 31,
+  "component_unverified": 18,
+  "no_play_control": 16,
+  "login_wall_or_blocked": 9,
+  "trailer_only": 7,
+  "trailer_suspect": 1
+ }
+}

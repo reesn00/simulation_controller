@@ -116,6 +116,29 @@ class TestExtract:
         )
         assert len(extract_items(arch)[0].elements) == 25
 
+    def test_带媒体探针信号(self):
+        """阶段 1：media_signal / paywall_type / screenshots 带进队列供复核
+        （来源 outcome/obs 可能尚未写入，缺失一律空串/空元组，不崩）。"""
+        arch = _archive(
+            [{"url": "u.com", "branch": "player_unverified", "evidence": "e",
+              "question": "player.ok",
+              "media_signal": "duration=0",
+              "paywall_type": "preview",
+              "screenshots": ["s3://bucket/u.png"]}],
+            [_visit("u.com")],
+        )
+        it = extract_items(arch)[0]
+        assert it.media_signal == "duration=0"
+        assert it.paywall_type == "preview"
+        assert it.screenshots == ("s3://bucket/u.png",)
+
+    def test_缺探针字段不崩(self):
+        arch = _archive([{"url": "u.com", "branch": "unresolved", "evidence": "e"}])
+        it = extract_items(arch)[0]
+        assert it.media_signal == ""
+        assert it.paywall_type == ""
+        assert it.screenshots == ()
+
 
 class TestApplyVerdicts:
     def test_确认成功改为成功样本(self):
@@ -203,6 +226,8 @@ class TestApplyVerdicts:
     def test_verdicts枚举是闭合的(self):
         assert set(VERDICTS) == {"confirm_success", "confirm_negative",
                                  "confirm_not_play_site", "confirm_paywall",
+                                 "confirm_login", "confirm_blocked",
+                                 "confirm_broken", "confirm_partial_free",
                                  "trailer", "need_browser", "skip"}
 
     def test_不是播放站与确认看不了是两个分支(self):
@@ -254,6 +279,86 @@ class TestApplyVerdicts:
         ``report`` 渲染成空白、``ledger.by_branch`` 与报表对不上。"""
         from trajectory_pipeline.executor.branches import BRANCH_LABELS
         assert "subscription_wall" in BRANCH_LABELS
+
+    # ── 2026-10-12 阶段 1：②/④ payload 细分的人工裁定 ──────────────
+    def test_确认登录墙落login_required(self):
+        """② 的细分：登录后可免费看，agent 无登录态。归属 site.is_reachable。"""
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "site.is_reachable", "evidence": "e"}])
+        out, st = apply_verdicts(arch, {"a.com": {"verdict": "confirm_login"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "login_required"
+        assert rec["is_negative_sample"] is True
+        assert rec["source"] == "human"
+        assert st["confirm_login"] == 1
+
+    def test_确认登录墙跨判断点不贴(self):
+        """④ 的 outcome 上裁「登录墙」不贴 branch——那是②的结论。"""
+        arch = _archive([{"url": "a.com", "branch": "player_unverified",
+                          "question": "player.ok", "evidence": "e"}])
+        out, st = apply_verdicts(arch, {"a.com": {"verdict": "confirm_login"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "player_unverified"
+        assert rec["site_verdict"] == "login_required"
+        assert st["off_question"] == 1
+        assert st["confirm_login"] == 1
+
+    def test_确认环境阻断落blocked(self):
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "site.is_reachable", "evidence": "e"}])
+        out, st = apply_verdicts(arch, {"a.com": {"verdict": "confirm_blocked"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "blocked"
+        assert rec["is_negative_sample"] is True
+        assert st["confirm_blocked"] == 1
+
+    def test_确认内容损坏落broken(self):
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "site.is_reachable", "evidence": "e"}])
+        out, st = apply_verdicts(arch, {"a.com": {"verdict": "confirm_broken"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "broken"
+        assert rec["is_negative_sample"] is True
+        assert st["confirm_broken"] == 1
+
+    def test_确认部分免费落partial_free(self):
+        """④ 的细分：有免费部分（试看/预告），完整内容需付费。"""
+        arch = _archive([{"url": "a.com", "branch": "player_unverified",
+                          "question": "player.ok", "evidence": "e"}])
+        out, st = apply_verdicts(
+            arch, {"a.com": {"verdict": "confirm_partial_free"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "partial_free"
+        assert rec["is_negative_sample"] is True
+        assert st["confirm_partial_free"] == 1
+
+    def test_确认部分免费跨判断点降级(self):
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "site.is_reachable", "evidence": "e"}])
+        out, _ = apply_verdicts(
+            arch, {"a.com": {"verdict": "confirm_partial_free"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "unresolved"
+        assert rec["site_verdict"] == "partial_free"
+
+    def test_新增细分裁定全落在负样本池(self):
+        """四个新裁定都要入池（描述带「负样本」），否则人工确认的
+        负样本会静默丢出统计与训练信号。"""
+        for v in ("confirm_login", "confirm_blocked", "confirm_broken",
+                  "confirm_partial_free"):
+            assert "负样本" in VERDICTS[v], v
+
+    def test_新分支名在注册表与归属表里(self):
+        """分支 id 必须登记在 BRANCH_LABELS；归属必须由 question_of_branch
+        给出（登录/阻断/损坏 → site.is_reachable，部分免费 → player.ok）。"""
+        from trajectory_pipeline.executor.branches import BRANCH_LABELS
+        from trajectory_pipeline.perception.questions import question_of_branch
+        assert {"login_required", "blocked", "broken",
+                "partial_free"} <= set(BRANCH_LABELS)
+        assert question_of_branch("login_required") == "site.is_reachable"
+        assert question_of_branch("blocked") == "site.is_reachable"
+        assert question_of_branch("broken") == "site.is_reachable"
+        assert question_of_branch("partial_free") == "player.ok"
 
 
 class Test跨判断点:
@@ -435,6 +540,9 @@ class TestIO:
         assert row["verdict"] == ""
         assert row["verdict_options"] == dict(VERDICTS)
         assert row["video_tag_count"] == 1
+        assert row["media_signal"] == ""
+        assert row["paywall_type"] == ""
+        assert row["screenshots"] == []
 
     def test_collect跳过非法json(self, tmp_path):
         (tmp_path / "good.json").write_text(

@@ -44,6 +44,8 @@ from trajectory_pipeline.perception.base import Decision, Observation, Q, Questi
 from trajectory_pipeline.perception.rule_perceptor import (
     classify_paywall,
     classify_trailer,
+    infer_access_from_evidence,
+    infer_paywall_type_from_evidence,
     play_control_candidates,
     trailer_only_candidates,
 )
@@ -67,18 +69,46 @@ CONTRACTS: Mapping[str, str] = MappingProxyType(
             '{"selected":[{"url":"候选链接的url","title":"站点标题","why":"选中理由"}],'
             '"rejected":[{"url":"候选链接的url","reason":"排除理由"}]}'
         ),
+        # 2026-10-12：IS_REACHABLE 在 answer=false 时要求同时给出
+        # ``access_control_type``，决策点 ② 的细分分支靠它选用
+        # （login→login_required、region/captcha/anti_bot→blocked、
+        # not_found→broken；null 兜底回落合并态）。
+        # 增量十六 · P4a：另加 ``page_quotes`` 字段（array of str）——
+        # **只装页面原文短语**，与 evidence 分离；code 用 page_quotes 做
+        # fallback（详见 ``_is_reachable`` 解析段），避免 evidence 自述
+        # 误触关键词集合（P3 v1 regression 的根因）。
         Q.IS_REACHABLE: (
-            '{"answer":true|false,"evidence":"一句话，指出页面上的具体证据"}'
+            '{"answer":true|false|'
+            'null,"access_control_type":"login|region|captcha|anti_bot|not_found|null",'
+            '"page_quotes":["原文短语1","原文短语2"],'
+            '"evidence":"一句话，指出页面上的具体证据（文案/错误码/状态码）"}'
         ),
         Q.FIND_PLAY_CONTROL: (
             '{"ref":"控件ref或null","trailer_only":true|false,'
             '"trailer_suspect":["标签文本"],"why":"一句话，指出控件原文"}'
         ),
+        # 2026-10-12：PLAYER_OK 在 answer=false 且页面**实际阻挡**播放时
+        # 要求 paywall_type（preview→partial_free；trial 默认仍走订阅墙；
+        # null 兜底）。
+        # 增量十六 · P4a：另加 ``page_quotes`` 字段，code 用它做 fallback。
         Q.PLAYER_OK: (
-            '{"answer":true|false,"evidence":"一句话，指出页面上的具体证据"}'
+            '{"answer":true|false|'
+            'null,"paywall_type":"preview|trial|null",'
+            '"page_quotes":["原文短语1","原文短语2"],'
+            '"evidence":"一句话，指出页面上的具体证据"}'
         ),
     }
 )
+
+#: access_control_type 合法值集合——解析层只放行这五个，其余回 None。
+#: 这里列必须与 :func:`~trajectory_pipeline.executor.branches.decision_branch`
+#: 的细分逻辑同源：某个取值一旦出现却不在这里，回落合并态是配套的。
+ACCESS_CONTROL_TYPES: frozenset[str] = frozenset(
+    {"login", "region", "captcha", "anti_bot", "not_found"}
+)
+
+#: paywall_type 合法值集合（仅 preview/trial 走细分；null 兜底）。
+PAY_WALL_TYPES: frozenset[str] = frozenset({"preview", "trial"})
 
 #: 喂给模型的观察裁剪上限。实测：把正文从 1200 降到 600 字符后，
 #: 之前直接返回 ``None`` 的大输入请求恢复正常。裁剪必须与
@@ -251,19 +281,58 @@ class LLMPerceptor:
     def _is_reachable(
         self, spec: Question, obs: Observation, started: float
     ) -> Decision:
-        """判断点 ②：页面是否正常打开内容。"""
+        """判断点 ②：页面是否正常打开内容。
+
+        2026-10-12 阶段 1：answer=false 时**必须**带回
+        ``access_control_type``，decision_branch 据此选用细分分支
+        （login_required / blocked / broken）——payload 缺失则回落合并态
+        ``login_wall_or_blocked``（保持旧路径的兼容，见
+        ``branches.decision_branch`` 的「payload 缺失保持现状」注释）。
+
+        解析故意 fail-soft：模型没给字段、字段值不在合法集、或
+        answer=true 都没填，都按 None 走——不抛异常、不改答案。
+
+        2026-10-12 增量十五：payload 缺失 + evidence 含访问阻断关键词时
+        code fallback 反推 access——LLM 即便看到 70017001 也不一定每次都
+        填字段，但 evidence 又写明。evidence 字符串后置 fallback 标记，
+        让复核能识别。
+
+        2026-10-12 增量十六 · P4a：fallback 的输入源**改为 ``page_quotes``**——
+        LLM 单独回传的"页面原文短语"字段，而不是 LLM 自述 evidence。
+        ``page_quotes`` 里是 LLM 看到的页面真实字符、不会包含 LLM 推断语言。
+        这样避免 P3 v1 实证过的「LLM 自述 → 误触关键字」regression。
+        """
         data, why = self._ask_json(spec, _render(obs))
         if data is None:
             return self._unresolved_answer(spec, why, started)
         answer, why_null = _bool_or_reason(data)
         if answer is None:
             return self._unresolved_answer(spec, why_null, started)
+        raw_access = schema_parse.as_str(schema_parse.field(data, "access_control_type"))
+        # P4a 增量十六：fallback 输入源**只**用 page_quotes——把 LLM 的
+        # 页面原文与"自身推断"严格分开。如果 LLM 没给 page_quotes，fallback
+        # 就拿不到证据，按现状落合态——宁可不命中也别拿 LLM 自述当原文。
+        quotes_text = _quote_text(data)
+        access, fallback_note = _resolve_access(raw_access, quotes_text)
+        tail = fallback_note
+        if answer is False and access is None:
+            tail = (
+                "（模型未给出合法 access_control_type 也无 page_quotes 命中——"
+                "决策点②细分未启用，落合并态 login_wall_or_blocked）"
+            )
+        evidence = _evidence(data, spec, answer) + tail
         return self._answer(
             spec,
             answer,
-            evidence=_evidence(data, spec, answer),
+            evidence=evidence,
             started=started,
-            payload={"title": obs.page_title},
+            payload={
+                "title": obs.page_title,
+                "access_control_type": access,
+                # page_quotes 同步进 payload——单测、人工复核、报表都能
+                # 看到 LLM 真正观察到的页面文本。
+                "page_quotes": _quote_list(data),
+            },
         )
 
     def _find_play_control(
@@ -440,6 +509,20 @@ class LLMPerceptor:
         **只在模型也判 False 时才升级为付费墙**：模型判 True 说明它认为页面
         可用，此时词表命中多半是导航栏文案（实测百度页正文就有「免费观看」）。
         两边一致才落细分分支——**任何一边不一致都按未定的那个结论记**。
+
+        2026-10-12 阶段 1：付费墙判定时**同时**读 LLM 给的 ``paywall_type``，
+        仅 ``preview`` / ``trial`` 走 :data:`questions.PAY_WALL` 的细分——
+        ``preview``（试看/前几集免费）落 :data:`partial_free`，
+        其余形态仍落订阅墙。模型未给出合法 paywall_type 时，词表命中
+        但 LLM 没细分，按现状保留订阅墙。
+
+        2026-10-12 增量十五：``paywall=True`` + LLM 未给 ``paywall_type`` 时
+        code 从 evidence 关键词反推（``infer_paywall_type_from_evidence``）：
+        B 站"大会员抢先看" —— LLM 给 answer=false 但 paywall_type=null。
+        仅在 ``paywall=True`` 时启用——partial_free 本就是付费墙的细分。
+
+        2026-10-12 增量十六 · P4a：fallback 输入源改为 ``page_quotes``（页面
+        原文短语字段），不是 evidence。避免 LLM 自述 vs 页面原文混淆。
         """
         data, why = self._ask_json(spec, _render(obs))
         if data is None:
@@ -449,24 +532,40 @@ class LLMPerceptor:
             return self._unresolved_answer(spec, why_null, started)
 
         hit = classify_paywall(obs.body_text)
+        ev_text = _evidence(data, spec, answer)
+        # 解析 LLM 给的 paywall_type（fail-soft：不在合法集回 None）
+        raw_ptype = schema_parse.as_str(schema_parse.field(data, "paywall_type"))
+        # P4a 增量十六：fallback 输入源用 page_quotes，不再用 evidence。
+        quotes_text = _quote_text(data)
+        ptype, ptype_fallback_note = _resolve_field(
+            raw_ptype, PAY_WALL_TYPES, infer_paywall_type_from_evidence,
+            quotes_text, label="paywall_type",
+        )
+
         paywall = bool(answer is False and hit)
-        evidence = _evidence(data, spec, answer)
+        evidence = ev_text
         if paywall:
             evidence += (
                 f"；页面含付费墙信号「{hit}」——按 2026-10-10 口径，"
                 f"**有播放页但需订阅/付费不算成功**"
             )
+            if ptype is None:
+                evidence += (
+                    "（模型未给出合法 paywall_type，page_quotes 也无 paywall 关键词——"
+                    "决策点④细分未启用，落 subscription_wall；"
+                    "如实际是试看，请改判 partial_free）"
+                )
+            evidence += ptype_fallback_note
+        payload: dict[str, Any] = {
+            "media_count": obs.video_tag_count,
+            "iframe_count": obs.iframe_count,
+            "paywall": paywall,
+            "paywall_type": ptype if paywall else None,
+            "page_quotes": _quote_list(data),  # 同步进 payload
+            **({"paywall_word": hit} if paywall else {}),
+        }
         return self._answer(
-            spec,
-            answer,
-            evidence=evidence,
-            started=started,
-            payload={
-                "media_count": obs.video_tag_count,
-                "iframe_count": obs.iframe_count,
-                "paywall": paywall,
-                **({"paywall_word": hit} if paywall else {}),
-            },
+            spec, answer, evidence=evidence, started=started, payload=payload,
         )
 
     # ── 内部 ────────────────────────────────────────────────────────
@@ -902,6 +1001,76 @@ def _evidence(data: Mapping[str, Any], spec: Question, answer: bool) -> str:
     why = schema_parse.as_str(schema_parse.field(data, "evidence")) or spec.prompt[:40]
     tail = f"（置信度 {CONFIDENCE_JUDGED} 为代码层先验，非模型自报）"
     return f"LLM 判 {answer}：{why}{tail}"
+
+
+def _resolve_field(
+    raw_value: str,
+    valid_set: frozenset[str],
+    infer_fn,
+    evidence: str,
+    *,
+    label: str,
+) -> tuple[str, str]:
+    """LLM 给的细分字段 → 在 ``valid_set`` 即返回；否则 code fallback。
+
+    返回 ``(final_value, fallback_note)``：
+    - ``final_value`` 是合法值或空串（空串表示 fallback 也没命中）。
+    - ``fallback_note`` 仅在启用 fallback 时非空，**非空串直接追加到
+      evidence 末尾**——下游 ``record_from`` 写到 SiteOutcome 让复核看见
+      「这是 code 推断的，不是 LLM 自报」。
+
+    2026-10-12 增量十五。失败的姿势是「猜错」——空串绝不强给 unknown，
+    让 ``decision_branch`` 按现状回落合并态。这是 fail-soft 的本意。
+    """
+    if raw_value and raw_value in valid_set:
+        return raw_value, ""
+    reason = "LLM 未给出" if not raw_value else f"LLM 给出非合法值 {raw_value!r}"
+    inferred = infer_fn(evidence)
+    if inferred:
+        return inferred, (
+            f"\n[code_fallback] {label}={inferred}（{reason}；"
+            f"code 从 evidence 关键词反推）"
+        )
+    return "", ""
+
+
+def _resolve_access(raw_value: str, evidence: str) -> tuple[str, str]:
+    """``access_control_type`` 的 field resolver（`_resolve_field` 的
+    简化包装）——单入口让 ``_is_reachable`` 看起来更对称。
+    """
+    return _resolve_field(
+        raw_value, ACCESS_CONTROL_TYPES, infer_access_from_evidence, evidence,
+        label="access_control_type",
+    )
+
+
+#: 2026-10-12 增量十六 · P4a：把 LLM 回传的 ``page_quotes`` 字段规整成
+#: ``_resolve_field`` 能用的 query 文本。
+#: - ``_quote_text``：list[str] 用空格拼成 query 文本——``infer_*`` 是
+#:   字符串关键词匹配，**只**接 ``str`` 输入。
+#: - ``_quote_list``：把 list 规整成 ``list[str]``，丢掉非字符串元素，
+#:   落进 :attr:`Decision.payload` 供下游复核台看到。
+#:
+#: 防御性：LLM 给 ``page_quotes: ""`` 或 ``null`` 也按空处理（不抛）——
+#: 这条契约不复杂：模型漏字段 = fallback 拿不到证据 = 落合态，本就是
+#: fail-soft 设计的目标行为。
+def _quote_text(data: Mapping[str, Any]) -> str:
+    raw = schema_parse.field(data, "page_quotes")
+    if not isinstance(raw, list):
+        return ""
+    parts: list[str] = []
+    for q in raw:
+        s = schema_parse.as_str(q)
+        if s:
+            parts.append(s)
+    return " ".join(parts)
+
+
+def _quote_list(data: Mapping[str, Any]) -> list[str]:
+    raw = schema_parse.field(data, "page_quotes")
+    if not isinstance(raw, list):
+        return []
+    return [s for s in (schema_parse.as_str(q) for q in raw) if s]
 
 
 def _bool_or_reason(data: Mapping[str, Any]) -> tuple[bool | None, str]:

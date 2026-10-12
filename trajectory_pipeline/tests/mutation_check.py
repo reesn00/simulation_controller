@@ -189,7 +189,13 @@ MUTATIONS = [
     (
         "付费墙同页守卫",
         "trajectory_pipeline/executor/branches.py",
-        '    if branch in ("component_unverified", "subscription_wall"):',
+        '''    if branch in (
+        "component_unverified",
+        "subscription_wall",
+        "login_required",
+        "blocked",
+        "partial_free",
+    ):''',
         '    if branch == "component_unverified":',
         "trajectory_pipeline/tests/unit/test_branches.py::TestBranchPrecondition",
     ),

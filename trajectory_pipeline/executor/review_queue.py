@@ -29,8 +29,11 @@ W1 的 ``RulePerceptor`` 对 ``PLAYER_OK`` 只认 ``<video>`` / ``<audio>`` 标�
 :func:`apply_verdicts` 把人工结论回填进 P1 存档：确认成功的改 ``branch=None``，
 确认不行的落到真负样本分支（``confirm_not_play_site`` → ``not_play_site``；
 ``confirm_negative`` → ``component_unverified`` 或 ``no_play_control``，
-按 ``reached`` 区分）。**回填保留 ``reviewed_by`` 与原始 branch**，
-不覆盖——人工判定要能追溯，且将来能测"人工与代码的分歧率"（D 的下钻）。
+按 ``reached`` 区分；阶段 1 新增 ``confirm_login`` → ``login_required``、
+``confirm_blocked`` → ``blocked``、``confirm_broken`` → ``broken``、
+``confirm_partial_free`` → ``partial_free``，同样受归属与同页守卫约束）。
+**回填保留 ``reviewed_by`` 与原始 branch**，不覆盖——人工判定要能追溯，
+且将来能测"人工与代码的分歧率"（D 的下钻）。
 """
 
 from __future__ import annotations
@@ -53,6 +56,18 @@ VERDICTS: Final[dict[str, str]] = {
     ),
     "confirm_paywall": (
         "人工确认：有播放页但需订阅/付费（记 subscription_wall 负样本）"
+    ),
+    "confirm_partial_free": (
+        "人工确认：有免费部分但完整内容需付费（记 partial_free 负样本）"
+    ),
+    "confirm_login": (
+        "人工确认：登录后才能免费看（记 login_required 负样本）"
+    ),
+    "confirm_blocked": (
+        "人工确认：被验证码/地区限制/反爬等环境阻断挡住（记 blocked 负样本）"
+    ),
+    "confirm_broken": (
+        "人工确认：内容损坏，404 或媒体不可解码（记 broken 负样本）"
     ),
     "trailer": "人工确认：只有预告片（记为 trailer_only 负样本）",
     "need_browser": "存档证据不足，需人工开浏览器再看（暂不裁定）",
@@ -114,6 +129,10 @@ _WANTED_BRANCH: Final[dict[str, str | None]] = {
     "confirm_negative": None,                # 按 reached 分岔，见 _wanted
     "confirm_not_play_site": "not_play_site",      # ①
     "confirm_paywall": questions.PAY_WALL,         # ④
+    "confirm_partial_free": "partial_free",        # ④ 有免费部分（preview/trial）
+    "confirm_login": "login_required",             # ② 登录后可免费看
+    "confirm_blocked": "blocked",                  # ② 验证码/地区/反爬
+    "confirm_broken": "broken",                    # ② 404/媒体不可解码
     "trailer": "trailer_only",                     # ③
 }
 
@@ -173,6 +192,15 @@ class ReviewItem:
     #: 不是 P1 存档的字段名。存档侧那个字段叫 ``body_text``（全文）。
     body_preview: str
     degraded: tuple[str, ...]
+    #: 媒体探针结论（``mcp_probe`` 登记；如 "duration=0" / "媒体不可解码"）。
+    #: 阶段 1 起暴露给复核员判断「媒体损坏形态的 broken」——仅靠页面正文
+    #: 看不出来「媒体元素存在但解不了码」，必须由探针把信号带进队列。
+    media_signal: str = ""
+    #: 代码判定时的付费墙细分形态（``preview`` / ``trial`` → ``partial_free``）。
+    #: 带进队列是让复核员核「有免费部分」这个判断本身有没有依据。
+    paywall_type: str = ""
+    #: 复核可看的截图路径/URL 清单（探针/采集环节留存，空 = 没有截图）。
+    screenshots: tuple[str, ...] = ()
     elements: tuple[Mapping[str, str], ...] = ()
     verdict: str = ""            # 人工填写；空 = 待复核
     reviewed_by: str = ""
@@ -191,6 +219,9 @@ class ReviewItem:
             "iframe_count": self.iframe_count,
             "body_preview": self.body_preview,
             "degraded": list(self.degraded),
+            "media_signal": self.media_signal,
+            "paywall_type": self.paywall_type,
+            "screenshots": list(self.screenshots),
             "elements": [dict(e) for e in self.elements],
             "verdict": self.verdict,
             "verdict_options": dict(VERDICTS),
@@ -253,6 +284,17 @@ def extract_items(archive: Mapping[str, Any]) -> list[ReviewItem]:
             iframe_count=int(obs.get("iframe_count") or 0),
             body_preview=str(obs.get("body_text") or obs.get("body_preview") or "")[:200],
             degraded=tuple(str(d) for d in (obs.get("degraded") or [])),
+            media_signal=str(
+                outcome.get("media_signal") or obs.get("media_signal") or ""
+            ),
+            paywall_type=str(
+                outcome.get("paywall_type") or obs.get("paywall_type") or ""
+            ),
+            screenshots=tuple(
+                str(s) for s in (
+                    outcome.get("screenshots") or obs.get("screenshots") or []
+                )
+            ),
             elements=elements,
         ))
     return items
@@ -407,7 +449,7 @@ def apply_verdicts(
 
         # 这个裁定想要贴上去的分支。``None`` 表示「成功」。
         if verdict in _WANTED_BRANCH:
-            # 只有这五个裁定会碰 branch；need_browser / skip 走下面的 pending 分支
+            # 只有这九个裁定会碰 branch；need_browser / skip 走下面的 pending 分支
             want = _wanted(verdict, rec)
             question = str(outcome.get("question") or "")
             belongs = questions.question_of_branch(want)

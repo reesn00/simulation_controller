@@ -146,6 +146,125 @@ def classify_paywall(text: str) -> str:
     return ""
 
 
+#: 2026-10-12 增量十五 · 代码层 fallback：从 LLM 给的 evidence 文本反推
+#: ``paywall_type``。LLM 即便看到付费墙也不是每次都给细分字段（实测
+#: P1.5: B 站"大会员抢先看" —— LLM 给 answer=false 但 paywall_type=null），
+#: 此时仅靠 ``PAYWALL_WORDS`` 命中会让 ``subscription_wall`` 大筐塞太多
+#: 真 ``partial_free`` 样本。fallback 让形态更接近真实分布。
+#:
+#: **关键词必须是「试看/前几」类结构性短语，不是「大会员」类平台黑话**：
+#: 后者扩词会污染 ``PAYWALL_WORDS`` 主表。fallback 的定位是「文章已落到
+#: 付费词、且语义给得出 preview/trial」。
+#:
+#: 推断器是 best-effort：返 None 时调用方走原 fallback（``subscription_wall``）。
+#: **不要**从 evidence 反向推广——证据无关键词就放弃细分。
+PAYWALL_TYPE_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # preview: 可看一段（试看 N 分钟 / 前几集免费 / 限时免费 / 抢先看之一部分）
+    (
+        "preview", (
+            "试看", "首集免费", "限时免费", "免费试看",
+            "前6分钟", "前 6 分钟", "前几分钟", "前几集",
+            "抢先看", "部分试看", "限免",
+        ),
+    ),
+    # trial: 试用 / 体验期 / 新用户免
+    (
+        "trial", (
+            "试用", "体验期", "新用户免费", "首月免费",
+            "7天免费", "免费体验",
+        ),
+    ),
+)
+
+
+def infer_paywall_type_from_evidence(evidence: str) -> str:
+    """从 LLM 写的 evidence 文本反推 ``paywall_type``。
+
+    返回合法值之一（``preview``/``trial``）；空字符串 = 未命中，
+    调用方按现状保留 ``subscription_wall``。
+    """
+    if not evidence:
+        return ""
+    norm = _norm(evidence)
+    for value, keywords in PAYWALL_TYPE_HINTS:
+        for kw in keywords:
+            if _norm(kw) in norm:
+                return value
+    return ""
+
+
+#: 2026-10-12 增量十五 · 代码层 fallback：从 evidence 反推
+#: ``access_control_type``。LLM 看到登录墙 / 地区码 / 验证码 / Cloudflare 等
+#: 不一定每次给细分字段（实测 P1: bilibili "大会员" LLM 给 access=null），
+#: evidence 又写明这些字面；code 层兜底。
+#:
+#: **先于 keyword 顺序**：五个值的关键字相互之间没有歧义，但「登录」-「会员」
+#: 的语义重叠让 LLM 在 B 站 page 上踌躇（详见增量十四 §5）。fallback 让
+#: 「登录后」/「需登录」明确走 ``login``，避免把 paywall 形态的"大会员"
+#: 误判为纯 login。剩余形态交回合并态。
+ACCESS_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "login", (
+            "登录后观看", "登录后可", "登录后免费", "请登录",
+            "请先登录", "需登录", "登录解锁", "登录会员",
+            "登录后继续", "登录才能", "未登录",
+        ),
+    ),
+    (
+        "region", (
+            "地区不支持", "当前地区不支持", "本地区不支持",
+            "地区限制", "您所在地区", "版权限制",
+            "70017001", "地区无权",
+        ),
+    ),
+    (
+        "anti_bot", (
+            "performing security verification", "just a moment...",
+            "checking your browser", "cf-chl", "robot check",
+            "安全验证", "人机验证", "robot challenge",
+        ),
+    ),
+    (
+        "captcha", (
+            "请输入验证码", "请完成验证", "滑动验证", "图形验证",
+            "短信验证", "captcha",
+        ),
+    ),
+    (
+        "not_found", (
+            # **不带"X 不存在"这类短语**：LLM evidence 是「结论+证据」混合，
+            # 「视频不存在/内容不存在」经常是模型自述结论而非页面文案
+            # （实测 P3 重跑 v.qq.com/70017001 因此被误判 broken）。
+            # 留着"已被删除 / 已下架 / 404 错误"——这些更接近页面真实文案。
+            "页面不存在", "已下架", "已被删除",
+            "该视频已被删除", "404 错误", "404错误", "对不起",
+            "找不到该视频",
+        ),
+    ),
+)
+
+
+def infer_access_from_evidence(evidence: str) -> str:
+    """从 evidence 文本反推 ``access_control_type``。
+
+    返合法值或空串；调用方按空串落合并态。这是有意 fail-soft——空串
+    绝不强行给一个 ``null``/``unknown``；反推不成立就承认不知道。
+
+    ⚠️ **故意不做模糊匹配**：关键词是「完整短语」而不是「子串」——
+    「登录」单独出现做 ``login`` 推断会让 B 站"登录账号"普通按钮页
+    被误判。该函数行为比 :func:`classify_paywall` 更激进——
+    宁可不出也不猜错。
+    """
+    if not evidence:
+        return ""
+    norm = _norm(evidence)
+    for value, keywords in ACCESS_HINTS:
+        for kw in keywords:
+            if _norm(kw) in norm:
+                return value
+    return ""
+
+
 def classify_trailer(label: str) -> str:
     """把控件文本分成三类：``"only"`` / ``"suspect"`` / ``"none"``。
 

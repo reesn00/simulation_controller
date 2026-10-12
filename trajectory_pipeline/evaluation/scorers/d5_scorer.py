@@ -128,6 +128,13 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
       由 ``Decision.payload["paywall"]`` 选用而不是题绑定，
       所以它同样不出现在 ``negative_branch`` 里（口径见
       :data:`trajectory_pipeline.perception.questions.PAY_WALL`）。
+    - ``login_required`` / ``blocked`` / ``broken``（2026-10-12 阶段 1）——
+      ② 的**细分结论**，由 ``Decision.payload["access_control_type"]`` 选用
+      （login → login_required、region/captcha/anti_bot → blocked、
+      not_found → broken），不经过 ``negative_branch``；
+    - ``partial_free``（2026-10-12 阶段 1）—— ④ 的**细分结论**，
+      由 ``Decision.payload["paywall_type"]`` 选用（preview/trial），
+      同样不在 ``negative_branch`` 里。
 
     ⚠️ **这张表漏一条的代价与当年一样**：第一版手写字面量漏了
     ``unresolved``，**54 条正确结论被判成「分支走错」**。新增分支时
@@ -145,6 +152,13 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
         if qid == questions.Q.PLAYER_OK:
             allowed.add("player_unverified")  # record_unresolved_reached
             allowed.add(questions.PAY_WALL)  # payload 选用的细分结论
+            allowed.add("partial_free")  # paywall_type=preview/trial 的细分
+        if qid == questions.Q.IS_REACHABLE:
+            # ② 的 payload 细分（2026-10-12 阶段 1）：
+            # decision_branch 按 access_control_type 选用，不走题绑定。
+            allowed.add("login_required")
+            allowed.add("blocked")
+            allowed.add("broken")
         if qid == questions.Q.FIND_PLAY_CONTROL:
             allowed.add("component_unverified")  # I6 违约记账
         out[qid] = allowed
@@ -186,6 +200,9 @@ REQUIRES_PLAY_PAGE_PAIRS: frozenset[tuple[str, str]] = frozenset(
         # 「有播放页但需付费」同样要求**确实到了播放页**——
         # 站点页上的「开通会员」是导航栏文案，不是付费墙。
         ("subscription_wall", "player.ok"),
+        # partial_free 是④ 的细分（paywall_type=preview/trial），
+        # 「有播放页但只放试看/预告」同样先得**确实到了播放页**。
+        ("partial_free", "player.ok"),
     }
 )
 

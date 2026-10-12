@@ -92,9 +92,9 @@ class ArchiveBuildResult:
     archive: str
     sample_count: int = 0
     written: int = 0
-    skipped: tuple[str, ...] = ()        # 序列化失败的 sample_id
-    degraded: int = 0                    # degraded_from 非空的条数
-    negatives: int = 0                   # outcome.branch ∈ 真负样本分支的条数
+    skipped: tuple[str, ...] = ()  # 序列化失败的 sample_id
+    degraded: int = 0  # degraded_from 非空的条数
+    negatives: int = 0  # outcome.branch ∈ 真负样本分支的条数
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,9 +129,7 @@ def _sample_to_json(sample: Sample) -> dict[str, Any]:
     不是给门禁看的。
     """
     base = sample.to_json()
-    base["six"]["observations"] = observation_view.render_all(
-        list(sample.observations)
-    )
+    base["six"]["observations"] = observation_view.render_all(list(sample.observations))
     return base
 
 
@@ -152,8 +150,7 @@ def _write_one(
     target = target_dir / f"{sample_id}.json"
     tmp = target_dir / f"{sample_id}.json.tmp"
     try:
-        blob = json.dumps(_sample_to_json(sample), ensure_ascii=False,
-                          allow_nan=False)
+        blob = json.dumps(_sample_to_json(sample), ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         return False, f"序列化失败：{type(exc).__name__}: {exc}"
     try:
@@ -181,13 +178,18 @@ def _write_one(
 #: 改名要同时改 :mod:`trajectory_pipeline.executor.branches.BRANCH_LABELS`
 #: 配套的 :data:`trajectory_pipeline.executor.branches.NEGATIVE_SAMPLE_BRANCHES`
 #: （见 executor 侧注）。
-NEGATIVE_SAMPLE_BRANCHES: frozenset[str] = frozenset({
-    "not_play_site",          # 判断点 ①
-    "unreachable_hard",      # ②
-    "login_wall_or_blocked",  # ②
-    "no_play_control",        # ③
-    "component_unverified",   # ④
-})
+NEGATIVE_SAMPLE_BRANCHES: frozenset[str] = frozenset(
+    {
+        "not_play_site",  # 判断点 ①
+        "unreachable_hard",  # ② 导航失败
+        "login_required",  # ② 的细分：登录后可免费看
+        "blocked",  # ② 的细分：地区/验证码/反爬
+        "broken",  # ② 的细分：404；媒体损坏形态见 media_signal
+        "no_play_control",  # ③
+        "component_unverified",  # ④
+        "partial_free",  # ④ 的细分：试看/预告后付费
+    }
+)
 
 
 def _is_negative(branch: str | None) -> bool:
@@ -244,15 +246,19 @@ def build_from_archive(
         if s.outcome is not None and _is_negative(s.outcome.branch):
             neg += 1
     return ArchiveBuildResult(
-        archive=name, sample_count=len(samples),
-        written=written, skipped=tuple(skipped),
-        degraded=degraded, negatives=neg,
+        archive=name,
+        sample_count=len(samples),
+        written=written,
+        skipped=tuple(skipped),
+        degraded=degraded,
+        negatives=neg,
     )
 
 
 def _split_one(p: Path) -> Iterable[Sample]:
     """对单文件调 :func:`split_archive` 并校验。坏档抛 :class:`P1ShapeError`。"""
     from trajectory_pipeline.assembler.schema import split_archive, P1ShapeError
+
     try:
         return list(split_archive(p))
     except P1ShapeError:
@@ -316,15 +322,22 @@ def build_all(
         if allowed is not None and path.name not in allowed:
             continue
         try:
-            res = build_from_archive(path, root=target_root or source_root,
-                                     overwrite=overwrite)
+            res = build_from_archive(
+                path, root=target_root or source_root, overwrite=overwrite
+            )
         except P1ShapeError as exc:
             # 坏档：算 0 切出 0 写出、全部 skipped，让 :class:`BuildReport`
             # 仍能汇总，但坏档信息不丢。
-            per_archive.append(ArchiveBuildResult(
-                archive=path.name, sample_count=0, written=0,
-                skipped=(f"<bad-archive>: {exc}",), degraded=0, negatives=0,
-            ))
+            per_archive.append(
+                ArchiveBuildResult(
+                    archive=path.name,
+                    sample_count=0,
+                    written=0,
+                    skipped=(f"<bad-archive>: {exc}",),
+                    degraded=0,
+                    negatives=0,
+                )
+            )
             total_skipped += 1
             continue
         per_archive.append(res)
@@ -352,8 +365,12 @@ def load_sample(path: str | Path) -> dict[str, Any]:
 
 
 __all__ = [
-    "DEFAULT_SAMPLES_DIRNAME", "samples_dir",
-    "ArchiveBuildResult", "BuildReport",
+    "DEFAULT_SAMPLES_DIRNAME",
+    "samples_dir",
+    "ArchiveBuildResult",
+    "BuildReport",
     "NEGATIVE_SAMPLE_BRANCHES",
-    "build_from_archive", "build_all", "load_sample",
+    "build_from_archive",
+    "build_all",
+    "load_sample",
 ]

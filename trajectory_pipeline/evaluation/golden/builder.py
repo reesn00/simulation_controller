@@ -73,7 +73,11 @@ SPLIT_TARGET = 0.65  # 校准目标占比（65%，落在两区间的中点）
 SPLIT_PP_TOLERANCE = 0.05  # 实际占比离目标 65% 的允许偏差（"差距 ≤5pp"）
 RETEST_FRACTION = (0.20, 0.30)  # D9 重测子集占比
 RETEST_INTERVAL_DAYS = 14  # D9 建议间隔 T
-D10_THRESHOLD = 0.90  # 代码层与黄金集一致率上岗线
+D10_THRESHOLD = 0.90  # 代码层与黄金集一致率上岗线（口径 C = 语义等价类一致）
+#: 标签体系版本：1 = 11 类（10 分支 + success）；2 = 15 类
+#: （BRANCH_LABELS 14 key = 13 活跃 + deprecated 合并态 + success）。
+#: freeze 写入 manifest，跨版本对比 D10 前先核对（对齐方案 §4.3 / §5.2）。
+LABEL_SCHEMA_VERSION = "2"
 NEGATIVE_BRANCH_FIELDS = (  # 负样本池可直接透传的字段
     "task_id",
     "run_id",
@@ -505,7 +509,9 @@ _VALID_LABELS = None
 def _load_branch_labels() -> dict[str, str]:
     """加载分支注册表；import 延后以免 builder 顶层依赖 executor。
 
-    与负样本池/存档的 branch_label 同源，避免二次翻译走样。"""
+    与负样本池/存档的 branch_label 同源，避免二次翻译走样。
+    label 校验集由此自动派生：阶段 1 新增 4 分支 + deprecated 兼容在
+    ``BRANCH_LABELS`` 注册即生效，无需维护第二份合法值常量（对齐方案 §5.2）。"""
     global _VALID_LABELS
     if _VALID_LABELS is None:
         from trajectory_pipeline.executor.branches import BRANCH_LABELS
@@ -726,6 +732,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
+        "label_schema_version": LABEL_SCHEMA_VERSION,  # §5.2：11 类 → 15 类
         "version": version,
         "frozen_at": _now_iso(),
         "seed": seed,
@@ -774,6 +781,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     versions.append(
         {
             "version": version,
+            "label_schema_version": LABEL_SCHEMA_VERSION,
             "frozen_at": manifest["frozen_at"],
             "annotated": len(labeled),
             "calibration": len(calib),
@@ -918,11 +926,26 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     gold_label_of = lambda r: (r.get("golden") or {}).get("label") or SUCCESS_LABEL
     y_true = [gold_label_of(r) for r in site]
     y_pred = [code_branch_of(r) for r in site]
-    agree = sum(1 for t, p in zip(y_true, y_pred) if t == p)
-    ratio = agree / len(site)
-    report = classification_report(y_true, y_pred)
+    # 对齐方案 §4.3：口径 C 升级为「语义等价类一致」——新细分分支与
+    # 历史合并态（如 blocked vs login_wall_or_blocked）判一致，避免
+    # 标签域扩展当天 D10 假性暴跌。映射只有 alignment.EQUIV_CLASS 一份。
+    from trajectory_pipeline.evaluation.golden.alignment import (
+        equiv_class,
+        is_equivalent,
+    )
 
-    print(f"D10 与黄金集标签一致率（{label_note}，分母 = 黄金集样本数 {len(site)}）")
+    agree = sum(1 for t, p in zip(y_true, y_pred) if is_equivalent(t, p))
+    ratio = agree / len(site)
+    # 下钻口径 D 的分支路由 P/R/F1 也基于等价类标签算，与口径 C 同一把尺；
+    # 细分 err 仍可从原始标签（y_true / y_pred）下钻查看。
+    report = classification_report(
+        [equiv_class(t) for t in y_true], [equiv_class(p) for p in y_pred]
+    )
+
+    print(
+        f"D10 与黄金集标签一致率（{label_note}，分母 = 黄金集样本数 {len(site)}"
+        "；口径 C = 语义等价类一致）"
+    )
     print(
         f"  口径 C：{agree}/{len(site)} = {ratio:.1%}  "
         f"{'✅ ≥90% 上岗' if ratio >= D10_THRESHOLD else '❌ 未达 90% 上岗线'}"
@@ -940,6 +963,8 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             "agreed": agree,
             "agreement_ratio": ratio,
             "threshold": D10_THRESHOLD,
+            "criterion": "equiv_class",  # 口径 C：语义等价类一致（§4.3）
+            "label_schema_version": LABEL_SCHEMA_VERSION,
             "report": report,
         }
         p = pathlib.Path(args.json_out)
