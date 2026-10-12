@@ -98,3 +98,8 @@ archive/v1/etl/qwenformat/templates/
 
 # qwenformat LLM 摘要缓存（运行时生成，不提交）
 archive/v1/etl/qwenformat/cache/
+
+# DuMate 桌面工具运行目录：交付物清单含云签名 URL、工作产物含本机绝对路径，不入库
+.dumate/
+# 临时目录（dv 提取等）
+.tmp/
