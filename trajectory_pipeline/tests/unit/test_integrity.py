@@ -23,6 +23,9 @@ import pytest
 
 from trajectory_pipeline.assembler import schema as p2_schema
 from trajectory_pipeline.executor import integrity
+from trajectory_pipeline.executor.archive import (
+    CredentialLeak, credential_samples, scan_credentials,
+)
 from trajectory_pipeline.executor.integrity import (
     REPLACEMENT_CHAR, Severity, check_archive, check_root, degraded_marker_map,
     format_report,
@@ -479,3 +482,104 @@ class TestDegradedMarkersMatchSplit:
         「正文是烂的」看起来一样重，而后者更糟。"""
         assert "mojibake" not in degraded_marker_map()
         assert "evidence_mojibake" not in degraded_marker_map()
+
+
+# ── 9 · 凭据扫描正则的 regression 保护 ─────────────────────────────
+
+class TestScanCredentialsRegexRegression:
+    """``archive.scan_credentials`` 的 ``user:pass@`` 正则曾误报。
+
+    2026-10-12 增量十八 §五：L0 实跑 10/10 URL，但有 2/10（iqiyi / youku）
+    被凭据闸门拒写盘——根因是正则 ``https?://[^\\s/:]+:[^\\s/@]+@`` 的第一段
+    字符类没排除 ``@``，于是 JSON-LD 的 ``@graph`` / ``@type`` 字段名前缀
+    被吞成 ``host="schema.org","@graph":[{`` ``pass="`` + ``@``，误报为
+    URL 内嵌口令。修复：``[^\\s/:@]+:[^\\s/@]+@``（第一段也排除 ``@``）。
+
+    本类守住这一条：把"真凭据仍命中"与"JSON-LD 等结构化数据不命中"**两个
+    方向**都钉死——任何一边飘了（修过头 / 修漏了）L0 实跑就坏。
+    """
+
+    #: 这个常量在源文件里写成 r-string 字面量，所以 ``re.Pattern.pattern``
+    #: 出来**就是**这串——拿它做 ``assertIn`` 的金标准，而不是只断言
+    #: "命中"或"不命中"（那样改完修复，bug 复现仍会过测试）。
+    EXPECTED_URL_CREDS_PATTERN = r"https?://[^\s/:@]+:[^\s/@]+@"
+
+    def test_正则字面量在源里仍是修复后的形态(self):
+        """修过头（去掉 ``@`` 排除）或修漏（删了 ``@`` 锚定）都当场红。"""
+        from trajectory_pipeline.executor import archive
+        pats = "\n".join(p.pattern for p in archive._CREDENTIAL_PATTERNS)
+        assert self.EXPECTED_URL_CREDS_PATTERN in pats, (
+            f"user:pass@ 正则被改坏了——L0 会重新触发误报：\n{pats}"
+        )
+
+    def test_JSON_LD的at_graph与at_type不触发URL凭据(self):
+        """增量十八 §五 撞上的真误报形态。"""
+        for blob in (
+            # 短 JSON-LD（schema.org + @graph）
+            '{"@context":"https://schema.org","@graph":[{"@type":"VideoObject"}]}',
+            # 只有 @type（最常见）
+            '{"@type":"Thing","name":"x"}',
+            # 嵌进 HTML 的 <script type="application/ld+json">
+            '<script type="application/ld+json">'
+            '{"@context":"https://schema.org","@graph":[{"@type":"VideoObject"}]}'
+            '</script>',
+            # 多个 @-前缀字段连排
+            '{"@context":"https://x.test","@graph":[{"@id":"a","@type":"B","@value":"c"}]}',
+        ):
+            hits = scan_credentials(blob)
+            assert self.EXPECTED_URL_CREDS_PATTERN not in hits, (
+                f"JSON-LD 误报 user:pass@：\n  blob={blob!r}\n  hits={hits}"
+            )
+
+    def test_真凭据仍命中(self):
+        """修复不能过头——真 ``user:pass@host`` 必须仍被拦住。"""
+        for blob in (
+            "https://user:pass123@example.com/path",
+            "https://admin:secret@x.test/api?k=v",
+            "http://a:b@192.168.1.1:8080/",  # 端口 + 凭据并存
+        ):
+            hits = scan_credentials(blob)
+            assert self.EXPECTED_URL_CREDS_PATTERN in hits, (
+                f"真凭据漏报：\n  blob={blob!r}\n  hits={hits}"
+            )
+
+    def test_端口URL与OAuth用户URL不误报(self):
+        """``host:port``、``user@host``（无 pass）都不该走凭据分支。"""
+        for blob in (
+            "https://example.com:8080/path",
+            "https://user@example.com/path",  # OAuth 类，无密码
+            "https://x.test:443/api",  # 标准 https 端口
+        ):
+            hits = scan_credentials(blob)
+            assert self.EXPECTED_URL_CREDS_PATTERN not in hits, (
+                f"非凭据 URL 误报：\n  blob={blob!r}\n  hits={hits}"
+            )
+
+    def test_credential_samples抽到真凭据不抽JSON_LD(self):
+        """``credential_samples`` 是 ``dump_result`` 排错用的公开 API
+        （增量十八 §一）。JSON-LD 误报修复后，它必须只挑出**真**凭据段
+        而不是 JSON-LD 片段；否则排错日志就被噪音淹没。"""
+        # 真实凭据 + JSON-LD 同页：只挑真凭据
+        mixed = (
+            '<script type="application/ld+json">'
+            '{"@context":"https://schema.org","@graph":[{"@type":"VideoObject"}]}'
+            '</script>'
+            ' <!-- token: https://admin:secret@x.test/api -->'
+        )
+        samples = credential_samples(mixed, limit_chars=200)
+        assert any("https://admin:secret@" in s for s in samples), samples
+        assert not any('"@graph"' in s or '"@type"' in s for s in samples), samples
+
+    def test_纯文本与空payload不触发(self):
+        """``scan_credentials`` 接收 P1 JSON 序列化后的整段，结构化数据
+        与正文占绝大部分。空串/纯文本要返空列表，不能因为「空也走一遍
+        正则」就把别的 bug 误报上来。"""
+        for blob in ("", "页面正文，没有任何凭据特征",
+                     "404 Not Found\n本页找不到了"):
+            assert scan_credentials(blob) == [], blob
+
+    def test_CredentialLeak是RuntimeError(self):
+        """P1 落盘 ``P1Archive.write`` 在命中时抛 ``CredentialLeak``——它
+        必须继承 ``RuntimeError`` 才能被既有的 try/except 接住（failing
+        closed 链路设计见 ``archive.py:CREDENTIAL_PATTERNS`` 的 docstring）。"""
+        assert issubclass(CredentialLeak, RuntimeError)

@@ -52,6 +52,17 @@ class FakeLLM:
         answer_null: bool = False,
         answer_missing: bool = False,
         answer_garbage: Any = None,
+        # 2026-10-12 增量十七 · P4a 第二轮：让端到端测试**控制** LLM 在
+        # ``IS_REACHABLE`` / ``PLAYER_OK`` 时回传 ``page_quotes`` 字段
+        # ——``page_quotes`` 是 P4a 改造后 fallback 的**唯一**输入源，必须能
+        # 被端到端测试驱动才能验「LLM 给了 page_quotes → fallback 触发」。
+        # 默认 None / 空串以**不破坏**现有 ``TestBadOutputs`` 等用默认 FakeLLM
+        # 的测试。
+        page_quotes: list[str] | None = None,
+        # IS_REACHABLE 用的 ``access_control_type``——空串表示"我没给"。
+        access: str = "",
+        # PLAYER_OK 用的 ``paywall_type``——空串表示"我没给"。
+        paywall_type: str = "",
     ) -> None:
         #: 后端整体不可用（连接失败/超时）
         self.down = down
@@ -95,6 +106,10 @@ class FakeLLM:
         self.answer_missing = answer_missing
         #: ``answer`` 给了个既非布尔也非 null 的东西
         self.answer_garbage = answer_garbage
+        # 2026-10-12 增量十七：见上
+        self.page_quotes = page_quotes
+        self.access = access
+        self.paywall_type = paywall_type
         #: 记录每次请求，供断言「问了几次、system 里带了什么」
         self.calls: list[tuple[str, str]] = []
         #: 每次请求实际带的 ``max_tokens``（None = 走 config）
@@ -209,7 +224,28 @@ class FakeLLM:
                             "why": f"控件文本 {e.get('label','')!r}"}
             return {"ref": None, "trailer_only": False, "why": "未见播放控件"}
         # IS_REACHABLE / PLAYER_OK
-        return {"answer": self.answers.get(qid, True), "evidence": "页面主体可见且可交互"}
+        # 2026-10-12 增量十七 · P4a 第二轮：让 FakeLLM 能在 IS_REACHABLE /
+        # PLAYER_OK 时**真**回 page_quotes / access / paywall_type——
+        # 这样端到端测试就能驱动「LLM 给了 page_quotes → fallback 触发」
+        # 这条路径。已有 ``answer_*`` / ``answers`` 标志仍按惯例处理，
+        # 下面只在默认行为（无 answer_* 干预）下加这些字段。
+        payload: dict[str, Any] = {
+            "answer": self.answers.get(qid, True),
+            "evidence": "页面主体可见且可交互",
+        }
+        # page_quotes 仅当显式给了非 None list 时才进 payload——保持默认
+        # FakeLLM 与 P4a 之前测试同形（payload 无 page_quotes 字段），
+        # 同时让端到端测试可以"塞" quotes 触发 fallback。
+        if self.page_quotes is not None:
+            payload["page_quotes"] = list(self.page_quotes)
+        # access_control_type / paywall_type：给空串视为"未给"；给非空就
+        # 透传——端到端测试可分别验"LLM 给了 + access 齐" 与 "LLM 给了
+        # page_quotes 但 access 字段空，让 fallback 反推"两种姿势。
+        if self.access:
+            payload["access_control_type"] = self.access
+        if self.paywall_type:
+            payload["paywall_type"] = self.paywall_type
+        return payload
 
     def close(self) -> None:
         pass

@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -77,11 +78,15 @@ CONTRACTS: Mapping[str, str] = MappingProxyType(
         # **只装页面原文短语**，与 evidence 分离；code 用 page_quotes 做
         # fallback（详见 ``_is_reachable`` 解析段），避免 evidence 自述
         # 误触关键词集合（P3 v1 regression 的根因）。
+        # 增量十七 · P4a 第二轮：``page_quotes`` 提到 ``answer`` 之后立即位
+        # （**先填字段**），让 LLM 先看到它再写 evidence——避免 evidence 写满
+        # 页面引文、page_quotes 空。evidence 说明文字也收紧：「不含页面原文
+        # 引用」明示，禁止「」/"" 任何引号包裹。
         Q.IS_REACHABLE: (
-            '{"answer":true|false|'
-            'null,"access_control_type":"login|region|captcha|anti_bot|not_found|null",'
+            '{"answer":true|false|null,'
             '"page_quotes":["原文短语1","原文短语2"],'
-            '"evidence":"一句话，指出页面上的具体证据（文案/错误码/状态码）"}'
+            '"access_control_type":"login|region|captcha|anti_bot|not_found|null",'
+            '"evidence":"一句话，不含页面原文引用（页面引文全部进 page_quotes）"}'
         ),
         Q.FIND_PLAY_CONTROL: (
             '{"ref":"控件ref或null","trailer_only":true|false,'
@@ -91,11 +96,14 @@ CONTRACTS: Mapping[str, str] = MappingProxyType(
         # 要求 paywall_type（preview→partial_free；trial 默认仍走订阅墙；
         # null 兜底）。
         # 增量十六 · P4a：另加 ``page_quotes`` 字段，code 用它做 fallback。
+        # 增量十七 · P4a 第二轮：``page_quotes`` 提到 ``answer`` 之后立即位
+        # （**先填字段**），让 LLM 先看到它再写 evidence——避免 evidence 写满
+        # 页面引文、page_quotes 空。evidence 说明文字同步收紧。
         Q.PLAYER_OK: (
-            '{"answer":true|false|'
-            'null,"paywall_type":"preview|trial|null",'
+            '{"answer":true|false|null,'
             '"page_quotes":["原文短语1","原文短语2"],'
-            '"evidence":"一句话，指出页面上的具体证据"}'
+            '"paywall_type":"preview|trial|null",'
+            '"evidence":"一句话，不含页面原文引用（页面引文全部进 page_quotes）"}'
         ),
     }
 )
@@ -312,7 +320,9 @@ class LLMPerceptor:
         # P4a 增量十六：fallback 输入源**只**用 page_quotes——把 LLM 的
         # 页面原文与"自身推断"严格分开。如果 LLM 没给 page_quotes，fallback
         # 就拿不到证据，按现状落合态——宁可不命中也别拿 LLM 自述当原文。
-        quotes_text = _quote_text(data)
+        # 2026-10-12 增量二十一：``page_quotes`` 走 ``_quotes_with_fallback``
+        # — LLM 没给时从 evidence 后处理抽业务引文段作 fallback；零 LLM 改动。
+        quotes_text = " ".join(_quotes_with_fallback(data))
         access, fallback_note = _resolve_access(raw_access, quotes_text)
         tail = fallback_note
         if answer is False and access is None:
@@ -331,7 +341,7 @@ class LLMPerceptor:
                 "access_control_type": access,
                 # page_quotes 同步进 payload——单测、人工复核、报表都能
                 # 看到 LLM 真正观察到的页面文本。
-                "page_quotes": _quote_list(data),
+                "page_quotes": _quotes_with_fallback(data),
             },
         )
 
@@ -536,7 +546,9 @@ class LLMPerceptor:
         # 解析 LLM 给的 paywall_type（fail-soft：不在合法集回 None）
         raw_ptype = schema_parse.as_str(schema_parse.field(data, "paywall_type"))
         # P4a 增量十六：fallback 输入源用 page_quotes，不再用 evidence。
-        quotes_text = _quote_text(data)
+        # 2026-10-12 增量二十一：fallback 走 ``_quotes_with_fallback``，LLM
+        # 没给 page_quotes 时从 evidence 后处理抽业务引文段。
+        quotes_text = " ".join(_quotes_with_fallback(data))
         ptype, ptype_fallback_note = _resolve_field(
             raw_ptype, PAY_WALL_TYPES, infer_paywall_type_from_evidence,
             quotes_text, label="paywall_type",
@@ -561,7 +573,7 @@ class LLMPerceptor:
             "iframe_count": obs.iframe_count,
             "paywall": paywall,
             "paywall_type": ptype if paywall else None,
-            "page_quotes": _quote_list(data),  # 同步进 payload
+            "page_quotes": _quotes_with_fallback(data),  # 同步进 payload；增量二十一
             **({"paywall_word": hit} if paywall else {}),
         }
         return self._answer(
@@ -1072,6 +1084,76 @@ def _quote_list(data: Mapping[str, Any]) -> list[str]:
         return []
     return [s for s in (schema_parse.as_str(q) for q in raw) if s]
 
+
+_BUSINESS_QUOTE_HINTS: tuple[str, ...] = (
+    "VIP", "vip",
+    "会员", "大会员",
+    "登录", "注册",
+    "播放", "播放视频", "立即播放", "立即",
+    "设备", "地区", "版权",
+    "错误", "出错",
+    "不支持", "暂不支持", "不可播放",
+    "限制", "受限",
+    "验证", "验证码",
+    "开通", "续费", "购买", "付费", "收费", "充值", "购买单集",
+    "免费", "完整版", "试看", "抢先", "会员抢先",
+    "已下架", "不存在",
+    "404",
+    "新客", "特惠", "优惠", "促销",
+    "超清", "高清", "蓝光",
+    "重试", "刷新", "抱歉", "请稍后",
+)
+_NEGATIVE_QUOTE_HINTS: tuple[str, ...] = (
+    "没", "可验证", "找错站", "去了发现",
+    "采集", "哨兵", "不可逆", "前置事实",
+)
+
+
+def _extract_business_quotes(text: str, *, max_phrases: int = 5) -> list[str]:
+    if not text:
+        return []
+    # 开放类 = 「 + 三种直/弯双引号；闭类 = 」 + 三种直/弯双引号；
+    # 否定类 = 上面 4 个全排（含 」），避免 capture 跨过右侧书名号。
+    # 实测覆盖三种真实输入：
+    #   "当前设备不支持播放"     (弯引号)
+    #   「开通会员」            (书名号)
+    #   "开通 VIP"            (ASCII 直引号 - 测试源用的是这种)
+    pattern = re.compile(r'[「“”"]([^「“”」"\n]{2,50})[」“”"]')
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in pattern.finditer(text):
+        s = m.group(1).strip()
+        if not s or s in seen:
+            continue
+        if len(s) > 13:
+            continue
+        if not any(kw in s for kw in _BUSINESS_QUOTE_HINTS):
+            continue
+        if any(kw in s for kw in _NEGATIVE_QUOTE_HINTS):
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= max_phrases:
+            break
+    return out
+
+
+def _quotes_with_fallback(data: Mapping[str, Any]) -> list[str]:
+    """2026-10-12 增量二十一：``page_quotes`` 三层兜底解析。
+
+    优先级：LLM 回的 ``page_quotes`` 非空 -> 用它；否则从
+    ``data["evidence"]`` 后处理抽出业务引文段（启发式过滤页面原文与
+    LLM 评论）；都没有 -> ``[]``。
+
+    这是 :func:`_quote_list` 的**增强版**——下游 ``_is_reachable`` /
+    ``_player_ok`` 都改用它。当 P4a 第二轮 prompt 修改让 page_quotes
+    留 0/7 时，这条 fallback 是兜底（兜的是旧存档 + 模型退化）。
+    """
+    primary = _quote_list(data)
+    if primary:
+        return primary
+    ev = schema_parse.as_str(schema_parse.field(data, "evidence"))
+    return _extract_business_quotes(ev)
 
 def _bool_or_reason(data: Mapping[str, Any]) -> tuple[bool | None, str]:
     """读 ``answer``，并**说清为什么读不出来**。

@@ -99,6 +99,10 @@ class Test字段集一致:
         expected = {
             "url", "site_url", "play_page_url", "branch", "branch_label",
             "evidence", "question", "source", "fallback_used",
+            # 2026-10-12 增量二十：LLM 单独回传的"页面原文短语"列表。
+            # 落 P1 是关键——见 ``questions.py::Q.IS_REACHABLE.prompt``
+            # 的 page_quotes 必填说明，以及增量二十。
+            "page_quotes",
             "reached_play_page", "is_negative_sample",
         }
         assert actual == expected, (

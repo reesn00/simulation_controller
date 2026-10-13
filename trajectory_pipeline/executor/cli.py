@@ -49,6 +49,7 @@ from urllib.parse import urlsplit
 from trajectory_pipeline.executor.archive import (
     DEFAULT_ROOT,
     REVIEWED_SUFFIX,
+    CredentialLeak,
     P1Archive,
 )
 from trajectory_pipeline.executor.browser.mcp_client import EXE_ENV_VAR, McpClient
@@ -64,6 +65,25 @@ from trajectory_pipeline.executor.integrity import (
 )
 from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig, RunRecord
 from trajectory_pipeline.executor.plan import PlanError, load_plan
+from trajectory_pipeline.executor.probe import (
+    DEFAULT_TIMEOUT_S as MEDIA_DEFAULT_TIMEOUT_S,
+    FFPROBE_BIN,
+    PARTIAL_FREE_MAX_DURATION_S,
+    PARTIAL_FREE_MAX_CURRENT_TIME_S,
+    dump_media_result,
+    dump_result,
+    ffprobe_available,
+    probe,
+    probe_media,
+    run_ffprobe_subprocess,
+    to_branch,
+    to_media_branch,
+    probe_browser_media,
+    to_browser_branch,
+    dump_browser_result,
+    BROWSER_DEFAULT_TIMEOUT_S,
+    PROBE_WAIT_S,
+)
 from trajectory_pipeline.executor.review_queue import (
     VERDICTS,
     ReviewQueueError,
@@ -695,6 +715,376 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
             print(f"  branches = {json.dumps(branch_count, ensure_ascii=False)}")
             print(f"  → {path}")
     return 0
+
+
+async def cmd_staticprobe(args: argparse.Namespace) -> int:
+    """L0 静态可达性探测（HTTP 层，无浏览器）—— 阶段 4 第一站。
+
+    2026-10-12 增量十八配套。绕开搜索引擎与浏览器，对一组 URL 跑
+    HTTP 层可达性探测（:func:`trajectory_pipeline.executor.probe.probe`），
+    落 JSON 到 ``output/pipeline/staticprobe/`` 子目录（不被训练批次
+    glob 收走）。
+
+    与 :func:`cmd_proberun` 的差异：proberun 走 visit 整链（perceptor
+    → decision_branch → record），下 13 活跃分支结论；staticprobe 只
+    跑 HTTP 层探测，**不下分支结论**——由 ``to_branch()`` 在归档后
+    单独映射（只产 ``broken`` / ``blocked`` / ``None``，与阶段 1 的
+    13 活跃分支口径一致）。
+
+    ⚠️ **生产链上不走这条路径**——这是离线验证工具，与 proberun
+    同款，产物进 ``staticprobe/`` 子目录隔离。
+
+    关键边界（设计文档 §6）：
+    - **不复用 :mod:`executor.steps.reachability`**——后者刻意不用
+      HTTP 状态码；L0 是新通道。
+    - **网络层异常不归任何分支**——``unreachable_hard`` 由 DriverError
+      触发，留给 reachability。
+    - **L0 HTTP 404/5xx 初筛只产 ``broken``**，不产 ``unreachable_hard``。
+    """
+    if not args.from_urls:
+        print("[FAIL] --from-urls <path> 是必填（每行一个 URL）",
+              file=sys.stderr)
+        return 2
+    try:
+        urls = _load_url_lines(args.from_urls)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 2
+    if not args.title:
+        print("[FAIL] --title 是必填（任务名留痕 + 归档前缀；不参与探测逻辑）",
+              file=sys.stderr)
+        return 2
+
+    archive = P1Archive(Path(args.out) if args.out else None,
+                        subdir="staticprobe")
+
+    print(f"== staticprobe：{len(urls)} 个 URL，HTTP 层可达性探测（无浏览器）==")
+    print(f"  task_id = {args.task_id}")
+    print(f"  timeout = {args.timeout}s")
+
+    branch_count: Counter[str] = Counter()
+    status_count: Counter[str] = Counter()
+    leak_count = 0
+
+    for n, url in enumerate(urls, 1):
+        run_id = uuid.uuid4().hex[:8]
+        print(f"\n[{n}/{len(urls)}] {url[:90]}")
+        try:
+            result = await probe(url, timeout_s=args.timeout)
+        except Exception as exc:                              # noqa: BLE001
+            # 探测函数自身已对 httpx 异常分门别类；这里兜的是「不该出
+            # 现的意外」——单站炸不该毁整批。
+            print(f"  [FAIL] probe 抛异常：{type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            continue
+
+        branch = to_branch(result)
+        branch_count[branch or "passes"] += 1
+        status_count[result.landing_status] += 1
+
+        print(f"  status_code = {result.status_code}")
+        print(f"  landing     = {result.landing_status}")
+        print(f"  elapsed_ms  = {result.elapsed_ms}")
+        print(f"  redirects   = {result.redirect_count}")
+        print(f"  branch      = {branch or '(passes to next layer)'}")
+        if result.block_reason:
+            print(f"  block_reason= {result.block_reason}")
+        if result.error:
+            print(f"  error       = {result.error}")
+
+        path = archive.path_for(args.task_id, run_id)
+        try:
+            written = dump_result(result, path)
+            print(f"  → {written}")
+        except CredentialLeak as exc:
+            leak_count += 1
+            print(f"  [FAIL] {exc}", file=sys.stderr)
+
+    print(f"\n== 汇总 ==")
+    print(f"  branches = {dict(branch_count)}")
+    print(f"  landing  = {dict(status_count)}")
+    if leak_count:
+        print(f"  ⚠️ {leak_count}/{len(urls)} 因凭据命中被拒写盘（fail-closed）")
+    return 0
+
+
+async def cmd_mediaprobe(args: argparse.Namespace) -> int:
+    """L1 媒体解析（HTTP 拉页 + ffprobe 直连，无浏览器）—— 阶段 4 第二站。
+
+    2026-10-13 增量二十二配套。绕开搜索引擎与浏览器，对一组 URL 跑
+    HTTP 层拉页 + ffprobe 直连媒体（:func:`trajectory_pipeline.executor.probe.probe_media`），
+    落 JSON 到 ``output/pipeline/mediaprobe/`` 子目录（不被训练批次
+    glob 收走），与 L0 ``staticprobe`` 同款。
+
+    与 :func:`cmd_staticprobe` 的差异：L0 只跑 HTTP GET 探测可访问性；
+    L1 在来源页 200 后再走 ``HTML 解析 media/iframe`` + ``iframe 1 跳`` +
+    ``ffprobe 直连每条 media``，**下分支结论**（由 ``to_media_branch()``
+    映射：``broken`` / ``partial_free`` / ``None``）。
+
+    ⚠️ **生产链上不走这条路径**——这是离线验证工具，与 ``proberun`` 同款，
+    产物进 ``mediaprobe/`` 子目录隔离。
+
+    关键边界（设计文档 §6 / 增量二十二）：
+
+    - **ffprobe 未装 → fail-closed**——与 ``OBSCURA_EXE`` 同款纪律：缺即报错，
+      不拿「子进程不可用」猜「媒体不存在」。
+    - **iframe 1 跳解析**——``MAX_IFRAME_HOPS = 1``，超过即停。
+    - **凭据闸门复用 :func:`scan_credentials`**——iframe 拉回的 HTML / media URL
+      可能含 cookie / token，**不能绕过**（与 L0 同款）。
+    - **L1 与 L0 不重叠**——L0 在 HTTP 层已报 ``broken`` / ``blocked``；到 L1 时
+      来源页已经 200，L1 只产 ``broken``（媒体坏）与 ``partial_free``（试看）。
+    """
+    if not args.from_urls:
+        print("[FAIL] --from-urls <path> 是必填（每行一个 URL）",
+              file=sys.stderr)
+        return 2
+    try:
+        urls = _load_url_lines(args.from_urls)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 2
+    if not args.title:
+        print("[FAIL] --title 是必填（任务名留痕 + 归档前缀；不参与探测逻辑）",
+              file=sys.stderr)
+        return 2
+
+    if not ffprobe_available(bin_name=FFPROBE_BIN):
+        print(
+            f"[FAIL] ffprobe 未在本机 PATH 中找到（bin_name={FFPROBE_BIN}）。"
+            f"L1 媒体解析需要 ffprobe；安装并重试。"
+            f"也可换用别的二进制名（需改源码默认）——本 CLI 与 ``OBSCURA_EXE`` "
+            f"同款纪律：缺件即报错，不猜。",
+            file=sys.stderr,
+        )
+        return 3
+
+    archive = P1Archive(Path(args.out) if args.out else None,
+                        subdir="mediaprobe")
+
+    print(f"== mediaprobe：{len(urls)} 个 URL，HTTP 拉页 + ffprobe 直连（无浏览器）==")
+    print(f"  task_id = {args.task_id}")
+    print(f"  timeout = {args.timeout}s")
+    print(f"  ffprobe = {FFPROBE_BIN} (PARTIAL_FREE_MAX_DURATION_S={PARTIAL_FREE_MAX_DURATION_S})")
+
+    branch_count: Counter[str] = Counter()
+    media_count_total = 0
+    leak_count = 0
+
+    for n, url in enumerate(urls, 1):
+        run_id = uuid.uuid4().hex[:8]
+        print(f"\n[{n}/{len(urls)}] {url[:90]}")
+        try:
+            result = await probe_media(
+                url, timeout_s=args.timeout,
+                runner=run_ffprobe_subprocess,
+            )
+        except Exception as exc:                              # noqa: BLE001
+            # 探测函数自身已对 httpx / ffprobe 异常分门别类；
+            # 这里兜的是「不该出现的意外」——单站炸不该毁整批。
+            print(f"  [FAIL] probe 抛异常：{type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            continue
+
+        branch = to_media_branch(result)
+        branch_count[branch or "passes"] += 1
+        media_count_total += len(result.media_urls)
+
+        print(f"  media_urls    = {len(result.media_urls)}")
+        print(f"  iframe_urls   = {len(result.iframe_urls)}")
+        print(f"  probed        = {len(result.probed)} "
+              f"(ok={sum(1 for p in result.probed if p.ok)})")
+        print(f"  elapsed_ms    = {result.elapsed_ms}")
+        print(f"  branch        = {branch or '(passes to next layer)'}")
+        if result.probed:
+            short = [p for p in result.probed if p.ok and p.duration_s <= PARTIAL_FREE_MAX_DURATION_S]
+            if short:
+                print(f"  short_media   = {len(short)} (≤{PARTIAL_FREE_MAX_DURATION_S}s)")
+            broken = [p for p in result.probed if not p.ok]
+            if broken:
+                print(f"  failed_probed = {len(broken)} (ffprobe failed)")
+
+        path = archive.path_for(args.task_id, run_id)
+        try:
+            written = dump_media_result(result, path)
+            print(f"  → {written}")
+        except CredentialLeak as exc:
+            leak_count += 1
+            print(f"  [FAIL] {exc}", file=sys.stderr)
+
+    print(f"\n== 汇总 ==")
+    print(f"  branches = {dict(branch_count)}")
+    print(f"  media_url_total = {media_count_total}")
+    if leak_count:
+        print(f"  ⚠️ {leak_count}/{len(urls)} 因凭据命中被拒写盘（fail-closed）")
+    return 0
+
+
+
+
+
+# cmd_mediabrowse 函数本体（带前后各 2 空行）—— 供 inserter 拼接。
+# 中文以 UTF-8 落盘；中文 / emoji 不会破坏这里因为我们走 Path.write_text。
+async def cmd_mediabrowse(args: argparse.Namespace) -> int:
+    """L2 浏览器媒体探针（JS-aware，依赖 PageDriver 协议）—— 阶段 4 第三站。
+
+    2026-10-13 增量二十三配套。绕开搜索引擎；在 PageDriver 协议上跑
+    probe_browser_media 拿 <video> / <audio> 真实 playback 状态
+    （currentTime / readyState / videoWidth / error code 等），
+    落 JSON 到 output/pipeline/mediabrowse/ 子目录（不被训练批次
+    glob 收走）。
+
+    与 cmd_mediaprobe 的差异：L1 在 HTTP 层 + ffprobe 直连媒体文件，
+    **拿不到真实 playback 时序**——它只能看 mp4 头部 & metadata；
+    L2 用浏览器 JS 拿两次 currentTime 采样比对，确认是否真推进、
+    readyState / videoWidth 是否正常、media error.code 是什么。
+    partial_free 的判定在 L2 这层才算完整（DOM 真实状态）。
+
+    关键边界（设计文档 §6 / 增量二十三）：
+    - **依赖 PageDriver 协议**——不直连 obscura，留协议层替换余地。
+    - **默认 fake driver**——CLI 不打开真浏览器，只验契约与
+      to_branch 映射；KPI 验证 partial_free 形态必须接 obscura
+      （L2 与 L0/L1 的本质区别：没真浏览器时 L2 只能探 mock）。
+    - **凭据闸门复用 scan_credentials**——同 L1。
+    - **L2 与 L0/L1 不重叠**——L2 只能新增「JS-aware 黑屏」与
+      「试看形态二次确认」。L0 已判 broken/blocked；L1 已判媒体坏。
+    """
+    if not args.from_urls:
+        print("[FAIL] --from-urls <path> 是必填（每行一个 URL）",
+              file=sys.stderr)
+        return 2
+    try:
+        urls = _load_url_lines(args.from_urls)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 2
+    if not args.title:
+        print("[FAIL] --title 是必填（任务名留痕 + 归档前缀；不参与探测逻辑）",
+              file=sys.stderr)
+        return 2
+
+    driver_choice = getattr(args, "driver", "fake")
+    driver_obj = None
+    if driver_choice == "fake":
+        driver_obj = FakePageDriver()
+    elif driver_choice == "obscura":
+        if not os.environ.get(EXE_ENV_VAR, "").strip():
+            print(
+                f"[FAIL] --driver obscura 需要 ${EXE_ENV_VAR} 指向本机二进制；"
+                f"目前未设置。先用 --driver fake 验契约。",
+                file=sys.stderr,
+            )
+            return 3
+        print(
+            "[FAIL] --driver obscura 的真实 L2 串接尚未实现"
+            "（设计阶段 4 L4/L5）。先用 --driver fake。",
+            file=sys.stderr,
+        )
+        return 3
+    else:
+        print(
+            f"[FAIL] --driver 取值 {driver_choice!r} 不在 ('fake', 'obscura') 内",
+            file=sys.stderr,
+        )
+        return 2
+
+    archive = P1Archive(Path(args.out) if args.out else None,
+                        subdir="mediabrowse")
+
+    print(f"== mediabrowse：{len(urls)} 个 URL，L2 JS-aware 浏览器探针 ==")
+    print(f"  task_id = {args.task_id}")
+    print(f"  timeout = {args.timeout}s")
+    print(f"  wait    = {args.wait_s}s (PROBE_WAIT_S={PROBE_WAIT_S})")
+    print(f"  driver  = {driver_obj.name} (PARTIAL_FREE_MAX_CURRENT_TIME_S="
+          f"{PARTIAL_FREE_MAX_CURRENT_TIME_S})")
+
+    branch_count = Counter()
+    leak_count = 0
+
+    for n, url in enumerate(urls, 1):
+        run_id = uuid.uuid4().hex[:8]
+        print(f"\n[{n}/{len(urls)}] {url[:90]}")
+        try:
+            result = await probe_browser_media(
+                driver_obj, url,
+                timeout_s=args.timeout,
+                wait_s=args.wait_s,
+            )
+        except Exception as exc:                              # noqa: BLE001
+            # 探测函数自身已对 asyncio / driver 异常分门别类；
+            # 这里兜的是「不该出现的意外」——单站炸不该毁整批。
+            print(f"  [FAIL] probe 抛异常：{type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            continue
+
+        branch = to_browser_branch(result)
+        branch_count[branch or "passes"] += 1
+
+        sig = result.signal
+        print(f"  driver        = {result.driver_name}")
+        print(f"  media_count   = {result.media_count}")
+        print(f"  play_started  = {sig.play_started}")
+        print(f"  progress      = {sig.timeupdate_progress} "
+              f"(current_time={sig.current_time_sec}s)")
+        print(f"  frames_decoded= {sig.frames_decoded}")
+        print(f"  black_screen  = {sig.black_screen}")
+        print(f"  media_error   = {sig.media_error}")
+        print(f"  elapsed_ms    = {result.elapsed_ms}")
+        print(f"  branch        = {branch or '(passes to next layer)'}")
+        if result.note:
+            print(f"  note          = {result.note}")
+        if result.error:
+            print(f"  error         = {result.error}")
+
+        path = archive.path_for(args.task_id, run_id)
+        try:
+            written = dump_browser_result(result, path)
+            print(f"  → {written}")
+        except CredentialLeak as exc:
+            leak_count += 1
+            print(f"  [FAIL] {exc}", file=sys.stderr)
+
+    print(f"\n== 汇总 ==")
+    print(f"  branches = {dict(branch_count)}")
+    if leak_count:
+        print(f"  ⚠️ {leak_count}/{len(urls)} 因凭据命中被拒写盘（fail-closed）")
+    return 0
+
+
+class FakePageDriver:
+    """L2 mediabrowse 默认 in-process mock PageDriver。
+
+    2026-10-13 增量二十三配套。L2 :func:`probe_browser_media` 只需 3 个原语：
+    ``name`` / ``goto`` / ``evaluate``。``evaluate`` 返回 ``{"count": 0, "media": []}``
+    → :func:`_parse_media_payload` 出空 :class:`MediaSignal` → ``media_count=0``
+    → :func:`to_browser_branch` 返 ``None``（passes）。
+
+    设计动机：CLI 默认不开真浏览器——KPI 验证 partial_free 形态必须接
+    obscura driver 才能跑（这是 L2 与 L0/L1 的本质区别：**没真浏览器时
+    L2 只能探 mock，无法验 partial_free**）。
+
+    关键边界：
+    - **仅实现 L2 探针用到的 3 原语**——其他原子原语（snapshot / links /
+      interactive / click 等）靠鸭子类型按需调用，L2 探针不触达。
+    - **不抛异常**——与真 obscura 协议的「失败抛 DriverError」不同，
+      fake 默认走 happy path；要测错误分支请走单测。
+    """
+
+    name: str = "fake"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def goto(self, url: str, *, wait_until: str = "load") -> None:
+        self.calls.append(("goto", url))
+
+    async def evaluate(self, expression: str) -> Mapping[str, Any]:
+        # L2 探针只看 ``{count, media: [...]}`` 形态；返回空集让 ``to_branch``
+        # 走 ``None``（passes），验证 fake driver 的 happy-path 契约。
+        self.calls.append(("evaluate", expression[:32]))
+        return {"count": 0, "media": []}
+
+    async def close(self) -> None:
+        self.calls.clear()
 
 
 def _load_url_lines(path: str) -> list[str]:
@@ -1667,6 +2057,71 @@ def build_parser() -> argparse.ArgumentParser:
                      help="感知层选择；与 cli run 一致")
     prn.add_argument("--out", default=None, help="P1 输出目录")
     prn.set_defaults(func=cmd_proberun)
+
+    # 2026-10-12 增量十八配套：阶段 4 L0 静态可达性探测。HTTP 层，
+    # 无浏览器，与 proberun 并列的离线验证工具；产物进 staticprobe/
+    # 子目录隔离。
+    stp = sub.add_parser(
+        "staticprobe",
+        help="L0 静态可达性探测（HTTP 层，无浏览器，**不入主链**）",
+    )
+    stp.add_argument("--from-urls", default=None, metavar="PATH",
+                     help="每行一个 URL 的文本文件；# 开头的行视为注释")
+    stp.add_argument("--task-id", default="P018",
+                     help="归档用 task_id；每个 URL 一个独立 run_id")
+    stp.add_argument("--title", default=None,
+                     help="任务名（留痕用；不参与探测逻辑；**必填**）")
+    stp.add_argument("--timeout", type=float, default=10.0,
+                     help="单 URL 探测超时（秒）；默认 10")
+    stp.add_argument("--out", default=None, help="输出目录")
+    stp.set_defaults(func=cmd_staticprobe)
+
+    # 2026-10-13 增量二十二配套：阶段 4 L1 媒体解析（HTTP 拉页 + ffprobe
+    # 直连）。无浏览器，与 ``staticprobe`` 配对；产物进 ``mediaprobe/``
+    # 子目录隔离。
+    mdp = sub.add_parser(
+        "mediaprobe",
+        help="L1 媒体解析（HTTP 拉页 + ffprobe 直连，无浏览器，**不入主链**）",
+    )
+    mdp.add_argument("--from-urls", default=None, metavar="PATH",
+                     help="每行一个 URL 的文本文件；# 开头的行视为注释")
+    mdp.add_argument("--task-id", default="P022",
+                     help="归档用 task_id；每个 URL 一个独立 run_id")
+    mdp.add_argument("--title", default=None,
+                     help="任务名（留痕用；不参与探测逻辑；**必填**）")
+    mdp.add_argument("--timeout", type=float, default=10.0,
+                     help="单 URL 拉页超时（秒）；默认 10")
+    mdp.add_argument("--out", default=None, help="输出目录")
+    mdp.set_defaults(func=cmd_mediaprobe)
+
+    # 2026-10-13 增量二十三配套：阶段 4 L2 浏览器媒体探针（PageDriver 协议）。
+    # 与 mediaprobe / staticprobe 配对——三个都是不入主链的离线验证工具。
+    # 默认 --driver fake 不打开真浏览器；要真验 partial_free 形态需接
+    # obscura driver（L4/L5 串接时一并做）。产物进 mediabrowse/ 子目录隔离。
+    mbb = sub.add_parser(
+        "mediabrowse",
+        help=(
+            "L2 浏览器媒体探针（JS-aware，PageDriver 协议，"
+            "**不入主链**）"
+        ),
+    )
+    mbb.add_argument("--from-urls", default=None, metavar="PATH",
+                     help="每行一个 URL 的文本文件；# 开头的行视为注释")
+    mbb.add_argument("--task-id", default="P023",
+                     help="归档用 task_id；每个 URL 一个独立 run_id")
+    mbb.add_argument("--title", default=None,
+                     help="任务名（留痕用；不参与探测逻辑；**必填**）")
+    mbb.add_argument("--timeout", type=float, default=15.0,
+                     help="单 URL 浏览器探针超时（秒）；默认 15")
+    mbb.add_argument("--wait-s", type=float, default=2.0,
+                     help="L2 两次 currentTime 采样间隔（秒）；默认 2")
+    mbb.add_argument("--driver", choices=("fake", "obscura"), default="fake",
+                     help="PageDriver 选择；默认 fake 不联网，"
+                          "obscura 留待 L4/L5 串接（L2 暂未实现）")
+    mbb.add_argument("--out", default=None, help="输出目录")
+    mbb.set_defaults(func=cmd_mediabrowse)
+
+
 
     rep = sub.add_parser("report", help="汇总 P1 分支分布")
     rep.add_argument("--out", default=None)

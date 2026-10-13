@@ -101,6 +101,28 @@ class SiteOutcome:
     site_url: str = ""
     play_page_url: str = ""
 
+    #: 2026-10-12 增量二十：LLM 在 ``page_quotes`` 字段单独回传的"页面
+    #: 原文短语"列表（与 ``evidence`` 自述**严格分开**——后者是模型推断）。
+    #:
+    #: **来源**（按现状）：
+    #:
+    #: - LLM 版：``LLMPerceptor._is_reachable`` / ``_player_ok`` 把
+    #:   ``_quote_list(data)`` 放进 ``Decision.payload["page_quotes"]``；
+    #:   :meth:`RunLedger.record` / :meth:`RunLedger.record_from` 在
+    #:   落 :class:`SiteOutcome` 时把它**提升**到独立字段，避免被
+    #:   payload MappingProxyType 吞掉。
+    #: - 规则版：W1 规则版无 LLM 原文短语，**永为空**——但保留字段以让
+    #:   落盘 schema 不分 perceptor 类型，人工复核 / 报表 / 重跑都能
+    #:   同一份 JSON 看。
+    #:
+    #: **JSON 形态**：落盘时是 list（与 LLM 的约定一致），反序列化时
+    #: 仍为 list。空也写出 ``[]``——读档侧拿不到"未填"和"填了空数组"
+    #: 的区别时，行为与现状一致（落空就当空）。
+    #:
+    #: **元组而非列表**：``SiteOutcome`` 是 ``frozen=True, slots=True``，
+    #: 元组不可变，与 dataclass 不变式一致。JSON 序列化时 ``list(...)``。
+    page_quotes: tuple[str, ...] = ()
+
     @property
     def is_negative_sample(self) -> bool:
         return self.branch is not None and self.branch not in NON_SAMPLE_BRANCHES
@@ -113,6 +135,11 @@ class SiteOutcome:
             "branch": self.branch,
             "branch_label": BRANCH_LABELS.get(self.branch or "", "成功"),
             "evidence": self.evidence,
+            # 2026-10-12 增量二十：``page_quotes`` 落盘。空时写 ``[]``
+            # 而不是省略——读档侧拿不到"未填"和"填了空数组"的区别时，
+            # 行为与现状一致；显式空数组让单测断言更直接（不需要
+            # ``assert "page_quotes" in j or j["page_quotes"] == []``）。
+            "page_quotes": list(self.page_quotes),
             "question": self.question,
             "source": self.source,
             "fallback_used": self.fallback_used,
@@ -148,6 +175,11 @@ class RunLedger:
         reached: bool = False,
         site_url: str = "",
         play_page_url: str = "",
+        # 2026-10-12 增量二十：``page_quotes`` 显式传参时优先用显式值；
+        # 否则从 ``decision.payload["page_quotes"]`` 提升（LLM 路径）。
+        # 显式空元组 ``()`` 等价于"不要 page_quotes"——绝大多数调用点
+        # 走默认 ``()`` 走 Decision 透传。
+        page_quotes: tuple[str, ...] | None = None,
     ) -> SiteOutcome:
         """记一个站点结果并返回它。分支名非法时抛 :class:`UnknownBranch`。"""
         if (
@@ -161,6 +193,10 @@ class RunLedger:
                 f"未知失败分支 {branch!r}；注册表 13 条为 "
                 f"{sorted(questions.all_branches())}"
             )
+        # 2026-10-12 增量二十：``page_quotes`` 解析——见 :attr:`SiteOutcome.page_quotes`。
+        # 三层兜底（显式 > decision.payload > 空），与其它字段（question /
+        # source 等）同源路径保持一致。**归一为元组**以贴合 frozen dataclass。
+        resolved_quotes = _resolve_page_quotes(page_quotes, decision)
         outcome = SiteOutcome(
             url=url,
             branch=branch,
@@ -171,6 +207,7 @@ class RunLedger:
             reached=reached,
             site_url=site_url,
             play_page_url=play_page_url,
+            page_quotes=resolved_quotes,
         )
         self.outcomes.append(outcome)
         return outcome
@@ -425,6 +462,38 @@ def _same_page(a: Observation | None, b: Observation | None) -> bool:
     if len(a.interactive_elements) != len(b.interactive_elements):
         return False
     return a.body_text == b.body_text
+
+
+def _resolve_page_quotes(
+    explicit: tuple[str, ...] | None,
+    decision: Decision | None,
+) -> tuple[str, ...]:
+    """page_quotes 三层兜底解析（2026-10-12 增量二十）。
+    优先级：显式参数 > decision.payload[page_quotes] > 空元组。
+    不做 evidence 反推——那是独立增量，不要污染 P4a 边界。
+    """
+    if explicit is not None:
+        return _coerce_quotes(explicit)
+    if decision is not None:
+        raw = decision.payload.get("page_quotes") if decision.payload else None
+        if raw is not None:
+            return _coerce_quotes(raw)
+    return ()
+
+def _coerce_quotes(raw: Any) -> tuple[str, ...]:
+    """把 page_quotes 的任意可迭代输入归一成 tuple[str, ...]。
+    边界：None / 非可迭代 -> ()；元素非字符串 -> 丢掉；空串 -> 丢掉。
+    与 LLMPerceptor._quote_list 同款宁少勿错过滤。
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, (list, tuple)):
+        return tuple(s for s in (str(x) for x in raw) if s)
+    try:
+        return tuple(s for s in (str(x) for x in raw) if s)
+    except TypeError:
+        return ()
+
 
 
 def _precondition_failed(

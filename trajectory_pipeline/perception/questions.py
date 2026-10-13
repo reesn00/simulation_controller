@@ -56,8 +56,24 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
                 "登录墙、验证码、404、地区限制、空白页都算不可达。"
                 "注意：内容里**提到**「请登录」不代表不可达——"
                 "要判断的是页面主体是不是被挡住了。\n\n"
-                "如果 **answer=false**，请**同时**给出 ``access_control_type`` 字段，"
-                "五个值之一：\n"
+                "1. **填写 ``answer``**：``true`` / ``false`` / ``null`` "
+                "三选一——证据不足时给 ``null``，不要猜。\n\n"
+                # 2026-10-12 增量十七 · P4a 第二轮：page_quotes 提到 answer
+                # 之后第一个必填字段位置——这样无论 answer 真假，模型都被要求
+                # 先把"看到的页面原文"写进 page_quotes，再去写 access_control_type
+                # / evidence。P4a 第一轮实跑发现 LLM 把页面引文塞进 evidence
+                # 字段（用「」/"" 包裹），page_quotes 字段空——fallback 拿不到
+                # 证据。把 page_quotes 放首位是根除此问题的姿势：让模型先填
+                # page_quotes，再写 evidence。
+                "2. **必填 ``page_quotes``**（array of str）——"
+                "把你看到的**页面上真实出现的**中文/英文短语**逐字**引用：\n"
+                "- 例：``[\"请先登录再继续\", \"登录后观看完整版\", \"您的 IP 不在服务区\"]``\n"
+                "- 例：``[\"404 Not Found\", \"视频不存在\"]``\n"
+                "- **不**改写、**不**翻译、**不**补前置后置文字（\"用户须\",\"页面含\"等）\n"
+                "- **不**写自己的推断（不写\"看起来是登录墙\"）\n"
+                "- 没看到明显短语就空数组 ``[]``\n\n"
+                "3. 仅当 **answer=false** 时**同时**给出 ``access_control_type`` 字段，"
+                "六个值之一：\n"
                 "- ``login``      — 提示登录后可继续看（如「请登录」「登录后观看完整版」"
                 "等可绕过的登录墙，agent 没登录态因此取不到正片）\n"
                 "- ``region``     — 地区限制（如海外 IP 限制、错误码 70017001 等"
@@ -67,29 +83,25 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
                 "（「Performing security verification」「Just a moment…」等）\n"
                 "- ``not_found``  — 404 页面、内容已被删除/下架\n"
                 "- ``null``       — 判 false 但不属于以上情形（兜底；宁可 null 也别猜）\n\n"
-                "依据：在 ``evidence`` 里直接贴出页面文案或错误码。"
-                "拿不准就 ``null``——细分是给人复核用的，猜错会被打回去。\n\n"
-                # 2026-10-12 增量十六 · P4a：让 LLM 单独回传 page_quotes
-                # 字段——这是**只装页面原文短语**的字段，与 evidence 分离。
-                # evidence 是 LLM 自述（含结论与推断），page_quotes 必须是**逐字
-                # 引用**（不写 "这是登录墙" 这种改写，**只写页面上看到的字符串**）。
-                # code 层用 page_quotes 反推细分字段，避免 evidence 自述误触关键字
-                # （P3 v1 v.qq.com 实证过 regression）。
-                "**再单独给出 ``page_quotes``**（array of str）——"
-                "把你看到的**页面上真实出现的**中文/英文短语逐字引用：\n"
-                "- 例：``[\"请先登录再继续\", \"登录后观看完整版\", \"您的 IP 不在服务区\"]``\n"
-                "- 例：``[\"404 Not Found\", \"视频不存在\"]``\n"
-                "- **不**改写、**不**翻译、**不**补前置后置文字（\"用户须\",\"页面含\"等）\n"
-                "- **不**写自己的推断（不写\"看起来是登录墙\"）\n"
-                "- 没看到明显短语就空数组 ``[]``——evidence 与 page_quotes 是两条独立证据"
+                # 2026-10-12 增量十七 · P4a 第二轮：evidence 明示禁止
+                # 任何引号包裹的页面字符。页面引文只能进 page_quotes 字段——
+                # evidence 是模型自述（含结论与推断），不允许出现「...」/"..."
+                # 包裹的页面原文。这样避免 P3 v1 实证过的「evidence 自述误触
+                # 关键字集合」regression 让 fallback 永远可触发。
+                "4. **evidence** 只允许写**你自己的一句话判断**（如\"这是登录墙\"、"
+                "\"地区码 70017001 不在服务区\"），**禁止**在 evidence 里出现"
+                "「」/\"\"\"任何引号包裹的页面上看到的字符——那种引文一律搬到"
+                "``page_quotes`` 里。evidence 内禁止引用页面文案——引文都在 "
+                "page_quotes 里。"
             ),
             answer_type="bool",
             schema_hint=MappingProxyType(
                 {
-                    "access_control_type": "login|region|captcha|anti_bot|not_found|null",
-                    # 2026-10-12 增量十六：page_quotes 是 P4a 的新增字段，
-                    # 必须是 str 数组，不能 string。
+                    # 2026-10-12 增量十七 · P4a 第二轮：page_quotes 标首位。
+                    # ``MappingProxyType`` 保持声明序 = 迭代序，prompt 构造
+                    # 与解析容错都按这个顺序遍历。放首位 = 模型先看到 page_quotes。
                     "page_quotes": "array of str",
+                    "access_control_type": "login|region|captcha|anti_bot|not_found|null",
                 }
             ),
             confidence_threshold=0.7,
@@ -121,35 +133,45 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
                 "**判否**——本项目的口径是「有播放页但需付费不算成功」。\n"
                 "反之，页面只是**导航栏**里挂着「免费观看」「VIP」字样而并未"
                 "挡住播放的，不要因此判否。\n\n"
-                "如果 **answer=false** 且页面**确实阻挡**播放（不是单纯提示），"
-                "请**同时**给出 ``paywall_type`` 字段，三个值之一：\n"
-                "- ``preview`` — 可看一部分（试看 6 分钟 / 前几集免费 / 限时免费 / 预告）；"
-                "agents 不消耗会员也能拿到非空播放\n"
-                "- ``trial``   — 试用 / 体验期（首次免、试用 N 天）\n"
-                "- ``null``    — 不是以上情形（实在付费墙但形态不属于 preview/trial，"
-                "或判 false 但阻挡原因不是付费，例如纯广告前贴片）\n\n"
-                "依据：在 ``evidence`` 里贴出页面文案关键字（试看/前几集/开通会员/购买"
-                "单集/VIP 等）；区分不了就 ``null``，别猜——细分会被复核队列校对。\n\n"
-                # 2026-10-12 增量十六 · P4a：要求 LLM 单独回 page_quotes——
-                # **只装页面原文**（如"开通会员后观看完整版"），evidence
-                # 是 LLM 自述、page_quotes 才是真原文。code 用 page_quotes 反推
-                # paywall_type / 审稿事件——避免 evidence 自述误触付费关键词
-                # 集合（P3 v1 实证过 regression）。
-                "**再单独给出 ``page_quotes``**（array of str）——"
-                "把你看到的**页面上真实出现的**付费提示短语逐字引用：\n"
+                "1. **填写 ``answer``**：``true`` / ``false`` / ``null`` "
+                "三选一——证据不足时给 ``null``，不要猜。\n\n"
+                # 2026-10-12 增量十七 · P4a 第二轮：page_quotes 提到 answer
+                # 之后第一个必填字段位置——这样无论 answer 真假，模型都被要求
+                # 先把"看到的页面原文"写进 page_quotes，再去写 paywall_type
+                # / evidence。P4a 第一轮实跑发现 LLM 把页面引文塞进 evidence
+                # 字段（用「」/"" 包裹），page_quotes 字段空——fallback 拿不到
+                # 证据。把 page_quotes 放首位是根除此问题的姿势：让模型先填
+                # page_quotes，再写 evidence。
+                "2. **必填 ``page_quotes``**（array of str）——"
+                "把你看到的**页面上真实出现的**付费提示短语**逐字**引用：\n"
                 "- 例：``[\"开通 VIP 后观看\", \"试看 6 分钟，订阅继续观看\", \"购买单集 ¥6\"]``\n"
                 "- 例：``[\"免费试用 7 天\", \"首月免费\", \"仅限会员\"]``\n"
                 "- **不**改写、**不**翻译（页面写「开通会员」就**只**写「开通会员」，"
                 "**不**写「提示用户付费」）\n"
                 "- **不**写自己的推断（不写\"看起来在催付费\"）\n"
-                "- 没看到明显短语就空数组 ``[]``"
+                "- 没看到明显短语就空数组 ``[]``\n\n"
+                "3. 仅当 **answer=false** 且页面**确实阻挡**播放（不是单纯提示）时"
+                "**同时**给出 ``paywall_type`` 字段，三个值之一：\n"
+                "- ``preview`` — 可看一部分（试看 6 分钟 / 前几集免费 / 限时免费 / 预告）；"
+                "agents 不消耗会员也能拿到非空播放\n"
+                "- ``trial``   — 试用 / 体验期（首次免、试用 N 天）\n"
+                "- ``null``    — 不是以上情形（实在付费墙但形态不属于 preview/trial，"
+                "或判 false 但阻挡原因不是付费，例如纯广告前贴片）\n\n"
+                # 2026-10-12 增量十七 · P4a 第二轮：evidence 明示禁止
+                # 任何引号包裹的页面字符，与 P4a 第一轮同款根因——避免
+                # evidence 自述误触 paywall 关键词集合（P3 v1 实证过 regression）。
+                "4. **evidence** 只允许写**你自己的一句话判断**（如\"试看付费墙\"、"
+                "\"前贴片广告\"），**禁止**在 evidence 里出现「」/\"\"\"任何引号"
+                "包裹的页面上看到的字符——那种引文一律搬到 ``page_quotes`` 里。"
+                "evidence 内禁止引用页面文案——引文都在 page_quotes 里。"
             ),
             answer_type="bool",
             schema_hint=MappingProxyType(
                 {
-                    "paywall_type": "preview|trial|null",
-                    # 2026-10-12 增量十六：P4a 新增字段，必须是 str 数组。
+                    # 2026-10-12 增量十七 · P4a 第二轮：page_quotes 标首位，
+                    # ``MappingProxyType`` 保持声明序 = 迭代序。
                     "page_quotes": "array of str",
+                    "paywall_type": "preview|trial|null",
                 }
             ),
             confidence_threshold=0.7,

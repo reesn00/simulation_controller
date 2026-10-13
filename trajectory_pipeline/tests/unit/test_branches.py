@@ -291,6 +291,92 @@ class TestOutcomeUrls:
             led.record("https://x.test/m", "no_play_control", "e").play_page_url == ""
         )
 
+    # ── page_quotes 透传（2026-10-12 增量二十）────────────────
+
+    def test_page_quotes从决策payload提升(self):
+        """LLM 路径：``_is_reachable`` / ``_player_ok`` 把 ``page_quotes``
+        放在 ``Decision.payload``，``record_from`` 必须把它**提升**到
+        ``SiteOutcome.page_quotes`` 独立字段，``to_json`` 写出 list。
+        """
+        quotes = ["请先登录", "登录后观看完整版"]
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/",
+            dec(Q.IS_REACHABLE, False, payload={"page_quotes": quotes}),
+        )
+        # 字段在 dataclass 上是 tuple
+        assert out.page_quotes == tuple(quotes)
+        # 落盘是 list（与 LLM 约定一致）
+        assert out.to_json()["page_quotes"] == quotes
+
+    def test_page_quotes空payload时为空list(self):
+        """LLM 没给 page_quotes → 落 ``[]``，不是省略字段。
+        显式空数组让读档侧拿不到"未填"和"填了空数组"的区别时也能跑。"""
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/",
+            dec(Q.IS_REACHABLE, False, payload={}),
+        )
+        assert out.page_quotes == ()
+        assert out.to_json()["page_quotes"] == []
+
+    def test_record不传decision时page_quotes空(self):
+        """W1 规则版无 LLM 原文短语——``record()`` 不传 decision 时
+        ``page_quotes`` 字段必须为空（而非抛错或拉 default 路径漏字段）。"""
+        led = RunLedger("T001")
+        out = led.record("https://x.test/", None, "有播放组件")
+        assert out.page_quotes == ()
+        assert out.to_json()["page_quotes"] == []
+
+    def test_显式传page_quotes覆盖decision(self):
+        """显式 ``page_quotes=...`` 时**覆盖** ``decision.payload``
+        里的同名字段——给控制流留一个 escape hatch：偶尔需要人工
+        补的"页面原文"覆盖 LLM 给的（典型场景：LLM 给空、人工从
+        ``body_text`` 抽了关键短语）。"""
+        led = RunLedger("T001")
+        out = led.record(
+            "https://x.test/", "blocked", "e",
+            decision=dec(Q.IS_REACHABLE, False,
+                         payload={"page_quotes": ["LLM 抽的"]}),
+            page_quotes=("人工补的", "短语"),
+        )
+        assert out.page_quotes == ("人工补的", "短语")
+        assert out.to_json()["page_quotes"] == ["人工补的", "短语"]
+
+    def test_page_quotes归一_脏值不抛(self):
+        """``_coerce_quotes`` 的"宁少勿错"过滤：非字符串元素、空串、
+        None 都不抛——LLM 给的脏数据进 P1 不能炸。"""
+        from trajectory_pipeline.executor.branches import _coerce_quotes
+        # 脏数据：None、空串、整数、混入真字符串
+        result = _coerce_quotes([None, "", 42, "真短语", "  "])
+        # 注意：str(42)="42"会被保留（LLM 误把数字塞进引用），
+        # "  "也是非空字符串——本函数只丢明确的空/Nil，不做语义清洗
+        # （语义清洗是后续 evidence fallback 候选路径的事，不在 P4a 边界）
+        assert "真短语" in result
+        assert "" not in result
+        assert None not in result
+        # 非可迭代输入
+        assert _coerce_quotes(None) == ()
+        assert _coerce_quotes(123) == ()  # 整数不可迭代
+
+    def test_page_quotes经to_json是list不是tuple(self):
+        """JSON 序列化必须把 tuple 转 list——下游 (json.dumps) 不吃 tuple。
+        这条在改 to_json 时容易漏：``self.page_quotes`` 是元组，``json.dumps`` 会
+        把 tuple 当成 list 序列化（合法），但反序列化侧读档时类型又是 list，
+        落盘一致性还是 list 更直接。"""
+        import json
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/",
+            dec(Q.IS_REACHABLE, False, payload={"page_quotes": ["a", "b"]}),
+        )
+        j = out.to_json()
+        # 双重落盘：走 json.dumps 再读回
+        reloaded = json.loads(json.dumps(j, ensure_ascii=False))
+        assert reloaded["page_quotes"] == ["a", "b"]
+        assert isinstance(reloaded["page_quotes"], list)
+        # 同时核一下字段就地在 SiteOutcome 上是 tuple（frozen 不变式）
+        assert isinstance(out.page_quotes, tuple)
 
 class TestBranchPrecondition:
     """负分支的**前置事实**——贴标签之前页面状态必须满足分支定义的前提。

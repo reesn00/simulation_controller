@@ -966,7 +966,6 @@ class TestResolveFieldHelper:
         )
         assert v == "login"
         assert "code_fallback" in note
-        assert "login" in note
 
 
 class TestPageQuotes辅助:
@@ -1050,3 +1049,419 @@ class TestPageQuotes接入FieldeFallback:
         )
         assert v == "login"
         assert "code_fallback" in note
+
+
+class TestP4aRound2Prompt:
+    """2026-10-12 增量十七 · P4a 第二轮：prompt 结构验证。
+
+    第一轮 prompt 已把 ``page_quotes`` 字段加进 schema 与契约 JSON，**但**
+    顺序在 evidence 之后、且没明示 evidence 禁句式——实测 LLM 把页面引文
+    塞进 evidence（用「」/"" 包裹），page_quotes 字段空，fallback 拿不到。
+
+    第二轮做两处结构改造：
+    1. ``page_quotes`` 提到 ``answer`` 之后第一个条件位置——这样模型先看
+       到它、再写 evidence，避免 evidence 先写满页面引文。
+    2. evidence 段明示禁止引号包裹的页面上看到的字符。
+
+    这些是 prompt 级契约——只要 prompt 改了就行，**不依赖 LLM**。
+    """
+
+    def test_IS_REACHABLE_prompt_page_quotes_先于_access_control_type(self):
+        """``page_quotes`` 段必须出现在 ``access_control_type`` 段之前。"""
+        spec = lp.questions.get(Q.IS_REACHABLE)
+        # 找含字段名的位置——prompt 字符串里 ``page_quotes`` 可能出现多次
+        # （如 schema_hint 与例子里都有），第一次出现是行编号处的引用，
+        # 要找的是**段标题级别**的 ``必填 ``page_quotes`` 那条**——
+        # 它在答案指引"2."开头那一行，**先于** access_control_type 段（"3."开头）。
+        pq = spec.prompt.find("必填 ``page_quotes``")
+        ac = spec.prompt.find("access_control_type`` 字段")
+        assert pq != -1, "prompt 找不到「必填 page_quotes」段——第二轮未生效"
+        assert ac != -1, "prompt 找不到 access_control_type 段"
+        assert pq < ac, (
+            f"page_quotes 段（{pq}）必须在 access_control_type 段（{ac}）之前；"
+            f"这是第二轮改造的核心"
+        )
+
+    def test_PLAYER_OK_prompt_page_quotes_先于_paywall_type(self):
+        """``page_quotes`` 段必须出现在 ``paywall_type`` 段之前。"""
+        spec = lp.questions.get(Q.PLAYER_OK)
+        pq = spec.prompt.find("必填 ``page_quotes``")
+        pw = spec.prompt.find("paywall_type`` 字段")
+        assert pq != -1, "prompt 找不到「必填 page_quotes」段——第二轮未生效"
+        assert pw != -1, "prompt 找不到 paywall_type 段"
+        assert pq < pw, (
+            f"page_quotes 段（{pq}）必须在 paywall_type 段（{pw}）之前"
+        )
+
+    def test_IS_REACHABLE_prompt_evidence_禁止页面引文(self):
+        """evidence 段必须**明示**禁止引号包裹的页面字符。
+
+        第二轮 P3 v1 的根因：evidence 自述误触 fallback 关键词。
+        只要 prompt 没把「禁止」「引号」字样写进去，LLM 不会自己意识到
+        这是反模式——所以这条是硬断言。
+        """
+        spec = lp.questions.get(Q.IS_REACHABLE)
+        evidence_section = spec.prompt.split("**evidence**")[-1]
+        # 至少含「禁止」一词（中文硬话），或含「引号」/「页面文案」任一关键词。
+        # 三者都是 prompt 第二轮明示的反模式信号词。
+        assert (
+            "禁止" in evidence_section
+            or "引号" in evidence_section
+            or "页面文案" in evidence_section
+            or "页面原文" in evidence_section
+        ), (
+            "IS_REACHABLE prompt 的 evidence 段没有写「禁止/引号/页面文案/页面原文」"
+            "任一关键词——P4a 第二轮未生效"
+        )
+
+    def test_PLAYER_OK_prompt_evidence_禁止页面引文(self):
+        spec = lp.questions.get(Q.PLAYER_OK)
+        evidence_section = spec.prompt.split("**evidence**")[-1]
+        assert (
+            "禁止" in evidence_section
+            or "引号" in evidence_section
+            or "页面文案" in evidence_section
+            or "页面原文" in evidence_section
+        ), (
+            "PLAYER_OK prompt 的 evidence 段没有写「禁止/引号/页面文案/页面原文」"
+            "任一关键词——P4a 第二轮未生效"
+        )
+
+    def test_schema_hint_page_quotes_排首位(self):
+        """``MappingProxyType`` 保持声明序 = 迭代序——prompt 拼装会按这个
+        顺序遍历。page_quotes 必须出现在 access_control_type / paywall_type
+        之前，让 LLM 先看到字段表里的 page_quotes。"""
+        ir_hint = lp.questions.get(Q.IS_REACHABLE).schema_hint
+        po_hint = lp.questions.get(Q.PLAYER_OK).schema_hint
+        # list() 顺序 = 声明序
+        ir_keys = list(ir_hint)
+        po_keys = list(po_hint)
+        assert ir_keys[0] == "page_quotes", (
+            f"IS_REACHABLE schema_hint 首字段是 {ir_keys[0]!r}，应为 page_quotes"
+        )
+        assert po_keys[0] == "page_quotes", (
+            f"PLAYER_OK schema_hint 首字段是 {po_keys[0]!r}，应为 page_quotes"
+        )
+
+
+class TestP4aRound2DecideFallback:
+    """P4a 第二轮端到端验证：经 ``decide()`` 走完 IS_REACHABLE / PLAYER_OK
+    全链路，验 ``page_quotes`` 在第一位的 contract 生效。
+
+    测 P4a 第二轮的核心新能力：
+
+    1. LLM 给了 ``page_quotes`` 但没给 access / paywall_type → fallback 触发
+    2. LLM 没给 ``page_quotes`` → 不触发 fallback，按现状落合态
+
+    这两条都已经在 helper 层（``TestPageQuotes接入FieldeFallback``）验过，
+    本类验 ``decide()`` 把 helper 串起来后的行为**没断**。
+    """
+
+    def test_IS_REACHABLE_page_quotes_含登录提示触发_fallback(self):
+        """真实场景：B 站"大会员"页面，LLM 给 ``page_quotes=["请先登录再继续"]``
+        但没给 ``access_control_type``——code fallback 推回 ``login``。"""
+        fake = FakeLLM(
+            answers={Q.IS_REACHABLE: False},
+            page_quotes=["请先登录再继续"],
+            access="",  # 模拟 LLM 没给细分字段
+        )
+        d = lp.LLMPerceptor(fake).decide(
+            Q.IS_REACHABLE, _obs(body_text="请先登录再继续观看完整版")
+        )
+        assert d.answer is False
+        assert d.payload["access_control_type"] == "login"
+        assert "code_fallback" in d.evidence
+        assert "login" in d.evidence
+        # page_quotes 同步进 payload——这是 P4a 的接口设计：单测、人工复核、
+        # 报表都能看到 LLM 真正观察到的页面文本。
+        assert d.payload["page_quotes"] == ["请先登录再继续"]
+
+    def test_PLAYER_OK_page_quotes_含试看提示触发_fallback(self):
+        """真实场景：试看付费墙，LLM 给 ``page_quotes=["试看 6 分钟..."]``
+        但没给 ``paywall_type``——code fallback 推回 ``preview``。"""
+        fake = FakeLLM(
+            answers={Q.PLAYER_OK: False},
+            page_quotes=["试看 6 分钟，欢迎观看完整版"],
+            paywall_type="",  # 模拟 LLM 没给细分字段
+        )
+        # body_text 必须含 :data:`PAYWALL_WORDS` 表中的**完整短语**才能让
+        # ``classify_paywall`` 命中——表里收的是「开通会员/购买单集」等确定
+        # 性短语，不收「试看」光杆（导航栏里到处都是）。这里用「开通会员后
+        # 观看完整版」，让 code 层先命中付费墙信号、再让 fallback 推 preview。
+        d = lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(body_text="开通会员后观看完整版，开通 VIP")
+        )
+        assert d.answer is False
+        # 真实命中付费墙信号——payload.paywall=True, paywall_type=preview
+        assert d.payload["paywall"] is True
+        assert d.payload["paywall_type"] == "preview"
+        assert "code_fallback" in d.evidence
+        assert "preview" in d.evidence
+        assert d.payload["page_quotes"] == ["试看 6 分钟，欢迎观看完整版"]
+
+    def test_IS_REACHABLE_page_quotes_空时不触发_fallback(self):
+        """P4a 第二轮的**反向**断言：LLM 既没给 access 字段也没给 page_quotes
+        ——fallback 拿不到证据，按现状落合态。
+
+        :func:`_resolve_field` 在没字段又无关键词时返回 ``""``（**空串而非
+        None**）——故 ``payload.access_control_type`` 是 ``""``。evidence 末尾
+        不会有 ``code_fallback`` 标记（fallback 没触发）。"""
+        fake = FakeLLM(
+            answers={Q.IS_REACHABLE: False},
+            page_quotes=[],  # 显式给空：模拟 LLM 按 prompt "没看到就 []" 的合规答
+        )
+        d = lp.LLMPerceptor(fake).decide(
+            Q.IS_REACHABLE, _obs(body_text="页面主体不可访问")
+        )
+        assert d.answer is False
+        # _resolve_field 在 fallback 无证据时返回 ""（空串）而非 None——
+        # 这是已实现行为，测试以既成事实为准。
+        assert d.payload["access_control_type"] == ""
+        # 关键：不应出现 code_fallback 标记（fallback 没触发）。
+        assert "code_fallback" not in d.evidence
+
+
+class TestExtractBusinessQuotes:
+    """2026-10-12 增量二十一：从 ``evidence`` 后处理抽引文段的启发式过滤。
+
+    目的：LLM 没按 P4a 契约回 ``page_quotes`` 时，从 evidence 文本里
+    把 ``「…」`` / ``"…"`` 包裹段抽出来，按"业务术语 + 长度 + 否定词"三道
+    gate 筛掉 LLM 评论，**只留** 看起来像页面原文的短语。
+
+    守三件事：
+
+    1. 业务术语 gate：必须含 UI / 业务词（VIP、播放、设备、错误、会员…）
+    2. 长度 gate：2–13 字。LLM 复合句永远超长，绝对是评论不是引文。
+    3. 否定 gate：含 "没 / 可验证 / 不可逆" 等元评论标记的丢弃。
+
+    这三道不是设计哲学，是被 39 份带引文的 P1 存档**逼出来**的：
+    全抽会塞进 LLM 评论（如"找错站"），半抽会漏掉真正的反推信号
+    （如 v.qq.com 的 "当前设备不支持播放"）。逐条对照样本验证。
+    """
+
+    def test_empty_text_返空(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        assert _extract_business_quotes("") == []
+        assert _extract_business_quotes(None) == []
+
+    def test_纯LLM评论_无业务术语_被丢(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        # 站首页守卫给的「找错站」「去了发现看不了」是 LLM 评论，
+        # 都不含业务术语 gate。
+        out = _extract_business_quotes(
+            "这是**找错站**，不是「去了发现看不了」，故不记 no_play_control"
+        )
+        assert out == []
+
+    def test_纯页面原文_被留(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        out = _extract_business_quotes('播放器提示"当前设备不支持播放"')
+        assert out == ["当前设备不支持播放"]
+
+    def test_中英文引号都识别(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        out = _extract_business_quotes(
+            '页面显示「开通会员」和"开通 VIP"两个按钮'
+        )
+        assert "开通会员" in out
+        assert "开通 VIP" in out
+
+    def test_长复合句_超13字被丢(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        # 14 字：含 "播放"（业务）但 "可验证"（LLM 元评论）+ 长复合句。
+        out = _extract_business_quotes(
+            '"播放页上没有可验证的播放组件"说的是**到了播放页**之后没有组件'
+        )
+        assert out == []
+
+    def test_负向gate_没_丢弃(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        # 「页面没渲染完」是 LLM 评论，但含 "渲染"（非业务 gate）+ "没"（负向）。
+        # 「页面没控件」同上。
+        out = _extract_business_quotes(
+            '哨兵返回无法区分「页面没渲染完」与「页面确实没控件」'
+        )
+        assert out == []
+
+    def test_重复quote_去重保序(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        out = _extract_business_quotes(
+            '"开通会员"按钮和"开通会员"提示都在导航栏'
+        )
+        assert out == ["开通会员"]
+
+    def test_上限5条(self):
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        # 2026-10-12 增量二十一：用含业务关键词的占位串（原用 "页面{i}"，但
+        # 页面 不在 _BUSINESS_QUOTE_HINTS，会被业务 gate 全部过滤，断言失去
+        # 「cap 起作用」的本意）。`开通` 是真实业务词、伪造 8 个被 cap 到 5。
+        text = " ".join(f'"开通{i}"' for i in range(8))
+        out = _extract_business_quotes(text, max_phrases=5)
+        assert len(out) == 5
+
+    def test_实跑样本_vqq_evidence(self):
+        """39 份 P1 存档里最常出现的 v.qq.com 70017001 evidence——增量
+        十五后已经在 source 里有这条，但当时仍只走 evidence 反推，没有
+        page_quotes 字段。增量二十一让 ``page_quotes`` 字段也补全。"""
+        from trajectory_pipeline.perception.llm_perceptor import _extract_business_quotes
+        ev = (
+            'LLM 判 False：页面显示"当前设备不支持播放"并出现错误码'
+            '70017001.1，且当前剧集及播放列表均标注"VIP"并提示开通会员。'
+            '（置信度 0.8 为代码层先验，非模型自报）；'
+            '页面含付费墙信号「开通会员」——按 2026-10-10 口径，'
+            '**有播放页但需订阅/付费不算成功**'
+        )
+        out = _extract_business_quotes(ev)
+        # 期望保留："当前设备不支持播放"（设备/不支持/播放）、
+        # "VIP"（VIP）、"开通会员"（开通/会员）。
+        # "70017001.1" 是纯数字 ID 无业务词被丢；置信度行不进 evidence 不参与。
+        assert "当前设备不支持播放" in out
+        assert "VIP" in out
+        assert "开通会员" in out
+        # 句子尾部「**有播放页但需订阅/付费不算成功**」是 markdown 强调，
+        # 没有引号包裹，不参与抽取。
+        assert all("有播放页但需订阅" not in s for s in out)
+
+
+class TestQuotesWithFallback:
+    """2026-10-12 增量二十一：``_quotes_with_fallback`` 三层兜底语义。
+
+    优先级：LLM ``data.page_quotes`` 非空 -> 用它；否则从
+    ``data.evidence`` 后处理抽出业务引文段；都没有 -> ``[]``。
+    """
+
+    def test_LLM给了page_quotes_用LLM的(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quotes_with_fallback
+        # 即便 evidence 含很多引文段，LLM 给的 page_quotes 仍优先。
+        out = _quotes_with_fallback(
+            {
+                "page_quotes": ["LLM 抽的精确原文"],
+                "evidence": '页面显示"另一个不同的引文"',
+            }
+        )
+        assert out == ["LLM 抽的精确原文"]
+
+    def test_LLM没给_evidence后处理补(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quotes_with_fallback
+        out = _quotes_with_fallback(
+            {
+                "page_quotes": [],  # 显式空：LLM 按契约答"没看到"
+                "evidence": '页面显示"开通会员"按钮',
+            }
+        )
+        assert out == ["开通会员"]
+
+    def test_两者都空_返空list(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quotes_with_fallback
+        out = _quotes_with_fallback({})
+        assert out == []
+        out = _quotes_with_fallback({"page_quotes": [], "evidence": ""})
+        assert out == []
+
+    def test_page_quotes缺字段_走fallback(self):
+        from trajectory_pipeline.perception.llm_perceptor import _quotes_with_fallback
+        # P4a 之前的旧契约：payload 没有 page_quotes 字段。
+        # 现契约要求 LLM 给，但 Claude 还没改造完、或旧存档 P3 重跑……
+        out = _quotes_with_fallback(
+            {"evidence": '页面显示"开通会员"，video 标签缺失'}
+        )
+        assert out == ["开通会员"]
+
+
+class TestPostProcessingFallbackDecide:
+    """2026-10-12 增量二十一端到端：经 ``decide()`` 验 evidence 后处理
+    真能驱动 fallback 而不只是 helper 层。
+
+    这是 P4a 系列的最后一道护城河——当 P4a v2 prompt 修改让 0/7 残留，
+    但模型换 / 退化时仍能给 page_quotes 时，这条让判定仍能命中。
+    """
+
+    def test_IS_REACHABLE_evidence_含设备不支持_走fallback_推region(self):
+        """B 站 / 腾讯视频等真实场景：LLM 没给 page_quotes 没给 access，
+        evidence 里写了"当前设备不支持播放"——fallback 用 evidence 后
+        处理抽出 page_quotes，再让 _resolve_access 推 region。"""
+        fake = FakeLLM(
+            answers={Q.IS_REACHABLE: False},
+            page_quotes=[],  # 显式空
+            access="",  # 显式空
+        )
+        # evidence 必须真包含业务短语，且这个 evidence 经过
+        # _evidence(data, ...) 给到 _is_reachable——需要走端到端。
+        # 这里通过 patch fakes._build 让 Q.IS_REACHABLE 时 evidence=
+        # '页面显示"当前设备不支持播放"错误码 70017001.1'
+        original = FakeLLM._build
+        def _build_isr(self, qid, obs):
+            base = original(self, qid, obs)
+            if qid == Q.IS_REACHABLE:
+                base["evidence"] = (
+                    '页面显示"当前设备不支持播放"，错误码 70017001.1'
+                )
+            return base
+        FakeLLM._build = _build_isr
+        try:
+            d = lp.LLMPerceptor(fake).decide(
+                Q.IS_REACHABLE, _obs(body_text="页面正文")
+            )
+        finally:
+            FakeLLM._build = original
+        assert d.answer is False
+        # 关键：evidence 后处理抽出 "当前设备不支持播放"，fallback 推 region
+        assert d.payload["access_control_type"] == "region"
+        # page_quotes 同步进 payload——这是 P4a 全链路的最后一步
+        assert "当前设备不支持播放" in d.payload["page_quotes"]
+
+    def test_PLAYER_OK_evidence_含开通会员_走fallback(self):
+        """试看付费墙场景：evidence 含"开通会员"短句但 LLM 没给
+        page_quotes 没给 paywall_type——code fallback 仍能命中（依赖
+        body_text 的 PAYWALL_WORDS），而 page_quotes 同步被后处理补全。"""
+        fake = FakeLLM(
+            answers={Q.PLAYER_OK: False},
+            page_quotes=[],
+            paywall_type="",
+        )
+        original = FakeLLM._build
+        def _build_po(self, qid, obs):
+            base = original(self, qid, obs)
+            if qid == Q.PLAYER_OK:
+                base["evidence"] = (
+                    '页面显示"开通会员"按钮，且视频标签未渲染'
+                )
+            return base
+        FakeLLM._build = _build_po
+        try:
+            d = lp.LLMPerceptor(fake).decide(
+                Q.PLAYER_OK, _obs(body_text="开通会员 试看")
+            )
+        finally:
+            FakeLLM._build = original
+        # page_quotes 同步进 payload
+        assert "开通会员" in d.payload["page_quotes"]
+        # paywall 信号命中（PAYWALL_WORDS '开通会员' 在 body_text）
+        assert d.payload.get("paywall") is True
+
+    def test_LLM给了page_quotes_evidence引文段不参与(self):
+        """优先级回归：LLM 已经给了 page_quotes 时，evidence 里的引文段
+        **不**进 page_quotes——避免 LLM 看到的页文本被混入自述"""
+        fake = FakeLLM(
+            answers={Q.IS_REACHABLE: False},
+            page_quotes=["LLM 抽的原文"],
+            access="",
+        )
+        original = FakeLLM._build
+        def _build_isr(self, qid, obs):
+            base = original(self, qid, obs)
+            if qid == Q.IS_REACHABLE:
+                base["evidence"] = (
+                    '页面显示"另一个不同的引文"短语'
+                )
+            return base
+        FakeLLM._build = _build_isr
+        try:
+            d = lp.LLMPerceptor(fake).decide(
+                Q.IS_REACHABLE, _obs(body_text="页面正文")
+            )
+        finally:
+            FakeLLM._build = original
+        # LLM 给的 page_quotes 优先，evidence 的引文段不进 payload
+        assert d.payload["page_quotes"] == ["LLM 抽的原文"]
+        assert "另一个不同的引文" not in d.payload["page_quotes"]

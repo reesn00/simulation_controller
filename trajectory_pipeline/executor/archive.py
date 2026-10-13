@@ -84,7 +84,7 @@ _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"sk-[A-Za-z0-9]{16,}",                             # OpenAI 风格
         r"AKIA[0-9A-Z]{16,}",                               # AWS Access Key
         r"AIza[0-9A-Za-z_\-]{35,}",                         # Google API Key
-        r"https?://[^\s/:]+:[^\s/@]+@",                     # URL 内嵌口令
+        r"https?://[^\s/:@]+:[^\s/@]+@",                    # URL 内嵌口令
         r"set-cookie\s*:",
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
         r"ghp_[A-Za-z0-9]{36,}",                            # GitHub token
@@ -169,6 +169,28 @@ def scan_credentials(payload: str) -> list[str]:
         if pattern.search(payload):
             hits.append(pattern.pattern)
     return hits
+
+
+def credential_samples(payload: str, *, limit_chars: int = 60) -> list[str]:
+    """对每个命中 pattern 取一段匹配文本（去重 + 截断到 ``limit_chars``）。
+
+    与 :func:`scan_credentials` 的差异：后者只给「命中哪些 pattern」，本函数
+    进一步给「这些 pattern 命中的文本长什么样」。排错时（尤其是 HTML 页面
+    嵌 ``Authorization:`` / ``Bearer xxx`` / 资源链接带 ``user:pass@`` 这类
+    误报），看到样本文本比看到正则字符串快得多。
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for pattern in _CREDENTIAL_PATTERNS:
+        for m in pattern.finditer(payload):
+            s = m.group(0)
+            if len(s) > limit_chars:
+                s = s[:limit_chars] + "..."
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+    return out
 
 
 class P1Archive:
