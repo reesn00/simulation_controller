@@ -170,6 +170,24 @@ class Decision:
     def is_unresolved(self) -> bool:
         return self.answer is None
 
+    def to_dict(self) -> dict[str, Any]:
+        """L3 决策序列化；payload 转为可变 dict 以 JSON 化。
+
+        增量二十六接入：dump_result 通过 ``result.l3_decision.to_dict()`` 落盘。
+        其它 Perceptor（LLM/Rule）若沿用 Decision 也可直接复用。
+        """
+        payload = dict(self.payload) if self.payload else {}
+        return {
+            "question": self.question,
+            "answer": self.answer,
+            "confidence": self.confidence,
+            "evidence": self.evidence,
+            "source": self.source,
+            "payload": payload,
+            "latency_ms": self.latency_ms,
+            "fallback_used": self.fallback_used,
+        }
+
 
 class Q:
     """判断题注册表的属性访问简写。

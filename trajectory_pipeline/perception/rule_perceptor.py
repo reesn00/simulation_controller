@@ -541,6 +541,126 @@ class RulePerceptor:
 
     # ── 构造 ────────────────────────────────────────────────────────
 
+    # ── L3 业务信号独立判定(2026-10-13 增量二十六)───────────────────
+
+    def decide_business_signal(self, obs: Observation) -> Decision:
+        """L3 业务信号独立判定——body_text 关键词命中产 7 类 access_kind。
+
+        与 :meth:`decide` 的区别:不走 Question 注册表,
+        产出 ``question="business.signal"``(不在 REGISTRY)用于 L5 仲裁层
+        对账。``answer=True`` 表示已判出 access_kind(非 unresolved),
+        实际分类在 ``payload["access_kind"]``。
+
+        决策顺序(强拒访在前):
+            region > anti_bot > captcha > not_found > login > paywall > unknown
+
+        fail-closed 语义:
+            - ``obs.body_text`` 为空 → access_kind="unknown" + confidence=L3_CONF_WEAK
+            - 无任何关键词命中 → access_kind="unknown" + confidence=L3_CONF_WEAK
+            - 关键词命中 → access_kind=对应类 + confidence=对应档位
+
+        I1 evidence 写命中短语; I3 幂等(同一 obs 重复调用返相同 Decision);
+        I5 无副作用(纯文本推理,不动 obs)。
+        """
+        started = time.monotonic()
+        text = obs.body_text or ""
+
+        if not text:
+            return self._l3_answer(
+                "unknown", evidence="body_text 为空,L3 无法判定",
+                confidence=L3_CONF_WEAK, started=started,
+                payload={"access_kind": "unknown", "hit_keyword": "",
+                         "paywall_type": "none"},
+            )
+
+        for kind in L3_ACCESS_KIND_PRIORITY:
+            hints = L3_ACCESS_HINTS.get(kind, ())
+            hit = _l3_find_first_hit(text, hints)
+            if hit is not None:
+                confidence = _l3_access_kind_confidence(kind)
+                payload: dict[str, Any] = {
+                    "access_kind": kind,
+                    "hit_keyword": hit,
+                    "paywall_type": "none",
+                }
+                return self._l3_answer(
+                    kind, evidence=f"L3 命中 {kind}: {hit!r}",
+                    confidence=confidence, started=started, payload=payload,
+                )
+
+        return self._l3_answer(
+            "unknown", evidence="L3 无业务信号命中",
+            confidence=L3_CONF_WEAK, started=started,
+            payload={"access_kind": "unknown", "hit_keyword": "",
+                     "paywall_type": "none"},
+        )
+
+    def decide_paywall_type(self, obs: Observation) -> Decision:
+        """L3 paywall_type 细分判定——仅当 ``access_kind="paywall"`` 时有意义。
+
+        复用 :func:`infer_paywall_type_from_evidence`(增量十五已落地,
+        P1.5 实测稳定区分 preview/trial)。无关键词时返 unknown。
+
+        payload:
+            - ``paywall_type``: "none" | "preview" | "trial" | "unknown"
+            - ``hit_keyword``: 命中短语(unknown 时为空串)
+            - ``access_kind``: "paywall"(固定,标识此决策由 L3 二次细分产出)
+        """
+        started = time.monotonic()
+        text = obs.body_text or ""
+
+        if not text:
+            return self._l3_answer(
+                "unknown", evidence="body_text 为空,L3 无法判定 paywall_type",
+                confidence=L3_CONF_WEAK, started=started,
+                payload={"paywall_type": "unknown", "hit_keyword": "",
+                         "access_kind": "paywall"},
+                question="paywall.type",
+            )
+
+        ptype = infer_paywall_type_from_evidence(text) or "unknown"
+        if ptype == "unknown":
+            return self._l3_answer(
+                "unknown", evidence="L3 paywall_type 无关键词命中",
+                confidence=L3_CONF_WEAK, started=started,
+                payload={"paywall_type": "unknown", "hit_keyword": "",
+                         "access_kind": "paywall"},
+                question="paywall.type",
+            )
+
+        confidence = L3_CONF_STRONG if ptype in ("preview", "trial") else L3_CONF_MEDIUM
+        hints_map: dict[str, tuple[str, ...]] = dict(PAYWALL_TYPE_HINTS)
+        hit = _l3_find_first_hit(text, hints_map.get(ptype, ())) or ptype
+        return self._l3_answer(
+            ptype, evidence=f"L3 paywall_type 命中: {hit!r}",
+            confidence=confidence, started=started,
+            payload={"paywall_type": ptype, "hit_keyword": hit,
+                     "access_kind": "paywall"},
+            question="paywall.type",
+        )
+
+    def _l3_answer(
+        self,
+        answer: str,
+        *,
+        evidence: str,
+        confidence: float,
+        started: float,
+        payload: Mapping[str, Any] | None = None,
+        question: str = "business.signal",
+    ) -> Decision:
+        """L3 Decision 构造器——不走 Question 注册表,产 L5 仲裁对账用的 Decision。"""
+        return Decision(
+            question=question,
+            answer=True,                # L3 总是返回 True 表示已判出(非 unresolved)
+            confidence=confidence,
+            evidence=evidence,
+            source="rule",
+            payload=MappingProxyType(payload) if payload else MappingProxyType({}),
+            latency_ms=int((time.monotonic() - started) * 1000),
+            fallback_used=False,
+        )
+
     def _answer(
         self,
         spec: Any,
@@ -561,3 +681,123 @@ class RulePerceptor:
             latency_ms=int((time.monotonic() - started) * 1000),
             fallback_used=fallback,
         )
+# --- L3 模块级常量 + helpers（增量二十六 · 阶段 4 L3 规则层真接入）---
+# 设计纪律：L3 独立判定（不复用 L4 反推），词典独立但与 L4 同源对齐（不同 dict，同义词表）。
+# 注入点：L4 之后、L5 之前；触发条件与 L4 同 fail-closed 跳过。
+L3_ACCESS_KINDS: tuple[str, ...] = (
+    "region", "anti_bot", "captcha", "not_found", "login", "paywall", "unknown",
+)
+L3_PAYWALL_TYPES: tuple[str, ...] = ("none", "preview", "trial", "unknown")
+# 决策优先级：强拒访在前，paywall 兜底末位（unknown 作为兜兜底）
+L3_ACCESS_KIND_PRIORITY: tuple[str, ...] = (
+    "region", "anti_bot", "captcha", "not_found", "login", "paywall", "unknown",
+)
+# 置信度档位（与 I3 幂等：同一 obs 重复调用产出相同 confidence）
+L3_CONF_STRONG: float = 0.85
+L3_CONF_MEDIUM: float = 0.65
+L3_CONF_WEAK: float = 0.30
+
+# access_kind 关键词词典（与 L4 _BLOCKED_HINTS/_LOGIN_HINTS/_PAYWALL_HINTS 同源不同 dict；
+# L3 走 body_text 全文，L4 走 page_quotes+body+snapshot combined_text）
+L3_ACCESS_HINTS: MappingProxyType = MappingProxyType({
+    "region": (
+        "所在地区不支持", "所在地区暂不支持",
+        "该地区不支持", "该地区暂不支持",
+        "您所在地区", "您所在国家", "您所在的地区",
+        "当前地区不支持", "当前地区暂不支持",
+        "当前地区无法", "当前国家不支持",
+        "该视频仅限", "仅限中国大陆",
+        "暂不支持您所在", "不支持您所在的",
+        "地区限制", "区域限制", "地理限制",
+        "版权限制", "授权区域",
+        "未在您的地区", "未取得该地区",
+        "未获授权", "暂无版权",
+        "7001-7001", "70017001",
+        "this video is not available in your region/country",
+        "not available in your country", "not available in your region",
+        "geo-restricted", "geo blocked", "copyright restriction",
+    ),
+    "anti_bot": (
+        "performing security verification", "just a moment...", "checking your browser",
+        "verify you are human", "verifying you are human",
+        "please wait while we verify",
+        "cf-chl", "cf_chl", "cf-challenge", "cloudflare-challenge",
+        "robot check", "robot verification", "automated traffic",
+        "security check", "安全检查", "安全验证",
+        "访问验证", "人机验证",
+        "DDOS protection", "rate limit exceeded", "too many requests",
+        "please enable javascript", "please enable cookies",
+    ),
+    "captcha": (
+        "输入验证码", "请输入验证码",
+        "请完成验证", "完成验证后",
+        "图形验证码", "图片验证码",
+        "短信验证码", "邮箱验证码",
+        "滑动验证", "滑块验证",
+        "拼图验证", "点选验证", "拖动验证",
+        "captcha", "recaptcha", "hcaptcha", "turnstile",
+        "verify code", "verification code",
+    ),
+    "not_found": (
+        "页面不存在", "页面已删除",
+        "视频不存在", "视频已删除",
+        "视频不存在或已被删除",
+        "视频已下架", "视频已过期", "视频已失效",
+        "找不到该视频", "找不到您访问的页面",
+        "找不到您访问的视频",
+        "该视频不存在", "该视频已删除",
+        "该视频已被删除", "该视频已下架",
+        "该视频已过期", "该视频已失效",
+        "视频不存在或",
+        "抱歉，您访问的页面不存在",
+        "抱歉，视频已",
+        "404", "404 not found", "404 错误", "404错误", "404 页面",
+    ),
+    "login": (
+        "请先登录", "请登录后", "登录后观看",
+        "登录后查看", "登录后可",
+        "登录观看", "登录查看", "登录后才能",
+        "需登录",
+        "未登录", "您还未登录", "您尚未登录",
+        "请登录账号", "请登录账户",
+        "请先登录账号", "请先登录账户",
+        "登录账号后", "登录账户后",
+        "扫码登录", "扫一扫登录",
+        "sign in to watch", "sign in to view", "please sign in",
+        "login required", "please log in",
+    ),
+    "paywall": PAYWALL_WORDS,
+    "unknown": (),
+})
+
+
+def _l3_find_first_hit(text: str, hints) -> str | None:
+    """L3 专用：从 text 中找到 hints 里第一个出现的关键词。
+
+    与 L4 _find_first_hit 同源但独立；L3 只看 body_text（不走 snapshot）。
+    返回原始关键词串（不是位置、不是裁切后片段）以便 evidence 与「命中」事实一致；len(hits)==0 时返回 None。
+    """
+    if not text or not hints:
+        return None
+    for hint in hints:
+        if hint and hint in text:
+            return hint
+    return None
+
+
+def _l3_access_kind_confidence(kind: str) -> float:
+    """L3 专用：按 access_kind 返回置信度档位。
+
+    - region / anti_bot / captcha / not_found → STRONG（文案代表明确拒服务）
+    - login → MEDIUM（需要结合重定向）
+    - paywall → STRONG（付费关键词较明确）
+    - unknown → WEAK（兜底）
+    """
+    if kind in ("region", "anti_bot", "captcha", "not_found", "paywall"):
+        return L3_CONF_STRONG
+    if kind == "login":
+        return L3_CONF_MEDIUM
+    return L3_CONF_WEAK
+
+
+# I3 幂等：决策函数同一 obs 调用两次返回同一 Decision（不依赖随机状态）。

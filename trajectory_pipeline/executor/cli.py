@@ -41,6 +41,7 @@ import os
 import re
 import sys
 import uuid
+from types import MappingProxyType
 from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
@@ -52,13 +53,19 @@ from trajectory_pipeline.executor.archive import (
     CredentialLeak,
     P1Archive,
 )
-from trajectory_pipeline.executor.browser.mcp_client import EXE_ENV_VAR, McpClient
+from trajectory_pipeline.executor.browser.mcp_client import (
+    EXE_ENV_VAR,
+    McpClient,
+    McpError,
+)
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES, RunLedger
 from trajectory_pipeline.executor import downgrade as downgrade_mod
 from trajectory_pipeline.executor.browser.obscura_driver import (
     FORBIDDEN_TOOLS,
     ObscuraDriver,
 )
+# 增量二十五：``DriverError`` 给 _collect_l4_text 鸭子协议降级用。
+from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.integrity import (
     Severity, check_root, format_report,
@@ -84,6 +91,14 @@ from trajectory_pipeline.executor.probe import (
     BROWSER_DEFAULT_TIMEOUT_S,
     PROBE_WAIT_S,
 )
+# 2026-10-13 增量二十五：L4 VLM 复核串联。
+# INC28_L1_WIRING_v1 配套：L1 ffprobe 真接入 BrowserProbeResult。
+from trajectory_pipeline.executor.review.vlm_reviewer import (
+    HeuristicVLMReviewer,
+    VLMReviewInput,
+    VLMReviewResult,
+    VLMReviewer,
+)
 from trajectory_pipeline.executor.review_queue import (
     VERDICTS,
     ReviewQueueError,
@@ -101,8 +116,12 @@ from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.replay import (
     format_divergences, format_summary, replay_archive, summarize,
 )
-from trajectory_pipeline.perception.base import Q
+from trajectory_pipeline.perception.base import Observation, Q
 from trajectory_pipeline.perception.factory import build_perceptor, describe
+# 增量二十六：L3 规则层独立判定（不调 LLM，单 obs body_text 全文扫描）。
+# 与 L4 同 fail-closed 跳过；Question 不走 REGISTRY，由 L5 仲裁层消费。
+from trajectory_pipeline.executor.arbitration import arbitrate as arbitrate_l5
+from trajectory_pipeline.perception.rule_perceptor import RulePerceptor
 
 
 def _reconfigure_stdio() -> None:
@@ -952,39 +971,159 @@ async def cmd_mediabrowse(args: argparse.Namespace) -> int:
         print("[FAIL] --from-urls <path> 是必填（每行一个 URL）",
               file=sys.stderr)
         return 2
-    try:
-        urls = _load_url_lines(args.from_urls)
-    except (FileNotFoundError, ValueError) as exc:
-        print(f"[FAIL] {exc}", file=sys.stderr)
-        return 2
     if not args.title:
         print("[FAIL] --title 是必填（任务名留痕 + 归档前缀；不参与探测逻辑）",
               file=sys.stderr)
         return 2
 
     driver_choice = getattr(args, "driver", "fake")
-    driver_obj = None
     if driver_choice == "fake":
-        driver_obj = FakePageDriver()
-    elif driver_choice == "obscura":
-        if not os.environ.get(EXE_ENV_VAR, "").strip():
-            print(
-                f"[FAIL] --driver obscura 需要 ${EXE_ENV_VAR} 指向本机二进制；"
-                f"目前未设置。先用 --driver fake 验契约。",
-                file=sys.stderr,
-            )
+        return await _mediabrowse_with_driver(args, FakePageDriver())
+    if driver_choice == "obscura":
+        # 真实驱动：复用一条 MCP 连接跑整批
+        # （ObscuraDriver docstring 要求：多站遍历应复用连接 + tab 切换，
+        # 不是每步重连——避免 50MB V8 isolate × N 的浪费）
+        try:
+            client = McpClient.from_env()
+        except RuntimeError as exc:
+            print(f"[FAIL] {exc}", file=sys.stderr)
             return 3
-        print(
-            "[FAIL] --driver obscura 的真实 L2 串接尚未实现"
-            "（设计阶段 4 L4/L5）。先用 --driver fake。",
-            file=sys.stderr,
+        try:
+            async with client:
+                driver_obj = ObscuraDriver(client)
+                return await _mediabrowse_with_driver(args, driver_obj)
+        except McpError as exc:
+            print(f"[FAIL] obscura MCP 连接失败: {exc}", file=sys.stderr)
+            return 3
+    print(
+        f"[FAIL] --driver 取值 {driver_choice!r} 不在 ('fake', 'obscura') 内",
+        file=sys.stderr,
+    )
+    return 2
+
+
+_BODY_INNER_TEXT_JS: str = "document.body.innerText"
+_BODY_EXCERPT_MAX_CHARS: int = 1200
+_SNAPSHOT_EXCERPT_MAX_CHARS: int = 600
+
+
+async def _collect_l4_text(
+    driver: PageDriver,
+    *,
+    timeout_s: float,
+) -> tuple[str, str]:
+    """L4 文本采集——鸭子调用 driver.evaluate(innerText) / driver.snapshot()。
+
+    Returns:
+        (body_excerpt, snapshot_excerpt) 元组。任何一项失败 → 空字符串。
+        不抛异常——L4 文本降级不能毁整批（L5 仲裁走 MediaSignal 兜底）。
+
+    关键边界：
+    - 真实 ObscuraDriver.snapshot() 返 CleanedSnapshot（带 title / body），
+      fake 通过同名方法返字符串。鸭子兼容靠 str() 化即可。
+    - body_excerpt 取 innerText 前 1200 字符——长文 / 列表页会截断但
+      不影响关键词命中（前几句总是最权威的页面引文）。
+    """
+    body_excerpt = ""
+    snapshot_excerpt = ""
+    try:
+        raw = await asyncio.wait_for(
+            driver.evaluate(_BODY_INNER_TEXT_JS), timeout=timeout_s
         )
-        return 3
-    else:
-        print(
-            f"[FAIL] --driver 取值 {driver_choice!r} 不在 ('fake', 'obscura') 内",
-            file=sys.stderr,
+        if isinstance(raw, str):
+            body_excerpt = raw[:_BODY_EXCERPT_MAX_CHARS]
+    except (asyncio.TimeoutError, DriverError, Exception):  # noqa: BLE001
+        pass
+
+    try:
+        snap = await asyncio.wait_for(
+            driver.snapshot(max_chars=_SNAPSHOT_EXCERPT_MAX_CHARS),
+            timeout=timeout_s,
         )
+        snapshot_excerpt = str(snap)[:_SNAPSHOT_EXCERPT_MAX_CHARS]
+    except (asyncio.TimeoutError, DriverError, Exception):  # noqa: BLE001
+        pass
+
+    return body_excerpt, snapshot_excerpt
+
+
+async def _run_l4_review_async(
+    driver: PageDriver,
+    result: BrowserProbeResult,
+    page_quotes: tuple[str, ...] = (),
+    *,
+    timeout_s: float = 8.0,
+    reviewer: VLMReviewer | None = None,
+) -> tuple[VLMReviewResult, str, str]:
+    """L4 VLM 复核 async 入口（cli 主循环直接 await）。
+
+    Returns:
+        ``(VLMReviewResult, body_excerpt, snapshot_excerpt)`` 三元组。
+        主循环用 ``body_excerpt / snapshot_excerpt`` 写回 ``BrowserProbeResult``，
+        让 dump JSON 落盘时能看到 L4 实际消费的页面正文（记 3）。
+
+        失败 sentinel: ``note="vlm_error"``, ``label="unknown"``,
+        ``paywall_type="none"``, ``confidence=0.0``，附空字符串 body/snapshot。
+    """
+    if reviewer is None:
+        reviewer = HeuristicVLMReviewer()
+
+    body = ""
+    snapshot = ""
+    try:
+        body, snapshot = await _collect_l4_text(driver, timeout_s=timeout_s)
+    except Exception as exc:  # noqa: BLE001
+        return _vlm_error_sentinel(
+            f"text collect fail: {type(exc).__name__}: {exc}"
+        ), body, snapshot
+
+    inp = VLMReviewInput(
+        signal=result.signal,
+        body_excerpt=body,
+        snapshot_excerpt=snapshot,
+        page_quotes=page_quotes,
+        final_url=result.final_url,
+    )
+    try:
+        return reviewer.review(inp), body, snapshot
+    except Exception as exc:  # noqa: BLE001
+        return _vlm_error_sentinel(
+            f"reviewer fail: {type(exc).__name__}: {exc}"
+        ), body, snapshot
+
+
+def _vlm_error_sentinel(reason: str) -> VLMReviewResult:
+    """L4 reviewer 失败时的 sentinel result——fail-soft 不外抛。
+
+    L5 仲裁看到 note="vlm_error" + confidence=0.0 时降权（与 L3 rule
+    命中冲突时不强行仲裁），让人工复核队列兜底。
+    """
+    return VLMReviewResult(
+        label="unknown",
+        paywall_type="none",
+        evidence=f"VLM 复核失败: {reason[:120]}",
+        confidence=0.0,
+        note="vlm_error",
+        source="heuristic",
+    )
+
+
+async def _mediabrowse_with_driver(args: argparse.Namespace,
+                                   driver_obj: PageDriver) -> int:
+    """L2 mediabrowse 主循环（driver 生命周期由 cmd_mediabrowse 负责）。
+
+    cmd_mediabrowse 拆分后：driver 选择 + 连接管理在顶层，主循环放这里。
+    fake / obscura 两条路径都走同一份循环（探针 + 凭据闸门 + 落盘）。
+
+    2026-10-13 增量二十五：每 URL probe 之后串 :func:`_run_l4_review`
+    把 VLMReviewResult 写到 ``result.vlm_review`` 字段；文本源由
+    :func:`_collect_l4_text` 鸭子采集，driver 不支持 .snapshot() /
+    .evaluate(innerText) 时降级为空字符串。
+    """
+    try:
+        urls = _load_url_lines(args.from_urls)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
         return 2
 
     archive = P1Archive(Path(args.out) if args.out else None,
@@ -1019,6 +1158,119 @@ async def cmd_mediabrowse(args: argparse.Namespace) -> int:
         branch = to_browser_branch(result)
         branch_count[branch or "passes"] += 1
 
+        # 增量二十八：L1 ffprobe 真接入——L2 之后、L4 之前注入。
+        # 与 L4 / L5 同款 fail-soft：异常不毁整批；credential / driver 短路跳过。
+        # L1 不封装浏览器，只跑 HTTP GET 来源页 + ffprobe 子进程。
+        # 触发条件：--no-l1 关闭 / ffprobe_available() 失败 / fail-closed → 跳过。
+        l1_probe_result = None
+        if getattr(args, "no_l1", False):
+            # 用户显式关 L1——保持 l1_probe=None。
+            pass
+        elif result.note in ("credential_leak", "driver_missing", "timeout", "driver_error"):
+            # fail-closed 路径：L2 已经短路，凭据闸门语义不再污染。
+            pass
+        elif not ffprobe_available():
+            # 缺 ffprobe 二进制——降级跳过，不阻塞主链。
+            pass
+        else:
+            try:
+                _l1_timeout = float(getattr(args, "l1_timeout", 10.0))
+                l1_probe_result = await probe_media(
+                    url, timeout_s=_l1_timeout,
+                    runner=run_ffprobe_subprocess,
+                )
+                _l1_branch = to_media_branch(l1_probe_result)
+                print(f"  l1_branch      = {_l1_branch or '(passes to next layer)'}")
+                print(f"  l1_media_urls  = {len(l1_probe_result.media_urls)}")
+                print(f"  l1_probed_ok   = {sum(1 for p in l1_probe_result.probed if p.ok)}"
+                      f"/{len(l1_probe_result.probed)}")
+                print(f"  l1_elapsed_ms  = {l1_probe_result.elapsed_ms}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [FAIL] L1 ffprobe 异常：{type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                l1_probe_result = None
+        result = dataclasses.replace(result, l1_probe=l1_probe_result)
+
+        # 增量二十五：L4 VLM 复核（每 URL probe 完成后跑）—— fail-soft，
+        # 不让 reviewer 错误毁整批；vlm_review 失败时返 sentinel（note=vlm_error）
+        # 让 dump 仍能写盘，仲裁层看到 note="vlm_error" 降权处理。
+        # 注意：credential_leak / driver_missing / timeout / driver_error
+        # 这些 fail-closed result 没真实 DOM——不跑 L4（避免污染凭据闸门
+        # fail-closed 语义：test_credential_url_blocks_before_driver 守的就是这点）。
+        if result.note in ("credential_leak", "driver_missing", "timeout", "driver_error"):
+            # fail-closed 路径：不调 driver，不污染凭据闸门 fail-closed 语义。
+            vlm_review = _vlm_error_sentinel(f"skipped: probe note={result.note}")
+            l4_body = ""
+            l4_snapshot = ""
+        else:
+            try:
+                vlm_review, l4_body, l4_snapshot = await _run_l4_review_async(
+                    driver_obj, result,
+                    page_quotes=(),
+                    timeout_s=getattr(args, "l4_timeout", 8.0),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # _run_l4_review_async 自身不抛——这里兜 async 协议外的死循环 / OOM。
+                print(f"  [FAIL] L4 复核抛异常：{type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                vlm_review = _vlm_error_sentinel(
+                    f"outer try: {type(exc).__name__}: {exc}"
+                )
+                l4_body = ""
+                l4_snapshot = ""
+        # frozen dataclass 不可变 → dataclasses.replace 出新实例。
+        # 增量二十五：L4 采集的 body/snapshot 文本也一并写回 result——
+        # 让 dump JSON 落盘时能看到 L4 实际消费的页面正文（记 1）。
+        result = dataclasses.replace(
+            result,
+            vlm_review=vlm_review,
+            body_excerpt=l4_body,
+            snapshot_excerpt=l4_snapshot,
+        )
+
+        # 增量二十六：L3 规则层独立判定（在 L4 之后、L5 之前；触发条件同 L4 fail-closed）。
+        # L3 不调 LLM，直接对 body_text 做全文关键词扫描，产出 access_kind / paywall_type。
+        # L5 仲裁层会消费 result.l3_decision + result.vlm_review 做一致/冲突判定。
+        l3_decision = None
+        if result.note in ("credential_leak", "driver_missing", "timeout", "driver_error"):
+            # fail-closed：没有真实 DOM，L3 无依据可读。
+            l3_decision = None
+        else:
+            try:
+                _l3_obs = Observation(
+                    url=result.final_url or result.requested_url,
+                    page_title="",
+                    body_text=l4_body,  # L4 已采集的 body；snapshot 不参与 L3
+                )
+                _l3 = RulePerceptor()
+                l3_decision = _l3.decide_business_signal(_l3_obs)
+                # 如果 L3 识别到 paywall，再问 paywall_type 子问题（细粒度定档）。
+                if l3_decision.payload.get("access_kind") == "paywall":
+                    l3_paywall_dec = _l3.decide_paywall_type(_l3_obs)
+                    # paywall_type 合并到 payload；保留 business.signal 的 kind/confidence。
+                    merged_payload = dict(l3_decision.payload)
+                    merged_payload.update(l3_paywall_dec.payload)
+                    l3_decision = dataclasses.replace(
+                        l3_decision,
+                        payload=MappingProxyType(merged_payload),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                # L3 同步扫描，不应抛错；任何异常都降级为 None（fail-closed 同 L4）。
+                print(f"  [FAIL] L3 规则层异常：{type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                l3_decision = None
+        result = dataclasses.replace(result, l3_decision=l3_decision)
+
+        # 增量二十万：L5 仲裁层注入\uff08L3 之后001L5 仲裁层输出 SiteOutcome\uff09。
+        l5_outcome = None
+        try:
+            l5_outcome = arbitrate_l5(result)
+        except Exception as exc:  # noqa: BLE001
+            # L5 应在 L3 有输出时仍能运行\uff0c仅作最后 catch\uff1bfail-closed \u2192 None
+            print(f"  [FAIL] L5 仲裁层异常：{type(exc).__name__}: {exc}", file=sys.stderr)
+            l5_outcome = None
+        result = dataclasses.replace(result, l5_outcome=l5_outcome)
+
         sig = result.signal
         print(f"  driver        = {result.driver_name}")
         print(f"  media_count   = {result.media_count}")
@@ -1034,6 +1286,33 @@ async def cmd_mediabrowse(args: argparse.Namespace) -> int:
             print(f"  note          = {result.note}")
         if result.error:
             print(f"  error         = {result.error}")
+
+        # 增量二十五：L4 VLM 复核结果打印——3 行主体。
+        rv = vlm_review
+        print(f"  vlm_label     = {rv.label}")
+        print(f"  vlm_paywall   = {rv.paywall_type}")
+        print(f"  vlm_confidence= {rv.confidence}")
+        if rv.price is not None:
+            print(f"  vlm_price     = {rv.price} {rv.currency or ''}")
+        if rv.note:
+            print(f"  vlm_note      = {rv.note}")
+        # evidence 单独打一行（避免与其他字段同行太长）
+        print(f"  vlm_evidence  = {rv.evidence[:80]}")
+
+        # 增量二十六：L3 规则层判定结果 4 行打印
+        l3d = result.l3_decision
+        if l3d is None:
+            print("  l3_kind       = (skipped)")
+            print("  l3_paywall_type = (n/a)")
+        else:
+            l3p = l3d.payload
+            l3_kind = l3p.get('access_kind', '(unknown)')
+            l3_ptype = l3p.get('paywall_type', '(none)')
+            l3_hit = l3p.get("hit_keyword", "") or ""
+            print(f"  l3_kind       = {l3_kind}")
+            print(f"  l3_paywall_type = {l3_ptype}")
+            print(f"  l3_confidence = {l3d.confidence}")
+            print(f"  l3_hit        = {l3_hit[:60]!r}")
 
         path = archive.path_for(args.task_id, run_id)
         try:
@@ -1073,15 +1352,44 @@ class FakePageDriver:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        # 增量二十五：L4 文本输入预设（test 驱动 fake body/snapshot 文本）。
+        self._fake_body_text: str = ""
+        self._fake_snapshot_text: str = ""
+
+    def set_body_text(self, text: str) -> None:
+        """预设置 fake body innerText（让 :meth:`evaluate` 命中时返文本）。"""
+        self._fake_body_text = text
+
+    def set_snapshot_text(self, text: str) -> None:
+        """预设置 fake snapshot 文本（同上）。"""
+        self._fake_snapshot_text = text
 
     async def goto(self, url: str, *, wait_until: str = "load") -> None:
         self.calls.append(("goto", url))
 
     async def evaluate(self, expression: str) -> Mapping[str, Any]:
+        # L4 文本采集：识别 `document.body.innerText` → 返回字符串。
+        # 注意：协议返回类型实际是 ``Any``——L4 文本采集需要返回
+        # 字符串，鸭子类型兼容 obscura 真实驱动（同样返字符串）。
+        if expression.strip().startswith("document.body.innerText"):
+            self.calls.append(("evaluate:body", expression[:32]))
+            return self._fake_body_text
+
         # L2 探针只看 ``{count, media: [...]}`` 形态；返回空集让 ``to_branch``
         # 走 ``None``（passes），验证 fake driver 的 happy-path 契约。
         self.calls.append(("evaluate", expression[:32]))
         return {"count": 0, "media": []}
+
+    async def snapshot(
+        self, *, max_chars: int | None = None, degraded: list[str] | None = None
+    ) -> str:
+        # L4 文本采集：snapshot 返字符串（同 evaluate("document.body.innerText")）。
+        # 真实 ObscuraDriver.snapshot() 返 CleanedSnapshot（带 title / body）；
+        # fake 简化——只预设 body / snapshot 文本。
+        self.calls.append(("snapshot", str(max_chars)))
+        if degraded is not None:
+            degraded.append("fake_snapshot")
+        return self._fake_snapshot_text or self._fake_body_text
 
     async def close(self) -> None:
         self.calls.clear()
@@ -2116,9 +2424,20 @@ def build_parser() -> argparse.ArgumentParser:
     mbb.add_argument("--wait-s", type=float, default=2.0,
                      help="L2 两次 currentTime 采样间隔（秒）；默认 2")
     mbb.add_argument("--driver", choices=("fake", "obscura"), default="fake",
-                     help="PageDriver 选择；默认 fake 不联网，"
-                          "obscura 留待 L4/L5 串接（L2 暂未实现）")
+                     help="PageDriver 选择；默认 fake 不联网（in-process mock，"
+                          "FastPageDriver 鸭子兼容 L4 evaluate+snapshot），"
+                          "obscura 真驱动经 stdio MCP 起 V8 isolate；"
+                          "需 OBSCURA_EXE 环境变量指二进制位置。"
+                          " 增量二十四/二十五/二十九已打通 L0→L1→L2→L4→L3→L5 全链路"
+                          "（obscura SSRF guard 拦截 127.0.0.1，需公开 URL）。")
     mbb.add_argument("--out", default=None, help="输出目录")
+    # 2026-10-13 增量二十八：L1 ffprobe 真接入的开关与超时。
+    # --no-l1 关闭 ffprobe 层（缺 ffprobe 二进制或调试时用）；
+    # --l1-timeout 控制 L1 整层（HTTP GET 来源页 + iframe 1 跳 + ffprobe 子进程并发）总超时。
+    mbb.add_argument("--no-l1", action="store_true",
+                     help="关闭 L1 ffprobe 媒体解析（默认开启；缺 ffprobe 时降级跳过）")
+    mbb.add_argument("--l1-timeout", type=float, default=10.0,
+                     help="L1 单 URL 总超时（秒）；默认 10")
     mbb.set_defaults(func=cmd_mediabrowse)
 
 

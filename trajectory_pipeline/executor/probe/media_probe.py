@@ -36,7 +36,7 @@ import asyncio
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -49,6 +49,15 @@ from trajectory_pipeline.executor.browser.page_driver import (
     DriverError,
     PageDriver,
 )
+
+#: 增量二十五：L4 VLM 复核结果类型。``TYPE_CHECKING`` 保护避免循环 import
+#: （vlm_reviewer 内部要从 media_probe import MediaSignal）。
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trajectory_pipeline.executor.branches import SiteOutcome
+    from trajectory_pipeline.executor.review.vlm_reviewer import VLMReviewResult
+    from trajectory_pipeline.perception.base import Decision
 
 #: 两次 currentTime 采样间隔（秒）。比对时间增长是否真推进。
 PROBE_WAIT_S: float = 2.0
@@ -84,30 +93,11 @@ PARTIAL_FREE_MAX_CURRENT_TIME_S: float = 60.0
 #: 返回 {count, media: [{tag, currentTime, duration, paused, readyState,
 #:   networkState, ended, videoWidth, videoHeight, errorCode, framesDecoded}]}
 #: 适用于 :meth:`PageDriver.evaluate` 求值。
-MEDIA_PROBE_JS: str = """
-() => {
-  const ms = Array.from(document.querySelectorAll('video, audio'));
-  return {
-    count: ms.length,
-    media: ms.map(m => ({
-      tag: m.tagName.toLowerCase(),
-      currentTime: m.currentTime || 0,
-      duration: (isFinite(m.duration) && m.duration > 0) ? m.duration : null,
-      paused: !!m.paused,
-      readyState: m.readyState,
-      networkState: m.networkState,
-      ended: !!m.ended,
-      videoWidth: m.videoWidth || 0,
-      videoHeight: m.videoHeight || 0,
-      errorCode: m.error ? m.error.code : 0,
-      framesDecoded: (m.getVideoPlaybackQuality
-                     && typeof m.getVideoPlaybackQuality === 'function')
-                    ? (m.getVideoPlaybackQuality().totalVideoFrames || 0)
-                    : 0
-    }))
-  };
-}
-""".strip()
+#: 单行 IIFE（**obscura contract**：browser_evaluate 不支持多行 JS 表达式,
+#: 多行 block statement 会被 obscura 当作无返回值返 'null';单行表达式或
+#: 单行 IIFE 返回 JSON.stringify 才能拿到真实 dict）。
+#: 返回 JSON.stringify 字符串 → ObscuraDriver.evaluate 已 json.loads 反序列化。
+MEDIA_PROBE_JS: str = "(function(){var ms=Array.from(document.querySelectorAll('video,audio'));return JSON.stringify({count:ms.length,media:ms.map(function(m){var v=(m.getVideoPlaybackQuality&&typeof m.getVideoPlaybackQuality==='function')?(m.getVideoPlaybackQuality().totalVideoFrames||0):0;var e=m.error?m.error.code:0;return {tag:m.tagName.toLowerCase(),currentTime:m.currentTime||0,duration:isFinite(m.duration)&&m.duration>0?m.duration:null,paused:!!m.paused,readyState:m.readyState,networkState:m.networkState,ended:!!m.ended,videoWidth:m.videoWidth||0,videoHeight:m.videoHeight||0,errorCode:e,framesDecoded:v}})})})()"
 
 #: iframe 计数用 selector（与 L1 ``count("video, audio")`` 同款）。
 MEDIA_SELECTOR: str = "video, audio"
@@ -158,6 +148,29 @@ class BrowserProbeResult:
     error: str = ""                # 异常时的描述（空 = 无异常）
     elapsed_ms: int = 0
     note: str = ""                 # 给人看：credential_leak / timeout / driver_missing
+    #: 2026-10-13 增量二十五：L4 VLM 复核输入文本字段（默认空——
+    #: driver 不支持 .snapshot() / innerText 时为空字符串，VLMReviewer
+    #: 走 page_quotes + signal 仍能判定）。
+    body_excerpt: str = ""
+    snapshot_excerpt: str = ""
+    #: 2026-10-13 增量二十五：L4 VLM 复核结果。``None`` = 未跑 L4（probe_browser_media
+    #: 单调返回时永远为 None；CLI 层 ``_mediabrowse_with_driver`` 调 L4 后填上）。
+    vlm_review: "VLMReviewResult | None" = None
+    #: 2026-10-13 增量二十六：L3 规则层独立判定结果。``None`` = 未跑 L3 或 L4 fail-closed 跳过。
+    #: L3 在 L4 之后、L5 之前注入；触发条件与 L4 同 fail-closed 跳过（credential_leak /
+    #: driver_missing / timeout / driver_error）。Question 不走 REGISTRY，由 L5 仲裁层消费。
+    l3_decision: "Decision | None" = None
+    #: 2026-10-13 增量二十七：L5 仲裁层最终输出；``None`` = 未过 L5（probe_browser_media
+    #: 默认空，CLI 在 ``_mediabrowse_with_driver`` 中 L3 之后注入；fail-closed 短路也走 L5）。
+    #: SiteOutcome 与 :mod:`executor.branches` 同源，13 分支或 None=成功。
+    l5_outcome: "SiteOutcome | None" = None
+    #: 2026-10-13 增量二十八：L1 ffprobe 媒体解析结果；``None`` = 未跑 L1
+    #: （--no-l1 关闭 / ffprobe 未装 / 凭据 fail-closed 短路）。
+    #: L1 在 ``_mediabrowse_with_driver`` 中 L2 之后、L4 之前注入；
+    #: 复用 :func:`trajectory_pipeline.executor.probe.ffprobe.probe`，
+    #: 不封装浏览器；L5 仲裁层消费 ``l1_probe`` 产出 partial_free / broken
+    #: 等 L1 强信号时优先采纳（仿 L2 的启发式）。
+    l1_probe: "MediaProbeResult | None" = None
 
 
 def _parse_media_payload(payload: Mapping[str, Any]) -> MediaSignal:
@@ -263,6 +276,23 @@ def dump_result(result: BrowserProbeResult, path: Path) -> Path:
         "error": result.error,
         "elapsed_ms": result.elapsed_ms,
         "note": result.note,
+        # 2026-10-13 增量二十五：L4 VLM 复核输入/输出三字段——文本源
+        # 默认空（probe_browser_media 没填），CLI 层串接后会填上。
+        "body_excerpt": result.body_excerpt,
+        "snapshot_excerpt": result.snapshot_excerpt,
+        # vlm_review 用 ``None`` 还是 dict 区分「未跑 L4」与「L4 跑出
+        # sentinel」。dump 用 None 而非省略——读档侧拿到的 key 集合稳定，
+        # 不需要「字段有没有」判断 L4 是否被串接。
+        "vlm_review": (result.vlm_review.to_dict() if result.vlm_review else None),
+        # 增量二十六：L3 规则层判定结果。未跑 L3 或被跳过 -> None；调过则用 dict。
+        "l3_decision": (result.l3_decision.to_dict() if result.l3_decision else None),
+        # 2026-10-13 增量二十万：L5 仲裁层输出（SiteOutcome 13 分支）；
+        # 未过 L5 或 L5 在 fail-closed 路径上不存在 → None。to_json() 對应 site_outcome 的字段。
+        "l5_outcome": (result.l5_outcome.to_json() if result.l5_outcome else None),
+        # 2026-10-13 增量二十八：L1 ffprobe 媒体解析结果。
+        # 未跑 L1 / --no-l1 关闭 / ffprobe 未装 / 凭据 fail-closed 短路 → None。
+        # asdict() 走 MediaProbeResult + FFProbeOutput 的字段映射。
+        "l1_probe": (asdict(result.l1_probe) if result.l1_probe else None),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
