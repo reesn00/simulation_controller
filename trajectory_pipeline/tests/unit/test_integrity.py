@@ -583,3 +583,130 @@ class TestScanCredentialsRegexRegression:
         必须继承 ``RuntimeError`` 才能被既有的 try/except 接住（failing
         closed 链路设计见 ``archive.py:CREDENTIAL_PATTERNS`` 的 docstring）。"""
         assert issubclass(CredentialLeak, RuntimeError)
+
+
+# ── 6 · quarantine 拒收 URL（增量三十一） ─────────────────────────────
+
+class TestQuarantineURL:
+    """output/pipeline/quarantine.jsonl 是人工裁定「整条 URL 拒收」
+    的冻结记录。门禁遇到里面的 URL 必须**不**报 negative_not_pooled
+    （该 URL 已从池里摘掉）和 negative_contradicted_by_success
+    （同 URL 已被全库归档为成功 → 已裁定结案），否则每批次都刷出 14 份存档
+    × N 条的旧矛盾噪声，让人看不见真问题。
+    这组测试盯的是「参数生效」与「fail-open」两条契约。
+    """
+
+    URL = "http://quarantined.test/"
+
+    @staticmethod
+    def _winning_arc(url, **over):
+        obs = _obs(url, video_tag_count=0, iframes=[])
+        return _arc(
+            visits=[_visit(url, success=True, site_obs=obs)],
+            outcomes=[_outcome(url, None)],
+            **over,
+        )
+
+    @staticmethod
+    def _negative_arc(url, **over):
+        return _arc(
+            visits=[_visit(url, success=False)],
+            outcomes=[_outcome(url, "no_play_control")],
+            **over,
+        )
+
+    def test_load_quarantine_文件不存在返回空集(self, tmp_path):
+        assert integrity._load_quarantine(tmp_path) == frozenset()
+
+    def test_load_quarantine_只挑url字段忽略其它键(self, tmp_path):
+        (tmp_path / "quarantine.jsonl").write_text(
+            '{"url": "http://a.test", "note": "x"}\n'
+            '{"url": "http://b.test", "note": "y"}\n',
+            encoding="utf-8",
+        )
+        urls = integrity._load_quarantine(tmp_path)
+        assert urls == frozenset({"http://a.test", "http://b.test"})
+
+    def test_load_quarantine_空行与坏JSON跳过不去污(self, tmp_path):
+        (tmp_path / "quarantine.jsonl").write_text(
+            '{"url": "http://ok.test"}\n'
+            '\n'
+            '{not valid json\n'
+            '{"url": ""}\n'
+            '{"not_a_url_field": "garbage"}\n'
+            '{"url": "http://also-ok.test"}\n',
+            encoding="utf-8",
+        )
+        urls = integrity._load_quarantine(tmp_path)
+        assert urls == frozenset({"http://ok.test", "http://also-ok.test"})
+
+    def test_check_archive_被quarantine的URL不再报negative_not_pooled(self, tmp_path):
+        url = self.URL
+        path = _write(tmp_path, self._negative_arc(url))
+        assert "negative_not_pooled" in _codes(
+            check_archive(path, pool_keys=frozenset())
+        )
+        r2 = check_archive(
+            path, pool_keys=frozenset(),
+            quarantine_urls=frozenset({url}),
+        )
+        nnp = [f for f in r2.findings
+               if f.code == "negative_not_pooled" and url in (f.detail or "")]
+        assert nnp == [], (
+            "被冻结的 URL 不该再进 negative_not_pooled："
+            + "; ".join(f.detail for f in nnp)
+        )
+
+    def test_check_archive_quarantine不传染到未被冻结的URL(self, tmp_path):
+        watched = "http://seen.test/"
+        quiet = "http://not-quarantined-but-also-fail.test/"
+        path = _write(tmp_path, _arc(
+            visits=[_visit(watched), _visit(quiet, success=False)],
+            outcomes=[_outcome(watched, "no_play_control"),
+                      _outcome(quiet, "no_play_control")],
+        ))
+        after = check_archive(
+            path, pool_keys=frozenset(),
+            quarantine_urls=frozenset({watched}),
+        )
+        nnp = [f for f in after.findings if f.code == "negative_not_pooled"]
+        watched_hits = [f for f in nnp if watched in (f.detail or "")]
+        quiet_hits = [f for f in nnp if quiet in (f.detail or "")]
+        assert watched_hits == [], (
+            "被冻结的 URL 不该再报 negative_not_pooled："
+            + "; ".join(f.detail for f in watched_hits)
+        )
+        assert quiet_hits, (
+            "未被冻结的 URL 该报还得报——名单是 URL 级而非文件级豁免"
+        )
+
+    def test_check_root_被quarantine的URL跨存档矛盾静默(self, tmp_path):
+        url = self.URL
+        (tmp_path / "negative.jsonl").write_text(
+            '{"task_id":"T001","run_id":"r1","persona_id":"x","url":"' + url + '",'
+            '"branch":"no_play_control","branch_label":"x","evidence":"e",'
+            '"question":"q","source":"rule","fallback_used":false,'
+            '"reached_play_page":false,"content_tier":"B","popularity":"y","genre":"x"}\n',
+            encoding="utf-8",
+        )
+        _write(tmp_path, self._winning_arc(url))
+        before = check_root(tmp_path)
+        contradicted_before = [f for f in before.findings
+                               if f.code == "negative_contradicted_by_success"
+                               and url in (f.detail or "")]
+        assert contradicted_before, (
+            "sanity: 没 quarantine 时这条 URL 必须报警，否则下面测试无意义"
+        )
+        (tmp_path / "quarantine.jsonl").write_text(
+            '{"url":"' + url + '","frozen_at":"2026-10-13",'
+            '"frozen_by_inc":"INC31","true_branch":"subscription_wall"}\n',
+            encoding="utf-8",
+        )
+        after = check_root(tmp_path)
+        contradicted_after = [f for f in after.findings
+                              if f.code == "negative_contradicted_by_success"
+                              and url in (f.detail or "")]
+        assert contradicted_after == [], (
+            "quarantine 之后的跨存档矛盾不该再冒头："
+            + "; ".join(f.detail for f in contradicted_after)
+        )

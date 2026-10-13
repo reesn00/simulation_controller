@@ -107,6 +107,22 @@ class TestL3KeywordPriority:
         d = _R.decide_business_signal(_obs("抱歉，该视频不存在或已被删除"))
         assert d.payload["access_kind"] == "not_found"
 
+    # 2026-10-13 增量三十二 · D10 偏差修缮：英文 + 通用 5xx 短语落 not_found
+    def test_t11_not_found_hit_英文_404(self):
+        """nginx 默认 404 页英文短语——kmslxsh.com/nginx 实测样本。"""
+        d = _R.decide_business_signal(_obs("404 Not Found\nnginx"))
+        assert d.payload["access_kind"] == "not_found"
+
+    def test_t11_not_found_hit_英文_5xx(self):
+        """通用 5xx 短语——ixigua Internal Server Error 实测样本。"""
+        d = _R.decide_business_signal(_obs("Internal Server Error"))
+        assert d.payload["access_kind"] == "not_found"
+
+    def test_t11_not_found_hit_腾讯error页(self):
+        """腾讯视频 error.html——「那条视频不见了」实测样本。"""
+        d = _R.decide_business_signal(_obs("那条视频不见了"))
+        assert d.payload["access_kind"] == "not_found"
+
     def test_t12_login_hit(self):
         d = _R.decide_business_signal(_obs("请先登录后观看完整版"))
         assert d.payload["access_kind"] == "login"

@@ -3,6 +3,8 @@
  "label_schema_version": "2",
  "version": 2,
  "frozen_at": "2026-10-12T07:21:29+00:00",
+  "last_inc_modify": "INC32",
+  "last_inc_at": "2026-10-13T20:00:00+08:00",
  "seed": 42,
  "counts": {
   "candidates": 277,
@@ -32,12 +34,13 @@
  },
  "by_label": {
   "unresolved": 76,
-  "unreachable_hard": 48,
+  "unreachable_hard": 37,
   "success": 36,
   "subscription_wall": 35,
   "not_play_site": 31,
   "component_unverified": 18,
   "no_play_control": 16,
+  "broken": 11,
   "login_wall_or_blocked": 9,
   "trailer_only": 7,
   "trailer_suspect": 1

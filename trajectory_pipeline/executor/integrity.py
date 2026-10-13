@@ -254,6 +254,7 @@ def check_archive(
     path: Path,
     *,
     pool_keys: frozenset[tuple[str, str, str]] | None = None,
+    quarantine_urls: frozenset[str] = frozenset(),
 ) -> ArchiveReport:
     """体检一份 P1 存档。
 
@@ -261,6 +262,9 @@ def check_archive(
         pool_keys: 负样本池的 ``(task_id, url, branch)`` 去重键集合。
             ``None`` 表示不查并池（单份体检、离线测试）。形状与
             ``P1Archive._load_negative_keys`` 一致。
+        quarantine_urls: 增量三十一新增。被列入拒收的 URL 集合——
+            它们的 outcome **不**触发 ``negative_not_pooled`` 报错，
+            因为整条 URL 已被剔除，不再期望被并池。
     """
     name = path.name
     out: list[Finding] = []
@@ -396,7 +400,12 @@ def check_archive(
     ]
     if pool_keys is not None:
         for j, o in negatives:
-            key = (task_id, str(o.get("url") or ""), str(o.get("branch") or ""))
+            url = str(o.get("url") or "").strip()
+            # 2026-10-13 增量三十一：quarantine URL 的 outcome 本就该**不**进池
+            # ——它们整条拒收，跳过 negative_not_pooled。
+            if url in quarantine_urls:
+                continue
+            key = (task_id, url, str(o.get("branch") or ""))
             if key not in pool_keys:
                 out.append(Finding(
                     "negative_not_pooled", Severity.DEGRADED, name,
@@ -411,6 +420,33 @@ def check_archive(
 
 
 # ── 整个目录 ───────────────────────────────────────────────────────
+
+def _load_quarantine(root: Path) -> frozenset[str]:
+    """读 quarantine.jsonl 里的 URL 集合（被人工判定的拒收 URL）。
+
+    增量三十一新增：跨存档矛盾走「整条 URL 拒收」时记在这里，
+    integrity 的 :func:`_flag_contradicted_negatives` 会跳过这些 URL
+    而不重复报警——它们已经被从池里摘掉或已经记录在案。
+    文件不存在或解析失败时返回空集（fail-open：让门禁正常工作）。
+    """
+    qpath = root / "quarantine.jsonl"
+    if not qpath.exists():
+        return frozenset()
+    urls: set[str] = set()
+    for line in qpath.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, Mapping):
+            u = str(row.get("url") or "").strip()
+            if u:
+                urls.add(u)
+    return frozenset(urls)
+
 
 def _pool_keys(root: Path) -> frozenset[tuple[str, str, str]]:
     """读负样本池的去重键。
@@ -481,6 +517,10 @@ def _flag_contradicted_negatives(root: Path) -> tuple[Finding, ...]:
     if not pool_path.exists():
         return ()
 
+    # 2026-10-13 增量三十一：被人工裁定冻结的 URL（quarantine.jsonl）
+    # **不**在本检查里再报——它要么已从池里移除，要么整条拒收。
+    quarantine_urls = _load_quarantine(root)
+
     # 成功归属：url → [(存档, evidence)]
     winners: dict[str, list[tuple[str, str]]] = {}
     for path, _reviewed in select_archives(root):
@@ -511,6 +551,8 @@ def _flag_contradicted_negatives(root: Path) -> tuple[Finding, ...]:
         if not isinstance(row, Mapping):
             continue
         url = str(row.get("url") or "").strip()
+        if url in quarantine_urls:
+            continue
         if url not in winners:
             continue
         wins = winners[url]
@@ -534,9 +576,11 @@ def check_root(root: Path | str | None = None) -> IntegrityReport:
         return IntegrityReport((), (f"{base} 不存在",))
 
     pool_keys = _pool_keys(base)
+    quarantine_urls = _load_quarantine(base)  # 增量三十一：拒收 URL 集合
     reports: list[ArchiveReport] = []
     for path, _reviewed in select_archives(base):
-        reports.append(check_archive(path, pool_keys=pool_keys))
+        reports.append(check_archive(path, pool_keys=pool_keys,
+                                     quarantine_urls=quarantine_urls))
 
     conflicts = _flag_contradicted_negatives(base)
 

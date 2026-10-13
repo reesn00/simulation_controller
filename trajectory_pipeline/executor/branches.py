@@ -24,6 +24,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+import re
+
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.base import Decision, Observation
 
@@ -279,7 +281,7 @@ class RunLedger:
             # 两处各推一次的话，payload 里那个标记就只在一半路径上生效。
             # D-5 的映射表与注册表不同源已经吃过一次亏（避坑指南 §1.1）。
             branch = decision_branch(decision)
-            reason = _precondition_failed(branch, obs, pre_obs)
+            reason = _precondition_failed(branch, obs, pre_obs, decision)
             if reason:
                 return self.record(
                     url,
@@ -445,6 +447,76 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
 }
 
 
+#: 2026-10-13 增量三十二 · D10 偏差修缮：付费墙同页守卫的**强信号旁路**。
+#:
+#: 站点入口页导航栏里的「开通会员」广告是同页守卫要拦的「假付费墙」
+#: ——LLM 只看到「需付费」一个弱词就贴 ``subscription_wall``，守卫拦下、
+#: 降级 ``unresolved`` 是对的（见 ``test_付费墙前置事实不成立时降级``）。
+#:
+#: 但**真付费墙页面**点击前后就是同一个页面（页面本身就是付费墙终点站，
+#: 点击触发的是付费提示，不是导航）。LLM 在决策证据里写出**强付费墙**
+#: 关键词（VIP / 订阅 / 续费 / 包月 / 包年 / 专享 / 特惠）并至少配一个
+#: 弱关键词（开通 / 会员）或价格/优惠模式，就是「LLM 已经看穿了页面
+#: 内容」的强证据——这时同页守卫不该再把 ``subscription_wall`` 降级为
+#: ``unresolved``，否则 D10 偏差修缮白做。
+#:
+#: 把「开通」「会员」单独放进**弱**组是因为它们在站点导航栏广告里高频
+#: 出现（如「开通会员 享更多精彩」），单凭这俩词会把 nav-bar CTA 误判
+#: 成真付费墙。必须配强信号词一起出现才能旁路——见实测 v.youku.com
+#: （VIP + 首3月9.9元/月）、v.qq.com（新客VIP专享特惠 + 开通会员）、
+#: v-wb.youku.com（续费会员）三类强信号样本。
+#:
+#: 旁路**只对** ``subscription_wall`` 生效。``partial_free`` /
+#: ``login_required`` / ``blocked`` 同页守卫照旧——partial_free 在
+#: 阶段 1 没出现 D10 偏差，扩张旁路范围只会带来新的误判风险。
+STRONG_PAYWALL_KEYWORDS: tuple[str, ...] = (
+    # VIP 标记 / 订阅 / 续费 / 价格动词 / 营销词——这些在真付费墙页
+    # 几乎必然出现，而在站点入口页导航栏里**不会**同时出现多个。
+    "VIP", "订阅", "续费", "包月", "包年", "专享", "特惠",
+)
+WEAK_PAYWALL_KEYWORDS: tuple[str, ...] = (
+    # 开通 / 会员——这两个词在站点导航栏广告里高频出现，单凭它们
+    # 不能区分「真付费墙」与「站点入口页 nav-bar CTA」。
+    "开通", "会员",
+)
+PRICE_PATTERN = re.compile(
+    r"(?:[¥￥$€£]\s*\d|\d+\s*元|\d+\.\d+元\s*/\s*月|\d+月\d+元|首\s*\d+\s*月)"
+)
+
+
+def _has_strong_paywall_signal(decision: Decision | None) -> bool:
+    """LLM 决策证据里的付费墙信号是否**足够强**到让同页守卫放行。
+
+    关键设计：把付费墙关键词拆成**强**（VIP/订阅/续费/包月/包年/专享/特惠）
+    与**弱**（开通/会员）两组——「开通会员」是站点入口页 nav-bar 广告的
+    高频短语，单凭它无法区分真假付费墙；要旁路同页守卫，必须见到至少
+    一个**强**信号词。判据（任一即可）：
+
+      - ≥1 强关键词 + ≥1 弱关键词（如「VIP + 会员」、「订阅 + 开通」、
+        「续费 + 会员」）；
+      - ≥2 强关键词（如「VIP + 续费」、「订阅 + 包年」）；
+      - ≥1 强关键词 + 价格/优惠模式（「VIP + ¥99」、「订阅 9.9元/月」）。
+
+    ``decision is None``（调用方没传）或 evidence 为空串都按弱信号
+    处理——不旁路。
+    """
+    if decision is None:
+        return False
+    ev = (decision.evidence or "").strip()
+    if not ev:
+        return False
+    strong = sum(1 for kw in STRONG_PAYWALL_KEYWORDS if kw in ev)
+    weak = sum(1 for kw in WEAK_PAYWALL_KEYWORDS if kw in ev)
+    has_price = bool(PRICE_PATTERN.search(ev))
+    if strong >= 1 and weak >= 1:
+        return True
+    if strong >= 2:
+        return True
+    if strong >= 1 and has_price:
+        return True
+    return False
+
+
 def _same_page(a: Observation | None, b: Observation | None) -> bool:
     """这两份观察是不是**同一个页面**——rubric D-4 边界规则的可机械形态。
 
@@ -497,7 +569,8 @@ def _coerce_quotes(raw: Any) -> tuple[str, ...]:
 
 
 def _precondition_failed(
-    branch: str | None, obs: Observation | None, pre_obs: Observation | None = None
+    branch: str | None, obs: Observation | None, pre_obs: Observation | None = None,
+    decision: Decision | None = None,
 ) -> str:
     """这条分支的前置事实成立吗？不成立返回说明串，成立返回空串。
 
@@ -505,6 +578,11 @@ def _precondition_failed(
     降级逻辑不能反过来把老调用方的记账打成 unresolved，
     而那种「忘了传 obs」的错误由 :meth:`RunLedger.record_from` 的
     形参文档提醒，不在这里做第二次猜测。
+
+    2026-10-13 增量三十二：D10 偏差修缮——``subscription_wall`` 在 LLM
+    给出强付费墙信号时（见 :func:`_has_strong_paywall_signal`）旁路
+    同页守卫。真付费墙页面点击前后就是同一个页面（页面本身就是终点站）。
+    ``partial_free`` / ``login_required`` / ``blocked`` 同页守卫照旧。
     """
     if obs is None or branch is None:
         return ""
@@ -518,6 +596,9 @@ def _precondition_failed(
         if pre_obs is None:
             return ""
         if _same_page(pre_obs, obs):
+            # 2026-10-13 增量三十二：subscription_wall 真付费墙信号旁路
+            if branch == "subscription_wall" and _has_strong_paywall_signal(decision):
+                return ""
             return (
                 f"点击播放控件前后是同一个页面"
                 f"（url={obs.url}，元素数 / 正文也全同）——"

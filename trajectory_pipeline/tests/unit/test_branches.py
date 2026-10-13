@@ -638,6 +638,138 @@ class TestBranchPrecondition:
         )
         assert out.branch == "subscription_wall"
 
+    # 2026-10-13 增量三十二 · D10 偏差修缮：subscription_wall 强信号旁路
+    def test_subscription_wall_强信号旁路_多关键词(self):
+        """真付费墙页面点击前后就是同一个页面（页面即终点站）。
+        LLM 决策证据里 ≥2 个付费墙关键词即视为「看穿页面」——同页守卫放行。
+        实测样本：v.qq.com/x/cover/zr5a67l333ehzu9/d0032x85stp.html
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision(
+                "player.ok", False, 0.8,
+                "页面明确显示「新客VIP专享特惠」和「开通会员」，且播放器报错70017001.1",
+                "llm", {"paywall": True},
+            ),
+            obs=self._obs(url="https://x.test/movie", body_text="VIP专享 开通会员"),
+            pre_obs=self._obs(url="https://x.test/movie", body_text="VIP专享 开通会员"),
+        )
+        assert out.branch == "subscription_wall", (
+            f"强信号却降级为 {out.branch}——真付费墙页应该旁路同页守卫"
+        )
+
+    def test_subscription_wall_强信号旁路_单关键词_带价格(self):
+        """单关键词 + 价格模式也是强信号。
+        实测样本：v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==
+        （VIP + 首3月9.9元/月 + 立即开通）。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision(
+                "player.ok", False, 0.8,
+                "页面正片明确标注「VIP」，并显示「首3月9.9元/月，立即开通」，需订阅会员才能观看",
+                "llm", {"paywall": True},
+            ),
+            obs=self._obs(url="https://x.test/movie", body_text="VIP 9.9元/月"),
+            pre_obs=self._obs(url="https://x.test/movie", body_text="VIP 9.9元/月"),
+        )
+        assert out.branch == "subscription_wall"
+
+    def test_subscription_wall_强信号旁路_续费会员(self):
+        """续费 + 会员也是强信号。
+        实测样本：v-wb.youku.com/v_show/id_XNDE0NjYzODAzNg==
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision(
+                "player.ok", False, 0.8,
+                "页面显示「续费会员」，表明该影片需续费订阅后才能观看",
+                "llm", {"paywall": True},
+            ),
+            obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
+            pre_obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
+        )
+        assert out.branch == "subscription_wall"
+
+    def test_subscription_wall_弱信号不旁路(self):
+        """只命中 1 个关键词（付费）且无价格模式 = 弱信号 = 仍降级。
+        与 ``test_付费墙前置事实不成立时降级`` 同款设计。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision(
+                "player.ok", False, 0.8,
+                "需付费",
+                "llm", {"paywall": True},
+            ),
+            obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
+            pre_obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
+        )
+        assert out.branch == "unresolved", (
+            "弱信号却放行了——会污染 nav-bar ad CTA 类的真负样本池"
+        )
+
+    def test_partial_free_强信号不旁路(self):
+        """旁路**只对** ``subscription_wall`` 生效。partial_free 即使
+        命中 1 关键词也仍降级——不扩张旁路范围。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger(task_id="T001")
+        out = led.record_from(
+            "https://x.test/site",
+            Decision(Q.PLAYER_OK, False, 0.8, "会员抢先看", "llm",
+                     {"paywall_type": "preview"}),
+            obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
+        )
+        assert out.branch == "unresolved", "partial_free 走旁路了——超出设计范围"
+
+    def test_has_strong_paywall_signal_单元(self):
+        """直接测判据函数，方便回归。"""
+        from trajectory_pipeline.executor.branches import _has_strong_paywall_signal
+
+        cases = [
+            ("需付费", False, "弱信号 1 关键词无价格"),
+            # 仅弱关键词（开通/会员）= nav-bar CTA 模式，不旁路
+            ("开通会员观看", False, "仅弱关键词 不旁路"),
+            ("开通会员 享更多精彩", False, "仅弱关键词 不旁路"),
+            ("会员抢先看", False, "仅弱关键词 不旁路（partial_free 同款）"),
+            # 强 + 弱组合 = 真付费墙
+            ("VIP 会员", True, "1 强+1 弱"),
+            ("续费会员", True, "1 强+1 弱"),
+            ("订阅 开通", True, "1 强+1 弱"),
+            # ≥2 强关键词
+            ("VIP 订阅 续费 开通会员", True, "多强关键词"),
+            ("续费 包年", True, "2 强"),
+            # 强 + 价格
+            ("VIP 首3月9.9元/月", True, "1 强+价格"),
+            ("¥99 包月", True, "1 强+价格"),
+            ("订阅 9.9元", True, "1 强+价格"),
+            # 弱+价格（无强关键词）= 仍弱——保守起见不放行
+            ("开通会员 ¥9.9", False, "仅弱+价格 不旁路"),
+            ("", False, "空 evidence"),
+        ]
+        for ev, want, note in cases:
+            d = Decision("player.ok", False, 0.8, ev, "llm", {"paywall": True})
+            got = _has_strong_paywall_signal(d)
+            assert got is want, f"{note}: evidence={ev!r} want={want} got={got}"
+
+        # decision=None 必须返回 False（不让 None 误触发旁路）
+        assert _has_strong_paywall_signal(None) is False
+
     def test_同页判定与评分器同源(self):
         """executor 与 evaluation 各有一份 ``_same_page``（executor 不
         import evaluation，见 branches.py）。两处漂移会让「守卫拦的」

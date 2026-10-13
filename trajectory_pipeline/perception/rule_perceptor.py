@@ -202,6 +202,11 @@ def infer_paywall_type_from_evidence(evidence: str) -> str:
 #: 的语义重叠让 LLM 在 B 站 page 上踌躇（详见增量十四 §5）。fallback 让
 #: 「登录后」/「需登录」明确走 ``login``，避免把 paywall 形态的"大会员"
 #: 误判为纯 login。剩余形态交回合并态。
+#
+#: 2026-10-13 增量三十二 · ``not_found`` 新增英文 + 5xx 短语：
+#: D10 偏差修缮覆盖 kmslxsh/nginx 404、v.qq.com/error.html 那条视频不见了、
+#: ixigua Internal Server Error 三类实测样例；不带"X 不存在"这类短语的口径
+#: 不变（见下方注释）。
 ACCESS_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "login", (
@@ -243,6 +248,18 @@ ACCESS_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "页面不存在", "已下架", "已被删除",
             "该视频已被删除", "404 错误", "404错误", "对不起",
             "找不到该视频",
+            # 2026-10-13 增量三十二 · D10 偏差修缮：404/5xx 形态落 broken 的设计
+            # 意图（见 evaluation/golden/alignment.py）此前因为关键词只覆盖中文
+            # 短句、漏英文/英文混合页面（kmslxsh.com/nginx 的「404 Not Found」、
+            # ixigua 的「Internal Server Error」），fallback 返回空串、
+            # branches.py:decision_branch 退化到 login_wall_or_blocked 合并态。
+            # 补英文 + 通用 5xx 短语，覆盖三类实测样例：
+            #   - nginx 默认 404 页（kmslxsh.com 实测）
+            #   - 腾讯视频 error.html 那条视频不见了（v.qq.com 实测）
+            #   - 西瓜视频 5xx 错误页（m.ixigua.com 实测）
+            "404 Not Found", "404 not found", "Not Found",
+            "Internal Server Error", "500 Internal", "502 Bad Gateway",
+            "nginx", "那条视频不见了",
         ),
     ),
 )
@@ -752,6 +769,15 @@ L3_ACCESS_HINTS: MappingProxyType = MappingProxyType({
         "抱歉，您访问的页面不存在",
         "抱歉，视频已",
         "404", "404 not found", "404 错误", "404错误", "404 页面",
+        # 2026-10-13 增量三十二 · D10 偏差修缮：英文 + 通用 5xx 短语落
+        # not_found——覆盖三类实测样本：
+        #   - nginx 默认 404 页（kmslxsh.com 实测）
+        #   - 腾讯视频 error.html 那条视频不见了（v.qq.com 实测）
+        #   - 西瓜视频 5xx 错误页（m.ixigua.com 实测）
+        # 与 ACCESS_HINTS["not_found"] 同步增补。
+        "404 Not Found", "Not Found",
+        "Internal Server Error", "500 Internal", "502 Bad Gateway",
+        "nginx", "那条视频不见了",
     ),
     "login": (
         "请先登录", "请登录后", "登录后观看",
