@@ -38,6 +38,7 @@ W1 的 ``RulePerceptor`` 对 ``PLAYER_OK`` 只认 ``<video>`` / ``<audio>`` 标�
 
 from __future__ import annotations
 
+import collections
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,56 @@ from typing import Any, Final, Iterable, Mapping
 
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
 from trajectory_pipeline.perception import questions
+
+# ─────────────────────────────────────────────────────────────────────
+# L6 派发常量（2026-10-13 增量三十六落地）
+# ─────────────────────────────────────────────────────────────────────
+#
+# L6 人工触发器的判据由代码层**事实**决定，不由 LLM 决定——
+# 与「LLM 是传感器不是驾驶员」纪律一致。两条触发条件各自守一条事实：
+#
+# 1. :data:`REVIEW_BRANCHES` ——「代码没判出来」（分支体系里的反思档）
+# 2. :data:`AUTO_REVIEW_NOTES` ——「采集 / 仲裁层主动 fail-closed」
+#
+# 漏任一条都会把一类失败样本留在 P1 没人看，造出与实测脱节的负样本池。
+#: ``REVIEW_BRANCHES`` 之外、**凭 fail-closed note 也要进复核队列**的 note 集合。
+#:
+#: ``vlm_error`` — L4 reviewer 抛错时挂的哨兵；人是唯一能定结论的来源
+#: ``credential_leak`` — 凭据闸门触发的硬短路；落地的真 DOM 未必被人看过
+#: ``timeout`` / ``driver_missing`` / ``driver_error`` — 驱动层掉链；
+#:   L4 / L5 自然短路，**事实层**未必抓全；让人看一眼
+#:
+#: ⚠️ 这条集合**只挂 mediabrowse / run**（生产链），不挂
+#: :func:`cli.cmd_proberun` / :func:`cli.cmd_staticprobe` /
+#: :func:`cli.cmd_mediaprobe`（验证工具）——后者的失败形态是工具特性，
+#: 派给人工等于让人替验证工具背书。
+AUTO_REVIEW_NOTES: Final[frozenset[str]] = frozenset({
+    "vlm_error", "credential_leak", "timeout",
+    "driver_missing", "driver_error",
+})
+
+#: L6 默认追加落点。**与人工** ``cli review --write``
+#: 派的 ``queue.jsonl`` 物理隔离——auto-派发与人工派发使用同一文件名
+#: 时，``write_queue`` 是覆盖写，**auto-追加项会被人工导出整批替换掉**。
+#: 把 auto-派发落到独立 jsonl 后，人工 export 仍然覆盖 ``review/queue.jsonl``，
+#: 两条线互不污染。
+AUTO_QUEUE_SUBDIR: Final = "review_auto"
+AUTO_QUEUE_FILENAME: Final = "l6_dispatch.jsonl"
+
+
+def auto_queue_path(root: Path | str | None = None) -> Path:
+    """L6 auto-派发队列的解析路径。
+
+    ``root=None`` 走 **P1 默认根** :data:`~executor.archive.DEFAULT_ROOT`
+    ——与 ``cmd_review`` 同源，避免「目录对不上 → 派发项找不到」这种
+    静默失效。永远 ``mkdir(parents=True, exist_ok=True)``，副作用轻。
+    """
+    if root is None:
+        from trajectory_pipeline.executor.archive import DEFAULT_ROOT
+        base = Path(DEFAULT_ROOT)
+    else:
+        base = Path(root)
+    return base / AUTO_QUEUE_SUBDIR / AUTO_QUEUE_FILENAME
 
 #: 人工可给的裁定。**枚举值定死**是因为下游要按它分派，
 #: 自由文本裁定会退化成"复核员写什么算什么"，无法统计也无法回填。
@@ -585,8 +636,6 @@ def settle_same_site(rows: list[dict[str, Any]]) -> int:
     ``need_browser`` / ``skip`` 的含义是「**这一行没取到证据**」，
     不是「这个站点如何」——所以它不能压过一条基于证据的结论。
     """
-    import collections
-
     by_url: dict[str, set[str]] = collections.defaultdict(set)
     for row in rows:
         v = str(row.get("verdict") or "").strip()
@@ -613,3 +662,216 @@ def settle_same_site(rows: list[dict[str, Any]]) -> int:
             row["verdict"] = w
             n += 1
     return n
+
+
+# ══════════════════════════════════════════════════════════════════════
+# L6 自动派发（2026-10-13 增量三十六落地）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 与人工导出（``cli review --write`` → :func:`write_queue`）**两条线**：
+# - 人工是**覆盖写**到 ``<root>/review/queue.jsonl`` —— 重跑即重建。
+# - L6 是**追加写**到 ``<root>/review_auto/l6_dispatch.jsonl`` —— 同 URL
+#   不重复派；老行的 verdict 不动。
+#
+# 两条线物理隔离的理由（2026-10-13 设计裁定）：写同文件名时
+# :func:`write_queue` 是覆盖写，**auto-追加项会被人工导出整批替换掉**；
+# 分开存，互不污染，且每条线可独立统计 / 独立清空。
+
+#: 默认从 :class:`BrowserProbeResult` 抽取复核项时使用的元素样本条数。
+#: 与人工导出 :data:`ELEMENT_SAMPLE` 同值；mediabrowse 没有完整的
+#: ``interactive_elements`` 列表，body / snapshot 文本替代元素样本。
+AUTO_BODY_PREVIEW_MAX_CHARS: Final = 200
+
+
+def extract_from_browser_result(
+    result: Any, *, task_id: str
+) -> list[ReviewItem]:
+    """从 :class:`BrowserProbeResult`（含 L5 注入）抽 L6 复核项。
+
+    触发判据（**两条 OR**）：
+
+    1. ``result.l5_outcome.branch ∈ REVIEW_BRANCHES``
+       ——「代码层判定为反思档」（unresolved / trailer_suspect /
+       player_unverified）。与 :func:`extract_items` 同源。
+    2. ``result.note ∈ AUTO_REVIEW_NOTES``
+       ——「采集 / 仲裁层主动 fail-closed」。这条是 mediabrowse 专属，
+       run 路径的 P1 archive 没有 ``note`` 字段。
+
+    成功（``branch is None``）与其他 13 活跃负样本分支不进——前者按定义
+    不需要复核，后者按 :class:`~executor.branches.NON_SAMPLE_BRANCHES`
+    反面是**代码已给出确定性结论**，复核它属于抽检（另一件事）。
+
+    ⚠️ **dataclass 鸭子处理**——``final_url`` / ``requested_url`` /
+    ``note`` 等字段在探测层不同时是空值；本函数不读隐含语义，只看字段
+    实际值。
+    """
+    items: list[ReviewItem] = []
+    l5 = getattr(result, "l5_outcome", None)
+    note = str(getattr(result, "note", "") or "")
+    body = str(getattr(result, "body_excerpt", "") or "")
+    snapshot = str(getattr(result, "snapshot_excerpt", "") or "")
+    final_url = str(getattr(result, "final_url", "")
+                    or getattr(result, "requested_url", "") or "")
+
+    def _branch_qualifies(branch: Any) -> bool:
+        return isinstance(branch, str) and branch in REVIEW_BRANCHES
+
+    if l5 is not None and _branch_qualifies(getattr(l5, "branch", None)):
+        # L5 → SiteOutcome 落反思档 → 进 L6。这是主路径。
+        items.append(ReviewItem(
+            task_id=task_id,
+            url=final_url,
+            landed_url=final_url,
+            branch=str(l5.branch),
+            evidence=str(getattr(l5, "evidence", "") or ""),
+            reached_play_page=True,    # mediabrowse 已到落地页
+            page_title="",             # BrowserProbeResult 不直接给标题
+            video_tag_count=0,
+            iframe_count=0,
+            body_preview=body[:AUTO_BODY_PREVIEW_MAX_CHARS],
+            degraded=(note,) if note else (),
+            media_signal="",
+            paywall_type="",
+            screenshots=(),
+            elements=(),
+        ))
+    elif l5 is None and note in AUTO_REVIEW_NOTES:
+        # Fail-closed 兜底：**L5 没出**（None）时由 fail-closed 兜底触发；
+        # 若 L5 已出真负样本（branch 非反思档也非 None），代码已下结论，
+        # 不再二次触发——两个信号并存会让同 URL 派两条，靠 settle 收敛
+        # 没必要，且不真：派发原因只有一条（哪个是真判据）。
+        items.append(ReviewItem(
+            task_id=task_id,
+            url=final_url,
+            landed_url=final_url,
+            branch="unresolved",       # fail-closed 出口（与人工队列同源）
+            evidence=f"L6 auto-dispatch: note={note!r}",
+            reached_play_page=False,
+            page_title="",
+            video_tag_count=0,
+            iframe_count=0,
+            body_preview=body[:AUTO_BODY_PREVIEW_MAX_CHARS],
+            degraded=(note,),
+            media_signal="",
+            paywall_type="",
+            screenshots=(),
+            elements=(),
+        ))
+    return items
+
+
+def extract_from_p1_archive(
+    archive: Mapping[str, Any]
+) -> list[ReviewItem]:
+    """从 P1 archive（``cli run --plan`` / ``run --task-id`` 落盘形态）抽 L6。
+
+    本质是把 :func:`extract_items` 加 task_id 解析与忽略空 task_id 的
+    薄包装——archive 里已经有 :data:`REVIEW_BRANCHES` 的 outcome 行，
+    复用同一条过滤线，**不再引入第二套判断**。
+    """
+    task_id = str(archive.get("task_id") or "")
+    if not task_id:
+        return []
+    return extract_items(archive)
+
+
+def append_to_queue(
+    path: Path | str, items: Iterable[ReviewItem]
+) -> tuple[int, int]:
+    """追加写：同 URL **不重复派**，原行不动。
+
+    去重键：``landed_url or url``。这是**派发去重**，不是**裁定去重**
+    ——同一 URL 重复出现时不重复写入队列，但下游 ``apply_verdicts``
+    仍按 URL 收一份裁定，不会因为「派发去重」就丢掉任何 URL 的处理。
+
+    ⚠️ **不读也不改 verdict**。本函数仅当判定键（同 URL）作去重判据，
+    不会因为新一批里有「已填 verdict 的 URL」而跳过——只有「同 URL
+    已在本 jsonl」才跳过。这条避坑：覆写人工裁定属于静默破坏，
+    L6 派发要么追加要么跳过、不能改老行。
+
+    返回 ``(written, skipped)``：实写条数与跳过的条数。两者加在一起
+    = ``len(items)``；调用方用 ``written`` 做末尾打印的那一行汇总。
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: set[str] = set()
+    if p.exists():
+        with p.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                key = str(row.get("landed_url") or row.get("url") or "")
+                if key:
+                    existing.add(key)
+
+    items_list = list(items)
+    if not items_list:
+        # 空派发不创建/不留痕——避免「目录摸到了、文件 0 字节」被理解
+        # 成「派发通道没接好」。``written=0`` 也表明没派，不会被误读。
+        return 0, 0
+
+    written = 0
+    skipped = 0
+    with p.open("a", encoding="utf-8") as fh:
+        for it in items_list:
+            key = str(it.landed_url or it.url or "")
+            if key and key in existing:
+                skipped += 1
+                continue
+            fh.write(json.dumps(it.to_json(), ensure_ascii=False) + "\n")
+            if key:
+                existing.add(key)
+            written += 1
+    return written, skipped
+
+
+def dispatch_l6(
+    result_or_archive: Any,
+    *,
+    task_id: str,
+    queue_path: Path | str | None = None,
+) -> tuple[int, int]:
+    """CLI 钩子：自动派发复核项到 L6 队列。
+
+    根据输入类型自动选择抽法：
+
+    - 鸭子类型有 :attr:`l5_outcome` 字段 → :func:`extract_from_browser_result`
+      （mediabrowse 入口）
+    - 鸭子类型有 ``outcomes``（属性或键）→ :func:`extract_from_p1_archive`
+      （run 路径——既吃 ``archive_dict`` 也吃 :class:`RunRecord` dataclass）
+
+    入口写在 :mod:`executor.cli` 的两处主循环末尾；这条 hook 把
+    「判类型 → 抽 → 追加」三步绑成一个调用，便于单测覆盖与将来拓展
+    （例如加第二批产物的入口）。
+
+    ⚠️ **不在验证工具里挂**——proberun / staticprobe / mediaprobe
+    的产物体裁与生产链不同，它们是**验证工具**，产物常含「工具特性」
+    而非「真实业务分歧」，派发会让复核队列长出一批噪声。
+    """
+    if hasattr(result_or_archive, "l5_outcome") and not isinstance(
+        result_or_archive, Mapping
+    ):
+        items = extract_from_browser_result(result_or_archive, task_id=task_id)
+    else:
+        # 鸭子：Mapping（有 ``outcomes`` 键）或 dataclass（有 ``outcomes`` 属性）
+        if isinstance(result_or_archive, Mapping) and "outcomes" in result_or_archive:
+            archive_dict: Mapping[str, Any] = result_or_archive
+        elif hasattr(result_or_archive, "outcomes"):
+            archive_dict = {
+                "task_id": str(
+                    getattr(result_or_archive, "task_id", "") or task_id
+                ),
+                "outcomes": list(getattr(result_or_archive, "outcomes", []) or []),
+                "visits": list(getattr(result_or_archive, "visits", []) or []),
+            }
+        else:
+            return 0, 0  # 未知形态，零派发（fail-closed 不报错）
+        items = extract_from_p1_archive(archive_dict)
+    path = Path(queue_path) if queue_path is not None else auto_queue_path()
+    return append_to_queue(path, items)

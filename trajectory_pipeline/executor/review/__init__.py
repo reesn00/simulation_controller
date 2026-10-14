@@ -5,10 +5,16 @@ from trajectory_pipeline.executor.review.vlm_reviewer import (
     VLMReviewer,
     VLMReviewResult,
 )
+from trajectory_pipeline.executor.review.multim_vlm import (
+    MultimVLMReviewer,
+    build_reviewer,
+)
 
 __all__ = [
     "HeuristicVLMReviewer",
+    "MultimVLMReviewer",
     "VLMReviewInput",
     "VLMReviewer",
     "VLMReviewResult",
+    "build_reviewer",
 ]

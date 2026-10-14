@@ -1,0 +1,29 @@
+{
+ "label_note": "冻结版本 v1",
+ "n": 2,
+ "agreed": 2,
+ "agreement_ratio": 1.0,
+ "threshold": 0.9,
+ "criterion": "equiv_class",
+ "label_schema_version": "2",
+ "report": {
+  "n": 2,
+  "accuracy": 1.0,
+  "micro": {
+   "precision": 1.0,
+   "recall": 1.0,
+   "f1": 1.0
+  },
+  "per_class": {
+   "SUCCESS": {
+    "tp": 2,
+    "fp": 0,
+    "fn": 0,
+    "tn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+   }
+  }
+ }
+}

@@ -1,0 +1,36 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "2",
+ "version": 1,
+ "frozen_at": "2026-10-14T05:02:45+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 2,
+  "annotated": 2,
+  "site": 2,
+  "trajectory": 0,
+  "calibration": 1,
+  "holdout": 1
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.5,
+  "holdout_ratio": 0.5,
+  "pp_diff_from_target": 0.15
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.9,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "success": 2
+ }
+}

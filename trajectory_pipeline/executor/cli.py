@@ -44,7 +44,7 @@ import uuid
 from types import MappingProxyType
 from collections import Counter
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Final, Mapping
 from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor.archive import (
@@ -93,17 +93,24 @@ from trajectory_pipeline.executor.probe import (
 )
 # 2026-10-13 增量二十五：L4 VLM 复核串联。
 # INC28_L1_WIRING_v1 配套：L1 ffprobe 真接入 BrowserProbeResult。
+# 2026-10-13 增量三十四：MultimVLMReviewer + build_reviewer 工厂接入，
+# CLI 加 --reviewer 选项（heuristic | multim）。
 from trajectory_pipeline.executor.review.vlm_reviewer import (
     HeuristicVLMReviewer,
     VLMReviewInput,
     VLMReviewResult,
     VLMReviewer,
 )
+from trajectory_pipeline.executor.review.multim_vlm import (
+    MultimVLMReviewer,
+    build_reviewer,
+)
 from trajectory_pipeline.executor.review_queue import (
     VERDICTS,
     ReviewQueueError,
     apply_verdicts,
     collect as collect_reviews,
+    dispatch_l6,
     prefill as rq_prefill,
     settle_same_site as rq_settle,
     write_queue as write_review_queue,
@@ -289,6 +296,10 @@ async def _run_manual(args: argparse.Namespace) -> int:
             records.append(rec)
             path = archive.write(rec, task_id=args.task_id)
             _print_summary(rec, path)
+            # 增量三十六：L6 人工触发器——run 路径末尾自动派发。
+            # 与人工 cli review --write 共用同源判据（REVIEW_BRANCHES），
+            # 但落到独立 jsonl（review_auto/l6_dispatch.jsonl）。
+            _dispatch_l6_summary(rec, args.task_id)
 
     _print_batch_footer(records)
     return 0
@@ -378,6 +389,8 @@ async def _run_plan(args: argparse.Namespace) -> int:
             records.append(rec)
             path = archive.write(rec, task_id=task.task_id)
             _print_summary(rec, path)
+            # 增量三十六：L6 自动派发——与 _run_manual 同口径。
+            _dispatch_l6_summary(rec, task.task_id)
 
     _print_batch_footer(records)
     return 0
@@ -1054,6 +1067,7 @@ async def _run_l4_review_async(
     *,
     timeout_s: float = 8.0,
     reviewer: VLMReviewer | None = None,
+    reviewer_name: str = "heuristic",
 ) -> tuple[VLMReviewResult, str, str]:
     """L4 VLM 复核 async 入口（cli 主循环直接 await）。
 
@@ -1064,9 +1078,15 @@ async def _run_l4_review_async(
 
         失败 sentinel: ``note="vlm_error"``, ``label="unknown"``,
         ``paywall_type="none"``, ``confidence=0.0``，附空字符串 body/snapshot。
+
+    .. note::
+        增量三十四（2026-10-13）：``reviewer_name`` 关键字参数引入，
+        默认 ``"heuristic"``，与历史行为完全一致；显式 ``"multim"``
+        时走 :class:`MultimVLMReviewer`（无 key 自动降级到启发式）。
+        ``reviewer`` 形参保留——测试 / 上层可直接注入 mock。
     """
     if reviewer is None:
-        reviewer = HeuristicVLMReviewer()
+        reviewer = build_reviewer(reviewer_name)
 
     body = ""
     snapshot = ""
@@ -1208,6 +1228,7 @@ async def _mediabrowse_with_driver(args: argparse.Namespace,
                     driver_obj, result,
                     page_quotes=(),
                     timeout_s=getattr(args, "l4_timeout", 8.0),
+                    reviewer_name=getattr(args, "reviewer", "heuristic"),
                 )
             except Exception as exc:  # noqa: BLE001
                 # _run_l4_review_async 自身不抛——这里兜 async 协议外的死循环 / OOM。
@@ -1321,6 +1342,13 @@ async def _mediabrowse_with_driver(args: argparse.Namespace,
         except CredentialLeak as exc:
             leak_count += 1
             print(f"  [FAIL] {exc}", file=sys.stderr)
+            continue
+        # 增量三十六：L6 人工触发器——mediabrowse 路径末尾自动派发。
+        # 判据与 run 路径同源：REVIEW_BRANCHES（unresolved /
+        # trailer_suspect / player_unverified）+ AUTO_REVIEW_NOTES
+        # （vlm_error / credential_leak / timeout / driver_missing /
+        # driver_error）双轨触发；详见 review_queue.extract_from_browser_result。
+        _dispatch_l6_summary(result, args.task_id)
 
     print(f"\n== 汇总 ==")
     print(f"  branches = {dict(branch_count)}")
@@ -1416,6 +1444,31 @@ def _load_url_lines(path: str) -> list[str]:
     if not out:
         raise ValueError(f"--from-urls 文件 {p} 无 URL（除 # 注释外）")
     return out
+
+
+#: L6 自动派发的末尾打印格式。**只一行汇总**，不逐条打印（生产链
+#: 长跑时逐条 = 刷屏）。失败原因写在 ``dispatch_l6`` 内部，已经
+#: fail-soft 返回 ``written=0, skipped=0``——这种情况不打空行，避免
+#: 误读成「派发成功 0 条」。
+_L6_SUMMARY: Final = "  L6 dispatch: +{written} 条（去重跳过 {skipped}）"
+
+
+def _dispatch_l6_summary(item: Any, task_id: str) -> None:
+    """把 :func:`review_queue.dispatch_l6` 包装成「一行打印 + 异常吞掉」。
+
+    L6 派发是**派发管线**而不是**生产管线**：派发失败不该让整条 CLI
+    崩掉（落 P1 已写完，那才是核心资产）。失败在控制台冒一行提示就
+    够了——与 ``check-archives`` 的「**跳过**必须看得见」同源纪律，
+    跳过 N 条总比「静默吞掉」强。
+    """
+    try:
+        written, skipped = dispatch_l6(item, task_id=task_id)
+    except Exception as exc:                              # noqa: BLE001
+        print(f"  L6 dispatch fail: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return
+    if written or skipped:
+        print(_L6_SUMMARY.format(written=written, skipped=skipped))
 
 
 def _urls_of(archive: str, *, limit: int | None) -> list[str]:
@@ -2438,6 +2491,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="关闭 L1 ffprobe 媒体解析（默认开启；缺 ffprobe 时降级跳过）")
     mbb.add_argument("--l1-timeout", type=float, default=10.0,
                      help="L1 单 URL 总超时（秒）；默认 10")
+    # 2026-10-13 增量三十四：L4 reviewer 选择（heuristic / multim）。
+    # 默认 heuristic——不设 key 时走 multim 也只会降级 heuristic，没有收益。
+    # multim 通道需要 OPENAI_API_KEY / ANTHROPIC_API_KEY 环境变量；
+    # 无 key 时 :class:`MultimVLMReviewer` 自动降级到 :class:`HeuristicVLMReviewer`
+    # 并打 source="multim_fallback" + note="multim_fallback:no_api_key" 标签。
+    mbb.add_argument("--reviewer", choices=("heuristic", "multim"), default="heuristic",
+                     help="L4 复核器选择：heuristic（默认，无外部依赖）/ "
+                          "multim（真 LLM 文本理解；OpenAI gpt-4o-mini / "
+                          "Anthropic claude-3-5-haiku 双通道，无 key 降级启发式）")
     mbb.set_defaults(func=cmd_mediabrowse)
 
 

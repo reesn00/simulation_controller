@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -714,3 +716,428 @@ class TestL5Wiring:
         assert body["l5_outcome"] is not None
         assert body["l5_outcome"]["branch"] == "unresolved"
         assert "fail-closed" in body["l5_outcome"]["evidence"]
+
+
+# ─────────────── TestMultimVLMCLIWiring ───────────────
+# 增量三十四（2026-10-13）：--reviewer multim | heuristic 选项 + build_reviewer 工厂接线。
+# 验证三点：(1) args.reviewer="multim" 透传到 build_reviewer 被调一次；
+# (2) 默认走 heuristic（无 args.reviewer 字段时也不爆）；
+# (3) argparse choices=("heuristic","multim") 拒绝非法值。
+class TestMultimVLMCLIWiring:
+    """--reviewer 选项 + build_reviewer 工厂接线（增量三十四，2026-10-13）。"""
+
+    async def test_l4_reviewer_multim_invokes_build_reviewer(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        driver = FakePageDriver()
+        driver.set_body_text("当前设备不支持播放")
+        _patch_driver(monkeypatch, driver)
+
+        from trajectory_pipeline.executor.review import build_reviewer as real_factory
+        calls: list[str] = []
+
+        def spy(name: str = "heuristic"):
+            calls.append(name)
+            return real_factory(name)
+
+        monkeypatch.setattr(cli_mod, "build_reviewer", spy)
+        urls = _write_urls(
+            tmp_path / "u.txt",
+            ["https://a.example.com/reviewer-multim"],
+        )
+        ns = argparse.Namespace(
+            from_urls=str(urls), task_id="P034-multim", title="t",
+            timeout=5.0, wait_s=0.01, driver="fake", out=str(tmp_path),
+            reviewer="multim",
+        )
+        rc = await cmd_mediabrowse(ns)
+        assert rc == 0
+        # build_reviewer 被调过一次且入参是 "multim"——验证 args.reviewer 透传到 L4。
+        assert calls == ["multim"]
+
+    async def test_l4_reviewer_default_is_heuristic(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        driver = FakePageDriver()
+        _patch_driver(monkeypatch, driver)
+        from trajectory_pipeline.executor.review import build_reviewer as real_factory
+        calls: list[str] = []
+
+        def spy(name: str = "heuristic"):
+            calls.append(name)
+            return real_factory(name)
+
+        monkeypatch.setattr(cli_mod, "build_reviewer", spy)
+        urls = _write_urls(
+            tmp_path / "u.txt",
+            ["https://a.example.com/reviewer-default"],
+        )
+        ns = argparse.Namespace(
+            from_urls=str(urls), task_id="P034-default", title="t",
+            timeout=5.0, wait_s=0.01, driver="fake", out=str(tmp_path),
+            # 注意：不设 reviewer 字段——验证 getattr(args, "reviewer", "heuristic") 默认值
+        )
+        rc = await cmd_mediabrowse(ns)
+        assert rc == 0
+        out_dir = tmp_path / "mediabrowse"
+        written = list(out_dir.glob("P034-default__*.json"))
+        assert len(written) == 1
+        import json
+        body = json.loads(written[0].read_text(encoding="utf-8"))
+        # 默认行为：vlm_review 字段存在，source 应是 heuristic。
+        assert body["vlm_review"] is not None
+        assert body["vlm_review"]["source"] == "heuristic"
+        # 没显式传 reviewer 时 _run_l4_review_async 默认走 keyword 默认 "heuristic"，
+        # 但 CLI 主循环仍显式传 reviewer_name=getattr(args, "reviewer", "heuristic")，
+        # 所以 build_reviewer 被调一次，name="heuristic"。
+        assert calls == ["heuristic"]
+
+    async def test_l4_reviewer_argparse_rejects_invalid_choice(self, capsys):
+        # argparse choices=("heuristic", "multim") 守住——非法值不进 cmd_mediabrowse。
+        from trajectory_pipeline.executor.cli import build_parser
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "mediabrowse",
+                "--reviewer", "bogus_reviewer",
+                "--from-urls", "u.txt",
+            ])
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 增量三十六：L6 自动派发接线（mediabrowse + run 两入口）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestL6AutoDispatchMediabrowse:
+    """mediabrowse 主循环末尾挂 :func:`_dispatch_l6_summary`——守住
+    ``L5.branch in REVIEW_BRANCHES`` 与 ``note in AUTO_REVIEW_NOTES``
+    双轨触发；末尾一行汇总。"""
+
+    async def test_L5_unresolved_派发到_queue(self, tmp_path, monkeypatch,
+                                              capsys):
+        from trajectory_pipeline.executor.review_queue import (
+            AUTO_QUEUE_SUBDIR, AUTO_QUEUE_FILENAME,
+        )
+        from trajectory_pipeline.executor import archive as archive_mod
+
+        # 改 archive.DEFAULT_ROOT 让 auto_queue_path 解析到 tmp_path。
+        monkeypatch.setattr(archive_mod, "DEFAULT_ROOT", tmp_path)
+
+        from trajectory_pipeline.executor import cli as cli_mod2
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class _SigStub:
+            play_started: bool = False
+            timeupdate_progress: bool = False
+            current_time_sec: float | None = None
+            frames_decoded: int | None = None
+            black_screen: bool = False
+            media_error: int | None = None
+
+        @_dc
+        class _SiteOutcomeStub:
+            branch: str | None = "unresolved"
+            evidence: str = "fixture"
+
+        @_dc
+        class _ResultStub:
+            requested_url: str = "https://example.com/v"
+            final_url: str = "https://example.com/v"
+            driver_name: str = "fake"
+            ok: bool = True
+            media_count: int = 0
+            signal: object = None
+            error: str = ""
+            elapsed_ms: int = 0
+            note: str = ""
+            body_excerpt: str = "body"
+            snapshot_excerpt: str = "snap"
+            vlm_review: object = None
+            l3_decision: object = None
+            l5_outcome: _SiteOutcomeStub | None = None
+            l1_probe: object = None
+
+        async def _fake_probe(driver, url, *, timeout_s, wait_s):
+            return _ResultStub(
+                signal=_SigStub(),
+                requested_url=url,
+                final_url=url,
+                l5_outcome=_SiteOutcomeStub(branch="unresolved"),
+            )
+
+        async def _fake_collect(*a, **kw):
+            return "", ""
+
+        def _fake_arbitrate(result):
+            # 模拟 L5 输出 unresolved（避免被真 arbitrate_l5 覆盖）
+            return _SiteOutcomeStub(branch="unresolved",
+                                    evidence="test unresolved")
+
+        monkeypatch.setattr(cli_mod2, "arbitrate_l5", _fake_arbitrate)
+        # 注入：探测 + L4 文本采集都短路；dump_browser_result 复制 result 即可。
+        from trajectory_pipeline.executor.cli import (
+            _mediabrowse_with_driver, _dispatch_l6_summary, FakePageDriver,
+        )
+        monkeypatch.setattr(cli_mod2, "probe_browser_media", _fake_probe)
+        monkeypatch.setattr(cli_mod2, "_collect_l4_text", _fake_collect)
+
+        # URL 文件：写两个；预期两条 unresolved 都被派。
+        urls_file = tmp_path / "urls.txt"
+        urls_file.write_text("https://example.com/v1\n"
+                             "https://example.com/v2\n", encoding="utf-8")
+        args = SimpleNamespace(
+            out=str(tmp_path), task_id="P036", timeout=15.0, wait_s=2.0,
+            no_l1=True, l1_timeout=10.0, l4_timeout=8.0, reviewer="heuristic",
+            from_urls=str(urls_file),
+        )
+
+        # dump_browser_result 也短路——只写一个空 json 占位。
+        def _fake_dump(result, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+            return path
+
+        monkeypatch.setattr(cli_mod2, "dump_browser_result", _fake_dump)
+
+        # 不开 ffprobe（--no_l1 已设）。
+        monkeypatch.setattr(cli_mod2, "ffprobe_available", lambda *a, **kw: False)
+
+        rc = await _mediabrowse_with_driver(args, FakePageDriver())
+        assert rc == 0
+        queue = tmp_path / AUTO_QUEUE_SUBDIR / AUTO_QUEUE_FILENAME
+        assert queue.exists()
+        lines = [ln for ln in queue.read_text(encoding="utf-8").splitlines() if ln]
+        assert len(lines) == 2
+        # 每行 branch 都是 unresolved；task_id 都是 P036。
+        for ln in lines:
+            row = json.loads(ln)
+            assert row["branch"] == "unresolved"
+            assert row["task_id"] == "P036"
+
+    async def test_L5_真负样本_不派发(self, tmp_path, monkeypatch):
+        """branch=broken 是真负样本；与人工 REVIEW_BRANCHES 同源不应进 L6。"""
+        from trajectory_pipeline.executor import archive as archive_mod
+        monkeypatch.setattr(archive_mod, "DEFAULT_ROOT", tmp_path)
+        from trajectory_pipeline.executor import cli as cli_mod2
+
+        # 改用 _dc 装饰：
+        from dataclasses import dataclass as _dc
+        @_dc
+        class _SigStub:
+            play_started: bool = False
+            timeupdate_progress: bool = False
+            current_time_sec: float | None = None
+            frames_decoded: int | None = None
+            black_screen: bool = False
+            media_error: int | None = None
+
+        @_dc
+        class _SiteOutcomeStub:
+            branch: str | None = "broken"
+            evidence: str = "fixture"
+
+        @_dc
+        class _ResultStub:
+            requested_url: str = "https://example.com/v"
+            final_url: str = "https://example.com/v"
+            driver_name: str = "fake"
+            ok: bool = True
+            media_count: int = 0
+            signal: _SigStub = None
+            error: str = ""
+            elapsed_ms: int = 0
+            note: str = ""
+            body_excerpt: str = ""
+            snapshot_excerpt: str = ""
+            vlm_review: object = None
+            l3_decision: object = None
+            l5_outcome: _SiteOutcomeStub | None = None
+            l1_probe: object = None
+
+        async def _fake_probe(driver, url, **kw):
+            return _ResultStub(
+                signal=_SigStub(),
+                l5_outcome=_SiteOutcomeStub(branch="broken"),
+            )
+
+        def _fake_arbitrate_broken(result):
+            return _SiteOutcomeStub(branch="broken", evidence="test broken")
+
+        monkeypatch.setattr(cli_mod2, "arbitrate_l5", _fake_arbitrate_broken)
+
+        urls_file = tmp_path / "urls.txt"
+        urls_file.write_text("https://example.com/broken\n",
+                             encoding="utf-8")
+        args = SimpleNamespace(
+            out=str(tmp_path), task_id="P036", timeout=15.0, wait_s=2.0,
+            no_l1=True, l1_timeout=10.0, l4_timeout=8.0, reviewer="heuristic",
+            from_urls=str(urls_file),
+        )
+
+        def _fake_dump(result, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+            return path
+
+        monkeypatch.setattr(cli_mod2, "probe_browser_media", _fake_probe)
+        monkeypatch.setattr(cli_mod2, "dump_browser_result", _fake_dump)
+        monkeypatch.setattr(cli_mod2, "ffprobe_available", lambda *a, **kw: False)
+        from trajectory_pipeline.executor.cli import (
+            _mediabrowse_with_driver, FakePageDriver,
+        )
+        rc = await _mediabrowse_with_driver(args, FakePageDriver())
+        assert rc == 0
+        # 真负样本不进 review_auto queue。
+        queue_dir = tmp_path / "review_auto"
+        assert not (queue_dir / "l6_dispatch.jsonl").exists()
+
+    async def test_fail_closed_兜底派发(self, tmp_path, monkeypatch):
+        """note=vlm_error 或 credential_leak 等 fail-closed → 派发。"""
+        from trajectory_pipeline.executor import archive as archive_mod
+        monkeypatch.setattr(archive_mod, "DEFAULT_ROOT", tmp_path)
+        from trajectory_pipeline.executor import cli as cli_mod2
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class _SigStub:
+            play_started: bool = False
+            timeupdate_progress: bool = False
+            current_time_sec: float | None = None
+            frames_decoded: int | None = None
+            black_screen: bool = False
+            media_error: int | None = None
+
+        @_dc
+        class _SiteOutcomeStub:
+            branch: str | None = None
+            evidence: str = ""
+
+        @_dc
+        class _ResultStub:
+            requested_url: str = "https://example.com/v"
+            final_url: str = "https://example.com/v"
+            driver_name: str = "fake"
+            ok: bool = False
+            media_count: int = 0
+            signal: _SigStub = None
+            error: str = ""
+            elapsed_ms: int = 0
+            note: str = "vlm_error"
+            body_excerpt: str = ""
+            snapshot_excerpt: str = ""
+            vlm_review: object = None
+            l3_decision: object = None
+            l5_outcome: _SiteOutcomeStub | None = None
+            l1_probe: object = None
+
+        async def _fake_probe(driver, url, **kw):
+            return _ResultStub(
+                signal=_SigStub(),
+                l5_outcome=_SiteOutcomeStub(branch=None),
+                note="vlm_error",
+            )
+
+        def _fake_arbitrate_none(result):
+            # 模拟真实路径：fail-closed note=vlm_error 时 arbitrate_l5 也
+            # 会产出 unresolved（因为 L3/L4 sentinel、L2 无信号，
+            # 仲裁默认走 unresolved）。本测试验「note 与 L5 双轨触发的真实
+            # 表现」——L5 路径已经派上。
+            return _SiteOutcomeStub(branch="unresolved",
+                                    evidence="L5 vlm_error fallback")
+
+        monkeypatch.setattr(cli_mod2, "arbitrate_l5", _fake_arbitrate_none)
+
+        urls_file = tmp_path / "urls.txt"
+        urls_file.write_text("https://example.com/vlmerr\n",
+                             encoding="utf-8")
+        args = SimpleNamespace(
+            out=str(tmp_path), task_id="P036", timeout=15.0, wait_s=2.0,
+            no_l1=True, l1_timeout=10.0, l4_timeout=8.0, reviewer="heuristic",
+            from_urls=str(urls_file),
+        )
+        def _fake_dump(result, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+            return path
+
+        monkeypatch.setattr(cli_mod2, "probe_browser_media", _fake_probe)
+        monkeypatch.setattr(cli_mod2, "dump_browser_result", _fake_dump)
+        monkeypatch.setattr(cli_mod2, "ffprobe_available", lambda *a, **kw: False)
+        from trajectory_pipeline.executor.cli import (
+            _mediabrowse_with_driver, FakePageDriver,
+        )
+        rc = await _mediabrowse_with_driver(args, FakePageDriver())
+        assert rc == 0
+        queue = tmp_path / "review_auto" / "l6_dispatch.jsonl"
+        assert queue.exists()
+        line = [ln for ln in queue.read_text(encoding="utf-8").splitlines()
+                if ln][0]
+        row = json.loads(line)
+        # fail-closed 派发落到 unresolved 出口。
+        assert row["branch"] == "unresolved"
+        assert "vlm_error" in row["degraded"]
+
+
+class TestL6DispatchSummary:
+    """_dispatch_l6_summary：失败吞掉 + 末尾一行 + 零派发不打空行。"""
+
+    def test_正常派发打印一行(self, tmp_path, capsys):
+        from trajectory_pipeline.executor.cli import _dispatch_l6_summary
+        # 走 dispatch_l6 真实路径——喂一个能被 duck 出 1 条的 P1 archive。
+        arch = {"task_id": "P036",
+                "outcomes": [{"url": "https://a.com", "branch": "unresolved",
+                              "evidence": "e"}],
+                "visits": [{"url": "https://a.com",
+                            "landed_url": "https://a.com",
+                            "player_obs": {"video_tag_count": 1,
+                                           "iframe_count": 0,
+                                           "degraded": [], "page_title": "t"}}]}
+        # 临时把 DEFAULT_ROOT 设为 tmp_path，dispatch_l6 内部走 auto_queue_path。
+        from trajectory_pipeline.executor import cli as cli_mod
+        from trajectory_pipeline.executor import archive as archive_mod
+        original = archive_mod.DEFAULT_ROOT
+        archive_mod.DEFAULT_ROOT = tmp_path
+        try:
+            _dispatch_l6_summary(arch, "P036")
+        finally:
+            archive_mod.DEFAULT_ROOT = original
+        out = capsys.readouterr().out
+        assert "L6 dispatch: +1 条" in out
+        assert "去重跳过 0" in out
+        assert (tmp_path / "review_auto" / "l6_dispatch.jsonl").exists()
+
+    def test_异常_不崩_仅一行提示(self, tmp_path, capsys):
+        from trajectory_pipeline.executor.cli import _dispatch_l6_summary
+        # 制造一条 dispatch_l6 会抛异常的输入——但 wrapper 必须吞掉。
+        # 用一个把 dispatch_l6 monkeypatch 成抛异常的 fake 来验。
+        from trajectory_pipeline.executor import cli as cli_mod
+        original = cli_mod.dispatch_l6
+        try:
+            cli_mod.dispatch_l6 = lambda *a, **kw: (_ for _ in ()).throw(
+                RuntimeError("forced")
+            )
+            _dispatch_l6_summary({}, "P036")
+        finally:
+            cli_mod.dispatch_l6 = original
+        captured = capsys.readouterr()
+        assert "L6 dispatch fail" in captured.err
+
+    def test_零派发_不打空行(self, tmp_path, capsys):
+        """成功 / 真负样本 → written=0, skipped=0 → 不该有空行。"""
+        from trajectory_pipeline.executor.cli import _dispatch_l6_summary
+        from trajectory_pipeline.executor import archive as archive_mod
+        # 喂一个非派发表面的 Mapping（既不在 L5 也不在 fail-closed）：
+        arch = {"task_id": "P036",
+                "outcomes": [{"url": "https://a.com", "branch": "broken",
+                              "evidence": "e"}],
+                "visits": []}
+        original = archive_mod.DEFAULT_ROOT
+        archive_mod.DEFAULT_ROOT = tmp_path
+        try:
+            _dispatch_l6_summary(arch, "P036")
+        finally:
+            archive_mod.DEFAULT_ROOT = original
+        out = capsys.readouterr().out
+        assert "L6 dispatch" not in out  # 零派发，沉默

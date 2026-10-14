@@ -678,3 +678,311 @@ class Test同URL收敛:
                 _row(url, verdict="confirm_success")]
         settle_same_site(rows)
         assert "同步为 confirm_success" in rows[0]["note"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 增量三十六：L6 自动派发（extract_from_browser_result / dispatch_l6）
+# ══════════════════════════════════════════════════════════════════════
+
+
+from dataclasses import dataclass
+
+from trajectory_pipeline.executor.review_queue import (
+    AUTO_QUEUE_SUBDIR,
+    AUTO_QUEUE_FILENAME,
+    AUTO_REVIEW_NOTES,
+    REVIEW_BRANCHES,
+    append_to_queue,
+    auto_queue_path,
+    dispatch_l6,
+    extract_from_browser_result,
+    extract_from_p1_archive,
+)
+
+
+@dataclass
+class _SiteOutcome:
+    """L5 仲裁输出 duck 替身——L6 派发只读 branch + evidence。"""
+
+    branch: str | None
+    evidence: str = "test evidence"
+
+
+@dataclass
+class _BrowserResult:
+    """mediabrowse BrowserProbeResult duck 替身——L6 派发只读
+    l5_outcome / note / body_excerpt / final_url。"""
+
+    l5_outcome: _SiteOutcome | None = None
+    note: str = ""
+    body_excerpt: str = ""
+    snapshot_excerpt: str = ""
+    final_url: str = "https://v.qq.com/x/page/x.html"
+    requested_url: str = "https://v.qq.com/x/page/x.html"
+
+
+class TestExtractFromBrowserResult:
+    """L6 派发的判据线——守住「哪些该进、哪些不进」。"""
+
+    def test_L5_unresolved_入列(self):
+        """L5 仲裁落 unresolved → L6 必进。这是主路径。"""
+        r = _BrowserResult(l5_outcome=_SiteOutcome(branch="unresolved"))
+        items = extract_from_browser_result(r, task_id="P036")
+        assert len(items) == 1
+        assert items[0].branch == "unresolved"
+        assert items[0].task_id == "P036"
+        assert items[0].reached_play_page is True
+
+    def test_L5_trailer_suspect_入列(self):
+        r = _BrowserResult(l5_outcome=_SiteOutcome(branch="trailer_suspect"))
+        items = extract_from_browser_result(r, task_id="P036")
+        assert len(items) == 1
+        assert items[0].branch == "trailer_suspect"
+
+    def test_L5_player_unverified_入列(self):
+        r = _BrowserResult(l5_outcome=_SiteOutcome(branch="player_unverified"))
+        items = extract_from_browser_result(r, task_id="P036")
+        assert items[0].branch == "player_unverified"
+
+    def test_L5_真负样本_不进(self):
+        """broken / no_play_control / subscription_wall 等已下结论的
+        不进 L6 复核队列——与人工导出 review_queue.REVIEW_BRANCHES 同源。"""
+        for branch in ("broken", "no_play_control", "subscription_wall",
+                       "not_play_site", "blocked", "partial_free"):
+            r = _BrowserResult(l5_outcome=_SiteOutcome(branch=branch))
+            assert extract_from_browser_result(r, task_id="P036") == [], branch
+
+    def test_成功_不进(self):
+        """branch=None = 成功。成功不需要复核。"""
+        r = _BrowserResult(l5_outcome=_SiteOutcome(branch=None))
+        assert extract_from_browser_result(r, task_id="P036") == []
+
+    def test_fail_closed_兜底(self):
+        """采集 / 仲裁层主动 fail-closed → L6 必进（AUTO_REVIEW_NOTES）。"""
+        for note in AUTO_REVIEW_NOTES:
+            r = _BrowserResult(note=note, final_url=f"https://x.com/{note}")
+            items = extract_from_browser_result(r, task_id="P036")
+            assert len(items) == 1, f"note={note} should dispatch"
+            assert items[0].branch == "unresolved"
+            assert note in items[0].degraded
+
+    def test_非fail_closed_note_不进(self):
+        """note 不在 AUTO_REVIEW_NOTES 且 L5 不在 REVIEW_BRANCHES → 不进。"""
+        r = _BrowserResult(note="happy_path", l5_outcome=_SiteOutcome(branch=None))
+        assert extract_from_browser_result(r, task_id="P036") == []
+
+    def test_L5_branch_优先于_fail_closed(self):
+        """L5 真负样本时不应被 fail-closed 规则二次触发——同一 URL 派两条会
+        让复核队列同 URL 多行，需要 settle_same_site 又多一份负担。"""
+        r = _BrowserResult(
+            l5_outcome=_SiteOutcome(branch="broken"),
+            note="credential_leak",
+        )
+        items = extract_from_browser_result(r, task_id="P036")
+        # L5 真负样本不进；fail-closed 兜底也不进（已经被 L5 判完了）。
+        # 但若 L5 没出而仅 note 命中 → 进；在这里 L5 出且非 REVIEW，故不入。
+        assert items == []
+
+
+class TestAppendToQueue:
+    """L6 追加写的同 URL 去重 + jsonl 落地。"""
+
+    def test_首次_追加正常(self, tmp_path):
+        from trajectory_pipeline.executor.review_queue import ReviewItem
+
+        path = tmp_path / "l6.jsonl"
+        items = [
+            ReviewItem(
+                task_id="P036", url="https://a.com",
+                landed_url="https://a.com/landed", branch="unresolved",
+                evidence="e1",
+                reached_play_page=False, page_title="",
+                video_tag_count=0, iframe_count=0, body_preview="",
+                degraded=(),
+            ),
+        ]
+        w, s = append_to_queue(path, items)
+        assert (w, s) == (1, 0)
+        assert path.read_text(encoding="utf-8").count("\n") == 1
+
+    def test_同_URL_二次跑不重复(self, tmp_path):
+        from trajectory_pipeline.executor.review_queue import ReviewItem
+
+        path = tmp_path / "l6.jsonl"
+        items = [
+            ReviewItem(
+                task_id="P036", url="https://a.com",
+                landed_url="https://a.com", branch="unresolved",
+                evidence="e1",
+                reached_play_page=False, page_title="",
+                video_tag_count=0, iframe_count=0, body_preview="",
+                degraded=(),
+            ),
+        ]
+        append_to_queue(path, items)
+        w, s = append_to_queue(path, items)
+        assert (w, s) == (0, 1)
+        # 文件仍只 1 行——不重复写，老行 verdict 不动。
+        assert path.read_text(encoding="utf-8").count("\n") == 1
+
+    def test_不同_URL_累加(self, tmp_path):
+        from trajectory_pipeline.executor.review_queue import ReviewItem
+
+        path = tmp_path / "l6.jsonl"
+        items_a = [ReviewItem(task_id="P036", url="https://a.com",
+                              landed_url="https://a.com",
+                              branch="unresolved", evidence="eA",
+                              reached_play_page=False, page_title="",
+                              video_tag_count=0, iframe_count=0,
+                              body_preview="", degraded=())]
+        items_b = [ReviewItem(task_id="P036", url="https://b.com",
+                              landed_url="https://b.com",
+                              branch="trailer_suspect", evidence="eB",
+                              reached_play_page=False, page_title="",
+                              video_tag_count=0, iframe_count=0,
+                              body_preview="", degraded=())]
+        append_to_queue(path, items_a)
+        w, s = append_to_queue(path, items_b)
+        assert (w, s) == (1, 0)
+        assert path.read_text(encoding="utf-8").count("\n") == 2
+
+    def test_坏_JSON_老行_不阻断新追加(self, tmp_path):
+        """已有坏行（人手动改坏的）不会让整文件读崩；append 仍按
+        现有**合法** URL 集合去重。"""
+        path = tmp_path / "l6.jsonl"
+        path.write_text('{"landed_url": "https://a.com", "verdict": ""}\n'
+                        '{not valid json\n', encoding="utf-8")
+        from trajectory_pipeline.executor.review_queue import ReviewItem
+        items = [ReviewItem(task_id="P036", url="https://b.com",
+                            landed_url="https://b.com",
+                            branch="unresolved", evidence="eB",
+                            reached_play_page=False, page_title="",
+                            video_tag_count=0, iframe_count=0,
+                            body_preview="", degraded=())]
+        w, s = append_to_queue(path, items)
+        # 老行坏 → URL 集合失败被忽略；新行写入。
+        assert (w, s) == (1, 0)
+        # 验证文件至少有 1 条合法行：坏行 + 新行 → 至少 1 个 \\n。
+        contents = path.read_text(encoding="utf-8").splitlines()
+        assert any("landed_url" in line for line in contents)
+
+    def test_空_items_零写(self, tmp_path):
+        path = tmp_path / "l6.jsonl"
+        w, s = append_to_queue(path, [])
+        assert (w, s) == (0, 0)
+        # 不创建空文件——「零派发」与「通道没接」必须分得开。
+        assert not path.exists()
+
+
+class TestAutoQueuePath:
+    """默认落点解析——与 cli review --write 物理隔离。"""
+
+    def test_默认路径独立于人工_queue(self, tmp_path):
+        # 临时改 root：直接调 auto_queue_path(tmp_path) 验证子目录形态。
+        p = auto_queue_path(tmp_path)
+        assert AUTO_QUEUE_SUBDIR in str(p)
+        assert AUTO_QUEUE_FILENAME == "l6_dispatch.jsonl"
+        assert p.name == "l6_dispatch.jsonl"
+        # 独立于人工 review/queue.jsonl（已有约定）。
+        assert "review_auto" in str(p)
+        assert "review/queue" not in str(p)
+
+
+class TestDispatchL6:
+    """hook 钩子的鸭子分发——两条路径都到 append。"""
+
+    def test_BrowserResult_走_L5(self, tmp_path):
+        r = _BrowserResult(l5_outcome=_SiteOutcome(branch="unresolved"))
+        w, s = dispatch_l6(r, task_id="P036", queue_path=tmp_path / "q.jsonl")
+        assert (w, s) == (1, 0)
+        assert (tmp_path / "q.jsonl").exists()
+
+    def test_P1_archive_走_extract_items(self, tmp_path):
+        arch = {
+            "task_id": "P036",
+            "outcomes": [
+                {"url": "https://a.com", "branch": "unresolved",
+                 "evidence": "e1"},
+                {"url": "https://b.com", "branch": "broken",
+                 "evidence": "e2"},
+            ],
+            "visits": [
+                {"url": "https://a.com", "landed_url": "https://a.com",
+                 "player_obs": {"video_tag_count": 1, "iframe_count": 3,
+                                "degraded": [], "page_title": "t"}},
+            ],
+        }
+        w, s = dispatch_l6(arch, task_id="P036",
+                           queue_path=tmp_path / "q.jsonl")
+        # unresolved 进；broken 是真负样本不进。
+        assert (w, s) == (1, 0)
+
+    def test_RunRecord_dataclass_走_p1_archive(self, tmp_path):
+        """run 路径 RunRecord dataclass 内存对象 → 鸭子进 p1_archive 路径。"""
+        @dataclass
+        class FakeRunRecord:
+            task_id: str
+            outcomes: list
+            visits: list = None
+
+            def __post_init__(self):
+                if self.visits is None:
+                    self.visits = []
+
+        rec = FakeRunRecord(
+            task_id="P036",
+            outcomes=[{"url": "https://a.com", "branch": "unresolved",
+                       "evidence": "e1"}],
+        )
+        w, s = dispatch_l6(rec, task_id="P036",
+                           queue_path=tmp_path / "q.jsonl")
+        assert (w, s) == (1, 0)
+
+    def test_空_outcomes_不写(self, tmp_path):
+        arch = {"task_id": "P036", "outcomes": [], "visits": []}
+        w, s = dispatch_l6(arch, task_id="P036",
+                           queue_path=tmp_path / "q.jsonl")
+        assert (w, s) == (0, 0)
+        assert not (tmp_path / "q.jsonl").exists()
+
+    def test_未知形态_零派发(self, tmp_path):
+        """既不是 BrowserResult 也不是 archive / RunRecord → 0 派发。"""
+        w, s = dispatch_l6("not a queue", task_id="P036",
+                           queue_path=tmp_path / "q.jsonl")
+        assert (w, s) == (0, 0)
+
+
+class TestExtractFromP1Archive:
+    """P1 archive 形态薄包装——守住与 extract_items 同源 + 空 task_id 兜底。"""
+
+    def test_空_task_id_零返回(self):
+        arch = {
+            "task_id": "",
+            "outcomes": [
+                {"url": "https://a.com", "branch": "unresolved",
+                 "evidence": "e1"},
+            ],
+            "visits": [
+                {"url": "https://a.com", "landed_url": "https://a.com",
+                 "player_obs": {"video_tag_count": 1, "iframe_count": 0,
+                                "degraded": [], "page_title": "t"}},
+            ],
+        }
+        assert extract_from_p1_archive(arch) == []
+
+    def test_正常_task_id_走_extract_items(self):
+        arch = {
+            "task_id": "P036",
+            "outcomes": [
+                {"url": "https://a.com", "branch": "unresolved",
+                 "evidence": "e1"},
+            ],
+            "visits": [
+                {"url": "https://a.com", "landed_url": "https://a.com",
+                 "player_obs": {"video_tag_count": 1, "iframe_count": 0,
+                                "degraded": [], "page_title": "t"}},
+            ],
+        }
+        items = extract_from_p1_archive(arch)
+        assert len(items) == 1
+        assert items[0].branch == "unresolved"

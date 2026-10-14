@@ -201,6 +201,12 @@ class TestVLMReviewerProtocol:
     def test_vlm_reviewer_protocol_runtime_checkable(self):
         assert isinstance(HeuristicVLMReviewer(), VLMReviewer)
 
+    def test_multim_vlm_reviewer_also_satisfies_protocol(self):
+        # 增量三十四（2026-10-13）：MultimVLMReviewer 必须同 Protocol 等价。
+        # 协议先行——任何满足 VLMReviewer 协议的类都可被 _run_l4_review_async 吃下。
+        from trajectory_pipeline.executor.review.multim_vlm import MultimVLMReviewer
+        assert isinstance(MultimVLMReviewer(), VLMReviewer)
+
 
 # 拼文本
 

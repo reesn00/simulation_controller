@@ -1,4 +1,4 @@
-"""黄金集构建 / 标注 / 冻结 / 一致性测量的入口脚本（模块 6 · evaluation.golden.builder）。
+﻿"""黄金集构建 / 标注 / 冻结 / 一致性测量的入口脚本（模块 6 · evaluation.golden.builder）。
 
 设计来源：``docs/设计方案/00-总体方案.md`` §5.2（黄金集规格与一致性测量 D9）、
 §5.3（代码层一致率 D10 = 口径 C）、§4（数据契约）、``docs/05-现状与验收.md``
@@ -443,6 +443,7 @@ def _scan_p2_samples(root: pathlib.Path, existing: set[str]) -> list[dict[str, A
 
 
 def cmd_candidates(args: argparse.Namespace) -> int:
+    print("WARNING: 'candidates' 是 deprecated 入口,推荐 'from-scout'(走 rubric 评分门禁)。该入口在 v05 可能被移除。", file=sys.stderr)
     root = pathlib.Path(args.root)
     golden_root = pathlib.Path(args.golden_root)
     if not (root / "negative.jsonl").exists() and not golden_root.exists():
@@ -973,6 +974,288 @@ def cmd_agreement(args: argparse.Namespace) -> int:
         print(f"→ 已写 {p}")
     return 0
 
+# --------------------------------------------------------------------------
+# scout 帮手：把 candidates / scout 三件套回溯到 Sample / OutcomeRef
+# --------------------------------------------------------------------------
+#
+# 黄金集的两条入口（cmd_candidates 与 cmd_from_scout）都依赖一个共同事实：
+# candidates.jsonl 里的 code 字典要么直接来自 P1 的 outcome（站点级），
+# 要么来自 P2 样本的 Sample.outcome（轨迹级）。前者已经在
+# _scan_archives 里做完，后者必须先把 scout row 的 sample_id
+# （<task>__<run>__<unit>）还原成 Sample 对象再从 outcome 提炼。
+# 这两个 helper 就是为这条「P2 → Sample → OutcomeRef → code」链路服务的，
+# 不存第二份映射关系。
+def _resolve_sample_for_scout_record(
+    sample_id: str, p2_root: pathlib.Path
+) -> "Sample | None":
+    """把 scout 三件套里的 sample_id 还原成 Sample。
+
+    sample_id 形态：<task>__<run>__<unit>（P2 命名空间）。
+    通过 <task>__<run>.json 找 P1 存档，借 split_archive 切样本列表，
+    再按 sample_id 精确匹配。找不到返回 None，由调用方决定走 quarantine
+    还是兜底空 code。
+    """
+    if "__" not in sample_id:
+        return None
+    parts = sample_id.split("__")
+    if len(parts) < 3:
+        return None
+    archive_name = f"{parts[0]}__{parts[1]}.json"
+    archive_path = p2_root / archive_name
+    if not archive_path.exists():
+        return None
+    from trajectory_pipeline.assembler.schema import split_archive  # 延后 import
+    try:
+        samples = split_archive(archive_path)
+    except Exception:
+        return None
+    for s in samples:
+        if s.sample_id == sample_id:
+            return s
+    return None
+
+
+def _code_from_sample(sample: "Sample | None") -> dict[str, Any] | None:
+    """从 Sample.outcome 提炼 code 字典。
+
+    与 _scan_archives 给出的 code 字典同构（共享下游对 branch 字段的依赖）。
+    Sample.outcome 不含 branch_label / evidence / question ——那是 P1 outcome
+    的字段，archive_outcome 的 code 已经直接来自 P1，不必经 Sample；这里
+    只服务 from-scd 的 P2 路径。
+    """
+    if sample is None or getattr(sample, "outcome", None) is None:
+        return None
+    o = sample.outcome
+    return {
+        "branch": o.branch,
+        "source": o.source,
+        "fallback_used": o.fallback_used,
+        "succeeded": o.succeeded,
+        "reached_play_page": o.reached_play_page,
+    }
+
+
+def _resolve_sample_for_candidate(
+    c: dict[str, Any], p2_root: pathlib.Path
+) -> "Sample | None":
+    """把 candidates.jsonl 的任一行还原成 Sample。
+
+    三种 source_kind 分支：
+      - archive_outcome：按 task_id__run_id.json 切存档，再按 url 匹配站点 Sample；
+      - p2_sample：按 sample_id 直接切（同 from-scd 路径）；
+      - negative_pool：返回 None（负样本池只有 outcome 行，无存档可切）。
+
+    与 cmd_overlay_scout 配套使用；from-scd 只需 P2 形态，
+    走 _resolve_sample_for_scout_record 即可。
+    """
+    kind = c.get("source_kind")
+    task_id = str(c.get("task_id") or "")
+    rid = str(c.get("run_id") or "")
+    if kind == "p2_sample":
+        return _resolve_sample_for_scout_record(
+            str(c.get("sample_id") or ""), p2_root
+        )
+    if kind == "archive_outcome":
+        if not task_id or not rid:
+            return None
+        archive_path = p2_root / f"{task_id}__{rid}.json"
+        if not archive_path.exists():
+            return None
+        from trajectory_pipeline.assembler.schema import split_archive
+        try:
+            samples = split_archive(archive_path)
+        except Exception:
+            return None
+        url = str(c.get("url") or "")
+        for s in samples:
+            if s.outcome is not None and s.outcome.url == url:
+                return s
+        return None
+    return None
+
+
+def _report_overlay(
+    rows: Sequence[Mapping[str, Any]],
+    before_by_kind: Mapping[str, int],
+    counters: Mapping[str, int],
+) -> None:
+    """回填报表：保留原 code.branch 分布 + 评分分布，便于审计。
+    """
+    print(f"回填前候选来源 {dict(before_by_kind)}；总计 {len(rows)} 条")
+    print(
+        f"  scored={counters['scored']} missing={counters['missing']} "
+        f"skipped={counters['skipped']}"
+    )
+    branch_counts: collections.Counter = collections.Counter()
+    score_dists: dict[str, collections.Counter] = collections.defaultdict(
+        collections.Counter
+    )
+    for c in rows:
+        if c.get("source_kind") == "negative_pool":
+            continue
+        branch = (c.get("code") or {}).get("branch")
+        branch_counts[branch] += 1
+        for dim, score in (c.get("dimension_scores") or {}).items():
+            score_dists[dim][score] += 1
+    print("分支分布（overlay 不重写 code.branch，仅回填评分）：")
+    for branch, n in sorted(
+                branch_counts.items(), key=lambda kv: (-kv[1], str(kv[0]))
+            ):
+        print(f"  {str(branch):26s} {n:3d}")
+    print("评分分布（仅已 scored 的样本）：")
+    for dim in ("d2", "d4", "d5", "d6"):
+        if dim in score_dists:
+            print(f"  {dim}: {dict(score_dists[dim])}")
+
+
+# --------------------------------------------------------------------------
+# overlay：把 rubric 四维评分回填到现有 candidates.jsonl
+# --------------------------------------------------------------------------
+#
+# 为什么单独开 subcommand 而不是塞进 from-scd：
+#   from-scd 是「从 scout 三件套 → 全量重生成 candidates」，会丢人工标注
+#   与历史 freeze 链路；overlay 只挂评分不动 code.branch，保留现有 D10
+#   校准过的分支结论。两条命令职责分离：
+#     from-scd    → 候选重生成（清老/P2 重切 / scout 改判时用）
+#     overlay-scd → 评分回填（保留 code，仅补 dimension_scores）
+def cmd_overlay_scout(args: argparse.Namespace) -> int:
+    """把 d2 / d4 / d5 / d6 评分回填进 candidates.jsonl。
+
+    写回策略
+    --------
+      - archive_outcome：按 task_id__run_id.json 切存档 → 按 url 匹配
+        Sample → 跑评分。挂 dimension_scores（{dim: N}）与
+        scores_detail（完整 verdict 列表）字段；保留 code 不动。
+      - p2_sample：按 sample_id 切 Sample → 跑评分。同上保留 code 不动。
+      - negative_pool：负样本池只有 outcome 行没有 P2 样本，写
+        status='negative_pool_no_sample' 不阻塞流程。
+
+    写回使用 force=True（合规回填操作，不是覆盖新数据）；保留所有
+    现有 code.branch、golden、retest 字段值不变。
+    """
+    from trajectory_pipeline.evaluation.scout.io import _score_one  # type: ignore
+
+    golden_root = pathlib.Path(args.golden_root)
+    p2_root = (
+        pathlib.Path(args.p2_root) if getattr(args, "p2_root", None)
+        else PIPELINE_ROOT
+    )
+    src = golden_root / CANDIDATES_FILE
+    if not src.exists():
+        raise GoldenError(f"{src} 不存在；先跑 candidates / from-scd 生成候选")
+    rows = _load_jsonl(src)
+    if not rows:
+        raise GoldenError(f"{src} 为空；驳回；先跑 candidates / from-scd")
+    before_by_kind: collections.Counter = collections.Counter(
+        c.get("source_kind") for c in rows
+    )
+    out_rows: list[dict[str, Any]] = []
+    counters: collections.Counter = collections.Counter(
+        scored=0, missing=0, skipped=0
+    )
+    for c in rows:
+        row = dict(c)  # 浅拷：保留原 code / golden / retest
+        sample = _resolve_sample_for_candidate(row, p2_root)
+        if sample is None:
+            if row.get("source_kind") == "negative_pool":
+                row.setdefault("dimension_scores", {})
+                row.setdefault("scores_detail", [])
+                row["status"] = "negative_pool_no_sample"
+                counters["skipped"] += 1
+            else:
+                row.setdefault("dimension_scores", {})
+                row.setdefault("scores_detail", [])
+                row["status"] = "missing_sample"
+                counters["missing"] += 1
+            out_rows.append(row)
+            continue
+        scores = _score_one(sample)
+        # 紧凑型 dimension_scores 仅保留成功打分的维度；None 表示
+        # 该评分器判不可判定（例如 D6 在未走到播放页时返回 None），
+        # 不写进 dict，以免下游误读成「0 分」。
+        dim_scores: dict[str, int] = {
+            s["dimension"]: int(s["score"])
+            for s in scores
+            if s.get("dimension") in ("d2", "d4", "d5", "d6")
+            and s.get("score") is not None
+        }
+        row["dimension_scores"] = dim_scores
+        row["scores_detail"] = scores
+        row["status"] = "scored"
+        counters["scored"] += 1
+        out_rows.append(row)
+    if args.dry_run:
+        _report_overlay(out_rows, before_by_kind, counters)
+        return 0
+    _dump_jsonl(src, out_rows, force=True)
+    _report_overlay(out_rows, before_by_kind, counters)
+    print(
+        f"→ 已回填 {src}（{len(out_rows)} 条：scored={counters['scored']} "
+        f"missing={counters['missing']} skipped={counters['skipped']}）"
+    )
+    return 0
+
+def cmd_from_scout(args: argparse.Namespace) -> int:
+    scout_dir = pathlib.Path(args.scout_dir)
+    if not scout_dir.is_dir():
+        raise GoldenError(f"{scout_dir} 不是目录;先跑 scout")
+    p2_root = (
+        pathlib.Path(args.p2_root) if getattr(args, "p2_root", None)
+        else PIPELINE_ROOT
+    )
+    pos_path = scout_dir / "positive_candidates.jsonl"
+    neg_path = scout_dir / "negative_candidates.jsonl"
+    if not pos_path.exists() and not neg_path.exists():
+        raise GoldenError(f"{scout_dir} 下没有 positive/negative_candidates.jsonl;先 scout 跑出三件套")
+    pos_rows = _load_jsonl(pos_path) if pos_path.exists() else []
+    neg_rows = _load_jsonl(neg_path) if neg_path.exists() else []
+    candidates: list[dict[str, Any]] = []
+    for src_kind, rows in (("positive_scored", pos_rows), ("negative_scored", neg_rows)):
+        for r in rows:
+            scores = r.get("scores") or []
+            dim_scores = {
+                s["dimension"]: (s["score"] if s["score"] is not None else 0)
+                for s in scores if s.get("dimension") in ("d2", "d4", "d5", "d6")
+            }
+            sample_id = str(r.get("sample_id") or "")
+            task_id = str(r.get("task_id") or sample_id.split("__", 1)[0])
+            run_id = str(r.get("run_id") or "")
+            sample_obj = _resolve_sample_for_scout_record(
+                sample_id, p2_root
+            )
+            code = _code_from_sample(sample_obj) if sample_obj else None
+            if code is None:
+                # 没有 P1 存档就老老实实写空 —— D-10 会把这批的 code.branch
+                # 兜成 SUCCESS_LABEL，与 fallback 一致；不静默填错分支。
+                code = {"branch": None}
+            candidates.append({
+                "golden_id": sample_id,
+                "source_kind": src_kind,
+                "task_id": task_id,
+                "run_id": run_id,
+                "sample_id": sample_id,
+                "url": "",
+                "site_url": "",
+                "play_page_url": "",
+                "code": code,
+                "persona": None,
+                "dimension_scores": dim_scores,
+                "tags": list(r.get("tags") or []),
+                "evidence_supplement": dict(r.get("evidence_supplement") or {}),
+                "golden": None,
+                "retest": None,
+            })
+    if not candidates:
+        print("WARNING: scout 三件套均为空,候选为 0 条", file=sys.stderr)
+    dst = pathlib.Path(args.golden_root) / CANDIDATES_FILE
+    if args.dry_run:
+        _report_candidates(candidates)
+        return 0
+    _dump_jsonl(dst, candidates, force=args.force)
+    print(f"-> 已写 {dst}({len(candidates)} 条候选,其中 pos={len(pos_rows)} neg={len(neg_rows)})")
+    _report_candidates(candidates)
+    return 0
+
 
 # --------------------------------------------------------------------------
 # CLI
@@ -996,12 +1279,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p_cand = sub.add_parser("candidates", help="从负样本池/P1 outcomes/P2 样例生成候选")
+    p_cand = sub.add_parser("candidates", help="[DEPRECATED] 从负样本池/P1 outcomes/P2 样例生成候选（不跑 rubric 评分）")
     p_cand.add_argument("--dry-run", action="store_true", help="只统计不落盘")
     p_cand.add_argument(
         "--force", action="store_true", help="覆盖已存在的 candidates.jsonl"
     )
     p_cand.set_defaults(func=cmd_candidates)
+
+    p_from_scout = sub.add_parser("from-scout", help="只读 scout 三件套 -> candidates.jsonl(quarantine 永不入)")
+    p_from_scout.add_argument("--scout-dir", required=True,
+                              help="指向 evaluation/scout 落盘目录")
+    p_from_scout.add_argument("--p2-root", default=str(PIPELINE_ROOT),
+                              help=f"P1 存档根（默认 {PIPELINE_ROOT}）；cmd 会借 split_archive 回溯 Sample.outcome 推 code")
+    p_from_scout.add_argument("--dry-run", action="store_true", help="只统计不落盘")
+    p_from_scout.add_argument("--force", action="store_true", help="覆盖已存在的 candidates.jsonl")
+    p_from_scout.set_defaults(func=cmd_from_scout)
+
+    p_overlay = sub.add_parser(
+        "overlay-scout",
+        help="回填 rubric 四维评分(d2/d4/d5/d6)到现有 candidates.jsonl,保留 code.branch 不动",
+    )
+    p_overlay.add_argument(
+        "--p2-root", default=str(PIPELINE_ROOT),
+        help=f"P1 存档根（默认 {PIPELINE_ROOT}）",
+    )
+    p_overlay.add_argument("--dry-run", action="store_true", help="只统计不落盘")
+    p_overlay.set_defaults(func=cmd_overlay_scout)
 
     p_ann = sub.add_parser(
         "annotate", help="合并人工标注（round1 初测 / round2 retest）"
