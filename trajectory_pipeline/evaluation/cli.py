@@ -47,9 +47,11 @@ from typing import Any, Callable
 
 from trajectory_pipeline.assembler.schema import split_archive
 from trajectory_pipeline.evaluation.scorers.code_scorer import score_d2
+from trajectory_pipeline.evaluation.scorers.d3_scorer import score_d3
 from trajectory_pipeline.evaluation.scorers.d4_scorer import score_d4
 from trajectory_pipeline.evaluation.scorers.d5_scorer import score_d5
 from trajectory_pipeline.evaluation.scorers.d6_scorer import score_d6
+from trajectory_pipeline.evaluation.scorers.d9_scorer import score_d9
 from trajectory_pipeline.executor.archive import DEFAULT_ROOT, select_archives
 
 #: ``短名 → 打分函数``。**只有这四个**——D-3 未建（判据依赖黄金集），
@@ -62,6 +64,27 @@ SCORERS: dict[str, Callable[[Any], Any]] = {
     "d6": score_d6,
 }
 
+#: LLM 裁判层评分器（方案 10-§四 接入点）——**默认关**，
+#: 由 ``--include-llm-judge`` 显式打开。理由：
+#:
+#: 1. **CLAUDE.md 红线**——「生产链上禁止投票/集成」。LLM judge 与代码 judge
+#:    同时跑，报表上 6 个维度并列，**没有"judge 比代码 judge 准"的额外信号**，
+#:    等于默示集成。
+#: 2. **延迟与成本**——D-3 / D-9 走 LLM，每条样本 1-3s；批量跑会显著拖慢报表。
+#:    D-9 还依赖 ``gates.gate()`` 的 detailed 形式（方案 10-§三·第三步），
+#:    不是 ``sample.gate`` 一句话能拿到的，CLI 这层**不**主动调
+#:    ``gates.gate()``（避免给生产链加 200% 跑代码的成本），d9_scorer 走
+#:    ``gate_result=None → 回落 sample.gate.status`` 的快路径。
+#: 3. **判据口径不同**——D-3「播放站识别」判的是与黄金集类别一致性，
+#:    跑 CLI 没有黄金集对照等于裸跑出 1-5 分，**对账无门**。
+#:
+#: ``LLM_SCORERS`` 与 ``SCORERS`` **分开维护**：默认 SCORERS = 4 个代码 judge
+#:    仍满足 ``tests/unit/test_evaluation_cli.py::test_没有把SCORERS改坏``
+#:    的契约。LLM_SCORERS 仅在 ``--include-llm-judge`` 时合并进 dispatch。
+LLM_SCORERS: dict[str, Callable[[Any], Any]] = {
+    "d3": score_d3,
+    "d9": score_d9,
+}
 DEFAULT_ROOT_PATH = pathlib.Path(__file__).resolve().parents[1] / DEFAULT_ROOT
 
 #: **批次判据，两级**：
@@ -176,6 +199,7 @@ def _batch_basis(rows: list[dict[str, Any]]) -> str:
 
 def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
              per_sample: bool = False, undetermined_only: bool = False
+             , include_llm_judge: bool = False,
              ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """跑一遍，返回 ``(汇总, 逐条记录)``。
 
@@ -184,7 +208,19 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
     「不记批次元数据就会读成『质量变好了』」的另一种做法，而且更难发现：
     剔除后报表上每个数字都好看，没人知道曾经少算了什么。
     分档是**把差异显示出来**，不是把它藏起来。
+
+    Args:
+        include_llm_judge: 把 :data:`LLM_SCORERS`（D-3 / D-9）合并进 dispatch
+            ——只有显式 ``--include-llm-judge`` 时为 True。LLM judge 走
+            ``llm_client`` 为 ``None`` 的快路径，所有 verdict 均回 ``undetermined``
+            或 ``not_evaluated``——这是设计行为，不是 bug；拿到黄金集接入 LLM 后
+            才会出 ``scored`` 档。
     """
+    #: LLM judge 仅在 ``--include-llm-judge`` 时并入 dispatch。默认 false 与
+    #: :data:`SCORERS` 独立——见 ``test_没有把SCORERS改坏`` 契约。
+    dispatch: dict[str, Callable[[Any], Any]] = (
+        {**SCORERS, **LLM_SCORERS} if include_llm_judge else SCORERS
+    )
     tally: dict[str, collections.Counter] = {d: _agg() for d in dims}
     #: ``批次 → 维度 → 计分``。只用于报表分栏，不参与总分。
     #: 键是动态的（有版本号的批次叫 ``v2``，没版本号的才退回两档），
@@ -229,7 +265,7 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
                                        getattr(outcome, "p1_missing_fields",
                                                ()) or ())}
             for dim in dims:
-                verdict = SCORERS[dim](sample)
+                verdict = dispatch[dim](sample)
                 row[dim] = verdict.to_json()
                 key = str(verdict.score)
                 tally[dim][key] += 1
@@ -490,14 +526,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--per-sample", action="store_true", help="逐条列出")
     ap.add_argument("--only-undetermined", action="store_true",
                     help="只列不可判定或有扣分的样本")
+    ap.add_argument("--include-llm-judge", action="store_true",
+                    help="启用 LLM judge（D-3 / D-9）——**默认关**。"
+                         "生产链上禁止 judge 与代码 judge 混合解读，"
+                         "见 :data:`LLM_SCORERS` 模块级注释。")
     ap.add_argument("--json", dest="json_out", default=None,
                     help="把结果落成 JSON")
     args = ap.parse_args(argv)
 
     dims = [d.strip().lower() for d in args.dimension.split(",") if d.strip()]
-    unknown = [d for d in dims if d not in SCORERS]
+    #: 默认维度池 = :data:`SCORERS`（代码 judge 4 个）。带 ``--include-llm-judge``
+    #: 时并入 :data:`LLM_SCORERS`（D-3 / D-9）。两个 dict 仍分开维护——见各自
+    #: 模块级注释。
+    available = set(SCORERS)
+    if args.include_llm_judge:
+        available |= set(LLM_SCORERS)
+    unknown = [d for d in dims if d not in available]
     if unknown:
-        print(f"未知维度 {unknown}；可选 {sorted(SCORERS)}", file=sys.stderr)
+        print(f"未知维度 {unknown}；可选 {sorted(available)}", file=sys.stderr)
         return 2
 
     root = pathlib.Path(args.out)
@@ -507,7 +553,8 @@ def main(argv: list[str] | None = None) -> int:
 
     summary, rows = evaluate(root, dims, limit=args.limit,
                              per_sample=args.per_sample,
-                             undetermined_only=args.only_undetermined)
+                             undetermined_only=args.only_undetermined,
+                             include_llm_judge=args.include_llm_judge)
     _print(summary, rows, per_sample=args.per_sample,
            undetermined_only=args.only_undetermined)
 

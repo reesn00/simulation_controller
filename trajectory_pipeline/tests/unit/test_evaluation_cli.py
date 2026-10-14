@@ -397,3 +397,62 @@ class Test缺件分布:
         summary, rows = ecli.evaluate(tmp_path, ["d9"])
         ecli._print_markers(summary, rows)
         assert "outcome.site_url" in capsys.readouterr().out
+
+
+# ── LLM judge 接入（方案 10-§四 --include-llm-judge 默认关） ────────────
+
+
+class TestLLMJudge接入:
+    """``--include-llm-judge`` 默认关的契约——LLM judge 与代码 judge
+    **不**默认同跑（CLAUDE.md「生产链禁止投票/集成」红线）。
+
+    默认下 d3 / d9 是「未知维度」（同代码 judge 之外的名字一致），
+    带 ``--include-llm-judge`` 时才进入 dispatch。
+    """
+
+    def test_LLM_SCORERS_注册了d3与d9(self):
+        """LLM judge 注册表与 SCORERS 独立维护——SCORERS 仍是 4 个代码 judge
+        （``test_门禁`` 钉），LLM_SCORERS 含 d3 + d9。"""
+        assert set(ecli.LLM_SCORERS) == {"d3", "d9"}
+
+    def test_SCORERS_仍是4个(self):
+        """SCORERS **不**被 LLM judge 污染——见 ``test_门禁``。"""
+        assert set(ecli.SCORERS) == {"d2", "d4", "d5", "d6"}
+
+    def test_d3_默认未知维度(self, tmp_path, capsys):
+        """不带 ``--include-llm-judge`` 时，``d3`` 走「未知维度」出口。"""
+        rc = ecli.main(["--out", str(tmp_path), "--dimension", "d3"])
+        assert rc == 2
+        assert "未知维度" in capsys.readouterr().err
+
+    def test_d9_默认未知维度(self, tmp_path, capsys):
+        """不带 ``--include-llm-judge`` 时，``d9`` 走「未知维度」出口。"""
+        rc = ecli.main(["--out", str(tmp_path), "--dimension", "d9"])
+        assert rc == 2
+        assert "未知维度" in capsys.readouterr().err
+
+    def test_带flag_d3可跑(self, tmp_path):
+        """``--include-llm-judge`` + ``--dimension d3`` —— d3 维度进入 dispatch
+        （llm_client=None → 全出 undetermined，但 dispatch 走通）。"""
+        _archive(tmp_path / "T001__r1.json")
+        summary, _rows = ecli.evaluate(
+            tmp_path, ["d3"], include_llm_judge=True)
+        assert "d3" in summary["dimensions"]
+
+    def test_带flag_d9可跑(self, tmp_path):
+        """``--include-llm-judge`` + ``--dimension d9`` —— d9 走快路径
+        （CLI **不**主动调 gates.gate()，cost = 0）。"""
+        _archive(tmp_path / "T001__r1.json")
+        summary, _rows = ecli.evaluate(
+            tmp_path, ["d9"], include_llm_judge=True)
+        assert "d9" in summary["dimensions"]
+
+    def test_带flag_d3与代码judge同跑(self, tmp_path):
+        """``--include-llm-judge`` 不局限走 LLM——代码 judge + LLM judge 同跑
+        是显式开关的唯一使命（默认下不启，避免静默集成）。"""
+        _archive(tmp_path / "T001__r1.json", outcomes=[
+            {"url": "a.com", "branch": "no_play_control", "evidence": "e",
+             "question": "site.find_play_control"}])
+        summary, _rows = ecli.evaluate(
+            tmp_path, ["d5", "d3", "d9"], include_llm_judge=True)
+        assert set(summary["dimensions"]) == {"d5", "d3", "d9"}

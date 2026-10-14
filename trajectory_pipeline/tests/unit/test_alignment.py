@@ -81,3 +81,84 @@ def test_未知标签_fail_closed_抛KeyError():
 def test_全量等价类名由映射派生():
     assert alignment.ALL_EQUIV_CLASSES == frozenset(alignment.EQUIV_CLASS.values())
     assert len(alignment.ALL_EQUIV_CLASSES) >= 8
+
+
+# --------------------------------------------------------------------------
+# ``dim_agreement`` —— D10 软维度一致率判定（plan §三·第一步）
+# --------------------------------------------------------------------------
+
+
+def test_dim_agreement_默认_tolerance_档差1_一致():
+    """默认 ±1 容忍：档差 0 / 1 都一致；档差 >= 2 → False；越界仍是 None。"""
+    assert alignment.dim_agreement(4, 4) is True
+    assert alignment.dim_agreement(4, 3) is True
+    assert alignment.dim_agreement(4, 5) is True
+    assert alignment.dim_agreement(1, 2) is True
+    assert alignment.dim_agreement(4, 2) is False
+    # 6 越界（scale=1..5），按 fail-closed 当 None 处理，不计分母
+    assert alignment.dim_agreement(4, 6) is None
+
+
+def test_dim_agreement_tolerance_0_只允许相等():
+    assert alignment.dim_agreement(4, 4, tolerance=0) is True
+    assert alignment.dim_agreement(4, 5, tolerance=0) is False
+
+
+def test_dim_agreement_tolerance_2_放宽():
+    assert alignment.dim_agreement(4, 2, tolerance=2) is True
+    assert alignment.dim_agreement(4, 1, tolerance=2) is False
+
+
+def test_dim_agreement_任一侧None_返None_不计分母():
+    """``score=None`` 是不可判定，与 0 分（不在 1-5 档差）语义不同；
+    plan §二.1 三态纪律。"""
+    assert alignment.dim_agreement(None, 4) is None
+    assert alignment.dim_agreement(4, None) is None
+    assert alignment.dim_agreement(None, None) is None
+
+
+def test_dim_agreement_越界值返None_fail_closed():
+    """scale 默认 (1, 5)；0 / 99 视为不可判定。"""
+    assert alignment.dim_agreement(0, 4) is None
+    assert alignment.dim_agreement(6, 4) is None
+    assert alignment.dim_agreement(4, 0) is None
+    assert alignment.dim_agreement(4, 99) is None
+
+
+def test_dim_agreement_负tolerance_返None():
+    """负 tolerance 无意义；按不可判定处理。"""
+    assert alignment.dim_agreement(4, 4, tolerance=-1) is None
+
+
+def test_dim_agreement_非数值类型返None():
+    """int / float 之外走 ``int()`` 失败 → 不可判定。"""
+    # ``int("4") == 4`` 是合法的：``int()`` 不要求类型，只要求内容可解析
+    assert alignment.dim_agreement("4", "4") is True
+    # 真非数值（"x"）→ ``int("x")`` 抛 ValueError → 返回 None
+    assert alignment.dim_agreement(4, "x") is None
+
+
+# --------------------------------------------------------------------------
+# ``SOFT_DIM_NAMES`` / ``validate_soft_dim_name`` —— 白名单 + fail-closed
+# --------------------------------------------------------------------------
+
+
+def test_SOFT_DIM_NAMES_是d2到d9子集():
+    """白名单是 ``d2..d9`` 共 8 个。d1 不在——是路径占位，不是评分维度。"""
+    assert alignment.SOFT_DIM_NAMES == frozenset(
+        {f"d{i}" for i in range(2, 10)}
+    )
+    assert "d1" not in alignment.SOFT_DIM_NAMES
+    assert "d10" not in alignment.SOFT_DIM_NAMES
+
+
+def test_validate_soft_dim_name_白名单内_原样返回():
+    for d in ("d2", "d3", "d5", "d9"):
+        assert alignment.validate_soft_dim_name(d) == d
+
+
+def test_validate_soft_dim_name_白名单外_fail_closed():
+    """拼错的 dim 静默放过会让等价类的价值归零——plan contract 1。"""
+    for bad in ("d1", "d10", "rationale_consistency", "", "D3"):
+        with pytest.raises(ValueError, match="不在白名单"):
+            alignment.validate_soft_dim_name(bad)

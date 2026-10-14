@@ -98,3 +98,66 @@ def is_equivalent(true_label: str, pred_label: str) -> bool:
         )
     """
     return equiv_class(true_label) == equiv_class(pred_label)
+
+
+def dim_agreement(
+    true_score: int | float | None,
+    pred_score: int | float | None,
+    tolerance: int = 1,
+    *,
+    scale: tuple[int, int] = (1, 5),
+) -> bool | None:
+    """D10 软维度一致率（口径 C 衍生）的判定。
+
+    rubric 软维度（如 d3 / d9）以 1-5 分档打分；与黄金集对应分档对比时，
+    ``|t - p| <= tolerance`` 视为一致。
+
+    返回值口径与硬分类 ``is_equivalent`` 不一致——后者总是 True/False，
+    本函数多一个 ``None``：
+      - 任一侧为 ``None``（不可判定 / 未填）→ 返回 ``None``，调用方**不计
+        入分母**（项目纪律：「score=None != score=0」；plan §二.1）；
+      - 两侧非 None 且差 <= tolerance → ``True``；
+      - 否则 → ``False``。
+
+    设计来源：``docs/设计方案/10-judge接入方案.md`` §三·第一步。
+    ``tolerance`` 默认 1，由 ``cmd_agreement --dim-tolerance`` 透传，
+    不在本函数里写死——首次跑出分布后再定阈值（plan §三·风险
+    「dim_tolerance 不是 5 档而是 1-5 软一致」）。
+    """
+    if true_score is None or pred_score is None:
+        return None
+    try:
+        t_int = int(true_score)
+        p_int = int(pred_score)
+    except (TypeError, ValueError):
+        return None
+    lo, hi = scale
+    if not (lo <= t_int <= hi) or not (lo <= p_int <= hi):
+        return None  # 越界值不当分处理（fail-closed）
+    if tolerance < 0:
+        return None  # 负容忍度无意义，按未对齐处理
+    return abs(t_int - p_int) <= tolerance
+
+
+#: 软维度名白名单——黄金集 ``dimension_scores`` 的合法 key。
+#: 路由 plan §三·第一步 contract 1「软维度名在 ``d2..d9`` 子集」，
+#: 写死全集而不是散落在调用方散落校验。
+#: D-3 / D-9 judge 未建，但白名单里**预留**——本批接入后扩到 d3 / d9
+#: 不需要改对齐层（fail-closed 同步：白名单外抛 ``ValueError``）。
+SOFT_DIM_NAMES: frozenset[str] = frozenset(
+    {f"d{i}" for i in range(2, 10)}
+)
+
+
+def validate_soft_dim_name(dim: str) -> str:
+    """校验软维度名合法（白名单内）。
+
+    ``cmd_agreement --soft-dim`` 接受多值；每一条都必须通过本函数。
+    未登记名 **fail-closed**（抛 ``ValueError``）——白名单外静默放过会让
+    拼错的 dim 算进一致率，等价类的价值就没了（plan §三·第一步 contract 1）。
+    """
+    if dim not in SOFT_DIM_NAMES:
+        raise ValueError(
+            f"软维度名 {dim!r} 不在白名单 {sorted(SOFT_DIM_NAMES)} 内"
+        )
+    return dim

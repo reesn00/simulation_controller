@@ -274,6 +274,86 @@ def _fmt_opt(x: float | None) -> str:
     return "—" if x is None else f"{x:.3f}"
 
 
+def _compute_soft_dim_agreement(
+    site_rows: Sequence[Mapping[str, Any]],
+    *,
+    requested_dims: Sequence[str],
+    tolerance: int,
+) -> dict[str, dict[str, Any]]:
+    """D10 软维度一致率（plan §三·第一步）的逐样单列计算。
+
+    与硬分类一致率（``is_equivalent``）共用一组 ``site`` 行，但**只走
+    calibration set**（plan contract 5「calibration 优先于 holdout」——
+    holdout 留给最终评估，软维度对齐先在 calibration 上跑）。
+
+    输入侧口径：
+      - **gold 侧** = ``golden.dimension_scores``（黄金集人工 1-5 分档）；
+      - **pred 侧** = 行级 ``dimension_scores``（overlay-scout 写回的
+        d2/d4/d5/d6 scorer 输出——judge 上岗前的占位 pred，与 LLM score
+        **不是同一物**，由 ``cmd_overlay_scout`` 落盘后保证）。
+
+    维度名发现（``requested_dims`` 为空）：取 gold 侧出现过的 dim 与
+    ``alignment.SOFT_DIM_NAMES`` 的交集；白名单外的 dim 静默抛弃，不参与计算。
+    N=0 的 dim **不进 dict**（contract 3「空样本不参与」），输出报表里
+    不会出现「0/0 = 0%」误导。
+    """
+    from trajectory_pipeline.evaluation.golden.alignment import (
+        SOFT_DIM_NAMES,
+        dim_agreement as _dim_agree,
+    )
+
+    calib = [r for r in site_rows if r.get("__split__") == "calibration"]
+
+    gold_dims: set[str] = set()
+    for r in calib:
+        gd = (r.get("golden") or {}).get("dimension_scores")
+        if isinstance(gd, Mapping):
+            gold_dims |= set(gd.keys())
+
+    if requested_dims:
+        dims = list(requested_dims)
+    else:
+        dims = sorted(gold_dims & set(SOFT_DIM_NAMES))
+
+    out: dict[str, dict[str, Any]] = {}
+    for dim in dims:
+        n = 0
+        agreed = 0
+        skipped_no_pred = 0
+        skipped_no_gold = 0
+        skipped_invalid = 0
+        for r in calib:
+            gd = (r.get("golden") or {}).get("dimension_scores") or {}
+            pd = r.get("dimension_scores") or {}
+            t = gd.get(dim)
+            p = pd.get(dim)
+            if t is None:
+                skipped_no_gold += 1
+                continue
+            if p is None:
+                skipped_no_pred += 1
+                continue
+            verdict = _dim_agree(t, p, tolerance=tolerance)
+            if verdict is None:
+                skipped_invalid += 1
+                continue
+            n += 1
+            if verdict:
+                agreed += 1
+        if n == 0:
+            continue
+        out[dim] = {
+            "n": n,
+            "agreed": agreed,
+            "agreement_ratio": agreed / n,
+            "skipped_no_gold": skipped_no_gold,
+            "skipped_no_pred": skipped_no_pred,
+            "skipped_invalid": skipped_invalid,
+            "tolerance": tolerance,
+        }
+    return out
+
+
 # --------------------------------------------------------------------------
 # 候选构建（candidates）
 # --------------------------------------------------------------------------
@@ -904,7 +984,12 @@ def cmd_agreement(args: argparse.Namespace) -> int:
         rows = []
         for f in files:
             if f.exists():
-                rows += _load_jsonl(f)
+                # 标注 ``__split__`` 让软维度只走 calibration（plan §三
+                # 第一步 contract 5「calibration 优先于 holdout」）——硬分类
+                # 不动，全量进分母（与原行为一致）。
+                for row in _load_jsonl(f):
+                    row["__split__"] = f.stem
+                    rows.append(row)
         if not rows:
             raise GoldenError(f"{vdir} 下没有样本；先 freeze")
         label_note = f"冻结版本 v{args.version}"
@@ -933,6 +1018,7 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     from trajectory_pipeline.evaluation.golden.alignment import (
         equiv_class,
         is_equivalent,
+        validate_soft_dim_name,
     )
 
     agree = sum(1 for t, p in zip(y_true, y_pred) if is_equivalent(t, p))
@@ -941,6 +1027,24 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     # 细分 err 仍可从原始标签（y_true / y_pred）下钻查看。
     report = classification_report(
         [equiv_class(t) for t in y_true], [equiv_class(p) for p in y_pred]
+    )
+
+    # ── 软维度一致率（plan §三·第一步） ─────────────────────────
+    # 软维度只走 calibration set；holdout 留给最终评估（contract 5）。
+    # ``--soft-dim`` 为空 → 自动从 gold 侧 ``golden.dimension_scores``
+    # 出现的 dim 里挑白名单内的（contract 1）；显式指定 → 白名单校验
+    # （contract 1 fail-closed）。
+    _t = getattr(args, "dim_tolerance", 1)
+    tolerance = int(_t) if _t is not None else 1
+    requested_dims = list(getattr(args, "soft_dim", []) or [])
+    for d in requested_dims:
+        try:
+            validate_soft_dim_name(d)
+        except ValueError as exc:
+            # 白名单外 → fail-closed 转 GoldenError，exit code 2
+            raise GoldenError(str(exc)) from exc
+    soft = _compute_soft_dim_agreement(
+        site, requested_dims=requested_dims, tolerance=tolerance,
     )
 
     print(
@@ -957,6 +1061,27 @@ def cmd_agreement(args: argparse.Namespace) -> int:
         f"R={_fmt_opt(report['micro']['recall'])}  "
         f"F1={_fmt_opt(report['micro']['f1'])}"
     )
+
+    # 软维度打印：N=0 的 dim **不报**（plan §三·第一步 contract 3「空样本
+    # 不参与」）——输出 "0/0 = 0%" 是误导，dim 还没上场就别预占位。
+    print(
+        f"\n  软维度一致率（calibration；容忍档差 ±{tolerance}；"
+        "N=0 的 dim 不报——黄金集还没填这个维度的就别刻）"
+    )
+    if not soft:
+        print("    ⚠ 无任何软维度可算——黄金集 dimension_scores 全为空或全在 holdout。"
+              "  本次不发阈值（plan §三·第一步风险「首次跑只发 README 不准出数字」）")
+    else:
+        for dim, st in soft.items():
+            n = st["n"]
+            ratio_dim = st["agreement_ratio"]
+            tol_str = f"|t-p|≤{tolerance}"
+            mark = "  ⚠ 阈值未设（plan §三·第一步：先跑分布再定）"
+            print(
+                f"    {dim}: {st['agreed']}/{n} = {ratio_dim:.1%}  "
+                f"({tol_str}){mark}"
+            )
+
     if args.json_out:
         out = {
             "label_note": label_note,
@@ -967,6 +1092,16 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             "criterion": "equiv_class",  # 口径 C：语义等价类一致（§4.3）
             "label_schema_version": LABEL_SCHEMA_VERSION,
             "report": report,
+            # plan §三·第一步 contract 7「输出 JSON 含 soft_dims 键」——
+            # 不出数字的 dim 不进 dict（N=0 不计入，contract 3）。
+            # contract 6「manifest_schema_version 不破」——上层的
+            # ``label_schema_version`` 字段不动；soft dim 接口扩在
+            # ``soft_dims`` 子字典，跨字段不影响。
+            "soft_dims": soft,
+            "soft_dim_tolerance": tolerance,
+            "soft_dim_criterion": (
+                f"|t-p| <= {tolerance} (rubric 软维度 1-5)"
+            ),
         }
         p = pathlib.Path(args.json_out)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -1336,6 +1471,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--version", type=int, default=0, help="冻结版本号；缺省用未冻结的已标注候选"
     )
     p_agr.add_argument("--json-out", default="", help="结果落成 JSON")
+    p_agr.add_argument(
+        "--soft-dim",
+        nargs="*",
+        default=None,
+        help=(
+            "软维度名列表（白名单 d2..d9）；空 = 自动从黄金集 "
+            "``golden.dimension_scores`` 出现的 dim 探测（仅白名单内的）。"
+            "未登记名 fail-closed 抛 ValueError（plan §三·第一步 contract 1）。"
+        ),
+    )
+    p_agr.add_argument(
+        "--dim-tolerance",
+        type=int,
+        default=1,
+        help=(
+            "软维度一致率容忍档差，|t-p| <= tolerance 计一致。默认 1；"
+            "首次跑只发分布再定阈值（plan §三·第一步风险）。"
+        ),
+    )
     p_agr.set_defaults(func=cmd_agreement)
     return ap
 
