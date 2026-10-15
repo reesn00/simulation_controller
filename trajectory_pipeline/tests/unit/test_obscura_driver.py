@@ -20,20 +20,40 @@ import pytest
 from trajectory_pipeline.executor.browser.mcp_client import McpError, ToolResult
 from trajectory_pipeline.executor.browser.obscura_driver import (
     FORBIDDEN_TOOLS,
+    INNER_TEXT_EXPR,
     ObscuraDriver,
+    TEXT_CONTENT_EXPR,
 )
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 
 
 class FakeMcp:
-    """按 tool 名返回预设文本。缺失的 tool 抛 :class:`McpError`。"""
+    """按 tool 名返回预设文本。缺失的 tool 抛 :class:`McpError`。
 
-    def __init__(self, script: dict[str, str | Exception]) -> None:
+    2026-10-14 增量 H1-β：支持 ``by_args`` 字段按 ``(tool, args)`` 精确分发
+    ——fallback 路径（innerText 失败 / textContent 成功）需要按 expression
+    区分返回值，不能只按 tool 名。
+    """
+
+    def __init__(
+        self,
+        script: dict[str, str | Exception],
+        by_args: dict[tuple[str, str], str | Exception] | None = None,
+    ) -> None:
         self.script = script
+        self.by_args = by_args or {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
-        self.calls.append((name, args or {}))
+        args = args or {}
+        self.calls.append((name, args))
+        # 优先按 (tool, 单个 arg 字段) 精确匹配——H1-β 测试用 ``expression``
+        expr = args.get("expression") if isinstance(args, dict) else None
+        if expr is not None and (name, expr) in self.by_args:
+            value = self.by_args[(name, expr)]
+            if isinstance(value, Exception):
+                raise value
+            return ToolResult(text=value, is_error=False, structured=None, latency_ms=1)
         if name not in self.script:
             raise McpError(f"fake: {name} 未配置")
         value = self.script[name]
@@ -306,3 +326,123 @@ class TestExtractWiring:
         fake = FakeMcp({"browser_extract": '{"titles": ["a", "b"], "urls": ["u"]}'})
         got = asyncio.run(ObscuraDriver(fake).extract({"titles[]": "a", "urls[]": "a"}))
         assert got == {"titles": ["a", "b"], "urls": ["u"]}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 2026-10-14 增量 H1-β · 采集层 innerText → textContent fallback
+# ═══════════════════════════════════════════════════════════════════════
+# v3 黄金集 27 条 ``['body_text']`` 降级样本中 26 条仅 video 兜底，根因
+# 是 ``document.body.innerText`` 在 JS-heavy 站（iqiyi / ixigua / sohu /
+# bilibili）偶发因 layout 计算失败返回空。加 textContent fallback 后，
+# 这 26 条里大多数应能越过 ``_sufficiency`` 拦截，恢复正常判别路径。
+#
+# 守门要点（与 ``TestDegradedAccounting`` 互补）：
+#   1. innerText 返回空 / 抛错 → 调 textContent 兜底
+#   2. textContent 拿到非空 → body 非空、degraded **不**含 body_text
+#   3. textContent 也空 → 才追加 ``body_text`` 降级（与原 fail-closed 边界一致）
+#   4. innerText 本身成功 → **不**调 textContent（避免无谓请求）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestH1BetaTextContentFallback:
+    """innerText 失败时 textContent 兜底——采集层救济。
+
+    fixture 设计：snapshot 文本**故意不带任何正文**（CSS-only）——
+    模拟「JS 抢光正文」的真实场景。这样能区分两条路径：
+      - innerText 路径：能拿到正文
+      - textContent 路径：能拿到正文
+      - 全空路径：body_text="" + degraded 追加 body_text
+    """
+
+    #: CSS-only snapshot——模拟 JS 抢光正文的真实场景。
+    #: ``<div>`` 里没有可读文本，只有 CSS 块。
+    CSS_ONLY_SNAPSHOT = (
+        "URL: https://x.test/\n"
+        "Title: Test Title\n"
+        "Snapshot:\n"
+        "<body><style>.a{color:red}.b{font-size:12px}</style>"
+        "<div></div></body>"
+    )
+
+    @staticmethod
+    def _make_fake(inner_value: str | Exception, text_value: str = "") -> FakeMcp:
+        return FakeMcp(
+            script={
+                "browser_snapshot": TestH1BetaTextContentFallback.CSS_ONLY_SNAPSHOT,
+                "browser_links": "No links found.",
+                "browser_interactive_elements":
+                    "ref=e1  [button]  立即播放",
+                "browser_count": "1",
+                "browser_evaluate": "（不应被命中——精确分发走 by_args）",
+            },
+            by_args={
+                ("browser_evaluate", INNER_TEXT_EXPR): inner_value,
+                ("browser_evaluate", TEXT_CONTENT_EXPR): text_value,
+            },
+        )
+
+    async def test_innerText返回空_textContent兜底成功_不记降级(self):
+        """innerText 因 JS 未渲染返回空串 → textContent 兜底成功 → 不降级。
+
+        这是 H1-β 救济路径的主用例：v3 黄金集 26 条仅 video 兜底样本
+        期望通过这条路径被救济。"""
+        fake = self._make_fake(
+            inner_value="",
+            text_value="hao123 电影 立即播放 开通会员 续费 ¥25",
+        )
+        obs = await ObscuraDriver(fake).observe()
+        # 关键断言 1：degraded 不含 body_text（fallback 成功）
+        assert "body_text" not in obs.degraded
+        # 关键断言 2：body_text 拿到的是 textContent 的内容（含付费墙信号）
+        assert "开通会员" in obs.body_text
+        assert "续费" in obs.body_text
+
+    async def test_innerText抛错_textContent兜底成功_不记降级(self):
+        """innerText 因 layout 计算失败抛 McpError → textContent 兜底成功 → 不降级。"""
+        fake = self._make_fake(
+            inner_value=McpError("innerText layout failed"),
+            text_value="VIP 专享 订阅后观看 完整剧集",
+        )
+        obs = await ObscuraDriver(fake).observe()
+        # textContent 兜底拿到非空正文，body_text 字段级降级**不应该**出现
+        assert "body_text" not in obs.degraded
+        assert "VIP" in obs.body_text
+        assert "订阅" in obs.body_text
+
+    async def test_innerText和textContent都返回空_才记body_text降级(self):
+        """两个 source 都空 → 维持原 fail-closed 行为（与原 TestDegradedAccounting 一致）。"""
+        fake = self._make_fake(inner_value="", text_value="")
+        obs = await ObscuraDriver(fake).observe()
+        assert "body_text" in obs.degraded
+        assert obs.body_text == ""
+
+    async def test_innerText成功时不调textContent(self):
+        """innerText 已经返回非空 → 不发 textContent 请求（无谓的浏览器往返）。
+
+        这是契约：fallback 只在需要时触发，不是每次都调。"""
+        fake = self._make_fake(
+            inner_value="立即播放 开通会员",  # innerText 成功
+            text_value=McpError("不应被调用"),  # textContent 不应被调
+        )
+        obs = await ObscuraDriver(fake).observe()
+        assert "body_text" not in obs.degraded
+        assert obs.body_text == "立即播放 开通会员"
+        # 验证：没有发送过 TEXT_CONTENT_EXPR 的 browser_evaluate 调用
+        text_content_calls = [
+            c for c in fake.calls
+            if c[0] == "browser_evaluate"
+            and isinstance(c[1], dict)
+            and c[1].get("expression") == TEXT_CONTENT_EXPR
+        ]
+        assert text_content_calls == [], (
+            f"innerText 成功时不应调 textContent，但发了 {len(text_content_calls)} 次"
+        )
+
+    async def test_fallback时body_source仍标inner_text(self):
+        """fallback 路径下 body_source 仍标 ``inner_text``——H1-β 不新增
+        body_source 种类（避免下游契约扩展）。降级语义通过 ``degraded``
+        集合传递：如果未来想精确区分，再加 ``inner_text_fallback`` 名。"""
+        fake = self._make_fake(inner_value="", text_value="X Y Z")
+        obs = await ObscuraDriver(fake).observe()
+        assert obs.body_source == "inner_text"  # 不破下游契约
+        assert "body_text" not in obs.degraded  # 但仍要救济成功

@@ -103,6 +103,16 @@ PAYWALL_WORDS: tuple[str, ...] = (
     "开通会员", "开通vip", "开通VIP", "购买会员", "会员专享",
     "付费观看", "付费解锁", "订阅后观看", "订阅即可", "续费",
     "充值", "购买单集", "单集购买", "立即购买", "开通连续包月",
+    # 2026-10-15 INC43 · APP/客户端硬墙：页面明示「需下载 App/客户端
+    # 才能看正片」。实测三站命中而原词表全漏（金标 subscription_wall
+    # 被判 no_play_control / login_wall_or_blocked）：
+    #   - m.ixigua ×2：「以下内容需下载西瓜视频查看」
+    #   - play.tudou：「下载优酷PC客户端继续观看」
+    # 短语刻意收窄：「以下内容需下载」「客户端继续观看」都是**门禁语境**，
+    # 站点页脚的「下载中心」「下载客户端」（实测 mgtv / luketv 均有）
+    # 不构成子串命中，不会误伤。
+    "以下内容需下载", "客户端继续观看",
+    "打开app观看", "打开APP观看",
     # 英文
     "subscribe to watch", "subscription required", "purchase to watch",
     "rent for", "buy this episode", "premium required", "sign in to watch",
@@ -143,6 +153,88 @@ def classify_paywall(text: str) -> str:
     for word in PAYWALL_WORDS:
         if _norm(word) in norm:
             return word
+    return ""
+
+
+# ── 付费墙强弱信号分级 ─────────────────────────────────────────────────
+#
+# 2026-10-13 增量三十二引入（原在 ``executor/branches.py``，仅用于同页守卫
+# 旁路）；2026-10-15 INC43 移到感知层——②③ 负分支的付费墙救济
+# （:func:`paywall_rescue_evidence`）需要同一套判据，两处各留一份的后果
+# 是「守卫放行了、救济不认」或反过来，而两者本就是同一句话的两个说法。
+# ``branches.py`` 反向导入（executor → perception 单向依赖，不破层）。
+#
+# 「开通」「会员」单独放**弱**组：站点导航栏广告高频短语（「开通会员 享
+# 更多精彩」），单凭它们分不清真付费墙与 nav-bar CTA。要过强信号闸，
+# 必须至少配一个强词或价格模式。
+
+STRONG_PAYWALL_KEYWORDS: tuple[str, ...] = (
+    # VIP 标记 / 订阅 / 续费 / 价格动词 / 营销词——这些在真付费墙页
+    # 几乎必然出现，而在站点入口页导航栏里**不会**同时出现多个。
+    "VIP", "订阅", "续费", "包月", "包年", "专享", "特惠",
+)
+WEAK_PAYWALL_KEYWORDS: tuple[str, ...] = (
+    # 开通 / 会员——这两个词在站点导航栏广告里高频出现，单凭它们
+    # 不能区分「真付费墙」与「站点入口页 nav-bar CTA」。
+    "开通", "会员",
+)
+PRICE_PATTERN = re.compile(
+    r"(?:[¥￥$€£]\s*\d|\d+\s*元|\d+\.\d+元\s*/\s*月|\d+月\d+元|首\s*\d+\s*月)"
+)
+
+
+def has_strong_paywall_signal(text: str) -> bool:
+    """文本里的付费墙信号是否**足够强**（增量三十二同款三判据）。
+
+    任一即可：
+      - ≥1 强关键词 + ≥1 弱关键词（「VIP + 会员」、「订阅 + 开通」）；
+      - ≥2 强关键词（「VIP + 续费」、「订阅 + 包年」）；
+      - ≥1 强关键词 + 价格/优惠模式（「VIP + ¥99」）。
+
+    空串按弱信号处理——不旁路、不救济。
+    """
+    ev = (text or "").strip()
+    if not ev:
+        return False
+    strong = sum(1 for kw in STRONG_PAYWALL_KEYWORDS if kw in ev)
+    weak = sum(1 for kw in WEAK_PAYWALL_KEYWORDS if kw in ev)
+    has_price = bool(PRICE_PATTERN.search(ev))
+    if strong >= 1 and weak >= 1:
+        return True
+    if strong >= 2:
+        return True
+    return strong >= 1 and has_price
+
+
+def paywall_rescue_evidence(text: str) -> str:
+    """②③ 负分支付费墙救济（INC43）：正文里的付费墙**强证据**，空串=无。
+
+    D-10 主瓶颈错判簇的判定层根因：``classify_paywall`` 只在判断点 ④
+    运行，②（页面可达）③（找播放控件）的负分支从不检查付费墙信号，
+    于是订阅墙页面落 ``login_wall_or_blocked`` / ``no_play_control`` /
+    ``unresolved``。本函数供 :class:`LLMPerceptor` 在 ②③ 判 False 时
+    调用，命中则标记 ``payload["paywall"]=True``，让决策走到
+    ``subscription_wall`` 分支。
+
+    判据（任一即可，与 ④ 的 :func:`classify_paywall` 及同页守卫旁路
+    同源）：
+      - :data:`PAYWALL_WORDS` 完整短语命中；
+      - 强弱信号组合（:func:`has_strong_paywall_signal`）——实测
+        v-wb.youku「会员特惠 + 立即开通 + 首3月9.9元/月」无完整短语
+        但强弱信号齐全。
+
+    返回的是**给 evidence 用的证据描述**（命中的词 / 信号组合），
+    不是布尔值——救济改写了分支，evidence 必须能指认判据。
+    """
+    if not text:
+        return ""
+    hit = classify_paywall(text)
+    if hit:
+        return f"付费墙短语「{hit}」"
+    if has_strong_paywall_signal(text):
+        strong = [kw for kw in STRONG_PAYWALL_KEYWORDS if kw in text]
+        weak = [kw for kw in WEAK_PAYWALL_KEYWORDS if kw in text]
+        return f"付费墙强弱信号（强:{strong} 弱:{weak}）"
     return ""
 
 

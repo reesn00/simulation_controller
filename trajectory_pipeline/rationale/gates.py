@@ -112,6 +112,15 @@ class GateResult:
 # ── 可判定性 ──────────────────────────────────────────────────────
 
 
+def _truncated_flag(value: Any) -> bool:
+    """``truncated`` 字段统一判真——兼容 p1 bool 与 p2 dict 两种形态
+    （INC42；与 evaluation 侧各实现同款但独立，靠 contract 盯守）。
+    dict（``{'source': False, 'view': False}``）按 ``any(values)`` 判。"""
+    if isinstance(value, Mapping):
+        return any(bool(v) for v in value.values())
+    return bool(value)
+
+
 def observation_shortfall(obs: Mapping[str, Any] | None) -> str:
     """这份观察**能不能支撑**「某实体不存在/存在」的结论。空串 = 能。
 
@@ -128,7 +137,7 @@ def observation_shortfall(obs: Mapping[str, Any] | None) -> str:
         return "没有观察"
     if list(obs.get("degraded") or ()):
         return f"观察有采集降级项 {list(obs['degraded'])}"
-    if obs.get("truncated"):
+    if _truncated_flag(obs.get("truncated")):
         return ("观察被上游 max_chars 截断——实测 CSS 会抢光预算，"
                 "实体可能落在截断外")
     elements = list(obs.get("interactive_elements") or ())

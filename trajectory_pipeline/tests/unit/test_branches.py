@@ -737,6 +737,72 @@ class TestBranchPrecondition:
         )
         assert out.branch == "unresolved", "partial_free 走旁路了——超出设计范围"
 
+    # 2026-10-15 INC44 · 簇 A：④ 记账降级误伤订阅墙——确定性信号旁路
+    def test_subscription_wall_救济标记旁路同页守卫(self):
+        """②③④ 负分支付费墙救济留下的 ``paywall_word`` + body 过强弱
+        信号组合（与 LLM evidence 旁路同款强度）→ 同页守卫放行。
+
+        实测簇 A（INC44 前研，75 对直访 9 行）：④ False + body 含
+        付费墙文案，本该 subscription_wall 却被同页降级 unresolved。
+        本例 body「续费会员」：续费（强）+ 会员（弱）→ 过强度闸。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision(
+                "player.ok", False, 0.8,
+                "LLM 判 False：页面未检测到媒体元素，当前仍是影片详情页\n"
+                "[付费墙救济] 正文含付费墙短语「续费」",
+                "llm",
+                {"paywall": True, "paywall_word": "付费墙短语「续费」"},
+            ),
+            obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
+            pre_obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
+        )
+        assert out.branch == "subscription_wall", (
+            f"强确定性信号却被降级为 {out.branch}——真付费墙页应旁路同页守卫"
+        )
+
+    def test_subscription_wall_弱短语标记且弱body_仍降级(self):
+        """INC32 纪律回归保护：``_player_ok`` 短语命中路径对弱短语
+        （「开通会员」）也设 ``paywall_word``——那是 nav-bar CTA 形态
+        （mgtv 实测：详情页 + 开通会员广告）。标记 + 弱 body（无强弱
+        组合、无价格）→ 同页守卫照旧降级，不因标记存在而放行。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision(
+                "player.ok", False, 0.8,
+                "LLM 判 False：仍显示影片详情和『立即播放』按钮",
+                "llm",
+                {"paywall": True, "paywall_word": "开通会员"},
+            ),
+            obs=self._obs(url="https://x.test/movie", body_text="开通会员 享更多精彩"),
+            pre_obs=self._obs(url="https://x.test/movie", body_text="开通会员 享更多精彩"),
+        )
+        assert out.branch == "unresolved", (
+            "弱短语标记 + 弱 body 却放行了——nav-bar CTA 会污染真负样本池"
+        )
+
+    def test_subscription_wall_无标记且弱信号_仍降级(self):
+        """LLM 自报 ``paywall=True`` 但 evidence 无强弱组合、也无救济
+        标记——同页守卫照旧降级（INC32 原始形态，保持不变）。"""
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision("player.ok", False, 0.8, "需付费", "llm", {"paywall": True}),
+            obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
+            pre_obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
+        )
+        assert out.branch == "unresolved"
+
     def test_has_strong_paywall_signal_单元(self):
         """直接测判据函数，方便回归。"""
         from trajectory_pipeline.executor.branches import _has_strong_paywall_signal

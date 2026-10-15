@@ -169,6 +169,15 @@ def _site_url(sample: Any) -> str:
 # ── 观察充分性（独立实现） ────────────────────────────────────────
 
 
+def _truncated_flag(value: Any) -> bool:
+    """``truncated`` 字段统一判真——兼容 p1 bool 与 p2 dict 两种形态
+    （INC42；与 d9_scorer._truncated_flag 同款独立实现）。
+    dict（``{'source': False, 'view': False}``）按 ``any(values)`` 判。"""
+    if isinstance(value, Mapping):
+        return any(bool(v) for v in value.values())
+    return bool(value)
+
+
 def _observation_shortfall(obs: Mapping[str, Any] | None) -> str:
     """这份观察**能不能支撑**站点类型判断。空串 = 能。
 
@@ -182,7 +191,7 @@ def _observation_shortfall(obs: Mapping[str, Any] | None) -> str:
         return "没有观察"
     if list(obs.get("degraded") or ()):
         return f"观察有采集降级项 {list(obs['degraded'])}"
-    if obs.get("truncated"):
+    if _truncated_flag(obs.get("truncated")):
         return "观察被上游 max_chars 截断，实体可能落在截断外"
     elements = list(obs.get("interactive_elements") or ())
     total = int(obs.get("elements_total") or 0) or len(elements)

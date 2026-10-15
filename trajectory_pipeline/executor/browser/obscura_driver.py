@@ -49,6 +49,30 @@ IFRAME_SELECTOR = "iframe"
 #: ``<style>`` 块全部吃光。详见 ``executor/dom.py`` 模块 docstring。
 INNER_TEXT_EXPR = "document.body.innerText"
 
+#: 正文 fallback 源——``innerText`` 在 JS-heavy 站（iqiyi / ixigua / sohu /
+#: bilibili）偶发因 layout 计算失败返回空。``textContent`` 不参与 layout，
+#: 在 innerText 失败时**绝大多数情况仍能拿到已渲染的部分文本**。
+#: 区别是 textContent 不会折叠空白，所以仍走 :func:`parse_body_text` 清理。
+#:
+#: 2026-10-14 增量 H1-β · 采集降级精准救济：v3 黄金集 27 条
+#: ``['body_text']`` 降级样本中 26 条仅 video 兜底，根源是 innerText
+#: 失败——加 textContent fallback 后，这 26 条里大多数会拿到非空正文，
+#: 越过 ``_sufficiency`` 拦截，恢复正常判别路径。**fallback 仍失败时**
+#: 才追加 ``degraded.append("body_text")``——之前是无脑追加。
+#:
+#: 2026-10-15 INC43 · 剥离 script/style/noscript/template：裸 ``textContent``
+#: 会把 ``<script>`` 正文也采进来——实测 iqiyi 三站 innerText 失败后
+#: fallback 拿到 2651 字符**全是 JS/CSS**（``@keyframes`` / ``defaultTrace``），
+#: body 非空 → 越过 ``_sufficiency`` → 假恢复。clone 后删节点再取
+#: textContent：剥离后为空说明页面文本真没渲染，按原 fail-closed 边界
+#: 记 ``degraded.append("body_text")``。
+TEXT_CONTENT_EXPR = (
+    "(function(){var c=document.body.cloneNode(true);"
+    "c.querySelectorAll('script,style,noscript,template')"
+    ".forEach(function(n){n.remove();});"
+    "return c.textContent||'';})()"
+)
+
 #: 交互元素与链接的默认取回上限。播放页的候选元素通常远少于 200。
 DEFAULT_LIMIT = 200
 
@@ -164,10 +188,23 @@ class ObscuraDriver:
                                  on_error="empty", degraded=degraded)
         body = parse_body_text(inner, max_chars=max_chars) if inner else None
         if not body and degraded is not None:
-            # 两种「没正文」都要记：tool 报错（降级进 degraded），
-            # 以及 tool 成功但返回空串——JS 页面还没渲染时正是后者，
-            # **不是错误**所以 _call 不会记，得在这里补。
-            degraded.append("body_text")
+            # 2026-10-14 增量 H1-β：innerText 失败/空时 fallback 到
+            # ``document.body.textContent``。textContent 不参与 layout 计算，
+            # 在 innerText 因 JS 渲染未完成/选择器触发的 layout thrashing 失败
+            # 时仍能拿到已渲染的部分文本。fallback 仍失败才追加
+            # ``degraded.append("body_text")``——保持原有 fail-closed 边界。
+            fallback = await self._call(
+                "browser_evaluate",
+                {"expression": TEXT_CONTENT_EXPR},
+                on_error="empty",
+                degraded=None,  # 不让 fallback 失败污染 degraded 集合
+            )
+            body = parse_body_text(fallback, max_chars=max_chars) if fallback else None
+            if not body:
+                # 两种「没正文」都要记：tool 报错（降级进 degraded），
+                # 以及 tool 成功但返回空串——JS 页面还没渲染时正是后者，
+                # **不是错误**所以 _call 不会记，得在这里补。
+                degraded.append("body_text")
         elif body is not None and degraded is not None and is_mojibake(body):
             # 乱码正文**不是「没采到」，是「采到了但不可读」**——两者对
             # 下游的影响不同：前者无据可依，后者最危险，因为它看起来

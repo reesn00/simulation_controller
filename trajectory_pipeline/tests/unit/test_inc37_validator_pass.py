@@ -107,10 +107,17 @@ class TestInc37Invariants:
         )
 
     def test_total_count_unchanged(self, annotations):
-        """294 is the v3-frozen total; INC37 only changes reviewed_by."""
-        assert len(annotations) == 294, (
-            "golden set total changed to " + str(len(annotations))
+        """round=1 维持 294（v3 freeze 总数；INC37 只改 reviewed_by）；
+        round=2 是 INC41（2026-10-15 提前 retest）新增的 12 条，独立计数。"""
+        r1 = [a for a in annotations if a.get("round", 1) == 1]
+        r2 = [a for a in annotations if a.get("round", 1) == 2]
+        assert len(r1) == 294, (
+            "round=1 total changed to " + str(len(r1))
             + ", INC37 only moves reviewed_by not the total."
+        )
+        assert len(r2) == 12, (
+            "round=2 retest rows changed to " + str(len(r2))
+            + " (INC41 early retest wrote 12); re-run with --force intent."
         )
 
 

@@ -1,7 +1,8 @@
 """D9 retest 队列（``d9_retest_queue.jsonl``）contract 守门。
 
 设计来源：INC35「补 D9 retest 子集」。队列是**计划**不是**已评分**
-——它不进 annotations.jsonl，只在 14 天后真做 retest 时拿来对照。
+——它不进 annotations.jsonl，只在真做 retest 时拿来对照
+（原定 ≥2026-10-27，INC41 解除 14 天闸门后提前至 2026-10-15）。
 
 守住的几条不变量（任一被破就让门禁当场红）：
 
@@ -12,7 +13,9 @@
        "manual-review"``——AI 占大头的隐患由此被锁在外面；
     4. ``round_2_status == "pending"`` 且 ``round_2_label is None``——
        队列不能预填分数，那是 D9 不允许的伪造；
-    5. ``scheduled_retest_at >= 2026-10-27``（v3 freeze + 14 天间隔）；
+    5. ``scheduled_retest_at >= round_1_reviewed_at``——2026-10-15 owner
+       拍板解除「v3 freeze + 14 天」法定闸门（MVP 提速，INC41），闸门
+       弱化为不早于 round_1 标注时间；
     6. **分层覆盖**：抽到的 label 数 ≥ 6（manual-review 共 8 个 label），
        防止有人为「省事」全抽 subscription_wall。
 
@@ -27,14 +30,13 @@ from __future__ import annotations
 import json
 import pathlib
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 
 QUEUE = pathlib.Path(__file__).resolve().parents[2] / "evaluation" / "golden" / "data" / "d9_retest_queue.jsonl"
 V3_CALIB = pathlib.Path(__file__).resolve().parents[2] / "evaluation" / "golden" / "data" / "v3" / "calibration.jsonl"
 
-MIN_SCHEDULED = datetime(2026, 10, 27, tzinfo=timezone.utc)
 RETEST_FRACTION = (0.20, 0.30)
 
 
@@ -106,15 +108,22 @@ class Testretest状态:
         assert row["round_2_label"] is None
 
     @pytest.mark.parametrize("row", _load_queue(), ids=lambda r: r["golden_id"])
-    def test_scheduled_retest_at_不早于2026_10_27(self, row):
+    def test_scheduled_retest_at_不早于round_1_reviewed_at(self, row):
+        """INC41（2026-10-15 owner 拍板）解除「v3 freeze + 14 天」法定闸门后，
+        最低要求是重测计划不早于 round=1 标注时间——间隔可以短（MVP 提速），
+        但不能时间倒流。"""
         scheduled = datetime.fromisoformat(row["scheduled_retest_at"])
-        assert scheduled >= MIN_SCHEDULED, (
-            f"{row['golden_id']} scheduled={scheduled} 早于 v3 freeze+14 天"
+        r1 = datetime.fromisoformat(row["round_1_reviewed_at"])
+        assert scheduled >= r1, (
+            f"{row['golden_id']} scheduled={scheduled} 早于 round_1_reviewed_at={r1}"
         )
 
     @pytest.mark.parametrize("row", _load_queue(), ids=lambda r: r["golden_id"])
-    def test_interval_days_为14(self, row):
-        assert row["interval_days_planned"] == 14
+    def test_interval_days_计划为3(self, row):
+        """原 14 天法定间隔已解除（INC41，2026-10-15 owner 拍板）；
+        当前计划 = round_1（2026-10-12）→ 重测日 2026-10-15，间隔 3 天。
+        若再改期，同步改此断言与队列 jsonl。"""
+        assert row["interval_days_planned"] == 3
 
 
 class Test分层覆盖:

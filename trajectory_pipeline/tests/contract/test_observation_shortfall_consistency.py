@@ -67,6 +67,8 @@ _CAN_JUDGE = _obs()
 _CANT_JUDGE_CASES = [
     pytest.param(_obs(degraded=["video_tag_count"]), id="degraded-非空"),
     pytest.param(_obs(truncated=True), id="truncated-真"),
+    pytest.param(_obs(truncated={"source": False, "view": True}),
+                 id="truncated-字典含真值（INC42）"),
     pytest.param(
         _obs(interactive_elements=[{"tag": "a", "label": "L"}], elements_total=5),
         id="elements-被裁剪",
@@ -105,6 +107,18 @@ class Test可判_边界一致:
             assert r == "", (
                 f"{name}._observation_shortfall 在完整可判样本上返回非空"
                 f"：{r!r}——决策边界漂了，与本契约冲突"
+            )
+
+    def test_truncated字典全False_四处都空串(self):
+        """INC42：p2 样本的 truncated 是 dict（{'source': False, 'view':
+        False}）。全 False = 未截断——原 truthy 判断把非空 dict 一律
+        判真（E001__57bbf995__site-2 被误标截断），四处须同修。"""
+        obs = _obs(truncated={"source": False, "view": False})
+        results = _judge(obs)
+        for name, r in results.items():
+            assert r == "", (
+                f"{name} 在 truncated 全 False 字典上返回非空：{r!r}"
+                f"——dict 形态判真口径漂了（INC42）"
             )
 
 

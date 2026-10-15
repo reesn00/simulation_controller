@@ -72,7 +72,7 @@ HOLDOUT_RANGE = (0.30, 0.40)  # 持有集占比
 SPLIT_TARGET = 0.65  # 校准目标占比（65%，落在两区间的中点）
 SPLIT_PP_TOLERANCE = 0.05  # 实际占比离目标 65% 的允许偏差（"差距 ≤5pp"）
 RETEST_FRACTION = (0.20, 0.30)  # D9 重测子集占比
-RETEST_INTERVAL_DAYS = 14  # D9 建议间隔 T
+RETEST_INTERVAL_DAYS = 14  # D9 建议间隔 T（INC41 起 degrade 为纯建议：2026-10-15 owner 拍板解除法定间隔，实际间隔以 d9_retest_queue.jsonl / annotations.jsonl 的 interval_days 为准）
 D10_THRESHOLD = 0.90  # 代码层与黄金集一致率上岗线（口径 C = 语义等价类一致）
 #: 标签体系版本：1 = 11 类（10 分支 + success）；2 = 15 类
 #: （BRANCH_LABELS 14 key = 13 活跃 + deprecated 合并态 + success）。

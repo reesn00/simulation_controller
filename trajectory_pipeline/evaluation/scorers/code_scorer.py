@@ -143,6 +143,15 @@ def _click_actions(sample: Any) -> list[Any]:
     return out
 
 
+def _truncated_flag(value: Any) -> bool:
+    """``truncated`` 字段统一判真——兼容 p1 bool 与 p2 dict 两种形态
+    （INC42；与 d3/d9/gates 侧同款独立实现，靠 contract 盯守）。
+    dict（``{'source': False, 'view': False}``）按 ``any(values)`` 判。"""
+    if isinstance(value, Mapping):
+        return any(bool(v) for v in value.values())
+    return bool(value)
+
+
 def _observation_shortfall(obs: Mapping[str, Any]) -> str:
     """这份观察**能不能支撑**「某个元素不存在」的结论。
 
@@ -160,9 +169,10 @@ def _observation_shortfall(obs: Mapping[str, Any]) -> str:
     """
     if obs.get("degraded"):
         return f"观察有降级项 {list(obs['degraded'])}，缺项无法与「真没有」区分"
-    if obs.get("truncated"):
-        return f"观察被截断（{obs.get('raw_len')}/{obs.get('max_chars')}），" \
-               "元素可能落在截断外"
+    if _truncated_flag(obs.get("truncated")):
+        raw_len, max_chars = obs.get("raw_len"), obs.get("max_chars")
+        detail = f"（{raw_len}/{max_chars}）" if raw_len is not None else ""
+        return f"观察被截断{detail}，元素可能落在截断外"
 
     elements = list(obs.get("interactive_elements") or ())
     links = list(obs.get("links") or ())

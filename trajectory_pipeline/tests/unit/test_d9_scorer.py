@@ -86,8 +86,12 @@ class _StubLLM:
         self._content = content
         self._return_none = return_none
         self.last_error = ""
+        self.last_user = ""
+        self.last_system = ""
 
     def chat(self, system, user, *, max_tokens=None):
+        self.last_system = system
+        self.last_user = user
         if self._return_none:
             return None
         return self._content
@@ -507,16 +511,17 @@ class TestFewShot注入点:
     + ``_render_user(few_shot_examples=...)`` + ``score_d9(few_shot_examples=...)``。
 
     设计纪律：
-      - 默认空 → 不插 ``## few-shot examples`` 块（保持老行为）
       - ``None`` → 回落 :data:`D9_FEW_SHOT_EXAMPLES` 模块常量
+        （INC40 后非空 → 默认**插入** few-shot 块）
       - ``[]`` → 强制不插（绕过常量）
       - 非空 → 按 verdict / rationale / observation 三字段渲染
       - 块在闸门 findings 之后、Rationale 原文之前
     """
 
     def test_默认_不插_few_shot_块(self):
-        """``few_shot_examples=None`` → 回落常量（默认空）→ 输出 prompt
-        **不含** ``## few-shot examples`` 字样。"""
+        """``_render_user`` 不传 ``few_shot_examples`` → ``None`` 渲染为空 →
+        输出 prompt **不含** ``## few-shot examples`` 字样（常量回落只发生在
+        :func:`score_d9`，渲染层 ``None`` 就是「不带示例」）。"""
         obs = _obs()
         rat = _rationale()
         gate = _gate_result(status="failed",
@@ -639,9 +644,9 @@ class TestFewShot注入点:
     def test_score_d9_few_shot_None_回落常量(self):
         """``score_d9(few_shot_examples=None)`` 回落 ``D9_FEW_SHOT_EXAMPLES``。
 
-        默认常量空 → 输出 prompt 不含 ``## few-shot``。但模块常量是
-        全局可变，本测试不依赖外部 patch——只看 score_d9 调用本身能拿到
-        回落后的常量。"""
+        INC40 后常量非空 → 实际发给 LLM 的用户提示词**含**
+        ``## few-shot examples`` 块与每条示例的 verdict 标签（生产路径
+        不传参即激活示例池）。"""
         obs = _obs()
         rat = _rationale()
         gate = _gate_result(status="failed",
@@ -653,8 +658,12 @@ class TestFewShot注入点:
         v = score_d9(sample, gate_result=gate, llm_client=stub)
         assert v.kind == "scored"
         assert v.verdict == "anchored"
-        # 这里 `stub.last_user` 没有保留——本测试只断言回落逻辑不破坏
-        # 正常打分路径
+        # 回落常量后池真正注入了用户提示词
+        assert "## few-shot examples" in stub.last_user
+        for i, ex in enumerate(d9_scorer.D9_FEW_SHOT_EXAMPLES):
+            assert f"示例 {i + 1}（{ex['verdict']}）" in stub.last_user
+        # few-shot 块在系统提示词的 sentinel 承诺的位置（用户提示词内）
+        assert "## few-shot examples 会在下面追加" in d9_scorer.D9_SYSTEM_PROMPT
 
     def test_score_d9_显式_非空_注入_LLM(self):
         """``score_d9(few_shot_examples=[...])`` 不破坏 LLM 调通路径——
@@ -689,8 +698,166 @@ class TestFewShot注入点:
         assert v.kind == "scored"
         assert v.verdict == "anchored"
 
-    def test_D9_FEW_SHOT_EXAMPLES_默认空_tuple(self):
-        """``D9_FEW_SHOT_EXAMPLES`` 模块常量默认空 tuple——不可变，避免
-        运行时被业务侧误改。"""
-        assert d9_scorer.D9_FEW_SHOT_EXAMPLES == ()
-        assert isinstance(d9_scorer.D9_FEW_SHOT_EXAMPLES, tuple)
+    def test_D9_FEW_SHOT_EXAMPLES_池契约(self):
+        """INC40 v1 池契约——非空不可变 tuple；每条三字段齐全、verdict
+        合法枚举、rationale/observation 非空；覆盖 anchored / vague /
+        mild_hallucination 三档（hindsight / systematic / misleading 在
+        v1 素材库无干净实例，留待 round=2 锚点补充）。"""
+        pool = d9_scorer.D9_FEW_SHOT_EXAMPLES
+        assert isinstance(pool, tuple)
+        assert len(pool) > 0
+        valid = {"anchored", "vague", "mild_hallucination",
+                 "hindsight", "systematic", "misleading"}
+        verdicts = set()
+        for ex in pool:
+            assert set(ex.keys()) == {"verdict", "rationale", "observation"}
+            assert ex["verdict"] in valid
+            assert ex["rationale"].strip(), "rationale 不得为空"
+            assert ex["observation"].strip(), "observation 不得为空"
+            verdicts.add(ex["verdict"])
+        assert {"anchored", "vague", "mild_hallucination"} <= verdicts
+
+
+# ── 10. INC42：truncated 字典兼容 + capping 定向放行 ─────────────
+
+
+class TestINC42观察充分性两档:
+    """INC42（2026-10-15）：原版观察不充分一律 fail-closed，实测 D-9
+    judge 有效覆盖仅 1/14（INC41），最大头是 80/N 元素裁剪 + body 完好。
+
+    两档处理：
+      - hard（降级 / 截断 / 全空 / 没有观察）→ 仍 fail-closed；
+      - capping-only → 放行 LLM，missing-anchor 类 verdict 方向性降级。
+    """
+
+    def _capped_obs(self):
+        """capping-only 观察：body 完好、无降级、未截断、元素 80/102。"""
+        elements = [{"tag": "a", "label": f"L{i}"} for i in range(80)]
+        return _obs(body="页面含选集列表与播放入口",
+                    interactive_elements=elements, elements_total=102)
+
+    def test_capping_only_不再阻塞_anchored_照常出分(self):
+        """裁剪 + body 完好 → LLM 照跑；anchored 在保留区找到锚必真，
+        不受裁剪影响 → scored。"""
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content='{"verdict": "anchored", '
+                               '"evidence": "锚在 body", "confidence": 0.8}')
+        v = score_d9(_sample(rationales=[rat],
+                             observations=[self._capped_obs()]),
+                     gate_result=gate, llm_client=stub)
+        assert v.kind == "scored"
+        assert v.verdict == "anchored"
+        assert v.score == 5
+
+    def test_capping_only_mild_hallucination_降级_undetermined(self):
+        """裁剪观察上 judge 判 missing-anchor 类 verdict → 不可信
+        （「没找到锚」可能是「被裁掉」）→ fail-closed，judge 原始
+        verdict / evidence 留档。"""
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content='{"verdict": "mild_hallucination", '
+                               '"evidence": "『第8期链接』无观察锚", '
+                               '"confidence": 0.8}')
+        v = score_d9(_sample(rationales=[rat],
+                             observations=[self._capped_obs()]),
+                     gate_result=gate, llm_client=stub)
+        assert v.kind == "undetermined"
+        assert v.score is None
+        assert v.verdict is None
+        assert "INC42" in v.reasons[0]
+        assert "第8期链接" in v.reasons[0]  # judge 原始证据留档
+
+    @pytest.mark.parametrize("verdict", ["systematic", "misleading"])
+    def test_capping_only_其余裁剪敏感_verdict_同样降级(self, verdict):
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content=f'{{"verdict": "{verdict}", '
+                               f'"evidence": "x", "confidence": 0.8}}')
+        v = score_d9(_sample(rationales=[rat],
+                             observations=[self._capped_obs()]),
+                     gate_result=gate, llm_client=stub)
+        assert v.kind == "undetermined"
+
+    @pytest.mark.parametrize("verdict,score",
+                             [("vague", 4), ("hindsight", 3)])
+    def test_capping_only_非锚点类_verdict_不降级(self, verdict, score):
+        """vague / hindsight 是措辞判断，不依赖元素全集 → 照常出分。"""
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content=f'{{"verdict": "{verdict}", '
+                               f'"evidence": "x", "confidence": 0.8}}')
+        v = score_d9(_sample(rationales=[rat],
+                             observations=[self._capped_obs()]),
+                     gate_result=gate, llm_client=stub)
+        assert v.kind == "scored"
+        assert v.score == score
+
+    def test_降级_观察仍fail_closed(self):
+        """degraded body_text（采集失败与「真没有」同形——§5.5 最贵教训）
+        不因 INC42 放松：仍 undetermined，LLM 不被调。"""
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content='{"verdict": "anchored", '
+                               '"evidence": "x", "confidence": 0.8}')
+        obs = _obs(body="", elements=0, degraded=["body_text"])
+        v = score_d9(_sample(rationales=[rat], observations=[obs]),
+                     gate_result=gate, llm_client=stub)
+        assert v.kind == "undetermined"
+        assert stub.last_user == ""  # LLM 根本没被调
+
+    def test_truncated字典全False_放行_E001回归(self):
+        """E001__57bbf995__site-2 回归：p2 样本 truncated 为
+        {'source': False, 'view': False}——原 truthy 判断误标「被截断」，
+        修复后不阻塞。"""
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content='{"verdict": "anchored", '
+                               '"evidence": "x", "confidence": 0.8}')
+        obs = _obs(body="vip.1905.com 播放页提示需登录会员观看",
+                   truncated={"source": False, "view": False})
+        v = score_d9(_sample(rationales=[rat], observations=[obs]),
+                     gate_result=gate, llm_client=stub)
+        assert v.kind == "scored"
+
+    def test_truncated字典含True_仍阻塞(self):
+        """dict 任一子观察截断 → 真 · 截断，仍 fail-closed。"""
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content='{"verdict": "anchored", '
+                               '"evidence": "x", "confidence": 0.8}')
+        obs = _obs(body="正文", truncated={"source": False, "view": True})
+        v = score_d9(_sample(rationales=[rat], observations=[obs]),
+                     gate_result=gate, llm_client=stub)
+        assert v.kind == "undetermined"
+        assert stub.last_user == ""
+
+    def test__capping_only_判定表(self):
+        """``_capping_only`` 真值表直接钉：只有「纯裁剪」返回 True。"""
+        from trajectory_pipeline.evaluation.scorers.d9_scorer import (
+            _capping_only,
+        )
+        assert _capping_only(self._capped_obs()) is True
+        # 无裁剪 → False
+        assert _capping_only(_obs()) is False
+        # 降级 → False（hard）
+        assert _capping_only(
+            _obs(degraded=["body_text"], elements_total=102)) is False
+        # 截断（bool 真）→ False（hard）
+        assert _capping_only(
+            _obs(truncated=True, elements_total=102)) is False
+        # 截断（字典含真）→ False（hard）
+        assert _capping_only(
+            _obs(truncated={"view": True}, elements_total=102)) is False
+        # 全空 + 裁剪 → False（body 与保留元素皆空是 hard）
+        assert _capping_only(
+            _obs(body="", elements=0, elements_total=5)) is False
+        # None → False
+        assert _capping_only(None) is False

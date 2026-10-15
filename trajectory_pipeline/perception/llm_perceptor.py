@@ -47,6 +47,7 @@ from trajectory_pipeline.perception.rule_perceptor import (
     classify_trailer,
     infer_access_from_evidence,
     infer_paywall_type_from_evidence,
+    paywall_rescue_evidence,
     play_control_candidates,
     trailer_only_candidates,
 )
@@ -162,6 +163,52 @@ class LLMPerceptor:
         try:
             guard = _sufficiency(question, obs, target_title=self._target_title)
             if guard:
+                # 2026-10-15 INC43 · 哨兵路径付费墙救济：③ 的 0 元素哨兵
+                # 拦下了这道题，但 body_text 里有**确定性付费墙证据**
+                # （完整短语 / 强弱信号组合）——正文能采到付费墙文案，
+                # 本身就证明页面渲染了，哨兵担心的「没渲染完」不成立。
+                # 实测 m.ixigua ×2（elements=0、body=100 字符
+                # 「以下内容需下载西瓜视频查看」）即此形态。
+                #
+                # ⚠️ ``obs.degraded`` 时**不救济**（§5.5：采集失败与
+                # 「真没有」在存档里同形，必须 fail-closed）——降级观察的
+                # 正文可能只是部分加载的导航栏。
+                #
+                # 2026-10-15 INC45 · 乱码页例外（簇 B，tv.sohu ×3）：混合
+                # 编码页（GBK 主体 + UTF-8 字节混入）的 ``body_mojibake``
+                # 与其他降级**本质不同**——正文**采到了**（实测 1588 字符
+                # 里 156 个 U+FFFD，其余可读），可读部分含确定性付费墙
+                # 证据（「新用户首月9.9元，开通会员 立即抢购」）。§5.5 守
+                # 的是「**缺**证据别当业务结论」，这里是**有**证据——
+                # 仅当降级集合只含 mojibake 标记（body/title）时放行救济，
+                # 其余降级（body_text 缺失 / snapshot 失败等）照旧
+                # fail-closed。强信号闸（paywall_rescue_evidence）与
+                # INC43 同判据，nav-bar 弱 CTA 不放行。
+                if question in (Q.IS_REACHABLE, Q.FIND_PLAY_CONTROL) and (
+                    not obs.degraded
+                    or set(obs.degraded) <= {"body_mojibake", "title_mojibake"}
+                ):
+                    rescue = paywall_rescue_evidence(obs.body_text or "")
+                    if rescue:
+                        mojibake_note = (
+                            "；正文为混合编码（部分乱码），可读部分已含上述证据"
+                            if obs.degraded
+                            else ""
+                        )
+                        return self._answer(
+                            spec,
+                            False,
+                            evidence=(
+                                f"[哨兵路径付费墙救济] {guard}；但正文含{rescue}"
+                                f"{mojibake_note}"
+                                f"——页面已渲染出付费墙文案，「无控件」的真因是"
+                                f"付费/客户端墙，按 2026-10-10 口径记订阅墙，"
+                                f"不落哨兵 fail-closed"
+                            ),
+                            started=started,
+                            payload={"paywall": True, "paywall_word": rescue},
+                            fallback=True,
+                        )
                 return self._unresolved_answer(spec, guard, started)
 
             handler = {
@@ -187,7 +234,41 @@ class LLMPerceptor:
                     },
                     fallback=True,
                 )
-            return handler(spec, obs, started)
+            decision = handler(spec, obs, started)
+            # 2026-10-15 INC43 · ②③ 负分支付费墙救济：LLM 已判 False
+            # （页面确实不可用），但 ②③ 的负分支（login_wall_or_blocked /
+            # no_play_control）从不检查付费墙信号——订阅墙页面于是贴错
+            # 标签。正文含强付费墙证据时标记 ``payload["paywall"]``，
+            # ``decision_branch`` 会据此改判 ``subscription_wall``。
+            #
+            # **只在 answer=False 时救济**（不翻转保证）：True 是成功，
+            # None 是「没能力判」——词表命中不构成推翻二者的证据
+            # （④ 的既有口径：两边一致才落细分，任何一边不一致都按
+            # 未定的那个结论记）。② 已给出 access_control_type 细分
+            # （login/region/...）时也不救济——细分证据比关键词更具体，
+            # ``decision_branch`` 本就让细分优先，救济只添噪声。
+            #
+            # ⚠️ 2026-10-15 INC44 证伪记录：曾把救济扩到 ④（PLAYER_OK），
+            # e2e 75 对 A/B 实测**零收益**（修复 0 / 反转 0）——簇 A 的
+            # 付费墙证据在 LLM evidence 里而非 body_text，词表够不着；
+            # 唯一触发行 T011 v.qq.com/error.html 还是假阳性（错误页
+            # 页脚「VIP 会员」强弱组合命中，broken 被误改判订阅墙）。
+            # 已回滚，勿再对 ④ 做词表救济（见 05-现状与验收.md INC44）。
+            if (
+                question in (Q.IS_REACHABLE, Q.FIND_PLAY_CONTROL)
+                and decision.answer is False
+                and not decision.payload.get("paywall")
+                and (
+                    question == Q.FIND_PLAY_CONTROL
+                    # ② 的「无细分」形态是空串/None 两种（payload 恒带
+                    # ``access_control_type`` 键，缺细分时值为空）。
+                    or not decision.payload.get("access_control_type")
+                )
+            ):
+                rescue = paywall_rescue_evidence(obs.body_text or "")
+                if rescue:
+                    return _rescued_paywall_decision(decision, rescue)
+            return decision
         except Exception as exc:  # 兜底：契约禁止抛出去
             return self._unresolved_answer(
                 spec, f"判定异常 {type(exc).__name__}: {exc}", started
@@ -679,6 +760,37 @@ class LLMPerceptor:
 # ═══════════════════════════════════════════════════════════════════════
 # 采集充分性预检（铁律 2）
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def _rescued_paywall_decision(decision: Decision, rescue: str) -> Decision:
+    """②③ 负分支付费墙救济（INC43）：给已判 False 的决策补付费墙标记。
+
+    不改 ``answer`` / ``confidence`` / ``source``——LLM 的「页面不可用」
+    结论保持原样，救济只做一件事：把「不可用的真因是付费墙」这个
+    **确定性代码事实**（:func:`paywall_rescue_evidence`）补进 payload 与
+    evidence，让 :func:`~trajectory_pipeline.executor.branches.decision_branch`
+    把分支从 ``login_wall_or_blocked`` / ``no_play_control`` 改判为
+    ``subscription_wall``。
+
+    evidence 里必须能指认判据（命中的词 / 信号组合）——救济改写了分支，
+    人工复核时这条 evidence 是「为什么不是登录墙」的唯一解释。
+    """
+    payload = dict(decision.payload or {})
+    payload["paywall"] = True
+    payload["paywall_word"] = rescue
+    return Decision(
+        question=decision.question,
+        answer=decision.answer,
+        confidence=decision.confidence,
+        evidence=(
+            f"{decision.evidence}\n[付费墙救济] 正文含{rescue}——"
+            f"②③ 负分支的真因是付费墙，按 2026-10-10 口径记订阅墙"
+        ),
+        source=decision.source,
+        payload=MappingProxyType(payload),
+        latency_ms=decision.latency_ms,
+        fallback_used=decision.fallback_used,
+    )
 
 
 def _sufficiency(question: str, obs: Observation, *, target_title: str = "") -> str:
