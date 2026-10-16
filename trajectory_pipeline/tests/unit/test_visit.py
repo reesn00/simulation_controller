@@ -17,6 +17,8 @@ from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig, RunRecord
+from trajectory_pipeline.executor.steps import search as search_step
+from trajectory_pipeline.executor.steps import site_search as site_search_step
 from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.executor.steps.visit import visit_site
 from trajectory_pipeline.perception.base import (
@@ -2406,3 +2408,375 @@ class Test站点首页核:
         from trajectory_pipeline.executor.orchestrator import _is_site_homepage
 
         assert _is_site_homepage("https://[::1") is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 路径 B/C 发现链：三路径分叉 + 首页站内搜索（2026-10-16）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TabbedDriver(FakeDriver):
+    """外链校验 / 站内搜索需要的 fake：``new_tab`` 切页、``close_tab``
+    恢复、``press_key("Enter")`` 按 ``enter_targets`` 跳转。
+
+    基类 ``FakeDriver`` 的 ``new_tab`` 只记账不切页——对既有测试
+    （infrastructure 步骤不进消息视图）是对的，但外链校验链的
+    ``observe()`` 读的是**新 tab 的页面**，不切页会让每条外链都落回
+    中间页自己（same_host → dropped），链路根本测不出来。子类化而不
+    是改基类：两个需求都正当，不该互相将就。
+    """
+
+    def __init__(self, pages, enter_targets=None):
+        super().__init__(pages)
+        self._tab_stack: list[Observation | None] = []
+        #: 当前页 URL → 回车后跳去的 URL（站内搜索提交）
+        self.enter_targets = dict(enter_targets or {})
+
+    async def new_tab(self, url: str | None = None) -> str:
+        self.tabs.append(url or "")
+        self._tab_stack.append(self.current)
+        if url and url in self.pages:
+            self.current = self.pages[url]
+        return f"tab{len(self.tabs)}"
+
+    async def close_tab(self, tab_id: str | None = None) -> None:
+        if self._tab_stack:
+            self.current = self._tab_stack.pop()
+
+    async def press_key(self, key: str) -> None:
+        target = self.enter_targets.get(self.current.url if self.current else "")
+        if target and target in self.pages:
+            self.current = self.pages[target]
+
+
+class Test路径BC发现链:
+    """三路径分叉（direct / aggregator / article）与 B/C 首页站内搜索。
+
+    设计口径见 ``.trae/documents/路径BC发现链实施计划.md``：direct
+    不动（回归由既有测试守住），B/C 的差异落在检索词、①.5 选题、
+    ①.6 中间页遍历、visit ③.5 站内搜索分叉四处。
+    """
+
+    #: B 路径的搜索页 URL：聚合词按 task 轮换，测试与 orchestrator
+    #: 用同一对函数计算——硬编码会在词表调整时静默失配（FakeDriver
+    #: 对未登记 URL 直接抛 DriverError，表现为「搜索页都打不开」）。
+    AGG_SEARCH = search_step.search_url(search_step.aggregator_query("T001"))
+
+    SEARCH = (
+        "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+"
+        "%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B"
+    )
+
+    def _search_page(self, url, *links):
+        return Observation(
+            url=url,
+            page_title="百度",
+            body_text="搜索结果",
+            links=tuple(LinkItem(text=t, href=h) for t, h in links),
+        )
+
+    def _play_pages(self, *urls):
+        """内容站页面：播放按钮 e1 + 点击后的播放页（visit 链两跳）。"""
+        pages = {
+            u: obs_at(u, elements=(("e1", "button", "播放"),)) for u in urls
+        }
+        pages["https://x.test/play/e1"] = obs_at(
+            "https://x.test/play/e1", video=1
+        )
+        return pages
+
+    async def test_B路径聚合词检索到aggregator候选(self):
+        """B 全链：聚合词检索 → ①B 选题 → 中间页感知层 None 时启发式
+        全量（fail-closed 不中断）→ 外链校验产出 ``origin="aggregator"``
+        候选 → 标准 visit 链收尾。"""
+        pages = {
+            self.AGG_SEARCH: self._search_page(
+                self.AGG_SEARCH, ("聚合站", "https://agg.test/")
+            ),
+            "https://agg.test/": obs_at(
+                "https://agg.test/",
+                links=(LinkItem(text="P1站", href="https://www.p1.test/movie"),),
+            ),
+        }
+        pages.update(self._play_pages("https://www.p1.test/movie"))
+        script = {
+            Q.SELECT_AGGREGATOR_RESULTS: ok(
+                Q.SELECT_AGGREGATOR_RESULTS,
+                {"selected": [{"url": "https://agg.test/", "why": "w"}],
+                 "rejected": []},
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        perceptor = ScriptedPerceptor(script)
+        rec = await Orchestrator(
+            TabbedDriver(pages), perceptor,
+            RunConfig(discovery_path="aggregator"),
+        ).run("T001", "功夫")
+
+        # 检索词与片名解耦：query 是聚合词，不是「功夫 在线观看」
+        assert rec.query in search_step.AGGREGATOR_QUERIES
+        assert rec.search_url == self.AGG_SEARCH
+        assert rec.discovery_path == "aggregator"
+        assert Q.SELECT_AGGREGATOR_RESULTS in perceptor.calls
+        # 中间页：IS_AGGREGATOR / SELECT_SITE_ENTRIES 未配置（None）→
+        # fail-closed 启发式全量，产出带溯源的最终候选
+        assert len(rec.intermediates) == 1
+        assert rec.intermediates[0].role == "aggregator"
+        assert [c.url for c in rec.candidates] == ["https://www.p1.test/movie"]
+        assert rec.candidates[0].origin == "aggregator"
+        assert rec.candidates[0].parent == "https://agg.test/"
+        # 最终候选（非首页）走标准 visit 链，不做站内搜索
+        assert [v.candidate.url for v in rec.visits] == ["https://www.p1.test/movie"]
+        assert rec.visits[0].search is None
+
+    async def test_B路径首页候选走站内搜索子候选不再搜(self):
+        """首页型候选不丢弃、不做控件判定（§5.14 前置事实污染）：
+        先站内搜索定位深层页，派发的子候选进标准 visit 链，且
+        **子候选不再触发站内搜索**——「首页→搜索→结果页又含首页→
+        再搜」的循环派发真会发生。"""
+        home = "https://www.p2.test/"
+        results = "https://www.p2.test/so?wd=%E5%8A%9F%E5%A4%AB"
+        deep = "https://www.p2.test/v/1"
+        pages = {
+            self.AGG_SEARCH: self._search_page(
+                self.AGG_SEARCH, ("聚合站", "https://agg.test/")
+            ),
+            "https://agg.test/": obs_at(
+                "https://agg.test/",
+                links=(LinkItem(text="P2站", href=home),),
+            ),
+            # P2 是首页：有搜索框 s1，回车后到结果页
+            home: obs_at(home, elements=(("s1", "input", "搜索片名"),)),
+            results: obs_at(
+                results, links=(LinkItem(text="功夫正片", href=deep),),
+            ),
+        }
+        pages.update(self._play_pages(deep))
+        script = {
+            Q.SELECT_AGGREGATOR_RESULTS: ok(
+                Q.SELECT_AGGREGATOR_RESULTS,
+                {"selected": [{"url": "https://agg.test/", "why": "w"}],
+                 "rejected": []},
+            ),
+            Q.FIND_SITE_SEARCH: ok(Q.FIND_SITE_SEARCH, {"ref": "s1"}),
+            # 站内搜索结果页复用 ①（题意原样成立）
+            Q.SELECT_PLAY_SITES: ok(
+                Q.SELECT_PLAY_SITES,
+                {"selected": [{"url": deep, "why": "w"}], "rejected": []},
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(
+            TabbedDriver(pages, enter_targets={home: results}),
+            ScriptedPerceptor(script),
+            RunConfig(discovery_path="aggregator"),
+        ).run("T001", "功夫")
+
+        # 首页候选没被丢弃也没做控件判定，先搜索后核验
+        assert [v.candidate.url for v in rec.visits] == [home, deep]
+        first = rec.visits[0]
+        assert first.search is not None
+        assert first.search.status == site_search_step.ROUTED
+        assert [c.url for c in first.search.selected] == [deep]
+        assert first.search.selected[0].origin == "site_search"
+        assert first.search.selected[0].parent == results
+        # 子候选走标准链，且不再触发站内搜索（防循环派发）
+        assert rec.visits[1].candidate.origin == "site_search"
+        assert rec.visits[1].search is None
+        branches = [o.branch for o in rec.ledger.outcomes]
+        assert "site_search_routed" in branches
+        # B 路径不丢首页：那是站内搜索的入口，不是「找错站」
+        assert "not_play_site" not in branches
+
+    async def test_C路径文章引荐产出article候选(self):
+        """C 全链：片名检索（与 A 同查询）→ ①C 选题 → 文章页直接选
+        外链（无页面确认题，``is_intermediate`` 恒 None）→
+        ``origin="article"`` 候选。"""
+        pages = {
+            self.SEARCH: self._search_page(
+                self.SEARCH, ("影评", "https://blog.test/post/1")
+            ),
+            "https://blog.test/post/1": obs_at(
+                "https://blog.test/post/1",
+                links=(LinkItem(text="在线看", href="https://www.p1.test/movie"),),
+            ),
+        }
+        pages.update(self._play_pages("https://www.p1.test/movie"))
+        script = {
+            Q.SELECT_ARTICLE_RESULTS: ok(
+                Q.SELECT_ARTICLE_RESULTS,
+                {"selected": [{"url": "https://blog.test/post/1", "why": "w"}],
+                 "rejected": []},
+            ),
+            Q.SELECT_REFERRAL_LINKS: ok(
+                Q.SELECT_REFERRAL_LINKS,
+                {"selected": [{"url": "https://www.p1.test/movie", "why": "w"}],
+                 "rejected": []},
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(
+            TabbedDriver(pages), ScriptedPerceptor(script),
+            RunConfig(discovery_path="article"),
+        ).run("T001", "功夫")
+
+        assert rec.discovery_path == "article"
+        assert "功夫" in rec.query  # C 与 A 同查询（文章按片名长出来）
+        assert len(rec.intermediates) == 1
+        assert rec.intermediates[0].role == "article"
+        # C 没有「这是不是文章页」的确认题——①C 选题时已判过
+        assert rec.intermediates[0].is_intermediate is None
+        assert [c.url for c in rec.candidates] == ["https://www.p1.test/movie"]
+        assert rec.candidates[0].origin == "article"
+        assert rec.candidates[0].parent == "https://blog.test/post/1"
+        assert [v.candidate.url for v in rec.visits] == ["https://www.p1.test/movie"]
+
+    async def test_中间页候选按host跨页去重(self):
+        """两个聚合站引荐同一个站：第二个是重复发现不是新信息。
+        opaque（无 host）不去重——没有依据的合并与没有依据的排除
+        是同一种错。"""
+        pages = {
+            self.AGG_SEARCH: self._search_page(
+                self.AGG_SEARCH,
+                ("聚合1", "https://agg1.test/"), ("聚合2", "https://agg2.test/"),
+            ),
+            "https://agg1.test/": obs_at(
+                "https://agg1.test/",
+                links=(LinkItem(text="P1", href="https://www.p1.test/movie"),),
+            ),
+            "https://agg2.test/": obs_at(
+                "https://agg2.test/",
+                links=(LinkItem(text="P1备用", href="https://www.p1.test/movie2"),),
+            ),
+        }
+        pages.update(self._play_pages(
+            "https://www.p1.test/movie", "https://www.p1.test/movie2"
+        ))
+        script = {
+            Q.SELECT_AGGREGATOR_RESULTS: ok(
+                Q.SELECT_AGGREGATOR_RESULTS,
+                {"selected": [
+                    {"url": "https://agg1.test/", "why": "w"},
+                    {"url": "https://agg2.test/", "why": "w"},
+                ], "rejected": []},
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(
+            TabbedDriver(pages), ScriptedPerceptor(script),
+            RunConfig(discovery_path="aggregator"),
+        ).run("T001", "功夫")
+
+        # 两个中间页都访问了，但同 host 只保留首个（保序）
+        assert len(rec.intermediates) == 2
+        assert [c.url for c in rec.candidates] == ["https://www.p1.test/movie"]
+        assert [v.candidate.url for v in rec.visits] == ["https://www.p1.test/movie"]
+
+    async def test_中间页超上限截断保序(self):
+        """截断是预算控制不是语义筛选：保序、记 warning、不中断。"""
+        pages = {
+            self.AGG_SEARCH: self._search_page(
+                self.AGG_SEARCH,
+                *((f"聚合{i}", f"https://agg{i}.test/") for i in range(3)),
+            ),
+        }
+        for i in range(3):
+            pages[f"https://agg{i}.test/"] = obs_at(
+                f"https://agg{i}.test/",
+                links=(LinkItem(text="P", href=f"https://www.p{i}.test/movie"),),
+            )
+        pages.update(self._play_pages(
+            *[f"https://www.p{i}.test/movie" for i in range(3)]
+        ))
+        script = {
+            Q.SELECT_AGGREGATOR_RESULTS: ok(
+                Q.SELECT_AGGREGATOR_RESULTS,
+                {"selected": [
+                    {"url": f"https://agg{i}.test/", "why": "w"} for i in range(3)
+                ], "rejected": []},
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(
+            TabbedDriver(pages), ScriptedPerceptor(script),
+            RunConfig(discovery_path="aggregator", max_intermediates=2),
+        ).run("T001", "功夫")
+
+        assert len(rec.intermediates) == 2
+        assert [c.url for c in rec.candidates] == [
+            "https://www.p0.test/movie", "https://www.p1.test/movie",
+        ]
+        assert any("超上限" in w for w in rec.warnings)
+
+    async def test_B路径忽略传入检索词并记警告(self):
+        """taskgen 的检索词按 persona 渲染，B 用不上——静默忽略会让
+        「这批 B 的 query 为什么是聚合词」查无对证，warning 一句话
+        就能说清。"""
+        pages = {
+            self.AGG_SEARCH: self._search_page(
+                self.AGG_SEARCH, ("聚合站", "https://agg.test/")
+            ),
+        }
+        rec = await Orchestrator(
+            TabbedDriver(pages), ScriptedPerceptor({}),
+            RunConfig(discovery_path="aggregator"),
+        ).run("T001", "功夫", search_query="功夫 在线观看")
+
+        assert rec.query in search_step.AGGREGATOR_QUERIES
+        assert any("忽略传入的检索词" in w for w in rec.warnings)
+
+    async def test_发现链关键节点日志(self, caplog):
+        """排查用的实时日志（与 record.warnings 分工：log 给跑批当场
+        看，warnings 给复盘落盘读）。B 全链的五个路标——启动 / 取候选 /
+        中间页遍历 / 站点遍历 / 收尾——少一段就是排查时少一个路标，
+        而「哪段没打」只有在跑真批卡住时才会暴露，届时再找来不及。"""
+        import logging as _logging
+
+        pages = {
+            self.AGG_SEARCH: self._search_page(
+                self.AGG_SEARCH, ("聚合站", "https://agg.test/")
+            ),
+            "https://agg.test/": obs_at(
+                "https://agg.test/",
+                links=(LinkItem(text="P1站", href="https://www.p1.test/movie"),),
+            ),
+        }
+        pages.update(self._play_pages("https://www.p1.test/movie"))
+        script = {
+            Q.SELECT_AGGREGATOR_RESULTS: ok(
+                Q.SELECT_AGGREGATOR_RESULTS,
+                {"selected": [{"url": "https://agg.test/", "why": "w"}],
+                 "rejected": []},
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        with caplog.at_level(
+            _logging.INFO, logger="trajectory_pipeline.executor.orchestrator"
+        ):
+            await Orchestrator(
+                TabbedDriver(pages), ScriptedPerceptor(script),
+                RunConfig(discovery_path="aggregator"),
+            ).run("T001", "功夫")
+
+        msgs = " || ".join(caplog.messages)
+        for marker in (
+            "发现链启动",
+            "环节① 取回候选",
+            "中间页遍历开始",
+            "中间页（aggregator）",
+            "环节②",
+            "发现链结束",
+        ):
+            assert marker in msgs, f"关键节点日志缺失：{marker}"

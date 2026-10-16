@@ -117,6 +117,14 @@ class Test同源:
             v = score_d5(_sample(_out(br, question="")))
             assert v.score == 5, f"{br} 是代码判定分支，不该被判错"
 
+    def test_站内搜索收尾分支不参与配对(self):
+        """2026-10-16 路径 B/C：``site_search_routed`` / ``site_search_no_results``
+        由代码按子候选数量选用（``_finish``），记账刻意不带 question——
+        归属是发现链而不是选题那步的 ``select.play_sites``。"""
+        for br in ("site_search_routed", "site_search_no_results"):
+            v = score_d5(_sample(_out(br, question="", reached=False)))
+            assert v.score == 5, f"{br} 是代码判定分支，不该被判错"
+
     def test_站点首页核可判5分(self):
         """``_drop_site_homepages`` 是**代码层确定性事实核**：path 为 `/`
         的候选在任何判断点之前就被判 ``not_play_site``，question 恒为空。

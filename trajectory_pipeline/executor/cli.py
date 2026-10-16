@@ -39,6 +39,7 @@ import asyncio
 import dataclasses
 import inspect
 import json
+import logging
 import os
 import re
 import shutil
@@ -74,7 +75,12 @@ from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.integrity import (
     Severity, check_root, format_report,
 )
-from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig, RunRecord
+from trajectory_pipeline.executor.orchestrator import (
+    DISCOVERY_PATHS,
+    Orchestrator,
+    RunConfig,
+    RunRecord,
+)
 from trajectory_pipeline.executor.plan import PlanError, load_plan
 from trajectory_pipeline.executor.probe import (
     DEFAULT_TIMEOUT_S as MEDIA_DEFAULT_TIMEOUT_S,
@@ -291,6 +297,9 @@ async def _run_manual(args: argparse.Namespace) -> int:
         max_candidates=args.max_candidates,
         max_chars=args.max_chars,
         stop_after_success=args.stop_after_success,
+        discovery_path=args.discovery_path,
+        max_intermediates=args.max_intermediates,
+        max_referral_links=args.max_referral_links,
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
@@ -381,6 +390,9 @@ async def _run_plan(args: argparse.Namespace) -> int:
         max_candidates=args.max_candidates,
         max_chars=args.max_chars,
         stop_after_success=args.stop_after_success,
+        discovery_path=args.discovery_path,
+        max_intermediates=args.max_intermediates,
+        max_referral_links=args.max_referral_links,
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
@@ -2544,6 +2556,22 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-candidates", type=int, default=20)
     run.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     run.add_argument("--stop-after-success", type=int, default=0)
+    # ── 发现链路径（2026-10-16 路径 B/C）──────────────────────────
+    run.add_argument("--discovery-path", default="direct",
+                     choices=DISCOVERY_PATHS,
+                     help="发现链路径：direct（A，直搜，默认，与现状完全一致）/ "
+                          "aggregator（B，聚合站发现）/ article（C，文章引荐）。"
+                          "单路径 per run，批次按 run_config.discovery_path 归因")
+    run.add_argument("--max-intermediates", type=int, default=3,
+                     help="B/C 路径访问的中间页数上限。截断保序——只记警告不中断，"
+                          "是预算控制不是语义筛选")
+    run.add_argument("--max-referral-links", type=int, default=5,
+                     help="每个中间页校验的外链数上限")
+    run.add_argument("--log-level", choices=("debug", "info", "warning", "error"),
+                     default="info",
+                     help="发现链运行日志级别（orchestrator 关键节点实时输出到"
+                          "stderr；默认 info。warning 可只看告警，debug 留给"
+                          "深挖）")
     run.add_argument("--out", default=None, help="P1 输出目录")
     run.add_argument("--perceptor", choices=("rule", "llm", "auto"), default=None,
                      help="感知实现。默认读 TRAJECTORY_PERCEPTOR，再默认 auto"
@@ -2791,6 +2819,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     _reconfigure_stdio()
     args = build_parser().parse_args(argv)
+    # 运行日志（2026-10-16）：只在**真实 CLI 入口**配置，不在
+    # ``cmd_run`` 里——测试直接调 ``cmd_run`` / ``_run_plan``（手工
+    # Namespace），在那里读 ``args.log_level`` 会打出新的必填字段；
+    # 放这里则 ``getattr`` 拿不到就跳过，别的子命令零感知。
+    # ``basicConfig`` 对已配置的 root 是 no-op，pytest 的日志插件
+    # 先接管时不会打架。
+    level_name = getattr(args, "log_level", None)
+    if level_name:
+        logging.basicConfig(
+            level=getattr(logging, level_name.upper(), logging.INFO),
+            format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+        )
     if args.cmd == "review" and getattr(args, "apply", False):
         return cmd_apply_review(args)
     # 要不要走 asyncio **从函数本身推，不从命令名查表**。

@@ -85,8 +85,12 @@ class ToolSpec:
         }
 
     def visible_to_model(self) -> bool:
-        """这条动作该不该出现在喂给模型的工具列表里。"""
-        return self.name != "new_tab"
+        """这条动作该不该出现在喂给模型的工具列表里。
+
+        ``new_tab`` / ``close_tab`` 都是执行器自己的会话管理动作
+        （外链校验的开合），模型永远不该选它们。
+        """
+        return self.name not in ("new_tab", "close_tab")
 
 
 TOOL_SPECS: tuple[ToolSpec, ...] = (
@@ -98,6 +102,22 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="new_tab", params=("url",), instruction="在新标签页打开网址。"
+    ),  # 不可见，见 visible_to_model
+    # ── 路径 B/C 发现链（2026-10-16）：站内搜索的「填词→提交」与
+    # 外链校验的「开→关」。名字与 executor/actions.TOOLS 字面量对齐，
+    # 漂移由 test_p2_contract::TestToolSpaceDrift 盯住。
+    ToolSpec(
+        name="fill",
+        params=("text",),
+        instruction="往输入框里填文本（如把片名填进站内搜索框）。",
+    ),
+    ToolSpec(
+        name="press",
+        params=("key",),
+        instruction="按一个键（如回车，提交站内搜索）。",
+    ),
+    ToolSpec(
+        name="close_tab", params=(), instruction="关闭当前标签页。"
     ),  # 不可见，见 visible_to_model
 )
 

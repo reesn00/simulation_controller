@@ -82,12 +82,23 @@ UNRESOLVED = "unresolved"
 #: - ``trailer_suspect`` —— 词表判不准的**人工兜底**分支，与
 #:   ``trailer_only`` 同样由代码在环节③ 分流（见避坑指南 §6.5 的
 #:   「两个判断并列，suspect 优先」）。它**不是**负样本，
-#:   所以也不在注册表的 ``negative_branch`` 里——那份表只登记负分支。
+#:   所以也不在注册表的 ``negative_branch`` 里——那份表只登记负分支；
+#: - ``site_search_no_results`` / ``site_search_routed``（2026-10-16
+#:   路径 B/C）—— 站内搜索链的收尾记账，由代码按**子候选数量**选用
+#:   （派发了 → routed、一个没派发 → no_results）。选题那步的
+#:   question 是 ``select.play_sites``，但这两支的归属是发现链而非
+#:   ① 的题意，记账刻意不带 question（口径见
+#:   :func:`executor.steps.site_search._finish` 的 docstring）。它们与
+#:   ``not_play_site`` 的站点首页核**不同机制**：那支是① 的注册表
+#:   负分支、需要按组合放行（:data:`QUESTIONLESS_PAIRS`）；这两支
+#:   注册表里没有同名题绑定，整条进 CODE_ONLY 即可。
 CODE_ONLY_BRANCHES: frozenset[str] = frozenset(
     {
         "unreachable_hard",
         "trailer_only",
         "trailer_suspect",
+        "site_search_no_results",
+        "site_search_routed",
     }
 )
 

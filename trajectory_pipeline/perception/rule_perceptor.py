@@ -479,6 +479,47 @@ def trailer_only_candidates(obs: Observation) -> list[InteractiveElement]:
             if is_play_control(e.label) and classify_trailer(e.label) != "none"]
 
 
+# ── 站内搜索框词表（2026-10-16 路径 B/C）─────────────────────────────────
+
+#: 搜索框的肯定信号。命中即进入候选池。
+#:
+#: 只收**明确写着搜索语义**的词。输入框的 label 通常是 placeholder
+#: 文案（「搜索片名」「输入影视剧名称」），命中「搜索/检索」即算；
+#: 刻意不含「输入」「关键词」这类泛输入词——登录框、邮箱订阅框的
+#: placeholder 也长这样（INC43 教训：词表必须核信号位置，泛词的
+#: 误伤面控制不住）。
+SEARCH_BOX_KEYWORDS: tuple[str, ...] = ("搜索", "检索", "search")
+
+#: 可能承载搜索框的标签。``input`` 是主体、``textarea`` 少见但同构；
+#: **刻意不含** ``button`` / ``a``——本词表服务的是
+#: :func:`~trajectory_pipeline.perception.llm_perceptor.LLMPerceptor._find_site_search`
+#: 的 ref 兜底，取回的 ref 要被 ``type_text`` 填词，填进按钮会直接
+#: DriverError。「搜索」按钮的点击路径是 site_search 的
+#: ``SEARCH_BUTTON_HINTS``（那边是回车失败后的第二条提交路），两边
+#: 词表各管各的动作，不共用。
+SEARCH_BOX_TAGS: frozenset[str] = frozenset({"input", "textarea"})
+
+
+def search_box_candidates(obs: Observation) -> list[InteractiveElement]:
+    """页面上的站内搜索框候选，按观察原序。
+
+    ``FIND_SITE_SEARCH`` 的代码侧兜底（模型不回传 ref 时由它取回，
+    :func:`play_control_candidates` 在 ③ 的地位同款）与交叉印证。
+    词表唯一所有者在这里，避免 W3 兜底与单测各写一份。
+
+    匹配前把 label 归一并**去掉全部空格**（「搜 索」→「搜索」）——
+    按钮文案带空格排版是常见形态，逐变体列词表不如归一后比对。
+    """
+    out: list[InteractiveElement] = []
+    for e in obs.interactive_elements:
+        if (e.tag or "").lower() not in SEARCH_BOX_TAGS:
+            continue
+        text = _norm(e.label).replace(" ", "")
+        if text and any(kw in text for kw in SEARCH_BOX_KEYWORDS):
+            out.append(e)
+    return out
+
+
 class RulePerceptor:
     """确定性 Perceptor。W1 的唯一实现。"""
 
@@ -497,6 +538,13 @@ class RulePerceptor:
         """
         started = time.monotonic()
         spec = questions.get(question)
+        # 2026-10-16 路径 B/C：新增六题（SELECT_AGGREGATOR_RESULTS /
+        # IS_AGGREGATOR / SELECT_SITE_ENTRIES / SELECT_ARTICLE_RESULTS /
+        # SELECT_REFERRAL_LINKS / FIND_SITE_SEARCH）**刻意不挂 handler**——
+        # 全是语义题，W1 一律 fail-closed，与 ①② 现状一致。
+        # ``search_box_candidates`` 词表只作为 W3 的 ref 兜底存在，
+        # 不构成 W1 的判定能力（「词表命中」≠「语义确认」，同
+        # :func:`play_control_candidates` 不让 W1 独立判 ③ 的理由）。
         handler = {
             Q.FIND_PLAY_CONTROL: self._find_play_control,
             Q.PLAYER_OK: self._player_ok,

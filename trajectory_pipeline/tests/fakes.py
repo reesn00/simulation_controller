@@ -26,7 +26,12 @@ import json
 from typing import Any
 
 from trajectory_pipeline.perception import llm_perceptor as lp
-from trajectory_pipeline.perception.rule_perceptor import classify_trailer, is_play_control
+from trajectory_pipeline.perception.rule_perceptor import (
+    SEARCH_BOX_KEYWORDS,
+    SEARCH_BOX_TAGS,
+    classify_trailer,
+    is_play_control,
+)
 
 
 class FakeLLM:
@@ -223,7 +228,60 @@ class FakeLLM:
                     return {"ref": e.get("ref", ""), "trailer_only": False,
                             "why": f"控件文本 {e.get('label','')!r}"}
             return {"ref": None, "trailer_only": False, "why": "未见播放控件"}
-        # IS_REACHABLE / PLAYER_OK
+        # 2026-10-16 路径 B/C · ⑦ 站内搜索框：与 ③ 同款——页面上有
+        # 搜索框就回真实 ref，没有就回 null。匹配用词表同源常量
+        # （SEARCH_BOX_*），不另写一份判定。
+        if qid == lp.Q.FIND_SITE_SEARCH:
+            if self.lie_about_ref:
+                return {"ref": self.lie_about_ref, "why": "看着像搜索框"}
+            if self.forget_ref:
+                # 与 ③ 同款实测形态：看得到框却不回 ref——检验词表兜底
+                return {"ref": None, "why": "页面上有搜索框，但我没回传 ref"}
+            for e in obs.get("interactive_elements") or []:
+                tag = str(e.get("tag", "")).lower()
+                label = " ".join(
+                    str(e.get("label", "")).split()
+                ).replace(" ", "").lower()
+                if (
+                    tag in SEARCH_BOX_TAGS
+                    and label
+                    and any(kw in label for kw in SEARCH_BOX_KEYWORDS)
+                ):
+                    return {"ref": e.get("ref", ""),
+                            "why": f"搜索框 {e.get('label','')!r}"}
+            return {"ref": None, "why": "未见站内搜索框"}
+        # 2026-10-16 路径 B/C · 四道 SELECT_*：与 ① 同款——按编号回指，
+        # 复用同一批坏行为开关（invent_urls / no_conclusion / reject_all）。
+        # reject_all 在 ①′ 两题（搜索页选题）表现为「没结论」，在 ⑥′ 两题
+        # （单页选链接）表现为「真结论：本页没有入口」——同一开关驱动
+        # 两种口径，正好把 handler 的分叉两侧都测到。
+        if qid in (
+            lp.Q.SELECT_AGGREGATOR_RESULTS,
+            lp.Q.SELECT_SITE_ENTRIES,
+            lp.Q.SELECT_ARTICLE_RESULTS,
+            lp.Q.SELECT_REFERRAL_LINKS,
+        ):
+            links = obs.get("links") or []
+            if self.invent_urls:
+                return {"selected": [{"url": "https://编造.test/x",
+                                      "why": "看着像"}],
+                        "rejected": []}
+            if self.no_conclusion:
+                return {"selected": [], "rejected": []}
+            if self.reject_all:
+                return {"selected": [],
+                        "rejected": [{"i": n, "reason": "不是正式入口"}
+                                     for n, _ in enumerate(links[:3])]}
+            if not links:
+                return {"selected": [], "rejected": []}
+            selected = [{"i": 0, "title": links[0].get("text", ""),
+                         "why": "看着像目标"}]
+            rejected = (
+                [{"i": 1, "reason": "导航链接"}] if len(links) > 1 else []
+            )
+            return {"selected": selected, "rejected": rejected}
+        # IS_REACHABLE / PLAYER_OK / IS_AGGREGATOR（⑤ 与前两者同形：
+        # bool + evidence，走同一条通用应答；answers 开关可逐题覆盖）
         # 2026-10-12 增量十七 · P4a 第二轮：让 FakeLLM 能在 IS_REACHABLE /
         # PLAYER_OK 时**真**回 page_quotes / access / paywall_type——
         # 这样端到端测试就能驱动「LLM 给了 page_quotes → fallback 触发」

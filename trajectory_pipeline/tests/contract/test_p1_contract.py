@@ -79,6 +79,9 @@ class Test字段集一致:
             # INC46：搜索单元的终局反思（与 steps 平级，不进 outcomes——
             # 那是采集事实层）。站点单元的那份在 visits[] 里。
             "reflection",
+            # 2026-10-16 路径 B/C：发现路径（批次归因轴）与中间页单元
+            # （聚合站页 / 文章页，独立决策单元）。
+            "discovery_path", "intermediates",
         }
         assert actual == expected, (
             f"顶层字段漂移：多 {actual - expected} / 少 {expected - actual}。"
@@ -130,7 +133,11 @@ class Test字段集一致:
         expected = {"url", "landed_url", "success", "notes", "steps",
                     "site_obs", "player_obs",
                     # INC46：站点单元的终局反思，与 steps 平级
-                    "reflection"}
+                    "reflection",
+                    # 2026-10-16 路径 B/C：站内搜索结果。None = 没走
+                    # 站内搜索（direct / 深层候选），与「走了但
+                    # fail-closed」不同物。
+                    "search"}
         assert visit_keys == expected, (
             f"visit 字段漂移：多 {visit_keys - expected} / 少 {expected - visit_keys}"
         )

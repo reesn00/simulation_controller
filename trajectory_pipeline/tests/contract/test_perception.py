@@ -77,8 +77,10 @@ class TestRegistry:
             assert spec.negative_branch, f"{qid} 未绑定 negative_branch"
             assert spec.id == qid, f"注册表 key 与 Question.id 不一致: {qid}"
 
-    def test_失败分支全集是十三条(self):
+    def test_失败分支全集是二十条(self):
         """2026-10-12 阶段 1：10 → 13（10 旧 − Login墙合并态 + 4 新）。
+        2026-10-16 路径 B/C：13 → 20（+ 注册表负分支五支 + 站内搜索
+        代码判定两支）。
         ``login_wall_or_blocked`` 已弃用，不进 ``all_branches()``——
         它不再要求有产出，但 ``record()`` 按 ``DEPRECATED_BRANCHES``
         单独放行历史路径（visit.py ② 不传 payload 仍落合并态）。"""
@@ -100,6 +102,15 @@ class TestRegistry:
             "blocked",  # ②：地区/验证码/反爬
             "broken",  # ②：404；媒体损坏见 media_signal
             "partial_free",  # ④：试看/预告后付费
+            # 2026-10-16 路径 B/C 的注册表负分支五支：
+            "not_aggregator",  # ①B/⑤ 共用：候选不是聚合站
+            "aggregator_no_entries",  # ⑥：聚合站页无正式入口
+            "not_article",  # ①C：候选不是文章/社区页
+            "article_no_links",  # ⑥C：文章页无引荐外链
+            "no_site_search",  # ⑦：站点首页无站内搜索框
+            # 2026-10-16 路径 B/C 的站内搜索代码判定两支：
+            "site_search_no_results",  # 提交成功但结果页无子候选
+            "site_search_routed",  # 路由记账（NON_SAMPLE，不入池）
         }
 
     def test_未知_id_抛_KeyError(self):

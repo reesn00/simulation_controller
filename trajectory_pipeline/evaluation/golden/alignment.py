@@ -69,6 +69,21 @@ EQUIV_CLASS: Mapping[str, str] = {
     "not_play_site": "NOT_PLAY_SITE",
     "trailer_only": "TRAILER",
     "trailer_suspect": "TRAILER",
+    # 发现链（2026-10-16 路径 B/C）。①′/⑤′ 的「候选类型不对」与 ①
+    # 的 not_play_site 同口径；四支「页面无产出」（聚合站无入口 /
+    # 文章页无外链 / 无站内搜索 / 搜了没有）与 no_play_control
+    # 同口径——页面在手，但没有可看的东西。金标侧的 empty 归
+    # NO_PLAY_RESOURCE，正好接上。
+    "not_aggregator": "NOT_PLAY_SITE",
+    "not_article": "NOT_PLAY_SITE",
+    "aggregator_no_entries": "NO_PLAY_RESOURCE",
+    "article_no_links": "NO_PLAY_RESOURCE",
+    "no_site_search": "NO_PLAY_RESOURCE",
+    "site_search_no_results": "NO_PLAY_RESOURCE",
+    # 路由记账不是结论：派发了子候选、结论由子候选自己的 visit 记
+    # （NON_SAMPLE，不入池）。独立等价类——金标侧没有对应标签，
+    # 挂进任何既有类都会让它与某个金标标签「意外等价」。
+    "site_search_routed": "ROUTED",
     # 未判明
     "unresolved": "UNKNOWN",
     "player_unverified": "UNKNOWN",

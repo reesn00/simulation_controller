@@ -279,7 +279,11 @@ def _ns(**kw):
     base = dict(plan=None, out=None, limit=0, title=None, dry_run=False,
                 include_unrewritten=False, engine="bing", task_id="T001",
                 perceptor=None, max_candidates=5, max_chars=None,
-                stop_after_success=0)
+                stop_after_success=0,
+                # 发现链路径（2026-10-16 路径 B/C）：默认值与
+                # RunConfig 一致——这条路径的存档归因必须是 direct
+                discovery_path="direct", max_intermediates=3,
+                max_referral_links=5)
     base.update(kw)
     return argparse.Namespace(**base)
 

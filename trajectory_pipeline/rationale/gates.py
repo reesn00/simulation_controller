@@ -85,7 +85,12 @@ FindingKind = Literal[
 #: ``new_tab`` 不是一一对应（①② 发生在 goto 之后、③ 驱动 click），
 #: 所以因果核查**只在 rationale 明确提到别的动作名时报**，
 #: 不要求「必须提到当前动作」。
-_ACTION_NAMES: tuple[str, ...] = ("goto", "click", "new_tab")
+#:
+#: 2026-10-16 路径 B/C：+``fill``/``press``/``close_tab``，与
+#: ``executor/actions.TOOLS`` 字面量保持对齐（站内搜索与外链校验的产地）。
+_ACTION_NAMES: tuple[str, ...] = (
+    "goto", "click", "new_tab", "fill", "press", "close_tab",
+)
 
 
 @dataclass(frozen=True, slots=True)

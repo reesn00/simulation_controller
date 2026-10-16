@@ -4,7 +4,7 @@
 少一支」是**静默失效**——报表上分部数字都在，就是有一支永远是 0，
 没人知道是那支不产出还是那支没接。所以这里做两件事：
 
-1. **入池时校验**：分支名不在注册表的 13 条之内 → 抛错，不落盘。
+1. **入池时校验**：分支名不在注册表的 20 条之内 → 抛错，不落盘。
    新增分支忘了同步 ``perception/questions.py`` 会当场炸，而不是攒一批脏数据。
    已弃用分支（``questions.DEPRECATED_BRANCHES``）**单独放行**——历史路径
    仍可能产出合并态 ``login_wall_or_blocked``，不能把旧调用点当场炸掉。
@@ -12,11 +12,12 @@
    一条没有 evidence 的负样本，在人工复核时无法与「代码 bug 导致的失败」区分，
    等于把排查成本转嫁给标注员。
 
-另外记账三支「没判出来」的分支与真负样本**分开统计**（I4 的直接后果）：
+另外记账四支「不进负样本池」的分支与真负样本**分开统计**（I4 的直接后果）：
 ``unresolved`` / ``player_unverified`` / ``trailer_suspect`` 都不是「这里看不了」，
 混进负样本会污染负样本纯度——它会让负样本纯度这个指标失去意义，
 而指标失效是察觉不到的。三支之间也不合并：成因不同，要修的东西就不同，
-见 :data:`NON_SAMPLE_BRANCHES` 的说明。
+见 :data:`NON_SAMPLE_BRANCHES` 的说明。第四支 ``site_search_routed``
+（2026-10-16 路径 B/C）是另一回事：路由**记账**不是结论，见该常量说明。
 """
 
 from __future__ import annotations
@@ -43,6 +44,9 @@ from trajectory_pipeline.perception.rule_perceptor import (
 #: （+ ``broken`` 承接 404）。原 ``login_wall_or_blocked`` **保留但弃用**
 #: ——历史存档要展示，故不删；新代码路径不再主动产出它。全部合法值
 #: （13 活跃 + 1 deprecated + success）= 15 类。
+#:
+#: 2026-10-16 路径 B/C：+7 支发现链分支（聚合站两支、文章链两支、
+#: 站内搜索三支），活跃 13 → 20，全部合法值 = 22 类。
 BRANCH_LABELS: Mapping[str, str] = {
     "not_play_site": "不是播放站点",
     "unreachable_hard": "导航失败（网络/DNS/超时）",
@@ -58,6 +62,17 @@ BRANCH_LABELS: Mapping[str, str] = {
     "blocked": "地区限制 / 验证码 / 反爬环境阻断",
     "broken": "内容损坏（404 / 媒体不可解码 / duration=0）",
     "partial_free": "有免费部分（试看/预告），完整内容需付费",
+    # ── 路径 B/C 发现链（2026-10-16）────────────────────────────
+    # 前两支是聚合站链（①B 选站 + ⑤ 确认 / ⑥ 选入口），中间两支是
+    # 文章链（①C 选文 / ⑥C 选外链），后三支是站内搜索链。
+    # 见 .trae/documents/路径BC发现链实施计划.md。
+    "not_aggregator": "候选不是影视聚合站 / 导航站",
+    "aggregator_no_entries": "聚合站页面上没有正式影视站入口",
+    "not_article": "候选不是文章 / 社区讨论页",
+    "article_no_links": "文章页没有可引荐的影视站外链",
+    "no_site_search": "首页型候选没有站内搜索框",
+    "site_search_no_results": "站内搜索未产出任何子候选",
+    "site_search_routed": "首页经站内搜索派发子候选（路由记账，非结论）",
 }
 
 #: 这些分支**不是**真负样本，是「没判出来」。单独统计，不进负样本池。
@@ -67,11 +82,18 @@ BRANCH_LABELS: Mapping[str, str] = {
 #:   ``player_unverified`` 环节⑦ 判不出来，**但控件点了、播放页就在眼前**
 #:                         ——不确定的是「组件能不能用」，是页面证据不足
 #:   ``trailer_suspect``    词表判不准，需要语义判断
+#:
+#: ``site_search_routed``（2026-10-16 路径 B/C）是第四支，成因与上面
+#: 三支都不同：它**不是「没判出来」**，站内搜索成功派发了子候选，
+#: 后续结论由子候选自己的 visit 记。它记录的是**路由去向**——
+#: 「这个首页型候选的处理走了站内搜索这条路」。混进负样本会把
+#: 「成功进入处理流程」记成「这里看不了」。
 NON_SAMPLE_BRANCHES = frozenset(
     {
         "unresolved",
         "trailer_suspect",
         "player_unverified",
+        "site_search_routed",
     }
 )
 
@@ -199,7 +221,8 @@ class RunLedger:
             and branch not in questions.DEPRECATED_BRANCHES
         ):
             raise UnknownBranch(
-                f"未知失败分支 {branch!r}；注册表 13 条为 "
+                f"未知失败分支 {branch!r}；注册表 "
+                f"{len(questions.all_branches())} 条为 "
                 f"{sorted(questions.all_branches())}"
             )
         # 2026-10-12 增量二十：``page_quotes`` 解析——见 :attr:`SiteOutcome.page_quotes`。
@@ -377,7 +400,7 @@ class RunLedger:
     def summary(self) -> dict[str, Any]:
         """覆盖率报表。
 
-        ``missing_branches`` 是给**人**看的：十三条里有哪条这一批一条都没产出。
+        ``missing_branches`` 是给**人**看的：二十条里有哪条这一批一条都没产出。
         它比「各分支数量」更能说明问题——数量为 0 可能只是样本少，
         而 missing 会直接指向「这条路径没接上」。
         已弃用分支（``questions.DEPRECATED_BRANCHES``）**不在** missing 里：

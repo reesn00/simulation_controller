@@ -178,6 +178,146 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
             evidence_required=True,
             negative_branch="component_unverified",
         ),
+        # ── 路径 B/C 发现链六题（2026-10-16）────────────────────────
+        # 设计原则与上面四题一致：代码取回候选（链接 / 元素），
+        # 语义归属（「是不是聚合站」「是不是正式入口」「是不是搜索框」）
+        # 全部问模型。B/C 只是**候选来源不同**，产出 Candidate 之后
+        # 复用环节② visit 链与分支记账，不重写执行器。
+        Q.SELECT_AGGREGATOR_RESULTS: Question(
+            id=Q.SELECT_AGGREGATOR_RESULTS,
+            prompt=(
+                "以下是用**通用聚合查询**（与任何片名无关）搜出的链接，"
+                "每条带编号 i。选出其中**本身是影视聚合站 / 影视导航站**"
+                "的结果（回 i）——判据是页面用途：聚合多个影视站点入口的"
+                "导航页，而不是某部作品的播放页。"
+                "并说明选择理由；不选的要说明排除理由。"
+                "**selected 与 rejected 至少要有一条**："
+                "哪怕一个都选不出来，也要把最像的几个放进 rejected 并写明"
+                "为什么。两个都留空表示「没作答」，会被判为无法采信。"
+            ),
+            answer_type="decision",
+            schema_hint=MappingProxyType(
+                {
+                    "selected": [{"i": "int", "title": "str", "why": "str"}],
+                    "rejected": [{"i": "int", "reason": "str"}],
+                }
+            ),
+            # ① 模式：零选中不是「这页没有聚合站」（那是 False 的意思），
+            # 是没给出选站结论——负样本走逐候选点名（rejected）路径产生。
+            confidence_threshold=0.7,
+            evidence_required=True,
+            negative_branch="not_aggregator",
+        ),
+        Q.IS_AGGREGATOR: Question(
+            id=Q.IS_AGGREGATOR,
+            prompt=(
+                "这个页面是不是**影视聚合站 / 影视导航站**——"
+                "即汇总多个影视站点入口（站名 + 外链列表）的导航页？\n"
+                "判「否」的典型：单部作品的播放页、新闻资讯页、"
+                "论坛首页、下载站。\n\n"
+                "1. **填写 ``answer``**：``true`` / ``false`` / ``null`` "
+                "三选一——证据不足时给 ``null``，不要猜。\n"
+                "2. **evidence** 写你自己的一句话判断"
+                "（如「整页是影视站名与外链列表」）。"
+            ),
+            answer_type="bool",
+            schema_hint=MappingProxyType({"evidence": "str"}),
+            confidence_threshold=0.7,
+            evidence_required=True,
+            negative_branch="not_aggregator",
+        ),
+        Q.SELECT_SITE_ENTRIES: Question(
+            id=Q.SELECT_SITE_ENTRIES,
+            prompt=(
+                "这是一个影视聚合站页面，页面上有若干链接，每条带编号 i。"
+                "选出其中**通向影视站点的正式入口**（回 i）——"
+                "即点过去能到某个影视站点（播放站 / 资源站）的链接。\n"
+                "排除的写进 rejected 并说明形态：介绍页（讲这个站但"
+                "不通向它）、广告位、站内分类页、 dead link 等。\n"
+                "**selected 为空且 rejected 非空** = 你确认这个聚合站"
+                "页面上没有正式影视站入口——这是一条**真结论**（不是没答）。\n"
+                "**两个都留空**才表示「没作答」，会被判为无法采信。"
+            ),
+            answer_type="decision",
+            schema_hint=MappingProxyType(
+                {
+                    "selected": [{"i": "int", "why": "str"}],
+                    "rejected": [{"i": "int", "reason": "str"}],
+                }
+            ),
+            # ⑥ 模式：题问的是「**这个页面**上的入口」，范围收敛到单页，
+            # 排除全部候选后零选中是对**本页**的真结论（aggregator_no_entries）
+            # ——与 ①（整张搜索页、噪声占多数）刻意不同口径。
+            confidence_threshold=0.7,
+            evidence_required=True,
+            negative_branch="aggregator_no_entries",
+        ),
+        Q.SELECT_ARTICLE_RESULTS: Question(
+            id=Q.SELECT_ARTICLE_RESULTS,
+            prompt=(
+                "以下是搜索结果页的链接，每条带编号 i。选出其中"
+                "**讨论在线观看资源的文章 / 社区帖子页**（回 i）——"
+                "判据是页面形态：影视推荐文、观影攻略、贴吧/论坛讨论帖，"
+                "而不是播放站本身、聚合导航站或官方资讯页。"
+                "并说明选择理由；不选的要说明排除理由。"
+                "**selected 与 rejected 至少要有一条**："
+                "哪怕一个都选不出来，也要把最像的几个放进 rejected 并写明"
+                "为什么。两个都留空表示「没作答」，会被判为无法采信。"
+            ),
+            answer_type="decision",
+            schema_hint=MappingProxyType(
+                {
+                    "selected": [{"i": "int", "title": "str", "why": "str"}],
+                    "rejected": [{"i": "int", "reason": "str"}],
+                }
+            ),
+            # ① 模式，同 SELECT_AGGREGATOR_RESULTS。
+            confidence_threshold=0.7,
+            evidence_required=True,
+            negative_branch="not_article",
+        ),
+        Q.SELECT_REFERRAL_LINKS: Question(
+            id=Q.SELECT_REFERRAL_LINKS,
+            prompt=(
+                "这是一篇讨论在线观看资源的文章 / 帖子页面，"
+                "页面上有若干链接，每条带编号 i。选出正文中"
+                "**引荐读者前往的影视站外链**（回 i）——"
+                "即文章推荐去看片的站点链接。\n"
+                "排除的写进 rejected 并说明形态：站内导航、"
+                "参考文献、广告、社交分享等。\n"
+                "**selected 为空且 rejected 非空** = 你确认这篇文章"
+                "没有引荐任何影视站外链——这是一条**真结论**（不是没答）。\n"
+                "**两个都留空**才表示「没作答」，会被判为无法采信。"
+            ),
+            answer_type="decision",
+            schema_hint=MappingProxyType(
+                {
+                    "selected": [{"i": "int", "why": "str"}],
+                    "rejected": [{"i": "int", "reason": "str"}],
+                }
+            ),
+            # ⑥ 模式，同 SELECT_SITE_ENTRIES。
+            confidence_threshold=0.7,
+            evidence_required=True,
+            negative_branch="article_no_links",
+        ),
+        Q.FIND_SITE_SEARCH: Question(
+            id=Q.FIND_SITE_SEARCH,
+            prompt=(
+                "这是一个影视站点的**首页**（不是某部作品的页面），"
+                "目标作品的具体入口不在首页上。"
+                "页面上是否存在**站内搜索框**（可用于按片名检索）？"
+                "**必须回传该输入框的 ref**，代码要用它填入片名，"
+                "不要自己找。页面上没有搜索框时 ref 给 null。"
+            ),
+            answer_type="decision",
+            schema_hint=MappingProxyType({"ref": "str", "why": "str"}),
+            # ③ 模式：ref 必须可溯源到 obs.interactive_elements（I6），
+            # 词表（input/搜索关键词）作为代码侧兜底与模型交叉印证。
+            confidence_threshold=0.7,
+            evidence_required=True,
+            negative_branch="no_site_search",
+        ),
     }
 )
 
@@ -211,6 +351,21 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
 #:                         ``unreachable_hard``（环境导航失败）刻意分离
 #:   ``partial_free``       ④ 的细分（Q3）：有免费部分（试看/预告），
 #:                         完整内容需付费
+#:
+#: **站内搜索链的代码判定**（2026-10-16 路径 B/C，见
+#: ``.trae/documents/路径BC发现链实施计划.md``）：
+#:   ``site_search_no_results``  首页型候选的站内搜索**提交成功、到达了
+#:                               结果页，但没有产出任何子候选**（选题
+#:                               ``SELECT_PLAY_SITES`` 判 False 或启发式
+#:                               为空）——由 site_search 代码统一选用，
+#:                               与①的 ``not_play_site`` 刻意分流：同一
+#:                               个「选不出播放站」结论，产地不同
+#:                               （任务级搜索页 vs 站内搜索结果页），
+#:                               归因时不能混
+#:   ``site_search_routed``      首页型候选经站内搜索成功派发了子候选——
+#:                               **路由记账不是结论**：它回答「这个站的处理
+#:                               走了哪条路」而不是「这个站行不行」，所以
+#:                               不入负样本池（``NON_SAMPLE_BRANCHES``）
 CODE_ONLY_BRANCHES = frozenset(
     {
         "unreachable_hard",
@@ -223,6 +378,8 @@ CODE_ONLY_BRANCHES = frozenset(
         "blocked",
         "broken",
         "partial_free",
+        "site_search_no_results",
+        "site_search_routed",
     }
 )
 
@@ -277,7 +434,7 @@ def negative_branch_of(question_id: str) -> str:
 
 
 def all_branches() -> frozenset[str]:
-    """活跃失败分支全集（13 条，已排除 :data:`DEPRECATED_BRANCHES`）。
+    """活跃失败分支全集（20 条，已排除 :data:`DEPRECATED_BRANCHES`）。
 
     这是契约的一部分：``executor/branches.py`` 落盘时按这个集合校验，
     出现集合外的分支名即报错，避免「分支静默消失」。
@@ -287,6 +444,11 @@ def all_branches() -> frozenset[str]:
     ``partial_free`` 四个新分支）。已弃用分支不进本集合——它不再要求
     有产出（``missing_branches`` 追踪），但 ``record()`` 校验按
     :data:`DEPRECATED_BRANCHES` 单独放行，见该常量说明。
+
+    2026-10-16 路径 B/C：13 → 20（+ 注册表负分支 ``not_aggregator`` /
+    ``aggregator_no_entries`` / ``not_article`` / ``article_no_links`` /
+    ``no_site_search`` 五支 + 代码判定 ``site_search_no_results`` /
+    ``site_search_routed`` 两支）。
     """
     from_question = {q.negative_branch for q in REGISTRY.values() if q.negative_branch}
     return frozenset((from_question | CODE_ONLY_BRANCHES) - DEPRECATED_BRANCHES)
@@ -318,7 +480,21 @@ _BRANCH_QUESTION: dict[str, str] = {
     "blocked": Q.IS_REACHABLE,  # ② 的细分（Q4）：地区/验证码/反爬
     "broken": Q.IS_REACHABLE,  # ② 的细分（404）；媒体损坏形态见 media_signal
     "partial_free": Q.PLAYER_OK,  # ④ 的细分（Q3）：试看/预告后付费
+    # 2026-10-16 路径 B/C 的站内搜索链——都发生在 FIND_SITE_SEARCH
+    # 判 True（找到搜索框）之后的代码路径上，归属以起点判断点计。
+    "site_search_no_results": Q.FIND_SITE_SEARCH,  # 结果页未产出子候选
+    "site_search_routed": Q.FIND_SITE_SEARCH,  # 路由记账，非结论
 }
+
+# ⚠️ ``not_aggregator`` 是**双产地分支**（2026-10-16 路径 B/C）：
+# ①B ``SELECT_AGGREGATOR_RESULTS`` 判 False 与 ⑤ ``IS_AGGREGATOR``
+# 判 False 都记它。上面的动态推导按 REGISTRY 注册顺序**后者覆盖
+# 前者**，所以 :func:`question_of_branch` 返回 ⑤——站点级确认题，
+# 与 review_queue 按站点级 outcome 核归属的粒度一致。
+# ①B 侧的 (question, branch) 合法性**不受影响**：d5_scorer 的
+# ``QUESTION_TO_BRANCHES`` 是 question→branches 一对多推导，两道题
+# 的允许集都会包含它。若未来复核工作流要贴这支，须先扩
+# ``review_queue._fits`` 支持多产地分支，单一归属只核得出一个产地。
 
 
 def question_of_branch(branch: str) -> str:

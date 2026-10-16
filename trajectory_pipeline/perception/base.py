@@ -200,6 +200,15 @@ class Q:
     IS_REACHABLE = "site.is_reachable"
     FIND_PLAY_CONTROL = "site.find_play_control"
     PLAYER_OK = "player.ok"
+    # ── 路径 B/C 发现链（2026-10-16）────────────────────────────────
+    # 六道新题只扩「候选从哪来」，产出 Candidate 之后复用环节② visit 链，
+    # 详见 .trae/documents/路径BC发现链实施计划.md。
+    SELECT_AGGREGATOR_RESULTS = "select.aggregator_results"
+    IS_AGGREGATOR = "site.is_aggregator"
+    SELECT_SITE_ENTRIES = "select.site_entries"
+    SELECT_ARTICLE_RESULTS = "select.article_results"
+    SELECT_REFERRAL_LINKS = "select.referral_links"
+    FIND_SITE_SEARCH = "site.find_site_search"
 
 
 # ═══════════════════════════════════════════════════════════════════════

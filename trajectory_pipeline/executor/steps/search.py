@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import re
+import zlib
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
@@ -151,6 +152,28 @@ def build_query(
     raise ValueError(f"未知 intent: {intent!r}")
 
 
+#: 路径 B（聚合站发现）的通用检索词表。**与片名无关**——聚合站的
+#: 发现不靠片名（任何片名的聚合站入口池是同一个），靠的是「用聚合词
+#: 能搜到哪些导航站」。按 task 轮换而不是固定一个，是让三条词的
+#: 召回差都进批次——固定一条会把「这条词搜不到的聚合站」系统性排除，
+#: 而那不是站点不存在，是我们没问。
+AGGREGATOR_QUERIES: tuple[str, ...] = (
+    "影视聚合站",
+    "影视网站导航",
+    "在线影视资源站大全",
+)
+
+
+def aggregator_query(seed: str) -> str:
+    """按 seed（task_id）稳定轮换一条聚合检索词。
+
+    用 ``zlib.crc32`` 而不是内置 ``hash``：后者每进程随机
+    （PYTHONHASHSEED），同一 task 重跑会换词，而「这个 task 用了哪条
+    词」必须可以从 task_id 重算出来——存档可归因的前提是**确定性**。
+    """
+    return AGGREGATOR_QUERIES[zlib.crc32(seed.encode("utf-8")) % len(AGGREGATOR_QUERIES)]
+
+
 @dataclass(frozen=True, slots=True)
 class Candidate:
     """一个候选站点。
@@ -165,6 +188,15 @@ class Candidate:
     用的是解包后的 :attr:`url`。判断点 ① 回传的 url 是前者，控制器要
     拿它对上后者才能过滤候选——少记这个字段就得靠字符串猜测，
     而百度链接一旦解码失败就是「整个站点集丢失」。
+
+    ``origin`` / ``parent`` 是发现链溯源（2026-10-16 路径 B/C）：
+    ``origin`` 记这个候选**从哪条发现路径**来——``"search"``（直搜，含
+    站内搜索结果页）、``"aggregator"``（聚合站入口）、``"article"``
+    （文章引荐外链）、``"site_search"``（站内搜索派发的子候选）；
+    ``parent`` 记派发它的**中间页 URL**（聚合站页 / 文章页 / 站内搜索
+    结果页），直搜候选为空串。批次出了问题要能从候选回溯到产地，
+    没有这两个字段就只能按 URL 猜。默认值保证直搜路径（A）的
+    全部既有构造点零改动。
     """
 
     url: str
@@ -172,6 +204,8 @@ class Candidate:
     rank: int
     source_href: str = ""
     opaque_redirect: bool = False
+    origin: str = "search"
+    parent: str = ""
 
     @property
     def host(self) -> str:

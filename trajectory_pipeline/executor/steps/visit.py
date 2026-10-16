@@ -24,7 +24,7 @@ from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.browser.page_driver import DriverError, PageDriver
 from trajectory_pipeline.executor.branches import RunLedger
-from trajectory_pipeline.executor.steps import reachability
+from trajectory_pipeline.executor.steps import reachability, site_search as site_search_mod
 from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.perception.base import Observation, Perceptor, Q
 
@@ -47,8 +47,14 @@ class VisitResult:
     #: **本站点单元的终局反思**（INC46）。与 ``steps`` 平级，
     #: 与 :attr:`~trajectory_pipeline.executor.orchestrator.RunRecord.reflection`
     #: 同款：LLM 产物，不进 ``outcomes``（那是采集事实层）。
-    #: ``None`` = 没生成，与「生成了但内容为空」不同——三态原样落盘。
+    #: ``None`` = 没生成，与「生成了但内容是空的」不同——三态原样落盘。
     reflection: dict[str, Any] | None = None
+    #: **站内搜索的结果**（2026-10-16 路径 B/C）。``None`` = 没走站内
+    #: 搜索（direct 路径 / 深层链接候选 / 非首页落地）——与「走了但
+    #: 四种归宿之一」是两回事，P1 落盘靠它区分「没启用」与「启用了
+    #: 但 fail-closed」。``ROUTED`` 时 ``.selected`` 是派发的子候选，
+    #: 由 orchestrator 追加进遍历队列。
+    search: site_search_mod.SiteSearchResult | None = None
 
     def note(self, text: str) -> None:
         if self.notes is None:
@@ -63,6 +69,8 @@ async def visit_site(
     candidate: Candidate,
     *,
     max_chars: int | None = None,
+    allow_site_search: bool = False,
+    title: str = "",
 ) -> VisitResult:
     """遍历一个候选站点，把结果记进 ``ledger``。**本函数不抛异常**。
 
@@ -119,6 +127,29 @@ async def visit_site(
         return result
     if reachable.answer is None:
         result.note("IS_REACHABLE=None（不中断，继续采集）")
+
+    # ── ③.5 首页分叉：站内搜索（路径 B/C，2026-10-16）──────────
+    # 首页上的控件是**推荐位内容**，与目标片名无关——直接跑
+    # FIND_PLAY_CONTROL 会把「首页推荐位」当播放控件判，产出理由
+    # 通顺的假负样本（站里可能有，只是不在首页，§5.14 前置事实
+    # 污染）。所以 B/C 路径的首页型候选跳过控件判定，先用站内
+    # 搜索把片名定位到深层页面，子候选再走标准 visit 链。
+    #
+    # 判的是**落地页**（``landed_url``）不是候选 URL：候选是深层
+    # 链接但被重定向回首页的形态，页面上看到的就是首页，控件同样
+    # 是推荐位——判候选 URL 会漏掉这种。
+    #
+    # direct 路径不进来：它的首页候选在环节①已被 ``_drop_site_homepages``
+    # 记 not_play_site 剔除（「找错站」与「站看不了」分开，见其
+    # docstring），双重防线不重叠。
+    if allow_site_search and site_search_mod.is_site_homepage(
+        result.landed_url
+    ):
+        result.search = await site_search_mod.site_search(
+            driver, perceptor, ledger, result.steps, candidate,
+            result.site_obs, title, max_chars=max_chars,
+        )
+        return result
 
     # ── ④ 判断点 ③：找播放控件 ──────────────────────────────────
     control = perceptor.decide(Q.FIND_PLAY_CONTROL, result.site_obs)

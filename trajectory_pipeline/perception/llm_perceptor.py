@@ -49,6 +49,7 @@ from trajectory_pipeline.perception.rule_perceptor import (
     infer_paywall_type_from_evidence,
     paywall_rescue_evidence,
     play_control_candidates,
+    search_box_candidates,
     trailer_only_candidates,
 )
 
@@ -106,6 +107,34 @@ CONTRACTS: Mapping[str, str] = MappingProxyType(
             '"paywall_type":"preview|trial|null",'
             '"evidence":"一句话，不含页面原文引用（页面引文全部进 page_quotes）"}'
         ),
+        # ── 路径 B/C 发现链六题（2026-10-16）──────────────────────────
+        # 四道 SELECT_* 与 ① 同构：编号回指（``i``）优先于 URL 记忆——
+        # 「回长 URL 是记忆任务，回编号是复制任务」。其中 ⑥/⑥C 两题
+        # （单页选链接）的「selected 空 + rejected 非空」是**真结论**
+        # （本页没有要找的东西），①′ 两题（搜索页选题）零选中仍是
+        # 「没结论」——口径差异在 handler 层实现，契约形状一致。
+        Q.SELECT_AGGREGATOR_RESULTS: (
+            '{"selected":[{"i":0,"title":"站点标题","why":"选中理由"}],'
+            '"rejected":[{"i":1,"reason":"排除理由"}]}'
+        ),
+        Q.IS_AGGREGATOR: (
+            '{"answer":true|false|null,"evidence":"一句话判断"}'
+        ),
+        Q.SELECT_SITE_ENTRIES: (
+            '{"selected":[{"i":0,"why":"选中理由"}],'
+            '"rejected":[{"i":1,"reason":"排除理由（介绍页/广告/站内分类页/dead link）"}]}'
+        ),
+        Q.SELECT_ARTICLE_RESULTS: (
+            '{"selected":[{"i":0,"title":"文章标题","why":"选中理由"}],'
+            '"rejected":[{"i":1,"reason":"排除理由"}]}'
+        ),
+        Q.SELECT_REFERRAL_LINKS: (
+            '{"selected":[{"i":0,"why":"选中理由"}],'
+            '"rejected":[{"i":1,"reason":"排除理由（站内导航/参考文献/广告/社交分享）"}]}'
+        ),
+        Q.FIND_SITE_SEARCH: (
+            '{"ref":"输入框ref或null","why":"一句话，指出搜索框原文"}'
+        ),
     }
 )
 
@@ -127,6 +156,25 @@ PAY_WALL_TYPES: frozenset[str] = frozenset({"preview", "trial"})
 LLM_BODY_CHARS = 600
 LLM_ELEMENTS = 25
 LLM_LINKS = 20
+
+#: 路径 B/C 的四道链接选择题（2026-10-16）。与 ① 共用编号回指契约，
+#: 但**无片名判据**——①B 的查询是通用聚合词、①C 的判据是页面形态、
+#: ⑥/⑥C 判的是单页链接，``_title_link_sufficiency`` 一概不适用，
+#: 预检只查链接非空。
+_LINK_SELECTION_QUESTIONS = frozenset(
+    {
+        Q.SELECT_AGGREGATOR_RESULTS,
+        Q.SELECT_SITE_ENTRIES,
+        Q.SELECT_ARTICLE_RESULTS,
+        Q.SELECT_REFERRAL_LINKS,
+    }
+)
+
+#: 渲染时**给链接编号**的选择题全集（① + 上面四题）。:func:`_render`
+#: 按它加 ``i`` 字段，handler 按 ``i`` 回指——两处共用同一个集合，
+#: 避免「渲染带编号、解析不认编号」的错位（渲染与解析曾经在窗口口径
+#: 上错位过一次，后果见 :func:`_ordered_links` 的 docstring）。
+_NUMBERED_LINK_QUESTIONS = _LINK_SELECTION_QUESTIONS | {Q.SELECT_PLAY_SITES}
 
 
 class LLMPerceptor:
@@ -216,6 +264,15 @@ class LLMPerceptor:
                 Q.IS_REACHABLE: self._is_reachable,
                 Q.FIND_PLAY_CONTROL: self._find_play_control,
                 Q.PLAYER_OK: self._player_ok,
+                # 路径 B/C 发现链（2026-10-16）：①′ 两题（搜索页选题）
+                # 与 ⑥′ 两题（单页选链接）各共享一个实现——差异只在
+                # 「零选中是不是真结论」这一个布尔，见 _select_from_links。
+                Q.SELECT_AGGREGATOR_RESULTS: self._select_search_results,
+                Q.SELECT_ARTICLE_RESULTS: self._select_search_results,
+                Q.SELECT_SITE_ENTRIES: self._select_page_links,
+                Q.SELECT_REFERRAL_LINKS: self._select_page_links,
+                Q.IS_AGGREGATOR: self._is_aggregator,
+                Q.FIND_SITE_SEARCH: self._find_site_search,
             }[question]
 
             # 确定性事实优先：video 标签存在性不进 LLM
@@ -661,6 +718,232 @@ class LLMPerceptor:
             spec, answer, evidence=evidence, started=started, payload=payload,
         )
 
+    # ── 路径 B/C 发现链（2026-10-16）───────────────────────────────
+
+    def _select_search_results(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
+        """①B / ①C：从搜索结果页选出聚合站 / 文章候选。
+
+        ① 模式（与 :meth:`_select_play_sites` 同口径）：**零选中不是
+        「这页没有聚合站/文章」**（那是 False 的意思），而是没给出选题
+        结论——fail-closed。负样本由 rejected 逐候选点名产生（调用方
+        按 ``_apply_selection`` 同款路径记 ``not_aggregator`` /
+        ``not_article``），不在这一层整页判 False。
+
+        与 ① 的差异只有一处：**无片名判据**——①B 的查询是通用聚合词
+        （与片名无关）、①C 的判据是页面形态，链接文本里没有可以
+        ``_title_link_sufficiency`` 匹配的东西，预检只查链接非空。
+        """
+        return self._select_from_links(
+            spec, obs, started, empty_is_conclusion=False
+        )
+
+    def _select_page_links(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
+        """⑥ / ⑥C：从聚合站页 / 文章页选出正式入口 / 引荐外链。
+
+        ⑥ 模式（与 ① 刻意不同口径）：题问的是「**这个页面**上的入口」，
+        范围收敛到单页——**排除全部候选后零选中是对本页的真结论**
+        （answer=False → ``aggregator_no_entries`` / ``article_no_links``），
+        不是「没答」。搜索页噪声占多数（① 零选中多半是判不动），
+        单页则每个链接都是待判定项，「全都排除了」本身携带信息。
+        """
+        return self._select_from_links(
+            spec, obs, started, empty_is_conclusion=True
+        )
+
+    def _select_from_links(
+        self,
+        spec: Question,
+        obs: Observation,
+        started: float,
+        *,
+        empty_is_conclusion: bool,
+    ) -> Decision:
+        """四道 SELECT_* 新题的共享实现。**URL 必须来自观察，模型不能编。**
+
+        与 :meth:`_select_play_sites` 的骨架一致（解析 → 编号回指 →
+        白名单落位 → 按选中/排除分派），差别只在「零选中」一支的
+        归宿由 ``empty_is_conclusion`` 决定——①′ 落 None（没结论），
+        ⑥′ 落 False（真结论）。抽出来共享而不是复制四份：四份拷贝
+        里改三份漏一份的漂移，比口径差异本身难查得多。
+        """
+        raw, why = self._ask(
+            spec, _render(obs, target_title=self._target_title, question=spec.id)
+        )
+        if raw is None:
+            return self._unresolved_answer(spec, why, started)
+        data = schema_parse.extract_json(raw)
+        if data is None:
+            return self._unresolved_answer(spec, _why_unparsable(raw), started)
+
+        known = {link.href for link in obs.links}
+        window = _link_window(obs, spec.id, self._target_title)
+        raw_selected = _rows(schema_parse.field(data, "selected", []))
+        raw_rejected = _rows(schema_parse.field(data, "rejected", []))
+        selected = _resolve_rows(raw_selected, window, known)
+        rejected = _resolve_rows(raw_rejected, window, known)
+
+        if not selected and not rejected:
+            # 「模型给了条目但全对不上」与「模型压根没作答」是两件事
+            # （① 的实测教训，理由见 _select_play_sites 同款分支）。
+            if not raw_selected and not raw_rejected:
+                return self._unresolved_answer(
+                    spec,
+                    f"模型未给出任何 selected/rejected（送进模型 "
+                    f"{len(window)} 条链接）——它**没答这道题**，"
+                    f"不是答「这页没有可选目标」；模型原文摘录：{_excerpt(raw)}",
+                    started,
+                )
+            return self._unresolved_answer(
+                spec,
+                f"模型给出的 {len(raw_selected)} 个 selected / {len(raw_rejected)}"
+                f" 个 rejected 全部不在观察的 {len(known)} 个链接里，无法采信",
+                started,
+            )
+        if not selected:
+            if empty_is_conclusion:
+                # ⑥ 模式：单页上全排除 = 真结论。evidence 带上点名理由——
+                # 这是负样本池里「为什么没有入口」的唯一解释。
+                reasons = "；".join(
+                    r.get("reason") or ""
+                    for r in rejected
+                    if isinstance(r.get("reason"), str)
+                )[:160]
+                return self._answer(
+                    spec,
+                    False,
+                    evidence=(
+                        f"本页 {len(known)} 个链接全部排除"
+                        f"（{len(rejected)} 条点名：{reasons or '未给出理由'}）"
+                        f"——单页零选中是真结论，不是没答"
+                    ),
+                    started=started,
+                    payload={"selected": [], "rejected": rejected},
+                )
+            # ① 模式：零选中 = 没给出选题结论，fail-closed（① 同款理由：
+            # 放它过去会让整批一个候选都不访问，只留一堆 unresolved）。
+            return self._unresolved_answer(
+                spec,
+                f"模型排除了 {len(rejected)} 个链接但一个都没选中——"
+                f"**这不是「这页没有可选目标」**（那是 False），"
+                f"而是没给出选题结论，不判",
+                started,
+            )
+        return self._answer(
+            spec,
+            True,
+            evidence=(
+                f"自 {len(known)} 个链接中选出 {len(selected)} 个"
+                f"（已剔除不在观察中的 url），{len(rejected)} 个排除"
+            ),
+            started=started,
+            payload={"selected": selected, "rejected": rejected},
+        )
+
+    def _is_aggregator(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
+        """⑤：站点级确认——这个页面是不是影视聚合站 / 导航站。
+
+        ② 模式（页面级确认）但更简单：没有 login/region 那样的既定
+        细分法，answer 即结论。False → ``not_aggregator``（负样本：
+        这个候选实际不是聚合站）；None → fail-closed，控制流继续走
+        下一步（与 ①② 同口径，不中断采集）。
+        """
+        data, why = self._ask_json(spec, _render(obs))
+        if data is None:
+            return self._unresolved_answer(spec, why, started)
+        answer, why_null = _bool_or_reason(data)
+        if answer is None:
+            return self._unresolved_answer(spec, why_null, started)
+        return self._answer(
+            spec,
+            answer,
+            evidence=_evidence(data, spec, answer),
+            started=started,
+            payload={"title": obs.page_title},
+        )
+
+    def _find_site_search(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
+        """⑦：站点首页上找站内搜索框。③ 模式同款——ref 白名单 + 词表兜底。
+
+        - 模型回传 ref 且在观察里 → True（``payload["ref"]`` 即控制流
+          要 ``fill`` 片名的那个框）；
+        - 回传 ref 但不在观察里 → None（编造的 ref 会让代码填错框，
+          与 ③ 的铁律 3 同一条）；
+        - 未回传 ref → **词表取回**（:func:`search_box_candidates`）——
+          「模型看得到框却忘了回传字段」与 ③ 同形态（v.qq.com 实测：
+          漏字段 → 判 None → 整站轨迹作废），采集链不能在这里断；
+        - 词表也取不到 → False：**真结论**（这个站没有站内搜索框），
+          落 ``no_site_search`` 负样本。搜索框没有 ③ 那样的预告/
+          suspect 中间形态——框要么在元素表里，要么不在。
+        """
+        raw, why = self._ask(spec, _render(obs))
+        if raw is None:
+            return self._unresolved_answer(spec, why, started)
+        data = schema_parse.extract_json(raw)
+        if data is None:
+            return self._unresolved_answer(spec, _why_unparsable(raw), started)
+
+        # ── ref 白名单校验（铁律 3，③ 同款）────────────────────────
+        ref = schema_parse.as_str(schema_parse.field(data, "ref"))
+        known = {e.ref for e in obs.interactive_elements}
+        if ref and ref not in known:
+            return self._unresolved_answer(
+                spec,
+                f"模型回传 ref={ref!r} 不在观察的 {len(known)} 个元素里"
+                f"（{sorted(known)[:5]}）——编造的 ref 会让代码填错框",
+                started,
+            )
+        why_str = schema_parse.as_str(schema_parse.field(data, "why"))
+        if ref:
+            label = next(
+                (e.label for e in obs.interactive_elements if e.ref == ref), ""
+            )
+            return self._answer(
+                spec,
+                True,
+                evidence=f"选定搜索框 ref={ref}（文本 {label!r}）；{why_str}",
+                started=started,
+                payload={"ref": ref, "why": why_str},
+            )
+
+        # ── 无 ref：代码把框取回来，不让采集链在这里断（③ 同款）────
+        picked = search_box_candidates(obs)
+        if picked:
+            first = picked[0]
+            return self._answer(
+                spec,
+                True,
+                evidence=(
+                    f"模型未回传 ref；代码按词表从 {len(picked)} 个搜索框"
+                    f"候选中取 ref={first.ref}（文本 {first.label!r}，"
+                    f"tag={first.tag}）——**词表说了算**，"
+                    f"不以模型是否回传字段为准"
+                ),
+                started=started,
+                payload={
+                    "ref": first.ref,
+                    "why": why_str or "模型未回传 ref，代码按词表取回",
+                },
+            )
+        return self._answer(
+            spec,
+            False,
+            evidence=(
+                f"{len(obs.interactive_elements)} 个交互元素中，"
+                f"词表与模型均未找到站内搜索框——首页型候选无法"
+                f"定位目标片名，按无搜索框记负样本"
+            ),
+            started=started,
+            payload={"ref": "", "why": "词表与模型一致：无搜索框"},
+        )
+
     # ── 内部 ────────────────────────────────────────────────────────
 
     def _ask(
@@ -825,6 +1108,16 @@ def _sufficiency(question: str, obs: Observation, *, target_title: str = "") -> 
         if not obs.links:
             return "搜索页未采到链接，无从选择站点，不判"
         return _title_link_sufficiency(obs, target_title)
+    if question in _LINK_SELECTION_QUESTIONS and not obs.links:
+        # 路径 B/C 的四道选择题（2026-10-16）。与 ① 的零链接守卫同一条
+        # 纪律，但**无片名判据**（①B 通用查询 / ①C 判页面形态 / ⑥′ 判
+        # 单页链接），_title_link_sufficiency 一概不适用——空链接表就是
+        # 这道题唯一的「输入不支持」形态。
+        return (
+            f"采到 0 个链接（正文 {len(obs.body_text)} 字符）——"
+            f"选择题的输入就是链接表，哨兵返回无法区分"
+            f"「页面没渲染完」与「页面确实没有链接」，不判"
+        )
     if question == Q.FIND_PLAY_CONTROL and not obs.interactive_elements:
         # 这道题**唯一的输入就是元素表**。表是空的，模型看到的是
         # 「这页一个控件都没有」——而正文里可能明明白白写着「立即播放」。
@@ -846,6 +1139,16 @@ def _sufficiency(question: str, obs: Observation, *, target_title: str = "") -> 
             f"哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，"
             f"不判（正文里写着「立即播放」而元素 0 个，判 False 就是"
             f"把采集失败写成业务负样本）"
+        )
+    if question == Q.FIND_SITE_SEARCH and not obs.interactive_elements:
+        # ⑦ 与 ③ 同一条纪律、同一个理由（2026-10-16 路径 B/C）：这道题
+        # 唯一的输入就是元素表，空表分不清「首页没渲染完」与「首页
+        # 确实没有搜索框」——后者是 ``no_site_search`` **负样本**，
+        # 把前者写成后者，就是把采集失败伪装成「这个站没有站内搜索」。
+        return (
+            f"采到 0 个交互元素（正文 {len(obs.body_text)} 字符）——"
+            f"哨兵返回无法区分「页面没渲染完」与「页面确实没有搜索框」，"
+            f"不判"
         )
     if not obs.body_text and not obs.interactive_elements:
         # 两者皆空 = 这不是「页面没内容」，是采集没拿到东西。
@@ -986,7 +1289,9 @@ def _render(
         # 模型会顺手改写 scheme、吞掉 www、丢掉 query 尾巴，于是
         # 「选的 URL 压根不在观察里」整批作废。编号把它降级成纯复制，
         # 而回传后的 href 由代码从窗口里取，模型碰不到字符串。
-        numbered = question == Q.SELECT_PLAY_SITES
+        # 2026-10-16 路径 B/C：四道新 SELECT_* 同享编号契约
+        # （_NUMBERED_LINK_QUESTIONS），与 handler 的 ``i`` 回指同源。
+        numbered = question in _NUMBERED_LINK_QUESTIONS
         links = [{"text": l.text[:60], "href": l.href} for l in window]
         if numbered:
             links = [{"i": n, **row} for n, row in enumerate(links)]

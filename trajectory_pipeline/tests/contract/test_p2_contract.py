@@ -181,10 +181,11 @@ class TestToolSpaceDrift:
         assert seen <= declared, f"存档里出现过但训练空间没声明: {seen - declared}"
 
     def test_执行器自己做的动作对模型不可见(self):
-        """``new_tab`` 是会话隔离的实现细节。模型永远不该输出它——
-        但它仍要留在 P1 里（删掉就无法回放），所以靠可见性区分。"""
+        """``new_tab`` / ``close_tab`` 是会话管理的实现细节。模型永远
+        不该输出它们——但它们仍要留在 P1 里（删掉就无法回放），
+        所以靠可见性区分。"""
         invisible = {t.name for t in schema.TOOL_SPECS if not t.visible_to_model()}
-        assert invisible == {"new_tab"}
+        assert invisible == {"new_tab", "close_tab"}
 
     def test_声明的每个动作都有说明(self):
         for t in schema.TOOL_SPECS:

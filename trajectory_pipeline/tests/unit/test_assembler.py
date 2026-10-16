@@ -534,9 +534,13 @@ class TestReadArchive:
 
 class TestToolSpec:
     def test_可见动作排除执行器内部动作(self):
+        # 2026-10-16 路径 B/C：+fill / press（站内搜索）；
+        # close_tab 与 new_tab 同为不可见的会话管理动作。
         assert {t.name for t in schema.TOOL_SPECS if t.visible_to_model()} == {
             "goto",
             "click",
+            "fill",
+            "press",
         }
 
     def test_参数名可序列化(self):

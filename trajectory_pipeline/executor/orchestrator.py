@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping
-from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
@@ -33,10 +33,21 @@ from trajectory_pipeline.executor.branches import (
     validate_observation_for_decision,
 )
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
+from trajectory_pipeline.executor.steps import aggregator as aggregator_step
+from trajectory_pipeline.executor.steps import article as article_step
 from trajectory_pipeline.executor.steps import search as search_step
+from trajectory_pipeline.executor.steps import site_search as site_search_step
 from trajectory_pipeline.executor.steps import visit as visit_step
+from trajectory_pipeline.executor.steps.aggregator import IntermediateResult
 from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.perception.base import Decision, Observation, Perceptor, Q
+
+#: 发现链主流程的运行日志。**与 ``record.warnings`` 分工**（2026-10-16）：
+#: warnings 是存档字段——批次复盘的判据，跑完落盘才读得到；log 是实时
+#: 输出——跑批时当场看链路走到哪、卡在哪。同一个问题两边都记不是
+#: 冗余：复盘时终端早滚走了（没有 log），跑批时又要等落盘（没有
+#: warnings 的实时性）。CLI 侧由 ``--log-level`` 控制（默认 INFO）。
+log = logging.getLogger(__name__)
 
 #: 存档里保留的交互元素 / 链接条数上限。**提取成常量不是为了省字**，
 #: 是因为「落盘裁到几条」这件事现在有了判据意义——
@@ -69,6 +80,16 @@ PERCEPTION_LINK_WINDOW = 20
 #: 没回填是因为回填即猜（见 :attr:`RunRecord.schema_version`）。
 SCHEMA_VERSION = "2"
 
+#: 发现路径三选一（2026-10-16 路径 B/C）。**单路径 per run**——一次
+#: run 只走一条发现链，批次按 ``run_config.discovery_path`` 归因；
+#: 不做「一次跑三条然后合并」，那会让三条链的候选混进同一批，
+#: 「这个站是搜出来的还是聚合站引荐的」就再也分不开了。
+#:
+#: - ``direct``      路径 A：片名直搜（现状，默认——**完全向后兼容**）
+#: - ``aggregator``  路径 B：通用聚合词搜聚合站 → 访问 → 入口外链校验
+#: - ``article``     路径 C：片名直搜选文章页 → 访问 → 引荐外链校验
+DISCOVERY_PATHS = ("direct", "aggregator", "article")
+
 
 @dataclass
 class RunConfig:
@@ -82,6 +103,23 @@ class RunConfig:
     max_chars: int | None = DEFAULT_MAX_CHARS
     stop_after_success: int = 0  # 0 = 跑满候选；>0 = 成功 N 个即停
     per_site_timeout_s: float = 90.0
+    #: 发现路径（2026-10-16 路径 B/C）。默认 ``direct``：既有批次与
+    #: 全部既有调用点**零改动**——「默认值不改变现状」是加配置的第一纪律。
+    discovery_path: str = "direct"
+    #: B/C：最多访问几个中间页（聚合站 / 文章）。预算耗尽只记 warning
+    #: 不中断——那是「这一轮发现链的广度上限」，不是采集故障。
+    max_intermediates: int = 3
+    #: B/C：每个中间页最多校验几条引荐外链。外链校验每条都要开 tab
+    #: 真实访问，上限是预算控制不是语义筛选。
+    max_referral_links: int = 5
+
+    def __post_init__(self) -> None:
+        if self.discovery_path not in DISCOVERY_PATHS:
+            raise ValueError(
+                f"未知发现路径 {self.discovery_path!r}；可用：{DISCOVERY_PATHS}。"
+                f"拼错路径会静默跑成 direct，而那批存档的归因就是错的——"
+                f"与其猜，不如当场报错。"
+            )
 
 
 @dataclass
@@ -113,6 +151,14 @@ class RunRecord:
     reflection: dict[str, Any] | None = None
     candidates: list[Candidate] = field(default_factory=list)
     visits: list[visit_step.VisitResult] = field(default_factory=list)
+    #: 发现路径（2026-10-16 路径 B/C）。与 ``run_config.discovery_path``
+    #: 同值——单独存一份是因为 run_config 是「参数快照」而这里是
+    #: 「实际走的那条链」：将来若有「按观察动态换路径」的逻辑，
+    #: 两者会分叉，届时读档的人需要知道**实际**走了哪条。
+    discovery_path: str = "direct"
+    #: B/C 路径的中间页访问结果（聚合站页 / 文章页）。direct 恒空。
+    #: 每个元素是独立决策单元（P2 切条时 ``agg-N`` / ``article-N``）。
+    intermediates: list[IntermediateResult] = field(default_factory=list)
     ledger: RunLedger | None = None
     warnings: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
@@ -232,6 +278,32 @@ class RunRecord:
             # 搜索单元的终局反思（INC46）。与 ``steps`` 平级——它不是某一步
             # 的 rationale，是整个搜索单元看完之后的总结。
             "reflection": dict(self.reflection) if self.reflection else None,
+            "discovery_path": self.discovery_path,
+            # B/C 路径的中间页单元（2026-10-16）：就地构造（与 visits 同款），
+            # 决策只落摘要——question/answer/evidence 足够人工复核复现，
+            # 完整 Decision 的其余字段（source/fallback_used）已在对应
+            # outcome 里。
+            "intermediates": [
+                {
+                    "role": ir.role,
+                    "url": ir.candidate.url,
+                    "landed_url": ir.landed_url,
+                    "notes": list(ir.notes or []),
+                    "steps": [s.to_json(_obs_json) for s in ir.steps.steps],
+                    "obs": _obs_json(ir.obs),
+                    "is_intermediate": _decision_json(ir.is_intermediate),
+                    "entries": _decision_json(ir.entries),
+                    "referrals": [r.to_json() for r in ir.referrals],
+                    "candidates": [
+                        {
+                            "url": c.url, "text": c.text, "rank": c.rank,
+                            "host": c.host, "origin": c.origin, "parent": c.parent,
+                        }
+                        for c in ir.candidates
+                    ],
+                }
+                for ir in self.intermediates
+            ],
             "candidates": [
                 {"url": c.url, "text": c.text, "rank": c.rank, "host": c.host}
                 for c in self.candidates
@@ -247,6 +319,10 @@ class RunRecord:
                     "player_obs": _obs_json(v.player_obs),
                     # 站点单元的终局反思（INC46），与 steps 平级。
                     "reflection": dict(v.reflection) if v.reflection else None,
+                    # 站内搜索结果（2026-10-16 路径 B/C）。None = 没走
+                    # 站内搜索（direct / 深层候选），与「走了但
+                    # fail-closed」不同物。
+                    "search": v.search.to_json() if v.search else None,
                 }
                 for v in self.visits
             ],
@@ -282,6 +358,23 @@ def _outcome_json_for(
             if str(getattr(o, "url", "") or "") == want:
                 return o.to_json()
     return None
+
+
+def _decision_json(decision: Decision | None) -> dict[str, Any] | None:
+    """Decision → 摘要 JSON（中间页单元落盘用）。
+
+    只落 ``question`` / ``answer`` / ``evidence`` 三件：人工复核要复现
+    一个决策，有这三样就够；``source`` / ``fallback_used`` / 完整
+    ``payload`` 已随该决策的记账（``outcomes[]``）落盘，这里再放一份
+    是同一个事实的两处真值。
+    """
+    if decision is None:
+        return None
+    return {
+        "question": decision.question,
+        "answer": decision.answer,
+        "evidence": decision.evidence,
+    }
 
 
 def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
@@ -338,12 +431,20 @@ def _apply_selection(
     record: RunRecord,
     selection: Decision,
     ledger: RunLedger,
+    *,
+    branch: str = "not_play_site",
+    gate: str = "判断点 ①",
 ) -> list[Candidate]:
-    """按判断点 ① 的结论过滤候选，**并把落选的记成 ``not_play_site``**。
+    """按选题结论过滤候选，**并把落选的记成 ``branch`` 负分支**。
 
     落选必须记账，这是 CLAUDE.md「**每条分支都必须有对应样本入库**」
     的直接要求：负样本不是副产品。反过来「只记选中的」会让
     ``not_play_site`` 永远是 0，而报表上分部数字齐全，没人看得出这支空了。
+
+    ``branch`` / ``gate``（2026-10-16 路径 B/C）：①B 记 ``not_aggregator``、
+    ①C 记 ``not_article``，三路径共用这一份「选中保留 / 点名记负 /
+    未点名记 unresolved」的语义——分开写三份，改一份漏两份的漂移
+    比口径差异本身难查。默认值 = direct 现状，既有调用零改动。
 
     **匹配按 :attr:`Candidate.source_href`**（观察里的原始 href），而遍历用
     ``Candidate.url``（解包后）。感知层读的是观察，所以它回传的是前者。
@@ -385,10 +486,10 @@ def _apply_selection(
             ledger.record(
                 candidate.url,
                 "unresolved",
-                f"判断点 ① 未选中该站点，而模型未把它列入 rejected——"
+                f"{gate} 未选中该站点，而模型未把它列入 rejected——"
                 f"它多半压根没看到这条链接（送进模型的是排序后的前 "
                 f"{len(record.search_obs.links)} 条里的一小段）。"
-                f"**无证据不记负样本**：判成 not_play_site 就是把"
+                f"**无证据不记负样本**：判成 {branch} 就是把"
                 f"「模型没答」写成「这个站看不了」。",
                 decision=selection,
                 site_url=candidate.url,
@@ -398,16 +499,16 @@ def _apply_selection(
         why = (rejected.get(key) or rejected.get(candidate.url) or "").strip()
         ledger.record(
             candidate.url,
-            "not_play_site",
-            f"判断点 ① 排除该站点。{why}"
+            branch,
+            f"{gate} 排除该站点。{why}"
             if why
-            else "判断点 ① 排除该站点（模型点名了但未给出理由）",
+            else f"{gate} 排除该站点（模型点名了但未给出理由）",
             decision=selection,
             site_url=candidate.url,
         )
     record.warnings.append(
-        f"判断点 ① 选出 {len(kept)}/{len(record.candidates)} 个候选，"
-        f"{dropped} 个记 not_play_site"
+        f"{gate} 选出 {len(kept)}/{len(record.candidates)} 个候选，"
+        f"{dropped} 个记 {branch}"
         + (
             f"，{undecided} 个模型未点名，记 unresolved（**不入负样本池**）"
             if undecided
@@ -418,18 +519,14 @@ def _apply_selection(
 
 
 def _is_site_homepage(url: str) -> bool:
-    """URL 是否指向**站点首页**（path 为空或 ``/``）。
+    """URL 是否指向**站点首页**——委托 :func:`site_search.is_site_homepage`。
 
-    只看 path，不看 host——path 为 ``/`` 的 URL 一定是首页，而 query 与
-    fragment 不参与：``https://www.hao123.com/?from=baidu`` 仍是首页。
-    解析失败（畸形 URL）返回 ``False``：拿不准时**不判**，交给后面
-    的环节用真实观察去判——这条判据的价值全在「确定」，不确定就不算。
+    实现只有一处（2026-10-16 路径 B/C）：direct 的首页丢弃（本文件）
+    与 B/C 的站内搜索分叉（visit 链）必须同一把尺子，两边各写一份
+    迟早漂移成「direct 丢的首页 visit 链不认」。函数名保留在本模块
+    是既有测试与 mutation_check 锚点的 import 面。
     """
-    try:
-        path = urlsplit(url).path
-    except ValueError:
-        return False
-    return path in ("", "/")
+    return site_search_step.is_site_homepage(url)
 
 
 def _drop_site_homepages(record: RunRecord, ledger: RunLedger) -> None:
@@ -549,8 +646,19 @@ class Orchestrator:
                 f"请传真实片名。"
             )
         started = time.monotonic()
-        query = search_query or search_step.build_query(title, persona=persona)
+        # ── 检索词分叉（2026-10-16 路径 B/C）────────────────────────
+        # B 用**通用聚合词**（与片名无关——任何片名的聚合站入口池是
+        # 同一个）；C 与 A 同查询（文章推荐文本身按片名长出来）。
+        # 片名在三条路径下都必填：B 的站内搜索（环节②）要拿它填搜索框。
+        if self._cfg.discovery_path == "aggregator":
+            query = search_step.aggregator_query(task_id)
+        else:
+            query = search_query or search_step.build_query(
+                title, persona=persona
+            )
         url = search_step.search_url(query, self._cfg.engine)
+        log.info("[%s] 发现链启动：path=%s query=%r engine=%s",
+                 task_id, self._cfg.discovery_path, query, self._cfg.engine)
         ledger = RunLedger(task_id=task_id)
         record = RunRecord(
             task_id=task_id,
@@ -561,10 +669,20 @@ class Orchestrator:
             ledger=ledger,
             perceptor=getattr(self._perceptor, "name", "?"),
             provenance=dict(provenance or {}),
+            discovery_path=self._cfg.discovery_path,
             # 运行参数进存档：覆盖完整性（B-2）与异常处置（B-4）
             # 两项断言的分母/判据都在这里，见 RunRecord.run_config。
             run_config=dataclasses.asdict(self._cfg),
         )
+        if self._cfg.discovery_path == "aggregator" and search_query:
+            # taskgen 的检索词是按 persona 渲染的**片名**检索，B 路径
+            # 用不上——静默忽略会让「这批 B 为什么 query 是聚合词」
+            # 查无对证，而 warning 一句话就能说清。
+            record.warnings.append(
+                f"B 路径（aggregator）忽略传入的检索词 {search_query!r}"
+                f"——聚合站发现用通用聚合词 {query!r}（按 task 轮换），"
+                f"片名 {title!r} 保留给环节② 的站内搜索"
+            )
 
         # ── 环节 0：搜索页 ──────────────────────────────────────────
         step_search = record.steps.act(actions.goto(url))
@@ -578,6 +696,8 @@ class Orchestrator:
             # 「搜都没搜成」与「搜了但没素材」在报表上是两回事，
             # 而动作流是这个区分在样本层的落点。
             record.steps.settle(step_search, error=f"{type(exc).__name__}: {exc}")
+            log.warning("[%s] 搜索页采集失败：%s: %s",
+                        task_id, type(exc).__name__, exc)
             record.warnings.append(f"搜索页采集失败: {type(exc).__name__}: {exc}")
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record
@@ -600,6 +720,9 @@ class Orchestrator:
         )
         if blocked:
             record.search_blocked = blocked
+            log.warning("[%s] 搜索页被反爬拦截（%s）：%r @ %s",
+                        task_id, blocked, record.search_obs.page_title,
+                        record.search_obs.url[:80])
             record.warnings.append(
                 f"搜索页被反爬拦截（{blocked}）：{record.search_obs.page_title!r} "
                 f"@ {record.search_obs.url[:80]}。"
@@ -655,7 +778,11 @@ class Orchestrator:
             stats=record.candidate_filter,
             titles=titles,
         )
+        log.info("[%s] 环节① 取回候选 %d 个（links=%d，过滤记账 %s）",
+                 task_id, len(record.candidates),
+                 len(record.search_obs.links), dict(record.candidate_filter))
         if not record.candidates:
+            log.warning("[%s] 搜索页未提取到候选，run 提前结束", task_id)
             record.warnings.append(
                 f"搜索页未提取到候选（links={len(record.search_obs.links)}, "
                 f"degraded={list(record.search_obs.degraded)}，"
@@ -697,7 +824,7 @@ class Orchestrator:
                 f"**不中断采集**：fail-closed 管的是结论不是采集。"
             )
 
-        # ── 环节 ①.5：判断点 ①（语义层）──────────────────────────
+        # ── 环节 ①.5：判断点 ①（语义层，三路径分叉）───────────────
         # 「这个链接是不是能看《功夫》的站」是语义判断，代码做不了
         # （URL 里的 iqiyi.com 只说明它是爱奇艺）。取候选是代码层的
         # **结构性**过滤（搜索引擎自家、gov.cn、help 页），判断点 ①
@@ -706,27 +833,54 @@ class Orchestrator:
         # ⚠️ **None 时不中断**（fail-closed 管的是「结论」不是「采集」）。
         # W1 的规则版对 ① 只会返回 None，若据此中断，候选一个都不跑，
         # 负样本池永远空。同 IS_REACHABLE 的处理。
-        selection = self._perceptor.decide(Q.SELECT_PLAY_SITES, record.search_obs)
+        #
+        # 2026-10-16 路径 B/C：①B（选聚合站）/ ①C（选文章页）与 ①
+        # 共用「选中保留 / 点名记负 / 未点名记 unresolved」的语义，
+        # 只有题目、负分支名与 False 文案不同——参数化而不是复制三份，
+        # 改一份漏两份的漂移比口径差异本身难查。
+        if self._cfg.discovery_path == "aggregator":
+            question, branch, gate = (
+                Q.SELECT_AGGREGATOR_RESULTS, "not_aggregator", "判断点 ①B",
+            )
+            false_conclusion = "搜索结果里没有聚合站候选"
+        elif self._cfg.discovery_path == "article":
+            question, branch, gate = (
+                Q.SELECT_ARTICLE_RESULTS, "not_article", "判断点 ①C",
+            )
+            false_conclusion = "搜索结果里没有文章/社区帖候选"
+        else:
+            question, branch, gate = (
+                Q.SELECT_PLAY_SITES, "not_play_site", "判断点 ①",
+            )
+            false_conclusion = f"搜索结果里没有《{record.title}》的可看站点"
+        selection = self._perceptor.decide(question, record.search_obs)
         #: **过滤前**的候选数。三条分支都要用它，而 ``record.candidates``
         #: 在过滤后就被覆盖了——用它打消息会得到「过滤后无候选（原有 0 个）」
         #: 这种自相矛盾的句子（实测踩过：明明原有 6 个却报 0 个）。
         n_candidates = len(record.candidates)
         if selection.answer is True:
-            record.candidates = _apply_selection(record, selection, ledger)
+            record.candidates = _apply_selection(
+                record, selection, ledger, branch=branch, gate=gate,
+            )
             record.candidate_source = "perceptor"
+            log.info("[%s] %s 判 True：选出 %d/%d 个候选",
+                     task_id, gate, len(record.candidates), n_candidates)
         elif selection.answer is False:
             # False 是货真价实的结论（「这页没有该片的可看站点」），
             # 与 IS_REACHABLE 的处理一致：**中断遍历**，后续判断无从谈起。
-            # 但每个候选仍要记 not_play_site——中断若不记账，这批结论
+            # 但每个候选仍要记负分支——中断若不记账，这批结论
             # 就没有任何样本，而报表上只会看到「这批没跑出东西」。
             #
             # 判错的代价由人工复核承担：evidence 带着模型给的理由，
             # 重跑一次即可，不是不可逆。
             record.warnings.append(
-                f"判断点 ① 判 False：搜索结果里没有《{record.title}》的可看站点 "
+                f"{gate} 判 False：{false_conclusion} "
                 f"（{selection.evidence}）；{len(record.candidates)} 个候选"
-                f"不访问，**其中被模型点名的记 not_play_site、未点名的记 unresolved**"
+                f"不访问，**其中被模型点名的记 {branch}、未点名的记 unresolved**"
             )
+            log.warning("[%s] %s 判 False：%s（%s）；%d 个候选不访问",
+                        task_id, gate, false_conclusion, selection.evidence,
+                        len(record.candidates))
             rejected = {
                 str(r.get("url") or "").strip()
                 for r in (selection.payload.get("rejected") or [])
@@ -737,13 +891,13 @@ class Orchestrator:
                 key = candidate.source_href or candidate.url
                 # 同款判据：判 False 只说明「整体没有可看站点」，逐条
                 # **被否决**仍需要模型点名。没有点名就没有证据，
-                # 而 not_play_site 是负样本分支——无证据的负样本就是
+                # 而 {branch} 是负样本分支——无证据的负样本就是
                 # §5.13 那种「理由通顺的假负样本」，只是形态更隐蔽。
                 if key in rejected or candidate.url in rejected:
                     ledger.record(
                         candidate.url,
-                        "not_play_site",
-                        f"判断点 ① 判 False：{selection.evidence}",
+                        branch,
+                        f"{gate} 判 False：{selection.evidence}",
                         decision=selection,
                         site_url=candidate.url,
                     )
@@ -752,7 +906,7 @@ class Orchestrator:
                     ledger.record(
                         candidate.url,
                         "unresolved",
-                        f"判断点 ① 判 False，但模型未把该候选列入 "
+                        f"{gate} 判 False，但模型未把该候选列入 "
                         f"rejected——**无证据不记负样本**，"
                         f"转人工复核。整体判据：{selection.evidence}",
                         decision=selection,
@@ -766,15 +920,26 @@ class Orchestrator:
             record.candidate_source = "perceptor"
         else:
             record.candidate_source = "heuristic"
+            log.info("[%s] %s 未取得结论（fail-closed），%d 个候选按"
+                     "启发式全遍历：%s",
+                     task_id, gate, n_candidates, selection.evidence)
             record.warnings.append(
-                f"判断点 ① 未取得结论（{selection.evidence}）——"
+                f"{gate} 未取得结论（{selection.evidence}）——"
                 f"候选仍按代码启发式全遍历，不中断采集"
             )
 
-        # ── 环节 ①.6：站点首页核（代码层确定性事实，与 ① 的答案无关）──
-        # 位置在 ① 之后而不是里面：① 判 True / False / None 三条路径
-        # 都要过这道核，而 _apply_selection 只在 True 时被调。
-        _drop_site_homepages(record, ledger)
+        # ── 环节 ①.6：站点首页核（仅 direct）／中间页遍历（B/C）────
+        if self._cfg.discovery_path == "direct":
+            # 位置在 ① 之后而不是里面：① 判 True / False / None 三条路径
+            # 都要过这道核，而 _apply_selection 只在 True 时被调。
+            _drop_site_homepages(record, ledger)
+            log.info("[%s] direct 首页核完成：%d 个候选进入环节②",
+                     task_id, len(record.candidates))
+        elif record.candidates:
+            # B/C：**首页不丢**——聚合站入口 / 文章外链给出来的候选
+            # 很多是站点首页，那是站内搜索（环节②）的入口而不是
+            # 「找错站」。中间页访问链在这里产出最终候选。
+            await self._visit_intermediates(record, ledger)
 
         # ── 环节 ①.7：搜索单元的终局反思 ──────────────────────────
         # 放在候选定稿**之后**：搜索单元的总结要说的是「搜到了什么、
@@ -785,39 +950,85 @@ class Orchestrator:
         )
 
         if not record.candidates:
+            log.warning("[%s] %s 过滤后无候选（原有 %d 个，来源 %s），"
+                        "run 提前结束",
+                        task_id, gate, n_candidates, record.candidate_source)
             record.warnings.append(
-                f"判断点 ① 过滤后无候选（原有 {n_candidates} 个，"
+                f"{gate} 过滤后无候选（原有 {n_candidates} 个，"
                 f"来源 {record.candidate_source}）"
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record
 
         # ── 环节 ②：逐站点遍历 ────────────────────────────────────
+        # B/C 的首页型候选走站内搜索（visit 链 ③.5 分叉）；direct 全程
+        # ``allow_site_search=False``，visit 行为与改动前逐字一致。
         successes = 0
+        allow_site_search = self._cfg.discovery_path in ("aggregator", "article")
         for candidate in record.candidates:
             if (
                 self._cfg.stop_after_success
                 and successes >= self._cfg.stop_after_success
             ):
                 break
-            result = await self._visit_guarded(candidate, ledger, record)
+            # 子候选（origin="site_search"）**不再触发**站内搜索：
+            # 它们是站内搜索派发的深层页，再搜就是循环派发——
+            # 「首页→搜索→结果页又含首页链接」的形态真会出现。
+            result = await self._visit_guarded(
+                candidate, ledger, record,
+                allow_site_search=(
+                    allow_site_search and candidate.origin != "site_search"
+                ),
+                title=record.title,
+            )
             await self._write_rationales(
                 result.steps, record, result.candidate.url[:60]
             )
             # 站点单元的终局反思：放在逐步 rationale **之后**——它要看的
             # 是全单元历史与最终判定，而判定此时才记进 ledger。
+            outcome = _outcome_json_for(record, result)
             result.reflection = await self._write_reflection(
                 result.steps,
                 record,
                 result.candidate.url[:60],
-                outcome=_outcome_json_for(record, result),
+                outcome=outcome,
             )
             record.visits.append(result)
+            log.info("[%s] 环节② %s → %s%s", task_id, candidate.url,
+                     (outcome or {}).get("branch") or "无记账分支",
+                     "（成功）" if result.success else "")
+            # 站内搜索派发的子候选追加进遍历队列（B/C）：列表迭代按
+            # 索引推进，append 的元素会被本循环吃到。同站多入口是
+            # 有意的（site_search 的设计口径），不按 host 去重——
+            # 去重发生在中间页产出最终候选那一步（_visit_intermediates）。
+            if (
+                result.search
+                and result.search.status == site_search_step.ROUTED
+            ):
+                log.info("[%s] 站内搜索 routed：%d 个子候选入队（%s）",
+                         task_id, len(result.search.selected),
+                         "、".join(c.url for c in result.search.selected[:3]))
+                overflow = 0
+                for sub in result.search.selected:
+                    if len(record.candidates) >= self._cfg.max_candidates:
+                        overflow += 1
+                        continue
+                    record.candidates.append(sub)
+                if overflow:
+                    record.warnings.append(
+                        f"站内搜索子候选 {overflow} 个超出 max_candidates="
+                        f"{self._cfg.max_candidates} 上限，未入遍历队列"
+                        f"（总量约束，非语义筛选）"
+                    )
             if result.success:
                 successes += 1
 
         record.ledger = ledger
         record.elapsed_ms = int((time.monotonic() - started) * 1000)
+        log.info("[%s] 发现链结束：访问 %d 站，成功 %d，elapsed %dms，"
+                 "warnings %d 条",
+                 task_id, len(record.visits), successes, record.elapsed_ms,
+                 len(record.warnings))
         return record
 
     async def _write_rationales(
@@ -963,6 +1174,9 @@ class Orchestrator:
         candidate: Candidate,
         ledger: RunLedger,
         record: RunRecord,
+        *,
+        allow_site_search: bool = False,
+        title: str = "",
     ) -> visit_step.VisitResult:
         """单站点遍历的超时与异常兜底。
 
@@ -978,10 +1192,15 @@ class Orchestrator:
                     ledger,
                     candidate,
                     max_chars=self._cfg.max_chars,
+                    allow_site_search=allow_site_search,
+                    title=title,
                 ),
                 timeout=self._cfg.per_site_timeout_s,
             )
         except asyncio.TimeoutError:
+            log.warning("[%s] 站点遍历超时 %s（>%ss）",
+                        record.task_id, candidate.url,
+                        self._cfg.per_site_timeout_s)
             ledger.record(
                 candidate.url,
                 "unresolved",
@@ -992,6 +1211,9 @@ class Orchestrator:
             record.warnings.append(f"{candidate.url} 超时")
             return result
         except Exception as exc:
+            log.warning("[%s] 站点遍历异常 %s：%s: %s",
+                        record.task_id, candidate.url,
+                        type(exc).__name__, exc)
             ledger.record(
                 candidate.url,
                 "unresolved",
@@ -1001,3 +1223,129 @@ class Orchestrator:
             result.note(f"异常: {exc}")
             record.warnings.append(f"{candidate.url} 异常: {exc}")
             return result
+
+    # ── 路径 B/C：中间页遍历（2026-10-16）─────────────────────────
+
+    def _intermediate_visit(self):
+        """当前发现路径对应的中间页访问函数与角色标签。"""
+        if self._cfg.discovery_path == "aggregator":
+            return (
+                aggregator_step.visit_aggregator,
+                aggregator_step.ROLE_AGGREGATOR,
+            )
+        return article_step.visit_article, aggregator_step.ROLE_ARTICLE
+
+    async def _visit_intermediates(
+        self, record: RunRecord, ledger: RunLedger
+    ) -> None:
+        """B/C 路径：遍历中间页候选（聚合站页 / 文章页），产出最终候选。
+
+        三个预算纪律（耗尽都是正常终态，记 warning 不中断不重试）：
+
+        - ``max_intermediates``：访问几个中间页。截断保序——选题给出
+          的顺序就是优先级，代码没有依据重排。
+        - ``max_referral_links``：每个中间页校验几条外链（在
+          :func:`visit_aggregator` / :func:`visit_article` 内截断）。
+        - ``max_candidates``：最终候选总量。
+
+        产出候选按 host **跨中间页累计**去重：两个聚合站引荐同一个站，
+        第二个是重复发现不是新信息；host 未知的候选（opaque 重定向）
+        不去重——没有依据的合并与没有依据的排除是同一种错。
+        """
+        visit, _role = self._intermediate_visit()
+        pool = record.candidates[: self._cfg.max_intermediates]
+        if len(record.candidates) > self._cfg.max_intermediates:
+            record.warnings.append(
+                f"中间页候选 {len(record.candidates)} 个超上限 "
+                f"{self._cfg.max_intermediates}，截断为前 "
+                f"{self._cfg.max_intermediates} 个（预算控制，非语义筛选）"
+            )
+        log.info("[%s] 中间页遍历开始：%d 个候选（上限 %d）",
+                 record.task_id, len(pool), self._cfg.max_intermediates)
+        final: list[Candidate] = []
+        seen_hosts: set[str] = set()
+        budget_hit = False
+        for candidate in pool:
+            if budget_hit:
+                break
+            ir = await self._intermediate_guarded(candidate, ledger, record)
+            record.intermediates.append(ir)
+            log.info(
+                "[%s] 中间页（%s）%s → 产出 %d 个候选%s",
+                record.task_id, ir.role, candidate.url, len(ir.candidates),
+                f"（{'；'.join(ir.notes)}）" if ir.notes else "",
+            )
+            for c in ir.candidates:
+                if len(final) >= self._cfg.max_candidates:
+                    budget_hit = True
+                    break
+                host = c.host
+                if host:
+                    if host in seen_hosts:
+                        continue
+                    seen_hosts.add(host)
+                final.append(c)
+        if budget_hit:
+            record.warnings.append(
+                f"中间页产出候选达 max_candidates={self._cfg.max_candidates}"
+                f" 上限，截断（总量约束，非语义筛选）"
+            )
+        record.candidates = final
+        log.info("[%s] 中间页遍历完成：最终候选 %d 个（host 去重后）",
+                 record.task_id, len(final))
+
+    async def _intermediate_guarded(
+        self,
+        candidate: Candidate,
+        ledger: RunLedger,
+        record: RunRecord,
+    ) -> IntermediateResult:
+        """中间页访问的超时与异常兜底（与 :meth:`_visit_guarded` 同款纪律）。
+
+        外链 ``dropped`` 的记账走 ``stats=record.candidate_filter``——
+        与直搜链 ``extract_candidates`` 的过滤记账同一可见性口径，
+        P1 里「引擎给了多少、我们丢了多少、为什么丢」一张表看全。
+        """
+        visit, role = self._intermediate_visit()
+        try:
+            return await asyncio.wait_for(
+                visit(
+                    self._driver,
+                    self._perceptor,
+                    ledger,
+                    candidate,
+                    max_chars=self._cfg.max_chars,
+                    max_links=self._cfg.max_referral_links,
+                    engine=self._cfg.engine,
+                    stats=record.candidate_filter,
+                ),
+                timeout=self._cfg.per_site_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            log.warning("[%s] 中间页 %s 超时（>%ss）",
+                        record.task_id, candidate.url,
+                        self._cfg.per_site_timeout_s)
+            ledger.record(
+                candidate.url,
+                "unresolved",
+                f"中间页访问超时（>{self._cfg.per_site_timeout_s}s）",
+                site_url=candidate.url,
+            )
+            ir = IntermediateResult(role=role, candidate=candidate)
+            ir.note("超时")
+            record.warnings.append(f"中间页 {candidate.url} 超时")
+            return ir
+        except Exception as exc:
+            log.warning("[%s] 中间页 %s 异常：%s: %s",
+                        record.task_id, candidate.url,
+                        type(exc).__name__, exc)
+            ledger.record(
+                candidate.url,
+                "unresolved",
+                f"中间页访问异常: {type(exc).__name__}: {exc}",
+                site_url=candidate.url,
+            )
+            ir = IntermediateResult(role=role, candidate=candidate)
+            ir.note(f"异常: {exc}")
+            record.warnings.append(f"中间页 {candidate.url} 异常: {exc}")
+            return ir

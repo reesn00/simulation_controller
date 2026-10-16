@@ -56,14 +56,18 @@ from trajectory_pipeline.perception.base import Observation
 #: 换一个浏览器引擎就得重造全部历史数据。
 #:
 #: ⚠️ 这里列的是「**控制流现在真的会发出去的**」，不是 PageDriver 的全部原语
-#: （``type_text`` / ``press_key`` / ``evaluate`` / ``close_tab`` 都不在内）。
-#: 检索走 ``goto(search_url)`` 不走「输入 + 提交」，所以 ``type_text``
-#: 至今没有产地；``observe`` 按设计**不是动作**（见下）。
+#: （``evaluate`` 不在内）。检索走 ``goto(search_url)`` 不走「输入 + 提交」，
+#: 所以 ``type_text`` / ``press_key`` 的**驱动原语**至今没有直接产地——
+#: 2026-10-16 路径 B/C 的站内搜索链给它们补上了语义层包装：
+#: ``fill``（把片名填进搜索框，驱动层是 ``type_text``）与
+#: ``press``（回车提交，驱动层是 ``press_key``）；``close_tab`` 同轮
+#: 随外链校验（``new_tab`` 开、看完关）获得产地。``observe`` 按设计
+#: **不是动作**（见下）。
 #:
 #: 收窄是刻意的：P2 会拿这份清单当**训练动作空间**。列宽了就会训出
 #: 一批执行流从未产生过的动作，而那类样本永远不会被真实运行验证过。
 #: 控制流哪天真的发了新原语，这里跟着加——加的时候那条原语就有真实存档兜底。
-TOOLS: tuple[str, ...] = ("goto", "click", "new_tab")
+TOOLS: tuple[str, ...] = ("goto", "click", "new_tab", "fill", "press", "close_tab")
 
 #: 动作来源。``model`` = 模型会选的动作；``infrastructure`` = 执行器自己做的。
 ActionOrigin = Literal["model", "infrastructure"]
@@ -214,7 +218,33 @@ def click(target: ActionTarget | None) -> Action:
     return Action(tool="click", params={}, origin="model", target=target)
 
 
+def fill(target: ActionTarget | None, text: str) -> Action:
+    """往输入框里填文本（站内搜索：把片名填进搜索框）。
+
+    ``origin="model"``：选哪个框填什么词是感知层判断的落地。目标为
+    ``None`` 时与 :func:`click` 同口径——照实记，不编目标。
+    驱动层对应 ``type_text``；这里的名字对齐 P2 训练动作空间的语义层。
+    """
+    return Action(tool="fill", params={"text": text}, origin="model", target=target)
+
+
+def press(key: str, target: ActionTarget | None = None) -> Action:
+    """按键（站内搜索：回车提交检索）。
+
+    ``target`` 可空：回车提交是全局按键，不指向具体元素；点「搜索」
+    按钮提交时才带目标（那一路驱动层走 :func:`click`，不走这里）。
+    """
+    return Action(tool="press", params={"key": key}, origin="model", target=target)
+
+
+def close_tab() -> Action:
+    """关掉当前 tab。``infrastructure``：外链校验的开合（``new_tab`` 的对侧），
+    模型不选它。"""
+    return Action(tool="close_tab", params={}, origin="infrastructure")
+
+
 __all__ = [
     "TOOLS", "ActionOrigin", "ActionTarget", "Action", "ActionStep",
-    "StepLog", "target_of", "goto", "new_tab", "click",
+    "StepLog", "target_of", "goto", "new_tab", "click", "fill", "press",
+    "close_tab",
 ]

@@ -27,7 +27,8 @@
    退成 user 消息就把关联抹平了，而关联正是 agent 轨迹的训练信号。
 
 2. **``origin == "infrastructure"`` 的步整步不进消息视图。**
-   ``new_tab`` 是执行器自己的会话隔离动作，模型永远不该输出它。
+   ``new_tab`` / ``close_tab``（2026-10-16 路径 B/C 补的外链校验开合）
+   是执行器自己的会话管理动作，模型永远不该输出它们。
    早先口径是「保留在动作流里，只从工具声明里滤掉」，理由是可回放——
    但训练视图的任务是教模型**它该做的动作**：让模型看到一条它永远
    不会发、也不该发的 assistant ``tool_calls``，就是教它输出越权动作
@@ -214,12 +215,13 @@ def _visible_tools(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     **可见性的唯一权威是 P2 的 ``tools[]`` 里每条自己带的位置**——
     而 :class:`~trajectory_pipeline.assembler.schema.ToolSpec.visible_to_model`
-    是按名字判的（``name != "new_tab"``）。本模块从 P2 的 JSON 里读不到
-    方法，所以按同一条规则复现一次，并在契约测试里盯住两边同步。
+    是按名字判的（``new_tab`` / ``close_tab`` 都不可见）。本模块从 P2 的
+    JSON 里读不到方法，所以按同一条规则复现一次，并在契约测试里盯住
+    两边同步。
     """
     out: list[dict[str, Any]] = []
     for spec in sample.get("six", {}).get("tools") or ():
-        if str(spec.get("name") or "") == "new_tab":
+        if str(spec.get("name") or "") in ("new_tab", "close_tab"):
             continue
         out.append(_openai_tool(spec))
     return out
@@ -344,6 +346,16 @@ _CLOSING_DISPOSITION: dict[str, str] = {
     "blocked": "地区限制/验证码/反爬阻断，排除",
     "broken": "内容损坏，排除",
     "partial_free": "完整内容需付费，排除",
+    # ── 路径 B/C 发现链（2026-10-16）────────────────────────────
+    # site_search_routed 是路由记账不是结论（NON_SAMPLE），收尾话术
+    # 写「继续核验」——这个 unit 的任务就是派发子候选，排除语义不成立。
+    "not_aggregator": "候选不是影视聚合站，排除",
+    "aggregator_no_entries": "聚合站页面上没有正式影视站入口，排除",
+    "not_article": "候选不是文章/社区讨论页，排除",
+    "article_no_links": "文章里没有可引荐的影视站外链，排除",
+    "no_site_search": "首页上没有站内搜索框，无法按片名定位，排除",
+    "site_search_no_results": "站内搜索没有找到该片的资源，排除",
+    "site_search_routed": "经站内搜索找到候选，转入结果页继续核验",
     # deprecated 分支：老存档里仍有，新执行端不再产出。
     "login_wall_or_blocked": "登录墙/验证码/地区限制，排除",
 }
