@@ -477,6 +477,106 @@ class TestNoConclusionVsUnmatched:
         assert "内部推理" not in d.evidence
 
 
+class TestClassifySearchLinks:
+    """方案 12 阶段 A1 · 分类任务 handler（``_classify_search_links``）。
+
+    骨架与 SELECT_* 同款（解析 → 编号回指 → 白名单落位），差别在
+    answer 没有 False：分类是逐条的类型判定，「这批里没有目标类型」是
+    orchestrator 从 payload 推导的分发结论（kept=0），不是本题的整页
+    结论。FakeLLM 的默认规则按关键词四分类，``classify`` 表可逐链覆盖。
+    """
+
+    def _links(self):
+        return (
+            LinkItem("功夫 在线观看-爱奇艺", "https://www.iqiyi.com/v/1"),
+            LinkItem("知乎：哪里能看功夫", "https://www.zhihu.com/q/1"),
+            LinkItem("影视导航站大全", "https://www.hao123.com/"),
+            LinkItem("功夫 电影新闻", "https://news.test/x"),
+        )
+
+    def test_按类落位且编号回指补url(self):
+        d = llm_perceptor().decide(
+            Q.CLASSIFY_SEARCH_LINKS, _obs(links=self._links())
+        )
+        assert d.answer is True
+        assert [r["url"] for r in d.payload["video_site"]] == [
+            "https://www.iqiyi.com/v/1"
+        ]
+        assert [r["url"] for r in d.payload["article_post"]] == [
+            "https://www.zhihu.com/q/1"
+        ]
+        assert [r["url"] for r in d.payload["aggregator"]] == [
+            "https://www.hao123.com/"
+        ]
+        assert [r["url"] for r in d.payload["noise"]] == ["https://news.test/x"]
+        # evidence 是四类的分布账面（复盘读它不读 payload）
+        assert "video_site 1" in d.evidence
+        assert "article_post 1" in d.evidence
+
+    def test_显式classify表逐链覆盖(self):
+        d = llm_perceptor(
+            classify={"https://www.iqiyi.com/v/1": "noise"}
+        ).decide(Q.CLASSIFY_SEARCH_LINKS, _obs(links=self._links()))
+        assert d.answer is True
+        assert d.payload["video_site"] == []
+        assert [r["url"] for r in d.payload["noise"]] == [
+            "https://www.iqiyi.com/v/1", "https://news.test/x",
+        ]
+
+    def test_编造的url整条丢弃(self):
+        """编造的 url 会让控制流去访问不存在的站点——白名单纪律
+        与 SELECT_* 同款。全部对不上时是 None（无法采信），不是 False。"""
+        d = llm_perceptor(invent_urls=True).decide(
+            Q.CLASSIFY_SEARCH_LINKS, _obs(links=self._links())
+        )
+        assert d.answer is None
+        assert "不在观察" in d.evidence
+
+    def test_四类全空是没作答(self):
+        """「没作答」与「作答了但全对不上」是两件事（与 SELECT_* 的
+        NoConclusionVsUnmatched 同一条纪律）——合成一句会把排查引向
+        「URL 为什么不匹配」，而真正的问题是「它为什么一个都不给」。"""
+        d = llm_perceptor(no_conclusion=True).decide(
+            Q.CLASSIFY_SEARCH_LINKS, _obs(links=self._links())
+        )
+        assert d.answer is None
+        assert "没答这道题" in d.evidence
+        assert "不在观察" not in d.evidence
+
+    def test_全部归noise仍是有效作答(self):
+        """reject_all 形态：全部点名归 noise（有作答但都不是目标类）。
+        handler 层 answer=True（分类可用），「kept=0」由 orchestrator
+        分发推导——这是 A1 涌现式 False 的输入形态。"""
+        d = llm_perceptor(reject_all=True).decide(
+            Q.CLASSIFY_SEARCH_LINKS, _obs(links=self._links())
+        )
+        assert d.answer is True
+        assert len(d.payload["noise"]) == 4
+        assert d.payload["video_site"] == []
+        assert "noise 4" in d.evidence
+
+    def test_零链接fail_closed(self):
+        """候选视图为空 = 没有输入，无从分类。"""
+        d = llm_perceptor().decide(Q.CLASSIFY_SEARCH_LINKS, _obs(links=()))
+        assert d.answer is None
+        assert "0 条链接" in d.evidence
+
+    def test_候选视图无交互元素不误杀(self):
+        """候选视图刻意清空交互元素（分类题只读链接表，页面 chrome 是
+        纯 token 开销）。通用守卫「正文 0 字符且交互元素 0 个」守的是
+        页面渲染完整性，对投影观察是假阳性——分类分支必须跳过它，
+        只查链接非空。"""
+        obs = Observation(
+            url="https://www.baidu.com/s?wd=x",
+            page_title="百度",
+            body_text="",
+            interactive_elements=(),
+            links=self._links(),
+        )
+        d = llm_perceptor().decide(Q.CLASSIFY_SEARCH_LINKS, obs)
+        assert d.answer is True
+
+
 class Test回指编号而不是url:
     """① 让模型回**编号 i**，代码回指成 href——回长 URL 是记忆任务。
 

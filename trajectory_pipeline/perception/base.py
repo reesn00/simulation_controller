@@ -209,6 +209,12 @@ class Q:
     SELECT_ARTICLE_RESULTS = "select.article_results"
     SELECT_REFERRAL_LINKS = "select.referral_links"
     FIND_SITE_SEARCH = "site.find_site_search"
+    # ── 方案 12 阶段 A1（2026-10-16）────────────────────────────────
+    # 搜索页链接分类任务：一道题统一 ①/①B/①C 的「选某类链接」语义，
+    # 输出四分类（video_site / aggregator / article_post / noise），
+    # 分类决定分发路径。zhihu/douban/weibo 自结构排除表移出后正是
+    # 从 article_post 这一维进候选池（路径 C 的扩展）。
+    CLASSIFY_SEARCH_LINKS = "classify.search_links"
 
 
 # ═══════════════════════════════════════════════════════════════════════

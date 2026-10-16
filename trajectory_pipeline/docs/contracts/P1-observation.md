@@ -66,6 +66,7 @@
 | `candidate_source` | `"heuristic" \| "perceptor"` | 候选来源。`heuristic` = 代码全跑；`perceptor` = 判断点 ① 选过 |
 | `result_titles` | `int` | `RESULT_SELECTORS` 取回的结果标题数。0 = 输入不足，① 恒 fail-closed |
 | `search_blocked` | `str` | **运行级**反爬状态（如 `captcha`）。非空 ⇒ 不产出搜索单元样本 |
+| `gatekeeper_events` | `list[{stage,verdict,reason,disposition}]` | **Gatekeeper 事件账本**（2026-10-16 方案 12 阶段 G / D-A3 最小账本）。`verdict` 取值封闭于 `executor/gatekeeper.py::Verdict` 七值；`disposition.kind ∈ {inject_guidance, escalate_model, fail_closed}`——静默自愈已按 D-A2 否决，**每一档都可见**。与 `search_blocked` 并存不替代：后者是冻结口径的运行级字段，这里是统一账本（A2 起 agent 每步拦截都记）。空 = 本次运行无拦截事件。**新增可选字段，不动 `schema_version`** |
 | `candidate_filter` | `{str: int}` | 剔除**原因计数**：`excluded_host:<root>` / `duplicate_host` / `impossible_content:gov.cn` |
 | `run_config` | `{str: Any}` | **`RunConfig` 全量快照**。缺它 `--max-candidates 5` 与默认 20 跑出的两批在存档里一模一样，而覆盖完整性差 4 倍 → `DEGRADED` |
 | `provenance` | `{str: Any}` | persona 六维等切片轴。**空 dict 的含义固定为「不是 taskgen 跑的」** |

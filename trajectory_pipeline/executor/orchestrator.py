@@ -33,6 +33,7 @@ from trajectory_pipeline.executor.branches import (
     validate_observation_for_decision,
 )
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
+from trajectory_pipeline.executor.gatekeeper import FailClosed, intercept
 from trajectory_pipeline.executor.steps import aggregator as aggregator_step
 from trajectory_pipeline.executor.steps import article as article_step
 from trajectory_pipeline.executor.steps import search as search_step
@@ -40,7 +41,14 @@ from trajectory_pipeline.executor.steps import site_search as site_search_step
 from trajectory_pipeline.executor.steps import visit as visit_step
 from trajectory_pipeline.executor.steps.aggregator import IntermediateResult
 from trajectory_pipeline.executor.steps.search import Candidate
-from trajectory_pipeline.perception.base import Decision, Observation, Perceptor, Q
+from trajectory_pipeline.perception import questions
+from trajectory_pipeline.perception.base import (
+    Decision,
+    LinkItem,
+    Observation,
+    Perceptor,
+    Q,
+)
 
 #: 发现链主流程的运行日志。**与 ``record.warnings`` 分工**（2026-10-16）：
 #: warnings 是存档字段——批次复盘的判据，跑完落盘才读得到；log 是实时
@@ -61,10 +69,12 @@ OBS_LINK_LIMIT = 50
 #: executor 不能 import 感知层实现（01-架构总览 L49-50：executor 只依赖
 #: ``perception/base.py`` 协议），所以这里复制一份，由单测断言与
 #: ``LLM_LINKS`` 相等（test_search_pin.py::test_窗口常量与感知层同步），
-#: 防止两侧漂移——漂移 = 钉窗校验按错的宽度算，钉了也白钉。
-#: 04 方案 §2.4-3 同时要求 ``max_candidates ≤ LLM_LINKS``：超出时候选装
-#: 不进窗口，钉窗必然失败，正是 :func:`candidates_outside_window` 要报警的
-#: 情形。
+#: 防止两侧漂移。
+#:
+#: 2026-10-16 方案 12 阶段 A1 起语义从「钉窗校验宽度」变为**分类任务的
+#: 分批宽度**（:meth:`Orchestrator._classify_candidates` 按它把候选切成
+#: 批，每批一份候选视图）——04 方案 §2.4-3 的 ``max_candidates ≤
+#: LLM_LINKS`` 约束随之解除：超出的候选分批送，不再被窗口裁掉。
 PERCEPTION_LINK_WINDOW = 20
 
 #: **P1 存档格式版本**。每份新存档写入时记下这个值，于是「这批数据是哪一批」
@@ -195,6 +205,19 @@ class RunRecord:
     #: 单开字段的代价是 report 要额外统计一次；换来的是
     #: 「被拦」与「没素材」在报表上永远分得开。
     search_blocked: str = ""
+    #: **Gatekeeper 事件账本**（2026-10-16 方案 12 阶段 G / D-A3 最小账本）。
+    #: 每条 ``{stage, verdict, reason, disposition}``——拦截发生在哪个阶段、
+    #: 判定结论（:class:`~trajectory_pipeline.executor.gatekeeper.Verdict`
+    #: 封闭取值集）、原始原因串、处置档（D-A2 拍板：只有
+    #: InjectGuidance / EscalateModel / FailClosed 三档且**全部可见**，
+    #: 静默自愈已否决——「被拦→修复→重试」是训练信号本身）。
+    #:
+    #: 与 ``search_blocked`` 的分工：后者是搜索页拦截的**现行运行级字段**
+    #: （报表口径已冻结，不进分支体系）；本字段是统一账本——A2 起
+    #: agent 循环每步的拦截都记这里，将来接 Langfuse 就是它的投影（D-A3）。
+    #: 空 list = 本次运行没有拦截事件（**与「没接线」同形是已知代价**，
+    #: 阶段 G 只有搜索页一处写入点，A2 起写入点才多起来）。
+    gatekeeper_events: list[dict[str, Any]] = field(default_factory=list)
     #: 候选过滤记账：``{原因: 条数}``。静默剔除会让"引擎给了 50 个链接、
     #: 我们只跑了 11 个"这类损失不可见。
     candidate_filter: dict[str, int] = field(default_factory=dict)
@@ -250,6 +273,9 @@ class RunRecord:
         """
         self.provenance = dict(self.provenance or {})
         self.run_config = dict(self.run_config or {})
+        # gatekeeper_events 同款防引用共享（与 provenance/run_config 同理：
+        # 事件由 orchestrator 独占构造，但 RunRecord 也可能被直接构造）。
+        self.gatekeeper_events = list(self.gatekeeper_events or [])
 
     @property
     def succeeded(self) -> bool:
@@ -268,6 +294,9 @@ class RunRecord:
             "candidate_source": self.candidate_source,
             "result_titles": self.result_titles,
             "search_blocked": self.search_blocked,
+            # Gatekeeper 事件账本（方案 12 阶段 G）。空 list 照落——
+            # 「没有拦截事件」与「没这个键」在下游是两回事（缺件代理教训）。
+            "gatekeeper_events": [dict(e) for e in self.gatekeeper_events],
             "candidate_filter": dict(self.candidate_filter),
             "run_config": dict(self.run_config),
             "provenance": dict(self.provenance),
@@ -427,95 +456,39 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
     }
 
 
-def _apply_selection(
-    record: RunRecord,
-    selection: Decision,
-    ledger: RunLedger,
-    *,
-    branch: str = "not_play_site",
-    gate: str = "判断点 ①",
-) -> list[Candidate]:
-    """按选题结论过滤候选，**并把落选的记成 ``branch`` 负分支**。
+#: 分类任务的路径分发表（方案 12 阶段 A1）：``discovery_path`` →
+#: ``(保留类, 负分支, 判断点名)``。三条路径共用一份「目标类保留 /
+#: 其余点名记负 / 未点名记 unresolved」的分发语义，只有目标类与
+#: 分支名不同——参数化而不是复制三份（与旧 ①B/①C 的 branch 参数化
+#: 同款纪律）。类别名出自
+#: :data:`trajectory_pipeline.perception.questions.CLASSIFY_CATEGORIES`。
+_CLASSIFY_DISPATCH: Mapping[str, tuple[str, str, str]] = {
+    "direct": ("video_site", "not_play_site", "判断点 ①"),
+    "aggregator": ("aggregator", "not_aggregator", "判断点 ①B"),
+    "article": ("article_post", "not_article", "判断点 ①C"),
+}
 
-    落选必须记账，这是 CLAUDE.md「**每条分支都必须有对应样本入库**」
-    的直接要求：负样本不是副产品。反过来「只记选中的」会让
-    ``not_play_site`` 永远是 0，而报表上分部数字齐全，没人看得出这支空了。
 
-    ``branch`` / ``gate``（2026-10-16 路径 B/C）：①B 记 ``not_aggregator``、
-    ①C 记 ``not_article``，三路径共用这一份「选中保留 / 点名记负 /
-    未点名记 unresolved」的语义——分开写三份，改一份漏两份的漂移
-    比口径差异本身难查。默认值 = direct 现状，既有调用零改动。
+def _candidates_view(search_obs: Observation, batch: list[Candidate]) -> Observation:
+    """把一批候选投影成分类题的观察（方案 12 阶段 A1）。
 
-    **匹配按 :attr:`Candidate.source_href`**（观察里的原始 href），而遍历用
-    ``Candidate.url``（解包后）。感知层读的是观察，所以它回传的是前者。
-    两个字段对不上时按后者兜底——百度 ``/link?url=`` 包裹的链接一旦
-    匹配不上，表现是「整个站点集丢失」，且看不出是匹配问题。
+    links = 候选：``text`` = 结果标题（分类判据之首——标题里写着作品名
+    的播放页是最强 video_site 证据）、``href`` = **解包后**的目标 URL
+    （URL 形态是第二判据；百度 ``/link?url=`` 密文包裹形态对模型不可
+    判读，而编号回指 ``i`` 不依赖 href）。url / page_title / body_text
+    承自搜索页观察，保留出处上下文；交互元素清空——分类题只读链接表，
+    页面 chrome 是纯 token 开销。
 
-    顺序保持**引擎原序**（``rank``），不按 selected 数组的顺序重排——
-    重排等于用模型的判断覆盖引擎的相关性排序，那是没有依据的。
+    ⚠️ **视图不落 P1**：``record.search_obs`` 存的是引擎原序的搜索页
+    观察（钉窗已删，不再变形）；这份投影只进感知层请求，视图的 href
+    同时就是分发的匹配键（``Candidate.url``）——「模型看到的链接」与
+    「分发命中的候选」由同一构造同源。
     """
-    selected_rows = [
-        r for r in (selection.payload.get("selected") or []) if isinstance(r, dict)
-    ]
-    reasons: dict[str, str] = {}
-    for row in selected_rows:
-        url = str(row.get("url") or "").strip()
-        if url:
-            reasons[url] = str(row.get("why") or selection.evidence)
-
-    rejected = {
-        str(r.get("url") or "").strip(): str(r.get("reason") or "")
-        for r in (selection.payload.get("rejected") or [])
-        if isinstance(r, dict)
-    }
-
-    kept: list[Candidate] = []
-    dropped = 0
-    undecided = 0
-    for candidate in record.candidates:
-        key = candidate.source_href or candidate.url
-        if candidate.url in reasons or key in reasons:
-            kept.append(candidate)
-            continue
-        # 判据是「模型**点名**了这个候选」，不是「模型给了理由」——
-        # 理由可以为空，点名与否才是「它考虑过并否决了」与「它压根没看见」
-        # 的唯一区别。
-        named = key in rejected or candidate.url in rejected
-        if not named:
-            undecided += 1
-            ledger.record(
-                candidate.url,
-                "unresolved",
-                f"{gate} 未选中该站点，而模型未把它列入 rejected——"
-                f"它多半压根没看到这条链接（送进模型的是排序后的前 "
-                f"{len(record.search_obs.links)} 条里的一小段）。"
-                f"**无证据不记负样本**：判成 {branch} 就是把"
-                f"「模型没答」写成「这个站看不了」。",
-                decision=selection,
-                site_url=candidate.url,
-            )
-            continue
-        dropped += 1
-        why = (rejected.get(key) or rejected.get(candidate.url) or "").strip()
-        ledger.record(
-            candidate.url,
-            branch,
-            f"{gate} 排除该站点。{why}"
-            if why
-            else f"{gate} 排除该站点（模型点名了但未给出理由）",
-            decision=selection,
-            site_url=candidate.url,
-        )
-    record.warnings.append(
-        f"{gate} 选出 {len(kept)}/{len(record.candidates)} 个候选，"
-        f"{dropped} 个记 {branch}"
-        + (
-            f"，{undecided} 个模型未点名，记 unresolved（**不入负样本池**）"
-            if undecided
-            else ""
-        )
+    return dataclasses.replace(
+        search_obs,
+        interactive_elements=(),
+        links=tuple(LinkItem(text=c.text, href=c.url) for c in batch),
     )
-    return kept
 
 
 def _is_site_homepage(url: str) -> bool:
@@ -544,10 +517,11 @@ def _drop_site_homepages(record: RunRecord, ledger: RunLedger) -> None:
     ``not_play_site`` 永远 0 条——而「每条分支都必须有对应样本入库」是
     硬要求。这条分支的样本只能从这里来，删掉就再也长不出来。
 
-    **为什么落在判断点 ① 之后**：① 的 True / False / None 三条路径都要
-    过这道核，而 :func:`_apply_selection` 只在 True 时被调，挂在它里面
-    就只能覆盖三分之一。首页的否定不依赖模型是否作答，所以位置在
-    「① 处理完、开始遍历之前」——对三条路径都生效的唯一位置。
+    **为什么落在分类任务之后**：分类的各类分发（保留 / 记负 /
+    unresolved / 启发式保留）都要过这道核——分类判定的是「这个链接
+    是什么类型的站」，而首页的否定是 path 形态的**结构事实**，不依赖
+    模型是否作答（模型把首页分类成 video_site 也拦），所以位置在
+    「分类处理完、开始遍历之前」——对全部分发路径都生效的唯一位置。
     """
     kept: list[Candidate] = []
     dropped: list[Candidate] = []
@@ -720,6 +694,20 @@ class Orchestrator:
         )
         if blocked:
             record.search_blocked = blocked
+            # Gatekeeper 统一账本（方案 12 阶段 G）：同一拦截事件的
+            # 结构化记账，与 search_blocked / warnings **并存不替代**——
+            # 那两处是冻结口径的现行字段，这里是 D-A3 的最小事件账本
+            # （将来 agent 模式的每步拦截都记这里）。处置是 FailClosed
+            # 的运行级特例：整条 run 收口，**不落分支**（拦截发生在
+            # 取候选之前，没有 outcome 可记）。
+            record.gatekeeper_events.append({
+                "stage": "search",
+                "verdict": intercept(record.search_obs).value,
+                "reason": blocked,
+                "disposition": FailClosed(
+                    reason=f"搜索页被反爬拦截（{blocked}）"
+                ).to_event(),
+            })
             log.warning("[%s] 搜索页被反爬拦截（%s）：%r @ %s",
                         task_id, blocked, record.search_obs.page_title,
                         record.search_obs.url[:80])
@@ -791,147 +779,44 @@ class Orchestrator:
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return record
 
-        # ── 环节 ①.4.5：候选钉进窗口（同源修复，04 方案）────────────
-        # 根因（05 文档 L95-121）：候选从**全量** links 提取（111 条 → 5 个，
-        # 真实候选 index≥50），而感知层只看 _link_window=前 LLM_LINKS(20)
-        # 条。模型看不见候选，只能选窗口里的站内搜索链接，又被
-        # excluded_host:baidu.com 剔出候选 → 选中 ∩ 候选 = 空 → kept=0。
-        # 修复：把候选链接按 rank 钉到 links 最前（text 已含片名，落在
-        # _ordered_links 的 hit 区），其余保原序——「候选 ⊆ 窗口」由构造保证。
-        record.search_obs = dataclasses.replace(
-            record.search_obs,
-            links=search_step.pin_candidates_first(
-                record.search_obs.links, record.candidates
-            ),
-        )
-        # 「窗口 ⊇ 候选」强制校验（fail-closed：校验失败只记 warning、
-        # **不中断采集**）。重放感知层排序，凡是候选不在窗口内（target_title
-        # 为空 / 候选 text 无片名落 miss 区 / max_candidates 超窗）都必须在
-        # 存档里可归因——否则又会回到「kept=0 却查无实据」静默成一整批。
-        _out_of_window = search_step.candidates_outside_window(
-            record.search_obs.links,
-            record.candidates,
-            target_title=record.title,
-            window_size=PERCEPTION_LINK_WINDOW,
-        )
-        if _out_of_window:
-            record.warnings.append(
-                f"候选钉窗失败：{len(_out_of_window)}/{len(record.candidates)} "
-                f"个候选不在感知层窗口（前 {PERCEPTION_LINK_WINDOW} 条）内，"
-                f"模型将看不到它们，kept 可能仍为 0。"
-                f"（{'、'.join((c.text or '')[:20] or c.href for c in _out_of_window[:3])}"
-                f"{'…' if len(_out_of_window) > 3 else ''}）"
-                f"**不中断采集**：fail-closed 管的是结论不是采集。"
-            )
+        # ── 环节 ①.4.5：候选钉进窗口 —— 已删除（方案 12 阶段 A1）─────
+        # 旧机制（04 方案的同源修复）：把候选按 rank 钉到 links 最前，
+        # 并重放感知层排序校验「候选 ⊆ 窗口」。分类任务的候选视图由
+        # 构造保证「模型看得到全部候选」（见下方 ①.5），重排观察与
+        # 重放校验都不再需要——search_obs 保持引擎原序，存档的观察
+        # 忠实于页面而不是「钉过候选」的变形。机制墓碑与消解理由
+        # 详见 ``steps/search.py`` 尾注。
 
-        # ── 环节 ①.5：判断点 ①（语义层，三路径分叉）───────────────
-        # 「这个链接是不是能看《功夫》的站」是语义判断，代码做不了
-        # （URL 里的 iqiyi.com 只说明它是爱奇艺）。取候选是代码层的
-        # **结构性**过滤（搜索引擎自家、gov.cn、help 页），判断点 ①
-        # 在它之后：先剔掉根本不是内容站的，再问「哪些是这个作品的播放站」。
+        # ── 环节 ①.5：分类任务（方案 12 阶段 A1）────────────────────
+        # 「这个链接是什么类型的站」是语义判断，代码做不了（URL 里的
+        # iqiyi.com 只说明它是爱奇艺，是不是本片的播放页要看了才知道）。
+        # 取候选是代码层的**结构性**过滤（引擎自家、gov.cn、help 页），
+        # 分类在它之后：一道题问出四分类（video_site / aggregator /
+        # article_post / noise），按 discovery_path 取对应类分发
+        # （direct→video_site / aggregator→aggregator / article→
+        # article_post），取代旧 ①/①B/①C 三道 SELECT_* 分叉——三题
+        # 保留在注册表：站内搜索结果页仍复用 ①（见 steps/site_search.py），
+        # 金标重放与 A/B 对照也需要它们。
         #
-        # ⚠️ **None 时不中断**（fail-closed 管的是「结论」不是「采集」）。
-        # W1 的规则版对 ① 只会返回 None，若据此中断，候选一个都不跑，
-        # 负样本池永远空。同 IS_REACHABLE 的处理。
+        # **候选视图**：分类的输入就是候选列表（links=候选、text=结果
+        # 标题、href=解包后目标 URL），按 PERCEPTION_LINK_WINDOW 分批送
+        # 感知层，「模型看得到全部候选」由构造保证（钉窗机制的消解理由
+        # 见上方 ①.4.5 墓碑）。
         #
-        # 2026-10-16 路径 B/C：①B（选聚合站）/ ①C（选文章页）与 ①
-        # 共用「选中保留 / 点名记负 / 未点名记 unresolved」的语义，
-        # 只有题目、负分支名与 False 文案不同——参数化而不是复制三份，
-        # 改一份漏两份的漂移比口径差异本身难查。
-        if self._cfg.discovery_path == "aggregator":
-            question, branch, gate = (
-                Q.SELECT_AGGREGATOR_RESULTS, "not_aggregator", "判断点 ①B",
-            )
-            false_conclusion = "搜索结果里没有聚合站候选"
-        elif self._cfg.discovery_path == "article":
-            question, branch, gate = (
-                Q.SELECT_ARTICLE_RESULTS, "not_article", "判断点 ①C",
-            )
-            false_conclusion = "搜索结果里没有文章/社区帖候选"
-        else:
-            question, branch, gate = (
-                Q.SELECT_PLAY_SITES, "not_play_site", "判断点 ①",
-            )
-            false_conclusion = f"搜索结果里没有《{record.title}》的可看站点"
-        selection = self._perceptor.decide(question, record.search_obs)
-        #: **过滤前**的候选数。三条分支都要用它，而 ``record.candidates``
-        #: 在过滤后就被覆盖了——用它打消息会得到「过滤后无候选（原有 0 个）」
-        #: 这种自相矛盾的句子（实测踩过：明明原有 6 个却报 0 个）。
+        # ⚠️ **None 不中断**（fail-closed 管的是「结论」不是「采集」）：
+        # None 批次的候选按启发式保留全遍历（与旧 ① None 同口径）。
+        # W1 规则版对分类题只会返回 None，若据此中断，候选一个都不跑，
+        # 负样本池永远空——同 IS_REACHABLE 的处理。
+        # **过滤前**的候选数：record.candidates 在分类分发后就被覆盖，
+        # 用它打消息会得到「过滤后无候选（原有 0 个）」这种自相矛盾的
+        # 句子（实测踩过：明明原有 6 个却报 0 个）。
         n_candidates = len(record.candidates)
-        if selection.answer is True:
-            record.candidates = _apply_selection(
-                record, selection, ledger, branch=branch, gate=gate,
-            )
-            record.candidate_source = "perceptor"
-            log.info("[%s] %s 判 True：选出 %d/%d 个候选",
-                     task_id, gate, len(record.candidates), n_candidates)
-        elif selection.answer is False:
-            # False 是货真价实的结论（「这页没有该片的可看站点」），
-            # 与 IS_REACHABLE 的处理一致：**中断遍历**，后续判断无从谈起。
-            # 但每个候选仍要记负分支——中断若不记账，这批结论
-            # 就没有任何样本，而报表上只会看到「这批没跑出东西」。
-            #
-            # 判错的代价由人工复核承担：evidence 带着模型给的理由，
-            # 重跑一次即可，不是不可逆。
-            record.warnings.append(
-                f"{gate} 判 False：{false_conclusion} "
-                f"（{selection.evidence}）；{len(record.candidates)} 个候选"
-                f"不访问，**其中被模型点名的记 {branch}、未点名的记 unresolved**"
-            )
-            log.warning("[%s] %s 判 False：%s（%s）；%d 个候选不访问",
-                        task_id, gate, false_conclusion, selection.evidence,
-                        len(record.candidates))
-            rejected = {
-                str(r.get("url") or "").strip()
-                for r in (selection.payload.get("rejected") or [])
-                if isinstance(r, dict)
-            }
-            unnamed = 0
-            for candidate in record.candidates:
-                key = candidate.source_href or candidate.url
-                # 同款判据：判 False 只说明「整体没有可看站点」，逐条
-                # **被否决**仍需要模型点名。没有点名就没有证据，
-                # 而 {branch} 是负样本分支——无证据的负样本就是
-                # §5.13 那种「理由通顺的假负样本」，只是形态更隐蔽。
-                if key in rejected or candidate.url in rejected:
-                    ledger.record(
-                        candidate.url,
-                        branch,
-                        f"{gate} 判 False：{selection.evidence}",
-                        decision=selection,
-                        site_url=candidate.url,
-                    )
-                else:
-                    unnamed += 1
-                    ledger.record(
-                        candidate.url,
-                        "unresolved",
-                        f"{gate} 判 False，但模型未把该候选列入 "
-                        f"rejected——**无证据不记负样本**，"
-                        f"转人工复核。整体判据：{selection.evidence}",
-                        decision=selection,
-                        site_url=candidate.url,
-                    )
-            if unnamed:
-                record.warnings.append(
-                    f"  其中 {unnamed} 个模型未点名，记 unresolved（**不入负样本池**）"
-                )
-            record.candidates = []
-            record.candidate_source = "perceptor"
-        else:
-            record.candidate_source = "heuristic"
-            log.info("[%s] %s 未取得结论（fail-closed），%d 个候选按"
-                     "启发式全遍历：%s",
-                     task_id, gate, n_candidates, selection.evidence)
-            record.warnings.append(
-                f"{gate} 未取得结论（{selection.evidence}）——"
-                f"候选仍按代码启发式全遍历，不中断采集"
-            )
+        record.candidates = self._classify_candidates(record, ledger)
 
         # ── 环节 ①.6：站点首页核（仅 direct）／中间页遍历（B/C）────
         if self._cfg.discovery_path == "direct":
-            # 位置在 ① 之后而不是里面：① 判 True / False / None 三条路径
-            # 都要过这道核，而 _apply_selection 只在 True 时被调。
+            # 位置在分类之后而不是里面：分类的各类分发路径都要过这道
+            # 核（见 _drop_site_homepages 的位置说明）。
             _drop_site_homepages(record, ledger)
             log.info("[%s] direct 首页核完成：%d 个候选进入环节②",
                      task_id, len(record.candidates))
@@ -950,11 +835,11 @@ class Orchestrator:
         )
 
         if not record.candidates:
-            log.warning("[%s] %s 过滤后无候选（原有 %d 个，来源 %s），"
+            log.warning("[%s] 分类+过滤后无候选（原有 %d 个，来源 %s），"
                         "run 提前结束",
-                        task_id, gate, n_candidates, record.candidate_source)
+                        task_id, n_candidates, record.candidate_source)
             record.warnings.append(
-                f"{gate} 过滤后无候选（原有 {n_candidates} 个，"
+                f"分类+过滤后无候选（原有 {n_candidates} 个，"
                 f"来源 {record.candidate_source}）"
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -1168,6 +1053,134 @@ class Orchestrator:
                 f"长度不等或为空（抽到字段 {sorted(extracted)}）"
             )
         return titles, ""
+
+    def _classify_candidates(
+        self, record: RunRecord, ledger: RunLedger
+    ) -> list[Candidate]:
+        """环节 ①.5 主体：分批分类 + 按路径分发（方案 12 阶段 A1）。
+
+        每批 ≤ :data:`PERCEPTION_LINK_WINDOW` 条候选构造候选视图
+        （:func:`_candidates_view`）问 ``Q.CLASSIFY_SEARCH_LINKS``，
+        四分类结果按 ``discovery_path`` 分发（保留类见
+        :data:`_CLASSIFY_DISPATCH`）：
+
+        - 目标类 → 保留进遍历队列（顺序保持引擎原序——重排等于用
+          模型判断覆盖引擎的相关性排序，没有依据）；
+        - 其余类（模型点名）→ 记路径负分支，evidence 带模型给的
+          ``why``。zhihu/douban/weibo 自结构排除表移出后，在 direct
+          批次被分类为 ``article_post`` 而记 ``not_play_site`` 的正是
+          **有证据的真负样本**（见 ``steps/search.py`` 拆分说明）；
+        - 未点名 → 记 ``unresolved``（**无证据不记负样本**，与旧 ①
+          同一条纪律：漏分类说明模型没看到或没答，不是「这个站看不了」）；
+        - fail-closed 批次（answer=None）→ 该批候选按启发式保留、
+          **不记账**（与旧 ① None 同口径：全遍历，不中断采集）。
+
+        旧 False 分支（整页「没有可看站点」→ 中断遍历 + 全候选记账）
+        在新设计里是分发的**涌现结果**：目标类 kept=0 且逐条点名记负，
+        遍历自然没有目标——同一份账面，不再需要三条路径各自的 False
+        文案。落选必须记账这条纪律不变（负样本不是副产品）。
+        """
+        keep_class, branch, gate = _CLASSIFY_DISPATCH[self._cfg.discovery_path]
+        task_id = record.task_id
+        candidates = record.candidates
+        batches = [
+            candidates[i : i + PERCEPTION_LINK_WINDOW]
+            for i in range(0, len(candidates), PERCEPTION_LINK_WINDOW)
+        ]
+        kept: list[Candidate] = []
+        heuristic_kept: list[Candidate] = []
+        dropped = 0
+        undecided = 0
+        classified_batches = 0
+        for batch in batches:
+            decision = self._perceptor.decide(
+                Q.CLASSIFY_SEARCH_LINKS,
+                _candidates_view(record.search_obs, batch),
+            )
+            if decision.answer is None:
+                heuristic_kept.extend(batch)
+                record.warnings.append(
+                    f"{gate} 分类任务 fail-closed（{decision.evidence}）——"
+                    f"该批 {len(batch)} 个候选仍按代码启发式全遍历，不中断采集"
+                )
+                continue
+            classified_batches += 1
+            # url → (类别, why) 点名表。匹配键 = 候选视图的 href
+            # （= Candidate.url，见 _candidates_view——「模型看到的链接」
+            # 与「分发命中的候选」同源，不靠 source_href 猜测）。
+            # 同一 url 出现在两个类别时**先到先得**：类别互斥由题面
+            # 约束（「归入且只归入一类」），违反时取先出现的，evidence
+            # 里两类的 why 都不会丢——行本身都在 payload 里。
+            named: dict[str, tuple[str, str]] = {}
+            for cls in questions.CLASSIFY_CATEGORIES:
+                for row in decision.payload.get(cls) or []:
+                    if not isinstance(row, dict):
+                        continue
+                    url = str(row.get("url") or "").strip()
+                    if url and url not in named:
+                        named[url] = (cls, str(row.get("why") or ""))
+            for candidate in batch:
+                hit = named.get(candidate.url)
+                if hit is None:
+                    undecided += 1
+                    ledger.record(
+                        candidate.url,
+                        "unresolved",
+                        f"{gate} 分类任务未点名该候选——**无证据不记负样本**，"
+                        f"转人工复核（漏分类可能是模型漏答，不是"
+                        f"「这个站看不了」）。整体判据：{decision.evidence}",
+                        decision=decision,
+                        site_url=candidate.url,
+                    )
+                elif hit[0] == keep_class:
+                    kept.append(candidate)
+                else:
+                    dropped += 1
+                    why = hit[1].strip()
+                    ledger.record(
+                        candidate.url,
+                        branch,
+                        f"{gate} 分类为 {hit[0]}（非本路径目标类 "
+                        f"{keep_class}）。{why}"
+                        if why
+                        else f"{gate} 分类为 {hit[0]}（非本路径目标类 "
+                        f"{keep_class}，模型未给出理由）",
+                        decision=decision,
+                        site_url=candidate.url,
+                    )
+        if classified_batches:
+            record.candidate_source = "perceptor"
+            record.warnings.append(
+                f"{gate}（分类任务）自 {len(candidates)} 个候选保留 "
+                f"{len(kept)} 个（目标类 {keep_class}），{dropped} 个记 {branch}"
+                + (
+                    f"，{undecided} 个模型未点名，记 unresolved"
+                    f"（**不入负样本池**）"
+                    if undecided
+                    else ""
+                )
+                + (
+                    f"；{len(heuristic_kept)} 个因 fail-closed 批次"
+                    f"按启发式保留"
+                    if heuristic_kept
+                    else ""
+                )
+            )
+            log.info(
+                "[%s] %s 分类完成：保留 %d/%d（%d 批中 %d 批 fail-closed）",
+                task_id, gate, len(kept), len(candidates), len(batches),
+                len(batches) - classified_batches,
+            )
+        else:
+            record.candidate_source = "heuristic"
+            log.info(
+                "[%s] %s 分类任务全程 fail-closed，%d 个候选按启发式全遍历",
+                task_id, gate, len(candidates),
+            )
+        # 遍历顺序保持引擎原序：kept / heuristic_kept 按批分段收集，
+        # 多批混合时直接拼接会打乱批间顺序，按原序回放一次。
+        selected_urls = {c.url for c in kept} | {c.url for c in heuristic_kept}
+        return [c for c in candidates if c.url in selected_urls]
 
     async def _visit_guarded(
         self,

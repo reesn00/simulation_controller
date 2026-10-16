@@ -123,9 +123,10 @@ class TestExclusionReason:
         assert exclusion_reason("https://www.bing.com/search?q=x", "baidu") == (
             "excluded_host:bing.com"
         )
-        assert exclusion_reason("https://www.zhihu.com/question/1", "baidu") == (
-            "excluded_host:zhihu.com"
-        )
+        # 方案 12 阶段 A1（2026-10-16）：zhihu 自 EXCLUDED_HOST_ROOTS 移出，
+        # 不再有排除理由——它是路径 C 的语义信源，去向交给分类任务
+        # （Q.CLASSIFY_SEARCH_LINKS）判 article_post，不再结构剔除。
+        assert exclusion_reason("https://www.zhihu.com/question/1", "baidu") == ""
 
 
 class TestExtractCandidatesDedup:

@@ -135,6 +135,18 @@ CONTRACTS: Mapping[str, str] = MappingProxyType(
         Q.FIND_SITE_SEARCH: (
             '{"ref":"输入框ref或null","why":"一句话，指出搜索框原文"}'
         ),
+        # ── 方案 12 阶段 A1 · 分类任务（2026-10-16）────────────────────
+        # 一道题统一三条发现路径的「选某类链接」语义：四个类别的数组
+        # 键名与 :data:`perception.questions.CLASSIFY_CATEGORIES` 同源
+        # （改名等于破坏性契约变更——存档 payload 与 P1 里都是这四个键）。
+        # **四个数组全部为空 = 没作答**（fail-closed），漏分类的链接
+        # 不计入任何结论（prompt 声明 + orchestrator 兜底）。
+        Q.CLASSIFY_SEARCH_LINKS: (
+            '{"video_site":[{"i":0,"title":"站点标题","why":"归类理由"}],'
+            '"aggregator":[{"i":1,"title":"站点标题","why":"归类理由"}],'
+            '"article_post":[{"i":2,"title":"文章标题","why":"归类理由"}],'
+            '"noise":[{"i":3,"title":"链接标题","why":"归类理由"}]}'
+        ),
     }
 )
 
@@ -157,16 +169,17 @@ LLM_BODY_CHARS = 600
 LLM_ELEMENTS = 25
 LLM_LINKS = 20
 
-#: 路径 B/C 的四道链接选择题（2026-10-16）。与 ① 共用编号回指契约，
-#: 但**无片名判据**——①B 的查询是通用聚合词、①C 的判据是页面形态、
-#: ⑥/⑥C 判的是单页链接，``_title_link_sufficiency`` 一概不适用，
-#: 预检只查链接非空。
+#: 路径 B/C 的四道链接选择题（2026-10-16）+ 分类任务①（方案 12 阶段 A1）。
+#: 与 ① 共用编号回指契约，但**无片名判据**——①B 的查询是通用聚合词、
+#: ①C 与分类题判的是链接/页面形态，``_title_link_sufficiency`` 一概
+#: 不适用，预检只查链接非空。
 _LINK_SELECTION_QUESTIONS = frozenset(
     {
         Q.SELECT_AGGREGATOR_RESULTS,
         Q.SELECT_SITE_ENTRIES,
         Q.SELECT_ARTICLE_RESULTS,
         Q.SELECT_REFERRAL_LINKS,
+        Q.CLASSIFY_SEARCH_LINKS,
     }
 )
 
@@ -273,6 +286,9 @@ class LLMPerceptor:
                 Q.SELECT_REFERRAL_LINKS: self._select_page_links,
                 Q.IS_AGGREGATOR: self._is_aggregator,
                 Q.FIND_SITE_SEARCH: self._find_site_search,
+                # 方案 12 阶段 A1（2026-10-16）：搜索页链接分类任务——
+                # orchestrator 三条发现路径统一问这一道，按类分发。
+                Q.CLASSIFY_SEARCH_LINKS: self._classify_search_links,
             }[question]
 
             # 确定性事实优先：video 标签存在性不进 LLM
@@ -843,6 +859,82 @@ class LLMPerceptor:
             payload={"selected": selected, "rejected": rejected},
         )
 
+    def _classify_search_links(
+        self, spec: Question, obs: Observation, started: float
+    ) -> Decision:
+        """方案 12 阶段 A1：候选链接四分类（一道题统一三条发现路径）。
+
+        与 :meth:`_select_from_links` 的骨架一致（解析 → 编号回指 →
+        白名单落位），差别在语义结构：SELECT_* 是「按路径预置的二元筛选」
+        （选中/排除），本题是「类型判定」——每条链接归入
+        ``video_site / aggregator / article_post / noise`` 之一，**按哪类
+        保留、按哪类记负由 orchestrator 按发现路径分发**（direct 留
+        video_site 记 not_play_site、B 留 aggregator 记 not_aggregator、
+        C 留 article_post 记 not_article）。
+
+        ⚠️ **answer 没有 False**：分类是逐条的类型判定，「这批里没有目标
+        类型」是 orchestrator 从 payload 推导的分发结论（kept=0），不是
+        本题的整页结论——把三种路径的 False 语义塞回一道题，等于把
+        参数化刚拆开的东西又粘回去。True = 分类可用（至少一条对上了
+        观察里的链接）；None = 没答 / 全对不上（与 SELECT_* 同款两分支，
+        两种「零」是两件事，理由见 :meth:`_select_play_sites`）。
+
+        「漏分类的链接不计入任何结论」由 prompt 声明、由 orchestrator
+        兜底：未点名的候选按无证据处理（unresolved），与 rejected 未点名
+        同一条纪律。
+        """
+        raw, why = self._ask(
+            spec, _render(obs, target_title=self._target_title, question=spec.id)
+        )
+        if raw is None:
+            return self._unresolved_answer(spec, why, started)
+        data = schema_parse.extract_json(raw)
+        if data is None:
+            return self._unresolved_answer(spec, _why_unparsable(raw), started)
+
+        known = {link.href for link in obs.links}
+        window = _link_window(obs, spec.id, self._target_title)
+        classes: dict[str, list[dict[str, Any]]] = {}
+        raw_total = 0
+        for cls in questions.CLASSIFY_CATEGORIES:
+            raw_rows = _rows(schema_parse.field(data, cls, []))
+            raw_total += len(raw_rows)
+            # 编号回指 + URL 白名单（与 _resolve_rows 同款）：模型回 ``i``
+            # 落到窗口链接上，回不到编号退 URL 匹配，都落空的整条丢弃
+            # ——编出来的链接会让控制流去访问不存在的站点。
+            classes[cls] = _resolve_rows(raw_rows, window, known)
+
+        classified = sum(len(rows) for rows in classes.values())
+        if not classified:
+            if not raw_total:
+                return self._unresolved_answer(
+                    spec,
+                    f"模型四个类别数组全空（送进模型 {len(window)} 条链接）"
+                    f"——它**没答这道题**；模型原文摘录：{_excerpt(raw)}",
+                    started,
+                )
+            return self._unresolved_answer(
+                spec,
+                f"模型给出的 {raw_total} 个条目全部不在观察的 "
+                f"{len(known)} 个链接里，无法采信",
+                started,
+            )
+        return self._answer(
+            spec,
+            True,
+            evidence=(
+                f"自 {len(known)} 个链接分类：video_site "
+                f"{len(classes['video_site'])}、aggregator "
+                f"{len(classes['aggregator'])}、article_post "
+                f"{len(classes['article_post'])}、noise "
+                f"{len(classes['noise'])}"
+                f"（已剔除不在观察中的条目；未点名的 "
+                f"{len(known) - classified} 条不计入结论）"
+            ),
+            started=started,
+            payload=classes,
+        )
+
     def _is_aggregator(
         self, spec: Question, obs: Observation, started: float
     ) -> Decision:
@@ -1108,6 +1200,15 @@ def _sufficiency(question: str, obs: Observation, *, target_title: str = "") -> 
         if not obs.links:
             return "搜索页未采到链接，无从选择站点，不判"
         return _title_link_sufficiency(obs, target_title)
+    if question == Q.CLASSIFY_SEARCH_LINKS:
+        # 方案 12 阶段 A1：分类题读的是**候选视图**（orchestrator 构造的
+        # 投影观察，links=候选），判据只有链接表非空一条。通用守卫
+        # 「正文 0 字符且交互元素 0 个」守的是页面渲染完整性，对投影
+        # 观察是假阳性——候选能从搜索页提取出来，「页面渲染过」这件事
+        # 已由上游环节核过；视图的交互元素本来就刻意清空。
+        if not obs.links:
+            return "分类题收到 0 条链接（候选视图为空），无从分类，不判"
+        return ""
     if question in _LINK_SELECTION_QUESTIONS and not obs.links:
         # 路径 B/C 的四道选择题（2026-10-16）。与 ① 的零链接守卫同一条
         # 纪律，但**无片名判据**（①B 通用查询 / ①C 判页面形态 / ⑥′ 判

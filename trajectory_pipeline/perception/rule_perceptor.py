@@ -540,7 +540,8 @@ class RulePerceptor:
         spec = questions.get(question)
         # 2026-10-16 路径 B/C：新增六题（SELECT_AGGREGATOR_RESULTS /
         # IS_AGGREGATOR / SELECT_SITE_ENTRIES / SELECT_ARTICLE_RESULTS /
-        # SELECT_REFERRAL_LINKS / FIND_SITE_SEARCH）**刻意不挂 handler**——
+        # SELECT_REFERRAL_LINKS / FIND_SITE_SEARCH）与方案 12 阶段 A1 的
+        # CLASSIFY_SEARCH_LINKS **刻意不挂 handler**——
         # 全是语义题，W1 一律 fail-closed，与 ①② 现状一致。
         # ``search_box_candidates`` 词表只作为 W3 的 ref 兜底存在，
         # 不构成 W1 的判定能力（「词表命中」≠「语义确认」，同

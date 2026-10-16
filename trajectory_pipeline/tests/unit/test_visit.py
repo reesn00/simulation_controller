@@ -16,11 +16,13 @@ from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor import orchestrator
 from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig, RunRecord
 from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.executor.steps import site_search as site_search_step
 from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.executor.steps.visit import visit_site
+from trajectory_pipeline.perception import llm_perceptor as lp
 from trajectory_pipeline.perception.base import (
     Decision,
     InteractiveElement,
@@ -619,18 +621,37 @@ class TestOrchestrator:
             "https://www.a.test/movie": obs_at("https://www.a.test/movie"),
         }
         d = FakeDriver(pages)
+        # 方案 12 阶段 A1：zhihu 已不在结构性排除表里（路径 C 语义信源），
+        # 它的淘汰走分类任务——被判 article_post（非 direct 目标类），
+        # 落 **not_play_site 有证据负样本**，而不是结构剔除的静默消失。
+        script = {
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "video_site": [
+                        {"url": "https://www.a.test/movie", "why": "标题含片名"}
+                    ],
+                    "article_post": [
+                        {"url": "https://www.zhihu.com/question/1", "why": "知乎讨论帖"}
+                    ],
+                },
+            ),
+            Q.IS_REACHABLE: no(Q.IS_REACHABLE),
+        }
+        perceptor = ScriptedPerceptor(script)
         cfg = RunConfig(stop_after_success=1)
-        orch = Orchestrator(
-            d, ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)}), cfg
-        )
+        orch = Orchestrator(d, perceptor, cfg)
         rec = await orch.run("T001", "功夫")
 
         assert rec.title == "功夫"
         assert "功夫 在线观看" in rec.query
-        # 知乎在结构性排除表里 → 剔除；a.test 不在任何表里 → 保留
         assert [c.url for c in rec.candidates] == ["https://www.a.test/movie"]
-        assert rec.candidate_source == "heuristic"
-        assert rec.ledger is not None and len(rec.ledger.outcomes) == 1
+        assert rec.candidate_source == "perceptor"
+        assert Q.CLASSIFY_SEARCH_LINKS in perceptor.calls
+        # 知乎被分类点名淘汰 → 有证据入账；a.test 走 visit 链出结果
+        outcomes = {o.url: o.branch for o in rec.ledger.outcomes}
+        assert outcomes["https://www.zhihu.com/question/1"] == "not_play_site"
+        assert len(outcomes) == 2
 
     async def test_代码不做语义筛选(self):
         """`news.b.test` 这种域名**必须**留在候选里。
@@ -735,13 +756,19 @@ class TestOrchestrator:
         assert rec.run_config["per_site_timeout_s"] == 12.5
 
 
-class TestSelectPlaySitesWiring:
-    """判断点 ① 的控制流接线——**它此前没有调用方**。
+class TestClassifyCandidatesWiring:
+    """环节 ①.5 分类任务的控制流接线（方案 12 阶段 A1，2026-10-16）。
 
-    W1 之前环节 ① 之后直接 ``extract_candidates`` 全遍历，感知层的
-    ``SELECT_PLAY_SITES`` 无人问。后果不只是「少一个判断点」：
-    ``not_play_site`` 这条负分支**在真实链路上永远触发不了**，
-    而报表上分部数字齐全，没人会看得出这支空了。
+    它的前身 ``TestSelectPlaySitesWiring`` 测的是旧 ①（SELECT_PLAY_SITES
+    的 selected/rejected 二元筛选）；A1 起搜索页分叉改问
+    ``CLASSIFY_SEARCH_LINKS`` 四分类，按 ``discovery_path`` 取目标类分发
+    （direct→video_site / B→aggregator / C→article_post）。旧三道
+    SELECT_* 题保留在注册表：站内搜索结果页仍复用 ①（见
+    ``steps/site_search.py``），金标重放与 A/B 对照也需要它们。
+
+    负样本纪律一条不变：**只有模型点名的候选才记负分支**——
+    ``not_play_site`` 在真实链路上必须触发得了，否则报表分部数字齐全、
+    这支却空着，没人看得出来。
     """
 
     SEARCH = "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B"
@@ -764,21 +791,22 @@ class TestSelectPlaySitesWiring:
                 )
         return pages
 
-    async def test_选中后才遍历(self):
+    def _classify(self, **classes) -> Decision:
+        """构造分类任务的预设应答。``classes`` 形如
+        ``video_site=[{"url": ..., "why": ...}]``，未给的四类为空。"""
+        payload = {cls: rows for cls, rows in classes.items()}
+        return ok(Q.CLASSIFY_SEARCH_LINKS, payload)
+
+    async def test_目标类保留后才遍历(self):
         pages = self._pages(
             ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
         )
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
-                {
-                    "selected": [
-                        {"url": "https://www.a.test/movie", "why": "标题含片名"}
-                    ],
-                    "rejected": [
-                        {"url": "https://www.b.test/movie", "reason": "只有影评"}
-                    ],
-                },
+            Q.CLASSIFY_SEARCH_LINKS: self._classify(
+                video_site=[
+                    {"url": "https://www.a.test/movie", "why": "标题含片名"}
+                ],
+                noise=[{"url": "https://www.b.test/movie", "why": "只有影评"}],
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
@@ -793,20 +821,15 @@ class TestSelectPlaySitesWiring:
         assert rec.candidate_source == "perceptor"
         assert len(rec.visits) == 1
 
-    async def test_落选站点记not_play_site(self):
+    async def test_非目标类点名记not_play_site(self):
         """**每条分支都必须有对应样本入库**——负样本不是副产品。"""
         pages = self._pages(
             ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
         )
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
-                {
-                    "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
-                    "rejected": [
-                        {"url": "https://www.b.test/movie", "reason": "只有影评无播放"}
-                    ],
-                },
+            Q.CLASSIFY_SEARCH_LINKS: self._classify(
+                video_site=[{"url": "https://www.a.test/movie", "why": "w"}],
+                noise=[{"url": "https://www.b.test/movie", "why": "只有影评无播放"}],
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
@@ -822,12 +845,14 @@ class TestSelectPlaySitesWiring:
         assert "只有影评无播放" in dropped[0].evidence
 
     async def test_未取得结论不中断采集(self):
-        """fail-closed 管的是「结论」不是「采集」。W1 的规则版对 ① 只会
-        返回 None，若据此中断，候选一个都不跑，负样本池永远空。"""
+        """fail-closed 管的是「结论」不是「采集」。W1 的规则版对分类题
+        只会返回 None，若据此中断，候选一个都不跑，负样本池永远空。"""
         pages = self._pages(
             ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
         )
-        script = {Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "W1 无语义能力")}
+        script = {
+            Q.CLASSIFY_SEARCH_LINKS: none(Q.CLASSIFY_SEARCH_LINKS, "W1 无语义能力")
+        }
         rec = await Orchestrator(
             FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
         ).run("T001", "功夫")
@@ -836,33 +861,42 @@ class TestSelectPlaySitesWiring:
         assert rec.candidate_source == "heuristic"
         assert rec.candidates and any("不中断" in w for w in rec.warnings)
 
-    async def test_判False时不遍历(self):
-        """判 False 是货真价实的结论：「这页没有该片的可看站点」。"""
-        pages = self._pages(("a站", "https://www.a.test/movie"))
-        script = {Q.SELECT_PLAY_SITES: no(Q.SELECT_PLAY_SITES, "全是资讯站")}
+    async def test_目标类为零时不遍历(self):
+        """旧 ① 的 False 分支（「这页没有可看站点」→ 中断遍历）在 A1 里
+        是分发的**涌现结果**：目标类 kept=0 且逐条点名记负，遍历自然
+        没有目标——同一份账面，不再需要整页 False 文案。"""
+        pages = self._pages(
+            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
+        )
+        script = {
+            Q.CLASSIFY_SEARCH_LINKS: self._classify(
+                noise=[
+                    {"url": "https://www.a.test/movie", "why": "资讯站"},
+                    {"url": "https://www.b.test/movie", "why": "资讯站"},
+                ]
+            ),
+        }
         rec = await Orchestrator(
             FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
         ).run("T001", "功夫")
         assert rec.visits == []
-        assert any("判断点 ① 判 False" in w for w in rec.warnings)
+        assert [o.branch for o in rec.ledger.outcomes] == [
+            "not_play_site", "not_play_site",
+        ]
 
-    async def test_选中顺序保持引擎原序(self):
+    async def test_目标类保留顺序保持引擎原序(self):
         """重排等于用模型的判断覆盖引擎的相关性排序，那是没有依据的。"""
         pages = self._pages(
             *[(f"站{i}", f"https://www.s{i}.test/movie") for i in range(3)]
         )
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
-                {
-                    # 模型把第 3 个排第一——控制流不该照它重排
-                    "selected": [
-                        {"url": "https://www.s2.test/movie", "why": "最像"},
-                        {"url": "https://www.s0.test/movie", "why": "也行"},
-                        {"url": "https://www.s1.test/movie", "why": "可以"},
-                    ],
-                    "rejected": [],
-                },
+            # 模型把第 3 个排第一——控制流不该照它重排
+            Q.CLASSIFY_SEARCH_LINKS: self._classify(
+                video_site=[
+                    {"url": "https://www.s2.test/movie", "why": "最像"},
+                    {"url": "https://www.s0.test/movie", "why": "也行"},
+                    {"url": "https://www.s1.test/movie", "why": "可以"},
+                ]
             ),
         }
         rec = await Orchestrator(
@@ -870,10 +904,11 @@ class TestSelectPlaySitesWiring:
         ).run("T001", "功夫")
         assert [c.rank for c in rec.candidates] == [1, 2, 3]
 
-    async def test_按原始href匹配而非解包后(self):
-        """百度结果页大量用 ``/link?url=`` 包裹。感知层读的是观察，
-        回传的是**原始 href**；匹配不上就是「整个站点集丢失」，
-        且表现上看不出是匹配问题。"""
+    async def test_分类匹配用解包后URL而非原始href(self):
+        """百度结果页大量用 ``/link?url=`` 包裹。A1 的匹配键是候选视图的
+        ``href``——它**就是** ``Candidate.url``（解包后目标地址），由
+        :func:`orchestrator._candidates_view` 同源构造：「模型看到的链接」
+        与「分发命中的候选」不靠 source_href 猜测。"""
         wrapped = "https://www.baidu.com/link?url=https%3A%2F%2Fwww.a.test%2Fmovie"
         pages = {
             self.SEARCH: self._search_page(("a站", wrapped)),
@@ -882,9 +917,8 @@ class TestSelectPlaySitesWiring:
             ),
         }
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
-                {"selected": [{"url": wrapped, "why": "w"}], "rejected": []},
+            Q.CLASSIFY_SEARCH_LINKS: self._classify(
+                video_site=[{"url": "https://www.a.test/movie", "why": "w"}]
             ),
         }
         rec = await Orchestrator(
@@ -893,7 +927,7 @@ class TestSelectPlaySitesWiring:
         assert [c.url for c in rec.candidates] == ["https://www.a.test/movie"]
 
     async def test_规则版批次行为不变(self):
-        """W1 回归：``RulePerceptor`` 对 ① 返回 None → 全遍历。
+        """W1 回归：``RulePerceptor`` 对分类题返回 None → 全遍历。
         这是既有能力，新插件上线不能让既有批次报废。"""
         from trajectory_pipeline.perception.rule_perceptor import RulePerceptor
 
@@ -905,19 +939,93 @@ class TestSelectPlaySitesWiring:
         assert rec.candidate_source == "heuristic"
 
 
+class TestClassifyCandidatesBatches:
+    """分类任务的分批与窗口常量同步（方案 12 阶段 A1）。
+
+    「模型看得到全部候选」由构造保证：候选按 ``PERCEPTION_LINK_WINDOW``
+    分批构造候选视图（钉窗机制的消解，见 ``steps/search.py`` 尾注）。
+    窗口常量若与感知层 ``LLM_LINKS`` 漂移——批比窗口大——感知层会
+    **静默**把多出的链接近回窗口，「全部候选都送到了」就成了假话。
+    """
+
+    class EchoClassifyPerceptor:
+        """按观察回声分类：把收到的每条链接原样归入 video_site。
+
+        用来测分批本身——每批送了哪些链接、批数多少，与模型语义无关。
+        """
+
+        name = "echo"
+
+        def __init__(self):
+            self.batches: list[list[str]] = []
+
+        def decide(self, question: str, obs: Observation) -> Decision:
+            self.batches.append([l.href for l in obs.links])
+            return ok(
+                question,
+                {
+                    "video_site": [
+                        {"url": l.href, "why": "echo"} for l in obs.links
+                    ]
+                },
+            )
+
+    async def test_超窗候选分批送感知层(self):
+        n = 2 * orchestrator.PERCEPTION_LINK_WINDOW + 5  # 3 批：20 / 20 / 5
+        links = [(f"站{i}", f"https://s{i}.test/movie") for i in range(n)]
+        pages = {
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                url="https://www.baidu.com/s?wd=x",
+                page_title="百度",
+                body_text="搜索结果",
+                links=tuple(LinkItem(text=t, href=h) for t, h in links),
+            ),
+        }
+        perceptor = self.EchoClassifyPerceptor()
+        rec = await Orchestrator(
+            FakeDriver(pages), perceptor, RunConfig(max_candidates=n)
+        ).run("T001", "功夫")
+
+        assert [len(b) for b in perceptor.batches] == [
+            orchestrator.PERCEPTION_LINK_WINDOW,
+            orchestrator.PERCEPTION_LINK_WINDOW,
+            5,
+        ]
+        # 每条候选都送到了（「全部候选都可见」由构造保证）
+        sent = {href for b in perceptor.batches for href in b}
+        assert sent == {f"https://s{i}.test/movie" for i in range(n)}
+        # echo 全判 video_site（direct 目标类）→ 全保留、保引擎原序
+        assert [c.rank for c in rec.candidates] == list(range(1, n + 1))
+        assert rec.candidate_source == "perceptor"
+
+    def test_窗口常量与感知层LLM_LINKS一致(self):
+        """executor 侧复制了窗口宽度常量——不得与感知层漂移。
+        漂移 = 分批按错的宽度切，批比窗口大时感知层静默截断，
+        「模型看得到全部候选」的构造保证就破了，且校验还报绿。"""
+        assert orchestrator.PERCEPTION_LINK_WINDOW == lp.LLM_LINKS
+
+    def test_窗口常量为正整数(self):
+        assert isinstance(orchestrator.PERCEPTION_LINK_WINDOW, int)
+        assert orchestrator.PERCEPTION_LINK_WINDOW > 0
+
+
 class Test无证据不记负样本:
-    """① **没被模型点名**的候选不得记 ``not_play_site``。
+    """分类任务里**没被模型点名**的候选不得记 ``not_play_site``。
 
     实测形态（2026-10-10，T001《功夫》，baidu）：修复前整批 5 个候选
     落进 ``not_play_site`` 负样本池，evidence 写着「模型未给出排除理由」
     ——代码明知没有理由，仍把它记成了「这个站看不了」。
 
-    机制：① 返回 True，但模型的 ``rejected`` 里只有它**实际看到**的那
-    20 条导航链接；这 5 个候选排在第 25 条之后，模型压根没见过它们。
-    「没被选中」被当成了「被否决」，而这两件事在无证据时无法区分。
+    机制（A1 前的旧形态）：① 返回 True，但模型的 ``rejected`` 里只有它
+    **实际看到**的那 20 条导航链接；候选排在第 25 条之后，模型压根没见过
+    它们。「没被选中」被当成了「被否决」，而这两件事在无证据时无法区分。
 
-    口径：**只有模型点名（出现在 ``rejected`` 里）的候选才记负样本**，
-    其余记 ``unresolved``——人工复核分支，**不入负样本池**
+    A1 后的形态：分类任务按 ``PERCEPTION_LINK_WINDOW`` 分批、候选视图
+    由构造保证可见（上述窗口机制已消解），但「未点名」仍然可能出现
+    ——模型漏分类就是漏答，与「这个站看不了」是两回事。
+
+    口径：**只有模型点名（出现在分类 payload 里且非目标类）的候选才记
+    负样本**，其余记 ``unresolved``——人工复核分支，**不入负样本池**
     （CLAUDE.md：「``unresolved`` 不是负样本」）。
     """
 
@@ -926,7 +1034,7 @@ class Test无证据不记负样本:
     #: ``DriverError: 不存在``——FakeDriver 按 URL 取页，而 search_url
     #: 由 query 拼出，抄错一个字符就取不到搜索页，于是「什么都没记」，
     #: 看着像记账逻辑坏了。
-    SEARCH = TestSelectPlaySitesWiring.SEARCH
+    SEARCH = TestClassifyCandidatesWiring.SEARCH
 
     #: 实测（2026-10-10 T001，baidu 搜《功夫》）：``browser_extract`` 给的
     #: ``urls[]`` 是**解包后的目标地址**，而 ``links[].href`` 是
@@ -991,14 +1099,13 @@ class Test无证据不记负样本:
             ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
         )
         script = {
-            # rejected 只点了模型自己看到的那条导航，与两个候选无关
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
+            # 分类 payload 只点了模型自己看到的那条导航，与两个候选无关
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
                 {
-                    "selected": [],
-                    "rejected": [
-                        {"url": "https://www.baidu.com/", "reason": "搜索引擎"}
-                    ],
+                    "noise": [
+                        {"url": "https://www.baidu.com/", "why": "搜索引擎"}
+                    ]
                 },
             ),
         }
@@ -1019,12 +1126,14 @@ class Test无证据不记负样本:
             ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
         )
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
                 {
-                    "selected": [{"url": "https://www.a.test/movie", "why": "含片名"}],
-                    "rejected": [
-                        {"url": "https://www.b.test/movie", "reason": "只有影评"}
+                    "video_site": [
+                        {"url": "https://www.a.test/movie", "why": "含片名"}
+                    ],
+                    "noise": [
+                        {"url": "https://www.b.test/movie", "why": "只有影评"}
                     ],
                 },
             ),
@@ -1047,9 +1156,9 @@ class Test无证据不记负样本:
         模型点名了却没写理由，仍然是它考虑过并否决了。"""
         pages = self._pages(("a站", "https://www.a.test/movie"))
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
-                {"selected": [], "rejected": [{"url": "https://www.a.test/movie"}]},
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {"noise": [{"url": "https://www.a.test/movie"}]},
             ),
         }
         rec = await Orchestrator(
@@ -1060,40 +1169,21 @@ class Test无证据不记负样本:
         assert len(dropped) == 1
         assert "未给出理由" in dropped[0].evidence
 
-    async def test_判False时同样只记点名的(self):
-        """False 分支与 True 分支是同一个坑：整体判否不等于逐条被否决。"""
+    async def test_整体无目标类时未点名的仍不记负(self):
+        """旧 False 分支的坑在 A1 的对应形态：目标类 kept=0 的「整页
+        没有可看站点」不等于逐条被否决——未点名的候选照旧 unresolved，
+        点了名的才落 not_play_site。"""
         pages = self._pages(
             ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
         )
         script = {
-            Q.SELECT_PLAY_SITES: no(
-                Q.SELECT_PLAY_SITES, "搜索结果里没有该片的可看站点"
-            ),
-        }
-        rec = await Orchestrator(
-            FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
-        ).run("T001", "功夫")
-
-        assert rec.visits == []
-        assert not [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
-        assert len([o for o in rec.ledger.outcomes if o.branch == "unresolved"]) == 2
-
-    async def test_判False且模型点了名的仍记not_play_site(self):
-        pages = self._pages(
-            ("a站", "https://www.a.test/movie"), ("b站", "https://www.b.test/movie")
-        )
-        script = {
-            Q.SELECT_PLAY_SITES: Decision(
-                question=Q.SELECT_PLAY_SITES,
-                answer=False,
-                confidence=0.8,
-                evidence="全是资讯站",
-                source="llm",
-                payload={
-                    "selected": [],
-                    "rejected": [
-                        {"url": "https://www.b.test/movie", "reason": "影评页"}
-                    ],
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    # 只点名了 a（noise），b 未点名——kept=0 但 b 不入负
+                    "noise": [
+                        {"url": "https://www.a.test/movie", "why": "资讯站"}
+                    ]
                 },
             ),
         }
@@ -1101,9 +1191,10 @@ class Test无证据不记负样本:
             FakeDriver(pages), ScriptedPerceptor(script), RunConfig()
         ).run("T001", "功夫")
 
+        assert rec.visits == []
         dropped = [o for o in rec.ledger.outcomes if o.branch == "not_play_site"]
         assert len(dropped) == 1
-        assert dropped[0].url == "https://www.b.test/movie"
+        assert dropped[0].url == "https://www.a.test/movie"
         assert len([o for o in rec.ledger.outcomes if o.branch == "unresolved"]) == 1
 
 
@@ -1301,6 +1392,46 @@ class TestAntiScraping:
         rec = await orch.run("T001", "功夫")
         assert rec.ledger is not None and rec.ledger.outcomes == []
         assert rec.ledger.negative_samples() == []
+
+    async def test_被拦落gatekeeper事件账本(self):
+        """方案 12 阶段 G：同一拦截事件的结构化记账，与 search_blocked /
+        warnings **并存不替代**。处置是 FailClosed 运行级特例——branch
+        必须为空（拦截没有 outcome，不进分支体系）。"""
+        d = FakeDriver(
+            {
+                "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                    url=self.CAPTCHA_URL, page_title="百度安全验证", body_text="x"
+                ),
+            }
+        )
+        orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
+        rec = await orch.run("T001", "功夫")
+        assert len(rec.gatekeeper_events) == 1
+        ev = rec.gatekeeper_events[0]
+        assert ev["stage"] == "search"
+        # CAPTCHA_URL 命中 URL marker（wappass）→ captcha；标题「百度安全
+        # 验证」不含 CF 子集词 → 不细分为 blocked_cf。
+        assert ev["verdict"] == "captcha"
+        assert ev["reason"] == "captcha"
+        assert ev["disposition"]["kind"] == "fail_closed"
+        assert ev["disposition"]["branch"] == ""
+        # 落盘与内存同形
+        assert rec.to_json()["gatekeeper_events"] == [ev]
+
+    async def test_未被拦时事件账本为空(self):
+        d = FakeDriver(
+            {
+                "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                    url="https://www.baidu.com/s?wd=x",
+                    page_title="百度",
+                    body_text="结果",
+                    links=(LinkItem(text="a", href="https://a.test/x"),),
+                ),
+            }
+        )
+        orch = Orchestrator(d, ScriptedPerceptor({}), RunConfig())
+        rec = await orch.run("T001", "功夫")
+        assert rec.gatekeeper_events == []
 
     async def test_落盘带search_blocked(self):
         from trajectory_pipeline.executor.orchestrator import RunRecord
@@ -2103,7 +2234,7 @@ class TestRationale接线:
     全序列，执行期那一刻后续步还不存在。
     """
 
-    SEARCH = TestSelectPlaySitesWiring.SEARCH
+    SEARCH = TestClassifyCandidatesWiring.SEARCH
 
     def _pages(self):
         return {
@@ -2134,11 +2265,12 @@ class TestRationale接线:
     async def test_每一步都生成(self):
         sink: list = []
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
                 {
-                    "selected": [{"url": "https://www.a.test/movie", "why": "含片名"}],
-                    "rejected": [],
+                    "video_site": [
+                        {"url": "https://www.a.test/movie", "why": "含片名"}
+                    ]
                 },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
@@ -2182,11 +2314,12 @@ class TestRationale接线:
     async def test_落盘进存档(self):
         sink: list = []
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
                 {
-                    "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
-                    "rejected": [],
+                    "video_site": [
+                        {"url": "https://www.a.test/movie", "why": "w"}
+                    ]
                 },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
@@ -2210,7 +2343,9 @@ class TestRationale接线:
     async def test_没有writer时该字段为None(self):
         """W1 规则版批次（无后端）——**不生成占位**，
         闸门据此记 not_run 而不是 passed。搜索步同样不生成。"""
-        script = {Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "W1 无语义能力")}
+        script = {
+            Q.CLASSIFY_SEARCH_LINKS: none(Q.CLASSIFY_SEARCH_LINKS, "W1 无语义能力")
+        }
         rec = await Orchestrator(
             FakeDriver(self._pages()), ScriptedPerceptor(script), RunConfig()
         ).run("T001", "功夫")
@@ -2224,11 +2359,12 @@ class TestRationale接线:
             raise RuntimeError("后端炸了")
 
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
                 {
-                    "selected": [{"url": "https://www.a.test/movie", "why": "w"}],
-                    "rejected": [],
+                    "video_site": [
+                        {"url": "https://www.a.test/movie", "why": "w"}
+                    ]
                 },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
@@ -2291,14 +2427,15 @@ class Test站点首页核:
             ("a站", "https://www.a.test/movie"),
         )
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
+            # 分类把两个都判成 video_site（direct 目标类）——首页核的
+            # 判据是 URL 结构（path 为空），与分类无关，照样剔
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
                 {
-                    "selected": [
+                    "video_site": [
                         {"url": "https://www.hao123.com/", "why": "看着像"},
                         {"url": "https://www.a.test/movie", "why": "标题含片名"},
-                    ],
-                    "rejected": [],
+                    ]
                 },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
@@ -2321,14 +2458,13 @@ class Test站点首页核:
             ("a站", "https://www.a.test/movie"),
         )
         script = {
-            Q.SELECT_PLAY_SITES: ok(
-                Q.SELECT_PLAY_SITES,
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
                 {
-                    "selected": [
+                    "video_site": [
                         {"url": "https://www.hao123.com/", "why": "看着像"},
                         {"url": "https://www.a.test/movie", "why": "标题含片名"},
-                    ],
-                    "rejected": [],
+                    ]
                 },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
@@ -2343,16 +2479,17 @@ class Test站点首页核:
         assert [v.candidate.url for v in rec.visits] == ["https://www.a.test/movie"]
 
     async def test_判断点无结论时照样剔除(self):
-        """**实测那批走的正是这条路**：① 判 None → 候选全部保留遍历。
+        """**实测那批走的正是这条路**：分类任务判 None → 候选全部保留遍历。
 
-        挂在 `_apply_selection` 里就覆盖不到它，而那恰好是首页混进
+        首页核挂在分类分发**之后**（orchestrator 环节 ①.6），分类的
+        fail-closed 路径照样要过这道核——这正是首页混进
         负样本池的实际路径。"""
         pages = self._pages(
             ("导航站首页", "https://www.hao123.com/"),
             ("a站", "https://www.a.test/movie"),
         )
         script = {
-            Q.SELECT_PLAY_SITES: none(Q.SELECT_PLAY_SITES, "模型未作答"),
+            Q.CLASSIFY_SEARCH_LINKS: none(Q.CLASSIFY_SEARCH_LINKS, "模型未作答"),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             Q.PLAYER_OK: ok(Q.PLAYER_OK),
@@ -2500,10 +2637,14 @@ class Test路径BC发现链:
         }
         pages.update(self._play_pages("https://www.p1.test/movie"))
         script = {
-            Q.SELECT_AGGREGATOR_RESULTS: ok(
-                Q.SELECT_AGGREGATOR_RESULTS,
-                {"selected": [{"url": "https://agg.test/", "why": "w"}],
-                 "rejected": []},
+            # A1：B 路径的分类分发取 aggregator 类（旧 ①B 选题的分叉）
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "aggregator": [
+                        {"url": "https://agg.test/", "why": "w"}
+                    ]
+                },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
@@ -2519,7 +2660,7 @@ class Test路径BC发现链:
         assert rec.query in search_step.AGGREGATOR_QUERIES
         assert rec.search_url == self.AGG_SEARCH
         assert rec.discovery_path == "aggregator"
-        assert Q.SELECT_AGGREGATOR_RESULTS in perceptor.calls
+        assert Q.CLASSIFY_SEARCH_LINKS in perceptor.calls
         # 中间页：IS_AGGREGATOR / SELECT_SITE_ENTRIES 未配置（None）→
         # fail-closed 启发式全量，产出带溯源的最终候选
         assert len(rec.intermediates) == 1
@@ -2555,13 +2696,18 @@ class Test路径BC发现链:
         }
         pages.update(self._play_pages(deep))
         script = {
-            Q.SELECT_AGGREGATOR_RESULTS: ok(
-                Q.SELECT_AGGREGATOR_RESULTS,
-                {"selected": [{"url": "https://agg.test/", "why": "w"}],
-                 "rejected": []},
+            # A1：B 路径的分类分发取 aggregator 类（旧 ①B 选题的分叉）
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "aggregator": [
+                        {"url": "https://agg.test/", "why": "w"}
+                    ]
+                },
             ),
             Q.FIND_SITE_SEARCH: ok(Q.FIND_SITE_SEARCH, {"ref": "s1"}),
-            # 站内搜索结果页复用 ①（题意原样成立）
+            # 站内搜索结果页复用 ①（题意原样成立）——SELECT_* 在 A1 后
+            # 的唯一调用方就是这里
             Q.SELECT_PLAY_SITES: ok(
                 Q.SELECT_PLAY_SITES,
                 {"selected": [{"url": deep, "why": "w"}], "rejected": []},
@@ -2607,10 +2753,14 @@ class Test路径BC发现链:
         }
         pages.update(self._play_pages("https://www.p1.test/movie"))
         script = {
-            Q.SELECT_ARTICLE_RESULTS: ok(
-                Q.SELECT_ARTICLE_RESULTS,
-                {"selected": [{"url": "https://blog.test/post/1", "why": "w"}],
-                 "rejected": []},
+            # A1：C 路径的分类分发取 article_post 类（旧 ①C 选题的分叉）
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "article_post": [
+                        {"url": "https://blog.test/post/1", "why": "w"}
+                    ]
+                },
             ),
             Q.SELECT_REFERRAL_LINKS: ok(
                 Q.SELECT_REFERRAL_LINKS,
@@ -2659,12 +2809,14 @@ class Test路径BC发现链:
             "https://www.p1.test/movie", "https://www.p1.test/movie2"
         ))
         script = {
-            Q.SELECT_AGGREGATOR_RESULTS: ok(
-                Q.SELECT_AGGREGATOR_RESULTS,
-                {"selected": [
-                    {"url": "https://agg1.test/", "why": "w"},
-                    {"url": "https://agg2.test/", "why": "w"},
-                ], "rejected": []},
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "aggregator": [
+                        {"url": "https://agg1.test/", "why": "w"},
+                        {"url": "https://agg2.test/", "why": "w"},
+                    ]
+                },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
@@ -2697,11 +2849,14 @@ class Test路径BC发现链:
             *[f"https://www.p{i}.test/movie" for i in range(3)]
         ))
         script = {
-            Q.SELECT_AGGREGATOR_RESULTS: ok(
-                Q.SELECT_AGGREGATOR_RESULTS,
-                {"selected": [
-                    {"url": f"https://agg{i}.test/", "why": "w"} for i in range(3)
-                ], "rejected": []},
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "aggregator": [
+                        {"url": f"https://agg{i}.test/", "why": "w"}
+                        for i in range(3)
+                    ]
+                },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
@@ -2753,10 +2908,13 @@ class Test路径BC发现链:
         }
         pages.update(self._play_pages("https://www.p1.test/movie"))
         script = {
-            Q.SELECT_AGGREGATOR_RESULTS: ok(
-                Q.SELECT_AGGREGATOR_RESULTS,
-                {"selected": [{"url": "https://agg.test/", "why": "w"}],
-                 "rejected": []},
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "aggregator": [
+                        {"url": "https://agg.test/", "why": "w"}
+                    ]
+                },
             ),
             Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
             Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),

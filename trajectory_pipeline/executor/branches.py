@@ -36,6 +36,13 @@ from trajectory_pipeline.perception.rule_perceptor import (
     WEAK_PAYWALL_KEYWORDS,
     has_strong_paywall_signal,
 )
+# 2026-10-16 方案 12 阶段 G：``_same_page``（同页守卫的三特征比对）所有权
+# 迁入 executor.gatekeeper——它与死循环检测同属「同页/同域机械事实」这一类
+# 判定，统一拦截点收在那里。这里反向导入再导出（与上方 INC43 同款迁移
+# 姿势）：本模块 ``_precondition_failed`` 与 site_search / test_branches 的
+# 旧引用继续解析，与 d4_scorer 的同源对照测试不受影响（对照的是行为，
+# 不是实现位置）。
+from trajectory_pipeline.executor.gatekeeper import _same_page  # noqa: F401
 
 #: 分支 → 人读标签。落进 P1 存档，Label Studio 与报表直接用，
 #: 不在下游做二次翻译（翻译一次就多一次走样的机会）。
@@ -515,23 +522,11 @@ def _has_strong_paywall_signal(decision: Decision | None) -> bool:
     return has_strong_paywall_signal(decision.evidence or "")
 
 
-def _same_page(a: Observation | None, b: Observation | None) -> bool:
-    """这两份观察是不是**同一个页面**——rubric D-4 边界规则的可机械形态。
-
-    与 :mod:`evaluation.scorers.d4_scorer` 的同名判定**同源同规则**
-    （url / 元素数 / 正文三个粗粒度特征），但**不 import**——executor
-    不依赖 evaluation，两处漂移由 test_branches 的对照测试钉住。
-
-    只比三个粗粒度特征而不是逐字段：网址会从 http 跳 https、
-    正文会因懒加载微调，逐字段比对会把「同一页的两次快照」判成不同页。
-    """
-    if a is None or b is None:
-        return False
-    if a.url != b.url:
-        return False
-    if len(a.interactive_elements) != len(b.interactive_elements):
-        return False
-    return a.body_text == b.body_text
+# ``_same_page`` 已迁入 executor/gatekeeper.py（方案 12 阶段 G，
+# 见文件头再导出说明）。以下为该迁移前的原 docstring 要点存档：
+# rubric D-4 边界规则的可机械形态，与 evaluation.scorers.d4_scorer 的
+# 同名判定同源同规则（url / 元素数 / 正文三特征）但不 import，
+# 两处漂移由 test_branches 的对照测试钉住。
 
 
 def _resolve_page_quotes(

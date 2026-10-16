@@ -250,6 +250,26 @@ class TestApplyVerdicts:
         assert out["outcomes"][1]["branch"] == "component_unverified"
         assert st["confirm_not_play_site"] == 1
 
+    def test_不是播放站在新档分类判断点上也能贴(self):
+        """方案 12 阶段 A1（2026-10-16）：``not_play_site`` 双产地——①
+        ``select.play_sites``（老档）与 ①.5 ``classify.search_links``
+        （A1 起新档）。单一归属按 REGISTRY 注册顺序后者覆盖前者，老档
+        的合法回填会被误降级 site_verdict（实测踩过：本测试的镜像用例
+        ``test_不是播放站与确认看不了是两个分支`` 曾因此红）；复数核归属
+        （:func:`questions.questions_of_branch`）后任一产地命中即合规。"""
+        arch = _archive([
+            {"url": "hao123.com", "branch": "unresolved", "evidence": "e",
+             "question": "classify.search_links", "reached_play_page": False},
+        ])
+        out, st = apply_verdicts(
+            arch, {"hao123.com": {"verdict": "confirm_not_play_site"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "not_play_site"
+        assert rec["is_negative_sample"] is True
+        assert rec["source"] == "human"
+        assert st["confirm_not_play_site"] == 1
+        assert st["off_question"] == 0
+
     def test_不是播放站是真负样本(self):
         """``not_play_site`` 不在 ``NON_SAMPLE_BRANCHES`` 里，所以这一档
         入池。守卫写死，避免将来有人把它挪进「没判出来」那三支。"""
@@ -359,6 +379,21 @@ class TestApplyVerdicts:
         assert question_of_branch("blocked") == "site.is_reachable"
         assert question_of_branch("broken") == "site.is_reachable"
         assert question_of_branch("partial_free") == "player.ok"
+
+    def test_多产地分支复数归属(self):
+        """方案 12 阶段 A1：双产地分支的两个判断点都要能查到——
+        ``not_play_site``（① + ①.5）与 ``not_aggregator``（①B + ⑤）。
+        单产地分支返回单元素、未知分支返回空列表（= 拒绝贴任何
+        question）。"""
+        from trajectory_pipeline.perception.questions import (
+            questions_of_branch,
+        )
+        assert set(questions_of_branch("not_play_site")) == {
+            "select.play_sites", "classify.search_links"}
+        assert set(questions_of_branch("not_aggregator")) == {
+            "select.aggregator_results", "site.is_aggregator"}
+        assert questions_of_branch("login_required") == ["site.is_reachable"]
+        assert questions_of_branch("no_such_branch") == []
 
 
 class Test跨判断点:

@@ -26,6 +26,7 @@ import json
 from typing import Any
 
 from trajectory_pipeline.perception import llm_perceptor as lp
+from trajectory_pipeline.perception.questions import CLASSIFY_CATEGORIES
 from trajectory_pipeline.perception.rule_perceptor import (
     SEARCH_BOX_KEYWORDS,
     SEARCH_BOX_TAGS,
@@ -68,6 +69,10 @@ class FakeLLM:
         access: str = "",
         # PLAYER_OK 用的 ``paywall_type``——空串表示"我没给"。
         paywall_type: str = "",
+        # 方案 12 阶段 A1 · 分类任务的显式类别表：``{href: 类别}``
+        # 覆盖默认的关键词规则——端到端测试靠它驱动三条路径的分发
+        # （谁保留、谁记负、谁 unresolved），不靠碰巧的 URL 措辞。
+        classify: dict[str, str] | None = None,
     ) -> None:
         #: 后端整体不可用（连接失败/超时）
         self.down = down
@@ -115,6 +120,8 @@ class FakeLLM:
         self.page_quotes = page_quotes
         self.access = access
         self.paywall_type = paywall_type
+        #: 分类任务的显式类别表（方案 12 阶段 A1，见构造参数说明）
+        self.classify = classify
         #: 记录每次请求，供断言「问了几次、system 里带了什么」
         self.calls: list[tuple[str, str]] = []
         #: 每次请求实际带的 ``max_tokens``（None = 走 config）
@@ -280,6 +287,56 @@ class FakeLLM:
                 [{"i": 1, "reason": "导航链接"}] if len(links) > 1 else []
             )
             return {"selected": selected, "rejected": rejected}
+        # 方案 12 阶段 A1 · 分类任务：模拟「业务上答得对」的模型——
+        # 知乎/豆瓣/微博归 article_post、聚合/导航词归 aggregator、
+        # 新闻/下载词归 noise、其余归 video_site；``classify`` 显式表
+        # 可逐链覆盖。坏行为开关的映射：``no_conclusion`` = 四数组全空
+        # （没作答）；``invent_urls`` = 条目全部编造（对不上观察）；
+        # ``reject_all`` = 全部归 noise（有作答但都不是目标类——
+        # 分类任务里「kept=0 且逐条点名」的形态）。
+        if qid == lp.Q.CLASSIFY_SEARCH_LINKS:
+            links = obs.get("links") or []
+            if self.no_conclusion:
+                return {cls: [] for cls in CLASSIFY_CATEGORIES}
+            if self.invent_urls:
+                return {
+                    cls: (
+                        [{"url": "https://编造.test/x", "title": "编的",
+                          "why": "看着像"}]
+                        if cls == "noise" else []
+                    )
+                    for cls in CLASSIFY_CATEGORIES
+                }
+            if self.reject_all:
+                return {
+                    cls: (
+                        [{"i": n, "title": l.get("text", ""),
+                          "why": "不是播放站"} for n, l in enumerate(links)]
+                        if cls == "noise" else []
+                    )
+                    for cls in CLASSIFY_CATEGORIES
+                }
+            out: dict[str, list[dict[str, Any]]] = {
+                cls: [] for cls in CLASSIFY_CATEGORIES
+            }
+            for n, link in enumerate(links):
+                href = str(link.get("href", ""))
+                text = str(link.get("text", ""))
+                blob = f"{href} {text}".lower()
+                cls = (self.classify or {}).get(href)
+                if cls is None:
+                    if any(k in blob for k in
+                           ("zhihu", "douban", "weibo", "知乎", "豆瓣", "微博")):
+                        cls = "article_post"
+                    elif any(k in blob for k in ("聚合", "导航", "nav", "大全")):
+                        cls = "aggregator"
+                    elif any(k in blob for k in ("新闻", "news", "下载", "download")):
+                        cls = "noise"
+                    else:
+                        cls = "video_site"
+                out[cls].append({"i": n, "title": text,
+                                 "why": f"形态判定：{cls}"})
+            return out
         # IS_REACHABLE / PLAYER_OK / IS_AGGREGATOR（⑤ 与前两者同形：
         # bool + evidence，走同一条通用应答；answers 开关可逐题覆盖）
         # 2026-10-12 增量十七 · P4a 第二轮：让 FakeLLM 能在 IS_REACHABLE /

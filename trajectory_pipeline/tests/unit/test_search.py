@@ -88,12 +88,34 @@ class TestCandidates:
         assert [c.host for c in cands] == ["a.test", "b.test"]
 
     @pytest.mark.parametrize("url", [
-        "https://www.zhihu.com/q/1",
-        "https://weibo.com/x",
         "https://www.google.com/analytics",
         "https://fonts.googleapis.com/css2",
     ])
     def test_结构性剔除(self, url):
+        assert search.extract_candidates(obs_with(("x", url))) == []
+
+    @pytest.mark.parametrize("url", [
+        "https://www.zhihu.com/question/1",
+        "https://www.douban.com/subject/1",
+        "https://weibo.com/x",
+    ])
+    def test_语义信源不再结构剔除(self, url):
+        """方案 12 阶段 A1（2026-10-16）：zhihu/douban/weibo 自
+        ``EXCLUDED_HOST_ROOTS`` 移出。它们是内容页（语义信源），不是结构
+        噪声——知乎推荐贴 / 豆瓣微博讨论帖是路径 C「文章找视频站引荐
+        链接」的正主。整族剔除等于把路径 C 的入口池系统性清零；去哪由
+        分类任务（``Q.CLASSIFY_SEARCH_LINKS``）判 ``article_post`` 决定，
+        不是代码层直接杀掉。"""
+        assert [c.url for c in search.extract_candidates(obs_with(("x", url)))] == [url]
+
+    @pytest.mark.parametrize("url", [
+        "https://www.facebook.com/x",
+        "https://twitter.com/x",
+        "https://www.instagram.com/x",
+    ])
+    def test_海外社交仍是结构噪声(self, url):
+        """拆分的另一半：海外社交留下。中文引擎结果里它们不是任何发现
+        路径的信源，剔除仍是纯结构事实（见 ``search.py`` 拆分说明）。"""
         assert search.extract_candidates(obs_with(("x", url))) == []
 
     @pytest.mark.parametrize("url", [
@@ -240,14 +262,14 @@ class TestFilterAccounting:
             ("百度", "https://www.baidu.com/s?wd=x"),
             ("备案", "https://beian.miit.gov.cn/"),
             ("腾讯", "https://v.qq.com/x/cover/abc"),
-            ("社交", "https://weibo.com/x"),
+            ("社交", "https://www.facebook.com/x"),
         )
         stats: dict[str, int] = {}
         cands = search.extract_candidates(obs, engine="bing", stats=stats)
         assert [c.host for c in cands] == ["v.qq.com"]
         assert stats["excluded_host:baidu.com"] == 1
         assert stats["impossible_content:gov.cn"] == 1
-        assert stats["excluded_host:weibo.com"] == 1
+        assert stats["excluded_host:facebook.com"] == 1
 
     def test_引擎自身单独记账(self):
         """``engine_self`` 与 ``excluded_host:<root>`` 分开：

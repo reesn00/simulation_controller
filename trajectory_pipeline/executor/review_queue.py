@@ -196,7 +196,7 @@ def _wanted(verdict: str, rec: Mapping[str, Any]) -> str | None:
             else "no_play_control")
 
 
-def _fits(want: str | None, question: str, belongs: str) -> bool:
+def _fits(want: str | None, question: str, belongs: list[str]) -> bool:
     """这个分支能不能贴在这条 outcome 上。
 
     ⚠️ **成功（``want is None``）也要核归属**，且只能落在④ ``player.ok`` 上。
@@ -212,12 +212,19 @@ def _fits(want: str | None, question: str, belongs: str) -> bool:
 
     ⚠️ **``question`` 为空时一律拒绝**：老存档压根没记是哪个判断点，
     「无法核对」不等于「可以贴」。
+
+    ``belongs`` 是 :func:`~trajectory_pipeline.perception.questions.questions_of_branch`
+    的**全部产地**（2026-10-16 方案 12 阶段 A1 起为复数）：多产地分支
+    （``not_play_site`` 由 ① ``select.play_sites`` 与 ①.5
+    ``classify.search_links`` 双注册）只要**任一产地**命中当前 outcome
+    的 question 就合规，不强制唯一——老档与新档的「这不是播放站」
+    是同一支。未知分支（空列表）任何 question 都不合规。
     """
     if want == "unresolved":
         return True                          # 通用 fail-closed 出口
     if want is None:
         return question == questions.Q.PLAYER_OK
-    return bool(belongs) and belongs == question
+    return any(b == question for b in belongs)
 
 #: 交互元素样本条数。复核员判断"有没有播放按钮"主要看这个，
 #: 太多会淹没人眼（实测单页常有 80+ 元素），太少会漏掉唯一那个。
@@ -456,7 +463,8 @@ def apply_verdicts(
     所以**归属不对就不改 ``branch``**，改记 ``site_verdict`` +
     ``site_verdict_mismatch``，人工结论照样留下、照样可统计，
     决策树保持它该有的样子。归属用
-    :func:`~trajectory_pipeline.perception.questions.question_of_branch` 核。
+    :func:`~trajectory_pipeline.perception.questions.questions_of_branch`
+    核（多产地分支任一命中即合规，2026-10-16 方案 12 阶段 A1）。
 
     未裁定的项**保持原样**并计入 ``unreviewed``，不默认成成功也不默认丢弃。
     """
@@ -503,7 +511,7 @@ def apply_verdicts(
             # 只有这九个裁定会碰 branch；need_browser / skip 走下面的 pending 分支
             want = _wanted(verdict, rec)
             question = str(outcome.get("question") or "")
-            belongs = questions.question_of_branch(want)
+            belongs = questions.questions_of_branch(want)
             if not _fits(want, question, belongs):
                 # 跨判断点：**不动 branch**，人工结论降级为站点级记录。
                 # 成功写成字面量 "success" 而不是 None——落盘后 JSON null

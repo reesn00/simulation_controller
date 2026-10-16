@@ -22,6 +22,17 @@ from trajectory_pipeline.perception.base import Q, Question
 #: 它是纯文本匹配，不需要理解页面语义。其余三题都要语义，W1 一律 fail-closed。
 TRAILER_ONLY_NEEDS_LLM = False
 
+#: 分类任务（方案 12 阶段 A1）的四个类别——**产物契约的单一出处**。
+#: prompt 题面、schema_hint 数组键、llm_perceptor 的 payload 落位、
+#: orchestrator 的按类分发四处说的是同一组名字；改名等于破坏性契约
+#: 变更（存档 payload 与 P1 里都是这四个键）。
+CLASSIFY_CATEGORIES: tuple[str, ...] = (
+    "video_site",
+    "aggregator",
+    "article_post",
+    "noise",
+)
+
 
 REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
     {
@@ -318,6 +329,57 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
             evidence_required=True,
             negative_branch="no_site_search",
         ),
+        # ── 方案 12 阶段 A1（2026-10-16）：搜索页链接分类任务 ──────────
+        # 一道题统一 ①/①B/①C 的「选某类链接」语义：不再按发现路径问
+        # 三道不同的题，而是一次问出四分类，分发时按路径取对应类
+        # （direct → video_site、aggregator → aggregator、article →
+        # article_post）。①/①B/①C 保留在注册表（site_search 结果页
+        # 仍复用 ①；金标重放与 A/B 对照也需要它们），orchestrator 的
+        # 搜索页分叉改用本题。
+        Q.CLASSIFY_SEARCH_LINKS: Question(
+            id=Q.CLASSIFY_SEARCH_LINKS,
+            prompt=(
+                "以下是从搜索结果页提取的候选链接（已剔除搜索引擎自身与"
+                "结构性噪声），每条带编号 i。把每条链接归入以下四类之一，"
+                "并给出理由：\n"
+                "- video_site —— 影视播放站：提供在线观看的视频站点"
+                "（爱奇艺、腾讯视频、优酷等）或其作品页 / 播放页\n"
+                "- aggregator —— 影视聚合站 / 导航站：汇总多个影视站点"
+                "入口的导航页\n"
+                "- article_post —— 文章 / 社区帖：讨论「在哪看」的推荐文、"
+                "观影攻略、问答帖、豆瓣 / 微博讨论帖——正文里可能引荐"
+                "影视站外链（知乎、豆瓣、微博的链接多属此类）\n"
+                "- noise —— 其他：新闻资讯、下载站、工具页等与在线观看"
+                "无关的链接\n\n"
+                "判断依据是链接的标题文本与 URL 形态；标题里写着作品名的"
+                "播放页是最强的 video_site 证据。\n"
+                "每条链接归入且只归入一类；**四个数组全部为空**表示"
+                "「没作答」，会被判为无法采信。漏分类的链接会被视为"
+                "「未点名」，不计入任何结论。"
+            ),
+            answer_type="decision",
+            schema_hint=MappingProxyType(
+                {
+                    "video_site": [{"i": "int", "title": "str", "why": "str"}],
+                    "aggregator": [{"i": "int", "title": "str", "why": "str"}],
+                    "article_post": [{"i": "int", "title": "str", "why": "str"}],
+                    "noise": [{"i": "int", "title": "str", "why": "str"}],
+                }
+            ),
+            # 分类是**类型判定**（这条链接是什么站），不是片名↔URL 的
+            # 对应判定（那是 ① 的题面），所以预检只查链接非空，
+            # _title_link_sufficiency 不适用——与 ①B/①C 同口径。
+            #
+            # negative_branch 绑定 direct 路径的默认口径；另两条路径
+            # （aggregator → not_aggregator、article → not_article）由
+            # orchestrator 分发点显式指定（与旧 ①B/①C 的 branch 参数化
+            # 同款）。Question.negative_branch 是标量绑不死三种口径，
+            # d5_scorer 侧按本题特例放行另两支（见
+            # d5_scorer._build_question_to_branches 的 CLASSIFY 特例）。
+            confidence_threshold=0.7,
+            evidence_required=True,
+            negative_branch="not_play_site",
+        ),
     }
 )
 
@@ -493,8 +555,16 @@ _BRANCH_QUESTION: dict[str, str] = {
 # 与 review_queue 按站点级 outcome 核归属的粒度一致。
 # ①B 侧的 (question, branch) 合法性**不受影响**：d5_scorer 的
 # ``QUESTION_TO_BRANCHES`` 是 question→branches 一对多推导，两道题
-# 的允许集都会包含它。若未来复核工作流要贴这支，须先扩
-# ``review_queue._fits`` 支持多产地分支，单一归属只核得出一个产地。
+# 的允许集都会包含它。
+#
+# 2026-10-16 方案 12 阶段 A1：``not_play_site`` 成为第二个双产地分支
+# （① ``SELECT_PLAY_SITES`` 与 ①.5 ``CLASSIFY_SEARCH_LINKS`` 同绑），
+# 且**复核工作流真的要贴它**（``confirm_not_play_site``）——老存档
+# outcome 记 ``question=select.play_sites``、新档记
+# ``question=classify.search_links``，单一归属只核得出一个产地。
+# 因此 ``review_queue._fits`` 已扩为 :func:`questions_of_branch`
+# 复数核归属（任一产地命中即合规），本注释前两段的「粒度一致」
+# 论述只对 not_aggregator 成立，不再是一般规则。
 
 
 def question_of_branch(branch: str) -> str:
@@ -510,3 +580,32 @@ def question_of_branch(branch: str) -> str:
     其中 15 条触发 D-5 一票否决，且门禁 ``test_d5_scorer::Test同源`` 直接红。
     """
     return _BRANCH_QUESTION.get(branch, "")
+
+
+def questions_of_branch(branch: str | None) -> list[str]:
+    """所有能产出这个分支的判断点（**多产地分支**用，2026-10-16 方案 12 阶段 A1）。
+
+    与 :func:`question_of_branch` 的差别：那个按「后者覆盖前者」只返回
+    一个产地，双产地分支（``not_play_site`` = ① + ①.5、``not_aggregator``
+    = ①B + ⑤）的另一半会被覆盖掉；本函数把 REGISTRY 里
+    ``negative_branch`` 相同的**全部**判断点都返回。
+
+    消费方是 ``executor.review_queue._fits`` 的归属校验：复核回填时
+    **只要有一个产地命中当前 outcome 的 question 就合规**，不强制唯一
+    ——老档 ``select.play_sites`` 与新档 ``classify.search_links`` 的
+    ``not_play_site`` 是同一支「这不是播放站」。
+
+    单产地分支返回单元素列表；仅手工登记的细分分支
+    （``subscription_wall`` 等）走 :data:`_BRANCH_QUESTION` 兜底；
+    未知分支 / 空入参返回空列表（空列表 = 任何 question 都不合规，
+    与旧 ``question_of_branch`` 返回 ``""`` 的拒绝语义一致）。
+    """
+    if not branch:
+        return []
+    from_registry = [
+        qid for qid, q in REGISTRY.items() if q.negative_branch == branch
+    ]
+    if from_registry:
+        return from_registry
+    hit = _BRANCH_QUESTION.get(branch)
+    return [hit] if hit else []

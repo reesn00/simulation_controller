@@ -73,6 +73,10 @@ class Test字段集一致:
             "schema_version",
             "task_id", "title", "query", "user_prompt", "search_url",
             "perceptor", "candidate_source", "result_titles", "search_blocked",
+            # 2026-10-16 方案 12 阶段 G：Gatekeeper 事件账本（D-A3 最小
+            # 账本）。与 search_blocked 并存不替代——后者是冻结口径的
+            # 运行级字段，这里是统一事件账本（A2 起 agent 每步拦截都记）。
+            "gatekeeper_events",
             "candidate_filter", "run_config", "provenance", "elapsed_ms",
             "warnings", "search_observation", "steps", "candidates",
             "visits", "ledger", "outcomes",

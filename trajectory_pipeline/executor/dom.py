@@ -39,6 +39,12 @@ import re
 from dataclasses import dataclass
 from typing import Any, Final
 
+# 2026-10-16 方案 12 阶段 G：``detect_block``（反爬 / 限流识别）所有权迁入
+# :mod:`trajectory_pipeline.executor.gatekeeper`（统一拦截点）。本模块反向
+# 导入再导出——orchestrator 环节 0.5 / cli report 存量重算 / static_probe
+# 三处生产调用点与存量测试的 ``dom.detect_block`` 旧引用继续解析，零行为变化。
+from trajectory_pipeline.executor.gatekeeper import detect_block  # noqa: F401
+
 # ═══════════════════════════════════════════════════════════════════════
 # 常量
 # ═══════════════════════════════════════════════════════════════════════
@@ -444,65 +450,6 @@ def looks_like_error(text: str, is_error: bool) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 反爬拦截识别
+# 反爬拦截识别（2026-10-16 方案 12 阶段 G：整体迁入 executor/gatekeeper.py，
+# 含三张 marker 表与全部设计注释。见文件头再导出说明。）
 # ═══════════════════════════════════════════════════════════════════════
-#
-# 为什么要单独认出来
-# ------------------
-# 搜索引擎对连发请求会返回验证码页。实测：同批连跑 3 个 task，
-# 第 1 个正常，第 2、3 个被重定向到
-# ``wappass.baidu.com/static/captcha/tuxing_v2.html``（标题「百度安全验证」）。
-#
-# 这类页面的表现是「正文极短 + 零链接」，而当前控制流把它记成
-# 「搜索页未提取到候选」——**措辞指向「这批素材没价值」，
-# 真相却是「基础设施被拦了」**。二者处置完全不同：
-# 前者该换素材，后者该加间隔/换引擎。
-#
-# 混在一起的代价是**静默的**：跑一批 20 条，被拦掉 6 条，
-# 报表上表现为「这批搜索页质量差」，没人会去查反爬。
-#
-# 只看 URL 与标题，不看正文
-# -------------------------
-# 百度验证码页正文是「网络不给力，请稍后重试」——**那句话字面是网络错误**，
-# 在验证码页上只是模板文案。若把它当判据，真网络故障就会被误判成反爬，
-# 正好与本模块的目的相反。URL 路径（``/captcha``、``wappass``）与
-# 页面标题（「安全验证」）才是无歧义的强信号。
-
-#: URL 路径里的反爬特征。**全部是子路径标记**，不匹配裸域名。
-_BLOCK_URL_MARKERS: Final = (
-    "/captcha", "wappass", "antispider", "secverify", "/verifycode",
-    "/challenge", "/sorry/index",
-)
-
-#: 标题里的反爬特征。
-_BLOCK_TITLE_MARKERS: Final = (
-    "安全验证", "验证码", "访问验证", "百度安全", "人机验证",
-    "robot check", "just a moment", "attention required", "access denied",
-)
-
-#: 正文里的**限流**特征。只认「频繁」类措辞——它们在正文里是明确的限流信号，
-#: 且与网络故障的措辞（「网络不给力」「连接超时」）不重叠。
-_BLOCK_BODY_MARKERS: Final = (
-    "访问过于频繁", "请求过于频繁", "操作过于频繁",
-    "too many requests", "unusual traffic", "rate limit",
-)
-
-
-def detect_block(url: str, title: str, body: str = "") -> str:
-    """这个页面是不是被反爬/限流拦了。返回原因串，空串 = 没被拦。
-
-    纯字符串事实判定，**不做语义猜测**——URL 路径与页面标题都是
-    已经观察到的客观字段，符合「代码管事实层」的分工。
-
-    优先级 ``URL > 标题 > 正文``：越靠前越无歧义。
-    """
-    lowered = (url or "").lower()
-    if any(marker in lowered for marker in _BLOCK_URL_MARKERS):
-        return "captcha"
-    head = (title or "").lower()
-    if any(marker.lower() in head for marker in _BLOCK_TITLE_MARKERS):
-        return "captcha"
-    text = (body or "").lower()
-    if any(marker.lower() in text for marker in _BLOCK_BODY_MARKERS):
-        return "rate_limit"
-    return ""

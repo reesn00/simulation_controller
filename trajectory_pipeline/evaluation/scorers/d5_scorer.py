@@ -172,6 +172,16 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
             allowed.add("broken")
         if qid == questions.Q.FIND_PLAY_CONTROL:
             allowed.add("component_unverified")  # I6 违约记账
+        if qid == questions.Q.CLASSIFY_SEARCH_LINKS:
+            # 方案 12 阶段 A1：分类题一道题服务三条发现路径，落选分支由
+            # orchestrator 按 discovery_path 分发点显式指定（与旧 ①B/①C
+            # 的 branch 参数化同款）。Question.negative_branch 是标量，
+            # 只能绑 direct 的默认口径（not_play_site）；另两条路径的
+            # ``not_aggregator`` / ``not_article`` 在这里放行——漏放会把
+            # 真实的分发记账整批判成「分支走错」（第一版手写字面量漏
+            # unresolved 时 54 条正确结论被错判的前车之鉴）。
+            allowed.add("not_aggregator")
+            allowed.add("not_article")
         out[qid] = allowed
     # 代码层确定性事实核的分支：question 为空、不经 LLM，没有判断点可配对。
     # 按 (question, branch) 组合放行——分支名可能与注册表负分支重名

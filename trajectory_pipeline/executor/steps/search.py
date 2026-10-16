@@ -24,10 +24,10 @@ from __future__ import annotations
 import re
 import zlib
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
-from trajectory_pipeline.perception.base import LinkItem, Observation
+from trajectory_pipeline.perception.base import Observation
 
 #: 搜索引擎。**默认值是实测可达的那个**（``probe_observe`` 跑过 baidu）。
 #: bing/duckduckgo 在国内网络下时通时不通，不能当默认。
@@ -40,9 +40,8 @@ ENGINE_TEMPLATES: dict[str, str] = {
     "duckduckgo": "https://duckduckgo.com/?q={q}",
 }
 
-#: 候选里直接剔除的域名**族**——搜索引擎自身、社交、字体、统计。
-#: 全部是**结构性事实**（链接指向的根本不是内容站），不是语义判断：
-#: 社交站点不会变成播放站，判它错没有收益。
+#: 候选里直接剔除的域名**族**——搜索引擎自身、附属域、海外社交。
+#: 全部是**结构性事实**（链接指向的根本不是内容站），不是语义判断。
 #:
 #: ⚠️ **按「注册域族」声明，不用裸 ``endswith``**。
 #: 早期版本用 ``host.endswith(engine_host)`` 剔搜索引擎自身域，
@@ -57,6 +56,16 @@ ENGINE_TEMPLATES: dict[str, str] = {
 #: 刻意**不放** ``cdn.`` / ``static.`` 这类子域前缀：它们在搜索结果页
 #: 几乎不出现（结果页给的是页面链接），而前缀匹配会误杀
 #: ``static.example.com`` / ``cdn.mysite.com`` 这种本身就是内容站的域名。
+#:
+#: 2026-10-16 方案 12 阶段 A1 拆分：zhihu / douban / weibo **移出**本表。
+#: 它们是**语义信源**而不是结构噪声——知乎推荐贴 / 豆瓣微博讨论帖是
+#: 「文章找视频站引荐链接」（路径 C）的正主，此前按「社交/UGC 不会变成
+#: 播放站」整族剔除，等于把路径 C 的入口池系统性清零。移出后它们进
+#: 候选池，由分类任务（``Q.CLASSIFY_SEARCH_LINKS``）判为
+#: ``article_post`` 类走路径 C；在 direct 批次里被分类为非 ``video_site``
+#: 而记 ``not_play_site``——那是有证据的真负样本，不是污染。
+#: 海外社交（facebook / twitter / instagram）留下：中文引擎结果里它们
+#: 不是任何发现路径的信源，剔除仍是纯结构事实。
 EXCLUDED_HOST_ROOTS: tuple[str, ...] = (
     # 搜索引擎及其附属域
     "baidu.com",
@@ -76,10 +85,7 @@ EXCLUDED_HOST_ROOTS: tuple[str, ...] = (
     "fonts.googleapis.com",
     "google-analytics.com",
     "w3.org",
-    # 社交 / UGC（不会变成播放站）
-    "zhihu.com",
-    "weibo.com",
-    "douban.com",
+    # 海外社交（中文信源之外的结构噪声，见上方拆分说明）
     "facebook.com",
     "twitter.com",
     "instagram.com",
@@ -493,93 +499,18 @@ def extract_candidates(
     return out
 
 
-def pin_candidates_first(
-    links: Sequence[LinkItem],
-    candidates: Sequence[Candidate],
-) -> tuple[LinkItem, ...]:
-    """把候选对应的链接钉到 ``links`` 最前，其余保持原序。
-
-    **这是「候选 ⊆ 窗口」同源修复的执行点**（05 文档 L118-121 的方向一）：
-
-    候选是代码从**全量** ``obs.links`` 里过滤出来的（实测 111 条 → 5 个），
-    而感知层 ``_link_window`` 只把 ``_ordered_links`` 的前 ``LLM_LINKS``（20）
-    条送给模型。百度把导航排在结果之前，真实候选落在 index≥50——模型连
-    看见候选的机会都没有，只能选窗口里的站内搜索链接，又被
-    ``excluded_host:baidu.com`` 剔出候选，于是「选中 ∩ 候选 = 空」、
-    ``kept=0``、5 个候选全 unresolved。
-
-    解法：重排后，候选对应的链接（text 已被 ``title_for`` 写回标题，含片名）
-    落在 ``_ordered_links`` 的 hit 区**最前**，窗口前 20 条必含全部候选。
-
-    顺序按候选 ``rank``（引擎排定的相关性序）——不按我们自己的启发式重排，
-    也不按候选在 links 里的原始位置。候选是去重后的（同一 host 只取一次），
-    数量 ≤ ``limit``；多余的本就进不了候选。
-    """
-    by_candidate = {cand.source_href or cand.url: cand.rank for cand in candidates}
-    pinned: list[LinkItem] = []
-    seen: set[str] = set()
-    for link in links:
-        key = link.href
-        if key in by_candidate and key not in seen:
-            pinned.append(link)
-            seen.add(key)
-    pinned.sort(key=lambda lnk: by_candidate[lnk.href])
-    rest = [lnk for lnk in links if lnk.href not in seen]
-    return tuple(pinned + rest)
-
-
-def candidates_outside_window(
-    links: Sequence[LinkItem],
-    candidates: Sequence[Candidate],
-    target_title: str,
-    window_size: int,
-) -> tuple[LinkItem, ...]:
-    """重放感知层 ``_ordered_links`` 排序，返回**不在前 ``window_size`` 条
-    窗口内**的候选链接。
-
-    **为什么 executor 要重放感知层的排序**：判断点 ① 的窗口是感知层的
-    ``_ordered_links(obs, SELECT_PLAY_SITES, target_title)[:LLM_LINKS]``——
-    executor 在协议边界之外**不允许触碰感知层实现**（01-架构总览 L49-50），
-    但「候选钉没钉进窗口」是 executor 该负责的事实。所以这里用同一套
-    确定性规则（text 含片名的进 hit 区、其余保原序、截前 ``window_size`` 条）
-    重放一遍，只做**校验**，不做任何改动。
-
-    返回的候选只有在以下情况出现：
-
-    - 候选数 > ``window_size``——窗口装不下（``max_candidates`` 大于
-      感知层 ``LLM_LINKS`` 时会发生）；
-    - 窗口被**其他含片名的链接**占满——感知层把含片名的链接排到 hit 区
-      最前，若候选 text **没有片名**（``title_for`` 未取到标题）而前面有
-      ≥ ``window_size`` 条含片名的链接，候选整批落在 miss 区被挤出。这是
-      「钉了也白钉」最隐蔽的形态，正是本校验要让它显形的；
-    - 注意：``target_title`` 为空**不会**触发本校验——感知层此时不排序、
-      直接取 ``links`` 前 ``window_size`` 条，而候选已被
-      :func:`pin_candidates_first` 钉到 links 最前，构造上仍在窗口内。
-      （空片名由感知层 ``_title_link_sufficiency`` 负责 fail-closed。）
-
-    调用方拿返回值记 warning / evidence 即可，**不中断采集**（fail-closed
-    管的是「结论」不是「采集」，见 CLAUDE.md I4）——校验的意义是让
-    「钉窗失败」从静默变成可见。
-    """
-    # 重放前提：只用于判断点 ①（SELECT_PLAY_SITES）场景。感知层
-    # ``_ordered_links`` 对非 ① 题**不排序直接返回**（问题句决定排序与否），
-    # 而钉窗修复只作用于 ①，所以这里按 ① 的规则重放即可。
-    #
-    # 与 ``_ordered_links`` 逐字节一致：**匹配用原样 target_title**，
-    # 只用 ``.strip()`` 判断「是否为空」——感知层就是这样做的，重放
-    # 若用 strip 后的标题匹配，片名带首尾空白时两侧窗口就错位了，
-    # 而防错位正是这个重放存在的原因。
-    raw = target_title or ""
-    title = raw.strip()
-    hit: list[LinkItem] = []
-    miss: list[LinkItem] = []
-    for link in links:
-        (hit if title and raw in (link.text or "") else miss).append(link)
-    window = (hit + miss)[:window_size]
-    window_keys = {lnk.href for lnk in window}
-    candidate_keys = {c.source_href or c.url for c in candidates}
-    return tuple(
-        lnk
-        for lnk in links
-        if lnk.href in candidate_keys and lnk.href not in window_keys
-    )
+# 2026-10-16 方案 12 阶段 A1：``pin_candidates_first`` 与
+# ``candidates_outside_window`` **整体删除**。
+#
+# 旧机制（05 方案的同源修复）：候选从全量 links（实测 111 条）提取后
+# 散落在 index≥50，而感知层窗口只送前 ``LLM_LINKS``（20）条——模型看
+# 不见候选，只能选窗口里的站内导航，又被 ``excluded_host:baidu.com``
+# 剔出候选，于是「选中 ∩ 候选 = 空」。修复是把候选链接按 rank 钉到
+# links 最前，再用 ``candidates_outside_window`` 重放感知层排序校验
+# 「候选 ⊆ 窗口」。
+#
+# 消解（A1 分类任务）：分类的输入**就是候选列表**（orchestrator 构造
+# 候选视图观察，按 ``PERCEPTION_LINK_WINDOW`` 分批），「模型看得到
+# 全部候选」由构造保证——不再需要重排观察，也不再需要重放校验。
+# 附带收益：``record.search_obs`` 保持引擎原序不动，存档的观察
+# 忠实于页面而不是「钉过候选」的变形。
