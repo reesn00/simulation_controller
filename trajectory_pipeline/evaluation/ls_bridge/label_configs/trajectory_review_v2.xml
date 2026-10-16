@@ -18,9 +18,9 @@
   <!-- 分区一律 <Header>: <Tabs>/<Tab>/<List>/<TextEditor> 在本机 LS 1.23
        未注册或什么都不渲染, 实测结论见 v1 label_configs 注释。 -->
 
-  <!-- ═══ 劣质标记 ═══  negative 桶的样本显示 scout 的失败维度与 veto
-       理由; positive 桶显示 "无负向信号"。 -->
-  <Header value="══ 劣质标记 ══  scout 判定的失败维度与理由，请重点复核。"/>
+  <!-- ═══ 机器判定 ═══  三态: positive(合格) / negative(劣质,重点复核) /
+       quarantine(缺判,人工裁决)。开场行由 audit_text 给出。 -->
+  <Header value="══ 机器判定与理由 ══  positive=合格 / negative=劣质 / quarantine=缺判待裁决"/>
   <TextArea name="audit_view" toName="task_anchor" editable="true" rows="4"
             value="$audit_text"/>
 

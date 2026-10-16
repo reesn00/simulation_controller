@@ -145,11 +145,18 @@ class TestGranularity:
         assert schema.split_archive(_write(tmp_path, arc))[0].unit == "search"
 
     def test_站点单元带落地前后两个观察(self, tmp_path):
+        """观察**逐步对位**取自 ``steps[].observation``（2026-10-15 改，
+        原取 ``(site_obs, player_obs)`` 去重快照对）——那对快照与动作流
+        不等长，``new_tab`` 步的 null 观察会被真值过滤丢掉，整段错位。"""
         arc = _arc(
             visits=[
                 _visit(
                     "https://a.test/",
                     "https://a.test/play",
+                    steps=[
+                        _step("goto", url="https://a.test"),
+                        _step("click", url="https://a.test/play"),
+                    ],
                     site_obs=_obs("https://a.test"),
                     player_obs=_obs("https://a.test/play", video_tag_count=1),
                 )
@@ -160,6 +167,36 @@ class TestGranularity:
             "https://a.test",
             "https://a.test/play",
         ]
+
+    def test_null观察顶占位保持对位(self, tmp_path):
+        """E005 错位的根因：``new_tab`` 步 observation=null 被真值过滤
+        **静默丢掉**，3 个动作配 2 份观察，rationale 与观察整段错位。
+        现在顶 :data:`MISSING_OBSERVATION` 占位——**真值必须为真**，
+        否则下游任何 ``if o`` 过滤会把它再次丢掉。"""
+        steps = [
+            _step("goto", url="https://a.test"),
+            {
+                "action": {
+                    "tool": "new_tab",
+                    "params": {"url": "https://a.test/play"},
+                    "origin": "infrastructure",
+                },
+                "observation": None,
+                "error": "",
+                "rationale": None,
+            },
+            _step("click", url="https://a.test/play"),
+        ]
+        arc = _arc(
+            visits=[dict(_visit("https://a.test/"), steps=steps)],
+            outcomes=[_outcome("https://a.test/", "no_play_control")],
+        )
+        site = schema.split_archive(_write(tmp_path, arc))[1]
+        assert len(site.actions) == 3
+        assert len(site.observations) == 3, "缺位观察被丢掉就会再次错位"
+        assert site.observations[1]["degraded"] == ["observation_missing"]
+        assert site.observations[1], "占位必须真值为真（防下游 if o 再丢）"
+        assert site.observations[2]["url"] == "https://a.test/play"
 
     def test_没有观察的单元不产出(self, tmp_path):
         """两者皆空 → 切不出东西。抛出来而不是给一条空样本。"""
@@ -590,9 +627,16 @@ class Test闸门真跑:
     """闸门在**组装期**跑（2026-10-10 接线），不再是恒 ``not_run``。"""
 
     def _sample(self, tmp_path, rationale, obs_text="正文"):
+        """⚠️ INC46：被测的 rationale 放在**第 1 步**。
+
+        第 0 步的可见窗口是空的（首步没有历史观察），实体核查显式早退——
+        照旧把被测 rationale 放在第 0 步，测的其实是「首步」那一支，
+        而它现在一律不判幻觉。第 1 步的窗口含第 0 条观察，
+        才是「引用了观察里没有的实体」这条断言真正要打的位置。
+        """
         arc = _arc(
             search_observation=_obs("https://s.test", body=obs_text),
-            steps=[_step("goto", rationale)],
+            steps=[_step("goto", None), _step("goto", rationale)],
         )
         return schema.split_archive(_write(tmp_path, arc))[0]
 
@@ -618,7 +662,20 @@ class Test闸门真跑:
             _written("页面上写着「详见 https://evil.test/x」这个入口"),
         )
         assert s.gate.status == "failed"
-        assert any("第 0 步" in r for r in s.gate.reasons)
+        assert any("第 1 步" in r for r in s.gate.reasons)
+
+    def test_首步不判幻觉(self, tmp_path):
+        """INC46：首步没有历史观察，实体核查显式早退——不判幻觉。
+
+        这是全链路最容易误伤的位置：每一条 goto 首步的动机都只能
+        引用任务给的片名/诉求，判它幻觉等于把整批首步判死。
+        """
+        arc = _arc(
+            search_observation=_obs("https://s.test", body="正文"),
+            steps=[_step("goto", _written("页面上写着「详见 https://evil.test/x」"))],
+        )
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.gate.status == "passed", s.gate.reasons
 
     def test_片名是豁免域不判幻觉(self, tmp_path):
         """rationale 提到片名而观察里没有它，**不是幻觉**——

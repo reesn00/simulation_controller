@@ -233,6 +233,13 @@ def gate_of(
     「生成了一部分」是 ``passed``/``failed`` 的一部分判定，
     没生成的那几步会通过 ``rationale_missing`` 单独可见——
     两个信号分开，别合成一个。
+
+    ⚠️ INC46 口径：rationale 是**动作前动机**，所以 ``observations``
+    传给闸门后，第 ``i`` 步的可见窗口是 ``[:i]``（**不含本步观察**）。
+    本步的 ``step_index=i`` 语义不变——窗口的截取在
+    :func:`~trajectory_pipeline.rationale.gates.gate` 里做，
+    本函数只负责**逐条调用并汇总**。调用签名不变是刻意的：
+    换口径不该让「闸门怎么跑」这件事在两层里各改一遍。
     """
     from trajectory_pipeline.rationale import gates
 
@@ -251,12 +258,19 @@ def gate_of(
 
     failed: list[str] = []
     passed_steps = 0
-    for i, r in enumerate(rationales):
+    for r in rationales:
         if r.status != "written":
             continue
+        # ⚠️ **用条目自带的 ``step_index``，不用列表下标**：
+        # :func:`align_rationales` 的产出是**稀疏**的（没有 rationale 的那一步
+        # 整条不出现），按下标取会让后面每一步整体前移一格——
+        # 于是第 5 步的 rationale 拿第 4 步的动作与窗口去核。
+        # 旧口径下它只是把动作名取错，INC46 起它还把**可见窗口**取错一格，
+        # 而窗口错一格就是「把后见之明判成 anchored」或反过来。
+        i = r.step_index
         res = gates.gate(
             r.text,
-            action_tool=action_tools[i] if i < len(action_tools) else "",
+            action_tool=action_tools[i] if 0 <= i < len(action_tools) else "",
             observations=observations,
             step_index=i,
             exempt=exempt,
@@ -269,7 +283,7 @@ def gate_of(
     if failed:
         return GateMark("failed", tuple(failed))
     reasons = [f"逐条核查 {passed_steps}/{len(rationales)} 步通过"]
-    missing = [str(i) for i, r in enumerate(rationales) if r.status != "written"]
+    missing = [str(r.step_index) for r in rationales if r.status != "written"]
     if missing:
         reasons.append(f"第 {', '.join(missing)} 步没写成（未参与核查）")
     return GateMark("passed", tuple(reasons))
@@ -392,6 +406,20 @@ class Sample:
     gate: GateMark = GateMark("not_run", ("闸门未运行",))
     outcome: OutcomeRef | None = None
 
+    #: **本决策单元的终局反思**（INC46）。P1 里与 ``steps`` **平级**
+    #: （搜索单元在存档顶层、站点单元在 ``visits[i]`` 里），形状同
+    #: ``WriteResult.to_json``——于是与 ``steps[i].rationale`` **同构**，
+    #: 这里用一个 dict 装下，不做第二次建模。
+    #:
+    #: 它是 **unit 级**而不是 step 级：动作前动机把事后口吻从每一步赶了
+    #: 出去，而收尾那一句总结本来就该是看完整个单元之后写的。
+    #: ``views._closing_text`` 读它的 ``rationale.conclusion``；没有它时
+    #: 退回纯 disposition 话术——**不编**一句总结出来。
+    #:
+    #: 默认 ``None`` 而不是 ``{}``：「没有反思」与「有反思但内容是空的」
+    #: 在下游是两回事，合成一个空 dict 就把前者记成了后者。
+    reflection: Mapping[str, Any] | None = None
+
     #: **一条 rationale 都没写成**（模块 4 未落地 / 后端不可用 / 全被拒写）。
     #: 与「闸门跑过」分开记：闸门过了但这里为 True，说明样本只有动作没有思考——
     #: 训练 CoT SFT 时会缺一整块，而报告上「gate=passed」看不出来。
@@ -432,6 +460,7 @@ class Sample:
             },
             "gate": self.gate.to_json(),
             "rationale_missing": self.rationale_missing,
+            "reflection": dict(self.reflection) if self.reflection else None,
             "outcome": self.outcome.to_json() if self.outcome else None,
             "degraded_from": list(self.degraded_from),
         }
@@ -476,6 +505,22 @@ class P1ShapeError(ValueError):
 #: 两者**不能当成同一份正文**——那是不同长度的证据。
 BODY_KEY = "body_text"
 LEGACY_BODY_KEY = "body_preview"
+
+#: 步观察缺失占位（P1 ``steps[i].observation is None`` 时顶位）。
+#:
+#: 为什么必须有它（2026-10-15 实测 ``E005__e35b7455__site-4``）：
+#: 执行器的会话隔离动作 ``new_tab`` 那一步 observation=null，而站点样本
+#: 的观察此前取 ``(site_obs, player_obs)`` 加 ``if o`` 真值过滤——null 被
+#: **静默丢掉**，于是 3 个动作配 2 份观察：``new_tab`` 步的 rationale
+#: （「URL、标题和正文均为空」）配到了 player 页观察（满屏正文），渲染出的
+#: 训练消息自相矛盾；末步 ``click`` 则成了没有回执的悬空调用。
+#:
+#: **占位必须真值为真**：``None`` / ``{}`` 会在下游任何 ``if o`` 真值
+#: 过滤里被再次丢掉，错位原样复发。``degraded`` 标记让评分器的
+#: observation-shortfall 系判据把它当「没采到」而不是「页面真空」；
+#: 消息视图渲染成「（本步没有取到页面内容）」（见 observation_view /
+#: views 两侧的 missing 路径，本就存在）。
+MISSING_OBSERVATION: dict[str, Any] = {"degraded": ["observation_missing"]}
 
 
 def read_archive(path: str | Path) -> dict[str, Any]:
@@ -599,6 +644,24 @@ def _outcome_for(
     return None
 
 
+def _reflection_of(unit: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """取一个决策单元的 ``reflection``。没有 → ``None``。
+
+    **只认 ``status == "written"``**：``unavailable`` / ``empty`` 的
+    reflection 没有 ``rationale`` 文本，交给 ``views._closing_text`` 时
+    与「压根没生成」走同一条路（退回纯 disposition 话术）——
+    **把三态合成一个「有/没有」会丢掉「为什么没有」**，
+    但收尾话术这一处**只需要**知道「有没有文本可读」，所以在这里
+    把三态折成两态是安全的，且这个折法只有一处。
+    """
+    r = unit.get("reflection")
+    if not isinstance(r, Mapping):
+        return None
+    if str(r.get("status") or "") != "written":
+        return None
+    return dict(r)
+
+
 def _sample(
     *,
     archive: Mapping[str, Any],
@@ -609,6 +672,7 @@ def _sample(
     outcome: OutcomeRef | None,
     degraded: list[str],
     raw_steps: Sequence[Mapping[str, Any]] = (),
+    reflection: Mapping[str, Any] | None = None,
 ) -> Sample:
     task_id = str(archive.get("task_id"))
     rationales = align_rationales(actions_, raw_steps)
@@ -636,6 +700,7 @@ def _sample(
         rationales=rationales,
         gate=gate,
         outcome=outcome,
+        reflection=reflection,
         rationale_missing=not written,
         source_archive=source_name,
         degraded_from=tuple(dict.fromkeys(degraded)),
@@ -699,6 +764,8 @@ def split_archive(path: str | Path) -> list[Sample]:
                 outcome=None,  # 搜索阶段不记站点级 outcome
                 degraded=degraded,
                 raw_steps=steps,
+                # 搜索单元的 reflection 在**存档顶层**（与 steps 平级）。
+                reflection=_reflection_of(archive),
             )
         )
 
@@ -734,14 +801,20 @@ def split_archive(path: str | Path) -> list[Sample]:
                 source_name=source_name,
                 unit=f"site-{i}",
                 actions_=_actions_of(vsteps),
+                # 观察**逐步对位**取自 ``steps[].observation``，缺失顶
+                # :data:`MISSING_OBSERVATION`——**不**取 ``(site_obs,
+                # player_obs)``：那对是「去重后的两份快照」，与动作流
+                # 不等长（``new_tab`` 步的 null 会被真值过滤丢掉），
+                # 动作与观察按下标配对时整段错位（见常量注）。
                 observations=tuple(
-                    dict(o)
-                    for o in (visit.get("site_obs"), visit.get("player_obs"))
-                    if o
+                    dict(o) if o else dict(MISSING_OBSERVATION)
+                    for o in (s.get("observation") for s in vsteps)
                 ),
                 outcome=outcome,
                 degraded=degraded,
                 raw_steps=vsteps,
+                # 站点单元的 reflection 在 ``visits[i]`` 里（与 steps 平级）。
+                reflection=_reflection_of(visit),
             )
         )
 
@@ -795,6 +868,7 @@ __all__ = [
     "OutcomeRef",
     "Sample",
     "P1ShapeError",
+    "MISSING_OBSERVATION",
     "sample_id",
     "run_id_of",
     "read_archive",

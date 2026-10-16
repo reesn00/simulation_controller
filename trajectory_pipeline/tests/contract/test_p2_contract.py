@@ -191,6 +191,27 @@ class TestToolSpaceDrift:
             assert t.instruction.strip(), f"{t.name} 没有说明，模型无从选它"
 
 
+# ── A4.5：收尾处置词表不漂移 ───────────────────────────────────────
+
+class TestClosingDispositionDrift:
+    """``views._CLOSING_DISPOSITION`` 自己声明（views 不能 import
+    executor，与 A1 同一条纪律），与 ``executor.branches.BRANCH_LABELS``
+    键集的同步由这条测试盯。
+
+    词表漏一个分支不会炸——收尾总结走「不予记录（分支：…）」兜底，
+    而兜底话术是给**还没进词表的新分支**的；已在词表里的分支落进
+    兜底说明两张表漂移了。与 :class:`TestToolSpaceDrift` 同一形态：
+    交接面是格式，漂移是测试的事。
+    """
+
+    def test_盖住分支词表(self):
+        from trajectory_pipeline.assembler import views
+        from trajectory_pipeline.executor import branches
+
+        missing = set(branches.BRANCH_LABELS) - set(views._CLOSING_DISPOSITION)
+        assert not missing, f"执行器有分支而收尾处置词表没有: {missing}"
+
+
 # ── A5：裁剪必须留痕 ────────────────────────────────────────────────
 
 class TestTruncationIsVisible:
@@ -371,6 +392,9 @@ class Test契约文档不是摆设:
     @pytest.mark.parametrize("field", [
         "sample_id", "task_id", "unit", "title", "source_archive",
         "six", "gate", "rationale_missing", "outcome", "degraded_from",
+        # INC46：unit 级终局反思。它是**新键**，最容易漏的就是它——
+        # 消费方按没有它写的代码不会报错，只是收尾话术悄悄退回旧形态。
+        "reflection",
     ])
     def test_代码有字段文档没写(self, doc_text, field):
         """方向一：代码产出的字段必须在文档里点名。"""

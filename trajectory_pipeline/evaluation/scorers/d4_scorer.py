@@ -159,14 +159,33 @@ def _observations(sample: Any) -> list[Mapping[str, Any]]:
     return [o for o in obs if isinstance(o, Mapping)]
 
 
+def _is_missing(obs: Mapping[str, Any]) -> bool:
+    """这条观察是不是 P2 的**缺失占位**（``schema.MISSING_OBSERVATION``）。
+
+    2026-10-15 起观察按 ``steps[]`` 逐位构建，没采到的步顶一个
+    ``{"degraded": ["observation_missing"]}`` 占位（真值为真，防下游
+    ``if o`` 真值过滤把它再次丢掉造成错位）。D-4 的判据（媒体计数、
+    同页比较）必须把它当「没采到」而不是「页面真空」——占位的
+    ``url``/``body_text`` 都是空串，混进比较会把「点击前后同页」
+    判成「换了页」（§5.14 回潮）。
+    """
+    return "observation_missing" in (obs.get("degraded") or ())
+
+
 def _player_obs(observations: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """播放页观察 = **最后一条**观察。
 
     取最后一条而不是找带 ``video_tag_count`` 的那条：判断点 ④ 的输入就是
     点击之后的快照，而「最后一条」正是它——找「第一条非空的」在
     「点击失败、没换页」时会把站点页当播放页，而那正是 §5.14 的现场。
+
+    **末位是缺失占位 → ``None``**（2026-10-15 补）：占位语义是
+    「点击之后没采到」，往前取会把站点页顶成播放页——同一个
+    §5.14 错误换个形态回来。
     """
-    return observations[-1] if observations else None
+    if not observations or _is_missing(observations[-1]):
+        return None
+    return observations[-1]
 
 
 def _media(obs: Mapping[str, Any] | None) -> int:
@@ -359,14 +378,17 @@ def _check_premature_conclusion(observations: list[Mapping[str, Any]],
                              why=f"分支是 {_get(outcome, 'branch', None)!r}，"
                                  f"不声称页面上有播放组件——D-4 不管辖")
 
-    if len(observations) < 2:
+    # 缺失占位（没采到的步）不参与计数与比较——见 _is_missing：
+    # 占位的空串 url 会把「点击前后同页」判成「换了页」（§5.14 回潮）。
+    real = [o for o in observations if not _is_missing(o)]
+    if len(real) < 2:
         return EvidenceCheck(
             "应判未验证 vs 确定结论", "wrong", tier="premature",
-            why=f"声称有播放组件，但本样本只有 {len(observations)} 份观察"
+            why=f"声称有播放组件，但本样本只有 {len(real)} 份有效观察"
                 f"（点击之后没有取到第二份快照）——"
                 f"rubric D-4 边界规则：这种情况正确行为是「标记待验证，"
                 f"触发后再判」")
-    if _same_page(observations[-2], observations[-1]):
+    if _same_page(real[-2], real[-1]):
         return EvidenceCheck(
             "应判未验证 vs 确定结论", "wrong", tier="premature",
             why="点击播放控件前后是同一个页面（url / 元素数 / 正文全同）——"

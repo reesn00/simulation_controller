@@ -102,13 +102,20 @@ def scout_dir(tmp_path: Path) -> Path:
                 _dim("d5", 4), _dim("d6", 5)],
         tags=["d4_failed"],
     )
+    quarantine = _record(
+        "s-003",
+        scores=[_dim("d2", None, reasons=["没有模型可见的 click 动作"]),
+                _dim("d4", 5), _dim("d5", 4), _dim("d6", 5)],
+    )
     (tmp_path / "positive_candidates.jsonl").write_text(
         json.dumps(positive, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     (tmp_path / "negative_candidates.jsonl").write_text(
         json.dumps(negative, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    (tmp_path / "quarantine.jsonl").write_text("", encoding="utf-8")
+    (tmp_path / "quarantine.jsonl").write_text(
+        json.dumps(quarantine, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     return tmp_path
 
 
@@ -300,9 +307,13 @@ class TestExporter:
         records = read_scout_records(scout_dir)
         assert [b for b, _ in records] == ["positive", "negative"]
 
+    def test_默认三态全读(self, scout_dir):
+        records = read_scout_records(scout_dir, ("positive", "negative", "quarantine"))
+        assert [b for b, _ in records] == ["positive", "negative", "quarantine"]
+
     def test_未知bucket报错(self, scout_dir):
         with pytest.raises(ValueError):
-            read_scout_records(scout_dir, buckets=("quarantine",))
+            read_scout_records(scout_dir, buckets=("unknown",))
 
     def test_视图齐全_导出task与prediction(self, views_root):
         task, prediction, hits = export_one(_record(), "positive", views_root=views_root)
@@ -356,6 +367,27 @@ class TestExporter:
         neg = next(t for t in plan.tasks if t["data"]["status"] == "negative")
         assert "d4_failed" in neg["data"]["tags"]
         assert "组件验证失败" in neg["data"]["audit_text"]
+        assert "劣质" in neg["data"]["audit_text"]
+
+    def test_quarantine样本_缺判提示人工裁决(self, views_root):
+        from trajectory_pipeline.evaluation.ls_bridge.exporter import build_task
+        rec = _record(
+            scores=[_dim("d2", None, reasons=["没有模型可见的 click 动作"]),
+                    _dim("d4", 5), _dim("d5", 4), _dim("d6", 5)],
+        )
+        views = {"messages": [{"role": "user", "content": "hi"}],
+                 "openai": [], "meta": {}}
+        data, _card = build_task_data(rec, "quarantine", views)
+        task = build_task(data)
+        assert task["data"]["status"] == "quarantine"
+        assert "无法判定" in task["data"]["audit_text"]
+        assert "缺判" in task["data"]["audit_text"]
+        assert "d2: 缺判" in task["data"]["audit_text"]
+
+    def test_positive样本_开场行合格(self, views_root):
+        views = {"messages": [], "openai": [], "meta": {}}
+        data, _card = build_task_data(_record(), "positive", views)
+        assert data["audit_text"].startswith("机器判定: 合格")
 
     def test_build_task_data的扫描字段在渲染前(self, views_root):
         record = _record()

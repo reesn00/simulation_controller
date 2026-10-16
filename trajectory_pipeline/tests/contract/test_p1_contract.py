@@ -76,6 +76,9 @@ class Test字段集一致:
             "candidate_filter", "run_config", "provenance", "elapsed_ms",
             "warnings", "search_observation", "steps", "candidates",
             "visits", "ledger", "outcomes",
+            # INC46：搜索单元的终局反思（与 steps 平级，不进 outcomes——
+            # 那是采集事实层）。站点单元的那份在 visits[] 里。
+            "reflection",
         }
         assert actual == expected, (
             f"顶层字段漂移：多 {actual - expected} / 少 {expected - actual}。"
@@ -125,7 +128,9 @@ class Test字段集一致:
                     break
         assert visit_keys, "读不到 visits[] 的字典字面量"
         expected = {"url", "landed_url", "success", "notes", "steps",
-                    "site_obs", "player_obs"}
+                    "site_obs", "player_obs",
+                    # INC46：站点单元的终局反思，与 steps 平级
+                    "reflection"}
         assert visit_keys == expected, (
             f"visit 字段漂移：多 {visit_keys - expected} / 少 {expected - visit_keys}"
         )

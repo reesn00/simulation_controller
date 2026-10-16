@@ -48,8 +48,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_up = sub.add_parser("upload", help="推送 scout 候选到 LS")
     p_up.add_argument("--scout-dir", required=True, help="scout 三件套目录")
     p_up.add_argument(
-        "--buckets", default="positive,negative",
-        help="要上传的 bucket, 逗号分隔(默认 positive,negative; quarantine 不支持)",
+        "--buckets", default="positive,negative,quarantine",
+        help="要上传的 bucket, 逗号分隔(默认三态全传, 供人工分析)",
     )
     p_up.add_argument("--views-root", default=None, help="P3 视图根(默认 storage 默认根)")
     p_up.add_argument("--limit", type=int, default=None, help="最多处理 N 条(取样调试)")

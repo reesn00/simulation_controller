@@ -446,6 +446,52 @@ class Test边界:
         assert v.score == 5
         assert v.kind == "scored"
 
+    def test_Sample对象形态_也能拿到rationale原文(self):
+        """INC46 单档真跑撞出来的**静默错误**。
+
+        ``score_d9`` 签名写的是 ``Sample | Any``，但 ``Sample.rationales``
+        是 ``Rationale`` dataclass 元组、``Sample.actions`` 是
+        ``ActionView`` 元组——都不是 ``Mapping``。只认 Mapping 会把它们
+        **静默过滤成空**：不抛异常、不出 ``undetermined``，judge 在没有
+        rationale 原文的情况下照常出分（实测出 ``vague``，
+        evidence 写着「未提供 rationale 原文」——那句是 judge 在如实说
+        它手里没东西可判）。
+        """
+        from trajectory_pipeline.evaluation.scorers.d9_scorer import (
+            _actions, _rationales,
+        )
+        from trajectory_pipeline.assembler.schema import (
+            ActionView, Rationale, Sample,
+        )
+        s = Sample(
+            sample_id="s", task_id="T", unit="u", title="t",
+            source_archive="a", system_prompt="sp", user_prompt="up",
+            tools=(), provenance={},
+            actions=(ActionView("goto", {"url": "https://x.test"}),),
+            observations=({"url": "https://x.test", "body_text": "b"},),
+            rationales=(Rationale(0, "正文写着「重试」", "c", "written", ""),),
+        )
+        assert len(_rationales(s)) == 1, "Sample 对象的 rationale 不能静默变空"
+        assert len(_actions(s)) == 1
+        assert _rationales(s)[0].get("text") == "正文写着「重试」"
+
+    def test_观察渲染带page_title(self):
+        """可见性口径必须与闸门对齐——见 ``_render_observation`` 的注。
+
+        闸门 haystack 含 ``page_title``；judge 若看不到它，会把标题里明写
+        的东西判成「当时看不到」，系统性高估后见之明。
+        """
+        from trajectory_pipeline.evaluation.scorers.d9_scorer import (
+            _render_observation,
+        )
+        line = _render_observation(
+            0, {"url": "https://x.test", "page_title": "功夫 - 腾讯视频",
+                "body_text": "正文"})
+        assert "title=功夫 - 腾讯视频" in line
+        # 没有 title 时不渲染空字段
+        assert "title=" not in _render_observation(
+            1, {"url": "https://x.test", "body_text": ""})
+
     def test_未提供_gate_result_且_sample_gate_也缺失(self):
         """``gate_result=None`` 且 sample.gate 缺失 → ``not_evaluated``。"""
         obs = _obs()
@@ -644,9 +690,11 @@ class TestFewShot注入点:
     def test_score_d9_few_shot_None_回落常量(self):
         """``score_d9(few_shot_examples=None)`` 回落 ``D9_FEW_SHOT_EXAMPLES``。
 
-        INC40 后常量非空 → 实际发给 LLM 的用户提示词**含**
-        ``## few-shot examples`` 块与每条示例的 verdict 标签（生产路径
-        不传参即激活示例池）。"""
+        ⚠️ INC46（2026-10-15）：常量**已清空**，回落的结果是零样本出分——
+        用户提示词**不含** ``## few-shot examples``，且 verdict reason
+        标注 ``fewshot=none``（报表侧据此知道这批分数与带示例的批次
+        不可直接比较）。
+        """
         obs = _obs()
         rat = _rationale()
         gate = _gate_result(status="failed",
@@ -658,12 +706,31 @@ class TestFewShot注入点:
         v = score_d9(sample, gate_result=gate, llm_client=stub)
         assert v.kind == "scored"
         assert v.verdict == "anchored"
-        # 回落常量后池真正注入了用户提示词
-        assert "## few-shot examples" in stub.last_user
-        for i, ex in enumerate(d9_scorer.D9_FEW_SHOT_EXAMPLES):
-            assert f"示例 {i + 1}（{ex['verdict']}）" in stub.last_user
+        # 零样本：块不出现，且 reason 标出来
+        assert "## few-shot examples" not in stub.last_user
+        assert any("fewshot=none" in r for r in v.reasons)
         # few-shot 块在系统提示词的 sentinel 承诺的位置（用户提示词内）
         assert "## few-shot examples 会在下面追加" in d9_scorer.D9_SYSTEM_PROMPT
+
+    def test_score_d9_非空池_标注带示例(self):
+        """反过来仍成立（§7.1）：池非空时 reason **不带** ``fewshot=none``。
+
+        只测「清空后带标记」的话，标记可能在任何情况下都写——
+        那等于没标记。
+        """
+        obs = _obs()
+        rat = _rationale()
+        gate = _gate_result(status="failed",
+                            findings=[_finding(severity="hard")])
+        stub = _StubLLM(content='{"verdict": "anchored", '
+                               '"evidence": "ok", "confidence": 0.9}')
+        sample = _sample(rationales=[rat], observations=[obs])
+        v = score_d9(sample, gate_result=gate, llm_client=stub,
+                     few_shot_examples=[{"verdict": "anchored",
+                                          "rationale": "示例文本",
+                                          "observation": "示例观察"}])
+        assert v.kind == "scored"
+        assert not any("fewshot=none" in r for r in v.reasons)
 
     def test_score_d9_显式_非空_注入_LLM(self):
         """``score_d9(few_shot_examples=[...])`` 不破坏 LLM 调通路径——
@@ -699,23 +766,45 @@ class TestFewShot注入点:
         assert v.verdict == "anchored"
 
     def test_D9_FEW_SHOT_EXAMPLES_池契约(self):
-        """INC40 v1 池契约——非空不可变 tuple；每条三字段齐全、verdict
-        合法枚举、rationale/observation 非空；覆盖 anchored / vague /
-        mild_hallucination 三档（hindsight / systematic / misleading 在
-        v1 素材库无干净实例，留待 round=2 锚点补充）。"""
+        """INC46：池**已清空**，但常量必须还在——
+        ``score_d9(few_shot_examples=None)`` 这一路靠它定义。
+
+        空池不是「删掉常量」：删了之后默认路径失去定义，
+        而重选示例时还要把整个注入点重新接一遍。
+        """
         pool = d9_scorer.D9_FEW_SHOT_EXAMPLES
         assert isinstance(pool, tuple)
-        assert len(pool) > 0
-        valid = {"anchored", "vague", "mild_hallucination",
-                 "hindsight", "systematic", "misleading"}
-        verdicts = set()
-        for ex in pool:
-            assert set(ex.keys()) == {"verdict", "rationale", "observation"}
-            assert ex["verdict"] in valid
-            assert ex["rationale"].strip(), "rationale 不得为空"
-            assert ex["observation"].strip(), "observation 不得为空"
-            verdicts.add(ex["verdict"])
-        assert {"anchored", "vague", "mild_hallucination"} <= verdicts
+        assert pool == (), (
+            "INC46 已清空示例池（旧六例是事后反思口径，与新口径冲突）。"
+            "要恢复示例须从 manual-review 桶人工重选——**不挑 ai-assisted-* 桶**")
+
+    def test_渲染_窗口对位(self):
+        """INC46：第 ``i`` 条 rationale 附带的可见观察是 ``obs[0..i-1]``。
+
+        锚定关系必须在同一块里给全——不然 judge 要自己数下标，
+        而数错一格就是把后见之明判成 anchored。
+        """
+        from trajectory_pipeline.evaluation.scorers.d9_scorer import _render_user
+        obs0 = _obs(url="https://a.test", body="第零页正文")
+        obs1 = _obs(url="https://b.test", body="第一页正文")
+        rats = [_rationale(), _rationale()]
+        prompt = _render_user([obs0, obs1], rats, [], None)
+        blocks = prompt.split("### step ")
+        assert len(blocks) == 3                       # 空 + 两条
+        assert "（无前置观察，只有任务与动作）" in blocks[1]
+        assert "第零页正文" in blocks[2]
+        # 本步观察**不在**该步的可见窗口里
+        assert "第一页正文" not in blocks[2]
+
+    def test_渲染_全序列仍给全(self):
+        """反过来仍成立：``## 观察存档`` 是**全序列**——
+        judge 要判「实体是不是在后续步才出现」，必须看得到后续步。"""
+        from trajectory_pipeline.evaluation.scorers.d9_scorer import _render_user
+        obs0 = _obs(url="https://a.test", body="第零页正文")
+        obs1 = _obs(url="https://b.test", body="第一页正文")
+        prompt = _render_user([obs0, obs1], [_rationale()], [], None)
+        assert "第零页正文" in prompt
+        assert "第一页正文" in prompt
 
 
 # ── 10. INC42：truncated 字典兼容 + capping 定向放行 ─────────────

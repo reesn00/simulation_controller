@@ -16,8 +16,10 @@ v2 数据契约换成 **scout 三件套 + P3 视图**:
 
 * **不发 ``inner_id``** —— v1 实测 LS 1.23 对字符串 inner_id 不去重
   （批量导入时该字段被静默忽略）, 台账才是唯一去重, 索性不发。
-* **无 tier / min_score 过滤** —— scout 已三态分流, 上传侧只按 bucket
-  取数（quarantine 留本地, 不上传）。
+* **无 tier / min_score 过滤** —— 上传侧不二次审判, bucket 即口径。
+  默认三态全传（positive + negative + quarantine）: quarantine 是
+  "评分器缺判"而非"数据劣质", 上传后由人工裁决（决策 2026-10-15:
+  放宽 quarantine 口径, 缺判数据进 LS 供人工分析）。
 * prediction 的 ``task`` 字段在 build 时填 ``sample_id`` 占位,
   :func:`push_batch` 推送时替换成 LS 数字 id（``import/predictions``
   只认数字 id, 而 ``/import`` 返回体不带 id）。
@@ -44,11 +46,12 @@ from trajectory_pipeline.storage.read_p3 import read_views
 
 log = logging.getLogger(__name__)
 
-#: bucket → scout 产物文件名。quarantine **刻意不在表内** —— 无法判定的
-#: 样本没有标注价值, 留本地等上游修复。
+#: bucket → scout 产物文件名。三态全部可传 —— quarantine 样本的评分卡
+#: 会带 missing 维度提示, 标注页由人工裁决"合格 / 劣质 / 无法判定"。
 BUCKET_FILES: dict[str, str] = {
     "positive": "positive_candidates.jsonl",
     "negative": "negative_candidates.jsonl",
+    "quarantine": "quarantine.jsonl",
 }
 
 #: label_config 里真实存在的控件名。``risk_hints`` 是 predictions 预标注
@@ -155,20 +158,34 @@ def render_meta_text(meta: Any) -> str:
     return "\n".join(lines) if lines else "(空 meta)"
 
 
-def render_audit_text(record: ScoutRecord) -> str:
-    """劣质标记: tags + 各维 veto / 低分理由。positive 也渲染（显示无信号）。"""
+def render_audit_text(record: ScoutRecord, bucket: str = "positive") -> str:
+    """劣质/缺判标记: tags + 各维 veto / 低分 / 缺判理由。
+
+    三态各自的开场行让标注员第一眼知道机器立场:
+    * negative —— 失败维度与理由, 重点复核
+    * quarantine —— 缺判维度与原因, 人工裁决"合格/劣质/无法判定"
+    * positive —— 无负向信号
+    """
     lines: list[str] = []
+    if bucket == "negative":
+        lines.append("机器判定: 劣质(存在低分/veto 维度), 请重点复核。")
+    elif bucket == "quarantine":
+        lines.append("机器判定: 无法判定(存在缺判维度), 请人工裁决 合格/劣质/无法判定。")
+    else:
+        lines.append("机器判定: 合格(无负向信号)。")
     tags = record.get("tags") or []
     if tags:
         lines.append("机器标签: " + ", ".join(tags))
     for score in record.get("scores") or []:
-        if score.get("is_veto") or (
-            score.get("score") is not None and score["score"] <= 2
-        ):
+        if score.get("is_veto"):
             reasons = "; ".join(score.get("reasons") or [])
-            lines.append(f"{score['dimension']}: {'VETO' if score.get('is_veto') else '低分'} — {reasons}")
-    if not lines:
-        lines.append("无负向信号（scout 判为 positive）。")
+            lines.append(f"{score['dimension']}: VETO — {reasons}")
+        elif score.get("score") is not None and score["score"] <= 2:
+            reasons = "; ".join(score.get("reasons") or [])
+            lines.append(f"{score['dimension']}: 低分 — {reasons}")
+        elif score.get("score") is None:
+            reasons = "; ".join(score.get("reasons") or [])
+            lines.append(f"{score['dimension']}: 缺判 — {reasons or '无理由记录'}")
     return "\n".join(lines)
 
 
@@ -195,7 +212,7 @@ def build_task_data(
         "status": bucket,
         "tags": list(tags),
         "tags_text": ", ".join(tags) if tags else "无",
-        "audit_text": render_audit_text(record),
+        "audit_text": render_audit_text(record, bucket),
         "scorecard_text": render_scorecard_text(scorecard),
         "risk_hints_text": render_risk_hints(scorecard),
         "messages_text": render_messages_text(views.get("messages")),

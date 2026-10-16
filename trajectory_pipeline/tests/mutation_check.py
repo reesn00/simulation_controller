@@ -172,6 +172,50 @@ MUTATIONS = [
         "trajectory_pipeline/tests/unit/test_assembler.py::Test闸门真跑",
     ),
     (
+        "闸门按下标取步号而不是step_index",
+        "trajectory_pipeline/assembler/schema.py",
+        "        i = r.step_index",
+        "        i = 0",
+        # INC46：rationales 是**稀疏**序列，按下标取会让每步前移一格，
+        # 而窗口错一格就是把后见之明判成 anchored。
+        "trajectory_pipeline/tests/unit/test_assembler.py::Test闸门真跑",
+    ),
+    (
+        "闸门窗口含本步观察",
+        "trajectory_pipeline/rationale/gates.py",
+        "    visible = list(observations[:step_index])",
+        "    visible = list(observations[: step_index + 1])",
+        # 含了本步观察 = 允许后见之明——那正是 INC46 要修的东西。
+        "trajectory_pipeline/tests/unit/test_rationale_gates.py::Test时序核查",
+    ),
+    (
+        "首步不早退",
+        "trajectory_pipeline/rationale/gates.py",
+        "    if not observations:\n        return findings, 0, [\"首步无历史观察，实体核查不适用\"]",
+        "    if False:\n        return findings, 0, []",
+        # 空窗口走隐式路径会把每一条 goto 首步判成幻觉。
+        "trajectory_pipeline/tests/unit/test_rationale_gates.py::Test实体核查",
+    ),
+    (
+        # INC46 单档真跑 E005 site-4 撞出来的：合成实体「A/B」要求
+        # **每段都命中**。改成 any 就成了「看到 A 就能顺手编个 B」，
+        # 实体核查直接被放空。
+        "合成实体任一段即通过",
+        "trajectory_pipeline/rationale/gates.py",
+        "    return all(p.lower() in haystack_l for p in parts)",
+        "    return any(p.lower() in haystack_l for p in parts)",
+        "trajectory_pipeline/tests/unit/test_rationale_gates.py::Test实体核查",
+    ),
+    (
+        # 逗号进了分隔符表 = 一句编造的话被拆成短片段逐段核，
+        # 短片段极易意外命中，核查被放空。
+        "逗号当合成分隔符",
+        "trajectory_pipeline/rationale/lexicon.py",
+        'COMPOSITE_SEP_RE = re.compile(r"\\s*[/／|｜、]\\s*")',
+        'COMPOSITE_SEP_RE = re.compile(r"\\s*[/／|｜、，,]\\s*")',
+        "trajectory_pipeline/tests/unit/test_rationale_gates.py::Test实体核查",
+    ),
+    (
         "①零选中仍判True",
         "trajectory_pipeline/perception/llm_perceptor.py",
         "        if not selected:",
@@ -214,11 +258,21 @@ MUTATIONS = [
         "trajectory_pipeline/tests/unit/test_branches.py::TestSerialization",
     ),
     (
-        "失败原因不进提示词",
+        # INC46：``error`` 参数已删除（动作未执行谈不上失败），
+        # 这一条改盯**「采集降级必须写进提示词」**这条仍在的守卫。
+        "降级提示不再进提示词",
         "trajectory_pipeline/rationale/writer.py",
-        "    if error:",
-        "    if False:",
-        "trajectory_pipeline/tests/unit/test_writer.py::Test动作失败进提示词",
+        "    last_obs = last_history_observation(history)\n    if last_obs is not None:",
+        "    last_obs = None\n    if last_obs is not None:",
+        "trajectory_pipeline/tests/unit/test_writer.py::TestPromptContent",
+    ),
+    (
+        # 首步没有历史观察时**不写**完整性键——写「完整」等于谎报输入充分。
+        "首步仍写完整性键",
+        "trajectory_pipeline/rationale/writer.py",
+        "    if last_obs is not None:",
+        "    if True:",
+        "trajectory_pipeline/tests/unit/test_writer.py::TestStep0EmptyHistory",
     ),
     (
         "乱码检测恒假",

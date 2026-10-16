@@ -105,6 +105,12 @@ class RunRecord:
     #: 存档就是一条**静默失配**（跟 provenance 那条同源，理由见本字段上方）。
     user_prompt: str = ""
     search_obs: Observation | None = None
+    #: **搜索单元的终局反思**（INC46）。与 ``steps`` **平级**，不在
+    #: ``outcomes`` 里：它是 LLM 产物，而 outcome 要保持采集事实层纯洁。
+    #:
+    #: ``None`` = 没生成（writer 未注入 / 后端不可用 / 生成失败）。
+    #: 与「生成了但内容为空」是两回事——:class:`WriteResult` 的三态原样落盘。
+    reflection: dict[str, Any] | None = None
     candidates: list[Candidate] = field(default_factory=list)
     visits: list[visit_step.VisitResult] = field(default_factory=list)
     ledger: RunLedger | None = None
@@ -223,6 +229,9 @@ class RunRecord:
             "warnings": list(self.warnings),
             "search_observation": _obs_json(self.search_obs),
             "steps": [s.to_json(_obs_json) for s in self.steps.steps],
+            # 搜索单元的终局反思（INC46）。与 ``steps`` 平级——它不是某一步
+            # 的 rationale，是整个搜索单元看完之后的总结。
+            "reflection": dict(self.reflection) if self.reflection else None,
             "candidates": [
                 {"url": c.url, "text": c.text, "rank": c.rank, "host": c.host}
                 for c in self.candidates
@@ -236,6 +245,8 @@ class RunRecord:
                     "steps": [s.to_json(_obs_json) for s in v.steps.steps],
                     "site_obs": _obs_json(v.site_obs),
                     "player_obs": _obs_json(v.player_obs),
+                    # 站点单元的终局反思（INC46），与 steps 平级。
+                    "reflection": dict(v.reflection) if v.reflection else None,
                 }
                 for v in self.visits
             ],
@@ -244,6 +255,33 @@ class RunRecord:
                 o.to_json() for o in (self.ledger.outcomes if self.ledger else [])
             ],
         }
+
+
+def _outcome_json_for(
+    record: RunRecord, result: visit_step.VisitResult
+) -> Mapping[str, Any] | None:
+    """找这一步访问的**最终判定**（给 :meth:`Orchestrator._write_reflection`）。
+
+    匹配顺序**先候选 url、再落地 url**（与
+    :func:`~trajectory_pipeline.assembler.schema._outcome_for` 同款）：
+    ``visits[i].url`` 是候选链接，而 ``outcomes[j].url`` 记的是落地地址，
+    ``http→https`` 跳转时两者不等，只按候选 url 匹配会**静默**地一条都
+    对不上——于是反思拿到 ``None``，写成「没有结论」，而实际是有分支的。
+
+    ⚠️ 这里匹配的是 ``site_url`` 字段优先于 ``url``：``RunLedger`` 同时
+    记了两者，而候选链接在 ``site_url`` 里。
+    """
+    outcomes = list(record.ledger.outcomes if record.ledger else ())
+    for o in outcomes:
+        if str(getattr(o, "site_url", "") or "") == str(result.candidate.url or ""):
+            return o.to_json()
+    for want in (str(result.candidate.url or ""), str(result.landed_url or "")):
+        if not want:
+            continue
+        for o in outcomes:
+            if str(getattr(o, "url", "") or "") == want:
+                return o.to_json()
+    return None
 
 
 def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
@@ -738,6 +776,14 @@ class Orchestrator:
         # 都要过这道核，而 _apply_selection 只在 True 时被调。
         _drop_site_homepages(record, ledger)
 
+        # ── 环节 ①.7：搜索单元的终局反思 ──────────────────────────
+        # 放在候选定稿**之后**：搜索单元的总结要说的是「搜到了什么、
+        # 接下来核验哪几个」，而候选此时才定。搜索单元没有站点级
+        # outcome（``outcome=None``），它的「处置」是进入下一单元。
+        record.reflection = await self._write_reflection(
+            record.steps, record, "搜索页", outcome=None
+        )
+
         if not record.candidates:
             record.warnings.append(
                 f"判断点 ① 过滤后无候选（原有 {n_candidates} 个，"
@@ -757,6 +803,14 @@ class Orchestrator:
             result = await self._visit_guarded(candidate, ledger, record)
             await self._write_rationales(
                 result.steps, record, result.candidate.url[:60]
+            )
+            # 站点单元的终局反思：放在逐步 rationale **之后**——它要看的
+            # 是全单元历史与最终判定，而判定此时才记进 ledger。
+            result.reflection = await self._write_reflection(
+                result.steps,
+                record,
+                result.candidate.url[:60],
+                outcome=_outcome_json_for(record, result),
             )
             record.visits.append(result)
             if result.success:
@@ -800,12 +854,15 @@ class Orchestrator:
             try:
                 payload = self._writer(
                     action=step.action.to_json(),
-                    observation=_obs_json(step.observation),
-                    error=step.error,
                     user_prompt=record.user_prompt,
                     target_title=record.title,
-                    # 只给**动作**不给观察——见 rationale.writer.render_history
-                    history=[s.action.to_json() for s in steps[:index]],
+                    # INC46：**不喂本步观察**。历史是 ``(动作, 观察)`` 对——
+                    # 动作前动机只该依据此前看到的东西（见
+                    # ``rationale.writer.render_history``）。
+                    history=[
+                        (s.action.to_json(), _obs_json(s.observation))
+                        for s in steps[:index]
+                    ],
                 )
             except Exception as exc:  # noqa: BLE001 — 见上方口径
                 record.warnings.append(
@@ -814,6 +871,62 @@ class Orchestrator:
                 )
                 continue
             steps_log.attach_rationale(index, payload)
+
+    async def _write_reflection(
+        self,
+        steps_log: Any,
+        record: RunRecord,
+        label: str,
+        *,
+        outcome: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """为一个决策单元写**终局反思**，落 unit 级 ``reflection`` 键。
+
+        INC46 的另一半：动作前动机把「事后口吻」从第 ``i`` 步赶了出去，
+        但**收尾那一句总结本来就该是事后的**——它要说的是「这一趟下来
+        确认了什么、怎么处置」，而所有观察此时都已是历史。
+
+        与 :meth:`_write_rationales` 分开成两个入口而不是给逐步入口加个
+        ``terminal`` 开关：两者的提示词、payload 形状、时序立场都不同，
+        合成一个函数会让「本步观察能不能喂」这个最关键的区别退化成
+        布尔参数的副作用。
+
+        为什么挂在 ``writer.reflect`` 而不是复用 ``self._writer`` 本身：
+        ``self._writer`` 是**逐步**入口（CLI 注入的可调用对象，签名是
+        ``write_one`` 的 kwargs）。反思入口用 :func:`getattr` 取，
+        **取不到就跳过**——纯函数的 writer（单测里的假 writer）本来
+        就不该被要求实现第二个入口，而跳过的结果是这一单元没有
+        reflection，组装期退回纯 disposition 话术，不是错误。
+
+        Returns:
+            reflection 的 JSON（``WriteResult.to_json`` 形状），
+            ``None`` = 没生成。**返回而不是直接挂上**，因为 reflection
+            是 **unit 级**的：搜索单元挂在 ``RunRecord``、站点单元挂在
+            ``VisitResult``，两者都不是 ``StepLog`` 的字段——
+            往动作流上挂一个不属于任何一步的东西，就是后来
+            「这条总结到底属于哪一步」这种问题的来源。
+        """
+        if self._writer is None:
+            return None
+        reflect = getattr(self._writer, "reflect", None)
+        if reflect is None:
+            return None
+        steps = steps_log.steps
+        try:
+            return reflect(
+                user_prompt=record.user_prompt,
+                target_title=record.title,
+                history=[
+                    (s.action.to_json(), _obs_json(s.observation)) for s in steps
+                ],
+                outcome=outcome,
+            )
+        except Exception as exc:  # noqa: BLE001 — 同逐步入口的纪律
+            record.warnings.append(
+                f"reflection 生成异常（{label}）：{type(exc).__name__}: {exc}"
+                f"——该单元无 reflection，收尾退回纯 disposition 话术"
+            )
+            return None
 
     async def _result_titles(self) -> tuple[Mapping[str, str], str]:
         """取当前搜索页的「结果标题 ↔ URL」。返回 ``(映射, 失败原因)``。

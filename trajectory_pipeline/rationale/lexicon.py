@@ -187,6 +187,39 @@ def filter_entities(entities: Iterable[Entity]) -> tuple[Entity, ...]:
     return tuple(e for e in entities if not is_boilerplate(e.text))
 
 
+# ── 合成实体 ──────────────────────────────────────────────────────
+
+#: **并列分隔符**。模型把观察里两处出现的内容**合并**成一个引号串时
+#: 用的连接符：观察里有「越剧特别版」和「越剧特别季」两处，模型写成
+#: 「越剧特别版/越剧特别季」。见 :func:`split_composite`。
+#:
+#: 只收**并列**分隔符（斜杠 / 竖线 / 顿号），**不收逗号与分号**——
+#: 那是句内停顿，「发生了错误，请稍后再试」不是两个并列实体。
+COMPOSITE_SEP_RE = re.compile(r"\s*[/／|｜、]\s*")
+
+#: 拆分后当成独立成分去核的**最短长度**。低于它的是一个字/一个标点，
+#: 拿去 haystack 里做子串匹配几乎必然命中，等于把核查放空。
+_MIN_PART_CHARS = 2
+
+
+def split_composite(text: str) -> tuple[str, ...]:
+    """合成实体的成分拆分。**拆不出就返回空元组**，调用方退回整串匹配。
+
+    INC46 实测出来的形态：B 站播放页观察里 ``page_title`` 与正文各出现
+    一次「越剧特别版」「越剧特别季」，模型合并写成
+    ``《中国好声音——越剧特别版/越剧特别季》``。整串子串匹配**必然落空**
+    ——观察里没有那个斜杠串——于是判幻觉。而真相是模型引用的每个成分
+    都真实存在，只是写法合并了。
+
+    为什么是「拆开逐段核」而不是「放宽成模糊匹配」：模糊匹配无法回答
+    「这一段到底看没看到」，而逐段核的判据是**每段都必须命中**——
+    少一段命中就仍是幻觉，收紧的方向没变。
+    """
+    parts = tuple(p.strip() for p in COMPOSITE_SEP_RE.split(text or ""))
+    parts = tuple(p for p in parts if len(strip_noise(p)) >= _MIN_PART_CHARS)
+    return parts if len(parts) >= 2 else ()
+
+
 # ── 后见之明 ──────────────────────────────────────────────────────
 
 #: **后见之明词典**：只在结果已知之后才成立的表述。
@@ -278,6 +311,7 @@ def resettable_text(text: str) -> str:
 __all__ = [
     "EntityKind", "Entity",
     "strip_noise", "extract_entities", "filter_entities",
+    "COMPOSITE_SEP_RE", "split_composite",
     "BOILERPLATE", "is_boilerplate",
     "HINDSIGHT", "hindsight_spans",
     "CERTAIN_MARKERS", "UNCERTAIN_MARKERS",

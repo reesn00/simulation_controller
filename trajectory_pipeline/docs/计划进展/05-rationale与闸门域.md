@@ -20,6 +20,8 @@
 | 采集侧 mojibake 防护 | ⚠️ **离线成立，从未被真实站点触发** | 见下 |
 | 观察充分性两档（hard / capping-only） | ✅ INC42 | judge 有效覆盖 1/14 → **7/14** |
 | `truncated` 字典假阳性修复 | ✅ INC42 | 四处同步，各加独立 `_truncated_flag` |
+| **rationale「动作前动机」口径** | ✅ INC46 | 生成时不喂本步观察；闸门窗口 `[:step_index]`；终局反思落 unit 级 `reflection`（**存量 64 档待重生成**） |
+| D-9 few-shot 示例池 | ⚠️ **INC46 已清空** | 旧六例是事后反思口径，与新口径冲突；零样本出分并标注 `fewshot=none`，待重生成后从 manual-review 桶人工重选 |
 
 ---
 
@@ -154,6 +156,82 @@ uv run python trajectory_pipeline/tests/contract/tools/observation_shortfall_wor
 **关键约束**：**不进 CI 门禁**——工具是 reviewer 视角的人工 drift 巡检，
 不是机器判等（决策边界对齐 ≠ 措辞一致）。
 
+
+---
+
+## 增量四十六 · rationale「动作前动机」口径改造（INC46）
+
+**日期**：2026-10-15 · **owner 拍板**：改采集层 writer 口径，P3 渲染顺序不动。
+
+### 问题
+
+P1 `steps[i].rationale` 原本是**事后反思**：writer 生成时喂了
+`action[i] + observation[i]`，文本描述的是刚看到的页面。而 P3 把
+`rationale[i]` 渲染在 `tool_call(action[i])` **之前**——模型还没导航就先
+评价页面内容，训练在教**未卜先知**。
+
+实测证据 `E005__e35b7455.json` site-4：首步是 `goto`，rationale 已经写下
+「当前页是…越剧特别版…虽列出 8 期链接」。
+
+### 口径
+
+第 `i` 步的 rationale = **执行第 `i` 个动作之前的动机与预期**。
+生成时只喂历史（前 `i` 步的动作与观察）与当前动作，**不喂本步观察**。
+
+- 历史观察**只最近 5 步带**，且用瘦身形状（url / page_title /
+  body_text(500) / body_truncated / elements_total）——不带 elements/links
+  明细，防 prompt 线性膨胀拖成 `unresolved`；
+- `write_one` 的 `error` 参数**删除**：动作没执行谈不上失败，
+  而失败原因本就在 P1 `steps[i].error` 落盘；
+- 终局反思走**另一个入口** `write_reflection`，落 **unit 级 `reflection` 键**
+  （与 `steps` 平级，不进 `outcome`——那是采集事实层）。
+
+### 连带迁移
+
+| 位置 | 改动 |
+|---|---|
+| `rationale/gates.py` | 可见窗口 `[:step_index]`（**不含本步**），后见窗口 `[step_index:]`（**含本步**）；step 0 空窗口**显式早退**为 undeterminable，不判幻觉 |
+| `evaluation/scorers/d9_scorer.py` | `_render_user` 逐条给「该步可见观察」（`obs[0..i-1]`），step 0 渲染「（无前置观察，只有任务与动作）」；**few-shot 六例整体移除**，零样本出分并在 reason 标注 `fewshot=none` |
+| `assembler/schema.py` | `Sample.reflection` 新键；`gate_of` 改用 `rationale.step_index`（**不是**列表下标——`align_rationales` 产出是稀疏序列，按下标取会让窗口错一格） |
+| `assembler/views.py` | `_closing_text` 结论改读 `reflection.rationale.conclusion`；无 reflection 时退回纯 disposition 话术 |
+| `executor/cli.py` | 新增 `regenerate-rationales` 子命令（备份到 `output/pipeline/_backup_pre_motivation/`、原子写回、单步失败不中断、支持 `--only` / `--dry-run`） |
+
+### 规模与验收
+
+全量 **480 条 rationale + 316 条 reflection ≈ 796 次 LLM 调用**（需
+`TRAJECTORY_LLM_*`）。门禁 **2368 passed / 1 failed**（failed 是既有的
+`test_xlsx_backfill` 环境缺失）；变异检查 **47/47 全红**。
+
+### 风险与未做
+
+- **step 0 空窗口**是全链路最容易误伤的位置，已有显式早退 + 三组测试钉住；
+- D-9 空池期间分数与带示例批次**不可直接比较**，靠 `fewshot=none` 标注；
+- **旧 rationale 的派生物失效**：INC40 选的 few-shot 六例、INC41 κ=0.176 口径；
+- 存量 64 档**尚未重生成**（`regenerate-rationales` 已就绪，待后端配额确认后跑）。
+
+### 单档真跑（E005__e35b7455）连带发现：合成实体误判
+
+真跑 7 单元 / 13 步 + 7 reflection = **20 次调用，13 written / 0 unavailable**。
+因果链验证通过——site-4 step0 从「当前页是…越剧特别版…虽列出 8 期链接」
+变成「需要打开一个候选链接进行验证…**预期**进入后能判断…」，
+但闸门**误判**了其中一条：
+
+- site-4 step1 写「《中国好声音——越剧特别版/越剧特别季》」；
+- `obs[0]` 的 `page_title` 与 `body_text` 里这两处**各自都真实存在**，
+  模型只是**合并**成一个斜杠串；
+- quoted 实体是**整串子串匹配** → 合成串必然落空 → 判 hard fail。
+
+**旧口径下这条被掩盖**：本步观察 `obs[1]` 为空，实体核查直接早退。
+新口径下历史观察完整，核查真跑起来才暴露。
+
+修法（`lexicon.split_composite` + `gates._in_haystack`）：整串落空时按
+**并列分隔符**（`/ ／ | ｜ 、`）拆开，**每段都命中才算有据**。刻意**不收
+逗号**——「发生了错误，请稍后再试」是一句话不是两个并列实体，收了它
+短片段极易意外命中、核查被放空。
+
+收紧的方向没变：**少一段命中就仍是幻觉**，「看到 A 就顺手编个 B」照样判死。
+已加 3 组测试 + 2 条变异（`all`→`any`、逗号进分隔符表）钉住。
+
 ---
 
 ## ⚠️ 本域已知未闭环项
@@ -161,6 +239,7 @@ uv run python trajectory_pipeline/tests/contract/tools/observation_shortfall_wor
 | 项 | 现状 |
 |---|---|
 | **3 对 degraded 观察的解锁只能靠采集层** | body 采集降级根因，与「感知层主瓶颈」议题同源 |
+| **存量 rationale 未重生成** | 64 档 480 条仍是事后反思口径；`regenerate-rationales` 已就绪（≈796 次 LLM 调用），待后端配额 |
 | **judge 输出非确定性** | INC42 录到 E014 step0 翻转 `anchored`↔`mild_hallucination`；如需消除，judge 调用加 `temperature=0` 或多数投票，属 `llm/client` 层**独立批** |
 | **mojibake 防护从未被真实站点触发** | 要证伪需跑 `tv.sohu.com` |
 | **降级正文可能只是部分加载的导航栏** | INC43 明确**降级观察不做付费墙救济**——这是本条纪律的延伸 |
@@ -169,6 +248,31 @@ uv run python trajectory_pipeline/tests/contract/tools/observation_shortfall_wor
 
 ## 相关章节
 
-- 编年史：[`90-增量编年史.md`](90-增量编年史.md) §增量四十二（观察充分性两档）· §增量四十三（降级观察不救济）
+- 编年史：[`90-增量编年史.md`](90-增量编年史.md) §增量四十二（观察充分性两档）· §增量四十三（降级观察不救济）· **§增量四十六（动作前动机口径）**
 - rubric：[`../设计方案/在线视频场景rubric.md`](../设计方案/在线视频场景rubric.md) D-9 边界规则
 - 早期编年史：[`../07-增量档案.md`](../07-增量档案.md)（mojibake 追溯）
+
+
+### D-9 侧连带修掉的两处（真跑探针撞出来的）
+
+**（a）``_rationales`` / ``_actions`` 只认 ``Mapping`` → Sample 对象静默变空。**
+``score_d9`` 签名写 ``Sample | Any``，但 ``Sample.rationales`` 是 ``Rationale``
+dataclass 元组、``Sample.actions`` 是 ``ActionView`` 元组，都不是 Mapping，
+于是被**静默过滤成空**：不抛异常、不出 ``undetermined``，judge 在没有原文
+的情况下照常出分。实测探针出 ``vague``，evidence 写着「未提供 rationale
+原文」——那句话是 judge 在如实说它没东西可判。
+生产路径（``evaluation/cli.py`` 喂 P2 dict）绕开了这个坑，所以此前没暴露。
+修法：新增 ``_as_mappings``，dataclass 走它的 ``to_json()``。
+
+**（b）``_render_observation`` 不渲染 ``page_title`` → 可见性口径与闸门不一致。**
+闸门 haystack（``lexicon.resettable_text``）是 url / title / body / 元素 label /
+链接**五项**全并，judge 侧只有 url + body 两项。同一个「当时能看到什么」
+的问题两边拿着两个答案：judge 会把**标题里明写**的东西判成「当时看不到」，
+系统性高估后见之明，把好 rationale 判进负样本池。实测那一条：judge 说
+step0 里没有「…第一期：」，而它就在 ``obs[0]['page_title']`` 里。
+修法：渲染补 title（空则不渲染该字段）。
+
+修完重跑同一条探针：判据从「未提供 rationale 原文 → vague/4」变成
+**引用具体文本的 hindsight/3**——judge 抓到 step2 把本步动作的 ``target``
+label 说成「正文里出现」，而纯代码闸门漏了它（没加引号，lexicon 抽不出）。
+这正是 gate + judge 分层的价值。

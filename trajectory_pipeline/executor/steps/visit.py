@@ -44,6 +44,11 @@ class VisitResult:
     #: 本文件对「点了什么」的行动仍只看 ``control.payload['ref']``，
     #: 动作流是**记录**，不是控制输入（两者一旦耦合，改记录方式就改控制流）。
     steps: StepLog = field(default_factory=StepLog)
+    #: **本站点单元的终局反思**（INC46）。与 ``steps`` 平级，
+    #: 与 :attr:`~trajectory_pipeline.executor.orchestrator.RunRecord.reflection`
+    #: 同款：LLM 产物，不进 ``outcomes``（那是采集事实层）。
+    #: ``None`` = 没生成，与「生成了但内容为空」不同——三态原样落盘。
+    reflection: dict[str, Any] | None = None
 
     def note(self, text: str) -> None:
         if self.notes is None:

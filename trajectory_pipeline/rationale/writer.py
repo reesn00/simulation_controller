@@ -15,11 +15,28 @@ executor 改一个 dataclass 字段，半年前那批存档就不该切不出 ra
 七条口径
 ========
 
-1. **不可用返回 ``None``，不返回空串。** ``WriteResult.status`` 三值：
+1. **rationale 是「动作前动机」，不是「事后反思」。** INC46（2026-10-15）
+   改口径：生成第 ``i`` 步时**只喂历史**（第 ``0..i-1`` 步的动作与观察）
+   与本步动作，**不喂本步观察**。
+
+   旧口径喂的是 ``action[i] + observation[i]``，而 P3 把 ``rationale[i]``
+   渲染在 ``tool_call(action[i])`` **之前**——模型还没导航就先评价页面
+   内容，训练在教**未卜先知**。实测 ``E005__e35b7455__site-4``：首步是
+   ``goto``，rationale 却已经写下「当前页是…越剧特别版…虽列出 8 期链接」。
+
+   **「动作尚未执行」顺带解释了为什么没有 ``error`` 参数**：动作没执行
+   谈不上失败，而失败原因本就在 P1 ``steps[i].error`` 落盘，不必再喂一次。
+
+   本步观察不再进提示词，**历史观察仍要进**（不然第 2 步之后的动机无从
+   谈起）。控输入量的纪律改成：只最近
+   :data:`HISTORY_OBS_STEPS` 步带观察，且用**瘦身形状**
+   （:func:`render_history_observation`）——更早的步只留动作。
+
+2. **不可用返回 ``None``，不返回空串。** ``WriteResult.status`` 三值：
    ``written`` / ``unavailable`` / ``empty``。**「LLM 挂了」与「模型什么都没说」
    是两回事**，混成一个空串就等于把采集故障记成数据事实（§3.1）。
 
-2. **``<think>`` 剥完是空串 → 判不可用，不是「模型没说话」。**
+3. **``<think>`` 剥完是空串 → 判不可用，不是「模型没说话」。**
    这是本模块最贵的一个坑：推理模型被 ``max_tokens`` 截断时会留下
    **未闭合**的 ``<think>``，后面全是思维链正文。
    :func:`~trajectory_pipeline.llm.schema_parse.strip_think` 会把这一整段
@@ -39,21 +56,25 @@ executor 改一个 dataclass 字段，半年前那批存档就不该切不出 ra
    **同产品族里两种行为都有**，所以这条剥离是**防御性**的而不是多余的：
    换一次配置就可能换到一个会返的，而它返回与否**逐次都可能不同**。
 
-3. **采集降级必须写进提示词，不能只靠闸门兜。** 闸门是**事后**判，
+4. **采集降级必须写进提示词，不能只靠闸门兜。** 闸门是**事后**判，
    而模型是在**当场**编故事。§5.5 那条最贵的实测就发生在这里：
    iqiyi 播放页 ``video=1``、正文与元素皆空，模型写下
    「正文为空、元素为空，说明未渲染」——一句**通顺的错结论**。
    所以本模块把「这份观察不完整：<原因>」直接写进 user 提示词，
    让模型自己知道它的输入有多薄。**闸门是第二道防线，不是第一道。**
 
-4. **不把 ``ref`` 句柄喂给模型。** 它是 obscura 的会话内句柄，换个 session
-   就失效，进训练数据等于让模型学一个随机数。与
-   :class:`~trajectory_pipeline.assembler.schema.ActionView` 同款口径：
-   点击目标只给 ``tag`` + ``label``。
+   ⚠️ 改动作前动机口径后，**没有本步观察可判了**：这一条改成指
+   **最后一条历史观察**的 shortfall（:func:`shortfall`），
+   而**没有历史时该键不出现**——首步本来就没有可判的东西，
+   写一个「完整」进去等于告诉模型它的输入是充分的，而它只有用户诉求。
 
-5. **提示词不提 obscura / MCP / ref / 控制流。** 模型学到的是
-   「遇到这样的用户与页面该怎么办」，不是「怎么驱动某个浏览器」——
-   与 :data:`trajectory_pipeline.assembler.schema.SYSTEM_PROMPT` 同款口径。
+5. **喂给模型的动作不带 ``ref``，提示词不提 obscura / MCP / 控制流。**
+   ``ref`` 是 obscura 的会话内句柄，换个 session 就失效，进训练数据等于
+   让模型学一个随机数（点击目标只给 ``tag`` + ``label``，与
+   :class:`~trajectory_pipeline.assembler.schema.ActionView` 同款口径）；
+   不提执行端则是让模型学「遇到这样的用户与页面该怎么办」，
+   而不是「怎么驱动某个浏览器」——与
+   :data:`trajectory_pipeline.assembler.schema.SYSTEM_PROMPT` 同款口径。
 
 6. **剥完仍残留思维链标记 → 拒写。** 红线是 raw CoT 不进任何持久化路径，
    而本模块是 thinking 变成落盘数据的**第一站**。
@@ -84,6 +105,21 @@ executor 改一个 dataclass 字段，半年前那批存档就不该切不出 ra
 :attr:`WriteResult.degraded` 会带 ``rationale_truncated``，
 由 assembler 写进 ``degraded_from``。CoT SFT 吃的是完整轨迹，
 半截 CoT 与没有 CoT 是两种不同的坏，而只有记账能让人分出来。
+
+终局反思：:func:`write_reflection`
+=================================
+
+动作前动机把「事后口吻」从第 ``i`` 步赶了出去，但**单元收尾那一句总结
+本来就该是事后的**——它要说的是「这一趟下来确认了什么、怎么处置」。
+所以它是**另一个入口**，不是给 :func:`write_one` 加一个
+``terminal=True`` 开关：两个入口的 SYSTEM 提示词、payload 形状、
+语义都不同，合成一个函数会让「本步观察能不能喂」这个最关键的区别
+退化成一个布尔参数的副作用——而那条区别正是 INC46 的全部内容。
+
+产物落 **unit 级 ``reflection`` 键**（与 ``steps`` 平级），**不落在
+outcome 里**：它是 LLM 产物，而 outcome 要保持采集事实层纯洁。
+:class:`WriteResult` 形状不变，所以 ``reflection`` 与 ``steps[i].rationale``
+在 P1 里同构，组装期用同一套代码读。
 """
 
 from __future__ import annotations
@@ -110,6 +146,18 @@ BODY_CHARS = 600
 
 #: 交互元素条数上限。同上，不共用。
 ELEMENTS = 20
+
+#: 历史观察的正文预算。比 :data:`BODY_CHARS` **略小**：本步观察是「要据以
+#: 写」的主证据，历史观察只是「别重复做过的事、别自相矛盾」的上下文。
+HISTORY_BODY_CHARS = 500
+
+#: **只有最近这么多步带历史观察**，更早的步只留动作。
+#:
+#: 控输入量的纪律没变（见 :func:`render_history`）：观察全量进来会让每一步
+#: 的 prompt 线性增长，而超时会把整批站点拖成 ``unresolved``。放宽成
+#: 「最近 5 步」是动作前动机口径的**必要代价**——不喂历史，第二�步之后的
+#: 动机就无从谈起（「点第一期确认」得先知道上一页列了 8 期）。
+HISTORY_OBS_STEPS = 5
 
 #: rationale 正文的硬上限（超出截断并记账，见模块 docstring）。
 MAX_TEXT_CHARS = 1200
@@ -196,20 +244,47 @@ class WriteResult:
 #: 不提 obscura、不提 MCP、不提 ref、不提控制流。理由与
 #: ``assembler.schema.SYSTEM_PROMPT`` 同款：模型要学的是判断，
 #: 不是怎么驱动某个浏览器。
+#:
+#: INC46：口径从「事后反思」改成「**动作前动机**」。最关键的一句是
+#: **这个动作还没执行**——所以第 2 条「不得声称已看到本步结果」不是
+#: 风格要求，而是事实约束：喂进来的观察全是**此前**的，本步结果是
+#: 空位，谁填谁就是幻觉。
 SYSTEM = (
     "你在帮一位用户找在线观看某部片子的资源。\n"
-    "每一步你会拿到：用户想要什么、刚刚执行了什么动作、"
-    "执行后页面返回的观察。\n"
-    "写这段思考时遵守：\n"
-    "1. 只根据观察里真实出现的内容来写。观察里没有的东西不要说。\n"
-    "2. 如果观察不完整（页面还没渲染完、正文或元素被截断），"
-    "就明说你无法确认，不要编一个听起来合理的解释。\n"
-    "3. 写你**当时**的判断依据，不要用事后才知道的说法。\n"
-    "4. 如果这一步的动作本身失败了（this_action_failed 给了原因），"
-    "就说明这次尝试为什么没成，**不要**假装看到了页面内容。\n"
+    "每一步你会拿到：用户想要什么、此前各步的动作与页面返回、"
+    "本步**即将执行**的动作。\n"
+    "请写执行这个动作**之前**的动机与预期。遵守：\n"
+    "1. 只根据**历史**里真实出现的内容与任务要求来写。"
+    "历史里没有的东西不要说。\n"
+    "2. 这个动作**还没有执行**，你不可能知道它返回什么。"
+    "**不得**描述或评价本步动作的結果，不得声称已经看到了本步的页面。\n"
+    "3. 最近的历史观察不完整时（页面没渲染完、正文或元素被截断），"
+    "就明说你不确定，不要编一个听起来合理的解释。\n"
+    "4. 说清楚**为什么要做这个动作、预期能看到什么**，不要用事后"
+    "复盘的说法（「结果显示」「已经确认」「页面写着」一类）。\n"
     "5. 简明，200 字以内。\n"
     "输出 JSON：{\"thinking\": \"...\", \"conclusion\": \"...\"}，"
-    "thinking 是上述思考，conclusion 是一句话结论。"
+    "thinking 是上述思考，conclusion 是一句话结论"
+    "（结论是**预期**，不是既成事实）。"
+)
+
+#: 终局反思的系统提示词（:func:`write_reflection`）。
+#:
+#: 与 :data:`SYSTEM` 唯一的区别是**时序立场反过来**：这里**允许且要求**
+#: 事后口吻——它写的是「这一趟下来确认了什么」，而所有观察都已经是
+#: 历史了。刻意复制一份而不是在 :data:`SYSTEM` 上打补丁：两份提示词
+#: 会被独立调，而共用一个字符串 + 条件拼接会让「动作前」那版的第 2 条
+#: 硬约束在某个分支下悄悄消失。
+SYSTEM_REFLECTION = (
+    "你在帮一位用户找在线观看某部片子的资源。\n"
+    "这一轮访问已经结束。你会拿到：用户想要什么、各步的动作与页面返回、"
+    "以及最终结论。\n"
+    "写一段**事后总结**：这一趟下来确认了什么、为什么这么处置。遵守：\n"
+    "1. 只根据历史里真实出现的内容与给出的最终结论来写，不要补新事实。\n"
+    "2. 历史观察不完整时明说不确定，不要把「没采到」讲成「页面上没有」。\n"
+    "3. 简明，200 字以内。\n"
+    "输出 JSON：{\"thinking\": \"...\", \"conclusion\": \"...\"}，"
+    "thinking 是总结，conclusion 是一句话结论。"
 )
 
 
@@ -290,14 +365,99 @@ def render_action(action: Mapping[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-def render_history(history: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """前置步的动作摘要。**只给动作，不给观察。**
+#: 一条历史步。``(动作, 观察)`` 二元组；观察可为 ``None``（那一步没取到）。
+HistoryItem = tuple[Mapping[str, Any], Mapping[str, Any] | None]
 
-    给动作是为了别让模型重复已经做过的事、别与上一步的结论自相矛盾；
-    **不给观察**是为了控制输入量——前置观察全量进来会让每一步的
-    prompt 线性增长，而超时会把整批站点拖成 ``unresolved``。
+#: 观察的**瘦身形状**——只留页面身份、正文摘要与元素计数。
+#: 刻意在 :func:`render` 之外单独一份：:func:`render` 是「本步主证据」
+#: 的形状（带 elements/links 明细、带 video/iframe 计数），历史只是上下文，
+#: 带明细会让第 5 步之后的 prompt 膨胀到超时——而超时会把整批站点
+#: 记成 ``unresolved``（采集故障写成业务结论）。
+_SLIM_OBS_KEYS = ("url", "page_title", "body_text",
+                  "body_truncated", "elements_total")
+
+
+def render_history_observation(observation: Mapping[str, Any] | None) -> dict[str, Any]:
+    """历史观察 → 瘦身视图。**不带 elements / links 明细**（见常量注）。"""
+    obs = observation or {}
+    body = str(obs.get("body_text") or "")
+    elements = list(obs.get("interactive_elements") or ())
+    total = int(obs.get("elements_total") or 0) or len(elements)
+    return {
+        "url": str(obs.get("url") or ""),
+        "page_title": str(obs.get("page_title") or ""),
+        "body_text": body[:HISTORY_BODY_CHARS],
+        "body_truncated": len(body) > HISTORY_BODY_CHARS,
+        "elements_total": total,
+    }
+
+
+def _split_history_item(item: Any) -> tuple[Mapping[str, Any] | None,
+                                            Mapping[str, Any] | None]:
+    """一条历史项 → ``(动作, 观察)``。**认两种形状**：
+
+    - ``(action_json, obs_json)`` 二元组（orchestrator 现在给的形态）；
+    - 裸 ``action_json``（老调用方 / 测试给的动作序列）。
+
+    认裸映射不是「兼容历史包袱」：重生成 CLI 与单测都会直接喂动作列表，
+    而让每个调用方自己包一层 ``(a, None)`` 只是把同一件事写三遍。
     """
-    return [render_action(a) for a in history if isinstance(a, Mapping)]
+    if isinstance(item, Mapping):
+        return item, None
+    if (
+        isinstance(item, Sequence)
+        and not isinstance(item, (str, bytes))
+        and len(item) == 2
+    ):
+        action, obs = item[0], item[1]
+        return (action if isinstance(action, Mapping) else None,
+                obs if isinstance(obs, Mapping) else None)
+    return None, None
+
+
+def render_history(history: Sequence[Any]) -> list[dict[str, Any]]:
+    """前置步摘要：**最近** :data:`HISTORY_OBS_STEPS` 步带瘦身观察，更早只留动作。
+
+    INC46 之前是「只给动作，不给观察」——那是**事后反思**口径下的正确
+    取舍（本步观察就在手边，历史只是防重复）。改成动作前动机之后，
+    历史观察是**唯一的证据来源**：不喂它，「点第一期确认」这种动机
+    就写不出来，模型只能对着任务复述一遍。
+
+    代价是 prompt 会随步数增长，所以两头收紧：观察用瘦身形状
+    （:func:`render_history_observation`），且**只有最近 5 步带**。
+    更早的步只留动作——防重复做过的事不需要 10 步之前的正文。
+    """
+    items = list(history or ())
+    # 观察窗口的起点：**末尾**往前数，不是从头数。动机依赖的是最近看到
+    # 的东西，而截掉开头的旧观察不会让模型失去「现在在哪」的上下文。
+    first_with_obs = max(0, len(items) - HISTORY_OBS_STEPS)
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(items):
+        action, obs = _split_history_item(item)
+        if action is None:
+            continue
+        entry = render_action(action)
+        if obs is not None and i >= first_with_obs:
+            entry["observation"] = render_history_observation(obs)
+        out.append(entry)
+    return out
+
+
+def last_history_observation(
+    history: Sequence[Any],
+) -> Mapping[str, Any] | None:
+    """最后一条**非空**的历史观察。没有则 ``None``。
+
+    用途是 :func:`shortfall` 的输入（模块 docstring 口径 4）：把「最近这份
+    观察不完整」写进提示词。取**最后一条非空**而非「最后一步的观察」
+    是因为末步可能是 ``new_tab`` 那种观察为 null 的步——那时真正该提示的
+    是再往前那条。
+    """
+    for item in reversed(list(history or ())):
+        _, obs = _split_history_item(item)
+        if obs:
+            return obs
+    return None
 
 
 # ── 主入口 ────────────────────────────────────────────────────────
@@ -307,64 +467,129 @@ def write_one(
     client: LLMClient,
     *,
     action: Mapping[str, Any] | None,
-    observation: Mapping[str, Any] | None,
     user_prompt: str = "",
     target_title: str = "",
-    history: Sequence[Mapping[str, Any]] = (),
-    error: str = "",
+    history: Sequence[Any] = (),
 ) -> WriteResult:
-    """为**一步**生成 rationale。失败一律是返回值，不是异常。
+    """为**一步**生成「动作前动机」。失败一律是返回值，不是异常。
+
+    INC46：**不喂本步观察**。喂了它，模型就会描述一个它此刻还没看到的
+    页面，而 P3 把这段文本渲染在 ``tool_call`` 之前——那是在教未卜先知。
 
     Args:
         client: 已构造好的客户端。**不自己读环境变量**——调用方决定
             用哪个后端，而 writer 猜一个就是「配置错了但程序照跑」。
-        action: 本步实际动作（P1 ``steps[i].action`` 的形状）。
-        observation: 本步动作之后的观察。
+        action: 本步**即将执行**的动作（P1 ``steps[i].action`` 的形状）。
         user_prompt: 用户诉求原文。
         target_title: 目标片名。**任务给的，不该由模型从页面上找**。
-        history: 前置步的动作（只要动作，不要观察，见
-            :func:`render_history`）。
-        error: **本步动作本身的失败原因**（导航不通 / 点击报错 / 快照取不到）。
-            非空时它会进提示词——不给的话，模型会拿着一个空观察去解释
-            「我看到了什么」，而真相是这一步压根没拿到观察。
-            这是「采集失败必须让模型知道」那条纪律在 writer 侧的落点，
-            与 :func:`shortfall` 说的是两件事：那个讲观察**不完整**，
-            这个讲动作**没成功**。
+        history: 前置步，``(动作, 观察)`` 序列，见 :func:`render_history`。
+            观察**只最近** :data:`HISTORY_OBS_STEPS` 步带、且是瘦身形状。
 
     Returns:
         :class:`WriteResult`。``status="unavailable"`` 时 ``draft is None``。
     """
-    obs = observation or {}
-    gap = shortfall(obs)
-
     payload: dict[str, Any] = {
         "user_wants": user_prompt,
         "target_title": target_title,
         "previous_actions": render_history(history),
         "this_action": render_action(action),
-        "observation": render(obs),
     }
-    # 口径 3：**把采集降级明写进提示词**。这是第一道防线，
+    # 口径 4：**把采集降级明写进提示词**。这是第一道防线，
     # 闸门（gates）只能事后发现，拦不住模型当场编故事。
-    payload["observation_completeness"] = (
-        f"不完整：{gap}——不要据此断定页面上没有该内容"
-        if gap else "完整"
-    )
-    if error:
-        # 动作本身失败：观察压根不存在。与上面的「不完整」分开说，
-        # 因为处置不同——这一步的正确行为是**解释失败**，
-        # 而「不完整」时该说的是「不足以判断」。
-        payload["this_action_failed"] = error
+    # 改动作前动机后它指**最后一条历史观察**——没有历史时**不出现该键**：
+    # 首步本来就没有可判的观察，写一个「完整」等于谎报输入充分。
+    last_obs = last_history_observation(history)
+    if last_obs is not None:
+        gap = shortfall(last_obs)
+        payload["observation_completeness"] = (
+            f"不完整：{gap}——不要据此断定页面上没有该内容"
+            if gap else "完整"
+        )
+    return _complete(client, SYSTEM, payload)
 
+
+def write_reflection(
+    client: LLMClient,
+    *,
+    history: Sequence[Any] = (),
+    outcome: Mapping[str, Any] | None = None,
+    user_prompt: str = "",
+    target_title: str = "",
+) -> WriteResult:
+    """为一个**决策单元**写终局反思，落 unit 级 ``reflection`` 键。
+
+    这是全链路**唯一**允许事后口吻的地方（见模块 docstring「终局反思」节）：
+    动作前动机把后见之明从第 ``i`` 步赶了出去，而收尾那句总结本来就该
+    是看完整个单元之后写的。
+
+    Args:
+        client: 同 :func:`write_one`。
+        history: 本单元**全部**步的 ``(动作, 观察)`` 序列。观察窗口规则
+            同 :func:`render_history`（最近 5 步带瘦身观察）——终局总结
+            依赖的也是最近看到的东西。
+        outcome: 本单元的最终判定（P1 ``outcomes[i]`` / 站点级分支）。
+            **只取几个键**（:func:`render_outcome`），不整份透传：
+            evidence 原文很长且是给评分器看的，喂进提示词只会挤掉正文预算。
+        user_prompt: 用户诉求原文。
+        target_title: 目标片名。
+
+    Returns:
+        同 :func:`write_one` 的 :class:`WriteResult`——形状**刻意一致**，
+        于是 P1 里的 ``reflection`` 与 ``steps[i].rationale`` 同构，
+        组装期用同一套代码读。
+    """
+    payload: dict[str, Any] = {
+        "user_wants": user_prompt,
+        "target_title": target_title,
+        "previous_actions": render_history(history),
+        "final_outcome": render_outcome(outcome),
+    }
+    return _complete(client, SYSTEM_REFLECTION, payload)
+
+
+def render_outcome(outcome: Mapping[str, Any] | None) -> dict[str, Any]:
+    """最终判定 → 喂给模型的视图。**只留结论骨架**，不带 evidence 原文。
+
+    ``outcome`` 可能为 ``None``——**搜索单元没有 outcome**（它的「总结」
+    就是「接下来逐一打开候选站点核验」）。此时返回空 dict，让提示词里
+    的 ``final_outcome`` 是 ``{}`` 而不是缺键：缺键与「有判定但为空」
+    在模型眼里是两回事，而这里要说清的是「这一单元没有站点级结论」。
+    """
+    o = outcome if isinstance(outcome, Mapping) else {}
+    if not o:
+        # 搜索单元没有站点级 outcome。返回**空 dict** 而不是「branch=None」：
+        # ``branch=None`` 在 P1 里的含义是**成功**（ledger 只记失败分支），
+        # 拿它表示「这一单元压根没有判定」会让模型把「还没判」读成「判了成功」。
+        return {}
+    out: dict[str, Any] = {}
+    branch = o.get("branch")
+    # branch=None 是**成功**（P1 的 ledger 只记失败分支），
+    # 所以这里照实放 None 并显式补一句，别让模型把「无分支」读成「没结论」。
+    out["branch"] = str(branch) if branch is not None else None
+    out["branch_is_none_means"] = "无失败分支 = 判定为可播放站点" if branch is None else ""
+    for key in ("url", "play_page_url", "succeeded", "reached_play_page"):
+        if key in o:
+            out[key] = o[key]
+    return out
+
+
+def _complete(client: LLMClient, system: str, payload: dict[str, Any]) -> WriteResult:
+    """:func:`write_one` / :func:`write_reflection` 共用的收尾。
+
+    抽出来不是为省几行：两个入口之后的**每一步处置**（剥 think、拒残留
+    CoT、解析、三态记账）必须**完全一致**，否则「反思缺一个字段」与
+    「动机缺一个字段」会在下游长出两套形状，而 reflection 是要被
+    ``views._closing_text`` 直接读的。
+    """
     import json
 
-    raw = client.chat(SYSTEM, json.dumps(payload, ensure_ascii=False))
+    raw = client.chat(system, json.dumps(payload, ensure_ascii=False))
     if raw is None:
         return WriteResult(
             "unavailable", None,
             f"LLM 不可用（{client.last_error or '未配置或连不上'}）")
 
-    # 口径 2：剥完是空 → 不可用，且**原因要写出来**。
+    # 口径 3：剥完是空 → 不可用，且**原因要写出来**。
     text = schema_parse.strip_think(raw)
     if not text:
         return WriteResult(
@@ -394,7 +619,7 @@ def write_one(
     conclusion = schema_parse.as_str(
         schema_parse.field(data, "conclusion") or schema_parse.field(data, "decision")
     ).strip()
-    # 「键在但值是空串」与「键根本没有」必须分开（口径 1）：
+    # 「键在但值是空串」与「键根本没有」必须分开（口径 2）：
     #   前者是**数据事实**——模型这一轮确实什么都没说（``empty``）；
     #   后者是**流水线形状漂移**，整批样本都会缺同一段（``unavailable``）。
     # 合成一个空串就等于把后者记成前者，而前者不进负样本池、
@@ -422,7 +647,10 @@ def write_one(
 
 
 __all__ = [
-    "BODY_CHARS", "ELEMENTS", "MAX_TEXT_CHARS", "MAX_CONCLUSION_CHARS",
-    "SYSTEM", "WriteStatus", "Draft", "WriteResult",
-    "render", "render_action", "render_history", "shortfall", "write_one",
+    "BODY_CHARS", "ELEMENTS", "HISTORY_BODY_CHARS", "HISTORY_OBS_STEPS",
+    "MAX_TEXT_CHARS", "MAX_CONCLUSION_CHARS",
+    "SYSTEM", "SYSTEM_REFLECTION", "WriteStatus", "Draft", "WriteResult",
+    "render", "render_action", "render_history", "render_history_observation",
+    "render_outcome", "last_history_observation", "shortfall",
+    "write_one", "write_reflection",
 ]

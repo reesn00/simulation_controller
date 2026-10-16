@@ -23,6 +23,7 @@
   "gate": { "status": "passed", "reasons": ["逐条核查 1/1 步通过"] },
   "rationale_missing": false,
   "outcome": { ... },
+  "reflection": { ... } | null,
   "degraded_from": []
 }
 ```
@@ -48,6 +49,7 @@
 | `actions` | `list` | ④ 动作+参数。**没有 `ref`**——会话句柄不可回放 |
 | `observations` | `list` | ⑤ 观察原文（可长于训练态渲染） |
 | `rationales` | `list` | ⑥ 思考+结论，**与 `actions` 按 `step_index` 对齐**（见下） |
+| `reflection` | `object` \| `null` | INC46：**unit 级终局反思**（与 `rationales` 平级，不属于任何一步）。形状同 `WriteResult.to_json`（`status` / `rationale` / `reason` / `degraded`），于是与 `steps[i].rationale` 同构。`null` = 没生成（writer 未接 / 后端不可用 / 生成失败）——与「生成了但内容为空」不同 |
 
 ### ⑥ `rationales`（2026-10-10 由单值 `rationale` 改来）
 

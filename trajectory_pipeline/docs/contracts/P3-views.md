@@ -59,7 +59,8 @@
 | `role: "system"` | `{"role", "content"}` | 有 `system_prompt` 才发；空则不发 |
 | `role: "user"`（首轮） | `{"role", "content"}` | 有 `user_prompt` 才发；**空 `user_prompt` 不发空消息**（见判断 4） |
 | `role: "assistant"` | `{"role", "content"}` | 每步动作一条；`content` = 该步思考段（若有）+ `[动作] <tool>(…)` |
-| `role: "user"`（观察回执） | `{"role", "content"}` | 动作与观察一一配对；**观察不足时少发、不补空**；观察多于动作时多出的照实补上 |
+| `role: "user"`（观察回执） | `{"role", "content"}` | 动作与观察一一配对；**观察不足时显式发占位** `（本步没有取到页面内容）`（判断 8）；观察多于动作时多出的照实补上 |
+| `role: "assistant"`（收尾） | `{"role", "content"}` | **每条轨迹以「任务总结」终结**（判断 7）：从 `outcome` 与 unit 级 `reflection.rationale.conclusion` 确定性派生，无动作（INC46 起不再读末步 rationale） |
 
 工具调用在这里**降级成纯文本** `[动作] goto(url=…)`——这份视图的定位是
 「训练框架不认识 tool_calls 时的保底」，要精确的函数调用形态读 `openai.json`。
@@ -97,11 +98,14 @@
 | `role: "system"` | `{"role", "content"}` | 有 `system_prompt` 才发 |
 | `role: "user"`（首轮） | `{"role", "content"}` | 有 `user_prompt` 才发；空不发 |
 | `role: "assistant"`（每步） | `{"role", "content", "tool_calls": [...]}` | `tool_calls` 恰好一条；`content` 是该步思考段（无则 JSON null） |
-| `role: "tool"`（观察） | `{"role", "tool_call_id", "content"}` | `tool_call_id` 与对应 assistant 的 `id` 相同；观察与动作一一配对 |
+| `role: "tool"`（观察） | `{"role", "tool_call_id", "content"}` | `tool_call_id` 与对应 assistant 的 `id` 相同；观察与动作一一配对，**缺观察显式发占位回执**（判断 8） |
+| `role: "assistant"`（收尾） | `{"role", "content"}` | 「任务总结」（判断 7），**没有 `tool_calls`**；空轨迹（无可见模型动作）不发 |
 
-- **`tool_call_id` 由 step 序号派生**（`call_0` / `call_1` / …），不取自
-  P1 的任何字段——P1 里没有可用的调用 id，而 step 序号是确定的、不是猜的
+- **`tool_call_id` 由可见步序号派生**（`call_0` / `call_1` / …），不取自
+  P1 的任何字段——P1 里没有可用的调用 id，而序号是确定的、不是猜的
   （与 `builder` 用 `sample_id` 反查源存档同款：能从数据算出来的不另找来源）。
+  `origin == "infrastructure"` 的步整步跳过后序号仍**稠密**——
+  消息流里不存在的动作不该占号（判断 2）。
 - **观察是 `role: "tool"` 不是 `role: "user"`**（判断 1）：`tool_call_id`
   让模型学到「这条观察是对**那个**动作的回应」；退成 user 消息就把关联
   抹平了，而关联正是 agent 轨迹的训练信号。
@@ -171,7 +175,9 @@
 | `step_count` | `int` | 动作条数 |
 | `observation_count` | `int` | 观察条数 |
 | `infrastructure_actions` | `list[str]` | 执行器自己做的动作（`origin=infrastructure`，如 `new_tab`）的工具名清单 |
-| `observation_complete` | `bool` | `observation_count >= step_count`。动作多于观察 ⇒ 末步没取到观察，训练侧会看到一个「发出去但没回音」的动作——那是真实轨迹的一部分，不修，只演示 |
+| `observation_complete` | `bool` | `observation_count >= step_count`。动作多于观察 ⇒ 末步没取到观察；消息视图显式发占位回执（判断 8），但批次筛选仍要能一眼分出「观察齐全」与「有步没采到」 |
+| `missing_observation_count` | `int` | 缺失观察占位（P2 `MISSING_OBSERVATION`，`degraded` 含 `observation_missing`）的条数。占位多的样本观察面薄，复核优先级该高 |
+| `closing_summary` | `bool` | 是否带「任务总结」收尾（判断 7）。false 即「这条一个可见模型动作都没有」 |
 | `rationale_steps` | `list[{step_index, status}]` | **逐条**列出每步 rationale 的状态——不合成一个计数：合成之后就分不出「缺中间那步」与「缺最后那步」，而两者的处置不同 |
 
 ### `rationale_steps` 元素
@@ -181,8 +187,9 @@
 ```
 
 `status` 带 P2 的三态（`written` / `unavailable` / `empty`，原样透传）。
-`step_index` 从 0 起、按动作序号递增，与 P2 步骤一一对应（缺步即整条缺失，
-由 `len(rationale_steps) != step_count` 暴露）。
+`step_index` 取**条目自带值**（动作的步号），不按列表位置重编——
+`align_rationales` 的产出是稀疏序列（中间步没写成就跳号），重编会把
+「缺中间那步」抹成「缺最后那步」，而两者的处置不同。
 
 ---
 
@@ -214,6 +221,8 @@ video 标签 <n> 个，iframe <n> 个
 1. **空观察渲染成 `（本步没有取到页面内容）`，不是空字符串。**
    一条 `content: ""` 的 tool 消息在训练时会被当作「页面真的什么都没有」，
    而观察为空有三种成因（没采到 / 被拦 / 真的空），空字符串会把它们抹平。
+   P2 的缺失占位（`degraded` 含 `observation_missing`）同此渲染——
+   占位真值为真只是为了不被下游真值过滤丢掉，语义仍是「没采到」。
 2. **如实报账，不静默省略**：观察带 `degraded` 时末尾追加
    `[采集降级: …]`；带 `truncated` 时追加 `[内容不完整: 上游截断/本次裁剪]`。
    模型要学会看到「这块信息不完整」时说判不了，而不是当成页面上真没有
@@ -223,17 +232,20 @@ video 标签 <n> 个，iframe <n> 个
 
 ---
 
-## 六条关键判断（都是「看起来可以随便选、选错就静默毁训练数据」的那种）
+## 八条关键判断（都是「看起来可以随便选、选错就静默毁训练数据」的那种）
 
 1. **观察是 `role: "tool"`，不是 `role: "user"`。** `tool_call_id` 让模型
    学到「这条观察是对**那个**动作的回应」。退成 user 消息就把关联抹平了，
    而关联正是 agent 轨迹的训练信号。
-2. **`new_tab` 保留在轨迹里，但工具声明里不出现。**
-   `origin == "infrastructure"` 的动作是执行器自己的会话隔离，模型永远
-   不该输出它——但它是真实发生过的动作，删掉就无法回放（与
-   `executor/actions.py` 的 `StepLog` 同款理由）。可见性由
-   `ToolSpec.visible_to_model` **唯一决定**，P3 模块不重新判断：
-   `tools` 声明按 `name != "new_tab"` 过滤，动作流里按原样保留。
+2. **`origin == "infrastructure"` 的步整步不进消息视图。**
+   `new_tab` 是执行器自己的会话隔离动作，模型永远不该输出它。早先口径是
+   「保留在动作流里，只从工具声明里滤掉」，理由是可回放——但训练视图的
+   任务是教模型**它该做的动作**：让模型看到一条它永远不会发、也不该发的
+   assistant `tool_calls`，就是教它输出越权动作（2026-10-15 拍板反转）。
+   可回放的完整动作流仍在 P2 的 `six.actions` 里原样留着，消息视图按
+   `_visible_steps` **整步跳过**（动作连同它的观察与思考），`meta` 的
+   `infrastructure_actions` 留痕。工具声明侧照旧由
+   `ToolSpec.visible_to_model` 唯一决定。
 3. **`click` 的语义目标并进 `arguments`。** `ActionView` 是
    `{tool, params, target, origin}` 四字段，而 function-calling 的
    `arguments` 是**一个 dict**。所以 `target` 的 `{tag, label}` 平铺进
@@ -252,7 +264,35 @@ video 标签 <n> 个，iframe <n> 个
    或为 JSON null），而整条一条都没写成时 meta 记 `rationale_missing` ——
    「流水线没长出来」与「模型这轮没说话」的区分靠这个标记（与 `GateMark`
    的 `not_run` 同一思路）。**绝不补占位文字**：编一段思考会直接污染
-   CoT SFT。
+   CoT SFT。查找按 `step_index` 建字典（2026-10-15 改），不按列表位置——
+   `align_rationales` 的产出是稀疏序列，按位置取会在缺一条时整体串位。
+
+   ⚠️ **INC46（2026-10-15）rationale 的口径是「动作前动机」**：第 `i` 条
+   写的是执行第 `i` 个动作**之前**的动机与预期，只依据前 `i` 条观察与
+   任务要求，**不得**描述或评价本步结果。渲染顺序不变
+   （`rationale[i]` 仍配在 `tool_call(action[i])` 之前）——新口径下这个
+   顺序因果自然成立。闸门可见窗口随之改为 `[:step_index]`，本步观察算
+   「后见」；step 0 窗口为空，实体核查显式早退，不判幻觉。
+7. **每条轨迹以「任务总结」收尾。** 动作流结束后确定性合成一条
+   **没有 `tool_calls` 的 assistant 消息**（`_closing_text`）：内容只从
+   `outcome`（分支 → 处置词表 `_CLOSING_DISPOSITION`）与 unit 级
+   `reflection.rationale.conclusion` 派生，不编新事实。没有收尾的轨迹会教模型
+   「发完最后一个动作就结束」，而真实的助手行为是对用户有个交代
+   （2026-10-15 拍板补入——此前 302/304 条样本全部以动作终结）。
+
+   ⚠️ **INC46（2026-10-15）结论来源改了**：原来是「末可见步的
+   `rationale.conclusion`」。rationale 改成**动作前动机**之后，末步写的是
+   「为什么点这一下」——拿它当收尾，整条消息流会以一句「我打算点开看看」
+   结束。没有 `reflection` 时退回**纯 disposition 话术**，不拿预期冒充结论。
+   处置词表是渲染侧**自己声明**的，与 `executor.branches.BRANCH_LABELS`
+   键集的同步由契约测试盯（不 import executor）。**空轨迹不编总结**：
+   一个可见动作都没有的样本没有可总结的事。
+8. **缺观察的步显式发占位回执，不留悬空 `tool_calls`。** 末步失败没取到
+   观察时也发一条「（本步没有取到页面内容）」的 tool 消息——一个发出去
+   就没回音的 `tool_calls` 是不合法的 function-calling 序列，训练框架读它
+   行为未定义。「没采到」与「页面真空」的区分靠占位文本与 meta 的
+   `missing_observation_count`，不是靠消息缺席（2026-10-15 改，原为
+   「少一条就少发一条」）。
 
 ---
 

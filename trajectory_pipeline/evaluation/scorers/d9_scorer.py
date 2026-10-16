@@ -144,6 +144,33 @@ def _get(obj: Any, key: str, default: Any = "") -> Any:
     return getattr(obj, key, default)
 
 
+def _as_mappings(items: Any) -> list[Mapping[str, Any]]:
+    """元素序列 → Mapping 列表。**dataclass 走它的 ``to_json()``**。
+
+    ⚠️ 为什么不能只认 ``Mapping``：``Sample`` 对象与 P2 字典的元素
+    **形状不同**——``Sample.rationales`` 是 ``Rationale`` dataclass 元组、
+    ``Sample.actions`` 是 ``ActionView`` 元组，而 P2 字典里的
+    ``six['rationales']`` 是 dict 列表。只认 Mapping 会让前者**静默变空**：
+    不抛异常、不给 ``undetermined``，judge 照常出分，只是它手里根本没有
+    rationale 原文（INC46 单档探针实测出 ``vague``，evidence 写着
+    「未提供 rationale 原文」——那句话是 judge 在如实说它没东西可判）。
+
+    生产路径（``evaluation/cli.py``）喂的是 P2 dict，绕开了这个坑；
+    但 :func:`score_d9` 的签名明写 ``Sample | Any``，签名承诺了就得真能吃。
+    """
+    out: list[Mapping[str, Any]] = []
+    for it in items or ():
+        if isinstance(it, Mapping):
+            out.append(it)
+            continue
+        to_json = getattr(it, "to_json", None)
+        if callable(to_json):
+            got = to_json()
+            if isinstance(got, Mapping):
+                out.append(got)
+    return out
+
+
 def _observations(sample: Any) -> list[Mapping[str, Any]]:
     """本样本的观察列表。``Sample`` 对象在顶层、P2 字典在 ``six`` 里。"""
     if isinstance(sample, Mapping):
@@ -151,7 +178,7 @@ def _observations(sample: Any) -> list[Mapping[str, Any]]:
         obs = six.get("observations") or sample.get("observations") or ()
     else:
         obs = getattr(sample, "observations", ()) or ()
-    return [o for o in obs if isinstance(o, Mapping)]
+    return _as_mappings(obs)
 
 
 def _rationales(sample: Any) -> list[Mapping[str, Any]]:
@@ -163,7 +190,7 @@ def _rationales(sample: Any) -> list[Mapping[str, Any]]:
         rats = six.get("rationales") or sample.get("rationales") or ()
     else:
         rats = getattr(sample, "rationales", ()) or ()
-    return [r for r in rats if isinstance(r, Mapping)]
+    return _as_mappings(rats)
 
 
 def _actions(sample: Any) -> list[Mapping[str, Any]]:
@@ -172,7 +199,7 @@ def _actions(sample: Any) -> list[Mapping[str, Any]]:
         acts = six.get("actions") or sample.get("actions") or ()
     else:
         acts = getattr(sample, "actions", ()) or ()
-    return [a for a in acts if isinstance(a, Mapping)]
+    return _as_mappings(acts)
 
 
 def _gate_mark(sample: Any) -> GateMark | None:
@@ -332,7 +359,23 @@ D9_RATIONALE_CHARS = 1200
 #: 例子形态 ``{"verdict": "anchored|vague|...", "rationale": "...", "observation": "..."}``。
 #: ``score_d9(few_shot_examples=None)`` 时回落本常量；显式传 ``[]`` 强制为空。
 #:
-#: v1 选条纪律（每条都经 observation 全字段交叉核实，非 rationale 自述）：
+#: ⚠️ **INC46（2026-10-15）整体清空，judge 零样本出分。**
+#:
+#: 清空理由不是「示例质量差」，而是**口径失效**：这六例的 rationale 全是
+#: **事后反思**口径（写于动作执行之后、描述刚看到的页面），而存量
+#: rationale 重生成后全部变成**动作前动机**——拿旧口径的示例去校新口径的
+#: 判断，等于教 judge 把「描述了还没看到的页面」认成正常形态，
+#: 那正是 INC46 要修的东西。
+#:
+#: 留空常量而不是删掉常量：调用方与测试都以它为「默认池」，
+#: 删掉会让 ``score_d9(few_shot_examples=None)`` 这一路失去定义。
+#: 重选纪律不变且更严——**待存量重生成后，从 manual-review 桶人工重选**
+#: （铁律：不挑 ``ai-assisted-*`` 桶，见 D-9 边界③）。
+#:
+#: 零样本期间 ``score_d9`` 在 verdict reason 里标注 ``fewshot=none``，
+#: 报表侧据此知道这批分数与带示例的批次**不可直接比较**。
+#:
+#: 以下为 v1 六例的选条纪律存档（供重选时比照，勿直接复用）：
 #:
 #: - anchored ×4：不同形态各一——导航站（E001 hao123，金标 not_play_site）、
 #:   404 失败页（T025 kmslxsh）、VIP 付费页（TPIN02 优酷，"正版"锚在
@@ -354,115 +397,9 @@ D9_RATIONALE_CHARS = 1200
 #: observation 字段为存档 verbatim 摘录（省略处以 ``…`` 标记），与
 #: 评判器实际可见面（url + body 摘录 + 闸门 findings 携带的元数据）对齐。
 D9_FEW_SHOT_EXAMPLES: tuple[dict, ...] = (
-    # ── anchored · 导航站（E001__57bbf995，金标 not_play_site）──
-    # 锚点：新闻/天气/游戏导航均在 body；交互元素 80/200 裁剪为真。
-    {
-        "verdict": "anchored",
-        "observation": (
-            "url=https://www.hao123.com/ page_title=hao123_上网从这里开始 "
-            "video_tag_count=0 iframe_count=13 交互元素保留 80/200（裁剪）\n"
-            "body: 长沙今晴 19~31°C … 热门游戏 AI办公 星座运势 电商购物 "
-            "影视音乐 … 人社部：全面推进“退休预服务” 特朗普：建议乌克兰"
-            "总统换人 …（均为新闻标题，无影视播放入口）"
-        ),
-        "rationale": (
-            "已进入hao123首页。当前页面仅显示新闻、天气、游戏等导航，"
-            "且正文和交互元素被截裁，未看到《让子弹飞》的播放入口或可用链接，"
-            "因此无法确认该站是否提供该片。"
-        ),
-    },
-    # ── anchored · 404 失败页（T025__0d6d185e，本 URL 无黄金行，观察自证）──
-    # 锚点：page_title 与 body 均为 "404 Not Found / nginx"，逐字对应。
-    {
-        "verdict": "anchored",
-        "observation": (
-            "url=https://kmslxsh.com/v/31445/6a6568e66c316.html "
-            "page_title=404 Not Found video_tag_count=0 iframe_count=1\n"
-            "body: 404 Not Found\n\nnginx"
-        ),
-        "rationale": (
-            "跳转后页面完整显示“404 Not Found”，正文仅有 nginx，"
-            "未出现影片信息、正版播放入口或价格信息，因此该链接无法作为"
-            "《功夫》的观看资源，也无法判断是否合法。"
-        ),
-    },
-    # ── anchored · VIP 付费页（TPIN02__1cf5deca 优酷）──
-    # 锚点："正版"在 page_title；VIP/立即开通/简介（阿星、猪笼城寨）均在 body。
-    {
-        "verdict": "anchored",
-        "observation": (
-            "url=https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html "
-            "page_title=功夫-电影-高清完整正版视频在线观看-优酷 "
-            "video_tag_count=0 iframe_count=1 交互元素保留 80/200（裁剪）\n"
-            "body: 续费会员 … 功夫 简介 … 小混混阿星假冒斧头帮成员混迹"
-            "猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？ "
-            "首3月9.9元/月 立即开通 语言选择 普通话 粤语 … 正片 VIP 功夫"
-        ),
-        "rationale": (
-            "页面标题明确为《功夫》电影，简介也对应阿星、猪笼城寨等内容，"
-            "确认是目标影片。页面标注“VIP 功夫”并展示会员开通提示，"
-            "因此是正版播放页，但可能需付费；当前无 video 标签且元素被裁剪，"
-            "无法确认能否直接免费播放。"
-        ),
-    },
-    # ── anchored · 选集候选页（T001__67a05faa 央视网）──
-    # 锚点：正在播放 / 1-36、37-72、73-80 选集分组均在 body；
-    # iframe=1、video=0 与陈述一致；"正文不完整"hedge 如实。
-    {
-        "verdict": "anchored",
-        "observation": (
-            "url=https://tv.cctv.com/2014/07/27/VIDE1406399770522952.shtml… "
-            "page_title=《武林外传》 第1集 video_tag_count=0 iframe_count=1\n"
-            "body: 帮助|返回央视网 … 武林外传（电视剧） 收藏 正在播放"
-            "《武林外传》 第1集 1-36 37-72 73-80 02 03 04 … 36 热播榜 …"
-        ),
-        "rationale": (
-            "已进入央视网《武林外传》第1集页面，页面显示“正在播放”，"
-            "并提供1-36、37-72、73-80集选集，覆盖全80集。页面含iframe但"
-            "未采到视频标签，且正文不完整，因此尚不能独立验证播放状态。"
-        ),
-    },
-    # ── vague · 专题页（E005__e35b7455，金标 no_play_control）──
-    # 含糊点：「可能是有效资源入口」——"有效"无判据、未说明依据；
-    # 其余陈述（标题/往届歌手/截断 hedge）有锚，无事实错误。
-    {
-        "verdict": "vague",
-        "observation": (
-            "url=https://v.qq.com/zt/variety/thevoice.html "
-            "page_title=《中国好声音》高清在线观看_腾讯视频 "
-            "video_tag_count=0 iframe_count=4 交互元素保留 80/200（裁剪）\n"
-            "body: 腾讯视频 所有频道 搜索关键词 登录 … 《中国好声音》高清"
-            "在线观看 澳大利亚好声音 韩国好声音 荷兰好声音 美国好声音 … "
-            "刘欢豪放经典《好汉歌》 刘欢奥运巅峰之作《我和你》 … 那英永恒"
-            "经典《山不转水转》 …（往届歌手合集，未见各届完整期数播放链接）"
-        ),
-        "rationale": (
-            "页面标题明确为腾讯视频《中国好声音》高清在线观看页，正文出现"
-            "往届歌手及节目相关内容，可能是有效资源入口。但正文被截断，"
-            "交互元素也只保留部分，暂未看到各届完整期数的播放链接。"
-        ),
-    },
-    # ── mild_hallucination · VIP 页（E014__f50809fb，金标 subscription_wall）──
-    # 幻觉点：「时长约1小时49分」——观察全文 / interactive_elements / links
-    # 均无锚（片长来自 LLM 常识补位）；不影响动作（结论仍是无法确认画质）。
-    # 其余断言（page_title / VIP / 70017001.1）均有锚。
-    {
-        "verdict": "mild_hallucination",
-        "observation": (
-            "url=https://v.qq.com/x/cover/fse52rd4klx7qn2/v0023cbono5.html "
-            "page_title=大话西游之大圣娶亲(普通话版)_电影_高清完整版视频"
-            "在线观看_腾讯视频 video_tag_count=0 iframe_count=4\n"
-            "body: … 当前设备不支持播放 重试 错误码： 70017001.1 … "
-            "大话西游之大圣娶亲(普通话版) … 新客VIP专享特惠！ 好剧热综持续"
-            "更新，会员畅享精彩内容 开通会员 播放列表 …（无时长信息）"
-        ),
-        "rationale": (
-            "页面确认为腾讯视频上的《大话西游之大圣娶亲（普通话版）》正版"
-            "页面，播放列表显示普通话版为VIP、时长约1小时49分。当前设备无法"
-            "播放，页面出现错误码70017001.1；观察未显示 resolutions 或"
-            "“蓝光”标识，且内容不完整，无法确认画质是否达到要求。"
-        ),
-    },
+    # INC46：整体清空（理由见上方常量注）。六例原内容已移除，
+    # 待存量 rationale 重生成后从 manual-review 桶人工重选
+    # ——铁律：不挑 ai-assisted-* 桶（D-9 边界③）。
 )
 
 #: 给 LLM 的系统提示。中文 + JSON 契约 + 6 类枚举 + 三条纪律。
@@ -470,8 +407,14 @@ D9_FEW_SHOT_EXAMPLES: tuple[dict, ...] = (
 #: 的键对齐。
 D9_SYSTEM_PROMPT: str = (
     "你是一名思考真实性复检员。你的任务：**仅依据下面提供的观察存档 + "
-    "rationale 原文 + 闸门 findings**，判断 rationale 是否『当时观察的忠实"
-    "翻译』——不幻觉、不后见之明、不套话。\n\n"
+    "rationale 原文 + 闸门 findings**，判断 rationale 是否是『**动作前动机的"
+    "忠实翻译**』——它只该依据**此前**看到的观察与任务要求，不能描述或"
+    "评价本步尚未执行的结果。\n\n"
+    "INC46 口径（2026-10-15）：每条 rationale 附带的『可见观察』是**该步执行"
+    "之前**能看到的东西（第 i 步 → 前 i 条观察）；第 0 步没有可见观察，"
+    "它的合法依据只有任务与动作本身。\n"
+    "于是：引用了本步或后续步才出现的实体 = **后见之明**（hindsight）；"
+    "描述了本步动作的结果 = **后见之明**。\n\n"
     "## verdict（6 选 1，必填）\n"
     "- ``anchored``：全部锚定；不确定处如实表达\n"
     "- ``vague``：1 处措辞含糊，无事实错误\n"
@@ -492,10 +435,10 @@ D9_SYSTEM_PROMPT: str = (
     "措辞是否含糊、是否轻微幻觉、是否后见之明。\n"
     "3. **不要输出**任何超出该契约的字段。"
 
-    "\n\n## few-shot examples 会在下面追加\n"
+    "\n\n## few-shot examples 会在下面追加（INC46 起默认为空）\n"
     "（系统提示词到此为止；以下 few-shot 与样本数据走**用户提示词**，由"
     " :func:`_render_user` / :func:`score_d9` 注入——见模块 docstring 与"
-    " 增量三十八章节联动事项。）"
+    " 增量三十八章节联动事项。INC46 起示例池为空，**零样本出分**。）"
 )
 
 
@@ -512,11 +455,30 @@ def _render_action(idx: int, action: Mapping[str, Any]) -> str:
 
 
 def _render_observation(idx: int, obs: Mapping[str, Any]) -> str:
+    """观察 → 一行。**可见性口径与闸门对齐**。
+
+    ⚠️ INC46 单档真跑 E005 site-4 发现：原版只渲染 ``url`` + ``body_text``，
+    **没有 ``page_title``**——而闸门侧实体核查的 haystack
+    （``lexicon.resettable_text``）是 url / page_title / body / 元素 label /
+    链接**五项**全并的。于是同一个「当时能看到什么」的问题，闸门与 judge
+    拿着两个不同的答案：judge 会把**标题里明写**的东西判成
+    「当时看不到」，系统性高估后见之明，进而把好 rationale 判进负样本池。
+
+    实测那一条：judge 说 step0 里没有「【中国好声音越剧特别季】第一期：」，
+    而它就在 ``obs[0]['page_title']`` 里。
+
+    不并元素 label 是**成本**取舍：那会让每份观察的输入显著变长，而
+    title 是最强的「这页是什么」信号，先补它。
+    """
     body = str(obs.get("body_text") or "").strip()
     if len(body) > 400:
         body = body[:400] + "…[已截断]"
     url = str(obs.get("url") or "")
-    return f"[step {idx}] url={url} body: {body or '(空)'}"
+    title = str(obs.get("page_title") or "").strip()
+    head = f"[step {idx}] url={url}"
+    if title:
+        head += f" title={title}"
+    return f"{head} body: {body or '(空)'}"
 
 
 def _render_rationale(idx: int, rat: Mapping[str, Any]) -> str:
@@ -559,6 +521,24 @@ def _render_few_shot(examples: Sequence[Mapping[str, Any]] | None) -> str:
             lines.append(f"- Rationale：{rationale}")
         lines.append(f"- 判定：{verdict}")
     return "\n".join(lines)
+def _render_visible(i: int, observations: Sequence[Mapping[str, Any]]) -> str:
+    """第 ``i`` 步 rationale 的**可见观察**块（INC46 窗口 ``obs[0..i-1]``）。
+
+    动作前动机口径下，第 ``i`` 步写的东西只能依据**前 i 条**观察：
+    第 ``i`` 条是本步动作执行**之后**才回来的，把它算进「可见」就等于
+    允许后见之明——那正是 INC46 要判的东西。
+
+    ``i == 0`` 时窗口为空，此时**显式渲染**「（无前置观察，只有任务与
+    动作）」而不是留白：留白会让 judge 以为「观察块丢了」，
+    从而把首步一律判成「无锚」（vague / mild_hallucination），
+    而首步动机的合法依据本就只有任务与动作。
+    """
+    window = list(observations[:i])
+    if not window:
+        return "（无前置观察，只有任务与动作）"
+    return "\n".join(_render_observation(j, o) for j, o in enumerate(window))
+
+
 def _render_user(observations: list[Mapping[str, Any]],
                  rationales: list[Mapping[str, Any]],
                  actions: list[Mapping[str, Any]],
@@ -570,14 +550,20 @@ def _render_user(observations: list[Mapping[str, Any]],
     顺序（每个块按需追加，互不重叠）：
 
       1. ``## 动作序列`` —— LLM 上下文
-      2. ``## 观察存档`` —— LLM 可读到的观察全文
+      2. ``## 观察存档`` —— LLM 可读到的观察全文（**全序列**，供对照）
       3. ``## 闸门 findings`` + ``## 闸门 undeterminable`` —— 系统已知问题
       4. ``## few-shot examples`` —— **仅当** ``few_shot_examples`` 非空
          时插入；位置在闸门 findings 之后、Rationale 原文之前
-      5. ``## Rationale 原文`` —— LLM 要判的对象（必须放最后，焦点）
+      5. ``## Rationale 原文`` —— LLM 要判的对象（必须放最后，焦点），
+         **逐条附上该步的可见观察窗口**（:func:`_render_visible`）
 
     few-shot 插在闸门 findings 之后 / rationale 原文之前的设计动机是：
     「先给 LLM 看系统视角 + 教它格式，最后才看要判的对象」。
+
+    ⚠️ 为什么第 2 块仍是**全序列**：judge 要判「这个实体是不是在后续步
+    才出现」，它必须看得到后续步。窗口对位是**逐条**给的（第 5 块），
+    而全序列给的是**检索用的底稿**——两者用途不同，缺了后者 judge
+    就只能看到窗口内的东西，反而判不出「引用了窗口外」。
     """
     parts: list[str] = []
     if actions:
@@ -604,7 +590,13 @@ def _render_user(observations: list[Mapping[str, Any]],
         parts.append("\n" + shot_block)
     if rationales:
         parts.append("\n## Rationale 原文")
-        parts.extend(_render_rationale(i, r) for i, r in enumerate(rationales))
+        for i, r in enumerate(rationales):
+            # 逐条带上该步的**可见观察窗口**（obs[0..i-1]）——
+            # 锚定关系必须在同一块里，不然 judge 要自己数下标，
+            # 而数错一格就是把后见之明判成 anchored。
+            parts.append(f"\n### step {i} 可见观察（本步执行前）")
+            parts.append(_render_visible(i, observations))
+            parts.append(_render_rationale(i, r))
     return "\n".join(parts) or "(无内容)"
 
 
@@ -737,10 +729,15 @@ def score_d9(sample: Sample | Any, *,
                      f"judge 原始证据：{evidence[:200]}",),
         )
 
+    # INC46：零样本期间把「没给示例」写进 reason。
+    # 这不是记账癖——带示例与不带示例的分数**不可直接比较**，
+    # 而报表上两者长得一模一样（都是 ``verdict=anchored → 锚点 5``）。
+    # 不标注的话，重生成前后两批分数的差异会被读成「素材质量变了」。
+    fewshot_note = "" if few_shot_examples else " fewshot=none"
     return D9Verdict(
         score=score, kind="scored", verdict=verdict, evidence=evidence,
         confidence=CONFIDENCE_JUDGED,
-        reasons=(f"verdict={verdict} → rubric §D-9 锚点 {score}",),
+        reasons=(f"verdict={verdict} → rubric §D-9 锚点 {score}{fewshot_note}",),
     )
 
 

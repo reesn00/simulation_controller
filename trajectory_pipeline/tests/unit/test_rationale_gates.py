@@ -191,22 +191,33 @@ class Test观察充分性:
 # ═══════════════════════════════════════════════════════════════════
 
 
+#: ⚠️ **INC46 起窗口语义变了**：``step_index=i`` 的可见观察是
+#: ``observations[:i]``（**不含本步**），「后见」是 ``observations[i:]``。
+#: 所以「第 1 步、能看到第 0 步的观察」要写成
+#: ``observations=[obs0, obs1], step_index=1``——
+#: 照旧写 ``observations=[obs], step_index=0`` 的话可见窗口是**空的**，
+#: 断言的其实是「首步」那一支，而首步现在一律早退（下面有专门的测试）。
+def _two(a=None, b=None):
+    """两条观察 + ``step_index=1``：第 1 步看得见第 0 条观察。"""
+    return {"observations": [a or _obs(), b or _obs()], "step_index": 1}
+
+
 class Test实体核查:
     def test_引用观察里的内容通过(self):
         r = gates.gate("正文写着「当前设备不支持播放」，需要重试。",
-                       action_tool="goto", observations=[_obs()], exempt="功夫")
+                       action_tool="goto", exempt="功夫", **_two())
         assert r.status == "passed" and r.checked_entities == 1
 
     def test_引用元素label通过(self):
         r = gates.gate("看到了「重试」和「看其他」两个按钮。",
-                       action_tool="goto", observations=[_obs()], exempt="功夫")
+                       action_tool="goto", exempt="功夫", **_two())
         assert r.status == "passed" and r.checked_entities == 2
 
     def test_引用裸域名通过(self):
         """真实文本写 ``v.qq.com`` 而观察存 ``https://www.v.qq.com/...``
         是常态，按全串比会把它们判成幻觉。"""
         r = gates.gate("这是 v.qq.com 的页面。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       exempt="功夫", **_two())
         assert r.status == "passed"
 
     @pytest.mark.parametrize("text,what", [
@@ -215,8 +226,7 @@ class Test实体核查:
         ("对比 www.youtube.com 的做法。", "编造域名"),
     ])
     def test_编造实体判幻觉(self, text, what):
-        r = gates.gate(text, action_tool="goto", observations=[_obs()],
-                       exempt="功夫")
+        r = gates.gate(text, action_tool="goto", exempt="功夫", **_two())
         assert r.status == "failed", f"{what} 没被判幻觉"
         assert [f.kind for f in r.hard_findings] == ["unsupported_entity"]
 
@@ -235,16 +245,88 @@ class Test实体核查:
         assert "功夫" not in (no_title_in_page["page_title"]
                               + no_title_in_page["body_text"])
         r = gates.gate("用户要找《功夫》，这个站看着不像。",
-                       action_tool="goto", observations=[no_title_in_page],
-                       exempt="功夫")
+                       action_tool="goto", exempt="功夫",
+                       **_two(no_title_in_page, no_title_in_page))
         assert r.status == "passed"
         assert r.checked_entities == 1, "片名应当被抽到并走豁免匹配"
 
     def test_没引用实体不等于没幻觉(self):
         """抽不到实体时不判 fail——「没有可核项」≠「全部一致」。"""
         r = gates.gate("这个页面看起来不太对。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       exempt="功夫", **_two())
         assert r.status == "passed" and r.checked_entities == 0
+
+    # ── INC46：合成实体（「A/B」合并写法）─────────────────────────
+
+    def test_合成实体每段都在观察里通过(self):
+        """INC46 真跑 E005 site-4 撞出来的形态。
+
+        观察里 ``page_title`` 与正文**各出现一次**「越剧特别版」「越剧
+        特别季」，模型合并写成 ``《…越剧特别版/越剧特别季》``。整串子串
+        匹配必然落空——观察里没有那个斜杠串——于是判成幻觉。
+        """
+        obs = _obs(page_title="中国好声音——越剧特别版【中国好声音越剧特别季】",
+                   body_text="越剧特别版 3.9万弹幕 简介：越剧特别季延续")
+        r = gates.gate("这是《中国好声音——越剧特别版/越剧特别季》的页面。",
+                       action_tool="goto", exempt="功夫", **_two(obs, obs))
+        assert r.status == "passed", "合并写法不该判幻觉"
+
+    def test_合成实体少一段命中仍判幻觉(self):
+        """**收紧的方向没变**：只看到其中一段，另一段是编的。
+
+        这条是防「拆开逐段核」退化成「任一段命中即通过」的护栏——
+        那种写法会把「看到 A 就编个 B」全放过。
+        """
+        obs = _obs(page_title="越剧特别版", body_text="越剧特别版 3.9万弹幕")
+        assert "越剧特别季" not in (obs["page_title"] + obs["body_text"])
+        r = gates.gate("这是《越剧特别版/越剧特别季》的页面。",
+                       action_tool="goto", exempt="功夫", **_two(obs, obs))
+        assert r.status == "failed", "只命中一段时仍应判幻觉"
+        assert [f.kind for f in r.hard_findings] == ["unsupported_entity"]
+
+    def test_逗号不是合成分隔符(self):
+        """「发生了错误，请稍后再试」是**一句话**，不是两个并列实体。
+
+        逗号若进了分隔符表，一句编造的话会被拆成若干短片段逐段核，
+        而短片段极易意外命中——核查就被放空了。
+        """
+        assert lexicon.split_composite("发生了错误，请稍后再试") == ()
+        obs = _obs(body_text="电视剧 电影 首页")
+        r = gates.gate("正文写着「发生了错误，请稍后再试」。",
+                       action_tool="goto", exempt="功夫", **_two(obs, obs))
+        assert r.status == "failed"
+
+    # ── INC46：step 0 空窗口 ──────────────────────────────────────
+
+    def test_首步无历史观察不判幻觉(self):
+        """**全链路最容易误伤的位置**，必须显式钉住。
+
+        首步动机的合法依据只有 ``user_prompt`` / ``target_title``；
+        可见窗口为空时若走「查不到 → 判幻觉」，每一条 goto 首步都会被判死。
+        """
+        r = gates.gate("先在搜索结果里挑一个像正片的链接点进去。",
+                       action_tool="goto", observations=[_obs()],
+                       step_index=0, exempt="功夫")
+        assert r.status == "passed"
+        assert not r.hard_findings
+        assert any("首步" in u for u in r.undeterminable)
+
+    def test_首步引用具体实体仍判后见之明(self):
+        """空窗口**不等于**放行一切：首步没有任何观察来源，
+        引用具体页面实体就是编的——这一支要判 temporal_leak。"""
+        r = gates.gate("页面上有「立即观看」按钮，点它。", action_tool="goto",
+                       observations=[_obs(page_title="播放页",
+                                          body_text="「立即观看」")],
+                       step_index=0, exempt="功夫")
+        assert r.status == "failed"
+        assert "temporal_leak" in [f.kind for f in r.hard_findings]
+
+    def test_首步引用片名是豁免域不判泄漏(self):
+        """豁免域在时序核查里同样生效——片名是任务给的，不是看来的。"""
+        no_title = _obs(page_title="腾讯视频", body_text="电视剧 电影 首页")
+        r = gates.gate("用户要找《功夫》，点进去看看。", action_tool="goto",
+                       observations=[no_title], step_index=0, exempt="功夫")
+        assert r.status == "passed"
 
     # ── 最重的一条 ────────────────────────────────────────────────
 
@@ -258,20 +340,36 @@ class Test实体核查:
         **不得判成幻觉**——判『不可判定』」。
 
         这条是 §5.5 最贵教训的落点：iqiyi 播放页 ``video=1`` 被判「否」，
-        模型把**采集失败**讲成了通顺的错结论。"""
+        模型把**采集失败**讲成了通顺的错结论。
+
+        ⚠️ 窗口里**必须真有一份**不完整的观察：INC46 起 ``step_index=1``
+        的可见窗口是 ``obs[:1]``，所以把不完整那份放在第 0 位。
+        """
         r = gates.gate("页面上有「立即观看」按钮，确认可以播放。",
-                       action_tool="goto", observations=[_obs(**over)],
-                       exempt="功夫")
+                       action_tool="goto", exempt="功夫",
+                       **_two(_obs(**over)))
         assert r.status == "passed", "观察不充分时判了幻觉"
         assert r.undeterminable, "不可判定的原因必须记下来"
 
     def test_一份完整观察就能定案(self):
-        """任一份完整观察即可定案——被裁的那份**不能**把结论拖成不可判定。"""
+        """任一份完整观察即可定案——被裁的那份**不能**把结论拖成不可判定。
+
+        INC46：可见窗口要**同时**含两份（被裁的 + 完整的），
+        所以是三份观察配 ``step_index=2``。
+        """
+        obs = [_obs(truncated=True), _obs(), _obs()]
+        r = gates.gate("页面上有「立即观看」按钮。", action_tool="goto",
+                       observations=obs, step_index=2, exempt="功夫")
+        assert r.status == "failed"
+        assert "unsupported_entity" in [f.kind for f in r.hard_findings]
+
+    def test_可见窗口里只有裁过的那份就判不了(self):
+        """反过来仍成立（§7.1）：窗口里一份完整的都没有 → 不定案。"""
         obs = [_obs(truncated=True), _obs()]
         r = gates.gate("页面上有「立即观看」按钮。", action_tool="goto",
                        observations=obs, step_index=1, exempt="功夫")
-        assert r.status == "failed"
-        assert "unsupported_entity" in [f.kind for f in r.hard_findings]
+        assert r.status == "passed"
+        assert r.undeterminable
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -282,7 +380,7 @@ class Test实体核查:
 class Test因果核查:
     def test_提到别的动作判错(self):
         r = gates.gate("我要 click 那个按钮。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       observations=[_obs()], exempt="功夫", step_index=1)
         assert r.status == "failed"
         assert [f.kind for f in r.hard_findings] == ["action_mismatch"]
 
@@ -290,12 +388,12 @@ class Test因果核查:
         """thinking 里不提动作名是完全正常的写法。**要求必须提到**
         会把好 thinking 判成错。"""
         r = gates.gate("正文写着「当前设备不支持播放」。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       exempt="功夫", **_two())
         assert r.status == "passed"
 
     def test_提到当前动作不算错(self):
         r = gates.gate("刚 goto 过来的页面有问题。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       exempt="功夫", **_two())
         assert r.status == "passed"
 
 
@@ -313,7 +411,22 @@ class Test时序核查:
                      interactive_elements=[{"tag": "div", "label": "正在播放"}],
                      elements_total=1)
         r = gates.gate("看到「正在播放」了。", action_tool="goto",
-                       observations=[_obs(), later], step_index=0,
+                       observations=[_obs(), later], step_index=1,
+                       exempt="功夫")
+        assert r.status == "failed"
+        assert "temporal_leak" in [f.kind for f in r.hard_findings]
+
+    def test_引用本步观察判后见之明(self):
+        """**INC46 的核心正例**：本步观察此刻还不存在。
+
+        旧口径下 ``obs[i]`` 算「当时可见」，于是这条被判通过——
+        那正是「训练教未卜先知」的成因。现在它必须判 temporal_leak。
+        """
+        this_step = _obs(page_title="播放页", body_text="「正在播放」进度条",
+                         interactive_elements=[{"tag": "div", "label": "正在播放"}],
+                         elements_total=1)
+        r = gates.gate("看到「正在播放」了。", action_tool="click",
+                       observations=[_obs(), this_step], step_index=1,
                        exempt="功夫")
         assert r.status == "failed"
         assert "temporal_leak" in [f.kind for f in r.hard_findings]
@@ -321,14 +434,18 @@ class Test时序核查:
     def test_前置步就有的实体不算后见之明(self):
         later = _obs(page_title="别的页")
         r = gates.gate("正文写着「当前设备不支持播放」。", action_tool="goto",
-                       observations=[_obs(), later], step_index=0,
+                       observations=[_obs(), later], step_index=1,
                        exempt="功夫")
         assert r.status == "passed"
 
     def test_无后续步记不适用而不是通过(self):
-        """「没有可查项」≠「查过了没问题」。"""
+        """「没有可查项」≠「查过了没问题」。
+
+        INC46：``step_index`` 走到观察序列**末尾**时才没有「后续步
+        （含本步）」——此时可见窗口是全部观察。
+        """
         r = gates.gate("正文写着「当前设备不支持播放」。", action_tool="goto",
-                       observations=[_obs()], step_index=0, exempt="功夫")
+                       observations=[_obs()], step_index=1, exempt="功夫")
         assert any("无后续步" in u for u in r.undeterminable)
 
     def test_后续步不充分时不判后见之明(self):
@@ -337,7 +454,7 @@ class Test时序核查:
                      interactive_elements=[{"tag": "div", "label": "正在播放"}],
                      elements_total=1)
         r = gates.gate("看到「正在播放」了。", action_tool="goto",
-                       observations=[_obs(), later], step_index=0,
+                       observations=[_obs(), later], step_index=1,
                        exempt="功夫")
         assert r.status == "passed"
         assert any("后续步" in u for u in r.undeterminable)
@@ -351,7 +468,7 @@ class Test时序核查:
 class Test软信号:
     def test_通篇套话是软发现(self):
         r = gates.gate("无法确认，需要进一步核实。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       observations=[_obs()], exempt="功夫", step_index=1)
         kinds = [f.kind for f in r.findings]
         assert "boilerplate_only" in kinds
         assert r.status == "passed", "软发现不该让闸门 fail"
@@ -359,13 +476,13 @@ class Test软信号:
 
     def test_后见之明措辞是软发现(self):
         r = gates.gate("不出所料。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       observations=[_obs()], exempt="功夫", step_index=1)
         assert any(f.kind == "hindsight" for f in r.findings)
         assert r.status == "passed"
 
     def test_有具体实体就不算套话(self):
         r = gates.gate("正文写着「当前设备不支持播放」，无法确认能否播放。",
-                       action_tool="goto", observations=[_obs()], exempt="功夫")
+                       action_tool="goto", exempt="功夫", **_two())
         assert not [f for f in r.findings if f.kind == "boilerplate_only"]
 
 
@@ -377,12 +494,12 @@ class Test汇总:
 
     def test_可序列化(self):
         r = gates.gate("页面上有「立即观看」按钮。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       exempt="功夫", **_two())
         json.dumps(r.to_json(), ensure_ascii=False)
 
     def test_多处判错仍是一条汇总(self):
         r = gates.gate("我要 click 那个「立即观看」按钮。", action_tool="goto",
-                       observations=[_obs()], exempt="功夫")
+                       exempt="功夫", **_two())
         kinds = {f.kind for f in r.hard_findings}
         assert kinds == {"action_mismatch", "unsupported_entity"}
 
@@ -413,8 +530,11 @@ class TestOnRealObservations:
                       for e in (obs[-1].get("interactive_elements") or ())]
             labels = [x for x in labels if x][:3]
             for label in labels:
+                # INC46：``step_index=len(obs)`` 让**全部**观察都在可见窗口里。
+                # 用 ``len(obs)-1`` 的话末份观察被排除，而 label 正是从它取的
+                # ——那样测的是「引用了刚拿到的观察」，恒判后见之明。
                 r = gates.gate(f"页面上有「{label}」。", action_tool="goto",
-                               observations=obs, step_index=len(obs) - 1,
+                               observations=obs, step_index=len(obs),
                                exempt=s.get("title", ""))
                 assert "unsupported_entity" not in [
                     f.kind for f in r.hard_findings], (

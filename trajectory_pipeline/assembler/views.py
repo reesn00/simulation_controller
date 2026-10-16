@@ -26,12 +26,16 @@
    ``tool_call_id`` 让模型学到「这条观察是对**那个**动作的回应」。
    退成 user 消息就把关联抹平了，而关联正是 agent 轨迹的训练信号。
 
-2. **``new_tab`` 保留在轨迹里，但工具声明里不出现。**
-   ``origin == "infrastructure"`` 的动作是执行器自己的会话隔离，
-   模型永远不该输出它——但它是真实发生过的动作，删掉就无法回放
-   （与 ``executor/actions.py`` 的 ``StepLog`` 同款理由）。
-   **可见性由 :meth:`ToolSpec.visible_to_model` 唯一决定**，本模块
-   不重新判断：``tools`` 声明里按它过滤，动作流里按原样保留。
+2. **``origin == "infrastructure"`` 的步整步不进消息视图。**
+   ``new_tab`` 是执行器自己的会话隔离动作，模型永远不该输出它。
+   早先口径是「保留在动作流里，只从工具声明里滤掉」，理由是可回放——
+   但训练视图的任务是教模型**它该做的动作**：让模型看到一条它永远
+   不会发、也不该发的 assistant ``tool_calls``，就是教它输出越权动作
+   （2026-10-15 拍板反转）。可回放的完整动作流仍在 P2 的
+   ``six.actions`` 里原样留着，消息视图按 :func:`_visible_steps`
+   **整步跳过**（动作连同它的观察与思考），``meta`` 的
+   ``infrastructure_actions`` 留痕。工具声明侧照旧由
+   :meth:`ToolSpec.visible_to_model` 唯一决定。
 
 3. **``click`` 的语义目标并进 ``arguments``。**
    ``ActionView`` 是 ``{tool, params, target, origin}`` 四字段，而
@@ -57,6 +61,28 @@
    meta 记 ``rationale_missing``——「流水线没长出来」与「模型这轮没说话」
    的区分靠这个标记（与 :class:`GateMark` 的 ``not_run`` 同一思路）。
    **绝不补占位文字**：编一段思考会直接污染 CoT SFT。
+   查找按 ``step_index`` 建字典（2026-10-15 改），不按列表位置——
+   ``align_rationales`` 产出的是**稀疏**序列（中间步没写成就跳号），
+   按位置取会在缺一条时整体串位，串位的思考会被时序核查当成幻觉。
+
+7. **每条轨迹以「任务总结」收尾。**
+   动作流结束后确定性合成一条**没有 ``tool_calls`` 的 assistant 消息**
+   （:func:`_closing_text`）：内容只从 ``outcome``（分支 → 处置词表
+   :data:`_CLOSING_DISPOSITION`）与末可见步的 ``rationale.conclusion``
+   派生，不编新事实。没有收尾的轨迹会教模型「发完最后一个动作就结束」，
+   而真实的助手行为是对用户有个交代（2026-10-15 拍板补入——此前
+   302/304 条样本全部以动作终结）。处置词表是本模块**自己声明**的，
+   与 ``executor.branches.BRANCH_LABELS`` 的键集同步由契约测试盯
+   （不 import executor，交接面是格式不是 import）。
+   **空轨迹不编总结**：一个可见动作都没有的样本没有可总结的事。
+
+8. **缺观察的步显式发占位回执，不留悬空 ``tool_calls``。**
+   末步失败没取到观察时，也发一条「（本步没有取到页面内容）」的
+   tool 消息——一个发出去就没回音的 ``tool_calls`` 是不合法的
+   function-calling 序列，训练框架读它会行为未定义。「没采到」与
+   「页面真空」的区分靠这句占位文本与 meta 的
+   ``missing_observation_count``，不是靠消息缺席（2026-10-15 改，
+   原为「少一条就少发一条」）。
 """
 
 from __future__ import annotations
@@ -64,7 +90,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping
 
 from trajectory_pipeline.storage import (
     DEFAULT_VIEWS_DIRNAME,
@@ -105,6 +131,12 @@ def render_observation(obs: Mapping[str, Any]) -> str:
     （这正是 fail-closed 在训练侧的对应物）。
     """
     if not obs:
+        return "（本步没有取到页面内容）"
+
+    # P2 的缺失占位（schema.MISSING_OBSERVATION）：真值为真（否则会被
+    # 下游 ``if o`` 真值过滤再次丢掉），但语义就是「没采到」——渲染成
+    # 与空观察同一句，不把内部占位结构露给模型。
+    if "observation_missing" in (obs.get("degraded") or ()):
         return "（本步没有取到页面内容）"
 
     parts: list[str] = []
@@ -196,6 +228,38 @@ def _visible_tools(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
 # ── messages 视图（通用形态）──────────────────────────────────────
 
 
+def _visible_steps(
+    six: Mapping[str, Any],
+) -> tuple[list[tuple[int, Mapping[str, Any], Any, Any]], list[Any]]:
+    """模型看得见的步：``(step_index, action, observation, rationale)``。
+
+    - **infrastructure 整步跳过**（模块 docstring 第 2 条）：动作连同它
+      那一位的观察与思考一起不进消息视图——原地留着只会配到别的
+      动作上（那正是 2026-10-15 E005 错位的形态）。
+    - **rationale 按 ``step_index`` 查找**（第 6 条）：稀疏序列按列表
+      位置取会在中间缺一条时整体串位。
+    - 观察缺位时给 ``None``，渲染侧显式发占位回执（第 8 条）。
+
+    返回 ``(可见步, 多余观察)``——观察比动作多理论上不该发生，
+    真发生时多出来的照实保留：丢掉等于让模型看不到
+    「动作发完了但观察还没回来」。
+    """
+    actions = list(six.get("actions") or ())
+    observations = list(six.get("observations") or [])
+    rationales = {
+        int(r.get("step_index", -1)): r
+        for r in (six.get("rationales") or ())
+        if isinstance(r, Mapping)
+    }
+    steps: list[tuple[int, Mapping[str, Any], Any, Any]] = []
+    for i, act in enumerate(actions):
+        if act.get("origin") == "infrastructure":
+            continue
+        obs = observations[i] if i < len(observations) else None
+        steps.append((i, act, obs, rationales.get(i)))
+    return steps, observations[len(actions) :]
+
+
 def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     """通用 ``{role, content}`` 序列。
 
@@ -216,34 +280,35 @@ def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
         msgs.append({"role": "user", "content": user})
     # 空 user_prompt **不发**空消息——见模块 docstring 第 4 条。
 
-    actions = list(six.get("actions") or ())
-    observations = list(six.get("observations") or [])
-    rationales = list(six.get("rationales") or ())
-    # 动作与观察一一配对；观察可能比动作少（末步失败没取到观察）
-    for i, act in enumerate(actions):
-        content = _rationale_text(rationales, i)
+    steps, extra = _visible_steps(six)
+    for _, act, obs, rationale in steps:
         msgs.append(
             {
                 "role": "assistant",
-                "content": content + _action_line(act),
+                "content": _rationale_text(rationale) + _action_line(act),
             }
         )
-        if i < len(observations):
-            msgs.append(
-                {"role": "user", "content": render_observation(observations[i])}
-            )
-    # 观察多于动作（理论上不该发生）时，多出来的照实补上——
-    # 丢掉它们等于让模型看不到「动作发完了但观察还没回来」。
-    for obs in observations[len(actions) :]:
+        # 缺观察也显式发占位回执，不留没有回音的动作——
+        # 见模块 docstring 第 8 条。
+        msgs.append({"role": "user", "content": render_observation(obs or {})})
+    for obs in extra:
         msgs.append({"role": "user", "content": render_observation(obs)})
+
+    # 任务总结收尾（第 7 条）；空轨迹不编总结。
+    closing = _closing_text(sample, steps)
+    if closing is not None:
+        msgs.append({"role": "assistant", "content": closing})
     return msgs
 
 
-def _rationale_text(rationales: Sequence[Any], index: int) -> str:
-    """第 ``index`` 步的思考+结论，渲染成 assistant 消息的**前缀**。
+def _rationale_text(rationale: Any) -> str:
+    """一步的思考+结论，渲染成 assistant 消息的**前缀**。
 
-    2026-10-10 起逐步对齐（原实现只给第 0 步取那条单值）：
-    执行期是**逐���**生成的，只渲染第一步等于把后面的思考全丢掉。
+    入参是**按 ``step_index`` 查到的那一条**（可为 ``None``）——
+    2026-10-15 起由 :func:`_visible_steps` 按 ``step_index`` 建字典
+    查找，不再按列表位置取：``align_rationales`` 的产出是**稀疏**
+    序列（中间步没写成就跳号），按位置取会在缺一条时整体串位，
+    串位的思考会被时序核查当成幻觉。
 
     **缺一条不补空串**：``status != "written"`` 时返回空串，
     于是该步的 assistant 消息只有动作——「模型这轮没说话」与
@@ -251,15 +316,88 @@ def _rationale_text(rationales: Sequence[Any], index: int) -> str:
     ``meta`` 视图的 ``rationale_missing`` 单独可见，
     而在这里编一段占位思考会直接污染 CoT SFT。
     """
-    if index >= len(rationales):
+    if not isinstance(rationale, Mapping) or rationale.get("status") != "written":
         return ""
-    r = rationales[index]
-    if not isinstance(r, Mapping) or r.get("status") != "written":
-        return ""
-    text = str(r.get("text") or "").strip()
-    conclusion = str(r.get("conclusion") or "").strip()
+    text = str(rationale.get("text") or "").strip()
+    conclusion = str(rationale.get("conclusion") or "").strip()
     parts = [p for p in (text, conclusion) if p]
     return ("\n".join(parts) + "\n") if parts else ""
+
+
+# ── 收尾总结（模块 docstring 第 7 条）──────────────────────────────
+
+#: 分支 → 收尾处置话术。**本模块自己声明**，与
+#: ``executor.branches.BRANCH_LABELS`` 键集的同步由契约测试盯——
+#: import executor 会把 P3 的重建焊死在执行端当前版本上
+#: （与 ``schema.py`` 不 import executor 同一条纪律）。
+_CLOSING_DISPOSITION: dict[str, str] = {
+    "not_play_site": "不是播放站点，排除",
+    "unreachable_hard": "导航失败，排除",
+    "no_play_control": "页面上没有播放控件，排除",
+    "trailer_only": "只有预告片，没有正片资源，排除",
+    "trailer_suspect": "疑似预告，判不准，不予记录",
+    "component_unverified": "点开后没有可验证的播放组件，排除",
+    "player_unverified": "有播放组件但确认不了能不能用，标记未验证，不入正式记录",
+    "subscription_wall": "有播放页但需订阅/付费，排除",
+    "unresolved": "无法确认能否播放，不予记录",
+    "login_required": "登录后可免费观看（无登录态），排除",
+    "blocked": "地区限制/验证码/反爬阻断，排除",
+    "broken": "内容损坏，排除",
+    "partial_free": "完整内容需付费，排除",
+    # deprecated 分支：老存档里仍有，新执行端不再产出。
+    "login_wall_or_blocked": "登录墙/验证码/地区限制，排除",
+}
+
+
+def _closing_text(
+    sample: Mapping[str, Any],
+    steps: list[tuple[int, Mapping[str, Any], Any, Any]],
+) -> str | None:
+    """动作流结束后的「任务总结」。**只派生，不编新事实**。
+
+    - **空轨迹不编总结**：没有可见的模型动作，就没有可总结的事；
+    - 处置只看 ``outcome``：``branch=None`` 记成功（带播放页地址），
+      已知分支查 :data:`_CLOSING_DISPOSITION`，**未知分支照实写出
+      分支名**——词表没跟上的新分支在这里不能静默消失；
+    - 结论来自 unit 级 :attr:`reflection <Sample.reflection>` 的
+      ``rationale.conclusion``——那是模型自己写下的总结，不是本模块编的。
+
+    ⚠️ INC46（2026-10-15）：结论来源从「末步 ``rationale.conclusion``」
+    改成 ``reflection``。旧口径下末步 rationale 是**事后反思**，读它的
+    conclusion 当收尾恰好对得上；改成**动作前动机**之后，末步 rationale
+    写的是「为什么点这一下」——拿它当收尾，整条消息流就会以一句
+    「我打算点开看看」结束，而真正的结论没人说。
+
+    没有 reflection 时退回**纯 disposition 话术**，不拿末步 rationale
+    顶替——顶替就是拿「预期」冒充「结论」，比没有更坏。
+    """
+    if not steps:
+        return None
+    conclusion = ""
+    reflection = sample.get("reflection")
+    if isinstance(reflection, Mapping):
+        rat = reflection.get("rationale")
+        if isinstance(rat, Mapping):
+            conclusion = str(rat.get("conclusion") or "").strip()
+
+    outcome = sample.get("outcome")
+    if not isinstance(outcome, Mapping):
+        # 搜索单元没有 outcome——它的「总结」就是进入下一步。
+        disposition = "接下来逐一打开候选站点核验"
+    else:
+        branch = outcome.get("branch")
+        if branch is None:
+            url = str(outcome.get("play_page_url") or outcome.get("url") or "")
+            disposition = (
+                f"记录该网址为可播放资源：{url}" if url else "记录为可播放资源"
+            )
+        else:
+            disposition = _CLOSING_DISPOSITION.get(str(branch)) or (
+                f"不予记录（分支：{branch}）"
+            )
+    if conclusion:
+        return f"任务总结：{conclusion} 处置：{disposition}。"
+    return f"任务总结：{disposition}。"
 
 
 def _action_line(act: Mapping[str, Any]) -> str:
@@ -280,10 +418,12 @@ def _action_line(act: Mapping[str, Any]) -> str:
 def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     """OpenAI function-calling 形态。
 
-    ``tool_call_id`` 由 **step 序号** 派生（``call_0`` / ``call_1``…），
+    ``tool_call_id`` 由 **可见步序号** 派生（``call_0`` / ``call_1``…），
     不取自 P1 的任何字段——P1 里没有可用的调用 id，而 seq 是**确定**的，
     不是猜的（与 :mod:`~trajectory_pipeline.assembler.builder` 用
     ``sample_id`` 反查源存档同款：能从数据算出来的不另找来源）。
+    infrastructure 步整步跳过后序号仍**稠密**——消息流里不存在的
+    动作不该占号。
     """
     six = sample.get("six") or {}
     msgs: list[dict[str, Any]] = []
@@ -295,24 +435,20 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     if user:
         msgs.append({"role": "user", "content": user})
 
-    actions = list(six.get("actions") or ())
-    observations = list(six.get("observations") or [])
-    rationales = list(six.get("rationales") or ())
+    steps, extra = _visible_steps(six)
 
-    for i, act in enumerate(actions):
-        # 思考段只挂在**第一步**上：它解释的是「为什么开始找」，
-        # 而后续每步的思考在模块 4 落地后会逐步生成。
-        # 思考段**逐步对齐**（2026-10-10 改，原实现只挂第一步）。
+    for seq, (_, act, obs, rationale) in enumerate(steps):
+        # 思考段逐步对齐，按 ``step_index`` 查找（模块 docstring 第 6 条）。
         # 少一步就想清一步——只挂第一步等于把后面的思考全丢掉，而模型
         # 要学的恰恰是「上一步看到什么，才决定这一步做什么」。
-        text = _rationale_text(rationales, i).strip() or None
+        text = _rationale_text(rationale).strip() or None
         msgs.append(
             {
                 "role": "assistant",
                 "content": text,
                 "tool_calls": [
                     {
-                        "id": f"call_{i}",
+                        "id": f"call_{seq}",
                         "type": "function",
                         "function": {
                             "name": str(act.get("tool") or ""),
@@ -323,15 +459,15 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
                 ],
             }
         )
-        if i < len(observations):
-            msgs.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": f"call_{i}",
-                    "content": render_observation(observations[i]),
-                }
-            )
-    for j, obs in enumerate(observations[len(actions) :], start=len(actions)):
+        # 缺观察也显式发占位回执，不留悬空 tool_calls（第 8 条）。
+        msgs.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"call_{seq}",
+                "content": render_observation(obs or {}),
+            }
+        )
+    for j, obs in enumerate(extra, start=len(steps)):
         msgs.append(
             {
                 "role": "tool",
@@ -339,6 +475,11 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "content": render_observation(obs),
             }
         )
+
+    # 任务总结收尾：没有 tool_calls 的 assistant 消息（第 7 条）。
+    closing = _closing_text(sample, steps)
+    if closing is not None:
+        msgs.append({"role": "assistant", "content": closing})
     return msgs
 
 
@@ -380,6 +521,15 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
     infra = [
         str(a.get("tool") or "") for a in actions if a.get("origin") == "infrastructure"
     ]
+    # 缺失观察占位（schema.MISSING_OBSERVATION）的计数。「没采到」的步
+    # 在消息视图里渲染成占位回执（第 8 条），批次筛选时要能数出来——
+    # 占位多的样本观察面薄，复核优先级该高。
+    missing_obs = sum(
+        1
+        for o in observations
+        if isinstance(o, Mapping) and "observation_missing" in (o.get("degraded") or ())
+    )
+    steps, _ = _visible_steps(six)
 
     return {
         "sample_id": sample.get("sample_id", ""),
@@ -395,17 +545,24 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         # 可回放性：动作与观察必须成对（末步失败允许少一个观察）
         "step_count": len(actions),
         "observation_count": len(observations),
+        "missing_observation_count": missing_obs,
         "infrastructure_actions": infra,
-        # 成对性自查：动作多于观察说明末步没取到观察，训练侧会看到
-        # 一个「发出去但没回音」的动作——那是真实轨迹的一部分，不修。
+        # 成对性自查：动作多于观察说明末步没取到观察。消息视图会显式
+        # 发占位回执（不留悬空 tool_calls，第 8 条），但批次筛选仍要
+        # 能一眼分出「观察齐全」与「有步没采到」。
         "observation_complete": len(observations) >= len(actions),
+        # 是否带收尾总结（第 7 条）。空轨迹不编总结——False 即
+        # 「这条一个可见模型动作都没有」。
+        "closing_summary": _closing_text(sample, steps) is not None,
         # 思考的覆盖：``rationale_missing`` 只说「一条都没有」，
         # 而「写了 2/3 步」在批次筛选时同样要看得见——**逐条列出来**，
         # 别合成一个计数：合成之后就分不出「缺中间那步」与「缺最后那步」，
         # 而两者的处置不同（前者会让后面的时序核查失去上下文）。
+        # ``step_index`` 取条目自带值，不按列表位置——产出是稀疏序列。
         "rationale_steps": [
-            {"step_index": i, "status": str(r.get("status") or "")}
-            for i, r in enumerate(six.get("rationales") or ())
+            {"step_index": int(r.get("step_index", -1)),
+             "status": str(r.get("status") or "")}
+            for r in (six.get("rationales") or ())
             if isinstance(r, Mapping)
         ],
     }

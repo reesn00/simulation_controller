@@ -84,11 +84,22 @@ OBS_OK = {
 ACTION_CLICK = {"tool": "click", "params": {},
                 "target": {"tag": "a", "label": "立即播放", "ref": "e7"}}
 
+#: 一条前置步（``(动作, 观察)`` 二元组）。INC46 起 ``write_one`` **不接**
+#: 本步观察，所以「提示词里有没有观察」一律走 ``history``。
+ACTION_GOTO = {"tool": "goto", "params": {"url": "https://v.qq.com/x/cover/abc"}}
+HISTORY_ONE: list = [(ACTION_GOTO, OBS_OK)]
+
 
 def _write(client, **kw):
-    payload = {"action": ACTION_CLICK, "observation": OBS_OK}
+    payload = {"action": ACTION_CLICK, "history": list(HISTORY_ONE)}
     payload.update(kw)
     return writer.write_one(client, **payload)
+
+
+def _reflect(client, **kw):
+    payload = {"history": list(HISTORY_ONE)}
+    payload.update(kw)
+    return writer.write_reflection(client, **payload)
 
 
 def _last_user_payload(client) -> dict:
@@ -299,10 +310,12 @@ class TestPromptContent:
         """§5.5 的第一道防线：模型是**当场**编故事的，闸门是事后才发现。
 
         所以「这份观察不完整」必须**发出去**，而不是等闸门回来再判。
+
+        ⚠️ INC46：没有本步观察可判了，这一条改指**最后一条历史观察**。
         """
         c = _client(_ok())
-        _write(c, observation=dict(OBS_OK, degraded=["body_text"],
-                                   interactive_elements=[]))
+        _write(c, history=[(ACTION_GOTO, dict(OBS_OK, degraded=["body_text"],
+                                              interactive_elements=[]))])
         payload = _last_user_payload(c)
         assert payload["observation_completeness"].startswith("不完整")
         assert "body_text" in payload["observation_completeness"]
@@ -312,32 +325,72 @@ class TestPromptContent:
         _write(c)
         assert _last_user_payload(c)["observation_completeness"] == "完整"
 
+    def test_本步观察绝不进提示词(self):
+        """INC46 的核心断言：**当前观察没有入口**。
+
+        老签名带 ``observation=`` 参数，喂了它模型就会描述一个还没看到的
+        页面。现在这个参数**不存在**——用 ``TypeError`` 钉死，
+        因为「调用方仍在传旧参数」是最容易复发的形态。
+        """
+        c = _client(_ok())
+        with pytest.raises(TypeError):
+            writer.write_one(c, action=ACTION_CLICK, observation=OBS_OK)
+        # error 参数同样已删除（动作没执行谈不上失败）
+        with pytest.raises(TypeError):
+            writer.write_one(c, action=ACTION_CLICK, error="导航超时")
+
     def test_正文超预算时标出被截(self):
+        """历史观察按 :data:`HISTORY_BODY_CHARS` 截，且**记账**（body_truncated）。"""
         c = _client(_ok())
-        _write(c, observation=dict(OBS_OK, body_text="很长的正文" * 400))
-        obs = _last_user_payload(c)["observation"]
+        _write(c, history=[(ACTION_GOTO, dict(OBS_OK, body_text="很长的正文" * 400))])
+        obs = _last_user_payload(c)["previous_actions"][-1]["observation"]
         assert obs["body_truncated"] is True
-        assert len(obs["body_text"]) == writer.BODY_CHARS
-        assert obs["body_total_chars"] == 400 * 5
+        assert len(obs["body_text"]) == writer.HISTORY_BODY_CHARS
 
-    def test_元素超预算时标出裁剪(self):
+    def test_元素超预算时只报计数(self):
+        """瘦身形状**不带** elements 明细——只报 ``elements_total``。
+
+        带明细会让第 5 步之后的 prompt 膨胀到超时，而超时把整批站点
+        记成 ``unresolved``（采集故障写成业务结论）。
+        """
         c = _client(_ok())
-        _write(c, observation=dict(OBS_OK, interactive_elements=[
-            {"tag": "a", "label": f"e{i}", "ref": f"r{i}"} for i in range(50)]))
-        obs = _last_user_payload(c)["observation"]
+        _write(c, history=[(ACTION_GOTO, dict(OBS_OK, interactive_elements=[
+            {"tag": "a", "label": f"e{i}", "ref": f"r{i}"} for i in range(50)]))])
+        obs = _last_user_payload(c)["previous_actions"][-1]["observation"]
         assert obs["elements_total"] == 50
-        assert len(obs["interactive_elements"]) == writer.ELEMENTS
-        assert obs["elements_kept"] == writer.ELEMENTS
+        assert "interactive_elements" not in obs
+        assert "links" not in obs
 
-    def test_前置步只给动作不给观察(self):
-        """给观察会让每一步 prompt 线性增长，而超时会拖垮整批。"""
+    def test_历史步含瘦观察(self):
+        """动作前动机依赖历史观察——「点第一期确认」得先知道上一页列了什么。"""
         c = _client(_ok())
-        _write(c, history=[{"tool": "goto", "params": {"url": "https://a"},
-                            "observation": {"body_text": "不该出现的正文"}}])
+        _write(c, history=[(ACTION_GOTO, OBS_OK)])
         payload = _last_user_payload(c)
-        assert payload["previous_actions"] == [
-            {"tool": "goto", "params": {"url": "https://a"}}]
-        assert "不该出现的正文" not in json.dumps(payload, ensure_ascii=False)
+        assert payload["previous_actions"][-1]["tool"] == "goto"
+        assert payload["previous_actions"][-1]["observation"]["body_text"]
+        assert "电视剧 电影 综艺 少儿" in json.dumps(payload, ensure_ascii=False)
+
+    def test_早步只留动作(self):
+        """只最近 :data:`HISTORY_OBS_STEPS` 步带观察，更早只留动作——
+        防「重复做过的事」不需要 10 步之前的正文。
+        """
+        c = _client(_ok())
+        history = [(ACTION_GOTO, dict(OBS_OK, body_text=f"第{i}页正文"))
+                   for i in range(writer.HISTORY_OBS_STEPS + 3)]
+        _write(c, history=history)
+        rendered = _last_user_payload(c)["previous_actions"]
+        assert len(rendered) == len(history)
+        assert all("observation" not in r for r in rendered[:-writer.HISTORY_OBS_STEPS])
+        assert all("observation" in r for r in rendered[-writer.HISTORY_OBS_STEPS:])
+        # 被截掉的那几步的正文确实没进去
+        assert "第0页正文" not in json.dumps(rendered, ensure_ascii=False)
+
+    def test_历史观察不带ref(self):
+        """瘦身形状里也不许有 ``ref``——它是会话内句柄。"""
+        c = _client(_ok())
+        _write(c, history=[(ACTION_GOTO, OBS_OK)])
+        raw = json.dumps(_last_user_payload(c), ensure_ascii=False)
+        assert "e1" not in raw
 
     def test_系统提示词不提执行端实现(self):
         """模型要学的是判断，不是怎么驱动某个浏览器。"""
@@ -346,6 +399,17 @@ class TestPromptContent:
         sys_text = _last_system(c).lower()
         for banned in ("obscura", "mcp", "ref", "snapshot"):
             assert banned not in sys_text
+
+    def test_系统提示词要求写动作前动机(self):
+        """口径反转的**语法层**守卫：SYSTEM 必须明说「即将执行」「之前」。
+
+        没有这两句，模型会按训练语料的默认倾向写成事后反思——
+        而事后反思正是 INC46 要修的东西。
+        """
+        sys_text = writer.SYSTEM
+        assert "即将执行" in sys_text
+        assert "之前" in sys_text
+        assert "还没有执行" in sys_text
 
 
 # ── shortfall 只有一个定义 ────────────────────────────────────────
@@ -397,33 +461,90 @@ class TestNoUpstreamImport:
                 assert "perception" not in m, f"writer 不该 import {m}"
 
 
-class Test动作失败进提示词:
-    """动作本身失败时，**必须让模型知道**——否则它拿着空观察
-    去解释「我看到了什么」，而真相是这一步压根没拿到观察。
+class TestStep0EmptyHistory:
+    """**step 0 空历史**是 INC46 最容易误伤的位置，必须有显式断言钉住。
 
-    与「观察不完整」是**两件事**：那个讲证据不足以判断，
-    这个讲动作压根没成功，处置完全不同。
+    首步动机的合法依据只有 ``user_prompt`` / ``target_title``——
+    没有任何观察。此时若照旧写一条 ``observation_completeness: "完整"``，
+    等于告诉模型「你的输入是充分的」，而它其实只有用户诉求。
     """
 
-    def _payload(self, observation=None, **kw):
+    def _payload(self, **kw):
         import json as _json
         from trajectory_pipeline.tests.fakes import FakeLLM
         from trajectory_pipeline.rationale import writer as rw
         fake = FakeLLM()
-        rw.write_one(fake, action={"tool": "goto", "params": {"url": "u"}},
-                     observation=observation, **kw)
+        rw.write_one(fake, action={"tool": "goto", "params": {"url": "u"}}, **kw)
         return _json.loads(fake.calls[0][1])
 
-    def test_失败原因进提示词(self):
-        got = self._payload(error="导航失败: 连接超时")
-        assert got["this_action_failed"] == "导航失败: 连接超时"
+    def test_没有历史时不写完整性键(self):
+        got = self._payload()
+        assert "observation_completeness" not in got
+        assert got["previous_actions"] == []
 
-    def test_没失败时不带这个键(self):
-        assert "this_action_failed" not in self._payload()
+    def test_没有历史仍能写出(self):
+        """空历史不是错误——首步动机本来就只依据任务。"""
+        c = _client(_ok("先在搜索结果里挑一个看起来像正片的链接点进去。"))
+        r = _write(c, history=[])
+        assert r.status == "written"
 
-    def test_失败与不完整是两条独立信息(self):
-        """两条同时出现时都必须在——它们处置不同，不能互相顶掉。"""
-        got = self._payload(error="快照失败",
-                            observation={"body_text": "", "degraded": ["body_text"]})
-        assert got["this_action_failed"] == "快照失败"
+    def test_末步观察为空时回退到更前那条(self):
+        """末步是 ``new_tab``（观察为 null）时，该提示的是再往前那条。"""
+        got = self._payload(history=[
+            ({"tool": "goto", "params": {}}, dict(OBS_OK, degraded=["body_text"])),
+            ({"tool": "new_tab", "params": {}}, None),
+        ])
         assert got["observation_completeness"].startswith("不完整")
+
+
+class TestWriteReflection:
+    """终局反思：全链路**唯一**允许事后口吻的入口。"""
+
+    def test_用另一份系统提示词(self):
+        c = _client(_ok("这一趟确认腾讯视频只是专题页，没有正片。", "排除"))
+        _reflect(c)
+        assert _last_system(c) == writer.SYSTEM_REFLECTION
+        # 与动作前动机那份**不是同一个字符串**——共用一个会让
+        # 「动作前」那版的硬约束在某个分支下悄悄消失
+        assert writer.SYSTEM_REFLECTION != writer.SYSTEM
+
+    def test_产物形状与逐步同构(self):
+        """P1 里 ``reflection`` 与 ``steps[i].rationale`` 必须同形状，
+        否则组装期要写两套读取代码。"""
+        c = _client(_ok("确认了。", "排除"))
+        r = _reflect(c)
+        assert r.status == "written"
+        assert set(r.to_json()) == {"status", "rationale", "reason", "degraded"}
+
+    def test_最终判定进提示词(self):
+        c = _client(_ok())
+        _reflect(c, outcome={"branch": "no_play_control", "url": "https://x.tv/a"})
+        got = _last_user_payload(c)["final_outcome"]
+        assert got["branch"] == "no_play_control"
+
+    def test_没有outcome时空dict不是缺键(self):
+        """搜索单元没有 outcome——``{}`` 要与「有判定但为空」分开。"""
+        c = _client(_ok())
+        _reflect(c, outcome=None)
+        assert _last_user_payload(c)["final_outcome"] == {}
+
+    def test_剔除evidence原文(self):
+        """evidence 是给评分器看的，喂进提示词只会挤掉正文预算。"""
+        c = _client(_ok())
+        _reflect(c, outcome={"branch": "broken", "evidence": "很长的证据" * 50})
+        raw = json.dumps(_last_user_payload(c), ensure_ascii=False)
+        assert "很长的证据" not in raw
+
+    def test_不可用三态与逐步一致(self):
+        """共用一个收尾路径（``_complete``）——这里的处置不能与逐步分叉。"""
+        c = _client(None, status=503)
+        r = _reflect(c)
+        assert r.status == "unavailable"
+        assert r.draft is None
+        assert "503" in r.reason
+
+    def test_残留CoT同样拒写(self):
+        c = _client('{"thinking": "<scratchpad>先看控件", "conclusion": "x"}')
+        r = _reflect(c)
+        assert r.status == "unavailable"
+        assert "红线" in r.reason

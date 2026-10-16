@@ -2168,10 +2168,14 @@ class TestRationale接线:
         # 片名与用户原话都传下去了（豁免域靠它们）
         assert by_tool["goto"]["target_title"] == "功夫"
         assert by_tool["goto"]["user_prompt"] == "有能看的吗"
-        # 点击步看得到前置步的**动作**，看不到它们的观察
-        assert [a["tool"] for a in by_tool["click"]["history"]] == tools[
+        # INC46：history 是 ``(动作, 观察)`` 对——动作前动机要依据历史观察，
+        # 但**不含本步观察**（本步还没执行）。
+        assert [a["tool"] for a, _ in by_tool["click"]["history"]] == tools[
             : tools.index("click")
         ]
+        # 本步观察没有入口：喂了它，模型就会描述一个还没看到的页面
+        assert "observation" not in by_tool["click"]
+        assert "error" not in by_tool["click"]
 
     async def test_落盘进存档(self):
         sink: list = []

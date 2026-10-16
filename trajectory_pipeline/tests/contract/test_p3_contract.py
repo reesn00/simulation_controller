@@ -153,7 +153,7 @@ class Test视图名与渲染侧一致:
             f"payload 键 {payload_keys} 与 VIEW_NAMES {set(VIEW_NAMES)} 漂移"
         )
 
-    def test_to_meta键集是文档那15个(self):
+    def test_to_meta键集是文档那17个(self):
         """AST 读 ``to_meta`` 的返回字面量。**不多不少**——
         多了文档没写，少了文档写空话。"""
         actual = _keys_of(VIEWS_SRC, "to_meta")
@@ -170,8 +170,10 @@ class Test视图名与渲染侧一致:
             "provenance",
             "step_count",
             "observation_count",
+            "missing_observation_count",
             "infrastructure_actions",
             "observation_complete",
+            "closing_summary",
             "rationale_steps",
         }
         assert actual == expected, (
@@ -406,37 +408,46 @@ def _rendered(sample=None):
 class Test形状不变量:
     """这些断言不针对某个输入——任何 P2 JSON 渲染出来都必须成立。
 
-    与 unit 的分工：unit 验证六条判断逐条在具体输入上成立；
+    与 unit 的分工：unit 验证八条判断逐条在具体输入上成立；
     这里验证的是「一批样本整体读回来仍保持结构承诺」。"""
 
     def test_每个动作都有一条assistant且tool_call_id配对(self):
-        """openai 视图里 assistant 消息数与工具回执数一致，
-        每对 ``tool_call_id`` / ``id`` 咬合。关联是训练信号，丢了
-        模型就学不会「观察是对那个动作的回应」。"""
+        """openai 视图里**带 tool_calls 的** assistant 消息数与工具回执数
+        一致，每对 ``tool_call_id`` / ``id`` 咬合。关联是训练信号，丢了
+        模型就学不会「观察是对那个动作的回应」。
+
+        夹具有 2 个动作，其中 ``new_tab`` 是 infrastructure——整步不进
+        消息流（2026-10-15 判断 2 反转），故可见的只有 1 对；末尾那条
+        没有 tool_calls 的 assistant 是「任务总结」收尾（判断 7）。"""
         payload = _rendered()
         msgs = payload["openai"]["messages"]
-        assistants = [m for m in msgs if m["role"] == "assistant"]
+        assistants = [m for m in msgs if m["role"] == "assistant" and m.get("tool_calls")]
         tools = [m for m in msgs if m["role"] == "tool"]
-        assert len(assistants) == len(tools) == 2
+        assert len(assistants) == len(tools) == 1
         for a, t in zip(assistants, tools):
             assert len(a["tool_calls"]) == 1
             assert t["tool_call_id"] == a["tool_calls"][0]["id"], (
                 "观察回执没有指向它回应的那个动作"
             )
+        closing = msgs[-1]
+        assert closing["role"] == "assistant" and "tool_calls" not in closing
+        assert closing["content"].startswith("任务总结：")
 
     def test_工具声明不含基础设施动作(self):
         """new_tab 是执行器自己的会话隔离，模型永远不该输出它——
-        但它在动作流里照常保留（可回放）。（判断 2）"""
+        既不进工具声明，也**整步不进消息流**（2026-10-15 拍板反转：
+        让模型看到一条它永远不会发的 assistant tool_calls，就是教它
+        输出越权动作）。可回放的完整动作流留在 P2 的 six.actions。"""
         payload = _rendered()
         declared = {t["function"]["name"] for t in payload["openai"]["tools"]}
         assert "new_tab" not in declared
         flow = {
             c["function"]["name"]
             for m in payload["openai"]["messages"]
-            if m["role"] == "assistant"
+            if m["role"] == "assistant" and m.get("tool_calls")
             for c in m["tool_calls"]
         }
-        assert "new_tab" in flow
+        assert "new_tab" not in flow
 
     def test_rationale逐步对齐不合成计数(self):
         """rationale_steps 逐条列出、step_index 从 0 起连续——

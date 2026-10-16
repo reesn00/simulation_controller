@@ -7,6 +7,8 @@
     review           从 P1 存档导出**人工复核队列**（W1 正样本的唯一来源）
     check            只查能力（不跑任务）：obscura 可达性 / Perceptor 能力边界
     check-persona    画像库覆盖度体检 + 判分保真探针体检（不联网）
+    regenerate-rationales  存量 rationale 重生成（INC46 动作前动机口径，
+                     需 TRAJECTORY_LLM_*；建议先 --dry-run）
     report           汇总 P1 存档的分支分布
 
 为什么要有 ``check``：``run`` 失败时无法区分「网络不通」「浏览器起不来」
@@ -39,6 +41,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import sys
 import uuid
 from types import MappingProxyType
@@ -52,6 +55,7 @@ from trajectory_pipeline.executor.archive import (
     REVIEWED_SUFFIX,
     CredentialLeak,
     P1Archive,
+    select_archives,
 )
 from trajectory_pipeline.executor.browser.mcp_client import (
     EXE_ENV_VAR,
@@ -211,6 +215,21 @@ def _make_rationale_writer():
         """
         return rationale_writer.write_one(client, **kw).to_json()
 
+    def reflect(**kw):
+        """终局反思入口（INC46）。落 unit 级 ``reflection`` 键。
+
+        与 ``write`` **同形状**（都是 :meth:`WriteResult.to_json`），
+        于是 P1 里的 ``reflection`` 与 ``steps[i].rationale`` 同构，
+        组装期用同一套代码读。
+
+        挂成属性而不是让 ``write`` 自己分派：逐步入口的 kwargs 里没有
+        能区分「这是第几步」的东西，靠参数嗅探去分派等于把两个语义
+        不同的调用塞进一个签名，而「本步观察能不能喂」正是 INC46 要
+        钉死的那条区别。
+        """
+        return rationale_writer.write_reflection(client, **kw).to_json()
+
+    write.reflect = reflect             # type: ignore[attr-defined]
     write.close = client.close          # type: ignore[attr-defined]
     write.model = cfg.model             # type: ignore[attr-defined]
     return write, ""
@@ -2098,6 +2117,217 @@ def cmd_purge_run(args: argparse.Namespace) -> int:
     return 0
 
 
+#: 存量 rationale 重生成前的**备份子目录**（INC46）。
+#:
+#: 必须是**子目录**而不是 ``output/pipeline/`` 下的同级文件：
+#: ``assembler.schema.iter_samples`` 用 ``Path(root).glob("*.json")`` 收档，
+#: 备份若与真档同级，重建 P2 时会把备份也当成一批样本切出来——
+#: 批次数字翻倍，而两批内容一模一样，报表上看不出多了一份。
+#: 放在子目录里，顶层 glob 天然拾不到。
+BACKUP_DIRNAME = "_backup_pre_motivation"
+
+
+def _regenerate_units(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """一份 P1 存档 → 待重生成的**决策单元**列表。
+
+    与 :func:`~trajectory_pipeline.assembler.schema.split_archive` 的切条
+    口径**同源**：一个决策单元一条（搜索一条 + 每个站点一条）。
+    刻意不从 assembler 里 import 一个切条函数——那里产出的是 ``Sample``
+    （带 actions/observations 视图），而这里要的是**能写回原档的路径**
+    （改 ``steps[i].rationale`` 与 unit 级 ``reflection``），
+    两组东西的形状不同，合成一个只会让两边都别扭。
+
+    每项：``{"label": ..., "steps": [...], "set_reflection": callable}``。
+    """
+    units: list[dict[str, Any]] = []
+
+    def top_steps() -> list[dict[str, Any]]:
+        return list(archive.get("steps") or [])
+
+    if top_steps():
+        units.append({
+            "label": "search",
+            "steps": top_steps(),
+            "outcome": None,
+            "write_reflection": lambda payload, arc=archive: arc.__setitem__(
+                "reflection", payload),
+        })
+    outcomes = list(archive.get("outcomes") or ())
+    for i, visit in enumerate(archive.get("visits") or (), 1):
+        vsteps = list(visit.get("steps") or [])
+        if not vsteps:
+            continue
+        units.append({
+            "label": f"site-{i}",
+            "steps": vsteps,
+            "outcome": _outcome_json_in(outcomes, visit),
+            "write_reflection": lambda payload, v=visit: v.__setitem__(
+                "reflection", payload),
+        })
+    return units
+
+
+def _outcome_json_in(outcomes: Sequence[Mapping[str, Any]],
+                     visit: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """按 url 找站点单元的最终判定。**先候选 url、再落地 url。**
+
+    与 :func:`~trajectory_pipeline.assembler.schema._outcome_for` 同款顺序
+    （那里的长注释解释了为什么两个都要试）。这里**不 import** 那份实现：
+    它返回 ``OutcomeRef``（P2 侧的建模），而这里要喂给 writer 的是
+    P1 的原始 JSON——转一次再转回来只是多一次走样机会。
+    """
+    for want in (str(visit.get("url") or ""), str(visit.get("landed_url") or "")):
+        if not want:
+            continue
+        for o in outcomes:
+            if str(o.get("url") or "") == want:
+                return o
+    return None
+
+
+def cmd_regenerate_rationales(args: argparse.Namespace) -> int:
+    """存量 rationale 重生成（INC46：事后反思 → 动作前动机）。
+
+    为什么要整批重生成而不是「新数据用新口径、老数据留着」：
+    P2/P3 是**混批**训练的，一批事后反思混在一批动作前动机里，
+    模型学到的是「有时可以未卜先知、有时不行」——那比全错更难发现，
+    因为它在报表上表现为「分数略有下降」而不是「坏了一批」。
+
+    规模账（64 档 × 480 step + 约 100 次 reflection ≈ **600 次 LLM 调用**）
+    是这条命令唯一的真实成本，所以默认口径是**先 ``--dry-run``**。
+
+    失败纪律：**单步失败落 ``status="unavailable"`` 并继续，不中断整批**。
+    一次后端抖动不该让 600 次调用里已经成功的 599 次作废，
+    而缺的那些在 P2 侧会变成 ``rationale_missing``，本来就是可视的。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    writer, why = _make_rationale_writer()
+    if writer is None and not args.dry_run:
+        print(f"[FAIL] rationale writer 不可用（{why}）——"
+              f"重生成需要 TRAJECTORY_LLM_* 环境变量配好的后端。"
+              f"只想看规模就加 --dry-run")
+        return 2
+
+    archives = [(p, reviewed) for p, reviewed in select_archives(root)]
+    if args.only:
+        want = args.only if args.only.endswith(".json") else args.only + ".json"
+        archives = [a for a in archives if a[0].name == want]
+        if not archives:
+            print(f"[FAIL] {root} 下没有 {want}")
+            return 2
+
+    if not archives:
+        print(f"[FAIL] {root} 下没有可重生成的存档")
+        return 2
+
+    if args.dry_run:
+        n_steps = 0
+        n_reflect = 0
+        for path, _ in archives:
+            try:
+                arc = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"  {path.name}: 读不了（{exc}）——跳过")
+                continue
+            units = _regenerate_units(arc)
+            s = sum(len(u["steps"]) for u in units)
+            n_steps += s
+            n_reflect += len(units)
+            print(f"  {path.name}: {len(units)} 单元 / {s} 步")
+        print(f"\n[DRY-RUN] 将重写 {n_steps} 条 rationale + {n_reflect} 条 "
+              f"reflection ≈ {n_steps + n_reflect} 次 LLM 调用。"
+              f"未写盘、未备份。")
+        return 0
+
+    store = P1Archive(root)
+    backup_dir = root / BACKUP_DIRNAME
+    total_written = 0
+    total_unavailable = 0
+
+    for path, _reviewed in archives:
+        try:
+            arc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"  {path.name}: 读不了（{exc}）——跳过，原档未动")
+            continue
+        if not isinstance(arc, dict):
+            print(f"  {path.name}: 顶层不是 JSON 对象——跳过，原档未动")
+            continue
+
+        units = _regenerate_units(arc)
+        if not units:
+            print(f"  {path.name}: 0 单元（没有 steps）——跳过，原档未动")
+            continue
+
+        # 备份**首次写回前**做一次。已存在即跳过：重跑这条命令
+        # （补跑失败的那几步）不该把上一轮的结果覆盖成「改之前的原始档」
+        # ——那会让已经重生成的 599 条退回成事后反思。
+        backup = backup_dir / path.name
+        if not backup.exists():
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, backup)
+
+        written = 0
+        unavailable = 0
+        for unit in units:
+            steps = unit["steps"]
+            for index, step in enumerate(steps):
+                try:
+                    payload = writer(
+                        action=step.get("action") or {},
+                        user_prompt=str(arc.get("user_prompt") or ""),
+                        target_title=str(arc.get("title") or ""),
+                        history=[
+                            (s.get("action") or {}, s.get("observation"))
+                            for s in steps[:index]
+                        ],
+                    )
+                except Exception as exc:  # noqa: BLE001 — 见函数 docstring
+                    payload = {
+                        "status": "unavailable",
+                        "rationale": None,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                        "degraded": [],
+                    }
+                step["rationale"] = payload
+                if payload.get("status") == "written":
+                    written += 1
+                else:
+                    unavailable += 1
+            reflector = getattr(writer, "reflect", None)
+            if reflector is not None:
+                try:
+                    unit["write_reflection"](reflector(
+                        user_prompt=str(arc.get("user_prompt") or ""),
+                        target_title=str(arc.get("title") or ""),
+                        history=[
+                            (s.get("action") or {}, s.get("observation"))
+                            for s in steps
+                        ],
+                        outcome=unit["outcome"],
+                    ))
+                except Exception as exc:  # noqa: BLE001 — 同上
+                    unit["write_reflection"]({
+                        "status": "unavailable",
+                        "rationale": None,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                        "degraded": [],
+                    })
+
+        # 原子写回：与 P1Archive 落盘同款（``.tmp`` + ``os.replace``）。
+        # 刻意**复用** store 的私有方法而不是在这里再写一遍——
+        # 「原子写」有两份实现时，改了一份忘了另一份，后果是某条路径
+        # 上留下半截 JSON，而那正好是批跑到一半崩掉的场景。
+        store._write_text(path, json.dumps(arc, ensure_ascii=False, indent=2))
+        total_written += written
+        total_unavailable += unavailable
+        print(f"  {path.name}: written={written} unavailable={unavailable}")
+
+    print(f"\n完成：{len(archives)} 档，written={total_written} "
+          f"unavailable={total_unavailable}。原档已备份到 {backup_dir}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     root = Path(args.out) if args.out else DEFAULT_ROOT
     # 只认真存档（同目录的探针取证不参与），人工复核档取代原档。
@@ -2544,6 +2774,17 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--apply", action="store_true",
                     help="**默认只列不删**。池是训练数据的直接输入，删错不可逆")
     pg.set_defaults(func=cmd_purge_run)
+
+    rg = sub.add_parser(
+        "regenerate-rationales",
+        help="存量 rationale 重生成（INC46：事后反思 → 动作前动机）")
+    rg.add_argument("--out", default=None, help="P1 存档目录")
+    rg.add_argument("--only", default=None,
+                    help="只重生成这一份存档（文件名，如 E005__e35b7455.json）")
+    rg.add_argument("--dry-run", action="store_true",
+                    help="**默认建议先跑它**：只打印将重写多少条，不写盘、"
+                         "不备份、不调 LLM")
+    rg.set_defaults(func=cmd_regenerate_rationales)
     return p
 
 

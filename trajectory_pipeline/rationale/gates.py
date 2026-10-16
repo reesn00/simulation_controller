@@ -9,12 +9,31 @@
 ==========  ==================================  ==========================
 查          判什么                              判不出的
 ==========  ==================================  ==========================
-实体核查    rationale 引用的实体能在**本步及前置   「没引用实体」不等于
-            步**的观察里检索到                    「没有幻觉」
+实体核查    rationale 引用的实体能在**前置步**    「没引用实体」不等于
+            的观察里检索到                       「没有幻觉」
 因果核查    rationale 说的动作 == 本步实际动作    理由是否**充分**支持它
 时序核查    rationale 引用的实体**不在后续步**才   措辞上的后见之明
             出现（那是「事后才知道」的铁证）      （词典层只给辅助信号）
 ==========  ==================================  ==========================
+
+⚠️ INC46 窗口语义（2026-10-15）
+===============================
+
+rationale 改成**动作前动机**之后，「本步观察」从「当时可见」挪到了
+「后见」——第 ``i`` 步写下的动机**不可能**引用 ``obs[i]``，
+引用了就是铁证级的后见之明。
+
+于是三查的可见窗口统一是 **``[:step_index]``（不含本步）**：
+
+- 实体核查：可见 = ``observations[:step_index]``；
+- 时序核查：「当时看不到」= ``observations[step_index:]``（**含本步**）。
+
+**step 0 的窗口是空的**，这是全链路最容易误伤的位置：首步动机的合法
+依据只有 ``user_prompt`` / ``target_title``（豁免域），而空窗口若走
+「没有任何观察 → 查不到 → 判幻觉」那条隐式路径，会把每一条 goto 首步
+判成幻觉。所以空窗口**显式早退**返回 ``undeterminable``——
+「首步无历史观察，核查不适用」。
+
 
 最重要的一条：截断时**不得判幻觉**
 ================================
@@ -54,7 +73,7 @@ GateStatus = Literal["passed", "failed", "not_run"]
 
 #: 单条发现。
 FindingKind = Literal[
-    "unsupported_entity",   # 实体不在观察内（本步及前置步）
+    "unsupported_entity",   # 实体不在观察内（前置步）
     "action_mismatch",      # 说的动作 ≠ 实际动作
     "temporal_leak",        # 引用了只在后续步出现的实体
     "hindsight",            # 措辞上的后见之明（辅助信号）
@@ -154,8 +173,26 @@ def observation_shortfall(obs: Mapping[str, Any] | None) -> str:
 
 
 def _bag(observations: Sequence[Mapping[str, Any]]) -> str:
-    """观察序列 → 可检索袋。**本步及前置步**。"""
+    """观察序列 → 可检索袋。**前置步**（INC46：不含本步）。"""
     return "\n".join(lexicon.resettable_text(o) for o in observations)
+
+
+def _in_haystack(text: str, haystack_l: str) -> bool:
+    """实体 ``text`` 在已归一化的 haystack 里吗。
+
+    **整串命中**，或**合成实体拆开后每段都命中**
+    （见 :func:`~trajectory_pipeline.rationale.lexicon.split_composite`）。
+
+    合成命中要求**每段都在**：模型把观察到的两处合并写成「A/B」时，
+    A 与 B 都得真实出现过才算有据；少一段就落回整串匹配的结果
+    （不命中）——所以这条是**收紧的补充**，不是放宽。
+    """
+    if (text or "").lower() in haystack_l:
+        return True
+    parts = lexicon.split_composite(text)
+    if not parts:
+        return False
+    return all(p.lower() in haystack_l for p in parts)
 
 
 def check_entities(
@@ -169,7 +206,7 @@ def check_entities(
 
     Args:
         text: rationale 原文。
-        observations: **本步及前置步**的观察（按时间序）。
+        observations: **前置步**的观察（按时间序，INC46 起**不含本步**）。
         exempt: 任务给的豁免文本（片名 / 用户诉求）。rationale 引用
             这里的词**不是幻觉**——它来自任务，不是模型看来的。
         later_observations: **后续步**观察。只用于一个判断：
@@ -178,9 +215,21 @@ def check_entities(
 
     Returns:
         ``(findings, checked_count, undeterminable)``。
+
+    ⚠️ **空窗口显式早退**：``observations`` 为空（首步）时**不判任何幻觉**，
+    直接返回 undeterminable「首步无历史观察，核查不适用」。这不是可选项——
+    动作前动机口径下首步的合法依据只有任务给的豁免文本，走「没有观察
+    → 什么都查不到 → 判幻觉」那条隐式路径会把每一条 goto 首步判死。
     """
     findings: list[Finding] = []
     undeterminable: list[str] = []
+
+    # 空窗口**先于**实体抽取早退：它是**这一步**的属性（首步没有历史），
+    # 与这段文本里有没有可核实体无关。放在实体抽取之后的话，
+    # 不引实体的首步动机就拿不到这条说明，而下游据此区分
+    # 「查不了」与「没得查」——两者在 undeterminable 里同形就分不出。
+    if not observations:
+        return findings, 0, ["首步无历史观察，实体核查不适用"]
 
     entities = lexicon.filter_entities(lexicon.extract_entities(text))
     if not entities:
@@ -188,7 +237,7 @@ def check_entities(
         # 但若整段是套话，交给 :func:`check_boilerplate` 处理。
         return findings, 0, undeterminable
 
-    # 本步及前置步任一份观察不充分 → 该实体不可判定。
+    # 前置步任一份观察不充分 → 该实体不可判定。
     # **不是「全部不充分才算」**：只要有一份完整的就能定案，
     # 而一份都不完整时**不能**判幻觉（rubric D-9 边界规则）。
     complete_bag = ""
@@ -227,6 +276,9 @@ def check_entities(
         checked += 1
         if any(v in haystack_l or v in haystack for v in variants):
             continue
+        # 合成实体（「A/B」）：整串落空但每段都真实出现过 → 有据，不算幻觉。
+        if _in_haystack(ent.text, haystack_l):
+            continue
         if undeterminable:
             # 观察不充分时不判幻觉（rubric D-9 边界规则）。
             continue
@@ -242,7 +294,7 @@ def check_entities(
             continue
         findings.append(Finding(
             "unsupported_entity",
-            f"实体「{ent.text}」不在本步及前置步的观察里，也不在任务给的"
+            f"实体「{ent.text}」不在前置步的观察里，也不在任务给的"
             f"片名/诉求里，更不在后续步的任何观察里——按 I1 与 D-9 判为幻觉候选",
         ))
     return findings, checked, undeterminable
@@ -290,16 +342,27 @@ def check_temporal_at(
     词典只能判「措辞上像事后口吻」，而这里判的是「引用了当时看不到的东西」。
 
     ``observations`` 是**全序列**，``step_index`` 是本步下标。
-    「当时可见」= ``[:step_index+1]``，「当时看不到」= ``[step_index+1:]``。
+
+    ⚠️ INC46 窗口（动作前动机口径）：
+
+    - 「当时可见」= ``[:step_index]``——**不含本步**。本步观察是这一动作
+      执行**之后**才有的，引用它就是后见之明；
+    - 「当时看不到」= ``[step_index:]``——**含本步**。
+
+    **step 0 的可见窗口为空**，此时「引用了当时看不到的东西」这个判断
+    只能靠任务豁免文本兜底：命中豁免域（片名 / 用户诉求）的不算泄漏，
+    其余一律判 temporal_leak——首步动机引用任何具体页面实体都没有来源
+    （还没有任何观察），那确实是幻觉。
     """
     findings: list[Finding] = []
     undeterminable: list[str] = []
 
-    visible = list(observations[: step_index + 1])
-    later = list(observations[step_index + 1:])
+    visible = list(observations[:step_index])
+    later = list(observations[step_index:])
 
     if not later:
-        # 没有后续步就没有「后见之明」这个概念——**不是通过，是不适用**。
+        # 没有后续步（含本步）就没有「后见之明」这个概念——
+        # **不是通过，是不适用**。
         return findings, ["本样本无后续步，时序核查不适用"]
 
     entities = lexicon.filter_entities(lexicon.extract_entities(text))
@@ -319,14 +382,14 @@ def check_temporal_at(
 
     for ent in entities:
         needle = ent.text.lower()
-        if needle in visible_l:
+        if _in_haystack(needle, visible_l):
             continue                     # 当时就看得见，不是后见之明
-        if needle not in later_l:
+        if not _in_haystack(needle, later_l):
             continue                     # 前后都没有 → 实体核查管它
         findings.append(Finding(
             "temporal_leak",
-            f"实体「{ent.text}」只在**后续步**的观察里出现，"
-            f"本步及前置步没有——thinking 引用了当时看不到的东西"
+            f"实体「{ent.text}」只在**后续步（含本步）**的观察里出现，"
+            f"前置步没有——thinking 引用了当时看不到的东西"
             f"（rubric D-9 锚点 3：1 处后见之明）",
         ))
     return findings, undeterminable
@@ -396,6 +459,11 @@ def gate(
         step_index: 本步下标。
         exempt: 任务给的豁免文本（片名 / 用户诉求）。
 
+    ⚠️ INC46：可见窗口是 ``[:step_index]``（**不含本步**），
+    「后见」窗口是 ``[step_index:]``（**含本步**）。rationale 是动作前
+    动机，本步观察此刻还不存在。step 0 的可见窗口为空，实体核查
+    显式早退为 undeterminable，不判幻觉。
+
     ``status`` 的口径：任何一条 **hard** 发现 → ``failed``；
     否则 ``passed``，而 :attr:`GateResult.undeterminable` 非空表示
     「查过的都过了，但有一部分查不了」。
@@ -406,8 +474,8 @@ def gate(
     undeterminable: list[str] = []
     checked = 0
 
-    visible = list(observations[: step_index + 1])
-    later = list(observations[step_index + 1:])
+    visible = list(observations[:step_index])
+    later = list(observations[step_index:])
 
     ent_findings, checked, ent_und = check_entities(
         text, visible, exempt=exempt, later_observations=later)

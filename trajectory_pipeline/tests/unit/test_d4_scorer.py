@@ -172,6 +172,43 @@ class Test判据:
         assert score_d4(s).score == 4, "page_title 微调不应被判成换了页"
 
 
+# ── 2.5：缺失占位观察（2026-10-15 逐步对位改造）─────────────────────
+
+
+_MISSING = {"degraded": ["observation_missing"]}
+
+
+class Test缺失占位:
+    """P2 的观察改按 ``steps[]`` 逐位构建后，没采到的步顶
+    ``{"degraded": ["observation_missing"]}`` 占位（schema.MISSING_OBSERVATION）。
+    D-4 必须把它当「没采到」而不是「页面真空」——占位的空串 url 混进
+    同页比较会把「点击前后同页」判成「换了页」（§5.14 回潮）。"""
+
+    def test_末位占位等于没有播放页观察(self):
+        """占位语义是「点击之后没采到」。往前取会把站点页顶成播放页——
+        同一个 §5.14 错误换个形态回来。"""
+        obs = [_obs(url="https://x.test/movie"), dict(_MISSING)]
+        s = _sample(_out(None, source="llm"), observations=obs)
+        v = score_d4(s)
+        assert v.score == 4, "末步没采到 = 点击后没有第二份快照，应判 premature"
+
+    def test_中间占位不参与同页比较(self):
+        """E005 形态：[站点页, new_tab 占位, 播放页]。占位若在比较里，
+        它的空 url 会让「站点页 vs 播放页」这对真实比较变成
+        「播放页 vs 空串」——比较对象错了。"""
+        obs = [_obs(url="https://x.test/movie"),
+               dict(_MISSING),
+               _obs(url="https://x.test/play", video=1)]
+        s = _sample(_out(None), observations=obs)
+        assert score_d4(s).score == 5, "中间占位不应破坏真实的换页证据"
+
+    def test_占位不算有效观察计数(self):
+        """[站点页, 占位] 与「只有一份观察」同义。"""
+        obs = [_obs(url="https://x.test/movie", iframe=1), dict(_MISSING)]
+        s = _sample(_out(None, source="llm"), observations=obs)
+        assert score_d4(s).score == 4
+
+
 # ── 3. iframe 不作判据 ────────────────────────────────────────────
 
 
