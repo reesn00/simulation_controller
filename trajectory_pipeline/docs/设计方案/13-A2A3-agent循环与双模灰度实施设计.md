@@ -17,7 +17,7 @@
 | D-B3 | P1 动作枚举 | **前置核查先行**——实锤存量脱节（契约三值 vs 代码六值），A2a 开工第一步收口 | §5 |
 | D-B4 | scripted 序列 | **`visit_site` 并行保留不删**（A3 fallback 与黄金基线都要用） | §3.7 |
 
-A3 两个开放决策点（幻觉记账口径 / D-9 是否纳入验收）见 §6.6，**开工前待拍**。
+A3 开放决策点：**全部收口（2026-10-17）**——D-9 纳入验收（§6.4 决策记录）；幻觉记账口径选 A：幻觉 goto 不进 D-2 样本级，URL 溯源独立成批次级信号（§6.2 末决策记录）。A3 开工前不欠账。
 
 ---
 
@@ -139,6 +139,14 @@ async def agent_loop(
 
 **确定性纪律（方案 12 §5.3 第 1 条的落地）**：步数预算、终止判定、处置映射、事件落盘全部在代码——agent 的非确定性被限制在「页面内选哪个元素、goto 哪个链接」这一段语义决策。
 
+> **落地注（INC51，2026-10-17）**：A2a-2 段完成（`executor/agent_loop.py` ~950 行 + `FakeAgentLLM` + `tests/unit/test_agent_loop.py` 74 例），全量门禁 2546 passed, 10 skipped, 1 failed（存量 xlsx 恒定剔除）。落地时对本文设计的**四处细化**，均已反向体现在本文口径中：
+> 1. **拦截只在新观察到达时触发**（不在每轮循环开始时）——明文写死的循环体顺序会让「格式纠正重试」意外吃满 §3.4 的二次拦截闸，模型还没来得及换路就被收口；
+> 2. **I6 白名单取自渲染进对话的那一份**（`_INTERACTIVE_WINDOW` 切片）而非 `obs.interactive_elements` 全体——否则白名单只能挡住最笨的编造（e999）；
+> 3. **「没作答」与「答错了」分两条路**：后端没作答（`content is None`）直接收口、不重试不升配（那是运维问题，A2a-1 的契约提醒在此落地）；模型答得不合契约才注入引导重试。第三轮重试的唯一准入条件是「刚升配过」；
+> 4. **本模块不 import `llm`**（依赖方向，与 `rationale_writer` 同款注入姿势）：`json_of`（text→dict）由调用方注入，schema 校验在 loop 侧、文本解析在 llm 侧。连带收益是模型原文从不进本模块，raw CoT 无路径流进 P1/P2。
+>
+> §3.9 的 `wrong_then_recover` 布尔开关落为 `flaky=N`（前 N 次吐散文）——整数才能造出「连续错两步」这种形态，而那正是升配的触发条件。
+
 ### 3.3 分支收敛映射（agent 结论 → 22 分支）
 
 **核心规则：agent 永不直接产出分支。** `AgentOutcome` 只有三种形态，代码折算：
@@ -194,6 +202,17 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 - `LLMConfig.from_env` 加 `escalate: LLMConfig | None` 类方法或 factory 层构造两个 client；
 - agent_loop 拿 `escalate: LLMClient | None`（§3.2 签名），None 时 EscalateModel 处置只落事件——**升配是能力不是依赖**，未配置不 fail。
 
+> **落地注（INC50，2026-10-17）**：A2a-1 段完成——新增 `chat_messages` + `ChatResult` + `_usage_of`，请求循环抽到 `_exchange` 由 `chat` 与 `chat_messages` 共用（`chat` 成薄壳、外部契约一字不动），`FakeLLM` 补同签名方法（`_respond` 共用 dispatch + 坏行为开关）。全量门禁 2472 passed, 10 skipped, 1 failed（存量 xlsx 恒定剔除），新增 21 例。
+> **落地注（INC54，2026-10-17）**：A2a-4 完成，`TRAJECTORY_LLM_ESCALATE_*`
+> 三键落地为 `LLMConfig.escalate_from_env(env, *, base)`。三态语义：全没配
+> → `None`（无升配，不 fail）；全配 → 接上（API_KEY 缺省 `NO_KEY` 占位）；
+> **半配 → 报错**（有 BASE_URL 没 MODEL 或反之、光给 KEY 也算）——主后端
+> 「缺件即报错」纪律的降档版：半配静默当无升配，那一半配置就成了没人读
+> 的尸体。`base` 给了就继承 `timeout_s` / `max_tokens`（升配接同一类请求，
+> 继承的是已校准值而非类默认值）。工厂在 CLI 边界（`_make_agent_backend`），
+> 半配挡下时报错文案点名 `TRAJECTORY_LLM_ESCALATE_*`。凭据红线同主后端：
+> escalate config 的 repr 不含 key。
+
 ### 3.6 llm_calls[] 账本
 
 `RunRecord` 新字段 `llm_calls: list[dict]`（**不升 schema_version**——可选字段纪律，gatekeeper_events 同款先例）：
@@ -206,12 +225,48 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 
 **A2a 记账范围决策**：只记 agent_loop 调用（新面顺手）。感知层十一题的调用**不汇入**——Decision 已有 latency_ms，把账本实例传进 perceptor 是对感知层的侵入，收益（token 数）要改 client 返回形态才能拿到，**列为 O 阶段（Langfuse 前置）扩展项**。账本的意义在「agent 批次成本可比」而不是「全管线审计」，先够用。
 
+> **落地注（INC54，2026-10-17）**：账本闭环，条目形状与上文一致。
+> `RunRecord.llm_calls` 进 P1（可选字段纪律，scripted 批恒空 list 照落）。
+> **`ts` 粒度定为候选级**：循环体不引入时间源，由 orchestrator 在候选
+> 访问收口时统一加盖（`_stamp_llm_calls`，只补缺戳、幂等）——同候选各条
+> 共享一戳，候选内次序看 list 顺序、单条耗时看 `latency_ms`；超时/异常
+> 收口的候选带没盖戳的残条落盘，是诚实残账不补假戳。两处接线点
+> （`_visit_guarded` / `_intermediate_visit_agent`）传 `record.llm_calls`
+> 同一个 list 对象，与 `gatekeeper_events` 同款透传姿势。
+
 ### 3.7 visit_site 替换点与 scripted 保留（D-B4）
 
 - `visit_site`（`executor/steps/visit.py` L65-268，七段固定序列）**不删不改**——A3 fallback 与黄金基线；
 - 接线方式：`_visit_guarded` 内按 `RunConfig.executor_mode`（§6.1，A2a 先埋常量 `"scripted"` 默认 + 私有环境变量开关，A3 转正为 RunConfig 字段）分派到 `agent_visit(...)` 或 `visit_site(...)`；
 - `agent_visit`：薄壳（~80 行）——probe 预检 + agent_loop + 落播放页后复用 visit.py 尾部的复观/PLAYER_OK/记账段（**该段抽函数共用，不复制**）；
 - `VisitResult` 字段完全复用（`steps` 就是 agent_loop 写满的 StepLog）——P1 落盘对下游零差异。
+
+> **落地注（INC52，2026-10-17）**：A2a-3 完成。共用的**两段**抽成
+> `visit.enter_site`（① 导航 + ② 观察）与 `visit.judge_player`（⑦ PLAYER_OK
+> + 记账），`visit_site` 改为调用二者（外加提升为公开的 `open_tab`），
+> **外部行为一字不变**（存量 120 例零改动）。三处对本文的细化：
+>
+> 1. **⑦ 不做「复观」**：`AgentOutcome.final_obs` 直接带出循环结束时那份
+>    观察，`PLAYER_OK` 判在**agent 据以决策的那一页**上。循环外再取一次
+>    快照，判的就是另一份快照了——播放器会自转、广告会轮换，而 D-2/D-5
+>    判的正是观察正文。附带省掉一次浏览器往返。
+> 2. **落地即在播放页 → 保守降级**：深层链接候选里 agent 一步没走就报
+>    「到了」，于是 `pre_obs == player_obs`，守卫把 PLAYER_OK=False 的记账
+>    从 `component_unverified` 降级为 `unresolved`。**刻意的**：agent 的
+>    「到了」是自报、未经跨页证实，拿自报的前提贴负标签就是把「模型没
+>    找到」写成「这里看不了」。
+> 3. **agent 模式不跑 `IS_REACHABLE`**：页面级「能不能看」交给 gatekeeper
+>    逐步拦截（LOGIN_WALL → `login_required` 等），比那道题更早也更硬。
+>
+> 薄壳 80 行的估计成立（实到 ~140 行含 docstring）。
+>
+> **一处 P1 语义在 agent 模式下会收窄（A2b 要处理）**：B/C 候选的
+> `VisitResult.search` 在 agent 模式下恒为 `None`，而契约里 `None` 的意思是
+> 「没走站内搜索」——agent 在站内自己搜了，P1 上却看不出来。动作流里有
+> `fill`/`press` 两步可人工复原，但 `search` 那四个归宿
+> （`site_search_no_results` 等）在 agent 模式下没有产地。A2b 的任务③
+> 若要把站内搜索内化，这里要么加一种取值，要么干脆承认
+> 「agent 模式没有站搜单元，它的形态在动作流里」。
 
 ### 3.8 任务② prompt 设计要点
 
@@ -224,8 +279,10 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 新建 `FakeAgentLLM`（放 `tests/fakes.py`，复用坏行为开关族形态）：
 
 - `scripted_actions: list[dict]`——按步返回动作指令（**测试不靠碰巧的 URL 措辞**，与 FakeLLM 的 classify 表同哲学）；
-- 坏行为开关：`bad_json`（输出散文）、`invent_ref`（编 e99）、`never_done`（死循环到预算耗尽）、`wrong_then_recover`（错一步后引导重试成功——**「被拦→修复→重试」是训练信号本身，必须有测试钉住这条链完整落轨迹**）；
+- 坏行为开关：`bad_json`（输出散文）、`invent_ref`（编 e99）、`never_done`（死循环到预算耗尽）、`flaky=N`（前 N 次吐散文后按脚本走——**「被拦→修复→重试」是训练信号本身，必须有测试钉住这条链完整落轨迹**；用整数而非布尔是因为「连续错两步」是升配的触发条件，另一种真实现象）；
 - 接口与 `chat_messages` 同签名。
+
+> **落地注（INC51）**：`FakeAgentLLM` 已随 A2a-2 落地（未等到 A2a-5）——A2a-2 的 74 例全部依赖它，且它造出的形态（编 ref / 吐散文 / 永远不到 / 前 N 步错）正是循环体必须被钉住的那几种。§7 表里 A2a-5 的 fake 工作量因此减半。
 
 单元测试面（估 40-60 例）：
 
@@ -252,6 +309,34 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 - `max_intermediates` / `max_referral_links` 预算沿用（外层调度不动，agent 在单站点内的步数预算是新增的**第二层**预算，两层互不侵蚀）；
 - ROUTED 等价类口径：A2b 验收时跑 golden alignment 同源测试复核。
 
+> **落地注（INC53）**：`~200-300 行` 的估计成立（实到 `agent_intermediate.py`
+> 250 行 + `agent_loop.py` 增量 ~180 行，含 docstring）。
+>
+> 落地时定下来的四件事，只有第一件是文档里写了的：
+>
+> 1. **三值 `TASK_KINDS`，同一循环换任务指令**——动作契约、观察口径、
+>    流水线、拦截、预算五处共用一份，只有目标句（:data:`_TASK_GOAL`）与
+>    终局契约（:data:`_REPORT_FORMAT`）按 kind 取。分成三个模块各自维护，
+>    它们会在某一天分叉，而分叉那天两个任务的轨迹就不再可比；
+> 2. **`parse_instruction(data, kind)` 必须传 kind**。不传就是按
+>    `play` 解析，链接类的「到了」会因为交不出 `selected` 被当成格式
+>    违反——那是把**类型写错**伪装成**模型答错**。构造期
+>    `AgentTask.__post_init__` 拒认未知 kind，同一个理由；
+> 3. **终局自报的 URL 走白名单强制，goto 的 URL 不拦**。理由是「可自愈
+>    性」：goto 编了会走到 404，agent 自己看得见；终局报出来的 URL 会
+>    直接变成候选进 P2，而循环已经结束。**这条同时界定了 A3 溯源断言的
+>    范围**——它统计的正是循环里有意没拦的那一类，所以 `selected` 不该
+>    出现在那个断言里（它进不去 P1）。挡下来的那部分靠 `RejectedReport`
+>    事件记账，A3 的批次级幻觉计数读它；
+> 4. **签名里没有 `perceptor`**。三道判断题一道都不跑，收一个不用是更
+>    坏的信号——读代码的人会以为某处还在判，而那个「某处」并不存在。
+>
+> **连带的一条 P1 语义收窄（连续第三次）**：`not_aggregator` /
+> `aggregator_no_entries` / `article_no_links` 三支在 agent 模式下**没有
+> 产地**，它们的前提是「判断题判了 False」这个真结论。三支名字留在 22
+> 分支封闭集里（scripted 独占），A3 的 A/B 报表要按它解读：**agent 批的
+> 负样本变少不是质量变好，是产地变少了**。
+
 ---
 
 ## 5. P1 动作枚举前置核查（D-B3，A2a 第一步）
@@ -265,6 +350,8 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 
 **对 A2 的意义**：agent 的四工具（goto/click/fill/press）全部落在已存档的真实动作空间内——「控制流哪天真的发了新原语，这里跟着加——加的时候那条原语就有真实存档兜底」（actions.py 注释原话），A2 不引入任何 P1 未见过的新动作。
 
+> **落地注（INC49，2026-10-17）**：收口完成。P1-observation.md ActionStep 表已改六值口径并补「六值的来历」小节；`test_p2_contract` 核查结论为**无三值硬断言**（A4 组只查 TOOLS ⊆ TOOL_SPECS 的代码-声明同步），收口未碰红；新增 `test_p1_contract` 漂移守卫（文档 ↔ 代码方向，AST 读 TOOLS 字面量），全量门禁 2451 passed, 10 skipped, 1 failed（存量 xlsx 恒定剔除）。遗留：02/03/rubric 三份历史设计文档的旧三值表述待 A2a 期间随 rubric 复核处理。
+
 ---
 
 ## 6. A3 设计：双模灰度与评估收口
@@ -274,6 +361,39 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 - `RunConfig.executor_mode: Literal["scripted", "agent"] = "scripted"`（**灰度只在构造期**——run 子命令加 `--executor-mode`，proberun 不加，沿用 discovery-path 先例）；
 - `RunRecord.executor_mode` 分开记账（比对时永远知道这批是 agent 批——方案 12 §5.3 第 4 条）；
 - **agent 失败 fallback**：`agent_visit` 内部不 fallback（一个候选一种模式，混合轨迹不可归因）；批次级 fallback 由 A/B 双跑本身承担（agent 批的 unresolved 率就是决策数据）。
+
+> **落地注（INC52，2026-10-17）**：A2a 段完成，**模式落在 `RunRecord` 而不
+> 进 `RunConfig`**（A3 再加 `--executor-mode` 转正）。开关是私有的
+> `TRAJECTORY_EXECUTOR_MODE`（`executor/mode.py`，沿用 discovery-path 先例：
+> 先有内部开关，转正才开参数门）。三条落地口径：
+>
+> 1. **默认值是 `scripted` 而不是 `auto`**——与 `TRAJECTORY_PERCEPTOR` 不同，
+>    「有 LLM 后端」**不等于**该让它开方向盘：后端是为判断题配的，
+>    A1 批次全靠它，拿它的存在当灰度信号会让所有 A1 批次一夜变 agent 批。
+> 2. **要 agent 而没后端 → 构造期报错，不静默退回 scripted**。退回的那批
+>    存档上写的是 `executor_mode="scripted"`，于是「agent 批失败了 40%」
+>    会被读成「scripted 跑得好好的」——配置错误伪装成一次成功的灰度，
+>    而不报错、不空转、报表还挺好看。与 `--perceptor llm` 未配后端报错
+>    同款口径。
+> 3. **分派只有一处**（`_visit_guarded` 里那一个 `if`，有用例数着源码里
+>    `self._mode ==` 的次数 =1）。模式是批次级属性，下沉到 `visit_site`
+>    内部会让「scripted 基线与黄金对齐」变成需要额外证明的命题。
+>
+> **落地注（INC56，2026-10-17，A3-1）**：转正完成——
+> `RunConfig.executor_mode` 是模式的**唯一产地**（默认值 scripted，
+> `__post_init__` 报错不猜），run 子命令开 `--executor-mode` 参数门
+> （choices 直接用 `EXECUTOR_MODES` 封闭集），优先级
+> `--executor-mode` > `TRAJECTORY_EXECUTOR_MODE`（降级为 fallback，
+> A3 结束后撤）> 默认 scripted。Orchestrator **删掉了 `executor_mode`
+> 关键字参数**——构造器还能绕开 config 传模式的那一天，「这批是谁跑的」
+> 就有了两个互相矛盾的答案来源（TypeError 用例钉死）。proberun 不开这
+> 扇门（沿用 discovery-path 先例，parser 用例钉住）。上一条落地注里
+> 「分派只有一处」自 A2b 起已是两处（站点链 + 中间页链），位置由
+> AST 守卫钉在 `_visit_guarded` / `_intermediate_visit`。
+>
+> 已知口径：agent 模式**共用** `per_site_timeout_s`（一个候选最多 12 次
+> llm_call，90s 会被走得满的候选撞到），超时即 `unresolved` 与 scripted
+> 同形；A3 若要单列改一处。
 
 ### 6.2 goto URL 溯源断言（批次级，A3 最大单项）
 
@@ -285,20 +405,98 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 - 违反产出：批次级统计报告（幻觉 goto 计数 / 明细），**不进 22 分支封闭集**（样本级分支记账一字不动——幻觉是批次质量信号，不是站点失败原因）；
 - 例外口径：`done=true` 前的最后 goto 若是站内相对 URL 解析结果，以 `landed_url` 归一后核（domain+path 前缀匹配，容忍重定向）。
 
-> **待 owner 拍板（A3 开工前）**：幻觉 goto 是否要反映进 D-2 样本级（「动作引用实体在前置观察中可找到」口径天然覆盖 goto URL 溯源——goto 的 params.url 算不算「动作引用实体」）。倾向：D-2 保持只核 click/fill 的 target（现有口径），URL 溯源独立成批次级——两个信号分开放，D-2 分数跨模式可比。
+> **已拍板（2026-10-17 owner，选倾向方案）**：幻觉 goto **不进 D-2 样本级**——D-2 保持只核 click/fill 的 target（现有口径），URL 溯源独立成批次级信号。理由即原倾向：两个信号分开放，D-2 分数跨模式可比——scripted 批的 goto 恒真，agent 批混入 LLM 幻觉，混进同一分母后 A/B「得分不降」会分不清是「导航差」还是「编造 URL」。溯源断言（A3-2）照旧产出批次级计数，进 §6.6 验收⑤。
+
+**落地注（INC57，2026-10-17，A3-2）**：`evaluation/goto_trace.py` 落地，判定
+口径按上拍板定稿——
+
+1. **锚点递推**：候选池 ∪ 中间页 URL（B/C 存档里 `record.candidates`
+   已被引荐候选替换，不并中间页 URL 会系统性误报）∪ `search_url` ∪
+   搜索观察 ∪ 前 N-1 步观察的 `links[].href`。流顺序 = 执行顺序
+   （搜索步 → 中间页 → 站点访问）；
+2. **时序是判定的一部分**：第 N 步观察到的链接救不了第 N-1 步的 goto——
+   顺序反了检查器就是摆设（幻觉 goto 走一步就能看见自己的落地页）；
+3. **相对 href 以产生它的观察页 URL 解析**（urljoin）——「站内相对 URL
+   解析结果」由此一般化，不需要 §6.2 例外条款的特判；
+4. **容差三档逐级放宽**：原串 → (host 小写, 去尾斜杠 path, query) 归一
+   → landed 容差（落地页与锚点同 host 且 path 互为前缀，容忍重定向）。
+   两个刻意的收紧：根 path `/` 不与任何东西前缀匹配（否则同 host 的
+   任意 goto 自动可溯源，容差退化成没有）；landed 容差不跨 host（防
+   「编造 URL 而站点 302 到首页」被洗白）；
+5. **malformed 与违规分账**：goto 缺 `params.url` 单独计数不判违规——
+   采集缺件记成模型幻觉是两个病因混账；
+6. **退出码 0**：有违规不非零退出——这是 A/B 要收集的质量信号不是
+   闸门，混用会让 agent 批的幻觉数据在 CI 里变成失败。
+
+CLI：`python -m trajectory_pipeline.evaluation.goto_trace [--out DIR]
+[--limit N] [--json PATH]`，按 `executor_mode` 分桶（老存档缺该键进
+`unknown` 桶不静默丢）。端到端基线：真 visit_site / agent_visit 链落的
+档零违规（恒真式那头是断言基线，agent 那头是 I6 白名单的旁证）。
 
 ### 6.3 D-2/D-5/D-6 兼容性（调研结论：天然兼容 + 守卫钉住）
 
+> **落地注（INC58，2026-10-17）**：守卫落在 `tests/unit/test_agent_mode_guards.py`
+>（12 例），调研结论逐条复核——**D-2** 真链样本 click 引用判 found（5 分）、
+> 合成 missing 判 2 分、无 click 不出满分（undetermined），分类在 agent 形状
+> 零漂移；**D-5** 补 agent 链端到端冒烟（SPA 形态 outcome.question/
+> reached_play_page/branch 照常落 P2），FailClosed 映射的全量守卫不动；
+> **D-6** 照旧无需。复核中发现一个**两批共用的既有缺口**并钉成显式已知项：
+> 访问从根页导航到播放页时 outcome 记在播放页 url，而 assembler 配对只试
+> 候选/落地 url → `outcome_missing`（scripted 同样命中，非 agent 回归）——
+> 修法（加试 `player_obs.url`）留给独立 INC，A3-3 不夹带共用逻辑。
+
 | 判据 | 结论 | 守卫动作 |
 |---|---|---|
-| D-2（code_scorer） | click/fill target 前置观察核查与「谁决定动作」无关；不可判定判据依赖的 `elements_total`/`limits` 留痕在 agent 模式照常产出（观察采集层不动） | 守卫测试：FakeAgent 轨迹跑 D-2 得 found/missing 正确分类 |
+| D-2（code_scorer） | click/fill target 前置观察核查与「谁决定动作」无关；不可判定判据依赖的 `elements_total`/`limits` 留痕在 agent 模式照常产出（观察采集层不动） | ✅ 守卫测试（INC58）：FakeAgent 轨迹跑 D-2 得 found/missing 正确分类 |
 | D-5（d5_scorer） | 只锚 `outcome.(branch/question/reached_play_page)`；`QUESTION_TO_BRANCHES` 动态推导自 REGISTRY，agent 化判断点自动同步；§3.3 映射表的 FailClosed 分支组合逐条过 `Test同源` | 全量门禁即守卫（A2a 验收含） |
 | D-6 | 只读 outcome 与观察正文，零动作流依赖 | 无需 |
 | P3（views.py） | agent 原生轨迹（action=tool_call 形态 + 原生 think）比 scripted 事后合成更契合；`TestClosingDispositionDrift` 盯分支-处置映射漂移照常有效 | 端到端测试断言 P3 形态与 scripted 同形 |
 
-### 6.4 D-9 连带核对（若纳入验收）
+### 6.4 D-9 连带核对（**已拍板：纳入 A3 验收**，2026-10-17 owner）
 
-原生 CoT 的时点关系与 scripted 相反：scripted rationale 是「看过观察后写」的总结，agent 的 think 是「看观察→思考→决定动作」——d9/gates 的时序核查与 goto 首步早退逻辑要按新首步类型重核。**A2a 的 think 字段就是原生 CoT，P2 rationales 按 step_index 对齐逻辑已兼容**；D-9 判据修订是独立工作量，**建议不进 A3 验收（agent 批次先不产 D-9 分），列为后续 INC**——待 owner 拍板。
+原生 CoT 的时点关系与 scripted 相反：scripted rationale 是「看过观察后写」的总结，agent 的 think 是「看观察→思考→决定动作」——d9/gates 的时序核查与 goto 首步早退逻辑要按新首步类型重核。**A2a 的 think 字段就是原生 CoT，P2 rationales 按 step_index 对齐逻辑已兼容**；D-9 判据修订是独立工作量。
+
+> **落地注（INC58，2026-10-17）——判据修订落地 + 一处断链修复**：
+>
+> 1. **断链修复（本刀的主体）**：复核发现「P2 对齐已兼容」只对了一半——
+>    agent_loop 此前**不落任何 rationale**（think 只活在对话与
+>    AgentOutcome.transcript 里，两者都不进 P1），于是 agent 样本
+>    `rationales=()` → 闸门 `not_run` → D-9 永不触发，「D-9 纳入验收」
+>    会落空成永远缺分的维度。修复：`_execute` 在 `act()` 后把
+>    `instr.think` 装进 `steps[i].rationale` 槽位（成败两条路都挂——
+>    动机与执行结果无关；空 think 不挂，保持缺件形态），payload 与
+>    `WriteResult.to_json()` 的 written 形态全等，`reason="native-think"`
+>    作来源标记（同分不同质核对的刻痕）。形状同步由
+>    `tests/contract/test_think_payload_contract.py` 钉住——executor
+>    不 import rationale 的纪律不破。
+> 2. **时序核查复验（gates 零改动）**：think 引用只在后续步观察出现的
+>    实体 → `temporal_leak`（hard）→ 闸门 failed → D-9 强制走 LLM——
+>    agent 模式后见之明的唯一抓法，守卫实测抓得出（judge 收到的 prompt
+>    里带 think 原文，「同分不同质」里「质」的守军在）。干净 think 走
+>    成本控制口径与 scripted 同（passed + 无可判短板 → not_evaluated，
+>    不更松也不更严）。
+> 3. **首步早退复验**：agent 链首条 rationale 步的可见窗口里有进站
+>    观察（site 链 index 2 窗口=[site_obs, 缺件占位]；中间页链 index 1
+>    窗口=[agg obs]），早退不误伤；窗口真空的 step 0 早退照走（防御钉）。
+> 4. **套话检查的不对称（记录不修改）**：`check_boilerplate` 的
+>    「≤20 字判套话」是按 writer 的 800-1500 token rationale 校准的，
+>    think 是设计出来的一句话短句，无实体的 think 会吃 soft finding——
+>    soft 不进 GateMark、不改状态，下游零影响，**刻意不动判据**；若未来
+>    rubric 把 think 长度纳入锚点，再回来修订。
+
+> **决策记录（2026-10-17 owner 拍板，推翻本文原建议）**：D-9 **纳入** A3
+> 验收。原建议是「agent 批先不产 D-9 分，列为后续 INC」；owner 裁定的
+> 理由是思考真实性恰是 agent 模式最需要盯的质量面（驾驶员换了，方向盘
+> 后面的推理是新的），不产分等于这面裸奔——「缺分」本身没有信息量，
+> 「得分低」才有。随之成为 A3 硬依赖的工作项：
+>
+> 1. **D-9 判据修订**（A3-3 的前置）：d9/gates 时序核查按 agent 首步类型
+>    （goto 起手而非 scripted 的检索页）重核；goto 首步早退逻辑（step 0
+>    窗口为空实体核查显式早退）在 agent 轨迹上复验；
+> 2. **agent 批产 D-9 分**进验收指标（§6.6 ②扩为 D-2/D-5/D-6/D-9 得分
+>    不降）；A/B 对比的 D-9 口径注意 scripted（事后总结 rationale）与
+>    agent（原生 think）的判据差异，**同分不同质**的风险在 A3-3 守卫
+>    测试里显式核对，不靠分数巧合兜底。
 
 ### 6.5 mutation_check 口径
 
@@ -307,9 +505,11 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 ### 6.6 黄金集 A/B 双跑（验收主体）
 
 - 基建现成：`evaluation/golden/builder.py` 冻结黄金集版本 → 跑批次 → EQUIV_CLASS 等价类算 D10 一致率——scripted/agent **分别跑批、分别算，无需新建对比工具**；
-- 验收四指标：①D10 等价类一致率 agent 批不降（主要口径）；②D-2/D-5/D-6 得分不降；③agent 步数预算内完成率（导航到播放页的比例）；④unresolved 簇占比对比（方案 12 §3 的针对性主张：多步自主导航对 body 反爬降级 + JS-heavy 失败两类 unresolved 的修复效果）；
+- 验收五指标：①D10 等价类一致率 agent 批不降（主要口径）；②D-2/D-5/D-6/**D-9** 得分不降（D-9 随 2026-10-17 拍板纳入，§6.4）；③agent 步数预算内完成率（导航到播放页的比例）；④unresolved 簇占比对比（方案 12 §3 的针对性主张：多步自主导航对 body 反爬降级 + JS-heavy 失败两类 unresolved 的修复效果）；⑤幻觉 goto 计数（§6.2 批次级，**口径已定**：不进 D-2 样本级，D-2 保持只核 click/fill——2026-10-17 拍板，A/B 下 D-2 分母跨模式可比）；
 - **A1 遗留收口**：「①判断准确率 A/B 对比」与 golden alignment ROUTED 口径复核一并在此验收；
 - 真实批次迭代轮次（prompt 调优 × 站点时变）是两端最大的不可控项——批次验收与单元门禁分开记账，单元全绿不等于批次达标。
+
+> **落地注（2026-10-18，INC59）**：代码侧就三件——① INC58 钉板的 outcome 配对缺口已修（`_outcome_for` 加试 `player_obs.url`，根候选→播放页换址的成功访问不再 `outcome_missing`，scripted/agent 两链同修同测）；② 双跑配方（同 plan 两批、五指标读法与三条记录口径、D-9 快路径 vs detailed、A1 遗留两项并收）已写进 04-运行手册「scripted / agent A/B 双跑」节；③ 五指标数据源全部就位（D10=builder agreement、②=cli --include-llm-judge、③=outcomes.reached_play_page、④=outcomes.branch 分桶、⑤=goto_trace `[agent]` 行）。**真批次双跑待活 infra**（浏览器 + LLM 后端）：两批必须同时段、结论带时差保留，验收判定以双跑报告为准，不在代码侧预设通过/不通过。
 
 ### 6.7 文档收口
 
@@ -330,10 +530,11 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 | **A2a-5** | 测试：FakeAgentLLM + 单元 40-60 例 + 端到端 | fake ~200 行 + 测试主体 | A2a-1..4 |
 | **A2a-验收** | 全量门禁 + 文档（架构总览第 5 行 D-A5 修订） | 门禁全绿 + INC 入册 | 全部 |
 | **A2b** | 任务③④ + B/C 感知题内化 + ROUTED 复核 | ~200-300 行 + 测试 | A2a |
-| **A3-1** | executor_mode RunConfig 转正 + 记账 | ~80-120 行 | A2a |
-| **A3-2** | goto URL 溯源断言（批次级） | ~150-250 行（新逻辑） | A2a（动作流形态定） |
-| **A3-3** | D-2/5/6 守卫测试 + D-9/D-2 口径拍板落地 | 15-25 例 | A2a |
-| **A3-4** | 黄金集 A/B 双跑 + 四指标验收 | 代码 ~0，批次迭代 | A2b |
+| **A3-1** | executor_mode RunConfig 转正 + 记账 ✅（INC56，2026-10-17） | ~80-120 行 | A2a |
+| **A3-2** | goto URL 溯源断言（批次级）✅（INC57，2026-10-17，§6.2 落地注） | ~150-250 行（新逻辑） | A2a（动作流形态定） |
+| **A3-3** | D-2/5/6 守卫测试 + D-9 判据修订落地（**D-9 已拍纳入，§6.4**；含同分不同质守卫）✅（INC58，2026-10-17，§6.3/§6.4 落地注） | 15-25 例 | A2a |
+| **A3-4** | 黄金集 A/B 双跑 + 五指标验收 ✅（INC59，2026-10-18，§6.6 落地注；**双跑本身待活 infra**，配方与数据源已就位） | 代码 ~0，批次迭代 | A2b |
+| **A3-5** | 文档收口（mutation 口径 / 编年史 / 本文档落地注）✅（INC60，2026-10-18，§6.7 清单逐条核过） | 文书 | A3-4 |
 | **A3-5** | 文档收口（mutation 口径 / 编年史 / 本文档落地注） | 文书 | A3-4 |
 
 **可并行项**：A3-2（溯源断言）只依赖动作流形态确定，可与 A2b 并行前研；A2a-1 与 A2a-4 无依赖可同刀。
@@ -351,7 +552,7 @@ def chat_messages(self, messages: list[dict], *, max_tokens=None) -> ChatResult
 | 引导循环（InjectGuidance 反复触发同一拦截） | llm_calls 烧预算无进展 | 同站第二次同类拦截 → FailClosed（§3.4） |
 | 双轨并存期口径打架（词表救济链 vs agent 语义判定） | 同一页面两套结论 | 仲裁规则不变（确定性事实优先）；gatekeeper 唯一拦截出口；A2a 期间 agent 批与 scripted 批分开记账可比 |
 | P1 契约三值枚举若被测试硬钉 | A2a-0 收口动作碰红 | 核查 test_p2_contract 实际断言集——代码六值已是存档事实，契约文字对齐是纠偏不是变更 |
-| agent 批次 D-9 缺分被误读为质量下降 | 验收口径混乱 | 6.4 拍板后写死：agent 批不产 D-9（或产但单独口径），验收四指标里不含 D-9 |
+| agent 批次 D-9 判据与 scripted 时点关系相反，直接套旧判据会系统性误判 | 思考真实性得分失真 | **已拍板（2026-10-17）**：D-9 纳入验收，判据修订列 A3-3 前置（§6.4 决策记录）；同分不同质风险用守卫测试显式核对，不靠分数巧合 |
 
 ---
 

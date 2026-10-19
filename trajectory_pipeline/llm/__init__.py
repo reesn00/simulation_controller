@@ -11,6 +11,16 @@ json_schema**，模型会漂字段名、套 think、首轮跑偏。``schema_pars
 - :mod:`~trajectory_pipeline.llm.client` —— OpenAI 兼容 chat-completions
   客户端 + 配置。**凭据只从环境变量读**，不进代码/测试/文档/日志；
   ``LLMConfig.__repr__`` 刻意不吐 key。
+  两个入口共用 **一个请求循环** ``_exchange``（2026-10-17 A2a-1）：
+
+  - ``chat`` —— 十一道判断题的单轮两消息形态，返回模型原文或 ``None``。
+  - ``chat_messages`` —— agent 循环的多轮对话（方案 13 §3.1 D-B1 的
+    JSON 动作指令走文本通道，**不加 ``tools`` / ``tool_choice``**），
+    返回 :class:`~trajectory_pipeline.llm.client.ChatResult`：原文 +
+    token 计数 + 耗时 + 错误码，供 ``RunRecord.llm_calls[]`` 账本记账。
+
+  **失败语义一字不差**——重试策略分叉的后果是「某一类失败只在其中一条
+  路径上被正确处理」。``usage`` 取不到时为 ``None``，**不补 0**。
 - :mod:`~trajectory_pipeline.llm.schema_parse` —— 共享容错层：剥 think、
   从散文/fence 里抠 JSON、字段别名容错、宽松布尔与置信度解析。
 

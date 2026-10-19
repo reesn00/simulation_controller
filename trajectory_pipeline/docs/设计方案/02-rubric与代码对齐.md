@@ -99,7 +99,13 @@ rubric 正例：search("剧名 第3集 在线播放") → open(url_A) → click(
 rubric 反例：open("剧名第3集")            （搜索词当 URL）
 ```
 
-动作空间实际是 `("goto", "click", "new_tab")`（[`executor/actions.py`](../../executor/actions.py) 的 `TOOLS`，另见 [`assembler/schema.py`](../../assembler/schema.py) 的 `TOOL_SPECS`）。
+动作空间实际是六值 `("goto", "click", "new_tab", "fill", "press", "close_tab")`
+（[`executor/actions.py`](../../executor/actions.py) 的 `TOOLS`，另见 [`assembler/schema.py`](../../assembler/schema.py) 的 `TOOL_SPECS`；
+**2026-10-17 INC49 更新**——本文写作时它是三值，`fill`/`press` 自路径 B/C
+站内搜索、`close_tab` 随外链校验获得真实产地，六值的来历以
+[`contracts/P1-observation.md`](../contracts/P1-observation.md) 为准）。
+下文的推理结论不受影响：`search` 与 `open` 仍不存在，
+`click(None)` 仍是最接近的语义错配类型。
 
 `search` 与 `open` **都不存在**。后果不是「例子过时」这么轻：
 

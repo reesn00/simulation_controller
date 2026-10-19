@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 #: 环境变量名前缀。带 ``TRAJECTORY_`` 前缀是为了**不与存量 v1 的
 #: ``LLM_*`` 撞名**——两棵树在同一台机器上跑，共用变量名会让一次
@@ -38,6 +38,21 @@ ENV_MODEL = "TRAJECTORY_LLM_MODEL"
 ENV_API_KEY = "TRAJECTORY_LLM_API_KEY"
 ENV_TIMEOUT_S = "TRAJECTORY_LLM_TIMEOUT_S"
 ENV_MAX_TOKENS = "TRAJECTORY_LLM_MAX_TOKENS"
+
+#: 升配后端（方案 13 §3.5 G2）。EscalateModel 处置触发时 agent 循环从主
+#: 后端切到这一个——**全部可选**：一个都没配 = 无升配能力（处置降级为
+#: 只落事件不切后端，不 fail）；只配了一半（有 BASE_URL 没 MODEL 或反之）
+#: = 配置错误，**报错不猜**——与主后端同一条「缺件即报错」纪律：猜一个
+#: 默认模型的后果是升配悄悄失效，而报表上只会看到「这批 unresolved 多」，
+#: 没人会想到去查升配压根没接上。
+#:
+#: 刻意**不复用主后端的三键**：主后端与升配后端是两台机器两份模型
+#: （典型形态：主 = 本地小模型省钱，升配 = 远端大模型救场），共用键名
+#: 就意味着升配只能升向「同一台机器的另一个模型」，那不是能力限制，
+#: 是键名偷换了设计。
+ENV_ESCALATE_BASE_URL = "TRAJECTORY_LLM_ESCALATE_BASE_URL"
+ENV_ESCALATE_MODEL = "TRAJECTORY_LLM_ESCALATE_MODEL"
+ENV_ESCALATE_API_KEY = "TRAJECTORY_LLM_ESCALATE_API_KEY"
 
 #: 默认超时。**跑批校准值，30 → 90**（2026-10-11）：
 #:
@@ -93,6 +108,31 @@ class _BudgetExhausted(ValueError):
     继承 ``ValueError`` 是为了不改动 :meth:`LLMClient.chat` 既有的
     兜底 ``except`` 列表；但 :meth:`chat` **先**接这一类。
     """
+
+
+@dataclass(frozen=True, slots=True)
+class ChatResult:
+    """一轮**多轮**对话的结果——:meth:`LLMClient.chat_messages` 的返回类型。
+
+    与 :meth:`LLMClient.chat` 的差别只在**返回得更多**，失败语义一字不差：
+    ``content is None`` 与 ``chat`` 返回 ``None`` 同义（判不出来 / 后端
+    不可用），调用方一律按 fail-closed 处理。⚠️ 在 agent 循环里尤其不能把
+    ``None`` 当成「模型说放弃」——那是两种事实：「没作答」（要重试引导）
+    与「答了放弃」（要收口 unresolved）。
+
+    ``usage`` / ``latency_ms`` 是给 ``RunRecord.llm_calls[]`` 账本的
+    （方案 13 §3.6）：agent 循环每步一次调用，没有 token 与耗时就**比不出
+    批次成本**，而比不出来的 prompt 调优只能停在拍脑袋阶段。
+    """
+
+    content: str | None
+    #: ``{"prompt_tokens": int, "completion_tokens": int}``。后端没给就是
+    #: ``None``——**不补 0**，理由见 :func:`_usage_of`。
+    usage: dict[str, int] | None
+    latency_ms: int
+    #: 与 :attr:`LLMClient.last_error` 同格式（``transport:`` / ``http:`` /
+    #: ``shape:`` / ``budget:``）。**空串 = 成功**。
+    error: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +206,62 @@ class LLMConfig:
             max_tokens=tokens,
         )
 
+    @classmethod
+    def escalate_from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        base: "LLMConfig | None" = None,
+    ) -> "LLMConfig | None":
+        """读升配后端配置（方案 13 §3.5 G2，A2a-4）。
+
+        三态语义，与主后端的「缺件即报错」同纪律但**多一个「没配」档**——
+        升配是能力不是依赖（§3.5），未配置不 fail：
+
+        - 三个键**一个都没配** → ``None`` = 无升配。EscalateModel 处置
+          降级为只落事件不切后端，agent 循环在 ``escalate=None`` 时本来就
+          这么跑（``_maybe_escalate``），所以这里返回 None 是**闭环的**，
+          不是半个状态；
+        - BASE_URL 与 MODEL**只配了一半** → 抛 :class:`LLMUnavailable`。
+          半配是配置错误：用户显然**想**升配但没配齐，静默当无升配处理，
+          那一半配置就成了永远没人读的尸体——而想升配的人看到「升配没
+          生效」时不会去查「是不是只配了一半」；
+        - API_KEY 没配 → :data:`NO_KEY` 占位（与主后端同款：本机
+          vLLM / llama.cpp 不校验 key）。
+
+        ``base`` 给了就**继承 ``timeout_s`` / ``max_tokens``**：升配后端
+        接的是同一类请求（agent 动作指令 + 推理模型的思考预算），主后端
+        上校准过的输出预算原样带过去。继承的是「已校准值」而不是
+        「类默认值」——升配通常是远端大模型，烧的每一 token 都更贵，
+        预算被类默认值悄悄放大或缩小的代价都是真金白银。timeout 同理：
+        executor 的 ``per_site_timeout_s`` 是按主后端 90s 校准的链路
+        预算，升配后端不该比它更松。
+        """
+        e = os.environ if env is None else env
+        base_url = (e.get(ENV_ESCALATE_BASE_URL) or "").strip()
+        model = (e.get(ENV_ESCALATE_MODEL) or "").strip()
+        api_key = (e.get(ENV_ESCALATE_API_KEY) or "").strip() or NO_KEY
+        if not base_url and not model and api_key == NO_KEY:
+            return None
+        missing = [
+            n for n, v in (
+                (ENV_ESCALATE_BASE_URL, base_url),
+                (ENV_ESCALATE_MODEL, model),
+            )
+            if not v
+        ]
+        if missing:
+            raise LLMUnavailable(
+                f"升配后端配置不完整：缺少环境变量 {'、'.join(missing)}。"
+                f"三个 {ENV_ESCALATE_BASE_URL.rsplit('_BASE_URL', 1)[0]}_* 键"
+                f"要么全配、要么全不配——只配一半说明想升配但没配齐，"
+                f"静默当无升配处理，已配的那一半就成了没人读的尸体配置。"
+            )
+        kwargs: dict[str, Any] = {}
+        if base is not None:
+            kwargs.update(timeout_s=base.timeout_s, max_tokens=base.max_tokens)
+        return cls(base_url=base_url, model=model, api_key=api_key, **kwargs)
+
 
 class LLMClient:
     """同步 HTTP 客户端。协议 :class:`chat`。
@@ -215,13 +311,87 @@ class LLMClient:
         而推理模型思考与正文共用这一个预算，写死的数字必然在某个后端上
         不够——症状是「正文为空」，不是「这个数小了」，所以没人会去改它。
         传 ``None`` 之外的整数只为**排查**用（量边界），生产调用点不该带它。
+
+        .. note::
+
+           2026-10-17 A2a-1：请求循环抽到 :meth:`_exchange`，本方法成了
+           薄壳（组装两条消息 + 取 ``content``）。**外部契约一字未动**
+           ——十一道判断题与 ``FakeLLM`` 都还走这里。
         """
-        payload = {
-            "model": self.cfg.model,
-            "messages": [
+        content, _usage, error = self._exchange(
+            [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            max_tokens=max_tokens,
+        )
+        if error:
+            # 只在失败时写：``last_error`` 的语义是「上一次失败的原因」，
+            # 成功不清空（原实现即是如此，diag 路径依赖这个语义）。
+            self.last_error = error
+        return content
+
+    def chat_messages(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        """发一轮**多轮**对话。agent 循环（方案 13 §3.2）的调用入口。
+
+        与 :meth:`chat` 是**同一个出口、同一套失败语义**，差别只有两点：
+        消息由调用方给全、返回值多带账本字段。十一道判断题仍走 ``chat``
+        （单轮两消息形态被它们共用，不动）。
+
+        三个刻意的设计：
+
+        1. **不加 ``tools`` / ``tool_choice``。** D-B1 拍板用 JSON 动作
+           指令走文本通道：原生 tool_calls 要改 payload 与响应解析两处，
+           而 P3 视图由 ``views.py`` 从 Action 渲染，JSON 指令经
+           Action→ActionView 与 scripted **完全同形**，P3 契约零风险。
+        2. **``messages`` 原样透传**（OpenAI 形态的 ``{role, content}``）。
+           客户端不合并 system、不裁剪历史——那是 agent_loop 的事。在这里
+           加工会让「模型实际看到了什么」有**两份真相**：一份在调用方
+           组装的列表里，一份在客户端加工之后。
+        3. **失败不抛，仍是返回值。** 与 :meth:`chat` 同一条纪律（模块头
+           第 1 条）：调用方要的是「判不出来」这个信号，不是异常。
+
+        ⚠️ ``content is None`` 时账本里 ``usage`` 也必然是 ``None``
+        ——一次没跑完的请求没有可信的 token 数。
+        """
+        started = time.perf_counter()
+        content, usage, error = self._exchange(messages, max_tokens=max_tokens)
+        if error:
+            self.last_error = error
+        return ChatResult(
+            content=content,
+            usage=usage,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            error=error,
+        )
+
+    # ── 内部 ──────────────────────────────────────────────────────
+
+    def _exchange(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        max_tokens: int | None,
+    ) -> tuple[str | None, dict[str, int] | None, str]:
+        """发一轮请求，返回 ``(content, usage, error)``。
+
+        :meth:`chat` 与 :meth:`chat_messages` **共用这一份**重试与失败分类：
+        它们只有「消息从哪来」「返回多少」两点不同，而重试策略分叉的后果
+        是「某一类失败只在其中一条路径上被正确处理」——这类缺陷要等真实
+        后端出状况才暴露，代价是一次批次。
+        """
+        if not messages:
+            # 调用方的装配错误，不是后端的问题。发一次 90s 超时只为
+            # 换一个 400，不值。
+            return None, None, "shape:empty_messages"
+        payload = {
+            "model": self.cfg.model,
+            "messages": list(messages),
             "temperature": self.cfg.temperature,
             "max_tokens": self.cfg.max_tokens if max_tokens is None else max_tokens,
         }
@@ -229,6 +399,7 @@ class LLMClient:
         if self.cfg.api_key and self.cfg.api_key != NO_KEY:
             headers["Authorization"] = f"Bearer {self.cfg.api_key}"
 
+        error = ""
         for attempt in range(self.cfg.max_retries + 1):
             try:
                 resp = self._ensure_client().post(
@@ -238,39 +409,38 @@ class LLMClient:
                 # 传输层异常：连接失败/超时/DNS/后端进程挂了。重试有意义。
                 # 只留异常**类型名**——httpx 的异常串里可能带 URL 里的
                 # 查询参数，而 key 有时被塞在 URL 上而不是 header 里。
-                self.last_error = f"transport:{type(exc).__name__}"
+                error = f"transport:{type(exc).__name__}"
             else:
                 if resp.status_code >= 400:
-                    self.last_error = f"http:{resp.status_code}"
+                    error = f"http:{resp.status_code}"
                     # 4xx 与 5xx 都不重试，但原因不同：
                     #   4xx = 请求本身的问题（401 key 错、404 模型名错、400 参数错），
                     #         再发一次结果一样，纯烧时间。
                     #   5xx = 后端过载/崩溃，重试有机会成。
                     if resp.status_code < 500:
-                        return None
+                        return None, None, error
                 else:
                     try:
-                        return _content_of(resp.json())
+                        data = resp.json()
+                        return _content_of(data), _usage_of(data), ""
                     except _BudgetExhausted as exc:
                         # 预算用尽：**换参数就能好**，所以不重试同一请求
                         # （重发一次还是同一个预算、还是空）。给的是能照着
                         # 做的提示，不是异常类名。
-                        self.last_error = f"budget:{exc}"
-                        return None
+                        error = f"budget:{exc}"
+                        return None, None, error
                     except (ValueError, KeyError, IndexError, TypeError) as exc:
                         # 后端回了 200 但内容结构不对。**不重试**：
                         # 解析失败几乎总是源于模型稳定输出的某种坏格式，
                         # 再问一次它还是那样，重试只是把 30s 超时翻倍。
-                        self.last_error = f"shape:{type(exc).__name__}"
-                        return None
+                        error = f"shape:{type(exc).__name__}"
+                        return None, None, error
             if attempt < self.cfg.max_retries:
                 time.sleep(min(2.0 * (attempt + 1), 5.0))
 
-        # 重试用尽。返回 None 而不是抛异常：调用方（感知层）的契约是
-        # I4 fail-closed，它需要「判不出来」这个信号。
-        return None
-
-    # ── 内部 ──────────────────────────────────────────────────────
+        # 重试用尽。返回 None 而不是抛异常：调用方（感知层 / agent 循环）
+        # 的契约是 I4 fail-closed，它需要「判不出来」这个信号。
+        return None, None, error
 
     def _ensure_client(self) -> Any:
         if self._client is None:
@@ -310,6 +480,34 @@ def _content_of(data: Any) -> str:
             )
         raise ValueError("content 为空")
     return content
+
+
+def _usage_of(data: Any) -> dict[str, int] | None:
+    """从响应里取 token 计数。**取不到就 None，不补零。**
+
+    为什么不补 0：账本上「0」与「后端没给」是两个事实。补零后「这一批
+    压根没记到 token」会看起来像「这一批一个 token 没花」，于是成本对比
+    先错在**分母**上，而这个错不报任何警——它只是让比分看起来很好看。
+
+    只认 ``int``，且**显式排除 ``bool``**（它是 ``int`` 的子类）：字符串
+    数字与浮点一律当没给。转换规则一旦开始放宽，各后端各写一种写法，
+    账本就变成不可比的——而账本唯一的价值就是可比。
+
+    ``total_tokens`` 刻意不取：它能由两者相加得到，记下来就多一份要与之
+    同步的东西（方案 13 §3.6 的账本只声明了两个键）。
+    """
+    if not isinstance(data, Mapping):
+        return None
+    raw = data.get("usage")
+    if not isinstance(raw, Mapping):
+        return None
+    out: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens"):
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        out[key] = value
+    return out or None
 
 
 def probe(cfg: LLMConfig, timeout_s: float = 5.0) -> dict[str, Any]:

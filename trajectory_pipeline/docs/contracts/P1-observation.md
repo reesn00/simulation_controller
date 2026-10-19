@@ -67,6 +67,8 @@
 | `result_titles` | `int` | `RESULT_SELECTORS` 取回的结果标题数。0 = 输入不足，① 恒 fail-closed |
 | `search_blocked` | `str` | **运行级**反爬状态（如 `captcha`）。非空 ⇒ 不产出搜索单元样本 |
 | `gatekeeper_events` | `list[{stage,verdict,reason,disposition}]` | **Gatekeeper 事件账本**（2026-10-16 方案 12 阶段 G / D-A3 最小账本）。`verdict` 取值封闭于 `executor/gatekeeper.py::Verdict` 七值；`disposition.kind ∈ {inject_guidance, escalate_model, fail_closed}`——静默自愈已按 D-A2 否决，**每一档都可见**。与 `search_blocked` 并存不替代：后者是冻结口径的运行级字段，这里是统一账本（A2 起 agent 每步拦截都记）。空 = 本次运行无拦截事件。**新增可选字段，不动 `schema_version`** |
+| `executor_mode` | `"scripted" \| "agent"` | **执行器模式**（2026-10-17 方案 13 §6.1，A2a 埋点；A3 转正为 `RunConfig` 字段）。`scripted` = 七段固定序列，`agent` = 站内自主导航（agent_loop）。**批次级属性**：一批要么全 scripted 要么全 agent，模式在构造期定下、候选内不 fallback（混合轨迹不可归因）。它是 A/B 两批存档在磁盘上**唯一**能区分这两者的字段——两批的 `steps` 同形（六值动作空间）、`visits` 同形，没了它只能靠文件名猜。老存档无此键（可选字段纪律，不动 `schema_version`） |
+| `llm_calls` | `list[{ts,caller,candidate,model,latency_ms,prompt_tokens,completion_tokens,error}]` | **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4）。agent 循环每次问模型记一行。**记账范围只圈 agent_loop**：感知层十一题的调用不汇入（§3.6 的 A2a 决策，感知层侵入换不来收益）。`prompt/completion_tokens` 为 `null` = 后端没给 usage，**不是 0**——「没记到」与「没花」在成本分母上是两个事实。`ts` 粒度是**候选级**：循环体不引入时间源，由 orchestrator 在候选访问收口时统一加盖（同候选各条共享一戳；候选内次序看 list 顺序，单条耗时看 `latency_ms`）；超时/异常收口的候选可能带着没盖戳的残条落盘。scripted 批恒空 list。**新增可选字段，不动 `schema_version`** |
 | `candidate_filter` | `{str: int}` | 剔除**原因计数**：`excluded_host:<root>` / `duplicate_host` / `impossible_content:gov.cn` |
 | `run_config` | `{str: Any}` | **`RunConfig` 全量快照**。缺它 `--max-candidates 5` 与默认 20 跑出的两批在存档里一模一样，而覆盖完整性差 4 倍 → `DEGRADED` |
 | `provenance` | `{str: Any}` | persona 六维等切片轴。**空 dict 的含义固定为「不是 taskgen 跑的」** |
@@ -147,12 +149,17 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 
 | 字段 | 语义 |
 |---|---|
-| `action.tool` | `goto` / `click` / `new_tab` |
-| `action.params` | `goto`/`new_tab` 是 `{"url": ...}`；`click` 是 `{}` |
-| `action.origin` | `"model"`（模型会选）/ `"infrastructure"`（执行器自己做的会话隔离） |
-| `action.target` | **只有 click 有**，`{tag, label}` 语义化目标。**没有 `ref`** |
+| `action.tool` | `goto` / `click` / `fill` / `press` / `new_tab` / `close_tab`（封闭六值，与 `executor/actions.py` 的 `TOOLS` 同源；`observe` 不是动作） |
+| `action.params` | `goto`/`new_tab` 是 `{"url": ...}`；`fill` 是 `{"text": ...}`；`press` 是 `{"key": ...}`；`click`/`close_tab` 是 `{}` |
+| `action.origin` | `"model"`（模型会选）/ `"infrastructure"`（执行器自己做的会话隔离：`new_tab` / `close_tab`） |
+| `action.target` | `click`/`fill` 的语义化目标 `{tag, label}`（**没有 `ref`**）；目标为 `None` 时照实记——那是 I6 被违反的现场，不编目标补上。`press` 可带：回车等全局按键提交时 `null`（点「搜索」按钮提交走 `click`，不走这里）。`goto`/`new_tab`/`close_tab` 无此字段 |
 | `observation` | 上一个动作的观察回执。**`observe` 不是动作**——记成动作会让模型学出「调用 observe」 |
 | `error` | 非空 = 动作本身失败。与 `observation: null` 是两回事：前者是证据，后者是采集失败 |
+| `rationale` | 本步的思考+结论（`WriteResult.to_json()` 形状：`status` / `rationale:{text,conclusion}` / `reason` / `degraded`）。**scripted 形态** = rationale writer 产物（2026-10-17 INC46 起为动作前动机，`reason=""`）；**agent 形态** = 循环的原生 think（A3-3 / INC58，`reason="native-think"`——来源标记，两形态在 P1 里可区分）。`null` = 该步没有思考文本（执行器自己的步、或 scripted 未接 writer），**不与「写了但为空」相混** |
+
+### `action.tool` 六值的来历
+
+`goto` / `click` / `new_tab` 是 direct 路径的三件套；`fill`（把片名填进搜索框，驱动层 `type_text`）与 `press`（回车提交检索，驱动层 `press_key`）自 2026-10-16 路径 B/C 的站内搜索链获得真实产地，`close_tab` 同轮随外链校验（`new_tab` 开、看完关）获得产地。P2/P3 链路早已渲染 fill/press 步——契约文字此前停在旧三值，是**文档没跟上代码**，不是契约变更（A2a-0 / INC49 收口；文档 ↔ 代码的双向同步由 `test_p1_contract.py` 的漂移守卫钉住）。
 
 ---
 

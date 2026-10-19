@@ -86,6 +86,14 @@ class Test字段集一致:
             # 2026-10-16 路径 B/C：发现路径（批次归因轴）与中间页单元
             # （聚合站页 / 文章页，独立决策单元）。
             "discovery_path", "intermediates",
+            # 2026-10-17 方案 13 §6.1（A2a）：执行器模式。**A/B 两批
+            # 存档在磁盘上唯一能区分这两者的字段**——两批的 steps
+            # 同形（六值动作空间）、visits 同形，没了它只能靠文件名猜。
+            "executor_mode",
+            # 2026-10-17 方案 13 §3.6（A2a-4）：LLM 调用账本（agent
+            # 循环每次问模型一行）。与 gatekeeper_events 同款可选字段
+            # 纪律；scripted 批恒空 list 照落。
+            "llm_calls",
         }
         assert actual == expected, (
             f"顶层字段漂移：多 {actual - expected} / 少 {expected - actual}。"
@@ -182,7 +190,7 @@ class Test文档不是摆设:
         "perceptor", "candidate_source", "result_titles", "search_blocked",
         "candidate_filter", "run_config", "provenance", "elapsed_ms",
         "warnings", "search_observation", "steps", "candidates", "visits",
-        "ledger", "outcomes",
+        "ledger", "outcomes", "executor_mode", "llm_calls",
         "url", "page_title", "body_text", "body_len", "body_source",
         "truncated", "raw_len", "stripped_ratio", "degraded",
         "video_tag_count", "iframe_count", "elements_total", "links_total",
@@ -220,6 +228,36 @@ class Test文档不是摆设:
         assert "player_unverified" in doc_text
         assert "不回填" in doc_text
 
+    def test_动作枚举文档覆盖代码TOOLS(self, doc_text):
+        """A2a-0（INC49）收口的守卫：P1 ``action.tool`` 行必须覆盖
+        ``executor/actions.py`` ``TOOLS`` 的**全部**原语。
+
+        漂移史：契约文字停在 direct 路径旧三值（goto/click/new_tab），
+        而代码六值——``fill``/``press`` 自路径 B/C 站内搜索链、
+        ``close_tab`` 随外链校验获得真实产地，P2/P3 早已渲染——
+        只有文档没跟上。代码 ↔ 训练声明的同步由
+        ``test_p2_contract.TestToolSpaceDrift`` 负责；本测试管
+        文档这一侧，两个方向各查各的。
+        """
+        src = (REPO / "trajectory_pipeline" / "executor" / "actions.py") \
+            .read_text(encoding="utf-8")
+        native: set[str] = set()
+        for node in ast.walk(ast.parse(src)):
+            if (isinstance(node, ast.AnnAssign)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == "TOOLS"
+                    and isinstance(node.value, ast.Tuple)):
+                native = {e.value for e in node.value.elts
+                          if isinstance(e, ast.Constant)
+                          and isinstance(e.value, str)}
+        assert native, "读不到 executor.actions.TOOLS 的字面量（模块改名了？）"
+        row = next((line for line in doc_text.splitlines()
+                    if line.startswith("| `action.tool`")), "")
+        assert row, "P1 契约里找不到 action.tool 行"
+        for tool in sorted(native):
+            assert f"`{tool}`" in row, (
+                f"P1 契约的 action.tool 行少了 `{tool}`——代码在发、契约没写")
+
 
 # ── 真实存档逐份核对 ──────────────────────────────────────────────
 
@@ -245,6 +283,12 @@ class TestOnRealArchives:
     def test_真实存档字段与契约一致(self):
         """每份存档的顶层键都落在契约声明的集合内（老存档可能缺新增
         字段，但**不能有契约之外的多余字段**——那是另一条漂移）。"""
+        # 老存档**必然没有**的新增可选字段。**这条清单是容差的一部分**：
+        # 可选字段纪律（不动 ``schema_version``）的代价就是老批次没有它，
+        # 于是每加一个，老档的覆盖数就少一个。把它写成常数 3 的话，
+        # 每次加字段都要有人想起来 +1，而那一天多半是想不起来——
+        # 于是红的是这条测试，它却指向了错的地方。
+        _NEW_OPTIONAL = frozenset({"executor_mode", "llm_calls"})
         expected = _keys_of(ORCH_SRC, "to_json")
         seen: set[str] = set()
         for p in _real_archives():
@@ -253,9 +297,10 @@ class TestOnRealArchives:
             assert not extra, f"{p.name} 出现契约之外的顶层字段：{extra}"
             seen |= set(doc)
         # 至少覆盖到契约里的一大半字段，否则这条断言在残档上也是空的
-        assert len(seen) >= len(expected) - 3, (
+        assert len(seen) >= len(expected) - 3 - len(_NEW_OPTIONAL), (
             f"真实存档只覆盖了 {len(seen)}/{len(expected)} 个顶层字段，"
-            f"契约里这批数据没验证到的部分：{expected - seen}")
+            f"契约里这批数据没验证到的部分：{expected - seen}"
+            f"（已登记的新增可选字段：{sorted(_NEW_OPTIONAL)}）")
 
     def test_真实存档切得出的样本形状与契约一致(self):
         """跑一遍真的 ``split_archive``——契约说的六件套与

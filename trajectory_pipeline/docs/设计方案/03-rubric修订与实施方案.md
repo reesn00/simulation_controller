@@ -70,6 +70,13 @@ label 落在 `[:80]` 裁剪之外、观察降级导致 `interactive_elements` �
 | 改 | 正例：`goto(search_url)` → `goto(url_A)` → `click(target)`<br>反例：`click(target=None)`（判定说有控件却拿不到语义目标，I6 被违反） |
 |  why | `search` / `open` **不在动作空间**（真实是 `goto`/`click`/`new_tab`）。原反例「搜索词当 URL」在 v2 里**永远不会发生**——检索走 `goto(search_url)`，没有把检索串当 URL 提交这条路径。留着一个永不触发的反例，标注员会拿它当活跃扣分项 |
 
+> **事实更新（2026-10-17，INC49）**：文中「真实是 `goto`/`click`/`new_tab`」
+> 是当时快照，动作空间现为**六值**——`fill` / `press` 自路径 B/C 站内搜索、
+> `close_tab` 随外链校验获得真实产地。本节的结论不受影响：`search` / `open`
+> 仍不存在，`click(target=None)` 仍是最接近的语义错配类型；六值的来历与
+> 各值形态以 [`contracts/P1-observation.md`](../contracts/P1-observation.md)
+> 的「六值的来历」小节为准（契约 ↔ 代码同步有 AST 守卫）。
+
 ### 3.2 评分单位拆分（D-1/D-7/D-8 → 批次级）
 
 评分记录单拆成两张：

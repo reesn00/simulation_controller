@@ -332,6 +332,77 @@ class TestConfig:
         assert "secret-value" not in dump_for_debug(c)
 
 
+class TestEscalateConfig:
+    """升配后端的配置解析（方案 13 §3.5 G2，A2a-4）。
+
+    三态语义：全没配 → ``None``（无升配，不 fail）；全配 → 接上；
+    半配 → 报错不猜。键名刻意带 ``ESCALATE_`` 中缀，与主后端三键互相
+    独立——两台机器两份模型，共用键名等于把「升配」偷换成「同一台机器
+    换模型」。
+    """
+
+    def test_三键全没配返回None(self):
+        assert LLMConfig.escalate_from_env(env={}) is None
+
+    def test_主后端键不触发升配(self):
+        """只配主后端三键 = 无升配。升配是**额外**能力，不配是常态。"""
+        assert LLMConfig.escalate_from_env(
+            env={"TRAJECTORY_LLM_BASE_URL": "http://x",
+                 "TRAJECTORY_LLM_MODEL": "m"}
+        ) is None
+
+    def test_只配BASE_URL报错(self):
+        with pytest.raises(LLMUnavailable, match="TRAJECTORY_LLM_ESCALATE_MODEL"):
+            LLMConfig.escalate_from_env(env={"TRAJECTORY_LLM_ESCALATE_BASE_URL": "http://x"})
+
+    def test_只配MODEL报错(self):
+        with pytest.raises(LLMUnavailable,
+                           match="TRAJECTORY_LLM_ESCALATE_BASE_URL"):
+            LLMConfig.escalate_from_env(env={"TRAJECTORY_LLM_ESCALATE_MODEL": "big"})
+
+    def test_只配KEY也算半配报错(self):
+        """光给个 key 说不出升配指向哪台机器——同样是想配没配齐。"""
+        with pytest.raises(LLMUnavailable, match="缺少环境变量"):
+            LLMConfig.escalate_from_env(env={"TRAJECTORY_LLM_ESCALATE_API_KEY": "k"})
+
+    def test_配齐两键无KEY用占位(self):
+        cfg = LLMConfig.escalate_from_env(env={
+            "TRAJECTORY_LLM_ESCALATE_BASE_URL": "http://x",
+            "TRAJECTORY_LLM_ESCALATE_MODEL": "big",
+        })
+        assert cfg is not None and cfg.api_key == "not-needed"
+
+    def test_继承主后端的timeout与max_tokens(self):
+        """升配接的是同一类请求（agent 指令 + 推理预算）：主后端上校准过的
+        输出预算原样带过去，被类默认值悄悄放大/缩小的代价都是真金白银。"""
+        base = LLMConfig(base_url="http://x", model="m",
+                         timeout_s=42.0, max_tokens=2048)
+        cfg = LLMConfig.escalate_from_env(
+            env={"TRAJECTORY_LLM_ESCALATE_BASE_URL": "http://y",
+                 "TRAJECTORY_LLM_ESCALATE_MODEL": "big"},
+            base=base,
+        )
+        assert cfg is not None
+        assert cfg.timeout_s == 42.0 and cfg.max_tokens == 2048
+
+    def test_不传base用类默认(self):
+        cfg = LLMConfig.escalate_from_env(env={
+            "TRAJECTORY_LLM_ESCALATE_BASE_URL": "http://y",
+            "TRAJECTORY_LLM_ESCALATE_MODEL": "big",
+        })
+        assert cfg is not None and cfg.timeout_s == 90.0
+
+    def test_repr同样不含key(self):
+        """凭据红线对升配后端同等有效——它也会被 log / traceback 带出去。"""
+        cfg = LLMConfig.escalate_from_env(env={
+            "TRAJECTORY_LLM_ESCALATE_BASE_URL": "http://y",
+            "TRAJECTORY_LLM_ESCALATE_MODEL": "big",
+            "TRAJECTORY_LLM_ESCALATE_API_KEY": "esc-secret",
+        })
+        assert cfg is not None
+        assert "esc-secret" not in repr(cfg)
+
+
 class _Resp:
     """极简响应替身——只需 status_code 与 json()。"""
 
@@ -350,11 +421,30 @@ class _Transport:
         self.payload = payload
         self.status_code = status_code
         self.budgets: list = []
+        #: 每次请求**完整**的 payload。A2a-1 起要断言「messages 原样透传」
+        #: 与「不带 tools」，只记 ``max_tokens`` 不够。
+        self.sent: list = []
         self.closed = False
 
     def post(self, url, *, json, headers):
         self.budgets.append(json["max_tokens"])
+        self.sent.append(json)
         return _Resp(self.payload, self.status_code)
+
+
+class _BoomTransport:
+    """``post`` 固定抛异常——模拟连不上 / 超时 / DNS 失败。"""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.calls = 0
+
+    def post(self, url, *, json, headers):
+        self.calls += 1
+        raise self.exc
+
+    def close(self):
+        pass
 
     def close(self):
         self.closed = True
@@ -481,6 +571,228 @@ class TestMaxTokens:
         c = _client(payload)
         assert c.chat("s", "u") is None
         assert "思考过程" not in c.last_error
+
+
+class TestChatMessages:
+    """多轮入口（方案 12 A2a-1）——agent 循环的调用面。
+
+    与 :meth:`chat` 是**同一个出口、同一套失败语义**（请求循环抽在
+    ``_exchange`` 里共用），所以这里断言的不是「能不能调通」，而是三件
+    容易悄悄漂移的事：
+
+    1. **消息原样透传**——客户端不合并 system、不裁剪历史。加工了就会
+       让「模型实际看到什么」有两份真相，而轨迹存档要求唯一真相源。
+    2. **不带 ``tools`` / ``tool_choice``**——D-B1 拍板走 JSON 动作指令
+       的文本通道，加上去等于把半个原生 tool_calls 协议引进来，而 P3
+       视图是从 Action 渲染的，两套形状会打架。
+    3. **失败分类与 ``chat`` 一字不差**——重试策略分叉的后果是「某一类
+       失败只在其中一条路径上被正确处理」，它要等真实后端出状况才暴露。
+    """
+
+    @staticmethod
+    def _msgs() -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": "你是站内导航助手"},
+            {"role": "user", "content": "目标片名：功夫"},
+            {"role": "assistant", "content": '{"tool": "goto", "ref": "e1"}'},
+            {"role": "user", "content": '{"observation": {"links": []}}'},
+        ]
+
+    def test_消息原样透传(self):
+        c = _client(_ok("hi"))
+        result = c.chat_messages(self._msgs())
+        assert result.content == "hi"
+        assert c._client.sent[0]["messages"] == self._msgs()
+
+    def test_不带tools与tool_choice(self):
+        """D-B1：JSON 动作指令走文本通道，不引原生 tool_calls 协议。"""
+        c = _client(_ok("hi"))
+        c.chat_messages(self._msgs())
+        assert "tools" not in c._client.sent[0]
+        assert "tool_choice" not in c._client.sent[0]
+
+    def test_历史不裁剪(self):
+        """客户端不加工消息——裁剪是 agent_loop 的事（那是步数预算的下游）。"""
+        c = _client(_ok("hi"))
+        long = self._msgs() * 3
+        c.chat_messages(long)
+        assert len(c._client.sent[0]["messages"]) == len(long)
+
+    def test_usage回传(self):
+        payload = _ok("hi")
+        payload["usage"] = {"prompt_tokens": 456, "completion_tokens": 78,
+                            "total_tokens": 534}
+        r = _client(payload).chat_messages(self._msgs())
+        # total_tokens 刻意不取：由两者相加可得，记下来就多一份要同步的东西
+        assert r.usage == {"prompt_tokens": 456, "completion_tokens": 78}
+
+    def test_后端没给usage时为None(self):
+        """**不补 0**：账本上「0」与「没给」是两个事实，补了成本分母就错了。"""
+        r = _client(_ok("hi")).chat_messages(self._msgs())
+        assert r.usage is None
+
+    def test_usage只认int且排除bool(self):
+        payload = _ok("hi")
+        payload["usage"] = {"prompt_tokens": "456", "completion_tokens": 78}
+        # 字符串形态当没给——转换规则一放宽，各后端各写一种写法，账本就
+        # 变成不可比的，而可比是它唯一的价值。
+        assert _client(payload).chat_messages(self._msgs()).usage == {
+            "completion_tokens": 78}
+
+    def test_usage全坏时为None而不是空dict(self):
+        payload = _ok("hi")
+        payload["usage"] = {"prompt_tokens": True, "completion_tokens": None}
+        assert _client(payload).chat_messages(self._msgs()).usage is None
+
+    def test_latency是整数(self):
+        r = _client(_ok("hi")).chat_messages(self._msgs())
+        assert isinstance(r.latency_ms, int) and r.latency_ms >= 0
+
+    def test_失败时content与usage同时为None(self):
+        """一次没跑完的请求没有可信的 token 数——usage 不能靠猜。"""
+        r = _client(_ok(None, finish="stop")).chat_messages(self._msgs())
+        assert r.content is None
+        assert r.usage is None
+        assert r.error.startswith("shape:")
+
+    def test_4xx不重试(self):
+        c = _client(_ok("hi"), max_retries=2)
+        c._client = _Transport({}, status_code=404)
+        r = c.chat_messages(self._msgs())
+        assert r.content is None
+        assert r.error == "http:404"
+        assert len(c._client.budgets) == 1
+
+    def test_5xx重试到底(self):
+        # max_retries=1：够证「重试真的发生了」（2 次请求），又不让门禁
+        # 白等一次 4s 退避——退避时长本身不是这里要断言的东西。
+        c = _client(_ok("hi"), max_retries=1)
+        c._client = _Transport({}, status_code=503)
+        r = c.chat_messages(self._msgs())
+        assert r.content is None
+        assert r.error == "http:503"
+        assert len(c._client.budgets) == 2
+
+    def test_传输层异常重试到底(self):
+        from trajectory_pipeline.llm.client import LLMClient
+
+        c = LLMClient(LLMConfig(base_url="http://x", model="m", max_retries=1))
+        c._client = _BoomTransport(RuntimeError("boom"))
+        r = c.chat_messages(self._msgs())
+        assert r.content is None
+        assert r.error == "transport:RuntimeError"
+        assert c._client.calls == 2
+        assert c.last_error == "transport:RuntimeError"
+
+    def test_预算用尽与其它chat同口径(self):
+        r = _client(_ok(None, finish="length")).chat_messages(self._msgs())
+        assert r.content is None
+        assert r.error.startswith("budget:")
+        assert "TRAJECTORY_LLM_MAX_TOKENS" in r.error
+
+    def test_空消息不发请求(self):
+        """调用方的装配错误——发一次 90s 超时只为换一个 400，不值。"""
+        c = _client(_ok("hi"))
+        r = c.chat_messages([])
+        assert r.content is None
+        assert r.error == "shape:empty_messages"
+        assert c._client.sent == []
+
+    def test_chat仍是单轮两消息(self):
+        """回归守卫：``chat`` 改成薄壳后，十一道判断题的请求形态不能变。"""
+        c = _client(_ok("hi"))
+        assert c.chat("s", "u") == "hi"
+        assert c._client.sent[0]["messages"] == [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "u"},
+        ]
+
+    def test_成功后last_error不清空(self):
+        """``last_error`` 的语义是「上一次失败的原因」——原实现成功时不
+        清除，diag 路径依赖这一点，抽壳后保持不动。"""
+        c = _client(_ok("hi"))
+        c._client = _Transport({}, status_code=500)
+        c.chat("s", "u")
+        assert c.last_error == "http:500"
+        c._client = _Transport(_ok("hi"))
+        assert c.chat("s", "u") == "hi"
+        assert c.last_error == "http:500"
+
+
+class TestFake多轮接口:
+    """``FakeLLM.chat_messages`` 与单轮 ``chat`` 必须**同一个脑子**。
+
+    抽 ``_respond`` 之前，两个入口各走一份 dispatch 与坏行为开关——
+    分叉的后果是「某个开关只在单轮形态下生效」，而它要等真实批次里
+    那条路径第一次被走到才暴露，那时已经分不清是模型的问题还是 fake
+    的问题。
+    """
+
+    @staticmethod
+    def _body() -> str:
+        from trajectory_pipeline.perception import llm_perceptor as lp
+
+        return json.dumps({"question": lp.Q.IS_REACHABLE})
+
+    def _msgs(self) -> list[dict[str, str]]:
+        return [{"role": "system", "content": "sys"},
+                {"role": "user", "content": self._body()}]
+
+    def test_多轮与单轮同内容(self):
+        from trajectory_pipeline.tests.fakes import FakeLLM
+
+        fake = FakeLLM()
+        single = fake.chat("sys", self._body())
+        r = fake.chat_messages(self._msgs())
+        assert r.content == single
+        assert r.error == ""
+
+    def test_usage默认有值且可关(self):
+        from trajectory_pipeline.tests.fakes import FakeLLM
+
+        r = FakeLLM().chat_messages(self._msgs())
+        assert r.usage == {"prompt_tokens": 128, "completion_tokens": 32}
+        # 「后端没给 usage」的形态：账本要记 None，不是 0
+        assert FakeLLM(no_usage=True).chat_messages(self._msgs()).usage is None
+
+    def test_失败形态与单轮一致(self):
+        from trajectory_pipeline.tests.fakes import FakeLLM
+
+        for kwargs, prefix in (
+            ({"down": True}, "transport:"),
+            ({"budget_exhausted": True}, "budget:"),
+        ):
+            fake = FakeLLM(**kwargs)
+            r = fake.chat_messages(self._msgs())
+            assert r.content is None, kwargs
+            assert r.error.startswith(prefix), kwargs
+            assert r.usage is None, kwargs
+            assert fake.last_error.startswith(prefix), kwargs
+
+    def test_记账取首system末user(self):
+        from trajectory_pipeline.tests.fakes import FakeLLM
+
+        fake = FakeLLM()
+        msgs = [
+            {"role": "system", "content": "第一条 system"},
+            {"role": "user", "content": "第一次问"},
+            {"role": "assistant", "content": "第一次答"},
+            {"role": "user", "content": self._body()},
+        ]
+        fake.chat_messages(msgs)
+        assert fake.calls[-1] == ("第一条 system", self._body())
+        assert fake.budgets[-1] is None
+
+    def test_坏行为开关在多轮形态下同样生效(self):
+        """开关表是 fake 的价值所在——它必须**两个入口都生效**。"""
+        from trajectory_pipeline.tests.fakes import FakeLLM
+
+        r = FakeLLM(prose=True).chat_messages(self._msgs())
+        assert r.content is not None and "结论" in r.content
+        r = FakeLLM(fence=True).chat_messages(self._msgs())
+        assert r.content is not None and r.content.startswith("```json")
+        r = FakeLLM(think_only=True).chat_messages(self._msgs())
+        assert r.content is not None and r.content.startswith("<think>")
 
 
 class TestNoCredentialInSource:

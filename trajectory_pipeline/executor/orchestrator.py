@@ -24,6 +24,7 @@ import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from trajectory_pipeline.executor import actions
@@ -34,6 +35,11 @@ from trajectory_pipeline.executor.branches import (
 )
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.gatekeeper import FailClosed, intercept
+from trajectory_pipeline.executor.mode import AGENT, EXECUTOR_MODES
+from trajectory_pipeline.executor.steps import (
+    agent_intermediate,
+)
+from trajectory_pipeline.executor.steps import agent_visit as agent_visit_step
 from trajectory_pipeline.executor.steps import aggregator as aggregator_step
 from trajectory_pipeline.executor.steps import article as article_step
 from trajectory_pipeline.executor.steps import search as search_step
@@ -122,6 +128,17 @@ class RunConfig:
     #: B/C：每个中间页最多校验几条引荐外链。外链校验每条都要开 tab
     #: 真实访问，上限是预算控制不是语义筛选。
     max_referral_links: int = 5
+    #: 执行器模式（2026-10-17 方案 13 §6.1，A3-1 从私有环境变量转正为
+    #: 配置字段）。``scripted`` = 固定序列（:func:`~.steps.visit.visit_site`），
+    #: ``agent`` = 站内自主导航（:func:`~.steps.agent_visit.agent_visit`）。
+    #: 默认 ``scripted``：既有调用点零改动——「默认值不改变现状」是
+    #: 加配置的第一纪律。
+    #:
+    #: 取值合法性在 ``__post_init__`` 查（:mod:`.mode` 的纪律原文）：
+    #: 未知值**报错**不猜——拼错会静默跑成 scripted 批，而存档里的
+    #: ``executor_mode`` 会诚实写着 ``"scripted"``，A/B 对比那天没人
+    #: 分得清那是没灰度还是打错了字。
+    executor_mode: str = "scripted"
 
     def __post_init__(self) -> None:
         if self.discovery_path not in DISCOVERY_PATHS:
@@ -129,6 +146,13 @@ class RunConfig:
                 f"未知发现路径 {self.discovery_path!r}；可用：{DISCOVERY_PATHS}。"
                 f"拼错路径会静默跑成 direct，而那批存档的归因就是错的——"
                 f"与其猜，不如当场报错。"
+            )
+        if self.executor_mode not in EXECUTOR_MODES:
+            raise ValueError(
+                f"未知执行器模式 {self.executor_mode!r}；可用：{EXECUTOR_MODES}。"
+                f"拼错会静默跑成 scripted 批，而存档里的 executor_mode "
+                f"会诚实写着 'scripted'——A/B 对比那天没人分得清那是"
+                f"没灰度还是打错了字。"
             )
 
 
@@ -166,6 +190,19 @@ class RunRecord:
     #: 「实际走的那条链」：将来若有「按观察动态换路径」的逻辑，
     #: 两者会分叉，届时读档的人需要知道**实际**走了哪条。
     discovery_path: str = "direct"
+    #: **执行器模式**（2026-10-17 方案 13 §6.1，A2a 埋点）：
+    #: ``scripted`` = 固定序列（:func:`~.steps.visit.visit_site`），
+    #: ``agent`` = 站内自主导航（:func:`~.steps.agent_visit.agent_visit`）。
+    #:
+    #: 与 ``discovery_path`` **同一个理由单独存一份**：它是批次级属性，
+    #: 不是候选级——A/B 对比要看的是「这一整批是谁跑的」。A3-1 起
+    #: 取值来自 :attr:`RunConfig.executor_mode`，本字段仍是「实际走的
+    #: 那条链」（与 run_config 是「参数快照」同理）。
+    #:
+    #: 默认 ``scripted`` 刻意在**构造期**定下（:mod:`.mode` 的纪律）：
+    #: 已知的两条链在 P1 里同形，一旦允许逐候选切换，这批存档的
+    #: 归因就回答不了「这条轨迹是哪种执行器产的」。
+    executor_mode: str = "scripted"
     #: B/C 路径的中间页访问结果（聚合站页 / 文章页）。direct 恒空。
     #: 每个元素是独立决策单元（P2 切条时 ``agg-N`` / ``article-N``）。
     intermediates: list[IntermediateResult] = field(default_factory=list)
@@ -218,6 +255,26 @@ class RunRecord:
     #: 空 list = 本次运行没有拦截事件（**与「没接线」同形是已知代价**，
     #: 阶段 G 只有搜索页一处写入点，A2 起写入点才多起来）。
     gatekeeper_events: list[dict[str, Any]] = field(default_factory=list)
+    #: **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4）。每条
+    #: ``{ts, caller, candidate, model, latency_ms, prompt_tokens,
+    #: completion_tokens, error}``——agent 循环每次问模型记一行。
+    #:
+    #: 与 ``gatekeeper_events`` 同款可选字段纪律（不升 ``schema_version``）：
+    #: 老存档没有它。空 list 照落——「这次运行没问模型」（scripted 批）
+    #: 与「没这个键」在下游是两回事。
+    #:
+    #: **记账范围刻意只圈 agent_loop**（§3.6 的 A2a 决策）：感知层十一题
+    #: 的调用不汇入——Decision 已有 latency_ms，把账本传进 perceptor 是对
+    #: 感知层的侵入，而账本的用途是「agent 批次成本可比」，不是全管线审计。
+    #: token 数为 ``None``（不是 0）= 后端没给 usage，与「这一调用一个
+    #: token 没花」是两回事（理由见 ``llm.client._usage_of``）。
+    #:
+    #: ⚠️ ``ts`` 的粒度是**候选级**：循环体不引入时间源（否则每条记账都
+    #: 是时间相关的不可测代码），由 orchestrator 在候选访问收口时统一加盖，
+    #: 同一候选的各条共享一个时间戳。候选内的次序由 list 顺序保证，单条
+    #: 耗时由 ``latency_ms`` 给出——ts 要回答的只是「这批成本是哪段时间
+    #: 烧的」。超时/异常收口的候选可能带着没盖戳的残条落盘，那是诚实残账。
+    llm_calls: list[dict[str, Any]] = field(default_factory=list)
     #: 候选过滤记账：``{原因: 条数}``。静默剔除会让"引擎给了 50 个链接、
     #: 我们只跑了 11 个"这类损失不可见。
     candidate_filter: dict[str, int] = field(default_factory=dict)
@@ -297,6 +354,9 @@ class RunRecord:
             # Gatekeeper 事件账本（方案 12 阶段 G）。空 list 照落——
             # 「没有拦截事件」与「没这个键」在下游是两回事（缺件代理教训）。
             "gatekeeper_events": [dict(e) for e in self.gatekeeper_events],
+            # LLM 调用账本（方案 13 §3.6，A2a-4）。空 list 照落——
+            # scripted 批「没问模型」与「没这个键」在下游是两回事。
+            "llm_calls": [dict(c) for c in self.llm_calls],
             "candidate_filter": dict(self.candidate_filter),
             "run_config": dict(self.run_config),
             "provenance": dict(self.provenance),
@@ -308,6 +368,11 @@ class RunRecord:
             # 的 rationale，是整个搜索单元看完之后的总结。
             "reflection": dict(self.reflection) if self.reflection else None,
             "discovery_path": self.discovery_path,
+            # 执行器模式（方案 13 §6.1，A2a）。**空串也不写**：这是
+            # 「这批是谁跑的」的唯一答案，缺了它 A/B 两批存档在磁盘上
+            # 长得一模一样——而它们的可比性假设根本不同（方案 12 §5.3
+            # 第 3 条：agent 批的重跑可比性不成立）。
+            "executor_mode": self.executor_mode,
             # B/C 路径的中间页单元（2026-10-16）：就地构造（与 visits 同款），
             # 决策只落摘要——question/answer/evidence 足够人工复核复现，
             # 完整 Decision 的其余字段（source/fallback_used）已在对应
@@ -406,6 +471,24 @@ def _decision_json(decision: Decision | None) -> dict[str, Any] | None:
     }
 
 
+def _stamp_llm_calls(calls: list[dict[str, Any]]) -> None:
+    """给账本里**还没盖戳**的条目补 ``ts``（方案 13 §3.6，A2a-4）。
+
+    为什么不盖在循环里：``agent_loop._record`` 刻意不引入时间源——每条
+    记账都变成时间相关的不可测代码。所以 ts 由调用方在**候选访问收口时**
+    统一加盖（``RunRecord.llm_calls`` 字段 docstring 里写明的候选级粒度
+    口径：同候选各条共享一个戳，候选内次序看 list 顺序，单条耗时有
+    ``latency_ms``）。
+
+    只补**缺戳**的（``setdefault``）：多个候选 sequential 共用同一个
+    账本 list，先访问的候选已经盖过，重盖会把同一批条目刷成不同时间——
+    账本的 ts 是该候选的成本封口时间，不是「最后一次序列化的时间」。
+    """
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for entry in calls:
+        entry.setdefault("ts", ts)
+
+
 def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
     """Observation → JSON。落**可归因的证据**，不是给人眼看的摘要。
 
@@ -466,6 +549,15 @@ _CLASSIFY_DISPATCH: Mapping[str, tuple[str, str, str]] = {
     "direct": ("video_site", "not_play_site", "判断点 ①"),
     "aggregator": ("aggregator", "not_aggregator", "判断点 ①B"),
     "article": ("article_post", "not_article", "判断点 ①C"),
+}
+
+#: B/C 路径的中间页角色（A2b）。**两种模式同值**——``role`` 是 P1
+#: ``intermediates[]`` 的字段，说的是「这个单元是哪种中间页」，与它是
+#: 谁执行出来的无关。它与模式分开放，是为了让 :meth:`Orchestrator.
+#: _intermediate_visit` 里那唯一的模式判断只管选访问器。
+_INTERMEDIATE_ROLES: Mapping[str, str] = {
+    "aggregator": aggregator_step.ROLE_AGGREGATOR,
+    "article": aggregator_step.ROLE_ARTICLE,
 }
 
 
@@ -557,10 +649,32 @@ class Orchestrator:
         config: RunConfig | None = None,
         *,
         rationale_writer: Any = None,
+        agent_backend: Any = None,
     ) -> None:
+        # 两个模式的准入都在**构造期**查（:mod:`.mode` 的纪律）：
+        # 运行期才发现「没有后端」，那一批已经跑掉一半了——前面那些
+        # 候选是 scripted 还是 agent 产的，存档上回答不了。
+        # 模式的取值合法性由 RunConfig.__post_init__ 查（A3-1 起模式
+        # 的产地只有 config 一个——Orchestrator 不再收 executor_mode
+        # 关键字，两个产地等于两种真相）；这里只查「agent 必须有后端」，
+        # 那是 RunConfig 看不见注入侧、只有构造本类时才知道的事。
         self._driver = driver
         self._perceptor = perceptor
         self._cfg = config or RunConfig()
+        mode = self._cfg.executor_mode
+        if mode == AGENT and agent_backend is None:
+            # **不静默退回 scripted**。退回的那一批在存档上写的是
+            # 'scripted'，于是「这批是 agent 批、失败了 40%」这个
+            # 结论会被读成「这批 scripted 跑得好好的」——配置错误
+            # 伪装成了一次成功的灰度，而它是所有失败里最难发现的
+            # 一种：没有任何报错，报表还挺好看。
+            raise ValueError(
+                "executor_mode=agent 但没注入 agent 后端。"
+                "要 agent 模式就先把 LLM 后端配齐（TRAJECTORY_LLM_*）；"
+                "配不齐请显式用 scripted 模式跑。"
+            )
+        self._mode = mode
+        self._agent = agent_backend
         #: 模块 4 的 writer。**可调用对象，不是类型**——``executor``
         #: 不 import ``rationale``（依赖方向：llm ← {taskgen, perception,
         #: rationale}，executor 只依赖 perception 的协议）。构造它的是
@@ -631,8 +745,9 @@ class Orchestrator:
                 title, persona=persona
             )
         url = search_step.search_url(query, self._cfg.engine)
-        log.info("[%s] 发现链启动：path=%s query=%r engine=%s",
-                 task_id, self._cfg.discovery_path, query, self._cfg.engine)
+        log.info("[%s] 发现链启动：path=%s mode=%s query=%r engine=%s",
+                 task_id, self._cfg.discovery_path, self._mode, query,
+                 self._cfg.engine)
         ledger = RunLedger(task_id=task_id)
         record = RunRecord(
             task_id=task_id,
@@ -644,6 +759,7 @@ class Orchestrator:
             perceptor=getattr(self._perceptor, "name", "?"),
             provenance=dict(provenance or {}),
             discovery_path=self._cfg.discovery_path,
+            executor_mode=self._mode,
             # 运行参数进存档：覆盖完整性（B-2）与异常处置（B-4）
             # 两项断言的分母/判据都在这里，见 RunRecord.run_config。
             run_config=dataclasses.asdict(self._cfg),
@@ -1191,13 +1307,42 @@ class Orchestrator:
         allow_site_search: bool = False,
         title: str = "",
     ) -> visit_step.VisitResult:
-        """单站点遍历的超时与异常兜底。
+        """单站点遍历的超时与异常兜底。**两种模式的兜底是同一套**。
 
         单个站点超时不该拖垮整批——但**必须记账**，否则这次运行会因为
         「超时」而在样本分布里消失，变成一条看不见的损失。
+
+        ⚠️ 分派在**这里**而不是塞进 ``visit_site`` 内部：控制流里没有
+        ``if 模式`` 的分支，模式只在这一处起作用。若分派下沉到
+        ``visit_site`` 里，「scripted 基线与黄金对齐」这件事就变成了
+        一个需要额外证明的命题（它可能被 agent 路径改到）。
+
+        ⚠️ agent 模式**共用** ``per_site_timeout_s``：一个候选里最多
+        12 次 llm_call，90s 的默认值会被走得满的候选撞到。这是已知
+        的口径（超时即 unresolved，与 scripted 同形），A3 若要把
+        agent 的超时单列，改的是这里一处。
         """
         result = visit_step.VisitResult(candidate=candidate)
         try:
+            if self._mode == AGENT:
+                coro = agent_visit_step.agent_visit(
+                    self._driver,
+                    self._perceptor,
+                    ledger,
+                    candidate,
+                    self._agent,
+                    max_chars=self._cfg.max_chars,
+                    title=title,
+                    gatekeeper_events=record.gatekeeper_events,
+                    # §3.6 账本（A2a-4）：与事件账本同款透传——同一个
+                    # list 对象，循环往里 append，这里在收口时统一盖 ts。
+                    llm_calls=record.llm_calls,
+                )
+                visited = await asyncio.wait_for(
+                    coro, timeout=self._cfg.per_site_timeout_s
+                )
+                _stamp_llm_calls(record.llm_calls)
+                return visited
             return await asyncio.wait_for(
                 visit_step.visit_site(
                     self._driver,
@@ -1240,13 +1385,67 @@ class Orchestrator:
     # ── 路径 B/C：中间页遍历（2026-10-16）─────────────────────────
 
     def _intermediate_visit(self):
-        """当前发现路径对应的中间页访问函数与角色标签。"""
-        if self._cfg.discovery_path == "aggregator":
-            return (
-                aggregator_step.visit_aggregator,
-                aggregator_step.ROLE_AGGREGATOR,
-            )
-        return article_step.visit_article, aggregator_step.ROLE_ARTICLE
+        """（中间页访问器, 角色标签）——**模式在中间页链上只出现这一次**。
+
+        两条链的被调函数签名不同：agent 链**不收 ``perceptor``**（三道
+        判断题一道都不跑），scripted 链不收 ``backend``。各自配一个组装
+        方法，:meth:`_intermediate_guarded` 就只管超时与异常兜底、不碰
+        模式——把签名差异暴露到那一层，等于让「超时兜底」这个与模式
+        无关的职责背上模式的包袱。
+
+        角色只由 ``discovery_path`` 决定（两种模式同值，``role`` 是 P1
+        字段而不是模式的函数），所以它与模式无关地单独算。
+        """
+        role = _INTERMEDIATE_ROLES[self._cfg.discovery_path]
+        if self._mode == AGENT:
+            return self._intermediate_visit_agent, role
+        return self._intermediate_visit_scripted, role
+
+    async def _intermediate_visit_agent(
+        self, candidate: Candidate, ledger: RunLedger, record: RunRecord
+    ) -> IntermediateResult:
+        """agent 链的中间页访问的**参数组装**（模式词汇的容器之一）。"""
+        fn = (
+            agent_intermediate.visit_aggregator_agent
+            if self._cfg.discovery_path == "aggregator"
+            else agent_intermediate.visit_article_agent
+        )
+        result = await fn(
+            self._driver,
+            ledger,
+            candidate,
+            self._agent,
+            max_chars=self._cfg.max_chars,
+            max_links=self._cfg.max_referral_links,
+            engine=self._cfg.engine,
+            stats=record.candidate_filter,
+            title=record.title,
+            gatekeeper_events=record.gatekeeper_events,
+            # §3.6 账本（A2a-4）：与 ``_visit_guarded`` 同款透传 + 收口盖戳。
+            llm_calls=record.llm_calls,
+        )
+        _stamp_llm_calls(record.llm_calls)
+        return result
+
+    async def _intermediate_visit_scripted(
+        self, candidate: Candidate, ledger: RunLedger, record: RunRecord
+    ) -> IntermediateResult:
+        """scripted 链的中间页访问的参数组装。**外部行为与 A2b 前一致**。"""
+        fn = (
+            aggregator_step.visit_aggregator
+            if self._cfg.discovery_path == "aggregator"
+            else article_step.visit_article
+        )
+        return await fn(
+            self._driver,
+            self._perceptor,
+            ledger,
+            candidate,
+            max_chars=self._cfg.max_chars,
+            max_links=self._cfg.max_referral_links,
+            engine=self._cfg.engine,
+            stats=record.candidate_filter,
+        )
 
     async def _visit_intermediates(
         self, record: RunRecord, ledger: RunLedger
@@ -1318,20 +1517,15 @@ class Orchestrator:
         外链 ``dropped`` 的记账走 ``stats=record.candidate_filter``——
         与直搜链 ``extract_candidates`` 的过滤记账同一可见性口径，
         P1 里「引擎给了多少、我们丢了多少、为什么丢」一张表看全。
+
+        本方法**不碰模式**：两个访问器在 :meth:`_intermediate_visit` 里
+        就选好了，这里拿到的已经是一个签名统一的
+        ``(candidate, ledger, record) -> coro``。
         """
         visit, role = self._intermediate_visit()
         try:
             return await asyncio.wait_for(
-                visit(
-                    self._driver,
-                    self._perceptor,
-                    ledger,
-                    candidate,
-                    max_chars=self._cfg.max_chars,
-                    max_links=self._cfg.max_referral_links,
-                    engine=self._cfg.engine,
-                    stats=record.candidate_filter,
-                ),
+                visit(candidate, ledger, record),
                 timeout=self._cfg.per_site_timeout_s,
             )
         except asyncio.TimeoutError:

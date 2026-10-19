@@ -283,7 +283,10 @@ def _ns(**kw):
                 # 发现链路径（2026-10-16 路径 B/C）：默认值与
                 # RunConfig 一致——这条路径的存档归因必须是 direct
                 discovery_path="direct", max_intermediates=3,
-                max_referral_links=5)
+                max_referral_links=5,
+                # 执行器模式（A3-1）：None = 走环境变量 fallback——与
+                # build_parser 的 default=None 一致，scripted 批不受影响
+                executor_mode=None)
     base.update(kw)
     return argparse.Namespace(**base)
 

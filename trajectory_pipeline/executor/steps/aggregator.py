@@ -160,16 +160,25 @@ async def resolve_into_candidates(
     max_chars: int | None = None,
     max_links: int = 5,
     stats: dict[str, int] | None = None,
+    parent: str = "",
 ) -> None:
     """逐条外链过 :func:`~.link_check.resolve_referral`，产出最终候选。
 
-    ``origin``（"aggregator" / "article"）与 ``parent``（中间页落地 URL）
-    写进候选——批次出了问题要能从候选回溯到「哪个中间页引荐的它」。
-    上限 ``max_links`` 截断在**校验之前**：外链校验每条都要开 tab
-    真实访问，截断是预算控制不是语义筛选（保序截断，页面推荐权重
+    ``origin``（"aggregator" / "article"）与 ``parent``（产出这些链接的
+    那一页）写进候选——批次出了问题要能从候选回溯到「哪个中间页引荐
+    的它」。上限 ``max_links`` 截断在**校验之前**：外链校验每条都要开
+    tab 真实访问，截断是预算控制不是语义筛选（保序截断，页面推荐权重
     不可重排）。
+
+    Args:
+        parent: 覆盖默认的父页（默认取 ``result.landed_url``）。
+            **A2b 为 agent 链加的**：agent 在中间页内部导航过，它
+            报出链接的那一页未必是落地页，而
+            :func:`~.link_check.resolve_referral` 的 ``same_host``
+            剔除要以「当时站在哪」为基准——用错基准会把自己所在站的
+            链接也当成引荐放进来。
     """
-    parent = result.landed_url or result.candidate.url
+    parent = parent or result.landed_url or result.candidate.url
     base_host = base_host_of(parent)
     for href, text in hrefs[:max_links]:
         resolution = await link_check.resolve_referral(

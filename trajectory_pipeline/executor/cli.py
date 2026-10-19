@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any, Final, Mapping
 from urllib.parse import urlsplit
 
+from trajectory_pipeline.executor.agent_loop import AgentBackend
 from trajectory_pipeline.executor.archive import (
     DEFAULT_ROOT,
     REVIEWED_SUFFIX,
@@ -74,6 +75,12 @@ from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.integrity import (
     Severity, check_root, format_report,
+)
+from trajectory_pipeline.executor.mode import (
+    AGENT,
+    ENV_EXECUTOR_MODE,
+    EXECUTOR_MODES,
+    configured_mode,
 )
 from trajectory_pipeline.executor.orchestrator import (
     DISCOVERY_PATHS,
@@ -252,6 +259,96 @@ def _describe_rationale(writer, why: str) -> str:
     return f"已接上（{writer.model}）"
 
 
+def _make_agent_backend():
+    """组装 agent 模式的后端四件套。**没有可用后端时返回 ``(None, 原因)``**。
+
+    与 :func:`_make_rationale_writer` 同款形状：不说原因的话，报表上只看
+    到这批「没灰度」，没人知道是没配后端还是代码坏了（能力不可用
+    必须说出来，理由见 :func:`_describe_rationale`）。
+
+    ⚠️ 它立在**本文件**而不是 ``executor`` 里：:class:`AgentBackend` 装的是
+    LLM 客户端与 llm 侧的解析器，而 ``executor`` 不 import ``llm``
+    （01-架构总览 L26-50）。本文件是唯一能同时看见两边的边界层——
+    ``_make_rationale_writer`` 也是为了同一条边而活在这里。
+    """
+    try:
+        from trajectory_pipeline.llm import schema_parse
+        from trajectory_pipeline.llm.client import LLMClient, LLMConfig
+    except ImportError as exc:
+        return None, f"import 失败 {type(exc).__name__}: {exc}"
+    try:
+        cfg = LLMConfig.from_env()
+    except Exception as exc:                     # 未配齐或配置不合法
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        # §3.5 G2（A2a-4）：升配三键全没配 → None（无升配，不 fail）；
+        # 配了一半 → LLMUnavailable，与主后端同一条「缺件即报错」纪律——
+        # 静默当无升配处理，那一半配置就成了没人读的尸体。
+        esc_cfg = LLMConfig.escalate_from_env(base=cfg)
+    except Exception as exc:
+        return None, f"升配后端配置不合法：{type(exc).__name__}: {exc}"
+
+    return (
+        AgentBackend(
+            client=LLMClient(cfg),
+            # 与 :func:`agent_loop` docstring 里点名的生产侧解析器同款：
+            # 剥 ``<think>`` → 抠 JSON。解析器**注入**而不是在 executor
+            # 里 import，是为了让格式契约（schema）留在 loop 侧、
+            # 文本解析留在 llm 侧（见 agent_loop 模块 docstring）。
+            json_of=lambda raw: schema_parse.extract_json(
+                schema_parse.strip_think(raw)
+            ),
+            escalate=LLMClient(esc_cfg) if esc_cfg is not None else None,
+        ),
+        "",
+    )
+
+
+def _describe_agent(backend) -> str:
+    """把 agent 后端的状态写清楚。**升配配没配都要写在明面上**——
+    「未配置」与「已配置」在报表上不写出来，读的人就会默认它是配好的
+    （能力不可用必须说出来，理由见 :func:`_describe_rationale`）。"""
+    model = getattr(getattr(backend.client, "cfg", None), "model", "?")
+    esc = getattr(backend, "escalate", None)
+    if esc is None:
+        return f"已接上（{model}；升配后端=未配置，EscalateModel 只落事件）"
+    esc_model = getattr(getattr(esc, "cfg", None), "model", "?")
+    return f"已接上（{model}；升配后端={esc_model}）"
+
+
+def _resolve_executor(requested: str | None = None) -> tuple[str, Any, str]:
+    """构造期解析执行器模式：``(mode, backend, 打印文案)``。
+
+    优先级（A3-1 转正）：``--executor-mode``（run 子命令参数）>
+    ``TRAJECTORY_EXECUTOR_MODE``（私有环境变量，A3 结束后撤）> 默认
+    ``scripted``。两条门同一套缺件纪律——
+
+    **缺件即报错，不猜**（与 ``--perceptor llm`` 未配后端报错同款口径）：
+    agent 模式没有后端时若静默退回 scripted，那一批在存档上写的是
+    ``executor_mode="scripted"``，于是「agent 批失败了 40%」会被读成
+    「scripted 跑得好好的」——配置错误伪装成一次成功的灰度。
+    """
+    try:
+        mode = requested if requested is not None else configured_mode()
+    except ValueError as exc:
+        return "", None, f"[FAIL] {exc}"
+    via = "--executor-mode" if requested is not None else ENV_EXECUTOR_MODE
+    if mode != AGENT:
+        return mode, None, (
+            f"executor = scripted（经 {via}；agent 模式用 "
+            f"--executor-mode agent 切——需配齐 TRAJECTORY_LLM_*）"
+        )
+    backend, why = _make_agent_backend()
+    if backend is None:
+        return "", None, (
+            f"[FAIL] 要 agent 模式（经 {via}），但 agent 后端不可用：{why}。"
+            f"要么配齐 TRAJECTORY_LLM_*，要么显式用 scripted 跑"
+            f"（agent 模式没有后端时不会静默退回——那会让配置错误"
+            f"伪装成一次成功的灰度）。"
+        )
+    return mode, backend, f"executor = agent（经 {via}；{_describe_agent(backend)}）"
+
+
 async def cmd_run(args: argparse.Namespace) -> int:
     if args.plan:
         return await _run_plan(args)
@@ -292,6 +389,13 @@ async def _run_manual(args: argparse.Namespace) -> int:
         return 2
 
     titles = [t.strip() for t in args.title]
+    # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：模式是
+    # 批次级属性，不该等跑到某个候选才决定。解析先于 RunConfig 构造——
+    # 模式的产地是 RunConfig（A3-1 转正），backend 随模式一起在这里备好。
+    mode, agent_backend, banner = _resolve_executor(args.executor_mode)
+    if not mode:
+        print(banner)
+        return 2
     cfg = RunConfig(
         engine=args.engine,
         max_candidates=args.max_candidates,
@@ -300,11 +404,13 @@ async def _run_manual(args: argparse.Namespace) -> int:
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
+        executor_mode=mode,
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
     writer, why = _make_rationale_writer()
     print(f"rationale = {_describe_rationale(writer, why)}")
+    print(banner)
 
     async with client:
         driver = ObscuraDriver(client)
@@ -316,7 +422,8 @@ async def _run_manual(args: argparse.Namespace) -> int:
             perceptor = _make_perceptor(args, title)
             print(f"perceptor = {describe(perceptor)}")
             orch = Orchestrator(driver, perceptor, cfg,
-                                rationale_writer=writer)
+                                rationale_writer=writer,
+                                agent_backend=agent_backend)
             print(f"\n[{args.task_id}] {title}")
             # 不传 user_prompt：手工路径没有 persona 渲染的提问，
             # 存档里留空串（含义与 provenance 空 dict 相同）。
@@ -385,6 +492,13 @@ async def _run_plan(args: argparse.Namespace) -> int:
         print(f"[FAIL] {exc}")
         return 2
 
+    # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：手工路径
+    # 与计划路径在这里是同一套，换数据来源不该换执行链。解析先于
+    # RunConfig 构造——模式的产地是 RunConfig（A3-1 转正）。
+    mode, agent_backend, banner = _resolve_executor(args.executor_mode)
+    if not mode:
+        print(banner)
+        return 2
     cfg = RunConfig(
         engine=args.engine,
         max_candidates=args.max_candidates,
@@ -393,11 +507,13 @@ async def _run_plan(args: argparse.Namespace) -> int:
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
+        executor_mode=mode,
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
     writer, why = _make_rationale_writer()
     print(f"rationale = {_describe_rationale(writer, why)}")
+    print(banner)
 
     async with client:
         driver = ObscuraDriver(client)
@@ -408,7 +524,8 @@ async def _run_plan(args: argparse.Namespace) -> int:
             title = task.title
             # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
             orch = Orchestrator(driver, _make_perceptor(args, title), cfg,
-                                rationale_writer=writer)
+                                rationale_writer=writer,
+                                agent_backend=agent_backend)
             print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
                   f"| {title}")
             rec = await orch.run(
@@ -2576,6 +2693,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--perceptor", choices=("rule", "llm", "auto"), default=None,
                      help="感知实现。默认读 TRAJECTORY_PERCEPTOR，再默认 auto"
                           "（配了 LLM 后端就用 LLM 版，否则规则版）")
+    # 执行器模式（A3-1 转正）：choices 用封闭集本身——多一个值就要改
+    # mode.py，「参数集」与「取值集」两个产地的事不干。缺省 None = 读
+    # 环境变量 fallback，再不济默认 scripted（RunConfig 的第一纪律：
+    # 默认值不改变现状）。
+    run.add_argument("--executor-mode", choices=EXECUTOR_MODES, default=None,
+                     help="执行器模式：scripted=固定序列，agent=站内自主"
+                          "导航（需配齐 TRAJECTORY_LLM_*，缺件报错不静默"
+                          "退回 scripted）。缺省读 TRAJECTORY_EXECUTOR_MODE，"
+                          "再缺省 scripted")
     # ── 计划路径（模块 1 → 执行端）──────────────────────────────
     run.add_argument("--plan", default=None,
                      help="消费 gen --out 的执行计划 JSON（与 --title 互斥）")

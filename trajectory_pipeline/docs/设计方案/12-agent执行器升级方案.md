@@ -165,7 +165,7 @@ crc32 选词本身留在代码（确定性保留），真正非确定的是 **ag
 > **落地注（INC48，实录见[增量编年史](../计划进展/90-增量编年史.md)）**——与原计划的三处差异：
 > ①新题 `CLASSIFY_SEARCH_LINKS` **一道统一三条发现路径**（direct/B/C 各取目标类分发），不是「复用 ① 的 schema_hint」——四分类一次给出每条链接的类型判定，比三道二元筛选题信息密度高，且分发语义天然覆盖 B/C；②`SELECT_PLAY_SITES` **保留未删**（`site_search.py` 站内搜索结果页复用 + 金标重放）；③`not_play_site` 随之成为**多产地分支**（① 老档 / ①.5 新档），倒逼 `questions_of_branch` 复数归属查询 + `review_queue._fits` 任一产地命中（`not_aggregator` 同批受益）。单元门禁 2450 passed, 10 skipped（1 失败 = 存量 xlsx 恒定剔除）；「A/B 对比①判断准确率」需真实 LLM 批次，与 golden alignment 口径复核一并留待 A3 灰度验收（ROUTED 等价类已由路径 B/C 批次落地，单元门禁含同源测试）。
 
-### 阶段 A2：站内自主导航 agent 化
+### 阶段 A2：站内自主导航 agent 化 ✅ 已落地（A2a：INC49–INC54；A2b：INC53，2026-10-17）
 
 > **细化设计已拍板（2026-10-16 owner）并成文**：[13-A2A3-agent循环与双模灰度实施设计.md](13-A2A3-agent循环与双模灰度实施设计.md)——四项拍板：①JSON 动作指令（不用原生 tool_calls）；②A2a（基建+任务②）/A2b（任务③④）切分；③P1 动作枚举存量脱节前置收口（契约三值 vs 代码六值实锤）；④visit_site scripted 序列保留不删。本节为目标概述，实施以 13 号文档为准。
 
@@ -173,6 +173,16 @@ crc32 选词本身留在代码（确定性保留），真正非确定的是 **ag
 - `visit_site` 固定序列替换为 agent 任务②③④；`llm/client.py` 补 `temperature` 参数与 token / 成本记录（`llm_calls[]`）
 - 模型升配：`TRAJECTORY_LLM_ESCALATE_*` 第二后端配置，gatekeeper 触发
 - **验收**：agent 步数预算内完成率；unresolved 簇占比对比；D-2/D-5/D-6 在 agent 模式样本上的得分不降
+
+> **落地注（INC49–INC54，实录见[增量编年史](../计划进展/90-增量编年史.md)）**——
+> A2a 基建与任务②（INC51/52）、`chat_messages` 多轮出口（INC50）、
+> `llm_calls[]` 账本 + ESCALATE 三键（INC54）、A2b 任务③④（INC53）。
+> 验收三条**全部留待 A3**（需真实 LLM 批次）：步数预算内完成率、
+> unresolved 簇对比、D-2/D-5/D-6 agent 样本得分。结构性口径三处已钉：
+> ①「agent 永不直接产分支」——自报放弃一律 `unresolved`，负样本只收
+> 代码判出来的拦截事实；②`executor_mode` 批次级记账（`RunRecord` 字段，
+> 默认 scripted 刻意非 auto，要 agent 没后端构造期报错）；③记账范围
+> 只圈 agent_loop（感知层十一题不汇入，O 阶段再扩）。
 
 ### 阶段 A3：双模灰度与评估收口
 

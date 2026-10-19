@@ -624,7 +624,7 @@ def _actions_of(steps: Sequence[Mapping[str, Any]]) -> tuple[ActionView, ...]:
 def _outcome_for(
     outcomes: Sequence[Mapping[str, Any]], *urls: str
 ) -> OutcomeRef | None:
-    """按 url 找那条 outcome。**先候选 url、再落地 url。**
+    """按 url 找那条 outcome。**先候选 url、再落地 url、最后播放页 url。**
 
     两个都要试，顺序不能反：存档里 ``visits[i].url`` 是**候选链接**，
     而 ``outcomes[j].url`` 记的是**落地后的地址**——站点做 ``http→https``
@@ -637,6 +637,12 @@ def _outcome_for(
     而 ``None`` 与「搜索阶段本来就没有 outcome」长得一模一样——
     于是每条负样本都显示成「无结论」，报表上一条负样本都不少，
     只是全都查不到分支。分母没错、分子为空，没人会发现。
+
+    第三档试 ``player_obs.url``（INC59）：访问从根候选**导航到播放页**
+    时 outcome 记在播放页地址上（judge_player ⑦ 记的是判断发生的地方），
+    候选/落地两个 url 一个都配不上——A3-3 守卫实测 scripted 与 agent
+    的成功换址访问双双 ``outcome_missing``。成功访问丢了 outcome，
+    D-5/D-10 在这批样本上失明。
 
     刻意**不看**存档里的 ``is_negative_sample`` 字段——那份判据由
     :data:`~trajectory_pipeline.executor.branches.NON_SAMPLE_BRANCHES` 定义，
@@ -800,8 +806,12 @@ def split_archive(path: str | Path) -> list[Sample]:
             miss = _obs_missing(visit.get(key))
             if miss:
                 degraded.append(miss)
+        player_obs = visit.get("player_obs")
+        player_url = (str(player_obs.get("url") or "")
+                      if isinstance(player_obs, Mapping) else "")
         outcome = _outcome_for(
-            outcomes, str(visit.get("url") or ""), str(visit.get("landed_url") or "")
+            outcomes, str(visit.get("url") or ""),
+            str(visit.get("landed_url") or ""), player_url,
         )
         if outcome is None:
             # 站点级样本查不到 outcome = 这条没有分支结论。它不能只是

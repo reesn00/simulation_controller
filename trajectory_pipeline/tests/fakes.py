@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from trajectory_pipeline.llm.client import ChatResult
 from trajectory_pipeline.perception import llm_perceptor as lp
 from trajectory_pipeline.perception.questions import CLASSIFY_CATEGORIES
 from trajectory_pipeline.perception.rule_perceptor import (
@@ -33,6 +34,11 @@ from trajectory_pipeline.perception.rule_perceptor import (
     classify_trailer,
     is_play_control,
 )
+
+#: 多轮形态下 :meth:`FakeLLM.chat_messages` 回的 token 计数（方案 12
+#: A2a-1）。刻意**取固定的整数**而不是随机值：账本断言要能写出确定值，
+#: 而一个会跳的数字只会逼着断言退化成「> 0」这种恒真式。
+_FAKE_USAGE: dict[str, int] = {"prompt_tokens": 128, "completion_tokens": 32}
 
 
 class FakeLLM:
@@ -73,6 +79,11 @@ class FakeLLM:
         # 覆盖默认的关键词规则——端到端测试靠它驱动三条路径的分发
         # （谁保留、谁记负、谁 unresolved），不靠碰巧的 URL 措辞。
         classify: dict[str, str] | None = None,
+        # 方案 12 A2a-1 · 多轮形态：``chat_messages`` 返回的 ``usage``。
+        # 默认**给**（真 OpenAI 兼容后端会回 token 计数）；置 True 模拟
+        # 「后端没给 usage」——``llm_calls[]`` 账本对这种情况必须记
+        # ``None`` 而不是 0，两种事实在成本对比上是两回事。
+        no_usage: bool = False,
     ) -> None:
         #: 后端整体不可用（连接失败/超时）
         self.down = down
@@ -122,6 +133,8 @@ class FakeLLM:
         self.paywall_type = paywall_type
         #: 分类任务的显式类别表（方案 12 阶段 A1，见构造参数说明）
         self.classify = classify
+        #: 多轮形态下 ``usage`` 给不给（方案 12 A2a-1，见构造参数说明）
+        self.no_usage = no_usage
         #: 记录每次请求，供断言「问了几次、system 里带了什么」
         self.calls: list[tuple[str, str]] = []
         #: 每次请求实际带的 ``max_tokens``（None = 走 config）
@@ -138,19 +151,69 @@ class FakeLLM:
         #: 看着像模型判不了，谁也不会想到去改它。
         self.calls.append((system, user))
         self.budgets.append(max_tokens)
+        content, error = self._respond(user)
+        if error:
+            self.last_error = error
+        return content
+
+    def chat_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        """多轮形态的同签名方法（方案 12 A2a-1，agent 循环用）。
+
+        取**首条 system + 末条 user** 组装记账，正文交给与 :meth:`chat`
+        同一份 :meth:`_respond`——于是十一道判断题与分类任务的应答逻辑、
+        全部坏行为开关一行不改就能在多轮形态下复用。
+
+        ``latency_ms`` 恒为 ``0``：fake 不测真实耗时（那是
+        ``time.perf_counter`` 的事），而一个会跳的数字只会让断言不可确定。
+        """
+        system = ""
+        user = ""
+        for m in messages or ():
+            role = m.get("role")
+            if role == "system" and not system:
+                system = str(m.get("content", ""))
+            elif role == "user":
+                user = str(m.get("content", ""))
+        self.calls.append((system, user))
+        self.budgets.append(max_tokens)
+        content, error = self._respond(user)
+        if error:
+            self.last_error = error
+        return ChatResult(
+            content=content,
+            usage=None if (self.no_usage or content is None) else dict(_FAKE_USAGE),
+            latency_ms=0,
+            error=error,
+        )
+
+    def health(self) -> tuple[bool, str]:
+        return (not self.down), "fake 后端"
+
+    # ── 应答生成（chat / chat_messages 共用） ─────────────────────
+
+    def _respond(self, user: str) -> tuple[str | None, str]:
+        """按 ``user`` 正文生成应答，返回 ``(原文, 错误码)``。
+
+        抽出来是为了 :meth:`chat` 与 :meth:`chat_messages` **共用一份**
+        「题号 dispatch + 坏行为开关」逻辑：两份就会分叉，而分叉的后果是
+        「某个开关只在单轮形态下生效」——它要等真实批次里那条路径第一次
+        被走到才暴露，那时已经分不清是模型的问题还是 fake 的问题。
+        """
         if self.down:
-            self.last_error = "transport:ConnectError"
-            return None
+            return None, "transport:ConnectError"
         qid, obs = _request(user)
         if qid is None:
-            self.last_error = "shape:KeyError"
-            return None
+            return None, "shape:KeyError"
         if self.budget_exhausted:
-            self.last_error = (
+            return None, (
                 "budget:max_tokens 用尽（finish_reason=length，content 为空）；"
                 "调大 TRAJECTORY_LLM_MAX_TOKENS"
             )
-            return None
         payload = self._build(qid, obs)
         payload = self._shape_answer(payload)
         # ⚠️ **think 包装必须在 prose 之后统一套，不能在 prose 分支提前
@@ -162,13 +225,10 @@ class FakeLLM:
         if self.think:
             raw = f"<think>{self.think_text}</think>\n{raw}"
         if self.think_only:
-            return f"<think>{self.think_text}</think>"
+            return f"<think>{self.think_text}</think>", ""
         if self.fence:
             raw = f"```json\n{raw}\n```"
-        return raw
-
-    def health(self) -> tuple[bool, str]:
-        return (not self.down), "fake 后端"
+        return raw, ""
 
     # ── 各题应答 ──────────────────────────────────────────────────
 
@@ -364,6 +424,252 @@ class FakeLLM:
 
     def close(self) -> None:
         pass
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# agent 循环的假后端（方案 12 A2a-2 / 方案 13 §3.9）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class FakeAgentLLM:
+    """agent_loop 的假后端。接口与 :meth:`LLMClient.chat_messages` 同签名。
+
+    为什么与 :class:`FakeLLM` 分开而不是给它加开关：那边的 dispatch 是
+    「题号 → 答案」，这边是「第几步 → 动作指令」。两种驱动逻辑塞进一个
+    类，开关之间就会出现「哪个先生效」的隐式优先级。
+
+    **「答得对」的基准是按脚本走。** 与 FakeLLM 同哲学——测试不靠碰巧的
+    URL 措辞：导航路径由 :data:`script` 显式给定，断言写的就是「这条
+    路径产出了什么轨迹」，而不是「模型今手感好不好」。
+
+    坏行为开关复现的是**模型真的会犯的错**，不是让 fake 变傻：编 ref
+    （I6 的攻击面）、吐散文（格式契约）、卡在原地不结束（死循环）、
+    先错一步再修回来。最后一条尤其重要——D-A2 删除 L1 静默自愈之后，
+    「被拦 → 修复 → 重试」这条链本身就是**要教给模型的训练信号**。
+    """
+
+    def __init__(
+        self,
+        script: list[dict[str, Any]] | None = None,
+        *,
+        bad_json: bool = False,
+        invent_ref: bool = False,
+        invent_url: bool = False,
+        never_done: bool = False,
+        flaky: int = 0,
+        down: bool = False,
+        no_usage: bool = False,
+        model: str = "fake-agent",
+        kind: str = "play",
+    ) -> None:
+        #: 逐步的导航脚本。每条是 wire format 的字段（``tool`` / ``ref`` /
+        #: ``params``），**可含显式的终止条目** ``{"done": True, "report":
+        #: {...}}``。走完就默认报「到了」——与 FakeLLM 默认答 True 同款：
+        #: 默认态是「业务上走得通」，测别的东西时不用先排除导航失败。
+        self.script = list(script or [])
+        #: 坏行为开关，含义见类 docstring。
+        self.bad_json = bad_json
+        self.invent_ref = invent_ref
+        #: 终局自报一条**从未观察过**的 URL。与 ``invent_ref`` 是同一条
+        #: 纪律的两端（动作期 vs 终局期），攻击面分别是 I6 的 ref 白名单
+        #: 与 :func:`_validate_selected` 的链接白名单。
+        self.invent_url = invent_url
+        self.never_done = never_done
+        #: **前 N 次输出散文，之后按脚本走**（``flaky=1`` 就是方案 13 §3.9
+        #: 命名的 ``wrong_then_recover`` 形态）。用整数而不是布尔，是因为
+        #: 「连续错两步」是**另一种**真实现象——那正好是升配的触发条件，
+        #: 而布尔开关造不出第二种。
+        self.flaky = flaky
+        self.down = down
+        self.no_usage = no_usage
+        #: 本 fake 的模型名。升配测试要能一眼看出「这次调用走了哪个
+        #: 后端」，而账本里记的就是它。
+        self.model = model
+        #: 任务类型（task kind 三值之一）。它决定**默认终局报告**的形态：
+        #: 链接类任务报「到了」时若不带 selected，走的是契约违反那条路，
+        #: 于是「脚本走完就默认到了」这个便利对 ③④ 就失效了。
+        self.kind = kind
+        #: 每轮的 messages 快照（顺序即轮次）。
+        self.calls: list[list[dict[str, Any]]] = []
+        #: 已被消费的脚本下标——**只在产出有效指令时推进**，于是
+        #: 「白问了一次」不会吃掉一个脚本步骤。
+        self.script_i = 0
+        self.last_error = ""
+
+    @property
+    def cfg(self) -> Any:
+        """账本读的 ``cfg.model``。刻意只给 ``model`` 一个属性——
+        agent_loop 从 cfg 上取的也只有它。"""
+        return _Cfg(self.model)
+
+    def chat_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        self.calls.append([dict(m) for m in messages or ()])
+        if self.down:
+            self.last_error = "transport:ConnectError"
+            return ChatResult(content=None, usage=None, latency_ms=0,
+                              error="transport:ConnectError")
+        refs = _refs_of(messages)
+        payload = self._next_instruction(refs, _links_of(messages))
+        if payload is None:
+            # 散文形态：实测模型没被强制 JSON 时的默认输出。刻意**带书名号
+            # 与序号**——那种形态最容易骗过「先找第一个 {」的解析器。
+            raw = "我想先在页面上找找看有没有能点进去的地方。"
+        else:
+            raw = json.dumps(
+                {
+                    # 脚本条目可带 ``think`` 覆盖默认值——D-9 守卫测试要
+                    # 造「这一步的动机引用了一个特定实体」的形态，常量
+                    # think 造不出那种锚定关系。
+                    "think": payload.get("think")
+                    or "看到页面了，接着找正片入口",
+                    "tool": payload.get("tool", ""),
+                    "ref": payload.get("ref", ""),
+                    "params": payload.get("params", {}),
+                    "done": bool(payload.get("done")),
+                    "report": payload.get("report"),
+                },
+                ensure_ascii=False,
+            )
+        return ChatResult(
+            content=raw,
+            usage=None if self.no_usage else dict(_FAKE_USAGE),
+            latency_ms=0,
+        )
+
+    def _next_instruction(
+        self, refs: tuple[str, ...], links: tuple[str, ...]
+    ) -> dict[str, Any] | None:
+        """产出这条指令。``None`` = 输出散文（格式契约违反）。
+
+        ``invent_ref`` 与 ``bad_json`` 是**恒定**坏行为（每步都犯），
+        ``wrong_then_recover`` 只在第一步犯——「错一步再修回来」正是
+        它要造的形态，而修回来之后必须按脚本继续，否则测的就不是
+        「纠正后能继续」而是「纠正后路径变了」。
+        """
+        if self.bad_json:
+            return None
+        if self.invent_ref:
+            return {"tool": "click", "ref": "e99", "params": {}}
+        if len(self.calls) <= self.flaky:
+            # 前 N 轮吐散文。**不推进脚本下标**：那几步是白问的，纠错
+            # 重试拿到的应当还是脚本里没走过的第一条。
+            return None
+        if self.never_done:
+            # 卡在原地，永不结束——步数预算与死循环检测的靶子。
+            # 页面没有可交互元素时退到 press：那也不需要 ref，于是
+            # 「空转」这件事与「页面上恰好没有按钮」解耦。
+            if refs:
+                return {"tool": "click", "ref": refs[0], "params": {}}
+            return {"tool": "press", "params": {"key": "End"}}
+        if self.script_i >= len(self.script):
+            return {"tool": "", "done": True,
+                    "report": self._default_report(links)}
+        item = dict(self.script[self.script_i])
+        self.script_i += 1
+        if item.get("done"):
+            # 显式终止条目：report 原样透传，测试才能用它驱动
+            # 「自报放弃」那种形态。
+            report = item.get("report")
+            if self.invent_url and isinstance(report, dict):
+                report = dict(report)
+                selected = list(report.get("selected") or ())
+                selected.append(
+                    {"url": "https://invented.test/nope",
+                     "why": "我记得这里有"}
+                )
+                report["selected"] = selected
+            return {"tool": "", "done": True, "report": report}
+        return item
+
+    def _default_report(self, links: tuple[str, ...]) -> dict[str, Any]:
+        """脚本走完时的默认终局（与 FakeLLM 默认答 True 同款便利）。
+
+        链接类任务报的是**它看见的那些链接**——一个守规矩的模型真的会
+        这么报，所以默认态造出的是「业务上走得通」，测别的东西时不用
+        先排除终局违约。一条链接都没看见时默认报**放弃**而不是「到了」：
+        报「到了」却交不出链接是契约违反，那会把「这个页面没有链接」
+        测成「fake 坏了」。
+        """
+        if self.invent_url:
+            return {
+                "reached": True,
+                "why": "找到了",
+                "selected": [{"url": "https://invented.test/nope",
+                              "why": "我记得这里有"}],
+            }
+        if self.kind == "play":
+            return {"reached": True, "why": "到了播放页"}
+        if not links:
+            return {"reached": False, "why": "这个页面上没有可引荐的链接"}
+        return {
+            "reached": True,
+            "why": f"找到了 {len(links)} 条",
+            "selected": [{"url": href, "why": "页面正文里的引荐"}
+                         for href in links],
+        }
+
+    def close(self) -> None:
+        pass
+
+
+class _Cfg:
+    """账本读的 ``cfg`` 替身。只带 ``model``——把假后端的接口面缩到
+    被真用到的那个属性上，多给一个属性就是多一处要维护的假象。"""
+
+    __slots__ = ("model",)
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+
+def _obs_of(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """从最后一条 user 消息里取出**对话里出现过**的观察投影。
+
+    与 :func:`_request` 同款纪律——**从消息正文里读，不从 system prompt
+    的契约串反查**。fake 因此只能引用模型**真的看见过**的东西，于是
+    ``invent_ref`` / ``invent_url`` 造出的形态才正好是代码要挡的那一种。
+
+    逐行试解析：观察 JSON 后面可能还跟着引导文案（同一条消息里），
+    整段 ``json.loads`` 会失败。
+    """
+    for msg in reversed(messages or ()):
+        if msg.get("role") != "user":
+            continue
+        for line in str(msg.get("content", "")).splitlines():
+            try:
+                body = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(body, dict) and "interactive" in body:
+                return body
+    return {}
+
+
+def _refs_of(messages: list[dict[str, Any]]) -> tuple[str, ...]:
+    """对话里出现过的 ref（I6 白名单的同源镜像）。"""
+    return tuple(
+        str(e.get("ref", ""))
+        for e in _obs_of(messages).get("interactive") or ()
+    )
+
+
+def _links_of(messages: list[dict[str, Any]]) -> tuple[str, ...]:
+    """对话里出现过的链接 href（终局自报白名单的同源镜像）。
+
+    与 :func:`_refs_of` 分开是因为两者管的东西不同：ref 是最近一页的
+    可交互元素，链接是整条轨迹累积的——fake 只取最后一页的链接，正好
+    是「模型看着这一页报出去」那种真实形态。
+    """
+    return tuple(
+        str(x.get("href", ""))
+        for x in _obs_of(messages).get("links") or ()
+        if x.get("href")
+    )
 
 
 def _request(user: str) -> tuple[str, dict[str, Any]]:

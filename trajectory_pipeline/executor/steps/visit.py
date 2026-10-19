@@ -13,6 +13,22 @@
 2. **点击不抛异常**。元素不存在是业务事实（该站没播放控件），
    让它变成异常会把一个正常负样本变成一次运行失败。
 3. **重定向不判负**。见 :mod:`.reachability`——那是语言层的题。
+
+## 与 agent 链的分工（2026-10-17 方案 13 §3.7）
+
+站内的那一段是两条链的**唯一**差别：本文件走七段固定序列，
+:mod:`.agent_visit` 把「③ 找控件 → ⑤ 点击」换成 :func:`agent_loop`。
+其余两段**抽成函数共用，不复制**：
+
+- :func:`enter_site`（① 导航 + ② 观察）：进站是硬事实，两条链对
+  「打不开算什么」必须给同一个答案，否则负样本池会混进两种成因的
+  ``unreachable_hard``——它们是同一支分支，混了就看不出来；
+- :func:`judge_player`（⑦ PLAYER_OK + 记账）：负样本纯度的最后一道
+  闸（``component_unverified`` 的前置事实守卫）长在这段里，两条链
+  各写一份的话闸只会在一条上生效，而漏掉的那条产出的假负样本
+  **理由通顺、看着专业**，人工也未必看得出来。
+
+``visit_site`` 本身**不删不改**——A3 的 fallback 与黄金基线都是它。
 """
 
 from __future__ import annotations
@@ -81,32 +97,10 @@ async def visit_site(
     result = VisitResult(candidate=candidate)
     url = candidate.url
 
-    # ── ① 导航：唯一的硬事实 ──────────────────────────────────────
-    reach = await reachability.probe(driver, url)
-    step_goto = result.steps.act(actions.goto(url))
-    if not reach.reachable:
-        # 记「试过且失败」。unreachable_hard 在动作流里若整段消失，
-        # 负样本池里那条就会变成一条没有动作的判决，说不清模型该学什么。
-        result.steps.settle(step_goto, error=reach.reason)
-        ledger.record(url, "unreachable_hard", reach.reason, site_url=url)
-        result.note(f"导航失败: {reach.reason}")
+    # ── ① ② 进站：与 agent 链共用的那一段（见本文件头部分工说明）──
+    site_obs = await enter_site(driver, ledger, result, max_chars=max_chars)
+    if site_obs is None:
         return result
-
-    # ── ② 观察站点页 ──────────────────────────────────────────────
-    try:
-        result.site_obs = await driver.observe(max_chars=max_chars)
-    except DriverError as exc:
-        result.steps.settle(step_goto, error=f"快照失败: {exc}")
-        ledger.record(url, "unreachable_hard", f"导航成功但取不到快照: {exc}",
-                      site_url=url)
-        result.note(f"快照失败: {exc}")
-        return result
-    result.steps.settle(step_goto, result.site_obs)
-
-    landing = reachability.check_landing(result.site_obs, url)
-    result.landed_url = landing.landed_url or url
-    if landing.redirected:
-        result.note(landing.reason)
 
     # ── ③ 判断点 ②：页面是否正常访问（语言层）──────────────────
     #    **None 时不中断，继续往下走。** 这一点是实测逼出来的：
@@ -206,7 +200,7 @@ async def visit_site(
     if target is None:
         result.note(f"ref={ref} 未在 interactive_elements 中找到（I6 存疑），"
                     f"动作流按 target=None 记录")
-    await _open_tab(driver, url, result)
+    await open_tab(driver, url, result)
     step_click = result.steps.act(actions.click(target))
     try:
         await driver.click(ref=ref)
@@ -221,7 +215,7 @@ async def visit_site(
 
     # ── ⑥ 重新观察：判的是播放页，不是站点页 ────────────────────
     try:
-        result.player_obs = await driver.observe(max_chars=max_chars)
+        player_obs = await driver.observe(max_chars=max_chars)
     except DriverError as exc:
         result.steps.settle(step_click, error=f"点击后快照失败: {exc}")
         ledger.record(
@@ -234,16 +228,96 @@ async def visit_site(
         )
         result.note(f"点击后快照失败: {exc}")
         return result
-    result.steps.settle(step_click, result.player_obs)
+    result.steps.settle(step_click, player_obs)
 
     # ── ⑦ 判断点 ④：播放页是否可用 ─────────────────────────────
-    player = perceptor.decide(Q.PLAYER_OK, result.player_obs)
-    play_url = result.player_obs.url or result.landed_url
+    # 与 agent 链共用（pre_obs = 点击前的站点页观察，守卫靠「点击前后
+    # 是否换页」核它）。
+    judge_player(perceptor, ledger, result, player_obs,
+                 pre_obs=result.site_obs)
+    return result
+
+
+async def enter_site(
+    driver: PageDriver,
+    ledger: RunLedger,
+    result: VisitResult,
+    *,
+    max_chars: int | None = None,
+) -> Observation | None:
+    """① 导航 + ② 观察站点页。**进站段，两条执行链共用**。
+
+    返回 ``None`` = 已经记过 ``unreachable_hard``，调用方直接返回即可。
+
+    它落的是「这个 URL 打不打得开」这个**硬事实**，与「页面能不能看」
+    （``IS_REACHABLE`` / gatekeeper 拦截）是两件事，谁都不该替谁下结论
+    ——所以 agent 链也走这里：站都进不去的候选，没有让模型进来找
+    播放控件的道理。
+
+    ⚠️ 记账口径**写在本函数里**而不是留给调用方记：两条链对
+    「进站失败算什么」必须给同一个答案，否则负样本池里会混进两种
+    成因的 ``unreachable_hard``，而它们是同一支分支，混了看不出来。
+    """
+    url = result.candidate.url
+    reach = await reachability.probe(driver, url)
+    step_goto = result.steps.act(actions.goto(url))
+    if not reach.reachable:
+        # 记「试过且失败」。unreachable_hard 在动作流里若整段消失，
+        # 负样本池里那条就会变成一条没有动作的判决，说不清模型该学什么。
+        result.steps.settle(step_goto, error=reach.reason)
+        ledger.record(url, "unreachable_hard", reach.reason, site_url=url)
+        result.note(f"导航失败: {reach.reason}")
+        return None
+
+    try:
+        obs = await driver.observe(max_chars=max_chars)
+    except DriverError as exc:
+        result.steps.settle(step_goto, error=f"快照失败: {exc}")
+        ledger.record(url, "unreachable_hard", f"导航成功但取不到快照: {exc}",
+                      site_url=url)
+        result.note(f"快照失败: {exc}")
+        return None
+    result.steps.settle(step_goto, obs)
+    result.site_obs = obs
+
+    landing = reachability.check_landing(obs, url)
+    result.landed_url = landing.landed_url or url
+    if landing.redirected:
+        result.note(landing.reason)
+    return obs
+
+
+def judge_player(
+    perceptor: Perceptor,
+    ledger: RunLedger,
+    result: VisitResult,
+    player_obs: Observation,
+    *,
+    pre_obs: Observation | None,
+) -> None:
+    """⑦ 判断点 ④：播放页是否可用——**并记账**。两条执行链共用。
+
+    ``pre_obs`` 是**进站观察**（点进播放页之前看到的那一页）。agent 链
+    也传它，于是**落地即在播放页**的形态（深层链接候选，agent 一步没走
+    就报「到了」）在守卫眼里是「没换页」——``PLAYER_OK`` 判 False 时
+    会被 :func:`~trajectory_pipeline.executor.branches._precondition_failed`
+    降级成 ``unresolved`` 而不是 ``component_unverified``。
+
+    ⚠️ 这是**刻意的保守**，不是漏判：agent 说「到了」是自报，未经
+    跨页证实。拿自报的前提去贴负标签，等于把「模型没找到播放页」
+    写成「这个站看不了」——负样本池里最贵的一类错。让那批去
+    ``unresolved``，人工复核时 transcript 与动作流都还在，丢的是
+    一个负样本而不是一条假负样本。
+    """
+    result.player_obs = player_obs
+    player = perceptor.decide(Q.PLAYER_OK, player_obs)
+    play_url = player_obs.url or result.landed_url
     if player.answer is True:
         ledger.record(play_url, None, player.evidence, decision=player,
-                      reached=True, site_url=url, play_page_url=play_url)
+                      reached=True, site_url=result.candidate.url,
+                      play_page_url=play_url)
         result.success = True
-        return result
+        return
 
     if player.answer is None:
         # 判不出来，**且播放页就在眼前** → player_unverified，不是 unresolved。
@@ -254,25 +328,28 @@ async def visit_site(
         # ⚠️ 必须在 record_from **之前**分流：record_from 会把 None 一律
         # 记成 unresolved，而这条恰好是它管不到的情形。
         ledger.record_unresolved_reached(
-            play_url, player, site_url=url, play_page_url=play_url,
+            play_url, player, site_url=result.candidate.url,
+            play_page_url=play_url,
         )
         result.note("PLAYER_OK=None（有播放组件，确认不了能不能用）")
-        return result
+        return
 
-    # pre_obs = 点击前的站点页观察：component_unverified 的前置事实是
-    # 「到了播放页」，守卫靠「点击前后是否换页」核它（branches._same_page）。
-    ledger.record_from(play_url, player, reached=True, obs=result.player_obs,
-                       pre_obs=result.site_obs,
-                       site_url=url, play_page_url=play_url)
+    ledger.record_from(play_url, player, reached=True, obs=player_obs,
+                       pre_obs=pre_obs,
+                       site_url=result.candidate.url,
+                       play_page_url=play_url)
     result.note(f"PLAYER_OK={player.answer}")
-    return result
 
 
-async def _open_tab(driver: PageDriver, url: str, result: VisitResult) -> None:
+async def open_tab(driver: PageDriver, url: str, result: VisitResult) -> None:
     """为该站点开独立 tab。失败不阻断——就在当前页继续。
 
     独立 tab 的作用是**会话隔离**：站点 A 弹出的登录框 / 提示不影响
     站点 B 的观察。开不了就退化到当前 tab，不因此放弃该站点。
+
+    agent 链在**进站之后立刻**调用它（scripted 在点击之前调），为的是
+    让 agent 在站内走的那几步（搜索 → 详情 → 播放）全程落在自己的
+    会话里——站点页留在原 tab，前一个候选的弹窗也跟不进来。
 
     捕获 ``Exception`` 而非 ``DriverError``：obscura 的 tab 相关 tool
     失败时返回的文本形态尚未实测（见 §7 待验证），窄捕获会让它直接穿透
@@ -297,4 +374,11 @@ def summarize(results: list[VisitResult]) -> dict[str, Any]:
     }
 
 
-__all__ = ["VisitResult", "visit_site", "summarize"]
+__all__ = [
+    "VisitResult",
+    "visit_site",
+    "enter_site",
+    "judge_player",
+    "open_tab",
+    "summarize",
+]
