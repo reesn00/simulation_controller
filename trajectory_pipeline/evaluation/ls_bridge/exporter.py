@@ -37,12 +37,18 @@ from trajectory_pipeline.evaluation.ls_bridge.scan import ScanHit, scan_for_cred
 from trajectory_pipeline.evaluation.ls_bridge.scorecard import (
     CONFIDENCE_TO_SCORE,
     build_scorecard,
+    derive_overall,
     render_risk_hints,
     render_scorecard_text,
 )
 from trajectory_pipeline.evaluation.ls_bridge.settings import LSSettings
-from trajectory_pipeline.evaluation.scout.types import ScoutRecord
+from trajectory_pipeline.evaluation.scout.types import (
+    AggregationLogEntry,
+    ScoutRecord,
+    TrajectoryRecord,
+)
 from trajectory_pipeline.storage.read_p3 import read_views
+from trajectory_pipeline.storage.task_views import read_task_view
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +103,131 @@ def read_scout_records(
                 continue
             if isinstance(raw, dict) and raw.get("sample_id"):
                 out.append((bucket, raw))  # type: ignore[arg-type]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# trajectory 主路径:读聚合产物(D14.5) → per-Run 导出
+# ---------------------------------------------------------------------------
+
+
+def _derive_trajectory_bucket(record: TrajectoryRecord) -> str:
+    """``TrajectoryRecord`` → bucket 标签(``positive``/``negative``/``quarantine``)。
+
+    派生顺序(决策 D14.5):
+
+    1. ``status`` 不是 ``scored`` → ``quarantine``(``undetermined`` /
+       ``not_run`` 都进 quarantine;**桶由 status 一票决定**,不走 score 派生——
+       score 派生只看四维到齐/低分/veto,而 not_run 时 score 字段可能仍
+       有数,但那不是「判了」而是「没跑通」)
+    2. 否则 :func:`derive_overall`(veto 先于低分先于缺判)→
+       ``negative`` / ``positive``;都不是(极端 case)→ ``quarantine``。
+    """
+    status = str(record.get("status", ""))
+    if status != "scored":
+        return "quarantine"
+    overall = derive_overall(record)  # type: ignore[arg-type]
+    kind = overall.get("kind")
+    if kind == "negative":
+        return "negative"
+    if kind == "positive":
+        return "positive"
+    return "quarantine"
+
+
+def _render_aggregation_log(entries: list[AggregationLogEntry]) -> str:
+    """聚合 log → 多行文本(给 ``audit_text`` 复用)。"""
+    if not entries:
+        return "(无聚合留痕)"
+    lines: list[str] = []
+    for entry in entries:
+        unit = entry.get("unit", "-")
+        action = entry.get("action", "?")
+        reason = entry.get("reason", "")
+        lines.append(f"[{unit}] {action}: {reason}")
+    return "\n".join(lines)
+
+
+def _render_trajectory_audit_text(
+    record: TrajectoryRecord, bucket: str
+) -> str:
+    """per-Run 任务机器立场 + 聚合留痕(标注员一眼看到最差 unit 是谁)。
+
+    与 :func:`render_audit_text` 的差异:多了「参与 unit」+「聚合留痕」两段,
+    任务级桶不直接来自单 unit,而是来自最差 unit —— 这两段是给标注员的
+    解释链。
+    """
+    lines: list[str] = []
+    if bucket == "negative":
+        lines.append("机器判定(任务级): 劣质(任一 unit 低分/veto), 请重点复核。")
+    elif bucket == "quarantine":
+        lines.append("机器判定(任务级): 无法判定(存在缺判维度), 请人工裁决 合格/劣质/无法判定。")
+    else:
+        lines.append("机器判定(任务级): 合格(无负向信号)。")
+
+    tags = record.get("tags") or []
+    if tags:
+        lines.append("机器标签(并集): " + ", ".join(tags))
+
+    units = record.get("unit_outcomes") or []
+    if units:
+        lines.append(f"参与 unit: {', '.join(units)}")
+
+    log_entries = record.get("aggregation_log") or []
+    if log_entries:
+        lines.append("── 聚合留痕 ──")
+        for entry in log_entries:
+            unit = entry.get("unit", "-")
+            action = entry.get("action", "?")
+            reason = entry.get("reason", "")
+            lines.append(f"  [{unit}] {action}: {reason}")
+
+    for score in record.get("scores") or []:
+        if score.get("is_veto"):
+            reasons = "; ".join(score.get("reasons") or [])
+            lines.append(f"{score['dimension']}: VETO — {reasons}")
+        elif score.get("score") is not None and score["score"] <= 2:
+            reasons = "; ".join(score.get("reasons") or [])
+            lines.append(f"{score['dimension']}: 低分 — {reasons}")
+        elif score.get("score") is None:
+            reasons = "; ".join(score.get("reasons") or [])
+            lines.append(f"{score['dimension']}: 缺判 — {reasons or '无理由记录'}")
+    return "\n".join(lines)
+
+
+def read_trajectory_records(
+    scout_dir: Path,
+) -> list[tuple[str, TrajectoryRecord]]:
+    """读 ``trajectory_candidates.jsonl``(D14.5 聚合产物)→ ``(bucket, record)`` 列表。
+
+    bucket 派生见 :func:`_derive_trajectory_bucket`——**不读 raw bucket 文件名**,
+    trajectory_candidates.jsonl 是单一文件不分桶(聚合期已经消解)。
+
+    坏行 / 缺主键行跳过并计数(同 :func:`read_scout_records` 的容错纪律)。
+    """
+    # 延迟 import:scout.aggregate 顶层 import ls_bridge.exporter,反向 import
+    # 会触发循环。TRAJECTORY_BUCKET_FILE 是常量,函数级 import 走 sys.modules
+    # 缓存,不会重复加载。
+    from trajectory_pipeline.evaluation.scout.aggregate import TRAJECTORY_BUCKET_FILE
+
+    path = Path(scout_dir) / TRAJECTORY_BUCKET_FILE
+    if not path.is_file():
+        log.warning("read_trajectory_records: %s 不存在, 跳过", path)
+        return []
+    out: list[tuple[str, TrajectoryRecord]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            log.warning("read_trajectory_records: %s 有坏行, 已跳过", path)
+            continue
+        if not isinstance(raw, dict) or not raw.get("trajectory_id"):
+            continue
+        bucket = _derive_trajectory_bucket(raw)  # type: ignore[arg-type]
+        out.append((bucket, raw))  # type: ignore[arg-type]
     return out
 
 
@@ -320,21 +451,167 @@ def export_one(
     return build_task(data), build_prediction(data, scorecard), []
 
 
+def export_trajectory_one(
+    record: TrajectoryRecord,
+    bucket: str,
+    *,
+    task_views_root: str | Path | None = None,
+    scorecard_enabled: bool = True,
+    scan_settings: Any = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[ScanHit]]:
+    """单条 :class:`TrajectoryRecord` → ``(task, prediction, scan_hits)``。
+
+    读 **T 视图**(:func:`read_task_view`)拿 messages/openai/meta,不是
+    P3 单 unit 视图。T 视图缺失返回 ``(None, None, [])`` —— 主路径
+    fail-closed,「T 没落」时整条不推半份(决策 D14.3)。
+
+    评分卡构造走 :func:`build_scorecard`:把 ``trajectory_id`` 当
+    ``sample_id`` 喂进去,其他字段一一对得上 —— 不重写一份。
+
+    ``data`` 里多出两个 per-Run 专用字段:
+    * ``unit_outcomes`` —— 各 unit sample_id,给标注员跳查
+    * ``aggregation_log_text`` —— min/veto/缺 unit 决策留痕,人工复查
+      聚合口径
+    """
+    from trajectory_pipeline.evaluation.ls_bridge.settings import CredentialScanSettings
+
+    tid = str(record["trajectory_id"])
+    views = read_task_view(tid, root=task_views_root)
+    if views is None:
+        return None, None, []
+
+    # 构造 ScoutRecord-shape 喂 build_scorecard:trajectory_id 当 sample_id。
+    pseudo_scout: ScoutRecord = {
+        "sample_id": tid,
+        "task_id": str(record["task_id"]),
+        "run_id": str(record["run_id"]),
+        "status": record["status"],  # type: ignore[typeddict-item]
+        "scores": record["scores"],
+        "tags": record["tags"],  # type: ignore[typeddict-item]
+        "evidence_supplement": record.get("evidence_supplement") or {},
+    }
+    scorecard = build_scorecard(pseudo_scout, classify_kind=bucket)
+    if not scorecard_enabled:
+        scorecard = {**scorecard, "enabled": False}
+
+    tags = list(record.get("tags") or [])
+    data: dict[str, Any] = {
+        "sample_id": tid,
+        "task_id": pseudo_scout["task_id"],
+        "run_id": pseudo_scout["run_id"],
+        "status": bucket,
+        "tags": tags,
+        "tags_text": ", ".join(tags) if tags else "无",
+        "audit_text": _render_trajectory_audit_text(record, bucket),
+        "scorecard_text": render_scorecard_text(scorecard),
+        "risk_hints_text": render_risk_hints(scorecard),
+        "messages_text": render_messages_text(views.get("messages")),
+        "openai_text": render_openai_text(views.get("openai")),
+        "meta_text": render_meta_text(views.get("meta")),
+        "messages_view_raw": views.get("messages"),
+        "openai_view_raw": views.get("openai"),
+        "meta_view_raw": views.get("meta"),
+        # per-Run 专用字段(标注员跳查 + 复查聚合口径)
+        "unit_outcomes": list(record.get("unit_outcomes") or []),
+        "aggregation_log_text": _render_aggregation_log(
+            list(record.get("aggregation_log") or [])
+        ),
+    }
+
+    scan = scan_settings if scan_settings is not None else CredentialScanSettings()
+    hits: list[ScanHit] = []
+    for view in _SCAN_VIEW_KEYS:
+        if data.get(view):
+            hits.extend(scan_for_credentials(data[view], view=view, settings=scan))
+    if hits:
+        return None, None, hits
+
+    return build_task(data), build_prediction(data, scorecard), []
+
+
 def export_batch(
     scout_dir: Path,
     *,
     settings: LSSettings | None = None,
     buckets: Iterable[str] = ("positive", "negative"),
     views_root: str | Path | None = None,
+    task_views_root: str | Path | None = None,
     limit: int | None = None,
+    legacy_unit_trajectory: bool = False,
 ) -> ExportPlan:
     """scout 目录 → 逐条导出 → 凭据扫描 → 汇总成 :class:`ExportPlan`。
 
-    过滤只有两道: 视图缺失（skip, fail-closed 不推半份数据）→ 凭据扫描
-    （reject, fail-closed 留痕）。v1 的 tier / min_score / skip_task_ids
-    过滤不迁移 —— scout 已分流, 上传侧不再二次审判。
+    路径(决策 D14.5):
+
+    * **trajectory 主路径** (``legacy_unit_trajectory=False``, 默认):
+      读 ``trajectory_candidates.jsonl``(per-Run 聚合产物)→ 读 T 视图
+      → 上传。LS 标注员看完整任务,不是单 unit。
+    * **per-unit 旧路径** (``legacy_unit_trajectory=True``, 过渡期):
+      读 scout 三件套 + P3 视图,行为与 Phase 3 之前一致。**默认不开启**,
+      显式传旗标才走 —— 见 :func:`_export_batch_legacy_unit`。
+
+    过滤只有两道(两路径共用):视图缺失(skip, fail-closed 不推半份
+    数据)→ 凭据扫描(reject, fail-closed 留痕)。v1 的 tier / min_score /
+    skip_task_ids 过滤不迁移 —— scout 已分流, 上传侧不再二次审判。
     """
     settings = settings or LSSettings()
+    plan = ExportPlan()
+
+    if legacy_unit_trajectory:
+        return _export_batch_legacy_unit(
+            scout_dir, settings=settings, buckets=buckets,
+            views_root=views_root, limit=limit,
+        )
+
+    # ── trajectory 主路径 ──
+    records = read_trajectory_records(Path(scout_dir))
+    if limit is not None:
+        records = records[: max(0, int(limit))]
+
+    for bucket, record in records:
+        tid = str(record.get("trajectory_id", ""))
+        task, prediction, hits = export_trajectory_one(
+            record,
+            bucket,
+            task_views_root=task_views_root,
+            scorecard_enabled=settings.scorecard.enabled,
+            scan_settings=settings.credential_scan,
+        )
+        if task is None and hits:
+            plan.rejected.append((tid, hits))
+            log.error(
+                "export_batch(trajectory): %s 命中凭据扫描, 拒推 (%s)",
+                tid,
+                "; ".join(h.describe() for h in hits),
+            )
+            continue
+        if task is None:
+            plan.skipped.append((tid, "T 视图缺失或不可读"))
+            continue
+        plan.tasks.append(task)
+        if prediction is not None:
+            plan.predictions.append(prediction)
+    return plan
+
+
+def _export_batch_legacy_unit(
+    scout_dir: Path,
+    *,
+    settings: LSSettings,
+    buckets: Iterable[str],
+    views_root: str | Path | None,
+    limit: int | None,
+) -> ExportPlan:
+    """per-unit 旧路径(``--legacy-unit-trajectory`` 旗标)。
+
+    行为与 Phase 3 之前一致:读 scout 三件套 + P3 视图,逐 unit 上传。
+    过渡期(3 周)结束后移除。打印 deprecation banner,提醒上游
+    ``ls_bridge.cli._cmd_upload``。
+    """
+    log.warning(
+        "DEPRECATED: --legacy-unit-trajectory 走 per-unit P3 路径, "
+        "该旗标计划 3 周后移除(决策 D14.5)"
+    )
     plan = ExportPlan()
     records = read_scout_records(Path(scout_dir), buckets)
     if limit is not None:
@@ -352,7 +629,7 @@ def export_batch(
         if task is None and hits:
             plan.rejected.append((sample_id, hits))
             log.error(
-                "export_batch: %s 命中凭据扫描, 拒推 (%s)",
+                "_export_batch_legacy_unit: %s 命中凭据扫描, 拒推 (%s)",
                 sample_id,
                 "; ".join(h.describe() for h in hits),
             )
@@ -486,6 +763,7 @@ __all__ = [
     "TASK_ANCHOR_CONTROL",
     "ExportPlan",
     "read_scout_records",
+    "read_trajectory_records",
     "render_messages_text",
     "render_openai_text",
     "render_meta_text",
@@ -494,6 +772,7 @@ __all__ = [
     "build_task",
     "build_prediction",
     "export_one",
+    "export_trajectory_one",
     "export_batch",
     "push_batch",
 ]

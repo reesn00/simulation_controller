@@ -1,9 +1,9 @@
-"""新契约读写的**收拢点**（P1/P2/P3），与存量 C1/C2/C3 完全隔离。
+"""新契约读写的**收拢点**（P1/P2/P3/T），与存量 C1/C2/C3 完全隔离。
 
-当前分工（2026-10-11）
+当前分工（2026-10-19）
 ---------------------
 
-三层契约**各有归处，只有 P3 收拢在本模块**——这不是偷懒，是三条纪律卡出来的：
+四层契约**各有归处，T 与 P3 收拢在本模块**——这不是偷懒，是纪律卡出来的：
 
 - **P1 的路径权威在** :mod:`trajectory_pipeline.executor.archive`
   （:data:`~trajectory_pipeline.executor.archive.DEFAULT_ROOT` 的长注释明令
@@ -19,13 +19,28 @@
   :func:`trajectory_pipeline.storage.write_p3.write_views` 在这里，
   assembler 侧的渲染只调它、不自己 ``write_text``；读取侧
   :func:`trajectory_pipeline.storage.read_p3.read_views` 是训练侧入口。
+- **T（per-Run 完整任务视图）的读写也收拢在这里**，设计见
+  :mod:`docs.设计方案.14-完整任务视图与LS上传`。T 的输入是 **P1 的 JSON
+  dict**，**不从 P2 反推**（D14.3）——理由是 P1 已经是 per-run 的完整
+  流水，反推要重编全局 step_index / tool_call_id / 跨单位聚合 outcome，
+  反而引入新拼接逻辑。落盘唯一实现
+  :func:`trajectory_pipeline.storage.task_views.write_task_view` 与 P3
+  同款（原子写、默认不覆盖）。
 
 落盘形状
 --------
 
 ::
 
-    output/pipeline/views/<sample_id>_{messages,openai,meta}.json
+    output/pipeline/views/<sample_id>_{messages,openai,meta}.json     # P3
+    output/pipeline/task_views/<task_id>__<run_id>.json              # T（单文件三视图合一）
+
+T 是单文件——消息 / openai / meta 打包在同一 JSON 里，**主键形式
+``<task_id>__<run_id>``**（与 P3 的 ``<task_id>__<run_id>__<unit>``
+刻意区别）。P3 是 per-unit 训练视图（一 unit 一份），T 是 per-run 复核视图
+（一任务一份）——两者粒度不同所以各自一份好一份。落盘逻辑在
+:func:`trajectory_pipeline.storage.task_views.task_views_dir`，由契约
+测试 :func:`tests/contract/test_t_contract.Test产物根` 盯住。
 
 与 P1（``output/pipeline/<task_id>__<run_id>.json``）、P2
 （``output/pipeline/samples/<sample_id>.json``）**同根**
@@ -64,7 +79,11 @@ VIEW_NAMES: tuple[str, ...] = ("messages", "openai", "meta")
 #: 视图目录名。落在 ``output/pipeline/`` 下。
 DEFAULT_VIEWS_DIRNAME = "views"
 
-#: P1/P2/P3 的公共产物根（相对包根）。与
+#: T 视图目录名。落在 ``output/pipeline/`` 下，与 P3 同根。
+#: 由 :func:`task_views_dir` 拼出绝对路径。
+DEFAULT_TASK_VIEWS_DIRNAME = "task_views"
+
+#: P1/P2/P3/T 的公共产物根（相对包根）。与
 #: :data:`trajectory_pipeline.executor.archive.DEFAULT_ROOT`、
 #: :data:`trajectory_pipeline.assembler.builder.DEFAULT_SAMPLES_PARENT`
 #: **同根**——改了这处记得同步那两处（靠人盯，见各处的注释）。
@@ -90,9 +109,26 @@ def views_dir(root: str | Path | None = None) -> Path:
     return Path(root) / DEFAULT_VIEWS_DIRNAME
 
 
+def task_views_dir(root: str | Path | None = None) -> Path:
+    """``task_views/`` 目录的绝对路径。
+
+    ``root=None`` 时取 ``trajectory_pipeline/output/pipeline/task_views/``——
+    与 :func:`views_dir` 同根，**不走 executor 的 import 边界**
+    （同 :func:`views_dir` 的纪律）。
+
+    ⚠️ ``parents[1]`` 的坑同 :func:`views_dir`。由
+    ``tests/contract/test_t_contract.py::Test产物根`` 盯住。
+    """
+    if root is None:
+        root = Path(__file__).resolve().parents[1] / "output" / DEFAULT_SAMPLES_PARENT
+    return Path(root) / DEFAULT_TASK_VIEWS_DIRNAME
+
+
 __all__ = [
     "VIEW_NAMES",
     "DEFAULT_VIEWS_DIRNAME",
+    "DEFAULT_TASK_VIEWS_DIRNAME",
     "DEFAULT_SAMPLES_PARENT",
     "views_dir",
+    "task_views_dir",
 ]

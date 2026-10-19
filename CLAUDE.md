@@ -70,6 +70,18 @@ uv run python -m trajectory_pipeline.executor.cli check-persona
 # ── 组装层（不联网）─────────────────────────────────────
 uv run python -m trajectory_pipeline.executor.cli build          # P1 → P2 → P3 落盘
 uv run python -m trajectory_pipeline.executor.cli build --overwrite   # 重建（**默认不覆盖**）
+uv run python -m trajectory_pipeline.executor.cli task-view --all               # P1 → T 落盘（per-Run 完整任务视图，给 LS 上传 / 复核 / L4 用）
+uv run python -m trajectory_pipeline.executor.cli task-view --all --overwrite   # 重建整批 T 视图（**默认不覆盖**）
+uv run python -m trajectory_pipeline.evaluation.scout.cli aggregate --scout-dir output/scout/<date>   # scout 三件套 → trajectory_candidates.jsonl（per-Run 聚合，给 LS 上传 D14.5 用）
+uv run python -m trajectory_pipeline.evaluation.scout.cli aggregate --scout-dir <dir> --overwrite   # 重建 trajectory 聚合产物（**默认不覆盖**）
+uv run python -m trajectory_pipeline.evaluation.scout.cli verify --scout-dir <scout-dir>                # trajectory 产物体检：jsonl / stats / T 视图三者一致性（只读；error 返 1, warning 返 0）
+
+# ── LS 上传（per-Run trajectory 主路径，D14.5）──────────
+uv run python -m trajectory_pipeline.evaluation.ls_bridge status                                    # 连通性 + 配置检查
+uv run python -m trajectory_pipeline.evaluation.ls_bridge init-project                              # 创建/复用 LS 项目（幂等）
+uv run python -m trajectory_pipeline.evaluation.ls_bridge upload --scout-dir <scout-dir>            # 主路径：trajectory_candidates.jsonl + T 视图
+uv run python -m trajectory_pipeline.evaluation.ls_bridge upload --scout-dir <scout-dir> --dry-run  # 只构建计划不推送
+uv run python -m trajectory_pipeline.evaluation.ls_bridge upload --scout-dir <scout-dir> --legacy-unit-trajectory  # DEPRECATED 旧 per-unit 路径（三周过渡期后移除）
 
 # ── 人工复核与报表 ─────────────────────────────────────
 uv run python -m trajectory_pipeline.executor.cli review --write <queue.jsonl> --show 3

@@ -476,9 +476,15 @@ class TestBranchPrecondition:
         )
         assert out.branch == "component_unverified"
 
-    def test_login_required_同页时降级(self):
-        """② 拆分的 login_required 复用**同页守卫**（设计文档 §8 风险 5）：
-        站点页导航栏的「请登录」不是登录墙，点击没换页就没有新证据。"""
+    def test_login_required_同页时放行(self):
+        """2026-10-19 增量六十·方案 X:同页守卫窄化后,login_required
+        落地即结论(登录墙页面就是登录墙,无需「点击前后是否变」判据)。
+
+        原设计(增量二十·② 拆分)用同页守卫拦下 nav-bar「请登录」——
+        4 批 300 行核对:守卫触发的 46 行 100% 是 player 落地页形态,
+        没有 nav-bar 假登录墙真例。X 改后该守卫不再覆盖 login_required。
+        防回潮:nav-bar 形态真例若出现,TestBranchPreconditionNavBar 兜底。
+        """
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
@@ -489,8 +495,7 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/site", body_text="请登录"),
             pre_obs=self._obs(url="https://x.test/site", body_text="请登录"),
         )
-        assert out.branch == "unresolved", "同页却记了 login_required"
-        assert "同一个页面" in out.evidence
+        assert out.branch == "login_required", "X 改后 login_required 同页应放行"
 
     def test_login_required_到了目标页才成立(self):
         from trajectory_pipeline.executor.branches import RunLedger
@@ -505,8 +510,15 @@ class TestBranchPrecondition:
         )
         assert out.branch == "login_required"
 
-    def test_blocked_同页时降级(self):
-        """blocked 同样复用同页守卫：站点入口页的弹窗/文案不是环境阻断。"""
+    def test_blocked_同页时放行(self):
+        """2026-10-19 增量六十·方案 X:同页守卫窄化后,blocked
+        落地即结论(地区限制/反爬/验证码页面就是环境阻断,无需「点击
+        前后是否变」判据)。
+
+        原守卫(增量二十)拦 nav-bar「仅限中国大陆」文案——4 批 300 行
+        核对:守卫触发的 46 行 100% 是 player 落地页形态,没有 nav-bar
+        假阻断真例。X 改后该守卫不再覆盖 blocked。
+        """
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
@@ -517,7 +529,7 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/site", body_text="仅限中国大陆"),
             pre_obs=self._obs(url="https://x.test/site", body_text="仅限中国大陆"),
         )
-        assert out.branch == "unresolved", "同页却记了 blocked"
+        assert out.branch == "blocked", "X 改后 blocked 同页应放行"
 
     def test_blocked_到了目标页才成立(self):
         from trajectory_pipeline.executor.branches import RunLedger
@@ -532,9 +544,15 @@ class TestBranchPrecondition:
         )
         assert out.branch == "blocked"
 
-    def test_partial_free_同页时降级(self):
-        """④ 拆分的 partial_free 复用同页守卫：站点页的「会员抢先看」
-        是宣传文案，不是试看付费墙。"""
+    def test_partial_free_同页时放行(self):
+        """2026-10-19 增量六十·方案 X:同页守卫窄化后,partial_free
+        落地即结论(试看/预告页就是试看付费墙,无需「点击前后是否变」
+        判据)。
+
+        原守卫(增量二十·④ 拆分)拦 nav-bar「会员抢先看」——4 批 300 行
+        核对:守卫触发的 46 行 100% 是 player 落地页形态,没有 nav-bar
+        「会员抢先看」宣传文案真例。X 改后该守卫不再覆盖 partial_free。
+        """
         from trajectory_pipeline.executor.branches import RunLedger
 
         led = RunLedger(task_id="T001")
@@ -545,7 +563,7 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
             pre_obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
         )
-        assert out.branch == "unresolved", "同页却记了 partial_free"
+        assert out.branch == "partial_free", "X 改后 partial_free 同页应放行"
 
     def test_partial_free_到了播放页才成立(self):
         from trajectory_pipeline.executor.branches import RunLedger
@@ -610,9 +628,15 @@ class TestBranchPrecondition:
             "前置事实表超过 6 条了——这张表的价值在于短，每加一条都要有人维护它"
         )
 
-    def test_付费墙前置事实不成立时降级(self):
-        """「有播放页但需付费」要求**确实到了播放页**。站点页上的
-        「开通会员」是导航栏文案，不是付费墙——所以同页守卫适用。"""
+    def test_subscription_wall_同页时放行(self):
+        """2026-10-19 增量六十·方案 X:同页守卫窄化后,subscription_wall
+        落地即结论(付费墙页面就是付费墙)。
+
+        原守卫(增量三十二)拦 nav-bar「开通会员」弱短语——4 批 300 行
+        核对:守卫触发的 46 行 100% 是 player 落地页形态,没有 nav-bar
+        弱短语真例。X 改后该守卫不再覆盖 subscription_wall(强信号旁路
+        仍生效,但本身已无对手可拦)。
+        """
         from trajectory_pipeline.executor.branches import RunLedger
 
         pre = self._obs(video_tag_count=0, body_text="开通会员观看")
@@ -624,7 +648,7 @@ class TestBranchPrecondition:
             obs=same,
             pre_obs=pre,
         )
-        assert out.branch == "unresolved", "点击前后同页却记了付费墙"
+        assert out.branch == "subscription_wall", "X 改后 subscription_wall 同页应放行"
 
     def test_付费墙到了播放页才成立(self):
         from trajectory_pipeline.executor.branches import RunLedger
@@ -700,9 +724,18 @@ class TestBranchPrecondition:
         )
         assert out.branch == "subscription_wall"
 
-    def test_subscription_wall_弱信号不旁路(self):
-        """只命中 1 个关键词（付费）且无价格模式 = 弱信号 = 仍降级。
-        与 ``test_付费墙前置事实不成立时降级`` 同款设计。
+    def test_subscription_wall_弱信号放行(self):
+        """2026-10-19 增量六十·方案 X:同页守卫不再覆盖 subscription_wall,
+        「弱信号不旁路」语义已不存在(守卫是拦截主体,守卫移除后该
+        路径不再有任何拦挡)。
+
+        该测试在 X 改前断言 ``unresolved``(守卫拦下弱信号 nav-bar
+        CTA)。X 改后期望改为 ``subscription_wall``(守卫根本不拦,
+        弱信号也走金标分支)。
+
+        防回潮:nav-bar CTA 真例若出现,TestBranchPreconditionSinglePage
+        7 类单页落地 URL 测试会失败(因为 nav-bar CTA 不在那 7 类里,
+        反而会落 subscription_wall——这是 X 的**有意**取舍)。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -717,13 +750,105 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
             pre_obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
         )
-        assert out.branch == "unresolved", (
-            "弱信号却放行了——会污染 nav-bar ad CTA 类的真负样本池"
+        assert out.branch == "subscription_wall", (
+            "X 改后守卫不覆盖 subscription_wall,弱信号也放行"
         )
 
-    def test_partial_free_强信号不旁路(self):
-        """旁路**只对** ``subscription_wall`` 生效。partial_free 即使
-        命中 1 关键词也仍降级——不扩张旁路范围。
+    # ────────────────────────────────────────────────────────
+    # 2026-10-19 增量六十·方案 X 回归保护
+    # ────────────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("url", [
+        "/play/ep313572",  # bilibili bangumi
+        "/movie/10075153.html",  # le.com
+        "/article/K913R9HN05565JWF.html",  # 163.com dy
+        "/v/dXMvNjMzMjM4MzYvNTkxMTAyOTcuc2h0bWw=.html",  # tv.sohu
+        "/title/breaking-bad/",  # luketv.tv
+        "/zy/167079/",  # trtag
+        "/journal/jeju-food-guide",  # koreabycar
+        "/guocanju/wulinwaichuan/",  # 节目落地
+        "/y/35918.html",  # ljy
+    ])
+    @pytest.mark.parametrize("branch_factory,expected_branch", [
+        ("subscription_wall", "subscription_wall"),
+        ("login_required", "login_required"),
+        ("blocked", "blocked"),
+        ("partial_free", "partial_free"),
+    ])
+    def test_单页落地URL_4条分支放行(self, url, branch_factory, expected_branch):
+        """7+2 类 player 落地页 URL(簇 C 13 行实测样本) × 4 条分支 → 期望放行。
+
+        簇 C 根因(增量五十七):同页守卫无条件触发,误伤「单页落地」URL
+        形态。X 改后守卫只覆盖 component_unverified,4 条分支在 player
+        落地页应当**直接放行**到金标分支,不再降级 unresolved。
+
+        防回潮:任何「同页守卫重新覆盖这 4 条分支」的修改都会让这组
+        测试失败——直接锁住 X 方案不被回退。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        full_url = f"https://x.test{url}"
+        # 不同分支需要不同的 decision.question / payload
+        if branch_factory == "subscription_wall":
+            decision = Decision("player.ok", False, 0.8, "需付费", "llm",
+                                {"paywall": True})
+        elif branch_factory == "login_required":
+            decision = Decision(Q.IS_REACHABLE, False, 0.8, "需登录", "llm",
+                                {"access_control_type": "login"})
+        elif branch_factory == "blocked":
+            decision = Decision(Q.IS_REACHABLE, False, 0.8, "地区限制", "llm",
+                                {"access_control_type": "region"})
+        else:  # partial_free
+            decision = Decision(Q.PLAYER_OK, False, 0.8, "试看6分钟", "llm",
+                                {"paywall_type": "trial"})
+        led = RunLedger("T001")
+        out = led.record_from(
+            full_url, decision,
+            obs=self._obs(url=full_url, body_text="body"),
+            pre_obs=self._obs(url=full_url, body_text="body"),  # 同页
+        )
+        assert out.branch == expected_branch, (
+            f"X 改后 {branch_factory} 在 player 落地页({url})同页应放行,"
+            f"实际={out.branch}——守卫可能回退覆盖了 {branch_factory}"
+        )
+
+    def test_component_unverified_同页仍降级(self):
+        """X 改后守卫仍覆盖 component_unverified——这是 X 方案的
+        唯一保留分支。
+
+        设计意图:component_unverified 是「已落地播放页但无组件」
+        的兜底,需要「点击前后是否换页」做**强证据**确认;其他 4 条
+        是「落地即结论」语义。
+
+        实测(2026-10-09 mgtv):mgtv 详情页 + 「立即播放」按钮 + LLM
+        判 False「仍在详情页」+ 元素数/正文全同——这种场景**必须**
+        降级 unresolved(component_unverified 不该贴)。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
+
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/detail",
+            self._dec(False),
+            obs=self._obs(url="https://x.test/detail", video_tag_count=0,
+                          body_text="立即播放 影片详情"),
+            pre_obs=self._obs(url="https://x.test/detail", video_tag_count=0,
+                              body_text="立即播放 影片详情"),
+        )
+        assert out.branch == "unresolved", (
+            "X 改后 component_unverified 同页守卫仍应触发——"
+            "mgtv 类「详情页 + 立即播放按钮 + LLM 判 False」必须降级"
+        )
+        assert "同一个页面" in out.evidence
+
+    def test_partial_free_同页放行(self):
+        """2026-10-19 增量六十·方案 X:同页守卫不再覆盖 partial_free。
+        原测试 ``test_partial_free_强信号不旁路`` 验「旁路只对
+        subscription_wall 生效」——X 改后守卫根本不覆盖 partial_free,
+        「旁路」概念消失,守卫移除后该路径不再有任何拦挡。
+
+        「是否扩张旁路范围」已不再是问题——X 改后所有 4 条分支(除
+        component_unverified)都直接放行。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -735,7 +860,7 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
             pre_obs=self._obs(url="https://x.test/site", body_text="会员抢先看"),
         )
-        assert out.branch == "unresolved", "partial_free 走旁路了——超出设计范围"
+        assert out.branch == "partial_free", "X 改后 partial_free 同页放行"
 
     # 2026-10-15 INC44 · 簇 A：④ 记账降级误伤订阅墙——确定性信号旁路
     def test_subscription_wall_救济标记旁路同页守卫(self):
@@ -765,11 +890,10 @@ class TestBranchPrecondition:
             f"强确定性信号却被降级为 {out.branch}——真付费墙页应旁路同页守卫"
         )
 
-    def test_subscription_wall_弱短语标记且弱body_仍降级(self):
-        """INC32 纪律回归保护：``_player_ok`` 短语命中路径对弱短语
-        （「开通会员」）也设 ``paywall_word``——那是 nav-bar CTA 形态
-        （mgtv 实测：详情页 + 开通会员广告）。标记 + 弱 body（无强弱
-        组合、无价格）→ 同页守卫照旧降级，不因标记存在而放行。
+    def test_subscription_wall_弱短语标记_放行(self):
+        """2026-10-19 增量六十·方案 X:同页守卫不再覆盖 subscription_wall。
+        原 INC32 纪律回归保护「弱短语标记 + 弱 body 仍降级」——X 改后
+        守卫不拦 subscription_wall,弱信号 + 弱 body 也直接放行。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -785,23 +909,7 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/movie", body_text="开通会员 享更多精彩"),
             pre_obs=self._obs(url="https://x.test/movie", body_text="开通会员 享更多精彩"),
         )
-        assert out.branch == "unresolved", (
-            "弱短语标记 + 弱 body 却放行了——nav-bar CTA 会污染真负样本池"
-        )
-
-    def test_subscription_wall_无标记且弱信号_仍降级(self):
-        """LLM 自报 ``paywall=True`` 但 evidence 无强弱组合、也无救济
-        标记——同页守卫照旧降级（INC32 原始形态，保持不变）。"""
-        from trajectory_pipeline.executor.branches import RunLedger
-
-        led = RunLedger("T001")
-        out = led.record_from(
-            "https://x.test/movie",
-            Decision("player.ok", False, 0.8, "需付费", "llm", {"paywall": True}),
-            obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
-            pre_obs=self._obs(url="https://x.test/movie", body_text="开通会员观看"),
-        )
-        assert out.branch == "unresolved"
+        assert out.branch == "subscription_wall", "X 改后守卫不覆盖 subscription_wall"
 
     def test_has_strong_paywall_signal_单元(self):
         """直接测判据函数，方便回归。"""

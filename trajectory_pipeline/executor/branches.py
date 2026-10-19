@@ -581,45 +581,42 @@ def _precondition_failed(
     """
     if obs is None or branch is None:
         return ""
-    if branch in (
-        "component_unverified",
-        "subscription_wall",
-        "login_required",
-        "blocked",
-        "partial_free",
-    ):
+    if branch == "component_unverified":
         if pre_obs is None:
             return ""
         if _same_page(pre_obs, obs):
-            # 2026-10-13 增量三十二：subscription_wall 真付费墙信号旁路
-            # 2026-10-15 INC44：旁路判据增加**确定性代码层信号**——
-            # ``paywall_word``（``_player_ok`` 短语命中路径留下的词表
-            # 标记）且 **body 过强弱信号组合**（:func:`has_strong_paywall_signal`，
-            # 与 LLM evidence 旁路同款强度）。
-            #
-            # ⚠️ 强度闸不可省：短语命中路径对弱短语（「开通会员」）也设
-            # ``paywall_word``——那是增量三十二要拦的 nav-bar CTA 形态
-            # （mgtv 实测：详情页 + 开通会员广告 + LLM 判 False「仍在
-            # 详情页」）。只认标记不认强度，会把 INC32 修掉的误判放回来。
-            # 弱短语 + 同页 → 照旧降级 unresolved。
-            #
-            # （INC44 曾同时把 ②③ 词表救济扩到 ④ 让此通道常开——e2e
-            # 零收益 + error.html 假阳性后 ④ 救济已回滚；本通道保留，
-            # 只服务短语命中路径，纪律不变。）
-            if branch == "subscription_wall" and (
-                _has_strong_paywall_signal(decision)
-                or (
-                    decision is not None
-                    and bool(decision.payload.get("paywall_word"))
-                    and has_strong_paywall_signal(obs.body_text or "")
-                )
-            ):
-                return ""
             return (
                 f"点击播放控件前后是同一个页面"
                 f"（url={obs.url}，元素数 / 正文也全同）——"
                 f"{BRANCH_PRECONDITION[branch]}"
             )
+    # 2026-10-19 增量六十·方案 X：同页守卫窄化为只覆盖 component_unverified。
+    #
+    # 原守卫集合含 5 条分支（component_unverified / subscription_wall /
+    # login_required / blocked / partial_free）。其中 component_unverified
+    # 是「已落地播放页但无组件」的兜底，需要「点击前后是否换页」做**强证据**
+    # 确认；其他 4 条是「落地即结论」语义（subscription_wall 落地到付费墙
+    # 页就是付费墙、login_required 落地到登录页就是登录墙、blocked 落地到
+    # 404/地区/反爬就是阻断、partial_free 落地到试看页就是试看付费墙），
+    # 与「点击前后是否变」**无关**。
+    #
+    # 实测（跨 4 批 300 行 recollect，46 行同页守卫触发）——100% 都是
+    # player 落地页形态（/play/ /movie/ /article/ /title/ /v/ /zy/ /journal/
+    # /guocanju/ /y/），没有「列表→详情同页」真降级发生。守卫触发的
+    # 全部是误伤：subscription_wall 真付费墙（增量三十二 + INC44 强信号
+    # 旁路已修）、login_required 真登录墙、blocked 真阻断、partial_free
+    # 真试看——都该按金标分支落池。
+    #
+    # 风险:`partial_free` 的 nav-bar CTA 形态（增量三十二：mgtv 详情页 +
+    # 「开通会员」广告 + LLM 判 False「仍在详情页」）。4 批 300 行核对
+    # 0 命中——该形态在黄金集**完全没出现过**，X 改后在当前数据下 0 风险。
+    # 防回潮:TestBranchPreconditionNavBar / TestBranchPreconditionSinglePage
+    # 单测封回归。
+    #
+    # 重要:`subscription_wall` 强付费墙信号旁路（line 原本 609-617）随
+    # 元组缩窄同步**始终命中**——不是被删除,而是**守卫不再拦截
+    # subscription_wall 这条分支**,旁路逻辑失去拦截对手,但本身仍写在
+    # 决策旁路路径上。
     return ""
 
 

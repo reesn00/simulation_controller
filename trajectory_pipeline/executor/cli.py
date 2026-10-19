@@ -2199,6 +2199,85 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_view(args: argparse.Namespace) -> int:
+    """P1 → T 落盘——把 per-Run 完整任务视图渲染出来，给 LS 上传 / 人工复核 / L4 用。
+
+    与 ``cmd_build`` 同款纪律（全离线 / 不开浏览器），但**只跑 T 这一段**。
+    T 与 P3 是**两种独立渲染**：P3 是 P2 的另一份渲染（per-unit，给 SFT 训练）；
+    T 是 P1 的另一份渲染（per-Run，给 LS 上传 / 复核）。P3 训练契约不动——
+    T 单独跑，不依附 ``cmd build``。
+
+    三种调用形态：
+
+    - ``--p1 <file>...`` 渲染指定的 P1 存档（**支持多次**——重跑某几条）；
+    - ``--all`` 渲染 ``--out`` 目录下全部 P1 存档（默认根 = executor
+      :data:`DEFAULT_ROOT`）；
+    - ``--p1`` / ``--all`` + ``--overwrite`` 重建已存在的 T 视图。
+
+    默认不覆盖已落盘的产物（与 ``cmd build`` 同款——重建批次不该把别人
+    刚标好的视图抹掉）。
+
+    Returns:
+        始终 0（与 :func:`cmd_build` 同款纪律——跳过走 stdout 印出，
+        不靠退出码传达）。跳过的条数与原因逐组印出——**「跳过」必须
+        看得见**，否则批次看起来只是少了几条。
+    """
+    from trajectory_pipeline.assembler import task_view as tv
+    from trajectory_pipeline.executor.archive import DEFAULT_ROOT
+
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    overwrite = bool(args.overwrite)
+    if args.all:
+        # 整批：枚举 P1 存档目录
+        results = tv.build_all_task_views(
+            source_root=root, target_root=root, overwrite=overwrite,
+            backfill_from_filename=bool(
+                getattr(args, "backfill_from_filename", True),
+            ),
+        )
+        # 跳过原因归组打印（与 cmd_build 的 P3 段同款纪律——
+        # 二次跑会跳过 N 条，逐条印是噪声）。
+        by_reason: Counter = Counter()
+        for r in results.results:
+            for s in r.skipped:
+                # s 形如 "T001__a1.json: 已存在" 或 "T001__a1: 缺 payload 键 [...]"
+                # 抓 ``:`` 后的原因段做归组
+                reason = s.split(":", 1)[1].strip() if ":" in s else s
+                by_reason[reason] += 1
+        print(f"P1 → T：{len(results.results)} 份存档，"
+              f"写出 {results.total_written} 份 T 视图"
+              f"（每份单文件三视图合一）")
+        for reason, n in by_reason.most_common():
+            print(f"  跳过 {n} 份（{reason}；要重建加 --overwrite）")
+        print(f"  → {results.target_dir}")
+        return 0
+
+    if args.p1:
+        for spec in args.p1:
+            p = Path(spec)
+            if not p.exists():
+                print(f"  跳过 {p}（文件不存在）", flush=True)
+                continue
+            try:
+                archive = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                print(f"  跳过 {p}（读档失败 {type(exc).__name__}: {exc}）",
+                      flush=True)
+                continue
+            rep = tv.build_task_view(archive, root=root, overwrite=overwrite)
+            if rep.written:
+                print(f"  ✓ {rep.trajectory_id} → {p.name}", flush=True)
+            else:
+                reason = rep.skipped[0] if rep.skipped else "未写"
+                print(f"  跳过 {rep.trajectory_id}（{reason}；要重建加 --overwrite）",
+                      flush=True)
+        return 0
+
+    # 既没传 --p1 也没传 --all：必须二选一
+    print("error: 必须传 --p1 <file>... 或 --all", flush=True)
+    return 2
+
+
 def cmd_purge_run(args: argparse.Namespace) -> int:
     """回滚一个 run——**存档与它并进池的负样本一起删**。
 
@@ -2918,6 +2997,31 @@ def build_parser() -> argparse.ArgumentParser:
                     help="覆盖已落盘的产物。**默认不覆盖**——重建批次不该"
                          "悄悄抹掉别人标好的样本")
     bd.set_defaults(func=cmd_build)
+
+    tv = sub.add_parser(
+        "task-view",
+        help="P1 → T 落盘（per-Run 完整任务视图，给 LS 上传 / 复核用；不联网）",
+    )
+    tv.add_argument("--p1", nargs="+", default=None,
+                    help="指定一份或多份 P1 存档路径（可重跑某几条）")
+    tv.add_argument("--all", action="store_true",
+                    help="渲染 --out 目录下全部 P1 存档")
+    tv.add_argument("--out", default=None,
+                    help="P1 存档目录（--p1 不传时也作默认根）")
+    tv.add_argument("--overwrite", action="store_true",
+                    help="覆盖已存在的 T 视图。**默认不覆盖**——重建批次不该"
+                         "悄悄抹掉别人刚标好的视图")
+    tv.add_argument("--backfill-from-filename", dest="backfill_from_filename",
+                    action="store_true", default=True,
+                    help="**过渡期策略**：存量 P1 JSON 顶层缺 ``run_id`` 时，"
+                         "从文件名 ``<task>__<run>.json`` 派生补到内存 dict，"
+                         "渲染出 T 视图（**不写回盘**）。新 P1（archive.write "
+                         "增量六十一修复后自带）该参数无操作。要走纯纪律路径"
+                         "（缺字段就 skipped）传 ``--no-backfill-from-filename``")
+    tv.add_argument("--no-backfill-from-filename",
+                    dest="backfill_from_filename", action="store_false",
+                    help="显式关闭过渡期回填（缺字段就 skipped，不静默派生）")
+    tv.set_defaults(func=cmd_task_view)
 
     pg = sub.add_parser(
         "purge-run",

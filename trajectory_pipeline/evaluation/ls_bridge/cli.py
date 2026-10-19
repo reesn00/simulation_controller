@@ -52,6 +52,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="要上传的 bucket, 逗号分隔(默认三态全传, 供人工分析)",
     )
     p_up.add_argument("--views-root", default=None, help="P3 视图根(默认 storage 默认根)")
+    p_up.add_argument(
+        "--task-views-root", default=None,
+        help="T 视图根(per-Run 完整任务视图,默认 storage 默认根);"
+        " trajectory 主路径用,旧 per-unit 路径不用",
+    )
+    p_up.add_argument(
+        "--legacy-unit-trajectory", action="store_true",
+        help="DEPRECATED:走 per-unit P3 旧路径(默认走 trajectory 主路径,3 周过渡期后移除)",
+    )
     p_up.add_argument("--limit", type=int, default=None, help="最多处理 N 条(取样调试)")
     p_up.add_argument("--batch-size", type=int, default=None, help="单批推送条数(默认 50)")
     p_up.add_argument("--no-scorecard", action="store_true", help="不带 scorecard 预标注")
@@ -132,8 +141,29 @@ def _cmd_upload(args: argparse.Namespace) -> int:
         settings=settings,
         buckets=buckets,
         views_root=args.views_root,
+        task_views_root=args.task_views_root,
         limit=args.limit,
+        legacy_unit_trajectory=args.legacy_unit_trajectory,
     )
+    if args.legacy_unit_trajectory:
+        print("[upload] ⚠ DEPRECATED 路径: per-unit P3(过渡期, 计划移除)")
+        unit_label = "per-unit(单条 P2 样本)"
+    else:
+        print("[upload] 主路径: trajectory_candidates.jsonl + T 视图(per-Run)")
+        unit_label = "per-Run(整条任务)"
+
+    # 桶分布(分母口径取决于路径)—— 风险 1 加注:per-Run 与 per-unit
+    # 分母不同,过渡期两口径并存,这里显式打标签防读错。
+    from collections import Counter as _Counter
+    bucket_dist: _Counter = _Counter()
+    for t in plan.tasks:
+        bucket_dist[t.get("data", {}).get("status", "?")] += 1
+    if plan.skipped:
+        bucket_dist["__skipped"] = len(plan.skipped)
+    if plan.rejected:
+        bucket_dist["__rejected"] = len(plan.rejected)
+
+    print(f"[upload] 桶分布({unit_label}): {dict(bucket_dist) or '(空)'}")
     print(f"[upload] {plan.summary()}")
 
     show = max(0, args.dry_run_show)

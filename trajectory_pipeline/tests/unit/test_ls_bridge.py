@@ -348,21 +348,25 @@ class TestExporter:
         assert task is None and hits
 
     def test_export_batch_缺视图进skipped(self, scout_dir, tmp_path):
-        # 只有 s-001 的视图, s-002 缺 → skipped
+        # 只有 s-001 的视图, s-002 缺 → skipped(本测测的是旧 per-unit 路径)
         views = tmp_path / "views"
         views.mkdir()
         for name in ("messages", "openai", "meta"):
             (views / f"s-001_{name}.json").write_text("{}", encoding="utf-8")
-        plan = export_batch(scout_dir, views_root=tmp_path)
+        plan = export_batch(
+            scout_dir, views_root=tmp_path, legacy_unit_trajectory=True,
+        )
         assert plan.count == 1
         assert [sid for sid, _ in plan.skipped] == ["s-002"]
 
     def test_export_batch_negative带劣质标记(self, scout_dir, views_root):
-        # 给 s-002 也补齐视图
+        # 给 s-002 也补齐视图(本测测的是旧 per-unit 路径)
         views = views_root / "views"
         for name in ("messages", "openai", "meta"):
             (views / f"s-002_{name}.json").write_text("{}", encoding="utf-8")
-        plan = export_batch(scout_dir, views_root=views_root)
+        plan = export_batch(
+            scout_dir, views_root=views_root, legacy_unit_trajectory=True,
+        )
         assert plan.count == 2
         neg = next(t for t in plan.tasks if t["data"]["status"] == "negative")
         assert "d4_failed" in neg["data"]["tags"]

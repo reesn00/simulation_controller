@@ -489,3 +489,92 @@ class TestPurgeRun:
         assert n_row == 1, "删掉的行数不等于实际命中数——返回值在说谎"
         remaining = [r["url"] for r in _pool_rows(tmp_path)]
         assert remaining == ["https://g.test/1"], f"连坐了 good1：{remaining}"
+
+
+# ── 增量六十一回归：run_id / batch_id 注入 ─────────────────────
+
+
+class TestRunIdBatchIdInjection:
+    """``RunRecord.to_json()`` 历史上不写 ``run_id`` / ``batch_id``,但
+    ``task_view`` 渲染、LS 上传、批次报表全靠它们做轨迹身份（``<task>__<run>``）
+    与按批次切片。文件名有但 JSON 没有 → 读侧只能从路径反推,这是隐性耦合。
+
+    落盘边界注入（不覆盖 record 自带值，与既有 ``batch_id`` 注入同款纪律）。
+    这条测试盯住两点：① 注入生效；② 不覆盖 record 自带值（``RunRecord``
+    未来若把 run_id 加进 to_json，这段不能把它清掉）。
+    """
+
+    def test_run_id_被注入JSON(self, tmp_path):
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+
+        rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
+        blob = json.loads(
+            P1Archive(tmp_path).write(
+                rec, task_id="T001", run_id="abc12345",
+            ).read_text(encoding="utf-8")
+        )
+        # ⚠️ 必须落到 JSON 顶层——task_view.build_task_view 从这里读
+        assert blob.get("run_id") == "abc12345"
+        # 文件名也必须匹配（防文件名改了 JSON 没改）
+        written = sorted(p.name for p in tmp_path.glob("*.json"))
+        assert written == ["T001__abc12345.json"]
+
+    def test_run_id_未传时_自动生成并注入(self, tmp_path):
+        """``run_id=None`` → ``archive.write`` 自动生成一个 hex 8 位并注入。"""
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+
+        rec = RunRecord(task_id="T002", title="t", query="q", search_url="u")
+        path = P1Archive(tmp_path).write(rec, task_id="T002")
+        blob = json.loads(path.read_text(encoding="utf-8"))
+        run_id = blob.get("run_id")
+        assert isinstance(run_id, str) and len(run_id) >= 8, run_id
+        # 文件名 = task_id__run_id
+        assert path.stem == f"T002__{run_id}"
+
+    def test_batch_id_被注入(self, tmp_path):
+        from trajectory_pipeline.executor.orchestrator import RunRecord
+
+        rec = RunRecord(task_id="T003", title="T", query="q", search_url="u")
+        blob = json.loads(
+            P1Archive(tmp_path).write(
+                rec, task_id="T003", run_id="r-1", batch_id="batch-A",
+            ).read_text(encoding="utf-8")
+        )
+        assert blob.get("batch_id") == "batch-A"
+
+    def test_不覆盖_record自带run_id(self, tmp_path):
+        """``FakeRecord`` 在 ``to_json()`` 里就含 ``run_id``——``archive.write``
+        必须不覆盖它（既有 ``batch_id`` 同款纪律）。"""
+        rec = FakeRecord({"task_id": "T004", "run_id": "from-record",
+                          "title": "t", "query": "q", "search_url": "u"})
+        blob = json.loads(
+            P1Archive(tmp_path).write(
+                rec, task_id="T004", run_id="from-arg",
+            ).read_text(encoding="utf-8")
+        )
+        assert blob.get("run_id") == "from-record"  # record 自带优先
+        # 文件名仍按入参（落盘契约）
+        assert (tmp_path / "T004__from-arg.json").exists()
+
+    def test_不覆盖_record自带batch_id(self, tmp_path):
+        rec = FakeRecord({"task_id": "T005", "batch_id": "from-record",
+                          "title": "t", "query": "q", "search_url": "u"})
+        blob = json.loads(
+            P1Archive(tmp_path).write(
+                rec, task_id="T005", run_id="r-1", batch_id="from-arg",
+            ).read_text(encoding="utf-8")
+        )
+        assert blob.get("batch_id") == "from-record"
+
+    def test_record_既无run_id也无batch_id_两个都补齐(self, tmp_path):
+        """最小 record：只 task_id + title + query + search_url——两个字段都缺。
+        这是历史上存量 P1 的形态（60+ 份），archive.write 必须自动补齐。"""
+        rec = FakeRecord({"task_id": "T006", "title": "t",
+                          "query": "q", "search_url": "u"})
+        blob = json.loads(
+            P1Archive(tmp_path).write(
+                rec, task_id="T006", run_id="r-1", batch_id="b-1",
+            ).read_text(encoding="utf-8")
+        )
+        assert blob.get("run_id") == "r-1"
+        assert blob.get("batch_id") == "b-1"

@@ -18,11 +18,17 @@ XML_PATH = LS_BRIDGE_DIR / "label_configs" / "trajectory_review_v2.xml"
 
 #: ls_bridge 允许 import 的 trajectory_pipeline 模块（依赖方向:
 #: evaluation 层 → storage 读 P3 / scout 纯类型; **禁** executor/assembler）。
+#: ``scout.aggregate`` 是同 evaluation 层子模块(2026-10-19 D14.5 加)——exporter
+#: 借它的 ``TRAJECTORY_BUCKET_FILE`` 常量名(避免在 exporter 写死字面量导致
+#: 改名漂移)。两模块本身就有循环(aggregate 反向 import exporter 的
+#: ``BUCKET_FILES`` + ``read_scout_records``),加进白名单是承认现实。
 _ALLOWED_TP_IMPORTS = {
     "trajectory_pipeline.evaluation.ls_bridge",
+    "trajectory_pipeline.evaluation.scout.aggregate",
     "trajectory_pipeline.evaluation.scout.types",
     "trajectory_pipeline.storage",
     "trajectory_pipeline.storage.read_p3",
+    "trajectory_pipeline.storage.task_views",
 }
 
 
