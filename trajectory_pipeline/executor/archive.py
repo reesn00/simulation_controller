@@ -225,7 +225,14 @@ class P1Archive:
         run = run_id or uuid.uuid4().hex[:8]
         return self._root / f"{task_id}__{run}.json"
 
-    def write(self, record: Any, *, task_id: str, run_id: str | None = None) -> Path:
+    def write(
+        self,
+        record: Any,
+        *,
+        task_id: str,
+        run_id: str | None = None,
+        batch_id: str | None = None,
+    ) -> Path:
         """落盘一条运行记录，**并把它贡献的负样本并入负样本池**。
 
         两件事绑在一个方法里，不是偷懒：「每条失败分支都必须有对应样本入库」
@@ -235,11 +242,23 @@ class P1Archive:
         是静默的：报表上分部数字都在，就是有一支永远是 0，而那可能只是
         没并池、不是没产出。
 
+        ``batch_id``（2026-10-19 增量 A3 修缮）——同 plan / 同次提交批次内，
+        同一 ``task_id`` 可能落多份 P1（不同 persona 共骨架），没有 batch
+        标记会让报表按 task 去重时把两份合成一份，或权重被双倍计入。注入
+        到 P1 顶层 ``batch_id`` 字段（不参与文件名，仍按 ``<task_id>__<run>``），
+        由 cli 层从 ``--task-id`` / ``--batch-id`` 透传。
+
         Raises:
             CredentialLeak: 内容命中凭据特征。**不写任何文件**。
         """
         run = run_id or uuid.uuid4().hex[:8]
-        payload = json.dumps(record.to_json(), ensure_ascii=False, indent=2)
+        record_dict = record.to_json()
+        if batch_id is not None:
+            # 仅当 record 没有自己的 batch_id 时注入（不覆盖 record 自带字段）
+            if not isinstance(record_dict, dict) or "batch_id" not in record_dict:
+                if isinstance(record_dict, dict):
+                    record_dict["batch_id"] = batch_id
+        payload = json.dumps(record_dict, ensure_ascii=False, indent=2)
         hits = scan_credentials(payload)
         if hits:
             raise CredentialLeak(

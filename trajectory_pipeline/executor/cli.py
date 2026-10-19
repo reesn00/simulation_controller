@@ -429,7 +429,7 @@ async def _run_manual(args: argparse.Namespace) -> int:
             # 存档里留空串（含义与 provenance 空 dict 相同）。
             rec = await orch.run(args.task_id, title)
             records.append(rec)
-            path = archive.write(rec, task_id=args.task_id)
+            path = archive.write(rec, task_id=args.task_id, batch_id=args.task_id)
             _print_summary(rec, path)
             # 增量三十六：L6 人工触发器——run 路径末尾自动派发。
             # 与人工 cli review --write 共用同源判据（REVIEW_BRANCHES），
@@ -535,7 +535,7 @@ async def _run_plan(args: argparse.Namespace) -> int:
                 provenance=dict(task.provenance),
             )
             records.append(rec)
-            path = archive.write(rec, task_id=task.task_id)
+            path = archive.write(rec, task_id=task.task_id, batch_id=args.task_id)
             _print_summary(rec, path)
             # 增量三十六：L6 自动派发——与 _run_manual 同口径。
             _dispatch_l6_summary(rec, task.task_id)
@@ -886,7 +886,7 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
                 )
 
             record.ledger = ledger
-            path = archive.write(record, task_id=args.task_id, run_id=run_id)
+            path = archive.write(record, task_id=args.task_id, run_id=run_id, batch_id=args.task_id)
             # 末段分支分布
             branch_count: dict[str, int] = {}
             for o in ledger.outcomes:
