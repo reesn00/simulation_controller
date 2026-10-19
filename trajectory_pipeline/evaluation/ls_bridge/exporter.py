@@ -255,7 +255,21 @@ def render_openai_text(openai: Any) -> str:
 
     tool_call 的 ``arguments`` 可能是任意 JSON 串, 原样缩进展示 —— 标注员
     需要核对的就是参数本身。
+
+    兼容两种视图形态:
+    - **dict** ``{sample_id, messages, tools}`` —— 生产 P3 实存形态
+      （:func:`assembler.views.build_views` 写盘形态）。
+      ⚠️ **2026-10-19 增量六十一发现**:本函数历史上只接受 ``list``,
+      与 P3 实际写盘形态脱节,生产推到 LS 后 ``openai_text`` 全是占位文案
+      ``"(openai 视图缺失或形态异常)"``。本次补兼容并加契约测试盯住。
+    - **list** —— 旧测试 fixture 形态（保留兼容）。
+
+    Args:
+        openai: dict（含 messages / samples 键）或 list[message]。
     """
+    # 解包:dict 形态 → 取出 messages list
+    if isinstance(openai, dict):
+        openai = openai.get("messages")
     if not isinstance(openai, list):
         return "(openai 视图缺失或形态异常)"
     lines: list[str] = []

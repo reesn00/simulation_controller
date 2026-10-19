@@ -77,12 +77,22 @@ def views_root(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (views / "s-001_openai.json").write_text(
-        json.dumps([
-            {"role": "user", "content": "播放这首歌"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"function": {"name": "play", "arguments": '{"ref": "btn-1"}'}}
-            ]},
-        ]),
+        # ⚠️ 生产形态：``{sample_id, messages, tools}`` dict
+        # （来自 :func:`assembler.views.build_views`）—— 不是纯 list。
+        # 2026-10-19 增量六十一发现 ls_bridge `render_openai_text` 与
+        # 生产形态脱节：fixture 写 list 时测试过、生产写 dict 时 LS 收到
+        # 全是占位文案。本 fixture 改回真实形态,封回归。
+        json.dumps({
+            "sample_id": "s-001",
+            "messages": [
+                {"role": "user", "content": "播放这首歌"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"function": {"name": "play", "arguments": '{"ref": "btn-1"}'}}
+                ]},
+            ],
+            "tools": [{"type": "function",
+                       "function": {"name": "play", "parameters": {}}}],
+        }, ensure_ascii=False),
         encoding="utf-8",
     )
     (views / "s-001_meta.json").write_text(
@@ -513,3 +523,72 @@ def test_负例阈值与scout一致():
         NEGATIVE_SCORE_THRESHOLD as SCOUT_THRESHOLD,
     )
     assert NEGATIVE_SCORE_THRESHOLD == SCOUT_THRESHOLD
+
+
+# ── 增量六十一回归：render_openai_text 与 P3 形态对齐 ───────────────
+
+
+class TestRenderOpenaiText形态:
+    """``render_openai_text`` 必须兼容 P3 真实写盘形态（dict 包 messages）
+    而非仅旧 fixture 的纯 list 形态。**历史坑**：fixture 写 list 时这条函数
+    表现正常，``ls_bridge.upload`` 推到 LS 后所有任务的 ``openai_text``
+    都是占位文案 ``"(openai 视图缺失或形态异常)"`` —— 标签标注页那块
+    完全空着，标注员看不到 tool_call 内容。本类用 dict 形态 fixture
+    封回归。
+    """
+
+    def test_dict形态_渲染产出tool_call名与参数(self):
+        """P3 实际写盘形态 ``{sample_id, messages, tools}`` dict。"""
+        from trajectory_pipeline.evaluation.ls_bridge.exporter import (
+            render_openai_text,
+        )
+        p3_view = {
+            "sample_id": "T001__a1__search",
+            "messages": [
+                {"role": "system", "content": "你是助手"},
+                {"role": "user", "content": "播放这首歌"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "call_0",
+                     "function": {"name": "play",
+                                  "arguments": '{"ref": "btn-1"}'}},
+                ]},
+            ],
+            "tools": [],
+        }
+        out = render_openai_text(p3_view)
+        # 关键断言：tool_call 名 + 参数 都在文本里
+        # （占位文案绝不会含这些,所以这条能区分"修了"与"没修"）
+        assert "play" in out, f"tool_call 名缺失：{out!r}"
+        assert 'btn-1' in out, f"tool_call 参数缺失：{out!r}"
+        assert "(openai 视图缺失或形态异常)" not in out
+
+    def test_list形态_向后兼容(self):
+        """保留对旧 list 形态 fixture 的兼容——别把旧测试搞红。"""
+        from trajectory_pipeline.evaluation.ls_bridge.exporter import (
+            render_openai_text,
+        )
+        out = render_openai_text([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "click", "arguments": "{}"}},
+            ]},
+        ])
+        assert "click" in out
+
+    def test_空形态返占位(self):
+        """非 dict 非 list（int / None / str）→ 占位文案（已知契约）。"""
+        from trajectory_pipeline.evaluation.ls_bridge.exporter import (
+            render_openai_text,
+        )
+        assert render_openai_text(None) == "(openai 视图缺失或形态异常)"
+        assert render_openai_text("garbage") == "(openai 视图缺失或形态异常)"
+        assert render_openai_text({}) == "(openai 视图缺失或形态异常)"
+
+    def test_dict但messages不是list_返占位(self):
+        """dict 形态但 messages 字段坏——fail-closed,返占位。"""
+        from trajectory_pipeline.evaluation.ls_bridge.exporter import (
+            render_openai_text,
+        )
+        assert render_openai_text(
+            {"sample_id": "x", "messages": "broken", "tools": []},
+        ) == "(openai 视图缺失或形态异常)"
