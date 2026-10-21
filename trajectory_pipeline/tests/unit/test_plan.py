@@ -252,7 +252,10 @@ class TestPlanCliWiring:
                 pass
 
         monkeypatch.setattr(cli.McpClient, "from_env", staticmethod(lambda: _Client()))
-        monkeypatch.setattr(cli, "ObscuraDriver", _Driver)
+        # P0 之后 cli 只经 ``make_driver`` 造驱动，不再持有具体类名。
+        monkeypatch.setattr(
+            cli, "make_driver", lambda client, **_kw: _Driver(client)
+        )
 
         plan = tmp_path / "plan.json"
         plan.write_text(json.dumps(_plan(*rows), ensure_ascii=False), encoding="utf-8")

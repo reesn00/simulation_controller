@@ -100,12 +100,13 @@ class TestJudgeRef:
         把它默认掉，全批都会变成 1 分，且分数「看起来很严谨」。"""
         assert judge_ref("立即播放", "button", [_obs()]).kind == "missing"
 
-    def test_tag不符不改变判定(self):
-        """tag 来自 DOM 预处理，换一次渲染就可能变；label 一致且唯一时
+    def test_kind不符不改变判定(self):
+        """kind 槽（obscura 面的标签名 / camoufox 面的 ARIA role）来自 DOM
+        预处理，换一次渲染、甚至换一次执行层就可能变；text 槽一致且唯一时
         引用并没有歧义。只记一笔，不扣分。"""
         obs = _obs(interactive_elements=[_el("e5", "a", "立即播放")])
         f = judge_ref("立即播放", "button", [obs])
-        assert f.kind == "found" and "tag" in f.reason
+        assert f.kind == "found" and "kind" in f.reason
 
     def test_空label判不可判定而非不存在(self):
         """``target=None`` 是执行器没解出目标（I6 存疑），

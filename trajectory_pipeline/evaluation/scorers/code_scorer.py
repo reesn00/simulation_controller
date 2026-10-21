@@ -40,6 +40,10 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
 from trajectory_pipeline.assembler.schema import Sample
+from trajectory_pipeline.common.elements import (
+    element_name,
+    element_role,
+)
 
 #: 一次引用（一个 click 目标）的判定结果。
 RefKind = Literal["found", "ambiguous", "missing", "undetermined"]
@@ -97,27 +101,30 @@ class D2Verdict:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _label_of(action: Any) -> str:
-    """动作的点击目标 label。兼容 ``ActionView``（dataclass）与存档字典。"""
+def _target_of(action: Any) -> Any:
+    """动作的点击目标。兼容 ``ActionView``（dataclass）与存档字典。"""
     target = getattr(action, "target", None)
     if target is None and isinstance(action, Mapping):
         target = action.get("target")
-    if target is None:
-        return ""
-    label = (getattr(target, "label", None) if not isinstance(target, Mapping)
-             else target.get("label"))
-    return str(label or "")
+    return target
 
 
-def _tag_of(action: Any) -> str:
-    target = getattr(action, "target", None)
-    if target is None and isinstance(action, Mapping):
-        target = action.get("target")
-    if target is None:
-        return ""
-    tag = (getattr(target, "tag", None) if not isinstance(target, Mapping)
-           else target.get("tag"))
-    return str(tag or "")
+def _name_of(action: Any) -> str:
+    """动作点击目标的 **text 槽**（可访问名 / 可见文字）。
+
+    走 :func:`~trajectory_pipeline.perception.base.element_name` 而不是
+    ``target.get("label")``：目标字典的键名跟着**方言**走（P4）——历史
+    批次写 ``label``，camoufox 批次写 ``name``。写死 ``label`` 的后果是
+    新批次**每条 click 都取到空串**，而空串在 :func:`judge_ref` 里读作
+    「执行器没解出目标」，于是整批样本被判成不可判定——看起来像执行器
+    坏了，实际是读取端还停在旧方言。
+    """
+    return element_name(_target_of(action))
+
+
+def _role_of(action: Any) -> str:
+    """动作点击目标的 **kind 槽**。方言读取同 :func:`_name_of`。"""
+    return element_role(_target_of(action))
 
 
 def _click_actions(sample: Any) -> list[Any]:
@@ -192,14 +199,17 @@ def _observation_shortfall(obs: Mapping[str, Any]) -> str:
 def _matches(label: str, elements: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     """按 label 检索交互元素。超长 label 走**截断后全等**。
 
-    方向容易搞反：动作里的 label 来自内存里的 DOM 元素（``actions.target_of``
-    取的是 ``el.label``，**完整**），而存档里只留前 120 字
-    （``orchestrator._obs_json`` 的 ``label[:120]``）。所以是**存档那侧短**，
-    要拿动作 label 的前 120 字去比，不是拿存档那侧去前缀匹配动作 label。
+    方向容易搞反：动作里的 name 来自内存里的 DOM 元素（``actions.target_of``
+    取的是 ``el.name``，**完整**），而存档里只留前 120 字
+    （``orchestrator._obs_json`` 的 ``name_limit``）。所以是**存档那侧短**，
+    要拿动作 name 的前 120 字去比，不是拿存档那侧去前缀匹配动作 name。
+
+    两侧都比 **text 槽**（:func:`element_name`），不比键名：存的是哪个
+    方言由批次决定，比键名会把整批 camoufox 样本判成「引用不存在」。
     """
     needle = label if len(label) <= LABEL_TRUNCATED_AT \
         else label[:LABEL_TRUNCATED_AT]
-    return [e for e in elements if str(e.get("label") or "") == needle]
+    return [e for e in elements if element_name(e) == needle]
 
 
 def judge_ref(label: str, tag: str,
@@ -235,7 +245,7 @@ def judge_ref(label: str, tag: str,
             # （点击前后快照里 `ref=e5` 都在），不去重会把「命中一条」
             # 数成两条同名 → 误判含糊（4 分 / 3 分）。
             for el in found:
-                key = (str(el.get("ref") or ""), str(el.get("label") or ""))
+                key = (str(el.get("ref") or ""), element_name(el))
                 if key in seen_refs:
                     continue
                 seen_refs.add(key)
@@ -256,9 +266,9 @@ def judge_ref(label: str, tag: str,
             f"{len(hits)} 个元素同名，样本里不带 ref，模型无从指明是哪一条",
         )
     if len(hits) == 1:
-        hit_tag = str(hits[0].get("tag") or "")
-        note = "" if hit_tag == tag else f"（动作记 tag={tag or '空'}，" \
-                                          f"观察里是 {hit_tag or '空'}）"
+        hit_role = element_role(hits[0])
+        note = "" if hit_role == tag else f"（动作记 kind={tag or '空'}，" \
+                                          f"观察里是 {hit_role or '空'}）"
         return RefFinding("found", label, tag, f"命中 {len(hits)} 个元素{note}")
     if settled_by:
         reason = f"{settled_by} 是完整采集且无同名元素"
@@ -308,7 +318,7 @@ def score_d2(sample: Sample | Any) -> D2Verdict:
                           "「没有可校验项」不等于「全部可找到」",))
 
     observations = list(getattr(sample, "observations", ()) or ())
-    refs = tuple(judge_ref(_label_of(a), _tag_of(a), observations) for a in actions)
+    refs = tuple(judge_ref(_name_of(a), _role_of(a), observations) for a in actions)
 
     missing = [r for r in refs if r.kind == "missing"]
     ambiguous = [r for r in refs if r.kind == "ambiguous"]

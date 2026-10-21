@@ -153,7 +153,7 @@ class Test视图名与渲染侧一致:
             f"payload 键 {payload_keys} 与 VIEW_NAMES {set(VIEW_NAMES)} 漂移"
         )
 
-    def test_to_meta键集是文档那17个(self):
+    def test_to_meta键集是文档那20个(self):
         """AST 读 ``to_meta`` 的返回字面量。**不多不少**——
         多了文档没写，少了文档写空话。"""
         actual = _keys_of(VIEWS_SRC, "to_meta")
@@ -175,6 +175,14 @@ class Test视图名与渲染侧一致:
             "observation_complete",
             "closing_summary",
             "rationale_steps",
+            # 2026-10-20：能力声明 vs 已验证动作。工具声明扩到 13 条
+            # （11 条模型可见）之后，「这条没用过哪些」不显眼时，读样本的
+            # 人会把**能力声明**当成**已验证的动作**。
+            "tools_declared",
+            "tools_unused",
+            # 2026-10-20 方案 15 §7 R1：工具面（方言轴）。同名工具在两个
+            # 面里参数不同，面错了就是声明与调用对不上。
+            "tool_surface",
         }
         assert actual == expected, (
             f"to_meta 键集漂移：多 {actual - expected} / 少 {expected - actual}。"
@@ -242,6 +250,8 @@ class Test契约文档不是摆设:
             "infrastructure_actions",
             "observation_complete",
             "rationale_steps",
+            # 2026-10-20 方案 15 §7 R1：工具面（方言轴）
+            "tool_surface",
             # 嵌套字段
             "step_index",
             "status",

@@ -12,6 +12,10 @@ import json
 
 import pytest
 
+from trajectory_pipeline.common.elements import (
+    ELEMENT_VOCAB_ARIA_ROLE,
+    ELEMENT_VOCAB_HTML_TAG,
+)
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger
@@ -106,9 +110,9 @@ class FakeDriver:
         if target in self.pages:
             self.current = self.pages[target]
 
-    async def type_text(self, *, text, ref=None, selector=None) -> None: ...
+    async def fill(self, *, text, ref=None, selector=None, role=None, name=None) -> None: ...
 
-    async def press_key(self, key: str) -> None: ...
+    async def press(self, key: str, *, role=None, name=None) -> None: ...
 
     async def new_tab(self, url: str | None = None) -> str:
         self.tabs.append(url or "")
@@ -158,7 +162,7 @@ def obs_at(url, *, title="T", elements=(), body="正文", video=0, iframe=0, **k
         page_title=title,
         body_text=body,
         interactive_elements=tuple(
-            InteractiveElement(ref=r, tag=t, label=l) for r, t, l in elements
+            InteractiveElement(ref=r, role=t, name=l) for r, t, l in elements
         ),
         video_tag_count=video,
         iframe_count=iframe,
@@ -1286,7 +1290,7 @@ class TestRunRecordAudit:
             page_title="T",
             body_text="正文",
             interactive_elements=tuple(
-                InteractiveElement(ref=r, tag=t, label=l) for r, t, l in elements
+                InteractiveElement(ref=r, role=t, name=l) for r, t, l in elements
             ),
             links=tuple(LinkItem(text=t_, href=h) for t_, h in links),
             elements_total=120,
@@ -1890,13 +1894,17 @@ class TestDomainReach:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-EL = (InteractiveElement(ref="e5", tag="button", label="立即播放"),)
+EL = (InteractiveElement(ref="e5", role="button", name="立即播放"),)
 
 
 class TestTargetOf:
-    def test_解出tag与label(self):
+    def test_解出两个槽(self):
+        """槽位搬过去、**值不动**：这里不解「标签名 → ARIA role」。"""
         t = actions.target_of("e5", EL)
-        assert (t.tag, t.label) == ("button", "立即播放")
+        assert (t.role, t.name) == ("button", "立即播放")
+        # 存档投影跟着方言走（P4）：同一份 target 两种键名。
+        assert t.to_json(ELEMENT_VOCAB_HTML_TAG) == {"tag": "button", "label": "立即播放"}
+        assert t.to_json(ELEMENT_VOCAB_ARIA_ROLE) == {"role": "button", "name": "立即播放"}
 
     def test_解不出返回None(self):
         """fail-closed：ref 溯源不到就承认溯源不到，不拿第一个元素顶上。"""
@@ -2554,7 +2562,7 @@ class Test站点首页核:
 
 class TabbedDriver(FakeDriver):
     """外链校验 / 站内搜索需要的 fake：``new_tab`` 切页、``close_tab``
-    恢复、``press_key("Enter")`` 按 ``enter_targets`` 跳转。
+    恢复、``press("Enter")`` 按 ``enter_targets`` 跳转。
 
     基类 ``FakeDriver`` 的 ``new_tab`` 只记账不切页——对既有测试
     （infrastructure 步骤不进消息视图）是对的，但外链校验链的
@@ -2580,7 +2588,7 @@ class TabbedDriver(FakeDriver):
         if self._tab_stack:
             self.current = self._tab_stack.pop()
 
-    async def press_key(self, key: str) -> None:
+    async def press(self, key: str, *, role=None, name=None) -> None:
         target = self.enter_targets.get(self.current.url if self.current else "")
         if target and target in self.pages:
             self.current = self.pages[target]

@@ -25,6 +25,12 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Protocol, runtime_checkable
 
+# 元素方言的**定义**在 ``common/elements.py``（地基，谁都能 import）：
+# rationale / assembler / T 都有「不 import 上游」的硬规矩，而读一个存档
+# 键名是纯格式的事。本模块只**用**它，且**不转发**——两个导入路径迟早
+# 各自漂，要读方言就 import 那个模块。
+from trajectory_pipeline.common.elements import ELEMENT_VOCAB_HTML_TAG
+
 # ═══════════════════════════════════════════════════════════════════════
 # 观察层值对象
 # ═══════════════════════════════════════════════════════════════════════
@@ -42,13 +48,20 @@ class LinkItem:
 class InteractiveElement:
     """可点击 / 可输入元素，带**稳定 ref**。
 
-    ref 来自 ``browser_interactive_elements``，形如 ``e1``，**导航前有效**。
-    它是判断点 ③ 回传的内容——代码拿它直接 click，不再自己猜"哪个是播放按钮"。
+    ``ref`` 来自驱动层的枚举，形如 ``e1`` / ``c3``，**只在会话内有效**
+    （obscura 面导航前有效；camoufox 面的 ``{role,name}`` 更是只有**同一次
+    枚举内**有效，见设计方案 04 §4.5.6）。它只活在 P1 与采集面，**不进
+    训练动作流**。
+
+    ⚠️ **``role`` / ``name`` 是槽位名，不是值域保证**：值的词表由
+    :attr:`Observation.element_vocabulary` 决定（obscura 面的 ``role`` 槽
+    装的是 HTML 标签名）。P4 起字段名统一，值域仍逐面不同义——
+    见 :mod:`trajectory_pipeline.common.elements` 的模块 docstring。
     """
 
     ref: str
-    tag: str
-    label: str
+    role: str
+    name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +106,20 @@ class Observation:
     #: 数不出「可交互元素」，为此多一轮 MCP 往返不划算。
     elements_total: int = 0
     links_total: int = 0
+
+    #: 交互元素用的**词汇表**（见 :data:`ELEMENT_VOCAB_HTML_TAG`）。
+    #:
+    #: 它**不是可选元数据**：按词表筛元素的地方（站内搜索框 / 搜索按钮 /
+    #: 播放控件）换了执行层就必须换一套词，而两套词在值上根本对不上
+    #: （``input`` vs ``textbox``）。没有这个字段时唯一的活法是「两套并集」，
+    #: 那会让**同一份观察里的两个方言值同时命中**——症状是换了执行层之后
+    #: 某条路径静默取回 0 个候选，与「这页确实没有」完全同形。
+    #:
+    #: 由**驱动实现**填（它就是方言本身），不手填、不从别处推导；
+    #: 回放时由存档的 ``driver`` 折回来填（:func:`trajectory_pipeline
+    #: .perception.replay.observation_of`），缺省 ``html_tag`` —— 历史批次
+    #: 真实跑的就是 obscura。
+    element_vocabulary: str = ELEMENT_VOCAB_HTML_TAG
 
     # ── 截断与污染诊断（元数据，不参与语义判断）─────────────────────
     max_chars: int | None = None

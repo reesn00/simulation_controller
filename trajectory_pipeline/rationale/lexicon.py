@@ -44,6 +44,11 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Literal, Mapping
 
+from trajectory_pipeline.common.elements import (
+    element_name,
+    element_role,
+)
+
 #: 实体种类。**只有两类**——见模块 docstring 第 1 条。
 EntityKind = Literal["url", "quoted"]
 
@@ -298,8 +303,12 @@ def resettable_text(text: str) -> str:
             str(text.get("body_text") or ""),
         ]
         for el in text.get("interactive_elements") or ():
-            parts.append(str((el or {}).get("tag") or ""))
-            parts.append(str((el or {}).get("label") or ""))
+            # 两槽都并进去，与键名无关：漏并一槽就多一条假幻觉
+            # （实测元素里的播放按钮名是最常被引用的实体），而键名
+            # 跟着方言走（P4）——写死 ``tag``/``label`` 会让 camoufox
+            # 批次的元素名整批查不到，实体全判成幻觉。
+            parts.append(element_role(el))
+            parts.append(element_name(el))
         for lk in text.get("links") or ():
             parts.append(str((lk or {}).get("text") or ""))
             parts.append(str((lk or {}).get("href") or ""))

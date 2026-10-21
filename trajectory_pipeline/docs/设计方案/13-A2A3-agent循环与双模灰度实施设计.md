@@ -6,6 +6,11 @@
 
 **硬边界（继承方案 12，重申）**：22 分支封闭集、P1/P2/P3 产物契约、fail-closed 纪律、负样本纯度三支「没判出来」分立——**一字不动**。唯一例外：P1 `action.tool` 枚举与代码动作空间的存量脱节（§5，契约文字落后于代码，须先收口）。
 
+> ⚠️ **立场表述沿革（2026-10-20）**：本文按「agent 接管传感器 + 导航，代码保留
+> 流程引导 + 记账 + 收口」写的部分**保留原文作历史沿革**，不改写。
+> 现役口径已被[设计方案 15](15-执行器与agent-runtime重新定义.md) D-A6 取代：
+> **代码层做护栏、LLM 层做探索、persona 管输入分布**。
+
 ---
 
 ## 0. 拍板记录（2026-10-16 owner）
@@ -30,7 +35,7 @@ A3 开放决策点：**全部收口（2026-10-17）**——D-9 纳入验收（§
 | Gatekeeper 三档处置 | `executor/gatekeeper.py`（389 行） | `InjectGuidance` / `EscalateModel` / `FailClosed` 均 frozen dataclass，**专为 A2 留形、当前零调用方**；`to_event()` 事件形态已定 |
 | `Verdict` 封闭七值 | 同上 | NORMAL / BLOCKED_CF / CAPTCHA / LOGIN_WALL / PAYWALL / DEAD_LOOP / DEGRADED |
 | `DeadLoopDetector` | 同上 | `record(url, action, body_len)` + `detect() -> "repeat_action"|"empty_body"|""`，尾部连续语义；**等 A2 每步接线** |
-| PageDriver 原语 | `executor/browser/page_driver.py` | goto / snapshot / links / interactive / count / extract / evaluate / click / type_text / press_key / new_tab / close_tab / observe / close——**全齐** |
+| PageDriver 原语 | `executor/browser/page_driver.py` | goto / snapshot / links / interactive / count / extract / evaluate / click / fill / press / new_tab / close_tab / observe / close——**全齐**（`fill`/`press` 旧名 `type_text`/`press_key`，2026-10-20 已改名） |
 | StepLog 两段式 | `executor/actions.py` | `act(action) -> index` + `settle(index, observation)`——agent 每步动作+回执**天然就是 P1 落盘形态** |
 | 工具冻结声明 | `assembler/schema.py` `ToolSpec.visible_to_model()` | 模型可见 = goto / click / fill / press 四个；new_tab / close_tab 留动作流不进声明 |
 | `RunRecord.gatekeeper_events[]` | `executor/orchestrator.py` | INC47 已加，A2 直接写入（事件格式 `{stage, verdict, reason, disposition}` 沿用） |
@@ -134,7 +139,7 @@ async def agent_loop(
 3. **组 prompt + LLM 决策**（`chat_messages`）；llm_calls[] 记账（§3.6）；解析失败 → 格式引导重试一次 → FailClosed
 4. **I6 ref 白名单校验**（工具层强制）：`done=false` 且 tool∈{click, fill} 时 ref 必须 ∈ 最近观察 interactive_elements 的 ref 集；不过 → 注入引导重试一次 → 仍不过 FailClosed（**编 ref 是不可逆错误，不执行**）
 5. **预算检查**：步数 / llm_calls 任一耗尽 → FailClosed（`_BudgetExhausted` 口径）
-6. **执行**：`done=true` → 返回 AgentOutcome；否则按 tool 分发 driver 原语（goto→`driver.goto`、click→`driver.click(ref=...)`、fill→`driver.type_text(ref=..., text=...)`、press→`driver.press_key(...)`）→ `steps.act(Action(...))`
+6. **执行**：`done=true` → 返回 AgentOutcome；否则按 tool 分发 driver 原语（goto→`driver.goto`、click→`driver.click(ref=...)`、fill→`driver.fill(text=..., ref=...)`、press→`driver.press(...)`）→ `steps.act(Action(...))`。★**参数照抄 `ref` 是 obscura 面**：camoufox 面收 `role`/`name`，拿 `ref` 调它会**抛 `ValueError` 炸穿**——这是有意的（P4 迁移 I6 时这行要跟着改）
 7. **DeadLoopDetector.record(url, action, body_len)**（每步一次）
 
 **确定性纪律（方案 12 §5.3 第 1 条的落地）**：步数预算、终止判定、处置映射、事件落盘全部在代码——agent 的非确定性被限制在「页面内选哪个元素、goto 哪个链接」这一段语义决策。

@@ -1,0 +1,385 @@
+{
+  "env": {
+    "playwright": "1.62.0",
+    "camoufox": "0.5.8"
+  },
+  "results": [
+    {
+      "scenario": "headful_humanize_on_click",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 21,
+          "raf_stalled_ms": 11,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "locator_click_60s",
+          "kind": "action",
+          "status": "ok",
+          "ms": 3084
+        },
+        {
+          "step": "after_locator_click",
+          "kind": "read",
+          "clicks": 1,
+          "pd": 1,
+          "kd": 0,
+          "raf_frames": 82,
+          "raf_stalled_ms": 1,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "locator_click_force_60s",
+          "kind": "action",
+          "status": "ok",
+          "ms": 6010
+        },
+        {
+          "step": "after_force_click",
+          "kind": "read",
+          "clicks": 2,
+          "pd": 2,
+          "kd": 0,
+          "raf_frames": 83,
+          "raf_stalled_ms": 3917,
+          "vis": "visible",
+          "focus": true
+        }
+      ]
+    },
+    {
+      "scenario": "headful_humanize_off_click",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 20,
+          "raf_stalled_ms": 16,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "locator_click_60s",
+          "kind": "action",
+          "status": "ok",
+          "ms": 118
+        },
+        {
+          "step": "after_locator_click",
+          "kind": "read",
+          "clicks": 1,
+          "pd": 1,
+          "kd": 0,
+          "raf_frames": 33,
+          "raf_stalled_ms": 11,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "locator_click_force_60s",
+          "kind": "action",
+          "status": "ok",
+          "ms": 39
+        },
+        {
+          "step": "after_force_click",
+          "kind": "read",
+          "clicks": 2,
+          "pd": 2,
+          "kd": 0,
+          "raf_frames": 33,
+          "raf_stalled_ms": 11,
+          "vis": "visible",
+          "focus": true
+        }
+      ]
+    },
+    {
+      "scenario": "headless_humanize_on_click",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 20,
+          "raf_stalled_ms": 8,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "locator_click_60s",
+          "kind": "action",
+          "status": "ok",
+          "ms": 899
+        },
+        {
+          "step": "after_locator_click",
+          "kind": "read",
+          "clicks": 1,
+          "pd": 1,
+          "kd": 0,
+          "raf_frames": 69,
+          "raf_stalled_ms": 10,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "locator_click_force_60s",
+          "kind": "action",
+          "status": "ok",
+          "ms": 14
+        },
+        {
+          "step": "after_force_click",
+          "kind": "read",
+          "clicks": 2,
+          "pd": 2,
+          "kd": 0,
+          "raf_frames": 81,
+          "raf_stalled_ms": 16,
+          "vis": "visible",
+          "focus": true
+        }
+      ]
+    },
+    {
+      "scenario": "headful_humanize_on_raw_mouse",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 21,
+          "raf_stalled_ms": 6,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "mouse_click_raw",
+          "kind": "action",
+          "status": "error:TypeError",
+          "ms": 0,
+          "msg": "Mouse.click() got an unexpected keyword argument 'timeout'"
+        },
+        {
+          "step": "after_mouse_click",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 21,
+          "raf_stalled_ms": 6,
+          "vis": "visible",
+          "focus": true
+        }
+      ]
+    },
+    {
+      "scenario": "headful_humanize_off_raw_mouse",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 20,
+          "raf_stalled_ms": 15,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "mouse_click_raw",
+          "kind": "action",
+          "status": "error:TypeError",
+          "ms": 0,
+          "msg": "Mouse.click() got an unexpected keyword argument 'timeout'"
+        },
+        {
+          "step": "after_mouse_click",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 20,
+          "raf_stalled_ms": 15,
+          "vis": "visible",
+          "focus": true
+        }
+      ]
+    },
+    {
+      "scenario": "headful_bring_to_front",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 20,
+          "raf_stalled_ms": 14,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 2
+        },
+        {
+          "step": "after_front",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 20,
+          "raf_stalled_ms": 14,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "locator_click_60s",
+          "kind": "action",
+          "status": "ok",
+          "ms": 1642
+        },
+        {
+          "step": "after_click",
+          "kind": "read",
+          "clicks": 1,
+          "pd": 1,
+          "kd": 0,
+          "raf_frames": 121,
+          "raf_stalled_ms": 6,
+          "vis": "visible",
+          "focus": true
+        }
+      ]
+    },
+    {
+      "scenario": "headful_keyboard",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": 0,
+          "pd": 0,
+          "kd": 0,
+          "raf_frames": 22,
+          "raf_stalled_ms": 12,
+          "vis": "visible",
+          "focus": true
+        },
+        {
+          "step": "focus",
+          "kind": "action",
+          "status": "ok",
+          "ms": 87
+        },
+        {
+          "step": "press_enter",
+          "kind": "action",
+          "status": "ok",
+          "ms": 6
+        },
+        {
+          "step": "after_enter",
+          "kind": "read",
+          "clicks": 1,
+          "pd": 0,
+          "kd": 1,
+          "raf_frames": 22,
+          "raf_stalled_ms": 12,
+          "vis": "visible",
+          "focus": true
+        }
+      ]
+    }
+  ]
+}

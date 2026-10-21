@@ -203,8 +203,9 @@ async def visit_site(
     await open_tab(driver, url, result)
     step_click = result.steps.act(actions.click(target))
     try:
-        await driver.click(ref=ref)
-    except DriverError as exc:
+        await driver.click(**actions.target_params(
+            result.site_obs.element_vocabulary, target, ref=ref))
+    except (DriverError, actions.UnaddressableTarget) as exc:
         result.steps.settle(step_click, error=f"点击失败: {exc}")
         ledger.record(
             result.landed_url, "component_unverified",

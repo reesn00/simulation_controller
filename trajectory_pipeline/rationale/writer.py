@@ -130,6 +130,12 @@ from typing import Any, Literal, Mapping, Sequence
 
 from trajectory_pipeline.llm import schema_parse
 from trajectory_pipeline.llm.client import LLMClient
+from trajectory_pipeline.common.elements import (
+    element_keys,
+    element_name,
+    element_role,
+    vocabulary_of_archive_elements,
+)
 from trajectory_pipeline.rationale import gates
 
 # ── 预算 ──────────────────────────────────────────────────────────
@@ -301,6 +307,11 @@ def render(observation: Mapping[str, Any] | None) -> dict[str, Any]:
     obs = observation or {}
     body = str(obs.get("body_text") or "")
     elements = list(obs.get("interactive_elements") or ())
+    # 键名跟着**存档的方言**走（P4），且**只搬键名不翻译值**：
+    # 写死 ``tag``/``label`` 会让 camoufox 批次的元素在提示词里变成
+    # 两列空串——模型看到「有元素、没名字」，于是把控件名判成幻觉。
+    vocabulary = vocabulary_of_archive_elements(elements)
+    kind_key, text_key = element_keys(vocabulary)
     out: dict[str, Any] = {
         "url": str(obs.get("url") or ""),
         "page_title": str(obs.get("page_title") or ""),
@@ -309,7 +320,7 @@ def render(observation: Mapping[str, Any] | None) -> dict[str, Any]:
         "body_truncated": len(body) > BODY_CHARS,
         "elements_total": len(elements),
         "interactive_elements": [
-            {"tag": str(e.get("tag") or ""), "label": str(e.get("label") or "")}
+            {kind_key: element_role(e), text_key: element_name(e)}
             for e in elements[:ELEMENTS]
             if isinstance(e, Mapping)
         ],
@@ -360,8 +371,9 @@ def render_action(action: Mapping[str, Any] | None) -> dict[str, Any]:
         out["params"] = params
     target = act.get("target")
     if isinstance(target, Mapping):
-        out["target"] = {"tag": str(target.get("tag") or ""),
-                         "label": str(target.get("label") or "")}
+        kind_key, text_key = element_keys(vocabulary_of_archive_elements([target]))
+        out["target"] = {kind_key: element_role(target),
+                         text_key: element_name(target)}
     return out
 
 

@@ -15,6 +15,15 @@
     <Text name="task" value="$task_id"/>
   </View>
 
+  <!-- 时间戳(2026-10-19 增量六十一补):generated_at = 产物落盘时间
+       (P3/T 视图 mtime),uploaded_at = 推 LS 瞬间。空串时直接显示
+       "(未知)"——不静默吞,fail-closed 暴露数据完整性问题。 -->
+  <Header value="══ 时间戳 ══  generated_at = 数据生成 / uploaded_at = 推送 LS"/>
+  <TextArea name="generated_at_view" toName="task_anchor" editable="false" rows="1"
+            value="$generated_at"/>
+  <TextArea name="uploaded_at_view" toName="task_anchor" editable="false" rows="1"
+            value="$uploaded_at"/>
+
   <!-- 分区一律 <Header>: <Tabs>/<Tab>/<List>/<TextEditor> 在本机 LS 1.23
        未注册或什么都不渲染, 实测结论见 v1 label_configs 注释。 -->
 

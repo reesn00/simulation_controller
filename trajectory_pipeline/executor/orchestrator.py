@@ -6,7 +6,7 @@
 LLM 版的判断来自远端模型输出，把它写进 ``if`` 就等于让代码去猜模型的语义，
 而那正是 v2 要消灭的东西。
 
-「LLM 是传感器不是驾驶员」在这里体现为：
+「代码层做护栏、LLM层做探索」在这里体现为：
 
     决策权 = 本文件的控制流      —— 代码定
     感知内容 = Perceptor.decide  —— 插件给，可替换
@@ -47,7 +47,9 @@ from trajectory_pipeline.executor.steps import site_search as site_search_step
 from trajectory_pipeline.executor.steps import visit as visit_step
 from trajectory_pipeline.executor.steps.aggregator import IntermediateResult
 from trajectory_pipeline.executor.steps.search import Candidate
+from trajectory_pipeline import toolcatalog
 from trajectory_pipeline.perception import questions
+from trajectory_pipeline.common.elements import element_json
 from trajectory_pipeline.perception.base import (
     Decision,
     LinkItem,
@@ -70,6 +72,9 @@ log = logging.getLogger(__name__)
 #: 哪天这里改成 100 而别处还按 80 判断，D-2 会静默地把裁剪当成不存在。
 OBS_ELEMENT_LIMIT = 80
 OBS_LINK_LIMIT = 50
+#: 落盘的**元素名**裁到多少字符（``tag``/``label`` 时代的 ``label[:120]``）。
+#: 名字本身不截断在内存里——P1 是证据，裁的只是落盘那份。
+OBS_ELEMENT_NAME_LIMIT = 120
 
 #: 感知层送模型的**链接窗口宽度**（= ``perception.llm_perceptor.LLM_LINKS``）。
 #: executor 不能 import 感知层实现（01-架构总览 L49-50：executor 只依赖
@@ -203,6 +208,20 @@ class RunRecord:
     #: 已知的两条链在 P1 里同形，一旦允许逐候选切换，这批存档的
     #: 归因就回答不了「这条轨迹是哪种执行器产的」。
     executor_mode: str = "scripted"
+    #: **执行层（驱动实现）**（2026-10-20 方案 15 §7 R1）：``obscura`` /
+    #: ``camoufox``。
+    #:
+    #: 与 :attr:`executor_mode` **同一个理由单独存一份**：它是批次级属性
+    #: ——「这批是哪个执行层跑的」与「这批是 scripted 还是 agent 跑的」
+    #: 是**两个正交的归因轴**，缺一个读档人就分不清。
+    #:
+    #: 它还是**工具面**的唯一来源：目标编码（``{tag,label}`` vs
+    #: ``{role,name}``）由驱动决定，训练侧的声明按它折算
+    #: （:func:`trajectory_pipeline.toolcatalog.surface_of_driver`）。
+    #:
+    #: **空串 = 没记**（不是「未知驱动」）：历史批次没有这个字段，而那批
+    #: 真实跑的就是 obscura。补一个默认值等于凭空断言这份存档属于哪一批。
+    driver: str = ""
     #: B/C 路径的中间页访问结果（聚合站页 / 文章页）。direct 恒空。
     #: 每个元素是独立决策单元（P2 切条时 ``agg-N`` / ``article-N``）。
     intermediates: list[IntermediateResult] = field(default_factory=list)
@@ -242,6 +261,20 @@ class RunRecord:
     #: 单开字段的代价是 report 要额外统计一次；换来的是
     #: 「被拦」与「没素材」在报表上永远分得开。
     search_blocked: str = ""
+    #: **本 run 的短哈希**（2026-10-19 增量六十一补）。
+    #:
+    #: 历史上只活在文件名 ``<task_id>__<run_id>.json`` 与 :attr:`batch_id`
+    #: 同源——读侧只能从路径反推,而 task_view 渲染、LS 上传、批次报表
+    #: 全需要它在 JSON 顶层。「在 writer 边界临时注入」是隐性耦合:
+    #: RunRecord 不知情、测试 fixture 不造、读档人从路径反推才看得到。
+    #: 现在下沉为 RunRecord 字段(默认空串,writer 边界填入,读档人直接看),
+    #: 与 ``executor_mode`` / ``batch_id`` 同款——不可省略的运行级审计项。
+    run_id: str = ""
+    #: **本 run 所属的批次 id**（同 :attr:`run_id` 增补原因,2026-10-19）。
+    #:
+    #: ``T001`` / ``T002`` …来自 :class:`~.executor.task_generator.Plan`
+    #: 顶层,作为批次报表切片键。空串 = 不在 plan 跑出来的批次(手工 / 测试)。
+    batch_id: str = ""
     #: **Gatekeeper 事件账本**（2026-10-16 方案 12 阶段 G / D-A3 最小账本）。
     #: 每条 ``{stage, verdict, reason, disposition}``——拦截发生在哪个阶段、
     #: 判定结论（:class:`~trajectory_pipeline.executor.gatekeeper.Verdict`
@@ -339,7 +372,14 @@ class RunRecord:
         return any(v.success for v in self.visits)
 
     def to_json(self) -> dict[str, Any]:
-        """序列化。刻意只保留**可审计**的字段，不留页面句柄。"""
+        """序列化。刻意只保留**可审计**的字段，不留页面句柄。
+
+        元素与目标的那两个槽**按方言投影**（P4）：一次 run 只有一个驱动，
+        所以整份存档**只有一个方言**。方言来源见
+        :func:`_vocabulary_of_run`——首选观察自己记下的，没有观察时才按
+        ``driver`` 折算，认不出的 ``driver`` 在那一步**抛**。
+        """
+        vocabulary = _vocabulary_of_run(self)
         return {
             "schema_version": self.schema_version,
             "task_id": self.task_id,
@@ -363,7 +403,7 @@ class RunRecord:
             "elapsed_ms": self.elapsed_ms,
             "warnings": list(self.warnings),
             "search_observation": _obs_json(self.search_obs),
-            "steps": [s.to_json(_obs_json) for s in self.steps.steps],
+            "steps": [s.to_json(_obs_json, vocabulary) for s in self.steps.steps],
             # 搜索单元的终局反思（INC46）。与 ``steps`` 平级——它不是某一步
             # 的 rationale，是整个搜索单元看完之后的总结。
             "reflection": dict(self.reflection) if self.reflection else None,
@@ -373,6 +413,17 @@ class RunRecord:
             # 长得一模一样——而它们的可比性假设根本不同（方案 12 §5.3
             # 第 3 条：agent 批的重跑可比性不成立）。
             "executor_mode": self.executor_mode,
+            # 执行层（2026-10-20 方案 15 §7 R1）。**空串也写**：
+            # 「这批是哪个执行层跑的」与「这批是哪种链跑的」是两个正交
+            # 的归因轴，缺了这个字段，两批不同执行层的存档在磁盘上
+            # 长得一模一样——而它们的动作编码不同义，混池就是造数据。
+            "driver": self.driver,
+            # run_id / batch_id(2026-10-19 增量六十一):与 filename 同源,
+            # 之前只活在 writer 边界注入,下沉为 RunRecord 字段后读档人
+            # 直接看 JSON 顶层。空串 = 不在 plan 跑出来的批次(手工 / 测试),
+            # 不会因「字段不存在」与「批次外运行」混淆。
+            "run_id": self.run_id,
+            "batch_id": self.batch_id,
             # B/C 路径的中间页单元（2026-10-16）：就地构造（与 visits 同款），
             # 决策只落摘要——question/answer/evidence 足够人工复核复现，
             # 完整 Decision 的其余字段（source/fallback_used）已在对应
@@ -383,7 +434,9 @@ class RunRecord:
                     "url": ir.candidate.url,
                     "landed_url": ir.landed_url,
                     "notes": list(ir.notes or []),
-                    "steps": [s.to_json(_obs_json) for s in ir.steps.steps],
+                    "steps": [
+                        s.to_json(_obs_json, vocabulary) for s in ir.steps.steps
+                    ],
                     "obs": _obs_json(ir.obs),
                     "is_intermediate": _decision_json(ir.is_intermediate),
                     "entries": _decision_json(ir.entries),
@@ -408,7 +461,9 @@ class RunRecord:
                     "landed_url": v.landed_url,
                     "success": v.success,
                     "notes": list(v.notes or []),
-                    "steps": [s.to_json(_obs_json) for s in v.steps.steps],
+                    "steps": [
+                        s.to_json(_obs_json, vocabulary) for s in v.steps.steps
+                    ],
                     "site_obs": _obs_json(v.site_obs),
                     "player_obs": _obs_json(v.player_obs),
                     # 站点单元的终局反思（INC46），与 steps 平级。
@@ -489,6 +544,57 @@ def _stamp_llm_calls(calls: list[dict[str, Any]]) -> None:
         entry.setdefault("ts", ts)
 
 
+def _vocabulary_of(driver: str) -> str:
+    """驱动实现名 → 元素词汇表。**一条轴**：``driver`` → 工具面 → 方言。
+
+    认不出的驱动名**抛**（``toolcatalog`` 那两个函数都不回落）——拿默认
+    面去渲染一份 camoufox 存档，写出来的键名与真实调用对不上，而报告上
+    看不出任何异常。
+    """
+    return toolcatalog.dialect_of(
+        toolcatalog.surface_of_driver(driver)
+    ).vocabulary
+
+
+def _run_observations(record: "RunRecord") -> list[Observation | None]:
+    """这条 run 里出现过的**全部**观察，按落盘顺序。
+
+    ``steps[].observation`` 与 ``visits[].site_obs`` 是同一份观察的两条
+    路径（前者是本步取到的、后者是单元摘要），这里只要**任意一份**能答出
+    方言，所以不区分来源、也不去重——重复读一次同值的字符串不影响结论。
+    """
+    out: list[Observation | None] = [record.search_obs]
+    for steps_log in (record.steps,):
+        out += [s.observation for s in steps_log.steps]
+    for ir in record.intermediates:
+        out.append(ir.obs)
+        out += [s.observation for s in ir.steps.steps]
+    for v in record.visits:
+        out += [s.observation for s in v.steps.steps]
+        out.append(v.site_obs)
+        out.append(v.player_obs)
+    return out
+
+
+def _vocabulary_of_run(record: "RunRecord") -> str:
+    """整条 run 的元素词汇表。
+
+    **首选观察自己记下的** :attr:`Observation.element_vocabulary`——那是
+    驱动实现在采集时写下的原始事实（某个 ``<input>`` 值来自哪个词表，
+    只有采到它的那一刻能确定）。按 ``driver`` 再折一遍是**第二处推断**，
+    一旦驱动的 ``name`` 与存档里的 ``driver`` 字面值不一致，两处就会
+    各说各话，而症状是键名悄悄换了一套。
+
+    run 里一份观察都没有时才退回 ``driver`` 折算（例如搜索页立刻被反爬
+    拦下）：那时也没有元素可投影，但 ``driver`` **认不出仍然抛**——与工具
+    面同一条纪律，不猜。
+    """
+    for obs in _run_observations(record):
+        if obs is not None:
+            return obs.element_vocabulary
+    return _vocabulary_of(record.driver)
+
+
 def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
     """Observation → JSON。落**可归因的证据**，不是给人眼看的摘要。
 
@@ -529,8 +635,17 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
         # 是唯一一条不补数据就必然产生反向错判的边界规则。
         "elements_total": obs.elements_total or len(obs.interactive_elements),
         "links_total": obs.links_total or len(obs.links),
+        # 键名跟着**方言**走（P4）：obscura 面写 ``{tag,label}``、camoufox 面
+        # 写 ``{role,name}``。统一键名而不统一值域，等于把两个方言写成同一种
+        # 数据——而读档人无从判断该按哪套词表解释它。投影只有
+        # :func:`common.elements.element_json` 一处。
+        #
+        # 方言**取自这份观察自己**（``obs.element_vocabulary``），不由调用方
+        # 传：传参就有传错的可能，而传错的症状是「键名悄悄换了一套」，
+        # 报告上完全看不出来。观察是采集那一刻写下的原始事实，它就是权威。
         "interactive_elements": [
-            {"ref": e.ref, "tag": e.tag, "label": e.label[:120]}
+            element_json(e, obs.element_vocabulary,
+                         name_limit=OBS_ELEMENT_NAME_LIMIT)
             for e in obs.interactive_elements[:OBS_ELEMENT_LIMIT]
         ],
         "links": [
@@ -760,6 +875,11 @@ class Orchestrator:
             provenance=dict(provenance or {}),
             discovery_path=self._cfg.discovery_path,
             executor_mode=self._mode,
+            # **实际跑这条链的驱动实现**（2026-10-20 方案 15 §7 R1）。
+            # 它是「工具面」的唯一来源：目标编码（``{tag,label}`` vs
+            # ``{role,name}``）由驱动决定，写错了训练数据的声明就与
+            # 真实调用对不上——而那在报告上看不出任何异常。
+            driver=str(getattr(self._driver, "name", "") or ""),
             # 运行参数进存档：覆盖完整性（B-2）与异常处置（B-4）
             # 两项断言的分母/判据都在这里，见 RunRecord.run_config。
             run_config=dataclasses.asdict(self._cfg),
@@ -1061,18 +1181,20 @@ class Orchestrator:
         """
         if self._writer is None:
             return
+        vocabulary = _vocabulary_of_run(record)
         steps = steps_log.steps
         for index, step in enumerate(steps):
             try:
                 payload = self._writer(
-                    action=step.action.to_json(),
+                    action=step.action.to_json(vocabulary),
                     user_prompt=record.user_prompt,
                     target_title=record.title,
                     # INC46：**不喂本步观察**。历史是 ``(动作, 观察)`` 对——
                     # 动作前动机只该依据此前看到的东西（见
                     # ``rationale.writer.render_history``）。
                     history=[
-                        (s.action.to_json(), _obs_json(s.observation))
+                        (s.action.to_json(vocabulary),
+                         _obs_json(s.observation))
                         for s in steps[:index]
                     ],
                 )
@@ -1123,13 +1245,16 @@ class Orchestrator:
         reflect = getattr(self._writer, "reflect", None)
         if reflect is None:
             return None
+        vocabulary = _vocabulary_of_run(record)
         steps = steps_log.steps
         try:
             return reflect(
                 user_prompt=record.user_prompt,
                 target_title=record.title,
                 history=[
-                    (s.action.to_json(), _obs_json(s.observation)) for s in steps
+                    (s.action.to_json(vocabulary),
+                     _obs_json(s.observation))
+                    for s in steps
                 ],
                 outcome=outcome,
             )

@@ -79,7 +79,7 @@ def _obs(
         page_title=title,
         body_text=body,
         interactive_elements=tuple(
-            InteractiveElement(ref=r, tag="a", label=f"入口{r}") for r in refs
+            InteractiveElement(ref=r, role="a", name=f"入口{r}") for r in refs
         ),
         links=tuple(LinkItem(text=t, href=h) for t, h in links),
         **kw,  # type: ignore[arg-type]
@@ -131,12 +131,18 @@ class FakeDriver:
         if (ref or "") in self._click_fails:
             raise DriverError(f"fake: 点不动 {ref}")
 
-    async def type_text(
-        self, *, text: str, ref: str | None = None, selector: str | None = None
+    async def fill(
+        self,
+        *,
+        text: str,
+        ref: str | None = None,
+        selector: str | None = None,
+        role: str | None = None,
+        name: str | None = None,
     ) -> None:
         self.typed.append((ref or "", text))
 
-    async def press_key(self, key: str) -> None:
+    async def press(self, key: str, *, role: str | None = None, name: str | None = None) -> None:
         self.pressed.append(key)
 
     async def observe(self, *, max_chars: int | None = None) -> Observation:
@@ -1047,13 +1053,56 @@ class Test任务类型:
 
 class Test契约漂移:
     """§3.9 最后一行：agent_loop 实际发出的 tool 集必须与训练动作
-    空间的模型可见集**同一个集合**。"""
+    空间的模型可见集**一致**。
 
-    def test_四工具等于模型可见集(self):
+    ⚠️ **2026-10-20 起这条口径从「相等」改成「包含」**（增量六十二）。
+
+    旧口径是「**同一个集合**」：模型可见集 == agent 实际能发的 4 个。
+    增量六十二给训练侧的 `tools[]` 补了 7 条**能力声明**（模型被告知
+    存在，但本项目没有任何真实运行产生过它们的调用）——于是模型可见集
+    变成 11 条，而采集期的 agent 仍然只能发 4 个。
+
+    这不是漂移，是**两个不同的集合**，各有各的职责：
+
+    - :data:`AGENT_TOOLS` —— **执行端**的白名单。采集期的模型发出
+      白名单外的动作，是**协议违反**（不是「先记下来」），要打回。
+    - 模型可见集 —— **训练侧**的声明。样本的 `tools[]` 告诉模型
+      「这个工具空间长这样」。
+
+    所以关系是 **包含**而不是相等：agent 能发的**每一个**动作都必须在
+    模型可见集里（否则模型被告知的工具它发不出），反过来不要求——
+    多出来的那几条是能力声明，采集期会按 ``_GUIDANCE_BAD_TOOL`` 打回。
+
+    ⚠️ 代价是明说的：训练出的模型**可能**去调那 7 条能力声明。若部署
+    时给它的工具空间就是这 11 条，它调 `web_search` 不会被 v2 的
+    `agent_loop` 接受。这是「能力声明」这个设计的已知代价，靠
+    ``meta.tools_unused`` 逐个列名让人工复核看得见。
+    """
+
+    def test_agent能发的动作都在模型可见集里(self):
         visible = frozenset(
             spec.name for spec in TOOL_SPECS if spec.visible_to_model()
         )
-        assert frozenset(AGENT_TOOLS) == visible
+        assert set(AGENT_TOOLS) <= set(visible), (
+            "agent 能发的动作必须都声明给模型——否则模型被告知了一个"
+            "它发不出的工具"
+        )
+
+    def test_能力声明多出来的那些在动作流词汇表外(self):
+        """能力声明**不是**动作空间的一部分：控制流真会发的原语清单
+        是 :data:`actions.TOOLS`，能力声明那 7 条不在里面。
+
+        这条守住「声明不冒充能力」——多列一个进 ``actions.TOOLS``，
+        就会训出一批永远不会被真实运行验证过的动作。
+        """
+        visible = {
+            spec.name for spec in TOOL_SPECS if spec.visible_to_model()
+        }
+        declared_only = visible - set(AGENT_TOOLS)
+        assert declared_only, "当前口径：模型可见集应当大于 agent 的四工具"
+        assert not (declared_only & set(actions.TOOLS)), (
+            f"能力声明混进了动作流词汇表: {declared_only & set(actions.TOOLS)}"
+        )
 
     def test_四工具都在动作流词汇表内(self):
         """A2 不引入任何 P1 未见过的新动作——控制流真会发的原语清单

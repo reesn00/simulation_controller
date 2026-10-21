@@ -1,0 +1,127 @@
+{
+  "env": {
+    "playwright": "1.62.0",
+    "camoufox": "0.5.8"
+  },
+  "results": [
+    {
+      "scenario": "baseline_no_prefs",
+      "prefs": {},
+      "rows": [
+        {
+          "phase": "visible",
+          "ms": 407
+        },
+        {
+          "phase": "minimized",
+          "ms": 5191,
+          "pd_after": 2
+        },
+        {
+          "phase": "restored",
+          "ms": 994
+        }
+      ],
+      "hwnd_found": true
+    },
+    {
+      "scenario": "occlusion_tracking_off",
+      "prefs": {
+        "widget.windows.window_occlusion_tracking.enabled": false,
+        "ui.useOverlayScrollbars": 1,
+        "dom.quotaManager.temporaryStorage.fixedLimit": 499307006,
+        "privacy.donottrackheader.enabled": false,
+        "privacy.globalprivacycontrol.enabled": false,
+        "intl.locale.requested": "zh-CN",
+        "permissions.default.image": 1,
+        "media.peerconnection.enabled": true,
+        "browser.tabs.remote.useCrossOriginOpenerPolicy": true,
+        "webgl.enable-webgl2": true,
+        "webgl.force-enabled": true
+      },
+      "rows": [
+        {
+          "phase": "visible",
+          "ms": 840
+        },
+        {
+          "phase": "minimized",
+          "ms": 5060,
+          "pd_after": 2
+        },
+        {
+          "phase": "restored",
+          "ms": 839
+        }
+      ],
+      "hwnd_found": true
+    },
+    {
+      "scenario": "background_throttling_off",
+      "prefs": {
+        "dom.min_background_timeout_value": 4,
+        "dom.timeout.background_throttling_max_budget": -1,
+        "ui.useOverlayScrollbars": 1,
+        "dom.quotaManager.temporaryStorage.fixedLimit": 499307006,
+        "privacy.donottrackheader.enabled": false,
+        "privacy.globalprivacycontrol.enabled": false,
+        "intl.locale.requested": "zh-CN",
+        "permissions.default.image": 1,
+        "media.peerconnection.enabled": true,
+        "browser.tabs.remote.useCrossOriginOpenerPolicy": true,
+        "webgl.enable-webgl2": true,
+        "webgl.force-enabled": true
+      },
+      "rows": [
+        {
+          "phase": "visible",
+          "ms": 826
+        },
+        {
+          "phase": "minimized",
+          "ms": 5346,
+          "pd_after": 2
+        },
+        {
+          "phase": "restored",
+          "ms": 1035
+        }
+      ],
+      "hwnd_found": true
+    },
+    {
+      "scenario": "both_off",
+      "prefs": {
+        "widget.windows.window_occlusion_tracking.enabled": false,
+        "dom.min_background_timeout_value": 4,
+        "dom.timeout.background_throttling_max_budget": -1,
+        "ui.useOverlayScrollbars": 1,
+        "dom.quotaManager.temporaryStorage.fixedLimit": 499307006,
+        "privacy.donottrackheader.enabled": false,
+        "privacy.globalprivacycontrol.enabled": false,
+        "intl.locale.requested": "zh-CN",
+        "permissions.default.image": 1,
+        "media.peerconnection.enabled": true,
+        "browser.tabs.remote.useCrossOriginOpenerPolicy": true,
+        "webgl.enable-webgl2": true,
+        "webgl.force-enabled": true
+      },
+      "rows": [
+        {
+          "phase": "visible",
+          "ms": 658
+        },
+        {
+          "phase": "minimized",
+          "ms": 9371,
+          "pd_after": 2
+        },
+        {
+          "phase": "restored",
+          "ms": 690
+        }
+      ],
+      "hwnd_found": true
+    }
+  ]
+}

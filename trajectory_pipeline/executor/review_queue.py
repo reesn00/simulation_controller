@@ -46,13 +46,17 @@ from typing import Any, Final, Iterable, Mapping
 
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
 from trajectory_pipeline.perception import questions
+from trajectory_pipeline.common.elements import (
+    element_json,
+    vocabulary_of_archive_elements,
+)
 
 # ─────────────────────────────────────────────────────────────────────
 # L6 派发常量（2026-10-13 增量三十六落地）
 # ─────────────────────────────────────────────────────────────────────
 #
 # L6 人工触发器的判据由代码层**事实**决定，不由 LLM 决定——
-# 与「LLM 是传感器不是驾驶员」纪律一致。两条触发条件各自守一条事实：
+# 与「代码层做护栏、LLM层做探索」纪律一致。两条触发条件各自守一条事实：
 #
 # 1. :data:`REVIEW_BRANCHES` ——「代码没判出来」（分支体系里的反思档）
 # 2. :data:`AUTO_REVIEW_NOTES` ——「采集 / 仲裁层主动 fail-closed」
@@ -324,11 +328,16 @@ def extract_items(archive: Mapping[str, Any]) -> list[ReviewItem]:
             continue
         url = str(outcome.get("url") or "")
         obs = by_landed.get(url) or by_url.get(url) or {}
-        elements = tuple(
-            {"ref": str(e.get("ref", "")), "tag": str(e.get("tag", "")),
-             "label": str(e.get("label", ""))[:60]}
-            for e in list(obs.get("interactive_elements") or [])[:ELEMENT_SAMPLE]
+        # 键名跟着**存档的方言**走（P4）：这里写死 ``tag``/``label`` 会把
+        # camoufox 批次的元素抽成三列空串，而复核员看到的是「有元素，但
+        # 没有标签」——队列本身没报错，只是白抽了一批。
+        raw_elements = [
+            e for e in list(obs.get("interactive_elements") or [])[:ELEMENT_SAMPLE]
             if isinstance(e, Mapping)
+        ]
+        vocabulary = vocabulary_of_archive_elements(raw_elements)
+        elements = tuple(
+            element_json(e, vocabulary, name_limit=60) for e in raw_elements
         )
         items.append(ReviewItem(
             task_id=task_id,

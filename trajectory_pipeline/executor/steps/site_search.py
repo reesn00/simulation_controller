@@ -36,7 +36,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor import actions
@@ -44,6 +45,10 @@ from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger, _same_page
 from trajectory_pipeline.executor.browser.page_driver import DriverError, PageDriver
 from trajectory_pipeline.executor.steps import search
+from trajectory_pipeline.common.elements import (
+    ELEMENT_VOCAB_ARIA_ROLE,
+    ELEMENT_VOCAB_HTML_TAG,
+)
 from trajectory_pipeline.perception.base import (
     InteractiveElement,
     Observation,
@@ -83,7 +88,36 @@ def is_site_homepage(url: str) -> bool:
 #: label 常为空，猜它是搜索按钮的误点风险大于收益（与 INC43 之后
 #: 「词表救济必须核信号位置」同一条纪律）。
 SEARCH_BUTTON_HINTS: tuple[str, ...] = ("搜索", "检索", "搜 索", "search")
-_SEARCHABLE_TAGS = frozenset({"button", "input", "a"})
+#: 可当搜索按钮提交的 kind 槽词表，**一套词表一个方言**（P4 收窄；
+#: P3-α 的并集已退役）。
+#:
+#: 并集会**在两个方言下都命中错的东西**：``role`` 槽装 ``button`` 时两面看着
+#: 一样（``<button>`` 的 role 也是 ``button``），于是「换了执行层」在这条路上
+#: 没有任何痕迹——而 ``a`` 与 ``link`` 这种值本来就不通用。
+#:
+#: 词汇表认不出时**抛**（:func:`_searchable_words`），不回落：回落等于猜
+#: 「这份观察大概是什么面」，猜错的症状是词表命中 0 个、然后被读成
+#: 「这页确实没有搜索按钮」。
+#:
+#: **ARIA 那套只补 ``link``**：role 下的提交控件本来就叫 ``button``
+#: （``<input type=submit>`` 的 role 也是 ``button``）；``textbox`` 之类的
+#: **点下去不会提交**，收进来会把「回车失败后的第二条路」变成
+#: 「点一下搜索框，然后什么都没发生」。
+_SEARCHABLE_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
+    ELEMENT_VOCAB_HTML_TAG: frozenset({"button", "input", "a"}),
+    ELEMENT_VOCAB_ARIA_ROLE: frozenset({"button", "link"}),
+})
+
+
+def _searchable_words(obs: Observation) -> frozenset[str]:
+    """该观察的元素词表对应的「可提交控件」词集。认不出**抛**（不猜）。"""
+    try:
+        return _SEARCHABLE_WORDS[obs.element_vocabulary]
+    except KeyError:
+        raise ValueError(
+            f"认不出的元素词汇表 {obs.element_vocabulary!r}——"
+            f"搜索按钮词表无从确定。已知的：{sorted(_SEARCHABLE_WORDS)}"
+        ) from None
 
 
 @dataclass
@@ -123,22 +157,34 @@ class SiteSearchResult:
 def _find_search_button(
     elements: tuple[InteractiveElement, ...],
     *,
+    vocabulary: str,
     skip_ref: str = "",
 ) -> InteractiveElement | None:
     """词表找「搜索」按钮。找不到返回 ``None``（不猜）。
+
+    ``vocabulary``：这批元素的词表（``obs.element_vocabulary``）。**必填**——
+    给它一个 ``html_tag`` 的默认值就等于「不知道就按 obscura 猜」，
+    而猜错的症状是这条路静默失效（命中 0 个不报错）。
 
     ``skip_ref``：已填过词的搜索框 ref。回车没触发提交时，词表按
     观察原序会先命中**输入框自己**（placeholder「搜索片名」也含
     「搜索」）——再点输入框一遍没有意义，重试路径要的是真正的
     提交按钮（单测抓出的形态：点击记成了 e1 框而不是 e3 按钮）。
     """
+    try:
+        words = _SEARCHABLE_WORDS[vocabulary]
+    except KeyError:
+        raise ValueError(
+            f"认不出的元素词汇表 {vocabulary!r}——搜索按钮词表无从确定。"
+            f"已知的：{sorted(_SEARCHABLE_WORDS)}"
+        ) from None
     for el in elements or ():
         if skip_ref and el.ref == skip_ref:
             continue
-        label = (el.label or "").strip().lower()
-        if not label or str(el.tag or "").lower() not in _SEARCHABLE_TAGS:
+        name = (el.name or "").strip().lower()
+        if not name or str(el.role or "").lower() not in words:
             continue
-        if any(hint.lower() in label for hint in SEARCH_BUTTON_HINTS):
+        if any(hint.lower() in name for hint in SEARCH_BUTTON_HINTS):
             return el
     return None
 
@@ -293,8 +339,12 @@ async def site_search(
 
     step_fill = steplog.act(actions.fill(target, title))
     try:
-        await driver.type_text(ref=ref, text=title)
-    except DriverError as exc:
+        await driver.fill(
+            text=title,
+            **actions.target_params(
+                site_obs.element_vocabulary, target, ref=ref),
+        )
+    except (DriverError, actions.UnaddressableTarget) as exc:
         steplog.settle(step_fill, error=f"填词失败: {exc}")
         ledger.record(
             landed, "unresolved", f"站内搜索填词失败: {exc}",
@@ -305,7 +355,7 @@ async def site_search(
 
     step_press = steplog.act(actions.press("Enter"))
     try:
-        await driver.press_key("Enter")
+        await driver.press("Enter")
     except DriverError as exc:
         steplog.settle(step_press, error=f"回车失败: {exc}")
         ledger.record(
@@ -452,7 +502,11 @@ async def _retry_via_button(
     找不到按钮（词表不中）直接返回原观察——调用方按「仍同页」
     处理为提交失败，不在这里编造「试过」的记录。
     """
-    button = _find_search_button(obs.interactive_elements, skip_ref=skip_ref)
+    button = _find_search_button(
+        obs.interactive_elements,
+        vocabulary=obs.element_vocabulary,
+        skip_ref=skip_ref,
+    )
     if button is None:
         result.note("页面上找不到可点击的「搜索」按钮（词表未命中）")
         return obs
@@ -460,8 +514,9 @@ async def _retry_via_button(
     target = actions.target_of(button.ref, obs.interactive_elements)
     step_click = steplog.act(actions.click(target))
     try:
-        await driver.click(ref=button.ref)
-    except DriverError as exc:
+        await driver.click(**actions.target_params(
+            obs.element_vocabulary, target, ref=button.ref))
+    except (DriverError, actions.UnaddressableTarget) as exc:
         steplog.settle(step_click, error=f"点搜索按钮失败: {exc}")
         result.note(f"点搜索按钮失败: {exc}")
         return obs

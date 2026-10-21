@@ -221,7 +221,11 @@ class Test契约文档不是摆设:
                        "rationale_missing", "degraded_from", "overall_branch",
                        "step_count", "observation_count", "infrastructure_actions",
                        "observation_complete", "missing_observation_count",
-                       "closing_summary", "rationale_steps"}:
+                       "closing_summary", "rationale_steps",
+                       # 2026-10-20：能力声明 vs 已验证动作（同 P3）
+                       "tools_declared", "tools_unused",
+                       # 2026-10-20 方案 15 §7 R1：工具面（方言轴）
+                       "tool_surface"}:
                 assert k in text, f"代码 to_task_meta 里没出现 {k!r}"
 
 

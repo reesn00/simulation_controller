@@ -20,14 +20,22 @@
 探针只验接线，不验业务结论：这里不比「选出的站对不对」，
 那要对着真实存档读 evidence（CLAUDE.md：每次真实运行后逐条核对）。
 
+**两个实现都能跑**（P3-β 起）：``--driver obscura|camoufox``。P3-β 的完成判据
+是「``search`` 步骤的标题抽取与 obscura 逐条对齐」——两边各跑一次，比
+``raw 键`` / ``raw 数组长度`` / ``配成 {url:title} 对数``三行即可；
+**探针不判等**，因为两面的页面本身会因指纹/时区/locale 略有差异，
+机判等把「站点给不同结果」误报成「抽取口径不同」。
+
 用法::
 
     export OBSCURA_EXE=/path/to/obscura.exe
     uv run python -m trajectory_pipeline.executor.browser.probe_result_titles
+    uv run python -m trajectory_pipeline.executor.browser.probe_result_titles --driver camoufox
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from typing import Any
@@ -48,28 +56,21 @@ PROBE_TITLE = "功夫"
 ENGINES: tuple[str, ...] = ("bing", "baidu")
 
 
-async def _probe(engine: str) -> tuple[dict[str, str], Any, int, int]:
+async def _probe(engine: str, driver: Any) -> tuple[dict[str, str], Any, int, int]:
     """跑一次真实搜索页抽取。返回 ``(titles, raw, 面包屑命中数, 链接总数)``。"""
-    # ``async with`` 不是可选的：McpClient 的 initialize 握手在 __aenter__ 里，
-    # 漏掉它的症状是每一次 tool 调用都回「MCP 会话未初始化」——
-    # 而 goto 的 on_error="raise" 会把它说成「browser_navigate 传输失败」，
-    # 与网络、与引擎、与选择器都无关，看着像环境坏了。
-    async with McpClient.from_env(timeout=120.0) as client:
-        driver = ObscuraDriver(client)
-        await driver.goto(search_url(build_query(PROBE_TITLE), engine))
-        raw = await driver.extract(RESULT_SELECTORS[engine])
-        obs = await driver.observe(max_chars=4000)
-
+    await driver.goto(search_url(build_query(PROBE_TITLE), engine))
+    raw = await driver.extract(RESULT_SELECTORS[engine])
+    obs = await driver.observe(max_chars=4000)
     titles = result_titles(raw)
     crumb_hits = sum(1 for link in obs.links if PROBE_TITLE in (link.text or ""))
     return titles, raw, crumb_hits, len(obs.links)
 
 
-async def main() -> int:
-    print(f"== 目标片名：《{PROBE_TITLE}》==\n")
+async def _run(driver: Any, *, label: str) -> int:
+    print(f"== 目标片名：《{PROBE_TITLE}》 / 实现：{label} ==\n")
     bad: list[str] = []
     for engine in ENGINES:
-        titles, raw, crumb_hits, n_links = await _probe(engine)
+        titles, raw, crumb_hits, n_links = await _probe(engine, driver)
         hits = sum(1 for t in titles.values() if PROBE_TITLE in t)
         print(f"-- {engine} --")
         print(f"  selector       : {RESULT_SELECTORS[engine]}")
@@ -90,10 +91,32 @@ async def main() -> int:
         print()
 
     if bad:
-        print(f"结论：{', '.join(bad)} 的 RESULT_SELECTORS 需要重取（见 dom.parse_extract）")
+        print(f"结论（{label}）：{', '.join(bad)} 的 RESULT_SELECTORS 需要重取"
+              f"（见 dom.parse_extract）")
         return 1
-    print("结论：全部引擎的选择器仍然有效")
+    print(f"结论（{label}）：全部引擎的选择器仍然有效")
     return 0
+
+
+async def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--driver", choices=("obscura", "camoufox"), default="obscura")
+    args = parser.parse_args(argv)
+
+    if args.driver == "camoufox":
+        from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
+        from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+
+        session = await CamoufoxSession.launch()
+        async with session:
+            return await _run(CamoufoxDriver(session), label="camoufox")
+
+    # ``async with`` 不是可选的：McpClient 的 initialize 握手在 __aenter__ 里，
+    # 漏掉它的症状是每一次 tool 调用都回「MCP 会话未初始化」——
+    # 而 goto 的 on_error="raise" 会把它说成「browser_navigate 传输失败」，
+    # 与网络、与引擎、与选择器都无关，看着像环境坏了。
+    async with McpClient.from_env(timeout=120.0) as client:
+        return await _run(ObscuraDriver(client), label="obscura")
 
 
 if __name__ == "__main__":

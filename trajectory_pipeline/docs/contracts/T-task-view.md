@@ -69,7 +69,7 @@
 
 与 P3 `_action_line` 同款：
 - `[动作] <tool>(k1=v1, k2=v2)`
-- `click` 语义目标 `{tag, label}` 并进 `arguments`（不嵌套，与 P3 判断 3 同款）
+- `click` 语义目标并进 `arguments`（不嵌套，与 P3 判断 3 同款）；键名跟着方言走：obscura 面 `{tag, label}`、camoufox 面 `{role, name}`
 - `params` 为空且无 target 时只有 `[动作] <tool>`
 - `origin == "infrastructure"` 的步整步跳过（动作连同它的观察与思考；与 P3 判断 2 同款）
 
@@ -85,7 +85,8 @@ P3 `render_observation` 同款排版：
 <body_text>
 
 可交互元素：
-  - <tag> <label>
+  - <tag> <label>        ← obscura 面（历史批次全是这一种）
+  - [role] name          ← camoufox 面
 …
 
 链接：
@@ -158,7 +159,18 @@ video 标签 <n> 个，iframe <n> 个
 
 ### `tools` 元素
 
-与 P3 同款——`{type: "function", function: {name, description, parameters}}`；每个参数都给 `{"type": "string"}`；可见性由 `ToolSpec.visible_to_model()` 决定（`new_tab` 不进）。
+与 P3 同款——`{type: "function", function: {name, description, parameters}}`。
+
+- **唯一真源是 [`trajectory_pipeline/toolcatalog/`](../../toolcatalog/)**，T 与 P3
+  从同一处取，所以两边的工具声明**逐字一致**（2026-10-20 起不再各抄一份）。
+- **按面取**（2026-10-20 方案 15 §7 R1）：T 读 P1，所以面从源存档的
+  `driver` 折算（`meta.tool_surface`）。同名工具在两个面里参数不同
+  （`click` 是 `tag`/`label` 还是 `role`/`name`）——面错了就是**声明与真实
+  调用对不上**，而报告上看不出异常。
+- 每个参数给 `{"type": "string", "description": "..."}`——参数语义来自 catalog。
+- `required` 按**真实存档的出现率**定（`press` 的 `tag`/`label` 只有 30% ⇒ 不必填）。
+- 可见性由 catalog 的 `visibility` 字段决定：`new_tab` / `close_tab` 是执行器
+  自己的会话管理动作，不进。
 
 ---
 
@@ -172,6 +184,7 @@ video 标签 <n> 个，iframe <n> 个
 | `task_id` / `run_id` / `title` | str | 切片轴 |
 | `source_archive` | str | 据以生成的 P1 文件名（不含目录） |
 | `schema_version` | str | T 格式版本 |
+| `tool_surface` | str | **工具面**（2026-10-20 方案 15 §7 R1）：这份轨迹的动作空间属于哪个方言（`obscura-1` / `camoufox-1`）。T 读 P1，所以面从源存档的 `driver` 折算 |
 
 ### 单元级汇总（**T 独有，P3 没有**）
 
@@ -213,6 +226,8 @@ video 标签 <n> 个，iframe <n> 个
 | `step_count` | int | 全局动作条数（**不是 per-unit**） |
 | `observation_count` | int | 全局观察条数 |
 | `infrastructure_actions` | list[str] | 全局执行器自己的动作工具名（去重后） |
+| `tools_declared` | list[str] | **全局**模型可见工具清单（来自 catalog）。**含本条没用到的**——工具空间是固定的，不随 run 变 |
+| `tools_unused` | list[str] | `tools_declared` 里**这条轨迹没用过**的工具名。⚠️ 不显眼时，读 T 的人会把**能力声明**当成**已验证的动作**。逐个列出（不合成计数） |
 | `observation_complete` | bool | `observation_count >= step_count` |
 | `missing_observation_count` | int | 全局缺失观察（observation=None 走 ``observation_view.render`` 输出的 ``degraded=["observation_missing"]`` 形态）条数 |
 | `closing_summary` | bool | 是否带任务级收尾 summary |

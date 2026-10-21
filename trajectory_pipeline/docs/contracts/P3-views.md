@@ -69,7 +69,7 @@
 ### 动作行（`_action_line`）
 
 - 格式：`[动作] <tool>`；有参数时 `[动作] <tool>(k1=v1, k2=v2)`
-- `click` 的语义目标 `{tag, label}` **并进参数**（`tag=…, label=…`），
+- `click` 的语义目标**并进参数**（obscura 面 `tag=…, label=…`／camoufox 面 `role=…, name=…`），
   不塞嵌套字段——见判断 3。
 - `params` 为空且无 target 时只有 `[动作] <tool>`。
 
@@ -89,7 +89,7 @@
 |---|---|
 | `sample_id` | 与 P2 一致，**排序即时间序** |
 | `messages` | 对话序列（见下） |
-| `tools` | 模型看得见的工具声明（**不含** `new_tab`，见判断 2） |
+| `tools` | 模型看得见的工具声明（**不含** `new_tab`，见判断 2）。**按样本自己的工具面渲染**（面由 P2 的 `tool_surface` 定）——同名工具在两个面里参数不同 |
 
 ### `messages` 的元素
 
@@ -127,13 +127,19 @@
 
 ### `tools` 元素的形状
 
+下面是 **obscura 面**的 `click`（camoufox 面同名工具的参数是
+`role` / `name`——**同名不同参**，见 P2 契约的「工具面」一节）：
+
 ```json
 {"type": "function",
- "function": {"name": "goto",
-              "description": "…",
+ "function": {"name": "click",
+              "description": "点击页面上一个可交互元素（按元素类型与可见文字指定…）",
               "parameters": {"type": "object",
-                             "properties": {"url": {"type": "string"}},
-                             "required": ["url"]}}}
+                             "properties": {"tag": {"type": "string",
+                                                    "description": "元素类型，例如 button、a、input。"},
+                                             "label": {"type": "string",
+                                                       "description": "元素上的可见文字。"}},
+                             "required": ["tag", "label"]}}}
 ```
 
 | 字段 | 说明 |
@@ -141,17 +147,37 @@
 | `type` | 恒为 `"function"` |
 | `function` | 内层对象 |
 | `name` | 内层于 `function`：工具名 |
-| `description` | 内层于 `function`：说明文字（来自 P2 六件套的 `instruction`） |
+| `description` | 内层于 `function`：**行为契约**（来自 `toolcatalog`）——写清「什么时候会失败」「失败了该怎么办」，不是实现说明 |
 | `parameters` | 内层于 `function`：`{"type": "object", "properties": {...}, "required": [...]}` |
-| `properties` | 内层于 `parameters`：每个参数 `{"type": "string"}`——P2 里存的是参数名元组，本模块刻意不编造参数类型（理由见下） |
-| `required` | 内层于 `parameters`：顶层必填参数名列表（本工具内与 `properties` 键一致） |
+| `properties` | 内层于 `parameters`：每个参数 `{"type": "string", "description": "..."}`——**参数语义来自 `toolcatalog`**，不是编造的 |
+| `required` | 内层于 `parameters`：必填参数名列表。**口径是真实存档里的出现率**，不是设计愿望（见下） |
 
-- **每个参数都给 `{"type": "string"}`**——P2 里存的是参数名元组，本模块
-  刻意**不编造每步的参数类型**：凭空补类型会让训练出来的模型以为参数
-  校验是训练出来的，而真实执行层的校验在别处。
-- **可见性是 `ToolSpec.visible_to_model` 的复现**：`name == "new_tab"` 的
-  不进 `tools`（判断 2）；其余全部声明。可见性判定与
-  `assembler/schema.py` 的 `TOOL_SPECS` 必须同步，由契约测试盯住。
+- **形状是**面**的函数**（2026-10-20 方案 15 §7 R1）：渲染期从 P2 的
+  `tool_surface` 取面，再按面查 catalog。面错了就是声明与真实调用对不上，
+  而那正是训出「发空参数点击」的那类错——**报告上看不出异常**。
+
+- **工具声明的唯一真源是 [`trajectory_pipeline/toolcatalog/`](../../toolcatalog/)**。
+  P2 的 `six.tools[]` 存工具**名**与参数**名**列表（那是 P2 契约的形状），
+  参数级说明与 `required` 集合在渲染期从 catalog 补齐——三方（P2 / P3 / T）
+  都从它取，不各抄一份。
+- **`required` 按真实存档的出现率定**：盘上 361 份 P2 样本的统计里
+  `press` 的 `key` 是 100%、而 `tag`/`label` 只有 30%（回车提交是全局按键，
+  不指向元素）。出现率 100% 的才 `required`——标成必填会让模型给每次回车
+  都编一个元素，而真实分布里 70% 的回车没有目标。口径漂移由
+  `tests/contract/test_tool_catalog_contract.py` 重跑统计盯着。
+- **`type` 一律 `"string"`，不加 `enum`**：`press` 的 `key` 本来就是任意
+  按键名，加 enum 会把训练集框死在取值子集上。
+- ⚠️ **`click` 的两个语义参数是必须声明的**（2026-10-20 修）：旧口径下
+  `params` 就是全部入参，于是 `click` 的声明长成 `properties: {} /
+  required: []`——**模型无从知道要传什么**，而真实调用里是两个槽
+  （obscura 面 `{"tag": ..., "label": ...}`、camoufox 面
+  `{"role": ..., "name": ...}`；语义目标在 `target` 里，被 `arguments`
+  平铺合并）。声明与调用对不上，训出来的模型就会发空参数的点击。
+  **面是关键参数**：拿错面渲染出的声明与真实调用对不上，而报告上看不出
+  任何异常（见 P2 契约 · 工具面一节）。
+- **可见性由 catalog 的 `visibility` 字段决定**（不按名字黑名单）：
+  `new_tab` / `close_tab` 是执行器自己的会话管理动作，不进 `tools`（判断 2）；
+  其余全部声明。
 
 ---
 
@@ -175,6 +201,9 @@
 | `step_count` | `int` | 动作条数 |
 | `observation_count` | `int` | 观察条数 |
 | `infrastructure_actions` | `list[str]` | 执行器自己做的动作（`origin=infrastructure`，如 `new_tab`）的工具名清单 |
+| `tool_surface` | `str` | **工具面**（2026-10-20 方案 15 §7 R1）：这条样本的动作空间属于哪个方言（`obscura-1` / `camoufox-1`）。同名工具在两个面里参数不同，面错了 = 声明与真实调用对不上 |
+| `tools_declared` | `list[str]` | 这条样本的**模型可见工具**清单（来自 P2 的 `six.tools[]`，按 catalog 的可见性过滤）。**含本条没用到的**——工具空间是整批固定的，不随样本变 |
+| `tools_unused` | `list[str]` | `tools_declared` 里**这条轨迹没用过**的工具名。⚠️ 不显眼时，读样本的人会把**能力声明**当成**已验证的动作**——看到 11 个工具就以为这批数据验证过 11 种能力，而实际只有动作流里出现过的那些被真实运行验证过。逐个列出（不合成计数） |
 | `observation_complete` | `bool` | `observation_count >= step_count`。动作多于观察 ⇒ 末步没取到观察；消息视图显式发占位回执（判断 8），但批次筛选仍要能一眼分出「观察齐全」与「有步没采到」 |
 | `missing_observation_count` | `int` | 缺失观察占位（P2 `MISSING_OBSERVATION`，`degraded` 含 `observation_missing`）的条数。占位多的样本观察面薄，复核优先级该高 |
 | `closing_summary` | `bool` | 是否带「任务总结」收尾（判断 7）。false 即「这条一个可见模型动作都没有」 |
@@ -206,7 +235,8 @@
 <body_text>
 
 可交互元素：
-  - <tag> <label>
+  - <tag> <label>        ← obscura 面（历史批次全是这一种）
+  - [role] name          ← camoufox 面
 …
 
 链接：

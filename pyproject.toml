@@ -13,6 +13,19 @@ dependencies = [
     "mcp>=1.28",
     "pyyaml>=6.0",
     "pydantic>=2.0",
+    # ── 执行层（D11：camoufox 取代 obscura 成为目标执行层）───────────
+    # **钉死版本**，不用范围：指纹由 fpgen 生成，版本一动指纹就动，
+    # 而批次分布的可归因性建立在「指纹只随配置变、不随升级变」上。
+    # 实测面见 docs/设计方案/04-camoufox执行层替换方案.md §4.3.1。
+    #
+    # ⚠️ 不是 [project.optional-dependencies].legacy 里的
+    # ``cloverlabs-camoufox``——那是 v1 归档树的第三方 fork，**包名不同、
+    # API 面可能不同**（CLAUDE.md 纪律 2：存量只读参考）。两者不许混用。
+    "camoufox==0.5.8",
+    # playwright 是 camoufox 的传递依赖，但 `executor/browser/camoufox_driver.py`
+    # **直接** import 它的异常类型（`playwright.async_api.Error`）——直接
+    # 依赖必须直接声明，否则上游哪天换实现，报错会出现在 import 期而不是测试里。
+    "playwright==1.62.0",
 ]
 
 [build-system]
@@ -33,6 +46,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "pytest-socket>=0.7",
+    # 门禁需要：`test_xlsx_backfill` / `test_inc37_validator_pass` 直接
+    # import openpyxl 读人工复核工作单。生产代码不用它，故进 dev 组而不是主依赖。
+    # ⚠️ 它此前一直是「本机手装、未声明」的状态——2026-10-20 声明 camoufox 后
+    # 跑 `uv sync` 被当作多余包卸掉，两个测试文件直接 collection error。
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

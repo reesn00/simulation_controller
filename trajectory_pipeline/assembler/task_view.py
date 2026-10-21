@@ -13,11 +13,17 @@ import**——交接面是格式不是对象）：
    用 AST 强制——同 :mod:`~trajectory_pipeline.assembler.schema` / 读取 /
    views 同款的纪律。重建一批 T 必须脱离 executor 当前版本独立完成。
 
-3. **不 import assembler.schema 任何名字**。``tests/contract/test_t_contract.py::TestNoP2Import``
-   用 AST 强制——T 是 P1 的渲染，连同 :data:`SYSTEM_PROMPT` / :data:`TOOL_SPECS`
-   都**自己声明**（与 schema.py 字面字符串一致，由契约测试盯住）。这
-   与 P3 不同（P3 从 P2 的 ``six.tools`` 拿工具声明；T 从 P1 拿不到，
-   只能自己声明）。
+3. **不 import assembler.schema 任何名字**。``tests/contract/test_t_contract.py::Test模块图``
+   用 AST 强制——T 是 P1 的渲染。:data:`_TASK_SYSTEM_PROMPT` 仍**自己
+   声明**（与 schema.py 字面一致，由契约测试盯住）。
+
+   ⚠️ **工具声明不再自己声明**（2026-10-20 改）：以前 T 抄了一份
+   ``_TASK_TOOL_SPECS``，靠「复现一次 + 契约测试盯同步」防漂移。工具从
+   6 条扩到 13 条、每条多两个字段之后，手抄两份必漂。现在三方
+   （P2 的 schema / P3 的 views / T 的 task_view）都从
+   :mod:`trajectory_pipeline.toolcatalog` 取——**唯一真源**。
+   这不违反「T 不 import assembler.schema」：catalog 是**跨层地基**
+   （不 import 任何功能模块），不是组装端点的模块。
 
 4. **P1 observation 是取证态**（full 6000 字符 / 80 元素 / 50 链接），
    经 :func:`~trajectory_pipeline.assembler.observation_view.render`
@@ -44,6 +50,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from trajectory_pipeline import toolcatalog
 from trajectory_pipeline.assembler import observation_view
 
 #: 路径权威的 re-export：T 渲染端不许自己拼 ``output/pipeline/task_views``
@@ -83,66 +90,47 @@ _TASK_SYSTEM_PROMPT: str = (
 )
 
 
-#: T 视图的训练动作空间。**字面字符串**与
-#: :data:`trajectory_pipeline.assembler.schema.TOOL_SPECS` 逐字相同——
-#: 工具名 / 参数名元组 / instruction 字面一致，由契约测试盯住。
-#: 字典形态（不是 ToolSpec dataclass），避免 T 视图依赖 assembler.schema。
-#: 可见性按 ``visible_to_model`` 规则复现：``new_tab`` / ``close_tab``
-#: 不进工具声明（模型永远不该选它们——会话管理动作）。
-_TASK_TOOL_SPECS: tuple[dict[str, Any], ...] = (
-    {"name": "goto", "params": ("url",), "instruction": "打开一个网址。"},
+#: T 视图的训练动作空间。**从 :mod:`trajectory_pipeline.toolcatalog` 派生**——
+#: 那份是唯一真源（P3 的 ``assembler.schema`` / ``assembler.views`` 也从它取）。
+#:
+#: 以前这里是**自己抄一份**的（"T 连 SYSTEM_PROMPT 与 TOOL_SPECS 都自己
+#: 声明"），靠 ``test_t_contract.py::Test常量同步`` 盯两处逐字一致。
+#: 抄一份的代价在这次扩容里现形了：工具从 6 条扩到 13 条、每条多两个
+#: 字段（参数说明 / required），手抄两份必漂。
+#:
+#: 现在**不抄**了：catalog 是跨层地基（不 import 任何功能模块），T 从它取
+#: **不违反**「T 不 import assembler.schema / assembler.views」——它俩是
+#: 组装端点的模块，catalog 不是。
+#:
+#: 字典形态（不是 dataclass），保持与既有契约测试的形状一致。
+_TASK_TOOL_SPECS: tuple[dict[str, Any], ...] = tuple(
     {
-        "name": "click",
-        "params": (),
-        "instruction": "点击页面上一个可交互元素（按元素类型与文字指定）。",
-    },
-    {"name": "new_tab", "params": ("url",), "instruction": "在新标签页打开网址。"},
-    {"name": "fill", "params": ("text",), "instruction": "往输入框里填文本（如把片名填进站内搜索框）。"},
-    {"name": "press", "params": ("key",), "instruction": "按一个键（如回车，提交站内搜索）。"},
-    {"name": "close_tab", "params": (), "instruction": "关闭当前标签页。"},
+        "name": d.name,
+        "params": tuple(p.name for p in d.params),
+        "instruction": d.instruction,
+    }
+    for d in toolcatalog.CATALOG
 )
 
 
 # ── 工具声明 ───────────────────────────────────────────────────────
 
 
-def _task_tool(spec: Mapping[str, Any]) -> dict[str, Any]:
-    """训练动作空间的一条 → function-calling 的 ``tools[]`` 元素。
+def task_tools(surface: str = toolcatalog.DEFAULT_SURFACE) -> list[dict[str, Any]]:
+    """T 视图的工具声明（模型可见集，不进 ``new_tab`` / ``close_tab``）。
 
-    与 :func:`~trajectory_pipeline.assembler.views._openai_tool` 同款形状
-    （P3 第 3 条判断同款），刻意**重新实现**而不 import——交接面是格式
-    不是对象。ToolSpec 的可见性 ``visible_to_model`` 在调用方在
-    :func:`task_tools` 里按名字过滤。
+    与 :func:`~trajectory_pipeline.assembler.views._visible_tools` **同源**
+    ——两边都从 :mod:`trajectory_pipeline.toolcatalog` 取，所以 T 与 P3 的
+    工具声明**逐字一致**，不需要「复现一次 + 契约测试盯同步」那套。
+
+    ⚠️ 参数级说明与 ``required`` 集合也来自 catalog：``click`` 的语义
+    目标在 ``target={tag,label}`` 里，声明侧不写这两个参数，训出来的
+    模型就会发空参数的点击（详见 ``views._openai_tool`` 的注释）。
+
+    ⚠️ **按工具面取**（2026-10-20 方案 15 §7 R1）：T 读的是 P1 而不是
+    P2，所以面从**源存档的 ``driver``** 折算（见 :func:`_surface_of`）。
     """
-    params = spec.get("params") or ()
-    props = {str(p): {"type": "string"} for p in params}
-    return {
-        "type": "function",
-        "function": {
-            "name": str(spec.get("name") or ""),
-            "description": str(spec.get("instruction") or ""),
-            "parameters": {
-                "type": "object",
-                "properties": props,
-                "required": list(params),
-            },
-        },
-    }
-
-
-def task_tools() -> list[dict[str, Any]]:
-    """T 视图的工具声明（不进 ``new_tab`` / ``close_tab``）。
-
-    与 :func:`~trajectory_pipeline.assembler.views._visible_tools` 同款纪律：
-    可见性按名字判（``visible_to_model`` 是 ToolSpec 方法，T 这里按规则
-    复现——契约测试盯住两边同步）。
-    """
-    out: list[dict[str, Any]] = []
-    for spec in _TASK_TOOL_SPECS:
-        if str(spec.get("name") or "") in ("new_tab", "close_tab"):
-            continue
-        out.append(_task_tool(spec))
-    return out
+    return toolcatalog.openai_functions(surface=surface)
 
 
 # ── P1 → units 拆条 ────────────────────────────────────────────────
@@ -206,9 +194,7 @@ def _render_observation_text(obs: Mapping[str, Any]) -> str:
 
     elems = obs.get("interactive_elements") or []
     if elems:
-        lines = [
-            f"  - <{e.get('tag', '')}> {e.get('label', '')}".rstrip() for e in elems
-        ]
+        lines = [observation_view.element_line(e) for e in elems]
         parts.append("可交互元素：\n" + "\n".join(lines))
     else:
         parts.append("可交互元素：（空）")
@@ -265,11 +251,25 @@ def _rationale_text(rationale: Any) -> str:
     与 :func:`~trajectory_pipeline.assembler.views._rationale_text` 同款
     行为（缺一条不补空串，``status != "written"`` 返回空串——理由同 P3
     第 6 条判断，编一段占位思考会直接污染 CoT SFT）。
+
+    ⚠️ **2026-10-19 增量六十一发现**：本函数历史上读 ``rationale["text"]``
+    扁平字段，而生产 P1 实际写的是嵌套 ``rationale["rationale"]["text"]``
+    （:func:`trajectory_pipeline.executor.agent_loop._native_think_payload`
+    与 thought_refactor 写出形态）。结果是**所有 P1 不论 scripted / agent**
+    思考文本都被丢掉,assistant 消息只剩 tool_call。本函数现在先读嵌套、
+    后读扁平,两条路径都支持。
     """
     if not isinstance(rationale, Mapping) or rationale.get("status") != "written":
         return ""
-    text = str(rationale.get("text") or "").strip()
-    conclusion = str(rationale.get("conclusion") or "").strip()
+    # 嵌套形态：{"rationale": {"text": "...", "conclusion": "..."}}
+    inner = rationale.get("rationale")
+    if isinstance(inner, Mapping):
+        text = str(inner.get("text") or "").strip()
+        conclusion = str(inner.get("conclusion") or "").strip()
+    else:
+        # 扁平形态（兜底）：{"text": "...", "conclusion": "..."} 顶层
+        text = str(rationale.get("text") or "").strip()
+        conclusion = str(rationale.get("conclusion") or "").strip()
     parts = [p for p in (text, conclusion) if p]
     return ("\n".join(parts) + "\n") if parts else ""
 
@@ -486,6 +486,15 @@ def to_task_messages(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
 # ── openai 视图（function-calling 形态） ─────────────────────────────
 
 
+def _surface_of(archive: Mapping[str, Any]) -> str:
+    """这条 P1 的**工具面**（2026-10-20 方案 15 §7 R1）。
+
+    T 视图读的是 P1 而不是 P2，所以面从**源存档的 ``driver``** 折算。
+    没记驱动（历史批次）→ 默认面，那正是它们真实跑出来的面。
+    """
+    return toolcatalog.surface_of_driver(archive.get("driver"))
+
+
 def to_task_openai_messages(
     archive: Mapping[str, Any],
     tools: list[dict[str, Any]] | None = None,
@@ -499,11 +508,11 @@ def to_task_openai_messages(
 
     Args:
         archive: P1 JSON dict。
-        tools: 工具声明列表；``None`` 时取 :func:`task_tools`（默认按
-            ``TOOL_SPECS`` 渲染，进 ``new_tab`` / ``close_tab`` 滤掉）。
+        tools: 工具声明列表；``None`` 时按**这份存档自己的工具面**取
+            :func:`task_tools`（进 ``new_tab`` / ``close_tab`` 滤掉）。
     """
     if tools is None:
-        tools = task_tools()
+        tools = task_tools(_surface_of(archive))
 
     out: list[dict[str, Any]] = []
     system = _TASK_SYSTEM_PROMPT
@@ -706,6 +715,16 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
             str(first_failure.get("branch")) if first_failure else "unknown"
         )
 
+    # 「模型被告知但这条轨迹没用过」的工具名。
+    #
+    # ⚠️ T 视图的 tools 来自 catalog（T 不读 P2），所以这里报的是
+    # **catalog 当前**的可见集。信息不显眼时，读 T 的人会把**能力声明**
+    # 当成**已验证的动作**——看到 11 个工具就以为这批数据验证过 11 种
+    # 能力，而实际只有动作流里出现过的那几个被真实运行验证过。
+    used_tools = {str(a.get("tool") or "") for a in all_actions}
+    visible_tools = [t["function"]["name"] for t in task_tools(_surface_of(archive))]
+    tools_unused = sorted(set(visible_tools) - used_tools)
+
     # rationale_steps（逐条列出来，step_index 取**全局**重编）
     # 全局重编 = search unit 的 actions 全步先编（按 unit 内 i），然后
     # site-1 的 actions 续编，依此类推；infrastructure 步**占号**——
@@ -732,6 +751,9 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
         "title": title,
         "source_archive": "",  # 由 build_task_view 注入
         "schema_version": "task-view.v1",
+        # 工具面（2026-10-20 方案 15 §7 R1）：这份轨迹的训练动作空间属于
+        # 哪个方言。同名工具在两个面里参数不同，面错了就是声明与调用对不上。
+        "tool_surface": _surface_of(archive),
         # 单元级汇总（T 独有）
         "unit_count": 1 + len(visits),  # search + N sites
         "unit_sample_ids": _task_sample_ids(archive),
@@ -749,6 +771,9 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
         "observation_count": len(all_observations),
         "missing_observation_count": missing_obs_count,
         "infrastructure_actions": sorted(infra_tools),
+        # 能力声明 vs 已验证动作：这条轨迹没用到的模型可见工具
+        "tools_declared": visible_tools,
+        "tools_unused": tools_unused,
         "observation_complete": len(all_observations) >= len(all_actions),
         "closing_summary": _closing_text(archive) is not None
         and any(a.get("origin") != "infrastructure" for a in all_actions),

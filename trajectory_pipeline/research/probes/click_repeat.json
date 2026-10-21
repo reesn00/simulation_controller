@@ -1,0 +1,788 @@
+{
+  "env": {
+    "playwright": "1.62.0",
+    "camoufox": "0.5.8"
+  },
+  "results": [
+    {
+      "scenario": "headful_humanize_on",
+      "rows": [
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 0,
+          "status": "ok",
+          "ms": 1018,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 1018,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 5,
+          "raf_lag_after": 8
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 1,
+          "status": "ok",
+          "ms": 78,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 78,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 8,
+          "raf_lag_after": 8
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 2,
+          "status": "ok",
+          "ms": 62,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 62,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 8,
+          "raf_lag_after": 17
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 3,
+          "status": "ok",
+          "ms": 63,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 63,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 17,
+          "raf_lag_after": 17
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 4,
+          "status": "ok",
+          "ms": 1052,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 1052,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 17,
+          "raf_lag_after": 847
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 0,
+          "status": "ok",
+          "ms": 7284,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 7284,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 847,
+          "raf_lag_after": 400
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 1,
+          "status": "ok",
+          "ms": 24682,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 24682,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 400,
+          "raf_lag_after": 1048
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 2,
+          "status": "ok",
+          "ms": 32072,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 32072,
+          "landed": 1,
+          "clicks_delta": 0,
+          "raf_lag_before": 1048,
+          "raf_lag_after": 1263
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 3,
+          "status": "ok",
+          "ms": 61278,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 61278,
+          "landed": 0,
+          "clicks_delta": 0,
+          "raf_lag_before": 1263,
+          "raf_lag_after": 62736
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 4,
+          "status": "ok",
+          "ms": 42749,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 42749,
+          "landed": 2,
+          "clicks_delta": 1,
+          "raf_lag_before": 62736,
+          "raf_lag_after": 41533
+        }
+      ]
+    },
+    {
+      "scenario": "headful_humanize_off",
+      "rows": [
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 0,
+          "status": "ok",
+          "ms": 120,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 120,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 12,
+          "raf_lag_after": 2
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 1,
+          "status": "ok",
+          "ms": 73,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 73,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 2
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 2,
+          "status": "ok",
+          "ms": 61,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 61,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 2
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 3,
+          "status": "ok",
+          "ms": 63,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 63,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 15
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 4,
+          "status": "ok",
+          "ms": 63,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 63,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 15,
+          "raf_lag_after": 15
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 0,
+          "status": "ok",
+          "ms": 45,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 45,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 15,
+          "raf_lag_after": 17
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 1,
+          "status": "ok",
+          "ms": 20,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 20,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 17,
+          "raf_lag_after": 1
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 2,
+          "status": "ok",
+          "ms": 32,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 32,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 1,
+          "raf_lag_after": 16
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 3,
+          "status": "ok",
+          "ms": 33,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 33,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 16,
+          "raf_lag_after": 0
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 4,
+          "status": "ok",
+          "ms": 34,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 34,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 0,
+          "raf_lag_after": 2
+        }
+      ]
+    },
+    {
+      "scenario": "headless_humanize_on",
+      "rows": [
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 0,
+          "status": "ok",
+          "ms": 1280,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 1280,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 14,
+          "raf_lag_after": 16
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 1,
+          "status": "ok",
+          "ms": 43,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 43,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 16,
+          "raf_lag_after": 16
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 2,
+          "status": "ok",
+          "ms": 46,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 46,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 16,
+          "raf_lag_after": 13
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 3,
+          "status": "ok",
+          "ms": 47,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 47,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 13,
+          "raf_lag_after": 13
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 4,
+          "status": "ok",
+          "ms": 46,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 46,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 13,
+          "raf_lag_after": 13
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 0,
+          "status": "ok",
+          "ms": 674,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 674,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 13,
+          "raf_lag_after": 4
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 1,
+          "status": "ok",
+          "ms": 5,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 5,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 4,
+          "raf_lag_after": 14
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 2,
+          "status": "ok",
+          "ms": 5,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 5,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 14,
+          "raf_lag_after": 0
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 3,
+          "status": "ok",
+          "ms": 4,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 4,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 0,
+          "raf_lag_after": 8
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 4,
+          "status": "ok",
+          "ms": 4,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 4,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 8,
+          "raf_lag_after": 10
+        }
+      ]
+    },
+    {
+      "scenario": "headless_humanize_off",
+      "rows": [
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 0,
+          "status": "ok",
+          "ms": 71,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 71,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 14,
+          "raf_lag_after": 14
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 1,
+          "status": "ok",
+          "ms": 34,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 34,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 14,
+          "raf_lag_after": 2
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 2,
+          "status": "ok",
+          "ms": 45,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 45,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 2
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 3,
+          "status": "ok",
+          "ms": 48,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 48,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 2
+        },
+        {
+          "label": "locator_click",
+          "kind": "locator",
+          "round": 4,
+          "status": "ok",
+          "ms": 46,
+          "msg": ""
+        },
+        {
+          "label": "locator_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 46,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 2
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 0,
+          "status": "ok",
+          "ms": 8,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@0",
+          "kind": "delta",
+          "round": 0,
+          "status": "ok",
+          "ms": 8,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 16
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 1,
+          "status": "ok",
+          "ms": 4,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@1",
+          "kind": "delta",
+          "round": 1,
+          "status": "ok",
+          "ms": 4,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 16,
+          "raf_lag_after": 16
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 2,
+          "status": "ok",
+          "ms": 4,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@2",
+          "kind": "delta",
+          "round": 2,
+          "status": "ok",
+          "ms": 4,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 16,
+          "raf_lag_after": 17
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 3,
+          "status": "ok",
+          "ms": 4,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@3",
+          "kind": "delta",
+          "round": 3,
+          "status": "ok",
+          "ms": 4,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 17,
+          "raf_lag_after": 0
+        },
+        {
+          "label": "raw_mouse_click",
+          "kind": "mouse",
+          "round": 4,
+          "status": "ok",
+          "ms": 4,
+          "msg": ""
+        },
+        {
+          "label": "raw_mouse_click@4",
+          "kind": "delta",
+          "round": 4,
+          "status": "ok",
+          "ms": 4,
+          "landed": 1,
+          "clicks_delta": 1,
+          "raf_lag_before": 0,
+          "raf_lag_after": 13
+        }
+      ]
+    }
+  ]
+}

@@ -45,6 +45,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+from trajectory_pipeline.common.elements import (
+    element_name,
+    element_role,
+    vocabulary_of_archive_elements,
+)
 from trajectory_pipeline.perception.base import (
     Decision, InteractiveElement, LinkItem, Observation, Perceptor, Q,
 )
@@ -131,8 +136,8 @@ def observation_of(obs_json: Mapping[str, Any]) -> Observation:
         page_title=str(obs_json.get("page_title") or ""),
         body_text=body,
         interactive_elements=tuple(
-            InteractiveElement(str(e.get("ref") or ""), str(e.get("tag") or ""),
-                               str(e.get("label") or ""))
+            InteractiveElement(str(e.get("ref") or ""),
+                               element_role(e), element_name(e))
             for e in obs_json.get("interactive_elements") or ()
             if isinstance(e, Mapping)
         ),
@@ -148,6 +153,13 @@ def observation_of(obs_json: Mapping[str, Any]) -> Observation:
         stripped_ratio=float(obs_json.get("stripped_ratio") or 1.0),
         body_source=str(obs_json.get("body_source") or "inner_text"),
         degraded=tuple(str(d) for d in obs_json.get("degraded") or ()),
+        # 词汇表从**存档自己的键名**恢复（P4）：回放不开浏览器，也就没有
+        # ``driver`` 可查。取默认值会让一份 camoufox 存档里的元素带着
+        # ``role`` 值却被按 ``html_tag`` 词表筛——搜索框候选恒 0，
+        # 而「0 个候选」在回放报告里读作「这页真没有搜索框」。
+        element_vocabulary=vocabulary_of_archive_elements(
+            obs_json.get("interactive_elements")
+        ),
     )
 
 

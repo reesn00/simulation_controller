@@ -64,8 +64,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
+from trajectory_pipeline.assembler.observation_view import element_line
 from trajectory_pipeline.assembler.schema import Sample
 from trajectory_pipeline.llm.client import LLMClient
+from trajectory_pipeline.common.elements import (
+    element_name,
+    element_role,
+)
 from trajectory_pipeline.llm.schema_parse import (
     as_str,
     extract_json_reporting,
@@ -266,10 +271,11 @@ def _render_observation(obs: Mapping[str, Any]) -> str:
     for e in elements:
         if not isinstance(e, Mapping):
             continue
-        tag = str(e.get("tag") or "")
-        label = str(e.get("label") or "").strip()
-        if tag or label:
-            elem_lines.append(f"  - <{tag}>{(' ' + label) if label else ''}")
+        # 行写法与训练侧**同一处**（``element_line``）：两处各写一份，
+        # 方言一换就有一边停在 <tag>、另一边变成 [role]，而评审模型
+        # 与训练模型看到的口径从此不同。
+        if element_role(e) or element_name(e).strip():
+            elem_lines.append(element_line(e))
     media = int(obs.get("video_tag_count") or 0)
     iframe = int(obs.get("iframe_count") or 0)
     page_title = str(obs.get("page_title") or "")
@@ -343,7 +349,7 @@ def _is_evidence_concrete(evidence: str,
         for elem in (obs.get("interactive_elements") or ()):
             if not isinstance(elem, Mapping):
                 continue
-            label = str(elem.get("label") or "").strip()
+            label = element_name(elem).strip()
             if label and len(label) >= 2 and label in evidence:
                 return True
         media = int(obs.get("video_tag_count") or 0)

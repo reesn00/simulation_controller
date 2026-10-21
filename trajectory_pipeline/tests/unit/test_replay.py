@@ -88,7 +88,7 @@ class TestObservationOf:
             links=[{"text": "第1集", "href": "/ep1"}],
         ))
         assert o.interactive_elements[0].ref == "e7"
-        assert o.interactive_elements[0].label == "播放"
+        assert o.interactive_elements[0].name == "播放"
         assert o.links[0].href == "/ep1"
 
     def test_缺字段不抛异常(self):

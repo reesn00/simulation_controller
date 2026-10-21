@@ -32,7 +32,13 @@ from pathlib import Path
 
 from trajectory_pipeline.llm.client import LLMClient, LLMConfig
 from trajectory_pipeline.perception import questions
-from trajectory_pipeline.perception.base import Q
+from trajectory_pipeline.common.elements import (
+    element_json,
+    vocabulary_of_archive_elements,
+)
+from trajectory_pipeline.perception.base import (
+    Q,
+)
 
 BODY_CHARS = int(os.environ.get("PROBE_BODY_CHARS", "600"))
 #: ``perception/`` 的上一级就是包根，产物仍在 ``trajectory_pipeline/output/``
@@ -58,13 +64,14 @@ CONTRACTS = {
 
 
 def _obs(raw: dict) -> dict:
+    raw_elements = raw.get("interactive_elements") or []
+    vocabulary = vocabulary_of_archive_elements(raw_elements)
     return {
         "url": raw.get("url", ""),
         "page_title": raw.get("page_title", ""),
         "body_text": (raw.get("body_text") or "")[:BODY_CHARS],
         "interactive_elements": [
-            {"ref": e.get("ref", ""), "tag": e.get("tag", ""), "label": e.get("label", "")}
-            for e in (raw.get("interactive_elements") or [])[:25]
+            element_json(e, vocabulary) for e in raw_elements[:25]
         ],
         "links": [{"text": l.get("text", "")[:60], "href": l.get("href", "")}
                   for l in (raw.get("links") or [])[:20]],

@@ -68,6 +68,7 @@
 | `search_blocked` | `str` | **运行级**反爬状态（如 `captcha`）。非空 ⇒ 不产出搜索单元样本 |
 | `gatekeeper_events` | `list[{stage,verdict,reason,disposition}]` | **Gatekeeper 事件账本**（2026-10-16 方案 12 阶段 G / D-A3 最小账本）。`verdict` 取值封闭于 `executor/gatekeeper.py::Verdict` 七值；`disposition.kind ∈ {inject_guidance, escalate_model, fail_closed}`——静默自愈已按 D-A2 否决，**每一档都可见**。与 `search_blocked` 并存不替代：后者是冻结口径的运行级字段，这里是统一账本（A2 起 agent 每步拦截都记）。空 = 本次运行无拦截事件。**新增可选字段，不动 `schema_version`** |
 | `executor_mode` | `"scripted" \| "agent"` | **执行器模式**（2026-10-17 方案 13 §6.1，A2a 埋点；A3 转正为 `RunConfig` 字段）。`scripted` = 七段固定序列，`agent` = 站内自主导航（agent_loop）。**批次级属性**：一批要么全 scripted 要么全 agent，模式在构造期定下、候选内不 fallback（混合轨迹不可归因）。它是 A/B 两批存档在磁盘上**唯一**能区分这两者的字段——两批的 `steps` 同形（六值动作空间）、`visits` 同形，没了它只能靠文件名猜。老存档无此键（可选字段纪律，不动 `schema_version`） |
+| `driver` | `"obscura" \| "camoufox"` | **执行层**（2026-10-20 方案 15 §7 R1）。与 `executor_mode` **正交**：「哪条链跑的」与「哪个浏览器跑的」是两个归因轴，缺一个读档人就分不清。它还是**工具面**的唯一来源——目标编码（`{tag,label}` vs `{role,name}`）由执行层决定，训练侧的声明按它折算（`toolcatalog.surface_of_driver`）。空串 = **没记**（老存档没有这个键，而那批真实跑的就是 obscura），不是「未知执行层」。**新增可选字段，不动 `schema_version`** |
 | `llm_calls` | `list[{ts,caller,candidate,model,latency_ms,prompt_tokens,completion_tokens,error}]` | **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4）。agent 循环每次问模型记一行。**记账范围只圈 agent_loop**：感知层十一题的调用不汇入（§3.6 的 A2a 决策，感知层侵入换不来收益）。`prompt/completion_tokens` 为 `null` = 后端没给 usage，**不是 0**——「没记到」与「没花」在成本分母上是两个事实。`ts` 粒度是**候选级**：循环体不引入时间源，由 orchestrator 在候选访问收口时统一加盖（同候选各条共享一戳；候选内次序看 list 顺序，单条耗时看 `latency_ms`）；超时/异常收口的候选可能带着没盖戳的残条落盘。scripted 批恒空 list。**新增可选字段，不动 `schema_version`** |
 | `candidate_filter` | `{str: int}` | 剔除**原因计数**：`excluded_host:<root>` / `duplicate_host` / `impossible_content:gov.cn` |
 | `run_config` | `{str: Any}` | **`RunConfig` 全量快照**。缺它 `--max-candidates 5` 与默认 20 跑出的两批在存档里一模一样，而覆盖完整性差 4 倍 → `DEGRADED` |
@@ -121,9 +122,10 @@
 | `degraded` | `list[str]` | 本次**没采到**的项。**fail-closed 的前提**：没有它，「没采到交互元素」与「页面上确实没有」在数据里完全一样。另含**采到了但不可读**的两项 `body_mojibake` / `title_mojibake`（解码损坏，见下） |
 | `video_tag_count` | `int` | 覆盖 `<video>` + `<audio>`。规则版 `PLAYER_OK` 的**唯一**判据 |
 | `iframe_count` | `int` | **不作判据**，只作排查线索 |
-| `elements_total` | `int` | **采到的**交互元素条数（驱动层 limit 截断后）。落盘条数被裁到 80；两者成对落盘 |
+| `elements_total` | `int` | **采到的**交互元素条数（驱动层 limit 截断后）。落盘条数被裁到 80；两者成对落盘。⚠️ **camoufox 下这个数已经过三层过滤**（词表外 role / 无名字 / 真同名整组丢弃）——账目留在驱动的 `last_enumeration`，**尚未落盘**（P6 批次元数据一并解决）。在此之前，跨驱动比这个数（§6.1 的 30% 判据）要记住两边的分母不同源 |
 | `links_total` | `int` | 同上，链接裁到 50 |
-| `interactive_elements` | `list[{ref,tag,label}]` | `ref` 是**会话内句柄**，只存在于 P1；`label` 裁到 120 字符 |
+| `interactive_elements` | `list[元素]`，形状**逐方言**（见下） | `ref` 是**会话内句柄**，只存在于 P1；text 槽裁到 120 字符 |
+| ↑ 的键名 | obscura 面 `{ref,tag,label}`／camoufox 面 `{ref,role,name}` | **P4 起按方言投影**（`driver` → 工具面 → 方言，只有一条轴，见 [设计方案 04 §4.8](../设计方案/04-camoufox执行层替换方案.md)）。槽位名统一、**值域不统一**：obscura 面的 kind 槽装 HTML 标签名（`button`/`input`），camoufox 面装 ARIA role（`button`/`textbox`）——`input` 与 `textbox` 在两套词表里对不上，**不可混池**。键名由 `Observation.element_vocabulary` 决定（驱动实现写、回放按键名恢复），读档侧统一走 `common/elements.py` 的 `element_role`/`element_name` |
 | `links` | `list[{text,href}]` | `text` 裁到 80 字符 |
 
 ### `elements_total` / `links_total` 为什么是 P0
@@ -144,7 +146,7 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 ## `ActionStep`（`steps[]` 的元素）
 
 ```json
-{"action": {...}, "observation": {...} | null, "error": ""}
+{"action": {...}, "observation": {...} | null, "error": "", "duration_ms": 1234 | null}
 ```
 
 | 字段 | 语义 |
@@ -152,14 +154,15 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 | `action.tool` | `goto` / `click` / `fill` / `press` / `new_tab` / `close_tab`（封闭六值，与 `executor/actions.py` 的 `TOOLS` 同源；`observe` 不是动作） |
 | `action.params` | `goto`/`new_tab` 是 `{"url": ...}`；`fill` 是 `{"text": ...}`；`press` 是 `{"key": ...}`；`click`/`close_tab` 是 `{}` |
 | `action.origin` | `"model"`（模型会选）/ `"infrastructure"`（执行器自己做的会话隔离：`new_tab` / `close_tab`） |
-| `action.target` | `click`/`fill` 的语义化目标 `{tag, label}`（**没有 `ref`**）；目标为 `None` 时照实记——那是 I6 被违反的现场，不编目标补上。`press` 可带：回车等全局按键提交时 `null`（点「搜索」按钮提交走 `click`，不走这里）。`goto`/`new_tab`/`close_tab` 无此字段 |
+| `action.target` | `click`/`fill` 的语义化目标 `{tag, label}`（obscura 面）／`{role, name}`（camoufox 面），**没有 `ref`**；目标为 `None` 时照实记——那是 I6 被违反的现场，不编目标补上。`press` 可带：回车等全局按键提交时 `null`（点「搜索」按钮提交走 `click`，不走这里）。`goto`/`new_tab`/`close_tab` 无此字段 |
 | `observation` | 上一个动作的观察回执。**`observe` 不是动作**——记成动作会让模型学出「调用 observe」 |
 | `error` | 非空 = 动作本身失败。与 `observation: null` 是两回事：前者是证据，后者是采集失败 |
 | `rationale` | 本步的思考+结论（`WriteResult.to_json()` 形状：`status` / `rationale:{text,conclusion}` / `reason` / `degraded`）。**scripted 形态** = rationale writer 产物（2026-10-17 INC46 起为动作前动机，`reason=""`）；**agent 形态** = 循环的原生 think（A3-3 / INC58，`reason="native-think"`——来源标记，两形态在 P1 里可区分）。`null` = 该步没有思考文本（执行器自己的步、或 scripted 未接 writer），**不与「写了但为空」相混** |
+| `duration_ms` | **本步的墙钟耗时（毫秒）**，从动作发起到观察/失败回填（2026-10-21 起）。**不是动作单独那几秒**——成功路径上它含随后的观察耗时；失败路径上动作一抛就收口，整步 ≈ 动作耗时。**为什么必须有**：camoufox 面的点击超时（5s）与「页面没有播放器」在证据上同形，都是一条 `error` 非空的步骤，没有耗时字段就分不出「慢了一点」与「慢到离谱」，只能靠猜。`null` = 这一步没走到收口（中途异常），**不与「0 毫秒」相混**。**新增可选字段，不动 `schema_version`** |
 
 ### `action.tool` 六值的来历
 
-`goto` / `click` / `new_tab` 是 direct 路径的三件套；`fill`（把片名填进搜索框，驱动层 `type_text`）与 `press`（回车提交检索，驱动层 `press_key`）自 2026-10-16 路径 B/C 的站内搜索链获得真实产地，`close_tab` 同轮随外链校验（`new_tab` 开、看完关）获得产地。P2/P3 链路早已渲染 fill/press 步——契约文字此前停在旧三值，是**文档没跟上代码**，不是契约变更（A2a-0 / INC49 收口；文档 ↔ 代码的双向同步由 `test_p1_contract.py` 的漂移守卫钉住）。
+`goto` / `click` / `new_tab` 是 direct 路径的三件套；`fill`（把片名填进搜索框）与 `press`（回车提交检索）自 2026-10-16 路径 B/C 的站内搜索链获得真实产地，`close_tab` 同轮随外链校验（`new_tab` 开、看完关）获得产地。**语义层与驱动层自 2026-10-20 起同名**（驱动侧旧名 `type_text`/`press_key` 已随 D12 改掉，见[设计方案 04 §4.6](../设计方案/04-camoufox执行层替换方案.md)）。P2/P3 链路早已渲染 fill/press 步——契约文字此前停在旧三值，是**文档没跟上代码**，不是契约变更（A2a-0 / INC49 收口；文档 ↔ 代码的双向同步由 `test_p1_contract.py` 的漂移守卫钉住）。
 
 ---
 

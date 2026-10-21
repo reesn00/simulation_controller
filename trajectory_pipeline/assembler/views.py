@@ -41,9 +41,11 @@
 3. **``click`` 的语义目标并进 ``arguments``。**
    ``ActionView`` 是 ``{tool, params, target, origin}`` 四字段，而
    function-calling 的 ``arguments`` 是**一个 dict**。所以
-   ``target`` 的 ``{tag, label}`` 平铺进 ``arguments``，
+   ``target`` 的两个槽平铺进 ``arguments``（obscura 面是 ``{tag, label}``、
+   camoufox 面是 ``{role, name}``——P4 起键名跟着方言走，见
+   :func:`~trajectory_pipeline.toolcatalog.dialect_of`），
    而不是塞进一个嵌套字段——后者会让训练出来的模型学会
-   往 ``arguments.target.label`` 里填，而真实 API 要的是平铺。
+   往 ``arguments.target.<槽>`` 里填，而真实 API 要的是平铺。
 
 4. **空 ``user_prompt`` **不发** user 消息，并在 meta 记缺件。**
    这与 :mod:`~trajectory_pipeline.assembler.observation_view` 的
@@ -93,6 +95,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from trajectory_pipeline import toolcatalog
+from trajectory_pipeline.assembler import observation_view
 from trajectory_pipeline.storage import (
     DEFAULT_VIEWS_DIRNAME,
     VIEW_NAMES,
@@ -151,9 +155,7 @@ def render_observation(obs: Mapping[str, Any]) -> str:
 
     elems = obs.get("interactive_elements") or []
     if elems:
-        lines = [
-            f"  - <{e.get('tag', '')}> {e.get('label', '')}".rstrip() for e in elems
-        ]
+        lines = [observation_view.element_line(e) for e in elems]
         parts.append("可交互元素：\n" + "\n".join(lines))
     else:
         parts.append("可交互元素：（空）")
@@ -186,44 +188,86 @@ def render_observation(obs: Mapping[str, Any]) -> str:
 # ── 工具声明 ──────────────────────────────────────────────────────
 
 
-def _openai_tool(spec: Mapping[str, Any]) -> dict[str, Any]:
-    """一条 :class:`ToolSpec` → OpenAI function 定义。
+def _surface_of(sample: Mapping[str, Any]) -> str:
+    """这条样本的**工具面**（2026-10-20 方案 15 §7 R1）。
 
-    ``params`` 是**参数名元组**（``schema.TOOL_SPECS`` 的形状），转成
-    OpenAI 的 ``parameters`` 时给 ``{"type": "object", "properties": {…}}``。
-    刻意**不编造每步的参数类型**——P2 里存的就是名字，凭空补
-    ``"string"`` 会让训练出来的模型以为参数校验是训练出来的，
-    而真实执行层的校验在别处。
+    空串 = 这条 P2 没有工具面身份（2026-10-20 之前建的）→ 按默认面
+    渲染。那批样本**真实跑出来的**就是默认面，不是兜底。
     """
-    props = {name: {"type": "string"} for name in spec.get("params") or ()}
-    return {
-        "type": "function",
-        "function": {
-            "name": str(spec.get("name") or ""),
-            "description": str(spec.get("instruction") or ""),
-            "parameters": {
-                "type": "object",
-                "properties": props,
-                "required": list(spec.get("params") or ()),
+    return str(sample.get("tool_surface") or "") or toolcatalog.DEFAULT_SURFACE
+
+
+def _openai_tool(spec: Mapping[str, Any], surface: str = toolcatalog.DEFAULT_SURFACE) -> dict[str, Any]:
+    """一条工具声明 → OpenAI function 定义。
+
+    **参数级的说明与 ``required`` 集合从 :mod:`trajectory_pipeline.toolcatalog`
+    取**（唯一真源）。P2 的 ``six.tools[]`` 只存参数**名**列表——那是 P2
+    契约的形状；参数语义不在 P2 里，渲染期补齐。
+
+    ⚠️ **这里修掉的是一处实质错位**（2026-10-20）：旧口径下 ``params``
+    就是全部入参，于是 ``click`` 的 function 定义长成
+    ``properties: {} / required: []``——**模型无从知道要传什么**，
+    而真实调用里是两个槽（obscura 面 ``{"tag": ..., "label": ...}``，
+    camoufox 面 ``{"role": ..., "name": ...}``；语义目标在
+    ``target`` 里，被 :func:`_arguments` 平铺进 ``arguments``）。
+    声明与调用对不上，训出来的模型就会发空参数的点击。
+    ``fill`` 同理少两个参数。
+
+    ``type`` 一律 ``"string"``，**不编造类型也不加 enum**——``press`` 的
+    ``key`` 本来就是任意按键名，加 enum 会把训练集框死在取值子集上。
+
+    ⚠️ **面是必答项**：``click`` 在 obscura 面是 ``{tag,label}``、在
+    camoufox 面是 ``{role,name}``。拿错面渲染出来的声明与真实调用对不上，
+    而那正是训出「发空参数点击」的那类错。
+
+    ``toolcatalog`` 里查不到这个工具时（catalog 与 P2 漂移）**不抛**——
+    抛了会让一条旧 P2 拖垮整批 P3。退化成「只有名字」的声明，
+    漂移由 ``tests/contract/test_tool_catalog_contract.py`` 抓。
+    """
+    name = str(spec.get("name") or "")
+    d = toolcatalog.by_name(name, surface)
+    if d is None:
+        params = list(spec.get("params") or ())
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": str(spec.get("instruction") or ""),
+                "parameters": {
+                    "type": "object",
+                    "properties": {p: {"type": "string"} for p in params},
+                    "required": params,
+                },
             },
-        },
-    }
+        }
+    return toolcatalog.openai_function(d)
 
 
 def _visible_tools(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     """模型看得见的工具声明。
 
-    **可见性的唯一权威是 P2 的 ``tools[]`` 里每条自己带的位置**——
-    而 :class:`~trajectory_pipeline.assembler.schema.ToolSpec.visible_to_model`
-    是按名字判的（``new_tab`` / ``close_tab`` 都不可见）。本模块从 P2 的
-    JSON 里读不到方法，所以按同一条规则复现一次，并在契约测试里盯住
-    两边同步。
+    **工具集合由 P2 的 ``six.tools[]`` 决定**（P3 以 P2 为真源——
+    交接面是格式不是对象），**可见性由
+    :mod:`trajectory_pipeline.toolcatalog` 判**（按 ``visibility`` 字段，
+    不按名字黑名单——catalog 新增一个 infrastructure 动作时，
+    名字黑名单会漏它进模型可见集）。
+
+    ⚠️ P2 没重建时这里就是旧的（4 个可见工具）——那是**对的**：
+    旧 P2 就是旧训练契约，渲染它就该用旧声明。重建整批 P2 后
+    （``cli build --overwrite``）这里自动带上新工具。
+    两边漂移由 ``tests/contract/test_tool_catalog_contract.py`` 抓。
+
+    **按样本自己的工具面查**（2026-10-20 方案 15 §7 R1）：同名工具在
+    两个面里参数不同，面错了就是声明与调用对不上。
     """
+    surface = _surface_of(sample)
     out: list[dict[str, Any]] = []
     for spec in sample.get("six", {}).get("tools") or ():
-        if str(spec.get("name") or "") in ("new_tab", "close_tab"):
+        name = str(spec.get("name") or "")
+        d = toolcatalog.by_name(name, surface)
+        if d is not None and d.visibility != "model":
             continue
-        out.append(_openai_tool(spec))
+        out.append(_openai_tool(spec, surface))
     return out
 
 
@@ -317,11 +361,25 @@ def _rationale_text(rationale: Any) -> str:
     「压根没生成」在训练文本里同形是**刻意的**：后者用
     ``meta`` 视图的 ``rationale_missing`` 单独可见，
     而在这里编一段占位思考会直接污染 CoT SFT。
+
+    ⚠️ **2026-10-19 增量六十一发现**：本函数历史上读 ``rationale["text"]``
+    扁平字段,而生产 P1 实际写的是嵌套 ``rationale["rationale"]["text"]``
+    （:func:`trajectory_pipeline.executor.agent_loop._native_think_payload`
+    与 thought_refactor 写出形态）。结果是**所有 P1 不论 scripted / agent**
+    思考文本都被丢掉,assistant 消息只剩 tool_call。本函数现在先读嵌套、
+    后读扁平,两条路径都支持。
     """
     if not isinstance(rationale, Mapping) or rationale.get("status") != "written":
         return ""
-    text = str(rationale.get("text") or "").strip()
-    conclusion = str(rationale.get("conclusion") or "").strip()
+    # 嵌套形态：{"rationale": {"text": "...", "conclusion": "..."}}
+    inner = rationale.get("rationale")
+    if isinstance(inner, Mapping):
+        text = str(inner.get("text") or "").strip()
+        conclusion = str(inner.get("conclusion") or "").strip()
+    else:
+        # 扁平形态（兜底）：{"text": "...", "conclusion": "..."} 顶层
+        text = str(rationale.get("text") or "").strip()
+        conclusion = str(rationale.get("conclusion") or "").strip()
     parts = [p for p in (text, conclusion) if p]
     return ("\n".join(parts) + "\n") if parts else ""
 
@@ -543,6 +601,20 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
     )
     steps, _ = _visible_steps(six)
 
+    # 「模型被告知但这条轨迹没用过」的工具名。
+    #
+    # ⚠️ 这条信息不显眼时，读样本的人会把**能力声明**当成**已验证的
+    # 动作**——看到 tools[] 里有 11 个，就以为这批数据验证过 11 种
+    # 能力。而实际只有动作流里出现过的那几个被真实运行验证过。
+    # 逐个列出来（不合成计数）：合成之后就分不出「没用到」与「没有」，
+    # 而这两者在批次筛选时的处置完全不同。
+    #
+    # 集合基于 **P2 的 ``six.tools``**（这份样本的声明），不是全局 catalog
+    # ——重建前的旧 P2 仍然报旧集合。
+    used_tools = {str(a.get("tool") or "") for a in actions}
+    visible_tools = [t["function"]["name"] for t in _visible_tools(sample)]
+    tools_unused = sorted(set(visible_tools) - used_tools)
+
     return {
         "sample_id": sample.get("sample_id", ""),
         "task_id": sample.get("task_id", ""),
@@ -559,6 +631,14 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         "observation_count": len(observations),
         "missing_observation_count": missing_obs,
         "infrastructure_actions": infra,
+        # 工具面（2026-10-20 方案 15 §7 R1）：这份样本的训练动作空间属于
+        # 哪个方言。同名工具在两个面里参数不同（click 是 {tag,label} 还是
+        # {role,name}），面错了就是**声明与调用对不上**——训出来的模型会发
+        # 空参数的点击。空串 = 旧 P2（没有面身份）→ 按默认面渲染。
+        "tool_surface": _surface_of(sample),
+        # 能力声明 vs 已验证动作：这条样本没用到的模型可见工具
+        "tools_declared": visible_tools,
+        "tools_unused": tools_unused,
         # 成对性自查：动作多于观察说明末步没取到观察。消息视图会显式
         # 发占位回执（不留悬空 tool_calls，第 8 条），但批次筛选仍要
         # 能一眼分出「观察齐全」与「有步没采到」。

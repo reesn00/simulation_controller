@@ -90,10 +90,20 @@ class Test字段集一致:
             # 存档在磁盘上唯一能区分这两者的字段**——两批的 steps
             # 同形（六值动作空间）、visits 同形，没了它只能靠文件名猜。
             "executor_mode",
+            # 2026-10-20 方案 15 §7 R1：执行层（驱动实现）。与
+            # executor_mode 正交的第二个归因轴，还是**工具面**的唯一
+            # 来源——目标编码（{tag,label} vs {role,name}）由它决定。
+            "driver",
             # 2026-10-17 方案 13 §3.6（A2a-4）：LLM 调用账本（agent
             # 循环每次问模型一行）。与 gatekeeper_events 同款可选字段
             # 纪律；scripted 批恒空 list 照落。
             "llm_calls",
+            # 2026-10-19 增量六十一:run_id / batch_id 下沉到 RunRecord
+            # 字段(默认空串),writer 边界「空串视为缺」自动补齐——
+            # 见 :class:`~.executor.archive.P1Archive.write` 的注入逻辑。
+            # 之前是 dict 注入不在 to_json 里,现在 to_json 落两键,
+            # test_真实存档字段与契约一致 的 _NEW_OPTIONAL 不再含它们。
+            "run_id", "batch_id",
         }
         assert actual == expected, (
             f"顶层字段漂移：多 {actual - expected} / 少 {expected - actual}。"

@@ -253,16 +253,18 @@ class P1Archive:
         """
         run = run_id or uuid.uuid4().hex[:8]
         record_dict = record.to_json()
-        # ── run_id / batch_id 注入（2026-10-19 增量六十一根因修复）──
-        # ``RunRecord.to_json()`` 历史上不写这两个字段,但 ``task_view``
-        # 渲染、批次报表、LS 上传全靠它们做 trajectory_id（``<task>__<run>``）
-        # 与按批次切片。文件名有 ``<task_id>__<run_id>.json``,但 JSON 顶层没
-        # 这俩字段——读侧只能从路径再反推,这是隐性耦合。
-        # 落盘边界注入（不覆盖 record 自带值,与既有 ``batch_id`` 注入同款纪律）。
+        # ── run_id / batch_id 注入(2026-10-19 增量六十一根因修复)──
+        # RunRecord.to_json() 已含这俩字段(默认空串),writer 边界补
+        # 「空串视为缺」逻辑 —— RunRecord 构造时 run_id="" 表示「还没分
+        # 到 run」,writer 必须接管;构造时非空(如单元测试 / 重入入口)
+        # 保留 record 自己的选择。「key 完全缺失」与「key 在但空串」两
+        # 种形态都按缺处理,与既有 batch_id 注入同款(「不覆盖 record
+        # 自带值」的真实含义是「不覆盖 record 自带的非空值」)。
         if isinstance(record_dict, dict):
-            if "run_id" not in record_dict:
+            existing_run = record_dict.get("run_id")
+            if not existing_run:
                 record_dict["run_id"] = run
-            if batch_id is not None and "batch_id" not in record_dict:
+            if batch_id is not None and not record_dict.get("batch_id"):
                 record_dict["batch_id"] = batch_id
         payload = json.dumps(record_dict, ensure_ascii=False, indent=2)
         hits = scan_credentials(payload)

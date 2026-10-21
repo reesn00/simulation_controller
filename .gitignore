@@ -104,3 +104,10 @@ archive/v1/etl/qwenformat/cache/
 .dumate/
 # 临时目录（dv 提取等）
 .tmp/
+
+# ── 根级临时名（2026-10-20 研究产物迁入 trajectory_pipeline/research/ 后补）──
+# 旧约定只认点前缀，导致无点前缀的 tmp/ 与 tmp_* 被当成「漏 ignore」并提交。
+# 注意：ignore 规则对已跟踪文件无效——本组规则只防将来复发，不是清理手段。
+/tmp/
+/tmp_*/
+/.tmp_*/

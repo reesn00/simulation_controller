@@ -1,22 +1,30 @@
-"""端到端真实采集探针——验证 :class:`ObscuraDriver` 的**接线**，不是格式知识。
+"""端到端真实采集探针——验证驱动的**接线**，不是格式知识。
 
 与 ``probe_returns.py`` 的分工：
     ``probe_returns.py``   取证 obscura 的 tool 返回格式（喂 ``dom.py`` 的单测）
     ``probe_observe.py``   跑一次真实的 ``goto + observe``，把 :class:`Observation`
                            落盘并断言契约——喂的是「driver 能不能用」这个问题
 
-不跑网络单测的原因：mcp server 起来要几秒且依赖 ``OBSCURA_EXE``，
-属集成探针；契约本身由 ``tests/unit/test_dom.py``（离线）与
-``tests/contract/``（七不变式）守。这个脚本是三者的补充，不是替代。
+**两个实现都跑**（P3-β 起）：``--driver obscura``（缺省）或 ``--driver camoufox``。
+同一批 URL、同一套契约断言、**同一份打印格式**——方案 04 §6 的 P2 判据
+「同一页在两个实现下 ``Observation`` 字段同口径」就是靠把两边的读数并排看
+来回答的。**探针不做判等**：`elements_total` 两面的语义差异是已知的
+（见 ``Observation.elements_total`` 注释），机判等会给出一个虚假的通过/失败。
+
+不跑网络单测的原因：obscura 的 mcp server 起来要几秒且依赖 ``OBSCURA_EXE``、
+camoufox 要起真浏览器，都属集成探针；契约本身由 ``tests/unit/test_dom.py``
+（离线）与 ``tests/contract/``（七不变式）守。这个脚本是三者的补充，不是替代。
 
 用法::
 
     export OBSCURA_EXE=/path/to/obscura.exe
     uv run python -m trajectory_pipeline.executor.browser.probe_observe
+    uv run python -m trajectory_pipeline.executor.browser.probe_observe --driver camoufox
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -87,7 +95,7 @@ def check(obs: Observation, *, expect_video: bool) -> list[str]:
     if obs.max_chars and obs.raw_len and obs.raw_len > obs.max_chars * 1.2:
         problems.append(
             f"raw_len={obs.raw_len} 远超 max_chars={obs.max_chars}——"
-            f"obscura 未按 max_chars 截断，truncated={obs.truncated} 的推断可能失效"
+            f"驱动未按 max_chars 截断，truncated={obs.truncated} 的推断可能失效"
         )
     if not 0.0 <= obs.stripped_ratio <= 1.0:
         problems.append(f"stripped_ratio 越界: {obs.stripped_ratio}")
@@ -106,46 +114,86 @@ def check(obs: Observation, *, expect_video: bool) -> list[str]:
     return problems
 
 
-async def main() -> int:
+async def _collect(driver: Any, report: dict[str, Any]) -> None:
+    """同一批 URL 跑一遍 ``goto + observe``，**打印与断言都与实现无关**。"""
+    for name, url in TARGETS:
+        print(f"\n[{name}] goto {url}")
+        try:
+            await driver.goto(url)
+            obs = await driver.observe(max_chars=DEFAULT_MAX_CHARS)
+        except Exception as exc:
+            # 单站失败不该带崩整批——记下来继续
+            report["observations"][name] = {"url": url, "error": f"{type(exc).__name__}: {exc}"}
+            report["problems"][name] = [f"采集失败: {exc}"]
+            print(f"  FAIL {type(exc).__name__}: {exc}")
+            continue
+
+        issues = check(obs, expect_video=False)
+        report["observations"][name] = {"url": url, "observation": _jsonable(obs)}
+        report["problems"][name] = issues
+        print(
+            f"  url={obs.url!r} title={obs.page_title!r}\n"
+            f"  body={len(obs.body_text)}ch (raw={obs.raw_len}, "
+            f"stripped={obs.stripped_ratio:.2f}, truncated={obs.truncated})\n"
+            f"  links={len(obs.links)} (total={obs.links_total}) "
+            f"elements={len(obs.interactive_elements)} (total={obs.elements_total}) "
+            f"video={obs.video_tag_count} iframe={obs.iframe_count}\n"
+            f"  degraded={list(obs.degraded)}"
+        )
+        print(f"  {'OK' if not issues else 'ISSUES: ' + '; '.join(issues)}")
+
+
+async def _run_obscura(report: dict[str, Any]) -> int:
     try:
         client = McpClient.from_env()
     except RuntimeError as exc:
         print(f"跳过：{exc}")
         return 0
+    async with client:
+        report["server"] = asdict(client.info)
+        print(f"server = {client.info.name} {client.info.version}, "
+              f"{client.info.tool_count} tools")
+        await _collect(ObscuraDriver(client), report)
+    return 0
+
+
+async def _run_camoufox(report: dict[str, Any]) -> int:
+    from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
+    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+
+    session = await CamoufoxSession.launch()
+    async with session:
+        # 指纹一起落盘：两面的读数要并排看时，「这批 camoufox 是哪一次
+        # launch」必须能答上来，否则视口抖动 ±8px 会被读成站点差异。
+        report["server"] = {"name": "camoufox", "fingerprint": session.fingerprint}
+        print(f"server = camoufox / fingerprint = {session.fingerprint}")
+        await _collect(CamoufoxDriver(session), report)
+    return 0
+
+
+async def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--driver", choices=("obscura", "camoufox"), default="obscura",
+                        help="跑哪个实现（缺省 obscura；两面的读数用同一个脚本产出）")
+    args = parser.parse_args(argv)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    report: dict[str, Any] = {"server": None, "observations": {}, "problems": {}}
+    report: dict[str, Any] = {
+        "driver": args.driver, "server": None, "observations": {}, "problems": {},
+    }
+    if args.driver == "camoufox":
+        rc = await _run_camoufox(report)
+    else:
+        rc = await _run_obscura(report)
+    if rc != 0 or report["server"] is None:
+        return rc
 
-    async with client:
-        driver = ObscuraDriver(client)
-        report["server"] = asdict(client.info)
-        print(f"server = {client.info.name} {client.info.version}, {client.info.tool_count} tools")
-
-        for name, url in TARGETS:
-            print(f"\n[{name}] goto {url}")
-            try:
-                await driver.goto(url)
-                obs = await driver.observe(max_chars=DEFAULT_MAX_CHARS)
-            except Exception as exc:
-                # 单站失败不该带崩整批——记下来继续
-                report["observations"][name] = {"url": url, "error": f"{type(exc).__name__}: {exc}"}
-                report["problems"][name] = [f"采集失败: {exc}"]
-                print(f"  FAIL {type(exc).__name__}: {exc}")
-                continue
-
-            issues = check(obs, expect_video=False)
-            report["observations"][name] = {"url": url, "observation": _jsonable(obs)}
-            report["problems"][name] = issues
-            print(
-                f"  url={obs.url!r} title={obs.page_title!r}\n"
-                f"  body={len(obs.body_text)}ch (raw={obs.raw_len}, "
-                f"stripped={obs.stripped_ratio:.2f}, truncated={obs.truncated})\n"
-                f"  links={len(obs.links)} elements={len(obs.interactive_elements)} "
-                f"video={obs.video_tag_count} iframe={obs.iframe_count}"
-            )
-            print(f"  {'OK' if not issues else 'ISSUES: ' + '; '.join(issues)}")
-
-    out = OUT_DIR / "probe_observe.json"
+    # 按实现分文件：两面各落一份，并排看才是「同口径」的证据。
+    # 覆盖同一份会让后跑的覆盖先跑的，而两份都要留着对账。
+    out = OUT_DIR / (
+        "probe_observe.json" if args.driver == "obscura"
+        else f"probe_observe_{args.driver}.json"
+    )
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n落盘: {out}")
 

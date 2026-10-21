@@ -1,6 +1,6 @@
 """W1 规则版 Perceptor——**故意做得很弱**。
 
-「弱」不是偷懒，是三层分工铁律的直接后果：事实层由代码管，那么
+「弱」不是偷懒，是三层分工铁律的直接后果：代码层做护栏，那么
 规则版**只配做确定性事实判定**，语义判断一律 ``answer=None``（I4）。
 让规则版去「猜」语义，得到的不是弱信号而是**假信号**——它会污染负样本池，
 让「这一站没播放控件」这个结论看起来有代码背书，实际是关键词匹配的幻觉。
@@ -27,6 +27,10 @@ import time
 from types import MappingProxyType
 from typing import Mapping, Any
 
+from trajectory_pipeline.common.elements import (
+    ELEMENT_VOCAB_ARIA_ROLE,
+    ELEMENT_VOCAB_HTML_TAG,
+)
 from trajectory_pipeline.perception.base import (
     Decision,
     InteractiveElement,
@@ -92,7 +96,7 @@ TRAILER_KEYWORDS: tuple[str, ...] = (
 #: 也不是「页面上没有播放控件」（控件是有的，卡在付费）。
 #: 两种混在一起记，训练信号就失真了。
 #:
-#: 与 :data:`TRAILER_WORDS` 同款定位：**确定性事实归代码**，
+#: 与 :data:`TRAILER_WORDS` 同款定位：**确定性事实归代码层**，
 #: 模型只在选中某个 ref 时用它复核（口径一「确定性事实优先」）。
 #:
 #: ⚠️ **「免费观看」「在线观看」不在表里**：它们出现在**导航栏**里的
@@ -463,7 +467,7 @@ def play_control_candidates(obs: Observation) -> list[InteractiveElement]:
     需要保留预告控件时用 :func:`is_play_control` 自己筛。
     """
     return [e for e in obs.interactive_elements
-            if is_play_control(e.label) and classify_trailer(e.label) == "none"]
+            if is_play_control(e.name) and classify_trailer(e.name) == "none"]
 
 
 def trailer_only_candidates(obs: Observation) -> list[InteractiveElement]:
@@ -476,7 +480,7 @@ def trailer_only_candidates(obs: Observation) -> list[InteractiveElement]:
     且两个都看着像对的——这正是词表复制的代价。
     """
     return [e for e in obs.interactive_elements
-            if is_play_control(e.label) and classify_trailer(e.label) != "none"]
+            if is_play_control(e.name) and classify_trailer(e.name) != "none"]
 
 
 # ── 站内搜索框词表（2026-10-16 路径 B/C）─────────────────────────────────
@@ -493,11 +497,41 @@ SEARCH_BOX_KEYWORDS: tuple[str, ...] = ("搜索", "检索", "search")
 #: 可能承载搜索框的标签。``input`` 是主体、``textarea`` 少见但同构；
 #: **刻意不含** ``button`` / ``a``——本词表服务的是
 #: :func:`~trajectory_pipeline.perception.llm_perceptor.LLMPerceptor._find_site_search`
-#: 的 ref 兜底，取回的 ref 要被 ``type_text`` 填词，填进按钮会直接
+#: 的 ref 兜底，取回的 ref 要被 ``fill`` 填词，填进按钮会直接
 #: DriverError。「搜索」按钮的点击路径是 site_search 的
 #: ``SEARCH_BUTTON_HINTS``（那边是回车失败后的第二条提交路），两边
 #: 词表各管各的动作，不共用。
-SEARCH_BOX_TAGS: frozenset[str] = frozenset({"input", "textarea"})
+#:
+#: **一套词表一个方言，按观察自带的词汇表取**（P4 收窄；P3-α 的并集已退役）。
+#:
+#: 并集的问题是它**在两个方言下都会命中错的东西**：``role`` 槽里装的是
+#: ``input`` 还是 ``textbox``，并集都能匹配，于是「换了执行层」这件事在
+#: 这里完全没有痕迹——而两套词表本来就不该通用（``input`` 是标签名，
+#: ``textbox`` 是 role，同一个控件在两面各写各的）。
+#:
+#: 词汇表认不出时**抛**，不回落任何一套：回落等于猜「这份观察大概是什么面」，
+#: 猜错的症状是静默取回 0 个候选，与「这页确实没有搜索框」同形。
+#:
+#: **不收 ``combobox``**：playwright 给 ``<select>`` 的 role 就是 ``combobox``，
+#: 而往 select 里 ``fill`` 会直接失败——那是「取回一个填不进去的 ref」，
+#: 比取回 0 个更坏（0 个会走「没有搜索框」分支，错的很明显）。
+SEARCH_BOX_WORDS: Mapping[str, frozenset[str]] = MappingProxyType({
+    # HTML 标签名（obscura 面）
+    ELEMENT_VOCAB_HTML_TAG: frozenset({"input", "textarea"}),
+    # ARIA role（camoufox 面）
+    ELEMENT_VOCAB_ARIA_ROLE: frozenset({"textbox", "searchbox"}),
+})
+
+
+def search_box_words(obs: Observation) -> frozenset[str]:
+    """该观察的元素词表对应的「可填词控件」词集。认不出**抛**（不猜）。"""
+    try:
+        return SEARCH_BOX_WORDS[obs.element_vocabulary]
+    except KeyError:
+        raise ValueError(
+            f"认不出的元素词汇表 {obs.element_vocabulary!r}——"
+            f"搜索框词表无从确定。已知的：{sorted(SEARCH_BOX_WORDS)}"
+        ) from None
 
 
 def search_box_candidates(obs: Observation) -> list[InteractiveElement]:
@@ -510,11 +544,12 @@ def search_box_candidates(obs: Observation) -> list[InteractiveElement]:
     匹配前把 label 归一并**去掉全部空格**（「搜 索」→「搜索」）——
     按钮文案带空格排版是常见形态，逐变体列词表不如归一后比对。
     """
+    words = search_box_words(obs)
     out: list[InteractiveElement] = []
     for e in obs.interactive_elements:
-        if (e.tag or "").lower() not in SEARCH_BOX_TAGS:
+        if (e.role or "").lower() not in words:
             continue
-        text = _norm(e.label).replace(" ", "")
+        text = _norm(e.name).replace(" ", "")
         if text and any(kw in text for kw in SEARCH_BOX_KEYWORDS):
             out.append(e)
     return out
@@ -608,7 +643,7 @@ class RulePerceptor:
                 ),
                 started=started, fallback=True,
             )
-        candidates = [e for e in obs.interactive_elements if is_play_control(e.label)]
+        candidates = [e for e in obs.interactive_elements if is_play_control(e.name)]
         if not candidates:
             if obs.video_tag_count >= 1:
                 # 观察**自己**否定了「没有播放控件」这句话：页面上已经有 <video>，
@@ -633,23 +668,23 @@ class RulePerceptor:
             )
         real = play_control_candidates(obs)
         if real:
-            suspects = [e for e in candidates if classify_trailer(e.label) == "suspect"]
+            suspects = [e for e in candidates if classify_trailer(e.name) == "suspect"]
             return self._answer(
                 spec, True,
-                evidence=f"命中播放控件 ref={real[0].ref} label={real[0].label!r}",
+                evidence=f"命中播放控件 ref={real[0].ref} name={real[0].name!r}",
                 started=started,
                 payload={"ref": real[0].ref, "trailer_only": False,
-                         "trailer_suspect": [e.label for e in suspects],
+                         "trailer_suspect": [e.name for e in suspects],
                          "why": f"命中 {len(real)} 个非预告控件"},
             )
         # 有候选但全是预告片 —— 这是业务规则里的「播放资源不存在」
-        suspects = [e.label for e in candidates
-                    if classify_trailer(e.label) == "suspect"]
+        suspects = [e.name for e in candidates
+                    if classify_trailer(e.name) == "suspect"]
         return self._answer(
             spec, True,
             evidence=(
                 f"{len(candidates)} 个候选控件全为预告："
-                f"{[e.label for e in candidates][:3]}"
+                f"{[e.name for e in candidates][:3]}"
             ),
             started=started,
             payload={"ref": "", "trailer_only": not suspects,

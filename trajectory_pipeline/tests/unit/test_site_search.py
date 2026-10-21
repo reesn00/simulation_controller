@@ -7,6 +7,8 @@ no_results / routed / unresolved 不合并）、动作流（fill → press →
 
 from __future__ import annotations
 
+import pytest
+
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.steps import search
@@ -20,6 +22,10 @@ from trajectory_pipeline.executor.steps.site_search import (
     _heuristic_results,
     _selected_candidates,
     site_search,
+)
+from trajectory_pipeline.common.elements import (
+    ELEMENT_VOCAB_ARIA_ROLE,
+    ELEMENT_VOCAB_HTML_TAG,
 )
 from trajectory_pipeline.perception.base import (
     Decision,
@@ -36,7 +42,7 @@ from trajectory_pipeline.perception.base import (
 
 
 class FakeDriver:
-    """``press_key`` / ``click`` 可配置导航目标的 driver。
+    """``press`` / ``click`` 可配置导航目标的 driver。
 
     ``on_press`` / ``on_click``：按键 / 点击后切换到哪个观察。
     不配置 = 页面不变（提交失败的形态）。
@@ -57,10 +63,10 @@ class FakeDriver:
         self.pressed: list[str] = []
         self.clicked: list[str] = []
 
-    async def type_text(self, *, text, ref=None, selector=None) -> None:
+    async def fill(self, *, text, ref=None, selector=None, role=None, name=None) -> None:
         self.typed.append((ref or selector or "", text))
 
-    async def press_key(self, key: str) -> None:
+    async def press(self, key: str, *, role=None, name=None) -> None:
         self.pressed.append(key)
         if self.on_press is not None:
             self.current = self.on_press
@@ -107,7 +113,7 @@ def none_(question, evidence="e"):
 
 
 def elements(*pairs):
-    return tuple(InteractiveElement(ref=r, tag=t, label=l) for r, t, l in pairs)
+    return tuple(InteractiveElement(ref=r, role=t, name=l) for r, t, l in pairs)
 
 
 def obs_at(
@@ -123,7 +129,7 @@ def obs_at(
         page_title=title,
         body_text=body,
         interactive_elements=tuple(
-            InteractiveElement(ref=r, tag=t, label=l) for r, t, l in elements
+            InteractiveElement(ref=r, role=t, name=l) for r, t, l in elements
         ),
         links=tuple(LinkItem(text=t, href=h) for t, h in links),
     )
@@ -346,15 +352,43 @@ class TestRouting:
 class TestFindSearchButton:
     def test_词表命中(self):
         els = elements(("e1", "button", "搜 索"), ("e2", "a", "首页"))
-        assert _find_search_button(els).ref == "e1"
+        assert _find_search_button(
+            els, vocabulary=ELEMENT_VOCAB_HTML_TAG
+        ).ref == "e1"
 
     def test_空label不命中(self):
         els = elements(("e1", "input", ""))
-        assert _find_search_button(els) is None
+        assert _find_search_button(els, vocabulary=ELEMENT_VOCAB_HTML_TAG) is None
 
     def test_非可点标签不命中(self):
         els = elements(("e1", "span", "搜索"))
-        assert _find_search_button(els) is None
+        assert _find_search_button(els, vocabulary=ELEMENT_VOCAB_HTML_TAG) is None
+
+    def test_两个面各一套词表_拿错面就认不出(self):
+        """``button`` 同在两套词表里（两面同形），而 ``link`` 只在 ARIA
+        那套、``input`` 只在 HTML 那套——拿这两种当探针。
+
+        拿错面的后果不是抛错，而是**静默认不出**：camoufox 批次按 HTML
+        词表筛，搜索按钮恒为 0 个，于是每一条都走「站内搜索不可用」分支。
+        """
+        aria = elements(("e1", "link", "搜索"))
+        assert _find_search_button(
+            aria, vocabulary=ELEMENT_VOCAB_ARIA_ROLE
+        ).ref == "e1"
+        assert _find_search_button(aria, vocabulary=ELEMENT_VOCAB_HTML_TAG) is None
+
+        html = elements(("e1", "input", "搜索"))
+        assert _find_search_button(
+            html, vocabulary=ELEMENT_VOCAB_HTML_TAG
+        ).ref == "e1"
+        assert _find_search_button(html, vocabulary=ELEMENT_VOCAB_ARIA_ROLE) is None
+
+    def test_认不出的词表抛而不是回落(self):
+        """回落 = 猜。认不出的词汇表要炸，而不是悄悄当成 ``html_tag``。"""
+        with pytest.raises(ValueError):
+            _find_search_button(
+                elements(("e1", "input", "搜索")), vocabulary="bogus"
+            )
 
 
 class TestHeuristicResults:

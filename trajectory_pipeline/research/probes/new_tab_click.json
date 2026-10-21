@@ -1,0 +1,446 @@
+{
+  "env": {
+    "playwright": "1.62.0",
+    "camoufox": "0.5.8",
+    "python": "3.12.14"
+  },
+  "results": [
+    {
+      "scenario": "first_page_click",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "p1_before",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p1_click",
+          "status": "pw_timeout",
+          "ms": 1529,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for locator(\"#b\") - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled "
+        },
+        {
+          "step": "p1_after",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "second_page_click",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "pages",
+          "status": "value",
+          "value": 2
+        },
+        {
+          "step": "p1_after_open",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_after_open",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_locator_read_tag",
+          "status": "ok",
+          "ms": 89
+        },
+        {
+          "step": "p2_click_1",
+          "status": "pw_timeout",
+          "ms": 1513,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for locator(\"#b\") - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled "
+        },
+        {
+          "step": "p1_after_p2_click",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_after_p2_click",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_click_2",
+          "status": "pw_timeout",
+          "ms": 1513,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for locator(\"#b\") - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled "
+        },
+        {
+          "step": "p2_after_p2_click2",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "js_click",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "p2_js_click",
+          "status": "ok",
+          "ms": 11
+        },
+        {
+          "step": "p2_after_js_click",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "mouse_primitives",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "p2_mouse_move",
+          "status": "ok",
+          "ms": 1339
+        },
+        {
+          "step": "p1_after_move",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_after_move",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_mouse_down",
+          "status": "ok",
+          "ms": 2729
+        },
+        {
+          "step": "p2_mouse_up",
+          "status": "ok",
+          "ms": 6000
+        },
+        {
+          "step": "p2_after_mouse",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "bring_to_front",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "p2_bring_to_front",
+          "status": "ok",
+          "ms": 5
+        },
+        {
+          "step": "p1_after_front",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_after_front",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_click",
+          "status": "ok",
+          "ms": 948
+        },
+        {
+          "step": "p2_after_click",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "close_first",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "close_p1",
+          "status": "ok",
+          "ms": 8
+        },
+        {
+          "step": "pages",
+          "status": "value",
+          "value": 1
+        },
+        {
+          "step": "p2_after_close",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_click",
+          "status": "pw_timeout",
+          "ms": 1515,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for locator(\"#b\") - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled "
+        },
+        {
+          "step": "p2_after_click",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "force_click",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "p2_force_click",
+          "status": "ok",
+          "ms": 934
+        },
+        {
+          "step": "p2_after_force",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "keyboard",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "p2_focus",
+          "status": "ok",
+          "ms": 81
+        },
+        {
+          "step": "p2_press_enter",
+          "status": "error:TypeError",
+          "ms": 0,
+          "msg": "Keyboard.press() got an unexpected keyword argument 'timeout'"
+        },
+        {
+          "step": "p2_after_enter",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    },
+    {
+      "scenario": "real_site",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": false
+        },
+        {
+          "step": "p1_goto_real",
+          "status": "ok",
+          "ms": 2095
+        },
+        {
+          "step": "p1_click_body",
+          "status": "ok",
+          "ms": 702
+        },
+        {
+          "step": "p2_goto_real",
+          "status": "ok",
+          "ms": 209
+        },
+        {
+          "step": "p2_click_body",
+          "status": "ok",
+          "ms": 694
+        }
+      ]
+    },
+    {
+      "scenario": "second_page_headless",
+      "steps": [
+        {
+          "step": "headless",
+          "status": "value",
+          "value": true
+        },
+        {
+          "step": "pages",
+          "status": "value",
+          "value": 2
+        },
+        {
+          "step": "p1_after_open",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_after_open",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_locator_read_tag",
+          "status": "ok",
+          "ms": 80
+        },
+        {
+          "step": "p2_click_1",
+          "status": "ok",
+          "ms": 659
+        },
+        {
+          "step": "p1_after_p2_click",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_after_p2_click",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        },
+        {
+          "step": "p2_click_2",
+          "status": "ok",
+          "ms": 41
+        },
+        {
+          "step": "p2_after_p2_click2",
+          "status": "state",
+          "vis": "visible",
+          "focus": true,
+          "clicks": null,
+          "pointerdown": null,
+          "keydown": null
+        }
+      ]
+    }
+  ]
+}

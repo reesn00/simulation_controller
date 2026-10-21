@@ -2,7 +2,9 @@
 
 格式知识全部集中在这里——传输层（``mcp_client.py``）与协议层
 （``page_driver.py``）都不认识 obscura 的 tool 名。将来换浏览器，
-只改本文件 + ``factory``。
+只改本文件 + :mod:`trajectory_pipeline.executor.browser.driver_factory`
+（装配唯一入口；生产代码**不许直接构造本类**，门禁见
+``tests/unit/test_driver_factory.py``）。
 
 全部格式知识来自实测（``output/pipeline/obscura_returns_*.json``），
 **不是按 tool 描述推测**。已踩过的格式坑：
@@ -26,6 +28,10 @@ from typing import Any, Mapping
 from trajectory_pipeline.executor.browser.mcp_client import McpClient, McpError
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.dom import (
+    IFRAME_SELECTOR,        # noqa: F401  （定义已迁 dom.py；此处再导出供既有引用）
+    INNER_TEXT_EXPR,        # noqa: F401  （定义已迁 dom.py；此处再导出供既有引用）
+    MEDIA_SELECTOR,         # noqa: F401
+    TEXT_CONTENT_EXPR,      # noqa: F401
     CleanedLink,
     CleanedSnapshot,
     is_mojibake,
@@ -37,40 +43,13 @@ from trajectory_pipeline.executor.dom import (
     parse_links,
     parse_snapshot,
 )
-from trajectory_pipeline.perception.base import InteractiveElement, LinkItem, Observation
-
-#: 探测存在性时用的选择器。obscura 的 browser_count 接受任意 CSS selector，
-#: 所以 iframe 直接用选择器测，不需要绕道 evaluate。
-MEDIA_SELECTOR = "video, audio"
-IFRAME_SELECTOR = "iframe"
-
-#: 正文主来源。实测 baidu 首页：``innerText`` 474 字符纯文本 / 47ms，
-#: 而 ``browser_snapshot(max_chars=6000)`` 的 6000 字符预算被 16675 字符的
-#: ``<style>`` 块全部吃光。详见 ``executor/dom.py`` 模块 docstring。
-INNER_TEXT_EXPR = "document.body.innerText"
-
-#: 正文 fallback 源——``innerText`` 在 JS-heavy 站（iqiyi / ixigua / sohu /
-#: bilibili）偶发因 layout 计算失败返回空。``textContent`` 不参与 layout，
-#: 在 innerText 失败时**绝大多数情况仍能拿到已渲染的部分文本**。
-#: 区别是 textContent 不会折叠空白，所以仍走 :func:`parse_body_text` 清理。
-#:
-#: 2026-10-14 增量 H1-β · 采集降级精准救济：v3 黄金集 27 条
-#: ``['body_text']`` 降级样本中 26 条仅 video 兜底，根源是 innerText
-#: 失败——加 textContent fallback 后，这 26 条里大多数会拿到非空正文，
-#: 越过 ``_sufficiency`` 拦截，恢复正常判别路径。**fallback 仍失败时**
-#: 才追加 ``degraded.append("body_text")``——之前是无脑追加。
-#:
-#: 2026-10-15 INC43 · 剥离 script/style/noscript/template：裸 ``textContent``
-#: 会把 ``<script>`` 正文也采进来——实测 iqiyi 三站 innerText 失败后
-#: fallback 拿到 2651 字符**全是 JS/CSS**（``@keyframes`` / ``defaultTrace``），
-#: body 非空 → 越过 ``_sufficiency`` → 假恢复。clone 后删节点再取
-#: textContent：剥离后为空说明页面文本真没渲染，按原 fail-closed 边界
-#: 记 ``degraded.append("body_text")``。
-TEXT_CONTENT_EXPR = (
-    "(function(){var c=document.body.cloneNode(true);"
-    "c.querySelectorAll('script,style,noscript,template')"
-    ".forEach(function(n){n.remove();});"
-    "return c.textContent||'';})()"
+from trajectory_pipeline.common.elements import (
+    ELEMENT_VOCAB_HTML_TAG,
+)
+from trajectory_pipeline.perception.base import (
+    InteractiveElement,
+    LinkItem,
+    Observation,
 )
 
 #: 交互元素与链接的默认取回上限。播放页的候选元素通常远少于 200。
@@ -99,6 +78,26 @@ def _assert_tool_allowed(tool: str) -> None:
     """拦住红线 tool。调用点统一走 :meth:`_call`，故这是唯一的闸门。"""
     if tool in FORBIDDEN_TOOLS:
         raise DriverError(f"obscura tool {tool} 触碰隐私红线，禁止包装")
+
+
+def _reject_role_name(op: str, *, role: str | None, name: str | None) -> None:
+    """挡住跨面调用：obscura **没有** ``role+name`` 这条定位路径。
+
+    为什么抛而不是忽略：obscura 的 ``browser_click`` 只认 ``ref``/``selector``，
+    多给的参数会被上游忽略——于是「按 role+name 点」会**静默退化成什么都没指定**，
+    症状与「点了但页面没变」完全同形。跨面调用是接线错误（调用方拿错了面的词汇），
+    必须当场炸，不能留到读存档时才发现整批动作没发生。
+
+    ⚠️ **抛 ``ValueError`` 而不是 ``DriverError``**：后者被 `steps/` 捕获后会走
+    「能力不可用」分支、**照样产出样本**——于是一个接线 bug 会被写成一条
+    理由通顺的负样本。接线错误必须炸穿，不能变成数据。
+    """
+    if role is not None or name is not None:
+        raise ValueError(
+            f"obscura 面的 {op} 不支持 role+name（它的动作面是 ref/selector）。"
+            f"role={role!r} name={name!r} 是 camoufox 面的目标编码——"
+            f"拿错面的词汇说明调用点接了错实现。"
+        )
 
 
 class ObscuraDriver:
@@ -230,7 +229,7 @@ class ObscuraDriver:
             "browser_interactive_elements", {"limit": limit}, on_error="empty"
         )
         return tuple(
-            InteractiveElement(ref=ref, tag=tag, label=label)
+            InteractiveElement(ref=ref, role=tag, name=label)
             for ref, tag, label in parse_interactive_elements(text or "")
         )
 
@@ -272,12 +271,20 @@ class ObscuraDriver:
         except ValueError:
             return raw          # 表达式返回非 JSON（如字符串）时原样给出
 
-    async def click(self, *, ref: str | None = None, selector: str | None = None) -> None:
+    async def click(
+        self,
+        *,
+        ref: str | None = None,
+        selector: str | None = None,
+        role: str | None = None,
+        name: str | None = None,
+    ) -> None:
         """点击。元素不存在时静默返回——那是业务事实，由上层转 unresolved。
 
         静默处理是有意的：播放按钮不存在 ≠ 站点不可用。
         上层拿不到 ``goto`` 之后的快照变化，会自然走 ``answer=None`` 分支。
         """
+        _reject_role_name("click", role=role, name=name)
         if not ref and not selector:
             raise ValueError("click 需要 ref 或 selector 之一")
         args: dict[str, Any] = {}
@@ -287,19 +294,32 @@ class ObscuraDriver:
             args["selector"] = selector
         await self._call("browser_click", args, on_error="empty")
 
-    async def type_text(
-        self, *, text: str, ref: str | None = None, selector: str | None = None
+    async def fill(
+        self,
+        *,
+        text: str,
+        ref: str | None = None,
+        selector: str | None = None,
+        role: str | None = None,
+        name: str | None = None,
     ) -> None:
+        """设值（先清空再写）。**旧名 ``type_text`` 见协议注释**。
+
+        obscura 同时提供 ``browser_fill``（设值）与 ``browser_type``（追加），
+        搜索场景要设值——往已有关键词的搜索框里追加会产生错误 query。
+        """
+        _reject_role_name("fill", role=role, name=name)
         if not ref and not selector:
-            raise ValueError("type_text 需要 ref 或 selector 之一")
-        # obscura 同时提供 browser_fill（设值）与 browser_type（追加）。
-        # 搜索场景要「设值」——往已有关键词的搜索框里追加会产生错误 query，
-        # 故一律走 fill。
+            raise ValueError("fill 需要 ref 或 selector 之一")
         key = "ref" if ref else "selector"
         target = ref if ref else selector
         await self._call("browser_fill", {key: target, "value": text}, on_error="empty")
 
-    async def press_key(self, key: str) -> None:
+    async def press(self, key: str, *, role: str | None = None, name: str | None = None) -> None:
+        """页面级按键。**带目标的形式只有 camoufox 面支持**——obscura 的
+        ``browser_press_key`` 没有元素参数，硬塞会被上游忽略（静默变成
+        页面级按键），所以在这里显式拒绝。"""
+        _reject_role_name("press", role=role, name=name)
         await self._call("browser_press_key", {"key": key}, on_error="empty")
 
     async def new_tab(self, url: str | None = None) -> str:
@@ -337,7 +357,7 @@ class ObscuraDriver:
 
         links = parse_links(links_raw or "")
         elements = tuple(
-            InteractiveElement(ref=ref, tag=tag, label=label)
+            InteractiveElement(ref=ref, role=tag, name=label)
             for ref, tag, label in parse_interactive_elements(elements_raw or "")
         )
         return Observation(
@@ -351,6 +371,10 @@ class ObscuraDriver:
             # 「不存在」。理由见 Observation.elements_total 的说明。
             elements_total=len(elements),
             links_total=len(links),
+            # 方言由驱动实现自己填（P4）。obscura 面的 ``role`` 槽装的是
+            # **HTML 标签名**——这是那个方言的值域，不是命名错误；下游按
+            # 这个字段选词表，不按驱动名去猜。
+            element_vocabulary=ELEMENT_VOCAB_HTML_TAG,
             video_tag_count=video_count,
             iframe_count=iframe_count,
             max_chars=snap.max_chars,

@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -48,7 +49,7 @@ from trajectory_pipeline.evaluation.scout.types import (
     TrajectoryRecord,
 )
 from trajectory_pipeline.storage.read_p3 import read_views
-from trajectory_pipeline.storage.task_views import read_task_view
+from trajectory_pipeline.storage.task_views import read_task_view, task_views_dir
 
 log = logging.getLogger(__name__)
 
@@ -250,6 +251,26 @@ def render_messages_text(messages: Any) -> str:
     return "\n".join(lines) if lines else "(空轨迹)"
 
 
+def _read_generated_at(tid: str, root: str | Path | None) -> str:
+    """T 视图落盘 mtime → ISO 8601（带时区）。
+
+    找不到 T 视图（fail-closed 不会走到这里）或 mtime 不可读 → 返空串。
+    与 ``uploaded_at`` 配套,标注员在 LS 上看到「这条数据是什么时候跑出来的、
+    什么时候推过来的」两个时间点,核对批次边界用。
+    """
+    try:
+        path = task_views_dir(root) / f"{tid}.json"
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _now_iso() -> str:
+    """当前 UTC 时间 ISO 8601（带时区），秒级精度。"""
+    return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+
+
 def render_openai_text(openai: Any) -> str:
     """openai 视图（function-calling 形态）→ 逐轮文本。
 
@@ -340,13 +361,23 @@ def render_audit_text(record: ScoutRecord, bucket: str = "positive") -> str:
 
 
 def build_task_data(
-    record: ScoutRecord, bucket: str, views: Mapping[str, Any]
+    record: ScoutRecord,
+    bucket: str,
+    views: Mapping[str, Any],
+    *,
+    generated_at: str = "",
+    uploaded_at: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """ScoutRecord + P3 视图 → ``(task.data, scorecard)``。
 
     ``data`` 里同时放渲染文本（标注页展示）与原始视图（``*_view_raw``,
     凭据扫描用 + JSON 导出留底）。**不放 inner_id** —— LS 1.23 对字符串
     inner_id 不去重, 台账才是唯一防线。
+
+    ``generated_at`` / ``uploaded_at``（2026-10-19 增量六十一补）—— 两个
+    时间点都给标注员,核对批次边界用:前者是 P3 视图落盘时间(数据生成),
+    后者是当前 push 触发瞬间(导入 LS)。``generated_at`` 缺时返空串,
+    不回退到 ``uploaded_at`` —— fail-closed 暴露问题,不混。
     """
     scorecard = build_scorecard(record, classify_kind=bucket)
     tags = record.get("tags") or []
@@ -366,6 +397,8 @@ def build_task_data(
         "messages_view_raw": views.get("messages"),
         "openai_view_raw": views.get("openai"),
         "meta_view_raw": views.get("meta"),
+        "generated_at": generated_at,
+        "uploaded_at": uploaded_at,
     }
     return data, scorecard
 
@@ -446,11 +479,28 @@ def export_one(
     """
     from trajectory_pipeline.evaluation.ls_bridge.settings import CredentialScanSettings
 
-    views = read_views(record["sample_id"], root=views_root)
+    sample_id = str(record.get("sample_id") or "")
+    views = read_views(sample_id, root=views_root)
     if views is None:
         return None, None, []
 
-    data, scorecard = build_task_data(record, bucket, views)
+    # generated_at: P3 视图文件 mtime（任一视图即可,三视图一起落的）。
+    # 缺 P3 视图时 read_views 已 fail-closed,走不到这里 —— 兜底空串。
+    generated_at = ""
+    try:
+        from trajectory_pipeline.storage import views_dir
+        p3_path = views_dir(views_root) / f"{sample_id}_openai.json"
+        generated_at = datetime.fromtimestamp(
+            p3_path.stat().st_mtime, tz=timezone.utc
+        ).isoformat(timespec="seconds")
+    except OSError:
+        pass
+
+    data, scorecard = build_task_data(
+        record, bucket, views,
+        generated_at=generated_at,
+        uploaded_at=_now_iso(),
+    )
     if not scorecard_enabled:
         scorecard = {**scorecard, "enabled": False}
 
@@ -530,6 +580,10 @@ def export_trajectory_one(
         "aggregation_log_text": _render_aggregation_log(
             list(record.get("aggregation_log") or [])
         ),
+        # 时间戳(2026-10-19 增量六十一补):T 视图落盘时间 = 数据生成;
+        # 推 LS 瞬间 = 上传。两者都从产物时间派生,不是 LLM 编。
+        "generated_at": _read_generated_at(tid, task_views_root),
+        "uploaded_at": _now_iso(),
     }
 
     scan = scan_settings if scan_settings is not None else CredentialScanSettings()

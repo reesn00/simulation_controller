@@ -80,6 +80,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Final, Literal, Mapping
 
+from trajectory_pipeline.common.elements import ELEMENT_VOCAB_HTML_TAG
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.browser.page_driver import DriverError
@@ -106,10 +107,23 @@ else:
 # 动作空间
 # ═══════════════════════════════════════════════════════════════════════
 
-#: agent 的四工具（D-B1 + §5）：与
-#: :func:`assembler.schema.ToolSpec.visible_to_model` 的可见集**同一个集合**
-#: ——``new_tab`` / ``close_tab`` 是执行器自己的会话管理动作，模型不该选，
-#: 选了就是协议违反（不是「先记下来」）。A2 不引入任何 P1 未见过的新动作。
+#: agent 的四工具（D-B1 + §5）：**执行端的白名单**。
+#:
+#: ⚠️ **2026-10-20 起，它与训练侧「模型可见集」不再是同一个集合**
+#: （增量六十二）。两个集合各有职责：
+#:
+#: - 本常量 = **采集期**模型能发的动作。白名单外的动作是**协议违反**
+#:   （不是「先记下来」），按 ``_GUIDANCE_BAD_TOOL`` 打回。
+#: - :func:`assembler.schema.ToolSpec.visible_to_model` 的可见集 =
+#:   **训练侧**的声明（11 条：4 已用 + 7 能力声明）。训练样本的 ``tools[]``
+#:   告诉模型「这个工具空间长这样」，而采集期它只被允许用这 4 个。
+#:
+#: 关系是**包含**：agent 能发的每一个动作都在可见集里（否则模型被告知了
+#: 一个它发不出的工具）；反过来不要求——多出来的那 7 条是**能力声明**，
+#: 本项目没有任何真实运行产生过它们的调用。
+#:
+#: ``new_tab`` / ``close_tab`` 是执行器自己的会话管理动作，两边都排除：
+#: 模型不该选，选了就是协议违反。A2 不引入任何 P1 未见过的新动作。
 #: 两处漂移由
 #: ``tests/unit/test_agent_loop.py::Test契约漂移`` 双向盯住。
 AGENT_TOOLS: Final = ("goto", "click", "fill", "press")
@@ -242,7 +256,7 @@ def _render_observation(obs: Observation) -> str:
                 for item in obs.links[:_LINK_WINDOW]
             ],
             "interactive": [
-                {"ref": el.ref, "tag": el.tag, "label": el.label}
+                {"ref": el.ref, "role": el.role, "name": el.name}
                 for el in _visible_interactive(obs)
             ],
             "counts": {"video": obs.video_tag_count, "iframe": obs.iframe_count},
@@ -1239,8 +1253,13 @@ class _Loop:
             # 「没说话」保持缺件形态，不与「说了但没落」相混。
             self.steps.attach_rationale(index, _think_payload(instr.think))
         try:
-            await _apply(self.driver, instr)
-        except DriverError as exc:
+            await _apply(
+                self.driver,
+                instr,
+                target=action.target,
+                vocabulary=self.obs.element_vocabulary,
+            )
+        except (DriverError, actions.UnaddressableTarget) as exc:
             # 动作执行失败**不收口**：让 agent 看着失败原因自己换路。
             # 写进 P1 的是 ``error`` 非空的那一步——「点了但点不动」正是
             # 负样本最该留的证据。
@@ -1454,27 +1473,45 @@ class _Loop:
         return tuple(dict(m) for m in self.messages)
 
 
-async def _apply(driver: "PageDriver", instr: ActionInstruction) -> None:
+async def _apply(
+    driver: "PageDriver",
+    instr: ActionInstruction,
+    *,
+    target: Any = None,
+    vocabulary: str = ELEMENT_VOCAB_HTML_TAG,
+) -> None:
     """把指令分发到驱动原语。**只分发，不含任何业务语义**。
 
-    与 ``actions.TOOLS`` 的语义层名字对齐：``fill`` → ``type_text``、
-    ``press`` → ``press_key``。驱动层的名字是引擎的事，进存档的是语义层
-    名字（换引擎不必重造历史数据）。
+    ``actions.TOOLS`` 的语义层名字与驱动原语名**从 2026-10-20 起逐字相同**
+    （``fill`` / ``press``）——`type_text` / `press_key` 那层翻译已随 D12 删掉：
+    名字对不上的时候，进存档的语义层名字与驱动真实调用之间多一道映射，
+    而这道映射骗过一次人（``type_text`` 看着像追加，实际是设值）。
+
+    ⚠️ **目标参数按面分**（P5）：派发点只有一个——
+    :func:`~trajectory_pipeline.executor.actions.target_params` 按观察自带的
+    词汇表把「语义目标 + ref」折成该面接受的参数（``html_tag`` 面是 ``ref``、
+    ``aria_role`` 面是 ``role+name``）。这里**不再直接传 ref**：那一版假设
+    了 obscura 面，换面后成了「跨面调用被驱动拒绝」的接线错。
+    跨面调用仍然炸穿（驱动抛 ``ValueError``，不是 ``DriverError``）：
+    接线错误不能变成 ``unreachable_hard`` 那种理由通顺的负样本。
 
     Raises:
         DriverError: 导航失败 / 连接断开。点击不存在**不抛**（那是业务
             事实），但导航失败是能力问题，必须 fail-closed。
+        actions.UnaddressableTarget: ``aria_role`` 面但这一步没有语义目标。
     """
     if instr.tool == "goto":
         await driver.goto(_as_text(instr.params.get("url")))
     elif instr.tool == "click":
-        await driver.click(ref=instr.ref or None)
+        await driver.click(**actions.target_params(
+            vocabulary, target, ref=instr.ref or None))
     elif instr.tool == "fill":
-        await driver.type_text(
-            text=_as_text(instr.params.get("text")), ref=instr.ref or None
+        await driver.fill(
+            text=_as_text(instr.params.get("text")),
+            **actions.target_params(vocabulary, target, ref=instr.ref or None),
         )
     else:
-        await driver.press_key(_as_text(instr.params.get("key")))
+        await driver.press(_as_text(instr.params.get("key")))
 
 
 async def agent_loop(

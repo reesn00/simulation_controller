@@ -2,7 +2,7 @@
 
 采集**可归因**的 Agent 浏览器操作轨迹：任务生成 → 代码执行 → 语义感知 → 样本组装 → 评估。
 
-核心主张：**代码管事实层、LLM 管语言层、persona 管输入分布**——LLM 是传感器，不是驾驶员。
+核心主张：**代码层做护栏、LLM层做探索、persona 管输入分布**。
 
 ---
 
@@ -17,9 +17,11 @@
               obscura 浏览器（MCP 直调，观察真回放）
 ```
 
-`executor/orchestrator.py` 里有 `if`，但**没有一句在判断业务语义**——「这是不是播放站 / 有没有播放控件 / 是不是播放页」全在 `Perceptor` 里，控制流只负责按答案分流。遍历谁、按什么顺序、点哪个、记什么、何时终止、失败样本是否入池——**全部是代码，LLM 无否决权**。
+`executor/orchestrator.py` 里有 `if`，但**没有一句在判断业务语义**——「这是不是播放站 / 有没有播放控件 / 是不是播放页」全在 `Perceptor` 里，控制流只负责按答案分流。遍历谁、按什么顺序、点哪个、记什么、何时终止、失败样本是否入池——**全部是代码**。
 
-LLM 只有四个位置：
+分工是：**代码层做护栏**（预算 / 终止判定 / 处置映射 / 分支记账 / fail-closed），**LLM 层做探索**（判断语义、挑下一步动作）。agent runtime 自己选动作，**终局仍由代码验收**（见[设计方案 15](trajectory_pipeline/docs/设计方案/15-执行器与agent-runtime重新定义.md)）。
+
+感知层只问四题——LLM 在这条链上的四个位置：
 
 | # | 判断题 | 代码拿它做什么 |
 |---|---|---|
@@ -67,12 +69,15 @@ common ← llm ← {taskgen, perception, rationale}
 
 ```powershell
 uv sync --group dev
+# camoufox 0.5.8 / playwright 1.62.0 已钉在主依赖里（D11 目标执行层）；
+# 首次装还要下浏览器：uv run camoufox fetch
 
-# obscura 可执行文件位置（不硬编码本机路径，缺失即报错不猜）
+# obscura 可执行文件位置（**现行生产链**；不硬编码本机路径，缺失即报错不猜）
 setx OBSCURA_EXE "C:\Users\klpc\workspace\tool\obscura-x86_64-windows-stealth\obscura.exe"
 
 # 探一次执行层能力（唯一需要真实浏览器的自检）
 uv run python -m trajectory_pipeline.executor.cli check
+uv run python -m trajectory_pipeline.executor.cli check --driver camoufox   # D11 会话层 + 实测指纹，不需要 OBSCURA_EXE
 
 $P = trajectory_pipeline/output/pipeline
 uv run python -m trajectory_pipeline.executor.cli gen -n 20 --seed 7 --out $P/plan.json   # 采样任务，不联网
@@ -116,13 +121,13 @@ uv run python -m pytest -q
 | 文档 | 内容 |
 |---|---|
 | [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图、控制流与四个判断点、失败分支全集、执行层、感知层、persona 六维 |
-| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 60 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
+| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 75 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3 契约表、`steps[]` 三条口径 |
-| [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 命令全表 + 联网与否、环境变量、门禁与输出目录 |
+| [08-常用命令速查.md](trajectory_pipeline/docs/08-常用命令速查.md) | **命令清单唯一真源**——一行一条、复制即用 |
+| [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 每条命令「联网与否 / 作用」口径表、环境变量、门禁与输出目录 |
 | [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | 索引页——内容见 [`计划进展/`](trajectory_pipeline/docs/计划进展/) |
 | [计划进展/00-总览.md](trajectory_pipeline/docs/计划进展/00-总览.md) | **跑到哪儿了、接下来做什么**（不含历史），按 9 个功能域分册 |
 | [06-端到端流程.md](trajectory_pipeline/docs/06-端到端流程.md) | 一条数据从骨架走到训练样本的完整路径 |
-| [07-增量档案.md](trajectory_pipeline/docs/07-增量档案.md) | 增量一~十一的编年史——动守卫之前读它 |
 
 ### 设计方案
 

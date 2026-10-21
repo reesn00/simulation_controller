@@ -57,7 +57,7 @@ def _obs(
         page_title=title,
         body_text=body,
         interactive_elements=tuple(
-            InteractiveElement(ref=r, tag="a", label=f"入口{r}") for r in refs
+            InteractiveElement(ref=r, role="a", name=f"入口{r}") for r in refs
         ),
         links=tuple(LinkItem(text=t, href=h) for t, h in links),
         **kw,  # type: ignore[arg-type]
@@ -151,12 +151,18 @@ class FakeDriver:
         self.clicked.append(ref or selector or "")
         self._advance()
 
-    async def type_text(
-        self, *, text: str, ref: str | None = None, selector: str | None = None
+    async def fill(
+        self,
+        *,
+        text: str,
+        ref: str | None = None,
+        selector: str | None = None,
+        role: str | None = None,
+        name: str | None = None,
     ) -> None:
         self.typed.append((ref or "", text))
 
-    async def press_key(self, key: str) -> None:
+    async def press(self, key: str, *, role: str | None = None, name: str | None = None) -> None:
         self.pressed.append(key)
         self._advance()
 

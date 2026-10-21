@@ -534,14 +534,32 @@ class TestReadArchive:
 
 class TestToolSpec:
     def test_可见动作排除执行器内部动作(self):
-        # 2026-10-16 路径 B/C：+fill / press（站内搜索）；
-        # close_tab 与 new_tab 同为不可见的会话管理动作。
-        assert {t.name for t in schema.TOOL_SPECS if t.visible_to_model()} == {
-            "goto",
-            "click",
-            "fill",
-            "press",
+        """模型可见集 = 4 已用动作 + 7 能力声明；**排除**执行器自己的
+        会话管理动作（``new_tab`` / ``close_tab``）。
+
+        ⚠️ 2026-10-20（增量六十二）起可见集从 4 条变成 11 条——多的 7 条
+        是**能力声明**（模型被告知存在，但本项目没有任何真实调用产生过
+        它们）。可见性由 catalog 的 ``visibility`` 字段判，不再是名字
+        黑名单。口径见 ``trajectory_pipeline/toolcatalog/``。
+        """
+        visible = {t.name for t in schema.TOOL_SPECS if t.visible_to_model()}
+        assert visible == {
+            # 已用动作
+            "goto", "click", "fill", "press",
+            # 能力声明
+            "web_search", "web_fetch", "view_image", "desktop_screenshot",
+            "get_current_time", "read_file", "glob_search",
         }
+        assert not (visible & {"new_tab", "close_tab"}), (
+            "执行器自己的会话管理动作不该给模型看"
+        )
+
+    def test_不可见的两条在全集里(self):
+        """排除 ≠ 不声明。``new_tab`` / ``close_tab`` 留在 P2 的
+        ``six.tools`` 里——动作流里有它们，工具清单里没有的话，
+        读样本的人会以为那两步是凭空冒出来的。"""
+        names = {t.name for t in schema.TOOL_SPECS}
+        assert {"new_tab", "close_tab"} <= names
 
     def test_参数名可序列化(self):
         assert schema.TOOL_SPECS[0].to_json()["params"] == ["url"]

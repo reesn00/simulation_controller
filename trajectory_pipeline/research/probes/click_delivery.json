@@ -1,0 +1,728 @@
+{
+  "env": {
+    "playwright": "1.62.0",
+    "camoufox": "0.5.8"
+  },
+  "results": [
+    {
+      "scenario": "headful_page_flow",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "rate_before",
+          "kind": "read",
+          "raf_frames": 0,
+          "raf_ms": 615,
+          "timer_drift_ms": 15
+        },
+        {
+          "step": "click_before",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1515,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "after_click_before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 1
+        },
+        {
+          "step": "after_front",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "rate_after_front",
+          "kind": "read",
+          "raf_frames": 0,
+          "raf_ms": 609,
+          "timer_drift_ms": 9
+        },
+        {
+          "step": "click_after_front",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1514,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "after_click_front",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "two_pages",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "p1_bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 1
+        },
+        {
+          "step": "p1_click",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1508,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "p1_after_click",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "1",
+          "kd": "1",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "p2_before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "p2_rate_before",
+          "kind": "read",
+          "raf_frames": 0,
+          "raf_ms": 613,
+          "timer_drift_ms": 13
+        },
+        {
+          "step": "p2_click_before",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1501,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "p2_after_click_before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "p2_bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 20950
+        },
+        {
+          "step": "p2_rate_after_front",
+          "kind": "read",
+          "raf_frames": 0,
+          "raf_ms": 609,
+          "timer_drift_ms": 9
+        },
+        {
+          "step": "p2_click_after_front",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1514,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "p2_after_click_front",
+          "kind": "read",
+          "clicks": "1",
+          "pd": "1",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "same_window",
+          "kind": "value",
+          "value": true
+        }
+      ]
+    },
+    {
+      "scenario": "keyboard_delivery",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "focus",
+          "kind": "action",
+          "status": "ok",
+          "ms": 89
+        },
+        {
+          "step": "press_enter",
+          "kind": "action",
+          "status": "ok",
+          "ms": 17
+        },
+        {
+          "step": "after_enter",
+          "kind": "read",
+          "clicks": "1",
+          "pd": "0",
+          "kd": "1",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        },
+        {
+          "step": "bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 11
+        },
+        {
+          "step": "press_enter_after_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 7
+        },
+        {
+          "step": "after_enter_front",
+          "kind": "read",
+          "clicks": "2",
+          "pd": "0",
+          "kd": "2",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "headless_page_flow",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "rate_before",
+          "kind": "read",
+          "raf_frames": 36,
+          "raf_ms": 601,
+          "timer_drift_ms": 1
+        },
+        {
+          "step": "click_before",
+          "kind": "action",
+          "status": "ok",
+          "ms": 975
+        },
+        {
+          "step": "after_click_before",
+          "kind": "read",
+          "clicks": "1",
+          "pd": "1",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 2
+        },
+        {
+          "step": "after_front",
+          "kind": "read",
+          "clicks": "1",
+          "pd": "1",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        },
+        {
+          "step": "rate_after_front",
+          "kind": "read",
+          "raf_frames": 37,
+          "raf_ms": 609,
+          "timer_drift_ms": 9
+        },
+        {
+          "step": "click_after_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 42
+        },
+        {
+          "step": "after_click_front",
+          "kind": "read",
+          "clicks": "2",
+          "pd": "2",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1032
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "bare_humanize_on_headful",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        },
+        {
+          "step": "rate_before",
+          "kind": "read",
+          "raf_frames": 38,
+          "raf_ms": 623,
+          "timer_drift_ms": 23
+        },
+        {
+          "step": "click_before",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1501,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "after_click_before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        },
+        {
+          "step": "bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 1250
+        },
+        {
+          "step": "click_after_front",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1512,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "after_click_front",
+          "kind": "read",
+          "clicks": "1",
+          "pd": "1",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "bare_humanize_off_headful",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": false
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        },
+        {
+          "step": "rate_before",
+          "kind": "read",
+          "raf_frames": 30,
+          "raf_ms": 639,
+          "timer_drift_ms": 39
+        },
+        {
+          "step": "click_before",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1510,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "after_click_before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        },
+        {
+          "step": "bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 2
+        },
+        {
+          "step": "click_after_front",
+          "kind": "action",
+          "status": "pw_timeout",
+          "ms": 1507,
+          "msg": "Locator.click: Timeout 1500ms exceeded. Call log: - waiting for get_by_role(\"button\", name=\"立即播放\", exact=True) - locator resolved to <button id=\"b\">立即播放</button> - attempting click action - waiting for element to be visible, enabled and sta"
+        },
+        {
+          "step": "after_click_front",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "bare_humanize_on_headless",
+      "steps": [
+        {
+          "step": "headless",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "humanize",
+          "kind": "value",
+          "value": true
+        },
+        {
+          "step": "before",
+          "kind": "read",
+          "clicks": "0",
+          "pd": "0",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        },
+        {
+          "step": "rate_before",
+          "kind": "read",
+          "raf_frames": 37,
+          "raf_ms": 605,
+          "timer_drift_ms": 5
+        },
+        {
+          "step": "click_before",
+          "kind": "action",
+          "status": "ok",
+          "ms": 508
+        },
+        {
+          "step": "after_click_before",
+          "kind": "read",
+          "clicks": "1",
+          "pd": "1",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        },
+        {
+          "step": "bring_to_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 1
+        },
+        {
+          "step": "click_after_front",
+          "kind": "action",
+          "status": "ok",
+          "ms": 32
+        },
+        {
+          "step": "after_click_front",
+          "kind": "read",
+          "clicks": "2",
+          "pd": "2",
+          "kd": "0",
+          "scripts": "1",
+          "vis": "visible",
+          "focus": true,
+          "screenXY": [
+            0,
+            0
+          ],
+          "outer": [
+            1920,
+            1040
+          ]
+        }
+      ]
+    }
+  ]
+}

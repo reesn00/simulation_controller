@@ -62,7 +62,7 @@ def obs(**kwargs) -> Observation:
 
 
 def elements(*pairs: tuple[str, str, str]) -> tuple[InteractiveElement, ...]:
-    return tuple(InteractiveElement(ref=r, tag=t, label=l) for r, t, l in pairs)
+    return tuple(InteractiveElement(ref=r, role=t, name=l) for r, t, l in pairs)
 
 
 # ═══════════════════════════════════════════════════════════════════════

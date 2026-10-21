@@ -1,0 +1,223 @@
+{
+  "env": {
+    "playwright": "1.62.0",
+    "camoufox": "0.5.8"
+  },
+  "results": [
+    {
+      "scenario": "headful_humanize_on",
+      "headless": false,
+      "humanize": true,
+      "rows": [
+        {
+          "round": 0,
+          "target": "左上按钮",
+          "ms": 874,
+          "landed": 1,
+          "moves_delta": 26,
+          "raf_lag_before": 9,
+          "raf_lag_after": 4
+        },
+        {
+          "round": 1,
+          "target": "右下按钮",
+          "ms": 660,
+          "landed": 1,
+          "moves_delta": 35,
+          "raf_lag_before": 4,
+          "raf_lag_after": 10
+        },
+        {
+          "round": 2,
+          "target": "左上按钮",
+          "ms": 658,
+          "landed": 1,
+          "moves_delta": 35,
+          "raf_lag_before": 10,
+          "raf_lag_after": 15
+        },
+        {
+          "round": 3,
+          "target": "右下按钮",
+          "ms": 1129,
+          "landed": 1,
+          "moves_delta": 59,
+          "raf_lag_before": 15,
+          "raf_lag_after": 12
+        }
+      ]
+    },
+    {
+      "scenario": "headful_humanize_max0.3",
+      "headless": false,
+      "humanize": 0.3,
+      "rows": [
+        {
+          "round": 0,
+          "target": "左上按钮",
+          "ms": 1025,
+          "landed": 1,
+          "moves_delta": 18,
+          "raf_lag_before": 9,
+          "raf_lag_after": 15
+        },
+        {
+          "round": 1,
+          "target": "右下按钮",
+          "ms": 378,
+          "landed": 1,
+          "moves_delta": 14,
+          "raf_lag_before": 15,
+          "raf_lag_after": 1
+        },
+        {
+          "round": 2,
+          "target": "左上按钮",
+          "ms": 379,
+          "landed": 1,
+          "moves_delta": 18,
+          "raf_lag_before": 1,
+          "raf_lag_after": 8
+        },
+        {
+          "round": 3,
+          "target": "右下按钮",
+          "ms": 379,
+          "landed": 1,
+          "moves_delta": 18,
+          "raf_lag_before": 8,
+          "raf_lag_after": 16
+        }
+      ]
+    },
+    {
+      "scenario": "headful_humanize_on_front",
+      "headless": false,
+      "humanize": true,
+      "rows": [
+        {
+          "round": 0,
+          "target": "左上按钮",
+          "ms": 840,
+          "landed": 1,
+          "moves_delta": 21,
+          "raf_lag_before": 11,
+          "raf_lag_after": 9
+        },
+        {
+          "round": 1,
+          "target": "右下按钮",
+          "ms": 1128,
+          "landed": 1,
+          "moves_delta": 60,
+          "raf_lag_before": 9,
+          "raf_lag_after": 0
+        },
+        {
+          "round": 2,
+          "target": "左上按钮",
+          "ms": 725,
+          "landed": 1,
+          "moves_delta": 37,
+          "raf_lag_before": 0,
+          "raf_lag_after": 10
+        },
+        {
+          "round": 3,
+          "target": "右下按钮",
+          "ms": 1212,
+          "landed": 1,
+          "moves_delta": 69,
+          "raf_lag_before": 10,
+          "raf_lag_after": 16
+        }
+      ]
+    },
+    {
+      "scenario": "headless_humanize_on",
+      "headless": true,
+      "humanize": true,
+      "rows": [
+        {
+          "round": 0,
+          "target": "左上按钮",
+          "ms": 357,
+          "landed": 1,
+          "moves_delta": 6,
+          "raf_lag_before": 13,
+          "raf_lag_after": 14
+        },
+        {
+          "round": 1,
+          "target": "右下按钮",
+          "ms": 1554,
+          "landed": 1,
+          "moves_delta": 90,
+          "raf_lag_before": 14,
+          "raf_lag_after": 5
+        },
+        {
+          "round": 2,
+          "target": "左上按钮",
+          "ms": 1044,
+          "landed": 1,
+          "moves_delta": 39,
+          "raf_lag_before": 5,
+          "raf_lag_after": 11
+        },
+        {
+          "round": 3,
+          "target": "右下按钮",
+          "ms": 843,
+          "landed": 1,
+          "moves_delta": 35,
+          "raf_lag_before": 11,
+          "raf_lag_after": 14
+        }
+      ]
+    },
+    {
+      "scenario": "headful_humanize_off",
+      "headless": false,
+      "humanize": false,
+      "rows": [
+        {
+          "round": 0,
+          "target": "左上按钮",
+          "ms": 1150,
+          "landed": 1,
+          "moves_delta": 1,
+          "raf_lag_before": 17,
+          "raf_lag_after": 12
+        },
+        {
+          "round": 1,
+          "target": "右下按钮",
+          "ms": 95,
+          "landed": 1,
+          "moves_delta": 1,
+          "raf_lag_before": 12,
+          "raf_lag_after": 15
+        },
+        {
+          "round": 2,
+          "target": "左上按钮",
+          "ms": 78,
+          "landed": 1,
+          "moves_delta": 1,
+          "raf_lag_before": 15,
+          "raf_lag_after": 15
+        },
+        {
+          "round": 3,
+          "target": "右下按钮",
+          "ms": 79,
+          "landed": 1,
+          "moves_delta": 1,
+          "raf_lag_before": 15,
+          "raf_lag_after": 15
+        }
+      ]
+    }
+  ]
+}

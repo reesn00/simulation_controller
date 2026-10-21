@@ -604,7 +604,7 @@ class Test落盘:
 # ── 产物根：那个不会报错的错 ──────────────────────────────────────
 
 
-class Test产物根:
+class Test产品根:
     def test_落在trajectory_pipeline下而不是仓库根(self):
         """``parents[2]`` 会落到**仓库根**的 ``output/pipeline/``——
         CLAUDE.md 明令禁止碰的存量产物目录（D8）。而它**不报错**，
@@ -620,3 +620,108 @@ class Test产物根:
         assert resolved.parent.parent.parent.name == "trajectory_pipeline", (
             f"产物落到了 {resolved}——仓库根的 output/ 是存量目录，"
             f"新树产物必须落在 trajectory_pipeline/output/（D8）")
+
+
+# ── 增量六十一回归：rationale 嵌套形态 ─────────────────────────────
+
+
+class TestRationaleText形态:
+    """``_rationale_text`` 必须兼容 P1 真实写盘形态——嵌套
+    ``{"rationale": {"text": think, "conclusion": "..."}}``。
+
+    **历史坑（2026-10-19 增量六十一发现）**：本函数历史上读
+    ``rationale["text"]`` 扁平字段,而生产 ``agent_loop._native_think_payload``
+    与 thought_refactor 都写嵌套 ``rationale["rationale"]["text"]``。
+    结果**所有 P1 不论 scripted / agent** 思考文本都被丢掉,assistant 消息
+    只有 tool_call。LS 上看就是「LLM 没思考直接调工具」——其实是渲染期
+    路径错了。本类盯两条路径都支持,并以嵌套形态为主路径。
+    """
+
+    def test_嵌套形态_text被读到(self):
+        """主路径：嵌套 ``{"rationale": {"text": "..."}}``。"""
+        from trajectory_pipeline.assembler.views import _rationale_text
+        r = {
+            "status": "written",
+            "reason": "native-think",
+            "rationale": {"text": "我先打开百度搜索页", "conclusion": ""},
+            "degraded": [],
+        }
+        out = _rationale_text(r)
+        assert "我先打开百度搜索页" in out
+
+    def test_嵌套形态_conclusion也带上(self):
+        from trajectory_pipeline.assembler.views import _rationale_text
+        r = {
+            "status": "written",
+            "rationale": {"text": "点搜索按钮", "conclusion": "看正片"},
+            "reason": "native-think", "degraded": [],
+        }
+        out = _rationale_text(r)
+        assert "点搜索按钮" in out
+        assert "看正片" in out
+
+    def test_扁平形态向后兼容(self):
+        """扁平 ``{"text": "..."}`` 顶层形态（防御性兜底）。"""
+        from trajectory_pipeline.assembler.views import _rationale_text
+        r = {"status": "written", "text": "旧形态", "conclusion": ""}
+        out = _rationale_text(r)
+        assert "旧形态" in out
+
+    def test_status非written返空串(self):
+        """status 不是 written → 空串——与同款纪律(避免污染 CoT SFT)。"""
+        from trajectory_pipeline.assembler.views import _rationale_text
+        # nested + status != written
+        assert _rationale_text({"status": "absent", "rationale": {"text": "x"}}) == ""
+        # 缺 status
+        assert _rationale_text({"rationale": {"text": "x"}}) == ""
+        # None
+        assert _rationale_text(None) == ""
+
+    def test_嵌套空text_扁平空text都返空串(self):
+        """两条路径 text 都是空 → 空串（不会编占位思考）。"""
+        from trajectory_pipeline.assembler.views import _rationale_text
+        assert _rationale_text({
+            "status": "written",
+            "rationale": {"text": "", "conclusion": ""},
+        }) == ""
+        assert _rationale_text({"status": "written", "text": "", "conclusion": ""}) == ""
+
+    def test_messages视图_嵌套rationale真文本进content(self, tmp_path):
+        """端到端：嵌套 rationale 真文本必须出现在 to_messages 产出里。
+        这条覆盖"LS 上看不到 LLM 思考"的根因路径。
+        """
+        from trajectory_pipeline.assembler import views as vw
+
+        sample = {
+            "sample_id": "s-001",
+            "task_id": "T001",
+            "run_id": "a1",
+            "reflection": None,
+            "outcome": None,
+            "ledger": None,
+            "six": {
+                "system_prompt": "",
+                "user_prompt": "帮我找资源",
+                "tools": [],
+                "actions": [
+                    {"tool": "goto", "params": {"url": "https://baidu.com"},
+                     "origin": "model", "target": None},
+                ],
+                "observations": [
+                    {"url": "https://baidu.com", "page_title": "百度",
+                     "body_text": "百度搜索", "truncated": False, "degraded": [],
+                     "video_tag_count": 0, "iframe_count": 0,
+                     "interactive_elements": [], "links": []},
+                ],
+                "rationales": [
+                    {"step_index": 0, "status": "written", "reason": "native-think",
+                     "rationale": {"text": "我要先打开百度", "conclusion": "搜资源"},
+                     "degraded": []},
+                ],
+            },
+        }
+        msgs = vw.to_messages(sample)
+        # 找到 assistant 消息
+        assistant = next(m for m in msgs if m["role"] == "assistant")
+        assert "我要先打开百度" in assistant["content"], \
+            f"思考文本没渲染进 assistant.content：{assistant['content']!r}"

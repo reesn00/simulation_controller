@@ -91,22 +91,70 @@ class PageDriver(Protocol):
         """
         ...
 
-    async def click(self, *, ref: str | None = None, selector: str | None = None) -> None:
-        """点击元素。优先用 ``ref``（来自 :meth:`interactive`）。
+    async def click(
+        self,
+        *,
+        ref: str | None = None,
+        selector: str | None = None,
+        role: str | None = None,
+        name: str | None = None,
+    ) -> None:
+        """点击元素。
+
+        **参数按「面」分家（D12），同名不同参**：
+
+        | 面 | 目标编码 | 实现 |
+        |---|---|---|
+        | obscura | ``ref``（来自 :meth:`interactive`）或 ``selector`` | ``browser_click`` |
+        | camoufox | ``role`` + ``name``（``get_by_role(…, exact=True)``） | :meth:`CamoufoxDriver.click` |
+
+        每个实现**必须显式拒绝另一面的参数**，并**抛 ``ValueError`` 而不是
+        :class:`DriverError`**：静默忽略会让「按 ref 点」与「按 role+name 点」
+        在调用方看起来一样，而其中一条什么都没点；而 ``DriverError`` 会被
+        ``steps/aggregator`` 吃成 ``unreachable_hard``——于是一个接线 bug
+        变成一条**理由通顺的负样本**。跨面调用是接线错误，必须炸穿。
 
         元素不存在时**不抛异常**——那是业务事实（该元素不在页面上），
         由上层转成 ``answer=None`` 走 unresolved，而不是让整站作废。
         """
         ...
 
-    async def type_text(
-        self, *, text: str, ref: str | None = None, selector: str | None = None
+    async def fill(
+        self,
+        *,
+        text: str,
+        ref: str | None = None,
+        selector: str | None = None,
+        role: str | None = None,
+        name: str | None = None,
     ) -> None:
-        """向输入框填入文本（优先 ``ref``）。"""
+        """向输入框**设值**（先清空再写，不是追加）。
+
+        面别同 :meth:`click`：
+
+        | 面 | 目标编码 | 实现 |
+        |---|---|---|
+        | obscura | ``ref`` / ``selector`` | ``browser_fill`` |
+        | camoufox | ``role`` + ``name`` | ``locator.fill(text)`` |
+
+        ⚠️ **名字从 ``type_text`` 改过来是有意的**：旧名暗示「逐字追加」，
+        而两个实现做的都是设值——名字撒谎，迟早有人照着它写个真追加。
+
+        ⚠️ **``<select>`` 不归本方法**：playwright 的 ``fill`` 只对可编辑元素有效，
+        对 ``<select>`` 会失败。``combobox`` 因此不在枚举词表要填的那一档里。
+        """
         ...
 
-    async def press_key(self, key: str) -> None:
-        """派发按键（如 ``Enter``）。"""
+    async def press(self, key: str, *, role: str | None = None, name: str | None = None) -> None:
+        """派发按键（如 ``Enter``）。
+
+        两种形态：
+        - 不带目标 → 页面级按键（``page.keyboard.press``；obscura ``browser_press_key``）；
+        - 带 ``role``/``name`` → 在元素上按键（``locator.press``）——仅 camoufox 面。
+
+        旧名 ``press_key`` 已随 D12 改掉：camoufox 的方法就叫 ``press``，
+        两代名字并存等于给「同一个动作两个词」留位置。
+        """
         ...
 
     async def new_tab(self, url: str | None = None) -> str:

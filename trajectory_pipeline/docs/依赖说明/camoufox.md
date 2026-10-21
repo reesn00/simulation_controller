@@ -1,0 +1,619 @@
+# Camoufox 使用说明
+
+> **定位**：依赖使用手册 + 本机实测记录。**不是架构决策**——v2 执行层仍是 obscura（决策 D7，[01-架构总览 §执行层](../01-架构总览.md)），本文不改变控制流、不提供新的驱动入口，也不主张替换 `ObscuraDriver`。
+> **适用版本**：camoufox `0.5.8` · playwright `1.62.0` · 浏览器 `v156.0.1-beta.36`（2026-10-20 本机实测）
+> **写作口径**：凡是标「实测」的，都是在本机跑出来、能重跑验证的；凡是标「源码」的，都以 `.venv/Lib/site-packages/camoufox/` 里这份 0.5.8 为准，**不以线上文档为准**（版本漂移会改行为）。
+> 交叉：[tools.md](../tools.md)（工具调用总目录）· [04-运行手册](../04-运行手册.md)（命令与环境变量）· [02-避坑指南](../02-避坑指南.md)
+
+---
+
+## 0. 结论速查
+
+| 事项 | 结论 |
+|---|---|
+| 装浏览器 | `camoufox fetch`（**自动**带 uBO 插件、fpgen 模型、浏览器本体，共约 2.5 GB；**GeoIP 库只在装了 `camoufox[geoip]` 时才下载**——见 §1 注 3） |
+| 启动服务 | `camoufox server` —— **没有任何 stealth 参数可传**，要配就绕开 CLI（见 §3.2） |
+| 客户端连接 | `playwright.firefox.connect(ws)`，**不是** `connect_over_cdp` |
+| 客户端必补 | `new_context(no_viewport=True)`，否则 viewport 恒为 1280×720 且 `dpr` 被打成 1（实测，见 §6.2） |
+| 离线核对配置 | 指纹在 `env["CAMOU_CONFIG_1..N"]` **分片 JSON** 里，**不在** `firefox_user_prefs`、**不在**返回顶层（见 §4.3） |
+| 必开的 stealth 开关 | `humanize=True`（默认**关**）· `os="windows"`（默认**随机**三选一）· `geoip=True`（默认**关**，且**当前 venv 缺 `maxminddb` 会直接抛异常**） |
+| 最容易被忽略的自洽点 | **时区与 `navigator.languages` 必须同区**；默认配置不保证（实测，见 §6.1） |
+| 三个已踩坑 | ① 默认配置 locale 与时区打架 ② server 模式 viewport/dpr 被写死 ③ `debug=True` 在 GBK 控制台必崩 |
+
+---
+
+## 1. 本机安装状态
+
+`camoufox version` 实测输出（2026-10-20）：
+
+```
+Python Packages
+  Camoufox      v0.5.8        fpgen   v1.3.0        Playwright  v1.62.0
+Browser
+  Active              official/stable
+  Current browser     v156.0.1-beta.36
+  Build date          Oct 6
+  SHA256              096fd4832a7a
+  Installed           Yes
+GeoIP
+  Database            GeoIP AIO by daijro        Updated  2026-10-20 09:33
+Storage
+  Install path        C:\Users\klpc\AppData\Local\camoufox\camoufox\Cache
+  Browser(s) size     2.4 GB                     GeoIP size  115.4 MB
+```
+
+**四条与使用相关的推论**：
+
+1. `Install path` 是**用户级缓存**，不在仓库里、也不在 `.venv` 里 → 换仓库/重建 venv 不用重下浏览器；反之删 `.venv` 也不影响它。
+2. 浏览器版本是 `156.0.1-beta.36`，**而 UA 会自报 `Firefox/156.0`**——这个版本号由 `resolve_verstr()` 从实际二进制读出来（`camoufox/utils.py`），所以不要用 `ff_version` 去「对齐」它，那只会制造不一致（`warnings.yml::ff_version`）。
+3. ⚠️ **GeoIP 有两层，缺一不可**（2026-10-20 复核，推翻此前「装好即可用」的说法）：
+   - **数据文件**：本机**已装**（`Cache/geoip/mmdb/geoip aio by daijro-combined.mmdb`，115.4 MB，`camoufox version` 显示 Updated 2026-10-20 09:33）。
+   - **Python 读取器 `maxminddb`**：**当前 venv 未安装** → `geolocation.py` 顶部 `try: import maxminddb / except ImportError: ALLOW_GEOIP = False` → `ALLOW_GEOIP=False`。
+   - 后果：`geoip=True` 会在 `launch_options` 里 `geoip_allowed()` 处**直接抛 `NotInstalledGeoIPExtra`**，**根本走不到查库那步**。
+     查库也要 `maxminddb`（`geolocation.py::get_geolocation` 里是无条件 `import maxminddb`）。
+   - 且 `camoufox fetch` 的 GeoIP 下载本身是**有条件的**（`__main__.py`：`if ALLOW_GEOIP: download_mmdb()`）——extra 没装时 fetch **静默跳过**，不报错。
+   - **要开 geoip 的完整步骤**：`uv pip install "camoufox[geoip]"`（装 `maxminddb`）→ 数据文件本机已有，或 `camoufox set --geoip` 选源后 `camoufox fetch` 补下。
+   - 另注：`geoip=True` 会**外发一次公网 IP 探测请求**（`ip.py::public_ip`），且查不到 IP 会抛 `UnknownIPLocation`。
+4. PowerShell 里的 `(useramulation)` **就是本仓库的 `.venv`**（`pyvenv.cfg` 里 `prompt = useramulation`）→ CLI 与 `python` API 用的是同一份 camoufox，不会出现「命令行能跑、代码里找不到」。
+
+---
+
+## 2. CLI 命令全表
+
+`camoufox --help` 列出的命令，逐条落到「它到底干什么 / 会不会联网 / 会不会删东西」：
+
+| 命令 | 作用 | 联网 | 破坏性 | 备注 |
+|---|---|---|---|---|
+| `camoufox fetch [VERSION]` | 安装当前 active 版本（或指定版本） | 是 | 覆盖旧数据 | 先 `Cleaning old data...`；顺带装 uBO / fpgen 模型；**GeoIP 库仅在 `maxminddb` 已装时才下**（`if ALLOW_GEOIP: download_mmdb()`，否则静默跳过） |
+| `camoufox set` | 交互式选版本 + 设置 → 并 fetch | 是 | 无 | 非交互写法：`camoufox set official/stable`（取该通道最新）、`camoufox set official/stable/134.0.2-beta.20`（钉死版本） |
+| `camoufox set --geoip` | 交互式选 GeoIP 数据源 | 是 | 无 | **只能交互**，没有「传名字」的写法 |
+| `camoufox set --release` | 丢掉显式版本选择，回到本 release 配对的浏览器 | 是 | 无 | 排查「版本对不上」时用 |
+| `camoufox list [installed\|all]` | 列已装 / 可装版本 | 读缓存 | 无 | `--path` 显示全路径 |
+| `camoufox active` | 打印当前 active 版本 | 否 | 无 | 只读 |
+| `camoufox path` | 打印安装目录 | 否 | 无 | 只读 |
+| `camoufox version` | 版本 + 浏览器 + GeoIP + 存储 | 否 | 无 | **开工前第一条命令** |
+| `camoufox sync` | 从远端仓库同步可用版本清单 | 是 | 无 | `--spoof-os [auto\|mac\|win\|lin]`、`--spoof-arch [...]` |
+| `camoufox remove [VERSION_PATH]` | 删下载的数据 | 否 | **是** | 默认删全部；`--select` 交互选单个版本，`-y` 跳过确认 |
+| `camoufox test [URL]` | 打开 Playwright inspector | 取决于 URL | 无 | `--executable-path` 可指定二进制 |
+| `camoufox gui` | 图形管理器 | 是 | 同 set | 需 `pip install 'camoufox[gui]'`（PySide6），本机未装 |
+| `camoufox server` | 起 Playwright server，打印 ws endpoint | 否* | 无 | *浏览器未装时会自动下载 → 首次可能联网 |
+
+---
+
+## 3. 启动服务
+
+### 3.1 CLI 这条路：能跑，但没有旋钮
+
+实测（有头，全默认）：
+
+```powershell
+camoufox server
+# → Launching server...
+# → Server launched: 5.558s
+# → Websocket endpoint: ws://[::1]:59065/0d6af0de63fbb787b11e0888faaee8f3
+```
+
+三个事实：
+
+1. **endpoint 只在 stdout 打一次**，端口随机、token 在路径里。要程序化消费就必须解析这行输出（或自己写 launcher，见 §3.2）。
+2. **子命令一个参数都没有**——`camoufox/__main__.py:880` 是 `launch_server()` 裸调用，`launch_server` 的签名允许全套 stealth 参数但 CLI 一个都没暴露。所以「用 CLI 起 + 配 stealth」这件事在当前版本**做不到**。
+3. **它不接受持久化 profile**：`launch_server` 对 `persistent_context` / `user_data_dir` 直接抛 `ValueError`（`camoufox/server.py:55`，理由是 Playwright 无法把持久化 Context 通过 ws 暴露出去）。
+
+### 3.2 带 stealth 参数起服务：自己包一层
+
+```python
+# 与 camoufox server 行为一致，但参数可控
+from camoufox.server import launch_server
+
+launch_server(
+    os="windows",      # 与宿主一致：字体 / GPU / 核数才对得上
+    geoip=True,        # ★ 时区 + 经纬度 + locale 一把对齐
+    humanize=True,     # 鼠标轨迹人性化（默认最长 1.5s；传浮点改时长）
+    headless=False,    # 有头；headless='virtual' 只有 Linux（Xvfb）有
+    enable_cache=True,
+)
+```
+
+要点：
+
+- `launch_server` **会继承 stdout**（`server.py::_serve` 用 `subprocess.Popen` 不接管输出），所以 endpoint 照旧打在**你进程的 stdout** 上；想拿到它，要么在调用方重定向 fd、要么干脆别用 server 模式（§4 的进程内 API 连 endpoint 都不需要）。
+- `geoip=True` 会**额外发一次公网请求**查自己的出口 IP（`ip.py::public_ip`，候选 `api.ipify.org` / `checkip.amazonaws.com` / `ipinfo.io` …）。想省掉这一次，就填死 `geoip="x.x.x.x"`。
+- 挂了代理就**必须**开 geoip，否则触发 `warnings.yml::proxy_without_geoip`——「代理换了国家、浏览器还宣称原国家」是最典型的自动识别特征。
+
+### 3.3 客户端连接（两个必须知道的点）
+
+```python
+from playwright.async_api import async_playwright
+
+async with async_playwright() as p:
+    browser = await p.firefox.connect(ws_endpoint)   # 是 firefox，不是 chromium / CDP
+    ctx = await browser.new_context(no_viewport=True)  # ★ 见 §6.2
+```
+
+- **`firefox.connect`**：服务端是 Playwright 的 `firefox.launchServer`（`camoufox/launchServer.js`）。
+- **`no_viewport=True` 不能省**：不补这一行，`innerWidth/innerHeight` 恒为 `1280×720`、`devicePixelRatio` 被压成 `1`（实测对照见 §6.2）。进程内 API 帮你在 `new_page`/`new_context` 上打了这个默认值（`utils.py::attach_no_viewport_default`），**走 ws 的裸 Playwright 客户端没有这个补丁**。
+
+---
+
+## 4. 进程内 Python API
+
+日常更推荐这条路——不用管 endpoint、不用多进程、参数与 server 完全相同。
+
+### 4.1 两个上下文管理器
+
+```python
+from camoufox.sync_api import Camoufox          # 同步
+from camoufox.async_api import AsyncCamoufox    # 异步
+
+with Camoufox(os="windows", geoip=True, humanize=True, headless=False) as browser:
+    page = browser.new_page()          # 默认 no_viewport=True（补丁已打）
+    page.goto("https://example.com")
+
+async with AsyncCamoufox(os="windows", geoip=True) as browser:
+    page = await browser.new_page()
+```
+
+- 返回类型取决于 `persistent_context`：默认 `False` → 返回 `Browser`；`persistent_context=True` → 返回 `BrowserContext`（此时可用 `user_data_dir`）。
+- **只有这条路支持持久化 profile**。注意与本仓库红线的关系：**不保存浏览器 Profile**，所以 `persistent_context=True` 属于「技术上可行但纪律上不做」——写脚本时不要顺手打开。
+
+### 4.2 手动接管已有 playwright
+
+```python
+from camoufox import AsyncNewBrowser, AsyncNewContext, NewBrowser, NewContext
+```
+
+`AsyncNewBrowser(playwright, ...)` 复用你已经起好的 `Playwright` 实例；`NewContext` 用于在同一浏览器里再开一个**独立身份**的 context（`fingerprints.py::generate_context_fingerprint` 支持 per-context 指纹）。
+
+### 4.3 只取配置、不启浏览器
+
+```python
+import json, re
+from camoufox import launch_options
+
+opts = launch_options(os="windows", geoip=True, humanize=True)   # 纯 dict，不起进程
+
+# ⚠️ 指纹**不在** opts 顶层，也**不在** opts["firefox_user_prefs"] 里——
+# 它被编码进 opts["env"]["CAMOU_CONFIG_1..N"]（分片的一个大 JSON）。
+# 直接读 opts["navigator.userAgent"] 会拿到 None（KeyError / None），
+# 而「拿到 None」与「指纹没生成」长得一模一样，���以这条读法是错的。
+
+def _rebuild(prefix: str) -> dict:
+    """把 env 里的分片按编号拼回一个 JSON 对象。"""
+    parts = []
+    for key, value in opts["env"].items():
+        m = re.fullmatch(re.escape(prefix) + r"_(\d+)", key)
+        if m:
+            parts.append((int(m.group(1)), value))
+    parts.sort()
+    return json.loads("".join(v for _, v in parts))
+
+cfg = _rebuild("CAMOU_CONFIG")
+print(cfg["navigator.userAgent"])     # → Mozilla/5.0 (... rv:156.0) ... Firefox/156.0
+print(cfg.get("timezone"), cfg.get("locale:region"), cfg.get("humanize"))
+print(cfg.get("webGl:vendor"), cfg.get("webGl:renderer"))
+```
+
+**实测（2026-10-20，camoufox 0.5.8）**：分片共 6 段，按编号顺序拼接后可 `json.loads`，
+还原出 43 个键的 config；UA / `humanize` / `webGl:vendor` 均取得到。
+`firefox_user_prefs` 里只有 10 个**非指纹** pref（滚动条样式、存储配额、DNT/GPC、
+`intl.locale.requested` 等）——`navigator.userAgent` / `timezone` / `webgl.vendor` **全都不在那里**。
+
+这是**离线核对 stealth 配置**的正确姿势——查 UA / 时区 / locale / humanize / WebGL
+有没有按预期下发，不需要开窗口。注意：`geoip=True` 在 `launch_options` 阶段就会发那次公网请求。
+
+> **要拿到最终生效值，仍以浏览器内读数为准**：离线 config 是「打算下发什么」，
+> 浏览器里的 `navigator.userAgent` 是「实际生效什么」——§8.2 的判据表按后者核。
+
+### 4.4 指纹相关的可调用面
+
+| 入口 | 用途 |
+|---|---|
+| `camoufox.fingerprints.Screen(min_width, max_width, min_height, max_height)` | 约束生成屏幕尺寸的范围（不是写死尺寸） |
+| `camoufox.fingerprints.generate_fingerprint(window, screen, os)` | 直接生成一份指纹 dict |
+| `camoufox.fingerprints.get_random_preset(os, ff_version)` / `from_preset(preset, ff_version, salt)` | 取内置**真实设备预设** / 转成 `CAMOU_CONFIG` |
+| `camoufox.webgl.firefox_gpus(target_os)` | 该 OS 上 fpgen 记录过的 `(vendor, renderer)` 组合；`webgl_config` 只接受这里的值 |
+
+**身份稳定性**由 `launch_options` 里的 `identity_salt` 决定（`fingerprints.py:174`）：传了 `fingerprint` / `fingerprint_preset=dict` / 自带 `navigator.userAgent` 的 config → salt 稳定，字音/字体/GPU 噪声种子跟着这份身份走；什么都不传 → 每次 launch 抽一个**全新身份**（含新 salt）。
+
+---
+
+## 5. stealth 参数表（按收益排序）
+
+「为什么」一栏出自库自带的泄漏清单 `warnings.yml` 与跨字段自洽校验 `coherence.py`。
+
+### 5.1 主要矛盾（前三条决定成败）
+
+| 参数 | 推荐值 | 为什么 |
+|---|---|---|
+| `geoip` | `True` 或填死出口 IP | 一个开关对齐**时区 / 经纬度 / locale 语言与地区 / WebRTC IP**。不开则 locale 地区是随机抽的，会与本机时区、与出口 IP 三方打架（§6.1 实测）。⚠️ **默认关**，且需 `camoufox[geoip]`（`maxminddb`），本机当前未装 → 传 `True` 会抛 `NotInstalledGeoIPExtra`（§1 注 3） |
+| `humanize` | `True`（或浮点秒数） | 关掉等于鼠标瞬移；`True` 走默认最长 1.5s。⚠️ **默认关** |
+| `os` | 与本机真实 OS 一致（本机 `"windows"`） | 字体清单、GPU、核数都按它生成；⚠️ **默认是三选一随机**，抽到 mac/linux 就与宿主真实字体对不上 |
+
+### 5.2 别把已经对的默认值弄坏
+
+| 参数 | 推荐 | 原因 |
+|---|---|---|
+| `block_images` | 保持 `False` | `warnings.yml::block_images`：拦图已被报告为大型 WAF 的检测诱因 |
+| `block_webgl` | 保持 `False` | 很多 WAF 会查 WebGL 是否可用 |
+| `custom_fonts_only` | 保持 `False` | 伪装 OS 却抽掉该 OS 字体 = 明显自相矛盾 |
+| `disable_coop` | 仅必要时开 | 关 COOP 是为了能点跨域 iframe 里的 Turnstile checkbox，本身可被识别 |
+| `addons` / `exclude_addons` | **本项目排除 uBO**：`exclude_addons=[DefaultAddons.UBO]` | 默认**会装** uBlock Origin（`launch_options` 无条件调 `add_default_addons()`，而 `DefaultAddons` 枚举里只有 UBO）。它是真实用户画像的一部分，但**对本项目是采集风险**：uBO 会拦广告 CDN，视频站的播放器初始化/预取请求可能一并被拦 → 播放器起不来 → 感知层判「无播放控件」→ **写出理由通顺的假负样本**。宁可少一层画像，不可少一层真值 |
+| `pin_cpu_cores` | 保持 `False` | 开着会真占 CPU 并串行化并发；「报宿主核数」本身也是自洽的（实测 16 核 = 宿主） |
+| `ff_version` | 不传 | 伪装 Firefox 版本极易被识别；要轮换就换 camoufox 版本 |
+
+### 5.3 手别贱（会被 warning 拦下的项）
+
+| 不要手动设 | 正确做法 |
+|---|---|
+| `navigator.*`（含 UA） | 交给 fpgen；UA 由真实二进制版本推出 |
+| `screen.*` / `window.*` / `viewport` | 交给 fpgen；要约束就用 `screen=Screen(...)` / `window=(w, h)` |
+| `geolocation.*` | 用 `geoip=`，否则「声称在 A 国、IP 在 B 国」 |
+| `locale.*` | 用 `locale=` 参数（含地区，如 `"zh-CN"`） |
+| `headers.User-Agent` | 不设 |
+| 自带 `fingerprint` | 非必要不传（`warnings.yml::custom_fingerprint`） |
+
+### 5.4 其余可选
+
+| 参数 | 说明 |
+|---|---|
+| `proxy={"server": "http://…"}` | 与 `geoip=True` 成对出现 |
+| `enable_cache` | 默认为关；真实用户有缓存，可按采集需要开（吃内存） |
+| `headless` | 有头最稳；无头会让屏幕尺寸被 `get_screen_cons(headless)` 收窄去凑；`'virtual'` = Xvfb，**仅 Linux** |
+| `webgl_config=(vendor, renderer)` | 钉死 GPU 伙伴；必须先 `os`，且组合必须来自 `camoufox.webgl.firefox_gpus(os)`，否则 `ValueError` |
+| `fingerprint_preset` | `True` = 随机挑一个内置真实预设；传 dict = 钉死该预设（身份跨 launch 稳定） |
+| `main_world_eval` | 允许主世界执行脚本；用法是 `page.evaluate("mw:" + script)` |
+| `i_know_what_im_doing` | **唯一作用是把上面这些泄漏警告静音**——除非你确实知道自己在做什么，否则别开 |
+| `env` / `args` / `firefox_user_prefs` | 透传给浏览器；`prefs` 手调会破坏自洽，慎用 |
+
+---
+
+## 6. 三个实测坑（本机可复现）
+
+### 6.1 坑一：默认配置时区与语言打架
+
+`camoufox server` 原样启动（无 locale、无 geoip），连接后实测：
+
+```json
+{"langs": ["en-US", "en"], "intl": "en-US", "tz": "Asia/Shanghai"}
+```
+
+**中国时区 + 全英文语言**——两个字段各自内部自洽，凑一起就是一个「不可能的设备」。根因是 `warnings.yml::no_region` 说的那件事：没传 locale 地区时 Camoufox 会**自己抽一个地区**。
+
+**修法**（两种都行，不要同时用错值）：
+
+```python
+launch_server(geoip=True)    # 让出口 IP 决定：实测 → locale zh/CN + timezone Asia/Shanghai
+launch_server(locale="zh-CN")  # 手动指定；必须与出口 IP 的地区一致，否则等于主动暴露矛盾
+```
+
+修正后实测：`langs ["zh-CN","zh"]` · `intl "zh-Hans-CN"` · `tz "Asia/Shanghai"` —— 三者对齐。
+
+### 6.2 坑二：server 模式 viewport 恒为 1280×720，dpr 被压成 1
+
+同一 server、同一身份，两种 context 对照（实测）：
+
+```
+default       {"inner": [1280, 720],  "outer": [1295, 813], "screen": [1920, 1080], "dpr": 1}
+no_viewport   {"inner": [1905, 940],  "outer": [1920, 1032], "screen": [1920, 1080], "dpr": 1.5}
+```
+
+**后果有两层**：① 每次会话的 `innerWidth/Height` 是同一个常数（可跨会话关联）；② `inner`/`dpr` 与 spoof 出去的 `screen` 对不上。
+
+根因：Playwright 默认给 context 套 1280×720 viewport；进程内 API 用 `attach_no_viewport_default`（`camoufox/utils.py:714`）把默认改成 `no_viewport=True`，**ws 客户端没有这个补丁**。
+
+**修法**：客户端 `new_context(no_viewport=True)` / `new_page(no_viewport=True)`；需要固定视口时显式给一个与 `screen` 匹配的 `viewport=`。
+
+### 6.3 坑三：`debug=True` 在 GBK 控制台必崩
+
+```
+UnicodeEncodeError: 'gbk' codec can't encode character '\ub9d1' in position 1
+  File "...camoufox/utils.py", line 1533, in launch_options
+    pprint(config)
+```
+
+指纹的字体清单里带韩文字体名（`맑은 고딕`），`pprint` 打到 GBK stdout 直接抛异常、**进程退出、服务根本没起来**。
+
+**修法**：先 `$env:PYTHONIOENCODING="utf-8"`（或 `chcp 65001`）。`debug=True` 值得用——它是唯一能看到 fpgen 到底下发了什么的手段（§8 的判据表就是照它的输出核对的）。
+
+---
+
+## 7. 推荐配置（可直接抄）
+
+> **三处「不抄就会踩」的默认值**（2026-10-20 源码复核，详见 §11）：
+> `humanize` / `geoip` **默认关**；`os` **默认在 windows/macos/linux 里随机挑**；
+> `addons` **默认会装 uBlock Origin**。
+> 下面这份已经把该显式写的都显式写了。
+
+**服务端**（要 CLI 没有的旋钮，只能这样起）：
+
+```python
+from camoufox.addons import DefaultAddons
+from camoufox.server import launch_server
+
+launch_server(
+    os="windows",                 # 不传则随机挑 OS
+    humanize=True,                # 默认关
+    headless=True,                # ⚠️ 2026-10-21 起默认无头（§7.1.1）；服务端这条路
+                                  #    没有人守着的桌面，只能无头
+    enable_cache=True,
+    exclude_addons=[DefaultAddons.UBO],   # 默认会装 uBO——会挡播放器请求
+    # geoip=True,                 # ⚠️ 需 `camoufox[geoip]`（maxminddb），本机当前未装
+    # debug=True,   # 排查用；开之前先 PYTHONIOENCODING=utf-8
+)
+```
+
+**客户端**：
+
+```python
+browser = await playwright.firefox.connect(ws_endpoint)
+ctx = await browser.new_context(no_viewport=True)
+```
+
+**进程内等价写法**（省掉 endpoint 与两段进程，日常首选）：
+
+```python
+from camoufox.addons import DefaultAddons
+
+async with AsyncCamoufox(
+    os="windows", humanize=True, headless=True,   # ⚠️ 2026-10-21 起默认无头，见 §7.1.1
+    exclude_addons=[DefaultAddons.UBO],
+    # geoip=True,                 # 同上，需 maxminddb
+) as browser:
+    page = await browser.new_page()
+```
+
+---
+
+## 7.1 ⚠️ headful 的硬约束：**窗口必须可渲染**（2026-10-20 实测）
+
+`headless=False` 曾是本项目的**有意选择**（方案 §4.3：无头本身是一类检测信号）。
+但它带来一条必须记账的代价，六轮探针（`research/probes/probe_click_*.py`）量到的：
+
+| 状态 | 同一次 `locator.click` | 页内 `rAF` 滞后 |
+|---|---|---|
+| 窗口可见 | **0.4–1.5s** | 4–17ms |
+| 窗口最小化 / 息屏 / 锁屏 / 完全遮挡 | **5–13s** | 902ms → **62s**（一帧没画） |
+| `headless=True` | 34–71ms | 4–17ms |
+
+- **慢的不是 `humanize`**：最小化时 `humanize=False` 仍 **9.1s**、`humanize=0.3` 也 9.1s；
+  它只把 9.1s 放大到 13.3s；
+- **Firefox 偏好治不住**：`widget.windows.window_occlusion_tracking.enabled=False`、
+  `dom.min_background_timeout_value` / `dom.timeout.background_throttling_max_budget`
+  三项都试过，最小化后仍 5.1–9.4s；
+- **超时的点击不等于没点**：页内 `pointerdown`/`click` 计数照样涨。
+  **所以绝不能重试**——重试就是点两次。
+
+**因此**：无人值守跑 headful 批次，必须保证桌面可渲染（不息屏、不锁屏、窗口不最小化、
+不被全屏窗口完全覆盖）；做不到就 `headless=True`，**并把这条记进批次元数据**——
+换指纹口径是会影响分布的事，不能悄悄改。
+
+### 7.1.1 ★ 口径反转：**无人值守默认走无头**（2026-10-21 owner 拍板）
+
+**缺省从 `headless=False` 改成 `headless=True`**，这是对上面 §7.1 那条
+「有意选择 headful」的**反转**，理由与代价：
+
+| | headful | headless |
+|---|---|---|
+| 单次点击 | 可见 0.4–1.5s；**不可渲染时 5–13s** | **34–71ms，从不慢** |
+| 依赖桌面状态 | **是**（不锁屏 / 不息屏 / 不最小化 / 不遮挡） | **否** |
+| 无人值守可行性 | **不保证**（跑一夜 / 合盖 / 远程桌面断开都会触发） | **成立** |
+| 代价 | — | **指纹口径变了** → `headless` 进批次元数据（`fingerprint` 第九项） |
+
+「保证桌面可渲染」在真无人值守场景里**保证不了**——那正是无人值守的定义。
+所以默认无头，有头保留为显式 `launch(headless=False)` / CLI `--headful`，
+给「人守着的桌面」那条路。
+
+**两处配套**：
+
+- `ACTION_TIMEOUT_MS` 5s → **15s**（盖住实测上界 13323ms）。
+  无头口径下 34–71ms **永远碰不到上限**，所以放宽只影响有头那条路；
+- ⚠️ **无头口径下的指纹读数要重测**——§4.3.1 那组读数（内高 940/948 摆动、
+  `dpr` 1.5）是 **headful 下**量的。无头下视口与 dpr 会不会变，**还没测过**。
+
+**A 的前置门**：headless 下的**反爬拦截率**（方案 §6.1：显著变高是否决项），
+**还没测**。
+
+---
+
+## 8. 复验流程（换机器 / 升级版本后照这个再跑一遍）
+
+### 8.1 步骤
+
+```powershell
+camoufox version          # ① 浏览器 / GeoIP / 包版本是否就绪
+camoufox server           # ② 起服务，记下 ws endpoint（要配参数见 §7）
+# ③ 另开终端，用下面这段探针连上去读数
+```
+
+```python
+# probe.py —— 只读、不写任何文件
+import asyncio, json, sys
+from playwright.async_api import async_playwright
+
+JS = """() => ({
+  ua: navigator.userAgent, oscpu: navigator.oscpu, platform: navigator.platform,
+  wd: navigator.webdriver, langs: navigator.languages, cores: navigator.hardwareConcurrency,
+  intl: Intl.DateTimeFormat().resolvedOptions().locale,
+  tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  screen: [screen.width, screen.height], inner: [innerWidth, innerHeight],
+  dpr: devicePixelRatio,
+  gl: (() => { const c = document.createElement('canvas').getContext('webgl');
+    const d = c && c.getExtension('WEBGL_debug_renderer_info');
+    return c ? (d ? c.getParameter(d.UNMASKED_RENDERER_WEBGL) : c.getParameter(c.RENDERER)) : null; })(),
+})"""
+
+async def main(ws):
+    async with async_playwright() as p:
+        b = await p.firefox.connect(ws)
+        ctx = await b.new_context(no_viewport=True)
+        pg = await ctx.new_page()
+        await pg.goto("https://example.com", wait_until="domcontentloaded")
+        print(json.dumps(await pg.evaluate(JS), ensure_ascii=False))
+        await b.close()
+
+asyncio.run(main(sys.argv[1]))
+```
+
+```powershell
+$env:PYTHONIOENCODING="utf-8"; python probe.py "ws://[::1]:端口/token"
+```
+
+### 8.2 判据（全部满足才算「这一天没退化」）
+
+| 判据 | 期望 | 不满足的含义 |
+|---|---|---|
+| `navigator.webdriver` | `false` | 自动化标记泄漏，**阻塞级** |
+| UA 里的 `rv:` / `Firefox/` 版本 | 与 `camoufox version` 的浏览器版本主号一致 | 版本冒充 |
+| `oscpu` / `platform` 与 UA | 三者同 OS | 指纹自相矛盾 |
+| `langs` / `intl` 与 `tz` | 同一地区（如 zh-CN ↔ Asia/Shanghai） | 见 §6.1，**默认配置就会踩** |
+| `inner` | **不等于** `1280×720` 常数 | 漏了 `no_viewport=True` |
+| `dpr` | 与宿主显示缩放一致（本机 150% → 1.5） | viewport 覆盖了 dpr |
+| `screen` 与 `inner` | inner ≤ screen，且尺寸关系合理 | 窗口与屏幕打架 |
+| `gl` | 非空，且 `(vendor, renderer)` 在 `firefox_gpus(os)` 里 | WebGL 兜底/异常 |
+
+> **本仓库口径**：这类「读证据核对」属于人读，不进 `pytest` 门禁——与 [CLAUDE.md](../../../CLAUDE.md)「每次真实运行后逐条读 evidence」同一条纪律。
+
+---
+
+## 9. 与仓库纪律的交叉点
+
+| 仓库规矩 | 与本依赖的关系 |
+|---|---|
+| **不保存浏览器 Profile**（跨树红线） | server 模式**天然符合**（`launch_server` 拒绝持久化）；进程内 `persistent_context=True` 则显式违反，不要开 |
+| **批次元数据必留**（并池是写入时动作） | 指纹身份每次 launch 重抽（未 pin 时），且**身份绑在浏览器进程上**（实测：同 server 重连身份不变）。采集记录里要落当时用的 `os` / `geoip` / `locale` / 是否 pin 预设，否则分布变化无法归因 |
+| **禁止投票/集成** | 不适用：Camoufox 只是单一实现，不构成「多实现投票」 |
+| **D7 = obscura** | 本文**不改变**执行层选型。要在 v2 里用 Camoufox，必须另开决策，而不是顺手 `import` |
+| **D11 = 修订 D7** | 2026-10-20 决策修订：**camoufox 取代 obscura 成为唯一执行层**。见[设计方案 04](../设计方案/04-camoufox执行层替换方案.md) |
+
+---
+
+## 附：本机实测记录（2026-10-20）
+
+| 项 | 默认 `camoufox server` | §7 推荐配置 |
+|---|---|---|
+| 启动耗时 | 5.558 s | 与默认同级 |
+| UA | `Firefox/156.0` on `Windows NT 10.0` | 同 |
+| `oscpu` / `platform` | `Windows NT 10.0; Win64; x64` / `Win32` | 同 |
+| `webdriver` | `false` | `false` |
+| `hardwareConcurrency` | 16 | 16 |
+| `screen` | 2560×1440，avail 2560×1410，dpr 1 | 1920×1080，avail 1920×1032 |
+| `inner`（默认 context） | 1280×720 | 1280×720（同一坑） |
+| `inner`（`no_viewport`） | — | 1905×940 |
+| `dpr`（默认 / no_viewport） | 1 / 1.5 | 1 / 1.5 |
+| `langs` | `["en-US","en"]` ✘ | `["zh-CN","zh"]` ✔ |
+| `intl` | `en-US` ✘ | `zh-Hans-CN` ✔ |
+| `tz` | `Asia/Shanghai` | `Asia/Shanghai` |
+| 地理位置 | 未下发 | 28.2 / 112.96667（geoip 推出） |
+| `humanize` | 无 | `true` |
+| WebGL | `ANGLE (NVIDIA, GTX 980 …), or similar` | `ANGLE (AMD, Radeon HD 3200 …), or similar` |
+| 页面加载 | example.com HTTP 200 + 截图正常 | 同 |
+
+**三条读数解释**：
+
+1. `", or similar"` **不是**泄漏——那是 Firefox 自己对 `ANGLE`/nouveau 驱动串的归纳写法，`coherence.py` 里直接拿它当示例。
+2. GPU 会抽到老卡（Radeon HD 3200 配 16 核）是 fpgen 池里组合有限的固有现象；要固定就只能 `webgl_config` 钉 `firefox_gpus(os)` 里的某一对。
+3. ⚠️ **「地理位置」那一行的读数当时依赖 `geoip=True` 可用**（即 `maxminddb` 当时已装）。
+   **当前 venv 缺 `maxminddb`**，照 §7 的配置重跑会抛 `NotInstalledGeoIPExtra`——
+   要复现这行读数，先 `uv pip install "camoufox[geoip]"`（见 §1 注 3 / §11.5）。
+
+---
+
+## 10. 与 v2 执行层对接的实测（2026-10-20，进程内 API）
+
+> 探针：[`executor/browser/camoufox_probe.py`](../../executor/browser/camoufox_probe.py)（包内，可重跑）。
+> 面向 [设计方案 04](../设计方案/04-camoufox执行层替换方案.md) 的取证。
+> 配置：`AsyncCamoufox(os="windows", humanize=True, headless=False, locale="zh-CN")`。
+
+### 10.1 四条对方案有决定性影响的事实
+
+| # | 实测 | 含义 |
+|---|---|---|
+| **F1** | **`screen` 逐 launch 变化**：1920×1080 → 1536×864 → 1440×900 | viewport **逐 Run 漂移**。响应式站点的内容分布因此不可归因。**必须显式钉 `screen=` / `window=`** |
+| **F2** | `page.evaluate` 默认 **isolated world**：`window.__mw` 读出 `null`；`mw:` 前缀报 `Main world evaluation is disabled`，须 `main_world_eval=True` 才可用（此时 `mw:window.__mw` → `"from-main-world"`） | DOM 共享、**页面 JS 全局状态读不到**。要读播放器状态必须开 `main_world_eval` |
+| **F3** | 真实点击 `isTrusted` = **`"true"`**；`evaluate` 伪造点击 = **`"false"`** | camoufox 靠**真浏览器真输入**满足「事件必须 trusted」，与 obscura 靠 stealth patch 等价 |
+| **F4** | 元素**被替换** → handle `isConnected=false`，`click()` 抛 **Error**；元素**不存在** → `click()`/`fill()` 抛 **TimeoutError** | 两类语义**可区分**（Error vs TimeoutError）；但「不存在」与「页面卡住」**同型**，须另判 |
+
+### 10.2 协议语义实测（camoufox → `PageDriver` 原语的底账）
+
+| 项 | 实测值 | 与 obscura |
+|---|---|---|
+| `new_context()` 默认 viewport | `None` → **no_viewport 补丁生效** | obscura 无此概念 |
+| `count(缺失选择器)` | `0`，不报错 | ✅ 一致 |
+| `links` / `extract` | 直接给结构化数组 | ✅ obscura 的 NDJSON / 列式文本解析**作废** |
+| `textContent` | **含 `<script>` 正文** | ⚠️ obscura 的 `TEXT_CONTENT_EXPR`（clone + 删 script/style）**仍需要** |
+| `innerText` | 真实换行保留 | ✅ 一致 |
+| `locator.fill()` / `keyboard.press()` | 正常 | ✅ 一致 |
+| `ctx.new_page()` | 独立 page，同 context | 对应 obscura `new_tab` |
+
+### 10.3 探针自身的两个坑（写下来免得后人重踩）
+
+1. **`data:` URL 不能用**——URL 里的 `#` 是 fragment 分隔符，payload 在首个 `#` 处截断，
+   `<script>` 块**根本不执行**，探针会**静默给出错误结论**（实测：`isTrusted` 两个值都是 `null`、
+   待替换按钮纹丝不动）。必须用 `page.set_content()`。
+2. **`isTrusted` 回传要用 DOM 属性，不能用 `window` 全局变量**——F2 的 world 隔离会让
+   `window.__x` 读成 `null`，分不清「不是 trusted」与「没点到」。
+
+### 10.4 指纹配置的下发通道（与 §4.3 同源）
+
+`launch_options()` 的返回里，指纹**不在**顶层、**不在** `firefox_user_prefs`，
+而是编码进 `env["CAMOU_CONFIG_1..N"]`（分片的一个大 JSON，实测 6 段 / 43 键）。
+`firefox_user_prefs` 里只有 10 个**非指纹** pref。
+
+**推论**：**绕过 `AsyncCamoufox` / `launch_server` 直接用 playwright 起浏览器，
+指纹会整个丢掉**——`cfg["env"]` 必须传给 playwright 的 launch。
+
+---
+
+## 11. 默认值的真相（2026-10-20 源码复核，**推翻几处文档转述**）
+
+> 这一节逐条对着 `.venv/Lib/site-packages/camoufox/utils.py` 的
+> `launch_options()` 源码核过，**不是**照抄官方文档。
+> 起因：写「推荐配置」时发现照官方示例抄会直接崩。
+
+### 11.1 三个反检测参数**默认全是关的**
+
+`launch_options()` 的签名里三者是 `Optional[...] = None`，源码里都是 `if xxx:` 才生效——
+**不显式传就等于没开**：
+
+| 参数 | 源码位置 | 默认 | 不开的后果 |
+|---|---|---|---|
+| `humanize` | `utils.py` `if humanize:` → `set_into(config, 'humanize', True)` | ❌ 关 | 鼠标瞬移，行为特征裸露 |
+| `geoip` | `utils.py` `if geoip:` → `geoip_allowed()` → 查库 | ❌ 关 | 时区/经纬度不与出口 IP 对齐 |
+| `main_world_eval` | `utils.py` `if main_world_eval:` | ❌ 关 | 主世界脚本读不到页面 JS 全局 |
+
+> **别被 `fingerprint` 骗了**：fpgen 生成的**设备指纹**默认是开的（`fingerprint_preset`
+> 不传时走 `generate_fingerprint()`），
+> 但 **humanize（行为）与 geoip（位置对齐）是另外两回事，默认都不开**。
+
+### 11.2 `os` 默认**随机**
+
+`generate_fingerprint(screen=..., window=..., os=os)` 的 `os` 不传时，
+fpgen 在 `["windows", "macos", "linux"]` 里**随机挑**（docstring 写明）。
+字体清单、GPU 池、核数都按它生成——**抽到 mac/linux 就与宿主真实环境对不上**。
+本项目宿主是 Windows，故显式 `os="windows"`。
+
+### 11.3 uBlock Origin **默认会装**
+
+`launch_options()` 里 `add_default_addons(addons, exclude_addons)` 是**无条件调用**，
+而 `DefaultAddons` 枚举**只有 UBO** 一项 → 每次 launch 都装 uBO。
+
+**对本项目是采集风险**（不是画像收益）：uBO 拦广告 CDN，
+视频站的播放器初始化/预取请求可能被一并拦掉 →
+播放器起不来 → 感知层判「无播放控件」→ **写出理由通顺的假负样本**。
+
+处置：`exclude_addons=[DefaultAddons.UBO]`（见 §5.2）。
+
+### 11.4 `screen` 与 `window` 管的是**两件事**
+
+| 参数 | 管什么 | 不传的后果 |
+|---|---|---|
+| `screen=Screen(min_w, max_w, min_h, max_h)` | **指纹里**的屏幕尺寸 | 逐 launch 抽不同（实测 F1：1920×1080 → 1536×864 → 1440×900） |
+| `window=(w, h)` | **实际窗口/视口**尺寸 | 有显示器时 `get_screen_cons()` 按显示器上界抽 min，仍随机 |
+
+`new_context()` 默认 `no_viewport=True`（视口 = 窗口尺寸），
+所以**要固定视口必须传 `window=`，只传 `screen=` 不够**——两个都要钉。
+
+### 11.5 GeoIP 的两层前置（详见 §1 注 3）
+
+- 数据文件：已装 ✓
+- Python 读取器 `maxminddb`：**未装** ✗ → `ALLOW_GEOIP=False` → `geoip=True` **直接抛异常**

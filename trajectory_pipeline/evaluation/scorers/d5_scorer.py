@@ -297,7 +297,7 @@ def _outcome_of(sample: Any) -> Any:
     只用 ``getattr`` 会让「传 P2 字典」的调用路径恒取到 ``None``，
     于是每条样本都判成「没有决策可判」——**不可判定看起来像一条正常结果**，
     报表上只是「分数都没出」，没人会去查为什么。
-    （同 :func:`trajectory_pipeline.evaluation.scorers.code_scorer._label_of`
+    （同 :func:`trajectory_pipeline.evaluation.scorers.code_scorer._name_of`
     的 dataclass / Mapping 双取。）
     """
     if isinstance(sample, Mapping):

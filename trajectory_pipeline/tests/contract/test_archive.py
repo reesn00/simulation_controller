@@ -195,7 +195,7 @@ class TestCandidateSourceAudit:
         obs = Observation(
             url="https://x.test/", page_title="T", body_text="正文",
             interactive_elements=tuple(
-                InteractiveElement(ref=f"e{i}", tag="a", label=f"链接{i}")
+                InteractiveElement(ref=f"e{i}", role="a", name=f"链接{i}")
                 for i in range(100)),
             links=tuple(LinkItem(text=f"t{i}", href=f"https://x.test/{i}")
                         for i in range(70)),

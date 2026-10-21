@@ -1,6 +1,6 @@
 """W3 LLM 版 Perceptor——**混合体，不是「纯 LLM」**。
 
-「LLM 是传感器不是驾驶员」在这里有三条可检查的落法，缺一条就会
+「代码层做护栏、LLM层做探索」在这里有三条可检查的落法，缺一条就会
 把采集故障写成业务结论：
 
 1. **确定性事实优先，LLM 只做语义补位。**
@@ -41,7 +41,15 @@ from typing import Any, Mapping
 from trajectory_pipeline.llm import schema_parse
 from trajectory_pipeline.llm.client import LLMClient
 from trajectory_pipeline.perception import questions
-from trajectory_pipeline.perception.base import Decision, Observation, Q, Question
+from trajectory_pipeline.common.elements import (
+    element_json,
+)
+from trajectory_pipeline.perception.base import (
+    Decision,
+    Observation,
+    Q,
+    Question,
+)
 from trajectory_pipeline.perception.rule_perceptor import (
     classify_paywall,
     classify_trailer,
@@ -551,7 +559,7 @@ class LLMPerceptor:
 
         if ref:
             label = next(
-                (e.label for e in obs.interactive_elements if e.ref == ref), ""
+                (e.name for e in obs.interactive_elements if e.ref == ref), ""
             )
             verdict = classify_trailer(label)
             if verdict == "only":
@@ -593,7 +601,7 @@ class LLMPerceptor:
                 True,
                 evidence=(
                     f"模型未回传 ref；代码按词表从本页 {len(picked)} 个非预告"
-                    f"播放控件中取 ref={first.ref}（文本 {first.label!r}）——"
+                    f"播放控件中取 ref={first.ref}（文本 {first.name!r}）——"
                     f"**词表说了算**，不以模型是否回传字段为准"
                 ),
                 started=started,
@@ -613,7 +621,7 @@ class LLMPerceptor:
         trailers = trailer_only_candidates(obs)
         if trailers:
             trailer_suspects = [
-                e.label for e in trailers if classify_trailer(e.label) == "suspect"
+                e.name for e in trailers if classify_trailer(e.name) == "suspect"
             ]
             if not trailer_suspects:
                 trailer_suspects = suspects
@@ -622,7 +630,7 @@ class LLMPerceptor:
                 True,
                 evidence=(
                     f"{len(trailers)} 个候选控件全为预告："
-                    f"{[e.label for e in trailers][:3]}"
+                    f"{[e.name for e in trailers][:3]}"
                 ),
                 started=started,
                 payload={
@@ -995,7 +1003,7 @@ class LLMPerceptor:
         why_str = schema_parse.as_str(schema_parse.field(data, "why"))
         if ref:
             label = next(
-                (e.label for e in obs.interactive_elements if e.ref == ref), ""
+                (e.name for e in obs.interactive_elements if e.ref == ref), ""
             )
             return self._answer(
                 spec,
@@ -1014,8 +1022,8 @@ class LLMPerceptor:
                 True,
                 evidence=(
                     f"模型未回传 ref；代码按词表从 {len(picked)} 个搜索框"
-                    f"候选中取 ref={first.ref}（文本 {first.label!r}，"
-                    f"tag={first.tag}）——**词表说了算**，"
+                    f"候选中取 ref={first.ref}（文本 {first.name!r}，"
+                    f"kind={first.role}）——**词表说了算**，"
                     f"不以模型是否回传字段为准"
                 ),
                 started=started,
@@ -1372,8 +1380,11 @@ def _render(
         "body_text": obs.body_text[:LLM_BODY_CHARS],
         "body_total_chars": len(obs.body_text),
         "body_truncated": len(obs.body_text) > LLM_BODY_CHARS,
+        # 键名跟着**方言**走（P4）：obscura 面写 ``tag``/``label``、camoufox 面
+        # 写 ``role``/``name``。模型看到的就是这两个词——把 HTML 标签名
+        # 叫 ``role`` 会让它在 camoufox 面的任务里按标签名去找 role。
         "interactive_elements": [
-            {"ref": e.ref, "tag": e.tag, "label": e.label[:60]}
+            element_json(e, obs.element_vocabulary, name_limit=60)
             for e in obs.interactive_elements[:LLM_ELEMENTS]
         ],
         "elements_total": len(obs.interactive_elements),

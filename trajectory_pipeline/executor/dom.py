@@ -54,10 +54,53 @@ from trajectory_pipeline.executor.gatekeeper import detect_block  # noqa: F401
 #: 太大则白白吃掉 LLM 上下文。这是个待调参数，不是定论。
 DEFAULT_MAX_CHARS = 6000
 
+#: 媒体与 iframe 的存在性探测选择器（``browser_count`` / ``locator().count()``
+#: 都接受任意 CSS selector）。
+#:
+#: 2026-10-20 D11/P3-β：从 ``obscura_driver.py`` 迁到此处，理由与
+#: :data:`INNER_TEXT_EXPR` 相同——两个执行层实现都要用**同一对**选择器，
+#: 否则 ``Observation.video_tag_count`` / ``iframe_count`` 在两面不同义，
+#: 而这两个数直接进判断点 ③ 的确定性事实与 D-2 打分口径。
+MEDIA_SELECTOR = "video, audio"
+IFRAME_SELECTOR = "iframe"
+
 #: 长度达到预算的这个比例即判定「已截断」。obscura 不给截断标记，
 #: 只能按长度推断——故取保守值，宁可误判为截断（闸门放宽）也不误判为完整
 #: （闸门把被截掉的实体判成幻觉）。
 TRUNCATION_RATIO = 0.95
+
+#: 正文主来源。实测 baidu 首页：``innerText`` 474 字符纯文本 / 47ms，
+#: 而 ``browser_snapshot(max_chars=6000)`` 的 6000 字符预算被 16675 字符的
+#: ``<style>`` 块全部吃光（见模块 docstring）。
+#:
+#: 2026-10-20 D11/P1：从 ``obscura_driver.py`` 迁到此处。它是**纯 DOM 表达式**、
+#: 不是某个浏览器的格式知识，而两个执行层实现（obscura / camoufox）都要用它——
+#: 留一份在驱动里会让 camoufox 抄第二份，抄的那份迟早与这份漂移。
+INNER_TEXT_EXPR = "document.body.innerText"
+
+#: 正文 fallback 源——``innerText`` 在 JS-heavy 站（iqiyi / ixigua / sohu /
+#: bilibili）偶发因 layout 计算失败返回空。``textContent`` 不参与 layout，
+#: 在 innerText 失败时**绝大多数情况仍能拿到已渲染的部分文本**。
+#: 区别是 textContent 不会折叠空白，所以仍走 :func:`parse_body_text` 清理。
+#:
+#: 2026-10-14 增量 H1-β · 采集降级精准救济：v3 黄金集 27 条
+#: ``['body_text']`` 降级样本中 26 条仅 video 兜底，根源是 innerText
+#: 失败——加 textContent fallback 后，这 26 条里大多数会拿到非空正文，
+#: 越过 ``_sufficiency`` 拦截，恢复正常判别路径。**fallback 仍失败时**
+#: 才追加 ``degraded.append("body_text")``——之前是无脑追加。
+#:
+#: 2026-10-15 INC43 · 剥离 script/style/noscript/template：裸 ``textContent``
+#: 会把 ``<script>`` 正文也采进来——实测 iqiyi 三站 innerText 失败后
+#: fallback 拿到 2651 字符**全是 JS/CSS**（``@keyframes`` / ``defaultTrace``），
+#: body 非空 → 越过 ``_sufficiency`` → 假恢复。clone 后删节点再取
+#: textContent：剥离后为空说明页面文本真没渲染，按原 fail-closed 边界
+#: 记 ``degraded.append("body_text")``。
+TEXT_CONTENT_EXPR = (
+    "(function(){var c=document.body.cloneNode(true);"
+    "c.querySelectorAll('script,style,noscript,template')"
+    ".forEach(function(n){n.remove();});"
+    "return c.textContent||'';})()"
+)
 
 _URL_RE = re.compile(r"^URL:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
 _TITLE_RE = re.compile(r"^Title:[ \t]*(.+?)[ \t]*$", re.MULTILINE)

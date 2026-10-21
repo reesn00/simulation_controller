@@ -81,8 +81,9 @@ def _make_fake_mcp_factory():
 def _make_fake_obscura_driver_cls(driver_recorder: list[str]):
     """建一个用调用记录器做地基的 fake ObscuraDriver class.
 
-    record 是 list of tuple(method, arg)；外部 monkeypatch cli_mod.ObscuraDriver
-    后, cli 内部 `ObscuraDriver(client)` 走这个 class, 调 goto/evaluate 都记录。
+    record 是 list of tuple(method, arg)；由 :func:`_patch_fake_driver`
+    换掉 cli 的装配入口后, cli 内部 `make_driver(client)` 走这个 class,
+    调 goto/evaluate 都记录。
     """
     class FakeObscuraDriver:
         def __init__(self, client):
@@ -108,6 +109,20 @@ def _make_fake_obscura_driver_cls(driver_recorder: list[str]):
             driver_recorder.append(("close", None))
 
     return FakeObscuraDriver
+
+
+def _patch_fake_driver(monkeypatch, recorder) -> None:
+    """把**装配入口**换成 fake 驱动。
+
+    P0 之后 ``cli`` 里不再有 ``ObscuraDriver`` 这个名字，测试也不能再去 patch
+    具体类——否则「cli 到底有没有走装配入口」这件事反而没被覆盖。
+    patch ``make_driver`` 正好把这条不变式钉住：谁把 factory 调用删回硬编码，
+    这 4 条测试会一起红。
+    """
+    cls = _make_fake_obscura_driver_cls(recorder)
+    monkeypatch.setattr(
+        cli_mod, "make_driver", lambda client, **_kw: cls(client)
+    )
 
 
 # ─────────────── TestFakePageDriver ───────────────
@@ -348,10 +363,7 @@ class TestObscuraDriverPath:
             SimpleNamespace(from_env=staticmethod(factory)),
         )
         recorder: list[tuple[str, object]] = []
-        monkeypatch.setattr(
-            cli_mod, "ObscuraDriver",
-            _make_fake_obscura_driver_cls(recorder),
-        )
+        _patch_fake_driver(monkeypatch, recorder)
         urls = _write_urls(
             tmp_path / "u.txt",
             ["https://a.example.com/1",
@@ -380,10 +392,7 @@ class TestObscuraDriverPath:
             SimpleNamespace(from_env=staticmethod(factory)),
         )
         recorder: list[tuple[str, object]] = []
-        monkeypatch.setattr(
-            cli_mod, "ObscuraDriver",
-            _make_fake_obscura_driver_cls(recorder),
-        )
+        _patch_fake_driver(monkeypatch, recorder)
         urls = _write_urls(
             tmp_path / "u.txt", ["https://a.example.com/1"],
         )
@@ -409,10 +418,7 @@ class TestObscuraDriverPath:
             SimpleNamespace(from_env=staticmethod(factory)),
         )
         recorder: list[tuple[str, object]] = []
-        monkeypatch.setattr(
-            cli_mod, "ObscuraDriver",
-            _make_fake_obscura_driver_cls(recorder),
-        )
+        _patch_fake_driver(monkeypatch, recorder)
         urls = _write_urls(
             tmp_path / "u.txt",
             ["https://a.example.com/1", "https://a.example.com/2"],
@@ -482,10 +488,7 @@ class TestObscuraDriverPath:
             SimpleNamespace(from_env=staticmethod(factory)),
         )
         recorder: list[tuple[str, object]] = []
-        monkeypatch.setattr(
-            cli_mod, "ObscuraDriver",
-            _make_fake_obscura_driver_cls(recorder),
-        )
+        _patch_fake_driver(monkeypatch, recorder)
         urls = _write_urls(
             tmp_path / "u.txt",
             ["https://a.example.com/1", "https://a.example.com/2"],

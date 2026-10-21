@@ -1,0 +1,104 @@
+{
+  "env": {
+    "playwright": "1.62.0",
+    "camoufox": "0.5.8"
+  },
+  "results": [
+    {
+      "scenario": "headful_humanize_on",
+      "headless": false,
+      "humanize": true,
+      "rows": [
+        {
+          "phase": "normal_before",
+          "target": "按钮甲",
+          "ms": 435,
+          "landed": 1,
+          "raf_lag_before": 4,
+          "raf_lag_after": 16
+        },
+        {
+          "phase": "minimized",
+          "target": "按钮乙",
+          "ms": 13323,
+          "landed": 1,
+          "raf_lag_before": 902,
+          "raf_lag_after": 1
+        },
+        {
+          "phase": "restored",
+          "target": "按钮甲",
+          "ms": 1086,
+          "landed": 1,
+          "raf_lag_before": 16,
+          "raf_lag_after": 16
+        }
+      ],
+      "hwnd_found": true
+    },
+    {
+      "scenario": "headful_humanize_off",
+      "headless": false,
+      "humanize": false,
+      "rows": [
+        {
+          "phase": "normal_before",
+          "target": "按钮甲",
+          "ms": 112,
+          "landed": 1,
+          "raf_lag_before": 9,
+          "raf_lag_after": 9
+        },
+        {
+          "phase": "minimized",
+          "target": "按钮乙",
+          "ms": 9103,
+          "landed": 1,
+          "raf_lag_before": 855,
+          "raf_lag_after": 3919
+        },
+        {
+          "phase": "restored",
+          "target": "按钮甲",
+          "ms": 82,
+          "landed": 1,
+          "raf_lag_before": 3,
+          "raf_lag_after": 5
+        }
+      ],
+      "hwnd_found": true
+    },
+    {
+      "scenario": "headful_humanize_max0.3",
+      "headless": false,
+      "humanize": 0.3,
+      "rows": [
+        {
+          "phase": "normal_before",
+          "target": "按钮甲",
+          "ms": 421,
+          "landed": 1,
+          "raf_lag_before": 12,
+          "raf_lag_after": 14
+        },
+        {
+          "phase": "minimized",
+          "target": "按钮乙",
+          "ms": 9063,
+          "landed": 1,
+          "raf_lag_before": 935,
+          "raf_lag_after": 3983
+        },
+        {
+          "phase": "restored",
+          "target": "按钮甲",
+          "ms": 386,
+          "landed": 1,
+          "raf_lag_before": 2,
+          "raf_lag_after": 15
+        }
+      ],
+      "hwnd_found": true
+    }
+  ]
+}

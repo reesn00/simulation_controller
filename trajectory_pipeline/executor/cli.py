@@ -5,7 +5,8 @@
     run              跑一个 task（真实浏览器），落 P1
     gen              模块 1 采样：骨架 × persona → 任务实例计划（不联网）
     review           从 P1 存档导出**人工复核队列**（W1 正样本的唯一来源）
-    check            只查能力（不跑任务）：obscura 可达性 / Perceptor 能力边界
+    check            只查能力（不跑任务）：执行层可达性 / Perceptor 能力边界
+                     （``--driver camoufox`` 探 D11 的会话层与实测指纹）
     check-persona    画像库覆盖度体检 + 判分保真探针体检（不联网）
     regenerate-rationales  存量 rationale 重生成（INC46 动作前动机口径，
                      需 TRAJECTORY_LLM_*；建议先 --dry-run）
@@ -43,8 +44,10 @@ import logging
 import os
 import re
 import shutil
+import string
 import sys
 import uuid
+from contextlib import AsyncExitStack, asynccontextmanager
 from types import MappingProxyType
 from collections import Counter
 from pathlib import Path
@@ -66,10 +69,12 @@ from trajectory_pipeline.executor.browser.mcp_client import (
 )
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES, RunLedger
 from trajectory_pipeline.executor import downgrade as downgrade_mod
-from trajectory_pipeline.executor.browser.obscura_driver import (
-    FORBIDDEN_TOOLS,
-    ObscuraDriver,
+from trajectory_pipeline.executor.browser.driver_factory import (
+    DEFAULT_KIND,
+    SUPPORTED_KINDS,
+    make_driver,
 )
+from trajectory_pipeline.executor.browser.obscura_driver import FORBIDDEN_TOOLS
 # 增量二十五：``DriverError`` 给 _collect_l4_text 鸭子协议降级用。
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
@@ -140,6 +145,7 @@ from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.replay import (
     format_divergences, format_summary, replay_archive, summarize,
 )
+from trajectory_pipeline.common.elements import element_name
 from trajectory_pipeline.perception.base import Observation, Q
 from trajectory_pipeline.perception.factory import build_perceptor, describe
 # 增量二十六：L3 规则层独立判定（不调 LLM，单 obs body_text 全文扫描）。
@@ -355,6 +361,40 @@ async def cmd_run(args: argparse.Namespace) -> int:
     return await _run_manual(args)
 
 
+@asynccontextmanager
+async def _driver_for_run(kind: str, *, shared: Any = None,
+                          headless: bool = True):
+    """一次 Run 的执行层句柄（P5）。**两种实现两种生命周期**：
+
+    - ``obscura``：整批复用一条 MCP 连接上的驱动（``shared``）。P5 之前就是
+      这样，**一行行为都不改**——把连接改成每 Run 一条，是另一件事，不该混在
+      换执行层这一批里。
+    - ``camoufox``：**一个 Run 一次 launch**（设计方案 04 §4.3）——身份、
+      指纹、cookie 全随 Run 重建。跨 Run 复用会把上一部作品的会话状态带进
+      下一条样本，而归因要的正是「这一条样本是在哪个身份下采到的」。
+      launch 失败**抛**（``DriverError`` / playwright 异常）——那是能力问题，
+      由调用方决定整批是否继续，不在这里吞。
+
+    ``headless`` 只对 camoufox 分支有意义（obscura 是远端 MCP，没有这个概念）：
+    **无人值守默认无头**（2026-10-21 口径反转——headful 窗口不可渲染时
+    单次点击要 5–13s，会把一半的点击打成超时假负样本，见
+    :meth:`CamoufoxSession.launch`）。``--headful`` 显式切回有头，
+    给「人守着的桌面」那条路。
+
+    认不出的 ``kind`` 由 :func:`make_driver` 抛 ``ValueError``，本函数不预判。
+    """
+    if shared is not None:
+        yield shared
+        return
+    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+
+    session = await CamoufoxSession.launch(headless=headless)
+    try:
+        yield make_driver(kind=kind, camoufox_session=session)
+    finally:
+        await session.close()
+
+
 async def _run_manual(args: argparse.Namespace) -> int:
     """手工路径：``--task-id`` + ``--title``。**不带 provenance**。
 
@@ -382,11 +422,14 @@ async def _run_manual(args: argparse.Namespace) -> int:
               f"要么 --title <作品名>（可重复），要么 --plan <plan.json>。")
         return 2
 
-    try:
-        client = McpClient.from_env()
-    except RuntimeError as exc:
-        print(f"[FAIL] {exc}")
-        return 2
+    kind = getattr(args, "driver", DEFAULT_KIND)
+    client = None
+    if kind == "obscura":
+        try:
+            client = McpClient.from_env()
+        except RuntimeError as exc:
+            print(f"[FAIL] {exc}")
+            return 2
 
     titles = [t.strip() for t in args.title]
     # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：模式是
@@ -412,22 +455,33 @@ async def _run_manual(args: argparse.Namespace) -> int:
     print(f"rationale = {_describe_rationale(writer, why)}")
     print(banner)
 
-    async with client:
-        driver = ObscuraDriver(client)
-        print(f"server = {client.info.name} {client.info.version} "
-              f"({client.info.tool_count} tools)")
+    async with AsyncExitStack() as batch:
+        shared = None
+        if client is not None:
+            client = await batch.enter_async_context(client)
+            print(f"server = {client.info.name} {client.info.version} "
+                  f"({client.info.tool_count} tools)")
+            # obscura：整批一条连接复用（P5 前就是这条路径，行为不变）
+            shared = make_driver(client)
+        print(f"driver = {kind}")
         for title in titles:
             # **每个 task 一个 perceptor**：LLM 版的判断点 ① 需要目标片名，
             # 而片名是任务的属性不是页面的属性，靠构造注入。
             perceptor = _make_perceptor(args, title)
             print(f"perceptor = {describe(perceptor)}")
-            orch = Orchestrator(driver, perceptor, cfg,
-                                rationale_writer=writer,
-                                agent_backend=agent_backend)
-            print(f"\n[{args.task_id}] {title}")
-            # 不传 user_prompt：手工路径没有 persona 渲染的提问，
-            # 存档里留空串（含义与 provenance 空 dict 相同）。
-            rec = await orch.run(args.task_id, title)
+            # camoufox 面**一个 Run 一次 launch**（见 _driver_for_run）；
+            # obscura 面复用批次驱动，yield 的就是同一个对象。
+            async with _driver_for_run(
+                kind, shared=shared,
+                headless=not getattr(args, "headful", False),
+            ) as driver:
+                orch = Orchestrator(driver, perceptor, cfg,
+                                    rationale_writer=writer,
+                                    agent_backend=agent_backend)
+                print(f"\n[{args.task_id}] {title}")
+                # 不传 user_prompt：手工路径没有 persona 渲染的提问，
+                # 存档里留空串（含义与 provenance 空 dict 相同）。
+                rec = await orch.run(args.task_id, title)
             records.append(rec)
             path = archive.write(rec, task_id=args.task_id, batch_id=args.task_id)
             _print_summary(rec, path)
@@ -486,11 +540,14 @@ async def _run_plan(args: argparse.Namespace) -> int:
               f"自洽而全错的负样本，且不报错。重跑 gen 生成计划。")
         return 2
 
-    try:
-        client = McpClient.from_env()
-    except RuntimeError as exc:
-        print(f"[FAIL] {exc}")
-        return 2
+    kind = getattr(args, "driver", DEFAULT_KIND)
+    client = None
+    if kind == "obscura":
+        try:
+            client = McpClient.from_env()
+        except RuntimeError as exc:
+            print(f"[FAIL] {exc}")
+            return 2
 
     # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：手工路径
     # 与计划路径在这里是同一套，换数据来源不该换执行链。解析先于
@@ -515,25 +572,35 @@ async def _run_plan(args: argparse.Namespace) -> int:
     print(f"rationale = {_describe_rationale(writer, why)}")
     print(banner)
 
-    async with client:
-        driver = ObscuraDriver(client)
-        print(f"server = {client.info.name} {client.info.version} "
-              f"({client.info.tool_count} tools)")
+    async with AsyncExitStack() as batch:
+        shared = None
+        if client is not None:
+            client = await batch.enter_async_context(client)
+            print(f"server = {client.info.name} {client.info.version} "
+                  f"({client.info.tool_count} tools)")
+            # obscura：整批一条连接复用（行为与 P5 前一致）
+            shared = make_driver(client)
+        print(f"driver = {kind}")
         for n, task in enumerate(tasks, 1):
             # 上面的检查已保证 title 非空，这里直接取
             title = task.title
             # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
-            orch = Orchestrator(driver, _make_perceptor(args, title), cfg,
-                                rationale_writer=writer,
-                                agent_backend=agent_backend)
-            print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
-                  f"| {title}")
-            rec = await orch.run(
-                task.task_id, title,
-                search_query=task.search_query,
-                user_prompt=task.prompt_text,
-                provenance=dict(task.provenance),
-            )
+            # camoufox 面一个 Run 一次 launch（_driver_for_run）。
+            async with _driver_for_run(
+                kind, shared=shared,
+                headless=not getattr(args, "headful", False),
+            ) as driver:
+                orch = Orchestrator(driver, _make_perceptor(args, title), cfg,
+                                    rationale_writer=writer,
+                                    agent_backend=agent_backend)
+                print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
+                      f"| {title}")
+                rec = await orch.run(
+                    task.task_id, title,
+                    search_query=task.search_query,
+                    user_prompt=task.prompt_text,
+                    provenance=dict(task.provenance),
+                )
             records.append(rec)
             path = archive.write(rec, task_id=task.task_id, batch_id=args.task_id)
             _print_summary(rec, path)
@@ -676,6 +743,13 @@ async def cmd_check(args: argparse.Namespace) -> int:
     print(f"  {EXE_ENV_VAR} 未设置" if not _env_ok() else f"  {EXE_ENV_VAR} 已设置")
     print(f"  禁用的 tool（{len(FORBIDDEN_TOOLS)}）: {sorted(FORBIDDEN_TOOLS)}")
 
+    if args.driver == "camoufox":
+        return await _check_camoufox(
+            args.probe_url,
+            action_smoke=getattr(args, "action_smoke", False),
+            headless=not getattr(args, "headful", False),
+        )
+
     print("\n== obscura 连接 ==")
     try:
         client = McpClient.from_env()
@@ -688,12 +762,198 @@ async def cmd_check(args: argparse.Namespace) -> int:
               f"{info.tool_count} tools")
         drift = FORBIDDEN_TOOLS & {t["name"] for t in await client.list_tools()}
         print(f"  红线 tool 仍在服务端清单里（已在驱动层拦截）: {sorted(drift)}")
-        driver = ObscuraDriver(client)
+        driver = make_driver(client)
         await driver.goto(args.probe_url)
         obs = await driver.observe(max_chars=DEFAULT_MAX_CHARS)
         print(f"  探针页 {obs.url}: body={len(obs.body_text)}ch "
               f"source={obs.body_source} degraded={list(obs.degraded)}")
     return 0
+
+
+async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
+                          headless: bool = True) -> int:
+    """``check --driver camoufox``：起一次会话，打印**实测指纹**并跑一遍采集面原语。
+
+    为什么不并进上面那段：obscura 的探针是「MCP 连得上吗 + 采得到吗」，
+    camoufox 没有 MCP 连接这一层，探的是**另两件事**——
+    ①身份/几何有没有被钉住（没钉住则批次不可归因，方案 §4.3）；
+    ②采集面原语在真实站点上通不通（``snapshot``/``count``/``interactive``/
+      ``links``），**并且**元素枚举的账目读得出来
+      （P3-α：``interactive`` 的过滤丢弃是静默的，只能靠账目看）。
+
+    ``headless`` 缺省**无头**（与生产口径一致，2026-10-21）——所以这里打印的
+    指纹读数就是**无人值守批次真正的指纹**。要看有头口径的读数加 ``--headful``。
+
+    失败返回 1（obscura 段不可达时返回 0）——obscura 那段不可达是「这台机器
+    没配」的常态，camoufox 是**本仓库自己的依赖**，起不来就是环境坏了。
+    """
+    print("\n== camoufox 会话 ==")
+    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+
+    try:
+        session = await CamoufoxSession.launch(headless=headless)
+    except Exception as exc:                     # noqa: BLE001
+        # launch 可能抛任何东西（playwright 启动失败 / 浏览器二进制缺失 /
+        # screen 约束不被接受），这里只报类型与消息，不分类——分类等于猜。
+        print(f"  [FAIL] launch 失败 — {type(exc).__name__}: {exc}")
+        return 1
+
+    async with session:
+        print("  指纹（批次元数据口径；os/geoip/locale/humanize 是请求值，"
+              "其余是实测值）:")
+        for k, v in session.fingerprint.items():
+            print(f"    {k:<10} = {v}")
+        print("  现场读数（诊断用，不进批次元数据）:")
+        for k, v in session.readings.items():
+            print(f"    {k:<10} = {v}")
+
+        driver = make_driver(kind="camoufox", camoufox_session=session)
+        try:
+            await driver.goto(probe_url)
+            snap = await driver.snapshot(max_chars=DEFAULT_MAX_CHARS)
+            media = await driver.count("video, audio")
+            iframes = await driver.count("iframe")
+            elements = await driver.interactive()
+        except DriverError as exc:
+            print(f"  [FAIL] {exc}")
+            return 1
+        print(f"\n  探针页 {snap.url}")
+        print(f"    title={snap.title!r} body={len(snap.body)}ch "
+              f"source={snap.body_source} truncated={snap.truncated} "
+              f"video/audio={media} iframe={iframes}")
+
+        # 采集面（P3-α）：把过滤账目和元素原表都打出来。**账目要看**——
+        # 「枚举出 0 个」在元素表上空着，与「这页没有可点目标」同形；
+        # 账目能指出是过滤掉的还是真没有。
+        stats = getattr(driver, "last_enumeration", {})
+        print(f"\n  可交互元素 {len(elements)} 个（tag 列是 ARIA role）：")
+        for el in elements:
+            print(f"    {el.ref:<4} {el.role:<10} {el.name}")
+        if stats:
+            print("    过滤账目: " + "  ".join(f"{k}={v}" for k, v in stats.items()))
+
+        # 采集面剩余原语（P3-β）：只报**条数**，不在这里 dump 内容——
+        # 逐条核对走 `probe_observe --driver camoufox`（它把整份 Observation
+        # 落盘并跑契约断言），这里只回答「接线通不通」。
+        try:
+            links = await driver.links()
+        except DriverError as exc:
+            print(f"    链接: [FAIL] {exc}")
+        else:
+            print(f"    链接: {len(links)} 条（前 3 条）")
+            for link in links[:3]:
+                print(f"      {link.text[:40]!r} → {link.href[:80]}")
+
+        if action_smoke:
+            await _camoufox_action_smoke(driver, elements)
+    return 0
+
+
+async def _camoufox_action_smoke(driver: Any, elements: Any) -> None:
+    """``--action-smoke``：真填一次、真点一次，打印结果账目。
+
+    为什么要在 CLI 里留这一条而不是只写单测：单测用的是假 page，
+    它证明「我们调了哪几个 API」，**不证明那些 API 在真实页面上能跑**。
+    P2 的验收判据是「动作的 camoufox 调用可原样执行」——那条只能在真浏览器上量。
+
+    目标一律取自**当前页的枚举结果**（不写死选择器）：要验的正是
+    「枚举出来的 role+name 能被动作面定位」这条闭环。**顺序有意义**：
+    先填词 + 回车（可能跳转到结果页），最后才点击（点击会离开本页）。
+    """
+    print("\n  动作面冒烟:")
+    before = await driver.snapshot(max_chars=1)
+
+    # ① fill + press：站内搜索的真实形态。回车带目标（压在搜索框上），
+    #    不走页面级按键——后者会把「搜索框没找到」变成「在随便哪里敲回车」。
+    box = next((e for e in elements if e.role in ("textbox", "searchbox")), None)
+    if box is None:
+        print("    [SKIP] fill/press：本页没有枚举出 textbox/searchbox")
+    else:
+        print(f"    fill {box.role} {box.name!r} ← '冒烟测试'")
+        try:
+            await driver.fill(role=box.role, name=box.name, text="冒烟测试")
+            print(f"      {driver.last_action}")
+            await driver.press("Enter", role=box.role, name=box.name)
+            print(f"      {driver.last_action}")
+        except DriverError as exc:
+            print(f"    [FAIL] fill/press: {exc}")
+
+    # ② 「不存在」那一态：页面上不可能有的名字，必须静默返回 ``not_found``
+    #    而不是抛——这是假负样本防线，每次冒烟都读一遍。
+    await driver.click(role="button", name="__trajectory_no_such_button__")
+    print(f"    click 不存在目标 → {driver.last_action}（必须是 not_found）")
+
+    # ③ 真点一次（放最后：点了可能导航走）。
+    #
+    # ⚠️ 先看页面换没换。**回车提交会导航**，而 `role+name` 是**页面级**定位：
+    # 拿上一页枚举出来的名字去点新页，如果新页恰好有同名元素，会**静默点中
+    # 那个不该点的元素**（不像 ref 那样必然失效报错）。所以导航后必须重新枚举。
+    mid = await driver.snapshot(max_chars=1)
+    if mid.url != before.url:
+        elements = await driver.interactive()
+        print(f"    页面已变（{mid.url[:60]}…）→ 重新枚举 {len(elements)} 个元素后再点")
+    picked = next((e for e in elements if e.role in ("link", "button")), None)
+    if picked is None:
+        print("    [SKIP] click：本页没有枚举出 link/button")
+        return
+    print(f"    click {picked.role} {picked.name!r}")
+    picked_url = mid.url  # 点击**前**的 URL：后面判断「跳没跳」只能拿它当基线
+    try:
+        await driver.click(role=picked.role, name=picked.name)
+    except DriverError as exc:
+        print(f"    [FAIL] click: {exc}")
+        return
+    print(f"      {driver.last_action}")
+    after, reads, moved = await _after_action_snapshot(driver, clicked_from=picked_url)
+    tail = "" if moved else "  ⚠️ URL 未变（点击没有导航，或跳转比 2s 还慢）"
+    print(f"    页面: 点击前 {picked_url} → 点击后 {after.url}（读 {reads} 次）{tail}")
+    empty = "  ⚠️ 2s 内没读到 title（可能是过渡态，也可能这页本来没有 <title>）" if not after.title else ""
+    print(f"    标题: 点击后 {after.title!r}{empty}")
+
+
+async def _after_action_snapshot(
+    driver: Any, *, clicked_from: str, attempts: int = 8, delay: float = 0.25
+) -> tuple[Any, int, bool]:
+    """动作之后读观察：**先等 URL 真的变，再等新页读稳**，返回 ``(观察, 读了几次, 变没变)``。
+
+    为什么不能直接 ``snapshot()`` 一次（2026-10-20 冒烟踩到，三个版本三种错法）：
+
+    1. **读到的是整个旧页**：``click()`` 返回时不保证导航已经开始，旧页在导航前
+       **天然稳定**——所以「连续两次读数一致就算稳」在这里**恒真**（那版报告
+       ``URL = /s?…``，0.5s 后它其实跳到了首页）。
+    2. **读到过渡态**：导航已开始但新文档还没 commit，``title`` 是空串
+       （那版打出 ``标题: '百度一下，你就知道' → ''``，页面上明明有标题）。
+    3. **过渡态本身也可能是稳定的**：空标题能连读两次一致——只要求「两次一致」
+       仍会把过渡态交出去。所以第二阶段还要**等 title 读得出来**。
+
+    于是两段式：①等 URL 相对动作前**变化**（导航开始的唯一硬信号）；
+    ②等 ``(url, title)`` 一致**且** title 非空。
+
+    「title 非空」只是「新文档 commit 了」的**廉价代理**，不是判据——
+    真有页面没有 ``<title>``，所以预算耗尽仍返回最后一次读数（``moved`` 照实），
+    由调用方打出「标题为空」的提示。**不猜、不编标题、不反复等下去。**
+
+    这条对整条链的影响不止冒烟：动作之后立刻 ``interactive()`` 会枚举到**旧页**，
+    于是下一步拿着旧页的名字去动作——症状见[02-避坑指南 §8.8](../docs/02-避坑指南.md)。
+    """
+    last = await driver.snapshot(max_chars=1)
+    reads = 1
+    moved = last.url != clicked_from
+    for _ in range(attempts - 1):
+        await asyncio.sleep(delay)
+        cur = await driver.snapshot(max_chars=1)
+        reads += 1
+        if not moved:
+            # 第一阶段：等导航**开始**（URL 变化）。旧页在导航前是稳定态，
+            # 「两次读数一致」在这里没有意义——那正是上面第 1 条踩的坑。
+            moved = cur.url != clicked_from
+            last = cur
+            continue
+        # 第二阶段：导航已开始，还要等到 title 读得出来且连续两次一致
+        if cur.title and (cur.url, cur.title) == (last.url, last.title):
+            return cur, reads, True
+        last = cur
+    return last, reads, moved
 
 
 def _env_ok() -> bool:
@@ -733,7 +993,7 @@ async def _probe_one(client: McpClient, url: str, *,
     而表态会顺着人的倾向走（当初 id_XMTQ 就是只看存档就判了付费墙，
     补了现场才发现判对了，但**那次是运气**）。
     """
-    driver = ObscuraDriver(client)
+    driver = make_driver(client)
     try:
         await driver.goto(url)
         obs = await driver.observe(max_chars=max_chars)
@@ -756,7 +1016,7 @@ async def _probe_one(client: McpClient, url: str, *,
 
     pw = classify_paywall(body)
     print(f"  付费墙词表 : 「{pw or '（未命中）'}」")
-    hits = [e.label for e in obs.interactive_elements if is_play_control(e.label)]
+    hits = [e.name for e in obs.interactive_elements if is_play_control(e.name)]
     print(f"  播放控件词表命中 {len(hits)} 个: {hits[:8]}")
     marks = [w for w in _SITATION_MARKS if w in body]
     print(f"  正文出现   : {marks}")
@@ -850,7 +1110,7 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
     print(f"  title     = {args.title!r}")
 
     async with client:
-        driver = ObscuraDriver(client)
+        driver = make_driver(client)
         print(f"  server    = {client.info.name} {client.info.version}"
               f" ({client.info.tool_count} tools)")
         from trajectory_pipeline.executor.steps.search import Candidate
@@ -1151,7 +1411,7 @@ async def cmd_mediabrowse(args: argparse.Namespace) -> int:
             return 3
         try:
             async with client:
-                driver_obj = ObscuraDriver(client)
+                driver_obj = make_driver(client)
                 return await _mediabrowse_with_driver(args, driver_obj)
         except McpError as exc:
             print(f"[FAIL] obscura MCP 连接失败: {exc}", file=sys.stderr)
@@ -1842,7 +2102,7 @@ def cmd_review(args: argparse.Namespace) -> int:
                   f"degraded={list(it.degraded)}")
             print(f"    证据  : {it.evidence}")
             if it.elements:
-                print(f"    元素  : {[e['label'] for e in it.elements[:6]]}")
+                print(f"    元素  : {[element_name(e) for e in it.elements[:6]]}")
     return 0
 
 
@@ -2142,6 +2402,28 @@ def cmd_check_archives(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_compare_drivers(args: argparse.Namespace) -> int:
+    """双跑对账（设计方案 04 §6.1）。**只读存档，不开浏览器、不联网。**
+
+    ``--a`` 是基线（当前生产链 obscura），``--b`` 是候选（camoufox）。
+    退出码：0 = 机械判据全过；1 = 有判据不达标；2 = 有判不了的条目
+    （例如基线中位数为 0，比值无从计算）——**「判不了」不等于「过了」**。
+    """
+    from trajectory_pipeline.executor import dual_run
+
+    a = dual_run.summarize(args.a_label, Path(args.a))
+    b = dual_run.summarize(args.b_label, Path(args.b))
+    report = dual_run.compare(a, b)
+    print(dual_run.format_report(report))
+    if args.json:
+        out = Path(args.json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        print(f"\n报告已落盘：{out}")
+    return {"pass": 0, "fail": 1}.get(report["verdict"], 2)
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     """P1 → P2 → P3 组装。**全离线，不开浏览器。**
 
@@ -2278,12 +2560,58 @@ def cmd_task_view(args: argparse.Namespace) -> int:
     return 2
 
 
-def cmd_purge_run(args: argparse.Namespace) -> int:
-    """回滚一个 run——**存档与它并进池的负样本一起删**。
+def _derived_products(root: Path, run_id: str) -> tuple[Path, ...]:
+    """一个 run 的**派生产物**（P2 样本 / P3 视图 / T 视图）。
 
-    默认**只列不删**（``--apply`` 才真删）。这条命令动的是负样本池，
-    而池是训练数据的直接输入，删错了不可逆——所以默认口径必须是
-    「先看清楚」。
+    为什么回滚要连它们一起删
+    ------------------------
+    P1 存档删了、负样本池行删了，**派生的训练数据却留在原地**——
+    那批样本的标签已经被判为「前提不成立」，却还躺在 ``samples/`` 里，
+    等着被渲染进 P3、被上传给 Label Studio、被喂进 SFT。
+
+    而且它们**再也重建不了**：源存档没了，重建只会跳过（造不出新样本），
+    于是这批旧样本就成了永久的、与 catalog 漂移的僵尸——训练集里一半
+    样本带新工具声明、一半带旧的，而**报告上看不出任何异常**。
+
+    ⚠️ 2026-10-20 实测：盘上 19 条孤儿样本就是这么来的——3 个 run 被
+    回滚过，而当时的 ``purge-run`` 只删存档与池行。更麻烦的是**那条命令
+    当时也清不掉它们**：它只数 P1 存档，于是报「这个 run_id 下没有东西」
+    就退出了，孤儿**永久留下**。本函数的存在就是为了让回滚能收干净。
+
+    ⚠️ 三个目录的**路径权威**分别在
+    :func:`trajectory_pipeline.assembler.builder.samples_dir`、
+    :func:`trajectory_pipeline.storage.views_dir`、
+    :func:`trajectory_pipeline.storage.task_views_dir`——本函数只调它们，
+    **不自己拼字面量**（改存储布局只动那三处）。
+
+    ⚠️ ``run_id`` 会被拼进 glob 模式，所以这里**限制字符集**：glob 里的
+    ``*``/``?``/``[`` 会匹配到别的 run。这条命令会**删文件**，匹配面必须
+    收紧。
+    """
+    run_id = (run_id or "").strip()
+    if not run_id or any(
+        ch not in (string.ascii_letters + string.digits + "_-") for ch in run_id
+    ):
+        return ()
+
+    from trajectory_pipeline.storage import task_views_dir, views_dir
+
+    out: list[Path] = []
+    for pattern, directory in (
+        (f"*__{run_id}__*.json", builder.samples_dir(root)),
+        (f"*__{run_id}__*.json", views_dir(root)),
+        (f"*__{run_id}.json", task_views_dir(root)),
+    ):
+        if directory.is_dir():
+            out.extend(directory.glob(pattern))
+    return tuple(sorted(set(out)))
+
+
+def cmd_purge_run(args: argparse.Namespace) -> int:
+    """回滚一个 run——**存档、派生产物与它并进池的负样本一起删**。
+
+    默认**只列不删**（``--apply`` 才真删）。这条命令动的是负样本池
+    与训练样本，删错了不可逆——所以默认口径必须是「先看清楚」。
 
     什么时候该用：某个 run 的**前提**错了，于是它整批结论都不成立。
     实测（2026-10-09）：``run`` 少给 ``--title`` 就拿 ``T001`` 当片名，
@@ -2302,6 +2630,7 @@ def cmd_purge_run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"[FAIL] {exc}")
         return 2
+    derived = _derived_products(root, args.run_id)
 
     print(f"run_id = {args.run_id}   根目录 = {root}")
     print(f"\n存档（{len(archives)}）:")
@@ -2311,7 +2640,14 @@ def cmd_purge_run(args: argparse.Namespace) -> int:
     for row in rows:
         print(f"  [{row.get('branch')}] {str(row.get('url'))[:78]}")
         print(f"      {str(row.get('evidence'))[:110]}")
-    if not archives and not rows:
+    print(f"\n派生产物 · P2 样本 / P3 视图 / T 视图（{len(derived)}）:")
+    for path in derived:
+        try:
+            shown = path.relative_to(root)
+        except ValueError:
+            shown = path
+        print(f"  {shown}")
+    if not archives and not rows and not derived:
         print("\n这个 run_id 下没有东西。run_id 是存档文件名里 __ 后半段"
               "（T001__b3a3548a.json → b3a3548a），别把整条 task_id 填进来。")
         return 1
@@ -2320,8 +2656,19 @@ def cmd_purge_run(args: argparse.Namespace) -> int:
         print("\n以上为**预演**。确认无误后加 --apply 执行。")
         return 0
     n_arc, n_rows = store.apply_purge(archives, rows)
-    print(f"\n已删除：存档 {n_arc} 个，池行 {n_rows} 条。"
+    n_derived = 0
+    for path in derived:
+        try:
+            path.unlink(missing_ok=True)
+            n_derived += 1
+        except OSError:
+            # 删不掉就报出来，不静默——留下的孤儿比没回滚更糟
+            print(f"  [WARN] 删不掉: {path}")
+    print(f"\n已删除：存档 {n_arc} 个，池行 {n_rows} 条，派生产物 {n_derived} 个。"
           f"建议接着跑 check-archives 看池与全库是否还自相矛盾。")
+    if n_derived < len(derived):
+        print(f"⚠️ 有 {len(derived) - n_derived} 个派生产物没删掉——"
+              f"它们会留在训练集里，重建也救不回来（源存档已删）。")
     return 0
 
 
@@ -2763,6 +3110,18 @@ def build_parser() -> argparse.ArgumentParser:
                           "是预算控制不是语义筛选")
     run.add_argument("--max-referral-links", type=int, default=5,
                      help="每个中间页校验的外链数上限")
+    run.add_argument("--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
+                     help="执行层实现（P5 双跑用）。默认值与 driver_factory 的 "
+                          "DEFAULT_KIND 同源——切换生产链只改那一处。"
+                          "obscura 整批一条 MCP 连接，camoufox 一个 Run 一次 "
+                          "launch。注意：两种实现落出的存档**不是同一口径**"
+                          "（元素键名与词表都随面变），不能混池")
+    run.add_argument("--headful", action="store_true",
+                     help="（仅 camoufox 面）用**有头**浏览器而不是无头。"
+                          "缺省是**无头**——无人值守时 headful 窗口一旦不可渲染"
+                          "（最小化/息屏/锁屏/遮挡），单次点击要 5–13s，"
+                          "会把一半的点击打成超时假负样本（设计方案 04 §4.9.5）。"
+                          "有头 = 人守着的桌面。两种口径都记进批次元数据")
     run.add_argument("--log-level", choices=("debug", "info", "warning", "error"),
                      default="info",
                      help="发现链运行日志级别（orchestrator 关键节点实时输出到"
@@ -2850,6 +3209,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     chk = sub.add_parser("check", help="查能力，不跑任务")
     chk.add_argument("--probe-url", default="https://example.com/")
+    chk.add_argument(
+        "--driver", choices=("obscura", "camoufox"), default="obscura",
+        help="探哪条执行层。默认 obscura（生产链现行实现）；camoufox 是 D11 "
+             "P1 骨架——会起一次真实浏览器并打印实测指纹读数")
+    chk.add_argument(
+        "--action-smoke", action="store_true",
+        help="（仅 --driver camoufox）动作面冒烟：点一次枚举出来的元素并打印账目。"
+             "P2 的验收判据「动作可用」只有真浏览器能证明——单测用的是假 page。"
+             "会改变页面状态（可能导航），故默认关",
+    )
+    chk.add_argument(
+        "--headful", action="store_true",
+        help="（仅 --driver camoufox）用**有头**浏览器。缺省无头——"
+             "无人值守口径（设计方案 04 §4.9.5）。加这个开关看的是"
+             "「人守着桌面」那条路的指纹读数",
+    )
     chk.set_defaults(func=cmd_check)
 
     prb = sub.add_parser(
@@ -2979,6 +3354,23 @@ def build_parser() -> argparse.ArgumentParser:
                       help="把 DEGRADED 也算失败。默认只拦 FATAL——"
                            "降级样本仍可用，只是不能直接当训练数据")
     ck_a.set_defaults(func=cmd_check_archives)
+
+    # P5 的验收工具：同一批任务在两个执行层上各跑一遍，逐条比（§6.1）。
+    # 与 check-archives 的分工：那个问「每份存档背后有没有东西」，
+    # 这个问「换了一层之后分布变成什么样了」。
+    cmp_d = sub.add_parser(
+        "compare-drivers",
+        help="双跑对账：同一批任务在两个执行层上的分布差（不联网）",
+    )
+    cmp_d.add_argument("--a", required=True,
+                       help="A 侧（**基线**，通常是 obscura）的 P1 存档目录")
+    cmp_d.add_argument("--b", required=True,
+                       help="B 侧（候选，通常是 camoufox）的 P1 存档目录")
+    cmp_d.add_argument("--a-label", default="A")
+    cmp_d.add_argument("--b-label", default="B")
+    cmp_d.add_argument("--json", default=None,
+                       help="把完整报告写成 JSON（负样本原文、逐分支读数都在里面）")
+    cmp_d.set_defaults(func=cmd_compare_drivers)
 
     rp = sub.add_parser("replay", help="感知层回放：在存档的真实观察上跑感知实现（不联网）")
     rp.add_argument("--out", default=None, help="P1 存档目录")

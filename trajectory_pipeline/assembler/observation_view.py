@@ -37,6 +37,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from trajectory_pipeline.assembler.schema import BODY_KEY, LEGACY_BODY_KEY
+from trajectory_pipeline.common.elements import (
+    ELEMENT_VOCAB_HTML_TAG,
+    element_keys,
+    element_name,
+    element_role,
+    vocabulary_of_archive_elements,
+)
 
 #: 训练态的正文上限。取 2000 是权衡后的值，不是拍脑袋：
 #: 播放页的关键信息（片名、集数、播放入口）通常在首屏内，而 iframe 播放器的
@@ -106,6 +113,17 @@ def render(obs: Mapping[str, Any] | None) -> dict[str, Any]:
 
     body, cropped, body_source = _pick_body(obs)
     elements = list(obs.get("interactive_elements") or ())
+    # 键名跟着**存档的方言**走（P4）：老存档写 ``tag``/``label``，camoufox
+    # 批次写 ``role``/``name``。这一层拿不到 ``driver``，所以按存档自己的
+    # 键名判方言（:func:`vocabulary_of_archive_elements`——键名本来就是
+    # 这个轴的投影，读回来不是猜）。
+    #
+    # ⚠️ **不带 ``ref``**：``ref`` 是会话内句柄，进训练数据等于教模型背
+    # 一个随机数，且样本永远不可回放（P2 契约 ``TestNoRefInActions``）。
+    # 所以这里不用 :func:`element_json`（它会写 ref），只借它的键名。
+    element_kind_key, element_text_key = element_keys(
+        vocabulary_of_archive_elements(elements)
+    )
     links = list(obs.get("links") or ())
     limits = ViewLimits(
         body_chars=VIEW_BODY_CHARS if cropped else None,
@@ -127,7 +145,8 @@ def render(obs: Mapping[str, Any] | None) -> dict[str, Any]:
         "truncated": {"source": bool(obs.get("truncated")), "view": cropped},
         "degraded": list(obs.get("degraded") or ()),
         "interactive_elements": [
-            {"tag": str(e.get("tag") or ""), "label": str(e.get("label") or "")}
+            {element_kind_key: element_role(e),
+             element_text_key: element_name(e)}
             for e in elements[:VIEW_ELEMENTS]
         ],
         "links": [
@@ -140,6 +159,32 @@ def render(obs: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def element_line(element: Any, vocabulary: str | None = None) -> str:
+    """把一个元素渲染成提示词里的一行——**写法跟着方言走**（P4）。
+
+        html_tag    ``  - <button> 播放``
+        aria_role   ``  - [button] 播放``
+
+    两种写法是**故意不同**的，不是审美选择：camoufox 面的 kind 槽装的是
+    ARIA role，若沿用尖括号，``<link>`` 就会被读成一个 HTML 标签——把
+    「这列是标签名」这个错口径写进提示词，而提示词是模型学到的唯一口径。
+    方括号标的是「这行说的是角色」，它同时是新旧样本**不混池**在提示词
+    侧的那一半：光把存档键名改掉、提示词两边长一样，模型看不出差别。
+
+    ``vocabulary=None`` 时按元素自己的键名推（存档字典的情形）；传
+    :class:`~trajectory_pipeline.perception.base.InteractiveElement` 这类
+    值对象时键名不在字典里，必须显式给方言。
+    """
+    if vocabulary is None:
+        vocabulary = vocabulary_of_archive_elements([element])
+    head = (
+        f"<{element_role(element)}>"
+        if vocabulary == ELEMENT_VOCAB_HTML_TAG
+        else f"[{element_role(element)}]"
+    )
+    return f"  - {head} {element_name(element)}".rstrip()
+
+
 def render_all(observations: tuple[Mapping[str, Any], ...] | list[Any]) -> list[dict[str, Any]]:
     """批量渲染。输入是 :class:`~trajectory_pipeline.assembler.schema.Sample`
     的 ``observations`` 原样。"""
@@ -147,4 +192,4 @@ def render_all(observations: tuple[Mapping[str, Any], ...] | list[Any]) -> list[
 
 
 __all__ = ["VIEW_BODY_CHARS", "VIEW_ELEMENTS", "VIEW_LINKS",
-           "ViewLimits", "render", "render_all"]
+           "ViewLimits", "element_line", "render", "render_all"]

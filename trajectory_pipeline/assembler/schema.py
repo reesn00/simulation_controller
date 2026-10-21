@@ -32,13 +32,17 @@
    :attr:`Sample.rationale_missing` 与 :class:`GateMark`：闸门与理由分列，
    读的人一眼能分出「没跑」与「没过」。
 
-4. **工具清单在这里冻结，不从 P1 反推。**
+4. **工具清单不从 P1 反推，但也不在本模块声明。**
    P1 的 ``steps[]`` 只记**这一条样本实际用过**的动作，而「训练动作空间」
    必须是整个任务空间——从存档反推会让每条样本各带各的动作空间，
    模型看到的世界随样本变。反过来，从 ``executor.actions.TOOLS`` import
    又把 assembler 焊死在执行端（违背纪律 1）。
-   取折中：**本模块自己声明**，由契约测试拿真实存档交叉验证没有漏项
-   （漂移是测试的事，不是 import 的事）。
+   取折中：**清单的唯一真源在 :mod:`trajectory_pipeline.toolcatalog`**
+   （跨层地基，不 import 任何功能模块），本模块从它派生
+   :data:`TOOL_SPECS`。P3（``assembler.views``）与 T（``assembler.task_view``）
+   也从它取——三处不必各抄一份，漂移是**结构上不可能**的，而不只是
+   「靠测试盯着」。
+   由契约测试拿真实存档交叉验证没有漏项（漂移是测试的事，不是 import 的事）。
 """
 
 from __future__ import annotations
@@ -47,6 +51,8 @@ import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, Sequence
+
+from trajectory_pipeline import toolcatalog
 
 #: ① 系统提示词。**随样本一起冻结**（进 P2 文件），不是渲染时读全局常量——
 #: 常量改一次，历史样本的系统提示词就全变了，而样本之间原本是可比的。
@@ -71,11 +77,22 @@ SYSTEM_PROMPT = (
 #: 由 :meth:`ToolSpec.visible_to_model` 而非 ``origin`` 决定模型看不看得见。
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """一个动作原语的训练侧声明。"""
+    """一个动作原语的训练侧声明。
+
+    :attr:`params` 是**参数名元组**——参数级的说明与 ``required`` 集合在
+    :mod:`trajectory_pipeline.toolcatalog` 里（那边是唯一真源），本类只
+    保留 P2 契约需要的形状。
+
+    :attr:`visibility` 决定这条进不进**模型可见**的工具声明。
+    ``new_tab`` / ``close_tab`` 是执行器自己的会话管理动作（外链校验的
+    开合），模型永远不该选它们——但它们**留在 P2 的动作空间里**
+    （删了 P1 就无法回放）。
+    """
 
     name: str
     params: tuple[str, ...]
     instruction: str
+    visibility: str = "model"
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -87,39 +104,64 @@ class ToolSpec:
     def visible_to_model(self) -> bool:
         """这条动作该不该出现在喂给模型的工具列表里。
 
-        ``new_tab`` / ``close_tab`` 都是执行器自己的会话管理动作
-        （外链校验的开合），模型永远不该选它们。
+        判据是 :attr:`visibility`（来自
+        :mod:`trajectory_pipeline.toolcatalog` 的唯一真源），**不是名字
+        黑名单**——按名字判的话，catalog 里新增一个 infrastructure 动作
+        就会漏进模型可见集，而模型发一个它永远不该发的动作就是**教它
+        越权**。
         """
-        return self.name not in ("new_tab", "close_tab")
+        return self.visibility == "model"
 
 
-TOOL_SPECS: tuple[ToolSpec, ...] = (
-    ToolSpec(name="goto", params=("url",), instruction="打开一个网址。"),
+#: ② 训练动作空间。**从 :mod:`trajectory_pipeline.toolcatalog` 派生**——
+#: 那份是唯一真源，P3（:mod:`trajectory_pipeline.assembler.views`）与
+#: T（:mod:`trajectory_pipeline.assembler.task_view`）也从它取，三处
+#: 天然一致，不必再抄第二份第三份。
+#:
+#: ⚠️ 这份清单**不是**「执行端会发哪些动作」——那由
+#: :data:`trajectory_pipeline.executor.actions.TOOLS` 拥有（**收窄是
+#: 刻意的**，理由写在那条注释里）。本清单是**喂给模型的工具声明**：
+#: 13 条里 11 条模型可见（其中 7 条是**能力声明**——本项目没有任何
+#: 真实运行产生过它们的调用），2 条是执行器的 infrastructure 动作。
+#: 两者差集由 ``tests/contract/test_tool_catalog_contract.py`` 机械盯着。
+#:
+#: 「只列控制流真会发出的动作」这条老口径**在本清单上已不成立**：
+#: 它原本保护的是「模型发出一个永远不会被验证的动作」。而**声明**了
+#: 但没人调用的工具不产生这种动作——它只让模型知道存在这个能力。
+#: 真正要防的「模型发出未验证的调用」由
+#: :attr:`ToolSpec.visibility`（infrastructure 挡在模型可见集外）与
+#: 样本级的 ``meta.tools_unused``（人可复核）共同兜住。
+TOOL_SPECS: tuple[ToolSpec, ...] = tuple(
     ToolSpec(
-        name="click",
-        params=(),
-        instruction="点击页面上一个可交互元素（按元素类型与文字指定）。",
-    ),
-    ToolSpec(
-        name="new_tab", params=("url",), instruction="在新标签页打开网址。"
-    ),  # 不可见，见 visible_to_model
-    # ── 路径 B/C 发现链（2026-10-16）：站内搜索的「填词→提交」与
-    # 外链校验的「开→关」。名字与 executor/actions.TOOLS 字面量对齐，
-    # 漂移由 test_p2_contract::TestToolSpaceDrift 盯住。
-    ToolSpec(
-        name="fill",
-        params=("text",),
-        instruction="往输入框里填文本（如把片名填进站内搜索框）。",
-    ),
-    ToolSpec(
-        name="press",
-        params=("key",),
-        instruction="按一个键（如回车，提交站内搜索）。",
-    ),
-    ToolSpec(
-        name="close_tab", params=(), instruction="关闭当前标签页。"
-    ),  # 不可见，见 visible_to_model
+        name=d.name,
+        params=tuple(p.name for p in d.params),
+        instruction=d.instruction,
+        visibility=d.visibility,
+    )
+    for d in toolcatalog.CATALOG
 )
+
+#: **逐工具面**的训练动作空间（2026-10-20 方案 15 §7 R1）。
+#:
+#: 为什么多这一层：``click`` 在 obscura 面是 ``click(tag,label)``、在
+#: camoufox 面是 ``click(role,name)``——**同名不同参**。一份 P2 样本
+#: 只对应一个面（由源存档的 ``driver`` 决定），所以六件套第 ② 件
+#: (``tools``) 必须**按面**取，不能一份通吃。
+#:
+#: 一份存档只对应一个面 ⇒ **不存在「同一条样本混了两个方言」的状态**。
+#: 两个面也**不混池**（方案 04 §4.5.5）：目标编码不同义。
+TOOL_SPECS_BY_SURFACE: Mapping[str, tuple[ToolSpec, ...]] = {
+    surface: tuple(
+        ToolSpec(
+            name=d.name,
+            params=tuple(p.name for p in d.params),
+            instruction=d.instruction,
+            visibility=d.visibility,
+        )
+        for d in defs
+    )
+    for surface, defs in toolcatalog.SURFACES.items()
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -461,6 +503,20 @@ class Sample:
     #: 并把那份代理**标注为代理**（见 ``evaluation.cli``）。
     schema_version: str = ""
 
+    #: **工具面**（2026-10-20 方案 15 §7 R1）——这份样本的训练动作空间
+    #: 属于哪个方言（``obscura-1`` / ``camoufox-1``）。
+    #:
+    #: 它来自源 P1 的 ``driver`` 字段，经
+    #: :func:`~trajectory_pipeline.toolcatalog.surface_of_driver` 折算。
+    #:
+    #: **空串 = 这条样本没有工具面身份**（2026-10-20 之前建的 P2 没有
+    #: 这个键）。读档时按 :data:`~trajectory_pipeline.toolcatalog.DEFAULT_SURFACE`
+    #: 渲染——那是那批样本**真实跑出来**的面，不是默认值兜底。
+    #:
+    #: 为什么必须显式落：``click`` 在两个面里参数不同，渲染时拿错面就会
+    #: 训出「有时按标签点、有时按角色点」的模型，而那在报告上看不出异常。
+    tool_surface: str = ""
+
     def to_json(self) -> dict[str, Any]:
         return {
             "sample_id": self.sample_id,
@@ -469,6 +525,7 @@ class Sample:
             "title": self.title,
             "source_archive": self.source_archive,
             "schema_version": self.schema_version,
+            "tool_surface": self.tool_surface,
             "six": {
                 "system_prompt": self.system_prompt,
                 "tools": [t.to_json() for t in self.tools],
@@ -701,6 +758,9 @@ def _sample(
     reflection: Mapping[str, Any] | None = None,
 ) -> Sample:
     task_id = str(archive.get("task_id"))
+    # 工具面 = 源存档的方言（2026-10-20 方案 15 §7 R1）。认不出的驱动名
+    # 在这里**抛**：渲染期才发现会晚一步，而那一步已经把错声明写进样本了。
+    surface = toolcatalog.surface_of_driver(archive.get("driver"))
     rationales = align_rationales(actions_, raw_steps)
     written = [r for r in rationales if r.status == "written"]
     gate = gate_of(
@@ -718,7 +778,7 @@ def _sample(
         unit=unit,
         title=str(archive.get("title") or ""),
         system_prompt=SYSTEM_PROMPT,
-        tools=TOOL_SPECS,
+        tools=TOOL_SPECS_BY_SURFACE[surface],
         user_prompt=str(archive.get("user_prompt") or ""),
         provenance=dict(archive.get("provenance") or {}),
         actions=actions_,
@@ -733,6 +793,9 @@ def _sample(
         # 键不存在 → 空串（**不是** ``"1"``）：没有版本身份就是没有版本身份，
         # 补一个默认值等于凭空断言这份存档属于哪一批。
         schema_version=str(archive.get("schema_version") or ""),
+        # 工具面：源存档记了驱动就按那个方言走，没记就按默认面
+        # （历史批次都是 obscura 面）。**面认不出 → 上面已经抛了**。
+        tool_surface=surface,
     )
 
 

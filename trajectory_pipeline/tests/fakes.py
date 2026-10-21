@@ -28,9 +28,14 @@ from typing import Any
 from trajectory_pipeline.llm.client import ChatResult
 from trajectory_pipeline.perception import llm_perceptor as lp
 from trajectory_pipeline.perception.questions import CLASSIFY_CATEGORIES
+from trajectory_pipeline.common.elements import (
+    element_name,
+    element_role,
+    vocabulary_of_archive_elements,
+)
 from trajectory_pipeline.perception.rule_perceptor import (
     SEARCH_BOX_KEYWORDS,
-    SEARCH_BOX_TAGS,
+    SEARCH_BOX_WORDS,
     classify_trailer,
     is_play_control,
 )
@@ -304,18 +309,18 @@ class FakeLLM:
             if self.forget_ref:
                 # 与 ③ 同款实测形态：看得到框却不回 ref——检验词表兜底
                 return {"ref": None, "why": "页面上有搜索框，但我没回传 ref"}
-            for e in obs.get("interactive_elements") or []:
-                tag = str(e.get("tag", "")).lower()
-                label = " ".join(
-                    str(e.get("label", "")).split()
-                ).replace(" ", "").lower()
+            elements = obs.get("interactive_elements") or []
+            words = SEARCH_BOX_WORDS[vocabulary_of_archive_elements(elements)]
+            for e in elements:
+                kind = element_role(e).lower()
+                label = " ".join(element_name(e).split()).replace(" ", "").lower()
                 if (
-                    tag in SEARCH_BOX_TAGS
+                    kind in words
                     and label
                     and any(kw in label for kw in SEARCH_BOX_KEYWORDS)
                 ):
                     return {"ref": e.get("ref", ""),
-                            "why": f"搜索框 {e.get('label','')!r}"}
+                            "why": f"搜索框 {element_name(e)!r}"}
             return {"ref": None, "why": "未见站内搜索框"}
         # 2026-10-16 路径 B/C · 四道 SELECT_*：与 ① 同款——按编号回指，
         # 复用同一批坏行为开关（invent_urls / no_conclusion / reject_all）。

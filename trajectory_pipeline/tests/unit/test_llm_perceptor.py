@@ -36,7 +36,7 @@ def _obs(**kw) -> Observation:
 
 
 def _els(*pairs: tuple[str, str, str]):
-    return tuple(InteractiveElement(ref=r, tag=t, label=lbl) for r, t, lbl in pairs)
+    return tuple(InteractiveElement(ref=r, role=t, name=lbl) for r, t, lbl in pairs)
 
 
 class TestSufficiencyGuard:
@@ -1577,7 +1577,7 @@ class TestINC43负分支付费墙救济:
     ②（页面可达）③（找播放控件）的负分支从不检查付费墙信号——订阅墙
     页面落 ``login_wall_or_blocked`` / ``no_play_control`` / ``unresolved``。
 
-    探针实测（tmp/inc43_probe_bodies.jsonl，18 行金标 subscription_wall
+    探针实测（trajectory_pipeline/research/probes/inc43_probe_bodies.jsonl，18 行金标 subscription_wall
     错判簇）：m.ixigua ×2「以下内容需下载西瓜视频查看」、play.tudou
     「下载优酷PC客户端继续观看」、v-wb.youku「会员特惠 + 立即开通 +
     首3月9.9元/月」三类形态可被救济；对照组 v.qq.com（金标
@@ -1783,7 +1783,7 @@ class TestINC43救济判据真值表:
 class TestINC45乱码页救济:
     """簇 B（INC44 前研）：tv.sohu.com 混合编码页（GBK 主体 + UTF-8
     字节混入）被 ``body_mojibake`` 一律 fail-closed → unresolved（金标
-    subscription_wall ×3）。探针实测（tmp/inc45_probe2_sohu.jsonl）：
+    subscription_wall ×3）。探针实测（trajectory_pipeline/research/probes/inc45_probe2_sohu.jsonl）：
     正文**采到了**（1588 字符 / 156 U+FFFD），可读部分含
     「新用户首月9.9元，开通会员 立即抢购」——**确定性付费墙证据在场**。
 
