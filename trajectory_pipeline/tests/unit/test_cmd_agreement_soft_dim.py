@@ -323,7 +323,9 @@ class TestCalibration优先于Holdout:
         )
         assert rc == 0
         data = json.loads(out_path.read_text(encoding="utf-8"))
-        assert data["n"] == 5
+        # 硬分类头条也只看调参池（C-04）：holders 旁置，只作旧口径读数
+        assert data["n"] == 2
+        assert data["legacy_denominator"]["n"] == 5
         assert data["soft_dims"]["d3"]["n"] == 2
         assert data["soft_dims"]["d3"]["agreed"] == 2
 

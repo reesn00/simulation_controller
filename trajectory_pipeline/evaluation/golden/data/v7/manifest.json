@@ -1,0 +1,69 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "2",
+ "rubric_version": "1.2",
+ "evaluator_version": "9b3ec1c46545",
+ "holdout_runs": 0,
+ "version": 7,
+ "frozen_at": "2026-10-22T08:19:40+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 357,
+  "annotated": 294,
+  "site": 289,
+  "trajectory": 5,
+  "calibration": 131,
+  "regression": 60,
+  "holdout": 103
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.4456,
+  "pool_ratio": 0.6497,
+  "regression_ratio": 0.2041,
+  "holdout_ratio": 0.3503,
+  "pp_diff_from_target": 0.0003,
+  "headline_split": "calibration",
+  "regression_size": 60,
+  "regression_seed": 20261022,
+  "regression_fingerprint": "2ebb270e64c8"
+ },
+ "derived_from": {
+  "version": 6,
+  "counts": {
+   "candidates": 357,
+   "annotated": 294,
+   "site": 289,
+   "trajectory": 5,
+   "calibration": 191,
+   "holdout": 103
+  },
+  "holdout_runs": 0
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.9,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 37,
+  "success": 36,
+  "subscription_wall": 35,
+  "not_play_site": 31,
+  "component_unverified": 18,
+  "no_play_control": 16,
+  "blocked": 15,
+  "broken": 13,
+  "login_wall_or_blocked": 9,
+  "trailer_only": 7,
+  "trailer_suspect": 1
+ }
+}

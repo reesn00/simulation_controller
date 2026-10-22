@@ -54,6 +54,28 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
+#: rubric 版本与评估器指纹——每个冻结版本 / 每次 agreement 都要记下来，
+#: 否则「这批数字是哪版尺子量的」答不出（方案 16 §1.2 / C-01）。
+#: 只 import 纯常量模块；LLM 侧 prompt 在本模块函数内惰性加载。
+from trajectory_pipeline.evaluation.scorers.rubric_version import (
+    RUBRIC_VERSION,
+    evaluator_version,
+)
+
+#: 三档切分的档名 / 文件名 / 头条档位——**只从 splits.py 取，不手抄字符串**
+#: （方案 16 C-04 / C-17：头条分母认错档位不会报错，只会静默算成 0）。
+from trajectory_pipeline.evaluation.golden.splits import (
+    HEADLINE_SPLIT,
+    REGRESSION_SEED,
+    REGRESSION_SIZE,
+    SPLIT_CALIBRATION,
+    SPLIT_FILES,
+    SPLIT_HOLDOUT,
+    SPLIT_REGRESSION,
+    SPLITS,
+    split_of_file,
+)
+
 #: 管线产物根（负样本池 / P1 存档 / P2 样例）：相对本文件上溯到 trajectory_pipeline/，
 #: 不依赖 cwd。output/ 整树在 .gitignore 内（日常产物不跟踪）。
 PIPELINE_ROOT = pathlib.Path(__file__).resolve().parents[2] / "output" / "pipeline"
@@ -302,7 +324,9 @@ def _compute_soft_dim_agreement(
         dim_agreement as _dim_agree,
     )
 
-    calib = [r for r in site_rows if r.get("__split__") == "calibration"]
+    # 只认同头条档（``HEADLINE_SPLIT``）：软维度与硬分类必须看同一个池子，
+    # 否则「D-10 在调参池上算、软维度在别的档上算」这种错配看不出来。
+    calib = [r for r in site_rows if r.get("__split__") == HEADLINE_SPLIT]
 
     gold_dims: set[str] = set()
     for r in calib:
@@ -756,18 +780,127 @@ def _stratified_split(
     return best[0], best[1], best[2]
 
 
+def _rows_fingerprint(rows: Sequence[Mapping[str, Any]]) -> str:
+    """回归集的 12 位内容指纹（方案 16 C-17「金标冻结 + diff 守卫」）。
+
+    对**整行规范 JSON**（``sort_keys`` + 按 ``golden_id`` 排序）取 sha256：
+    只指纹 id 列表挡不住"标签被人改了"，而这正是回归集最需要防的一种改法
+    ——把原本判对的标签改成与模型一致，`regressed` 就永远是 0。
+
+    ``__`` 开头的键是读冻结档时**运行时加的标注**（``__split__``），不是内容，
+    指纹前剔掉：否则同一批行「freeze 时算一次、agreement 读时算一次」永远对不上。
+    """
+    blob = "\n".join(
+        json.dumps(
+            {k: v for k, v in r.items() if not str(k).startswith("__")},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        for r in sorted(rows, key=lambda r: str(r.get("golden_id") or ""))
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def _regression_slice(
+    rows: Sequence[Mapping[str, Any]], k: int, *, seed: int = REGRESSION_SEED
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """从 calibration 里切固定 ``k`` 条**站点级**行作回归集（方案 16 C-17）。
+
+    返回 ``(regression, rest)``。三条规矩：
+
+    1. **只收站点级**（``source_kind != "p2_sample"`` 且有 ``golden``）。
+       轨迹级行没有 D-10 标签，放进回归集等于往门禁里塞永远判不了的条目。
+    2. **按 ``golden.label`` 分层**，配额按层大小比例 + 余数给最大的层。
+       均匀抽样会让稀有分支（``subscription_wall`` 之类）在 60 条里落到个位数，
+       那条分支出回归时读不出来。
+    3. **确定性**：层内用 ``random.Random(f"{seed}:{label}")``，同一输入
+       两次切出同一批行。回归集一旦冻结就不再重切——重切等于把"原本判对的"
+       换成"这次判对的"，门禁自证为空。
+    """
+    if k <= 0:
+        return [], [dict(r) for r in rows]
+    site = [
+        r for r in rows
+        if r.get("source_kind") != "p2_sample" and r.get("golden")
+    ]
+    if k >= len(site):
+        raise GoldenError(
+            f"回归集要切 {k} 条，但 calibration 只有 {len(site)} 条站点级样本；"
+            "调参池会剩不下——要么少切，要么先补标注"
+        )
+
+    groups: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    for r in site:
+        groups[str((r.get("golden") or {}).get("label") or SUCCESS_LABEL)].append(r)
+
+    total = len(site)
+    quotas = {
+        label: (k * len(items)) // total for label, items in groups.items()
+    }
+    remainder = k - sum(quotas.values())
+    # 余数分配顺序显式写死（层大优先、同大同名），不依赖 dict 插入顺序
+    for label in sorted(groups, key=lambda s: (-len(groups[s]), s)):
+        if remainder <= 0:
+            break
+        if quotas[label] < len(groups[label]):
+            quotas[label] += 1
+            remainder -= 1
+
+    picked: list[dict[str, Any]] = []
+    for label in sorted(groups):
+        items = sorted(groups[label], key=lambda r: str(r.get("golden_id") or ""))
+        rng = random.Random(f"{seed}:{label}")
+        for i in sorted(rng.sample(range(len(items)), quotas[label])):
+            picked.append(items[i])
+
+    picked_ids = {str(r.get("golden_id") or "") for r in picked}
+    picked.sort(key=lambda r: str(r.get("golden_id") or ""))
+    rest = [
+        dict(r) for r in rows if str(r.get("golden_id") or "") not in picked_ids
+    ]
+    return [dict(r) for r in picked], rest
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     golden_dir = pathlib.Path(args.golden_root)
     cand_path = golden_dir / CANDIDATES_FILE
     ann_path = golden_dir / ANNOTATIONS_FILE
-    if not cand_path.exists():
-        raise GoldenError(f"{cand_path} 不存在；先跑 candidates")
-    if not ann_path.exists():
-        raise GoldenError(f"{ann_path} 不存在；先 annotate（冻结只含已人工标注样本）")
-    candidates = _load_jsonl(cand_path)
-    annotations = _load_jsonl(ann_path)
+    # `--from-version` 是**继承式重冻结**：切分从上一版原样带过来，不再回头读
+    # candidates/annotations。回头重切会重新洗牌，"v7 与 v6 逐行可比"就没了。
+    carrying = bool(getattr(args, "from_version", 0))
+    src_manifest: dict[str, Any] = {}
+    derived_from: dict[str, Any] = {}
+    if carrying:
+        src_vdir = golden_dir / f"v{args.from_version}"
+        if not src_vdir.exists():
+            raise GoldenError(f"{src_vdir} 不存在；--from-version 只能继承已冻结的版本")
+        src_manifest = _load_manifest(src_vdir)
+        parts: dict[str, list[dict[str, Any]]] = {}
+        for split, fname in SPLIT_FILES.items():
+            p = src_vdir / fname
+            if p.exists():
+                parts[split] = _load_jsonl(p)
+        if not parts:
+            expected = " / ".join(SPLIT_FILES.values())
+            raise GoldenError(
+                f"{src_vdir} 下没有 {expected} 任何一个；没有可继承的切分"
+            )
+        labeled = [r for split in SPLITS for r in parts.get(split, [])]
+        derived_from = {
+            "version": int(args.from_version),
+            "counts": dict(src_manifest.get("counts") or {}),
+            "holdout_runs": int(src_manifest.get("holdout_runs") or 0),
+        }
+    else:
+        if not cand_path.exists():
+            raise GoldenError(f"{cand_path} 不存在；先跑 candidates")
+        if not ann_path.exists():
+            raise GoldenError(f"{ann_path} 不存在；先 annotate（冻结只含已人工标注样本）")
+        candidates = _load_jsonl(cand_path)
+        annotations = _load_jsonl(ann_path)
+        labeled = _labeled_rows(candidates, annotations)
+        parts = {}
 
-    labeled = _labeled_rows(candidates, annotations)
     site = [r for r in labeled if r["source_kind"] != "p2_sample"]
     traj = [r for r in labeled if r["source_kind"] == "p2_sample"]
     if not labeled:
@@ -792,21 +925,46 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     if vdir.exists():
         raise GoldenError(f"{vdir} 已存在；换版本号或人工核对（不静默覆盖）")
 
-    calib, hold, seed = _stratified_split(
-        labeled, args.seed, SPLIT_TARGET, CALIBRATION_RANGE[0], CALIBRATION_RANGE[1]
-    )
-    frac = len(calib) / len(labeled) if labeled else 0.0
-    out_of_range = not (CALIBRATION_RANGE[0] <= frac <= CALIBRATION_RANGE[1])
+    if carrying:
+        calib = parts.get(SPLIT_CALIBRATION, [])
+        hold = parts.get(SPLIT_HOLDOUT, [])
+        reg = parts.get(SPLIT_REGRESSION, [])
+        seed = int(src_manifest.get("seed") or 0)
+        if reg and args.regression:
+            raise GoldenError(
+                f"v{args.from_version} 已有 {SPLIT_FILES[SPLIT_REGRESSION]}"
+                f"（{len(reg)} 条）；**回归集一经冻结不得重切**（方案 16 C-17）——"
+                "重切等于把「原本判对的」换成「这次判对的」，门禁自证为空"
+            )
+        if args.regression and not reg:
+            reg, calib = _regression_slice(
+                calib, args.regression, seed=args.regression_seed
+            )
+    else:
+        calib, hold, seed = _stratified_split(
+            labeled, args.seed, SPLIT_TARGET, CALIBRATION_RANGE[0], CALIBRATION_RANGE[1]
+        )
+        reg = []
+        if args.regression:
+            reg, calib = _regression_slice(
+                calib, args.regression, seed=args.regression_seed
+            )
+    total_rows = len(calib) + len(reg) + len(hold)
+    frac = len(calib) / total_rows if total_rows else 0.0
+    # 范围判的是「调参池 + 回归集」合计占比：回归集是从调参池里切出去的，
+    # 切完再看单档 calibration 必然低于 60%——那不是切坏了，是口径变了。
+    pool_frac = (len(calib) + len(reg)) / total_rows if total_rows else 0.0
+    out_of_range = not (CALIBRATION_RANGE[0] <= pool_frac <= CALIBRATION_RANGE[1])
     if out_of_range and not args.force:
         raise GoldenError(
-            f"当前切分校准占比 {frac:.1%} 不在 [{CALIBRATION_RANGE[0]:.0%}, "
+            f"当前切分校准占比 {pool_frac:.1%} 不在 [{CALIBRATION_RANGE[0]:.0%}, "
             f"{CALIBRATION_RANGE[1]:.0%}]，且与目标 {SPLIT_TARGET:.0%} 差 "
-            f"{abs(frac - SPLIT_TARGET):.1%}pp 超过 5pp；要么补样本到能分层，要么 --force "
+            f"{abs(pool_frac - SPLIT_TARGET):.1%}pp 超过 5pp；要么补样本到能分层，要么 --force "
             "（强制冻结并如实记录偏差，回调时按偏差重新切）"
         )
-    if abs(frac - SPLIT_TARGET) > SPLIT_PP_TOLERANCE:
+    if abs(pool_frac - SPLIT_TARGET) > SPLIT_PP_TOLERANCE and not carrying:
         print(
-            f"⚠️ 校准占比 {frac:.1%} 与目标 {SPLIT_TARGET:.0%} 偏差超过 5pp，"
+            f"⚠️ 校准占比 {pool_frac:.1%} 与目标 {SPLIT_TARGET:.0%} 偏差超过 5pp，"
             "已在 manifest 记录；下次回调建议补样本重新切",
             file=sys.stderr,
         )
@@ -814,23 +972,49 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,  # §5.2：11 类 → 15 类
+        # 尺子编号（方案 16 §1.2 / C-01）：没有这两行，D10 数字无法回答
+        # 「是哪版 rubric、哪版 judge prompt 量出来的」，跨版本对比会读成
+        # 「质量变好了」而其实换了尺子。
+        "rubric_version": RUBRIC_VERSION,
+        "evaluator_version": evaluator_version(),
+        # holdout 已被消费的次数。冻结时恒 0；**解封一次记一次**。
+        # 继承式重冻结**不许归零**——归零等于把封存计数抹掉。
+        "holdout_runs": (
+            int(src_manifest.get("holdout_runs") or 0) if carrying else 0
+        ),
         "version": version,
         "frozen_at": _now_iso(),
         "seed": seed,
         "counts": {
-            "candidates": len(candidates),
+            "candidates": len(candidates) if not carrying else
+            int((src_manifest.get("counts") or {}).get("candidates") or 0),
             "annotated": len(labeled),
             "site": len(site),
             "trajectory": len(traj),
             "calibration": len(calib),
+            "regression": len(reg),
             "holdout": len(hold),
         },
         "split": {
             "target_calibration": SPLIT_TARGET,
+            # ``calibration_ratio`` 是调参池单独占比；``pool_ratio`` 是
+            # 「调参池 + 回归集」合计——设计目标是后者（切出回归集之后单看
+            # 前者必然掉到 45%，拿它跟 65% 比会说"切坏了"，其实是口径变了）。
             "calibration_ratio": round(frac, 4),
-            "holdout_ratio": round(1 - frac, 4),
-            "pp_diff_from_target": round(abs(frac - SPLIT_TARGET), 4),
+            "pool_ratio": round(pool_frac, 4),
+            "regression_ratio": (
+                round(len(reg) / total_rows, 4) if total_rows else 0.0
+            ),
+            "holdout_ratio": round(len(hold) / total_rows, 4) if total_rows else 0.0,
+            "pp_diff_from_target": round(abs(pool_frac - SPLIT_TARGET), 4),
+            # 三档口径（C-04 / C-17）：头条只用 calibration，回归集按内容指纹
+            # 冻住——指纹只盖 id 挡不住"标签被改成与模型一致"，所以盖整行。
+            "headline_split": HEADLINE_SPLIT,
+            "regression_size": len(reg),
+            "regression_seed": int(args.regression_seed),
+            "regression_fingerprint": _rows_fingerprint(reg) if reg else "",
         },
+        "derived_from": derived_from,
         "thresholds": {
             "d10_min_agreement": D10_THRESHOLD,
             "retest_interval_days": RETEST_INTERVAL_DAYS,
@@ -857,27 +1041,51 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     (vdir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
-    _dump_jsonl(vdir / "calibration.jsonl", calib, force=True)
-    _dump_jsonl(vdir / "holdout.jsonl", hold, force=True)
+    _dump_jsonl(vdir / SPLIT_FILES[SPLIT_CALIBRATION], calib, force=True)
+    _dump_jsonl(vdir / SPLIT_FILES[SPLIT_HOLDOUT], hold, force=True)
+    # 回归集只在真切出来时才落文件：写一个空的 regression.jsonl 会让
+    # 「这一版有没有回归门」变成看文件存在与否之外的第二个判据。
+    if reg:
+        _dump_jsonl(vdir / SPLIT_FILES[SPLIT_REGRESSION], reg, force=True)
     versions.append(
         {
             "version": version,
             "label_schema_version": LABEL_SCHEMA_VERSION,
+            # 索引层也记一份：翻 versions.jsonl 就能看出哪版换了尺子，
+            # 不必逐版打开 manifest。
+            "rubric_version": RUBRIC_VERSION,
             "frozen_at": manifest["frozen_at"],
             "annotated": len(labeled),
             "calibration": len(calib),
+            "regression": len(reg),
             "holdout": len(hold),
+            "derived_from": int(derived_from.get("version") or 0),
         }
     )
     _dump_jsonl(versions_path, versions, force=True)
     print(f"→ 已冻结 v{version} 到 {vdir}/")
+    if carrying:
+        print(
+            f"  继承自 v{derived_from['version']}（切分原样带过来，行内容未改）"
+        )
+    hold_frac = f"{len(hold) / total_rows:.1%}" if total_rows else "0.0%"
+    reg_note = f" / 回归集 {len(reg)} 条" if reg else ""
     print(
-        f"  校准 {len(calib)} 条（{frac:.1%}） / 持有 {len(hold)} 条（{1 - frac:.1%}），"
-        f"seed={seed}"
+        f"  调参池 {len(calib)} 条（{frac:.1%}）{reg_note}"
+        f" / 持有 {len(hold)} 条（{hold_frac}），seed={seed}"
     )
+    if reg:
+        print(
+            f"  回归集指纹 {manifest['split']['regression_fingerprint']}"
+            f"（种子 {args.regression_seed}）；一经冻结不得重切（C-17）"
+        )
     print(f"  分布：{json.dumps(manifest['by_label'], ensure_ascii=False)}")
     print(
-        f"  D10 上岗线 ≥{D10_THRESHOLD:.0%}；D9 建议间隔 {RETEST_INTERVAL_DAYS} 天、"
+        f"  D10 上岗线 ≥{D10_THRESHOLD:.0%}；头条分母档 = {HEADLINE_SPLIT}"
+        f"（回归集 / 持有集旁置，均不进头条）"
+    )
+    print(
+        f"  D9 建议间隔 {RETEST_INTERVAL_DAYS} 天、"
         f"重测 {RETEST_FRACTION[0]:.0%}–{RETEST_FRACTION[1]:.0%}"
     )
     return 0
@@ -972,27 +1180,126 @@ def cmd_consistency(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+def _load_manifest(vdir: pathlib.Path) -> dict[str, Any]:
+    """读冻结版 manifest；缺失 / 损坏都返回 ``{}``，**不抛**。
+
+    v6 及更早的冻结档没有 ``rubric_version`` / ``evaluator_version`` /
+    ``holdout_runs`` 三个字段。测量这类历史版本时应当如实报「未记录」，
+    而不是拿当前值顶上去——顶上去等于把新尺子的编号贴在旧数字旁边。
+    """
+    path = vdir / "manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _emit_calibration_artifacts(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    version: int,
+    rubric_version: str,
+    tolerance: int,
+    target_dir: str,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """落「全量快照 + 分歧卡」两份派生数据（方案 16 C-15 / C-02）。
+
+    为什么两份一起出：回归判定问「上一轮对、这一轮错」，那一行在上一轮的
+    分歧卡里不存在 ⇒ 只存卡判不了回归，必须先有全量快照（见
+    ``evaluation/calibration/snapshot.py`` 模块 docstring）。两者由同一次
+    计算派生，口径不会分叉。
+
+    **只读派生**：不回写 ``v{N}/*.jsonl``，产物落 ``output/``（gitignore 内）。
+    """
+    from trajectory_pipeline.evaluation.calibration.disagreement import (
+        cards_from_snapshot,
+        summarize_cards,
+        write_cards,
+    )
+    from trajectory_pipeline.evaluation.calibration.snapshot import (
+        build_snapshot,
+        summarize_snapshot,
+        write_snapshot,
+    )
+
+    if not version:
+        raise GoldenError(
+            "--emit-disagreements 需要 --version：快照必须绑定冻结版本，"
+            "否则「上一轮这一行判了什么」无从对齐（方案 16 C-15）"
+        )
+    snapshot = build_snapshot(
+        rows,
+        golden_version=version,
+        success_label=SUCCESS_LABEL,
+        rubric_version=rubric_version,
+        evaluator_version=evaluator_version(),
+        tolerance=tolerance,
+    )
+    outdir = pathlib.Path(target_dir) / f"v{version}"
+    snap_path = write_snapshot(outdir / "snapshot.json", snapshot)
+    cards = cards_from_snapshot(snapshot)
+    cards_path = write_cards(outdir / "disagreements.jsonl", cards)
+
+    stats = summarize_snapshot(snapshot)
+    cstats = summarize_cards(cards)
+    verdict_str = " / ".join(
+        f"{k}={v}" for k, v in stats["by_verdict"].items() if v
+    )
+    delta_str = " / ".join(f"{k}={v}" for k, v in cstats["by_delta_kind"].items())
+    print(
+        f"→ 已写快照 {snap_path}（{stats['entries']} 条：{verdict_str}）"
+        f" · 分歧卡 {cards_path}（{cstats['n']} 张：{delta_str or '无'}）"
+    )
+    return snap_path, cards_path
+
+
 def cmd_agreement(args: argparse.Namespace) -> int:
-    """D10 = 口径 C：代码判定 == 黄金集人工标签 / 黄金集样本数（≥90%）。
+    """D10 = 口径 C：代码判定 == 黄金集人工标签 / **调参池**样本数（≥90%）。
 
     站点级样本才有 code，轨迹级样本不计入。另出下钻口径 D（分支路由准确率，
-    micro precision/recall/F1）。"""
+    micro precision/recall/F1）。
+
+    **分母口径（方案 16 C-04）**：头条只用 ``calibration`` 档；``regression``
+    与 ``holdout`` 旁置、只报条数。同时打印"旧口径（三档合计）"——分母一换，
+    历史数字必须还能对齐，否则跨版本对比会读成"质量暴跌"。老冻结档
+    （v6 及更早）没有 regression.jsonl，这一行就是它原来的头条。"""
     golden_root = pathlib.Path(args.golden_root)
+    manifest_meta: dict[str, Any] = {}
+    split_rows: dict[str, list[dict[str, Any]]] = {}
     if args.version:
         vdir = golden_root / f"v{args.version}"
-        files = [vdir / "calibration.jsonl", vdir / "holdout.jsonl"]
         rows = []
-        for f in files:
-            if f.exists():
-                # 标注 ``__split__`` 让软维度只走 calibration（plan §三
-                # 第一步 contract 5「calibration 优先于 holdout」）——硬分类
-                # 不动，全量进分母（与原行为一致）。
-                for row in _load_jsonl(f):
-                    row["__split__"] = f.stem
-                    rows.append(row)
+        for split in SPLITS:
+            f = vdir / SPLIT_FILES[split]
+            if not f.exists():
+                continue
+            loaded = _load_jsonl(f)
+            split_rows[split] = loaded
+            for row in loaded:
+                # 标注 ``__split__``：软维度只走 calibration（plan §三
+                # 第一步 contract 5「calibration 优先于 holdout」）、头条
+                # 只认 calibration（C-04）、快照与分歧卡按档打标。
+                row["__split__"] = split
+                rows.append(row)
         if not rows:
             raise GoldenError(f"{vdir} 下没有样本；先 freeze")
+        manifest_meta = _load_manifest(vdir)
         label_note = f"冻结版本 v{args.version}"
+        # 回归集 diff 守卫（C-17）：冻结时记了整行指纹，读的时候重算一遍。
+        # 标签被改成"与模型一致"是最省力的作弊，也是 `regressed == 0` 唯一
+        # 测不出来的那种；指纹对不上就当场炸，不静默放过。
+        want = str((manifest_meta.get("split") or {}).get("regression_fingerprint") or "")
+        if want:
+            got = _rows_fingerprint(split_rows.get(SPLIT_REGRESSION, []))
+            if got != want:
+                raise GoldenError(
+                    f"v{args.version} 的回归集内容与冻结时不一致（manifest "
+                    f"{want} / 实际 {got}）：{SPLIT_FILES[SPLIT_REGRESSION]} "
+                    "不是在 freeze 之后改的吧？回归集不得改动（C-17）"
+                )
     else:
         cand_path = golden_root / CANDIDATES_FILE
         ann_path = golden_root / ANNOTATIONS_FILE
@@ -1010,8 +1317,6 @@ def cmd_agreement(args: argparse.Namespace) -> int:
 
     code_branch_of = lambda r: (r.get("code") or {}).get("branch") or SUCCESS_LABEL
     gold_label_of = lambda r: (r.get("golden") or {}).get("label") or SUCCESS_LABEL
-    y_true = [gold_label_of(r) for r in site]
-    y_pred = [code_branch_of(r) for r in site]
     # 对齐方案 §4.3：口径 C 升级为「语义等价类一致」——新细分分支与
     # 历史合并态（如 blocked vs login_wall_or_blocked）判一致，避免
     # 标签域扩展当天 D10 假性暴跌。映射只有 alignment.EQUIV_CLASS 一份。
@@ -1021,12 +1326,34 @@ def cmd_agreement(args: argparse.Namespace) -> int:
         validate_soft_dim_name,
     )
 
-    agree = sum(1 for t, p in zip(y_true, y_pred) if is_equivalent(t, p))
-    ratio = agree / len(site)
+    def _score(subset: Sequence[Mapping[str, Any]]) -> tuple[int, float]:
+        t = [gold_label_of(r) for r in subset]
+        p = [code_branch_of(r) for r in subset]
+        n_ok = sum(1 for a, b in zip(t, p) if is_equivalent(a, b))
+        return n_ok, (n_ok / len(subset) if subset else 0.0)
+
+    # 头条 = 调参池（C-04）。未冻结口径没有 ``__split__``，退化为全量算——
+    # 那是"还没切档"，不是"调参池为空"，两者不能混成同一个 0。
+    has_split = any(r.get("__split__") for r in site)
+    headline = (
+        [r for r in site if r.get("__split__") == HEADLINE_SPLIT]
+        if has_split
+        else list(site)
+    )
+    if has_split and not headline:
+        raise GoldenError(
+            f"{label_note} 的 {HEADLINE_SPLIT} 档站点级样本为 0；头条分母为空——"
+            "先核对切分文件，不要用旁置档顶替头条"
+        )
+    agree, ratio = _score(headline)
+    # 旧口径（三档合计）：分母口径变更（C-04）之后必须同时出，否则跨版本
+    # 对比会从 289 掉到 188 而被读成"质量暴跌"。
+    legacy_agree, legacy_ratio = _score(site)
     # 下钻口径 D 的分支路由 P/R/F1 也基于等价类标签算，与口径 C 同一把尺；
     # 细分 err 仍可从原始标签（y_true / y_pred）下钻查看。
     report = classification_report(
-        [equiv_class(t) for t in y_true], [equiv_class(p) for p in y_pred]
+        [equiv_class(gold_label_of(r)) for r in headline],
+        [equiv_class(code_branch_of(r)) for r in headline],
     )
 
     # ── 软维度一致率（plan §三·第一步） ─────────────────────────
@@ -1048,19 +1375,70 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     )
 
     print(
-        f"D10 与黄金集标签一致率（{label_note}，分母 = 黄金集样本数 {len(site)}"
-        "；口径 C = 语义等价类一致）"
+        f"D10 与黄金集标签一致率（{label_note}，口径 C = 语义等价类一致）"
     )
     print(
-        f"  口径 C：{agree}/{len(site)} = {ratio:.1%}  "
+        f"  口径 C（头条，分母 = {HEADLINE_SPLIT if has_split else '全部站点级'} "
+        f"{len(headline)} 条）：{agree}/{len(headline)} = {ratio:.1%}  "
         f"{'✅ ≥90% 上岗' if ratio >= D10_THRESHOLD else '❌ 未达 90% 上岗线'}"
     )
+    if has_split:
+        print(
+            f"  口径 C（旧口径，三档合计 {len(site)} 条）："
+            f"{legacy_agree}/{len(site)} = {legacy_ratio:.1%}"
+            "   ← 与 v6 及更早的报表对齐用（C-04 换分母，不是质量变了）"
+        )
     print(
         "  下钻口径 D（分支路由，micro P/R/F1）："
         f"P={_fmt_opt(report['micro']['precision'])}  "
         f"R={_fmt_opt(report['micro']['recall'])}  "
         f"F1={_fmt_opt(report['micro']['f1'])}"
     )
+
+    # ── 尺子编号与分母构成（方案 16 §1.2 / C-01） ───────────────
+    # 三件事必须和数字一起出现，否则「这批数是谁量的」答不出：
+    #   ① rubric 版本（人写，来自 manifest；老冻结档没有就如实报"未记录"）；
+    #   ② judge 指纹（机器算，当前代码的 D-3/D-9 prompt 状态）；
+    #   ③ D10 的 pred 侧来源——**不是当前评分器**，是冻结行里采集时写下的
+    #      code.branch。把 (2) 当成 D10 的来源是这类报表最常见的误读。
+    ruler_rubric = str(manifest_meta.get("rubric_version") or "")
+    ruler_at_freeze = str(manifest_meta.get("evaluator_version") or "")
+    holdout_runs = int(manifest_meta.get("holdout_runs") or 0)
+    rows_by_split = {
+        split: sum(1 for r in rows if r.get("__split__") == split) for split in SPLITS
+    }
+    site_by_split = {
+        split: sum(1 for r in site if r.get("__split__") == split) for split in SPLITS
+    }
+    hold_site_n = site_by_split[SPLIT_HOLDOUT]
+    regression_site_n = site_by_split[SPLIT_REGRESSION]
+
+    if ruler_rubric:
+        ruler_desc = f"rubric v{ruler_rubric}"
+    elif args.version:
+        ruler_desc = "rubric 版本未记录（v6 及更早冻结档无此字段）"
+    else:
+        ruler_desc = "rubric 版本未记录（未冻结口径，无 manifest）"
+    print(
+        f"  尺子：{ruler_desc} · judge 指纹 {evaluator_version()}"
+        f" · 冻结时指纹 {ruler_at_freeze or '未记录'} · holdout_runs={holdout_runs}"
+    )
+    print("  D10 pred 侧 = 冻结行 code.branch（采集时写下，**不由当前评分器重算**）")
+    if has_split:
+        aside = " · ".join(
+            f"{s} {site_by_split[s]} 条" for s in SPLITS if s != HEADLINE_SPLIT
+        )
+        print(f"  旁置（不进头条）：{aside or '无'}")
+    if hold_site_n:
+        print(
+            f"  🔒 持有集 {hold_site_n} 条只报条数、不报一致率——封存纪律（D-C5）；"
+            "最终验收才跑一次，跑一次 holdout_runs +1"
+        )
+    if regression_site_n:
+        print(
+            f"  🛡 回归集 {regression_site_n} 条不进头条：「原本判对的现在判错」由"
+            " verify 判（C-08），这里不解读"
+        )
 
     # 软维度打印：N=0 的 dim **不报**（plan §三·第一步 contract 3「空样本
     # 不参与」）——输出 "0/0 = 0%" 是误导，dim 还没上场就别预占位。
@@ -1082,15 +1460,51 @@ def cmd_agreement(args: argparse.Namespace) -> int:
                 f"({tol_str}){mark}"
             )
 
+    if args.emit_disagreements is not None:
+        _emit_calibration_artifacts(
+            rows=rows,
+            version=args.version,
+            rubric_version=ruler_rubric,
+            tolerance=tolerance,
+            target_dir=args.emit_disagreements,
+        )
+
     if args.json_out:
         out = {
             "label_note": label_note,
-            "n": len(site),
+            # ``n`` / ``agreed`` / ``agreement_ratio`` = **头条**（调参池，C-04）。
+            "n": len(headline),
             "agreed": agree,
             "agreement_ratio": ratio,
             "threshold": D10_THRESHOLD,
             "criterion": "equiv_class",  # 口径 C：语义等价类一致（§4.3）
             "label_schema_version": LABEL_SCHEMA_VERSION,
+            # 尺子编号（方案 16 C-01）。老冻结档缺字段时给空串，不拿当前值顶替
+            # ——顶替等于把新尺子的编号贴在旧数字旁边。
+            "rubric_version": ruler_rubric,
+            "evaluator_version": evaluator_version(),  # 当前代码的 D-3/D-9 prompt 指纹
+            "evaluator_version_at_freeze": ruler_at_freeze,
+            "code_branch_provenance": "frozen_row",  # D10 pred 侧来源
+            "holdout_runs": holdout_runs,
+            "rows_by_split": rows_by_split,
+            "site_rows_by_split": site_by_split,
+            "d10_denominator": {
+                "n": len(headline),
+                "split": HEADLINE_SPLIT if has_split else "all",
+                "excluded_site_rows": {
+                    s: site_by_split[s]
+                    for s in SPLITS
+                    if s != HEADLINE_SPLIT and site_by_split[s]
+                },
+            },
+            # 旧口径（三档合计）：换分母之前头条就是它。留着做跨版本对齐，
+            # 不是为了"两个数取好看的哪个"——两个数都在，谁降谁升一目了然。
+            "legacy_denominator": {
+                "n": len(site),
+                "agreed": legacy_agree,
+                "agreement_ratio": legacy_ratio,
+                "criterion": "all_splits",
+            },
             "report": report,
             # plan §三·第一步 contract 7「输出 JSON 含 soft_dims 键」——
             # 不出数字的 dim 不进 dict（N=0 不计入，contract 3）。
@@ -1452,9 +1866,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ann.set_defaults(func=cmd_annotate)
 
-    p_frz = sub.add_parser("freeze", help="版本化冻结 + 校准/持有切块")
+    p_frz = sub.add_parser(
+        "freeze", help="版本化冻结 + 调参池/回归集/持有集三档切分"
+    )
     p_frz.add_argument("--version", type=int, default=0, help="版本号；缺省自动 +1")
     p_frz.add_argument("--seed", type=int, default=42, help="分层切分随机种子")
+    p_frz.add_argument(
+        "--from-version",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "继承 vN 的切分**原样重冻结**（行内容不动，只补/带回归集与三档口径）。"
+            "给了它就**不读** candidates/annotations——回头重切会重新洗牌，"
+            "「v7 与 v6 逐行可比」就没了。源版本已有 regression.jsonl 时原样带过来。"
+        ),
+    )
+    p_frz.add_argument(
+        "--regression",
+        type=int,
+        default=0,
+        metavar="K",
+        help=(
+            f"从调参池切 K 条站点级行作回归集（黄金校准集；D-C8 建议 {REGRESSION_SIZE}）。"
+            "默认 0 = 不切（manifest 里如实记 0，不静默假定已切）。"
+            "源版本已有回归集时再给本选项直接报错：回归集一经冻结不得重切。"
+        ),
+    )
+    p_frz.add_argument(
+        "--regression-seed",
+        type=int,
+        default=REGRESSION_SEED,
+        help=f"回归集抽样种子（默认 {REGRESSION_SEED}；与切校准/持有的 --seed 分开）",
+    )
     p_frz.add_argument("--dry-run", action="store_true", help="只输出 manifest 不落盘")
     p_frz.add_argument(
         "--force", action="store_true", help="切分偏差超 5pp 时也强制冻结（如实记录）"
@@ -1488,6 +1932,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "软维度一致率容忍档差，|t-p| <= tolerance 计一致。默认 1；"
             "首次跑只发分布再定阈值（plan §三·第一步风险）。"
+        ),
+    )
+    p_agr.add_argument(
+        "--emit-disagreements",
+        nargs="?",
+        const=str(PIPELINE_ROOT / "calibration"),
+        default=None,
+        metavar="DIR",
+        help=(
+            "派生「全量预测快照 + 分歧卡」到 DIR/v{N}/（方案 16 C-15 / C-02）。"
+            "只读派生，不回写冻结档。不带参数 = output/pipeline/calibration；"
+            "不写该选项 = 不落盘。要求同时给 --version。"
         ),
     )
     p_agr.set_defaults(func=cmd_agreement)
