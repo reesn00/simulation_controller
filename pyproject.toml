@@ -46,8 +46,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "pytest-socket>=0.7",
-    # 门禁需要：`test_xlsx_backfill` / `test_inc37_validator_pass` 直接
-    # import openpyxl 读人工复核工作单。生产代码不用它，故进 dev 组而不是主依赖。
+    # ⚠️ **当前没有任何代码 import 它**——2026-10-21 起那两份人工复核工作单
+    # （23/254 条 xlsx）已被删除，读它们的两组测试同步清退了 11 条
+    # （见 docs/计划进展/09-门禁与纪律域.md §xlsx 测试清退）。
+    # 保留在 dev 组只为下一轮人工复核导出新工作单时直接用（31 条
+    # flagged_mismatch 仍待人工）。生产代码从不用它，故不进主依赖。
     # ⚠️ 它此前一直是「本机手装、未声明」的状态——2026-10-20 声明 camoufox 后
     # 跑 `uv sync` 被当作多余包卸掉，两个测试文件直接 collection error。
     "openpyxl>=3.1",

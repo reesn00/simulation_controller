@@ -47,6 +47,7 @@ def make_driver(
     *,
     kind: str = DEFAULT_KIND,
     camoufox_session: object | None = None,
+    collect_element_basis: bool = False,
 ) -> PageDriver:
     """按 ``kind`` 造一个 :class:`PageDriver`。
 
@@ -58,6 +59,10 @@ def make_driver(
         camoufox_session: 已 launch 的 :class:`CamoufoxSession`（仅
             ``kind="camoufox"`` 需要）。**同样由调用方持有**——一个 Run
             一次 launch，驱动只是它的使用者。
+        collect_element_basis: **跨面可比的元素账目要不要采**
+            （设计方案 04 §4.9.6）。**默认关**——它多一次 evaluate 往返，
+            是**测量仪器**不是生产链必需项。开着时两本账落进
+            ``Observation.element_basis``。
 
     Raises:
         ValueError: ``kind`` 不在 :data:`SUPPORTED_KINDS` 里，或该实现缺它
@@ -71,11 +76,13 @@ def make_driver(
     if kind == "obscura":
         if client is None:
             raise ValueError("obscura 实现需要 McpClient，未提供")
-        return ObscuraDriver(client)
+        return ObscuraDriver(client, collect_element_basis=collect_element_basis)
     if camoufox_session is None:
         raise ValueError("camoufox 实现需要 CamoufoxSession，未提供")
     from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
 
     # 延迟 import：camoufox 是可选依赖（D11 阶段 P1），default 路径不该因为
     # 它没装而 import 失败——obscura 生产链必须保持能跑。
-    return CamoufoxDriver(camoufox_session)  # type: ignore[arg-type]
+    return CamoufoxDriver(  # type: ignore[arg-type]
+        camoufox_session, collect_element_basis=collect_element_basis,
+    )

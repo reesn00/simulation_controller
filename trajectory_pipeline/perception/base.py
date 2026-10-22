@@ -121,6 +121,41 @@ class Observation:
     #: 真实跑的就是 obscura。
     element_vocabulary: str = ELEMENT_VOCAB_HTML_TAG
 
+    #: **跨面可比的**元素枚举账目（设计方案 04 §4.9.6，2026-10-21）。
+    #:
+    #: **它是新增的一列，不改 ``elements_total``。** ``elements_total``
+    #: 记的是「**本面自己的**集合有多大」，两个面数的是两个不同义的东西
+    #: （obscura = 上游工具给的交互元素；camoufox = ARIA 树里过了词表的
+    #: 那些）——所以跨面直接比它，差值不可解释。
+    #:
+    #: 结构 = ``{"shared": {...}, "face": {...}}``——**两本账平级**：
+    #:
+    #: - ``shared``：**同一段 JS + 同一把尺子**在两个浏览器上各跑一次，
+    #:   于是**按构造可比**。它是「同一个页面在两个引擎上差多少」的答案。
+    #: - ``face``：本面自己的枚举账目。**键可以缺**（obscura 面的上游工具
+    #:   给不出「role 命中几条 / 无名丢掉几条」）——缺就是缺，不填 0。
+    #:
+    #: ⚠️ ``None`` = **这一批没开 ``--element-basis``**，不是「页面上没有元素」。
+    #: 读档的人要把这两种「没有」分开：一个是没测，一个是真没有。
+    element_basis: Mapping[str, Any] | None = None
+
+    #: **共享口径没测到的原因**（``None`` = 没开开关，或测到了）。
+    #:
+    #: ⚠️ **它不进 :attr:`degraded`**——那是**内容块**的降级通道，
+    #: 下游只判它非空（``steps/search.extract_candidates`` 见到降级就
+    #: **不取候选**、``gatekeeper`` 见到降级就拦）。共享口径是**测量仪器**，
+    #: 它坏了只说明**这把尺子没量到**，不说明**这个页面不可信**——
+    #: 把测量失败混进 ``degraded``，等于让一把坏尺子**作废整批数据**
+    #: （2026-10-21 由 P0 等价性门禁的变异测试挖出）。
+    #:
+    #: 两种「没有」必须分开读：
+    #:
+    #: - ``element_basis is None`` 且 ``element_basis_error is None``
+    #:   → **没开开关**；
+    #: - ``element_basis`` 缺 ``shared`` 键、``element_basis_error`` 非空
+    #:   → **开了，但共享口径没测到**（face 账目仍在）。
+    element_basis_error: str | None = None
+
     # ── 截断与污染诊断（元数据，不参与语义判断）─────────────────────
     max_chars: int | None = None
     truncated: bool = False

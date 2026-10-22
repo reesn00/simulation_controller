@@ -1,0 +1,222 @@
+{
+  "sides": [
+    {
+      "side": "obscura",
+      "observations": 114,
+      "violations": {},
+      "violation_samples": {},
+      "stage_distribution": {
+        "candidates": {
+          "n": 114,
+          "min": 0,
+          "median": 52.0,
+          "max": 288,
+          "mean": 72.95
+        },
+        "hidden": {
+          "n": 114,
+          "min": 0,
+          "median": 3.0,
+          "max": 146,
+          "mean": 28.81
+        },
+        "visible": {
+          "n": 114,
+          "min": 0,
+          "median": 31.0,
+          "max": 142,
+          "mean": 44.14
+        },
+        "role_matched": {
+          "n": 114,
+          "min": 0,
+          "median": 31.0,
+          "max": 142,
+          "mean": 42.33
+        },
+        "role_unmatched": {
+          "n": 114,
+          "min": 0,
+          "median": 0.0,
+          "max": 13,
+          "mean": 1.81
+        },
+        "nameless_dropped": {
+          "n": 114,
+          "min": 0,
+          "median": 0.0,
+          "max": 13,
+          "mean": 2.02
+        },
+        "ambiguous_dropped": {
+          "n": 114,
+          "min": 0,
+          "median": 0.0,
+          "max": 71,
+          "mean": 11.61
+        },
+        "kept": {
+          "n": 114,
+          "min": 0,
+          "median": 12.0,
+          "max": 89,
+          "mean": 28.7
+        },
+        "truncated": {
+          "n": 114,
+          "min": 0,
+          "median": 0.0,
+          "max": 0,
+          "mean": 0.0
+        }
+      },
+      "by_slot_family": {
+        "player_obs": {
+          "n": 11,
+          "candidates_median": 114.0,
+          "visible_median": 84.0,
+          "role_matched_median": 76.0,
+          "kept_median": 60.0
+        },
+        "search": {
+          "n": 3,
+          "candidates_median": 181.0,
+          "visible_median": 121.0,
+          "role_matched_median": 110.0,
+          "kept_median": 79.0
+        },
+        "site_obs": {
+          "n": 43,
+          "candidates_median": 1.0,
+          "visible_median": 1.0,
+          "role_matched_median": 1.0,
+          "kept_median": 1.0
+        },
+        "step": {
+          "n": 3,
+          "candidates_median": 181.0,
+          "visible_median": 121.0,
+          "role_matched_median": 110.0,
+          "kept_median": 79.0
+        },
+        "visit_step": {
+          "n": 54,
+          "candidates_median": 28.0,
+          "visible_median": 17.5,
+          "role_matched_median": 16.5,
+          "kept_median": 6.5
+        }
+      },
+      "kept_over_role_matched_median": 0.7761
+    },
+    {
+      "side": "camoufox",
+      "observations": 116,
+      "violations": {},
+      "violation_samples": {},
+      "stage_distribution": {
+        "candidates": {
+          "n": 116,
+          "min": 0,
+          "median": 52.0,
+          "max": 320,
+          "mean": 67.91
+        },
+        "hidden": {
+          "n": 116,
+          "min": 0,
+          "median": 1.5,
+          "max": 131,
+          "mean": 22.95
+        },
+        "visible": {
+          "n": 116,
+          "min": 0,
+          "median": 33.0,
+          "max": 191,
+          "mean": 44.97
+        },
+        "role_matched": {
+          "n": 116,
+          "min": 0,
+          "median": 33.0,
+          "max": 191,
+          "mean": 43.33
+        },
+        "role_unmatched": {
+          "n": 116,
+          "min": 0,
+          "median": 0.0,
+          "max": 14,
+          "mean": 1.64
+        },
+        "nameless_dropped": {
+          "n": 116,
+          "min": 0,
+          "median": 1.0,
+          "max": 18,
+          "mean": 3.1
+        },
+        "ambiguous_dropped": {
+          "n": 116,
+          "min": 0,
+          "median": 0.0,
+          "max": 76,
+          "mean": 10.4
+        },
+        "kept": {
+          "n": 116,
+          "min": 0,
+          "median": 17.0,
+          "max": 97,
+          "mean": 29.83
+        },
+        "truncated": {
+          "n": 116,
+          "min": 0,
+          "median": 0.0,
+          "max": 0,
+          "mean": 0.0
+        }
+      },
+      "by_slot_family": {
+        "player_obs": {
+          "n": 13,
+          "candidates_median": 84.0,
+          "visible_median": 72.0,
+          "role_matched_median": 72.0,
+          "kept_median": 35.0
+        },
+        "search": {
+          "n": 3,
+          "candidates_median": 180.0,
+          "visible_median": 136.0,
+          "role_matched_median": 124.0,
+          "kept_median": 83.0
+        },
+        "site_obs": {
+          "n": 42,
+          "candidates_median": 4.0,
+          "visible_median": 4.0,
+          "role_matched_median": 2.0,
+          "kept_median": 2.0
+        },
+        "step": {
+          "n": 3,
+          "candidates_median": 180.0,
+          "visible_median": 136.0,
+          "role_matched_median": 124.0,
+          "kept_median": 83.0
+        },
+        "visit_step": {
+          "n": 55,
+          "candidates_median": 33.0,
+          "visible_median": 32.0,
+          "role_matched_median": 32.0,
+          "kept_median": 17.0
+        }
+      },
+      "kept_over_role_matched_median": 0.6261
+    }
+  ]
+}

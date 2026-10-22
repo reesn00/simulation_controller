@@ -1,0 +1,108 @@
+{
+  "driver": "camoufox",
+  "server": {
+    "name": "camoufox",
+    "fingerprint": {
+      "os": "windows",
+      "geoip": false,
+      "locale": "zh-CN",
+      "humanize": true,
+      "headless": true,
+      "screen": [
+        1920,
+        1080
+      ],
+      "window": [
+        1920,
+        955
+      ],
+      "dpr": 1,
+      "timezone": "Asia/Shanghai"
+    }
+  },
+  "archive_dir": "trajectory_pipeline/output/pipeline/dualrun2/camoufox",
+  "results": [
+    {
+      "url": "https://m.chusuiwenhua.com/bq/2te.html",
+      "observed_url": "https://m.chusuiwenhua.com/bq/2te.html",
+      "page_title": "网页无法访问",
+      "body_len": 6,
+      "body_head": "网页无法访问",
+      "elements_total": 0,
+      "video_tag_count": 0,
+      "iframe_count": 1,
+      "degraded": [],
+      "body_source": "snapshot",
+      "archived": {
+        "url": "https://m.chusuiwenhua.com/bq/2te.html",
+        "page_title": "网页无法访问",
+        "body_len": 6,
+        "body_head": "网页无法访问",
+        "elements_total": 0,
+        "video_tag_count": 0,
+        "iframe_count": 1,
+        "degraded": [],
+        "body_source": "snapshot"
+      }
+    },
+    {
+      "url": "https://m.chusuiwenhua.com/sg/2te-1080zyk-1.html",
+      "observed_url": "https://m.chusuiwenhua.com/sg/2te-1080zyk-1.html",
+      "page_title": "网页无法访问",
+      "body_len": 6,
+      "body_head": "网页无法访问",
+      "elements_total": 0,
+      "video_tag_count": 0,
+      "iframe_count": 1,
+      "degraded": [],
+      "body_source": "snapshot",
+      "archived": {
+        "url": "https://m.chusuiwenhua.com/sg/2te-1080zyk-1.html",
+        "page_title": "网页无法访问",
+        "body_len": 6,
+        "body_head": "网页无法访问",
+        "elements_total": 0,
+        "video_tag_count": 0,
+        "iframe_count": 1,
+        "degraded": [],
+        "body_source": "snapshot"
+      }
+    },
+    {
+      "url": "https://www.9999pian.com/xiangqing/21870.html",
+      "observed_url": "https://www.9999pian.com/xiangqing/21870.html",
+      "page_title": "网页无法访问",
+      "body_len": 6,
+      "body_head": "网页无法访问",
+      "elements_total": 0,
+      "video_tag_count": 0,
+      "iframe_count": 1,
+      "degraded": [],
+      "body_source": "snapshot",
+      "archived": null
+    },
+    {
+      "url": "https://www.iqiyi.com/v_19rr9ubdr8.html?vfm=2008_aldbd&fv=p_02_01",
+      "observed_url": "https://www.iqiyi.com/v_19rr9ubdr8.html?vfm=2008_aldbd&fv=p_02_01",
+      "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+      "body_len": 6,
+      "body_head": "精彩即将开始",
+      "elements_total": 0,
+      "video_tag_count": 2,
+      "iframe_count": 0,
+      "degraded": [],
+      "body_source": "inner_text",
+      "archived": {
+        "url": "https://www.iqiyi.com/v_19rr9ubdr8.html?vfm=2008_aldbd&fv=p_02_01",
+        "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+        "body_len": 6,
+        "body_head": "精彩即将开始",
+        "elements_total": 0,
+        "video_tag_count": 2,
+        "iframe_count": 0,
+        "degraded": [],
+        "body_source": "inner_text"
+      }
+    }
+  ]
+}

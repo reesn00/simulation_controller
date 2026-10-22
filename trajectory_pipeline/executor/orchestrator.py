@@ -651,7 +651,37 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
         "links": [
             {"text": l.text[:80], "href": l.href} for l in obs.links[:OBS_LINK_LIMIT]
         ],
+        # **跨面可比的元素账目**（设计方案 04 §4.9.6）——**新增的一列，
+        # 不改 ``elements_total``**。
+        #
+        # ⚠️ ``None`` 要**原样落盘**：它是「这一批没开 ``--element-basis``」，
+        # 与「页面上一个元素都没有」是**两件事**，混同会让读档的人把
+        # 「没测」读成「没有」。缺键与 ``null`` 同义，都表示没测。
+        "element_basis": _element_basis_json(obs.element_basis),
+        # **共享口径没测到的原因**（2026-10-21）。⚠️ **它与 ``degraded``
+        # 分开**：``degraded`` 是内容块的降级通道，下游只判它非空——
+        # 把测量失败混进去，一把坏尺子就能**作废整批数据**。
+        "element_basis_error": obs.element_basis_error,
     }
+
+
+def _element_basis_json(basis: Mapping[str, Any] | None) -> dict[str, dict[str, int]] | None:
+    """两本账落盘。**空的账不落**。
+
+    ⚠️ **空账会被读成「测了，什么都没有」**——而真相是「没测到」。
+    所以某一本账没测到时**缺键**，不落 ``{}``。
+
+    ``shared`` 键**可能缺**：共享口径没测到时（尺子坏了）只剩 face 账。
+    """
+    if basis is None:
+        return None
+    out: dict[str, dict[str, int]] = {}
+    for side in ("shared", "face"):
+        block = basis.get(side)
+        if not isinstance(block, Mapping) or not block:
+            continue
+        out[side] = {str(k): int(v) for k, v in block.items()}
+    return out or None
 
 
 #: 分类任务的路径分发表（方案 12 阶段 A1）：``discovery_path`` →

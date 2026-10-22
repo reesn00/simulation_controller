@@ -160,7 +160,44 @@ def observation_of(obs_json: Mapping[str, Any]) -> Observation:
         element_vocabulary=vocabulary_of_archive_elements(
             obs_json.get("interactive_elements")
         ),
+        # **跨面可比的元素账目**（设计方案 04 §4.9.6）。**缺键 / null 都
+        # 表示「没测」**——与采集端同一个语义，回放不许把它读成「空账」。
+        element_basis=_element_basis_of(obs_json.get("element_basis")),
+        # **共享口径没测到的原因**（2026-10-21）。缺键 = 没开开关，
+        # 空串 = 没开开关（老存档没有这一列）。
+        element_basis_error=_element_basis_error_of(obs_json.get("element_basis_error")),
     )
+
+
+def _element_basis_error_of(raw: Any) -> str | None:
+    """存档里的 ``element_basis_error`` → 回放用的字符串。
+
+    **fail-closed**：不是字符串就当「没测到且没记原因」（= 没开开关）。
+    """
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text or None
+
+
+def _element_basis_of(raw: Any) -> Mapping[str, Any] | None:
+    """存档里的 ``element_basis`` → 回放用的结构。
+
+    **fail-closed**：形状不对就返回 ``None``（= 没测），不返回半截的账。
+    半截账比没有账更坏——读档的人会拿它当「测过」的数去比。
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    out: dict[str, dict[str, int]] = {}
+    for side in ("shared", "face"):
+        block = raw.get(side)
+        if not isinstance(block, Mapping):
+            continue
+        try:
+            out[side] = {str(k): int(v) for k, v in block.items()}
+        except (TypeError, ValueError):
+            continue
+    return out or None
 
 
 def _has_full_body(obs_json: Mapping[str, Any]) -> bool:

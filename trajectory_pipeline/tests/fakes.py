@@ -78,6 +78,13 @@ class FakeLLM:
         page_quotes: list[str] | None = None,
         # IS_REACHABLE 用的 ``access_control_type``——空串表示"我没给"。
         access: str = "",
+        # bool 题（IS_REACHABLE / PLAYER_OK / IS_AGGREGATOR）的 **evidence**
+        # ——空串 = 用默认那句「页面主体可见且可交互」。
+        # 2026-10-21（H-16 修复①）新增：让位规则要能验「**模型已经诊断出
+        # 更具体的访问形态**时不改判订阅墙」——模型的诊断只写在 evidence
+        # 里（③ 没有结构化字段），而 evidence 以前是写死的一句，造不出
+        # 「模型判出地区限制」这个形态。
+        evidence: str = "",
         # PLAYER_OK 用的 ``paywall_type``——空串表示"我没给"。
         paywall_type: str = "",
         # 方案 12 阶段 A1 · 分类任务的显式类别表：``{href: 类别}``
@@ -135,6 +142,7 @@ class FakeLLM:
         # 2026-10-12 增量十七：见上
         self.page_quotes = page_quotes
         self.access = access
+        self.evidence = evidence
         self.paywall_type = paywall_type
         #: 分类任务的显式类别表（方案 12 阶段 A1，见构造参数说明）
         self.classify = classify
@@ -411,7 +419,7 @@ class FakeLLM:
         # 下面只在默认行为（无 answer_* 干预）下加这些字段。
         payload: dict[str, Any] = {
             "answer": self.answers.get(qid, True),
-            "evidence": "页面主体可见且可交互",
+            "evidence": self.evidence or "页面主体可见且可交互",
         }
         # page_quotes 仅当显式给了非 None list 时才进 payload——保持默认
         # FakeLLM 与 P4a 之前测试同形（payload 无 page_quotes 字段），

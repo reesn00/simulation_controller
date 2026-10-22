@@ -53,9 +53,10 @@ from trajectory_pipeline.perception.base import (
 from trajectory_pipeline.perception.rule_perceptor import (
     classify_paywall,
     classify_trailer,
+    infer_access_defect,
     infer_access_from_evidence,
     infer_paywall_type_from_evidence,
-    paywall_rescue_evidence,
+    paywall_evidence,
     play_control_candidates,
     search_box_candidates,
     trailer_only_candidates,
@@ -247,17 +248,25 @@ class LLMPerceptor:
                 # 编码页（GBK 主体 + UTF-8 字节混入）的 ``body_mojibake``
                 # 与其他降级**本质不同**——正文**采到了**（实测 1588 字符
                 # 里 156 个 U+FFFD，其余可读），可读部分含确定性付费墙
-                # 证据（「新用户首月9.9元，开通会员 立即抢购」）。§5.5 守
-                # 的是「**缺**证据别当业务结论」，这里是**有**证据——
-                # 仅当降级集合只含 mojibake 标记（body/title）时放行救济，
-                # 其余降级（body_text 缺失 / snapshot 失败等）照旧
-                # fail-closed。强信号闸（paywall_rescue_evidence）与
-                # INC43 同判据，nav-bar 弱 CTA 不放行。
+                # 证据。§5.5 守的是「**缺**证据别当业务结论」，这里是
+                # **有**证据——仅当降级集合只含 mojibake 标记（body/title）
+                # 时放行救济，其余降级（body_text 缺失 / snapshot 失败等）
+                # 照旧 fail-closed。
+                #
+                # ⚠️ **2026-10-21 判据收紧**（H-16 修复①）：救济只认
+                # **门禁语境**（:func:`paywall_evidence`）——可读部分里的
+                # 「新用户首月9.9元，开通会员 立即抢购」是**营销模块**，
+                # 不是门禁（原强弱信号闸把它放行了，而人工复核判它
+                # 「不是付费墙」）。门禁语境收紧后，这一支自然落回
+                # fail-closed 的 ``unresolved``——那才是它该去的地方。
                 if question in (Q.IS_REACHABLE, Q.FIND_PLAY_CONTROL) and (
                     not obs.degraded
                     or set(obs.degraded) <= {"body_mojibake", "title_mojibake"}
                 ):
-                    rescue = paywall_rescue_evidence(obs.body_text or "")
+                    # 让位规则：正文里已有**环境阻断形态**（地区/验证码/
+                    # 反爬/404）时不救济——真因是环境不给看，不是要付钱。
+                    defect = infer_access_defect(obs.body_text or "")
+                    rescue = "" if defect else paywall_evidence(obs.body_text or "")
                     if rescue:
                         mojibake_note = (
                             "；正文为混合编码（部分乱码），可读部分已含上述证据"
@@ -319,22 +328,40 @@ class LLMPerceptor:
             # 2026-10-15 INC43 · ②③ 负分支付费墙救济：LLM 已判 False
             # （页面确实不可用），但 ②③ 的负分支（login_wall_or_blocked /
             # no_play_control）从不检查付费墙信号——订阅墙页面于是贴错
-            # 标签。正文含强付费墙证据时标记 ``payload["paywall"]``，
-            # ``decision_branch`` 会据此改判 ``subscription_wall``。
+            # 标签。正文含**门禁语境**的付费墙证据时标记
+            # ``payload["paywall"]``，``decision_branch`` 会据此改判
+            # ``subscription_wall``。
             #
             # **只在 answer=False 时救济**（不翻转保证）：True 是成功，
             # None 是「没能力判」——词表命中不构成推翻二者的证据
             # （④ 的既有口径：两边一致才落细分，任何一边不一致都按
-            # 未定的那个结论记）。② 已给出 access_control_type 细分
-            # （login/region/...）时也不救济——细分证据比关键词更具体，
-            # ``decision_branch`` 本就让细分优先，救济只添噪声。
+            # 未定的那个结论记）。
+            #
+            # ⚠️ **2026-10-21 让位规则**（H-16 修复①）：**LLM 已经诊断出
+            # 更具体的访问形态时一律不救济**。原来只有「② 给了
+            # ``access_control_type``」这一条让位，③ 完全没有——于是
+            # 「连 LLM 已经诊断清楚的『地区限制』都会被改掉」：
+            # ③ 没有结构化字段，诊断只写在 evidence 里，救济照样把它
+            # 改写成订阅墙（实测 v.qq.com 8 条：主证据是
+            # 「当前设备不支持播放」+ 70017001.1 地区限制，「开通会员」
+            # 只是句尾附加）。
+            #
+            # 让位判据 = 结构化字段（② 的 ``access_control_type``，
+            # LLM 自己填的，任意形态都让位）**或** evidence 里的**环境
+            # 阻断形态**（地区/验证码/反爬/404，见
+            # :func:`~trajectory_pipeline.perception.rule_perceptor.infer_access_defect`）。
+            # **登录形态不参与 evidence 让位**：导航栏的「请登录」与
+            # 「开通会员」一样高频，让它让位会把整批订阅墙赶进 unresolved。
             #
             # ⚠️ 2026-10-15 INC44 证伪记录：曾把救济扩到 ④（PLAYER_OK），
             # e2e 75 对 A/B 实测**零收益**（修复 0 / 反转 0）——簇 A 的
             # 付费墙证据在 LLM evidence 里而非 body_text，词表够不着；
             # 唯一触发行 T011 v.qq.com/error.html 还是假阳性（错误页
             # 页脚「VIP 会员」强弱组合命中，broken 被误改判订阅墙）。
-            # 已回滚，勿再对 ④ 做词表救济（见 05-现状与验收.md INC44）。
+            # 已回滚，勿再对 ④ 做**关键词救济**（见 05-现状与验收.md
+            # INC44）。⚠️ ④ **仍然**按门禁语境判付费墙（那是它自己的
+            # 判据，不是救济），但**必须先给更具体的形态让位**——
+            # 见 :meth:`_player_ok`。
             if (
                 question in (Q.IS_REACHABLE, Q.FIND_PLAY_CONTROL)
                 and decision.answer is False
@@ -346,9 +373,11 @@ class LLMPerceptor:
                     or not decision.payload.get("access_control_type")
                 )
             ):
-                rescue = paywall_rescue_evidence(obs.body_text or "")
-                if rescue:
-                    return _rescued_paywall_decision(decision, rescue)
+                diagnosed = _diagnosed_access(decision)
+                if not diagnosed:
+                    rescue = paywall_evidence(obs.body_text or "")
+                    if rescue:
+                        return _rescued_paywall_decision(decision, rescue)
             return decision
         except Exception as exc:  # 兜底：契约禁止抛出去
             return self._unresolved_answer(
@@ -455,9 +484,12 @@ class LLMPerceptor:
 
         2026-10-12 阶段 1：answer=false 时**必须**带回
         ``access_control_type``，decision_branch 据此选用细分分支
-        （login_required / blocked / broken）——payload 缺失则回落合并态
-        ``login_wall_or_blocked``（保持旧路径的兼容，见
-        ``branches.decision_branch`` 的「payload 缺失保持现状」注释）。
+        （login_required / blocked / broken）——payload 缺失则**落
+        ``unresolved``**（2026-10-21 增量七十四，H-15，owner 裁定
+        「只落 unresolved，不新开分支」；旧口径是回落合并态
+        ``login_wall_or_blocked``，那一支的语义是「登录墙/验证码/地区限制」，
+        而**三个前提一个都没观测到**——见
+        ``executor/branches.decision_branch`` 的「② 的兜底为什么不再落合并态」）。
 
         解析故意 fail-soft：模型没给字段、字段值不在合法集、或
         answer=true 都没填，都按 None 走——不抛异常、不改答案。
@@ -490,7 +522,7 @@ class LLMPerceptor:
         if answer is False and access is None:
             tail = (
                 "（模型未给出合法 access_control_type 也无 page_quotes 命中——"
-                "决策点②细分未启用，落合并态 login_wall_or_blocked）"
+                "决策点②细分未启用，**不落任何拦截分支**，fail-closed 落 unresolved）"
             )
         evidence = _evidence(data, spec, answer) + tail
         return self._answer(
@@ -695,6 +727,19 @@ class LLMPerceptor:
 
         2026-10-12 增量十六 · P4a：fallback 输入源改为 ``page_quotes``（页面
         原文短语字段），不是 evidence。避免 LLM 自述 vs 页面原文混淆。
+
+        2026-10-21（H-16 修复①）两处收紧：
+
+        1. **门禁语境**：``classify_paywall`` 不再是「扁平词表子串命中」。
+           「开通会员」独行**不**成立（导航栏广告），「订阅后观看」成立。
+           实测 v.qq.com 8 条的「开通会员」全是句尾附加，裸命中把
+           **地区限制**的页面贴成了订阅墙。
+        2. **让位**：页面原文（``page_quotes``）里已有**更具体的访问形态**
+           （地区限制 / 验证码 / 反爬 / 404）时**不判付费墙**，而把那个
+           形态写进 ``payload["access_control_type"]``——
+           ``decision_branch`` 据此落 ``blocked`` / ``login_required`` /
+           ``broken``。这一条让那 8 条的落点从「订阅墙」变成「地区限制
+           阻断」，与人工复核的判读一致。
         """
         data, why = self._ask_json(spec, _render(obs))
         if data is None:
@@ -716,11 +761,36 @@ class LLMPerceptor:
             quotes_text, label="paywall_type",
         )
 
-        paywall = bool(answer is False and hit)
+        # 让位（2026-10-21）：**更具体**的访问形态优先于付费墙。
+        #
+        # 输入源两个，方向都是「**收回**付费墙标签」：
+        #   1. **模型自己的诊断**（evidence）——「不覆盖模型已诊断清楚的
+        #      形态」是本条存在的理由（实测 v.qq.com 8 条：模型已判出
+        #      地区限制「当前设备不支持播放」+ 70017001.1，付费墙却把它
+        #      改写成订阅墙）。让位与 P4a 的 fallback **方向相反**：
+        #      fallback 用自述**造**结论（所以禁），让位用自述**收回**
+        #      结论——收回的方向永远保守（少一条负样本，不是多一条假
+        #      负样本）。
+        #   2. **页面原文**（page_quotes）——模型回传的页面短语。
+        #
+        # ⚠️ **登录形态不参与让位**（见
+        # :data:`~trajectory_pipeline.perception.rule_perceptor.ACCESS_DEFECT_KINDS`）：
+        # 导航栏的「请登录」与「开通会员」一样高频，让它让位会把整批
+        # 订阅墙赶进 unresolved。登录墙有它自己的判断点与分支
+        # （② 的 ``access_control_type=login`` → ``login_required``）。
+        access = (infer_access_defect(ev_text)
+                  or infer_access_defect(quotes_text))
+        paywall = bool(answer is False and hit and not access)
         evidence = ev_text
+        if access and answer is False:
+            src = "模型诊断" if infer_access_defect(ev_text) else "页面原文"
+            evidence += (
+                f"；{src}含访问阻断形态「{access}」——"
+                f"它比付费墙更具体，按「确定性事实优先」不判订阅墙"
+            )
         if paywall:
             evidence += (
-                f"；页面含付费墙信号「{hit}」——按 2026-10-10 口径，"
+                f"；页面含付费墙门禁证据「{hit}」——按 2026-10-10 口径，"
                 f"**有播放页但需订阅/付费不算成功**"
             )
             if ptype is None:
@@ -737,6 +807,11 @@ class LLMPerceptor:
             "paywall_type": ptype if paywall else None,
             "page_quotes": _quotes_with_fallback(data),  # 同步进 payload；增量二十一
             **({"paywall_word": hit} if paywall else {}),
+            # 让位的结果（2026-10-21）：更具体的访问形态写进 payload，
+            # ``decision_branch`` 据此落 blocked / broken / login_required，
+            # 而不是笼统的 component_unverified。④ 的 payload 此前**没有**
+            # 这个键——于是「地区限制」在④ 只能被降成「点了但没组件」。
+            **({"access_control_type": access} if access else {}),
         }
         return self._answer(
             spec, answer, evidence=evidence, started=started, payload=payload,
@@ -1150,13 +1225,14 @@ def _rescued_paywall_decision(decision: Decision, rescue: str) -> Decision:
 
     不改 ``answer`` / ``confidence`` / ``source``——LLM 的「页面不可用」
     结论保持原样，救济只做一件事：把「不可用的真因是付费墙」这个
-    **确定性代码事实**（:func:`paywall_rescue_evidence`）补进 payload 与
-    evidence，让 :func:`~trajectory_pipeline.executor.branches.decision_branch`
+    **确定性代码事实**（:func:`paywall_evidence` 的门禁语境判据）补进
+    payload 与 evidence，让
+    :func:`~trajectory_pipeline.executor.branches.decision_branch`
     把分支从 ``login_wall_or_blocked`` / ``no_play_control`` 改判为
     ``subscription_wall``。
 
-    evidence 里必须能指认判据（命中的词 / 信号组合）——救济改写了分支，
-    人工复核时这条 evidence 是「为什么不是登录墙」的唯一解释。
+    evidence 里必须能指认判据（命中的门禁短语 / CTA + 语境）——救济改写
+    了分支，人工复核时这条 evidence 是「为什么不是登录墙」的唯一解释。
     """
     payload = dict(decision.payload or {})
     payload["paywall"] = True
@@ -1174,6 +1250,32 @@ def _rescued_paywall_decision(decision: Decision, rescue: str) -> Decision:
         latency_ms=decision.latency_ms,
         fallback_used=decision.fallback_used,
     )
+
+
+def _diagnosed_access(decision: Decision) -> str:
+    """这条决策里**已经诊断出的访问形态**，空串 = 没有。
+
+    这是**让位规则**的判据（2026-10-21，H-16 修复①）：已经诊断出更具体
+    形态的结论，不该被一个关键词救济改写成订阅墙。
+
+    取值来源有两条，顺序即优先级：
+
+    1. ``payload["access_control_type"]``——② 的**结构化字段**，LLM 自己
+       填的（``login`` / ``region`` / ``captcha`` / ``anti_bot`` /
+       ``not_found``）。结构化字段是 LLM 的**正式结论**，任意形态都让位；
+    2. evidence 里的**环境阻断形态**（地区 / 验证码 / 反爬 / 404）——
+       ③ 没有这个字段，诊断只写在 evidence 里；只认**环境阻断**不认
+       登录（导航栏的「请登录」与「开通会员」一样高频，让它让位会把
+       整批订阅墙赶进 ``unresolved``）。
+
+    ⚠️ 这条**只做让位，不做诊断**：它不新增结论，只在已有结论时阻止
+    另一个结论覆盖它。真正判形态的活儿在
+    :func:`~trajectory_pipeline.perception.rule_perceptor.infer_access_defect`。
+    """
+    raw = decision.payload.get("access_control_type")
+    if raw:
+        return str(raw)
+    return infer_access_defect(decision.evidence or "")
 
 
 def _sufficiency(question: str, obs: Observation, *, target_title: str = "") -> str:

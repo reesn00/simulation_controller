@@ -104,9 +104,42 @@ class TestDecisionMapping:
         assert decision_branch(dec(Q.IS_REACHABLE, None)) == "unresolved"
 
     def test_false_映射该题的负分支(self):
-        assert decision_branch(dec(Q.IS_REACHABLE, False)) == "login_wall_or_blocked"
         assert decision_branch(dec(Q.FIND_PLAY_CONTROL, False)) == "no_play_control"
         assert decision_branch(dec(Q.PLAYER_OK, False)) == "component_unverified"
+
+    def test_二的兜底落_unresolved_不落合并态(self):
+        """⚠️ **② 答 False 而 payload 缺失 ⇒ ``unresolved``**（2026-10-21，
+        H-15，owner 裁定「只落 unresolved，不新开分支」）。
+
+        旧口径落 ``login_wall_or_blocked``——那一支的语义是
+        「登录墙 / 验证码 / 地区限制」，而**三个前提一个都没观测到**
+        （实测 10 条：LLM 的 evidence 写的是「未加载出目标内容」，
+        与分支名直接矛盾；A 面对同一批 URL 落的是 ``unresolved``）。
+        ⇒ 这是**分支映射越权**，不是页面事实。
+        """
+        assert decision_branch(dec(Q.IS_REACHABLE, False)) == "unresolved"
+
+    def test_二带细分_payload_仍落细分分支(self):
+        """兜底改 unresolved **只影响 payload 缺失那一路**——
+        有 ``access_control_type`` 时照旧落细分分支（真负样本不丢）。"""
+        assert decision_branch(
+            dec(Q.IS_REACHABLE, False, payload={"access_control_type": "login"})
+        ) == "login_required"
+        assert decision_branch(
+            dec(Q.IS_REACHABLE, False, payload={"access_control_type": "anti_bot"})
+        ) == "blocked"
+        assert decision_branch(
+            dec(Q.IS_REACHABLE, False, payload={"access_control_type": "not_found"})
+        ) == "broken"
+
+    def test_二的兜底不产生负样本(self):
+        """落到 unresolved ⇒ **不进负样本池**（``unresolved`` 不是负样本），
+        而是进复核队列让人看——这正是 fail-closed 要的处置。"""
+        ledger = RunLedger("T001")
+        out = ledger.record_from("https://x.test/", dec(Q.IS_REACHABLE, False))
+        assert out.branch == "unresolved"
+        assert out.is_negative_sample is False
+        assert ledger.negative_samples() == []
 
     def test_true_不是失败分支(self):
         assert decision_branch(dec(Q.PLAYER_OK, True)) == ""
@@ -119,8 +152,10 @@ class TestDecisionMapping:
         ledger = RunLedger("T001")
         out = ledger.record_from("https://x.test/", dec(Q.IS_REACHABLE, None))
         assert out.branch == "unresolved"
+        # ② 答 False 且 payload 缺失 ⇒ unresolved（H-15 后的口径），
+        # 不再落合并态 login_wall_or_blocked。
         out2 = ledger.record_from("https://y.test/", dec(Q.IS_REACHABLE, False))
-        assert out2.branch == "login_wall_or_blocked"
+        assert out2.branch == "unresolved"
 
 
 class TestSerialization:
@@ -663,10 +698,20 @@ class TestBranchPrecondition:
         assert out.branch == "subscription_wall"
 
     # 2026-10-13 增量三十二 · D10 偏差修缮：subscription_wall 强信号旁路
-    def test_subscription_wall_强信号旁路_多关键词(self):
-        """真付费墙页面点击前后就是同一个页面（页面即终点站）。
-        LLM 决策证据里 ≥2 个付费墙关键词即视为「看穿页面」——同页守卫放行。
-        实测样本：v.qq.com/x/cover/zr5a67l333ehzu9/d0032x85stp.html
+    # ⚠️ 2026-10-21（H-16 修复①）：**强信号不再用于贴分支**。
+    # 原来三条「强信号 ⇒ 旁路同页守卫 ⇒ 保留 subscription_wall」全部
+    # 作废——它们守的是「页面像付费墙吗」，而贴分支要答「页面**是不是**
+    # 付费墙」。人工复核（2026-10-21）判池里 12 条 subscription_wall
+    # **一条都站不住**：8 条真因是地区限制（v.qq 70017001.1）、1 条是
+    # 续费营销、1 条是采集降级、1 条是「打开app观看」的裸 CTA。
+    # 强信号现在只回答「像不像」（gatekeeper 拦页面），不回答「是不是」。
+    def test_subscription_wall_强信号但无门禁语境_降级unresolved(self):
+        """**证伪记录**（2026-10-21）：原断言「强信号 ⇒ 保留订阅墙」。
+
+        实测样本：v.qq.com/x/cover/zr5a67l333ehzu9/d0032x85stp.html——
+        它的真因是**地区限制**（70017001.1），「开通会员」只是句尾附加；
+        页面正文里没有门禁命题 ⇒ 前置事实不成立 ⇒ 降级 ``unresolved``
+        （真因由 ``cli relabel`` 按人工判读改写，见 07 号手册 §2.7）。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -681,14 +726,15 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/movie", body_text="VIP专享 开通会员"),
             pre_obs=self._obs(url="https://x.test/movie", body_text="VIP专享 开通会员"),
         )
-        assert out.branch == "subscription_wall", (
-            f"强信号却降级为 {out.branch}——真付费墙页应该旁路同页守卫"
+        assert out.branch == "unresolved", (
+            f"无门禁语境却保留为 {out.branch}——强信号不构成付费墙证据"
         )
 
-    def test_subscription_wall_强信号旁路_单关键词_带价格(self):
-        """单关键词 + 价格模式也是强信号。
-        实测样本：v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==
-        （VIP + 首3月9.9元/月 + 立即开通）。
+    def test_subscription_wall_价格形态同样不成立(self):
+        """**证伪记录**（2026-10-21）：原断言「单关键词 + 价格 ⇒ 保留订阅墙」。
+
+        实测样本：v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==（VIP + 首3月9.9元/月
+        + 立即开通）——人工复核判它是**营销**，不是门禁。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -703,11 +749,13 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/movie", body_text="VIP 9.9元/月"),
             pre_obs=self._obs(url="https://x.test/movie", body_text="VIP 9.9元/月"),
         )
-        assert out.branch == "subscription_wall"
+        assert out.branch == "unresolved"
 
-    def test_subscription_wall_强信号旁路_续费会员(self):
-        """续费 + 会员也是强信号。
-        实测样本：v-wb.youku.com/v_show/id_XNDE0NjYzODAzNg==
+    def test_subscription_wall_续费形态同样不成立(self):
+        """**证伪记录**（2026-10-21）：原断言「续费 + 会员 ⇒ 保留订阅墙」。
+
+        实测样本：v-wb.youku.com/v_show/id_XNDE0NjYzODAzNg==——续费是
+        **对老用户的挽留营销**，不是门禁命题。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -722,7 +770,7 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
             pre_obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
         )
-        assert out.branch == "subscription_wall"
+        assert out.branch == "unresolved"
 
     def test_subscription_wall_弱信号放行(self):
         """2026-10-19 增量六十·方案 X:同页守卫不再覆盖 subscription_wall,
@@ -792,20 +840,30 @@ class TestBranchPrecondition:
         if branch_factory == "subscription_wall":
             decision = Decision("player.ok", False, 0.8, "需付费", "llm",
                                 {"paywall": True})
+            # ⚠️ 2026-10-21：``subscription_wall`` 的**前置事实**是「页面
+            # 明说门禁命题」——正文里没有门禁语境时守卫会把它降成
+            # ``unresolved``（那是刻意的：见
+            # :data:`~trajectory_pipeline.executor.branches.BRANCH_PRECONDITION`）。
+            # 本测试守的是**方案 X 的同页守卫放行**，所以正文给出真门禁
+            # 语境，让它落到被测的那条路径上。
+            body = "订阅后观看 正片"
         elif branch_factory == "login_required":
             decision = Decision(Q.IS_REACHABLE, False, 0.8, "需登录", "llm",
                                 {"access_control_type": "login"})
+            body = "body"
         elif branch_factory == "blocked":
             decision = Decision(Q.IS_REACHABLE, False, 0.8, "地区限制", "llm",
                                 {"access_control_type": "region"})
+            body = "body"
         else:  # partial_free
             decision = Decision(Q.PLAYER_OK, False, 0.8, "试看6分钟", "llm",
                                 {"paywall_type": "trial"})
+            body = "body"
         led = RunLedger("T001")
         out = led.record_from(
             full_url, decision,
-            obs=self._obs(url=full_url, body_text="body"),
-            pre_obs=self._obs(url=full_url, body_text="body"),  # 同页
+            obs=self._obs(url=full_url, body_text=body),
+            pre_obs=self._obs(url=full_url, body_text=body),  # 同页
         )
         assert out.branch == expected_branch, (
             f"X 改后 {branch_factory} 在 player 落地页({url})同页应放行,"
@@ -863,13 +921,17 @@ class TestBranchPrecondition:
         assert out.branch == "partial_free", "X 改后 partial_free 同页放行"
 
     # 2026-10-15 INC44 · 簇 A：④ 记账降级误伤订阅墙——确定性信号旁路
-    def test_subscription_wall_救济标记旁路同页守卫(self):
-        """②③④ 负分支付费墙救济留下的 ``paywall_word`` + body 过强弱
-        信号组合（与 LLM evidence 旁路同款强度）→ 同页守卫放行。
+    # ⚠️ 2026-10-21（H-16 修复①）：强信号旁路**整体退役**。原来判据是
+    # 「正文过强弱信号组合 ⇒ 放行」，而强弱信号分不清「真付费墙」与
+    # 「营销 / 导航栏 CTA」——人工复核判池里 12 条 subscription_wall
+    # 一条都站不住。新的守门是**门禁语境**：正文里没有门禁命题就降级。
+    def test_subscription_wall_救济标记但无门禁语境_降级unresolved(self):
+        """**证伪记录**（2026-10-21）：原断言「正文含付费墙短语 ⇒ 保留订阅墙」。
 
-        实测簇 A（INC44 前研，75 对直访 9 行）：④ False + body 含
-        付费墙文案，本该 subscription_wall 却被同页降级 unresolved。
-        本例 body「续费会员」：续费（强）+ 会员（弱）→ 过强度闸。
+        实测簇 A（INC44 前研，75 对直访 9 行）：④ False + body 含付费墙
+        文案，本该 subscription_wall 却被同页降级 unresolved——当时靠
+        「续费会员」（续费强 + 会员弱）过强度闸放行。**续费是挽留营销**，
+        不是门禁 ⇒ 现在降级是对的。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -886,14 +948,15 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
             pre_obs=self._obs(url="https://x.test/movie", body_text="续费会员"),
         )
-        assert out.branch == "subscription_wall", (
-            f"强确定性信号却被降级为 {out.branch}——真付费墙页应旁路同页守卫"
+        assert out.branch == "unresolved", (
+            f"无门禁语境却保留为 {out.branch}——续费营销不是门禁命题"
         )
 
-    def test_subscription_wall_弱短语标记_放行(self):
-        """2026-10-19 增量六十·方案 X:同页守卫不再覆盖 subscription_wall。
-        原 INC32 纪律回归保护「弱短语标记 + 弱 body 仍降级」——X 改后
-        守卫不拦 subscription_wall,弱信号 + 弱 body 也直接放行。
+    def test_subscription_wall_导航栏CTA_降级unresolved(self):
+        """**证伪记录**（2026-10-21）：原断言「弱短语 + 弱 body 也放行」。
+
+        「开通会员 享更多精彩」是站点导航栏广告（实测池里 12 条订阅墙
+        全是这类裸命中）——门禁语境不成立 ⇒ 降级 ``unresolved``。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -909,40 +972,31 @@ class TestBranchPrecondition:
             obs=self._obs(url="https://x.test/movie", body_text="开通会员 享更多精彩"),
             pre_obs=self._obs(url="https://x.test/movie", body_text="开通会员 享更多精彩"),
         )
-        assert out.branch == "subscription_wall", "X 改后守卫不覆盖 subscription_wall"
+        assert out.branch == "unresolved", "导航栏 CTA 不构成门禁语境"
 
-    def test_has_strong_paywall_signal_单元(self):
-        """直接测判据函数，方便回归。"""
-        from trajectory_pipeline.executor.branches import _has_strong_paywall_signal
+    def test_subscription_wall_门禁语境成立_保留分支(self):
+        """正向守卫：正文**明说**门禁命题时，这条分支必须留得住。
 
-        cases = [
-            ("需付费", False, "弱信号 1 关键词无价格"),
-            # 仅弱关键词（开通/会员）= nav-bar CTA 模式，不旁路
-            ("开通会员观看", False, "仅弱关键词 不旁路"),
-            ("开通会员 享更多精彩", False, "仅弱关键词 不旁路"),
-            ("会员抢先看", False, "仅弱关键词 不旁路（partial_free 同款）"),
-            # 强 + 弱组合 = 真付费墙
-            ("VIP 会员", True, "1 强+1 弱"),
-            ("续费会员", True, "1 强+1 弱"),
-            ("订阅 开通", True, "1 强+1 弱"),
-            # ≥2 强关键词
-            ("VIP 订阅 续费 开通会员", True, "多强关键词"),
-            ("续费 包年", True, "2 强"),
-            # 强 + 价格
-            ("VIP 首3月9.9元/月", True, "1 强+价格"),
-            ("¥99 包月", True, "1 强+价格"),
-            ("订阅 9.9元", True, "1 强+价格"),
-            # 弱+价格（无强关键词）= 仍弱——保守起见不放行
-            ("开通会员 ¥9.9", False, "仅弱+价格 不旁路"),
-            ("", False, "空 evidence"),
-        ]
-        for ev, want, note in cases:
-            d = Decision("player.ok", False, 0.8, ev, "llm", {"paywall": True})
-            got = _has_strong_paywall_signal(d)
-            assert got is want, f"{note}: evidence={ev!r} want={want} got={got}"
+        守卫的作用是「拦住没证据的标签」，不是「拦住所有订阅墙」——
+        真订阅墙页面（实测 m.ixigua「以下内容需下载西瓜视频查看」）
+        必须还能落 ``subscription_wall``，否则负样本池会少掉这一类。
+        """
+        from trajectory_pipeline.executor.branches import RunLedger
 
-        # decision=None 必须返回 False（不让 None 误触发旁路）
-        assert _has_strong_paywall_signal(None) is False
+        led = RunLedger("T001")
+        out = led.record_from(
+            "https://x.test/movie",
+            Decision(
+                "player.ok", False, 0.8,
+                "LLM 判 False：播放器提示需下载客户端后观看",
+                "llm", {"paywall": True},
+            ),
+            obs=self._obs(url="https://x.test/movie",
+                          body_text="以下内容需下载西瓜视频查看"),
+            pre_obs=self._obs(url="https://x.test/movie",
+                              body_text="以下内容需下载西瓜视频查看"),
+        )
+        assert out.branch == "subscription_wall"
 
     def test_同页判定与评分器同源(self):
         """executor 与 evaluation 各有一份 ``_same_page``（executor 不

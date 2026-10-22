@@ -122,11 +122,13 @@
 | `degraded` | `list[str]` | 本次**没采到**的项。**fail-closed 的前提**：没有它，「没采到交互元素」与「页面上确实没有」在数据里完全一样。另含**采到了但不可读**的两项 `body_mojibake` / `title_mojibake`（解码损坏，见下） |
 | `video_tag_count` | `int` | 覆盖 `<video>` + `<audio>`。规则版 `PLAYER_OK` 的**唯一**判据 |
 | `iframe_count` | `int` | **不作判据**，只作排查线索 |
-| `elements_total` | `int` | **采到的**交互元素条数（驱动层 limit 截断后）。落盘条数被裁到 80；两者成对落盘。⚠️ **camoufox 下这个数已经过三层过滤**（词表外 role / 无名字 / 真同名整组丢弃）——账目留在驱动的 `last_enumeration`，**尚未落盘**（P6 批次元数据一并解决）。在此之前，跨驱动比这个数（§6.1 的 30% 判据）要记住两边的分母不同源 |
+| `elements_total` | `int` | **采到的**交互元素条数（驱动层 limit 截断后）。落盘条数被裁到 80；两者成对落盘。⚠️ **camoufox 下这个数已经过三层过滤**（词表外 role / 无名字 / 真同名整组丢弃）——过滤账目见下面的 `element_basis.face`。⚠️⚠️ **跨驱动比这个数（§6.1 的 30% 判据）不成立**：两个面数的是**不同的集合**（obscura = 上游工具给的交互元素；camoufox = ARIA 树里过了词表的那些），差值混着「枚举基础不同」与「过滤规则不同」两件事。**可比的那个数在 `element_basis.shared`** |
 | `links_total` | `int` | 同上，链接裁到 50 |
 | `interactive_elements` | `list[元素]`，形状**逐方言**（见下） | `ref` 是**会话内句柄**，只存在于 P1；text 槽裁到 120 字符 |
 | ↑ 的键名 | obscura 面 `{ref,tag,label}`／camoufox 面 `{ref,role,name}` | **P4 起按方言投影**（`driver` → 工具面 → 方言，只有一条轴，见 [设计方案 04 §4.8](../设计方案/04-camoufox执行层替换方案.md)）。槽位名统一、**值域不统一**：obscura 面的 kind 槽装 HTML 标签名（`button`/`input`），camoufox 面装 ARIA role（`button`/`textbox`）——`input` 与 `textbox` 在两套词表里对不上，**不可混池**。键名由 `Observation.element_vocabulary` 决定（驱动实现写、回放按键名恢复），读档侧统一走 `common/elements.py` 的 `element_role`/`element_name` |
 | `links` | `list[{text,href}]` | `text` 裁到 80 字符 |
+| `element_basis` | `dict \| null` | **跨面可比的元素账目**（设计方案 04 §4.9.6，2026-10-21）。**新增的一列，不改 `elements_total`**。结构 `{"shared": {...}, "face": {...}}`——**两本账平级**：`shared` 是**同一段 JS + 同一把尺子**在两个浏览器上各跑一次的结果（**按构造可比**），`face` 是本面自己的枚举账目（obscura 面只有 `nodes`/`kept` 两条，给不出「role 命中几条 / 无名丢掉几条」——**缺就是缺，不填 0**）。档位名见 `executor/browser/element_basis.py` 的 `LADDER_STAGES` / `SHARED_BASE_STAGES`。**`null` = 这一批没开 `--element-basis`**，不是「页面上没有元素」——这两种「没有」必须分开读。由 `cli run --element-basis` / `cli check --element-basis` 显式开启（**默认关**：多一次 evaluate 往返，是测量仪器不是生产链必需项）。⚠️ **空的账不落盘**：某一本账没测到时**缺键**，不落 `{}`——空账会被读成「测了，什么都没有」 |
+| `element_basis_error` | `str \| null` | **共享口径没测到的原因**（2026-10-21）。⚠️ **它与 `degraded` 分开**——`degraded` 是**内容块**的降级通道，下游只判它非空（`steps/search.extract_candidates` 见到降级就**不取候选**、`gatekeeper` 见到降级就拦），把**测量失败**混进去等于让一把坏尺子**作废整批数据**。三种状态分开读：`element_basis=null` 且本列 `null` → **没开开关**；`element_basis` 缺 `shared` 键且本列非空 → **开了但没测到**（face 账目仍在）；`element_basis` 完整 → **测到了** |
 
 ### `elements_total` / `links_total` 为什么是 P0
 
@@ -196,6 +198,7 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 | `reached_play_page` | 是否走到了播放页 |
 | `is_negative_sample` | `branch` 非空且 ∉ `NON_SAMPLE_BRANCHES` |
 | `branch_before_downgrade` | 人工降级前的分支。**只有被 `cli downgrade` 处置过的记录才有** |
+| `branch_before_relabel` | 人工**改判**前的分支（**最初**那一个，链式改判不覆盖）。**只有被 `cli relabel` 处置过的记录才有** |
 | `success_downgraded_by` | `visits[]` 上的降级留痕，见下 |
 
 > 三个 URL 字段**不合并**是刻意的：合并后读档的人必须回查控制流才知道
@@ -218,6 +221,28 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 > ⚠️ **`evidence` 的 `[原判 …]` 前缀是幂等判据**：`base_evidence()` 剥掉前缀
 > 与 `\n\n` 之后的一切，所以「已处置过的记录」按**戳**识别，不按 `branch` 值。
 > 现有 38 份原档大多是本命令落地之前处置的，**没有**这个前缀。
+
+### 人工改判的留痕（`cli relabel` 写，2026-10-21 H-16 修复②）
+
+改判**也改结论**（只是**留在**负样本池里），所以同样留痕：
+
+| 位置 | 形状 | 谁读它 |
+|---|---|---|
+| `outcomes[].branch_before_relabel` | `"subscription_wall"` 这样的**原判**（链式 A→B→C 之后它仍是 A） | 读档的人、回测 |
+| `outcomes[].evidence` | `<原正文>\n\n[改判 <旧> → <新>] <理由>` | 读档的人 |
+| `outcomes[].source` | `"human"` | 报表的「人工介入比例」 |
+| 负样本池行 | `branch` / `branch_label` / `source` / `evidence` **同步改** | **训练侧吃的是池行**（`evaluation.golden.builder`） |
+
+⚠️ **戳刻意不同于降级**：降级是 `[原判 X] `（且**剥掉**前缀与 `\n\n` 之后
+的一切），改判是 `[改判 A → B]` **追加在正文之后**。复用同一个前缀会让
+第二次改判被当成「已处置」跳过，链式改判就断了。
+改判的幂等判据是**目标分支值**（已经是目标分支就跳过）。
+
+⚠️ **改判必须同步改负样本池**：训练侧读的是池行的 `branch`，
+不是存档；而门禁 `integrity.check_archive` 查的是「存档里每条真负样本的
+`(task_id, url, branch)` **在不在池里**」——只改一边 ⇒ 门禁报
+`negative_not_pooled`（DEGRADED），而报告上只多一行「没并池」，
+看不出是改判写了一半。
 
 ---
 

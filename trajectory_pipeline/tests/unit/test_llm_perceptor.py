@@ -873,6 +873,47 @@ class Test付费墙不算成功:
         )
         assert d.payload.get("paywall") is False
 
+    # ── 让位规则（2026-10-21，H-16 修复①）────────────────────────────
+
+    def test_模型已诊断地区限制_不落付费墙(self):
+        """**更具体的形态优先**：模型自己判出地区限制时，付费墙让位。
+
+        实测 v.qq.com 8 条：主证据是「当前设备不支持播放」+ 70017001.1，
+        「开通会员」只是句尾附加——让位之前它们全被贴成订阅墙。
+        """
+        from trajectory_pipeline.executor.branches import decision_branch
+
+        fake = FakeLLM(
+            answers={Q.PLAYER_OK: False},
+            evidence="播放器显示「当前设备不支持播放」，错误码70017001.1",
+        )
+        d = lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY)
+        )
+        assert d.answer is False
+        assert d.payload.get("paywall") is False
+        assert d.payload["access_control_type"] == "region"
+        assert decision_branch(d) == "blocked"
+
+    def test_页面引文含地区限制_不落付费墙(self):
+        """让位的第二个输入源：**页面原文**（page_quotes）。
+
+        模型把它看到的原话回传在 page_quotes 里——代码据此让位，
+        不把「当前设备不支持播放」的页面贴成订阅墙。
+        """
+        from trajectory_pipeline.executor.branches import decision_branch
+
+        fake = FakeLLM(
+            answers={Q.PLAYER_OK: False},
+            page_quotes=["当前设备不支持播放"],
+        )
+        d = lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK, _obs(body_text=self.PAYWALL_BODY)
+        )
+        assert d.payload.get("paywall") is False
+        assert d.payload["access_control_type"] == "region"
+        assert decision_branch(d) == "blocked"
+
     def test_模型判真时不因词表升级(self):
         """**两边一致才落细分分支。** 模型判 True 说明它认为页面可用，
         此时词表命中多半是导航栏文案（实测百度页正文就有「免费观看」）。
@@ -1585,6 +1626,14 @@ class TestINC43负分支付费墙救济:
 
     **不翻转保证**（与 ④ 既有口径一致）：只在 answer=False 时救济；
     True（成功）与 None（没能力判）不动——词表命中不构成推翻二者的证据。
+
+    ⚠️ **2026-10-21 判据收紧**（台账 H-16 修复①）：救济只认**门禁语境**
+    （:func:`~trajectory_pipeline.perception.rule_perceptor.paywall_evidence`）——
+    「开通会员」**独行不成立**（导航栏广告），成立的是「门禁命题」或
+    「CTA + 同句观看语境」。原「强弱信号组合」那条路整体作废：人工复核
+    （``research/probes/inc73_human_review.json``）判池里 12 条
+    ``subscription_wall`` **一条都站不住**，成因全是 CTA 裸命中与地区
+    限制——本类里那两条被证伪的用例都记着原因。
     """
 
     APP_WALL_BODY = "海量影视免费看 打开 功夫8.1 立即播放 以下内容需下载西瓜视频查看"
@@ -1592,20 +1641,49 @@ class TestINC43负分支付费墙救济:
 
     # ── 路径 1：② 判否 + 无 access 细分 ─────────────────────────────
 
-    def test_二判否且正文含付费短语_改判订阅墙(self):
+    def test_二判否且正文含门禁语境_改判订阅墙(self):
+        """CTA + **同句观看语境** → 改判订阅墙。
+
+        「开通会员观看正片」：CTA「开通会员」+ 语境「正片」——语境词在
+        CTA 跨度之外（否则等于自己给自己作证）。
+        """
         from trajectory_pipeline.executor.branches import decision_branch
 
         fake = FakeLLM(answers={Q.IS_REACHABLE: False})
         d = lp.LLMPerceptor(fake).decide(
-            Q.IS_REACHABLE, _obs(body_text="登录后可观看 开通会员专享内容")
+            Q.IS_REACHABLE, _obs(body_text="开通会员观看正片 立即播放")
         )
         assert d.answer is False
         assert d.payload["paywall"] is True
         assert "付费墙" in d.evidence  # evidence 必须能指认判据
         assert decision_branch(d) == "subscription_wall"
 
-    def test_二判否且正文含强弱信号_改判订阅墙(self):
-        """v-wb.youku 实测形态：无 PAYWALL_WORDS 完整短语，但强弱信号齐全。"""
+    def test_二判否且正文只有裸CTA_不救济(self):
+        """**导航栏 CTA 不救济**（2026-10-21 新增守卫）。
+
+        「开通会员 享更多精彩」是站点导航栏广告：单凭它分不清「真付费墙」
+        与「入口页广告」——实测池里 12 条 subscription_wall 全是这类裸命中。
+        ② 判否 + 裸 CTA ⇒ 不改判，落 ② 的 fail-closed 出口 ``unresolved``。
+        """
+        from trajectory_pipeline.executor.branches import decision_branch
+
+        fake = FakeLLM(answers={Q.IS_REACHABLE: False})
+        d = lp.LLMPerceptor(fake).decide(
+            Q.IS_REACHABLE, _obs(body_text="开通会员 享更多精彩")
+        )
+        assert d.answer is False
+        assert d.payload.get("paywall") is None
+        assert decision_branch(d) == "unresolved"
+
+    def test_二判否且正文含强弱信号_不救济(self):
+        """**证伪记录**（2026-10-21）：v-wb.youku 实测形态「会员特惠 立即开通
+        首3月9.9元/月」原被列为真阳性（INC43 探针金标），人工复核独立判它
+        是**续费营销**（页面没有门禁命题，也没有观看语境）——改按新判据
+        不成立。
+
+        强弱信号现在**只**回答「这页**像**付费墙吗」（gatekeeper 拦页面），
+        **不用于贴分支**：贴分支只认门禁语境。
+        """
         from trajectory_pipeline.executor.branches import decision_branch
 
         fake = FakeLLM(answers={Q.IS_REACHABLE: False})
@@ -1613,8 +1691,8 @@ class TestINC43负分支付费墙救济:
             Q.IS_REACHABLE, _obs(body_text=self.STRONG_WEAK_BODY)
         )
         assert d.answer is False
-        assert d.payload["paywall"] is True
-        assert decision_branch(d) == "subscription_wall"
+        assert d.payload.get("paywall") is None
+        assert decision_branch(d) == "unresolved"
 
     def test_二判否但已给login细分_不救济(self):
         """access_control_type 细分比关键词更具体，decision_branch 本就让
@@ -1628,6 +1706,31 @@ class TestINC43负分支付费墙救济:
         assert d.answer is False
         assert d.payload.get("paywall") is None
         assert decision_branch(d) == "login_required"
+
+    def test_二判否且模型已诊断地区限制_不救济(self):
+        """**让位规则**（2026-10-21）：模型**自己**诊断出的访问形态更具体，
+        救济不得把它改写成订阅墙。
+
+        ③ 没有 ``access_control_type`` 字段，诊断只写在 evidence 里——
+        所以让位必须读 evidence（实测 v.qq.com 8 条：模型已判出
+        「当前设备不支持播放」+ 70017001.1，救济却把它改成了订阅墙）。
+        """
+        from trajectory_pipeline.executor.branches import decision_branch
+
+        fake = FakeLLM(
+            answers={Q.IS_REACHABLE: False},
+            evidence="播放器显示「当前设备不支持播放」，错误码70017001.1",
+        )
+        d = lp.LLMPerceptor(fake).decide(
+            Q.IS_REACHABLE, _obs(body_text="开通会员观看正片")
+        )
+        assert d.answer is False
+        assert d.payload.get("paywall") is None
+        # 模型的诊断落地成 ② 的 access_control_type=region → blocked
+        # （**不是**订阅墙，也不是笼统的 unresolved）。
+        assert d.payload["access_control_type"] == "region"
+        assert decision_branch(d) == "blocked"
+
 
     # ── 路径 2：③ 判否 ──────────────────────────────────────────────
 
@@ -1746,33 +1849,82 @@ class TestINC43负分支付费墙救济:
 
 
 class TestINC43救济判据真值表:
-    """``paywall_rescue_evidence`` 的判据钉住——探针实测的命中/不命中
-    形态各取其三，防止将来扩词时悄悄漂移。"""
+    """**门禁语境**判据（:func:`paywall_evidence`）的真值表——判据钉住，
+    防止将来扩词时悄悄漂移。
 
-    def test_APP墙短语命中(self):
-        assert lp.paywall_rescue_evidence("以下内容需下载西瓜视频查看") != ""
-        assert lp.paywall_rescue_evidence("下载优酷PC客户端继续观看") != ""
+    ⚠️ **2026-10-21 判据换代**（台账 H-16 修复①）：原来的
+    ``paywall_rescue_evidence``（扁平词表命中 **或** 强弱信号组合）已删除。
+    现在只有两层：
+
+    - **L1 门禁命题**：短语本身就是完整命题（「订阅后观看」= 不订阅不看）；
+    - **L2 号召 CTA + 同句观看语境**：「开通会员」独行是导航栏广告，
+      「您可以试看5分钟，点击开通会员」才是门禁。
+
+    原「强弱信号组合」那条路整体作废（人工复核判它是营销）。
+    """
+
+    def test_L1门禁短语命中(self):
+        """APP/客户端硬墙实测形态（INC43 探针金标）。"""
+        assert lp.paywall_evidence("以下内容需下载西瓜视频查看") != ""
+        assert lp.paywall_evidence("下载优酷PC客户端继续观看") != ""
+        assert lp.paywall_evidence("订阅后观看") != ""
 
     def test_站脚下载链接不命中(self):
         """「下载客户端」「下载中心」是站点页脚常规链接（实测 mgtv /
         luketv 都有），不是门禁语境——短语刻意收窄，不构成子串命中。"""
-        assert lp.paywall_rescue_evidence("首页 会员方案 下载客户端 热播榜单") == ""
-        assert lp.paywall_rescue_evidence("公司介绍 下载中心 版权所有") == ""
+        assert lp.paywall_evidence("首页 会员方案 下载客户端 热播榜单") == ""
+        assert lp.paywall_evidence("公司介绍 下载中心 版权所有") == ""
 
-    def test_强弱信号组合命中(self):
-        assert lp.paywall_rescue_evidence("会员特惠 立即开通 首3月9.9元/月") != ""
+    def test_L2_CTA加同句语境命中(self):
+        """CTA 与观看语境**同句**（不按逗号切句——实测真阳性 sohu
+        「您可以试看5分钟，点击开通会员」里两者被一个逗号隔开）。"""
+        hit = lp.paywall_evidence("您可以试看5分钟，点击开通会员")
+        assert hit != ""
+        assert "开通会员" in hit and "试看" in hit
+
+    def test_裸CTA不命中(self):
+        """导航栏 CTA 独行——**不成立**（实测 12 条 subscription_wall
+        里全是这类裸命中）。"""
+        assert lp.paywall_evidence("开通会员 享更多精彩") == ""
+        assert lp.paywall_evidence("会员专享") == ""
+        assert lp.paywall_evidence("续费 充值") == ""
+
+    def test_强弱信号组合不命中(self):
+        """**证伪记录**（2026-10-21）：v-wb.youku「会员特惠 立即开通
+        首3月9.9元/月」原是真阳性金标，人工复核判它是**续费营销**。"""
+        assert lp.paywall_evidence("会员特惠 立即开通 首3月9.9元/月") == ""
 
     def test_弱信号单出_不命中(self):
         """bilibili 实测形态：「会员购」导航项，仅弱词、无强词。"""
-        assert lp.paywall_rescue_evidence("首页 番剧 直播 游戏中心 会员购") == ""
+        assert lp.paywall_evidence("首页 番剧 直播 游戏中心 会员购") == ""
 
     def test_强信号单出_不命中(self):
         """mgtv 实测形态：导航栏「限时特惠」广告位，仅强词、无弱词无价格。"""
-        assert lp.paywall_rescue_evidence("限时特惠 创作 综艺 电视剧") == ""
+        assert lp.paywall_evidence("限时特惠 创作 综艺 电视剧") == ""
 
     def test_对照组无信号(self):
         """v.qq.com thevoice（金标 no_play_control 判对）——零命中。"""
-        assert lp.paywall_rescue_evidence("腾讯视频 所有频道 登录 我看过的 上传") == ""
+        assert lp.paywall_evidence("腾讯视频 所有频道 登录 我看过的 上传") == ""
+
+    def test_语境词不得落在CTA跨度内(self):
+        """表自洽守卫：语境词**不能**是任何 CTA 短语的子串。
+
+        判据要求语境词落在 CTA 跨度**之外**（否则「打开app观看」自己
+        给自己作证）。这条不变量今天成立，所以那道跨度检查暂时是
+        空转的——但它是为了将来扩表时不至于静默失效而留的。哪天有人
+        加了「试看后开通会员」这种 CTA，本测试会当场红，提醒他改词表。
+        """
+        from trajectory_pipeline.perception.rule_perceptor import (
+            PAYWALL_CONTEXT_WORDS,
+            PAYWALL_CTA_PHRASES,
+        )
+
+        for ctx in PAYWALL_CONTEXT_WORDS:
+            for cta in PAYWALL_CTA_PHRASES:
+                assert ctx not in cta, (
+                    f"语境词「{ctx}」出现在 CTA 短语「{cta}」的跨度内——"
+                    f"它会给自己作证，门禁判据就废了"
+                )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1802,13 +1954,39 @@ class TestINC45乱码页救济:
         "\ufffd\ufffd\ufffd\ufffd֮��ʥȢ�ף���棩\n相关明星\n为你推荐"
     )
 
-    def test_乱码降级且正文含付费墙证据_救济为订阅墙(self):
-        from trajectory_pipeline.executor.branches import decision_branch
+    def test_乱码降级且正文只有营销模块_不救济(self):
+        """**证伪记录**（2026-10-21）：sohu 实测混编页的可读部分是
+        「新用户首月9.9元，开通会员 立即抢购」——**营销模块**，不是门禁
+        （没有门禁命题，也没有同句观看语境）。
 
+        门禁语境收紧后，这一支自然落回 fail-closed 的 ``unresolved``——
+        那才是它该去的地方（人工复核 2026-10-21 独立判它「采集降级
+        mojibake」，成因是**采集**不是付费墙）。
+        """
         fake = FakeLLM()
         d = lp.LLMPerceptor(fake).decide(
             Q.FIND_PLAY_CONTROL,
             _obs(body_text=self.SOHU_BODY, interactive_elements=(),
+                 degraded=("body_mojibake",)),
+        )
+        assert fake.calls == []  # 拦截在 LLM 之前，不发请求
+        assert d.answer is None
+        assert d.payload.get("paywall") is None
+        assert "采集降级" in d.evidence
+
+    def test_乱码降级且可读部分有门禁命题_仍救济(self):
+        """乱码例外**只放宽降级，不放宽判据**：可读部分里**有**门禁命题
+        时照样救济（实测 m.ixigua「以下内容需下载西瓜视频查看」）。"""
+        from trajectory_pipeline.executor.branches import decision_branch
+
+        body = (
+            "����导航��"
+            "以下内容需下载西瓜视频查看\n��"
+        )
+        fake = FakeLLM()
+        d = lp.LLMPerceptor(fake).decide(
+            Q.FIND_PLAY_CONTROL,
+            _obs(body_text=body, interactive_elements=(),
                  degraded=("body_mojibake",)),
         )
         assert fake.calls == []  # 拦截在 LLM 之前，不发请求
@@ -1853,14 +2031,30 @@ class TestINC45乱码页救济:
         assert d.answer is False
         assert d.payload["paywall"] is True
 
-    def test_二乱码降级_同样救济(self):
-        """② 也被 degraded 拦截（visit 流程先问 ②）——同款例外适用。"""
+    def test_二乱码降级_同样不救济(self):
+        """② 也被 degraded 拦截（visit 流程先问 ②）——同款例外适用：
+        **放宽的是降级，不是判据**。sohu 混编页的可读部分是营销模块，
+        没有门禁语境 ⇒ ② 判否也不救济（落 ``unresolved``）。"""
         from trajectory_pipeline.executor.branches import decision_branch
 
         fake = FakeLLM()
         d = lp.LLMPerceptor(fake).decide(
             Q.IS_REACHABLE,
             _obs(body_text=self.SOHU_BODY, degraded=("body_mojibake",)),
+        )
+        assert fake.calls == []
+        assert d.answer is None
+        assert decision_branch(d) == "unresolved"
+
+    def test_二乱码降级且可读部分有门禁命题_同样救济(self):
+        """同款例外在② 上同样成立：可读部分有门禁命题就救济。"""
+        from trajectory_pipeline.executor.branches import decision_branch
+
+        body = "����导航��以下内容需下载西瓜视频查看��"
+        fake = FakeLLM()
+        d = lp.LLMPerceptor(fake).decide(
+            Q.IS_REACHABLE,
+            _obs(body_text=body, degraded=("body_mojibake",)),
         )
         assert fake.calls == []
         assert d.answer is False

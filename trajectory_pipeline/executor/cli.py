@@ -51,7 +51,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from types import MappingProxyType
 from collections import Counter
 from pathlib import Path
-from typing import Any, Final, Mapping
+from typing import Any, Callable, Final, Mapping
 from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor.agent_loop import AgentBackend
@@ -69,6 +69,7 @@ from trajectory_pipeline.executor.browser.mcp_client import (
 )
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES, RunLedger
 from trajectory_pipeline.executor import downgrade as downgrade_mod
+from trajectory_pipeline.executor import relabel as relabel_mod
 from trajectory_pipeline.executor.browser.driver_factory import (
     DEFAULT_KIND,
     SUPPORTED_KINDS,
@@ -363,7 +364,8 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
 @asynccontextmanager
 async def _driver_for_run(kind: str, *, shared: Any = None,
-                          headless: bool = True):
+                          headless: bool = True,
+                          collect_element_basis: bool = False):
     """一次 Run 的执行层句柄（P5）。**两种实现两种生命周期**：
 
     - ``obscura``：整批复用一条 MCP 连接上的驱动（``shared``）。P5 之前就是
@@ -381,6 +383,10 @@ async def _driver_for_run(kind: str, *, shared: Any = None,
     :meth:`CamoufoxSession.launch`）。``--headful`` 显式切回有头，
     给「人守着的桌面」那条路。
 
+    ``collect_element_basis`` 传给 camoufox 分支的驱动；obscura 分支的驱动是
+    批次级共享的（``shared``），采集开关在**造它的时候**就定下了（见
+    ``_run_manual`` / ``_run_plan``）——共享对象的开关不能逐 Run 改。
+
     认不出的 ``kind`` 由 :func:`make_driver` 抛 ``ValueError``，本函数不预判。
     """
     if shared is not None:
@@ -390,7 +396,8 @@ async def _driver_for_run(kind: str, *, shared: Any = None,
 
     session = await CamoufoxSession.launch(headless=headless)
     try:
-        yield make_driver(kind=kind, camoufox_session=session)
+        yield make_driver(kind=kind, camoufox_session=session,
+                          collect_element_basis=collect_element_basis)
     finally:
         await session.close()
 
@@ -462,7 +469,10 @@ async def _run_manual(args: argparse.Namespace) -> int:
             print(f"server = {client.info.name} {client.info.version} "
                   f"({client.info.tool_count} tools)")
             # obscura：整批一条连接复用（P5 前就是这条路径，行为不变）
-            shared = make_driver(client)
+            shared = make_driver(
+                client,
+                collect_element_basis=getattr(args, "element_basis", False),
+            )
         print(f"driver = {kind}")
         for title in titles:
             # **每个 task 一个 perceptor**：LLM 版的判断点 ① 需要目标片名，
@@ -474,6 +484,7 @@ async def _run_manual(args: argparse.Namespace) -> int:
             async with _driver_for_run(
                 kind, shared=shared,
                 headless=not getattr(args, "headful", False),
+                collect_element_basis=getattr(args, "element_basis", False),
             ) as driver:
                 orch = Orchestrator(driver, perceptor, cfg,
                                     rationale_writer=writer,
@@ -579,7 +590,10 @@ async def _run_plan(args: argparse.Namespace) -> int:
             print(f"server = {client.info.name} {client.info.version} "
                   f"({client.info.tool_count} tools)")
             # obscura：整批一条连接复用（行为与 P5 前一致）
-            shared = make_driver(client)
+            shared = make_driver(
+                client,
+                collect_element_basis=getattr(args, "element_basis", False),
+            )
         print(f"driver = {kind}")
         for n, task in enumerate(tasks, 1):
             # 上面的检查已保证 title 非空，这里直接取
@@ -589,6 +603,7 @@ async def _run_plan(args: argparse.Namespace) -> int:
             async with _driver_for_run(
                 kind, shared=shared,
                 headless=not getattr(args, "headful", False),
+                collect_element_basis=getattr(args, "element_basis", False),
             ) as driver:
                 orch = Orchestrator(driver, _make_perceptor(args, title), cfg,
                                     rationale_writer=writer,
@@ -748,6 +763,7 @@ async def cmd_check(args: argparse.Namespace) -> int:
             args.probe_url,
             action_smoke=getattr(args, "action_smoke", False),
             headless=not getattr(args, "headful", False),
+            collect_element_basis=getattr(args, "element_basis", False),
         )
 
     print("\n== obscura 连接 ==")
@@ -762,16 +778,49 @@ async def cmd_check(args: argparse.Namespace) -> int:
               f"{info.tool_count} tools")
         drift = FORBIDDEN_TOOLS & {t["name"] for t in await client.list_tools()}
         print(f"  红线 tool 仍在服务端清单里（已在驱动层拦截）: {sorted(drift)}")
-        driver = make_driver(client)
+        driver = make_driver(
+            client,
+            collect_element_basis=getattr(args, "element_basis", False),
+        )
         await driver.goto(args.probe_url)
         obs = await driver.observe(max_chars=DEFAULT_MAX_CHARS)
         print(f"  探针页 {obs.url}: body={len(obs.body_text)}ch "
               f"source={obs.body_source} degraded={list(obs.degraded)}")
+        if obs.element_basis is not None:
+            _print_element_basis(obs.element_basis, obs.element_basis_error)
+        elif getattr(args, "element_basis", False):
+            print("  元素账目: [FAIL] 开了 --element-basis 却没采到"
+                  "（见上面的 degraded）")
     return 0
 
 
+def _print_element_basis(basis: Mapping[str, Any],
+                         error: str | None = None) -> None:
+    """打印两本账（shared / face）。
+
+    **两本账平级打**，不合成一个数——合成就是「让两面可比」的失败版。
+
+    ⚠️ **缺键与「空账」不是一回事**（2026-10-21）：共享口径没测到时
+    存档里**缺** ``shared`` 键，而它的原因记在 ``element_basis_error`` 里。
+    打印时把它显式说出来——否则「shared 缺了」会被读成「这一档是 0」。
+    """
+    print("  元素账目（跨面可比口径）:")
+    for side in ("shared", "face"):
+        block = dict(basis.get(side, {}) or {})
+        if not block:
+            if side == "shared" and error:
+                print(f"    {side:<7} [FAIL] 没测到——{error}")
+            else:
+                print(f"    {side:<7} （本面给不出这一档）")
+            continue
+        print(f"    {side:<7} " + "  ".join(f"{k}={v}" for k, v in block.items()))
+    if error:
+        print(f"    ⚠️ 共享口径没测到：{error}")
+
+
 async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
-                          headless: bool = True) -> int:
+                          headless: bool = True,
+                          collect_element_basis: bool = False) -> int:
     """``check --driver camoufox``：起一次会话，打印**实测指纹**并跑一遍采集面原语。
 
     为什么不并进上面那段：obscura 的探针是「MCP 连得上吗 + 采得到吗」，
@@ -807,7 +856,8 @@ async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
         for k, v in session.readings.items():
             print(f"    {k:<10} = {v}")
 
-        driver = make_driver(kind="camoufox", camoufox_session=session)
+        driver = make_driver(kind="camoufox", camoufox_session=session,
+                             collect_element_basis=collect_element_basis)
         try:
             await driver.goto(probe_url)
             snap = await driver.snapshot(max_chars=DEFAULT_MAX_CHARS)
@@ -831,6 +881,19 @@ async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
             print(f"    {el.ref:<4} {el.role:<10} {el.name}")
         if stats:
             print("    过滤账目: " + "  ".join(f"{k}={v}" for k, v in stats.items()))
+
+        # 跨面可比口径（可选）：两本账打出来，好和 obscura 面**同一段 JS**
+        # 的读数直接并排比。
+        if collect_element_basis:
+            try:
+                shared = await driver.element_basis()
+            except DriverError as exc:
+                # 共享口径坏了**不等于这次检查失败**——它是**测量仪器**坏了，
+                # 不是页面不可信。face 账目照旧打出来（它不依赖共享口径）。
+                print(f"    共享口径: [FAIL] {exc}")
+                _print_element_basis({"face": dict(stats)}, str(exc))
+            else:
+                _print_element_basis({"shared": shared, "face": dict(stats)})
 
         # 采集面剩余原语（P3-β）：只报**条数**，不在这里 dump 内容——
         # 逐条核对走 `probe_observe --driver camoufox`（它把整份 Observation
@@ -2171,6 +2234,98 @@ def cmd_downgrade(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_relabel(args: argparse.Namespace) -> int:
+    """把「标签错了但仍是负样本」的记录**改分支**（取证后的处置）。
+
+    ⚠️ **默认 dry-run。** 改判改的是**训练资产**——负样本池是跨 run
+    累积的 append-only 资产，池没有反向操作（``purge-run`` 是按 run
+    回滚，不是按标签回滚）。先看清单，确认了再 ``--apply``。
+
+    与相邻两条处置路径的分工（互不重叠）：
+
+    * ``cli downgrade``：判定**不成立** → 落 ``unresolved``（**离开**池）；
+    * ``cli review --apply``：只对 ``REVIEW_BRANCHES``（反思档）生效——
+      「从没判过 → 人判」；
+    * **本命令**：判定**成立**但**贴错了支** → 换到正确的负分支
+      （**留在**池里）。
+
+    处置动作在 :mod:`relabel`（存档与**池**一起改、ledger 记账），
+    **判据在命令行**——与 ``cli downgrade`` 同一分工。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    patterns: list[re.Pattern[str]] = []
+    for raw in args.evidence or ():
+        try:
+            patterns.append(re.compile(raw))
+        except re.error as exc:
+            print(f"[stop] --evidence 正则不合法 {raw!r}：{exc}", file=sys.stderr)
+            return 2
+    # ⚠️ **必须在碰盘之前校验**（与 cli downgrade 同款）：理由必填这条
+    # 若落在模块里，它要先把整个目录走一遍、撞上第一条命中才抛——
+    # 而抛出来是裸 traceback，看起来像崩溃，实际只是一次参数写漏。
+    if not (args.reason or "").strip():
+        print("[stop] 改判必须给 --reason：它是这条日后唯一的依据",
+              file=sys.stderr)
+        return 2
+    ok, why = relabel_mod.check_target(args.to)
+    if not ok:
+        print(f"[stop] {why}", file=sys.stderr)
+        return 2
+    if not (args.url or args.branch or patterns):
+        print("[stop] 得给 --url / --branch / --evidence 之一"
+              "（不给就是全选——那会改判池里的每一条）", file=sys.stderr)
+        return 2
+
+    # 判据组合：**同类 OR、异类 AND**（写死在 help 里，不靠实现去猜）。
+    sels: list[Callable[[relabel_mod.Candidate], bool]] = []
+    if args.url:
+        sels.append(relabel_mod.select_by_url(*args.url))
+    if args.branch:
+        sels.append(relabel_mod.select_by_branch(*args.branch))
+    if patterns:
+        sels.append(relabel_mod.select_by_evidence(patterns))
+
+    def _select(cand: relabel_mod.Candidate) -> bool:
+        return all(s(cand) for s in sels)
+
+    try:
+        summary = relabel_mod.relabel_to_root(
+            root, select=_select, to_branch=args.to,
+            reason=args.reason or "", dry_run=not args.apply)
+    except relabel_mod.RelabelError as exc:
+        print(f"[stop] {exc}", file=sys.stderr)
+        return 2
+
+    if not summary["relabelled"] and not summary["rejected"]:
+        print("没有匹配的记录 —— 判据不匹配，或已改判过（幂等）")
+        return 0
+    verb = "改判" if args.apply else "**将**改判"
+    print(f"== {verb} {summary['relabelled']} 条记录 → "
+          f"{summary['to_branch']}（{summary['outcomes']} 条 outcome、"
+          f"{summary['pool_rows']} 行池、{len(summary['archives'])} 份存档）==")
+    for name, n in sorted(summary["archives"].items()):
+        print(f"  {name:38s} {n:>3d} 条")
+    if summary["skipped"]:
+        print(f"  （另有 {summary['skipped']} 条已是目标分支，跳过）")
+    if summary["merged"]:
+        print(f"\n⚠ {summary['merged']} 条**并入已有行**：池里已经有同一 "
+              f"(task_id, url) 的 {summary['to_branch']} 标签，")
+        print("  本次**删掉**贴错标签的那一行，不新建行（同键只能有一行）。")
+    if summary["rejected"]:
+        print(f"\n⚠ {len(summary['rejected'])} 条**被拒**（未改）：")
+        for what, why in summary["rejected"]:
+            print(f"  {what}\n      {why}")
+    if not args.apply:
+        print("\n⚠ 这是 dry-run。加 --apply 才落盘。")
+        print("  落盘时**存档与负样本池一起改**——只改一边会让门禁报"
+              "「没并池」。")
+    else:
+        print("\n⚠ 复核档（`.reviewed.json`）若存在也已同步；"
+              "下一次 review --apply 会从**原档**重新合并——"
+              "原档也改了，所以改判不会被覆盖回去。")
+    return 0
+
+
 def cmd_review_queue(args: argparse.Namespace) -> int:
     """改**复核队列文件**本身（预填 / 收敛），不动 P1。
 
@@ -3122,6 +3277,13 @@ def build_parser() -> argparse.ArgumentParser:
                           "（最小化/息屏/锁屏/遮挡），单次点击要 5–13s，"
                           "会把一半的点击打成超时假负样本（设计方案 04 §4.9.5）。"
                           "有头 = 人守着的桌面。两种口径都记进批次元数据")
+    run.add_argument("--element-basis", action="store_true",
+                     help="采**跨面可比的元素账目**（设计方案 04 §4.9.6）："
+                          "同一段 JS + 同一把尺子在两个浏览器上各跑一次，"
+                          "落进存档的 element_basis 列（shared/face 两本账）。"
+                          "**默认关**——多一次 evaluate 往返，是测量仪器不是"
+                          "生产链必需项。开它是为了让判据②③的数**可比**，"
+                          "不是改 elements_total 的语义")
     run.add_argument("--log-level", choices=("debug", "info", "warning", "error"),
                      default="info",
                      help="发现链运行日志级别（orchestrator 关键节点实时输出到"
@@ -3207,6 +3369,25 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
     dg.set_defaults(func=cmd_downgrade)
 
+    rl = sub.add_parser(
+        "relabel",
+        help="把「标签错了但仍是负样本」的记录改分支（**默认 dry-run**）")
+    rl.add_argument("--to", required=True,
+                    help="目标分支。**必须仍是真负样本**"
+                         "（unresolved / trailer_suspect / player_unverified "
+                         "这类反思档不是负样本，走 cli review --apply）")
+    rl.add_argument("--out", default=None, help="P1 存档目录（默认 output/pipeline）")
+    rl.add_argument("--url", nargs="+", default=None,
+                    help="按 URL 片段挑（多片段 **OR**）")
+    rl.add_argument("--branch", nargs="+", default=None,
+                    help="按**当前**分支挑（多名 **OR**）")
+    rl.add_argument("--evidence", nargs="+", default=None,
+                    help="按**原始判定正文**是否命中正则来挑（只看第一段）")
+    rl.add_argument("--reason", default=None,
+                    help="改判理由，**必填**，原样进 evidence")
+    rl.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
+    rl.set_defaults(func=cmd_relabel)
+
     chk = sub.add_parser("check", help="查能力，不跑任务")
     chk.add_argument("--probe-url", default="https://example.com/")
     chk.add_argument(
@@ -3224,6 +3405,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="（仅 --driver camoufox）用**有头**浏览器。缺省无头——"
              "无人值守口径（设计方案 04 §4.9.5）。加这个开关看的是"
              "「人守着桌面」那条路的指纹读数",
+    )
+    chk.add_argument(
+        "--element-basis", action="store_true",
+        help="采**跨面可比的元素账目**（设计方案 04 §4.9.6）并打印两本账。"
+             "默认关——它是测量仪器，不是生产链必需项",
     )
     chk.set_defaults(func=cmd_check)
 

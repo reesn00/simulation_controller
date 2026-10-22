@@ -151,6 +151,14 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
     ``unresolved``，**54 条正确结论被判成「分支走错」**。新增分支时
     必须同步这里——``tests/unit/test_d5_scorer.py::Test同源`` 盯着
     真实存档里出现的每个 (question, branch) 组合。
+
+    2026-10-21（H-16 修复①）：那些「payload 选用的细分结论」**不再
+    在这里手写**——改从
+    :data:`trajectory_pipeline.perception.questions.PAYLOAD_FINE_BRANCHES`
+    取（那张表是**单一真源**，`executor.review_queue._fits` 的归属校验
+    也从它取）。两处各留一份的后果是「d5 放行、归属拒绝」——
+    而那种分歧是**静默**的：一边把行判成分支走错，另一边把同一条
+    判成跨判断点，报告上两处都看不出异常。
     """
     from trajectory_pipeline.perception import questions
 
@@ -160,28 +168,15 @@ def _build_question_to_branches() -> Mapping[str, frozenset[str]]:
         if q.negative_branch:
             allowed.add(q.negative_branch)
         allowed.add(UNRESOLVED)  # 通用 fail-closed 出口
-        if qid == questions.Q.PLAYER_OK:
-            allowed.add("player_unverified")  # record_unresolved_reached
-            allowed.add(questions.PAY_WALL)  # payload 选用的细分结论
-            allowed.add("partial_free")  # paywall_type=preview/trial 的细分
-        if qid == questions.Q.IS_REACHABLE:
-            # ② 的 payload 细分（2026-10-12 阶段 1）：
-            # decision_branch 按 access_control_type 选用，不走题绑定。
-            allowed.add("login_required")
-            allowed.add("blocked")
-            allowed.add("broken")
-        if qid == questions.Q.FIND_PLAY_CONTROL:
-            allowed.add("component_unverified")  # I6 违约记账
-        if qid == questions.Q.CLASSIFY_SEARCH_LINKS:
-            # 方案 12 阶段 A1：分类题一道题服务三条发现路径，落选分支由
-            # orchestrator 按 discovery_path 分发点显式指定（与旧 ①B/①C
-            # 的 branch 参数化同款）。Question.negative_branch 是标量，
-            # 只能绑 direct 的默认口径（not_play_site）；另两条路径的
-            # ``not_aggregator`` / ``not_article`` 在这里放行——漏放会把
-            # 真实的分发记账整批判成「分支走错」（第一版手写字面量漏
-            # unresolved 时 54 条正确结论被错判的前车之鉴）。
-            allowed.add("not_aggregator")
-            allowed.add("not_article")
+        # payload 选用的细分结论（单一真源见 questions.PAYLOAD_FINE_BRANCHES）：
+        #   ② access_control_type → login_required / blocked / broken
+        #   ④ paywall / paywall_type → subscription_wall / partial_free
+        #   ④ access_control_type → login_required / blocked / broken
+        #     （2026-10-21：播放页本身弹地区限制/404 时 ④ 才是最早看到
+        #      它的判断点，② 在点击播放之前还没报错）
+        #   ③ I6 违约记账 → component_unverified
+        #   ①.5 分类题 → not_aggregator / not_article
+        allowed |= set(questions.PAYLOAD_FINE_BRANCHES.get(qid, ()))
         out[qid] = allowed
     # 代码层确定性事实核的分支：question 为空、不经 LLM，没有判断点可配对。
     # 按 (question, branch) 组合放行——分支名可能与注册表负分支重名

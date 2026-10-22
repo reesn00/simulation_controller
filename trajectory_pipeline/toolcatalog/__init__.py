@@ -299,10 +299,24 @@ _PRESS_OBSCURA = ToolDef(
 # 说明里**点名 camoufox 与 get_by_role**（方案 04 §5.1）——不点名，
 # 模型学不会「匹配到多个元素时怎么办」，而那是执行期最常见的失败。
 #
-# ⚠️ 这三条 ``exercised=False``：**还没有任何真实运行跑出过这个形状**
-# （camoufox 面一次都没跑过）。它们是**已验证能力的方言变体**，不是
-# 「本项目没有的能力」——两者的区别在 ``family`` 与 ``exercised`` 上
-# 分开记。
+# ⚠️ ``exercised`` 逐条成立，**不是**整段一起成立（2026-10-21 补记）：
+#
+# - ``click``：**已验证**——2026-10-20 的第一轮双跑（DR01《让子弹飞》，
+#   camoufox 侧）真实产生过 3 次 ``{role, name}`` 目标的点击，落在
+#   ``output/pipeline/dualrun/camoufox/``。**它的 ``required`` 口径
+#   （``role`` 与 ``name`` 都必填）是按那次真实调用校出来的**，不是猜的。
+# - ``fill`` / ``press``：**仍是能力声明**——那批 camoufox 存档里
+#   没跑出过这个形状（脚本化链没走到填搜索框那一步）。
+#
+# ⚠️ 之前这三条一律标 ``exercised=False``，理由是「camoufox 面一次都没
+# 跑过」。**那条理由已经不成立**（2026-10-20 跑过了），而标注没跟着改——
+# 于是契约测试查不到真实调用，只能「按没跑过」处理。**标注撒谎比
+# 标注缺失更难发现**：它会让 ``required`` 口径永远不被真实数据校准。
+# 2026-10-21 把契约测试的存档扫描改成**递归**（原先 glob 不递归，
+# ``dualrun/`` 下的存档看不见）之后，这条断言立刻变红并指名了要改哪一条。
+#
+# 它们是**已验证能力的方言变体**，不是「本项目没有的能力」——两者的区别
+# 在 ``family`` 与 ``exercised`` 上分开记。
 
 _CLICK_CAMOUFOX = ToolDef(
     name="click",
@@ -322,7 +336,7 @@ _CLICK_CAMOUFOX = ToolDef(
         "页面上有相当一部分元素没有可访问名，那些定位不到，别选它们。"
     ),
     family="action",
-    exercised=False,
+    exercised=True,
 )
 
 _FILL_CAMOUFOX = ToolDef(

@@ -148,8 +148,15 @@ def ok(question, payload=None, evidence="e"):
     return Decision(question, True, 1.0, evidence, "rule", payload or {})
 
 
-def no(question, evidence="e"):
-    return Decision(question, False, 1.0, evidence, "rule", {})
+def no(question, evidence="e", payload=None):
+    """②/③ 答 False。
+
+    ⚠️ **payload 决定落哪支**：② 答 False 而 payload 缺失 ⇒
+    ``unresolved``（2026-10-21 增量七十四，H-15，owner 裁定）——
+    「分不清是哪一种拦截」不是「有拦截」。带 ``access_control_type``
+    时照旧落细分分支（真负样本不丢）。
+    """
+    return Decision(question, False, 1.0, evidence, "rule", payload or {})
 
 
 def none(question, evidence="e"):
@@ -185,12 +192,36 @@ class TestVisitFlow:
         await visit_site(d, ScriptedPerceptor({}), ledger, CAND)
         assert ledger.outcomes[0].branch == "unreachable_hard"
 
-    async def test_页面不可达记_login_wall(self):
+    async def test_页面不可达_无细分_payload_记_unresolved(self):
+        """⚠️ **② 答 False 而 payload 缺失 ⇒ ``unresolved``**（2026-10-21，
+        H-15，owner 裁定「只落 unresolved，不新开分支」）。
+
+        旧口径落 ``login_wall_or_blocked``——那一支的语义是
+        「登录墙/验证码/地区限制」，而**三个前提一个都没观测到**。
+        实测那 10 条因此以真负样本的身份进了池，而 LLM 自己的 evidence
+        写的是「未加载出目标内容」——**与分支名直接矛盾**。
+        """
         d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
         p = ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)})
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
-        assert ledger.outcomes[0].branch == "login_wall_or_blocked"
+        assert ledger.outcomes[0].branch == "unresolved"
+        # **不是负样本** ⇒ 不进池
+        assert ledger.outcomes[0].is_negative_sample is False
+        assert ledger.negative_samples() == []
+
+    async def test_页面不可达_带细分_payload_仍记真负样本(self):
+        """兜底改 unresolved **只影响 payload 缺失那一路**——
+        有 ``access_control_type`` 时照旧落细分分支。"""
+        d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
+        p = ScriptedPerceptor({
+            Q.IS_REACHABLE: no(
+                Q.IS_REACHABLE, payload={"access_control_type": "login"})
+        })
+        ledger = RunLedger("T001")
+        await visit_site(d, p, ledger, CAND)
+        assert ledger.outcomes[0].branch == "login_required"
+        assert ledger.outcomes[0].is_negative_sample is True
 
     async def test_无播放控件记_no_play_control(self):
         d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
@@ -372,10 +403,15 @@ class TestVisitFlow:
 
         d.new_tab = boom
 
-        p = ScriptedPerceptor({Q.IS_REACHABLE: no(Q.IS_REACHABLE)})
+        # 带细分 payload ⇒ 落真负样本分支——**这样断言才证明
+        # 「走到了判断环节」**（落 unresolved 分不清是 ② 判的还是别处兜的）
+        p = ScriptedPerceptor({
+            Q.IS_REACHABLE: no(
+                Q.IS_REACHABLE, payload={"access_control_type": "login"})
+        })
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
-        assert ledger.outcomes[0].branch == "login_wall_or_blocked"  # 走到了判断环节
+        assert ledger.outcomes[0].branch == "login_required"  # 走到了判断环节
 
     async def test_前置环节的_none_记_unresolved(self):
         """fail-closed：没判出来不是失败。
@@ -532,15 +568,17 @@ class TestPlayerUnverifiedAtStep7:
                 )
             }
         )
+        # 带细分 payload（真登录墙）⇒ 落真负样本分支
         p = ScriptedPerceptor(
             {
-                Q.IS_REACHABLE: no(Q.IS_REACHABLE),
+                Q.IS_REACHABLE: no(
+                    Q.IS_REACHABLE, payload={"access_control_type": "login"}),
                 Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
             }
         )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
-        assert ledger.outcomes[0].branch == "login_wall_or_blocked"
+        assert ledger.outcomes[0].branch == "login_required"
         assert d.clicked == []  # 登录墙上不该点播放
 
 

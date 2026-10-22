@@ -15,6 +15,7 @@ W1 阶段只有 :data:`TRAILER_ONLY_NEEDS_LLM = False` 的题能确定性判定�
 from __future__ import annotations
 
 from types import MappingProxyType
+from typing import Mapping
 
 from trajectory_pipeline.perception.base import Q, Question
 
@@ -139,22 +140,26 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
             prompt=(
                 "这是点击播放控件后到达的页面。"
                 "结合代码测得的媒体元素数量，判断它**是不是一个能正常播放的播放器页**。\n"
-                "⚠️ **播放器存在 ≠ 能看**。页面明确要求订阅/付费才能播放时"
-                "（开通会员、订阅后观看、购买单集…），"
+                "⚠️ **播放器存在 ≠ 能看**。页面**明说**不给钱/不订阅就看不了正片时"
+                "（门禁命题：「订阅后观看」「购买单集」「开通会员观看」"
+                "「以下内容需下载…」；或同一句里既有订阅 CTA（开通会员/续费/充值）"
+                "又有观看语境（试看/解锁/正片/全集/完整版）），"
                 "**判否**——本项目的口径是「有播放页但需付费不算成功」。\n"
-                "反之，页面只是**导航栏**里挂着「免费观看」「VIP」字样而并未"
-                "挡住播放的，不要因此判否。\n"
-                # 2026-10-19 增量 A3 修缮：反假阳性段——「会员到期续费营销」
-                # 形态：页内出现「立即续费 / 限时续费享优惠 / 会员 X 天后到期 /
-                # 首 3 月每月 12 元」类 CTA / 续费弹窗时，**不**判可播——
-                # 这些是付费墙终点站对老用户的挽留营销，整页仍是付费墙
-                # 上下文。看到就 **answer=false**，**paywall_type=null**
-                # （不是试看，留给 subscription_wall 大类）。
+                "反之，页面只是**导航栏**里挂着「免费观看」「VIP」「开通会员」"
+                "字样而并未挡住播放的，不要因此判否。\n"
+                # 2026-10-19 增量 A3 修缮的反假阳性段，2026-10-21（H-16 修复①）
+                # **改口径**：原来写「看到续费营销 CTA 就必须判否（留给
+                # subscription_wall 大类）」。那条与收紧后的**代码**判据打架——
+                # 代码按**门禁语境**判，裸「续费」不成立；而让人为续费横幅
+                # 判否、代码又不认门禁，落点就成笼统的 component_unverified
+                # （「点了但没组件」——页面明明有组件）。⇒ 两侧改成同一口径：
+                # 续费营销**本身不是门禁**，门禁是页面明说的那句话。
                 "**反假阳性**：页内出现「**立即续费** / 「**续费享优惠**」 / "
                 "「**会员 X 天后到期**」 / 「**包月 / 包年续费**」等"
-                "续费营销 CTA / 弹窗 / 横幅时，整页仍是付费墙上下文，**必须**"
-                "判 **answer=false** + **paywall_type=null**——"
-                "「能看」必须是真的能看正片，不是「续完费就能看」。\n\n"
+                "续费营销 CTA / 弹窗 / 横幅时，那是**对老用户的挽留营销**——"
+                "它不说明「这里看不了正片」，**不要**仅凭它判否；"
+                "只有页面**明说**「续费后才能观看 / 解锁 / 看全集」这类"
+                "**门禁命题**时才判否。\n\n"
                 "1. **填写 ``answer``**：``true`` / ``false`` / ``null`` "
                 "三选一——证据不足时给 ``null``，不要猜。\n\n"
                 # 2026-10-12 增量十七 · P4a 第二轮：page_quotes 提到 answer
@@ -462,22 +467,32 @@ CODE_ONLY_BRANCHES = frozenset(
 )
 
 #: **已弃用**的分支（2026-10-12 阶段 1）：不再由新代码路径主动产生，
-#: 保留是为了**历史兼容**——旧存档合并态展示、以及 visit.py ② 未细分
-#: 的老路径（Decision 无 payload 时仍落合并态）都需要它合法。
+#: 保留是为了**历史兼容**——旧存档合并态展示需要它合法。
+#:
+#: ⚠️ **2026-10-21 起，② 的兜底也不再落它**（台账 H-15，owner 裁定
+#: 「只落 ``unresolved``，不开新支」）。原先的兜底路径——② 答 False
+#: **且没填** ``access_control_type``——落进这个合并态，而**墙 / 验证码 /
+#: 反爬这三个前提一个都没观测到**：实测 10 条这样判出来的负样本，
+#: LLM 自己的 evidence 里从没提过「登录 / 验证码 / 反爬」，
+#: 现场重采与存档**逐字一致**（不是采集残留），而 A 面（obscura）
+#: 对同一批 URL 落的正是 ``unresolved``。⇒ **10/39 = 26% 的负样本池
+#: 是分支越权造出来的**。现在兜底 fail-closed 落 ``unresolved``。
 #:
 #: 处理规则与 :func:`all_branches` / ``executor/branches.py::record`` 配套：
 #:
 #: - ``all_branches()`` **排除**已弃用分支——覆盖追踪（``missing_branches``）
 #:   不再要求它产出，新增分支不会因为历史合并态「没产出」而误报；
-#: - ``record()`` 校验时**额外放行**——历史路径仍可能产出它，抛
-#:   ``UnknownBranch`` 会把旧调用点当场炸掉（test_visit.py 四处断言
-#:   会全红）。
+#: - ``record()`` 校验时**额外放行**——**历史存档**仍可能带它（清理前
+#:   一直合法），抛 ``UnknownBranch`` 会把旧调用点当场炸掉。
+#: - ``executor/branches.py::decision_branch`` 的兜底**遇到它就改落
+#:   ``unresolved``**——「合并态不再兜底」这条规则按**语义**判
+#:   （``fallback in DEPRECATED_BRANCHES``），不按题号判。
 DEPRECATED_BRANCHES = frozenset(
     {
         # ② 的合并态：登录墙 / 验证码 / 地区限制。阶段 1 拆分为
-        # ``login_required`` / ``blocked`` / ``broken`` 后不再主动产出，
-        # 但 visit.py ② 不传 payload 的路径仍落它（决策口径见
-        # ``executor/branches.py::decision_branch`` 的「payload 缺失保持现状」）。
+        # ``login_required`` / ``blocked`` / ``broken`` 后不再主动产出；
+        # **2026-10-21 起兜底路径也不再落它**（② 无 payload ⇒ 落
+        # ``unresolved``）——理由见上面那段「分支越权」的记录。
         "login_wall_or_blocked",
     }
 )
@@ -564,6 +579,73 @@ _BRANCH_QUESTION: dict[str, str] = {
     "site_search_routed": Q.FIND_SITE_SEARCH,  # 路由记账，非结论
 }
 
+
+#: **payload 细分分支**——决策树里这些分支**不是题绑定的**，而是由
+#: ``Decision.payload`` 选用（见
+#: :func:`~trajectory_pipeline.executor.branches.decision_branch`）：
+#: ``access_control_type`` 选 ``login_required`` / ``blocked`` /
+#: ``broken``，``paywall`` / ``paywall_type`` 选 ``subscription_wall`` /
+#: ``partial_free``。
+#:
+#: **单一真源**：``d5_scorer.QUESTION_TO_BRANCHES``（判一个
+#: ``(question, branch)`` 组合合不合法）与 ``review_queue._fits``
+#: （人工贴标签前核归属）都从这张表取。两处各留一份的后果是
+#: 「d5 放行、归属拒绝」或反过来，而那种分歧是**静默**的——
+#: 一边把行判成分支走错，另一边把同一条判成跨判断点。
+#:
+#: 2026-10-21（H-16 修复①）**④ 也进了这张表**：播放页**本身**弹
+#: 地区限制 / 验证码 / 404 时，④ 才是**最早**看到它的判断点——
+#: ② 在点击播放之前，那会儿页面还没报错（实测 v.qq.com 8 条：② 判
+#: 「可达」，④ 才撞上「当前设备不支持播放」+ 70017001.1）。
+#: ④ 的 payload 此前**没有** ``access_control_type`` 键，于是那种形态
+#: 只能被降成笼统的 ``component_unverified``。
+#:
+#: 同日 **②③ 也进了这张表**（``subscription_wall``）：付费墙**救济**
+#: 路径在②判否、③判否时补 ``payload["paywall"]``，``decision_branch``
+#: 据此落订阅墙。这条路径 2026-10-15（INC43）就在，判据在
+#: 2026-10-21 收紧成**门禁语境**（见
+#: :func:`trajectory_pipeline.perception.rule_perceptor.paywall_evidence`）。
+#: **不登记的后果**：代码自己产出的 (site.is_reachable, subscription_wall)
+#: 会被 D-5 判成「分支走错」——**打分器与生产链互相打架**，而那种
+#: 分歧在报告上看不出异常（正是 H-16 记的「同一个仓库里两套口径」）。
+#:
+#: ⚠️ **这张表只收「payload 选出来的」细分分支**。分类题
+#: （``classify.search_links``）的 ``not_aggregator`` / ``not_article``
+#: 是**路径分发**选的（orchestrator 按 discovery_path 指定），不是
+#: payload 选的——混进来会让 :func:`questions_of_branch` 把
+#: ``not_aggregator`` 的产地算成三处，而它只有两处（①B + ⑤）。
+PAYLOAD_FINE_BRANCHES: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    Q.IS_REACHABLE: (
+        "login_required",   # access_control_type=login
+        "blocked",          # region / captcha / anti_bot
+        "broken",           # not_found
+        # 2026-10-21（H-16 修复①）：② 也有**付费墙救济**路径——
+        # ``llm_perceptor`` 在②判否且正文有**门禁语境**证据时补
+        # ``payload["paywall"]``，``decision_branch`` 据此落本支。
+        # 不登记的后果：代码自己产出的 (site.is_reachable, subscription_wall)
+        # 会被 D-5 判成「分支走错」——**打分器与生产链互相打架**，
+        # 而那种分歧在报告上看不出异常。
+        "subscription_wall",
+    ),
+    Q.PLAYER_OK: (
+        "subscription_wall",   # payload["paywall"]
+        "partial_free",        # payload["paywall_type"]=preview/trial
+        "player_unverified",   # record_unresolved_reached（环节⑦）
+        # 2026-10-21：④ 也能带 access_control_type（见上）——播放页本身
+        # 弹地区限制 / 验证码 / 404 时，④ 才是最早看到它的判断点。
+        # ⚠️ **不含 ``login_required``**：④ 的形态推断走
+        # ``rule_perceptor.infer_access_defect``，它**刻意不含 login**
+        # （导航栏「请登录」与「开通会员」一样高频，让它让位会把整批
+        # 订阅墙赶进 unresolved）。代码产不出的组合不登记。
+        "blocked", "broken",
+    ),
+    Q.FIND_PLAY_CONTROL: (
+        "component_unverified",  # I6 违约记账：answer=True 却无 ref
+        # 同上：③ 的付费墙救济路径（门禁语境）。
+        "subscription_wall",
+    ),
+})
+
 # ⚠️ ``not_aggregator`` 是**双产地分支**（2026-10-16 路径 B/C）：
 # ①B ``SELECT_AGGREGATOR_RESULTS`` 判 False 与 ⑤ ``IS_AGGREGATOR``
 # 判 False 都记它。上面的动态推导按 REGISTRY 注册顺序**后者覆盖
@@ -615,13 +697,25 @@ def questions_of_branch(branch: str | None) -> list[str]:
     （``subscription_wall`` 等）走 :data:`_BRANCH_QUESTION` 兜底；
     未知分支 / 空入参返回空列表（空列表 = 任何 question 都不合规，
     与旧 ``question_of_branch`` 返回 ``""`` 的拒绝语义一致）。
+
+    2026-10-21（H-16 修复①）：改成**三处来源的并集**——
+    REGISTRY 的题绑定 + :data:`PAYLOAD_FINE_BRANCHES` 的 payload 细分
+    产地 + :data:`_BRANCH_QUESTION` 兜底。原来是「先到先得」：
+    ``component_unverified`` 在 REGISTRY 里绑着④，于是③ 的产地
+    （I6 违约记账）被吞掉；而 ``blocked`` 只登记在 :data:`_BRANCH_QUESTION`
+    里，④ 也产它的事实（2026-10-21 起）就登记不进去。
     """
     if not branch:
         return []
-    from_registry = [
-        qid for qid, q in REGISTRY.items() if q.negative_branch == branch
-    ]
-    if from_registry:
-        return from_registry
-    hit = _BRANCH_QUESTION.get(branch)
-    return [hit] if hit else []
+    out: list[str] = []
+    for qid, q in REGISTRY.items():
+        if q.negative_branch == branch and qid not in out:
+            out.append(qid)
+    for qid, branches in PAYLOAD_FINE_BRANCHES.items():
+        if branch in branches and qid not in out:
+            out.append(qid)
+    if not out:
+        hit = _BRANCH_QUESTION.get(branch)
+        if hit:
+            out.append(hit)
+    return out

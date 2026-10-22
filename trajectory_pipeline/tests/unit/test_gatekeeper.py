@@ -137,6 +137,74 @@ class TestIntercept:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 付费墙强信号真值表
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class Test付费墙强信号:
+    """强付费墙信号（``≥1强+≥1弱 / ≥2强 / ≥1强+价格``）的真值表。
+
+    ⚠️ **2026-10-21 迁居**：这条判据原先挂在
+    ``executor.branches._has_strong_paywall_signal`` 那个**没有调用点**
+    的适配函数上——它随同页守卫窄化而退役，已删除。判据本身**没死**：
+    它是 :func:`gatekeeper.is_paywall`（**拦截口径**）的判据，唯一所有者
+    在 :mod:`trajectory_pipeline.perception.rule_perceptor`。
+
+    ⚠️ **别把它和「分支前置事实」混起来**：贴 ``subscription_wall`` 标签
+    认的是 :func:`rule_perceptor.paywall_evidence`（**门禁语境**）——
+    人工复核判强弱组合是**营销**（实测 12 条 ``subscription_wall`` 没有
+    一条站得住）。两套口径各管一段：**拦页面** vs **贴标签**。
+    """
+
+    #: ``(文本, 期望, 说明)``
+    CASES = [
+        ("需付费", False, "弱信号 1 关键词无价格"),
+        # 仅弱关键词（开通/会员）= nav-bar CTA 模式，不拦
+        ("开通会员观看", False, "仅弱关键词 不拦"),
+        ("开通会员 享更多精彩", False, "仅弱关键词 不拦"),
+        ("会员抢先看", False, "仅弱关键词 不拦（partial_free 同款）"),
+        # 强 + 弱组合 = 像付费墙
+        ("VIP 会员", True, "1 强+1 弱"),
+        ("续费会员", True, "1 强+1 弱"),
+        ("订阅 开通", True, "1 强+1 弱"),
+        # ≥2 强关键词
+        ("VIP 订阅 续费 开通会员", True, "多强关键词"),
+        ("续费 包年", True, "2 强"),
+        # 强 + 价格
+        ("VIP 首3月9.9元/月", True, "1 强+价格"),
+        ("¥99 包月", True, "1 强+价格"),
+        ("订阅 9.9元", True, "1 强+价格"),
+        # 弱+价格（无强关键词）= 仍弱——保守起见不拦
+        ("开通会员 ¥9.9", False, "仅弱+价格 不拦"),
+        ("", False, "空文本"),
+    ]
+
+    def test_真值表(self):
+        from trajectory_pipeline.perception.rule_perceptor import (
+            has_strong_paywall_signal,
+        )
+
+        for text, want, note in self.CASES:
+            got = has_strong_paywall_signal(text)
+            assert got is want, f"{note}: text={text!r} want={want} got={got}"
+
+    def test_拦截口径用它(self):
+        """同一套判据经 :func:`gatekeeper.is_paywall` 落到拦截处置上。"""
+        assert gatekeeper.is_paywall(obs_at(body="VIP 会员")) is True
+        assert gatekeeper.is_paywall(obs_at(body="开通会员 享更多精彩")) is False
+
+    def test_门禁语境是另一套判据(self):
+        """**两套口径不许互相顶替**：强弱组合（拦截）认「VIP 会员」，
+        门禁语境（贴标签）不认——它要的是「不订阅就看不了正片」。"""
+        from trajectory_pipeline.perception.rule_perceptor import (
+            paywall_evidence,
+        )
+
+        assert paywall_evidence("VIP 会员 开通") == ""
+        assert paywall_evidence("订阅后观看") != ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # DeadLoopDetector：尾部连续语义
 # ═══════════════════════════════════════════════════════════════════════
 

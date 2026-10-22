@@ -175,7 +175,7 @@ opts = launch_options(os="windows", geoip=True, humanize=True)   # 纯 dict，�
 # ⚠️ 指纹**不在** opts 顶层，也**不在** opts["firefox_user_prefs"] 里——
 # 它被编码进 opts["env"]["CAMOU_CONFIG_1..N"]（分片的一个大 JSON）。
 # 直接读 opts["navigator.userAgent"] 会拿到 None（KeyError / None），
-# 而「拿到 None」与「指纹没生成」长得一模一样，���以这条读法是错的。
+# 而「拿到 None」与「指纹没生成」长得一模一样，所以这条读法是错的。
 
 def _rebuild(prefix: str) -> dict:
     """把 env 里的分片按编号拼回一个 JSON 对象。"""
@@ -561,6 +561,102 @@ $env:PYTHONIOENCODING="utf-8"; python probe.py "ws://[::1]:端口/token"
 
 **推论**：**绕过 `AsyncCamoufox` / `launch_server` 直接用 playwright 起浏览器，
 指纹会整个丢掉**——`cfg["env"]` 必须传给 playwright 的 launch。
+
+### 10.5 共享元素口径在 camoufox 侧怎么跑（`--element-basis`，2026-10-21）
+
+**唯一真源**：[`executor/browser/element_basis.py`](../../executor/browser/element_basis.py)
+里的 `SHARED_DOM_JS` + `filter_ladder()`。**两面跑同一段 JS**：
+obscura 走 `browser_evaluate`，camoufox 走 `page.evaluate`。
+
+| 事实 | 说明 |
+|---|---|
+| **隔离世界不影响它** | F2 的 `main_world_eval` 关着 → `page.evaluate` 在 isolated world 里跑。但这段 JS **只读 DOM**（`querySelectorAll` / `getAttribute` / `getComputedStyle`），**DOM 在两个 world 之间是共享的** → 读得到。**它不读页面 JS 全局**，所以 `main_world_eval` 不用开 |
+| **返回形状** | JS 用 `JSON.stringify` 返回字符串（obscura 的 `browser_evaluate` 返回的是 `toString()`，对象会变 `[object Object]`——tools.md 记过）。driver 侧 `json.loads` 后交给 `parse_shared_basis()` |
+| **手算的 role/name，不是引擎算的** | 共享口径的 `nameOf` 是本仓库手写的链，**与 playwright `aria_snapshot` 的一致率实测 87.9%**（设计方案 04 §4.5.3）。所以**共享口径的绝对值 ≠ camoufox 面的生产值**——共享口径回答的是「**同一个页面在两个浏览器上差多少**」，不是「camoufox 的元素表对不对」。**两者别混** |
+| **测量上限 500** | 共享口径是**一次测量**、不是生产枚举；生产枚举的 200 条上限（D-2「被裁掉 vs 不存在」判据）在这里不适用。超了记 `truncated`，**不装作没有** |
+| **默认关** | `--element-basis` 显式开启（多一次 evaluate 往返）。它是**测量仪器**，不是生产链必需项——`elements_total` 一个字都没改 |
+
+**怎么用**：双跑两侧**都要开**，否则 `compare-drivers` 的共享口径判据永远是 `incomplete`。
+
+```powershell
+uv run python -m trajectory_pipeline.executor.cli check --driver camoufox --element-basis --probe-url https://www.baidu.com/
+uv run python -m trajectory_pipeline.executor.cli check --driver obscura  --element-basis --probe-url https://www.baidu.com/
+# 两个读数直接并排比（shared 那一行才可比；face 那一行本来就是两回事）
+```
+
+**读数缺了怎么读**（2026-10-21，共享口径落盘后）：
+
+| 存档里看到 | 含义 | 处置 |
+|---|---|---|
+| `element_basis.shared` **有** | 测到了 | 两面直接比 |
+| `element_basis.shared` **缺键** + `element_basis_error` **有值** | **没测到**（页面没起来 / JS 返回不合法），**原因在 `element_basis_error` 里** | 看原因；**别把「缺键」读成「这一档是 0」** |
+| `element_basis.shared` **缺键** + `element_basis_error` **是 `null`** | 这一批**没开** `--element-basis` | 判据会是 `incomplete`——**判不了 ≠ 一样** |
+| `element_basis` **整个是 `null`** | 同上（没开开关） | 同上 |
+
+⚠️ **face 账目照旧给**：它不依赖共享口径，共享口径测失败时它**仍在**
+（`element_basis.face`）。**只有 `shared` 会缺**。
+
+⚠️ **测量失败不会让整批作废**——失败走 `Observation.element_basis_error`
+这条**独立通道**，**不进 `degraded`**（`degraded` 是内容块的降级通道，
+下游只判它非空 ⇒ 会不取候选 ⇒ 一把坏尺子能作废整批数据）。
+
+### 10.6 venv 里 pyyaml 缺文件时的修法（L-13，2026-10-21 实测）
+
+**症状**：`import camoufox` 报
+`ImportError: cannot import name 'CLoader' from 'yaml' (unknown location)`。
+
+**为什么是它先炸**：`camoufox/pkgman.py` 里 `from yaml import CLoader, load`——
+camoufox 的一条**传递依赖**先把 `yaml` 拖进来。
+
+⚠️ **`import yaml` 会「成功」，这是假象**：`yaml/__init__.py` 没了以后，
+`yaml/` 目录退化成**命名空间包**（namespace package）——
+`import yaml` 返回一个空壳，只有 `from yaml import CLoader` 才炸。
+**所以别拿「import yaml 过了」当修好的证据**，要验 `from yaml import CLoader`。
+
+**诊断按 RECORD 走，别猜**：包自己的 `*.dist-info/RECORD` 记着每个文件的
+sha256 与大小，对一遍就知道**缺了哪几个、哪些被改过**：
+
+```bash
+# 逐条核对：缺失 / 哈希不符
+.venv/Scripts/python.exe - << 'PY'
+import base64, csv, hashlib, pathlib
+sp = pathlib.Path(".venv/Lib/site-packages")
+for r in csv.reader((sp/"pyyaml-6.0.3.dist-info"/"RECORD").read_text(encoding="utf-8").splitlines()):
+    if not r or not r[1].startswith("sha256="): continue
+    p = sp/r[0]
+    if not p.exists(): print("缺失", r[0]); continue
+    got = base64.urlsafe_b64encode(hashlib.sha256(p.read_bytes()).digest()).rstrip(b"=").decode()
+    if got != r[1][7:]: print("哈希不符", r[0])
+PY
+```
+
+**修法（离线、不动别的包）**：
+
+```bash
+# ① Windows 上**加载中的 .pyd 删不掉**（os error 5 = 拒绝访问）：
+#    先把坏目录**重命名**挪开——Windows 允许重命名一个内含打开文件的目录，
+#    路径因此腾空，进程照常跑（它已经把模块读进内存了）。
+mv .venv/Lib/site-packages/yaml .venv/Lib/site-packages/yaml__broken_20261021
+# ② 再让 uv 从**本地缓存**装一份全新的（--offline = 不联网；不写 --reinstall
+#    的话 uv 认为版本没变、什么都不做）
+uv sync --offline --group dev --reinstall-package pyyaml
+```
+
+**验证三件套**（缺一不可）：
+
+```bash
+.venv/Scripts/python.exe -c "from yaml import CLoader, safe_load; print(CLoader, safe_load('a: 1'))"
+.venv/Scripts/python.exe -c "import camoufox; print(camoufox.__file__)"
+# ＋ 按 RECORD 复核一遍（上面那段诊断脚本，期望零输出）
+```
+
+⚠️ **挪走的目录还占着旧 DLL**，等占它的进程退出后再删——
+本机当时是 2026-10-20 留下的 `cf_launch.py` 残留进程（脚本本身已从仓库删掉）
+占着 `_yaml.cp312-win_amd64.pyd`，所以第一次 `uv sync` 报
+「failed to remove file ... 拒绝访问」；**重命名**这一步就是为了绕开它。
+
+⚠️ **别用 `pip install` 修**——那会走网络解析依赖树；`uv sync --offline`
+用的是锁文件 + 本地缓存，是本仓库的既定姿势。
 
 ---
 

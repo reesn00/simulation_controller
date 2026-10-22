@@ -46,6 +46,10 @@ from trajectory_pipeline.executor.dom import (
 from trajectory_pipeline.common.elements import (
     ELEMENT_VOCAB_HTML_TAG,
 )
+from trajectory_pipeline.executor.browser.element_basis import (
+    SHARED_DOM_JS,
+    parse_shared_basis,
+)
 from trajectory_pipeline.perception.base import (
     InteractiveElement,
     LinkItem,
@@ -105,8 +109,15 @@ class ObscuraDriver:
 
     name = "obscura"
 
-    def __init__(self, client: McpClient) -> None:
+    def __init__(self, client: McpClient, *,
+                 collect_element_basis: bool = False) -> None:
         self._mc = client
+        #: **跨面可比的元素账目要不要采**（设计方案 04 §4.9.6）。
+        #:
+        #: **默认关**：它多一次 ``browser_evaluate`` 往返（MCP 往返不便宜），
+        #: 是**测量仪器**不是生产链的必需项。开着的时候 :meth:`observe`
+        #: 会把两本账落进 :attr:`Observation.element_basis`。
+        self._collect_element_basis = collect_element_basis
 
     # ── 内部：调 tool 并把业务性错误折叠掉 ───────────────────────
 
@@ -232,6 +243,30 @@ class ObscuraDriver:
             InteractiveElement(ref=ref, role=tag, name=label)
             for ref, tag, label in parse_interactive_elements(text or "")
         )
+
+    async def element_basis(self) -> dict[str, int]:
+        """**跨面可比的**元素枚举账目（设计方案 04 §4.9.6）。
+
+        跑的是 :data:`element_basis.SHARED_DOM_JS`——**与 camoufox 面同一段
+        JS、同一把尺子**，于是两面的数字**按构造可比**。
+
+        与 :meth:`interactive` 的差别是**枚举基础**：
+        这里是 **DOM 交互候选**（role/name 自己算），
+        那里是**上游工具给什么拿什么**（黑盒）。两者**故意不同**——
+        共享口径要回答的是「同一个页面在两个浏览器上差多少」，
+        用同一段 JS 才量得出来。
+
+        ⚠️ **失败抛** :class:`DriverError`：空账会被读成
+        「这个页面上一个交互元素都没有」，而真相是「没测到」。
+        """
+        text = await self._call(
+            "browser_evaluate", {"expression": SHARED_DOM_JS}, on_error="raise",
+        )
+        try:
+            _, ledger = parse_shared_basis(text)
+        except ValueError as exc:
+            raise DriverError(f"obscura 共享口径返回不合法: {exc}") from None
+        return ledger
 
     async def count(self, selector: str) -> int:
         text = await self._call("browser_count", {"selector": selector}, on_error="zero")
@@ -360,6 +395,27 @@ class ObscuraDriver:
             InteractiveElement(ref=ref, role=tag, name=label)
             for ref, tag, label in parse_interactive_elements(elements_raw or "")
         )
+        # 跨面可比的元素账目（**默认不采**，见 __init__ 的说明）。
+        #
+        # ⚠️ 本面（face）的账目**只有两条数**——上游工具只给最终列表，
+        # 给不出「role 命中几条 / 无名丢掉几条」。**缺就是缺，不填 0**：
+        # 填 0 会被读成「一条都没被过滤」。
+        #
+        # ⚠️ **测量失败不进 ``degraded``**（2026-10-21 修）：``degraded``
+        # 是**内容块**的降级通道，下游只判它非空——``extract_candidates``
+        # 见到降级就**不取候选**，于是「尺子坏了」会**作废整批数据**。
+        # 失败只记进 ``element_basis_error``，face 账目照旧给。
+        basis = None
+        basis_error = None
+        if self._collect_element_basis:
+            try:
+                shared = await self.element_basis()
+            except DriverError as exc:
+                basis_error = str(exc)
+                shared = None
+            basis = {"face": {"nodes": len(elements), "kept": len(elements)}}
+            if shared is not None:
+                basis["shared"] = shared
         return Observation(
             url=snap.url,
             page_title=snap.title,
@@ -371,6 +427,8 @@ class ObscuraDriver:
             # 「不存在」。理由见 Observation.elements_total 的说明。
             elements_total=len(elements),
             links_total=len(links),
+            element_basis=basis,
+            element_basis_error=basis_error,
             # 方言由驱动实现自己填（P4）。obscura 面的 ``role`` 槽装的是
             # **HTML 标签名**——这是那个方言的值域，不是命名错误；下游按
             # 这个字段选词表，不按驱动名去猜。

@@ -209,6 +209,100 @@ def _walk_steps(archive: dict):
         yield from v.get("steps") or ()
 
 
+# ── 盘上产物怎么找（2026-10-21：glob 改递归）─────────────────────
+#
+# ⚠️ **原来的 glob 不递归，漏掉了一整批真实数据**。
+# ``ARCHIVES.glob("*.json")`` 只看 ``output/pipeline/`` 根目录，而
+# **双跑的存档在 ``dualrun/{obscura,camoufox}/`` 下** ⇒ camoufox 面的
+# 真实调用**一条都看不见** ⇒ 那几条契约测试**永远是 skip 而不是 pass**。
+# 「没数据」与「通过了」在报告上长得一模一样——这正是要治的病。
+#
+# 改成递归之后，**判「是不是存档」就不能靠路径了**（目录会变，
+# ``dualrun/`` 是 2026-10-20 才加的）：改**按形状判**。
+
+#: P1 存档的文件名形状：``<task_id>__<run_id>.json``，
+#: ``run_id`` 是 8 位十六进制（``uuid4().hex[:8]``，见 ``executor/archive.py``）。
+#: **按名字筛只是省钱**（派生产物有三段名），判据是下面的形状。
+_ARCHIVE_NAME = re.compile(r"^[^/]+__[0-9a-f]{8}\.json$")
+
+#: 读过的文件缓存。键里带 ``mtime`` 与大小 ⇒ **文件一改缓存自动失效**，
+#: 不会拿着上一版的读数当这一版的。
+_FILE_CACHE: dict[tuple[str, int, int], Any] = {}
+
+
+def _load_json(path: Path) -> Any:
+    """读一个 JSON 文件。读不了 / 不是 JSON → ``None``。
+
+    ``None`` 的含义是「**没读到**」，不是「读到空内容」——这两者在
+    统计里必须分开（前者不进分母，后者会让分母变小）。
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if key in _FILE_CACHE:
+        return _FILE_CACHE[key]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        payload = None
+    _FILE_CACHE[key] = payload
+    return payload
+
+
+def _is_p1_archive(payload: Any) -> bool:
+    """是不是 P1 存档——**按形状判，不按路径判**。
+
+    判据：顶层有 ``run_config``（采集运行的配置）**且**有 ``steps`` 或
+    ``visits``（动作流）。
+
+    ⚠️ **为什么不用目录判**：目录清单会漂——``dualrun/`` 是后加的，
+    ``proberun/`` 是探针的，``_backup_pre_motivation/`` 是备份的。
+    按目录列白名单，漏一个目录就是**静默少算一批数据**，而少算的那批
+    在报告上看不出任何异常。
+
+    P2 样本 / P3 视图 / T 视图 / 媒体探针结果**都不满足**这条：
+    P2 有 ``six`` 没有 ``run_config``；P3 视图是消息数组或
+    ``{messages, tools, sample_id}``；T 视图是 ``{trajectory_id, messages}``；
+    媒体探针是 ``{requested_url, media_count, …}``。
+    """
+    if not isinstance(payload, dict):
+        return False
+    if "run_config" not in payload:
+        return False
+    return bool(payload.get("steps") or payload.get("visits"))
+
+
+def _is_p2_sample(payload: Any) -> bool:
+    """是不是 P2 样本——**按形状判**：顶层有 ``six``（六件套的容器）。"""
+    return isinstance(payload, dict) and isinstance(payload.get("six"), dict)
+
+
+def _walk_products(is_product: Any) -> list[dict]:
+    """扫 ``output/pipeline/`` **整棵子树**，挑出形状对得上的产物。
+
+    ⚠️ **按 run_id / sample_id 去重**：``_backup_pre_motivation/`` 里躺着
+    根目录某条存档的**副本**——同一个 run 算两次，``required`` 口径
+    （按出现率算）**分母就被重复计数**。**一个 run 一份存档**，副本不另算。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for path in sorted(PIPELINE.rglob("*.json")):
+        if not _ARCHIVE_NAME.match(path.name):
+            continue
+        payload = _load_json(path)
+        if not is_product(payload):
+            continue
+        ident = str(payload.get("run_id") or payload.get("sample_id") or "").strip()
+        if ident:
+            if ident in seen:
+                continue
+            seen.add(ident)
+        out.append(payload)
+    return out
+
+
 def _observed_from_p2(surface: str = DEFAULT_SURFACE) -> tuple[Counter, dict[str, Counter], dict[str, Counter]]:
     """扫 P2 样本，返回 ``(调用次数, 键在场次数, 非空值次数)``。
 
@@ -222,11 +316,7 @@ def _observed_from_p2(surface: str = DEFAULT_SURFACE) -> tuple[Counter, dict[str
     calls: Counter = Counter()
     keys: dict[str, Counter] = defaultdict(Counter)
     nonempty: dict[str, Counter] = defaultdict(Counter)
-    for p in sorted(SAMPLES.glob("*.json")):
-        try:
-            sample = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for sample in _walk_products(_is_p2_sample):
         sample_surface = str(sample.get("tool_surface") or "") or DEFAULT_SURFACE
         if sample_surface != surface:
             continue
@@ -254,13 +344,7 @@ def _observed_from_p1(surface: str = DEFAULT_SURFACE) -> tuple[Counter, dict[str
     calls: Counter = Counter()
     keys: dict[str, Counter] = defaultdict(Counter)
     nonempty: dict[str, Counter] = defaultdict(Counter)
-    for p in sorted(ARCHIVES.glob("*.json")):
-        if "__" not in p.stem:
-            continue  # 产物目录里混着 plan_*.json 之类的杂项
-        try:
-            archive = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for archive in _walk_products(_is_p1_archive):
         try:
             arch_surface = toolcatalog.surface_of_driver(archive.get("driver"))
         except ValueError:

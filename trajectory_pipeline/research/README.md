@@ -63,7 +63,14 @@ research/
 │  ├─ probe_click_distance.py         第五轮：对角按钮交替点 → 位移不是主因
 │  ├─ probe_click_occluded.py         第六轮：**人为最小化窗口** → 5–13s，因果定案
 │  ├─ probe_click_occlusion_prefs.py  第七轮：Firefox 偏好能不能治住（答：不能）
-│  └─ click_*.json / new_tab_click.json   上述各轮的原始读数
+│  ├─ click_*.json / new_tab_click.json   上述各轮的原始读数
+│  ├─ inc72_paired_compare.py         双跑**配对复算**（按落地 URL 配对；分母只取两面都测到的页面）
+│  ├─ inc72_ladder_identity.py        元素阶梯**逐观察恒等式**核对（`candidates == hidden + visible`）
+│  ├─ inc73_human_review.py + .json   ★**判据⑤ 人判工作表**（负样本成因封闭集 17 项 + 动作可移植性）；
+│  │                                 留池列由 `cause` 派生，冲突在 `keep_conflicts` 点名
+│  ├─ inc73_human_review.filled-original.json   首轮**人填原件**（留池列还在手填时：yes 28 / no 11），审计对照
+│  ├─ inc73_field_check.py            判据⑤ 的**现场取证**（重采一遍与存档并排；联网）
+│  └─ inc73_action_replay.py          判据⑥ 的**动作重放**（从存档 steps[] 定位重放；联网）
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）
 ```
@@ -89,6 +96,14 @@ uv run python trajectory_pipeline/research/probes/inc43_ab_compare.py
 uv run python trajectory_pipeline/research/probes/inc44_ab_compare.py
 uv run python trajectory_pipeline/research/probes/inc44_unresolved_analysis.py
 uv run python trajectory_pipeline/research/probes/cluster_c_landing_check.py
+
+# 判据⑤ 人判工作表（离线；重生成沿用旧表已填格子——人填的判断只在 JSON 里）
+# ⚠️ --a/--b 可给多次：**B 面两批存档都得列上**（少列一批 ⇒ 那批的行整批消失）
+uv run python -m trajectory_pipeline.research.probes.inc73_human_review \
+  --a trajectory_pipeline/output/pipeline/dualrun2/obscura \
+  --b trajectory_pipeline/output/pipeline/dualrun2/camoufox \
+  --b trajectory_pipeline/output/pipeline/dualrun/camoufox \
+  --json trajectory_pipeline/research/probes/inc73_human_review.json
 
 # 重采 / 探针（联网 + 真浏览器；对照 .env 里的 OBSCURA_EXE / TRAJECTORY_LLM_*）
 uv run python trajectory_pipeline/research/recollect/visit.py

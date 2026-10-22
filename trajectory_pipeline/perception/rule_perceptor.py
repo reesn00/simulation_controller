@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping, Any
 
@@ -89,24 +90,50 @@ TRAILER_KEYWORDS: tuple[str, ...] = (
     "official trailer", "official teaser", "trailer only",
 )
 
-#: 付费墙词表（2026-10-10 口径裁定）。
+#: 付费墙词表——**分两层**（2026-10-21 · 台账 H-16 修复①）。
 #:
 #: **业务规则，模型不该猜**：页面明确要求订阅/付费才能播放时，
 #: 这条结论是「**有播放页但看不了**」——它**不是成功**（用户看不到正片），
 #: 也不是「页面上没有播放控件」（控件是有的，卡在付费）。
 #: 两种混在一起记，训练信号就失真了。
 #:
-#: 与 :data:`TRAILER_WORDS` 同款定位：**确定性事实归代码层**，
+#: 与 :data:`TRAILER_KEYWORDS` 同款定位：**确定性事实归代码层**，
 #: 模型只在选中某个 ref 时用它复核（口径一「确定性事实优先」）。
 #:
 #: ⚠️ **「免费观看」「在线观看」不在表里**：它们出现在**导航栏**里的
 #: 频率远高于出现在付费提示里（实测百度页正文就有），把它们当付费信号
 #: 会把大批正常站点判成付费墙。
-PAYWALL_WORDS: tuple[str, ...] = (
-    # 中文
-    "开通会员", "开通vip", "开通VIP", "购买会员", "会员专享",
-    "付费观看", "付费解锁", "订阅后观看", "订阅即可", "续费",
-    "充值", "购买单集", "单集购买", "立即购买", "开通连续包月",
+#:
+#: ⚠️⚠️ **为什么分成两层**（2026-10-21，H-16 修复①）
+#: ------------------------------------------------
+#: 原来这里是一张**扁平**表，把两种性质完全不同的短语混在一起：
+#:
+#:   - **门禁命题**：「订阅后观看」「以下内容需下载」——页面明说
+#:     「不给钱 / 不订阅 / 不换端就看不了正片」，短语本身就是完整命题；
+#:   - **号召 CTA**：「开通会员」「续费」「打开app观看」——它们在
+#:     **站点导航栏、角标、营销模块**里高频出现，单独出现分不清
+#:     「真付费墙」与「入口页广告」。
+#:
+#: 扁平表当判据用的后果（2026-10-21 人工复核：池里 12 条
+#: ``subscription_wall`` **没有一条站得住**）：v.qq.com 8 条的真因是
+#: **地区限制**（70017001.1），「开通会员」只是句尾附加；youku 1 条是
+#: **续费营销**；ixigua 1 条是「打开app观看」——**全是 CTA 裸命中**。
+#:
+#: 而 :mod:`trajectory_pipeline.executor.gatekeeper` **早就知道**这张表
+#: 不能当判据：它的 ``is_paywall`` 刻意绕开 ``classify_paywall``，
+#: 注释明写「PAYWALL_WORDS 第一条就是「开通会员」——它在站点导航栏广告
+#: （nav-bar CTA）里高频出现，单凭它分不清真付费墙与入口页广告」。
+#: 同一个仓库里两套口径，是这类错判能活这么久的原因。
+#:
+#: 所以现在分两层，判定走 :func:`paywall_evidence`：
+#:   L1 :data:`PAYWALL_GATE_PHRASES` —— 门禁短语，命中即成立；
+#:   L2 :data:`PAYWALL_CTA_PHRASES`  —— CTA 短语，必须**配同句观看语境**
+#:      （:data:`PAYWALL_CONTEXT_WORDS`）才成立。
+PAYWALL_GATE_PHRASES: tuple[str, ...] = (
+    # 中文 · 门禁命题
+    "付费观看", "付费解锁", "订阅后观看", "订阅后可看", "订阅即可观看",
+    "购买单集", "单集购买", "按集购买",
+    "开通会员观看", "开通vip观看", "开通VIP观看",
     # 2026-10-15 INC43 · APP/客户端硬墙：页面明示「需下载 App/客户端
     # 才能看正片」。实测三站命中而原词表全漏（金标 subscription_wall
     # 被判 no_play_control / login_wall_or_blocked）：
@@ -115,13 +142,45 @@ PAYWALL_WORDS: tuple[str, ...] = (
     # 短语刻意收窄：「以下内容需下载」「客户端继续观看」都是**门禁语境**，
     # 站点页脚的「下载中心」「下载客户端」（实测 mgtv / luketv 均有）
     # 不构成子串命中，不会误伤。
-    "以下内容需下载", "客户端继续观看",
-    "打开app观看", "打开APP观看",
-    # 英文
+    "以下内容需下载", "客户端继续观看", "下载客户端后观看",
+    # 英文 · 门禁命题
     "subscribe to watch", "subscription required", "purchase to watch",
-    "rent for", "buy this episode", "premium required", "sign in to watch",
+    "rent for", "buy this episode", "premium required",
     "members only", "vip required", "unlock with",
 )
+
+#: L2 · **号召 CTA** 短语——必须配同句观看语境才成立（见模块头那段说明）。
+#:
+#: ⚠️ **「sign in to watch」不在这里**（2026-10-21）：它是**登录门**
+#: 不是付费门——「登录了也要付钱」与「登录后免费」是两条不同的分支
+#: （``login_required`` vs ``subscription_wall``），把它算进付费墙
+#: 会把可绕过的登录墙写成绕不过去的订阅墙。它已并入
+#: :data:`ACCESS_HINTS` 的 ``login``。
+PAYWALL_CTA_PHRASES: tuple[str, ...] = (
+    # 中文
+    "开通会员", "开通vip", "开通VIP", "购买会员", "会员专享",
+    "订阅即可", "续费", "充值", "立即购买", "开通连续包月",
+    "打开app观看", "打开APP观看",
+)
+
+#: **观看语境词**——L2 的 CTA 短语必须与之一**同句**，且该语境词**不在**
+#: CTA 短语自己的跨度内（否则「打开app观看」自己给自己作证）。
+#:
+#: 刻意**不含**「播放」「观看」两个高频词：站点导航栏的「立即播放」
+#: 「在线观看」「免费观看」到处都是，与「开通会员」同句就足以让裸 CTA
+#: 复活成付费墙（v.qq.com 那 8 条的正文里就有「当前设备不支持播放」）。
+#: 收进来的都是**门禁特有**的形态：试看 / 解锁 / 正片 / 全集 / 完整版。
+PAYWALL_CONTEXT_WORDS: tuple[str, ...] = (
+    "试看", "解锁", "正片", "全集", "完整版", "完整内容",
+    "观看完整", "看完", "本片",
+)
+
+#: **词表全集**（L1 门禁 + L2 CTA）——给 L3 粗分类层用（它要的是
+#: 「页面里有没有付费相关字样」，不是「有没有门禁」）。
+#:
+#: ⚠️ **这张表不是判据**：裸命中分不出真付费墙与导航栏广告。
+#: 贴分支一律走 :func:`paywall_evidence`。
+PAYWALL_WORDS: tuple[str, ...] = PAYWALL_GATE_PHRASES + PAYWALL_CTA_PHRASES
 
 
 #: 「预告片」的反义旁证——出现这些词时，即使文本含「预告」也多半是正片
@@ -144,29 +203,136 @@ def _norm(label: str) -> str:
 
 
 def classify_paywall(text: str) -> str:
-    """正文里有没有付费墙信号。返回命中的词（没有则空串）。
+    """正文里有没有**付费墙门禁证据**。返回命中的短语（没有则空串）。
 
-    **判据是「页面明确要求付费」，不是「页面提到会员」**——所以只收
-    祈使性/条件性的短语（开通会员、订阅后观看），不收「VIP」「会员」这类
-    光杆名词：它们在正常播放页的导航与角标里也到处都是。
+    ⚠️ **口径 2026-10-21 改过**（台账 H-16 修复①）：原来这里是
+    「扁平词表子串命中」，「开通会员」单独出现就算——那是**导航栏广告**
+    与**真付费墙**分不清的根源（实测 12 条 ``subscription_wall`` 没有
+    一条站得住）。现在走 :func:`paywall_evidence` 的**门禁语境**判据：
+    「订阅后观看」成立，「开通会员」独行**不成立**。
 
-    :func:`PAYWALL_WORDS` 的每一条都写成**完整短语**而不是关键词，
-    理由同上——「续费」「充值」单独出现可能是侧栏广告。
+    返回的仍是**短语**（不是描述），老调用方（``cli probe`` 打印、
+    ④ 的 ``paywall_word``）的用法不变。
     """
-    norm = _norm(text)
-    for word in PAYWALL_WORDS:
-        if _norm(word) in norm:
-            return word
+    hit = _find_paywall_hit(text)
+    return hit.phrase if hit else ""
+
+
+@dataclass(frozen=True, slots=True)
+class _PaywallHit:
+    """一次付费墙证据命中：命中哪个短语、哪一层、有没有语境词。"""
+
+    phrase: str
+    kind: str          # "gate"（L1 门禁短语）| "cta"（L2 CTA + 语境）
+    context: str = ""  # 语境词（仅 kind == "cta" 时非空）
+
+
+#: 付费墙语境判定的**切句单位**：换行 + 句读（。！？；）。
+#: 刻意**不按「，」切**——实测真阳性 sohu「您可以试看5分钟，点击开通会员」
+#: 里「试看」与「开通会员」被一个逗号隔开，按逗号切就看不到「同句」了。
+_PAYWALL_UNIT_SPLIT = re.compile(r"[\n\r。！？；;!?]+")
+
+
+def _paywall_units(text: str) -> list[tuple[int, int, str]]:
+    """把正文切成语境判定用的**句单元**，返回 ``(起, 止, 单元文本)``。"""
+    units: list[tuple[int, int, str]] = []
+    pos = 0
+    for m in _PAYWALL_UNIT_SPLIT.finditer(text):
+        if m.start() > pos:
+            units.append((pos, m.start(), text[pos:m.start()]))
+        pos = m.end()
+    if pos < len(text):
+        units.append((pos, len(text), text[pos:]))
+    return units
+
+
+def _context_outside(unit_low: str, cta_start: int, cta_end: int) -> str:
+    """句单元里 CTA 短语**跨度之外**的观看语境词（没有则空串）。
+
+    跨度之内不算：「打开app观看」这个 CTA 短语自己就含「观看」，
+    让它给自己作证等于没有判据。
+    """
+    for word in PAYWALL_CONTEXT_WORDS:
+        wlow = word.lower()
+        pos = unit_low.find(wlow)
+        while pos >= 0:
+            if pos + len(wlow) <= cta_start or pos >= cta_end:
+                return word
+            pos = unit_low.find(wlow, pos + 1)
     return ""
+
+
+def _find_paywall_hit(text: str) -> _PaywallHit | None:
+    """付费墙**门禁证据**的判定实现（唯一真源）。没有则 ``None``。
+
+    判据（任一即可）：
+
+    1. **L1 门禁短语**命中（:data:`PAYWALL_GATE_PHRASES`）——短语本身
+       就是完整命题（「订阅后观看」= 不订阅不给看），不需要再看上下文；
+    2. **L2 CTA 短语**命中（:data:`PAYWALL_CTA_PHRASES`）**且同一句**
+       里有**观看语境词**（:data:`PAYWALL_CONTEXT_WORDS`）——
+       「开通会员」独行是导航栏广告，「开通会员 观看完整版」是门禁。
+    """
+    if not text:
+        return None
+    low = text.lower()
+    for phrase in PAYWALL_GATE_PHRASES:
+        if phrase.lower() in low:
+            return _PaywallHit(phrase=phrase, kind="gate")
+    for _start, _end, unit in _paywall_units(text):
+        ulow = unit.lower()
+        for cta in PAYWALL_CTA_PHRASES:
+            clow = cta.lower()
+            pos = ulow.find(clow)
+            while pos >= 0:
+                ctx = _context_outside(ulow, pos, pos + len(clow))
+                if ctx:
+                    return _PaywallHit(phrase=cta, kind="cta", context=ctx)
+                pos = ulow.find(clow, pos + 1)
+    return None
+
+
+def paywall_evidence(text: str) -> str:
+    """正文里的**付费墙门禁证据**描述，空串 = 没有证据。
+
+    这是**判定付费墙的唯一入口**（2026-10-21，H-16 修复①）。
+    判据见 :func:`_find_paywall_hit` 的说明。
+
+    返回的是**给 evidence 用的描述**（命中哪个短语、哪一层、有没有
+    语境词），不是布尔值——凡是靠它改写分支的地方，evidence 必须能
+    指认判据，否则半年后没人说得清「凭什么算付费墙」。
+    """
+    hit = _find_paywall_hit(text)
+    if hit is None:
+        return ""
+    if hit.kind == "gate":
+        return f"付费墙门禁短语「{hit.phrase}」"
+    return f"付费墙 CTA「{hit.phrase}」+ 同句观看语境「{hit.context}」"
 
 
 # ── 付费墙强弱信号分级 ─────────────────────────────────────────────────
 #
 # 2026-10-13 增量三十二引入（原在 ``executor/branches.py``，仅用于同页守卫
-# 旁路）；2026-10-15 INC43 移到感知层——②③ 负分支的付费墙救济
-# （:func:`paywall_rescue_evidence`）需要同一套判据，两处各留一份的后果
-# 是「守卫放行了、救济不认」或反过来，而两者本就是同一句话的两个说法。
-# ``branches.py`` 反向导入（executor → perception 单向依赖，不破层）。
+# 旁路）；2026-10-15 INC43 移到感知层——②③ 负分支的付费墙救济需要同一套
+# 判据，两处各留一份的后果是「守卫放行了、救济不认」或反过来，而两者
+# 本就是同一句话的两个说法。``branches.py`` 反向导入（executor → perception
+# 单向依赖，不破层）。
+#
+# ⚠️ **2026-10-21 口径变更（H-16 修复①）**：这张表**不再用于贴分支**。
+# 原来 ②③ 的付费墙救济（``paywall_rescue_evidence``）走的是
+# 「词表命中 **或** 强弱信号组合」——两个口径都会把**导航栏 CTA** 与
+# **续费营销**判成付费墙（实测 12 条 ``subscription_wall`` 没有一条
+# 站得住）。现在救济只认**门禁语境**（:func:`paywall_evidence`）。
+#
+# 强弱信号**仍在用**，但用途收窄成**不贴分支**的地方：
+#   - :mod:`trajectory_pipeline.executor.gatekeeper` 的 ``is_paywall``
+#     （要不要把页面拦下来）。
+#
+# ⚠️ **2026-10-21**：原先的第二处用途（``executor.branches`` 的同页守卫
+# 旁路）随同页守卫窄化而**失去拦截对手**，那个适配函数
+# ``_has_strong_paywall_signal`` 已删除——**今天强弱信号只管拦截**。
+# 这里要的是「这页**像**付费墙吗」，不是「这页**是不是**付费墙」——
+# 拦错页面与贴错分支，代价不是一个量级。
 #
 # 「开通」「会员」单独放**弱**组：站点导航栏广告高频短语（「开通会员 享
 # 更多精彩」），单凭它们分不清真付费墙与 nav-bar CTA。要过强信号闸，
@@ -196,6 +362,10 @@ def has_strong_paywall_signal(text: str) -> bool:
       - ≥1 强关键词 + 价格/优惠模式（「VIP + ¥99」）。
 
     空串按弱信号处理——不旁路、不救济。
+
+    ⚠️ **不用于贴分支**（2026-10-21）：它答的是「这页**像**付费墙吗」，
+    用来**拦页面**与**放行同页守卫**；贴分支要答「这页**是不是**付费墙」，
+    那是 :func:`paywall_evidence` 的门禁语境判据。
     """
     ev = (text or "").strip()
     if not ev:
@@ -208,38 +378,6 @@ def has_strong_paywall_signal(text: str) -> bool:
     if strong >= 2:
         return True
     return strong >= 1 and has_price
-
-
-def paywall_rescue_evidence(text: str) -> str:
-    """②③ 负分支付费墙救济（INC43）：正文里的付费墙**强证据**，空串=无。
-
-    D-10 主瓶颈错判簇的判定层根因：``classify_paywall`` 只在判断点 ④
-    运行，②（页面可达）③（找播放控件）的负分支从不检查付费墙信号，
-    于是订阅墙页面落 ``login_wall_or_blocked`` / ``no_play_control`` /
-    ``unresolved``。本函数供 :class:`LLMPerceptor` 在 ②③ 判 False 时
-    调用，命中则标记 ``payload["paywall"]=True``，让决策走到
-    ``subscription_wall`` 分支。
-
-    判据（任一即可，与 ④ 的 :func:`classify_paywall` 及同页守卫旁路
-    同源）：
-      - :data:`PAYWALL_WORDS` 完整短语命中；
-      - 强弱信号组合（:func:`has_strong_paywall_signal`）——实测
-        v-wb.youku「会员特惠 + 立即开通 + 首3月9.9元/月」无完整短语
-        但强弱信号齐全。
-
-    返回的是**给 evidence 用的证据描述**（命中的词 / 信号组合），
-    不是布尔值——救济改写了分支，evidence 必须能指认判据。
-    """
-    if not text:
-        return ""
-    hit = classify_paywall(text)
-    if hit:
-        return f"付费墙短语「{hit}」"
-    if has_strong_paywall_signal(text):
-        strong = [kw for kw in STRONG_PAYWALL_KEYWORDS if kw in text]
-        weak = [kw for kw in WEAK_PAYWALL_KEYWORDS if kw in text]
-        return f"付费墙强弱信号（强:{strong} 弱:{weak}）"
-    return ""
 
 
 #: 2026-10-12 增量十五 · 代码层 fallback：从 LLM 给的 evidence 文本反推
@@ -309,6 +447,12 @@ ACCESS_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "登录后观看", "登录后可", "登录后免费", "请登录",
             "请先登录", "需登录", "登录解锁", "登录会员",
             "登录后继续", "登录才能", "未登录",
+            # 2026-10-21（H-16 修复①）：「sign in to watch」原来在付费墙
+            # 词表里——但它是**登录门**不是付费门。「登录了也要付钱」
+            # （subscription_wall）与「登录后免费」（login_required）是
+            # 两条不同的分支，判错方向的代价是**把可绕过的登录墙写成
+            # 绕不过去的订阅墙**。
+            "sign in to watch", "sign in to view",
         ),
     ),
     (
@@ -341,8 +485,15 @@ ACCESS_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
             # 「视频不存在/内容不存在」经常是模型自述结论而非页面文案
             # （实测 P3 重跑 v.qq.com/70017001 因此被误判 broken）。
             # 留着"已被删除 / 已下架 / 404 错误"——这些更接近页面真实文案。
+            # ⚠️ **2026-10-21 去掉「对不起」**（H-16 修复①）：它是**礼貌语**
+            # 不是 404 证据。实测正文里出现「对不起，评论暂时关闭」
+            # （正常播放页的评论区）——留着它，一次正文扫描就能把正常页面
+            # 判成 ``not_found``，进而在让位规则里**收回**付费墙标签，
+            # 把一条真负样本变成 ``broken``（错因）或 ``unresolved``
+            # （少一条负样本）。LLM evidence 里的「对不起，该视频已被删除」
+            # 本来就带着「已被删除」，去掉它不丢覆盖。
             "页面不存在", "已下架", "已被删除",
-            "该视频已被删除", "404 错误", "404错误", "对不起",
+            "该视频已被删除", "404 错误", "404错误",
             "找不到该视频",
             # 2026-10-13 增量三十二 · D10 偏差修缮：404/5xx 形态落 broken 的设计
             # 意图（见 evaluation/golden/alignment.py）此前因为关键词只覆盖中文
@@ -376,6 +527,39 @@ def infer_access_from_evidence(evidence: str) -> str:
         return ""
     norm = _norm(evidence)
     for value, keywords in ACCESS_HINTS:
+        for kw in keywords:
+            if _norm(kw) in norm:
+                return value
+    return ""
+
+
+#: **环境阻断形态**——「不是不给钱，是这个环境不给看」。
+#:
+#: 刻意**不含 ``login``**：站点导航栏的「请登录」与「开通会员」一样高频
+#: （实测百度页正文就有「免费观看」），拿登录形态给付费墙让位，会把
+#: 整批订阅墙赶进 ``unresolved``——那是**假 fail-closed**，不是严谨。
+#: 登录墙有自己的判断点（② 的 ``access_control_type`` 结构化字段）。
+ACCESS_DEFECT_KINDS: tuple[str, ...] = ("region", "captcha", "anti_bot", "not_found")
+
+
+def infer_access_defect(text: str) -> str:
+    """文本里的**环境阻断形态**（地区 / 验证码 / 反爬 / 404），空串=无。
+
+    这是**付费墙的让位判据**（2026-10-21，H-16 修复①）：页面原文里已经
+    出现「当前设备不支持播放」「70017001」「请完成验证」这类形态时，
+    真因是**环境阻断**，不是「要付钱」——两者的处置与训练信号都不同。
+    实测 v.qq.com 8 条：主证据是「当前设备不支持播放」+ 70017001.1，
+    「开通会员」只是句尾附加；被付费墙抢走就贴错了支。
+
+    与 :func:`infer_access_from_evidence` 的差别是**不含 login**
+    （理由见 :data:`ACCESS_DEFECT_KINDS`）。
+    """
+    if not text:
+        return ""
+    norm = _norm(text)
+    for value, keywords in ACCESS_HINTS:
+        if value not in ACCESS_DEFECT_KINDS:
+            continue
         for kw in keywords:
             if _norm(kw) in norm:
                 return value
@@ -968,6 +1152,9 @@ L3_ACCESS_HINTS: MappingProxyType = MappingProxyType({
         "sign in to watch", "sign in to view", "please sign in",
         "login required", "please log in",
     ),
+    # L3 是**粗分类层**（要的是「页面里有没有付费相关字样」），
+    # 用的是**全集**（门禁 + CTA）——它不贴分支，贴分支的判据是
+    # :func:`paywall_evidence` 的门禁语境。两者不是一回事，别混用。
     "paywall": PAYWALL_WORDS,
     "unknown": (),
 })

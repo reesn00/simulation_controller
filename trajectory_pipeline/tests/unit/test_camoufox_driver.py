@@ -446,12 +446,19 @@ class TestInteractive:
 
         **这四项是空列表的自证**：「页面上一个可点目标都没有」与「全被过滤了」
         在观察里同形，只有这里分得开。
+
+        ⚠️ **2026-10-21 加了 ``role_unmatched``**：以前词表外那 3 个是
+        「知道丢了但没记数」，于是账目对不上（nodes 9 ≠ role_matched 6 +
+        后面三项），读账的人以为漏了一档。现在过滤阶梯是**共用**的
+        （:func:`element_basis.filter_ladder`），每一档都有数，
+        ``nodes = role_matched + role_unmatched`` 恒等。
         """
         driver, _ = _driver(_FakePage(aria=ARIA_SAMPLE))
         await driver.interactive()
         assert driver.last_enumeration == {
             "nodes": 9,
             "role_matched": 6,
+            "role_unmatched": 3,
             "nameless_dropped": 1,
             "ambiguous_dropped": 2,
             "kept": 3,
@@ -974,3 +981,72 @@ class Test超时预算与不重试:
         verb, _role, _name, _detail, timeout = page.actions[0]
         assert verb == "click"
         assert timeout == ACTION_TIMEOUT_MS
+
+class TestResolve:
+    """**只定位不动作**——判据⑥（动作可移植性）的重放探针用的那个口。
+
+    它的价值在于**不执行**：点击不可逆（可能点进另一个视频、
+    可能触发付费流程），而可移植性问的是「**还能不能定位到**」。
+
+    判定必须与 :meth:`click` **走同一条路径**（同一把尺子）——
+    探针另写一份的话，「重放定位率」就不是生产链的读数了。
+    """
+
+    async def test_命中一个算_ok_且不动作(self):
+        page = _FakePage()
+        driver, _ = _driver(page)
+        res = await driver.resolve(role="button", name="立即播放")
+        assert res == {"outcome": "ok", "matches": 1,
+                       "role": "button", "name": "立即播放"}
+        # **没点**——这是这个口存在的理由
+        assert page.actions == []
+        assert page.role_calls == [("button", "立即播放", True)]
+
+    async def test_命中不到算_not_found_且不动作(self):
+        page = _FakePage(role_counts={("button", "立即播放"): (0, None)})
+        driver, _ = _driver(page)
+        res = await driver.resolve(role="button", name="立即播放")
+        assert res["outcome"] == "not_found"
+        assert res["matches"] == 0
+        assert page.actions == []
+
+    async def test_真同名算_ambiguous_并带命中数(self):
+        page = _FakePage(role_counts={("link", "50集全 电视剧"): (3, None)})
+        driver, _ = _driver(page)
+        res = await driver.resolve(role="link", name="50集全 电视剧")
+        assert res["outcome"] == "ambiguous"
+        assert res["matches"] == 3
+        assert page.actions == []
+
+    async def test_空_name_直接判不存在且不往返(self):
+        page = _FakePage()
+        driver, _ = _driver(page)
+        res = await driver.resolve(role="link", name="")
+        assert res["outcome"] == "not_found"
+        assert page.role_calls == []
+
+    async def test_词表外的_role_直接判不存在(self):
+        page = _FakePage()
+        driver, _ = _driver(page)
+        res = await driver.resolve(role="heading", name="影片介绍")
+        assert res["outcome"] == "not_found"
+        assert page.role_calls == []
+
+    async def test_count_报错是能力故障不是元素不存在(self):
+        """与动作面同一条纪律：定位能力不可用**不许**折叠成
+        「元素不存在」——两者的正确处置相反。"""
+        page = _FakePage(
+            role_counts={("button", "立即播放"): (PwError("Target closed"), None)}
+        )
+        driver, _ = _driver(page)
+        with pytest.raises(DriverError):
+            await driver.resolve(role="button", name="立即播放")
+
+    async def test_账目不许出现成功与不存在同形(self):
+        """``ok`` 这一支必须自己记一份账——否则「定位到了」与
+        「没定位到」在 ``last_action`` 里同形（后者是三态里的一态）。"""
+        page = _FakePage()
+        driver, _ = _driver(page)
+        await driver.resolve(role="button", name="立即播放")
+        assert driver.last_action["outcome"] == "ok"
+        assert driver.last_action["op"] == "resolve"

@@ -116,7 +116,13 @@ async def visit_site(
     #    本来就可由 evidence 区分。
     reachable = perceptor.decide(Q.IS_REACHABLE, result.site_obs)
     if reachable.answer is False:
-        ledger.record_from(result.landed_url, reachable, site_url=url)
+        # ⚠️ **必须传 ``obs``**：前置事实核验（``branches._precondition_failed``）
+        # 要拿观察里的**页面原文**核「门禁语境」——② 的付费墙救济路径
+        # （``payload["paywall"]`` → ``subscription_wall``）也走这里。
+        # 不传 obs ⇒ 核验被跳过（守卫的既有约定：调用方没传就放行），
+        # 于是「② 判否 + 正文有门禁证据」这条路径的前置事实**从来没被核过**。
+        ledger.record_from(result.landed_url, reachable, obs=result.site_obs,
+                           site_url=url)
         result.note("IS_REACHABLE=False")
         return result
     if reachable.answer is None:

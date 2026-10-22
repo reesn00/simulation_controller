@@ -117,6 +117,14 @@ class Test字段集一致:
             "truncated", "raw_len", "stripped_ratio", "degraded",
             "video_tag_count", "iframe_count", "elements_total",
             "links_total", "interactive_elements", "links",
+            # 2026-10-21 增量七十：跨面可比的元素账目（设计方案 04 §4.9.6）。
+            # **新增的一列，不改 elements_total**。值恒为 dict 或 None
+            # （None = 这一批没开 --element-basis，与「页面上没有元素」不同义）。
+            "element_basis",
+            # 2026-10-21：共享口径**没测到的原因**。⚠️ **与 degraded 分开**——
+            # degraded 是内容块的降级通道（下游只判它非空），把测量失败
+            # 混进去，一把坏尺子就能作废整批数据。
+            "element_basis_error",
         }
         assert actual == expected, (
             f"观察字段漂移：多 {actual - expected} / 少 {expected - actual}"

@@ -1,0 +1,49 @@
+{
+  "driver": "camoufox",
+  "server": {
+    "name": "camoufox",
+    "fingerprint": {
+      "os": "windows",
+      "geoip": false,
+      "locale": "zh-CN",
+      "humanize": true,
+      "headless": true,
+      "screen": [
+        2560,
+        1080
+      ],
+      "window": [
+        1920,
+        947
+      ],
+      "dpr": 1,
+      "timezone": "Asia/Shanghai"
+    }
+  },
+  "archive_dir": "trajectory_pipeline/output/pipeline/dualrun2/camoufox",
+  "results": [
+    {
+      "url": "https://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+      "observed_url": "https://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+      "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+      "body_len": 6,
+      "body_head": "精彩即将开始",
+      "elements_total": 0,
+      "video_tag_count": 2,
+      "iframe_count": 0,
+      "degraded": [],
+      "body_source": "inner_text",
+      "archived": {
+        "url": "https://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+        "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+        "body_len": 6,
+        "body_head": "精彩即将开始",
+        "elements_total": 0,
+        "video_tag_count": 2,
+        "iframe_count": 0,
+        "degraded": [],
+        "body_source": "inner_text"
+      }
+    }
+  ]
+}

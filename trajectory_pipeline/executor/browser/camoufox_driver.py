@@ -136,11 +136,15 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from trajectory_pipeline.executor.browser.aria_snapshot import parse_nodes
-from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+from trajectory_pipeline.executor.browser.element_basis import (
+    ROLE_VOCAB,
+    SHARED_DOM_JS,
+    filter_ladder,
+    parse_shared_basis,
+)
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.dom import (
     IFRAME_SELECTOR,
@@ -163,17 +167,25 @@ from trajectory_pipeline.perception.base import (
     Observation,
 )
 
+if TYPE_CHECKING:  # pragma: no cover - 仅类型标注，运行期不导入
+    # ⚠️ **刻意不在运行期导入** ``camoufox_session``（2026-10-21 改）：
+    # 它只在 :meth:`CamoufoxDriver.__init__` 的**类型标注**里出现，
+    # 而它会 ``import camoufox``——那是一条**把浏览器拉起**的依赖链。
+    # 于是「import 驱动模块」与「能不能起浏览器」被绑在一起：驱动层的
+    # 单测（本文件）本不该被浏览器栈的可安装性绑架。
+    #
+    # 与 ``probe_observe.py`` / ``probe_result_titles.py`` 同一手法——那里
+    # 早就是**函数内导入**了（要真会话才导），这里只是把它提到类型层。
+    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+
 __all__ = ["CamoufoxDriver", "ROLE_VOCAB"]
 
-#: 采集面枚举的 role 词表——**必须短**（方案 §4.5.2）。
-#:
-#: 只收本场景真用得到的：播放/提交按钮、搜索结果链接、站内搜索框、筛选器。
-#: 词表之外的 role 一律不枚举——宁可少列，也不要列一堆用不上、且各自带
-#: 一堆边界情况的 role。**这张表就是「哪些元素会出现在观察里」的全部定义。**
-ROLE_VOCAB = (
-    "button", "link", "textbox", "searchbox", "combobox",
-    "checkbox", "radio", "tab",
-)
+#: ``ROLE_VOCAB`` **住在** :mod:`trajectory_pipeline.executor.browser.element_basis`
+#: （2026-10-21 搬走）：它现在是**两把尺子共用的词表**——
+#: 本面的 ARIA 阶梯 + 跨面共享口径的阶梯。留在驱动里会让共享口径抄第二份，
+#: 抄两份必然漂，而漂了之后「−70% 落在哪一档」又变成不可解释的量。
+#: 这里只做**再导出**，让旧引用（``from ...camoufox_driver import ROLE_VOCAB``）
+#: 不用改。
 
 #: 元素列表的默认上限。与 obscura 的 ``DEFAULT_LIMIT`` 取同一个数，
 #: 但**两个实现下的语义不同**（obscura 由服务端截断，这里由我们截断），
@@ -237,8 +249,16 @@ class CamoufoxDriver:
 
     name = "camoufox"
 
-    def __init__(self, session: CamoufoxSession) -> None:
+    def __init__(self, session: CamoufoxSession, *,
+                 collect_element_basis: bool = False) -> None:
         self._session = session
+        #: **跨面可比的元素账目要不要采**（设计方案 04 §4.9.6）。
+        #:
+        #: **默认关**：它多一次 ``page.evaluate`` 往返，是**测量仪器**
+        #: 不是生产链的必需项。开着的时候 :meth:`observe` 会把两本账
+        #: （``shared`` 共享口径 + ``face`` 本面 ARIA 阶梯）落进
+        #: :attr:`Observation.element_basis`。
+        self._collect_element_basis = collect_element_basis
         #: ref → (role, name)。**只在采集面内部活着**：判断点 ③ 回传 ref，
         #: 代码按它取回目标；动作面另走 role+name（D12：ref 不进训练数据）。
         self._refs: dict[str, tuple[str, str]] = {}
@@ -390,33 +410,74 @@ class CamoufoxDriver:
             raise DriverError(f"camoufox 取 aria 快照失败: {_brief(exc)}") from None
 
         nodes = parse_nodes(text or "")
-        by_role = [n for n in nodes if n.role in ROLE_VOCAB]
-        named = [n for n in by_role if n.name]
-        # 同名整组丢，而不是留第一个：留哪个是赌（属「猜测」），而
-        # ``get_by_role(role, name, exact=True)`` 对同名会触发 strict mode 报错，
-        # 留下等于给动作面埋一颗必然失败的雷。
-        occurrences = Counter((n.role, n.name) for n in named)
-        unique = [n for n in named if occurrences[(n.role, n.name)] == 1]
-        kept = unique[: max(int(limit), 0)]
+        # 过滤阶梯**与跨面共享口径共用一把尺子**
+        # （:func:`element_basis.filter_ladder`）：role 词表 → 无名 →
+        # 真同名整组 → 截断。同名整组丢而不是留第一个——留哪个是赌
+        # （属「猜测」），而 ``get_by_role(role, name, exact=True)`` 对同名
+        # 会触发 strict mode 报错，留下等于给动作面埋一颗必然失败的雷。
+        kept_pairs, ladder = filter_ladder(
+            ((node.role, node.name or "") for node in nodes),
+            role_vocab=ROLE_VOCAB,
+            limit=limit,
+        )
 
         refs: dict[str, tuple[str, str]] = {}
         elements: list[InteractiveElement] = []
-        for index, node in enumerate(kept, start=1):
+        for index, (role, name) in enumerate(kept_pairs, start=1):
             ref = f"e{index}"
-            name = node.name or ""
-            refs[ref] = (node.role, name)
-            elements.append(InteractiveElement(ref=ref, role=node.role, name=name))
+            refs[ref] = (role, name)
+            elements.append(InteractiveElement(ref=ref, role=role, name=name))
 
         self._refs = refs
-        self.last_enumeration = {
-            "nodes": len(nodes),
-            "role_matched": len(by_role),
-            "nameless_dropped": len(by_role) - len(named),
-            "ambiguous_dropped": len(named) - len(unique),
-            "kept": len(elements),
-            "truncated": len(unique) - len(kept),
-        }
+        self.last_enumeration = {"nodes": len(nodes), **ladder}
         return tuple(elements)
+
+    async def element_basis(self) -> dict[str, int]:
+        """**跨面可比的**元素枚举账目（设计方案 04 §4.9.6）。
+
+        跑的是 :data:`element_basis.SHARED_DOM_JS`——**与 obscura 面同一段
+        JS、同一把尺子**，于是两面的数字**按构造可比**。
+
+        与 :meth:`interactive` 的差别是**枚举基础**：
+        这里是 **DOM 交互候选**（role/name 自己算），
+        那里是 **playwright 的可访问性树**（role/name 引擎算）。
+        两者**故意不同**——共享口径要回答的是「同一个页面在两个浏览器上
+        差多少」，用同一段 JS 才量得出来。
+
+        ⚠️ **失败抛** :class:`DriverError`：空账会被读成
+        「这个页面上一个交互元素都没有」，而真相是「没测到」。
+        """
+        try:
+            raw = await self._page.evaluate(SHARED_DOM_JS)
+        except _PwError as exc:
+            raise DriverError(f"camoufox 取共享口径失败: {_brief(exc)}") from None
+        try:
+            _, ledger = parse_shared_basis(raw)
+        except ValueError as exc:
+            raise DriverError(f"camoufox 共享口径返回不合法: {exc}") from None
+        return ledger
+
+    async def _collect_basis(
+        self, degraded: list[str], face_ledger: Mapping[str, int]
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """采两本元素账目。返回 ``(两本账, 没测到的原因)``。
+
+        **没开开关就返回 ``(None, None)``**——``None`` = 「没测」，
+        空账 = 「测了，什么都没有」。这两件事必须能分开。
+
+        ⚠️ **测量失败不进 ``degraded``**（2026-10-21 修，与 obscura 面同口径）：
+        ``degraded`` 是**内容块**的降级通道，下游只判它非空——
+        ``extract_candidates`` 见到降级就**不取候选**，于是「尺子坏了」
+        会**作废整批数据**。失败只记进 ``element_basis_error``，
+        **face 账目照旧给**（它不依赖共享口径）。
+        """
+        if not self._collect_element_basis:
+            return None, None
+        try:
+            shared = await self.element_basis()
+        except DriverError as exc:
+            return {"face": dict(face_ledger)}, str(exc)
+        return {"shared": shared, "face": dict(face_ledger)}, None
 
     async def count(self, selector: str) -> int:
         """选择器命中数。
@@ -529,6 +590,52 @@ class CamoufoxDriver:
             role=role, name=name,
         )
         await self._settle()
+
+    async def resolve(
+        self, *, role: str | None, name: str | None
+    ) -> dict[str, Any]:
+        """**只定位，不动作**——给判据⑥（动作可移植性）的重放探针用。
+
+        为什么需要它：可移植性问的是「**换个会话重放，还定位得到吗**」，
+        判据是**定位读数**（0 个 / 恰好 1 个 / >1 个），**不是**「点了会怎样」。
+        而点击**不可逆**（可能点进另一个视频、可能触发付费流程）——
+        探针要的是读数，不该拿真页面去试点击。
+
+        判定走的是 :meth:`_locate` **同一条路径**（同一把尺子：
+        ``get_by_role(role, name=name, exact=True)``）——**不另写一份**，
+        否则探针与生产链的定位口径会漂，而漂了之后「重放定位率」这个读数
+        就不再是生产链的读数（判据⑥ 就判错了对象）。
+
+        返回 ``{"outcome", "matches", "role", "name"}``：
+        ``outcome`` 取 :meth:`_locate` 的三态
+        ——``ok``（恰好 1 个）/ ``not_found``（0 个，或词表外 role，
+        或空 name）/ ``ambiguous``（>1 个真同名）。
+        ``matches`` 是页面上的匹配数（**整数**；找不到时是 0）。
+
+        ⚠️ **失败抛** :class:`DriverError`——定位能力不可用（页面崩、
+        浏览器坏）**不是**「元素不存在」，两者不能折叠。
+        """
+        locator = await self._locate("resolve", role=role, name=name)
+        if locator is None:
+            rec = dict(self.last_action)
+            outcome = str(rec.get("outcome") or "not_found")
+            try:
+                matches = int(str(rec.get("matches") or "0"))
+            except ValueError:
+                matches = 0
+            return {
+                "outcome": outcome,
+                "matches": matches,
+                "role": role or "",
+                "name": name or "",
+            }
+        # 命中 1 个：``_locate`` 这条路径上没记 ``last_action``（那是 ``_do`` 的活），
+        # 这里自己记一份——账目不许出现「成功与不存在同形」的空档。
+        self.last_action = {
+            "op": "resolve", "role": role or "", "name": name or "",
+            "outcome": "ok", "matches": "1",
+        }
+        return {"outcome": "ok", "matches": 1, "role": role or "", "name": name or ""}
 
     async def _locate(
         self,
@@ -903,9 +1010,15 @@ class CamoufoxDriver:
         except DriverError:
             degraded.append("interactive")
             elements = ()
+        # **当场的** ARIA 阶梯账目：``last_enumeration`` 是驱动级状态，
+        # 枚举失败时它还留着**上一页**的数——直接读会把上一页的账
+        # 记到这一页头上。取不到就是空账。
+        face_ledger = dict(self.last_enumeration) if elements else {}
 
         video_count = await self._count_or_zero(MEDIA_SELECTOR, degraded)
         iframe_count = await self._count_or_zero(IFRAME_SELECTOR, degraded)
+
+        basis, basis_error = await self._collect_basis(degraded, face_ledger)
 
         return Observation(
             url=snap.url,
@@ -918,6 +1031,10 @@ class CamoufoxDriver:
             # 「被裁掉」与「不存在」（见 Observation.elements_total 的说明）。
             elements_total=len(elements),
             links_total=len(links),
+            # 跨面可比的元素账目（**默认不采**，见 __init__ 的说明）。
+            # 两本账平级：``shared`` 是跨面可比的，``face`` 是本面 ARIA 阶梯。
+            element_basis=basis,
+            element_basis_error=basis_error,
             # 方言由**驱动实现**自己填（P4）：camoufox 面的 role 是 ARIA role。
             # 不填会让按词表筛元素的地方把 ``textbox`` 拿去 HTML 标签名那套里比对，
             # 静默取回 0 个候选。

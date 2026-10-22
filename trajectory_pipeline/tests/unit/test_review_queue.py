@@ -405,17 +405,44 @@ class Test跨判断点:
     """
 
     def test_归属不对就不动branch(self):
+        """③ 的行贴 ② 的细分分支（``login_required``）——归属不对，不动 branch。
+
+        ⚠️ **2026-10-21 换了例子**：原来这里用的是「③ 的行 + 付费墙裁定」，
+        那时 ③ 不产 ``subscription_wall``。现在**③ 也会产**（②③ 的付费墙
+        救济路径，单一真源 ``questions.PAYLOAD_FINE_BRANCHES``），所以那个
+        组合已经**归属正确**、照贴分支（见下面的新用例）。归属不对的
+        例子换成「③ 的行 + ② 的细分」——``login_required`` 只有 ② 一个产地。
+        """
+        arch = _archive([{"url": "youku.com", "branch": "unresolved",
+                          "question": "site.find_play_control",
+                          "evidence": "e"}])
+        out, st = apply_verdicts(arch, {"youku.com": {"verdict": "confirm_login"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "unresolved"            # ← 分支没动
+        assert rec["site_verdict"] == "login_required"
+        assert "site.is_reachable" in rec["site_verdict_mismatch"]
+        assert "site.find_play_control" in rec["site_verdict_mismatch"]
+        assert st["off_question"] == 1
+        assert st["confirm_login"] == 1
+
+    def test_三的行也能贴订阅墙(self):
+        """**2026-10-21 新增**：③ 也会产 ``subscription_wall``（付费墙救济
+        路径），所以人工在③ 的行上裁定「这是付费墙」是**归属正确**的，
+        应当照贴。
+
+        这条与 :data:`trajectory_pipeline.perception.questions.PAYLOAD_FINE_BRANCHES`
+        同源——那张表是归属校验与 D-5 决策树的**单一真源**，两处各留一份
+        就会「一边放行、一边拒绝」。
+        """
         arch = _archive([{"url": "youku.com", "branch": "unresolved",
                           "question": "site.find_play_control",
                           "evidence": "e"}])
         out, st = apply_verdicts(arch, {"youku.com": {"verdict": "confirm_paywall"}})
         rec = out["outcomes"][0]
-        assert rec["branch"] == "unresolved"            # ← 分支没动
-        assert rec["site_verdict"] == "subscription_wall"
-        assert "player.ok" in rec["site_verdict_mismatch"]
-        assert "site.find_play_control" in rec["site_verdict_mismatch"]
-        assert st["off_question"] == 1
-        assert st["confirm_paywall"] == 1
+        assert rec["branch"] == "subscription_wall"
+        assert "site_verdict" not in rec
+        assert st["off_question"] == 0
+        assert st["branch_written"] == 1
 
     def test_人工结论仍然留得住可统计(self):
         """不改 branch 不等于丢掉结论——``review_verdict`` 照记。"""

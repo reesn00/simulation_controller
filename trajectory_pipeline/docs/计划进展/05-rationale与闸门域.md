@@ -199,8 +199,10 @@ P1 `steps[i].rationale` 原本是**事后反思**：writer 生成时喂了
 ### 规模与验收
 
 全量 **480 条 rationale + 316 条 reflection ≈ 796 次 LLM 调用**（需
-`TRAJECTORY_LLM_*`）。门禁 **2368 passed / 1 failed**（failed 是既有的
-`test_xlsx_backfill` 环境缺失）；变异检查 **47/47 全红**。
+`TRAJECTORY_LLM_*`）。门禁 **0 failed / 0 skipped**（2026-10-21 xlsx 测试
+清退后；当时总条数在 3398～3439 之间浮动，因工作区并发编辑，见
+[09 §当前状态](09-门禁与纪律域.md)；此前那一格 1 failed 是 `test_xlsx_backfill`
+的 xlsx 环境缺失，已随工作单删除清退）；变异检查 **47/47 全红**。
 
 ### 风险与未做
 

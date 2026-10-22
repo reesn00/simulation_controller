@@ -34,7 +34,7 @@ from trajectory_pipeline.perception.rule_perceptor import (
     PRICE_PATTERN,
     STRONG_PAYWALL_KEYWORDS,
     WEAK_PAYWALL_KEYWORDS,
-    has_strong_paywall_signal,
+    paywall_evidence,
 )
 # 2026-10-16 方案 12 阶段 G：``_same_page``（同页守卫的三特征比对）所有权
 # 迁入 executor.gatekeeper——它与死循环检测同属「同页/同域机械事实」这一类
@@ -450,9 +450,12 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
         "而这次点击没有把页面带进播放页，结论没有新证据支撑"
     ),
     "subscription_wall": (
-        "「有播放页但需订阅/付费」同样要求**确实到了播放页**——"
-        "站点页上的「开通会员」是导航栏文案，不是付费墙。"
-        "这次点击没把页面带进播放页，就没有新证据支撑这条结论"
+        "「有播放页但需订阅/付费」要求页面**明说**不给钱/不订阅/不换端"
+        "就看不了正片（门禁语境：订阅后观看 / 开通会员观看 / "
+        "试看 N 分钟后需订阅）——页面上挂着「开通会员」字样**不算**，"
+        "那是导航栏广告；纯续费营销也不是（人工复核 2026-10-21："
+        "池里 12 条 subscription_wall 没有一条站得住，"
+        "成因全是 CTA 裸命中与地区限制）"
     ),
     # 2026-10-12 阶段 1：② 拆分的 login_required / blocked 与 ④ 拆分的
     # partial_free 同样要「确实到了目标页/播放页」，否则导航栏文案会被
@@ -488,40 +491,21 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
 
 # 2026-10-13 增量三十二 · D10 偏差修缮：付费墙同页守卫的**强信号旁路**。
 #
-# 站点入口页导航栏里的「开通会员」广告是同页守卫要拦的「假付费墙」
-# ——LLM 只看到「需付费」一个弱词就贴 ``subscription_wall``，守卫拦下、
-# 降级 ``unresolved`` 是对的（见 ``test_付费墙前置事实不成立时降级``）。
+# ⚠️ **2026-10-21（H-16 修复①）这段旁路已经退役**——本模块原来的
+# ``_has_strong_paywall_signal`` **已删除**，因为它**没有调用点**：
+# 同页守卫在 2026-10-19 增量六十·方案 X 里已窄化为只覆盖
+# ``component_unverified``（见 :func:`_precondition_failed` 末段），
+# 而 ``subscription_wall`` 的降级改由**门禁语境**判据
+# （:func:`~trajectory_pipeline.perception.rule_perceptor.paywall_evidence`）
+# 核前置事实——比「强弱关键词组合」严得多（人工复核判强弱组合是**营销**）。
 #
-# 但**真付费墙页面**点击前后就是同一个页面（页面本身就是付费墙终点站，
-# 点击触发的是付费提示，不是导航）。LLM 在决策证据里写出**强付费墙**
-# 关键词（VIP / 订阅 / 续费 / 包月 / 包年 / 专享 / 特惠）并至少配一个
-# 弱关键词（开通 / 会员）或价格/优惠模式，就是「LLM 已经看穿了页面
-# 内容」的强证据——这时同页守卫不该再把 ``subscription_wall`` 降级为
-# ``unresolved``，否则 D10 偏差修缮白做。
+# 强弱信号本身**没有退役**：它仍是
+# :func:`trajectory_pipeline.executor.gatekeeper.is_paywall` 的判据
+# （拦截口径，与「分支前置事实」是两回事），唯一所有者仍在
+# :mod:`trajectory_pipeline.perception.rule_perceptor`。
 #
-# 强弱分组与三判据（≥1强+≥1弱 / ≥2强 / ≥1强+价格）的**唯一所有者**在
-# :mod:`trajectory_pipeline.perception.rule_perceptor`
-# （2026-10-15 INC43 移入，与 ``PAYWALL_WORDS`` 同源；本模块文件头反向
-# 导入再导出，旧引用继续解析）。同页守卫旁路与 ②③ 负分支付费墙救济
-# （``paywall_rescue_evidence``）是同一套信号的两个用途，两处各留一份
-# 会漂移成「守卫放行了、救济不认」。
-#
-# 旁路**只对** ``subscription_wall`` 生效。``partial_free`` /
-# ``login_required`` / ``blocked`` 同页守卫照旧——partial_free 在
-# 阶段 1 没出现 D10 偏差，扩张旁路范围只会带来新的误判风险。
-def _has_strong_paywall_signal(decision: Decision | None) -> bool:
-    """LLM 决策证据里的付费墙信号是否**足够强**到让同页守卫放行。
+# 留这一段是**历史说明**（当初为什么有旁路、为什么退役），不是活代码。
 
-    实现（含全部关键词表）在
-    :func:`trajectory_pipeline.perception.rule_perceptor.has_strong_paywall_signal`
-    ——这里只做 Decision → evidence 文本的适配。
-
-    ``decision is None``（调用方没传）或 evidence 为空串都按弱信号
-    处理——不旁路。
-    """
-    if decision is None:
-        return False
-    return has_strong_paywall_signal(decision.evidence or "")
 
 
 # ``_same_page`` 已迁入 executor/gatekeeper.py（方案 12 阶段 G，
@@ -574,13 +558,34 @@ def _precondition_failed(
     而那种「忘了传 obs」的错误由 :meth:`RunLedger.record_from` 的
     形参文档提醒，不在这里做第二次猜测。
 
-    2026-10-13 增量三十二：D10 偏差修缮——``subscription_wall`` 在 LLM
-    给出强付费墙信号时（见 :func:`_has_strong_paywall_signal`）旁路
-    同页守卫。真付费墙页面点击前后就是同一个页面（页面本身就是终点站）。
-    ``partial_free`` / ``login_required`` / ``blocked`` 同页守卫照旧。
+    2026-10-13 增量三十二：D10 偏差修缮——``subscription_wall`` 曾有
+    一条「LLM 给出强付费墙信号就旁路同页守卫」的通道。该通道在
+    **2026-10-19 增量六十·方案 X** 随同页守卫窄化（同守卫集合从 5 条
+    缩到 1 条）而**失去拦截对手**，随后在 2026-10-21（H-16 修复①）
+    随 ``_has_strong_paywall_signal`` 一并删除——**今天没有这条旁路**。
+
+    2026-10-21（H-16 修复①）新增 ``subscription_wall`` 的**前置事实核验**：
+    这条分支的前提是「页面**明说**不给钱/不订阅就看不了正片」，
+    而不是一个「页面上有会员字样」。核验用**门禁语境**判据
+    （:func:`~trajectory_pipeline.perception.rule_perceptor.paywall_evidence`）——
+    那是判定付费墙的**唯一入口**，与感知层同源（不另写一份词表：
+    两份判据必然漂，而漂移的表现是「一处认了、另一处没认」）。
     """
     if obs is None or branch is None:
         return ""
+    if branch == "subscription_wall":
+        # 前置事实：门禁语境证据在场。输入源两个都是**页面原文**——
+        # 采集到的正文（``obs.body_text``）与模型回传的引文
+        # （``payload["page_quotes"]``）；**不是** evidence（那是模型自述）。
+        quotes = decision.payload.get("page_quotes") if decision else None
+        quoted = " ".join(str(q) for q in (quotes or ()))
+        hit = (paywall_evidence(obs.body_text or "")
+               or paywall_evidence(quoted))
+        if not hit:
+            return (
+                f"页面里没有付费墙门禁证据——"
+                f"{BRANCH_PRECONDITION[branch]}"
+            )
     if branch == "component_unverified":
         if pre_obs is None:
             return ""
@@ -613,10 +618,11 @@ def _precondition_failed(
     # 防回潮:TestBranchPreconditionNavBar / TestBranchPreconditionSinglePage
     # 单测封回归。
     #
-    # 重要:`subscription_wall` 强付费墙信号旁路（line 原本 609-617）随
-    # 元组缩窄同步**始终命中**——不是被删除,而是**守卫不再拦截
-    # subscription_wall 这条分支**,旁路逻辑失去拦截对手,但本身仍写在
-    # 决策旁路路径上。
+    # 重要:`subscription_wall` 的强付费墙信号旁路**已随守卫缩窄退役**
+    # （2026-10-19 增量六十·方案 X 缩窄守卫集合 ⇒ 旁路失去拦截对手；
+    # 2026-10-21 H-16 修复① 删除 ``_has_strong_paywall_signal``）。
+    # ``subscription_wall`` 今天**不再被同页守卫拦**，它的降级由上面那段
+    # **门禁语境**前置事实核验负责。
     return ""
 
 
@@ -632,9 +638,28 @@ def decision_branch(decision: Decision) -> str:
       ``not_found`` → ``broken``；
     - ④ ``paywall_type``：``preview``/``trial`` → ``partial_free``，
       其余仍由 ``paywall`` 大类落在 ``subscription_wall``；
-    - payload 均缺失时**保持题绑定的合并态**（``login_wall_or_blocked`` /
-      ``component_unverified``）——visit.py ② 老路径不传 payload，
-      该行为不能因为阶段 1 而改变（deprecated 分支由 ``record()`` 放行）。
+    - **payload 均缺失时落 ``unresolved``**（2026-10-21，H-15，owner 裁定
+      「只落 unresolved，不新开分支」）——见下面那段说明。
+
+    ⚠️ **② 的兜底为什么不再落合并态**（2026-10-21 增量七十四，H-15）：
+    ② 答 False 而 ``access_control_type`` 缺失（模型没给，或 ``page_quotes``
+    里没有阻断关键词），**说明的是「我们分不清是哪一种拦截」**，
+    **不是「有拦截」**。而旧的兜底把它落进 ``login_wall_or_blocked``
+    ——那一支的语义是「登录墙 / 验证码 / 地区限制」，**三个前提一个都没观测到**。
+    实测代价（第二轮双跑 B 面）：**10 条**因此被当成真负样本并进池，
+    而 LLM 自己的 evidence 写的是「未加载出目标内容」「仅显示加载提示」
+    ——**与分支名直接矛盾**；A 面（obscura）对同一批 URL 落的正是
+    ``unresolved``。⇒ 那是**分支映射越权**，不是页面事实。
+    现场重采（增量七十三）还证伪了「采集层没拿到内容」这个前提：
+    那 10 条的页面**今天原样还在**，现场与存档逐字一致。
+
+    ⇒ 正解是**兜底 fail-closed 落 ``unresolved``**（进复核队列、
+    **不进负样本池**），**不是调阈值**（阈值改变不了「站点只返回了 6 个字」
+    这个事实），**也不是新开分支**（owner 裁定：22 类封闭集不动）。
+
+    ⚠️ **这条改动只碰 ②**：④ 的 ``component_unverified`` **照旧**——
+    「点了但没组件」本身就是一条可判的负样本，它有
+    :data:`BRANCH_PRECONDITION` 条目、有同页守卫，与 ② 的合并态不同源。
     """
     if decision.answer is True:
         return ""
@@ -659,7 +684,15 @@ def decision_branch(decision: Decision) -> str:
     # 而两者都由 PLAYER_OK 问出。
     if decision.payload.get("paywall"):
         return questions.PAY_WALL
-    return questions.negative_branch_of(decision.question)
+    fallback = questions.negative_branch_of(decision.question)
+    # ② 的合并态（``login_wall_or_blocked``）**不再兜底**——落 unresolved。
+    # ⚠️ 判据是「**这一支是已弃用的合并态**」，不是「题是 ②」：
+    # 前者是**语义**（合并态的语义是一整类拦截，而这里一个都没观测到），
+    # 后者是**位置**（换题名就得重改一遍）。合并态集合见
+    # :data:`questions.DEPRECATED_BRANCHES`。
+    if fallback in questions.DEPRECATED_BRANCHES:
+        return "unresolved"
+    return fallback
 
 
 def validate_observation_for_decision(obs: Observation, question: str) -> str:
