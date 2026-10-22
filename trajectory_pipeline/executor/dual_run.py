@@ -550,9 +550,23 @@ def _surface_of(driver: str) -> str:
         return "unknown"
 
 
-def summarize(label: str, path: Path) -> SideSummary:
-    """把一侧的存档汇总成 :class:`SideSummary`。"""
+def summarize(
+    label: str, path: Path, *, surface: str | None = None
+) -> SideSummary:
+    """把一侧的存档汇总成 :class:`SideSummary`。
+
+    ``surface`` 只统计**那个面**的存档（``obscura-1`` / ``camoufox-1``）。
+    ⚠️ **盘上现在两面都有**（obscura 是存量面、camoufox 是生产面），
+    不筛就会把**两代读数混成一个数**——而两代的驱动行为不同
+    （camoufox 等新文档 commit、obscura 不等），混起来的数**既不是
+    旧批次的数，也不是新批次的数**，是最坏的一种数。
+    ⇒ 筛的键取**面**而不是 ``driver`` 字段：存量 obscura 批次**没记
+    ``driver``**（该字段是 2026-10-22 才进的），而它们真实跑的就是
+    obscura ⇒ 按 ``driver==""`` 筛会把存量批次**全筛掉**。
+    """
     records = load_runs(path)
+    if surface:
+        records = [r for r in records if _surface_of(str(r.get("driver") or "")) == surface]
     branch_counts: dict[str, int] = {}
     drivers: dict[str, int] = {}
     surfaces: dict[str, int] = {}

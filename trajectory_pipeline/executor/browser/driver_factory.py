@@ -15,9 +15,26 @@ P0 的边界（设计方案 04 §2.3）
 **纯重构、零行为变化**：P0 落地时本模块只有 obscura 一个分支，产出物必须与之前逐字节同形。
 ``make_driver`` 的 ``kind`` 参数就是 camoufox 分支要长的地方。
 
-P1 加了 ``"camoufox"`` 分支，但**默认实现仍是 obscura**（:data:`DEFAULT_KIND`）——
-生产链一行没变，camoufox 只由 ``cli check --driver camoufox`` 显式点名进入。
-这样「默认值改了没」是一个可读的事实，而不是六处调用点各自的隐式约定。
+P1 加了 ``"camoufox"`` 分支。**2026-10-22 owner 裁定：默认实现改为 camoufox**
+（:data:`DEFAULT_KIND`）——生产链走 camoufox，obscura 降为显式点名
+（``--driver obscura``）的回溯路径。
+
+裁定依据（**不是**「camoufox 更好看」，是三条实测读数）：
+
+1. **反爬**：真·反爬拦截率 B（camoufox）**9.09%** < A（obscura）**14.89%**，
+   配对子集同向（增量七十二）。⚠️ 必须用「真·反爬」口径——合并口径
+   （反爬 + 登录墙）给出**相反**的结论（A 19.15% / B 34.09%）。
+2. **页面内容**：obscura 在爱奇艺这类**客户端渲染**站上正文一个字都抽不出
+   （``body_len=0`` + ``degraded=['body_text']``，19 条），A 侧 60% 的站点
+   是「没测到」（H-14）。**抽不到正文的浏览器对「页面内容获取为主」的
+   项目没有价值**——反而不准。
+3. **速度不是目标**：本项目的目标是**减少被拦截 + 拿到页面内容**，
+   速度排在后面——为此接受 camoufox 的等待时间（真人鼠标轨迹回放）。
+
+⚠️ **obscura 没有被删掉**：它是存量 P1/P2 产物的方言（工具面
+``obscura-1`` 仍在 catalog 里），也是 replay 与口径回溯的参照系。
+「不再比对」≠「删掉实现」。
+
 camoufox 分支的会话（launch）由调用方持有：一个 Run 一次 launch（方案 §4.3），
 factory 只负责把会话包成驱动，不负责起停浏览器。
 
@@ -34,8 +51,12 @@ from trajectory_pipeline.executor.browser.mcp_client import McpClient
 from trajectory_pipeline.executor.browser.obscura_driver import ObscuraDriver
 from trajectory_pipeline.executor.browser.page_driver import PageDriver
 
-#: 当前生产链唯一在用的实现。D11 完成后这里会改成 ``"camoufox"``。
-DEFAULT_KIND = "obscura"
+#: 当前生产链在用的实现。
+#:
+#: **2026-10-22 owner 裁定 = ``"camoufox"``**（理由见模块 docstring）。
+#: 改这一处就切生产链——它不是六处调用点各自的隐式约定，
+#: 而是一个**可读、可断言、可写进批次元数据**的事实。
+DEFAULT_KIND = "camoufox"
 
 #: 本模块认的实现名。**逗号式的白名单，不在表里就报错**——
 #: 认不出时静默回落到默认实现，会让「配错了」与「配对了」产出同一份数据。

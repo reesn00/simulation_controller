@@ -349,9 +349,36 @@ def _literal_tuple(node) -> set[str]:
 
 
 def _real_archives() -> list[Path]:
-    """批次里真实跑出来的存档。**取不到就跳过**，不拿 fixture 冒充。"""
+    """批次里真实跑出来的存档。**取不到就跳过**，不拿 fixture 冒充。
+
+    ⚠️ **必须递归**（2026-10-22 补记）：这里原先是 ``glob("*.json")``
+    ——只扫顶层，子目录下的批次（``dualrun/`` / ``camoufox_prod1/``）
+    一条都核不到。与 ``test_p1_contract._real_archives`` 与
+    ``test_element_dialect._run_records`` 是同一个漏的三个副本。
+
+    这里要的形状比 P1 那处**宽**：P2 契约核的是
+    ``split_archive`` 的输入，所以判据是「顶层有 ``run_config``
+    **或** 有 ``steps``/``visits``」——老存档两种布局都见过。
+    仍然按 ``run_id`` 去重。
+    """
     root = Path(__file__).resolve().parents[2] / "output" / "pipeline"
-    found = [p for p in sorted(root.glob("*.json")) if "__" in p.stem]
+    found: list[Path] = []
+    seen: set[str] = set()
+    for p in sorted(root.rglob("*.json")):
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or "__" not in p.stem:
+            continue
+        if "run_config" not in doc and "steps" not in doc and "visits" not in doc:
+            continue
+        run_id = str(doc.get("run_id") or "").strip()
+        if run_id:
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+        found.append(p)
     if not found:
         pytest.skip("没有真实 P1 存档（output/pipeline/ 是产物目录，未入库）")
     return found

@@ -68,7 +68,8 @@
 | `search_blocked` | `str` | **运行级**反爬状态（如 `captcha`）。非空 ⇒ 不产出搜索单元样本 |
 | `gatekeeper_events` | `list[{stage,verdict,reason,disposition}]` | **Gatekeeper 事件账本**（2026-10-16 方案 12 阶段 G / D-A3 最小账本）。`verdict` 取值封闭于 `executor/gatekeeper.py::Verdict` 七值；`disposition.kind ∈ {inject_guidance, escalate_model, fail_closed}`——静默自愈已按 D-A2 否决，**每一档都可见**。与 `search_blocked` 并存不替代：后者是冻结口径的运行级字段，这里是统一账本（A2 起 agent 每步拦截都记）。空 = 本次运行无拦截事件。**新增可选字段，不动 `schema_version`** |
 | `executor_mode` | `"scripted" \| "agent"` | **执行器模式**（2026-10-17 方案 13 §6.1，A2a 埋点；A3 转正为 `RunConfig` 字段）。`scripted` = 七段固定序列，`agent` = 站内自主导航（agent_loop）。**批次级属性**：一批要么全 scripted 要么全 agent，模式在构造期定下、候选内不 fallback（混合轨迹不可归因）。它是 A/B 两批存档在磁盘上**唯一**能区分这两者的字段——两批的 `steps` 同形（六值动作空间）、`visits` 同形，没了它只能靠文件名猜。老存档无此键（可选字段纪律，不动 `schema_version`） |
-| `driver` | `"obscura" \| "camoufox"` | **执行层**（2026-10-20 方案 15 §7 R1）。与 `executor_mode` **正交**：「哪条链跑的」与「哪个浏览器跑的」是两个归因轴，缺一个读档人就分不清。它还是**工具面**的唯一来源——目标编码（`{tag,label}` vs `{role,name}`）由执行层决定，训练侧的声明按它折算（`toolcatalog.surface_of_driver`）。空串 = **没记**（老存档没有这个键，而那批真实跑的就是 obscura），不是「未知执行层」。**新增可选字段，不动 `schema_version`** |
+| `driver` | `"obscura" \| "camoufox"` | **执行层**（2026-10-20 方案 15 §7 R1）。与 `executor_mode` **正交**：「哪条链跑的」与「哪个浏览器跑的」是两个归因轴，缺一个读档人就分不清。它还是**工具面**的唯一来源——目标编码（`{tag,label}` vs `{role,name}`）由执行层决定，训练侧的声明按它折算（`toolcatalog.surface_of_driver`）。空串 = **没记**（老存档没有这个键，而那批真实跑的就是 obscura），不是「未知执行层」。**2026-10-22 起生产链默认 = `camoufox`**（owner 裁定）。**新增可选字段，不动 `schema_version`** |
+| `fingerprint` | `{str: Any}` | **执行层指纹读数**（2026-10-22 P6）。键：`os` / `screen` / `window` / `dpr` / `humanize` / `geoip` / `main_world_eval` / `headless` / `locale`。`screen`/`window`/`dpr` 是**实测值**，其余是**请求值**。⚠️ **launch 时测的，事后补不回来**——所以必须跟 `driver` 一起进存档；事后再去问浏览器已经没有这一批的读数了。**空 dict = 没记**（obscura 是远端 MCP，看不见窗口尺寸），与「记了但是空」在下游是两回事。**新增可选字段，不动 `schema_version`** |
 | `llm_calls` | `list[{ts,caller,candidate,model,latency_ms,prompt_tokens,completion_tokens,error}]` | **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4）。agent 循环每次问模型记一行。**记账范围只圈 agent_loop**：感知层十一题的调用不汇入（§3.6 的 A2a 决策，感知层侵入换不来收益）。`prompt/completion_tokens` 为 `null` = 后端没给 usage，**不是 0**——「没记到」与「没花」在成本分母上是两个事实。`ts` 粒度是**候选级**：循环体不引入时间源，由 orchestrator 在候选访问收口时统一加盖（同候选各条共享一戳；候选内次序看 list 顺序，单条耗时看 `latency_ms`）；超时/异常收口的候选可能带着没盖戳的残条落盘。scripted 批恒空 list。**新增可选字段，不动 `schema_version`** |
 | `candidate_filter` | `{str: int}` | 剔除**原因计数**：`excluded_host:<root>` / `duplicate_host` / `impossible_content:gov.cn` |
 | `run_config` | `{str: Any}` | **`RunConfig` 全量快照**。缺它 `--max-candidates 5` 与默认 20 跑出的两批在存档里一模一样，而覆盖完整性差 4 倍 → `DEGRADED` |
@@ -86,8 +87,17 @@
 
 `engine` / `max_candidates` / `max_chars` / `stop_after_success` / **`per_site_timeout_s`**。
 
-⚠️ `per_site_timeout_s` **连 `--help` 都查不到**（CLI 不设，走
-`RunConfig` 默认 90.0），而它是批次级断言 B-4（异常处置）唯一的时限判据。
+⚠️ `per_site_timeout_s` 是批次级断言 B-4（异常处置）唯一的时限判据。
+
+**2026-10-22 变化**：默认值 90.0 → **180.0**，且**已暴露到 CLI**
+（`run --per-site-timeout`，不传就走源码默认）。
+
+- 为什么涨：90 是 **obscura 时代**的数。camoufox 单次点击实测上界
+  13.3s（真人鼠标轨迹回放），8 步 ≈ 122s——90s 会**必然触顶**。
+- 触顶的后果不是「超时」这么轻：它会被记成 `unreachable_hard`，
+  也就是**一条理由通顺的假负样本**。假负样本进了池，模型学到的
+  是「这类站点了不得」——而真相是「我们没等够」。
+- 180 ≈ 实测上界的 1.5 倍；再慢就该先看是不是站点本身的问题。
 
 ### `ledger`（`RunLedger.summary()`）
 

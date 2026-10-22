@@ -246,7 +246,80 @@ class TestIframe不作判据:
         assert "当前代码" in f.why
 
 
-# ── 4. 变更 E 未落地 ──────────────────────────────────────────────
+# ── 4. 存档口径与读数可信度（2026-10-22 第一批 camoufox 生产批带出）──
+
+
+class Test存档口径:
+    """**否证读的是整份存档**，且**读数不可信时不判**。
+
+    背景（第一批 camoufox 生产批实测）：同一个 URL、同一个动作位置、
+    两次独立运行，``iframe_count`` 读出 **3** 和 **0**——**同一个页面的
+    计数在两次运行间翻面**。那个 0 不是页面事实，是**读到一半**
+    （旧文档正在被替换，旧 iframe 已被拆掉）。
+
+    原先的代码只读 ``observations[-1]``，于是拿那半个读数当事实：
+    存档里明明有 3 个 iframe，却判成「存档无任何播放元素却判成功」。
+    """
+
+    def test_否证读的是整份存档(self):
+        """rubric 锚点 1 写的是「**存档**无任何播放元素」。
+
+        只读末位那一条 ⇒ 同一页读两次的样本，后一条（读到一半）
+        读出 0/0 就敢说「存档里一个播放元素都没有」——**而存档里明明有**。
+        实测 ``E028__bfa254bb__site-13`` 就这样被判成 1 分档。
+        """
+        s = _sample(_out(None), observations=[
+            _obs(url="https://x.test/play", video=0, iframe=3),
+            _obs(url="https://x.test/play", video=0, iframe=0),
+        ])
+        v = score_d4(s)
+        assert not any(c.tier == "skip_record" for c in v.wrong), (
+            f"存档里明明有 iframe=3，却判了「无任何播放元素」："
+            f"{[c.to_json() for c in v.wrong]}"
+        )
+
+    def test_存档自相矛盾时不判(self):
+        """同一页两次读数媒体元素**变少** ⇒ 至少有一条读到了一半
+        ⇒ 「页面有没有播放元素」不可判定 ⇒ **不判**，不判错。"""
+        s = _sample(_out(None), observations=[
+            _obs(url="https://x.test/play", video=1, iframe=1),
+            _obs(url="https://x.test/play", video=0, iframe=1),
+        ])
+        v = score_d4(s)
+        assert v.kind == "undetermined" and v.score is None, (
+            f"自相矛盾的存档被判了 {v.kind}/{v.score}"
+        )
+
+    def test_页面还在加载不算矛盾(self):
+        """计数**变多**是页面还在加载（广告 iframe / 播放器部件陆续挂上），
+        机制与「读到一半」**相反** ⇒ 不算矛盾。
+
+        ⚠️ 这一条是防「把矛盾判据写太宽」：写成「只要对不上就算矛盾」
+        会把这一类好样本也降成「不判」——那是**无故扣分**。
+        实测 E002 那批：``(v1,i0,e0) → (v1,i1,e31) → (v1,i1,e33)``。
+        """
+        s = _sample(_out(None), observations=[
+            _obs(url="https://x.test/play", video=0, iframe=0),
+            _obs(url="https://x.test/play", video=1, iframe=3),
+        ])
+        v = score_d4(s)
+        assert v.kind == "scored", f"「变多」被判成 {v.kind}（不该算矛盾）"
+
+    def test_读数没落定不成立否证(self):
+        """播放页观察**没落定**（URL 有而 title 空＝页面正在换文档）
+        ⇒ 那份读数里的 0 是「读早了」而不是「页面上没有」
+        ⇒ 不能拿它当否证 ⇒ **不判**。"""
+        s = _sample(_out(None), observations=[
+            _obs(url="https://x.test/movie", video=0, iframe=0),
+            _obs(url="https://x.test/play", video=0, iframe=0, page_title=""),
+        ])
+        v = score_d4(s)
+        assert v.kind == "undetermined" and v.score is None, (
+            f"没落定的读数被判了 {v.kind}/{v.score}"
+        )
+
+
+# ── 5. 变更 E 未落地 ──────────────────────────────────────────────
 
 
 class Test变更E:

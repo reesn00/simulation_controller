@@ -14,11 +14,12 @@ obscura 给的确实是 HTML 标签名。camoufox 面给的是 ARIA role，于�
    报告上看不出异常。
 2. **投影而不是改名**：同一份数据按方言写出不同键名，**值原样搬**。
 3. **认不出的东西一律抛**：词汇表 / 工具面 / 驱动名。回落 = 猜。
-4. **老存档仍是老键名**：已落盘的 P1/P2 产物里没有一条 ``{role, name}``。
-   这一条同时是**探针**：它的前提是「现有批次全是 obscura 面」，一旦
-   有 camoufox 批次落盘，:class:`Test存量口径` 会红——那时候要做的
-   不是改断言，是重算 ``toolcatalog`` 里 camoufox 面的 ``required``
-   （见该类最后一条测试的提示）。
+4. **键名是方言的投影**：已落盘的 P1/P2 产物里，每条的元素键名都与
+   **它自己声明的面**一致——不跨面。这一条同时是**探针**，而它的
+   前提换过一次（2026-10-22，见 :class:`Test逐面口径` 的说明）：
+   原先是「全库只有 obscura 面」，第一批 camoufox 生产批落盘后那个
+   事实不成立；``required`` 随之按真实调用重算（结论：声明值不用改），
+   断言改问更强的那一条——**「键名配不配它自己的面」**。
 """
 
 from __future__ import annotations
@@ -71,20 +72,44 @@ def _obs(vocabulary: str) -> Observation:
 
 
 def _run_records() -> list[tuple[Path, dict]]:
-    """``output/pipeline/`` 下的**P1 run 存档**。
+    """``output/pipeline/`` 整棵子树下的 **P1 run 存档**。
 
     同目录还有 ``probe_observe*.json`` 这类探针产物（也带 ``driver``），
     它们不是 run 存档——用 ``task_id`` + ``steps`` 两个只有存档才有的键
     把它们排除掉，而不是按文件名过滤（文件名不含 ``probe`` 的探针迟早有）。
+
+    ⚠️ **必须递归**（2026-10-22 补记）：这里原先是 ``glob("*.json")``，
+    **只扫顶层**⇒ 子目录下的批次一条都看不见。而批次落子目录是常态
+    （``dualrun/{obscura,camoufox}/`` 是双跑、``camoufox_prod1/`` 是
+    2026-10-22 的第一批 camoufox 生产批）。
+
+    ⇒ **这个类当时给出的绿是假绿**：第一批 camoufox 批次落进
+    ``camoufox_prod1/`` 之后，``test_现有run全部是默认面`` 与
+    ``test_现有P1产物里元素键名仍是tag_label`` **依然通过**——
+    它们看的是顶层 66 条 obscura 面存档，新批次压根没进视野。
+    类文档里那句「一旦有 camoufox 批次落盘，Test存量口径 会红」
+    **当时是不成立的**，且不成立的方式正是最坏的一种：**静默**。
+
+    同 :mod:`test_tool_catalog_contract` 的 ``_walk_products`` 一样
+    **按 run_id 去重**：``_backup_pre_motivation/`` 里有根目录存档的
+    副本，同一个 run 算两次会让「存量条数」虚高，且副本里可能存着
+    与主档**不同面**的旧读数。
     """
     out: list[tuple[Path, dict]] = []
-    for path in sorted(Path(DEFAULT_ROOT).glob("*.json")):
+    seen: set[str] = set()
+    for path in sorted(Path(DEFAULT_ROOT).rglob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and "task_id" in data and "steps" in data:
-            out.append((path, data))
+        if not (isinstance(data, dict) and "task_id" in data and "steps" in data):
+            continue
+        run_id = str(data.get("run_id") or "").strip()
+        if run_id:
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+        out.append((path, data))
     return out
 
 
@@ -251,45 +276,99 @@ class Test工具声明逐面:
         assert camoufox == {"role", "name"}
 
 
-# ── 4 · 存量口径（同时是探针） ────────────────────────────────────
+# ── 4 · 逐面口径（同时是探针） ────────────────────────────────────
 
 
-class Test存量口径:
-    def test_现有run全部是默认面(self):
-        """下面两条断言的前提：已落盘的批次全来自默认面。
+def _shape(el: dict) -> tuple[str, ...]:
+    """元素的键名形状（**去掉 ``ref``**——它是会话句柄，不属方言）。
 
-        **这条红了不是改断言了事**：它意味着有 camoufox 批次落盘了，
-        于是「老键名」不再是全部产物的事实，而 ``toolcatalog`` 里
-        camoufox 面的 ``required`` 也该按真实调用重算了（此前没有数据，
-        一直只能沿用声明值）。
+    P1 的元素带 ``ref``（会话内定位用），P2 落盘时已经剥掉，
+    所以比形状时必须把 ``ref`` 排除，否则同一个面会出两种形状。
+    """
+    return tuple(sorted(k for k in el if k != "ref"))
+
+
+def _expected_shape(surface: str) -> tuple[str, ...]:
+    """该面的元素键名形状（``{kind_key, text_key}``，按字典序）。"""
+    d = toolcatalog.dialect_of(surface)
+    return tuple(sorted((d.kind_key, d.text_key)))
+
+
+class Test逐面口径:
+    """**每条产物的元素键名必须与它自己声明的面一致。**
+
+    ⚠️ **这一节换过一次口径**（2026-10-22），换的理由记在这儿，别删：
+
+    原来三条断言是「**现有产物全是默认面**」——「全库只有 obscura 面」
+    这一条**事实**。第一条 camoufox 生产批（``camoufox_prod1/``）落盘后，
+    那个事实**不成立了**，三条一起红。
+
+    按当时的约定（「红了要重算 ``required``，不是把门禁改松」），
+    ``required`` **已按新批次的真实调用重算**：camoufox 面 ``click``
+    59 次调用 ``{role, name}`` 键名齐备率 100%、非空率 100%，
+    ``goto`` / ``new_tab`` 的 ``url`` 100% ⇒ **声明值不需要改**。
+    重算完回头看，那三条断言守护的**不变式**其实不是「全是 obscura」，
+    而是「**键名是方言的投影**」——后者**更强地成立**了：
+
+        P1 存档 138 条（obscura 121 / camoufox 17）——形状与面不符 **0 例**
+        P2 样本 543 条（obscura 361 / camoufox 182）——形状与面不符 **0 例**
+
+    所以改成**逐面**断言：不再问「是不是默认面」，改问「**这条产物
+    的键名配不配它自己的面**」。这条比原来那条**更严**——
+    原来的断言压根发现不了「camoufox 面的存档写着 obscura 键名」，
+    而那正是 CLAUDE.md 点名的失败形态（**拿错面 = 声明与真实调用对不上，
+    而报告上看不出异常**）。
+
+    **探针价值不变**：落一个认不出的 driver、或某条产物的键名串了面，
+    立刻红。
+    """
+
+    def test_每条run的面都认得出(self):
+        """面由 P1 的 ``driver`` 一对一折算，**认不出的 driver 直接抛**
+        （不猜、不静默回落——见 ``surface_of_driver``）。
+
+        这条守的是「产出侧没绕过折算」：落盘的批次里出现一个认不出的
+        driver，说明有人手写了面名。
         """
         records = _run_records()
         if not records:
             pytest.skip("没有真实 P1 存档（output/pipeline/ 是产物目录）")
         for path, data in records:
             surface = toolcatalog.surface_of_driver(data.get("driver"))
-            assert surface == toolcatalog.DEFAULT_SURFACE, (
-                f"{path.name} 是 {surface} 面——有 camoufox 批次落盘了，"
-                f"该重算 catalog 里 camoufox 面的 required，再改这里的口径"
+            assert surface in toolcatalog.SURFACES, (
+                f"{path.name} 的 driver={data.get('driver')!r} 折出未知面 "
+                f"{surface!r}"
             )
 
-    def test_现有P1产物里元素键名仍是tag_label(self):
+    def test_P1产物里元素键名跟着自己的面(self):
+        """P1：键名形状 == **该存档自己**的面的方言。"""
         records = _run_records()
         if not records:
             pytest.skip("没有真实 P1 存档（output/pipeline/ 是产物目录）")
         for path, data in records:
+            surface = toolcatalog.surface_of_driver(data.get("driver"))
+            expected = _expected_shape(surface)
             for el in _all_element_dicts(data):
-                assert "role" not in el and "name" not in el, (
-                    f"{path.name} 里出现了 {{role, name}} 形状的元素：{el}"
+                assert _shape(el) == expected, (
+                    f"{path.name} 是 {surface} 面，元素却是 {_shape(el)} 形状："
+                    f"{el}"
                 )
 
-    def test_现有P2样本里元素键名仍是tag_label(self):
+    def test_P2样本里元素键名跟着自己的面(self):
+        """P2：键名形状 == **该样本自己**的 ``tool_surface`` 的方言。
+
+        ⚠️ 没记 ``tool_surface`` 的样本（2026-10-20 之前建的）算默认面——
+        那批样本真实跑出来的就是它，不是「缺信息就往新面上靠」。
+        """
         files = sorted(samples_dir().glob("*.json"))
         if not files:
             pytest.skip("没有 P2 样本（output/pipeline/samples/ 是产物目录）")
         for path in files:
             data = json.loads(path.read_text(encoding="utf-8"))
+            surface = str(data.get("tool_surface") or "") or toolcatalog.DEFAULT_SURFACE
+            expected = _expected_shape(surface)
             for el in _all_element_dicts(data):
-                assert "role" not in el and "name" not in el, (
-                    f"{path.name} 的 P2 里出现了 {{role, name}} 形状的元素：{el}"
+                assert _shape(el) == expected, (
+                    f"{path.name} 是 {surface} 面，元素却是 {_shape(el)} 形状："
+                    f"{el}"
                 )

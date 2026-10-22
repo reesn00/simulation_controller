@@ -1,6 +1,6 @@
 # Camoufox 使用说明
 
-> **定位**：依赖使用手册 + 本机实测记录。**不是架构决策**——v2 执行层仍是 obscura（决策 D7，[01-架构总览 §执行层](../01-架构总览.md)），本文不改变控制流、不提供新的驱动入口，也不主张替换 `ObscuraDriver`。
+> **定位**：依赖使用手册 + 本机实测记录。**架构决策在别处**——v2 生产链的执行层**自 2026-10-22 owner 裁定起就是 camoufox**（`DEFAULT_KIND = "camoufox"`，见 [设计方案 04 §6.1 覆盖块](../设计方案/04-camoufox执行层替换方案.md) 与[编年史 增量七十九](../计划进展/90-增量编年史.md)）；本文只记「这个依赖怎么装、怎么配、怎么验」，**不重复**决策本身。本文不改变控制流，也不提供新的驱动入口——驱动入口是 [`executor/browser/driver_factory.py`](../../executor/browser/driver_factory.py) 的 `make_driver`。**obscura 没被删**：它是存量 P1/P2 产物的方言（`obscura-1` 面**只读不再产出**）与口径回溯参照系。
 > **适用版本**：camoufox `0.5.8` · playwright `1.62.0` · 浏览器 `v156.0.1-beta.36`（2026-10-20 本机实测）
 > **写作口径**：凡是标「实测」的，都是在本机跑出来、能重跑验证的；凡是标「源码」的，都以 `.venv/Lib/site-packages/camoufox/` 里这份 0.5.8 为准，**不以线上文档为准**（版本漂移会改行为）。
 > 交叉：[tools.md](../tools.md)（工具调用总目录）· [04-运行手册](../04-运行手册.md)（命令与环境变量）· [02-避坑指南](../02-避坑指南.md)
@@ -226,7 +226,7 @@ print(cfg.get("webGl:vendor"), cfg.get("webGl:renderer"))
 | 参数 | 推荐值 | 为什么 |
 |---|---|---|
 | `geoip` | `True` 或填死出口 IP | 一个开关对齐**时区 / 经纬度 / locale 语言与地区 / WebRTC IP**。不开则 locale 地区是随机抽的，会与本机时区、与出口 IP 三方打架（§6.1 实测）。⚠️ **默认关**，且需 `camoufox[geoip]`（`maxminddb`），本机当前未装 → 传 `True` 会抛 `NotInstalledGeoIPExtra`（§1 注 3） |
-| `humanize` | `True`（或浮点秒数） | 关掉等于鼠标瞬移；`True` 走默认最长 1.5s。⚠️ **默认关** |
+| `humanize` | `True`（或浮点秒数） | 关掉等于鼠标瞬移；`True` 走默认最长 1.5s。⚠️ **默认关**。★ **它只人化「鼠标移动」，不人化「键盘输入」**（上游源码 `PageHandler.js` 只拦 `mousemove`，注释原话：*"Keyboard/typing input is NOT humanized"*）——所以 owner 裁定里「模拟鼠标移动、键盘输入」的说法**只有前半句成立**。本项目的动作面三条原语里**只有 `click` 走鼠标路径**：`fill` 是 `locator.fill(text)`（**直接设值，根本不打字**）、`press` 是 `page.keyboard.press(key)` ⇒ **两者都拿不到 humanize 的收益** |
 | `os` | 与本机真实 OS 一致（本机 `"windows"`） | 字体清单、GPU、核数都按它生成；⚠️ **默认是三选一随机**，抽到 mac/linux 就与宿主真实字体对不上 |
 
 ### 5.2 别把已经对的默认值弄坏
@@ -713,3 +713,77 @@ fpgen 在 `["windows", "macos", "linux"]` 里**随机挑**（docstring 写明）
 
 - 数据文件：已装 ✓
 - Python 读取器 `maxminddb`：**未装** ✗ → `ALLOW_GEOIP=False` → `geoip=True` **直接抛异常**
+
+### 11.6 ★ `humanize` **只人化鼠标移动，不人化键盘输入**（2026-10-22 源码复核）
+
+上游 camoufox 源码对 `humanize` 的定义原话是
+*"Humanize the mouse movement, but not the keyboard input"* /
+*"Keyboard/typing input is NOT humanized"*。
+
+⇒ **三条后果**（都直接落在本项目的动作面上）：
+
+| 后果 | 说明 |
+|---|---|
+| **`fill` / `press` 拿不到 humanize 的收益** | 动作面有三条原语（`click` / `fill` / `press`），**只有 `click` 走鼠标路径**。`fill`（往输入框打字）与 `press`（敲回车）**仍是瞬时的** |
+| **「humanize 拖慢点击」的说法要分清** | 它拖慢的是**点击**（鼠标轨迹回放，最长 1.5s），**不是页面加载**。页面加载慢的成因是 patched Firefox 本身 + 指纹注入，**不是 humanize**（§7.1 那张表：「慢的不是 `humanize`」——最小化时 `humanize=False` 仍 9.1s） |
+| **headless + humanize 是正确组合** | 有头在窗口不可渲染时（最小化/息屏/锁屏/遮挡）单次点击要 **5–13s**，会把一半的点击打成超时假负样本（§7.1 / §7.1.1）。⇒ **无人值守走无头**（`headless=True`），`--headful` 显式切回 |
+
+⚠️ **owner 裁定原文里「模拟鼠标移动、键盘输入」的说法只有前半句成立**——
+记在这里，免得后人照那句话去设计「打字也要人化」的方案。
+
+### 11.7 ★ 生产口径的指纹读数（2026-10-22 实测，`headless=True`）
+
+v2 生产链的执行层自 2026-10-22 起是 camoufox（见[设计方案 04 §4.3.1](../设计方案/04-camoufox执行层替换方案.md)），
+配置是 `camoufox_session.py::CamoufoxSession.launch` 里那一支：
+`os="windows"` · `screen=Screen(1920×1080)` · `window=(1920, 1080)` ·
+`locale="zh-CN"` · `humanize=True` · `geoip=False` · `main_world_eval=False` ·
+排除 uBO · `headless=True`。
+
+**5 次 `check --driver camoufox` 的实测读数**（读回来的，不是请求值）：
+
+| 字段 | 值 | 稳定性 |
+|---|---|---|
+| `os` | `windows` | 请求值·恒定 |
+| `locale` | `zh-CN` | 请求值·恒定 |
+| `humanize` | `True` | 请求值·恒定 |
+| `geoip` | `False` | 请求值·恒定（**本机缺 `maxminddb`，开 `geoip=True` 会直接抛**，见 §11.5） |
+| `headless` | `True` | 请求值·恒定 |
+| `screen` | `[1920, 1080]` | **实测·5/5 恒定** ✅ |
+| `window`（inner） | `[1920, 947]` ×2 / `[1920, 955]` ×3 | 实测·**宽恒 1920，高摆动 8px** |
+| `dpr` | `1` | 实测·5/5 恒定 |
+| `timezone` | `Asia/Shanghai` | 实测·5/5 恒定 |
+
+配套现场读数（诊断用，**不进批次元数据**）：`ua` = `Firefox/156.0 on Windows NT 10.0` ·
+`oscpu` = `Windows NT 10.0; Win64; x64` · `platform` = `Win32` ·
+**`webdriver` = `False`** ✅ · `cores` = 16 ·
+`languages` = `["zh-CN","zh"]` · `intl` = `zh-Hans-CN` ·
+`timezone` = `Asia/Shanghai`（**与 locale 同区 ✅**——§6.1 那个「不可能的设备」没发生）。
+
+⚠️ **两条别踩的坑**：
+
+1. **`window` 记的是 inner，不是请求值。** 请求值是 `window=(1920, 1080)`
+   （外框），实测 inner 是 `[1920, 947/955]`——**视口 = 外框 − chrome**。
+   而 chrome 高度逐次微变 ⇒ **同一份配置每批的实测几何都不一样**，
+   所以批次元数据**只认实测值**。
+2. **headful 与 headless 的读数不同，别混用**：headful 实测内宽恒 `1905`、
+   `dpr=1.5`、内高 `940/948`；headless 实测内宽恒 `1920`、`dpr=1`、
+   内高 `947/955`。**拿 headful 的数去比 headless 的存档会读成「指纹异常」**。
+
+⚠️ **2026-10-22 生产批次补记：内高的摆动比上面记的 8px 宽得多**。
+`check` 探针 5 次量到 `947`/`955`（摆动 8px），但**第一批生产批**
+（`output/pipeline/camoufox_prod1/`）里读到的内高是
+**`909` / `947` / `955` / `965`——跨度 56px**（8 条：909×1、947×3、
+955×2、965×1）。
+
+⇒ **「摆动 8px」是探针口径的读数，生产口径已经把它推翻**。
+**别把它当上界**（那会让 `909` 被读成「指纹异常」，而它其实是常态）。
+⇒ 读法不变：**只认实测值**。该批其余八项**全部恒定**
+（`os` / `geoip` / `locale` / `humanize` / `headless` / `screen` /
+`dpr` / `timezone`）⇒ **漂的只有 chrome 高度（⇒ inner 高），
+不是窗口尺寸本身**。
+
+⇒ **这正是「指纹必须落进 P1 存档」的直接理由**：指纹只在 launch
+那一刻确定，**事后补不回来**（`RunRecord.fingerprint`），而它决定
+「这批为什么快 / 为什么慢」「这批的分布跳变是站点变了还是指纹漂了」。
+**上面这批读数就是现场证明**：不落盘，909 与 965 会被读成两个不同环境，
+落了就只是「这批 chrome 偏高」——而后者不需要任何人去查。

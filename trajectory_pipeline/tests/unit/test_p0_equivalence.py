@@ -27,7 +27,7 @@ P0 是什么
 
 判据拆成三条
 ------------
-1. **构造等价**：``make_driver(client)`` 与 ``ObscuraDriver(client)``
+1. **构造等价**：``make_driver(client, kind="obscura")`` 与 ``ObscuraDriver(client)``
    产出的对象逐属性相同（装配入口不许偷偷加默认参数）。
 2. **存档等价**：同一份假 MCP 应答下，两条路径产出的存档
    **逐字节相同**（只屏蔽时间与身份那几个必然变的字段）。
@@ -181,12 +181,16 @@ async def _run_with(make_driver_call) -> dict:
 
 class Test装配入口与内联构造等价:
     def test_两个构造出的驱动逐属性相同(self):
-        """``make_driver(client)`` ≡ ``ObscuraDriver(client)``。
+        """``make_driver(client, kind="obscura")`` ≡ ``ObscuraDriver(client)``。
 
         逐属性比，**不比 ``id``**——那是对象身份，不是行为。
+
+        ⚠️ **必须显式点名 obscura**：默认实现 2026-10-22 起是 camoufox，
+        裸调用会走 camoufox 分支（并因缺 session 报错）——那就不是
+        「obscura 装配路径的等价性」了。
         """
         client = FakeMcp(_script())
-        a = make_driver(client)
+        a = make_driver(client, kind="obscura")
         b = ObscuraDriver(client)
         assert type(a) is type(b)
         assert a.__dict__ == b.__dict__
@@ -197,7 +201,7 @@ class Test装配入口与内联构造等价:
         开着会多一次 ``browser_evaluate`` 往返，存档里多一列——
         那正是「装配入口偷偷改了行为」的样子。**默认必须是关的。**
         """
-        driver = make_driver(FakeMcp(_script()))
+        driver = make_driver(FakeMcp(_script()), kind="obscura")
         assert driver._collect_element_basis is False
 
 
@@ -211,7 +215,7 @@ class Test存档逐字节同形:
         输入是录下来的驱动应答，所以**站点不动**；任何差异都是
         装配路径造成的。
         """
-        via_factory = await _run_with(lambda c: make_driver(c))
+        via_factory = await _run_with(lambda c: make_driver(c, kind="obscura"))
         via_inline = await _run_with(lambda c: ObscuraDriver(c))
         assert _canonical(via_factory) == _canonical(via_inline), (
             "装配入口与内联构造产出了不同的存档——"
@@ -224,7 +228,7 @@ class Test存档逐字节同形:
         两边都产出 ``{}`` 时上面那条会绿——那是什么都没比。
         这里钉住「存档里真的有东西」：有搜索观察、有动作流、有分支。
         """
-        archive = await _run_with(lambda c: make_driver(c))
+        archive = await _run_with(lambda c: make_driver(c, kind="obscura"))
         assert archive["search_observation"], "搜索观察没落进存档——比的是空壳"
         assert archive["steps"], "动作流没落进存档——比的是空壳"
         assert archive["outcomes"], "分支没落进存档——比的是空壳"

@@ -34,8 +34,12 @@
 | 操作抛错（元素在页上） | — | 抛 ``DriverError`` |
 
 动作返回 ``None``，于是「点成功了」与「元素不在」在调用方同形——**区分靠
-:attr:`CamoufoxDriver.last_action`**（``op`` / ``role`` / ``name`` / ``outcome``），
+:attr:`CamoufoxDriver.last_action`**（``op`` / ``role`` / ``name`` / ``outcome``
+／``nav`` / ``settle``），
 与 :attr:`last_enumeration` 同一条纪律：过滤/失败必须能自证。
+其中 ``nav``（新文档 commit 了没有）与 ``settle``（DOM ready 了没有）是
+**动作之后页面落没落定**的账——「等到了」与「没等到」必须分得开，
+否则下一步读到的旧页没法归因（见下文「动作之后的读稳」）。
 
 ### ★ 调用方必须遵守的一条（2026-10-20 冒烟实测，不是推测）
 
@@ -48,6 +52,37 @@
 在这里恒真）。判据只能是**「URL 相对动作前变了没有」**，见 ``cli._after_action_snapshot``。
 两条合起来是同一个坑的两个入口：**一个在名字过期，一个在读得太早**。
 症状侧见 02-避坑指南 §8.8。
+
+## 动作之后的读稳（2026-10-22，第一批 camoufox 生产批实测）
+
+**动作之后不能立刻读页面——读到的可能不是「旧页」，是「读到一半」。**
+
+实测（第一批 camoufox 生产批）：**同一页、同一动作位置、两次独立运行**，
+``iframe_count`` 读出 **3** 与 **0**。同一个页面的计数在两次运行间翻面，
+所以那个 0 **不是页面事实，是读到一半**。症状齐了：URL 非空而 title 空、
+旧正文还在、旧 iframe 可能已被拆掉、链接查询直接抛（``degraded=['links']``）。
+
+机制：``observe`` 要做 **4 次以上独立往返**（url/title → 正文 → 链接 →
+交互元素 → 计数），而点击触发的导航是**异步 commit** 的——commit 落在
+两次往返之间，这份观察就是**两个文档拼起来的**（旧文档的正文 + 新文档的计数）。
+原先的 ``_settle`` 等的是 ``domcontentloaded``，可它等的是**当前文档**的
+状态：旧文档早就是 loaded，那句等待**恒真**，新导航还没 commit 就已经返回了。
+
+⇒ **动作之后先等新文档 commit，再观察。** 判据用**文档代号**
+（``performance.timeOrigin``，每个文档一个常量，见 :meth:`_doc_stamp`），
+**不用「title 非空」那种代理**——真有页面没有 ``<title>``，拿它当判据会把
+好页面一路等超时（实测 bilibili 播放页就是 title 空，而那份读数是好的）。
+
+⇒ 观察侧再加一道**读数自检**：一次观察的读数**跨了文档**就是半成品，
+重来一次（:data:`OBSERVE_RETRY` 次）；一直读不稳就记 ``degraded``，
+让下游**不判**（fail-closed），而不是拿半成品去判。
+
+⚠️ **判据为什么不是「主框架 ``framenavigated``」**：它对**同文档导航**
+（pushState / 改 query）也会触发，而 SPA 页面（bilibili 等）会在播放时改
+URL——拿它当判据会把「只改了 URL」误判成「换了文档」，观察白白重来，
+连续撞上还误记 ``nav_unsettled``，**把好观察当半成品丢掉**。
+文档代号对 pushState **不变**，实测四条全过
+（``research/probes/probe_doc_stamp.py``）。
 
 ## ``interactive`` 的口径（P3-α，2026-10-20）
 
@@ -135,7 +170,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Mapping
 
 from trajectory_pipeline.executor.browser.aria_snapshot import parse_nodes
@@ -219,6 +257,81 @@ ACTION_TIMEOUT_MS = 15000
 #: 后者由页面自己决定，等它等于把预算交给站点。
 NAV_SETTLE_TIMEOUT_MS = 2000
 
+#: 动作之后等**新文档 commit** 的上限（毫秒）。
+#:
+#: 等的是「**这次导航 commit 了没有**」，不是「页面加载完没完」。
+#: 为什么必须单独等：``_settle`` 的 ``domcontentloaded`` 等的是**当前文档**的
+#: 状态——动作触发的新导航还没 commit 时，旧文档早就是 loaded，那句等待
+#: **恒真**，于是观察落在「旧文档正在被替换」的那一瞬（见模块文档的
+#: 「动作之后的读稳」一节）。
+#:
+#: 有界是重点：等不到就照实记 ``last_action["nav"]="same"``，
+#: 由观察侧的**读数自检**兜底——**不在这里猜**。
+#:
+#: ⚠️ **这是「不导航的动作」也要付的钱**（点了不跳页 ⇒ 一路等到预算用完）。
+#: owner 裁定「**速度次要，可以接受增加等待时间**」，所以这里选了
+#: 「宁可等满」而不是「不等」——不等的代价是**读到旧页**，下一步拿旧页的
+#: 名字去点新页，**点错不可逆**。
+NAV_COMMIT_TIMEOUT_MS = 2000
+
+#: 等 commit 时的轮询间隔（秒）。每次轮询是**一次浏览器往返**
+#: （读文档代号），所以间隔不宜太小——间隔一小，墙上时间不变而往返变多。
+NAV_COMMIT_POLL_S = 0.1
+
+#: 取**文档代号**的表达式：``performance.timeOrigin``。
+#:
+#: **每个文档一个常量**（同文档内恒定、跨文档必变），且是**原生属性**——
+#: 页面上多不出任何痕迹（不往 ``window`` 上挂自己的全局变量）。
+#:
+#: 实测（2026-10-22，``research/probes/probe_doc_stamp.py``）四条：
+#:
+#: | 场景 | 代号 |
+#: |---|---|
+#: | 同文档连读两次 | 相同 |
+#: | **同文档导航**（pushState 改 query） | **相同** |
+#: | 真导航（换文档） | **变** |
+#: | 新文档内连读两次 | 相同 |
+#:
+#: ⇒ 它比主框架 ``framenavigated`` **强一档**：后者对 pushState 也会触发，
+#: 而 SPA 页面（bilibili 等）会在播放时改 URL——拿它当判据会把
+#: 「只改了 URL」误判成「换了文档」，观察白白重来，连续撞上还误记
+#: ``nav_unsettled``，**把好观察当半成品丢掉**。
+#:
+#: ⚠️ **跑在 isolated world 里也没事**（``main_world_eval=False``）：
+#: 实测同文档连读两次代号相同 ⇒ 隔离世界与主世界**共用文档的时间原点**。
+#:
+#: ⚠️ **返回字符串、且把「页面没有 performance」单列一个值 ``"none"``**：
+#: ``"none"`` 是**恒定**的（恒定的东西永远判不出「变了」⇒ 不会误伤），
+#: 而**读失败**（执行上下文被销毁）是**另一回事**——那是「正在换文档」
+#: 的证据。两件事必须分得开，见 :meth:`_doc_stamp`。
+DOC_STAMP_EXPR = (
+    "() => (window.performance && performance.timeOrigin != null)"
+    " ? String(performance.timeOrigin) : 'none'"
+)
+
+#: 「页面没有 ``performance.timeOrigin``」时代号取这个值。
+#:
+#: 它**恒定不变**——所以它永远不会让读数自检误判成「读到一半」，
+#: 只是让「等 commit」永远等不到（:meth:`_await_commit` 记 ``same``）。
+#: 真有页面缺 ``performance`` 时这是**唯一诚实的说法**：不猜。
+DOC_STAMP_NONE = "none"
+
+#: 观察**读到一半**时的重来次数。
+#:
+#: 读到一半不是「这次读坏了」，是「读的过程中页面换了文档」——
+#: 重来一次通常就读到落定后的页面。上限有界：一直读不稳说明页面在
+#: **持续**变动（轮播 / 无限流），那时读多少遍都不稳 ⇒ 记 ``degraded``，
+#: 让下游**不判**（fail-closed），而不是拿半成品去判。
+OBSERVE_RETRY = 2
+
+#: 「读到一半」记进 ``degraded`` 的名字。
+#:
+#: 它是**能力名**（与同层的 ``links`` / ``interactive`` / ``count:*`` 同族），
+#: 不是 tool 名——下游只判「是否为空」，不认具体字符串（见模块文档末节）。
+#: ⚠️ **它不是「页面没有播放控件」**：非空降级会让感知层判 ``answer=None``
+#: ⇒ 落 ``unresolved`` / ``player_unverified``，**不进负样本池**。
+DEGRADED_NAV_UNSETTLED = "nav_unsettled"
+
 #: playwright 异常的公共基类名不稳定，直接按「除 KeyError/TypeError 外的
 #: 浏览器异常」捕获会更糟——所以显式列 playwright 的那两个基类。
 try:  # pragma: no cover - import 结构，不是行为
@@ -281,6 +394,52 @@ class CamoufoxDriver:
     @property
     def _page(self) -> Any:
         return self._session.page
+
+    async def _doc_stamp(self) -> str:
+        """当前文档的**代号**——``performance.timeOrigin``。
+
+        **每个文档一个常量**：同文档内恒定、跨文档必变，**同文档导航
+        （pushState / 改 query）不变**。它是**原生属性**——页面上多不出
+        任何痕迹（不往 ``window`` 上挂自己的全局变量）。
+
+        实测（2026-10-22，``research/probes/probe_doc_stamp.py``）四条：
+
+        | 场景 | 代号 |
+        |---|---|
+        | 同文档连读两次 | 相同 |
+        | **同文档导航**（pushState 改 query） | **相同** |
+        | 真导航（换文档） | **变** |
+        | 新文档内连读两次 | 相同 |
+
+        ⇒ 它比主框架 ``framenavigated`` **强一档**：后者对 pushState
+        也会触发，而 SPA 页面（bilibili 等）会在播放时改 URL——拿它当
+        判据会把「只改了 URL」误判成「换了文档」，观察白白重来，
+        连续撞上还误记 ``nav_unsettled``，**把好观察当半成品丢掉**。
+
+        ⇒ 它同时充当两件事的判据：**等 commit**（代号变了 = 新文档到位）
+        与**读数自检**（读的过程中代号变了 = 这次读到了两个文档）。
+
+        ⚠️ **读不到就返回空串**——**空串不是「同一个文档」，是「不知道」**。
+        读不到的原因：导航中执行上下文被销毁（⇒ **正处在换文档的路上**）。
+        猜一个「没变」出来会把「读到了半个文档」说成「读稳了」。
+
+        ⚠️ **空串与 ``"none"`` 必须分得开**（:data:`DOC_STAMP_NONE`）：
+        ``"none"`` 是「页面没有 performance」——**读到了**，而且**恒定**，
+        于是它永远判不出「变了」（不误伤）；空串是「**没读到**」——
+        执行上下文没了，那恰恰是「正在换文档」的证据（要当不稳处理）。
+        两者混成一个值，「页面缺 performance」会被当成「页面在换」，
+        每次观察都重来、每次都记降级 ⇒ **整站一份样本都留不下**。
+        """
+        try:
+            value = await self._page.evaluate(DOC_STAMP_EXPR)
+        except Exception:
+            # 导航中执行上下文被销毁是**常态**，不是故障——照实说「不知道」。
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return ""
+        return str(value)
 
     @property
     def fingerprint(self) -> dict[str, Any]:
@@ -539,12 +698,13 @@ class CamoufoxDriver:
                                      ref=ref, selector=selector)
         if locator is None:
             return
+        pre_stamp = await self._doc_stamp()  # 动作前的基线（文档代号）
         await self._do(
             "click",
             lambda: locator.click(timeout=ACTION_TIMEOUT_MS, no_wait_after=True),
             role=role, name=name,
         )
-        await self._settle()
+        await self._settle(pre_stamp)
 
     async def fill(
         self,
@@ -564,10 +724,16 @@ class CamoufoxDriver:
                                      ref=ref, selector=selector)
         if locator is None:
             return
+        pre_stamp = await self._doc_stamp()  # 动作前的基线（文档代号）
         await self._do(
             "fill", lambda: locator.fill(text, timeout=ACTION_TIMEOUT_MS),
             role=role, name=name,
         )
+        # ⚠️ **``fill`` 也等**：它「只设值不提交」，但页面脚本可能因输入
+        # 触发跳转，而 agent 链里 ``fill`` 之后**下一步就是观察**
+        # （``agent_loop``：每步先 observe 再决策）。不等的代价是读到旧页，
+        # 下一步拿旧页的名字去点新页——点错不可逆。
+        await self._settle(pre_stamp)
 
     async def press(
         self, key: str, *, role: str | None = None, name: str | None = None
@@ -578,18 +744,20 @@ class CamoufoxDriver:
         走的就是这条：焦点不必在元素上，playwright 会先聚焦再按。
         """
         if role is None and name is None:
+            pre_stamp = await self._doc_stamp()   # 动作前的基线（文档代号）
             await self._do("press", lambda: self._page.keyboard.press(key))
-            await self._settle()
+            await self._settle(pre_stamp)
             return
         locator = await self._locate("press", role=role, name=name)
         if locator is None:
             return
+        pre_stamp = await self._doc_stamp()  # 动作前的基线（文档代号）
         await self._do(
             "press",
             lambda: locator.press(key, timeout=ACTION_TIMEOUT_MS, no_wait_after=True),
             role=role, name=name,
         )
-        await self._settle()
+        await self._settle(pre_stamp)
 
     async def resolve(
         self, *, role: str | None, name: str | None
@@ -725,8 +893,8 @@ class CamoufoxDriver:
             "op": op, "role": role or "", "name": name or "", "outcome": "ok",
         }
 
-    async def _settle(self) -> None:
-        """动作之后把新文档等到 **DOM ready**——有界，等不到要**说出来**。
+    async def _settle(self, pre_stamp: str = "") -> None:
+        """动作之后**先等新文档 commit，再等 DOM ready**——有界，等不到要**说出来**。
 
         为什么不用 playwright 的默认行为（``click`` 会等它触发的那次导航「完成」）：
         本机实测（2026-10-20，baidu 结果页上点「百度首页」）默认等待 **9–13s**，
@@ -735,24 +903,64 @@ class CamoufoxDriver:
         ``performing click action``。这既不是页面事实（元素在、可见、可用、
         已滚入视口、包围盒稳定）也不是能力故障，是**我们在等一个没人需要的信号**。
 
-        改成 ``no_wait_after=True`` + 这里等一次 ``domcontentloaded``（上限 2s）：
-        动作返回时新文档**至少 DOM ready**，观察拿得到内容，而不再被
-        页面里某个慢 iframe 拖住。等不到就照实返回，由调用方的读稳逻辑处理
-        （``cli._after_action_snapshot``，避坑指南 §8.8）——**不在这里猜**。
+        改成 ``no_wait_after=True`` + 这里两段有界的等待：
 
-        结果记进 ``last_action["settle"]``（``ok`` / ``timeout``）：
-        「等到了」与「没等到」必须在账上分得开，否则下一步读到的旧页没法归因。
+        1. **等新文档 commit**（:data:`NAV_COMMIT_TIMEOUT_MS`）——判据是
+           **文档代号变了没有**（``performance.timeOrigin``，每个文档一个
+           常量，见 :meth:`_doc_stamp`）。**必须先等这一段**：
+           ``domcontentloaded`` 等的是**当前文档**的状态，动作触发的新导航
+           还没 commit 时旧文档早就是 loaded，那句等待**恒真**，
+           于是观察落在「旧文档正在被替换」的那一瞬（模块文档「动作之后的
+           读稳」一节有实测）。
+        2. **等 DOM ready**（:data:`NAV_SETTLE_TIMEOUT_MS`）——拿到内容，
+           而不被页面里某个慢 iframe 拖住。
+
+        结果记进 ``last_action``：
+
+        - ``nav``：``new``（新文档 commit 了）/ ``same``（预算内没 commit，
+          也就是**这次动作没导航**）/ ``unknown``（没取到基线，**不猜**）；
+        - ``settle``：``ok`` / ``timeout``（「等到了」与「没等到」必须在账上
+          分得开，否则下一步读到的旧页没法归因）。
         """
-        try:
-            await self._page.wait_for_load_state(
-                "domcontentloaded", timeout=NAV_SETTLE_TIMEOUT_MS
-            )
-        except _PwError:
-            if self.last_action:
-                self.last_action["settle"] = "timeout"
-            return
+        nav = await self._await_commit(pre_stamp)
         if self.last_action:
-            self.last_action["settle"] = "ok"
+            self.last_action["nav"] = nav
+        ok = await self._await_ready()
+        if self.last_action:
+            self.last_action["settle"] = "ok" if ok else "timeout"
+
+    async def _await_commit(self, pre: str) -> str:
+        """等新文档 commit。返回 ``"new"`` / ``"same"`` / ``"unknown"``。
+
+        ``pre`` 是**动作前**的文档代号；**空串 = 没取到基线** ⇒
+        **不猜、也不等**（没有基线就没有「变了没有」可判），返回 ``"unknown"``。
+
+        ⚠️ **``"same"`` 只说「预算内没 commit」**，不说「这次动作没导航」——
+        也可能是导航还没 commit（服务器慢）。两种情况的区分由**观察侧的
+        读数自检**做：真换了文档，读数就跨了文档。
+
+        ⚠️ **代号读不到（空串）时继续等**：导航中执行上下文被销毁 ⇒
+        执行上下文没了 ⇒ **正处在换文档的路上**——那正是要等的情形。
+        把空串当成「没变」就会提前返回，等于没等。
+
+        ⚠️ **读到的代号是 ``"none"``（页面没有 performance）时照常等完**，
+        但结果只能是 ``"same"``——那不是「没跳页」，是「**看不出来**」，
+        而「看不出来」在账上归 ``same``（预算内没观察到 commit）。
+        """
+        if not pre:
+            return "unknown"
+        deadline = time.monotonic() + NAV_COMMIT_TIMEOUT_MS / 1000
+        saw_readable = False
+        while True:
+            cur = await self._doc_stamp()
+            if cur:
+                saw_readable = True
+                if cur != pre:
+                    return "new"
+            if time.monotonic() >= deadline:
+                # 一次都没读到 ⇒ **判断不了** ⇒ 说「不知道」，不假装「没跳」。
+                return "same" if saw_readable else "unknown"
+            await asyncio.sleep(NAV_COMMIT_POLL_S)
 
     # ── 内部 ─────────────────────────────────────────────────────
 
@@ -996,58 +1204,130 @@ class CamoufoxDriver:
         **能力名**（``links`` / ``interactive`` / ``count:video, audio``）。
         下游（``gatekeeper`` / ``branches`` / ``gates``）只判「是否为空」，
         不认具体字符串；硬抄 tool 名等于在这里写一句谎话。
+
+        ## 读数自检（2026-10-22，第一批 camoufox 生产批实测）
+
+        **一次观察是 4 次以上独立往返**（url/title → 正文 → 链接 → 交互元素
+        → 计数）。导航是**异步 commit** 的——commit 落在两次往返之间，这份
+        观察就是**两个文档拼起来的**：旧文档的正文 + 新文档的计数。
+
+        实测症状：同一页两次独立运行 ``iframe_count`` 读出 **3** 与 **0**；
+        那个 0 **不是页面事实，是读到一半**。
+
+        ⇒ 读数前后各取一次**文档代号**（``performance.timeOrigin``，见
+        :meth:`_doc_stamp`）：变了就是跨了文档 ⇒ **重来一次**
+        （:data:`OBSERVE_RETRY` 次）；一直读不稳就记 ``degraded``，
+        让下游**不判**（fail-closed），而不是拿半成品去判。
+
+        ⚠️ **代号读不到（空串）也算「读到一半」**：执行上下文被销毁 ⇒
+        **正处在换文档的路上**——那是比「代号变了」更早的信号。
+        「页面没有 performance」（代号恒为 ``"none"``）**不算**：恒定的东西
+        永远判不出「变了」。
         """
-        degraded: list[str] = []
-        snap = await self.snapshot(max_chars=max_chars, degraded=degraded)
+        obs: Observation | None = None
+        torn = False
+        for attempt in range(OBSERVE_RETRY + 1):
+            degraded: list[str] = []
+            stamp_before = await self._doc_stamp()
+            try:
+                snap = await self.snapshot(max_chars=max_chars, degraded=degraded)
+            except DriverError:
+                # 快照失败抛（I4）。但**导航途中**的失败是「读到一半」，
+                # 给它一次机会重来——重试仍失败就照旧抛（不掩盖真因）。
+                if attempt >= OBSERVE_RETRY:
+                    raise
+                await self._await_ready()
+                continue
 
+            try:
+                links = await self.links()
+            except DriverError:
+                degraded.append("links")
+                links = ()
+            try:
+                elements = await self.interactive()
+            except DriverError:
+                degraded.append("interactive")
+                elements = ()
+            # **当场的** ARIA 阶梯账目：``last_enumeration`` 是驱动级状态，
+            # 枚举失败时它还留着**上一页**的数——直接读会把上一页的账
+            # 记到这一页头上。取不到就是空账。
+            face_ledger = dict(self.last_enumeration) if elements else {}
+
+            video_count = await self._count_or_zero(MEDIA_SELECTOR, degraded)
+            iframe_count = await self._count_or_zero(IFRAME_SELECTOR, degraded)
+
+            basis, basis_error = await self._collect_basis(degraded, face_ledger)
+
+            stamp_after = await self._doc_stamp()
+            obs = Observation(
+                url=snap.url,
+                page_title=snap.title,
+                body_text=snap.body,
+                interactive_elements=elements,
+                links=tuple(LinkItem(text=l.text, href=l.href) for l in links),
+                # 采到的条数（已被 DEFAULT_LIMIT 截断）。与 obscura 同义：
+                # 存档侧还会再截到 80/50，落盘的量必须能对上，否则 D-2 分不清
+                # 「被裁掉」与「不存在」（见 Observation.elements_total 的说明）。
+                elements_total=len(elements),
+                links_total=len(links),
+                # 跨面可比的元素账目（**默认不采**，见 __init__ 的说明）。
+                # 两本账平级：``shared`` 是跨面可比的，``face`` 是本面 ARIA 阶梯。
+                element_basis=basis,
+                element_basis_error=basis_error,
+                # 方言由**驱动实现**自己填（P4）：camoufox 面的 role 是 ARIA role。
+                # 不填会让按词表筛元素的地方把 ``textbox`` 拿去 HTML 标签名那套里比对，
+                # 静默取回 0 个候选。
+                element_vocabulary=ELEMENT_VOCAB_ARIA_ROLE,
+                video_tag_count=video_count,
+                iframe_count=iframe_count,
+                max_chars=snap.max_chars,
+                truncated=snap.truncated,
+                raw_len=snap.raw_len,
+                stripped_ratio=snap.stripped_ratio,
+                body_source=snap.body_source,
+                degraded=tuple(dict.fromkeys(degraded)),   # 去重且保序
+            )
+
+            # **读数跨了文档** = 半成品。三种证据：
+            #  ① 前后代号**变了** ⇒ 中途换了文档；
+            #  ② 某个代号**读不到**（空串）⇒ 执行上下文被销毁 ⇒
+            #     **正处在换文档的路上**（比 ① 更早的信号）。
+            # 代号读到 ``"none"``（页面没有 performance）**不算**证据——
+            # 它恒定不变，恒定的东西永远判不出「变了」。
+            torn = (not stamp_before) or (not stamp_after) or stamp_before != stamp_after
+            if not torn:
+                break
+            if attempt >= OBSERVE_RETRY:
+                break
+            # 重来之前先等新文档落定：commit 可能在读完之后才发生，
+            # 直接重读还是旧的／半解析的新文档。
+            # （代号已经变了 ⇒ 新文档**已到位**，等的是它**解析完**。）
+            await self._await_ready()
+
+        if obs is None:      # pragma: no cover - 循环至少跑一次
+            raise DriverError("camoufox 观察未产出")
+        if torn:
+            # 读了几遍都不稳 ⇒ 这份观察**不可信**。记降级让下游不判
+            # （fail-closed ⇒ ``answer=None`` ⇒ 不进负样本池）。
+            obs = replace(obs, degraded=tuple(dict.fromkeys(
+                (*obs.degraded, DEGRADED_NAV_UNSETTLED))))
+        return obs
+
+    async def _await_ready(self) -> bool:
+        """等**当前文档** DOM ready（有界）。返回「等到了没有」。
+
+        与 :meth:`_settle` 的第二段是同一件事，单独拎出来是为了让
+        「读到一半之后重来」也能用上它：新文档刚 commit 时它还没解析完，
+        直接重读会读到**半解析**的新文档（title 空、正文缺）。
+        """
         try:
-            links = await self.links()
-        except DriverError:
-            degraded.append("links")
-            links = ()
-        try:
-            elements = await self.interactive()
-        except DriverError:
-            degraded.append("interactive")
-            elements = ()
-        # **当场的** ARIA 阶梯账目：``last_enumeration`` 是驱动级状态，
-        # 枚举失败时它还留着**上一页**的数——直接读会把上一页的账
-        # 记到这一页头上。取不到就是空账。
-        face_ledger = dict(self.last_enumeration) if elements else {}
-
-        video_count = await self._count_or_zero(MEDIA_SELECTOR, degraded)
-        iframe_count = await self._count_or_zero(IFRAME_SELECTOR, degraded)
-
-        basis, basis_error = await self._collect_basis(degraded, face_ledger)
-
-        return Observation(
-            url=snap.url,
-            page_title=snap.title,
-            body_text=snap.body,
-            interactive_elements=elements,
-            links=tuple(LinkItem(text=l.text, href=l.href) for l in links),
-            # 采到的条数（已被 DEFAULT_LIMIT 截断）。与 obscura 同义：
-            # 存档侧还会再截到 80/50，落盘的量必须能对上，否则 D-2 分不清
-            # 「被裁掉」与「不存在」（见 Observation.elements_total 的说明）。
-            elements_total=len(elements),
-            links_total=len(links),
-            # 跨面可比的元素账目（**默认不采**，见 __init__ 的说明）。
-            # 两本账平级：``shared`` 是跨面可比的，``face`` 是本面 ARIA 阶梯。
-            element_basis=basis,
-            element_basis_error=basis_error,
-            # 方言由**驱动实现**自己填（P4）：camoufox 面的 role 是 ARIA role。
-            # 不填会让按词表筛元素的地方把 ``textbox`` 拿去 HTML 标签名那套里比对，
-            # 静默取回 0 个候选。
-            element_vocabulary=ELEMENT_VOCAB_ARIA_ROLE,
-            video_tag_count=video_count,
-            iframe_count=iframe_count,
-            max_chars=snap.max_chars,
-            truncated=snap.truncated,
-            raw_len=snap.raw_len,
-            stripped_ratio=snap.stripped_ratio,
-            body_source=snap.body_source,
-            degraded=tuple(dict.fromkeys(degraded)),   # 去重且保序
-        )
+            await self._page.wait_for_load_state(
+                "domcontentloaded", timeout=NAV_SETTLE_TIMEOUT_MS
+            )
+        except _PwError:
+            return False
+        return True
 
     async def _count_or_zero(self, selector: str, degraded: list[str]) -> int:
         """计数，**失败记降级并返回 0**。

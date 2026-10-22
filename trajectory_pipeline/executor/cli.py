@@ -362,6 +362,57 @@ async def cmd_run(args: argparse.Namespace) -> int:
     return await _run_manual(args)
 
 
+def _positive_float(raw: str) -> float:
+    """argparse 的 ``type``：只收**正的有限小数**。
+
+    超时是 0 或负数没有业务含义——而它一旦被放行，那批会「立刻超时」，
+    产出的是**看起来正常的空批**。缺省即报错，不猜。
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"不是数字：{raw!r}") from None
+    if value != value:                      # NaN
+        raise argparse.ArgumentTypeError(f"不是数字：{raw!r}")
+    if value in (float("inf"), float("-inf")):
+        raise argparse.ArgumentTypeError(f"必须是有限数：{raw!r}")
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"必须大于 0：{raw!r}")
+    return value
+
+
+def _per_site_timeout(args: argparse.Namespace) -> float:
+    """单站超时的取值。**不传 = 走源码默认值**，不猜。
+
+    ⚠️ **不能用 ``or``**：`0` 是假值 ⇒ ``--per-site-timeout 0`` 会被
+    静默读成默认值 180。「没给」与「给了 0」是两件事——后者是配错了，
+    配错了该当场报错，不该悄悄换个值继续跑。
+    """
+    value = getattr(args, "per_site_timeout", None)
+    if value is None:
+        return RunConfig.per_site_timeout_s
+    return float(value)
+
+
+async def _launch_camoufox(*, headless: bool = True) -> Any:
+    """起一个 camoufox 会话。**唯一的 launch 入口**（测试可打桩）。
+
+    ⚠️ 为什么单列一支：``CamoufoxSession.launch`` 会**真的下载 fpgen 模型**
+    并起浏览器进程。测试若走生产链默认（camoufox）就会在测试里
+    拉网络 + 起进程——慢、且被 ``pytest-socket`` 拦成红。
+
+    单列一个函数不是为了让生产代码好写，是为了让**测试有一个可打桩的缝**：
+    测试打桩 ``cli._launch_camoufox``，就不用真起浏览器。
+
+    另一个更根本的缝在**调用方**：测试应当显式钉住 ``--driver obscura``
+    （它本来就在 monkeypatch ``cli.make_driver``），而不是靠默认值碰巧
+    不联网。**默认值变了，测试就该显式钉住驱动**——这是这次切换的教训。
+    """
+    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+
+    return await CamoufoxSession.launch(headless=headless)
+
+
 @asynccontextmanager
 async def _driver_for_run(kind: str, *, shared: Any = None,
                           headless: bool = True,
@@ -392,9 +443,41 @@ async def _driver_for_run(kind: str, *, shared: Any = None,
     if shared is not None:
         yield shared
         return
-    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    session = await _launch_camoufox(headless=headless)
+    try:
+        yield make_driver(kind=kind, camoufox_session=session,
+                          collect_element_basis=collect_element_basis)
+    finally:
+        await session.close()
 
-    session = await CamoufoxSession.launch(headless=headless)
+
+@asynccontextmanager
+async def _probe_driver(kind: str, *, headless: bool = True,
+                        collect_element_basis: bool = False):
+    """探针工具的驱动会话：**整批一条**。
+
+    与 :func:`_driver_for_run` 的区别是**粒度**，不是实现：
+
+    - :func:`_driver_for_run`：**一个 Run 一次 launch**（生产链，每 task 一个
+      Run）——身份、指纹、cookie 全随 Run 重建，跨 Run 复用会把上一部作品
+      的会话状态带进下一条样本。
+    - 本函数：**一条命令跑一批 URL**（``probe`` / ``proberun`` /
+      ``mediabrowse`` 都是这个形态）。每 URL 启一次浏览器要秒级 launch，
+      慢到不可接受 ⇒ 整批复用一条会话。
+
+    ⚠️ **两种实现的会话纪律相反**（obscura 一条 MCP 连接 / camoufox 一次
+    launch），但**「一条命令一条会话」对两者都成立**——obscura 本来就是
+    整批复用一条连接。
+
+    认不出的 ``kind`` 由 :func:`make_driver` 抛 ``ValueError``，本函数不预判。
+    """
+    if kind == "obscura":
+        client = McpClient.from_env()
+        async with client:
+            yield make_driver(client, kind="obscura",
+                              collect_element_basis=collect_element_basis)
+        return
+    session = await _launch_camoufox(headless=headless)
     try:
         yield make_driver(kind=kind, camoufox_session=session,
                           collect_element_basis=collect_element_basis)
@@ -455,6 +538,9 @@ async def _run_manual(args: argparse.Namespace) -> int:
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
         executor_mode=mode,
+        # 单站超时（2026-10-22 起暴露到 CLI）。**不传就用源码默认值**——
+        # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。
+        per_site_timeout_s=_per_site_timeout(args),
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
@@ -469,8 +555,12 @@ async def _run_manual(args: argparse.Namespace) -> int:
             print(f"server = {client.info.name} {client.info.version} "
                   f"({client.info.tool_count} tools)")
             # obscura：整批一条连接复用（P5 前就是这条路径，行为不变）
+            # **kind 必须显式写 obscura**：这条分支只在 ``kind == "obscura"``
+            # 时才走到（client 是 McpClient），而 DEFAULT_KIND 已是 camoufox
+            # ——不写就会拿 obscura 的连接去造 camoufox 的驱动。
             shared = make_driver(
                 client,
+                kind="obscura",
                 collect_element_basis=getattr(args, "element_basis", False),
             )
         print(f"driver = {kind}")
@@ -576,6 +666,9 @@ async def _run_plan(args: argparse.Namespace) -> int:
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
         executor_mode=mode,
+        # 单站超时（2026-10-22 起暴露到 CLI）。**不传就用源码默认值**——
+        # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。
+        per_site_timeout_s=_per_site_timeout(args),
     )
     archive = P1Archive(Path(args.out) if args.out else None)
     records = []
@@ -590,8 +683,16 @@ async def _run_plan(args: argparse.Namespace) -> int:
             print(f"server = {client.info.name} {client.info.version} "
                   f"({client.info.tool_count} tools)")
             # obscura：整批一条连接复用（行为与 P5 前一致）
+            # **kind 必须显式写 obscura**：这条分支只在 ``kind == "obscura"``
+            # 时才走到（client 是 McpClient），而 DEFAULT_KIND 已是 camoufox
+            # ——不写就会拿 obscura 的连接去造 camoufox 的驱动，**当场抛
+            # ValueError**（"camoufox 实现需要 CamoufoxSession，未提供"）。
+            # ⚠️ **手工路径与计划路径是两处独立调用点**，改一处漏一处
+            # ⇒ 手工路径（``run --task-id``）不炸、计划路径（``run --plan``）
+            # 炸，而后者才是批量生产入口。**两处都要写。**
             shared = make_driver(
                 client,
+                kind="obscura",
                 collect_element_basis=getattr(args, "element_basis", False),
             )
         print(f"driver = {kind}")
@@ -780,6 +881,7 @@ async def cmd_check(args: argparse.Namespace) -> int:
         print(f"  红线 tool 仍在服务端清单里（已在驱动层拦截）: {sorted(drift)}")
         driver = make_driver(
             client,
+            kind="obscura",
             collect_element_basis=getattr(args, "element_basis", False),
         )
         await driver.goto(args.probe_url)
@@ -1047,7 +1149,7 @@ _SITATION_MARKS = ("完整", "正片", "未删减", "无删减", "全片", "高�
                    "会员", "开通", "续费", "立即播放", "播放")
 
 
-async def _probe_one(client: McpClient, url: str, *,
+async def _probe_one(driver: Any, url: str, *,
                      preview: int, max_chars: int | None) -> None:
     """取一次现场事实并打印。**只报事实，不下结论。**
 
@@ -1055,8 +1157,10 @@ async def _probe_one(client: McpClient, url: str, *,
     它一旦开始输出「所以这是付费墙」，就把取证变成了表态——
     而表态会顺着人的倾向走（当初 id_XMTQ 就是只看存档就判了付费墙，
     补了现场才发现判对了，但**那次是运气**）。
+
+    驱动由调用方给（:func:`_probe_driver`）——**一条命令一条会话**，
+    不每个 URL 重开浏览器（camoufox 每次 launch 要秒级）。
     """
-    driver = make_driver(client)
     try:
         await driver.goto(url)
         obs = await driver.observe(max_chars=max_chars)
@@ -1104,19 +1208,24 @@ async def cmd_probe(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    try:
-        client = McpClient.from_env()
-    except RuntimeError as exc:
-        print(f"  [SKIP] {exc}", file=sys.stderr)
-        return 2
-
     print(f"== 取证探针 · {len(urls)} 个 URL（全部走现场，"
           f"不读存档证据）==")
-    async with client:
-        print(f"  server = {client.info.name} {client.info.version}")
+    kind = getattr(args, "driver", DEFAULT_KIND)
+    # obscura 缺件**先查**（``RuntimeError`` 若包住整个循环，会把批内单站的
+    # ``RuntimeError`` 吞成「整批失败」——分不清「没配好」与「这一站炸了」）。
+    if kind == "obscura":
+        try:
+            McpClient.from_env()
+        except RuntimeError as exc:
+            print(f"  [FAIL] {exc}", file=sys.stderr)
+            return 2
+
+    async with _probe_driver(
+            kind, headless=not getattr(args, "headful", False)) as driver:
+        print(f"  driver  = {driver.name}")
         for url in urls:
             print(f"\n── {url}")
-            await _probe_one(client, url, preview=args.preview,
+            await _probe_one(driver, url, preview=args.preview,
                              max_chars=DEFAULT_MAX_CHARS)
     print("\n⚠ 上面是**事实**，不是结论。贴标签仍需人工裁定"
           "（review --verdicts ... --apply）")
@@ -1153,11 +1262,7 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    try:
-        client = McpClient.from_env()
-    except RuntimeError as exc:
-        print(f"[FAIL] {exc}")
-        return 2
+    kind = getattr(args, "driver", DEFAULT_KIND)
 
     cfg = RunConfig(engine=args.engine, max_chars=args.max_chars)
     # 写进 ``output/pipeline/proberun/`` ——验证工具的产物**不**混进生产
@@ -1172,10 +1277,19 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
     print(f"  task_id   = {args.task_id}")
     print(f"  title     = {args.title!r}")
 
-    async with client:
-        driver = make_driver(client)
-        print(f"  server    = {client.info.name} {client.info.version}"
-              f" ({client.info.tool_count} tools)")
+    # obscura 缺件**先查**：``McpClient.from_env`` 抛 ``RuntimeError``，
+    # 而那个异常若包住整个循环就会把批内单站的 ``RuntimeError`` 也吞成
+    # 「整批失败」——分不清「没配好」与「这一站炸了」。缺件即报错，不猜。
+    if kind == "obscura":
+        try:
+            McpClient.from_env()
+        except RuntimeError as exc:
+            print(f"[FAIL] {exc}")
+            return 2
+
+    async with _probe_driver(
+            kind, headless=not getattr(args, "headful", False)) as driver:
+        print(f"  driver    = {driver.name}")
         from trajectory_pipeline.executor.steps.search import Candidate
         for n, url in enumerate(urls, 1):
             # 用 URL 自身作 run_id 后缀（hex 化），同 task 多 URL 不冲突
@@ -1191,6 +1305,12 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
                 perceptor=pname,
                 provenance={"source": "proberun", "url": url},
                 run_config=dataclasses.asdict(cfg),
+                # **执行层必须记**：工具面（``{tag,label}`` vs ``{role,name}``）
+                # 由它折算。不记 ⇒ 新批次会被当成 obscura-1 面渲染，
+                # 而真实调用是另一种编码——「声明与真实调用对不上」，
+                # 报告上看不出异常。
+                driver=driver.name,
+                fingerprint=dict(getattr(driver, "fingerprint", {}) or {}),
             )
             candidate = Candidate(url=url, text=url, rank=0, source_href=url)
             record.candidates = [candidate]
@@ -1474,13 +1594,26 @@ async def cmd_mediabrowse(args: argparse.Namespace) -> int:
             return 3
         try:
             async with client:
-                driver_obj = make_driver(client)
+                driver_obj = make_driver(client, kind="obscura")
                 return await _mediabrowse_with_driver(args, driver_obj)
         except McpError as exc:
             print(f"[FAIL] obscura MCP 连接失败: {exc}", file=sys.stderr)
             return 3
+    if driver_choice == "camoufox":
+        # **生产面**（2026-10-22 owner 裁定后）。L2 要在**真实生产面**上
+        # 采两次 ``currentTime`` 判「真推进」——探针跑的浏览器不是生产面，
+        # 结论就不能外推（与「工具声明按面取」同一条纪律）。
+        try:
+            async with _probe_driver(
+                    "camoufox",
+                    headless=not getattr(args, "headful", False)) as driver_obj:
+                return await _mediabrowse_with_driver(args, driver_obj)
+        except RuntimeError as exc:
+            print(f"[FAIL] {exc}", file=sys.stderr)
+            return 3
     print(
-        f"[FAIL] --driver 取值 {driver_choice!r} 不在 ('fake', 'obscura') 内",
+        f"[FAIL] --driver 取值 {driver_choice!r} 不在 "
+        f"('fake', 'obscura', 'camoufox') 内",
         file=sys.stderr,
     )
     return 2
@@ -3254,6 +3387,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-candidates", type=int, default=20)
     run.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     run.add_argument("--stop-after-success", type=int, default=0)
+    run.add_argument("--per-site-timeout", type=_positive_float, default=None,
+                     help="单站超时（秒）。**它落进 run_config**——"
+                          "B-4（异常处置）唯一的时限判据，不落盘等于没有判据。"
+                          "缺省 180（2026-10-22 从 90 提上来：camoufox 单步慢"
+                          "一个量级，实测单次点击上界 13.3s × 8 步 ≈ 122s；"
+                          "撞顶会被记成 unreachable_hard ——理由通顺的假负样本）"
+                          "。必须是正数：0 或负数没有业务含义，放行会产出一批"
+                          "「立刻超时、看起来正常的空批」")
     # ── 发现链路径（2026-10-16 路径 B/C）──────────────────────────
     run.add_argument("--discovery-path", default="direct",
                      choices=DISCOVERY_PATHS,
@@ -3391,9 +3532,11 @@ def build_parser() -> argparse.ArgumentParser:
     chk = sub.add_parser("check", help="查能力，不跑任务")
     chk.add_argument("--probe-url", default="https://example.com/")
     chk.add_argument(
-        "--driver", choices=("obscura", "camoufox"), default="obscura",
-        help="探哪条执行层。默认 obscura（生产链现行实现）；camoufox 是 D11 "
-             "P1 骨架——会起一次真实浏览器并打印实测指纹读数")
+        "--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
+        help="探哪条执行层。**缺省 = DEFAULT_KIND（camoufox，生产面）**——"
+             "自检默认探的必须是**生产面**：探的不是生产面，读数就不能外推"
+             "（与「工具声明按面取」同一条纪律）。"
+             "obscura 要显式点名（回溯路径，需 OBSCURA_EXE）")
     chk.add_argument(
         "--action-smoke", action="store_true",
         help="（仅 --driver camoufox）动作面冒烟：点一次枚举出来的元素并打印账目。"
@@ -3420,6 +3563,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="P1 存档目录：从该目录待复核项里取 URL（不用手打）")
     prb.add_argument("--limit", type=int, default=None, help="--from-archive 时取前 N 个")
     prb.add_argument("--preview", type=int, default=400, help="打印正文前 N 字")
+    prb.add_argument("--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
+                     help="执行层实现；默认 = DEFAULT_KIND（camoufox）。"
+                          "**探针要跑在生产面上**——跑的浏览器不是生产面，"
+                          "现场事实就不能外推到生产批次。"
+                          "obscura 需 OBSCURA_EXE 环境变量。")
+    prb.add_argument("--headful", action="store_true",
+                     help="camoufox 显式切回有头（默认无头：无人值守时"
+                          "有头窗口不可渲染，单次点击要 5–13s）")
     prb.set_defaults(func=cmd_probe)
 
     # 2026-10-12 增量十三配套：阶段 1 新分支 ground-truth 验证工具。
@@ -3441,6 +3592,11 @@ def build_parser() -> argparse.ArgumentParser:
     prn.add_argument("--perceptor", choices=("rule", "llm", "auto"), default=None,
                      help="感知层选择；与 cli run 一致")
     prn.add_argument("--out", default=None, help="P1 输出目录")
+    prn.add_argument("--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
+                     help="执行层实现；默认 = DEFAULT_KIND（camoufox）。"
+                          "obscura 需 OBSCURA_EXE 环境变量。")
+    prn.add_argument("--headful", action="store_true",
+                     help="camoufox 显式切回有头（默认无头）")
     prn.set_defaults(func=cmd_proberun)
 
     # 2026-10-12 增量十八配套：阶段 4 L0 静态可达性探测。HTTP 层，
@@ -3500,13 +3656,18 @@ def build_parser() -> argparse.ArgumentParser:
                      help="单 URL 浏览器探针超时（秒）；默认 15")
     mbb.add_argument("--wait-s", type=float, default=2.0,
                      help="L2 两次 currentTime 采样间隔（秒）；默认 2")
-    mbb.add_argument("--driver", choices=("fake", "obscura"), default="fake",
+    mbb.add_argument("--driver", choices=("fake", "obscura", "camoufox"), default="fake",
                      help="PageDriver 选择；默认 fake 不联网（in-process mock，"
                           "FastPageDriver 鸭子兼容 L4 evaluate+snapshot），"
                           "obscura 真驱动经 stdio MCP 起 V8 isolate；"
                           "需 OBSCURA_EXE 环境变量指二进制位置。"
+                          "camoufox 是**生产面**（2026-10-22 owner 裁定）——"
+                          "L2 要在生产面上采两次 currentTime 判「真推进」，"
+                          "探针跑的浏览器不是生产面，结论就不能外推。"
                           " 增量二十四/二十五/二十九已打通 L0→L1→L2→L4→L3→L5 全链路"
                           "（obscura SSRF guard 拦截 127.0.0.1，需公开 URL）。")
+    mbb.add_argument("--headful", action="store_true",
+                     help="camoufox 显式切回有头（默认无头）")
     mbb.add_argument("--out", default=None, help="输出目录")
     # 2026-10-13 增量二十八：L1 ffprobe 真接入的开关与超时。
     # --no-l1 关闭 ffprobe 层（缺 ffprobe 二进制或调试时用）；

@@ -5,6 +5,21 @@
 > 2026-10-20，camoufox 0.5.8 / playwright 1.62.0 / Firefox 156.0.1-beta.36）；
 > 「推断」= 尚未验证，实施时必须先验。
 > **本轮只做取证，未写实现。**
+>
+> ---
+>
+> ⚠️⚠️ **2026-10-22 owner 裁定覆盖了 §6.1 的 go/no-go 门槛**——
+> **生产链默认执行层已切 camoufox**（`DEFAULT_KIND = "camoufox"`）。
+> owner 判：「**不再双跑**，选定 camoufox 做默认浏览器调用主力——**反爬拦截与
+> 页面内容获取是主要，速度次要**，可接受增加等待时间。」
+> ⇒ **§6.1 那六条判据不再是切换的门槛**（它们是「双跑可比」路线下的门槛，
+> 而 owner 判的是「不双跑了，直接换」）。
+> **覆盖说明与六条读数的新地位见 [§6.1 顶部的覆盖块](#61-p5-的验收判据必须双跑)**。
+>
+> ⚠️ **本文正文里「`DEFAULT_KIND` 仍是 `obscura`」那些句子一律保留不改**——
+> 它们记的是**当时的判断**（2026-10-20/21 那一轮双跑时的实况），
+> 删掉等于篡改历史。**现役口径是 camoufox**（增量七十九，
+> [编年史](../计划进展/90-增量编年史.md)）。
 
 ---
 
@@ -504,6 +519,35 @@ fingerprint: { os, geoip, locale, timezone, humanize, headless, screen, window, 
 > 与 `dpr`（1.5）会不会变。**重测前，上表只对 headful 口径成立。**
 > 这一条本身也是「`headless` 必须进批次元数据」的最好理由：
 > 换了执行窗口，同一台机器给出的几何读数就可能不同。
+
+##### 无头口径重测（2026-10-22，**生产口径**）
+
+> ✅ **上面那个「要重测」已做**——切 camoufox 之后按**生产口径**
+> （`headless=True`）重测 5 次 `check --driver camoufox`。
+> **结论：无头口径与 headful 口径在两项上不同，读数不能混用。**
+
+| 字段 | headful（8 次，2026-10-20，上表） | **headless（5 次，2026-10-22，生产口径）** | 变了吗 |
+|---|---|---|---|
+| `screen` | `[1920, 1080]` ×8 | `[1920, 1080]` ×5 | ❌ 不变 |
+| `window`（inner）宽 | 恒 `1905` | **恒 `1920`** | ✅ **变了** |
+| `window`（inner）高 | `940` ×5 / `948` ×3 | **`947` ×2 / `955` ×3** | ✅ **整体移了 ~7px**（摆动幅度仍是 8px） |
+| `dpr` | `1.5` ×8 | **`1`** ×5 | ✅ **变了** |
+| `timezone` | `Asia/Shanghai` ×8 | `Asia/Shanghai` ×5 | ❌ 不变 |
+| `os`/`locale`/`humanize`/`headless`/`geoip` | 请求值 | 同（`windows` / `zh-CN` / `True` / `True` / `False`） | ❌ 不变 |
+| `ua`/`webdriver`/`cores` | `Firefox/156.0` / `False` / `16` | 同 | ❌ 不变 |
+
+⚠️ **两个必须记住的差**：
+
+1. **内宽 headful 是 1905、headless 是 1920**——拿 headful 的数去比
+   headless 的存档，会读成「这批指纹异常」。**这是 P6 必须记实测值的
+   直接理由**：请求值（`window=(1920, 1080)`）在两个口径下都一样，
+   区分它们的只有实测值。
+2. **内高的 8px 摆动在无头口径下同样存在**（947/955）——所以
+   「视口 = 外框 − chrome，且 chrome 高度逐次微变」这条结论**两种口径
+   通用**，只是基准值不同。
+
+⇒ **批次元数据只认实测值**（`fingerprint` 里 `window`/`dpr`/`screen` 是
+读回来的，`headless` 是请求值）——**两条一起才说得清「这批是什么」**。
 
 同机连续 **8 次** `check --driver camoufox`，读的是浏览器自己报的值（不是请求值）：
 
@@ -1613,14 +1657,43 @@ camoufox 侧有**等价的一组**，必须同样堵死，且同样走**唯一�
 | **P3-α** | 采集面第一块：`interactive`（**一页一次 `page.aria_snapshot()`**，role+name 取 playwright 结论）+ 纯解析器 `browser/aria_snapshot.py` + 下游两处词表放宽。**已落地（2026-10-20，§4.5.6）** | ✅ `check --driver camoufox --probe-url …` 打出元素表与过滤账目（`example.com` kept=1 / `baidu` nodes=101→kept=34）；`aria_snapshot` 解析 10 条格式坑用例全绿；**三处偏离已记账**（可见性未逐元素过滤 / `tag` 装 role / 无名与真同名整组丢） |
 | **P3-β** | 采集面剩余：`links`/`extract`（复刻 `[]`/`@attr`）+ `new_tab`/`close_tab` + `observe`。**已落地（2026-10-20，§4.7）**——标签页做成**栈**（关当前页回上一页、只剩一页先补空白页、开页失败收掉新页）；`links` **按 href 去重**（obscura 恒 `total==distinct`，不去重则 `links_total` 高 28–37%）；`extract` 取文本 `innerText \|\| textContent`（实测 bing 结果页 10 个锚 `innerText` 全空） | ✅ **`search` 步骤的标题抽取与 obscura 逐条对齐**（`probe_result_titles --driver …`：bing `10/10` 对、baidu `8/8` 对，两边同形）；✅ 真浏览器上四条标签页语义全对；✅ 两面 `observe` 用同一脚本同一套契约断言，**字段全绿**。⏳ **「`steps/` 全部走通」未验**（要一次完整 `run`，需 key + 批次）；⚠️ **`elements_total` 两面不同义**（baidu 首页 `74 vs 34`，−54%，**已超 §6.1 的 30% 门槛**，处置在 P4/P5，见 §4.7.4） |
 | **P4** | ★**契约迁移**：`actions.py` / `perception/`（`role`/`name` 词表）/ `toolcatalog/` / 契约测试禁用词表。**已落地（2026-10-20，§4.8）**——字段名统一为槽位 `{role, name}`、键名**按方言投影**（obscura 面仍写 `{tag, label}`，老存档逐字节不变），词表收窄成逐面两套且**认不出就抛** | ✅ 新旧样本**标记为不同口径**：存档键名 / 提示词写法 / `tool_surface` 三处都分得开，老存档一条没动（`test_element_dialect.py` 逐条扫盘盯住）；❌ **`required` 无法按新批次重算**——camoufox 面**一条 P2 样本都没落盘**，没有可统计的分母（同一原因让 `Test参数口径与真实存档一致` 在 camoufox 面**整体 skip**）。这条不是没做，是**做不了**，见 §4.8.4 |
-| **P5** | 切换生产链：CLI 默认走 camoufox，obscura 降为 `--driver obscura`。**机制已落地（2026-10-20，§4.9）**——动作派发按面（`actions.target_params`）+ `run --driver`（每 Run 一次 launch）+ `cli compare-drivers`；**但切换未做：第一轮真双跑判 fail**。★**2026-10-21 口径已定**：无人值守走 `headless=True`（§4.9.5），配套 `ACTION_TIMEOUT_MS` 5s→**15s**、超时不重试、`steps[]` 记 `duration_ms` | ❌ **判据未过**。★**第二轮双跑（2026-10-21，headless，3 task × 2 面）读数已齐**（§4.9.8）：判定仍 `fail`，但**理由换了**——不再是「不知道 camoufox 好不好」，而是「**读数口径本身有四个已知缺陷，三个已修，两个未闭环**」。**headless 的前置门已过**（真·反爬 B 9.09% < A 14.89%，配对子集同向）⇒ **不构成否决项**。已修：拦截率**拆分**真·反爬/登录墙（合并口径会把结论读反）、**配对比较**（占比口径分母不可比）、**按族分列**（混合中位数会翻号）、**各档中位数不可相减**的注释。未闭环：判据①的可比性（A 侧 60% 的站点是「没测到」）、判据⑤⑥ 两条人判。`DEFAULT_KIND` 仍 `obscura` |
-| **P6** | 批次元数据（`driver` + `fingerprint` + **动作编码版本**）+ 依赖说明修订 + D7→D11→D12 改写。⚠️ **2026-10-21：口径反转让这一项提前了**——`headless` 已在 `fingerprint` 里（第九项），但**整份 fingerprint 还只在 driver 层，没进 P1 存档** | 存档里能查到 fingerprint 字段与编码版本 |
+| **P5** | 切换生产链：CLI 默认走 camoufox，obscura 降为 `--driver obscura`。**机制已落地（2026-10-20，§4.9）**——动作派发按面（`actions.target_params`）+ `run --driver`（每 Run 一次 launch）+ `cli compare-drivers`；**但切换未做：第一轮真双跑判 fail**。★**2026-10-21 口径已定**：无人值守走 `headless=True`（§4.9.5），配套 `ACTION_TIMEOUT_MS` 5s→**15s**、超时不重试、`steps[]` 记 `duration_ms`。✅ **2026-10-22 已切**（增量七十九）：owner 裁定绕过 §6.1 直接切 ⇒ **`DEFAULT_KIND = "camoufox"`**；配套 **`per_site_timeout_s` 90→180**（camoufox 单次点击实测上界 13.3s × 8 步 ≈ 122s ⇒ 90s 必然触顶，触顶会被记成 `unreachable_hard`——理由通顺的假负样本）并暴露 `--per-site-timeout`；**探针三条命令一起接**（`probe` / `proberun` / `mediabrowse`） | ✅ **切了**（`DEFAULT_KIND = "camoufox"`，`driver_factory.py` 一处）。⚠️ **第一批 camoufox 真实批次还没跑**——本阶段只切了默认值与接线，**没产出新数据**；⚠️ **第一批落盘后 `Test存量口径` 会红** ⇒ **重算 `required`**，不是把门禁改松 |
+| **P6** | 批次元数据（`driver` + `fingerprint` + **动作编码版本**）+ 依赖说明修订 + D7→D11→D12 改写。⚠️ **2026-10-21：口径反转让这一项提前了**——`headless` 已在 `fingerprint` 里（第九项），但**整份 fingerprint 还只在 driver 层，没进 P1 存档**。✅ **2026-10-22 已落地**（增量七十九）：**`fingerprint` 进 P1**（`RunRecord.fingerprint` + `to_json` 落盘 + 编排器从 `driver.fingerprint` 取值 + `__post_init__` 拷一份防引用共享）；`driver` 早已在 P1 里。**动作编码版本**仍缺（`tool_surface` 那一列还没进 P1） | ✅ 存档里能查到 fingerprint 字段（`os`/`screen`/`window`/`dpr`/`humanize`/`geoip`/`main_world_eval`/`headless`/`locale`，九项；`screen`/`window`/`dpr` 是**实测值**，其余是**请求值**）。⚠️ **指纹只在 launch 那一刻确定，事后补不回来**——所以它必须**在第一批 camoufox 批次之前**落地（已落地 ✅）。⏳ **动作编码版本**那一列还没进 P1 |
 
 > **P4 为什么不能省**：契约一改，`toolcatalog` 的 `required` 口径（按盘上样本出现率统计）
 > 与 `test_tool_catalog_contract.py::Test参数口径与真实存档一致` 会立刻对不上。
 > **要么同批改完，要么先关掉那条断言**——不能让它红着过。
 
 ### 6.1 P5 的验收判据（必须双跑）
+
+> ⚠️⚠️ **2026-10-22 owner 裁定覆盖了本节的门槛**。
+>
+> owner 判：「**不计划再继续比对 obscura 与 camoufox，选定 camoufox 做默认浏览器
+> 调用主力**——注意**反爬拦截与页面获取页面内容是主要，速度次要**，
+> 可以接受增加等待时间。」
+>
+> ⇒ **本节六条判据不再是切换的门槛**。它们是「**双跑可比**」路线下的换层门槛，
+> 而 owner 判的是「**不双跑了，直接换**」。⇒ `DEFAULT_KIND` 已改成 `"camoufox"`
+> （2026-10-22，增量七十九）。
+>
+> ⚠️ **但覆盖 ≠ 六条读数作废**——它们测出来的东西有三条**继续有用**：
+>
+> | 判据 | 读数 | 现在的地位 |
+> |---|---|---|
+> | 分支分布 | 不可比（A 侧 60% 的站点「没测到」，两批页面只重叠 37/50） | ⚠️ **已无效**——换层后不存在「两面可比」这个前提 |
+> | `body_text` | 混合中位数，按族分列会翻号 | ⚠️ **已无效**——同上 |
+> | `interactive_elements` | `elements_total` 两面**不同义**（74 vs 34） | ★**继续有效**——**不可混池**这条不受换层影响 |
+> | 负样本成因 | 39/39 人判完，10/39 是分支越权造出来的 | ★**继续有效**——那是**分支体系**的问题，与执行层无关 |
+> | 采集体感 | 真·反爬 B **9.09%** < A **14.89%** | ★**支持**裁定的方向（⚠️ 必须用真·反爬口径，见下） |
+> | 动作可移植性 | 16/16 定位到 | ★**支持**裁定的方向 |
+>
+> ⚠️ **「真·反爬」vs 合并口径**：合并口径（反爬 + 登录墙）给出**相反**的结论
+> （A 19.15% / B 34.09%）。owner 的裁定针对的是「**被拦截**」——登录墙
+> **不是浏览器能解决的**（那要账号），所以它不该被算进「浏览器好不好」的账。
+>
+> ⚠️ **本节保留原文不删**：它是「为什么当初没切」的历史记录，
+> 而「为什么现在切了」是 owner 裁定 + 上面这张覆盖说明。**删掉它就等于
+> 篡改当时的判断**。
 
 同一批任务，obscura 与 camoufox 各跑一遍，**逐条对比**：
 

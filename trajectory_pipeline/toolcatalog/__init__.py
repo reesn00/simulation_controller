@@ -581,15 +581,28 @@ _GLOB_SEARCH = ToolDef(
 
 #: obscura 面的标识。**盘上 361 份样本都是这个面**（目标编码
 #: ``{tag,label}``），冻结。
+#:
+#: ⚠️ **2026-10-22 owner 裁定后：只读存量面，不再产出。**
+#: 生产链默认执行层已是 camoufox（见
+#: :data:`trajectory_pipeline.executor.browser.driver_factory.DEFAULT_KIND`），
+#: 新批次走 :data:`SURFACE_CAMOUFOX`。这个面**留在这里不删**——
+#: 存量存档正是唯一的真实证据，而它们全在这个面上。
 SURFACE_OBSCURA = "obscura-1"
 
 #: camoufox 面的标识。目标编码 ``{role,name}`` + 三个读原语。
 #:
-#: **还没有任何真实运行跑过这个面**——它现在是**目标方言的声明**
-#: （方案 15 §7 的 R2），等 camoufox 链跑起来才有数据。
+#: **2026-10-22 起是生产面**（owner 裁定切 camoufox 为主力执行层）。
+#: 此前它是**目标方言的声明**（方案 15 §7 的 R2）——第一份真实数据
+#: 要等第一批 camoufox 批次落盘才出现。
 SURFACE_CAMOUFOX = "camoufox-1"
 
 #: **默认面**。没有记录方言的存档（历史批次）按它渲染。
+#:
+#: ⚠️ **它不是「生产面」**——生产面由 P1 的 ``driver`` 一对一折算
+#: （:func:`surface_of_driver`），而 2026-10-22 起生产链写的是
+#: ``driver="camoufox"`` ⇒ 折算到 :data:`SURFACE_CAMOUFOX`。
+#: 这个默认值服务的是**没记 driver 的历史存档**，而那批存档真实跑的
+#: 就是 obscura——所以默认取 obscura 是**如实**的，不是「保守」。
 DEFAULT_SURFACE = SURFACE_OBSCURA
 
 #: 驱动实现名 → 工具面。**1:1**——一个驱动实现只有一个调用面。

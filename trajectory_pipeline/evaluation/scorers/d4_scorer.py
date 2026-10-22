@@ -54,6 +54,25 @@ rubric 正例第二条「存档含 ``class="player-container"``」明写
 「1 处 / ≥2 处」在样本级退化为「**几个检查项判错**」。
 这不是将就——它让两个 rubric 维度在同一条样本上可加总。
 
+**4. 「存档」指整份存档，且**读数没落定就不判**（2026-10-22 增补）。**
+
+锚点 1 写的是「**存档**无任何播放元素」——「存档」是整份存档，
+不是末位那一条观察。原先只读 ``observations[-1]``，于是同一页
+读两次的样本会翻车（第一批 camoufox 生产批实测）：
+
+    第一条观察（进站）      iframe=3
+    第二条观察（点击后）    iframe=0   ← 页面正在换文档，读到一半
+
+代码拿第二条说「存档里一个播放元素都没有」，**而存档里明明有 3 个**。
+⇒ 否证改为问**整份存档**：有没有任何一条真实观察见过播放元素。
+
+而「读到一半」这件事本身要能认出来：**URL 非空而 title 为空**
+＝新文档 commit 了而 ``<head>`` 还没解析完（项目里已有同一个代理，
+见 ``executor.cli._after_action_snapshot``）。这样的读数里
+**推不出肯定也推不出否定**——于是两项都落 ``undetermined``
+（**不判**），不落 ``wrong``。理由与 fail-closed 纪律同源：
+**能力不可用时给 ``None``，绝不猜。**
+
 ## 分数映射（直接照 rubric 的分档，严重度降序）
 
 ===============================================  ======
@@ -172,6 +191,67 @@ def _is_missing(obs: Mapping[str, Any]) -> bool:
     return "observation_missing" in (obs.get("degraded") or ())
 
 
+def _is_unsettled(obs: Mapping[str, Any] | None) -> bool:
+    """这份观察是不是**页面还没落定**时读出来的（换文档读了一半）。
+
+    判据：**URL 非空而 title 为空**——新文档已经 commit（新 URL 生效）
+    而 ``<head>`` 里的 ``<title>`` 还没解析出来，于是 ``title`` 读出空串。
+
+    ⚠️ **这是代理，不是判据**（项目里已有同一个代理：
+    ``executor.cli._after_action_snapshot`` 的「title 非空 = 新文档 commit
+    了」）。真有页面就是没有 ``<title>``——实测 bilibili 播放页就是
+    「URL 有、title 空、媒体计数两读一致（1/1）」，那份读数**是好的**。
+    所以它**只用来收回指控**（把「判错」降成「不判」），
+    **绝不用来成立指控**：宁可少判一条错，不可冤枉一条样本。
+
+    为什么需要它（2026-10-22 第一批 camoufox 生产批实测）：
+    动作之后立刻读页面，而**新文档的 commit 还没等到**——读到的是
+    **旧文档正在被替换**的那一瞬（title 空、旧正文还在、旧 iframe
+    可能已被拆掉、链接查询直接抛）。
+    """
+    if not obs:
+        return False
+    return bool(str(obs.get("url") or "")) and not str(obs.get("page_title") or "")
+
+
+def _reads_conflict(observations: list[Mapping[str, Any]]) -> bool:
+    """同一 URL 的**后一次**读数，媒体元素比前一次**少**——「读了一半」的直接证据。
+
+    实测（2026-10-22 第一批 camoufox 生产批）：同一个 URL、同一个动作
+    位置、两次**独立运行**，``iframe_count`` 读出 **3** 和 **0**。
+    同一页的元素数在两次读数里不可能不一样 ⇒ **那个 0 不是页面事实，
+    是读到一半**（旧文档正在被替换，旧 iframe 已被拆掉）。
+
+    ⚠️ **只认「变少」这一侧**（2026-10-22 修）。全库 32 条「同 URL 两次
+    计数不同」的样本分成两类，机制相反：
+
+        变多  页面**还在加载**（广告 iframe / 播放器部件陆续挂上）
+              实测 E002：``(v1,i0,e0) → (v1,i1,e31) → (v1,i1,e33)``
+        变少  新文档 commit 了而它的媒体元素**还没挂上** ⇒ 读到一半
+
+    ⇒ 「变多」是正常加载，**不算矛盾**；「变少」才是矛盾。
+    早先写成「只要对不上就算矛盾」，误伤了 6 条「变多」的样本
+    （把它们的 5 分降成「不判」——那是**无故扣分**）。
+
+    这条比 :func:`_is_unsettled` **硬**：它不靠代理，直接看存档
+    **自相矛盾**。矛盾 ⇒ 至少有一条读数不可信 ⇒ 从读数里推出的
+    肯定/否定结论都不成立（fail-closed：能力不可用时不猜）。
+    """
+    by_url: dict[str, list[tuple[int, int]]] = {}
+    for o in observations:
+        if _is_missing(o):
+            continue
+        url = str(o.get("url") or "")
+        if not url:
+            continue
+        by_url.setdefault(url, []).append((_media(o), _frames(o)))
+    for seq in by_url.values():
+        for prev, cur in zip(seq, seq[1:]):
+            if cur[0] < prev[0] or cur[1] < prev[1]:
+                return True
+    return False
+
+
 def _player_obs(observations: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """播放页观察 = **最后一条**观察。
 
@@ -210,25 +290,63 @@ def _frames(obs: Mapping[str, Any] | None) -> int:
 
 
 def _check_success_recorded(sample: Any, outcome: Any,
-                            obs: Mapping[str, Any] | None) -> EvidenceCheck:
+                            observations: list[Mapping[str, Any]]) -> EvidenceCheck:
     """``branch is None`` = 「有组件且可确认」。
 
     rubric 锚点 1 明写：「**存档无任何播放元素**却判成功」= 1 分。
     注意是「**无任何**」——只有 video 与 iframe **同时**为 0 才落这一档。
+
+    ⚠️ **「存档」是整份存档，不是末位那一条**（2026-10-22 改）：
+    原文写的是「存档无任何播放元素」，而代码只读 ``observations[-1]``。
+    于是**同一页读两次**（先进站、后点击）的样本会这样翻车：
+    第一次读数 ``iframe=3``，第二次（页面正在换文档）读出 ``iframe=0``，
+    代码拿第二条说「存档里一个播放元素都没有」——**而存档里明明有**。
+    实测 ``E028__bfa254bb__site-13`` 就是这样被判成 ``skip_record``
+    （1 分档）的：它整份存档里 3 个 iframe 都在第一条观察里。
+
+    ⇒ 现在问的是**整份存档**：「有没有任何一条真实观察见过播放元素」。
+    见过 ⇒ 这条否证不成立（走下面的 rule/llm 分支，判人工核实）。
     """
     if outcome is None or _get(outcome, "branch", None) is not None:
         return EvidenceCheck("判成功 vs 存档媒体证据", "skipped",
                              why="本条结论不是「记录成功」，本项不适用")
+    obs = _player_obs(observations)
     if obs is None:
         return EvidenceCheck("判成功 vs 存档媒体证据", "undetermined",
                              why="本样本没有播放页观察，无法核组件存在性")
 
-    media, frames = _media(obs), _frames(obs)
+    # 存档口径：缺失占位不算（它没有页面内容）。
+    real = [o for o in observations if not _is_missing(o)]
+    media = max((_media(o) for o in real), default=0)
+    frames = max((_frames(o) for o in real), default=0)
+    # ⚠️ **存档自相矛盾 ⇒ 这一项不判**（2026-10-22）。理由：同一 URL 的
+    # 两次读数媒体计数对不上 ⇒ 至少有一条是**读到一半**读出来的 ⇒
+    # 「页面到底有没有播放元素」这件事**不可判定**。
+    # 既不能拿它当否证（冤枉），也不能拿它当「有据」（自相矛盾）——
+    # 按 fail-closed 纪律，**不判**。
+    if _reads_conflict(observations):
+        return EvidenceCheck(
+            "判成功 vs 存档媒体证据", "undetermined",
+            why="存档**自相矛盾**：同一 URL 的两次读数媒体计数对不上"
+                "——至少有一条读到了一半（「0」是读早了，不是「页面上没有」），"
+                "「页面有没有播放元素」不可判定。**不判**")
     if media >= 1:
         return EvidenceCheck(
             "判成功 vs 存档媒体证据", "ok",
             why=f"存档含 video/audio ×{media}，判「有组件」有据")
     if media == 0 and frames == 0:
+        # 否证成立——但**只在读数可信时**才成立。
+        if _is_unsettled(obs):
+            return EvidenceCheck(
+                "判成功 vs 存档媒体证据", "undetermined",
+                why="播放页观察**没落定**（URL 有而 title 空＝页面正在换文档）"
+                    "——这份读数里的 0 可能是「读早了」而不是「页面上没有」，"
+                    "不能拿它当否证。**不判**（fail-closed：能力不可用不猜）")
+        if any("count:" in str(d) for d in (obs.get("degraded") or ())):
+            return EvidenceCheck(
+                "判成功 vs 存档媒体证据", "undetermined",
+                why=f"媒体计数本身降级了（{list(obs.get('degraded') or ())}）"
+                    f"——这个 0 是「没采到」不是「页面上没有」，不能当否证。**不判**")
         return EvidenceCheck(
             "判成功 vs 存档媒体证据", "wrong", tier="skip_record",
             why=f"判成功但存档里 video=0 且 iframe=0——rubric D-4 锚点 1："
@@ -381,6 +499,10 @@ def _check_premature_conclusion(observations: list[Mapping[str, Any]],
     # 缺失占位（没采到的步）不参与计数与比较——见 _is_missing：
     # 占位的空串 url 会把「点击前后同页」判成「换了页」（§5.14 回潮）。
     real = [o for o in observations if not _is_missing(o)]
+    if not real:
+        return EvidenceCheck(
+            "应判未验证 vs 确定结论", "undetermined",
+            why="本样本没有一份有效观察——「有没有新证据」无从谈起。**不判**")
     if len(real) < 2:
         return EvidenceCheck(
             "应判未验证 vs 确定结论", "wrong", tier="premature",
@@ -388,14 +510,30 @@ def _check_premature_conclusion(observations: list[Mapping[str, Any]],
                 f"（点击之后没有取到第二份快照）——"
                 f"rubric D-4 边界规则：这种情况正确行为是「标记待验证，"
                 f"触发后再判」")
-    if _same_page(real[-2], real[-1]):
+    if not _same_page(real[-2], real[-1]):
+        # 换了页 ⇒ 结论**有**新证据支撑。这条不因读数可疑而改：
+        # URL 变了是硬信号（「换了页」这件事本身是实的）。
+        return EvidenceCheck("应判未验证 vs 确定结论", "ok",
+                             why="点击后确实换了页面，结论有新证据支撑")
+    # 同页 ⇒ 下面要判「无新证据」。**但这个「同页」可能是读了一半读出来的**：
+    # 存档自相矛盾（同一 URL 两次读数媒体计数对不上）——**硬证据**。
+    #
+    # ⚠️ **不要用「title 空」当这里的判据**（2026-10-22 实测踩过）：
+    # 实测有一批样本两条观察**计数完全一致**（ifr=3/3、1/1）而只有
+    # title 从有变空——那份读数**不矛盾**，「同页」的结论站得住，
+    # 拿 title 空把它降成「不判」是**放过一条真问题**。
+    # ⇒ 这里只认**自相矛盾**，那才是「读了一半」的硬证据。
+    if _reads_conflict(observations):
         return EvidenceCheck(
-            "应判未验证 vs 确定结论", "wrong", tier="premature",
-            why="点击播放控件前后是同一个页面（url / 元素数 / 正文全同）——"
-                "「有组件」这个结论没有新证据支撑（组件懒加载未触发），"
-                "rubric D-4 边界规则要求标为待验证")
-    return EvidenceCheck("应判未验证 vs 确定结论", "ok",
-                         why="点击后确实换了页面，结论有新证据支撑")
+            "应判未验证 vs 确定结论", "undetermined",
+            why="存档**自相矛盾**（同一 URL 的两次读数媒体计数对不上）"
+                "——「点击前后同页」是读到一半读出来的，"
+                "不能据此判「无新证据」。**不判**")
+    return EvidenceCheck(
+        "应判未验证 vs 确定结论", "wrong", tier="premature",
+        why="点击播放控件前后是同一个页面（url / 元素数 / 正文全同）——"
+            "「有组件」这个结论没有新证据支撑（组件懒加载未触发），"
+            "rubric D-4 边界规则要求标为待验证")
 
 
 # ── 检查 4：player 类名判据（变更 E）──────────────────────────────
@@ -437,7 +575,7 @@ def score_d4(sample: Sample | Any) -> D4Verdict:
     obs = _player_obs(observations)
 
     checks = (
-        _check_success_recorded(sample, outcome, obs),
+        _check_success_recorded(sample, outcome, observations),
         _check_component_unverified(outcome, obs),
         _check_premature_conclusion(observations, outcome),
         _check_player_class(obs),

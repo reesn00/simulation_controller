@@ -23,13 +23,30 @@ from typing import Any
 import pytest
 from playwright.async_api import Error as PwError
 
+from trajectory_pipeline.executor.browser import camoufox_driver
 from trajectory_pipeline.executor.browser.camoufox_driver import (
     ACTION_TIMEOUT_MS,
+    DEGRADED_NAV_UNSETTLED,
+    DOC_STAMP_EXPR,
+    DOC_STAMP_NONE,
     NAV_SETTLE_TIMEOUT_MS,
     CamoufoxDriver,
 )
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.dom import INNER_TEXT_EXPR, TEXT_CONTENT_EXPR
+
+
+class _FakeFrame:
+    """主框架占位——留着是为了「子框架导航」那条口径还能测。
+
+    真 playwright 里主框架的导航事件带的是 **frame**；驱动现在用
+    **文档代号**（``performance.timeOrigin``）当判据，不再订阅事件——
+    但「子框架换文档不算换文档」这条口径**仍然要测**，所以假页保留
+    ``main_frame`` 与 ``navigate(main=False)``。
+    """
+
+    def __init__(self, page: "_FakePage") -> None:
+        self.page = page
 
 
 class _FakePage:
@@ -50,6 +67,9 @@ class _FakePage:
         keyboard_error: Exception | None = None,
         selectors: dict[str, Any] | None = None,
         selector_counts: dict[str, Any] | None = None,
+        navigate_verbs: tuple[str, ...] = ("click", "press"),
+        fail_stamp: bool = False,
+        no_performance: bool = False,
     ) -> None:
         self.url = url
         self._title = title
@@ -89,6 +109,52 @@ class _FakePage:
         self.locator_calls: list[str] = []
         #: ``close()`` 的记录：被关掉的页不允许再被当成当前页用。
         self.closed = False
+        # ── 文档代号（2026-10-22）─────────────────────────────────
+        #
+        # 驱动用 **``performance.timeOrigin``**（每文档一个常量）当
+        # 「新文档 commit 了」的判据（见 camoufox_driver 的「动作之后的
+        # 读稳」）。假对象必须**同形**：换文档 ⇒ 代号变；同文档导航
+        # （pushState）⇒ 代号**不变**；子框架换文档 ⇒ 代号**不变**。
+        self.main_frame = _FakeFrame(self)
+        #: ``event → [handler, …]``（驱动现在不订阅，留着只为测「别订阅」）。
+        self.listeners: dict[str, list[Any]] = {}
+        #: 当前文档的代号。每次**主框架**导航 +1（同文档导航不变）。
+        self.stamp = "1000"
+        #: 哪些动作会触发**导航 commit**（默认可点/可按键会）。
+        #: 填 ``()`` 就是「点了不跳页」——驱动该记 ``nav="same"``。
+        self.navigate_verbs = navigate_verbs
+        #: 已发生的导航次数（诊断用）。
+        self.navigations = 0
+        #: 代号**读不到**（= 执行上下文被销毁 ⇒ 正在换文档）⇒ 抛。
+        self.fail_stamp = fail_stamp
+        #: 页面**没有** ``performance`` ⇒ 代号恒为 ``"none"``（读得到）。
+        self.no_performance = no_performance
+        #: 代号读取次数（诊断用）。
+        self.stamp_reads = 0
+
+    def on(self, event: str, handler: Any) -> None:
+        """订阅事件（真 playwright 同名 API）。
+
+        ⚠️ **驱动现在不订阅导航事件了**（改用文档代号）——留着这个方法
+        只为让「驱动误订阅事件」这件事**测得出来**：真要是有人又改回
+        事件计数，这条假实现不该挡路。
+        """
+        self.listeners.setdefault(event, []).append(handler)
+
+    def navigate(self, *, main: bool = True) -> None:
+        """模拟一次**导航 commit**：换文档 ⇒ 代号变。
+
+        ``main=False`` 模拟**子框架**导航——子框架换文档**不换主文档**，
+        代号**不变**（驱动不该把它算成「当前页换了文档」）。
+        """
+        if not main:
+            return
+        self.navigations += 1
+        self.stamp = str(int(self.stamp) + 1)
+
+    def push_state(self) -> None:
+        """模拟**同文档导航**（改 query 不换文档）——代号**不变**。"""
+        self.url = f"{self.url}?tp_fake=1"
 
     async def title(self) -> str:
         if self.fail_title:
@@ -99,11 +165,20 @@ class _FakePage:
         return self.html
 
     async def evaluate(self, expression: str) -> Any:
+        if expression == DOC_STAMP_EXPR:
+            self.stamp_reads += 1
+            if self.fail_stamp:
+                raise PwError("fake: 执行上下文被销毁")
+            return DOC_STAMP_NONE if self.no_performance else self.stamp
         if expression not in self.evals:
             raise PwError(f"fake: 表达式未配置 {expression!r}")
         value = self.evals[expression]
         if isinstance(value, Exception):
             raise value
+        # **可调用值**：让测试在读数**中途**做点事（= 模拟「读到一半」——
+        # 导航恰好落在两次往返之间）。这是本轮要治的那个病。
+        if callable(value):
+            value = value()
         return value
 
     async def goto(self, url: str, *, wait_until: str = "load") -> None:
@@ -177,6 +252,10 @@ class _FakeRoleLocator:
         _, err = self._spec
         if err is not None:
             raise err
+        # 动作真的落地了 ⇒ 有没有跟着导航，由假页说了算
+        # （默认可点/可按键会跳页；``fill`` 不会）。
+        if verb in self._page.navigate_verbs:
+            self._page.navigate()
 
     # click/press 收 ``no_wait_after``：动作面**不**让 playwright 等它触发的
     # 那次导航（实测那样要 9–13s，见 camoufox_driver._settle）。假 page 记下来，
@@ -202,6 +281,9 @@ class _FakeKeyboard:
         self._page.keyboard_keys.append(key)
         if self._page.keyboard_error is not None:
             raise self._page.keyboard_error
+        # 页面级按键（回车提交）会跳页——与元素级 press 同一口径。
+        if "press" in self._page.navigate_verbs:
+            self._page.navigate()
 
 
 class _FakeLocator:
@@ -1050,3 +1132,173 @@ class TestResolve:
         await driver.resolve(role="button", name="立即播放")
         assert driver.last_action["outcome"] == "ok"
         assert driver.last_action["op"] == "resolve"
+
+
+# ── 动作之后的读稳（2026-10-22，第一批 camoufox 生产批实测）───────
+#
+# 这一节治的病：**读到一半**。
+#
+# 实测：同一页、同一动作位置、两次独立运行，``iframe_count`` 读出 **3** 与 **0**。
+# 同一个页面的计数在两次运行间翻面 ⇒ 那个 0 **不是页面事实**。
+#
+# 机制：``observe`` 是 4 次以上独立往返，而导航是**异步 commit** 的——
+# commit 落在两次往返之间，观察就是**两个文档拼起来的**。
+#
+# ⇒ 治法两条：① 动作之后**等新文档 commit** 再观察（判据 = **文档代号**
+# ``performance.timeOrigin``，每文档一个常量）；② 观察侧**读数自检**：
+# 读数跨了文档就重来，一直不稳就记降级让下游**不判**。
+#
+# ⚠️ **判据为什么不是「主框架 ``framenavigated``」**：它对**同文档导航**
+# （pushState / 改 query）也会触发，而 SPA 页面会在播放时改 URL——
+# 拿它当判据会把「只改了 URL」误判成「换了文档」，观察白白重来，
+# 连续撞上还误记 ``nav_unsettled``，**把好观察当半成品丢掉**。
+# 下面 ``test_同文档导航不算换文档`` 就是钉这一条的。
+
+
+def _navigate_on_read(page: _FakePage, *, times: int = 1) -> str:
+    """正文读数时触发导航——「读到一半」的最小复现。
+
+    真场景里导航落在两次往返之间；这里让它落在**读正文**这一次往返里，
+    于是这一次观察的 URL/正文来自旧文档、链接/计数来自新文档。
+    """
+    state = {"left": times}
+
+    def _body() -> str:
+        if state["left"] > 0:
+            state["left"] -= 1
+            page.navigate()
+        return "正文"
+
+    return _body
+
+
+class Test动作之后的读稳:
+    @pytest.fixture(autouse=True)
+    def _短预算(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """等 commit 的预算压到 50ms——测「没等到」那条不该真等 2s。"""
+        monkeypatch.setattr(camoufox_driver, "NAV_COMMIT_TIMEOUT_MS", 50)
+
+    async def test_动作之后等新文档_commit_账上写_new(self):
+        """点击触发导航 ⇒ 驱动**等它 commit**（而不是立刻观察旧页）。"""
+        page = _FakePage()
+        driver, _ = _driver(page)
+        await driver.click(role="button", name="立即播放")
+        assert page.navigations == 1
+        assert driver.last_action["nav"] == "new"
+
+    async def test_没跳页时写_same_不是_new_也不是猜(self):
+        """点击没导航 ⇒ 账上写 ``same``。
+
+        ⚠️ **不许写 ``new``**——那会把「没跳页」说成「跳了」；
+        也不许写 ``unknown``——那个是「**不知道**」，与「知道没跳」不同。
+        """
+        page = _FakePage(navigate_verbs=())
+        driver, _ = _driver(page)
+        await driver.click(role="button", name="立即播放")
+        assert driver.last_action["nav"] == "same"
+
+    async def test_同文档导航不算换文档(self):
+        """**pushState（改 query 不换文档）不算「换了文档」**。
+
+        这是选「文档代号」而不是「导航事件」的全部理由：SPA 页面
+        （bilibili 等）会在播放时改 URL——拿导航事件当判据会把好观察
+        当半成品丢掉（白白重来，连续撞上还误记 ``nav_unsettled``）。
+        """
+        page = _FakePage()
+        driver, _ = _driver(page)
+        page.push_state()          # 改 URL，但代号不变
+        assert await driver._doc_stamp() == "1000"
+        # 读数自检也不该把它当成「读到一半」
+        obs = await driver.observe()
+        assert DEGRADED_NAV_UNSETTLED not in obs.degraded
+
+    async def test_子框架导航不算换文档(self):
+        """播放器 iframe 换文档**不是**「当前页换了文档」。
+
+        把它算进去会让读数自检无谓地重来（每次都等一次落定）。
+        """
+        page = _FakePage()
+        driver, _ = _driver(page)
+        before = await driver._doc_stamp()
+        page.navigate(main=False)          # 子框架换文档
+        assert await driver._doc_stamp() == before
+
+    async def test_取不到基线时写_unknown_不猜(self):
+        """代号**读不到** ⇒ 没有基线 ⇒ **不猜、也不等**。
+
+        没有基线就没有「变了没有」可判——这时候写 ``same`` 就是
+        把「不知道」说成「没跳页」。
+        """
+        page = _FakePage(fail_stamp=True)
+        driver, _ = _driver(page)
+        await driver.click(role="button", name="立即播放")
+        assert driver.last_action["nav"] == "unknown"
+
+    async def test_页面没有_performance_时不是_读不稳(self):
+        """代号恒为 ``"none"``（页面没有 ``performance``）⇒ **不误伤**。
+
+        ``"none"`` 是**读到了**而且**恒定**——恒定的东西永远判不出
+        「变了」。混成「读不到」的话，每次观察都重来、每次都记降级
+        ⇒ 整站一份样本都留不下。
+        """
+        page = _FakePage(no_performance=True)
+        driver, _ = _driver(page)
+        await driver.click(role="button", name="立即播放")
+        assert driver.last_action["nav"] == "same"
+        obs = await driver.observe()
+        assert DEGRADED_NAV_UNSETTLED not in obs.degraded
+
+    async def test_fill_也等_因为页面脚本可能因输入跳页(self):
+        """``fill`` 只设值，但 agent 链里 ``fill`` 之后**下一步就是观察**
+        ——不等的代价是读到旧页，下一步拿旧页的名字去点新页。"""
+        page = _FakePage(navigate_verbs=("fill",))
+        driver, _ = _driver(page)
+        await driver.fill(role="textbox", name="站内搜索", text="功夫")
+        assert driver.last_action["nav"] == "new"
+
+    async def test_读数跨了文档就重来一次(self):
+        """导航落在读数中间 ⇒ 那份观察是半成品 ⇒ **重来**。
+
+        重来之后拿到的是**干净**的观察 ⇒ 不带降级标记。
+        """
+        page = _FakePage()
+        page.evals[INNER_TEXT_EXPR] = _navigate_on_read(page)
+        driver, _ = _driver(page)
+        obs = await driver.observe()
+        assert page.navigations == 1          # 第一次读坏了，第二次没坏
+        assert DEGRADED_NAV_UNSETTLED not in obs.degraded
+
+    async def test_一直读不稳就记降级让下游不判(self):
+        """读几遍都不稳 ⇒ 这份观察**不可信** ⇒ 记降级。
+
+        降级 ⇒ 感知层判 ``answer=None`` ⇒ 落 ``unresolved``，
+        **不进负样本池**——半成品绝不能变成业务负样本。
+        """
+        page = _FakePage()
+        page.evals[INNER_TEXT_EXPR] = _navigate_on_read(page, times=99)
+        driver, _ = _driver(page)
+        obs = await driver.observe()
+        assert DEGRADED_NAV_UNSETTLED in obs.degraded
+
+    async def test_读数途中执行上下文被销毁也算读到一半(self):
+        """代号**读不到**（执行上下文被销毁）⇒ **正在换文档** ⇒ 也要重来。
+
+        这是比「代号变了」更早的信号：导航还没 commit 完时就读，
+        那一刻的读数跨着两个文档。
+        """
+        page = _FakePage()
+        driver, _ = _driver(page)
+        # 让「读正文」那一次往返触发「执行上下文被销毁」：
+        # 代号读不到 ⇒ 驱动读不出代号 ⇒ 判不稳 ⇒ 重来。
+        state = {"left": 1}
+
+        def _body() -> str:
+            if state["left"] > 0:
+                state["left"] -= 1
+                page.fail_stamp = True
+            return "正文"
+
+        page.evals[INNER_TEXT_EXPR] = _body
+        obs = await driver.observe()
+        # 读不稳 ⇒ 记降级（绝不让半成品变成业务负样本）
+        assert DEGRADED_NAV_UNSETTLED in obs.degraded

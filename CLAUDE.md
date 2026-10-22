@@ -81,7 +81,7 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 | 文档 | 内容 |
 |---|---|
 | [08-常用命令速查.md](trajectory_pipeline/docs/08-常用命令速查.md) | **命令清单的唯一真源**——一行一条、复制即用，附「缺了就报错不猜」的必填项表。要跑命令先读它 |
-| [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图 + 依赖方向、控制流与四个判断点、失败分支全集、obscura 执行层、感知层七不变式、persona 六维、模块 5/6、**存量 v1 各目录职责** |
+| [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图 + 依赖方向、控制流与四个判断点、失败分支全集、**camoufox 执行层**（obscura 保留为回溯路径）、感知层七不变式、persona 六维、模块 5/6、**存量 v1 各目录职责** |
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3 契约表、`steps[]` 三条口径、P1 三处「不给就不可判定」的字段 |
 | [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 每条命令「联网与否 / 作用 / 参数」口径表 + 环境变量全表、门禁与输出目录、`replay` 口径、故障排查（**命令清单本身在 08 号**） |
 | [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | **索引页**——内容已拆到 [`计划进展/`](trajectory_pipeline/docs/计划进展/)（2026-10-15） |
@@ -99,7 +99,7 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 - [01-模块3-可替换感知层.md](trajectory_pipeline/docs/设计方案/01-模块3-可替换感知层.md) —— 插件化机制完整规格 + 七不变式
 - [02-rubric与代码对齐.md](trajectory_pipeline/docs/设计方案/02-rubric与代码对齐.md) —— 评分标准 `RUB-VID-PLAY-001` 逐维度 ↔ 新树代码的对齐账。**改 rubric 或改控制流之前先读**——它记的是两侧哪里已经错位，而错位不会自己显形
 - [03-rubric修订与实施方案.md](trajectory_pipeline/docs/设计方案/03-rubric修订与实施方案.md) —— rubric v1.1 逐条改稿清单 + 五个代码变更（点文件、点函数）。**§9 是实施结果**（哪条做了、哪条没做、每条由哪个测试封着、方案漏掉了什么）。**要动 `branches.py` / `observation_view.py` / `integrity.py` 的先读**
-- [04-camoufox执行层替换方案.md](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md) —— **D11 修订 D7**：camoufox 取代 obscura 成为唯一执行层。含实测取证（F1–F4）、13 原语映射表、三个难点（ref 机制 / 错误三态 / 身份钉死）、两份红线、P0–P5 落地阶段。**§6.1 是 go/no-go 门槛**——反爬拦截率不达标就不换。**实施未开始，生产链仍跑 obscura**
+- [04-camoufox执行层替换方案.md](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md) —— **D11 修订 D7**：camoufox 取代 obscura 成为唯一执行层。含实测取证（F1–F4）、13 原语映射表、三个难点（ref 机制 / 错误三态 / 身份钉死）、两份红线、P0–P6 落地阶段。⚠️ **§6.1 的 go/no-go 门槛已被 owner 裁定覆盖（2026-10-22）**——生产链默认执行层**已切 camoufox**（`DEFAULT_KIND = "camoufox"`）；§6.1 顶部有覆盖块，六条读数的新地位写在那里。**obscura 没删**（`--driver obscura` 显式点名，工具面 `obscura-1` 只读不再产出）
 - [15-执行器与agent-runtime重新定义.md](trajectory_pipeline/docs/设计方案/15-执行器与agent-runtime重新定义.md) —— **D-A6–D-A11**：**LLM 层做探索、代码层做护栏**。感知层退位成三块静态资产，七不变式里 I3（幂等）与 I6（ref 可溯源）退役；工具声明 = agent 工具集 = camoufox 调用面（含采集面 4 条）；含方言轴与批次元数据、落地路线 R0–R5、待决项 O-1–O-4
 - [在线视频场景rubric.md](trajectory_pipeline/docs/设计方案/在线视频场景rubric.md) —— 评分标准本体
 

@@ -123,7 +123,28 @@ class RunConfig:
     max_candidates: int = 20
     max_chars: int | None = DEFAULT_MAX_CHARS
     stop_after_success: int = 0  # 0 = 跑满候选；>0 = 成功 N 个即停
-    per_site_timeout_s: float = 90.0
+    #: **单站超时**（B-4 异常处置唯一的时限判据）。
+    #:
+    #: ⚠️ **90 → 180（2026-10-22，切 camoufox 后）**：90 是 obscura 时代定的
+    #: （obscura 单步快）。camoufox 单步慢一个量级——真人鼠标轨迹回放带
+    #: 停顿与 overshoot，加上 ``_settle`` 有界等 ``domcontentloaded``（2s），
+    #: 实测单次点击上界 **13.3s**（headful 最坏；headless 下 34–71ms 不慢）。
+    #: ``AgentBudget.max_steps=8`` ⇒ 8 步 × 15.3s ≈ **122s**，90 顶不住。
+    #:
+    #: **2026-10-22 再加一段**：``_settle`` 现在**先等新文档 commit**
+    #: （有界 2.5s，见 ``camoufox_driver`` 的「动作之后的读稳」）——不等的
+    #: 代价是**读到一半**（第一批生产批实测：同一页两次运行 ``iframe_count``
+    #: 读出 3 与 0，那个 0 不是页面事实）。每步最坏再 +2.5s ⇒
+    #: 8 步 × 17.8s ≈ **142s**，180 仍顶得住（余量从 58s 降到 38s）。
+    #:
+    #: 撞顶的后果**不是"慢"而是"错"**：站点遍历超时会被记成一条
+    #: ``unreachable_hard`` ——**理由通顺的假负样本**（H-15/H-17 那一类）。
+    #: 180 ≈ 1.3× 于实测上界，留了余量。
+    #:
+    #: ⚠️ 它曾经**连 ``--help`` 都查不到**（CLI 不设它，只在源码里）——
+    #: 2026-10-22 起 ``--per-site-timeout`` 暴露出来，且**落进 ``run_config``**
+    #: （B-4 的判据是它，不落盘就等于没有判据）。
+    per_site_timeout_s: float = 180.0
     #: 发现路径（2026-10-16 路径 B/C）。默认 ``direct``：既有批次与
     #: 全部既有调用点**零改动**——「默认值不改变现状」是加配置的第一纪律。
     discovery_path: str = "direct"
@@ -222,6 +243,40 @@ class RunRecord:
     #: **空串 = 没记**（不是「未知驱动」）：历史批次没有这个字段，而那批
     #: 真实跑的就是 obscura。补一个默认值等于凭空断言这份存档属于哪一批。
     driver: str = ""
+    #: **执行层的指纹读数**（2026-10-22 P6 批次元数据，owner 裁定切 camoufox 后
+    #: 从「未开工」变「必须」）。
+    #:
+    #: 九项（方案 04 §4.3）：``os`` / ``screen`` / ``window`` / ``dpr`` /
+    #: ``humanize`` / ``geoip`` / ``main_world_eval`` / ``headless`` / ``locale``。
+    #: 其中 ``screen`` / ``window`` / ``dpr`` 是**实测值**（读回来的），
+    #: 其余是**请求值**（没有可读回来的形态）——两种语义混在一份 dict 里，
+    #: 所以读侧必须知道哪几项可信。
+    #:
+    #: ⚠️ **为什么它必须进存档**：指纹只在 launch 那一刻确定，
+    #: **事后补不回来**。而 camoufox 的 ``window=`` 钉的是**外框**——
+    #: 视口 = 外框 − chrome ⇒ **内高逐次摆动**。
+    #: 不记它，批次分布的变化就会被读成「站点变了」而不是「指纹漂了」。
+    #:
+    #: ⚠️ **生产口径（``headless=True``）的实测读数**（2026-10-22，
+    #: 5 次 ``check --driver camoufox``）：``screen`` ``[1920, 1080]``
+    #: 恒定 · ``window``（inner）``[1920, 947]`` ×2 / ``[1920, 955]`` ×3 ·
+    #: ``dpr`` ``1`` · ``timezone`` ``Asia/Shanghai``。
+    #: **内宽恒 ``1920``**——**别拿 headful 的 ``1905`` 去比 headless 的
+    #: 存档**（headful 口径才是 1905，见[设计方案 04 §4.3.1](../../../trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md)）。
+    #:
+    #: ⚠️ **「摆动 8px」是探针口径的读数，生产口径已经把它推翻**
+    #: （2026-10-22 生产批补记）：第一批生产批
+    #: （``output/pipeline/camoufox_prod1/``）8 条里读到的内高是
+    #: **``909`` / ``947`` / ``955`` / ``965``——跨度 56px**。
+    #: ⇒ **别把 955 当上界**：拿它当上界，``909`` 会被读成「指纹异常」，
+    #: 而它其实是常态。**读法是「只认实测值」**，不是「拿某个数当基准」。
+    #: 该批其余八项**全部恒定**
+    #: ⇒ **漂的只有 chrome 高度（⇒ inner 高），不是窗口尺寸本身**。
+    #:
+    #: **空 dict = 没记**，不是「没有指纹」：obscura 是远端 MCP，
+    #: 本地看不到它的指纹——那是「没测到」，不是「测出来是空的」。
+    #: 两者混用会让「obscura 批次没有指纹」被读成「obscura 批次指纹为空」。
+    fingerprint: dict[str, Any] = field(default_factory=dict)
     #: B/C 路径的中间页访问结果（聚合站页 / 文章页）。direct 恒空。
     #: 每个元素是独立决策单元（P2 切条时 ``agg-N`` / ``article-N``）。
     intermediates: list[IntermediateResult] = field(default_factory=list)
@@ -363,6 +418,11 @@ class RunRecord:
         """
         self.provenance = dict(self.provenance or {})
         self.run_config = dict(self.run_config or {})
+        # 执行层指纹同款防引用共享（与 provenance/run_config 同理：
+        # 指纹来自驱动的 session，而 session 是活的——调用方在归档前
+        # 再读一次 driver.fingerprint 拿到的是**同一个 dict**，
+        # 改它就等于改存档）。
+        self.fingerprint = dict(self.fingerprint or {})
         # gatekeeper_events 同款防引用共享（与 provenance/run_config 同理：
         # 事件由 orchestrator 独占构造，但 RunRecord 也可能被直接构造）。
         self.gatekeeper_events = list(self.gatekeeper_events or [])
@@ -418,6 +478,10 @@ class RunRecord:
             # 的归因轴，缺了这个字段，两批不同执行层的存档在磁盘上
             # 长得一模一样——而它们的动作编码不同义，混池就是造数据。
             "driver": self.driver,
+            # 执行层指纹读数（2026-10-22 P6）。**空 dict 也写**——
+            # 与 ``driver`` / ``executor_mode`` 同款约定：「没记」与
+            # 「记了但是空」在下游是两回事（缺件代理教训）。
+            "fingerprint": dict(self.fingerprint),
             # run_id / batch_id(2026-10-19 增量六十一):与 filename 同源,
             # 之前只活在 writer 边界注入,下沉为 RunRecord 字段后读档人
             # 直接看 JSON 顶层。空串 = 不在 plan 跑出来的批次(手工 / 测试),
@@ -910,6 +974,10 @@ class Orchestrator:
             # ``{role,name}``）由驱动决定，写错了训练数据的声明就与
             # 真实调用对不上——而那在报告上看不出任何异常。
             driver=str(getattr(self._driver, "name", "") or ""),
+            # 执行层指纹读数（2026-10-22 P6）。**只取驱动自己有的**——
+            # obscura 没有指纹可读（远端 MCP），那是「没测到」，
+            # 补一个空 dict 与「实测为空」混用会让读档人分不清。
+            fingerprint=dict(getattr(self._driver, "fingerprint", {}) or {}),
             # 运行参数进存档：覆盖完整性（B-2）与异常处置（B-4）
             # 两项断言的分母/判据都在这里，见 RunRecord.run_config。
             run_config=dataclasses.asdict(self._cfg),

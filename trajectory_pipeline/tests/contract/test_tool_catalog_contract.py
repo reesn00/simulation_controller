@@ -220,10 +220,25 @@ def _walk_steps(archive: dict):
 # 改成递归之后，**判「是不是存档」就不能靠路径了**（目录会变，
 # ``dualrun/`` 是 2026-10-20 才加的）：改**按形状判**。
 
-#: P1 存档的文件名形状：``<task_id>__<run_id>.json``，
+#: 产物的文件名形状：``<task_id>__<run_id>.json``（P1 存档）或
+#: ``<task_id>__<run_id>__<slot>.json``（P2 样本 / P3 / T 视图）。
 #: ``run_id`` 是 8 位十六进制（``uuid4().hex[:8]``，见 ``executor/archive.py``）。
-#: **按名字筛只是省钱**（派生产物有三段名），判据是下面的形状。
-_ARCHIVE_NAME = re.compile(r"^[^/]+__[0-9a-f]{8}\.json$")
+#: **按名字筛只是省钱**（探针报告、计划文件、工作表都在同一个根下），
+#: 判据是下面的**形状**。
+#:
+#: ⚠️ **2026-10-22 修正：末尾那段 ``(..)?`` 是后补的，之前漏了**。
+#: 原式 ``^[^/]+__[0-9a-f]{8}\.json$`` **只放行两段名**，于是
+#: **盘上 1444 个 P2 样本一个都进不来**（实测 ``_walk_products(_is_p2_sample)``
+#: 恒返回 **0**）。后果不是报错，是**静默换统计源**：
+#: :func:`_observed_from_p2` 永远交白卷 ⇒ :func:`_observed` 走
+#: 「P2 没落盘就退回 P1」那条 fallback ⇒ **``required`` 一直是按 P1 存档
+#: 算的，而代码与文档都写着「统计源选 P2 样本」**（required 是训练数据的
+#: 口径，训练数据是 P2）。
+#:
+#: 为什么一直没被发现：P1 存档**确实有**数据，fallback 拿得到分母，
+#: 于是断言照常跑、照常绿——**两个口径给出相近结论，差异被抹平了**。
+#: 这与增量七十一抓到的那条谎话是同一类：**标注/口径说着一套，数据是另一套**。
+_ARCHIVE_NAME = re.compile(r"^[^/]+__[0-9a-f]{8}(?:__.+)?\.json$")
 
 #: 读过的文件缓存。键里带 ``mtime`` 与大小 ⇒ **文件一改缓存自动失效**，
 #: 不会拿着上一版的读数当这一版的。
@@ -642,11 +657,26 @@ class Test三处一致:
                 )
 
     def test_落盘的P2工具集与catalog一致(self):
-        """盘上 P2 样本的 ``six.tools`` 名字集 == catalog 名字集。
+        """盘上 P2 样本的 ``six.tools`` 名字集 == **它自己那个面**的 catalog。
 
         不一致 = **产物没重建**（catalog 加了工具但 P2 还是旧的）。
         这不是代码缺陷，但它是**静默**的：P3 会照着旧 P2 渲染出旧工具
         清单，而报告上看不出任何异常。
+
+        ⚠️ **期望值必须逐面取，不能用 ``CATALOG``**（2026-10-22 修正）：
+        ``toolcatalog.CATALOG`` 是 ``SURFACES[DEFAULT_SURFACE]``——
+        **obscura 面**的定义集（13 条）。而 P2 的 ``six.tools`` 取的是
+        :data:`assembler.schema.TOOL_SPECS_BY_SURFACE[surface]`
+        = **该面的全部定义**。
+
+        两个面**定义集不同**（方案 04 §2.2：camoufox 面多三条采集面
+        读原语 ``snapshot`` / ``interactive`` / ``links``）⇒ 用 obscura
+        面的集合去核 camoufox 面的样本**必然不等**。
+
+        ⇒ **第一批 camoufox 批次落盘时，这条断言就是这么红的**——
+        且红得**有信息量**（指名的正是那三条多出来的采集面读原语）。
+        ⚠️ 但它红的**原因**是断言写错了，不是产物错了：产物按自己的面
+        渲染，是对的。**改断言，不改产物**——把期望值换成样本自己的面。
 
         ⚠️ **源存档已不在的样本不参与校验**。那些是 ``purge-run`` 回滚后
         的**孤儿**：P1 存档删了，派生出来的 P2 还在（回滚只删存档与负样本
@@ -656,7 +686,6 @@ class Test三处一致:
         files = sorted(SAMPLES.glob("*.json"))
         if not files:
             pytest.skip("没有落盘的 P2 样本（产物目录不入库）")
-        expected = {d.name for d in toolcatalog.CATALOG}
         orphans: list[str] = []
         for p in files:
             sample = json.loads(p.read_text(encoding="utf-8"))
@@ -664,9 +693,13 @@ class Test三处一致:
             if source and not (ARCHIVES / source).exists():
                 orphans.append(p.name)
                 continue
+            # 期望值按**样本自己的面**取：没记 tool_surface 的（2026-10-20
+            # 之前建的）算默认面——那批样本真实跑出来的就是它。
+            surface = str(sample.get("tool_surface") or "") or toolcatalog.DEFAULT_SURFACE
+            expected = {d.name for d in toolcatalog.defs_of(surface)}
             names = [str(t.get("name")) for t in (sample.get("six") or {}).get("tools") or ()]
             assert set(names) == expected, (
-                f"{p.name} 的 six.tools 与 catalog 对不上——"
+                f"{p.name}（{surface} 面）的 six.tools 与该面的 catalog 对不上——"
                 f"跑 cli build --overwrite 重建"
             )
         if orphans:

@@ -41,10 +41,36 @@ class _StubClient:
 
 
 class TestMakeDriver:
-    def test_默认实现是obscura(self):
-        driver = make_driver(_StubClient())
-        assert driver.name == "obscura"
+    def test_默认实现是camoufox(self):
+        """**2026-10-22 owner 裁定**：生产链默认实现 = camoufox。
+
+        改的是 :data:`DEFAULT_KIND` 这一处事实，不是六处调用点各自的
+        隐式约定——所以这条断言是「默认实现是什么」的唯一真源。
+        """
+        assert DEFAULT_KIND == "camoufox"
         assert DEFAULT_KIND in SUPPORTED_KINDS
+
+    def test_默认实现仍在白名单里(self):
+        """白名单与默认值的关系要被钉住：默认值必须在表内，
+        否则「默认实现」本身就是一个认不出的名字。"""
+        assert DEFAULT_KIND in SUPPORTED_KINDS
+
+    def test_默认调用不带会话就报错不回落(self):
+        """默认值改成 camoufox 之后，**裸调用必须报错**。
+
+        如果这里悄悄回落到 obscura，那么「忘了传 session」会跑出
+        一份 obscura 产出的数据，而调用方以为自己在跑 camoufox——
+        两边产出物结构一模一样，**混池统计时看不出来**。
+        """
+        with pytest.raises(ValueError) as exc:
+            make_driver(_StubClient())
+        assert "CamoufoxSession" in str(exc.value)
+
+    def test_显式点名obscura仍然可用(self):
+        """obscura **没被删掉**——它是存量产物的方言与口径回溯参照系。
+        「不再比对」≠「删掉实现」。"""
+        driver = make_driver(_StubClient(), kind="obscura")
+        assert driver.name == "obscura"
 
     def test_未知实现名报错不回落(self):
         """回落会让「配错了」产出与「配对了」同一份数据。"""

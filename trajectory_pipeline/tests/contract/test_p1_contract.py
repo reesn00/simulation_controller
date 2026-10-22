@@ -94,6 +94,11 @@ class Test字段集一致:
             # executor_mode 正交的第二个归因轴，还是**工具面**的唯一
             # 来源——目标编码（{tag,label} vs {role,name}）由它决定。
             "driver",
+            # 2026-10-22 P6：执行层指纹读数（os/screen/window/humanize/
+            # geoip/…）。**launch 时测的，事后补不回来**——所以必须
+            # 跟 driver 一起进存档。空 dict = 没记（obscura 是远端 MCP，
+            # 看不见），与「记了但是空」在下游是两回事。
+            "fingerprint",
             # 2026-10-17 方案 13 §3.6（A2a-4）：LLM 调用账本（agent
             # 循环每次问模型一行）。与 gatekeeper_events 同款可选字段
             # 纪律；scripted 批恒空 list 照落。
@@ -281,9 +286,43 @@ class Test文档不是摆设:
 
 
 def _real_archives() -> list[Path]:
+    """批次里真实跑出来的 P1 存档。**取不到就跳过**，不拿 fixture 冒充。
+
+    ⚠️ **必须递归**（2026-10-22 补记）：这里原先是 ``glob("*.json")``
+    ——只扫 ``output/pipeline/`` **顶层**，而批次落子目录是常态
+    （``dualrun/`` 是双跑、``camoufox_prod1/`` 是 2026-10-22 的第一批
+    camoufox 生产批、``camoufox_smoke/`` 是接线冒烟）。
+
+    ⇒ 新批次落进子目录后，P1 契约**一条都核不到**：顶层 66 条全是
+    obscura 面的老档，而契约要守的恰恰是「新批次也别写歪」。
+    **覆盖缺口不报错**——它只是让这一整类测试对新数据失明。
+    与 ``test_element_dialect._run_records`` 是同一个漏（同一个根、
+    同一个「改递归」的动作，增量七十一只改了 ``tool_catalog`` 那侧）。
+
+    按**形状**筛而不是按文件名：顶层有 ``run_config`` 且有
+    ``steps``/``visits`` 才是存档（探针产物 ``probe_*.json``、
+    计划文件 ``plan_*.json``、工作表 ``inc73_*.json`` 都不满足），
+    且按 ``run_id`` 去重（``_backup_pre_motivation/`` 有副本）。
+    """
     root = REPO / "trajectory_pipeline" / "output" / "pipeline"
-    found = [p for p in sorted(root.glob("*.json"))
-             if "__" in p.stem and not p.name.endswith(".reviewed.json")]
+    found: list[Path] = []
+    seen: set[str] = set()
+    for p in sorted(root.rglob("*.json")):
+        if p.name.endswith(".reviewed.json"):
+            continue
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not (isinstance(doc, dict) and "run_config" in doc
+                and ("steps" in doc or "visits" in doc)):
+            continue
+        run_id = str(doc.get("run_id") or "").strip()
+        if run_id:
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+        found.append(p)
     if not found:
         pytest.skip("没有真实 P1 存档（output/pipeline/ 是产物目录，未入库）")
     return found
