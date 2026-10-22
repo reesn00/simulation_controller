@@ -1,0 +1,199 @@
+{
+  "before": "trajectory_pipeline\\output\\pipeline",
+  "after": "trajectory_pipeline\\output\\pipeline\\camoufox_prod2",
+  "shared_pairs": 112,
+  "contradiction_counts": {
+    "都负（分支不同）": 5,
+    "前负后成": 8,
+    "前成后负": 4
+  },
+  "contradictions": [
+    {
+      "task_id": "E014",
+      "url": "https://m.dinggetv.com/dingge/84421.html",
+      "kind": "都负（分支不同）",
+      "before": [
+        "unresolved"
+      ],
+      "after": [
+        "broken"
+      ]
+    },
+    {
+      "task_id": "E022",
+      "url": "https://www.ycsedu.cn/yc-vod-play/201830-1-1.html",
+      "kind": "前负后成",
+      "before": [
+        "no_play_control"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "E028",
+      "url": "https://v.youku.com/v_show/id_XNTIwMTc1Njg3Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=aece4439b297414ca945",
+      "kind": "前成后负",
+      "before": [
+        "成功"
+      ],
+      "after": [
+        "login_required"
+      ]
+    },
+    {
+      "task_id": "E028",
+      "url": "https://www.karalalala.com/play/35932298/3/1.html",
+      "kind": "前负后成",
+      "before": [
+        "player_unverified"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "E028",
+      "url": "https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all",
+      "kind": "前成后负",
+      "before": [
+        "成功"
+      ],
+      "after": [
+        "unreachable_hard"
+      ]
+    },
+    {
+      "task_id": "T004",
+      "url": "https://vo.youku.com/v_show/id_XNDgzODkwODE5Ng==.html?scm=20140719.rcmd.46309.video_XNDgzODkwODE5Ng%3D%3D",
+      "kind": "前成后负",
+      "before": [
+        "成功"
+      ],
+      "after": [
+        "component_unverified"
+      ]
+    },
+    {
+      "task_id": "T018",
+      "url": "https://tv.sohu.com/v/MjAxNTAxMTkvbjQwNzg5MTgxOC5zaHRtbA==.html?txid=2501c78c3e10c8cdcbc7f701c70db188",
+      "kind": "都负（分支不同）",
+      "before": [
+        "no_play_control"
+      ],
+      "after": [
+        "subscription_wall"
+      ]
+    },
+    {
+      "task_id": "T018",
+      "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+      "kind": "前负后成",
+      "before": [
+        "component_unverified"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "T030",
+      "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+      "kind": "前负后成",
+      "before": [
+        "component_unverified"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "T038",
+      "url": "https://tv.sohu.com/v/MjAxNTAxMTkvbjQwNzg5MTgxOC5zaHRtbA==.html?txid=2501c78c3e10c8cdcbc7f701c70db188",
+      "kind": "都负（分支不同）",
+      "before": [
+        "no_play_control"
+      ],
+      "after": [
+        "subscription_wall"
+      ]
+    },
+    {
+      "task_id": "T038",
+      "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+      "kind": "前负后成",
+      "before": [
+        "component_unverified"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "T044",
+      "url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+      "kind": "前成后负",
+      "before": [
+        "成功"
+      ],
+      "after": [
+        "login_required"
+      ]
+    },
+    {
+      "task_id": "T044",
+      "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+      "kind": "前负后成",
+      "before": [
+        "component_unverified"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "T048",
+      "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+      "kind": "前负后成",
+      "before": [
+        "component_unverified"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "T054",
+      "url": "https://v.qq.com/x/page/j0826u0yy6e.html?ptag=mzhan&qqVersion=6",
+      "kind": "都负（分支不同）",
+      "before": [
+        "unresolved"
+      ],
+      "after": [
+        "blocked"
+      ]
+    },
+    {
+      "task_id": "T054",
+      "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+      "kind": "前负后成",
+      "before": [
+        "component_unverified"
+      ],
+      "after": [
+        "成功"
+      ]
+    },
+    {
+      "task_id": "T057",
+      "url": "https://www.iqiyi.com/v_1izxbujouio.html?vfm=2008_aldbd&fv=p_02_01",
+      "kind": "都负（分支不同）",
+      "before": [
+        "login_required"
+      ],
+      "after": [
+        "unresolved"
+      ]
+    }
+  ]
+}

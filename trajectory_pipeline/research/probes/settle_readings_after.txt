@@ -1,0 +1,43 @@
+# 「读到一半」读数 · **第二批（修复后，2026-10-22）**
+#
+# 复算方式：把第二批那 12 份批次存档复制到一个临时目录再跑探针——
+# 探针是 `rglob` 递归扫的，批次存档躺在 `output/pipeline/` 顶层，
+# 顶层还压着存量 obscura 批次与探针产物 ⇒ 直接扫会把别的资产算进来。
+# 对照：同目录下的 `settle_readings_prefix.txt` 是**修复前**那一代的读数
+# （24 份 camoufox 面存档 / 388 条观察 / 过渡态 59（15%）/ 打架 6）。
+#
+# 结论（增量八十一 §三）：**过渡态 15% ⇒ 3%、打架 6 ⇒ 1、`nav_unsettled` 0**；
+# 且剩下的 **8 条过渡态全落在 ixigua 一个站**上 ⇒ 是站点属性（页面没 title），
+# 不是「读到一半」——修复前的分布是**散在 10 份存档里**。
+
+目录: trajectory_pipeline/output/pipeline/（第二批那 12 份）
+存档: 12  按 driver: {'camoufox': 12}
+观察（带 URL 的）: 218
+过渡态（URL 有 / title 空）: 8  (3%)
+读数打架（同 URL 后一次变少）: 1
+带 nav_unsettled 降级的观察: 0
+
+-- 过渡态明细（前 15 条）--
+  E014__15e4b195.json  https://www.ixigua.com/7182514563005612603?utm_source=baidu_lvideo
+  T018__8f1aec03.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+  T025__102d3554.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+  T030__ae6553b1.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+  T038__a78dc57e.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+  T044__dcdf616c.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+  T048__0680dc4a.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+  T054__93f110b6.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+
+-- 打架明细（前 15 条）--
+  T054__93f110b6.json  https://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f
+
+-- 过渡态最多的存档（前 10）--
+  E014__15e4b195.json  1/14
+  T018__8f1aec03.json  1/18
+  T025__102d3554.json  1/18
+  T030__ae6553b1.json  1/18
+  T038__a78dc57e.json  1/18
+  T044__dcdf616c.json  1/20
+  T048__0680dc4a.json  1/20
+  T054__93f110b6.json  1/20
+  E022__f48c4d6c.json  0/19
+  E028__023b8837.json  0/20

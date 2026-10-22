@@ -1,0 +1,97 @@
+[
+  {
+    "label": "修复前",
+    "path": "trajectory_pipeline\\output\\pipeline",
+    "surface": "camoufox-1",
+    "runs": 12,
+    "drivers": {
+      "camoufox": 12
+    },
+    "observations": 466,
+    "outcomes_total": 155,
+    "antibot_rate": 9.032258064516128,
+    "loginwall_rate": 1.2903225806451613,
+    "block_rate": 10.32258064516129,
+    "antibot_outcomes": 14,
+    "loginwall_outcomes": 2,
+    "blocked_outcomes": 16,
+    "search_blocked_runs": 0,
+    "branch_counts": {
+      "not_play_site": 14,
+      "unresolved": 68,
+      "login_required": 2,
+      "player_unverified": 3,
+      "blocked": 14,
+      "unreachable_hard": 5,
+      "no_play_control": 14,
+      "component_unverified": 18,
+      "trailer_suspect": 1,
+      "broken": 11,
+      "subscription_wall": 5
+    },
+    "body_len_median": 778.0,
+    "body_len_median_by_family": {
+      "player_obs": 1551.0,
+      "search": 2774.0,
+      "site_obs": 116.0,
+      "step": 2774.0,
+      "visit_step": 775.0
+    },
+    "observations_by_family": {
+      "player_obs": 56,
+      "search": 12,
+      "site_obs": 165,
+      "step": 12,
+      "visit_step": 221
+    },
+    "elements_median": 37.0,
+    "note": "这一代的存档已于 2026-10-22 **整代回滚**（12 份存档 + 79 条池行 + 182 份派生产物，见增量八十）⇒ 这条读数**不可重算**，是历史快照。"
+  },
+  {
+    "label": "修复后",
+    "path": "trajectory_pipeline\\output\\pipeline",
+    "surface": "camoufox-1",
+    "runs": 12,
+    "drivers": {
+      "camoufox": 12
+    },
+    "observations": 436,
+    "outcomes_total": 152,
+    "antibot_rate": 8.552631578947368,
+    "loginwall_rate": 1.9736842105263157,
+    "block_rate": 10.526315789473683,
+    "antibot_outcomes": 13,
+    "loginwall_outcomes": 3,
+    "blocked_outcomes": 16,
+    "search_blocked_runs": 0,
+    "branch_counts": {
+      "not_play_site": 17,
+      "broken": 12,
+      "unresolved": 68,
+      "login_required": 3,
+      "component_unverified": 13,
+      "blocked": 13,
+      "unreachable_hard": 13,
+      "trailer_suspect": 1,
+      "no_play_control": 5,
+      "subscription_wall": 7
+    },
+    "body_len_median": 800.5,
+    "body_len_median_by_family": {
+      "player_obs": 1553.0,
+      "search": 3029.5,
+      "site_obs": 107.0,
+      "step": 3029.5,
+      "visit_step": 740.5
+    },
+    "observations_by_family": {
+      "player_obs": 52,
+      "search": 12,
+      "site_obs": 154,
+      "step": 12,
+      "visit_step": 206
+    },
+    "elements_median": 35.5,
+    "note": "修完「点击后未等新文档提交就观察」之后重跑的第二批；12 份存档已**摊平**到 output/pipeline/ 顶层（顶层 glob 才是 P1 的口径）⇒ path 是顶层目录。**判据①/② 在 6 条降级之后才取的数**（5 条优酷假成功 + 1 条点击失败 ⇒ outcomes_total 147→152、component_unverified 14→13、unresolved 62→68）。"
+  }
+]

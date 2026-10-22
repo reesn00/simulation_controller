@@ -70,6 +70,7 @@ from trajectory_pipeline.executor.browser.mcp_client import (
 from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES, RunLedger
 from trajectory_pipeline.executor import downgrade as downgrade_mod
 from trajectory_pipeline.executor import relabel as relabel_mod
+from trajectory_pipeline.executor import pool_drop as pool_drop_mod
 from trajectory_pipeline.executor.browser.driver_factory import (
     DEFAULT_KIND,
     SUPPORTED_KINDS,
@@ -2459,6 +2460,58 @@ def cmd_relabel(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pool_drop(args: argparse.Namespace) -> int:
+    """**撤掉负样本池里的行**（**默认 dry-run**）——按 URL 逐条定。
+
+    什么时候用：某一行池记录的**结论不成立**（门禁的
+    ``negative_contradicted_by_success`` 会指出来），而**同 run 里
+    其他行是对的** ⇒ 整批回滚会误伤。
+
+    ⚠️ **它只动池，不动存档**——存档侧的结论由 ``cli downgrade`` /
+    ``cli relabel`` 改。顺序永远是**先改存档、后撤池行**：反过来的话，
+    撤池时存档还写着旧结论 ⇒ 撤掉的那行在存档里还有支撑，看着像撤错了。
+
+    ⚠️ **撤掉的行进 ``pool_dropped.jsonl`` 审计日志**（原行 + 理由 +
+    时间）——池是 append-only 资产，撤行是唯一的删除动作，必须留痕。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    if not (args.reason or "").strip():
+        print("[stop] 撤池行必须给 --reason：它是这条日后唯一的依据",
+              file=sys.stderr)
+        return 2
+    if not (args.url or args.task_id or args.branch):
+        print("[stop] 撤池行必须给判据（--url / --task-id / --branch）"
+              "——不给就是全选，而池是 append-only 资产，全选等于清空训练集",
+              file=sys.stderr)
+        return 2
+    try:
+        out = pool_drop_mod.drop_from_root(
+            root, url_fragments=tuple(args.url or ()),
+            task_id=args.task_id, branch=args.branch,
+            reason=args.reason or "", dry_run=not args.apply)
+    except ValueError as exc:
+        print(f"[stop] {exc}", file=sys.stderr)
+        return 2
+
+    rows = out["selected"]
+    if not rows:
+        print("没有匹配的池行 —— 判据不匹配，或已撤过（幂等）")
+        return 0
+    verb = "撤掉" if args.apply else "**将**撤掉"
+    print(f"== {verb} {len(rows)} 行池记录 ==")
+    for row in rows:
+        print(f"  [{row.get('task_id')}] {row.get('branch')}  "
+              f"{str(row.get('url'))[:76]}")
+        print(f"      {str(row.get('evidence'))[:110]}")
+    if not args.apply:
+        print("\n⚠ 这是 dry-run。加 --apply 才落盘。")
+        print("  顺序：**先改存档（cli downgrade）→ 再撤池行**。")
+    else:
+        print(f"\n已撤 {out['dropped']} 行。审计日志：{out['log']}")
+        print("接着跑：cli build --overwrite  →  cli check-archives")
+    return 0
+
+
 def cmd_review_queue(args: argparse.Namespace) -> int:
     """改**复核队列文件**本身（预填 / 收敛），不动 P1。
 
@@ -3528,6 +3581,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="改判理由，**必填**，原样进 evidence")
     rl.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
     rl.set_defaults(func=cmd_relabel)
+
+    pdr = sub.add_parser(
+        "pool-drop",
+        help="撤掉负样本池里的行（**默认 dry-run**；只动池，不动存档）")
+    pdr.add_argument("--out", default=None, help="P1 存档目录（默认 output/pipeline）")
+    pdr.add_argument("--url", nargs="+", default=None,
+                     help="按 URL 片段挑（多片段 **OR**）")
+    pdr.add_argument("--task-id", default=None,
+                     help="限定 task_id（与 --url 同为 **AND**）")
+    pdr.add_argument("--branch", default=None,
+                     help="限定分支（与上面同为 **AND**）")
+    pdr.add_argument("--reason", default=None,
+                     help="撤行理由，**必填**，进 pool_dropped.jsonl 审计日志")
+    pdr.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
+    pdr.set_defaults(func=cmd_pool_drop)
 
     chk = sub.add_parser("check", help="查能力，不跑任务")
     chk.add_argument("--probe-url", default="https://example.com/")

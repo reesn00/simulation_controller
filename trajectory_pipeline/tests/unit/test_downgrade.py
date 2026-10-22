@@ -236,6 +236,34 @@ class Test处置:
                             name=p.name, dry_run=False)
         assert arch["ledger"]["negative_samples"] == 3    # 原样不动
 
+    def test_降成功要减ledger的成功数(self, tmp_path):
+        """**「成功」记在三处**：``outcome.branch`` / ``visits[].success`` /
+        ``ledger.succeeded``。
+
+        第三处是**落盘时的快照**（``branches.summary()`` 算好的），
+        不跟着减 ⇒ 存档里「成功 3 条」而 ``outcomes`` 里只剩 2 条。
+        门禁**不查这一项**（只查 visits ↔ branch），所以它会一路飘到
+        报表的成功率上（模块 docstring 坑 7）。
+        """
+        arch = _arch([_o("a.com", None), _o("b.com", None)])
+        arch["ledger"]["succeeded"] = 2
+        p = _write(tmp_path, arch)
+        dg.apply_downgrades(arch, hits=[arch["outcomes"][0]], reason="r",
+                            name=p.name, dry_run=False)
+        assert arch["ledger"]["succeeded"] == 1
+        # 实际成功条数与快照必须一致（这条才是门禁该守的不变量）
+        real = sum(1 for o in arch["outcomes"] if o.get("branch") is None)
+        assert arch["ledger"]["succeeded"] == real
+
+    def test_降负样本不动ledger的成功数(self, tmp_path):
+        """降的是负样本 ⇒ 成功数**不动**（别顺手减一）。"""
+        arch = _arch([_o("a.com", "no_play_control")])
+        arch["ledger"]["succeeded"] = 4
+        p = _write(tmp_path, arch)
+        dg.apply_downgrades(arch, hits=arch["outcomes"], reason="r",
+                            name=p.name, dry_run=False)
+        assert arch["ledger"]["succeeded"] == 4
+
 
 class Test目录遍历:
     def test_不动复核档(self, tmp_path):

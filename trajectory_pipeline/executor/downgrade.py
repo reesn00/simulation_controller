@@ -50,6 +50,25 @@
    所以「已经 ``unresolved`` 的记录不受理」必须是**无条件**的，不该挂在
    调用方给不给分支过滤上：**目标态与过滤条件无关**，它就是处置动作本身
    的定义。筛选器在这里只负责**排除**，没有「包括进来」的余地。
+7. **「成功」记在三处，不是两处**（:func:`apply_downgrades`）。
+   坑 5 说 ``outcome.branch is None`` 与 ``visits[i].success``——漏了
+   ``ledger.succeeded``（:func:`~trajectory_pipeline.executor.branches.
+   SiteOutcomeRecorder.summary` 落盘时算好的**快照**）。
+   降级一条**成功**（``branch is None``）时它不减 ⇒ 存档里
+   「成功 3 条」而 ``outcomes`` 里只剩 2 条成功。
+
+   为什么这次才暴露：本模块的三个原始判据全是**负样本**的判据
+   （"没找到控件" / "0 个交互元素" / "误判成功"），而**误判成功**
+   那一支（2026-10-10 的 ``downgrade_false_success``）恰恰降的是
+   ``branch=None`` 的记录——它当时也没管 ``ledger.succeeded``，
+   只是那批数据的报表没读这个字段，所以没显形。
+
+   实测（2026-10-22）：camoufox 批次里 5 条「成功」被降级后，
+   5 份存档的 ``ledger.succeeded`` 全部多算了 1 ⇒ 报表上的成功率
+   会比实际高，而**门禁不查这一项**（:mod:`executor.integrity` 只查
+   ``visits[].success`` 与 ``outcome.branch`` 是否自洽）。
+   ⇒ 降级成功时必须同步减 ``ledger.succeeded``（连带
+   ``ledger.negative_samples``，见 :func:`apply_downgrades`）。
 """
 
 from __future__ import annotations
@@ -162,12 +181,18 @@ def apply_downgrades(archive: dict[str, Any], *,
     #: 判成功的（``branch=None``，见模块 docstring 顶部）本来就**不在池里**，
     #: 按 ``len(hits)`` 减会把池子减成比实际小，而报告看不出是哪条减的。
     was_negative = 0
+    #: **被降掉的「成功」条数**——``ledger.succeeded`` 是落盘时的**快照**
+    #: （:func:`~trajectory_pipeline.executor.branches.SiteOutcomeRecorder.
+    #: summary` 算好的），降级不改它就会多算（模块 docstring 坑 7）。
+    was_success = 0
     for rec in hits:
         old = rec.get("branch")
         summary["branches"][str(old)] = summary["branches"].get(
             str(old), 0) + 1
         if old is not None and old != TARGET_BRANCH:
             was_negative += 1
+        elif old is None:
+            was_success += 1
         urls.add(str(rec.get("url") or ""))
         if dry_run:
             continue
@@ -190,6 +215,13 @@ def apply_downgrades(archive: dict[str, Any], *,
         led["by_branch"] = {k: v for k, v in by.items() if v}
         led["negative_samples"] = max(
             0, led.get("negative_samples", 0) - was_negative)
+        if was_success:
+            # ⚠️ **快照要跟着改**（模块 docstring 坑 7）：``succeeded`` 是
+            # 落盘时算好的「成功条数」，降级把一条成功改成了 unresolved
+            # ⇒ 成功条数少一条。不改的话报表上的成功率会**比实际高**，
+            # 而门禁不查这一项（它只查 visits[].success ↔ branch）。
+            led["succeeded"] = max(
+                0, int(led.get("succeeded") or 0) - was_success)
         miss = led.setdefault("missing_branches", [])
         if TARGET_BRANCH not in miss:
             miss.append(TARGET_BRANCH)

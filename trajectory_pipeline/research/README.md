@@ -71,7 +71,19 @@ research/
 │  ├─ inc73_human_review.filled-original.json   首轮**人填原件**（留池列还在手填时：yes 28 / no 11），审计对照
 │  ├─ inc73_field_check.py            判据⑤ 的**现场取证**（重采一遍与存档并排；联网）
 │  └─ inc73_action_replay.py          判据⑥ 的**动作重放**（从存档 steps[] 定位重放；联网）
+│  ├─ probe_doc_stamp.py              **文档代号**（`performance.timeOrigin`）能不能分「换了文档」与「只换了 URL」（联网）
+│  ├─ probe_nav_commit.py             动作之后页面**落没落定**的现场读数（联网）
+│  ├─ probe_settle_readings.py        存档里**有多少观察是「读到一半」的**（离线；`--exclude` 排掉批次子目录）
+│  │  ├─ settle_readings_prefix.txt   **修复前**那一代的读数（24 份 / 388 观察 / 过渡态 59（15%）/ 打架 6）
+│  │  └─ settle_readings_after.txt    **修复后**（第二批 12 份 / 218 观察 / 过渡态 8（3%）/ 打架 1 / nav_unsettled 0）
+│  ├─ probe_batch_rates.py            一批存档的**判据①（真·反爬拦截率）与判据②（`body_text`）**（离线）
+│  │  ├─ batch_rates_prefix.json      **修复前**那一代的读数（真·反爬 9.03% / body 778.0）
+│  │  └─ batch_rates_two_generations.json  两代对照（**修复后 8.55% / 800.5**；⚠️ 修复前那代已整代回滚 ⇒ 不可重算）
+│  ├─ compare_generations.py          **两代存档逐 URL 对照**：同一页两代结论互相矛盾的条目（离线）
+│  │  └─ generation_collision.json    两代对撞读数（112 个共享 (task,url) 对 / 17 处结论矛盾）
+│  └─ merge_batch_pool.py             批次后处理：把子目录里的 **P1 存档展平 + 负样本池并进根目录**（默认 dry-run）
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
+│  └─ plan-camoufox-prod1.json  **第一批 camoufox 生产批次**的 12 条计划（seed 20261022；第二批复用同一份⇒前后可比）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）
 ```
 
@@ -108,14 +120,43 @@ uv run python -m trajectory_pipeline.research.probes.inc73_human_review \
 # 重采 / 探针（联网 + 真浏览器；对照 .env 里的 OBSCURA_EXE / TRAJECTORY_LLM_*）
 uv run python trajectory_pipeline/research/recollect/visit.py
 uv run python trajectory_pipeline/research/probes/inc45_probe_sohu.py
+
+# 「读到一半」这一族（2026-10-22）：文档代号 / 动作后落定 / 存档里的半读读数
+uv run python trajectory_pipeline/research/probes/probe_doc_stamp.py        # 联网
+uv run python trajectory_pipeline/research/probes/probe_nav_commit.py --url https://www.baidu.com/   # 联网
+# ⚠️ 探针是 rglob 递归扫的 ⇒ **必须把批次子目录排掉**，否则两代混进一张表
+#    （现在的子目录：camoufox / camoufox_smoke / dualrun* / proberun / mediaprobe /
+#      mediabrowse / staticprobe / review_auto）。**批次存档已摊平在顶层**。
+uv run python trajectory_pipeline/research/probes/probe_settle_readings.py trajectory_pipeline/output/pipeline camoufox --exclude camoufox --exclude camoufox_smoke --exclude dualrun --exclude dualrun2 --exclude dualrun_camoufox --exclude dualrun2_camoufox --exclude proberun --exclude mediabrowse --exclude mediaprobe --exclude staticprobe --exclude review_auto   # 离线
+uv run python trajectory_pipeline/research/probes/probe_batch_rates.py --label 修复后=trajectory_pipeline/output/pipeline --surface camoufox-1   # 离线
+
+# 两代对撞：修复前那代 vs 修复后那代，同一 (task, url) 上结论是否相反
+# ⚠️ **两侧都要点名 run_id**（--before-run-ids / --after-run-ids）：根目录里还躺着存量批次，
+#    不筛就变成「两代执行层 + 存量 obscura」混在一张表里。
+# ⚠️ **这一对已经跑不动了**（2026-10-22）：**修复前那一代已整代回滚** ⇒
+#    存档不在盘上 ⇒ 读数只剩 `probes/generation_collision.json` 那份**历史快照**
+#    （112 个共享 (task,url) 对 / 17 处结论矛盾）。下面是**下一次**两代对撞的写法。
+uv run python trajectory_pipeline/research/probes/compare_generations.py \
+  --before trajectory_pipeline/output/pipeline --after trajectory_pipeline/output/pipeline \
+  --driver camoufox --before-run-ids <前一代 run_id 列表> --after-run-ids 15e4b195,f48c4d6c,023b8837,b441d5aa,8f1aec03,102d3554,ae6553b1,a78dc57e,dcdf616c,0680dc4a,93f110b6,c39e54c7   # 离线
+
+# 批次后处理：展平 P1 存档 + 并池（**默认 dry-run**，确认后加 --apply）
+# ⚠️ **顺序不能反**：先回滚要作废的那一代（cli purge-run --apply），**再**并池。
+#    两代共用去重键 (task_id,url,branch) ⇒ 先并后回会把新批次那行**静默吞掉**
+#    （既没进池、也没了存档）。实测两代 12 个 task 有 **39 个重叠键**。
+uv run python trajectory_pipeline/research/probes/merge_batch_pool.py \
+  --batch trajectory_pipeline/output/pipeline/<批次目录> \
+  --root trajectory_pipeline/output/pipeline
 ```
 
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、
-`probes/inc45_probe_sohu.py`、`probes/inc45_probe2_sohu.py`。其余全部离线。
+`probes/inc45_probe_sohu.py`、`probes/inc45_probe2_sohu.py`、
+`probes/probe_doc_stamp.py`、`probes/probe_nav_commit.py`。其余全部离线。
 
 **哪些脚本会起真浏览器**：`probes/probe_new_tab_click.py`、`probe_click_delivery.py`、
 `probe_click_latency.py`、`probe_click_repeat.py`、`probe_click_distance.py`、
-`probe_click_occluded.py`、`probe_click_occlusion_prefs.py`（camoufox，**不开网络**，
+`probe_click_occluded.py`、`probe_click_occlusion_prefs.py`、
+`probe_doc_stamp.py`、`probe_nav_commit.py`（camoufox，**不开网络**，
 只有第一轮与 distance 轮用到 `jijikb.com`）。后两个会**最小化它自己起的那个窗口**
 再恢复（按标题 `PROBE-MARK-*` 认窗口，不碰别的窗口）——**跑的时候别看屏幕**。
 

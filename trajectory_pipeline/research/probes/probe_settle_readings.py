@@ -16,17 +16,36 @@
 
 用法（**必须在仓库根跑**）::
 
-    python trajectory_pipeline/research/probes/probe_settle_readings.py [存档目录]
+    python trajectory_pipeline/research/probes/probe_settle_readings.py [存档目录] [driver]
+
+    # ★ **量「修复前」那一代时要排除批次子目录**：
+    #   探针是 `rglob`（递归）扫的，而批次子目录就躺在存档目录底下
+    #   （`camoufox_prod2/`）⇒ 不排除就把**两代混进一张表**。
+    python trajectory_pipeline/research/probes/probe_settle_readings.py \
+        trajectory_pipeline/output/pipeline camoufox --exclude camoufox_prod2
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path("trajectory_pipeline/output/pipeline")
+
+
+def _utf8_console() -> None:
+    """把标准输出改成 utf-8（Windows 控制台默认 GBK：中文花屏、``⇒`` 直接抛）。
+
+    探针的读数是要给人看的，打不出来就等于没量。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):    # pragma: no cover - 老解释器
+            pass
 
 
 def _obs_of(node: object):
@@ -50,14 +69,29 @@ def _frames(obs: dict) -> int:
 
 
 def main(argv: list[str]) -> int:
-    root = Path(argv[1]) if len(argv) > 1 else ROOT
-    only_driver = argv[2] if len(argv) > 2 else ""
+    _utf8_console()
+    ap = argparse.ArgumentParser(description="存档里的「读到一半」读数")
+    ap.add_argument("root", nargs="?", default=str(ROOT), help="存档目录")
+    ap.add_argument("driver", nargs="?", default="", help="只统计这个 driver")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="排除掉**含这个目录名**的路径（可多次）。"
+                         "批次子目录（camoufox_prod2）就躺在存档目录底下，"
+                         "不排除就把两代混进一张表")
+    # ⚠️ **``parse_args`` 传进去的整个列表都会被当参数解析**（含第 0 项）
+    # ——它只在不传参时才自己剥掉 ``sys.argv[0]``。这里统一按
+    # 「argv 是完整 argv」处理，剥掉第 0 项。
+    args = ap.parse_args(list(argv)[1:] if argv else [])
+
+    root = Path(args.root)
+    only_driver = args.driver
+    excluded = set(args.exclude)
     if not root.exists():
         print(f"目录不存在: {root}")
         return 1
 
     archives = sorted(p for p in root.rglob("*.json")
-                      if p.is_file() and "_backup" not in p.parts)
+                      if p.is_file() and "_backup" not in p.parts
+                      and not (excluded & set(p.parts)))
     by_driver: Counter[str] = Counter()
     obs_total = 0
     unsettled: list[tuple[str, str]] = []

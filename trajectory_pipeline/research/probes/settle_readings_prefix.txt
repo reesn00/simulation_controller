@@ -1,0 +1,43 @@
+目录: trajectory_pipeline\output\pipeline
+存档: 3341  按 driver: {'camoufox': 24}
+观察（带 URL 的）: 388
+过渡态（URL 有 / title 空）: 59  (15%)
+读数打架（同 URL 后一次变少）: 6
+带 nav_unsettled 降级的观察: 0
+
+-- 过渡态明细（前 15 条）--
+  DR01__cc2a2b13.json  https://v.qq.com/x/cover/rzpyce9pmxayzvb/a0015hve7w6.html?ptag=10521
+  DR01__cc2a2b13.json  https://jijikb.com/vod/20056.html
+  DR02__e042d04d.json  http://www.ljy200471.com/w/35918-1-0.html
+  DR02__e042d04d.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+  DR02__e042d04d.json  https://www.xdjdxx.com/infolist/132337.html
+  DR03__080c0964.json  https://www.jjww.net/vodplay/49023-1-1.html
+  DR03__080c0964.json  https://www.jjww.net/vodplay/49023-1-1.html
+  DR03__080c0964.json  https://www.hnsyzg.com/voddetail/23170.html
+  DR03__080c0964.json  https://www.lyxinle.cn/yq-vod/310383.html
+  DR03__080c0964.json  https://www.lyxinle.cn/yq-vod-watch/310383-1-1.html
+  SMOKE01__98663d72.json  https://www.xdjdxx.com/infolist/132337.html
+  DR01__cc2a2b13.json  https://v.qq.com/x/cover/rzpyce9pmxayzvb/a0015hve7w6.html?ptag=10521
+  DR01__cc2a2b13.json  https://jijikb.com/vod/20056.html
+  DR02__e042d04d.json  http://www.ljy200471.com/w/35918-1-0.html
+  DR02__e042d04d.json  https://www.ixigua.com/6532729724869804557?utm_source=baidu_lvideo
+
+-- 打架明细（前 15 条）--
+  DR01__cc2a2b13.json  https://v.qq.com/x/cover/rzpyce9pmxayzvb/a0015hve7w6.html?ptag=10521
+  DR03__080c0964.json  https://www.jjww.net/vodplay/49023-1-1.html
+  DR01__cc2a2b13.json  https://v.qq.com/x/cover/rzpyce9pmxayzvb/a0015hve7w6.html?ptag=10521
+  DR03__080c0964.json  https://www.jjww.net/vodplay/49023-1-1.html
+  E028__bfa254bb.json  https://www.jobzrt.com/play/12332298/5/1.html
+  T004__4997bd8f.json  https://v.qq.com/x/cover/mzc00200k549l9q/w0048q62oe3.html
+
+-- 过渡态最多的存档（前 10）--
+  E022__1212fd51.json  7/17
+  DR03__080c0964.json  5/25
+  DR03__080c0964.json  5/25
+  E028__bfa254bb.json  5/25
+  T025__ca5c533e.json  4/21
+  DR02__e042d04d.json  3/19
+  DR02__e042d04d.json  3/19
+  E014__902a67d8.json  3/13
+  T004__4997bd8f.json  3/13
+  T018__b44ebae4.json  3/21
