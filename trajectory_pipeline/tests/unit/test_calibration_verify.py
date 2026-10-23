@@ -372,10 +372,12 @@ def test_未切档快照按头条计():
 def test_持有集只报条数():
     base, curr = _h1a_pools(fixed=10, regressed=0)
     report = verify.analyze(_snap(base), _snap(curr))
-    assert report["holdout"] == {
-        "paired": 2,
-        "note": "只报条数，不判——封存纪律（D-C5）",
-    }
+    assert report["holdout"]["paired"] == 2
+    assert report["holdout"]["note"] == "只报条数，不判——封存纪律（D-C5）"
+    # Q-12：切档按行 ⇒ 持有集不是 N 条独立证据。附注必须带，且**不重算
+    # 泄漏条数**（快照里没有 URL，数字的真源在 agreement 的 URL 级读数）。
+    assert "不是 N 条独立证据" in report["holdout"]["independence_note"]
+    assert "agreement --version" in report["holdout"]["independence_note"]
 
 
 # ── 5. 同桶清零 ─────────────────────────────────────────────

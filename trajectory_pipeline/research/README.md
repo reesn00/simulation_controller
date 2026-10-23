@@ -81,7 +81,18 @@ research/
 │  │  └─ batch_rates_two_generations.json  两代对照（**修复后 8.55% / 800.5**；⚠️ 修复前那代已整代回滚 ⇒ 不可重算）
 │  ├─ compare_generations.py          **两代存档逐 URL 对照**：同一页两代结论互相矛盾的条目（离线）
 │  │  └─ generation_collision.json    两代对撞读数（112 个共享 (task,url) 对 / 17 处结论矛盾）
-│  └─ merge_batch_pool.py             批次后处理：把子目录里的 **P1 存档展平 + 负样本池并进根目录**（默认 dry-run）
+│  ├─ merge_batch_pool.py             批次后处理：把子目录里的 **P1 存档展平 + 负样本池并进根目录**（默认 dry-run）
+│  ├─ probe_m29_d5_two.py + m29_d5_two.json   **D-5 判 2 分的样本逐条摊开**：正文原话（`body_text`）
+│  │                                     + 命中的形态词 + 形态组合（`defect_only` / `paywall_only` /
+│  │                                     `both` / `neither`）+ 裸 CTA 的同句语境词（离线；M-29 收口用）
+│  └─ m30_live_check.py + m30_live_check.json + m30_live_check_run2.json
+│                                     **M-30 现场重采**：把 7 个待核 URL **真的重新打开看**
+│                                     （camoufox；**联网**），现场读数与 P1 存档读数**并排**输出
+│                                     （body 字数 / video / iframe / 关键词命中）——
+│                                     用来判「现场≠存档」是**站点漂移**还是**观察时机太早**
+│                                     ⚠️ **每站读两次**（「导航一返回就观察」＋「等 4 秒再观察」，
+│                                       `--settle` 可调）；**两读之差就是「渲染时机」的证据**
+│                                     ⚠️ 两个 json 是**两轮独立重采**（独立证据，不是同一份复制）
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
 │  └─ plan-camoufox-prod1.json  **第一批 camoufox 生产批次**的 12 条计划（seed 20261022；第二批复用同一份⇒前后可比）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）
@@ -140,6 +151,27 @@ uv run python trajectory_pipeline/research/probes/compare_generations.py \
   --before trajectory_pipeline/output/pipeline --after trajectory_pipeline/output/pipeline \
   --driver camoufox --before-run-ids <前一代 run_id 列表> --after-run-ids 15e4b195,f48c4d6c,023b8837,b441d5aa,8f1aec03,102d3554,ae6553b1,a78dc57e,dcdf616c,0680dc4a,93f110b6,c39e54c7   # 离线
 
+# D-5 判 2 分的样本逐条摊开（离线；M-29 收口的「逐条读正文」那一步）
+# ⚠️ 读的是**存档原文**（observations[].body_text），不是临场重采 ⇒ 站点可能已漂移。
+uv run python trajectory_pipeline/research/probes/probe_m29_d5_two.py
+
+# M-30 现场重采：7 个待核 URL 真的重新打开看（**联网 + 真浏览器**；camoufox）
+# ⚠️ 必须在**仓库根**跑（读的是仓库根相对路径的存档目录）。
+# ⚠️ 有的站点 `wait_until="load"` 会把导航打断（NS_BINDING_ABORTED）⇒ 脚本自动退回
+#    `domcontentloaded` 重试一次（两轮实测都靠这条回落拿到 ixigua 的正文）。
+# ⚠️ **每站读两次**：「导航一返回就观察」＋「等 --settle 秒再观察」（默认 4.0s）——
+#    两次读数之差 = 「页面还没渲染完就观察」的量化证据（如 iqiyi 6 字 → 471 字）。
+uv run python -m trajectory_pipeline.research.probes.m30_live_check \
+  --json trajectory_pipeline/research/probes/m30_live_check.json
+# 第二轮（独立重采，另存一份）
+uv run python -m trajectory_pipeline.research.probes.m30_live_check \
+  --json trajectory_pipeline/research/probes/m30_live_check_run2.json
+# 换一批 URL 采（--targets-file 一行一个；--url 可重复叠加）
+uv run python -m trajectory_pipeline.research.probes.m30_live_check \
+  --targets-file <清单文件> --all-archives --json <落盘路径>
+# ⚠️ --all-archives：并排比较**全部** P1 存档（顶层 `{task_id}__{run_id}.json`，
+#    当前 78 个），不只默认那三个 run ⇒ 换 URL 批次时用这个。
+
 # 批次后处理：展平 P1 存档 + 并池（**默认 dry-run**，确认后加 --apply）
 # ⚠️ **顺序不能反**：先回滚要作废的那一代（cli purge-run --apply），**再**并池。
 #    两代共用去重键 (task_id,url,branch) ⇒ 先并后回会把新批次那行**静默吞掉**
@@ -151,7 +183,8 @@ uv run python trajectory_pipeline/research/probes/merge_batch_pool.py \
 
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、
 `probes/inc45_probe_sohu.py`、`probes/inc45_probe2_sohu.py`、
-`probes/probe_doc_stamp.py`、`probes/probe_nav_commit.py`。其余全部离线。
+`probes/probe_doc_stamp.py`、`probes/probe_nav_commit.py`、
+`probes/m30_live_check.py`。其余全部离线。
 
 **哪些脚本会起真浏览器**：`probes/probe_new_tab_click.py`、`probe_click_delivery.py`、
 `probe_click_latency.py`、`probe_click_repeat.py`、`probe_click_distance.py`、

@@ -1197,6 +1197,112 @@ def _load_manifest(vdir: pathlib.Path) -> dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
+def _sample_on_disk_map(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, bool]:
+    """``golden_id → 该行对应的样本现在还能不能从盘上取到``。
+
+    判据（两种来源分开判）：
+
+    - ``archive_outcome``：P1 存档文件在盘上**且**能从里面切出同 url 的站点
+      Sample——存档在但样本已被裁掉，也算取不到；
+    - ``negative_pool``：负样本池文件里有这一行。
+
+    这一项**真的查了**，所以取不到就是 ``False``（明确），不是 ``None``
+    （未检查）——两者混成同一个值，读的人会把「查了没有」当成「查了，没有」。
+    """
+    by_id = {str(r.get("golden_id") or ""): r for r in rows}
+    need: dict[str, list[str]] = collections.defaultdict(list)
+    want_urls: dict[str, set[str]] = collections.defaultdict(set)
+    neg_ids: list[str] = []
+    for row in rows:
+        gid = str(row.get("golden_id") or "")
+        kind = str(row.get("source_kind") or "")
+        if kind == "archive_outcome":
+            key = f"{row.get('task_id') or ''}__{row.get('run_id') or ''}"
+            need[key].append(gid)
+            want_urls[key].add(str(row.get("url") or ""))
+        elif kind == "negative_pool":
+            neg_ids.append(gid)
+
+    out: dict[str, bool] = {}
+    for key, gids in need.items():
+        path = PIPELINE_ROOT / f"{key}.json"
+        present: set[str] = set()
+        if path.exists():
+            try:
+                from trajectory_pipeline.assembler.schema import split_archive
+
+                for s in split_archive(path):
+                    outcome = getattr(s, "outcome", None)
+                    if outcome is not None:
+                        present.add(str(getattr(outcome, "url", "") or ""))
+            except Exception:  # noqa: BLE001 - 存档读不出来 = 取不到，不炸
+                present = set()
+        for gid in gids:
+            url = str((by_id.get(gid) or {}).get("url") or "")
+            out[gid] = bool(present) and url in present
+
+    if neg_ids:
+        neg_urls: set[str] = set()
+        neg_path = PIPELINE_ROOT / "negative.jsonl"
+        if neg_path.exists():
+            for line in neg_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    neg_urls.add(str(json.loads(line).get("url") or ""))
+                except json.JSONDecodeError:
+                    continue
+        for gid in neg_ids:
+            url = str((by_id.get(gid) or {}).get("url") or "")
+            out[gid] = bool(url) and url in neg_urls
+    return out
+
+
+def _emit_url_conflicts_markdown(
+    *,
+    path: str,
+    conflicts: Mapping[str, Mapping[str, Any]],
+    leakage: Mapping[str, Any],
+    generated_by: str,
+) -> pathlib.Path:
+    """落 URL 级金标冲突清单（机器事实块 + 人填的两列结论）。
+
+    **机器重跑不抹掉人的结论**：先回读旧文件里的「定性」「裁定依据」两列，
+    再连同刷新后的事实块一起写回；旧文件认不出的节按新事实重起一节，
+    结论列留空等人填（fail-closed：没人裁过的东西不许机器替他裁）。
+    """
+    from trajectory_pipeline.evaluation.calibration.urlconflict import (
+        parse_verdicts_markdown,
+        render_conflicts_markdown,
+    )
+
+    p = pathlib.Path(path)
+    verdicts: dict[str, dict[str, str]] = {}
+    if p.exists():
+        verdicts = parse_verdicts_markdown(p.read_text(encoding="utf-8"))
+    text = render_conflicts_markdown(
+        conflicts,
+        leakage=leakage,
+        verdicts=verdicts,
+        generated_by=generated_by,
+    )
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    multi = {u for u, b in conflicts.items() if len(b.get("labels") or {}) > 1}
+    filled = sum(1 for u in multi if (verdicts.get(u) or {}).get("定性"))
+    try:
+        shown: Any = p.relative_to(pathlib.Path.cwd())
+    except ValueError:
+        shown = p
+    print(
+        f"→ 已写 {shown}（{len(multi)} 个多头 URL；"
+        f"已填定性 {filled} 个 / 待填 {len(multi) - filled} 个）"
+    )
+    return p
+
+
 def _emit_calibration_artifacts(
     *,
     rows: Sequence[Mapping[str, Any]],
@@ -1204,6 +1310,8 @@ def _emit_calibration_artifacts(
     rubric_version: str,
     tolerance: int,
     target_dir: str,
+    snapshot: Mapping[str, Any] | None = None,
+    cards: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path]:
     """落「全量快照 + 分歧卡」两份派生数据（方案 16 C-15 / C-02）。
 
@@ -1213,6 +1321,9 @@ def _emit_calibration_artifacts(
     计算派生，口径不会分叉。
 
     **只读派生**：不回写 ``v{N}/*.jsonl``，产物落 ``output/``（gitignore 内）。
+
+    ``snapshot`` / ``cards`` 可由调用方**预计算后传入**（``cmd_agreement``
+    要拿同一份快照算 URL 级读数，同一份东西算两遍只会多一次漂移的机会）。
     """
     from trajectory_pipeline.evaluation.calibration.disagreement import (
         cards_from_snapshot,
@@ -1230,17 +1341,19 @@ def _emit_calibration_artifacts(
             "--emit-disagreements 需要 --version：快照必须绑定冻结版本，"
             "否则「上一轮这一行判了什么」无从对齐（方案 16 C-15）"
         )
-    snapshot = build_snapshot(
-        rows,
-        golden_version=version,
-        success_label=SUCCESS_LABEL,
-        rubric_version=rubric_version,
-        evaluator_version=evaluator_version(),
-        tolerance=tolerance,
-    )
+    if snapshot is None:
+        snapshot = build_snapshot(
+            rows,
+            golden_version=version,
+            success_label=SUCCESS_LABEL,
+            rubric_version=rubric_version,
+            evaluator_version=evaluator_version(),
+            tolerance=tolerance,
+        )
     outdir = pathlib.Path(target_dir) / f"v{version}"
     snap_path = write_snapshot(outdir / "snapshot.json", snapshot)
-    cards = cards_from_snapshot(snapshot)
+    if cards is None:
+        cards = cards_from_snapshot(snapshot)
     cards_path = write_cards(outdir / "disagreements.jsonl", cards)
 
     stats = summarize_snapshot(snapshot)
@@ -1460,6 +1573,83 @@ def cmd_agreement(args: argparse.Namespace) -> int:
                 f"({tol_str}){mark}"
             )
 
+    # ── URL 级金标读数（M-30）──────────────────────────────────────
+    # 两件已裁定的事都会让「按 URL 读」与「按行读」对不上，这里把差在哪摆
+    # 出来，**只摆事实，不判缺陷**：
+    #   ① 同一 URL 上的 d10 金标可能多头 —— 金标粒度按访问（Q-11）时那是
+    #      **正常事实**（站点漂移 / 地区 / 登录态），不是标注缺陷；
+    #   ② 切档按行（Q-12）⇒ 持有集可能有行与调参池/回归集同 URL ⇒ 持有集
+    #      不独立，「持有集 N 条」不能读成「N 条独立证据」。
+    from trajectory_pipeline.evaluation.calibration.disagreement import (
+        cards_from_snapshot,
+    )
+    from trajectory_pipeline.evaluation.calibration.snapshot import (
+        HARD_DIM,
+        build_snapshot,
+    )
+    from trajectory_pipeline.evaluation.calibration.urlconflict import (
+        URL_UNKNOWN,
+        project_d10_rows,
+        split_leakage,
+        summarize_conflicts,
+        url_gold_conflicts,
+    )
+
+    snapshot = build_snapshot(
+        rows,
+        golden_version=int(args.version or 0),
+        success_label=SUCCESS_LABEL,
+        rubric_version=ruler_rubric,
+        evaluator_version=evaluator_version(),
+        tolerance=tolerance,
+    )
+    cards = cards_from_snapshot(snapshot)
+    rows_by_id = {str(r.get("golden_id") or ""): r for r in rows}
+    url_of = {gid: str(r.get("url") or "") for gid, r in rows_by_id.items()}
+    projected = project_d10_rows(
+        [e for e in snapshot.get("entries", []) if e.get("dimension") == HARD_DIM],
+        rows_by_id,
+        on_disk=_sample_on_disk_map(rows),
+    )
+    conflicts = url_gold_conflicts(projected, url_of)
+    csum = summarize_conflicts(conflicts)
+    leak = split_leakage(projected, url_of)
+    multi_urls = {
+        u for u, b in conflicts.items() if len(b.get("labels") or {}) > 1
+    }
+    on_conflict = sum(
+        1
+        for c in cards
+        if url_of.get(str(c.get("golden_id") or ""), URL_UNKNOWN) in multi_urls
+    )
+    print("\n  URL 级金标读数")
+    # 分母为 0 时不写 "0/0"——那个比值是误导（与「N=0 的软维度不报」同款）。
+    card_part = (
+        f"本轮分歧卡 {on_conflict}/{len(cards)} 张落其上"
+        if cards
+        else "本轮无分歧卡"
+    )
+    if csum["urls_with_gold"]:
+        print(
+            f"    同 URL 多头金标：{csum['urls_multi_label']}/"
+            f"{csum['urls_with_gold']} 个 URL（跨档 "
+            f"{leak['cross_split_urls']} 个；{card_part}）"
+        )
+    else:
+        print("    同 URL 多头金标：无带 d10 金标的 URL，无可统计项")
+    if leak["holdout_rows"]:
+        print(
+            f"    切档按行 ⇒ 持有集 {leak['holdout_rows_on_cross_split_urls']}/"
+            f"{leak['holdout_rows']} 行与调参池/回归集同 URL"
+            "（持有集不独立，所有持有集读数须带此附注）"
+        )
+    else:
+        print("    切档按行 ⇒ 未切档（无持有集可算泄漏）")
+    print(
+        "    金标粒度按访问（Q-11）⇒ 同一 URL 多头标签是正常事实，"
+        "此处只标注不判缺陷；逐 URL 的定性见 golden/data/url_gold_conflicts.md"
+    )
+
     if args.emit_disagreements is not None:
         _emit_calibration_artifacts(
             rows=rows,
@@ -1467,6 +1657,25 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             rubric_version=ruler_rubric,
             tolerance=tolerance,
             target_dir=args.emit_disagreements,
+            snapshot=snapshot,
+            cards=cards,
+        )
+
+    if getattr(args, "emit_url_conflicts", ""):
+        _uc_path = pathlib.Path(args.emit_url_conflicts)
+        try:
+            _uc_shown = str(_uc_path.relative_to(pathlib.Path.cwd()))
+        except ValueError:
+            _uc_shown = str(_uc_path)
+        _emit_url_conflicts_markdown(
+            path=args.emit_url_conflicts,
+            conflicts=conflicts,
+            leakage=leak,
+            generated_by=(
+                "python -m trajectory_pipeline.evaluation.golden.builder "
+                f"agreement --version {args.version or 0} "
+                f"--emit-url-conflicts {_uc_shown}"
+            ),
         )
 
     if args.json_out:
@@ -1516,6 +1725,14 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             "soft_dim_criterion": (
                 f"|t-p| <= {tolerance} (rubric 软维度 1-5)"
             ),
+            # URL 级金标读数（M-30）。两件裁定过的事在这里摆事实：
+            # 金标按访问 ⇒ 同一 URL 多头标签是正常事实；切档按行 ⇒ 持有集
+            # 有跨档泄漏。**都只是读数，不判缺陷**（定性由人做）。
+            "url_gold_conflicts": {
+                "summary": csum,
+                "leakage": leak,
+                "conflicts": conflicts,
+            },
         }
         p = pathlib.Path(args.json_out)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -1666,7 +1883,7 @@ def _report_overlay(
 #   与历史 freeze 链路；overlay 只挂评分不动 code.branch，保留现有 D10
 #   校准过的分支结论。两条命令职责分离：
 #     from-scd    → 候选重生成（清老/P2 重切 / scout 改判时用）
-#     overlay-scd → 评分回填（保留 code，仅补 dimension_scores）
+#     overlay-scout → 评分回填（保留 code，仅补 dimension_scores）
 def cmd_overlay_scout(args: argparse.Namespace) -> int:
     """把 d2 / d4 / d5 / d6 评分回填进 candidates.jsonl。
 
@@ -1944,6 +2161,18 @@ def build_parser() -> argparse.ArgumentParser:
             "派生「全量预测快照 + 分歧卡」到 DIR/v{N}/（方案 16 C-15 / C-02）。"
             "只读派生，不回写冻结档。不带参数 = output/pipeline/calibration；"
             "不写该选项 = 不落盘。要求同时给 --version。"
+        ),
+    )
+    p_agr.add_argument(
+        "--emit-url-conflicts",
+        nargs="?",
+        const=str(GOLDEN_ROOT / "url_gold_conflicts.md"),
+        default="",
+        metavar="PATH",
+        help=(
+            "落「URL 级金标冲突清单」（M-30）：机器填事实块，人填「定性 / "
+            "裁定依据」两列。重跑只刷新事实块，**已填结论原样保留**。"
+            "不带参数 = golden/data/url_gold_conflicts.md。"
         ),
     )
     p_agr.set_defaults(func=cmd_agreement)

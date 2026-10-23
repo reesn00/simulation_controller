@@ -204,6 +204,57 @@ class Test付费墙强信号:
         assert paywall_evidence("订阅后观看") != ""
 
 
+class Test拦截形态证据:
+    """:func:`access_evidence` —— :func:`paywall_evidence` 的**对称伙伴**。
+
+    2026-10-23 新增，为 D-5 的第四条检查（结论的证据核）提供「这句话
+    里到底写了哪种拦截形态」的读数。与 :func:`infer_access_defect`
+    的差别**只有一处但很关键**：它**含 ``login``**——
+    ``login_wall_or_blocked`` 这类合并态需要知道依据里是登录墙，
+    让位裁定（H-16）不需要（登录标签在导航栏太常见，见
+    :data:`ACCESS_DEFECT_KINDS` 的说明）。
+    """
+
+    def test_命中时返回形态与原话(self):
+        from trajectory_pipeline.perception.rule_perceptor import access_evidence
+
+        got = access_evidence("本视频仅限中国大陆，您所在地区无法观看")
+        assert "region" in got, f"没认出地区形态：{got!r}"
+        assert "「" in got, f"没引原话，读报告的人无法复核：{got!r}"
+
+    def test_空文本返回空串(self):
+        from trajectory_pipeline.perception.rule_perceptor import access_evidence
+
+        assert access_evidence("") == ""
+
+    def test_无形态返回空串而不是猜(self):
+        """**找不到形态 ≠ 判错**。这条函数的空串在 D-5 里落成
+        ``undetermined``（不出分），不是 ``wrong``。"""
+        from trajectory_pipeline.perception.rule_perceptor import access_evidence
+
+        assert access_evidence("页面打不开，Sorry, you have been blocked") == ""
+
+    def test_kind过滤只在该类里找(self):
+        from trajectory_pipeline.perception.rule_perceptor import access_evidence
+
+        text = "请先登录后观看，您所在地区不支持"
+        assert "login" in access_evidence(text, kind="login")
+        assert "region" in access_evidence(text, kind="region")
+        assert access_evidence(text, kind="captcha") == ""
+
+    def test_含login而infer_access_defect不含(self):
+        """这条差别是刻意的：合并态的核对要认登录墙，
+        付费墙让位裁定不许认（否则整批订阅墙被赶进 unresolved）。"""
+        from trajectory_pipeline.perception.rule_perceptor import (
+            access_evidence,
+            infer_access_defect,
+        )
+
+        text = "请先登录后观看"
+        assert "login" in access_evidence(text)
+        assert infer_access_defect(text) == ""
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # DeadLoopDetector：尾部连续语义
 # ═══════════════════════════════════════════════════════════════════════

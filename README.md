@@ -165,7 +165,7 @@ uv run python -m pytest -q
 | 文档 | 内容 |
 |---|---|
 | [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图、控制流与四个判断点、失败分支全集、执行层、感知层、persona 六维 |
-| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 75 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
+| [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 77 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3/T 契约表、`steps[]` 三条口径 |
 | [08-常用命令速查.md](trajectory_pipeline/docs/08-常用命令速查.md) | **命令清单唯一真源**——一行一条、复制即用，附「缺了就报错不猜」必填项表 |
 | [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 每条命令「联网与否 / 作用」口径表、环境变量、门禁与输出目录 |

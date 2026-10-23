@@ -25,6 +25,47 @@ rubric v1.1 把 D-5 的管辖层定为**代码断言**，判据是一条**决策
    这是 rubric 锚点 1 明写的反例：「首页见『立即观看』字样直接记录，
    未进播放页」——**看 URL 直接给结论，没有中间过程**。
 
+## 第四条检查（2026-10-23）：结论的证据核
+
+前三条检查有一个共同的毛病，是**真数据量出来的**（465 条真实 site
+样本上 445 条判 5、20 条不可判定，**4/3/2/1 四档一次都没出过**）：
+它们比的都是**控制流自己写下的字段**。
+
+    分支 ↔ 判断点   `QUESTION_TO_BRANCHES` 从 `questions.REGISTRY` 推导，
+                    而分支正是 `decision_branch` 按同一张注册表产出的；
+    前提 ↕ 到达     `reached_play_page` 与分支出自同一次记账。
+
+⇒ 它们能抓**接线 bug**（表改了、调用点漏改），抓不了**判错**。
+一条被人工判为「代码的分支映射缺陷」的样本照样拿 5 分——
+实测 `TPIN02__1cf5deca__site-11`、`E014__f50809fb__site-1` 都在其中。
+
+所以补第四条：**分支声称的那件事，页面正文里出现了吗**。
+依据 = 该样本的**观察正文**（``body_text``），不是评分器重新读页面，
+**也不是 ``rationales``**——INC46 口径里理由写的是**动作前动机**
+（「我先打开链接核对…；是否存在地区限制还需确认」），它可能是**打算
+去看的**，不是**看到的**。第一版把理由也算证据，10 条低分里 2 条
+就是这么误判的：搜狐页面正文是「您可以试看5分钟，点击开通会员」
+（真·付费门禁），而动机句里的「无地区限制仍需确认」被当成了地区证据。
+
+**只实现一处已裁定的优先级，方向单一**（这是这条检查的边界）：
+
+- 分支贴了**付费墙**（``subscription_wall`` / ``partial_free``），
+  而正文里出现**环境阻断形态**（地区 / 验证码 / 反爬 / 404）⇒ 判错。
+  依据是 H-16 的让位裁定原文：「LLM 已给出结构化细分**或** evidence 里
+  有环境阻断形态时**一律不救济**」——实测 v.qq.com 那 8 条正文写着
+  「当前设备不支持播放 + 70017001.1」却被贴成订阅墙，正是这条。
+- **反向不判**（分支贴了墙、正文里是付费门禁）——那个方向没有裁定，
+  判了就是评分器自己发明优先级。实测优酷三条「浏览器版本太低 →
+  下载优酷PC客户端继续观看」会被判成这种情况，而它其实是客户端限制，
+  **判错就是又一条判反**。
+
+**「找不到形态」不等于「判错」。** 词表永远不全：实测 kkday 被
+Cloudflare 拦下，正文写的是 ``Sorry, you have been blocked``，
+而 ``ACCESS_HINTS`` 里没有这一句 ⇒ 只能说「正文里没有拦截特征」，
+**不能说「所以它不是墙」**。这一档落 ``undetermined``（**不判**，
+本维不出分），理由与 fail-closed 纪律同源：**能力不可用时给 None**。
+它同时也是「词表该扩了」的信号——出现在报告里比藏在 5 分里有用。
+
 ## 三条不能含糊的地方
 
 **「没到播放页」不等于「不能给结论」。**
@@ -222,19 +263,39 @@ REQUIRES_PLAY_PAGE_PAIRS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-#: 三处检查的节点名。**用常量而不在调用点硬编码**——下面按节点名
+#: 四处检查的节点名。**用常量而不在调用点硬编码**——下面按节点名
 #: 反查（``next(c for c in wrong if c.node == _NODE_NO_SKIP)``），
 #: 两处各写一个字符串就会让那个反查抛 ``StopIteration``。
 #: 而它抛出时的症状是「本条样本评不出来」，看起来像数据问题，不像代码问题。
 _NODE_BRANCH = "分支与判断点配套"
 _NODE_REACHED = "结论的前置事实"
 _NODE_NO_SKIP = "无跳步结论"
+_NODE_EVIDENCE = "结论的证据核"
+
+#: 检查 4 的两处口径。``final`` = 这条错的是**最终结论本身**
+#: （rubric 锚点 2「最终结论错误，过程部分正确」），不是「走错一步」。
+EVIDENCE_CONFLICT_TIER = "final"
+
+#: 声称「要付费才能看」的分支——**证据核能在这一族上判错**，
+#: 因为「环境阻断让位于付费墙」是 H-16 裁定过的（见模块头）。
+PAYWALL_BRANCHES: frozenset[str] = frozenset({"subscription_wall", "partial_free"})
+
+#: 声称「被拦住了」的分支——证据核只**收指控**，不据此判错（方向未裁定）。
+BLOCK_CLAIM_BRANCHES: frozenset[str] = frozenset(
+    {"login_required", "blocked", "broken"}
+)
+
+#: 已弃用的**合并态**（``login_wall_or_blocked``）：它按定义**不区分**
+#: 登录墙与阻断，所以「正文里是付费门禁」这种冲突在它身上**判不出方向**。
+#: 单独一支口径，不与上面那张表混：混进去就是拿「合并」当「细分」审。
+MERGED_BLOCK_BRANCH: str = "login_wall_or_blocked"
 
 #: 判定结果类型。``undetermined`` 与 ``scored`` 分开，不共用 ``score=None``。
 VerdictKind = Literal["scored", "undetermined"]
 
-#: 一处检查的结果。
-CheckKind = Literal["ok", "wrong", "skipped"]
+#: 一处检查的结果。``undetermined``（**本项核不了**）与 ``skipped``
+#: （**本项不适用**）分开——前者该让人去核，后者只是这一条不管辖它。
+CheckKind = Literal["ok", "wrong", "skipped", "undetermined"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,9 +309,15 @@ class TreeCheck:
     node: str
     kind: CheckKind
     why: str
+    #: 这一处错的**是哪一档**（只对 ``wrong`` 有意义）。空串 = 「走错一步」
+    #: （锚点 3）；``"final"`` = 最终结论本身错（锚点 2）。留痕而不
+    #: 只体现在分数里，是因为 2 分与 3 分的**处置不同**：3 分继续观察、
+    #: 2 分要回去改映射。
+    tier: str = ""
 
     def to_json(self) -> dict[str, Any]:
-        return {"node": self.node, "kind": self.kind, "why": self.why}
+        return {"node": self.node, "kind": self.kind, "why": self.why,
+                "tier": self.tier}
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +479,148 @@ def _check_no_skip(branch: str | None, reached: bool) -> TreeCheck:
     )
 
 
+# ── 检查 4：结论的证据核 ──────────────────────────────────────────
+
+
+def _observations(sample: Any) -> list[Mapping[str, Any]]:
+    """本样本的观察列表。``Sample`` 对象在顶层、P2 字典在 ``six`` 里。"""
+    if isinstance(sample, Mapping):
+        six = sample.get("six") or {}
+        obs = six.get("observations") or sample.get("observations") or ()
+    else:
+        obs = getattr(sample, "observations", ()) or ()
+    return [o for o in obs if isinstance(o, Mapping)]
+
+
+def _observed_text(sample: Any) -> str:
+    """本样本的**页面正文**（观察里的 ``body_text``），空串 = 没留正文。
+
+    ⚠️ **只认正文，不认 ``rationales``**——INC46 口径里 rationale 是
+    **动作前动机**（「我先打开链接，核对…；是否存在地区限制还需确认」），
+    它不是对页面的观察。2026-10-23 第一版把理由也当证据，10 条低分里
+    有 2 条是这么来的：搜狐页面正文写的是「您可以试看5分钟，点击开通
+    会员」（真·付费门禁），而**动机句**里那句「无地区限制仍需确认」
+    被当成了地区证据，判了 2 分。那是评分器判反，比不出分贵得多。
+
+    正文缺了怎么办：落 ``undetermined``。理由句里哪怕写着「页面出现
+    错误码70017001」，也无从区分那是**看到的**还是**打算去看的**——
+    分不清就不许拿来定罪。
+    """
+    return " ".join(
+        str(o.get("body_text") or "") for o in _observations(sample)
+    )
+
+
+def _check_claim_evidence(branch: str | None, sample: Any) -> TreeCheck:
+    """检查 4：分支声称的那件事，**记在自己的依据里出现了吗**。
+
+    判据与口径见模块头「第四条检查」。三档：
+
+    - ``wrong`` —— **只有一处**：付费墙分支 + **页面正文里**的环境阻断
+      形态。依据是 H-16 的让位裁定，方向单一（反向没有裁定，不判）；
+    - ``ok`` —— 正文里能找到该分支所需的形态；
+    - ``undetermined`` —— 正文里找不到（词表可能不全 / 没留正文）或
+      合并态冲突方向不明。**不判错也不给 5 分**：说不清就不许说它对。
+
+    「依据」= :func:`_observed_text`，即**页面正文**。理由文本不用——
+    理由见那个函数的说明。
+    """
+    if (
+        branch not in PAYWALL_BRANCHES
+        and branch not in BLOCK_CLAIM_BRANCHES
+        and branch != MERGED_BLOCK_BRANCH
+    ):
+        return TreeCheck(
+            _NODE_EVIDENCE,
+            "skipped",
+            f"分支 {branch or '记录成功'} 不声称拦截/付费形态——本条不管辖"
+            f"（组件类由 D-4 核；unresolved 不声称任何结论，"
+            f"unreachable_hard / trailer_* 由代码判定）",
+        )
+
+    # 延迟导入：``perception`` 与 ``evaluation`` 之间今天只有这一条
+    # 依赖（``questions.REGISTRY`` 那条也是延迟导入的）。放在模块顶部
+    # 会让 import 顺序变成硬约束，而这里的判据只是**借用一张词表**。
+    from trajectory_pipeline.perception.rule_perceptor import (
+        access_evidence,
+        infer_access_defect,
+        paywall_evidence,
+    )
+
+    text = _observed_text(sample)
+    if not text:
+        return TreeCheck(
+            _NODE_EVIDENCE,
+            "undetermined",
+            "本样本没有留存页面正文（观察里没有 body_text）——"
+            "分支的依据无从核对，不拿理由文本顶替",
+        )
+
+    paywall = paywall_evidence(text)
+    defect = infer_access_defect(text)
+
+    if branch in PAYWALL_BRANCHES:
+        if defect:
+            # 让位裁定（H-16）：页面正文已经是「这个环境不给看」了，
+            # 再贴「要付钱」就是把真因换成了另一条支。
+            phrase = access_evidence(text, kind=defect) or defect
+            return TreeCheck(
+                _NODE_EVIDENCE,
+                "wrong",
+                f"分支贴了 {branch}（要付费才能看），而页面正文里写的是"
+                f"环境阻断{phrase}——H-16 已裁定环境阻断让位在先"
+                f"（正文里有地区/验证码/反爬/404 形态时不许救济成付费墙），"
+                f"结论方向贴反了",
+                EVIDENCE_CONFLICT_TIER,
+            )
+        if paywall:
+            return TreeCheck(
+                _NODE_EVIDENCE,
+                "ok",
+                f"正文里{paywall}，与分支 {branch} 一致",
+            )
+        return TreeCheck(
+            _NODE_EVIDENCE,
+            "undetermined",
+            f"正文里找不到 {branch} 所需的付费门禁证据"
+            f"（门禁语境短语；裸 CTA 不算，见 H-16）——"
+            f"可能是词表不全，**不据此判错**，但也不能说这条对",
+        )
+
+    if branch == MERGED_BLOCK_BRANCH:
+        if defect or (access_evidence(text) and not paywall):
+            return TreeCheck(
+                _NODE_EVIDENCE,
+                "ok",
+                f"正文里{access_evidence(text, kind=defect) if defect else access_evidence(text)}，"
+                f"与合并态 {branch} 相容",
+            )
+        return TreeCheck(
+            _NODE_EVIDENCE,
+            "undetermined",
+            f"{branch} 是**已弃用的合并态**（按定义不区分登录墙与阻断），"
+            f"正文里却{'是付费门禁' if paywall else '没有任何拦截特征'}——"
+            f"合并态在这种输入上判不出方向，**不据此判错**",
+        )
+
+    # 剩下的拦截类（login_required / blocked / broken）：只**收指控**。
+    # 反向（正文里是付费门禁而分支贴了墙）没有裁定过优先级，
+    # 判了就是评分器自己发明一条规则。
+    if defect or access_evidence(text):
+        hit = access_evidence(text, kind=defect) if defect else access_evidence(text)
+        return TreeCheck(
+            _NODE_EVIDENCE,
+            "ok",
+            f"正文里{hit}，与分支 {branch} 一致",
+        )
+    return TreeCheck(
+        _NODE_EVIDENCE,
+        "undetermined",
+        f"正文里找不到 {branch} 所需的拦截特征（登录/验证码/地区/反爬/404）——"
+        f"可能是词表不全，**不据此判错**，但也不能说这条对",
+    )
+
+
 # ── 打分 ──────────────────────────────────────────────────────────
 
 
@@ -473,26 +682,39 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
         _check_branch_matches_question(question, branch),
         _check_reached_precondition(branch, question, reached),
         _check_no_skip(branch, reached),
+        _check_claim_evidence(branch, sample),
     )
 
     wrong = [c for c in checks if c.kind == "wrong"]
-    reasons = list(dict.fromkeys(c.why for c in checks if c.kind == "skipped"))
+    unresolved = [c for c in checks if c.kind == "undetermined"]
+    reasons = list(dict.fromkeys(
+        c.why for c in checks if c.kind in ("skipped", "undetermined")))
 
-    if not wrong:
-        return D5Verdict(5, "scored", checks, tuple(reasons))
-
-    # 跳步 = 锚点 1；其余单处错 = 锚点 3（「未影响最终结论」——
-    # 判据链错在中间那一环，但结论本身仍与观察一致）。
+    # 跳步 = 锚点 1；两处及以上 = 判据链已断。
     #
     # `any(...)` 而不是 `next(...)`：后者在没找到时抛 StopIteration，
     # 而那个异常从评分器冒到调用方时，症状是「本条样本评不出来」——
     # 看起来像数据问题，不像代码问题（实测踩过一次）。
-    if any(c.node == _NODE_NO_SKIP for c in wrong):
+    if any(c.node == _NODE_NO_SKIP for c in wrong) or len(wrong) >= 2:
         return D5Verdict(1, "scored", checks, tuple(reasons))
-    if len(wrong) == 1:
+    if wrong:
+        # 证据核判出来的错是**最终结论本身错了**（锚点 2「过程部分正确」）；
+        # 其余单处错是「走错一步、未影响最终结论」（锚点 3）。
+        # 两者处置不同：3 分继续观察，2 分回去改映射。
+        if any(c.tier == EVIDENCE_CONFLICT_TIER for c in wrong):
+            return D5Verdict(2, "scored", checks, tuple(reasons))
         return D5Verdict(3, "scored", checks, tuple(reasons))
-    # 两处及以上：分支走错**且**前提不成立 → 结论的判据链已断。
-    return D5Verdict(1, "scored", checks, tuple(reasons))
+
+    # 一处都没错，但有一项**核不了**（正文里找不到形态 / 没留正文）——
+    # 不出分。给 5 分等于断言「分支全对」，而那个断言根本没有验过；
+    # 与 D-4 同一口径：「不可判定项越多，说明采集越该改，
+    # 而不是轨迹越该扣分」。
+    if unresolved:
+        return D5Verdict(None, "undetermined", checks, tuple(reasons + [
+            f"{len(unresolved)}/{len(checks)} 项无法核实——本维不出分"
+            f"（补证据或扩词表，不要先扣轨迹的分）",
+        ]))
+    return D5Verdict(5, "scored", checks, tuple(reasons))
 
 
 __all__ = [
@@ -502,5 +724,9 @@ __all__ = [
     "D5Verdict",
     "QUESTION_TO_BRANCHES",
     "REQUIRES_PLAY_PAGE",
+    "PAYWALL_BRANCHES",
+    "BLOCK_CLAIM_BRANCHES",
+    "MERGED_BLOCK_BRANCH",
+    "EVIDENCE_CONFLICT_TIER",
     "score_d5",
 ]

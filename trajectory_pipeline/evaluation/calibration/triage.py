@@ -305,6 +305,92 @@ def add_rows(
     }
 
 
+#: 工作表 → 分诊档时**只保留**这些字段。分诊档是**裁定**，不是表单的副本：
+#: 证据原文、冻结行事实、建议理由都会随重算变，抄进裁定档就等于让今天的裁定
+#: 引用着下一版的观察。留 ``suggested_bucket`` 是因为它是**人当时看到的那个
+#: 建议值**——C-07 的「预填命中率」只能靠它算，事后重算会漂。
+KEPT_FIELDS: tuple[str, ...] = (
+    "golden_id",
+    "dimension",
+    "bucket",
+    "triage_by",
+    "triage_evidence",
+    "status",
+    "suggested_bucket",
+)
+
+
+def strip_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """把工作表的一行压成分诊档的字段集。**建议值也走封闭集**：脏值会污染 C-07。"""
+    out: dict[str, Any] = {}
+    for field in KEPT_FIELDS:
+        value = row.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if field == "suggested_bucket":
+            try:
+                buckets_mod.require_bucket(str(value).strip())
+            except KeyError as exc:
+                raise TriageError(
+                    f"suggested_bucket={value!r} 不是六桶之一：{exc.args[0]}"
+                ) from exc
+        out[field] = value
+    return out
+
+
+def incomplete(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """工作表里**还没填完**的行（逐行全部列出来，不只报第一条）。
+
+    只报第一条是最气人的失败方式：填表人要来回跑 N 次才知道还差几行。
+    """
+    bad: list[dict[str, Any]] = []
+    for lineno, row in enumerate(rows, 1):
+        missing = [f for f in REQUIRED_FIELDS if not _text(row.get(f))]
+        if missing:
+            bad.append(
+                {
+                    "line": lineno,
+                    "golden_id": _text(row.get("golden_id")),
+                    "dimension": _text(row.get("dimension")),
+                    "missing": missing,
+                }
+            )
+    return bad
+
+
+def import_worksheet(
+    path: pathlib.Path | str,
+    *,
+    target: pathlib.Path | str | None = None,
+    apply: bool = False,
+    replace: bool = False,
+) -> dict[str, Any]:
+    """批量导入人填工作表（C-06）：**全填完才收**，写之前仍走 :func:`add_rows`。
+
+    半填的表**整批拒**，不做"填了几行就写几行"：那种行为会让覆盖率看起来在涨，
+    而涨的只是人填表的耐心。拒绝时把没填的行逐条列出来。
+    """
+    rows = read_rows(path)
+    if not rows:
+        raise TriageError(f"工作表 {path} 是空的：没有可导入的分诊")
+    bad = incomplete(rows)
+    if bad:
+        detail = "\n".join(
+            f"  第 {b['line']} 行 {b['golden_id']}:{b['dimension']} 缺 {b['missing']}"
+            for b in bad
+        )
+        raise TriageError(
+            f"工作表还有 {len(bad)} 行没填完（整批不导入）：\n{detail}\n"
+            "三栏都要人给：bucket / triage_by / triage_evidence"
+        )
+    return add_rows(
+        [strip_row(r) for r in rows],
+        path=target,
+        apply=apply,
+        replace=replace,
+    )
+
+
 def _key(row: Mapping[str, Any]) -> tuple[str, str]:
     return (str(row.get("golden_id") or ""), str(row.get("dimension") or ""))
 
@@ -367,6 +453,16 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--replace", action="store_true",
                        help="覆盖已有桶（默认拒绝；旧值仍留在版本控制历史里）")
     p_add.add_argument("--apply", action="store_true", help="真写盘（默认 dry-run）")
+
+    p_imp = sub.add_parser(
+        "import",
+        help="批量导入人填工作表（worklist build 产出的 worksheet.jsonl）",
+    )
+    p_imp.add_argument("worksheet", help="工作表路径")
+    p_imp.add_argument("--path", default="", help=f"分诊档（缺省 {DEFAULT_TRIAGE_FILE}）")
+    p_imp.add_argument("--replace", action="store_true",
+                       help="覆盖已有桶（默认拒绝；旧值仍留在版本控制历史里）")
+    p_imp.add_argument("--apply", action="store_true", help="真写盘（默认 dry-run）")
     args = ap.parse_args(argv)
 
     try:
@@ -385,6 +481,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  按回路：{info['by_loop']}")
             if info["untriaged"]:
                 print(f"  ⚠ 有 {info['untriaged']} 行没有桶（fail-closed 的空桶）")
+            return 0
+
+        if args.cmd == "import":
+            imported = import_worksheet(
+                args.worksheet,
+                target=args.path or None,
+                apply=args.apply,
+                replace=args.replace,
+            )
+            info = summarize(imported["rows"])
+            print(
+                f"{'已写' if imported['applied'] else '（dry-run）拟写'} "
+                f"{imported['path']}：新增 {imported['added']} / "
+                f"覆盖 {imported['replaced']} / 跳过 {imported['skipped']}，"
+                f"共 {info['n']} 行"
+            )
+            print(f"  按桶：{info['by_bucket']}")
+            print(f"  按回路：{info['by_loop']}")
             return 0
 
         result = add_rows(
@@ -431,15 +545,19 @@ __all__ = [
     "AGENT_PREFIXES",
     "DEFAULT_TRIAGE_FILE",
     "DEFAULT_TRIAGE_ROOT",
+    "KEPT_FIELDS",
     "REQUIRED_FIELDS",
     "STATUSES",
     "STATUS_ASSIGNED",
     "TriageError",
     "actor_kind",
     "add_rows",
+    "import_worksheet",
+    "incomplete",
     "load_triage",
     "main",
     "read_rows",
+    "strip_row",
     "summarize",
     "validate_row",
     "validate_rows",

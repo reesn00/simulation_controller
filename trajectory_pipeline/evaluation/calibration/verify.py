@@ -679,6 +679,15 @@ def analyze(
         "holdout": {
             "paired": int(holdout.get("paired", 0)),
             "note": "只报条数，不判——封存纪律（D-C5）",
+            # 切档按行（Q-12）⇒ 这 N 条不是 N 条独立证据。**数字不在这里
+            # 重算**：快照里没有 URL（entry 不带 url），跨档泄漏的条数由
+            # ``agreement --version N`` 的「URL 级金标读数」出——那里是
+            # 唯一真源，重复一份必然漂。
+            "independence_note": (
+                "切档按行（Q-12）⇒ 这 N 条不是 N 条独立证据：同一 URL 可同时"
+                "落在调参池/回归集与持有集。跨档泄漏条数见 "
+                "`agreement --version N` 的「URL 级金标读数」"
+            ),
         },
         "default_headline": default_headline,
     }
@@ -789,6 +798,11 @@ def render(report: Mapping[str, Any]) -> str:
     lines.append(
         f"  🔒 持有集：配对 {report['holdout']['paired']} 条"
         "（只报条数，不判——封存纪律 D-C5）"
+    )
+    lines.append(
+        "    ⚠ 切档按行（Q-12）⇒ 这 N 条**不是 N 条独立证据**："
+        "同一 URL 可同时落在调参池/回归集与持有集；跨档泄漏条数见 "
+        "`agreement --version N` 的「URL 级金标读数」"
     )
 
     others = report["calibration"]["other_dimensions"]

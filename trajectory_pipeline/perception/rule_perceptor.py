@@ -566,6 +566,40 @@ def infer_access_defect(text: str) -> str:
     return ""
 
 
+def access_evidence(text: str, *, kind: str = "") -> str:
+    """文本里的**拦截形态证据描述**，空串 = 没有证据。
+
+    ``kind`` 非空时只在该类里找（``"region"`` / ``"login"`` …）——
+    调用方已经知道是哪一类时不必再让 ``ACCESS_HINTS`` 的顺序替它选
+    （顺序里 ``login`` 在最前，一段同时出现登录与地区短语的文本会永远
+    报登录，那样错误消息里引的原话就不是判据命中的那一句）。
+
+    与 :func:`paywall_evidence` **对称**：那个回答「这页是不是要付钱」，
+    这个回答「这页是不是被拦住了」，返回的都是**给 evidence 用的描述**
+    （命中哪个短语、属于哪一类），不是布尔值——凡是靠它改写结论的地方，
+    evidence 必须能指认判据，否则半年后没人说得清「凭什么算登录墙」。
+
+    **它不是新的判据**：词表仍是 :data:`ACCESS_HINTS`，判定语义仍由
+    :func:`infer_access_from_evidence` 定义，这里只把「命中了哪一句」
+    摊开。加它是因为读报告的人要看原话——只给 ``region`` 三个字母，
+    复核时还得自己回去 grep 一遍正文（D-5 的证据核就卡在这上面）。
+
+    ⚠️ **含 ``login``**：这里回答的是「记录里有没有拦截形态」，
+    不参与 H-16 的让位裁定（那用的是 :func:`infer_access_defect`，
+    **不含** login）。两个问题不同，别混用。
+    """
+    if not text:
+        return ""
+    norm = _norm(text)
+    for value, keywords in ACCESS_HINTS:
+        if kind and value != kind:
+            continue
+        for kw in keywords:
+            if _norm(kw) in norm:
+                return f"「{kw}」（{value}）"
+    return ""
+
+
 def classify_trailer(label: str) -> str:
     """把控件文本分成三类：``"only"`` / ``"suspect"`` / ``"none"``。
 

@@ -228,6 +228,94 @@ rubric 要求这个区分是对的——它们是两条不同的训练信号：
 > 落地记录见 [`03-rubric修订与实施方案.md` §10](03-rubric修订与实施方案.md)。
 > （本节讲的 `player_unverified` 缺口是另一件事，已由 v1.1 变更 A 解决。）
 
+> **✅ 2026-10-23 已修：D-5 恒真（第四条检查 · 结论的证据核）**
+>
+> **症状**：真实存档上 D-5 只会出 5 与不可判定，**4/3/2/1 四档一次都没出过**
+> （465 条样本：445×5 / 20×None）。不是数据干净，是**判据全从自己身上取**：
+> 三条检查读的 `branch` / `question` / `reached_play_page` 出自同一处记账，
+> 而 `QUESTION_TO_BRANCHES` 与分支两边都从 `questions.REGISTRY` 推导——
+> 接线对了就恒真，接线错了它们一起错。**它们能抓接线 bug，抓不了判错。**
+>
+> **修法**：补第四条检查【结论的证据核】，读**另一条通道**——样本的
+> **页面正文**（观察 `body_text`）。只落一处已裁定方向（H-16 让位）：
+> 分支贴了付费墙（`subscription_wall` / `partial_free`）而正文里有环境阻断
+> 形态（地区 / 验证码 / 反爬 / 404）⇒ 锚点 2（最终结论错）。反向不判，
+> 合并态 `login_wall_or_blocked` 永不判错，找不到形态一律 `undetermined`。
+>
+> **实测**：522 条样本 → 5 分 397 / **2 分 8** / 不可判定 117。8 条全部是
+> v.qq.com 正文写着「当前设备不支持播放 + 70017001.1」却被贴成订阅墙——
+> 正是 H-16 裁定过的那种贴反。
+>
+> **一条判反教训（已写进测试）**：第一版把 `rationales[].text` 也算证据，
+> 10 条低分里 2 条是误判 —— 搜狐正文明明是「您可以试看5分钟，点击开通会员」
+> （真付费门禁），而**动作前动机句**里的「无地区限制仍需确认」被当成了地区
+> 证据。INC46 口径里 rationale 是动机不是观察，**分不清「看到的」与
+> 「打算去看的」就不许拿来定罪**。现在证据只有正文一路。
+>
+> **📌 逐条正文核对记录（M-29 收口，2026-10-23）**
+>
+> 上面「8 条全部是……被贴成订阅墙」是**读数**；「贴成订阅墙」是不是**判对了**，
+> 得人逐条打开正文看。这里是那份逐条记录——**8 条全部落在第 ① 档**：
+>
+> | golden_id | 档位 | 分支 | 金标（round=1） | 分支=金标 | 命中形态 | 付费门禁 | 裁定 |
+> |---|---|---|---|---|---|---|---|
+> | `E014__f50809fb__30062587` | calibration | subscription_wall | subscription_wall | ✅ | region「70017001」 | 无 | ① |
+> | `T024__b54092ee__10990df1` | calibration | subscription_wall | subscription_wall | ✅ | region「70017001」 | 无 | ① |
+> | `TPIN02__1cf5deca__3dcdbc14` | calibration | subscription_wall | trailer_only | ❌ | region「70017001」 | 无 | ① |
+> | `E021__94a1392f__13837008` | regression | subscription_wall | subscription_wall | ✅ | region「70017001」 | 无 | ① |
+> | `TPIN02__1cf5deca__bab5e7fc` | regression | subscription_wall | no_play_control | ❌ | region「70017001」 | 无 | ① |
+> | `E023__4d175424__7754b3d2` | holdout | subscription_wall | subscription_wall | ✅ | region「70017001」 | 无 | ① |
+> | `T025__0d6d185e__3dcdbc14` | holdout | subscription_wall | subscription_wall | ✅ | region「70017001」 | 无 | ① |
+> | `E021__dba5c958__59bab56c` | **（不在 v7 冻结档）** | subscription_wall | — | — | region「70017001」 | 无 | ① |
+>
+> **裁定口径三档**：① 正文有环境阻断形态、**无**付费门禁形态 ⇒ D-5 判 2 分**正确**
+> （分支贴反了，正解是 `blocked`＝地区限制/验证码/反爬）；② 有付费门禁、无环境阻断
+> ⇒ **评分器判反**；③ 两种形态都没有 ⇒ **词表不全**。
+> **本轮 8 条无一条落 ②③ ⇒ 不改 `d5_scorer`、不补词表。**
+>
+> 正文原话（8 条同形，v.qq.com 播放页）：
+>
+> ```
+> 当前设备不支持播放
+> 重试
+> 错误码：
+> 70017001.1
+> ```
+>
+> 正文里**另有**付费字样（「新客特惠开VIP」「开通会员」「会员专享」）——按 H-16
+> 口径**裸 CTA 不算门禁**（须**同句**配观看语境词）。探针逐条列了同句语境词：
+> 8 条的「开通会员」**同句语境词皆为空**（`gate_ready=false`），故付费门禁未命中。
+>
+> 复算（离线，仓库根跑）：
+> `uv run python trajectory_pipeline/research/probes/probe_m29_d5_two.py`
+> → 产物 `trajectory_pipeline/research/probes/m29_d5_two.json`（证据，不放结论）。
+>
+> **三条附带读数**：
+> ① **8 条里 7 条在 v7 冻结档**；第 8 条 `E021__dba5c958__59bab56c` 在
+> `annotations.jsonl` 里**没有 round=1 标注** ⇒ 不进冻结档 ⇒ 不进快照
+> ⇒ 正好对上 v8 快照 d5 期望的 **2×7**。**这个差集不用追。**
+> ② **分支与金标同为 `subscription_wall` 的是 5 条**（不是 3 条）：
+> `E014` / `T024` / `E023` / `T025` / `E021__94a1392f`。**D-5 判的是「结论的
+> 证据核」，不是「分支与金标不一致」**——这 5 条正是「两者一致也判 2 分」的证据，
+> 与 rubric 锚点 2（最终结论错）一致。
+> ③ `TPIN02__1cf5deca__3dcdbc14` 的金标有**两轮**：round 1（人工，10-12）=
+> `trailer_only`、round 2（agent-inc41，10-15）= `subscription_wall`。冻结取
+> round 1（`_labeled_rows` 只取 `round == 1`）⇒ 表里的 `trailer_only` 是对的；
+> 而 round 2 里 agent 独立判成 `subscription_wall`，**与代码分支一致**，
+> 是 D-5 的支持性旁证。
+>
+> ⚠️ **本轮暴露的分支贴法缺陷不在 M-29 范围**：这 8 条的正确分支应是 `blocked`
+> （`branches.py:673`，`access_control_type=region` ⇒ `blocked`），而存档贴的是
+> `subscription_wall`。`BRANCH_PRECONDITION` 里 `subscription_wall` 那条明写
+> 「池里 12 条没有一条站得住，成因全是 CTA 裸命中与**地区限制**」——**它点了
+> 地区限制是贴错的原因，却没说地区限制该落哪一支**。存量冻结行不回改；
+> 采集层该不该改**另开工单**（M-29 只修快照 pred 的时效性）。
+>
+> **仍未闭合**：① 本节讲的「未验证」档缺口不动，所以 **4 分锚仍判不出**；
+> ② 反向（正文是付费门禁而分支贴了墙）**没有裁定**，仍是不判；
+> ③ 词表不全导致的 `undetermined` 占 D-5 不可判定的多数（`broken` /
+> `login_required` / 合并态共 34+ 条），补词表前它们不出分。
+
 ---
 
 ### 2.5 D-6 记录字段完整性

@@ -43,6 +43,7 @@ import collections
 import json
 import pathlib
 import sys
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from trajectory_pipeline.assembler.schema import split_archive
@@ -408,6 +409,27 @@ def _marker_stats(rows: list[dict[str, Any]],
     return stats
 
 
+def _why_lines(verdict: Mapping[str, Any]) -> list[str]:
+    """一条判定要印的理由行：**判错的那几条先印**，再印说明性的 ``reasons``。
+
+    ⚠️ 只印 ``reasons`` 会出现「判了 2 分、一个字理由都没有」的行——
+    ``reasons`` 里装的是 ``skipped`` / ``undetermined`` 的说明（即
+    「这条为什么没判」），**判低分的依据在 ``checks`` 里**。2026-10-23
+    D-5 有了第一条会判低分的检查（结论的证据核），这个缺口立刻显形：
+    10 条 2 分样本在明细里干净得像评分器乱打分，读的人无法复核。
+
+    ``name`` / ``node`` 两种键都认：D-4 的检查字段叫 ``name``，
+    D-5 的叫 ``node``——两个评分器各自演进，这里不逼它们统一。
+    """
+    out: list[str] = []
+    for c in verdict.get("checks") or ():
+        if c.get("kind") == "wrong":
+            node = c.get("node") or c.get("name") or "（未命名检查）"
+            out.append(f"✗ {node}：{c.get('why', '')}")
+    out.extend(verdict.get("reasons") or ())
+    return out[:2]
+
+
 def _print_markers(summary: dict[str, Any],
                    rows: list[dict[str, Any]]) -> None:
     """印缺件分布。**这一张是事实**，与分档的推断相对。
@@ -473,8 +495,8 @@ def _print(summary: dict[str, Any], rows: list[dict[str, Any]],
         for v in vetoes[:10]:
             print(f"     [{v['dimension']}] {v['sample_id']:40s} "
                   f"branch={v['branch']!r} question={v['question']!r}")
-            for why in v["reasons"][:2]:
-                print(f"        {why}")
+            for line_ in _why_lines(v):
+                print(f"        {line_}")
         if len(vetoes) > 10:
             print(f"     …还有 {len(vetoes) - 10} 条（--json 看全量）")
     else:
@@ -489,8 +511,15 @@ def _print(summary: dict[str, Any], rows: list[dict[str, Any]],
         print()
         for row in rows:
             if undetermined_only:
-                if all(row[d]["kind"] == "scored" for d in row
-                       if d in summary["dimensions"]):
+                # 与 ``--help`` 一致：**不可判定 *或* 有扣分**。
+                # 只按 kind 过滤会让判了低分的行一条都不出现——而
+                # 「扣分」正是这个开关存在的理由之一（2026-10-23 修：
+                # 10 条 2 分样本在 ``--only-undetermined`` 下全被跳过）。
+                if all(
+                    row[d]["kind"] == "scored" and (row[d]["score"] or 0) >= 5
+                    for d in row
+                    if d in summary["dimensions"]
+                ):
                     continue
             bad = [d for d in dims
                    if row[d]["kind"] != "scored" or row[d]["score"] < 5]
@@ -502,8 +531,8 @@ def _print(summary: dict[str, Any], rows: list[dict[str, Any]],
             mark = f"[{row.get('batch')}] " if show_batch else ""
             print(f"  {row['sample_id']:44s} {mark}{scores}")
             for d in bad:
-                for why in row[d]["reasons"][:2]:
-                    print(f"      {label[d]} {why}")
+                for line_ in _why_lines(row[d]):
+                    print(f"      {label[d]} {line_}")
 
 
 def main(argv: list[str] | None = None) -> int:

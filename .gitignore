@@ -71,6 +71,7 @@ htmlcov/
 trajectory_pipeline/output/
 dist/
 refine_data/
+.pytest-tmp-run*/
 
 # v1 时代遗留的 merkle 完整性快照（历史遗留，不做跟踪）
 .merkle-snapshot.json
