@@ -82,6 +82,7 @@ from trajectory_pipeline.evaluation.calibration.disagreement import read_cards
 from trajectory_pipeline.evaluation.calibration.snapshot import (
     HARD_DIM,
     PROVIDER_FROZEN_BRANCH,
+    provider_kind,
 )
 from trajectory_pipeline.evaluation.golden.builder import (
     GOLDEN_ROOT,
@@ -185,7 +186,7 @@ def _detect_rule_decided(
     里可机械核的那部分（:data:`~...scorers.rubric_version.DIM_CLAUSES` 的反向
     使用）——那是另一条改动，不在 C-06 里塞一个隐式推断。
     """
-    if str(card.get("pred_provider") or "") != PROVIDER_FROZEN_BRANCH:
+    if provider_kind(card.get("pred_provider")) != PROVIDER_FROZEN_BRANCH:
         return None
     if str(facts.get("pred_origin") or "") != "rule":
         return None
@@ -387,6 +388,12 @@ def build_worklist(
             "pred_provider": card.get("pred_provider") or "",
             "pred_evidence": card.get("pred_evidence"),
             "gold_note": card.get("gold_note") or "",
+            # ↓ **可比性**（方案 16 C-11 补齐）：这条 pred 出自哪一面、
+            # 那一面是不是当前这一版。判「评估器」桶时它是要看的现场之一
+            # ——**不是同一版**判的分歧，可能是版本差而不是质量差。
+            "pred_face": card.get("pred_face") or "",
+            "pred_comparability": card.get("pred_comparability"),
+            "pred_comparability_reason": card.get("pred_comparability_reason") or "",
             "facts": facts,
         }
         entry.update(suggest(card, facts))
@@ -491,6 +498,10 @@ def build_worksheet(
                 "suggested_bucket": row.get("suggested_bucket"),
                 "suggested_reason": row.get("suggested_reason") or "",
                 "needs_human_reason": row.get("needs_human_reason") or "",
+                # 可比性三态 + 人话理由：**只读上下文**，判「评估器」桶时看。
+                "pred_face": row.get("pred_face") or "",
+                "pred_comparability": row.get("pred_comparability"),
+                "pred_comparability_reason": row.get("pred_comparability_reason") or "",
                 "scene": dict(scene),
             }
         )

@@ -8,6 +8,7 @@
 分母 = 站点级 289；并集外的行保持原判（不重采不受影响）。
 select.play_sites 的 9 行不在直采范围，同样保持原判——单列报告。
 """
+import argparse
 import json
 import sys
 from collections import Counter
@@ -19,18 +20,21 @@ from trajectory_pipeline.evaluation.golden.alignment import is_equivalent
 HERE = Path(__file__).resolve().parent
 SUCCESS = "success"
 
+#: 默认读取的黄金集冻结版本（A 类付费墙修复后对准的当前档）。
+DEFAULT_VERSION = 10
 
-def load_rows():
+
+def load_rows(version: int = DEFAULT_VERSION):
     rows = []
     for f in ["calibration.jsonl", "holdout.jsonl"]:
-        p = Path("trajectory_pipeline/evaluation/golden/data/v3") / f
+        p = Path(f"trajectory_pipeline/evaluation/golden/data/v{version}") / f
         for line in p.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 rows.append(json.loads(line))
     return rows
 
 
-def main():
+def main(version: int = DEFAULT_VERSION):
     outcomes = {}
     p = HERE / "outcomes.jsonl"
     if not p.exists():
@@ -41,7 +45,7 @@ def main():
             o = json.loads(line)
             outcomes.setdefault((o["task_id"], o["url"]), o)  # 首条胜出，同 _scan_archives
 
-    rows = load_rows()
+    rows = load_rows(version)
     site = [r for r in rows if r["source_kind"] != "p2_sample" and r.get("golden")]
     br = lambda r: (r.get("code") or {}).get("branch") or SUCCESS
     gl = lambda r: (r.get("golden") or {}).get("label") or SUCCESS
@@ -76,11 +80,11 @@ def main():
 
     agree_all = sum(1 for r in site if is_equivalent(gl(r), br(r)))
     new_agree = agree_all + fixed - broken
-    print(f"90 行并集：直访命中 {matched} | 未直访（select.play_sites 等）{unmatched}")
+    print(f"冻结档 v{version} 并集：直访命中 {matched} | 未直访（select.play_sites 等）{unmatched}")
     print(f"分支修复（不一致→一致）{fixed} | 分支反转（一致→不一致）{broken}")
     print(f"降级样本 evidence 恢复：{degraded_fixed}/{sum(1 for r in union if '采集降级' in ((r.get('code') or {}).get('evidence') or ''))}")
     print(f"\nD-10 投影：{agree_all}/{len(site)} = {agree_all/len(site):.1%}"
-          f" → {new_agree}/{len(site)} = {new_agree/len(site):.1%}（阈值 90%）")
+          f" → {new_agree}/{len(site)} = {new_agree/len(site):.1%}")
     print("\n新分支分布（直访命中行）:", dict(Counter(
         d[3] for d in detail if d[3] not in ("(未直访)",)).most_common()))
     print("\n逐行明细（golden_id | 金标 | 旧分支 => 新分支）:")
@@ -94,4 +98,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(
+        description="重采后追溯测量：直采 outcomes 按 (task_id, url) 回填，重算 D-10 投影")
+    parser.add_argument("--version", type=int, default=DEFAULT_VERSION,
+                        help=f"黄金集冻结版本号（默认 {DEFAULT_VERSION}）")
+    args = parser.parse_args()
+    sys.exit(main(args.version))

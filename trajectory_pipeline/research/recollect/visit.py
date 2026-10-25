@@ -9,6 +9,7 @@ Candidate。感知链（obscura 驱动 + LLM perceptor + 判断点 ②③）一�
 字段与 P1 outcome 同构（branch/question/evidence/source/fallback_used/
 reached_play_page/branch_label）。
 """
+import argparse
 import asyncio
 import json
 import sys
@@ -20,15 +21,19 @@ HERE = Path(__file__).resolve().parent
 TIMEOUT_S = 90.0
 OUT = HERE / "outcomes.jsonl"
 
+#: 默认读取的黄金集冻结版本（A 类付费墙修复后对准的当前档）。
+#: 早先脚本硬编码 v3；金标经 14 条核改后已漂到 v10，重采必须对准最新冻结。
+DEFAULT_VERSION = 10
 
-def load_targets():
+
+def load_targets(version: int = DEFAULT_VERSION):
     from trajectory_pipeline.evaluation.golden.alignment import is_equivalent
 
     manifest = {m["task_id"]: m for m in json.loads(
         (HERE / "manifest.json").read_text(encoding="utf-8"))}
     rows = []
     for f in ["calibration.jsonl", "holdout.jsonl"]:
-        p = Path("trajectory_pipeline/evaluation/golden/data/v3") / f
+        p = Path(f"trajectory_pipeline/evaluation/golden/data/v{version}") / f
         for line in p.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 rows.append(json.loads(line))
@@ -52,7 +57,7 @@ def load_targets():
     return targets
 
 
-async def main():
+async def main(version: int = DEFAULT_VERSION):
     from trajectory_pipeline.executor.browser.mcp_client import McpClient
     from trajectory_pipeline.executor.browser.obscura_driver import ObscuraDriver
     from trajectory_pipeline.executor.branches import RunLedger
@@ -60,8 +65,8 @@ async def main():
     from trajectory_pipeline.executor.steps.visit import visit_site
     from trajectory_pipeline.perception.factory import build_perceptor
 
-    targets = load_targets()
-    print(f"待直访 (task_id, url) 对：{len(targets)}", flush=True)
+    targets = load_targets(version)
+    print(f"冻结档 v{version}：待直访 (task_id, url) 对：{len(targets)}", flush=True)
 
     client = McpClient.from_env()
     done = 0
@@ -107,4 +112,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(
+        description="URL 直采：直访黄金集并集里的访问级 URL，产出 outcomes.jsonl")
+    parser.add_argument("--version", type=int, default=DEFAULT_VERSION,
+                        help=f"黄金集冻结版本号（默认 {DEFAULT_VERSION}）")
+    args = parser.parse_args()
+    asyncio.run(main(args.version))

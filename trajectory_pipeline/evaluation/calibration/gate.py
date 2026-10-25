@@ -54,6 +54,7 @@ from trajectory_pipeline.evaluation.calibration.verify import (
 )
 from trajectory_pipeline.evaluation.golden.builder import GOLDEN_ROOT
 from trajectory_pipeline.evaluation.golden.splits import SPLIT_FILES
+from trajectory_pipeline.evaluation.scorers import thresholds
 
 #: 退出码（C-08 / C-09 共用一套；调用方必须分开报）
 EXIT_PASS = 0
@@ -154,7 +155,12 @@ def _emit_via_builder(
         emit_disagreements=str(calibration_root),
         json_out="",
         soft_dim=[],
-        dim_tolerance=1,
+        dim_tolerance=int(thresholds.value("soft_dim_tolerance")),
+        # 闸门的活儿就是**每次从冻结档重算**快照（盘上那份可能还是上一轮的
+        # 读数，复用它就等于拿旧答案判新版本）。所以这里显式允许覆盖——
+        # 「不静默覆盖」那道闸（M-29 S3′）守的是**人手重跑 agreement**
+        # 把历史快照重新盖章，不是闸门自己的重算。
+        force_snapshot=True,
     )
     buf = io.StringIO()
     try:
@@ -209,6 +215,50 @@ def ensure_snapshot(
 # --------------------------------------------------------------------------
 
 
+def _manifest_of(golden_root: pathlib.Path | str, version: int) -> dict[str, Any]:
+    """读 ``v{N}/manifest.json``；没有就 ``{}``（由冻结档本身的存在性兜底）。"""
+    path = pathlib.Path(golden_root) / f"v{int(version)}" / "manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # pragma: no cover - 坏档由别处兜
+        raise GateError(f"{path} 读不出来：{exc}") from exc
+
+
+def assert_gold_comparable(golden_root: pathlib.Path | str, current: int) -> None:
+    """金标/标签在两版之间变过 ⇒ **新基线，与前版不可比**（``GateError``，退 2）。
+
+    这条预检防的是一类看起来完全正常的读数：填完软维度金标、重冻结一版、
+    再拿它跟上一版比——「净改善 +40」读起来像评估器变好了，实际是**尺子
+    换了**。§10 的口径是「改金标要新版本 + 人裁」，而人裁的结果就是一个
+    **新基线**：本版只与**它的后继**可比。
+
+    判定依据是 manifest 里 ``gold_refresh.baseline_reset``（软维度金标）或
+    ``label_refresh.baseline_reset``（D-10 label）——分别由 ``freeze
+    --refresh-gold`` / ``freeze --refresh-label`` 写入；**不靠人记得别比**。
+    """
+    mf = _manifest_of(golden_root, current) or {}
+    gold = mf.get("gold_refresh") or {}
+    label = mf.get("label_refresh") or {}
+    if gold.get("enabled"):
+        changed = gold.get("changed_rows")
+        raise GateError(
+            f"v{int(current)} 重挂过金标（变动 {changed} 行，"
+            "`gold_refresh.baseline_reset=true`）：金标变动 = **新基线**，"
+            "与前版不可比——「修好/弄坏」只有在同一份金标上才成立。"
+            f"下一对可比是 v{int(current)} → v{int(current) + 1}"
+        )
+    if label.get("enabled"):
+        changed = label.get("changed_rows")
+        raise GateError(
+            f"v{int(current)} 重挂过 D-10 label（变动 {changed} 行，"
+            "`label_refresh.baseline_reset=true`）：label 变动 = **新基线**，"
+            "与前版不可比——「修好/弄坏」只有在同一份金标上才成立。"
+            f"下一对可比是 v{int(current)} → v{int(current) + 1}"
+        )
+
+
 def run(
     *,
     golden_root: pathlib.Path | str = GOLDEN_ROOT,
@@ -229,6 +279,8 @@ def run(
     cur, base = resolve_versions(
         list_versions(golden_root), current=current_version, baseline=baseline_version
     )
+    # 金标变动 = 新基线：本轮重挂过金标的版本**不能**跟上一版比（退 2）。
+    assert_gold_comparable(golden_root, cur)
     paths: dict[str, pathlib.Path] = {}
     for name, version in (("baseline", base), ("current", cur)):
         paths[name] = ensure_snapshot(
@@ -313,8 +365,13 @@ def main(argv: list[str] | None = None) -> int:
         help="不重算快照（只读盘上的 snapshot.json；缺了退 2）",
     )
     ap.add_argument(
-        "--class-tolerance", type=float, default=0.0,
-        help="类回归容差（同 verify；缺省 0，放宽属 D-C6 阈值变更）",
+        "--class-tolerance", type=float,
+        default=thresholds.value("class_regression_tolerance"),
+        help=(
+            "类回归容差（同 verify；缺省 0，放宽属 D-C6 阈值变更——"
+            "owner 裁定：阈值调整**不算** rubric 级变更，改 "
+            "evaluation/scorers/thresholds.py 那张唯一真源即可）"
+        ),
     )
     ap.add_argument(
         "--triage", nargs="*", default=None,

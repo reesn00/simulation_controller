@@ -367,3 +367,192 @@ def test_快照三档全收但回归集不出分歧卡(tmp_path):
     assert cards, "这批数据全一致，测试就白写了"
     # 分诊池 = 调参池：回归集（不能调参）与持有集（不能烧封存）都不出卡
     assert {c["split"] for c in cards} == {"calibration"}
+
+
+# ── 6. 继承式冻结刷新评分（M-29 S2 / S3） ──────────────────────
+#
+# M-29 的病根：继承式冻结「行内容不动」，于是 v7 冻结时写进去的 pred 侧
+# 分数**原样带到了 v8**——而那是 v6 时代的评分器留下的（D-5 还「恒真」，
+# 清一色 5 分）。快照与评分器不再是同一个东西，且**一个字都不报**。
+#
+# `--refresh-scores` 补的就是这个能力：切分与金标照旧继承，只把 pred 侧
+# 的三个字段按 golden_id 从 candidates 重挂。
+
+
+def _make_v6_stale(root: pathlib.Path) -> pathlib.Path:
+    """造一个 v6 冻结档：行带**过期**的 pred 侧评分（d5 全是 5）。
+
+    「过期」正是 M-29 的病根——那批分数是当时评分器的输出，评分器换了之后
+    它们就不代表当前评分器了。
+    """
+    vdir = root / "v6"
+    calib = [_row(f"c{i}", "success") for i in range(10)]
+    hold = [_row(f"h{i}", "success") for i in range(5)]
+    for r in calib + hold:
+        r["dimension_scores"] = {"d5": 5}
+        r["scores_detail"] = [{"dimension": "d5", "score": 5, "reasons": []}]
+        r["status"] = "scored"
+    _write_jsonl(vdir / "calibration.jsonl", calib)
+    _write_jsonl(vdir / "holdout.jsonl", hold)
+    (vdir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "label_schema_version": builder.LABEL_SCHEMA_VERSION,
+                "version": 6,
+                "holdout_runs": 0,
+                "seed": 42,
+                "counts": {
+                    "candidates": 0,
+                    "annotated": len(calib) + len(hold),
+                    "calibration": len(calib),
+                    "holdout": len(hold),
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _write_jsonl(root / builder.VERSIONS_INDEX, [{"version": 6}])
+    # candidates：当前评分器的输出（d5 判 2 分、d6 弃权、d2/d4 五分）
+    cands = []
+    for r in calib + hold:
+        cands.append({
+            "golden_id": r["golden_id"],
+            "dimension_scores": {"d2": 5, "d4": 5, "d5": 2, "d6": None},
+            "scores_detail": [
+                {"dimension": "d5", "score": 2, "reasons": ["环境阻断"]}
+            ],
+            "status": "scored",
+        })
+    _write_jsonl(root / builder.CANDIDATES_FILE, cands)
+    return root
+
+
+def test_刷新评分_只换pred侧不动金标与切分(tmp_path):
+    root = _make_v6_stale(tmp_path / "golden")
+    assert _run([
+        "--golden-root", str(root), "freeze", "--version", "7",
+        "--from-version", "6", "--regression", "3",
+    ])[0] == 0
+    v7_manifest = json.loads(
+        (root / "v7" / "manifest.json").read_text(encoding="utf-8")
+    )
+    v7_rows = {
+        r["golden_id"]: r
+        for r in _read_jsonl(root / "v7" / "calibration.jsonl")
+        + _read_jsonl(root / "v7" / "regression.jsonl")
+        + _read_jsonl(root / "v7" / "holdout.jsonl")
+    }
+
+    rc, out, err = _run([
+        "--golden-root", str(root), "freeze", "--version", "8",
+        "--from-version", "7", "--refresh-scores",
+    ])
+    assert rc == 0, (out, err)
+
+    v8_rows = {
+        r["golden_id"]: r
+        for r in _read_jsonl(root / "v8" / "calibration.jsonl")
+        + _read_jsonl(root / "v8" / "regression.jsonl")
+        + _read_jsonl(root / "v8" / "holdout.jsonl")
+    }
+    assert set(v8_rows) == set(v7_rows)
+
+    for gid, row in v8_rows.items():
+        old = v7_rows[gid]
+        # ① pred 侧换了：d5 从「恒 5」变成当前评分器的 2 分，d6 是弃权
+        assert row["dimension_scores"] == {
+            "d2": 5, "d4": 5, "d5": 2, "d6": None
+        }, gid
+        assert row["status"] == "scored"
+        # ② 金标与分支结论一个字段都不许动
+        assert row["golden"] == old["golden"], gid
+        assert row["code"] == old["code"], gid
+
+    # ③ 切分不重洗：每档的行集合与 v7 一致
+    for split, fname in (
+        ("calibration", "calibration.jsonl"),
+        ("regression", "regression.jsonl"),
+        ("holdout", "holdout.jsonl"),
+    ):
+        assert (
+            {r["golden_id"] for r in _read_jsonl(root / "v8" / fname)}
+            == {r["golden_id"] for r in _read_jsonl(root / "v7" / fname)}
+        ), split
+
+    v8_manifest = json.loads(
+        (root / "v8" / "manifest.json").read_text(encoding="utf-8")
+    )
+    # ④ 回归集指纹：内容变了指纹必须跟着变，且与文件内容一致
+    assert v8_manifest["split"]["regression_fingerprint"] != (
+        v7_manifest["split"]["regression_fingerprint"]
+    )
+    assert v8_manifest["split"]["regression_fingerprint"] == builder._rows_fingerprint(
+        _read_jsonl(root / "v8" / "regression.jsonl")
+    )
+    # ⑤ manifest 如实记下刷了什么
+    sr = v8_manifest["score_refresh"]
+    assert sr["enabled"] is True
+    assert sr["source"] == builder.CANDIDATES_FILE
+    assert sr["rows_missing"] == 0
+    assert sr["rows_matched"] == len(v8_rows)
+    assert sr["per_dim"]["d5"]["before"] == {"5": len(v8_rows)}
+    assert sr["per_dim"]["d5"]["after"] == {"2": len(v8_rows)}
+    assert sr["tally"]["d5"] == {
+        "scored": len(v8_rows), "abstain": 0, "no_sample": 0
+    }
+
+
+def test_刷新评分_候选缺id则退2且不写任何文件(tmp_path):
+    """fail-closed：找不到 id 就退 2，**绝不「找不到就留着旧分数」**。
+
+    留着旧分数看起来像刷过了，实际 pred 侧仍是过期的那批——比不刷更坏。
+    """
+    root = _make_v6_stale(tmp_path / "golden")
+    assert _run([
+        "--golden-root", str(root), "freeze", "--version", "7",
+        "--from-version", "6",
+    ])[0] == 0
+    # candidates 里删掉一行
+    cands = _read_jsonl(root / builder.CANDIDATES_FILE)
+    dropped = cands.pop(0)
+    _write_jsonl(root / builder.CANDIDATES_FILE, cands)
+
+    versions_before = (root / builder.VERSIONS_INDEX).read_text(encoding="utf-8")
+    rc, _, err = _run([
+        "--golden-root", str(root), "freeze", "--version", "8",
+        "--from-version", "7", "--refresh-scores",
+    ])
+    assert rc == 2
+    assert dropped["golden_id"] in err
+    # 一个文件都不许写
+    assert not (root / "v8").exists()
+    assert (root / builder.VERSIONS_INDEX).read_text(encoding="utf-8") == versions_before
+
+
+def test_没刷新评分时要喊一声(tmp_path):
+    """S3：带着上一版的旧分数走而不报，读数会被当成当前评分器的输出。"""
+    root = _make_v6_stale(tmp_path / "golden")
+    rc, out, err = _run([
+        "--golden-root", str(root), "freeze", "--version", "7",
+        "--from-version", "6",
+    ])
+    assert rc == 0, (out, err)
+    assert "未刷新评分" in err
+    assert "--refresh-scores" in err
+    # 确实没刷新：pred 侧仍是源版本的分数
+    row = _read_jsonl(root / "v7" / "calibration.jsonl")[0]
+    assert row["dimension_scores"] == {"d5": 5}
+    manifest = json.loads((root / "v7" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["score_refresh"]["enabled"] is False
+
+
+def test_刷新评分必须配继承(tmp_path):
+    """不继承的冻结本来就直接读 candidates 的评分字段，没有「旧分数」这回事。"""
+    root = _make_v6_stale(tmp_path / "golden")
+    rc, _, err = _run([
+        "--golden-root", str(root), "freeze", "--version", "7", "--refresh-scores",
+    ])
+    assert rc == 2
+    assert "--from-version" in err

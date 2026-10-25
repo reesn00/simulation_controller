@@ -208,6 +208,77 @@ def test_基线晚于本轮_退2(tmp_path):
         )
 
 
+def test_金标重挂过就是新基线_与前版不可比(tmp_path):
+    """填完软维度金标 → 重冻结一版 → 拿它跟上一版比 = 换了尺子量。"""
+    golden_root, cal = _tmp(tmp_path)
+    base, curr = _pools(fixed=2)
+    _version(golden_root, 7, **base)
+    v8 = _version(golden_root, 8, **curr)
+    (v8 / "manifest.json").write_text(
+        json.dumps(
+            {
+                "gold_refresh": {
+                    "enabled": True,
+                    "changed_rows": 91,
+                    "baseline_reset": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(gate.GateError) as ei:
+        gate.run(golden_root=golden_root, calibration_root=cal)
+    msg = str(ei.value)
+    assert "新基线" in msg
+    assert "91" in msg
+    # 解法不是修门，是等这个新基线自己的后继
+    assert "v8 → v9" in msg
+
+
+def test_基线刚重挂过金标_它跟后继是可比的(tmp_path):
+    """新基线是**可比对的一半**：v7 重挂过、v8 没重挂 ⇒ v7→v8 正是那一对。"""
+    golden_root, cal = _tmp(tmp_path)
+    base, curr = _pools(fixed=2)
+    v7 = _version(golden_root, 7, **base)
+    (v7 / "manifest.json").write_text(
+        json.dumps({"gold_refresh": {"enabled": True, "baseline_reset": True}}),
+        encoding="utf-8",
+    )
+    _version(golden_root, 8, **curr)
+
+    report, code = gate.run(golden_root=golden_root, calibration_root=cal)
+    assert code == gate.EXIT_PASS
+    assert report["gate_meta"]["baseline_version"] == 7
+
+
+def test_label重挂过就是新基线_与前版不可比(tmp_path):
+    """修正 gold_defect 金标错（改 D-10 label）→ 重冻结一版 → 拿它跟上一版比 = 换了尺子量。"""
+    golden_root, cal = _tmp(tmp_path)
+    base, curr = _pools(fixed=2)
+    _version(golden_root, 7, **base)
+    v8 = _version(golden_root, 8, **curr)
+    (v8 / "manifest.json").write_text(
+        json.dumps(
+            {
+                "label_refresh": {
+                    "enabled": True,
+                    "changed_rows": 14,
+                    "baseline_reset": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(gate.GateError) as ei:
+        gate.run(golden_root=golden_root, calibration_root=cal)
+    msg = str(ei.value)
+    assert "新基线" in msg
+    assert "14" in msg
+    assert "v8 → v9" in msg
+
+
 def test_一个冻结版本都没有_退2(tmp_path):
     golden_root, cal = _tmp(tmp_path)
     golden_root.mkdir()

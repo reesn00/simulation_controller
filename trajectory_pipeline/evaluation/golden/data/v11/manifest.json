@@ -1,0 +1,155 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "2",
+ "rubric_version": "1.2",
+ "evaluator_version": "1046e67994aa",
+ "scorer_fingerprint": "code:3d352641c0aa|llm:1046e67994aa",
+ "holdout_runs": 0,
+ "version": 11,
+ "frozen_at": "2026-10-25T00:18:25+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 357,
+  "annotated": 294,
+  "site": 289,
+  "trajectory": 5,
+  "calibration": 131,
+  "regression": 60,
+  "holdout": 103
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.4456,
+  "pool_ratio": 0.6497,
+  "regression_ratio": 0.2041,
+  "holdout_ratio": 0.3503,
+  "pp_diff_from_target": 0.0003,
+  "headline_split": "calibration",
+  "regression_size": 60,
+  "regression_seed": 20261022,
+  "regression_fingerprint": "937a45f25eea"
+ },
+ "derived_from": {
+  "version": 10,
+  "counts": {
+   "candidates": 357,
+   "annotated": 294,
+   "site": 289,
+   "trajectory": 5,
+   "calibration": 131,
+   "regression": 60,
+   "holdout": 103
+  },
+  "holdout_runs": 0
+ },
+ "score_refresh": {
+  "enabled": true,
+  "source": "candidates.jsonl",
+  "rows_matched": 294,
+  "rows_missing": 0,
+  "population": "site_rows",
+  "per_dim": {
+   "d2": {
+    "before": {
+     "5": 34,
+     "4": 16,
+     "null": 161
+    },
+    "after": {
+     "5": 34,
+     "4": 16,
+     "null": 161
+    }
+   },
+   "d4": {
+    "before": {
+     "5": 183,
+     "4": 18,
+     "null": 10
+    },
+    "after": {
+     "5": 183,
+     "4": 18,
+     "null": 10
+    }
+   },
+   "d5": {
+    "before": {
+     "5": 178,
+     "2": 7,
+     "null": 26
+    },
+    "after": {
+     "5": 175,
+     "2": 7,
+     "null": 29
+    }
+   },
+   "d6": {
+    "before": {
+     "5": 107,
+     "null": 104
+    },
+    "after": {
+     "5": 107,
+     "null": 104
+    }
+   }
+  },
+  "tally": {
+   "d2": {
+    "scored": 50,
+    "abstain": 161,
+    "no_sample": 78
+   },
+   "d4": {
+    "scored": 201,
+    "abstain": 10,
+    "no_sample": 78
+   },
+   "d5": {
+    "scored": 182,
+    "abstain": 29,
+    "no_sample": 78
+   },
+   "d6": {
+    "scored": 107,
+    "abstain": 104,
+    "no_sample": 78
+   }
+  },
+  "note": "per_dim 的 before/after 取有样本的行（与快照该维条目同口径）；tally 取全部站点级行，按刷新后的状态分三态"
+ },
+ "gold_refresh": {
+  "enabled": false
+ },
+ "label_refresh": {
+  "enabled": false
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.8,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 40,
+  "success": 37,
+  "subscription_wall": 34,
+  "not_play_site": 30,
+  "component_unverified": 17,
+  "no_play_control": 17,
+  "blocked": 16,
+  "broken": 13,
+  "trailer_only": 7,
+  "login_wall_or_blocked": 6,
+  "trailer_suspect": 1
+ }
+}

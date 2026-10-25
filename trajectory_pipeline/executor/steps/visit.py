@@ -213,8 +213,17 @@ async def visit_site(
             result.site_obs.element_vocabulary, target, ref=ref))
     except (DriverError, actions.UnaddressableTarget) as exc:
         result.steps.settle(step_click, error=f"点击失败: {exc}")
+        # 2026-10-23（M-27）：点击**失败** ⇒ 从未到达播放页 ⇒
+        # 「播放页上没有可验证的播放组件」这个结论**没有新证据支撑**
+        # ——``component_unverified`` 的前置事实是「**到了播放页**」
+        # （见 ``branches.BRANCH_PRECONDITION``）。⇒ 记 ``unresolved``：
+        # **采集缺件 ≠ 业务负样本**（它在 ``NON_SAMPLE_BRANCHES`` 里
+        # ⇒ **不进负样本池**，在人工复核队列里等人看）。
+        # ⚠️ 同页守卫**在这条路上结构性无从触发**——它要点击前后
+        # **两份**观察，而点击失败时只有一份（``pre_obs`` 有、``obs`` 没有）。
+        # 证据**原样留证**（那是要复看的现场），只改**分类**。
         ledger.record(
-            result.landed_url, "component_unverified",
+            result.landed_url, "unresolved",
             f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,
         )
         result.note(f"点击失败: {exc}")
@@ -225,8 +234,13 @@ async def visit_site(
         player_obs = await driver.observe(max_chars=max_chars)
     except DriverError as exc:
         result.steps.settle(step_click, error=f"点击后快照失败: {exc}")
+        # 2026-10-23（M-27）：同上一段——**点击成功但快照取不到**，
+        # 我们**不知道**那是不是播放页 ⇒ 同样缺「到了播放页」这个前置事实
+        # ⇒ 记 ``unresolved``，不记 ``component_unverified``。
+        # ⚠️ ``reached=True`` **不动**：点击确实成功了（只是快照没拿到），
+        # 「到没到播放页」是另一条语义，不在本条范围内。
         ledger.record(
-            result.landed_url, "component_unverified",
+            result.landed_url, "unresolved",
             f"点击后取不到页面快照: {exc}", decision=control, reached=True,
             site_url=url,
             # play_page_url 留空：点击了但快照取不到，我们**不知道**那是

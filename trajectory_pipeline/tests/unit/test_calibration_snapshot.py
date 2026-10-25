@@ -353,7 +353,37 @@ def test_老冻结档不拿当前值顶替(tmp_path):
     assert snap["meta"]["rubric_version"] == ""
 
 
-# ── 6. 条款号投影 ─────────────────────────────────────────────
+# ── 6. 快照已存在时不静默覆盖（M-29 S3′） ─────────────────────
+
+
+def test_快照已存在时不静默覆盖(tmp_path):
+    """重跑一次 agreement 就会把历史快照重新盖成今天的 evaluator_version。
+
+    那份文件是「上一轮判了什么」的唯一凭据——回归判定问的正是这个问题。
+    盖掉等于把地基抽了，所以默认退 2，要重算得显式 --force-snapshot。
+    """
+    root = _setup(tmp_path, calibration=[_row("g1")])
+    outdir = tmp_path / "out"
+    assert _agreement(root, outdir)[0] == 0
+    snap_path = outdir / "v6" / "snapshot.json"
+    before = snap_path.read_text(encoding="utf-8")
+
+    rc, _, stderr, _ = _agreement(root, outdir)
+    assert rc == 2
+    assert "不静默覆盖" in stderr
+    assert snap_path.read_text(encoding="utf-8") == before
+
+
+def test_显式force才允许覆盖(tmp_path):
+    root = _setup(tmp_path, calibration=[_row("g1")])
+    outdir = tmp_path / "out"
+    assert _agreement(root, outdir)[0] == 0
+    rc, _, _, _ = _agreement(root, outdir, "--force-snapshot")
+    assert rc == 0
+    assert (outdir / "v6" / "snapshot.json").exists()
+
+
+# ── 7. 条款号投影 ─────────────────────────────────────────────
 
 
 def test_条款号投影():

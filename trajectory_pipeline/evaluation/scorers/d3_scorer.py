@@ -77,6 +77,11 @@ from trajectory_pipeline.llm.schema_parse import (
     field,
 )
 
+#: 锚点表（方案 16 §7 / C-10）——system prompt 的「评分锚」一栏由它渲染，
+#: **不另写一份散文**。改了 rubric 某档而不改表 ⇒ 契约测试红（见
+#: ``rubric_version.anchors_drift``）⇒ prompt 与准则不再各走各的。
+from trajectory_pipeline.evaluation.scorers import rubric_version
+
 #: rubric §D-3 5 类契约——LLM 只能在这五类里选。其它字符串（实测模型会
 #: 飘出 ``video_hosting`` / ``streaming`` 之类）一律归 2 档（判错）。
 D3_CATEGORIES: frozenset[str] = frozenset({
@@ -254,6 +259,10 @@ D3_SYSTEM_PROMPT: str = (
     "1. ``evidence`` 必含**观察中的具体短语**——别只写「不是播放站」。\n"
     "2. ``playable`` 时 ``playable_subtype`` 必填；其它 4 类填 ``null``。\n"
     "3. **不要输出**任何超出该契约的字段。"
+    # 评分锚一栏**从锚点表渲染**（方案 16 §7 / C-10；owner 2026-10-23 裁定
+    # D-C7 = rubric 变更强制连带改 prompt）。表改了 ⇒ 这段跟着变 ⇒
+    # 评分口径与提示词不再各走各的。
+    + rubric_version.render_anchor_block("d3")
 )
 
 #: 给 LLM 的用户提示——观察存档 + 站点 URL。观察裁剪上限仿
@@ -373,9 +382,21 @@ def _is_evidence_concrete(evidence: str,
 
 
 def score_d3(sample: Sample | Any,
-             *, llm_client: LLMClient | None = None) -> D3Verdict:
+             *, llm_client: LLMClient | None = None,
+             system_prompt: str | None = None) -> D3Verdict:
     """D-3 打分。**永不抛**——LLM 失败 / 解析失败 / 观察不充分，
-    全部走对应分支。"""
+    全部走对应分支。
+
+    Args:
+        sample: P2 样本（``Sample`` 对象 / Mapping 都吃）。
+        llm_client: LLM 后端；``None`` → 本条不出分（fail-closed）。
+        system_prompt: **换一版提示词**（默认用 :data:`D3_SYSTEM_PROMPT`）。
+            为什么留这个口子：**A/B 要比的就是「同一份输入、两版提示词」**——
+            旧版提示词在生产代码里已经不存在了（锚点表渲染后就没了），而
+            「改提示词会不会改判」正是 D-C7（rubric 变更强制连带改 prompt）
+            必须回答的问题。没有这个口子，A/B 只能靠 monkeypatch 模块常量，
+            那测的就不是生产路径了。
+    """
     observations = _observations(sample)
     insufficient = _all_observations_insufficient(observations)
     if insufficient:
@@ -397,7 +418,7 @@ def score_d3(sample: Sample | Any,
 
     site_url = _site_url(sample)
     user_prompt = _render_user(site_url, observations)
-    raw = llm_client.chat(D3_SYSTEM_PROMPT, user_prompt)
+    raw = llm_client.chat(system_prompt or D3_SYSTEM_PROMPT, user_prompt)
     data, why = _parse_response(raw)
     if data is None:
         # rubric 锚点 1：观察充分 + LLM 没给答案 = fail-closed + 该站本可判

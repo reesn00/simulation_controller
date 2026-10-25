@@ -82,9 +82,13 @@ from trajectory_pipeline.llm.schema_parse import (
     field,
 )
 
+#: 锚点表（方案 16 §7 / C-10）——system prompt 的「评分锚」一栏由它渲染，
+#: **不另写一份散文**。改了 rubric 某档而不改表 ⇒ 契约测试红（见
+#: ``rubric_version.anchors_drift``）⇒ prompt 与准则不再各走各的。
+from trajectory_pipeline.evaluation.scorers import rubric_version
+
 #: rubric §D-9 6 类契约——LLM 只能在这六类里选。
-#: 与 rubric 锚点表的对应：anchored=5 / vague=4 /
-#: mild_hallucination=3 / hindsight=3 / systematic=2 / misleading=1。
+#: 与 rubric 档位的对应见 :data:`D9_VERDICT_TIERS`（单一真源）。
 D9_VERDICTS: frozenset[str] = frozenset({
     "anchored", "vague", "mild_hallucination", "hindsight",
     "systematic", "misleading",
@@ -402,6 +406,52 @@ D9_FEW_SHOT_EXAMPLES: tuple[dict, ...] = (
     # ——铁律：不挑 ai-assisted-* 桶（D-9 边界③）。
 )
 
+#: D-9 的 6 类 verdict → 档位（rubric §D-9 评分锚；**单一真源**）。
+#:
+#: 原先这份映射只以注释形式写在 :data:`D9_VERDICTS` 上方，prompt 里的六条
+#: verdict 说明则是 rubric 档位释义的**手抄**——改 rubric 时没人会同步它们。
+#: 现在映射与措辞都在表里，prompt 由表渲染（方案 16 §7 / C-10；owner
+#: 2026-10-23 裁定 D-C7 = rubric 变更强制连带改 prompt）。
+D9_VERDICT_TIERS: dict[str, int] = {
+    "anchored": 5,
+    "vague": 4,
+    "mild_hallucination": 3,
+    "hindsight": 3,
+    "systematic": 2,
+    "misleading": 1,
+}
+
+#: 每个 verdict 在 prompt 里的措辞。**与 rubric 档位释义同源**（契约测试
+#: ``test_D9判定措辞覆盖rubric档位释义`` 逐档核：档位释义里的每个片段都要
+#: 能在本档 verdict 的措辞里找到）。
+#:
+#: ⚠️ 3 档有两个 verdict（``mild_hallucination`` / ``hindsight``），rubric
+#: 那一档写的是二者的并（"1 处轻微幻觉（不影响动作）或 1 处后见之明"），
+#: 所以这里按 verdict 各写一条，档位层面由契约测试合并后比对。
+D9_VERDICT_TEXT: dict[str, str] = {
+    "anchored": "全部锚定；不确定处如实表达",
+    "vague": "1 处措辞含糊，无事实错误",
+    "mild_hallucination": "1 处轻微幻觉（不影响动作）",
+    "hindsight": "1 处后见之明（措辞像「事后才知道」）",
+    "systematic": "系统性不符或套话替代推理",
+    "misleading": "思考编造关键事实并驱动错误动作（与 D-2 联动）",
+}
+
+
+def _render_verdict_list() -> str:
+    """verdict 清单（6 行）——从 :data:`D9_VERDICT_TEXT` 渲染，不另写散文。
+
+    顺序固定（按档位从高到低，同档按 :data:`D9_VERDICT_TIERS` 的声明序），
+    免得渲染顺序漂成另一种「顺序变化也算变化」的噪声。
+    """
+    lines = []
+    for verdict in sorted(
+        D9_VERDICT_TEXT, key=lambda v: (-D9_VERDICT_TIERS[v], list(D9_VERDICT_TEXT).index(v))
+    ):
+        lines.append(f"- ``{verdict}``：{D9_VERDICT_TEXT[verdict]}")
+    return "\n".join(lines)
+
+
 #: 给 LLM 的系统提示。中文 + JSON 契约 + 6 类枚举 + 三条纪律。
 #: **字段顺序按字母**：evidence → verdict——与 schema_parse.ALIASES 表
 #: 的键对齐。
@@ -416,12 +466,8 @@ D9_SYSTEM_PROMPT: str = (
     "于是：引用了本步或后续步才出现的实体 = **后见之明**（hindsight）；"
     "描述了本步动作的结果 = **后见之明**。\n\n"
     "## verdict（6 选 1，必填）\n"
-    "- ``anchored``：全部锚定；不确定处如实表达\n"
-    "- ``vague``：1 处措辞含糊，无事实错误\n"
-    "- ``mild_hallucination``：1 处轻微幻觉（不影响动作）\n"
-    "- ``hindsight``：1 处后见之明（措辞像「事后才知道」）\n"
-    "- ``systematic``：系统性不符或套话替代推理\n"
-    "- ``misleading``：思考编造关键事实并驱动错误动作（与 D-2 联动）\n\n"
+    + _render_verdict_list()
+    + "\n\n"
     "## 输出契约（严格 JSON，无前后文字、无 markdown 代码块）\n"
     "```\n"
     '{"evidence": "依据引用 rationale 原文 + 观察的具体短语",'
@@ -434,12 +480,40 @@ D9_SYSTEM_PROMPT: str = (
     "2. 闸门已查过的硬事实（实体 / 因果 / 时序）不算你的工作；你的工作是**软层面**——"
     "措辞是否含糊、是否轻微幻觉、是否后见之明。\n"
     "3. **不要输出**任何超出该契约的字段。"
-
-    "\n\n## few-shot examples 会在下面追加（INC46 起默认为空）\n"
+    # 评分锚一栏**从锚点表渲染**（方案 16 §7 / C-10）——与 D-3 同一机制。
+    + rubric_version.render_anchor_block("d9")
+    + "\n\n## few-shot examples 会在下面追加（INC46 起默认为空）\n"
     "（系统提示词到此为止；以下 few-shot 与样本数据走**用户提示词**，由"
     " :func:`_render_user` / :func:`score_d9` 注入——见模块 docstring 与"
     " 增量三十八章节联动事项。INC46 起示例池为空，**零样本出分**。）"
 )
+
+
+def validate_few_shot_anchors(
+    examples: Sequence[Mapping[str, Any]] | None = None,
+) -> list[str]:
+    """校验 few-shot 每条都挂了**锚点表里有的**锚点；返回问题清单（空 = 全对）。
+
+    为什么要有这条（方案 16 §7 / C-10）：few-shot 池一旦重新有货，每条必须
+    说清「它教的是哪一档」——人工挑例时要能回答「这条教什么」，锚点漂了
+    也要有人看见。
+
+    **池现在是空的**（INC46 整体清空，理由见 :data:`D9_FEW_SHOT_EXAMPLES`），
+    所以这条现在只校验结构。**不合成假例**——铁律。
+    """
+    pool = D9_FEW_SHOT_EXAMPLES if examples is None else examples
+    allowed = set(rubric_version.anchor_clauses("d9"))
+    problems: list[str] = []
+    for idx, item in enumerate(pool):
+        anchor = str(item.get("anchor") or "")
+        if not anchor:
+            problems.append(f"第 {idx + 1} 条：没有 anchor 键")
+        elif anchor not in allowed:
+            problems.append(
+                f"第 {idx + 1} 条：anchor={anchor!r} 不在锚点表里"
+                f"（可用：{sorted(allowed)}）"
+            )
+    return problems
 
 
 def _render_action(idx: int, action: Mapping[str, Any]) -> str:
@@ -631,7 +705,8 @@ _VERDICT_TO_SCORE: Mapping[str, int] = {
 def score_d9(sample: Sample | Any, *,
              gate_result: Any = None,
              llm_client: LLMClient | None = None,
-             few_shot_examples: Sequence[Mapping[str, Any]] | None = None) -> D9Verdict:
+             few_shot_examples: Sequence[Mapping[str, Any]] | None = None,
+             system_prompt: str | None = None) -> D9Verdict:
     """D-9 打分。**永不抛**——LLM 失败 / 解析失败 / 观察不充分 / 成本控制跳过，
     全部走对应分支。
 
@@ -649,6 +724,9 @@ def score_d9(sample: Sample | Any, *,
             few-shot 块；非空序列则按 :func:`_render_few_shot` 渲染。
             **不要**从 ``ai-assisted-*`` 桶挑——违反 D-9 边界③
             （[10-judge接入方案.md §七 #2](../../../docs/设计方案/10-judge接入方案.md)）。
+        system_prompt: **换一版提示词**（默认用 :data:`D9_SYSTEM_PROMPT`）。
+            与 :func:`score_d3` 同款理由：A/B 要比「同一份输入、两版提示词」，
+            而旧版提示词在生产代码里已被锚点表渲染取代。
     """
     observations = _observations(sample)
     rationales = _rationales(sample)
@@ -691,7 +769,7 @@ def score_d9(sample: Sample | Any, *,
         observations, rationales, actions, gate_result,
         few_shot_examples=few_shot_examples,
     )
-    raw = llm_client.chat(D9_SYSTEM_PROMPT, user_prompt)
+    raw = llm_client.chat(system_prompt or D9_SYSTEM_PROMPT, user_prompt)
     data, why = _parse_response(raw)
     if data is None:
         # D-9 失败 ≠ 1 档——rubric 锚点 1「misleading」是 LLM 真实判断

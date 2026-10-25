@@ -53,6 +53,7 @@ from trajectory_pipeline.evaluation.golden.builder import (
     linear_weighted_kappa,
 )
 from trajectory_pipeline.evaluation.golden.splits import HEADLINE_SPLIT
+from trajectory_pipeline.evaluation.scorers import thresholds
 
 REPORT_FILE = "triggers.json"
 
@@ -93,7 +94,7 @@ SIGNALS: tuple[SignalSpec, ...] = (
         id="T-1",
         name="两评分者分歧率（条款级）",
         question="同一条款上两侧判成不同等价类的比例",
-        line="单条款 eq_class_mismatch ≥ 10% 且 n ≥ 20（暂定，未定线）",
+        line=f"单条款 eq_class_mismatch ≥ {thresholds.value('t1_eq_class_rate'):.0%} 且 n ≥ {thresholds.value('t1_min_n')}（暂定，未定线）",
         line_set=False,
     ),
     SignalSpec(
@@ -101,21 +102,27 @@ SIGNALS: tuple[SignalSpec, ...] = (
         name="judge ↔ 人工一致性",
         question="LLM judge 与人工金标的一致程度（硬 Cohen / 软线性加权）",
         # 这条**沿用已有上岗线**（D-C9：已有线沿用，新线只出读数）。
-        line="上岗线沿用：硬 kappa ≥0.70 / 软加权 ≥0.50；下降 = Δ ≤ −0.05",
+        line=(
+            f"上岗线沿用：硬 kappa ≥{thresholds.value('t2_hard_kappa'):.2f} / 软加权 ≥{thresholds.value('t2_soft_kappa'):.2f}；"
+            f"下降 = Δ ≤ −{abs(thresholds.value('t2_drop_delta')):.2f}"
+        ),
         line_set=True,
     ),
     SignalSpec(
         id="T-3",
         name="理由含糊率（按条款）",
         question="判分理由里不含观察原文片段的比例",
-        line="单条款 ≥ 30%（未定线）",
+        line=f"单条款 ≥ {thresholds.value('t3_vague_rate'):.0%}（未定线）",
         line_set=False,
     ),
     SignalSpec(
         id="T-4",
         name="评分分布退化（按条款）",
         question="取值分布是否退化成单一值（条款区分不开）",
-        line="众数占比 ≥ 80% 或不同取值 ≤ 2（未定线）",
+        line=(
+            f"众数占比 ≥ {thresholds.value('t4_mode_share'):.0%} 或不同取值 ≤ {thresholds.value('t4_distinct_values')}"
+            "（未定线）"
+        ),
         line_set=False,
     ),
 )
@@ -132,18 +139,22 @@ def spec_of(signal_id: str) -> SignalSpec:
 
 #: 判成两个值就算「这条款区分得开」。两个来自候选线的口径集中在这里，
 #: 换口径 = 改这两行 + 重跑（抽样/读数都不写时间戳，diff 能看出来）。
-MODE_SHARE_LINE = 0.80
-DISTINCT_VALUES_LINE = 2
+#:
+#: ⚠️ **数值来自阈值表**（`evaluation/scorers/thresholds.py`，owner 2026-10-23
+#: 裁定 D-C6：阈值调整**不算** rubric 级变更 ⇒ 不升 rubric 版本、不进 rubric
+#: 变更记录、不设签名门；但阈值有自己的唯一真源，不许各写一份字面量）。
+MODE_SHARE_LINE = thresholds.value("t4_mode_share")
+DISTINCT_VALUES_LINE = thresholds.value("t4_distinct_values")
 
 #: T-1 候选线。``line_set=False`` ⇒ 这两个数**只用于标注「按候选线会越线」**，
 #: 不进任何判定——候选线不是线。
-T1_RATE_LINE = 0.10
-T1_MIN_N = 20
+T1_RATE_LINE = thresholds.value("t1_eq_class_rate")
+T1_MIN_N = thresholds.value("t1_min_n")
 
 #: T-2 的**已有**上岗线（沿用，不是新定的）。``line_set=True`` 是四条里唯一
 #: 一条：所以它是唯一一条允许报「低于线」的，但仍不报「合格」。
-T2_HARD_LINE = 0.70
-T2_SOFT_LINE = 0.50
+T2_HARD_LINE = thresholds.value("t2_hard_kappa")
+T2_SOFT_LINE = thresholds.value("t2_soft_kappa")
 
 
 # ---------------------------------------------------------------------------

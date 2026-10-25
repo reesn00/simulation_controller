@@ -172,6 +172,16 @@ uv run python -m trajectory_pipeline.research.probes.m30_live_check \
 # ⚠️ --all-archives：并排比较**全部** P1 存档（顶层 `{task_id}__{run_id}.json`，
 #    当前 78 个），不只默认那三个 run ⇒ 换 URL 批次时用这个。
 
+# D-3 / D-9 提示词 A/B（方案 16 C-10 补验证）：三臂 —— `old`（现版**去掉锚点块**
+# 重建，**指纹须逐位等于** v8 manifest 的 `evaluator_version`，对不上当场停）/
+# `new`（现版）/ `new2`（同版再跑一遍 = **噪声地板**）。
+# ⚠️ **必须在仓库根跑**（读仓库根相对路径的存档目录）。
+# ⚠️ **联网**（调 LLM 裁判）；凭据只从 TRAJECTORY_LLM_* 读，**不打印不落盘**。
+# ⚠️ 慢：约 15s/行 ⇒ 247 行 D-3 + 8 行 D-9 ≈ **65 分钟**。
+# ⚠️ `--d3-limit 247 --d9-limit 8` 就是**候选全体**（不是抽样）——切小会变成前 N 条。
+uv run python trajectory_pipeline/research/probes/prompt_ab_anchor.py \
+  --d3-limit 247 --d9-limit 8
+
 # 批次后处理：展平 P1 存档 + 并池（**默认 dry-run**，确认后加 --apply）
 # ⚠️ **顺序不能反**：先回滚要作废的那一代（cli purge-run --apply），**再**并池。
 #    两代共用去重键 (task_id,url,branch) ⇒ 先并后回会把新批次那行**静默吞掉**
@@ -184,7 +194,8 @@ uv run python trajectory_pipeline/research/probes/merge_batch_pool.py \
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、
 `probes/inc45_probe_sohu.py`、`probes/inc45_probe2_sohu.py`、
 `probes/probe_doc_stamp.py`、`probes/probe_nav_commit.py`、
-`probes/m30_live_check.py`。其余全部离线。
+`probes/m30_live_check.py`、`probes/prompt_ab_anchor.py`（调 LLM 裁判）。
+其余全部离线。
 
 **哪些脚本会起真浏览器**：`probes/probe_new_tab_click.py`、`probe_click_delivery.py`、
 `probe_click_latency.py`、`probe_click_repeat.py`、`probe_click_distance.py`、

@@ -6,8 +6,13 @@ rubric v1.1 把 D-5 的管辖层定为**代码断言**，判据是一条**决策
 每个节点都标注了代码分支名::
 
     非播放站/无关站        → 排除 ✅  branch=not_play_site
+    传输层失败（没打开）    → 标记"未决" ✅  branch=unreachable_hard
+    代码能力不足（没走到判断）→ 标记"未决" ✅  branch=unresolved
+    地区/DRM/验证码/反爬    → 排除 ✅  branch=blocked
+    内容不存在（404/媒体损坏）→ 排除 ✅  branch=broken
     是播放站，无播放入口    → 排除 ✅  branch=no_play_control
     播放页无 video/组件    → 排除 ✅  branch=component_unverified
+    播放页但需订阅/付费     → 排除 ✅  branch=subscription_wall
     有组件但无法确认可用    → 标记"未验证" ✅  branch=player_unverified
     有组件且可确认          → 记录 ✅  branch=null
 
@@ -65,6 +70,25 @@ Cloudflare 拦下，正文写的是 ``Sorry, you have been blocked``，
 **不能说「所以它不是墙」**。这一档落 ``undetermined``（**不判**，
 本维不出分），理由与 fail-closed 纪律同源：**能力不可用时给 None**。
 它同时也是「词表该扩了」的信号——出现在报告里比藏在 5 分里有用。
+
+## 树上缺口核对（2026-10-24 · M-35）
+
+前四条检查合起来，核的是「结论**自洽**」：分支与判断点相容、前置事实
+成立、无跳步、证据与正文一致。但它们**从不核「分支是不是决策树上那颗
+事实对应的正确节点」**——rubric 锚点 5 字面要求的「决策树每步分支全对」，
+这个断言从来没被验过。代价是 11 张 d5 分诊卡（含 3 张 1–2 档）全被白送 5 分。
+
+**修法不是「让机器学会判对」**——机器没有语义判定力（它不知道「网易号文章
+该落 ``not_play_site``」这种结论），判错比不出分贵。修法是**承认核不了**：
+
+- 分支在 :data:`TREE_BRANCHES`（决策树 10 节点）上 → 正常走四检查；
+- 分支不在树上（``login_wall_or_blocked`` / ``trailer_only`` /
+  ``trailer_suspect`` / ``site_search_*`` 等）→ 检查 1 落 ``undetermined``
+  （**不判错，也不给 5 分**），整条样本因此不出分、显式交人工/黄金集对照。
+
+「分支落对没有」的语义核对由 ``agreement`` 口径 C（金标对照）承担，
+**不是** :func:`score_d5` 的职责——把金标塞进评分器会把评分器与校准回路
+耦合起来，违反方案 16 分层。
 
 ## 三条不能含糊的地方
 
@@ -140,6 +164,38 @@ CODE_ONLY_BRANCHES: frozenset[str] = frozenset(
         "trailer_suspect",
         "site_search_no_results",
         "site_search_routed",
+    }
+)
+
+#: rubric v1.1 D-5 **决策树上的节点**（在线视频场景rubric.md §D-5）。
+#:
+#: 只有落在这几个分支之一，才谈得上「分支走没走对」；落在其外的分支是
+#: 「树上没有节点」——**不是判错**，是「这条分支当前无法用决策树核对」。
+#: 语义判定力在人工复核 / 黄金集对照（``agreement`` 口径 C），代码评分器
+#: 不自己判「该落哪个节点」——能力不可用时给 ``None``（undetermined），
+#: 绝不猜（fail-closed 纪律，见模块头）。
+#:
+#: 2026-10-24（M-35）：由 6 节点扩到 10 节点，新增 ``unreachable_hard`` /
+#: ``unresolved`` / ``blocked`` / ``broken`` 四支（P-1 裁定 A 档）。
+#: 弃用合并态 ``login_wall_or_blocked`` 与 ``trailer_only`` /
+#: ``trailer_suspect``（预告误杀边界未定，见 M-12）**不在树上**，
+#: 它们走「树上缺口 → undetermined」。
+#:
+#: ⚠️ ``None``（记录成功）也在树上——它是决策树最后一行的 ``branch=null``。
+#: 但 ``None`` 不能放进 frozenset 的字面量里跟 str 混比（``branch in
+#: TREE_BRANCHES`` 对 ``branch is None`` 恒为 False，语义错位），所以
+#: 成功记录走「branch is None」的显式分支判断，不靠本集合。
+TREE_BRANCHES: frozenset[str] = frozenset(
+    {
+        "not_play_site",          # 非播放站/无关站
+        "unreachable_hard",       # 传输层失败（采集失败，非站点性质）
+        "unresolved",             # 代码能力不足（没走到判断）
+        "blocked",                # 地区/DRM/验证码/反爬
+        "broken",                 # 内容不存在（404/媒体损坏）
+        "no_play_control",        # 是播放站，无播放入口
+        "component_unverified",   # 播放页无 video/组件
+        "subscription_wall",      # 播放页但需订阅/付费
+        "player_unverified",      # 有组件但无法确认可用
     }
 )
 
@@ -410,11 +466,25 @@ def _check_branch_matches_question(question: str, branch: str | None) -> TreeChe
             f"只有判断点 player.ok 能得出「记录成功」",
         )
     if branch in CODE_ONLY_BRANCHES:
-        # 代码判定分支**没有** question 可配对（不经 LLM）。不核它——
+        # 代码判定分支**没有** question 可配对（不经 LLM）。不核「配套」——
         # 拿一个本就不该存在的字段去比，得到的是「采集器没填」，
         # 不是「分支走错」。
+        #
+        # 但「不核配套」≠「白送 5 分」：M-35 的根因正是这里无条件放行，
+        # 让 ``trailer_only`` / ``trailer_suspect`` 这类**不在决策树上**的分支
+        # 也拿到满分。改法：分支在决策树上 → 保留 ``ok``（配套检查对本就
+        # 无 question 的分支不适用）；分支不在树上 → ``undetermined``
+        # （**不判错**，也不给 5 分）——树上缺口该交人工/黄金集对照，
+        # 机器没有「该落哪个节点」的语义判定力，判错比不出分贵。
+        if branch in TREE_BRANCHES:
+            return TreeCheck(
+                _NODE_BRANCH, "ok", f"{branch} 由代码判定（不经 LLM），且在决策树上"
+            )
         return TreeCheck(
-            _NODE_BRANCH, "ok", f"{branch} 由代码判定（不经 LLM），无 question 可配对"
+            _NODE_BRANCH,
+            "undetermined",
+            f"{branch} 由代码判定（不经 LLM），但**不在 rubric 决策树上**——"
+            f"这条分支当前无法用树核对「落对没有」，不据此判错，也不据此给 5 分",
         )
     allowed = QUESTION_TO_BRANCHES.get(question)
     if allowed is None:
@@ -724,6 +794,7 @@ __all__ = [
     "D5Verdict",
     "QUESTION_TO_BRANCHES",
     "REQUIRES_PLAY_PAGE",
+    "TREE_BRANCHES",
     "PAYWALL_BRANCHES",
     "BLOCK_CLAIM_BRANCHES",
     "MERGED_BLOCK_BRANCH",

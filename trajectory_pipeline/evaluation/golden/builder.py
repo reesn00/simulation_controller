@@ -59,8 +59,17 @@ from typing import Any, Iterable, Mapping, Sequence
 #: 只 import 纯常量模块；LLM 侧 prompt 在本模块函数内惰性加载。
 from trajectory_pipeline.evaluation.scorers.rubric_version import (
     RUBRIC_VERSION,
+    VERSION_UNRECORDED,
+    code_part,
+    code_scorer_version,
     evaluator_version,
+    scorer_fingerprint,
 )
+
+#: 判定线**唯一真源**（方案 16 C-14；owner 2026-10-23 裁定 D-C6：
+#: 阈值调整**不算** rubric 级变更 ⇒ 不升版本 / 不进 rubric 变更记录 /
+#: 不设签名门，但阈值只此一份，各处不许再写字面量）。
+from trajectory_pipeline.evaluation.scorers import thresholds
 
 #: 三档切分的档名 / 文件名 / 头条档位——**只从 splits.py 取，不手抄字符串**
 #: （方案 16 C-04 / C-17：头条分母认错档位不会报错，只会静默算成 0）。
@@ -74,6 +83,14 @@ from trajectory_pipeline.evaluation.golden.splits import (
     SPLIT_REGRESSION,
     SPLITS,
     split_of_file,
+)
+
+#: 软维度金标的写入规则（只动分数、不碰标签）。`annotate --dimensions-only`
+#: 与 `freeze --refresh-gold` 两条路都走这一份，不各写一套合并逻辑。
+from trajectory_pipeline.evaluation.golden.dim_scores import (
+    DimScoreError,
+    group_fills,
+    merge_dimension_scores,
 )
 
 #: 管线产物根（负样本池 / P1 存档 / P2 样例）：相对本文件上溯到 trajectory_pipeline/，
@@ -95,7 +112,11 @@ SPLIT_TARGET = 0.65  # 校准目标占比（65%，落在两区间的中点）
 SPLIT_PP_TOLERANCE = 0.05  # 实际占比离目标 65% 的允许偏差（"差距 ≤5pp"）
 RETEST_FRACTION = (0.20, 0.30)  # D9 重测子集占比
 RETEST_INTERVAL_DAYS = 14  # D9 建议间隔 T（INC41 起 degrade 为纯建议：2026-10-15 owner 拍板解除法定间隔，实际间隔以 d9_retest_queue.jsonl / annotations.jsonl 的 interval_days 为准）
-D10_THRESHOLD = 0.90  # 代码层与黄金集一致率上岗线（口径 C = 语义等价类一致）
+#: 代码层与黄金集一致率上岗线（口径 C = 语义等价类一致）。
+#: **值不写在这里**——从阈值表取（方案 16 C-14）。改线请改
+#: ``evaluation/scorers/thresholds.py`` 那张表，别动这一行（D-C6：
+#: 改阈值不升 rubric 版本，所以这一行也不该成为「偷偷改线」的地方）。
+D10_THRESHOLD = thresholds.value("d10_min_agreement")
 #: 标签体系版本：1 = 11 类（10 分支 + success）；2 = 15 类
 #: （BRANCH_LABELS 14 key = 13 活跃 + deprecated 合并态 + success）。
 #: freeze 写入 manifest，跨版本对比 D10 前先核对（对齐方案 §4.3 / §5.2）。
@@ -119,6 +140,11 @@ NEGATIVE_BRANCH_FIELDS = (  # 负样本池可直接透传的字段
 
 #: 成功样本的黄金标签（代码 branch=None 与之对齐）
 SUCCESS_LABEL = "success"
+
+#: ``overlay-scout`` 负责回填的四个软维度。**键齐全是硬要求**：
+#: 有样本时四维都要出现（弃权写 ``None``），没有样本才留空 dict——
+#: 「弃权」与「没测」在快照里长得一样，正是 M-29 要修的那件事。
+OVERLAY_DIMS: tuple[str, ...] = ("d2", "d4", "d5", "d6")
 
 #: 每失败模式至少条数（总体方案 §5.2 锚点来源②：每个失败模式至少 3 条）
 MIN_PER_BRANCH = 3
@@ -636,8 +662,14 @@ def cmd_annotate(args: argparse.Namespace) -> int:
          "dimension_scores": {"rationale_consistency": 4}, "interval_days": null}
 
     round=2 为 retest（D9），必须带 interval_days。同一 (golden_id, round)
-    重复写入时校验 label 一致，不一致需 --force。"""
+    重复写入时校验 label 一致，不一致需 --force。
+
+    ``--dimensions-only`` 是**另一条路**（方案 16 · 填软维度金标）：输入只带
+    分数，``label`` 一字不碰。补 d2/d4/d5/d6 的人手里往往没有分支裁定，
+    走整行模式就得抄一个标签——那等于伪造金标。"""
     golden_root = pathlib.Path(args.golden_root)
+    if getattr(args, "dimensions_only", False):
+        return _annotate_dimensions_only(args, golden_root)
     cand_path = golden_root / CANDIDATES_FILE
     if not cand_path.exists():
         raise GoldenError(f"{cand_path} 不存在；先跑 candidates")
@@ -713,6 +745,73 @@ def cmd_annotate(args: argparse.Namespace) -> int:
             x["interval_days"] for x in ordered if x.get("interval_days")
         )
         print(f"  实际重测间隔天数：{intervals}")
+    return 0
+
+
+def _annotate_dimensions_only(args: argparse.Namespace, golden_root: pathlib.Path) -> int:
+    """``annotate --dimensions-only``：**只合并软维度分数**，标签一字不碰。
+
+    输入接受两种形态（见 :func:`group_fills`）：工作表行
+    ``{golden_id, dimension, gold_score}`` 或手写补丁
+    ``{golden_id, dimension_scores: {d5: 4}}``。
+
+    三条与整行模式**故意不同**的规矩：
+
+    - **不要求 label**——补分数的人不该被迫抄一个分支裁定；
+    - **只认已存在的 round=1 标注**——分数不能凭空造样本；
+    - **默认不覆盖已填的分**（``--force`` 才覆盖）——同键同值幂等跳过。
+
+    谁填的记在 ``dimension_reviewed_by`` / ``dimension_reviewed_at``，
+    **不覆盖标签的原署名人**：那是两笔账。
+    """
+    ann_path = golden_root / ANNOTATIONS_FILE
+    existing = _load_jsonl(ann_path)
+    if not existing:
+        raise GoldenError(
+            f"{ann_path} 里还没有标注：软维度分数必须挂在一条已有标注上，"
+            "先跑 `annotate`（整行模式）补标签"
+        )
+    inp = pathlib.Path(args.input)
+    if not inp.exists():
+        raise GoldenError(f"标注文件 {inp} 不存在")
+    rows = _load_jsonl(inp)
+    if not rows:
+        raise GoldenError(f"{inp} 是空的")
+    try:
+        fills = group_fills(rows)
+        if not fills:
+            raise DimScoreError(
+                "输入里没有一个填好的格子（gold_score 全是空）——"
+                "**没填不是判不了**：判不了写 null，没看就留空"
+            )
+        merged, stats = merge_dimension_scores(
+            existing, fills, allow_overwrite=bool(args.force)
+        )
+    except DimScoreError as exc:
+        raise GoldenError(str(exc)) from exc
+    if not stats["changed"]:
+        print(
+            f"→ 无变化：{stats['unchanged']} 条与现有分数相同（幂等跳过），未写盘"
+        )
+        return 0
+    ordered = sorted(
+        merged, key=lambda r: (str(r.get("golden_id") or ""), int(r.get("round", 1)))
+    )
+    _dump_jsonl(ann_path, ordered, force=True)
+    per_dim = " · ".join(
+        f"{dim} {n}" for dim, n in sorted(stats["per_dim"].items())
+    )
+    print(
+        f"→ 已写 {ann_path}：合并 {stats['changed']} 条"
+        f"（幂等跳过 {stats['unchanged']} 条 · 人判判不了 {stats['judged_na']} 格）"
+    )
+    print(f"  本次补的格子：{per_dim}")
+    if stats["overwritten"]:
+        print(f"  ⚠ 覆盖已有分数 {stats['overwritten']} 格（--force）")
+    print(
+        "  下一步：`freeze --from-version <上一版> --refresh-gold`"
+        " 把分数带进新版本——**金标变动 = 新基线**，与前版不可比"
+    )
     return 0
 
 
@@ -861,6 +960,355 @@ def _regression_slice(
     return [dict(r) for r in picked], rest
 
 
+def _score_tally(
+    rows: Sequence[Mapping[str, Any]], dim: str
+) -> dict[str, int]:
+    """一维的三态计数：``scored`` / ``abstain`` / ``no_sample``。
+
+    判据是**行的 ``status``**，不是「键在不在 dict 里」：
+    ``status`` 是 overlay-scout 落盘时写死的三态（scored / missing_sample /
+    negative_pool_no_sample），比键的形状稳。
+    """
+    out = {"scored": 0, "abstain": 0, "no_sample": 0}
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status != "scored":
+            out["no_sample"] += 1
+            continue
+        value = (row.get("dimension_scores") or {}).get(dim)
+        if value is None:
+            out["abstain"] += 1
+        else:
+            out["scored"] += 1
+    return out
+
+
+def _dim_dist(rows: Sequence[Mapping[str, Any]], dim: str) -> dict[str, int]:
+    """一维的取值分布，落盘用（键统一成字符串，``None`` → ``"null"``）。
+
+    JSON 对象的键本来就是字符串。不提前统一的话，内存里是 ``{5: 15}``、
+    落盘读回来是 ``{"5": 15}``——同一份东西两种长相，审计时对不上。
+    """
+    counter: collections.Counter = collections.Counter()
+    for row in rows:
+        counter[(row.get("dimension_scores") or {}).get(dim)] += 1
+    return {
+        ("null" if k is None else str(k)): v
+        for k, v in _sorted_score_dist(counter).items()
+    }
+
+
+def _refresh_scores(
+    parts: Mapping[str, Sequence[Mapping[str, Any]]],
+    cand_path: pathlib.Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """继承式冻结时把 pred 侧的评分按 ``golden_id`` 从 candidates 重挂。
+
+    为什么需要它（M-29）
+    ------------------
+    继承式冻结的设计是「**行内容不动**」——v7 冻结时写进行里的分数是
+    **当时**评分器的输出。评分器换了之后那批分数就过期了：v7 的 d5 pred
+    全是 5，因为那时 D-5 还「恒真」（四条检查全从自己的账本里取输入）。
+    快照与评分器于是不再是同一个东西，而这件事**一个字都不报**。
+
+    换哪三个字段
+    ------------
+    只换 ``dimension_scores`` / ``scores_detail`` / ``status``；
+    **``golden`` 与 ``code`` 一个字不动**——金标与分支结论不归这条路管，
+    这条路上没有任何东西被重算（d10 的 pred 仍是冻结行的 ``code.branch``）。
+
+    fail-closed
+    -----------
+    - ``golden_id`` 在 candidates 里找不到 ⇒ 退 2 并**列出全部缺失 id**，
+      绝不「找不到就留着旧分数」（那等于把过期分数继续盖着，看起来像刷过了）。
+    - candidates 行缺 ``status`` ⇒ 退 2：那份文件没经 ``overlay-scout``
+      回填，拿它覆盖只会把行里的分数抹成空。
+
+    审计口径
+    --------
+    ``per_dim`` 的 before/after 分布取**有样本的行**（与快照里该维的条目
+    同口径）；``tally`` 取**全部站点级行**，按**刷新后**的状态分三态。
+    """
+    if not cand_path.exists():
+        raise GoldenError(
+            f"{cand_path} 不存在；--refresh-scores 要从 candidates 重挂评分"
+        )
+    candidates = {
+        str(r.get("golden_id") or ""): r for r in _load_jsonl(cand_path)
+    }
+    missing: list[str] = []
+    new_parts: dict[str, list[dict[str, Any]]] = {}
+    for split, rows in parts.items():
+        refreshed: list[dict[str, Any]] = []
+        for row in rows:
+            gid = str(row.get("golden_id") or "")
+            cand = candidates.get(gid)
+            if cand is None:
+                missing.append(gid)
+                continue
+            if not cand.get("status"):
+                raise GoldenError(
+                    f"candidates 里的 {gid} 没有 status；这份 candidates 没经 "
+                    "overlay-scout 回填，先跑 overlay-scout 再刷新评分"
+                )
+            new = dict(row)
+            new["dimension_scores"] = cand.get("dimension_scores") or {}
+            new["scores_detail"] = cand.get("scores_detail") or []
+            new["status"] = cand.get("status")
+            refreshed.append(new)
+        new_parts[split] = refreshed
+    if missing:
+        raise GoldenError(
+            "candidates.jsonl 里找不到这些 golden_id（"
+            f"{len(missing)} 个）：{' / '.join(missing)}；"
+            "**不刷新**（留着过期分数比刷一半更糟），先补齐候选"
+        )
+
+    before_rows = [r for rows in parts.values() for r in rows]
+    after_rows = [r for rows in new_parts.values() for r in rows]
+
+    def _site(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        return [r for r in rows if r.get("source_kind") != "p2_sample"]
+
+    before_site = _site(before_rows)
+    after_site = _site(after_rows)
+    per_dim: dict[str, Any] = {}
+    tally: dict[str, Any] = {}
+    for dim in OVERLAY_DIMS:
+        per_dim[dim] = {
+            "before": _dim_dist(
+                [r for r in before_site if r.get("status") == "scored"], dim
+            ),
+            "after": _dim_dist(
+                [r for r in after_site if r.get("status") == "scored"], dim
+            ),
+        }
+        tally[dim] = _score_tally(after_site, dim)
+    info = {
+        "enabled": True,
+        "source": cand_path.name,
+        "rows_matched": len(after_rows),
+        "rows_missing": 0,
+        "population": "site_rows",
+        "per_dim": per_dim,
+        "tally": tally,
+        "note": (
+            "per_dim 的 before/after 取有样本的行（与快照该维条目同口径）；"
+            "tally 取全部站点级行，按刷新后的状态分三态"
+        ),
+    }
+    return new_parts, info
+
+
+def _refresh_gold(
+    parts: Mapping[str, Sequence[Mapping[str, Any]]],
+    ann_path: pathlib.Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """继承式冻结时把 **gold 侧的软维度分数**按 ``golden_id`` 从标注重挂。
+
+    为什么需要它（填软维度金标的最后一段）
+    ------------------------------------
+    软维度金标住在 ``annotations.jsonl`` 的 ``dimension_scores`` 里，冻结时由
+    :func:`_labeled_rows` 抄进 ``golden.dimension_scores``。而**继承式冻结是
+    「行内容不动」**——今天填的分数，走 ``--from-version`` 永远进不了新版本。
+    不补这条路，「填金标」这件事在冻结链上**没有出口**。
+
+    换哪一栏
+    --------
+    **只换** ``golden.dimension_scores``。``golden.label`` / ``note`` /
+    ``reviewed_by`` / ``code`` / ``dimension_scores``（pred 侧）一个字不动
+    ——标签金标的改动是另一件事（Q-11 裁定：不重标），这条路上没有东西被重判。
+
+    ⚠️ **金标变动 = 新基线**：两版之间的分数变动**不能**算进「净改善」——
+    修好/弄坏只有在同一份金标上才可比（§10「改金标要新版本 + 人裁」）。
+    所以 manifest 落 ``baseline_reset: true``，``gate`` 读到它就退 2
+    （与前版不可比），下一对可比是**本版与它的后继**。
+
+    fail-closed：标注里一条软维度分都没有 ⇒ 退 2（刷空等于什么都没做，
+    却消耗掉一个版本号）；``golden_id`` 找不到 round=1 标注 ⇒ 退 2 并列出全部。
+    """
+    annotations = {
+        str(r.get("golden_id") or ""): r
+        for r in _load_jsonl(ann_path)
+        if int(r.get("round", 1)) == 1
+    }
+    if not annotations:
+        raise GoldenError(f"{ann_path} 里没有 round=1 标注；先 annotate 再 --refresh-gold")
+    filled = [
+        r for r in annotations.values()
+        if isinstance(r.get("dimension_scores"), Mapping) and r.get("dimension_scores")
+    ]
+    if not filled:
+        raise GoldenError(
+            f"{ann_path} 里一条软维度分数都没有：先填（`annotate --dimensions-only`）"
+            "再 --refresh-gold——刷空等于什么都没做，却把版本号用掉了"
+        )
+
+    missing: list[str] = []
+    new_parts: dict[str, list[dict[str, Any]]] = {}
+    before_rows: list[Mapping[str, Any]] = []
+    after_rows: list[Mapping[str, Any]] = []
+    changed_rows = 0
+    for split, rows in parts.items():
+        refreshed: list[dict[str, Any]] = []
+        for row in rows:
+            gid = str(row.get("golden_id") or "")
+            ann = annotations.get(gid)
+            if ann is None:
+                missing.append(gid)
+                continue
+            dims = ann.get("dimension_scores")
+            dims = dict(dims) if isinstance(dims, Mapping) and dims else None
+            new = dict(row)
+            golden = dict(row.get("golden") or {})
+            old_dims = golden.get("dimension_scores")
+            golden["dimension_scores"] = dims
+            new["golden"] = golden
+            before_rows.append(row)
+            after_rows.append(new)
+            if (old_dims or {}) != (dims or {}):
+                changed_rows += 1
+            refreshed.append(new)
+        new_parts[split] = refreshed
+    if missing:
+        raise GoldenError(
+            "annotations.jsonl 里找不到这些 golden_id 的 round=1 标注（"
+            f"{len(missing)} 个）：{' / '.join(missing)}；不刷新"
+        )
+
+    per_dim: dict[str, Any] = {}
+    for dim in OVERLAY_DIMS:
+        per_dim[dim] = {
+            "before": _dim_dist(
+                [_as_gold(r) for r in before_rows if _as_gold(r).get(dim) is not None],
+                dim,
+            ),
+            "after": _dim_dist(
+                [_as_gold(r) for r in after_rows if _as_gold(r).get(dim) is not None],
+                dim,
+            ),
+        }
+    info = {
+        "enabled": True,
+        "source": ann_path.name,
+        "rows_matched": len(after_rows),
+        "rows_missing": 0,
+        "changed_rows": changed_rows,
+        "per_dim": per_dim,
+        # ⚠ 金标变了 = 新基线：gate 读到它就拒绝跟上一版比（退 2）。
+        "baseline_reset": True,
+        "note": (
+            "只重挂 golden.dimension_scores；label / code / pred 侧未动。"
+            "金标变动 ⇒ 与前版不可比（新基线），下一对可比是本版与它的后继"
+        ),
+    }
+    return new_parts, info
+
+
+def _as_gold(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    """取 ``golden`` 子字典（只读视图）；没有就空 dict。"""
+    golden = row.get("golden")
+    return golden if isinstance(golden, Mapping) else {}
+
+
+def _refresh_label(
+    parts: Mapping[str, Sequence[Mapping[str, Any]]],
+    ann_path: pathlib.Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """继承式冻结时把 **gold 侧的 D-10 label** 按 ``golden_id`` 从标注重挂。
+
+    为什么需要它（修正 gold_defect 金标错的最后一段）
+    ------------------------------------------------
+    D-10 金标 label 住在 ``annotations.jsonl`` 的 ``label`` 里，冻结时由
+    :func:`_labeled_rows` 抄进 ``golden.label``。而**继承式冻结是「行内容不动」**——
+    今天修正的 label，走 ``--from-version`` 永远进不了新版本。软维度有
+    ``--refresh-gold``、评分有 ``--refresh-scores``，唯独 D-10 label 没有出口，
+    这是 Q-11「改标签 = 新版本 + 人裁」在冻结链上断掉的那一截。
+
+    换哪一栏
+    --------
+    **只换** ``golden.label`` / ``label_label`` / ``reviewed_by`` /
+    ``reviewed_at`` / ``note``（五个与 label 绑定的字段）。
+    ``golden.dimension_scores`` / ``code`` / pred 侧（``dimension_scores`` /
+    ``scores_detail`` / ``status``）**一个字不动**——软维度金标归
+    ``--refresh-gold``、评分归 ``--refresh-scores`` 管，各走各的出口。
+
+    ⚠️ **label 变动 = 新基线**：与 ``--refresh-gold`` 同理，label 改动**不能**
+    算进「净改善」——所以 manifest 落 ``baseline_reset: true``，``gate`` 读到它
+    就退 2（与前版不可比），下一对可比是**本版与它的后继**。
+
+    fail-closed：``golden_id`` 找不到 round=1 标注 ⇒ 退 2 并列出全部；本次要
+    重挂的 label 与冻结行里的旧 label 完全相同 ⇒ 退 2（刷空等于什么都没做，
+    却消耗掉一个版本号）。
+    """
+    annotations = {
+        str(r.get("golden_id") or ""): r
+        for r in _load_jsonl(ann_path)
+        if int(r.get("round", 1)) == 1
+    }
+    if not annotations:
+        raise GoldenError(f"{ann_path} 里没有 round=1 标注；先 annotate 再 --refresh-label")
+
+    missing: list[str] = []
+    new_parts: dict[str, list[dict[str, Any]]] = {}
+    before_by_label: dict[str, int] = collections.Counter()
+    after_by_label: dict[str, int] = collections.Counter()
+    changed_rows = 0
+    for split, rows in parts.items():
+        refreshed: list[dict[str, Any]] = []
+        for row in rows:
+            gid = str(row.get("golden_id") or "")
+            ann = annotations.get(gid)
+            if ann is None:
+                missing.append(gid)
+                continue
+            new = dict(row)
+            golden = dict(row.get("golden") or {})
+            old_label = golden.get("label")
+            before_by_label[old_label or ""] += 1
+            new_label = ann.get("label")
+            golden["label"] = new_label
+            golden["label_label"] = ann.get("label_label")
+            golden["reviewed_by"] = ann.get("reviewed_by")
+            golden["reviewed_at"] = ann.get("reviewed_at")
+            golden["note"] = ann.get("note")
+            new["golden"] = golden
+            after_by_label[new_label or ""] += 1
+            if old_label != new_label:
+                changed_rows += 1
+            refreshed.append(new)
+        new_parts[split] = refreshed
+    if missing:
+        raise GoldenError(
+            "annotations.jsonl 里找不到这些 golden_id 的 round=1 标注（"
+            f"{len(missing)} 个）：{' / '.join(missing)}；不刷新"
+        )
+    if changed_rows == 0:
+        raise GoldenError(
+            "annotations.jsonl 里所有行 label 都与冻结行一致：没有需要重挂的 label"
+            "（刷空等于什么都没做，却把版本号用掉了）；先 annotate 改 label 再 --refresh-label"
+        )
+    info = {
+        "enabled": True,
+        "source": ann_path.name,
+        "rows_matched": len(after_by_label),
+        "rows_missing": 0,
+        "changed_rows": changed_rows,
+        "label_shift": {
+            "before": dict(sorted(before_by_label.items(), key=lambda kv: (-kv[1], str(kv[0])))),
+            "after": dict(sorted(after_by_label.items(), key=lambda kv: (-kv[1], str(kv[0])))),
+        },
+        # ⚠ label 变了 = 新基线：gate 读到它就拒绝跟上一版比（退 2）。
+        "baseline_reset": True,
+        "note": (
+            "只重挂 golden.label / label_label / reviewed_by / reviewed_at / note；"
+            "dimension_scores / code / pred 侧未动。label 变动 ⇒ 与前版不可比（新基线），"
+            "下一对可比是本版与它的后继"
+        ),
+    }
+    return new_parts, info
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     golden_dir = pathlib.Path(args.golden_root)
     cand_path = golden_dir / CANDIDATES_FILE
@@ -868,8 +1316,29 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     # `--from-version` 是**继承式重冻结**：切分从上一版原样带过来，不再回头读
     # candidates/annotations。回头重切会重新洗牌，"v7 与 v6 逐行可比"就没了。
     carrying = bool(getattr(args, "from_version", 0))
+    refresh_scores = bool(getattr(args, "refresh_scores", False))
+    refresh_gold = bool(getattr(args, "refresh_gold", False))
+    refresh_label = bool(getattr(args, "refresh_label", False))
+    if refresh_scores and not carrying:
+        raise GoldenError(
+            "--refresh-scores 只能配 --from-version 用：不继承的冻结本来就"
+            "直接读 candidates 的评分字段，没有「带过来的旧分数」这回事"
+        )
+    if refresh_gold and not carrying:
+        raise GoldenError(
+            "--refresh-gold 只能配 --from-version 用：不继承的冻结本来就"
+            "从 annotations 直接抄金标，没有「带过来的旧金标」这回事"
+        )
+    if refresh_label and not carrying:
+        raise GoldenError(
+            "--refresh-label 只能配 --from-version 用：不继承的冻结本来就"
+            "从 annotations 直接抄 label，没有「带过来的旧 label」这回事"
+        )
     src_manifest: dict[str, Any] = {}
     derived_from: dict[str, Any] = {}
+    score_refresh: dict[str, Any] = {"enabled": False}
+    gold_refresh: dict[str, Any] = {"enabled": False}
+    label_refresh: dict[str, Any] = {"enabled": False}
     if carrying:
         src_vdir = golden_dir / f"v{args.from_version}"
         if not src_vdir.exists():
@@ -884,6 +1353,21 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             expected = " / ".join(SPLIT_FILES.values())
             raise GoldenError(
                 f"{src_vdir} 下没有 {expected} 任何一个；没有可继承的切分"
+            )
+        if refresh_gold:
+            parts, gold_refresh = _refresh_gold(parts, ann_path)
+        if refresh_label:
+            parts, label_refresh = _refresh_label(parts, ann_path)
+        if refresh_scores:
+            parts, score_refresh = _refresh_scores(parts, cand_path)
+        else:
+            # S3：M-29 之所以存在，是因为「带过来的分数已经过期」这件事
+            # **一个字都不报**。继承式冻结默认就带着上一版的分数走，
+            # 不喊一声的话，下一版快照的 pred 会被当成当前评分器的输出。
+            print(
+                f"⚠️ 本次继承式冻结未刷新评分：快照 pred 将是 v{args.from_version} "
+                "冻结时的分数，不是当前评分器的输出（要刷新加 --refresh-scores）",
+                file=sys.stderr,
             )
         labeled = [r for split in SPLITS for r in parts.get(split, [])]
         derived_from = {
@@ -977,6 +1461,11 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         # 「质量变好了」而其实换了尺子。
         "rubric_version": RUBRIC_VERSION,
         "evaluator_version": evaluator_version(),
+        # **整张评分面**的指纹（代码面 + prompt 面；方案 16 C-11）。
+        # 存量 v1–v8 没有这一栏（那时还不写），补不回来——只能靠档外的
+        # 版本级台账重算取证。新版从 v9 起**逐版带上**：
+        # 「这版的分数是哪版评分器打的」从此是 manifest 里的一行字。
+        "scorer_fingerprint": scorer_fingerprint(),
         # holdout 已被消费的次数。冻结时恒 0；**解封一次记一次**。
         # 继承式重冻结**不许归零**——归零等于把封存计数抹掉。
         "holdout_runs": (
@@ -1015,6 +1504,16 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             "regression_fingerprint": _rows_fingerprint(reg) if reg else "",
         },
         "derived_from": derived_from,
+        # 评分是否重挂过（M-29）。``enabled=false`` 时 pred 侧是**上一版冻结时**
+        # 的分数——不是当前评分器的输出，读数时必须知道这件事。
+        "score_refresh": score_refresh,
+        # 金标是否重挂过（填软维度金标）。``baseline_reset=true`` 时本版是
+        # **新基线**：``gate`` 拒绝拿它与上一版比（退 2），因为修好/弄坏
+        # 只有在同一份金标上才可比。
+        "gold_refresh": gold_refresh,
+        # D-10 label 是否重挂过（修正 gold_defect 金标错）。与 gold_refresh 同理，
+        # ``baseline_reset=true`` 时本版是新基线（label 变了 = 与前版不可比）。
+        "label_refresh": label_refresh,
         "thresholds": {
             "d10_min_agreement": D10_THRESHOLD,
             "retest_interval_days": RETEST_INTERVAL_DAYS,
@@ -1068,6 +1567,45 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         print(
             f"  继承自 v{derived_from['version']}（切分原样带过来，行内容未改）"
         )
+        if gold_refresh.get("enabled"):
+            print(
+                "  ⚠ 金标已按 annotations 重挂："
+                f"变动 {gold_refresh.get('changed_rows')} 行"
+                "（**金标变动 = 新基线**，与前版不可比；下一对可比是本版与它的后继）"
+            )
+            for dim in OVERLAY_DIMS:
+                dist = (gold_refresh.get("per_dim") or {}).get(dim) or {}
+                print(
+                    f"    {dim}（金标非空）: "
+                    f"{json.dumps(dist.get('before'), ensure_ascii=False)}"
+                    f" → {json.dumps(dist.get('after'), ensure_ascii=False)}"
+                )
+        if label_refresh.get("enabled"):
+            shift = label_refresh.get("label_shift") or {}
+            print(
+                "  ⚠ D-10 label 已按 annotations 重挂："
+                f"变动 {label_refresh.get('changed_rows')} 行"
+                "（**label 变动 = 新基线**，与前版不可比；下一对可比是本版与它的后继）"
+            )
+            print(
+                "    label 分布: "
+                f"{json.dumps(shift.get('before'), ensure_ascii=False)}"
+                f" → {json.dumps(shift.get('after'), ensure_ascii=False)}"
+            )
+        if score_refresh.get("enabled"):
+            print(
+                "  评分已按当前评分器重挂（golden / code 未动）："
+                f"匹配 {score_refresh.get('rows_matched')} 行"
+            )
+            for dim in OVERLAY_DIMS:
+                t = (score_refresh.get("tally") or {}).get(dim) or {}
+                print(
+                    f"    {dim}: before={json.dumps((score_refresh['per_dim'][dim])['before'], ensure_ascii=False)}"
+                    f" → after={json.dumps((score_refresh['per_dim'][dim])['after'], ensure_ascii=False)}"
+                    f"（scored {t.get('scored')} / 弃权 {t.get('abstain')} / 无样本 {t.get('no_sample')}）"
+                )
+        else:
+            print("  评分未刷新：pred 侧仍是源版本冻结时的分数（不是当前评分器的输出）")
     hold_frac = f"{len(hold) / total_rows:.1%}" if total_rows else "0.0%"
     reg_note = f" / 回归集 {len(reg)} 条" if reg else ""
     print(
@@ -1100,9 +1638,13 @@ def cmd_consistency(args: argparse.Namespace) -> int:
     """D9 单人 test-retest 自我一致性。
 
     读 annotations.jsonl 中 round1/round2 配对：
-    - 硬维度：站点级 label —— Cohen's kappa（要求 ≥0.7）；
-    - 软维度：dimension_scores（1–5）—— 线性加权 kappa（要求 ≥0.50）；
-    总闸门：加权后 ≥0.7（由汇报方综合）。"""
+    - 硬维度：站点级 label —— Cohen's kappa（上岗线见阈值表 ``t2_hard_kappa``）；
+    - 软维度：dimension_scores（1–5）—— 线性加权 kappa（``t2_soft_kappa``）；
+    总闸门：加权后按硬维度线（由汇报方综合）。
+
+    上岗线**不在本模块写字面量**——取自 ``evaluation/scorers/thresholds.py``
+    （阈值唯一真源，方案 16 C-14 / D-C6）。
+    """
     golden_root = pathlib.Path(args.golden_root)
     ann_path = golden_root / ANNOTATIONS_FILE
     if not ann_path.exists():
@@ -1155,10 +1697,13 @@ def cmd_consistency(args: argparse.Namespace) -> int:
     print(f"D9 test-retest 一致性（配对 {len(paired_ids)} 条）")
     print(
         f"  硬维度 label 一致率: {hard_agree:.1%}  Cohen's kappa: {_fmt_opt(hard_k)}  "
-        f"(上岗线 ≥0.7)"
+        f"(上岗线 ≥{thresholds.value('t2_hard_kappa'):g})"
     )
     if soft:
-        print("  软维度（1–5 线性加权 kappa，上岗线 ≥0.50）：")
+        print(
+            "  软维度（1–5 线性加权 kappa，"
+            f"上岗线 ≥{thresholds.value('t2_soft_kappa'):.2f}）："
+        )
         for k, v in soft.items():
             print(f"    {k:28s} n={v['n']:3d}  kappa={_fmt_opt(v['weighted_kappa'])}")
     else:
@@ -1172,6 +1717,296 @@ def cmd_consistency(args: argparse.Namespace) -> int:
         "  边界提醒：① 这是 test-retest 自相关，不是评分者间一致性；"
         "② 间隔 T 已按上记录；③ 单人的系统性偏差测不出，只能测稳不稳。"
     )
+    return 0
+
+
+# --------------------------------------------------------------------------
+# 评分面出处台账（provenance）——方案 16 C-11 补齐
+# --------------------------------------------------------------------------
+#
+# 存量冻结档 v1–v8 的行里**没有** ``scorer_version``，而冻结档**一字不许改**
+# ⇒ 逐行版本补不回来。这条命令走**档外**的路：重算当前代码面、逐行比对存档里
+# 的读数，把结论落进**版本级台账** ``golden/data/scorer_provenance.jsonl``。
+#
+# ⚠️ **它不改任何数**：冻结档不写、``candidates.jsonl`` 不写、P1 存档不写。
+# 唯一的写目标是台账（可重算的旁路账）。
+#
+# 重算取证的效力边界：「当前代码面逐行复现了本版读数」证明的是**读数层面
+# 的一致**，不是「当时跑的就是这份源码」。可比性要的正是前者。
+
+
+def _recompute_code_face(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    p2_root: pathlib.Path,
+) -> dict[str, Any]:
+    """用**当前**代码面重跑某版的软维度评分，逐行比对存档里的读数。
+
+    返回取证字典（不抛）：
+
+    - ``rows_compared``：至少有一维可比对的行数；
+    - ``rows_matched``：比对的维全部一致的行数；
+    - ``rows_diverged``：有任一维不一致的行数；
+    - ``diverged``：不一致行的明细（``golden_id`` + 逐维 before/after）；
+    - ``per_dim``：逐维计数；
+    - ``no_sample``：存档里有读数但**样本已取不到**的行数（**不计为一致**，
+      也不计为不一致——它是「比不了」）。
+
+    比不了的行**不进分母**：把「取不到样本」算成「一致」会让「没量到」看起来
+    像「量过且一致」。
+    """
+    from trajectory_pipeline.evaluation.scout.io import _score_one  # 延后 import
+
+    per_dim: dict[str, dict[str, int]] = {
+        dim: {"compared": 0, "matched": 0, "diverged": 0}
+        for dim in OVERLAY_DIMS
+    }
+    rows_compared = 0
+    rows_matched = 0
+    diverged: list[dict[str, Any]] = []
+    no_sample = 0
+
+    for row in rows:
+        stored = row.get("dimension_scores")
+        if not isinstance(stored, Mapping) or not stored:
+            continue
+        sample = _resolve_sample_for_candidate(dict(row), p2_root)
+        if sample is None:
+            no_sample += 1
+            continue
+        scores = _score_one(sample)
+        recomputed = {
+            str(s.get("dimension")): s.get("score") for s in scores
+        }
+        diffs: dict[str, Any] = {}
+        for dim in OVERLAY_DIMS:
+            if dim not in stored:
+                continue
+            before = stored.get(dim)
+            after = recomputed.get(dim)
+            if before == after:
+                per_dim[dim]["compared"] += 1
+                per_dim[dim]["matched"] += 1
+                continue
+            per_dim[dim]["compared"] += 1
+            per_dim[dim]["diverged"] += 1
+            diffs[dim] = {"stored": before, "recomputed": after}
+        if not diffs:
+            rows_compared += 1
+            rows_matched += 1
+            continue
+        rows_compared += 1
+        diverged.append({
+            "golden_id": str(row.get("golden_id") or ""),
+            "diffs": diffs,
+        })
+
+    return {
+        "rows_compared": rows_compared,
+        "rows_matched": rows_matched,
+        "rows_diverged": len(diverged),
+        "no_sample": no_sample,
+        "diverged": diverged,
+        "per_dim": per_dim,
+        "population": "site_rows_with_stored_scores",
+    }
+
+
+def cmd_provenance(args: argparse.Namespace) -> int:
+    """核验并登记**版本级评分面出处**（方案 16 C-11 补齐）。
+
+    对每个版本产出三条**面**的记录：
+
+    - ``code``：代码面（D-2/D-4/D-5/D-6）。行里记了指纹 ⇒ 直接读；没记 ⇒
+      **重算**当前代码面、逐行比对 ⇒ ``reproduced``（可比）或 ``diverged``
+      （**已知不可比**）；
+    - ``llm``：prompt 面（D-3/D-9）。从 manifest 的 ``evaluator_version`` 读；
+      但**归档里没有 LLM 产的 pred**（overlay 只回填 d2/d4/d5/d6）⇒ 该面与
+      本版 pred **无关**（``not_applicable``）；
+    - ``collection``：采集侧（D-10 的 ``code.branch``）。判定侧版本**从未
+      记录** ⇒ ``unrecorded``（**不猜**）。
+
+    退出码：``0`` 成功；``2`` 测不成（版本不存在 / 台账读不了）。
+    """
+    from trajectory_pipeline.evaluation.calibration.provenance import (
+        FACE_CODE,
+        FACE_COLLECTION,
+        FACE_LLM,
+        STATUS_DIVERGED,
+        STATUS_NOT_APPLICABLE,
+        STATUS_RECORDED,
+        STATUS_REPRODUCED,
+        STATUS_UNRECORDED,
+        face_record,
+        provenance_path,
+        read_provenance,
+        write_provenance,
+    )
+
+    golden_root = pathlib.Path(args.golden_root)
+    p2_root = (
+        pathlib.Path(args.p2_root) if getattr(args, "p2_root", None)
+        else PIPELINE_ROOT
+    )
+    reg_path = provenance_path(golden_root)
+    registry = read_provenance(reg_path)
+
+    versions: list[int] = []
+    if getattr(args, "version", 0):
+        versions = [int(args.version)]
+    else:
+        versions = sorted(
+            int(p.name[1:])
+            for p in golden_root.glob("v[0-9]*")
+            if p.is_dir() and p.name[1:].isdigit()
+        )
+    if not versions:
+        print(f"❌ {golden_root} 下没有冻结版本目录（v{N}/）——无从登记", file=sys.stderr)
+        return 2
+
+    out_rows: list[dict[str, Any]] = []
+    for version in versions:
+        vdir = golden_root / f"v{version}"
+        if not vdir.is_dir():
+            print(f"❌ {vdir} 不存在；--version 只能指向已冻结的版本", file=sys.stderr)
+            return 2
+        rows: list[dict[str, Any]] = []
+        for split in SPLITS:
+            f = vdir / SPLIT_FILES[split]
+            if f.exists():
+                rows.extend(_load_jsonl(f))
+        manifest = _load_manifest(vdir)
+
+        # ── code 面 ──────────────────────────────────────────────────
+        recorded = {
+            str(r.get("scorer_version"))
+            for r in rows
+            if r.get("scorer_version")
+        }
+        if recorded:
+            # **行数**与**指纹数**是两件事——v9 起行里真会记版本，
+            # 两个字段填同一个数的话，「rows_with_scorer_version」会
+            # 把「500 行记了同一个版本」读成「只有 1 行记了」。
+            rows_recorded = sum(1 for r in rows if r.get("scorer_version"))
+            code_parts = {
+                code_part(fp) for fp in recorded
+            }
+            if len(code_parts) > 1:
+                print(
+                    f"❌ v{version} 的行里记了 {len(code_parts)} 个不同的代码面"
+                    f"（{sorted(code_parts)}）——同一版里混着两版评分器，"
+                    "出处登记不出来，停下。",
+                    file=sys.stderr,
+                )
+                return 2
+            code_face = {
+                "version": code_parts.pop(),
+                "status": STATUS_RECORDED,
+                "comparable": True,
+                "evidence": {
+                    "rows_with_scorer_version": rows_recorded,
+                    "distinct_fingerprints": len(recorded),
+                },
+                "note": "行里记了 scorer_version（内容指纹）⇒ 直接读",
+            }
+        else:
+            evidence = _recompute_code_face(rows, p2_root=p2_root)
+            if evidence["rows_compared"] == 0:
+                code_face = {
+                    "version": VERSION_UNRECORDED,
+                    "status": STATUS_UNRECORDED,
+                    "comparable": None,
+                    "evidence": evidence,
+                    "note": (
+                        "本版没有可比对的软维度读数"
+                        f"（行里没记 scorer_version；存档里的读数 {evidence['no_sample']} "
+                        "行取不到样本）⇒ 该面版本不可知"
+                    ),
+                }
+            elif evidence["rows_diverged"] == 0:
+                code_face = {
+                    "version": code_scorer_version(),
+                    "status": STATUS_REPRODUCED,
+                    "comparable": True,
+                    "evidence": evidence,
+                    "note": (
+                        "当前代码面**逐行复现**了本版的软维度读数 ⇒ "
+                        "这批读数与当前代码面可比"
+                    ),
+                }
+            else:
+                code_face = {
+                    "version": VERSION_UNRECORDED,
+                    "status": STATUS_DIVERGED,
+                    "comparable": False,
+                    "evidence": evidence,
+                    "note": (
+                        f"当前代码面**复现不出**本版的软维度读数"
+                        f"（{evidence['rows_diverged']} / {evidence['rows_compared']} "
+                        "行不一致）⇒ **已知不可比**（当时跑的是哪份源码没记，"
+                        "但「不是同一版」是确定的）"
+                    ),
+                }
+
+        # ── llm 面 ───────────────────────────────────────────────────
+        llm_version = str(manifest.get("evaluator_version") or "")
+        llm_face = {
+            "version": llm_version or VERSION_UNRECORDED,
+            "status": STATUS_RECORDED if llm_version else STATUS_UNRECORDED,
+            "comparable": None,
+            "evidence": {},
+            "note": (
+                "本版 manifest 记的 prompt 面；**归档里没有 LLM 面产出的 pred**"
+                "（overlay 只回填 d2/d4/d5/d6）⇒ 该面与本版 pred 无关"
+                if llm_version else
+                "本版 manifest 没记 prompt 面（v6 及更早）⇒ 不可知"
+            ),
+        }
+
+        # ── collection 面 ────────────────────────────────────────────
+        collection_face = {
+            "version": None,
+            "status": STATUS_UNRECORDED,
+            "comparable": None,
+            "evidence": {},
+            "note": (
+                "branch 由**采集时**判定（``code.source`` 可能是 ``llm``——"
+                "感知层也是 LLM 判的），判定侧版本从未被指纹化 ⇒ 不可判定；"
+                "且重采会换 run_id，不是同一总体，不能拿新判的来比"
+            ),
+        }
+
+        out_rows.append({
+            "version": version,
+            "method": "recompute" if not recorded else "recorded",
+            "faces": {
+                FACE_CODE: code_face,
+                FACE_LLM: llm_face,
+                FACE_COLLECTION: collection_face,
+            },
+            "verified_at": _now_iso(),
+            "note": (
+                "版本级出处台账（方案 16 C-11 补齐）：冻结档一字未改，"
+                "结论由重算取证"
+            ),
+        })
+
+    merged = {int(r["version"]): r for r in registry.values() if "version" in r}
+    for r in out_rows:
+        merged[int(r["version"])] = r
+    if getattr(args, "dry_run", False):
+        for r in out_rows:
+            print(json.dumps(r, ensure_ascii=False, indent=1))
+        print(f"[dry-run] 将写 {reg_path}")
+        return 0
+    write_provenance(reg_path, merged.values())
+    print(f"→ 已写出处台账 {reg_path}（{len(out_rows)} 版）")
+    for r in out_rows:
+        code = r["faces"][FACE_CODE]
+        print(
+            f"  v{r['version']}: code 面 {code['status']}"
+            f"（版本 {code['version']}，可比={code['comparable']}）"
+        )
     return 0
 
 
@@ -1195,6 +2030,32 @@ def _load_manifest(vdir: pathlib.Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return meta if isinstance(meta, dict) else {}
+
+
+def _read_provenance_registry(
+    golden_root: pathlib.Path,
+) -> dict[int, dict[str, Any]]:
+    """读**版本级出处台账**（方案 16 C-11 补齐）；读不到 → 空字典。
+
+    台账**读坏了**（行不是合法 JSON）→ **大声报出来并按「没有台账」处理**，
+    **不静默吞掉**：台账是旁路账，读坏了不影响测量本身（出处栏如实写
+    ``unrecorded``），但读的人必须知道「台账此刻不可信」。
+    """
+    from trajectory_pipeline.evaluation.calibration.provenance import (
+        provenance_path,
+        read_provenance,
+    )
+
+    path = provenance_path(golden_root)
+    try:
+        return read_provenance(path)
+    except ValueError as exc:
+        print(
+            f"⚠️ 出处台账 {path} 读坏了（{exc}）——本次测量按「没有台账」处理，"
+            "出处栏一律记 unrecorded。修好台账再跑一次 `provenance` 即可。",
+            file=sys.stderr,
+        )
+        return {}
 
 
 def _sample_on_disk_map(
@@ -1312,6 +2173,8 @@ def _emit_calibration_artifacts(
     target_dir: str,
     snapshot: Mapping[str, Any] | None = None,
     cards: Sequence[Mapping[str, Any]] | None = None,
+    force_snapshot: bool = False,
+    provenance: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path]:
     """落「全量快照 + 分歧卡」两份派生数据（方案 16 C-15 / C-02）。
 
@@ -1324,6 +2187,15 @@ def _emit_calibration_artifacts(
 
     ``snapshot`` / ``cards`` 可由调用方**预计算后传入**（``cmd_agreement``
     要拿同一份快照算 URL 级读数，同一份东西算两遍只会多一次漂移的机会）。
+
+    ``provenance`` 是**版本级出处台账**（方案 16 C-11 补齐）：给存量冻结档
+    （行里没记 ``scorer_version``）补「那一面的版本是哪版」。台账没有的
+    ⇒ ``unrecorded``，**不拿当前指纹顶替**。
+
+    **快照已存在时不静默覆盖**（M-29 S3′）：重跑一次 ``agreement --version N``
+    就会把历史那份快照重新盖章成今天的 ``evaluator_version``——那份文件是
+    「上一轮判了什么」的唯一凭据，盖掉等于把回归判定的地基抽了。
+    要重算得显式 ``--force-snapshot``。
     """
     from trajectory_pipeline.evaluation.calibration.disagreement import (
         cards_from_snapshot,
@@ -1349,9 +2221,17 @@ def _emit_calibration_artifacts(
             rubric_version=rubric_version,
             evaluator_version=evaluator_version(),
             tolerance=tolerance,
+            provenance=provenance,
+            code_version=code_scorer_version(),
         )
     outdir = pathlib.Path(target_dir) / f"v{version}"
-    snap_path = write_snapshot(outdir / "snapshot.json", snapshot)
+    snap_path = outdir / "snapshot.json"
+    if snap_path.exists() and not force_snapshot:
+        raise GoldenError(
+            f"{snap_path} 已存在；**不静默覆盖**（重盖章等于把「上一轮判了什么」"
+            "的凭据改掉）。要重算加 --force-snapshot，或换个 --emit-disagreements 目录"
+        )
+    snap_path = write_snapshot(snap_path, snapshot)
     if cards is None:
         cards = cards_from_snapshot(snapshot)
     cards_path = write_cards(outdir / "disagreements.jsonl", cards)
@@ -1474,8 +2354,12 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     # ``--soft-dim`` 为空 → 自动从 gold 侧 ``golden.dimension_scores``
     # 出现的 dim 里挑白名单内的（contract 1）；显式指定 → 白名单校验
     # （contract 1 fail-closed）。
-    _t = getattr(args, "dim_tolerance", 1)
-    tolerance = int(_t) if _t is not None else 1
+    _t = getattr(args, "dim_tolerance", None)
+    tolerance = (
+        int(_t)
+        if _t is not None
+        else int(thresholds.value("soft_dim_tolerance"))
+    )
     requested_dims = list(getattr(args, "soft_dim", []) or [])
     for d in requested_dims:
         try:
@@ -1493,7 +2377,7 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     print(
         f"  口径 C（头条，分母 = {HEADLINE_SPLIT if has_split else '全部站点级'} "
         f"{len(headline)} 条）：{agree}/{len(headline)} = {ratio:.1%}  "
-        f"{'✅ ≥90% 上岗' if ratio >= D10_THRESHOLD else '❌ 未达 90% 上岗线'}"
+        f"{f'✅ ≥{D10_THRESHOLD:.0%} 上岗' if ratio >= D10_THRESHOLD else f'❌ 未达 {D10_THRESHOLD:.0%} 上岗线'}"
     )
     if has_split:
         print(
@@ -1602,6 +2486,8 @@ def cmd_agreement(args: argparse.Namespace) -> int:
         rubric_version=ruler_rubric,
         evaluator_version=evaluator_version(),
         tolerance=tolerance,
+        provenance=_read_provenance_registry(golden_root),
+        code_version=code_scorer_version(),
     )
     cards = cards_from_snapshot(snapshot)
     rows_by_id = {str(r.get("golden_id") or ""): r for r in rows}
@@ -1659,6 +2545,8 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             target_dir=args.emit_disagreements,
             snapshot=snapshot,
             cards=cards,
+            force_snapshot=bool(getattr(args, "force_snapshot", False)),
+            provenance=_read_provenance_registry(golden_root),
         )
 
     if getattr(args, "emit_url_conflicts", ""):
@@ -1840,6 +2728,18 @@ def _resolve_sample_for_candidate(
     return None
 
 
+def _sorted_score_dist(counter: "collections.Counter") -> dict[Any, int]:
+    """评分分布的落定序：条数降序，``None``（弃权）排在最后。
+
+    顺序写死是为了**每次跑出来的读数能直接 diff**——分布对不上时，
+    顺序不固定就分不清是真变了还是只是打印顺序变了。
+    """
+    return {
+        k: counter[k]
+        for k in sorted(counter, key=lambda x: (x is None, -counter[x]))
+    }
+
+
 def _report_overlay(
     rows: Sequence[Mapping[str, Any]],
     before_by_kind: Mapping[str, int],
@@ -1868,10 +2768,10 @@ def _report_overlay(
                 branch_counts.items(), key=lambda kv: (-kv[1], str(kv[0]))
             ):
         print(f"  {str(branch):26s} {n:3d}")
-    print("评分分布（仅已 scored 的样本）：")
-    for dim in ("d2", "d4", "d5", "d6"):
+    print("评分分布（仅已 scored 的样本；None = 该维评分器弃权，不计入分母）：")
+    for dim in OVERLAY_DIMS:
         if dim in score_dists:
-            print(f"  {dim}: {dict(score_dists[dim])}")
+            print(f"  {dim}: {_sorted_score_dist(score_dists[dim])}")
 
 
 # --------------------------------------------------------------------------
@@ -1923,31 +2823,44 @@ def cmd_overlay_scout(args: argparse.Namespace) -> int:
         row = dict(c)  # 浅拷：保留原 code / golden / retest
         sample = _resolve_sample_for_candidate(row, p2_root)
         if sample is None:
+            # 显式写空，**不用 setdefault**：上一轮留下的旧分数若留在行里，
+            # 「这行现在没样本」这件事就看不见了（与 S1 要修的是同一类病）。
             if row.get("source_kind") == "negative_pool":
-                row.setdefault("dimension_scores", {})
-                row.setdefault("scores_detail", [])
+                row["dimension_scores"] = {}
+                row["scores_detail"] = []
                 row["status"] = "negative_pool_no_sample"
                 counters["skipped"] += 1
             else:
-                row.setdefault("dimension_scores", {})
-                row.setdefault("scores_detail", [])
+                row["dimension_scores"] = {}
+                row["scores_detail"] = []
                 row["status"] = "missing_sample"
                 counters["missing"] += 1
+            # 没有分数 ⇒ 没有「哪版评分器打的」可言。**显式写空**，
+            # 别让上一轮留下的 ``scorer_version`` 留在行里——那会把
+            # 「这行现在没分数」伪装成「这行有分数且版本是 X」。
+            row["scorer_version"] = None
             out_rows.append(row)
             continue
         scores = _score_one(sample)
-        # 紧凑型 dimension_scores 仅保留成功打分的维度；None 表示
-        # 该评分器判不可判定（例如 D6 在未走到播放页时返回 None），
-        # 不写进 dict，以免下游误读成「0 分」。
-        dim_scores: dict[str, int] = {
-            s["dimension"]: int(s["score"])
-            for s in scores
-            if s.get("dimension") in ("d2", "d4", "d5", "d6")
-            and s.get("score") is not None
-        }
+        # 弃权维度写 ``null``，**不删键**。
+        # 删键时「评分器判不可判定」与「压根没测」在快照里**长得一模一样**
+        # （都是条目消失）——M-29 审计的正是这个：弃权行无声消失，读数对不上
+        # 也看不出异常。键齐全 = 有样本；值为 ``None`` = 该维不可判定
+        # （下游 ``dim_agreement`` 遇 None 不计入分母，与「0 分」不是一回事）。
+        dim_scores: dict[str, int | None] = {dim: None for dim in OVERLAY_DIMS}
+        for s in scores:
+            dim = s.get("dimension")
+            if dim not in dim_scores:
+                continue
+            raw = s.get("score")
+            dim_scores[dim] = int(raw) if raw is not None else None
         row["dimension_scores"] = dim_scores
         row["scores_detail"] = scores
         row["status"] = "scored"
+        # C-11：这批分数是**哪版评分器**打的，写进行里。少了这一栏，
+        # 「旧 prompt 还是新 prompt 判的」在分歧卡上就答不出来——
+        # 而答不出来这件事本身会藏在「看起来一样」的分数里。
+        row["scorer_version"] = scorer_fingerprint()
         counters["scored"] += 1
         out_rows.append(row)
     if args.dry_run:
@@ -2077,9 +2990,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ann.add_argument("--input", required=True, help="标注 JSONL 路径")
     p_ann.add_argument(
+        "--dimensions-only",
+        action="store_true",
+        help=(
+            "只合并软维度分数（方案 16 · 填软维度金标）：输入可带"
+            "`{golden_id, dimension, gold_score}` 的工作表行或"
+            "`{golden_id, dimension_scores}` 的补丁；**label 一字不碰**，"
+            "`reviewed_by` 记进 `dimension_reviewed_by`（不覆盖标签署名人）"
+        ),
+    )
+    p_ann.add_argument(
         "--force",
         action="store_true",
-        help="同一 golden_id 同 round 的 label 不一致时允许覆盖",
+        help="允许覆盖：整行模式 = label 不一致时；--dimensions-only = 已有分数不同时",
     )
     p_ann.set_defaults(func=cmd_annotate)
 
@@ -2095,8 +3018,42 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help=(
             "继承 vN 的切分**原样重冻结**（行内容不动，只补/带回归集与三档口径）。"
-            "给了它就**不读** candidates/annotations——回头重切会重新洗牌，"
-            "「v7 与 v6 逐行可比」就没了。源版本已有 regression.jsonl 时原样带过来。"
+            "切分不读 candidates/annotations——回头重切会重新洗牌，"
+            "「v7 与 v6 逐行可比」就没了；给了 --refresh-scores 时**只**读 candidates "
+            "的三个评分字段。源版本已有 regression.jsonl 时原样带过来。"
+        ),
+    )
+    p_frz.add_argument(
+        "--refresh-scores",
+        action="store_true",
+        help=(
+            "继承式冻结时把每行的 pred 侧评分按 golden_id 从 candidates.jsonl 重挂"
+            "（dimension_scores / scores_detail / status；golden 与 code 不动）。"
+            "**不给它就带着上一版的旧分数走**，快照 pred 那一刻不是当前评分器的"
+            "输出（M-29）。只能配 --from-version 用。"
+        ),
+    )
+    p_frz.add_argument(
+        "--refresh-gold",
+        action="store_true",
+        help=(
+            "继承式冻结时把每行的 **gold 侧软维度分数**按 golden_id 从 "
+            "annotations.jsonl 重挂（只动 golden.dimension_scores；"
+            "label / code / pred 侧不动）。**金标变动 = 新基线**：manifest 落 "
+            "`gold_refresh.baseline_reset=true`，gate 拒绝拿本版与上一版比（退 2）。"
+            "只能配 --from-version 用。"
+        ),
+    )
+    p_frz.add_argument(
+        "--refresh-label",
+        action="store_true",
+        help=(
+            "继承式冻结时把每行的 **gold 侧 D-10 label**按 golden_id 从 "
+            "annotations.jsonl 重挂（只动 golden.label / label_label / "
+            "reviewed_by / reviewed_at / note；dimension_scores / code / pred "
+            "侧不动）。**label 变动 = 新基线**：manifest 落 "
+            "`label_refresh.baseline_reset=true`，gate 拒绝拿本版与上一版比（退 2）。"
+            "只能配 --from-version 用。"
         ),
     )
     p_frz.add_argument(
@@ -2127,6 +3084,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_con.set_defaults(func=cmd_consistency)
 
+    p_prov = sub.add_parser(
+        "provenance",
+        help=(
+            "登记**版本级评分面出处**（方案 16 C-11 补齐）：冻结行没记 "
+            "scorer_version 时，用当前代码面**重算**并逐行比对，得出"
+            "「复现得出来（可比）/ 复现不出来（已知不可比）」。"
+            "**只写档外的台账，不改冻结档、不改 candidates.jsonl**"
+        ),
+    )
+    p_prov.add_argument(
+        "--version", type=int, default=0,
+        help="只登记这一版；缺省 = 全部已冻结版本",
+    )
+    p_prov.add_argument(
+        "--p2-root", default=str(PIPELINE_ROOT),
+        help=f"P1 存档根（默认 {PIPELINE_ROOT}）",
+    )
+    p_prov.add_argument("--dry-run", action="store_true", help="只打印不落盘")
+    p_prov.set_defaults(func=cmd_provenance)
+
     p_agr = sub.add_parser("agreement", help="D10 代码层与黄金集一致率")
     p_agr.add_argument(
         "--version", type=int, default=0, help="冻结版本号；缺省用未冻结的已标注候选"
@@ -2145,9 +3122,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_agr.add_argument(
         "--dim-tolerance",
         type=int,
-        default=1,
+        default=int(thresholds.value("soft_dim_tolerance")),
         help=(
-            "软维度一致率容忍档差，|t-p| <= tolerance 计一致。默认 1；"
+            "软维度一致率容忍档差，|t-p| <= tolerance 计一致。"
+            "默认值取自 evaluation/scorers/thresholds.py（阈值唯一真源，"
+            "方案 16 C-14 / D-C6：改阈值不算 rubric 级变更）；"
             "首次跑只发分布再定阈值（plan §三·第一步风险）。"
         ),
     )
@@ -2161,6 +3140,14 @@ def build_parser() -> argparse.ArgumentParser:
             "派生「全量预测快照 + 分歧卡」到 DIR/v{N}/（方案 16 C-15 / C-02）。"
             "只读派生，不回写冻结档。不带参数 = output/pipeline/calibration；"
             "不写该选项 = 不落盘。要求同时给 --version。"
+        ),
+    )
+    p_agr.add_argument(
+        "--force-snapshot",
+        action="store_true",
+        help=(
+            "允许覆盖已存在的 snapshot.json。**默认不许**：那份文件是"
+            "「上一轮判了什么」的唯一凭据，重盖章等于改历史（M-29 S3′）。"
         ),
     )
     p_agr.add_argument(

@@ -130,7 +130,7 @@
 | `raw_len` | `int` | 预处理前的正文长度 |
 | `stripped_ratio` | `float` | 剥离 CSS/JS 后的保留比例；`<0.5` 说明页面脏 |
 | `degraded` | `list[str]` | 本次**没采到**的项。**fail-closed 的前提**：没有它，「没采到交互元素」与「页面上确实没有」在数据里完全一样。另含**采到了但不可读**的两项 `body_mojibake` / `title_mojibake`（解码损坏，见下） |
-| `video_tag_count` | `int` | 覆盖 `<video>` + `<audio>`。规则版 `PLAYER_OK` 的**唯一**判据 |
+| `video_tag_count` | `int` | 覆盖 `<video>` + `<audio>`。**观察事实，不作判据**——媒体计数只是「有播放组件」的**必要条件**，不许据此判「能播」（2026-10-23 · M-26，见 [02 感知与判定域 §M-26](../计划进展/02-感知与判定域.md)） |
 | `iframe_count` | `int` | **不作判据**，只作排查线索 |
 | `elements_total` | `int` | **采到的**交互元素条数（驱动层 limit 截断后）。落盘条数被裁到 80；两者成对落盘。⚠️ **camoufox 下这个数已经过三层过滤**（词表外 role / 无名字 / 真同名整组丢弃）——过滤账目见下面的 `element_basis.face`。⚠️⚠️ **跨驱动比这个数（§6.1 的 30% 判据）不成立**：两个面数的是**不同的集合**（obscura = 上游工具给的交互元素；camoufox = ARIA 树里过了词表的那些），差值混着「枚举基础不同」与「过滤规则不同」两件事。**可比的那个数在 `element_basis.shared`** |
 | `links_total` | `int` | 同上，链接裁到 50 |

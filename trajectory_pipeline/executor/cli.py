@@ -832,9 +832,11 @@ async def cmd_check(args: argparse.Namespace) -> int:
     rule = build_perceptor(mode="rule")
     print("\n  规则版（W1）可判的题:")
     print("    FIND_PLAY_CONTROL — 播放控件词表 + 预告片判定")
-    print("    PLAYER_OK        — <video>/<audio> 标签**存在性**（非「能播」）")
-    print("                        iframe 数量不作判据：导航站满屏 iframe，"
-          "实测会把 hao123 判成播放页")
+    print("    PLAYER_OK        — **判不出来就 None**（不凭标签存在性判成功，"
+          "2026-10-23 · M-26）")
+    print("                        <video>/<audio> 标签数与 iframe 数都**不作判据**：")
+    print("                        前者会把付费墙页读成「能看正片」，"
+          "后者会把导航站读成播放页（hao123 满屏 iframe）")
     print("  规则版（W1）必然 None 的题（fail-closed）:")
     for qid in (Q.SELECT_PLAY_SITES, Q.IS_REACHABLE):
         print(f"    {qid}")
@@ -848,9 +850,11 @@ async def cmd_check(args: argparse.Namespace) -> int:
 
         print("  LLM 版（W3）四题全走语义判定，但有三条代码层守卫不可绕过:")
         print("    采集充分性预检 — 正文与元素皆空时不问模型（实测模型会判否）")
-        print("    确定性事实优先 — <video> 存在性不问模型")
+        print("    付费墙门禁语境 — 「有播放页但要付费」不算成功（④ 代码层先判）")
         print("    ref 白名单校验 — 模型回传的 ref 必须真的在观察里")
         print(f"    置信度先验 = {CONFIDENCE_JUDGED}（未校准，**不是模型自报**）")
+        print("    ⚠️ 媒体计数不作判据 — <video> 存在性不许许诺成功"
+              "（2026-10-23 · M-26）")
 
     print(f"\n  失败分支全集（{len(questions.all_branches())} 条）: "
           f"{sorted(questions.all_branches())}")

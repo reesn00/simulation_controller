@@ -200,3 +200,103 @@ def test_派生根与verify同源():
         rubric_changelog.DEFAULT_CALIBRATION_ROOT
         == builder.PIPELINE_ROOT / "calibration"
     )
+
+
+# ── C-10：rubric 变更强制连带改 prompt（owner 2026-10-23 裁定 D-C7）────
+#
+# 这一组是 D-C7 的**机械执行面**。owner 裁的是「rubric 变更强制连带改
+# prompt」——但「强制」要有人盯，否则它只是一句愿望。四条不变式：
+#
+#   ① 锚点表与 rubric 文档**逐档对齐**（改档不改表 ⇒ 红）；
+#   ② 锚点条款号由 DIM_CLAUSES **投影**，不手抄，且都在条款词表里；
+#   ③ prompt 里的锚点段**从表渲染**（不许有第二份散文）；
+#   ④ few-shot 每条都挂着表里有的锚点。
+#
+# 另加一条 D-9 专有的：判定措辞必须覆盖 rubric 档位释义（档位释义改了、
+# 六条 verdict 措辞没跟着改 ⇒ 红）——这是「prompt 与准则各走各的」在
+# D-9 侧的具体形状。
+
+
+def test_锚点表与rubric文档逐档对齐():
+    """改 rubric 某档而不改锚点表 ⇒ 这里红。
+
+    这是 D-C7 的核心：**「改档不改 anchor」必须是个错误，而不只是疏忽。**
+    """
+    for dim in ("d3", "d9"):
+        drift = rubric_version.anchors_drift(dim)
+        assert drift == [], f"{dim} 锚点表与 rubric 文档不一致：{drift}"
+
+
+def test_锚点表对每档都能问出条款号():
+    """条款号**投影**自 DIM_CLAUSES（不手抄），且都在合法条款词表里。"""
+    for dim in ("d3", "d9"):
+        for tier in sorted(rubric_version.ANCHOR_TABLES[dim]):
+            clause = rubric_version.clause_of(dim, tier)
+            assert clause in rubric_changelog.known_clauses(), clause
+            assert clause.startswith(f"{rubric_version.clause_of(dim)}."), clause
+
+
+def test_prompt里的锚点段是从表渲染的():
+    """prompt 里那一段必须**等于**渲染结果——不许另写一份散文。
+
+    渲染结果里含表里每一档的释义原文；少一档、抄一档、措辞不同，都会红。
+    """
+    from trajectory_pipeline.evaluation.scorers import d3_scorer, d9_scorer
+
+    for dim, prompt in (
+        ("d3", d3_scorer.D3_SYSTEM_PROMPT),
+        ("d9", d9_scorer.D9_SYSTEM_PROMPT),
+    ):
+        block = rubric_version.render_anchor_block(dim)
+        assert block in prompt, f"{dim} 的 prompt 里没有渲染出来的锚点段"
+        for tier, anchor in rubric_version.ANCHOR_TABLES[dim].items():
+            assert f"- {tier} = {anchor}" in prompt, f"{dim} 档 {tier} 的释义不在 prompt 里"
+
+
+def test_fewshot每条都挂着表里有的锚点():
+    """池现在是空的（INC46 清空）⇒ 这条只校验结构；**不合成假例**。
+
+    池一旦有货，每条必须说清「它教的是哪一档」——锚点漂了要有人看见。
+    """
+    from trajectory_pipeline.evaluation.scorers import d9_scorer
+
+    assert d9_scorer.validate_few_shot_anchors() == []
+    # 结构本身也要能用：拿一条**合法的**锚点试一次（不是合成 few-shot 例子，
+    # 是验校验器认得出好坏）。
+    allowed = sorted(rubric_version.anchor_clauses("d9"))
+    assert d9_scorer.validate_few_shot_anchors([{"anchor": allowed[0]}]) == []
+    assert d9_scorer.validate_few_shot_anchors([{"anchor": "D-9.9"}]) != []
+    assert d9_scorer.validate_few_shot_anchors([{"note": "没写 anchor"}]) != []
+
+
+def test_D9判定措辞覆盖rubric档位释义():
+    """D-9 的六条 verdict 措辞必须覆盖 rubric 各档的释义。
+
+    rubric 档位 3 写的是两个 verdict 的并（「轻微幻觉**或**后见之明」），
+    所以按「或」切成片段，每片都要能在该档的 verdict 措辞里找到。
+    改 rubric 档位释义而不同步措辞 ⇒ 这里红。
+    """
+    from trajectory_pipeline.evaluation.scorers import d9_scorer
+
+    for tier, anchor in rubric_version.ANCHOR_TABLES["d9"].items():
+        verdicts = [
+            v for v, t in d9_scorer.D9_VERDICT_TIERS.items() if t == tier
+        ]
+        assert verdicts, f"D-9 档 {tier} 没有任何 verdict 对应"
+        blob = "".join(d9_scorer.D9_VERDICT_TEXT[v] for v in verdicts)
+        for fragment in anchor.split("或"):
+            frag = rubric_version._norm_text(fragment)
+            assert frag and frag in rubric_version._norm_text(blob), (
+                f"D-9 档 {tier} 的释义片段 {fragment!r} 在该档 verdict 措辞里找不到"
+            )
+
+
+def test_D9每个verdict都有档位与措辞():
+    """六条 verdict 一一对应档位与措辞——不许有孤儿 verdict。"""
+    from trajectory_pipeline.evaluation.scorers import d9_scorer
+
+    assert set(d9_scorer.D9_VERDICT_TIERS) == set(d9_scorer.D9_VERDICTS)
+    assert set(d9_scorer.D9_VERDICT_TEXT) == set(d9_scorer.D9_VERDICTS)
+    for verdict, tier in d9_scorer.D9_VERDICT_TIERS.items():
+        assert 1 <= tier <= 5, verdict
+        assert d9_scorer.D9_VERDICT_TEXT[verdict].strip(), verdict

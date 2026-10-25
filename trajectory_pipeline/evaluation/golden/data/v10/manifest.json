@@ -1,0 +1,116 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "2",
+ "rubric_version": "1.2",
+ "evaluator_version": "1046e67994aa",
+ "scorer_fingerprint": "code:3d352641c0aa|llm:1046e67994aa",
+ "holdout_runs": 0,
+ "version": 10,
+ "frozen_at": "2026-10-24T14:13:02+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 357,
+  "annotated": 294,
+  "site": 289,
+  "trajectory": 5,
+  "calibration": 131,
+  "regression": 60,
+  "holdout": 103
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.4456,
+  "pool_ratio": 0.6497,
+  "regression_ratio": 0.2041,
+  "holdout_ratio": 0.3503,
+  "pp_diff_from_target": 0.0003,
+  "headline_split": "calibration",
+  "regression_size": 60,
+  "regression_seed": 20261022,
+  "regression_fingerprint": "937a45f25eea"
+ },
+ "derived_from": {
+  "version": 9,
+  "counts": {
+   "candidates": 357,
+   "annotated": 294,
+   "site": 289,
+   "trajectory": 5,
+   "calibration": 131,
+   "regression": 60,
+   "holdout": 103
+  },
+  "holdout_runs": 0
+ },
+ "score_refresh": {
+  "enabled": false
+ },
+ "gold_refresh": {
+  "enabled": false
+ },
+ "label_refresh": {
+  "enabled": true,
+  "source": "annotations.jsonl",
+  "rows_matched": 12,
+  "rows_missing": 0,
+  "changed_rows": 14,
+  "label_shift": {
+   "before": {
+    "unresolved": 76,
+    "unreachable_hard": 37,
+    "success": 36,
+    "subscription_wall": 35,
+    "not_play_site": 31,
+    "component_unverified": 18,
+    "no_play_control": 16,
+    "blocked": 15,
+    "broken": 13,
+    "login_wall_or_blocked": 9,
+    "trailer_only": 7,
+    "trailer_suspect": 1
+   },
+   "after": {
+    "unresolved": 76,
+    "unreachable_hard": 40,
+    "success": 37,
+    "subscription_wall": 34,
+    "not_play_site": 30,
+    "component_unverified": 17,
+    "no_play_control": 17,
+    "blocked": 16,
+    "broken": 13,
+    "trailer_only": 7,
+    "login_wall_or_blocked": 6,
+    "trailer_suspect": 1
+   }
+  },
+  "baseline_reset": true,
+  "note": "只重挂 golden.label / label_label / reviewed_by / reviewed_at / note；dimension_scores / code / pred 侧未动。label 变动 ⇒ 与前版不可比（新基线），下一对可比是本版与它的后继"
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.9,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 40,
+  "success": 37,
+  "subscription_wall": 34,
+  "not_play_site": 30,
+  "component_unverified": 17,
+  "no_play_control": 17,
+  "blocked": 16,
+  "broken": 13,
+  "trailer_only": 7,
+  "login_wall_or_blocked": 6,
+  "trailer_suspect": 1
+ }
+}

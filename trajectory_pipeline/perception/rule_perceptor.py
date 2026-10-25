@@ -5,19 +5,26 @@
 让规则版去「猜」语义，得到的不是弱信号而是**假信号**——它会污染负样本池，
 让「这一站没播放控件」这个结论看起来有代码背书，实际是关键词匹配的幻觉。
 
-W1 只有两件事是确定性的：
+W1 只做两件事，且都必须是**确定性的**：
 
 1. **``trailer_only``**——纯文本匹配，不需要理解页面（用户业务规则：
    播放控件文本是「预告片」即说明播放资源不存在）。
-2. **``PLAYER_OK`` 的正向存在性**——**存在 ``<video>`` / ``<audio>`` 标签**
-   时可判 True；**不存在时返回 None 而非 False**，因为 JS / canvas / iframe
-   播放器都不产生这些标签，「没测到」≠「没有」。
+2. **``PLAYER_OK`` 判不出来就返回 None**——**存在 ``<video>`` / ``<audio>``
+   标签也不判 True**（2026-10-23 · M-26）：媒体计数是**必要条件**，
+   不是充分条件——优酷「试看6分钟｜开通会员看完整视频」页 ``video=1``、
+   网易号美食图文页 ``video=6``（点广告后注入），都曾被读成「能看正片」。
+   ⇒ 规则版**没有 LLM 可让**，``False`` 更糟（会把「能看但判不出」写成
+   **真负样本**进池），唯一不撒谎的取值是 ``None``（fail-closed）。
+   它落 ``player_unverified``：**不进负样本池**、在人工复核队列里
+   （这正是 W1 设计的正样本路径）。
    （iframe 数量**不作**判据：实测导航站 hao123 满屏 15 个 iframe，
    拿它当判据会把导航站判成播放页。）
 
-其余两题（``SELECT_PLAY_SITES`` / ``IS_REACHABLE``）W1 全程 ``answer=None``。
+其余两题（``SELECT_PLAY_SITES`` / ``IS_REACHABLE``）W1 全程 ``answer=None``；
+④（``PLAYER_OK``）自 2026-10-23 · M-26 起**也不再产出 True**（见上）。
 这意味着 W1 批次**不会有正样本**——它是执行层的连通性验证批次，
-素材价值主要在负样本池。正样本要等 W3 的 LLMPerceptor。
+素材价值主要在负样本池。正样本要等 W3 的 LLMPerceptor，
+或走人工复核队列（W1 的正样本来源，见 ``executor/review_queue.py``）。
 """
 
 from __future__ import annotations
@@ -149,6 +156,34 @@ PAYWALL_GATE_PHRASES: tuple[str, ...] = (
     "members only", "vip required", "unlock with",
 )
 
+#: **条件式门禁短语**（2026-10-25 · 方案 19 A 类补漏）——播放器报错形态，
+#: 单看是「错误」而非「付费」，必须与 :data:`PAYWALL_ERROR_CONTEXT_WORDS`
+#: 里的会员电商信号**同页同现**才算付费墙门禁。
+#:
+#: 背景：bilibili 会员影片未登录/未开通时，播放器区显示「发生了错误，
+#: 请稍后再试」+ 页面导航带「会员购」，正片标签标「会员」——这是
+#: **付费墙**形态（不是 broken，也不是「没控件」）。但「发生了错误」是
+#: 极泛的错误提示，服务器 5xx / 404 / 网络错误都会出现，单看它会把
+#: broken 页误判成订阅墙。
+#:
+#: 所以这批短语**不能进 :data:`PAYWALL_GATE_PHRASES`**（那是无条件命中），
+#: 必须单独一张表，配会员电商信号同现才成立——见
+#: :func:`_find_paywall_hit` 的第三条判据。
+#:
+#: ⚠️ 会员电商信号刻意只收**会员专享入口**（「会员购」「大会员购」「会员专区」），
+#: 不收泛化的「会员」二字——「会员」在普通影视详情页的标签/角标里也高频，
+#: 收进来会让「发生了错误」+「会员」标签的普通页面误判成付费墙。
+PAYWALL_ERROR_GATE_PHRASES: tuple[str, ...] = (
+    "发生了错误", "请稍后再试", "播放出错", "加载失败", "视频加载失败",
+    "播放器错误", "视频播放失败",
+)
+
+#: 条件式门禁的**会员电商信号**（必须与 :data:`PAYWALL_ERROR_GATE_PHRASES`
+#: 同页同现）。只收会员专享入口，不收泛化「会员」二字。
+PAYWALL_ERROR_CONTEXT_WORDS: tuple[str, ...] = (
+    "会员购", "大会员购", "会员专区", "会员专享区",
+)
+
 #: L2 · **号召 CTA** 短语——必须配同句观看语境才成立（见模块头那段说明）。
 #:
 #: ⚠️ **「sign in to watch」不在这里**（2026-10-21）：它是**登录门**
@@ -271,7 +306,12 @@ def _find_paywall_hit(text: str) -> _PaywallHit | None:
        就是完整命题（「订阅后观看」= 不订阅不给看），不需要再看上下文；
     2. **L2 CTA 短语**命中（:data:`PAYWALL_CTA_PHRASES`）**且同一句**
        里有**观看语境词**（:data:`PAYWALL_CONTEXT_WORDS`）——
-       「开通会员」独行是导航栏广告，「开通会员 观看完整版」是门禁。
+       「开通会员」独行是导航栏广告，「开通会员 观看完整版」是门禁；
+    3. **L1.5 条件式门禁**（2026-10-25 方案 19 A 类补漏）：播放器报错
+       短语（:data:`PAYWALL_ERROR_GATE_PHRASES`）命中，**且页面**里
+       有会员电商信号（:data:`PAYWALL_ERROR_CONTEXT_WORDS`）——
+       bilibili「发生了错误」+「会员购」= 付费墙；「发生了错误」独行
+       = broken/unreachable，不是付费墙。
     """
     if not text:
         return None
@@ -289,6 +329,16 @@ def _find_paywall_hit(text: str) -> _PaywallHit | None:
                 if ctx:
                     return _PaywallHit(phrase=cta, kind="cta", context=ctx)
                 pos = ulow.find(clow, pos + 1)
+    # L1.5 条件式门禁：播放器报错短语 + 会员电商信号同页同现。
+    for phrase in PAYWALL_ERROR_GATE_PHRASES:
+        if phrase.lower() in low:
+            for ctx in PAYWALL_ERROR_CONTEXT_WORDS:
+                if ctx.lower() in low:
+                    return _PaywallHit(
+                        phrase=phrase, kind="gate", context=ctx
+                    )
+            # 报错短语命中但无会员电商信号——不成立（就是 broken/错误页）。
+            break
     return None
 
 
@@ -306,6 +356,8 @@ def paywall_evidence(text: str) -> str:
     if hit is None:
         return ""
     if hit.kind == "gate":
+        if hit.context:
+            return f"付费墙门禁「{hit.phrase}」+ 会员电商信号「{hit.context}」"
         return f"付费墙门禁短语「{hit.phrase}」"
     return f"付费墙 CTA「{hit.phrase}」+ 同句观看语境「{hit.context}」"
 
@@ -817,7 +869,9 @@ class RulePerceptor:
 
     def health(self) -> tuple[bool, str]:
         """自述能力边界。``--readiness`` 类命令据此提示「正样本要等 W3」。"""
-        return True, "确定性实现：可判 trailer_only 与播放组件存在性；其余题 fail-closed"
+        return True, ("确定性实现：可判 trailer_only；"
+                      "④ 播放页判不出来一律 None（2026-10-23 · M-26 起不凭媒体计数判成功）；"
+                      "其余题 fail-closed")
 
     @property
     def unresolved_questions(self) -> frozenset[str]:
@@ -913,7 +967,8 @@ class RulePerceptor:
     def _player_ok(self, spec: Any, obs: Observation, started: float) -> Decision:
         """判断点 ④：播放页是否有媒体组件。
 
-        **只认 ``<video>`` / ``<audio>``，iframe 数量不作为判据。**
+        **``<video>`` / ``<audio>`` 的存在与 iframe 数量都不是判据**——
+        两种形态都返回 ``None``（见下）。
 
         实测把 iframe 当判据会直接产出假阳性：hao123（纯导航站）首页有
         **15** 个 iframe，于是被判「播放页 OK」——而它连作品都不对应。
@@ -921,8 +976,17 @@ class RulePerceptor:
         要真判 iframe 里是不是播放器得看 src 与尺寸，那是启发式阈值，
         拿不准的东西不该当判据。
 
-        存在标签时**只判正向**：存在性 ≠ 能正常播放，所以带 ``fallback=True``。
-        没有标签时返回 ``answer=None`` 而非 False——JS / canvas / iframe 播放器
+        **两种形态都返回 ``answer=None``**（2026-10-23 · M-26 改）：
+        有标签时**原来判 True**（「存在 ⇒ 成功」），那是**护栏越权**——
+        代码层可以**否**，不能**许**；媒体计数只能当**必要条件**，不能当
+        **充分条件**（实测：优酷「试看6分钟｜开通会员看完整视频」页
+        ``video_tag_count=1`` ⇒ 被读成「能看正片」⇒ **5 份存档 5 条假成功**，
+        而 LLM 压根没被问过）。
+        规则版**没有 LLM 可让**（LLM 版的对应修复是删掉短路、改问 LLM），
+        而 ``False`` 更糟——那会把「能看但判不出」写成**真负样本**进池；
+        ⇒ 唯一不撒谎的取值是 ``None``：判不出来，交人工
+        （落 ``player_unverified``，不进负样本池，且在人工复核队列里）。
+        没有标签时同样返回 ``None`` 而非 False——JS / canvas / iframe 播放器
         都不产生这些标签，「没测到」≠「没有」。优酷的播放页正是这种形态
         （video=0 iframe=1），W1 判不出来就该说判不出来：少一条正样本，
         比多一条假阳性划算（假阳性会污染成功率的基线）。
@@ -930,9 +994,19 @@ class RulePerceptor:
         media = obs.video_tag_count
         frames = obs.iframe_count
         if media >= 1:
+            # ⚠️ 2026-10-23（M-26）：**原来这里返回 ``True``**——
+            # 「存在标签 ⇒ 判成功」。删掉的理由见上面 docstring与台账 §M-26：
+            # 护栏可以否、不能许，媒体计数不是成功的充分条件。
+            # 这里保留一条**独立分支**而不是直接落下面的通用 ``None``：
+            # 两种「判不出来」的成因不同（**有组件但不知能不能用** vs
+            # **连组件都没测到**），诊断信息要分开说。
             return self._answer(
-                spec, True,
-                evidence=f"存在 <video>/<audio> 标签 ×{media}（iframe={frames}）",
+                spec, None,
+                evidence=(
+                    f"存在 <video>/<audio> 标签 ×{media}（iframe={frames}）——"
+                    "**有播放组件 ≠ 能正常播放**；代码层不许凭计数许诺成功"
+                    "（2026-10-23 · M-26），判不出来交人工"
+                ),
                 started=started,
                 payload={"media_count": media, "iframe_count": frames},
                 # 存在性 ≠ 能正常播放。标出来，别让下游误以为这是语义判定

@@ -129,18 +129,34 @@ class Test同源:
     def test_代码判定分支不参与配对(self):
         """``unreachable_hard`` / ``trailer_only`` / ``trailer_suspect``
         不经 LLM，question 本就是空的——拿空字段去比得到的是
-        「采集器没填」，不是「分支走错」。"""
-        for br in ("unreachable_hard", "trailer_only", "trailer_suspect"):
+        「采集器没填」，不是「分支走错」。
+
+        2026-10-24（M-35）：改为按「是否在决策树上」分流——
+        在树上（``unreachable_hard``）→ ``ok``；不在树上
+        （``trailer_only`` / ``trailer_suspect``）→ ``undetermined``
+        （树上缺口不判错，也不白送 5 分）。"""
+        for br in ("unreachable_hard",):
             v = score_d5(_sample(_out(br, question="")))
-            assert v.score == 5, f"{br} 是代码判定分支，不该被判错"
+            assert v.score == 5, f"{br} 在决策树上，不该被判错"
+        for br in ("trailer_only", "trailer_suspect"):
+            v = score_d5(_sample(_out(br, question="")))
+            assert v.kind == "undetermined" and not v.wrong_nodes, (
+                f"{br} 不在决策树上，应落 undetermined 而非判错/给 5 分，"
+                f"实际 {v.score}：{v.reasons}"
+            )
 
     def test_站内搜索收尾分支不参与配对(self):
         """2026-10-16 路径 B/C：``site_search_routed`` / ``site_search_no_results``
         由代码按子候选数量选用（``_finish``），记账刻意不带 question——
-        归属是发现链而不是选题那步的 ``select.play_sites``。"""
+        归属是发现链而不是选题那步的 ``select.play_sites``。
+
+        2026-10-24（M-35）：这两支**不在 D-5 决策树上**（是发现链/路由语义，
+        不是「站点能不能看」）→ 落 ``undetermined``，不判错也不给 5 分。"""
         for br in ("site_search_routed", "site_search_no_results"):
             v = score_d5(_sample(_out(br, question="", reached=False)))
-            assert v.score == 5, f"{br} 是代码判定分支，不该被判错"
+            assert v.kind == "undetermined" and not v.wrong_nodes, (
+                f"{br} 不在决策树上，应落 undetermined，实际 {v.score}：{v.reasons}"
+            )
 
     def test_站点首页核可判5分(self):
         """``_drop_site_homepages`` 是**代码层确定性事实核**：path 为 `/`
@@ -595,13 +611,15 @@ class TestOnRealSamples:
         )
 
     def test_真实样本上不可判定数与预期一致(self):
-        """不可判定只有两个来源，且**各自的前置事实要对**：
+        """不可判定有**三个**来源，且**各自的前置事实要对**：
 
         ① 老批次 / 搜索单元没有 outcome —— 「没有决策可判」；
-        ② 证据核核不了 —— 「决策有了，依据核不了」。
+        ② 证据核核不了 —— 「决策有了，依据核不了」；
+        ③ 树上缺口分支 —— 「决策有了，但分支不在 D-5 决策树上，
+           无法用树核对」（2026-10-24 · M-35 新增，检查 1 判 undetermined）。
 
         混成一个数看不出来是哪种：前者是采集器缺字段，后者是词表
-        或口径不够，该改的地方完全不同。"""
+        或口径不够，第三种是决策树还没覆盖这条分支——该改的地方完全不同。"""
         vague = 0
         for name, doc in _real_samples():
             v = score_d5(doc)
@@ -616,7 +634,9 @@ class TestOnRealSamples:
                 ), f"{name} 不可判定，理由却没说清缺什么：{v.reasons}"
                 continue
             assert any(
-                c.node == d5_scorer._NODE_EVIDENCE and c.kind == "undetermined"
+                (c.node == d5_scorer._NODE_EVIDENCE
+                 or c.node == d5_scorer._NODE_BRANCH)
+                and c.kind == "undetermined"
                 for c in v.checks
             ), f"{name} 有 outcome 却因别的原因不可判定：{[c.node for c in v.checks]}"
             vague += 1

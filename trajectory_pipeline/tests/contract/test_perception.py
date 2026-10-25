@@ -441,9 +441,18 @@ class TestRealSiteRegressions:
         assert d.payload["iframe_count"] == 15  # 诊断信息仍然留着
         assert d.payload["media_count"] == 0
 
-    def test_有video标签时判_true(self):
+    def test_有video标签时不判成功(self):
+        """**媒体计数不许许诺成功**（2026-10-23 · M-26）。
+
+        规则版原来在 ``video_tag_count >= 1`` 时直接判 ``True``（= 成功）——
+        那是**护栏越权**：代码层可以否，不能许。规则版没有 LLM 可让，
+        而 ``False`` 更糟（会把「能看但判不出」写成真负样本进池）
+        ⇒ 唯一不撒谎的取值是 ``None``（落 ``player_unverified``，
+        不进负样本池，在人工复核队列里）。"""
         d = RulePerceptor().decide(Q.PLAYER_OK, obs(video_tag_count=1, iframe_count=15))
-        assert d.answer is True
+        assert d.answer is None
+        assert d.fallback_used is True
+        assert d.payload["media_count"] == 1
 
     def test_零个交互元素不判无播放控件(self):
         """实测 iqiyi / ixigua / sohu 三站都是「正文 0 字符 + 元素 0 个」。
@@ -527,10 +536,14 @@ class TestW1CapabilityBoundary:
 
     def test_存在性判定标了_fallback(self):
         """media_count>0 只是存在性，不是「能播」。这个信号必须可被下游识别，
-        否则人工复核会把规则版的正样本当成语义判定结果。"""
+        否则人工复核会把规则版的正样本当成语义判定结果。
+
+        ⚠️ 2026-10-23（M-26）：规则版现在**不判成功**了（``None``）——
+        「有播放组件」只能当**必要条件**，不能当充分条件。"""
         d = RulePerceptor().decide(Q.PLAYER_OK, obs(video_tag_count=1))
-        assert d.answer is True
+        assert d.answer is None
         assert d.fallback_used is True
+        assert d.payload["media_count"] == 1
 
     def test_decision_可_json_序列化(self):
         """P1 存档要求 Decision 直落盘；不可序列化会在写盘时才炸。"""
@@ -637,8 +650,9 @@ class TestNoHardcodedBudget:
         """假后端回「预算用尽」，evidence 里必须能看出该调哪个变量。
 
         问的是 ``IS_REACHABLE``：``PLAYER_OK`` 在 ``video_tag_count>0`` 时
-        走代码事实短路，根本不发请求（确定性事实优先），拿它来试这条
-        会得到一个「压根没问」的假绿。
+        **原来**走代码事实短路、压根不发请求（那条短路 2026-10-23 · M-26
+        已删——媒体计数不许许诺成功），现在两题都会发请求，但这条测的是
+        「预算用尽时原因可行动」，用 ``IS_REACHABLE`` 更直接。
         """
         p = llm_perceptor(budget_exhausted=True)
         d = p.decide(Q.IS_REACHABLE, obs())

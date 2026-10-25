@@ -97,6 +97,202 @@ ALL_EQUIV_CLASSES: frozenset[str] = frozenset(EQUIV_CLASS.values())
 SPLIT_CONTENT_VS_REACH = ("broken", "unreachable_hard")
 
 
+# ---------------------------------------------------------------------------
+# 合并记账（方案 16 C-13；owner 2026-10-23 裁定 D-C4）
+# ---------------------------------------------------------------------------
+#
+#: **D-C4 裁定：合并等价类不需 owner 签。**
+#:
+#: 原建议是「等价类变更 owner 签」（理由：合并等价类是"放水"最省力的路径，
+#: 且当时无人记账）。owner 裁掉签字那一半，**记账那一半留着**——因为
+#: 「无人记账」是事实，换个签名人并不能让它变成有人记账。
+#:
+#: 于是本模块给每个**不止一个标签**的等价类配一张注记：
+#:
+#: - ``canonical``：该类的规范标签（代表）；
+#: - ``merged``：被并进来的标签——并进来之后它们**互相不可分辨**；
+#: - ``detail_lost``：合并后看不见的那层细分（一句话，说的是**丢了什么**，
+#:   不是「为什么等价」）；
+#: - ``reason``：为什么并（指到真实的出处：某份方案 / 某次分支拆分）。
+#:
+#: **机械保证**（契约测试盯）：一个类只要标签数 > 1 就**必须**有注记，
+#: 且注记里的 ``canonical + merged`` 必须**恰好等于**该类在
+#: :data:`EQUIV_CLASS` 里的全部标签。于是：
+#:
+#: - 偷偷合并 ⇒ 标签数变了而注记没跟上 ⇒ 测试红；
+#: - 注记写错（标签对不上 / 理由空着 / 丢了什么没写）⇒ 测试红。
+#:
+#: **单一标签的类不需要注记**——它没发生过合并，「合并后不可见细分」对它
+#: 是空集。
+#:
+#: ⚠️ 注记只记**当前**这一版分组，不是流水账：改动本身由 git diff 留着，
+#: 注记保证的是「改动落地时分组与记账同步」——这正是「无人记账」要防的。
+EQUIV_CLASS_NOTES: Mapping[str, Mapping[str, str]] = {
+    "SUCCESS": {
+        "canonical": "success",
+        "merged": ("playable", "ads_then_playable"),
+        "detail_lost": "先有广告才播 vs 直接能播（ads_then_playable 的广告前置）",
+        "reason": (
+            "对齐方案 06 §4.3：VLM 标签挂入现有体系锚点，"
+            "广告前置不改变「能不能播」的结论"
+        ),
+    },
+    "PAYWALL": {
+        "canonical": "subscription_wall",
+        "merged": ("paywall", "partial_free"),
+        "detail_lost": "有无免费部分（partial_free 的试看段长度）",
+        "reason": (
+            "对齐方案 06 §4.3：partial_free 归付费类——"
+            "「试看一段」与「完全付费」在「本轮能不能拿到完整内容」上同解"
+        ),
+    },
+    "ACCESS_BLOCKED": {
+        "canonical": "login_required",
+        "merged": ("blocked", "login_wall_or_blocked"),
+        "detail_lost": (
+            "阻断的具体成因（要登录 / 地区限制或反爬 / 验证码），"
+            "以及历史合并态 login_wall_or_blocked 原本混装的那层"
+        ),
+        "reason": (
+            "分支表 2026-10-12 把 login_wall_or_blocked 拆为 login_required / blocked"
+            "（拆分不改变「这一轮被挡住」这个结论）"
+        ),
+    },
+    "NO_PLAY_RESOURCE": {
+        "canonical": "no_play_control",
+        "merged": (
+            "component_unverified",
+            "empty",
+            "aggregator_no_entries",
+            "article_no_links",
+            "no_site_search",
+            "site_search_no_results",
+        ),
+        "detail_lost": (
+            "「页面在手但没有可看的东西」的具体形态"
+            "（控件缺失 / 组件不可验证 / 聚合站无入口 / 文章页无外链 / "
+            "无站内搜索 / 搜索无结果）"
+        ),
+        "reason": (
+            "路径 B/C 发现链（2026-10-16）七支与 no_play_control 同口径："
+            "页面在手，但没有可看的东西"
+        ),
+    },
+    "NOT_PLAY_SITE": {
+        "canonical": "not_play_site",
+        "merged": ("not_aggregator", "not_article"),
+        "detail_lost": "非播放站的具体形态（聚合站导航站 / 文章社区页）",
+        "reason": "路径 B/C 发现链：候选类型不对与 not_play_site 同口径",
+    },
+    "TRAILER": {
+        "canonical": "trailer_only",
+        "merged": ("trailer_suspect",),
+        "detail_lost": (
+            "「疑似」状态（trailer_suspect 词表判不准、待人工；"
+            "它**不是**负样本，混进负样本池会污染池子）"
+        ),
+        "reason": (
+            "两者都不是可播资源：疑似预告同样不产出播放，"
+            "但细分必须留着（负样本池靠它把疑似样本挡在外面）"
+        ),
+    },
+    "UNKNOWN": {
+        "canonical": "unresolved",
+        "merged": ("player_unverified", "unknown"),
+        "detail_lost": (
+            "未判明的三种形态（感知层没给出结论 / 有播放组件但确认不了能不能用 / "
+            "VLM 未识别）"
+        ),
+        "reason": (
+            "三种都不是「判为非播放站」——未判明必须留在未判明里，"
+            "并进别的类会把它洗成负样本"
+        ),
+    },
+}
+
+
+
+def class_labels(cls: str) -> tuple[str, ...]:
+    """某个等价类的全部标签（**派生**自 :data:`EQUIV_CLASS`，不手抄）。
+
+    顺序按标签名字典序——清单要能逐字节复现，不靠字典哈希序。
+    未登记的类名 → ``KeyError``（fail-closed）。
+    """
+    labels = tuple(sorted(lbl for lbl, c in EQUIV_CLASS.items() if c == cls))
+    if not labels:
+        raise KeyError(f"等价类 {cls!r} 在 EQUIV_CLASS 里没有标签")
+    return labels
+
+
+def invisible_details() -> tuple[str, ...]:
+    """**「合并后不可见细分」清单**（C-13 的产出面）。
+
+    一行一个等价类，形如::
+
+        ACCESS_BLOCKED：阻断的具体成因（要登录 / 地区限制或反爬 / 验证码）…
+
+    读法：「在 D-10 口径 C 下，这一类的哪些区分**已经分不出来了**」——
+    合并等价类的代价就在这一行里。清单是**派生**的（:data:`EQUIV_CLASS_NOTES`
+    + :data:`EQUIV_CLASS`），不是手抄的第二份。
+
+    只列**发生过合并**的类（标签数 > 1）；单标签类不在清单里。
+    """
+    out: list[str] = []
+    for cls in sorted(EQUIV_CLASS_NOTES):
+        note = EQUIV_CLASS_NOTES[cls]
+        out.append(f"{cls}：{note['detail_lost']}")
+    return tuple(out)
+
+
+def validate_merge_notes() -> list[str]:
+    """合并记账与 :data:`EQUIV_CLASS` 的一致性检查（返回问题清单，空 = 通过）。
+
+    契约测试调它。查四件事：
+
+    1. **每个多标签类都有注记**——漏记 = 有人悄悄合了一个类；
+    2. 注记的 ``canonical + merged`` **恰好等于**该类全部标签
+       ——多一个（表里有、注记没有）或少一个（注记有、表里没有）都算错；
+    3. ``canonical`` / ``merged`` 里的标签在 :data:`EQUIV_CLASS` 里
+       确实指向这个类；
+    4. ``detail_lost`` / ``reason`` 非空——「丢了什么」「为什么并」不许留白。
+
+    返回**人读的问题清单**（不是抛异常）：这是检查工具，调用方决定怎么用；
+    但它**不会**给「差不多通过」留口子——问题清单非空就是有问题。
+    """
+    problems: list[str] = []
+    for cls in sorted(ALL_EQUIV_CLASSES):
+        labels = class_labels(cls)
+        note = EQUIV_CLASS_NOTES.get(cls)
+        if note is None:
+            if len(labels) > 1:
+                problems.append(
+                    f"{cls}：{len(labels)} 个标签却没有合并注记"
+                    f"（{'、'.join(labels)}）"
+                )
+            continue
+        canonical = note.get("canonical", "")
+        merged = tuple(note.get("merged", ()))
+        declared = tuple(sorted((canonical,) + merged))
+        if declared != labels:
+            problems.append(
+                f"{cls}：注记声明的标签 {declared} 与 EQUIV_CLASS 实际 {labels} 不符"
+            )
+        for lbl in (canonical,) + merged:
+            if EQUIV_CLASS.get(lbl) != cls:
+                problems.append(
+                    f"{cls}：标签 {lbl!r} 在 EQUIV_CLASS 里指向 "
+                    f"{EQUIV_CLASS.get(lbl)!r}，不是 {cls}"
+                )
+        if not note.get("detail_lost", "").strip():
+            problems.append(f"{cls}：detail_lost 是空的（没说合并后丢了什么）")
+        if not note.get("reason", "").strip():
+            problems.append(f"{cls}：reason 是空的（没说为什么并）")
+    for cls in sorted(EQUIV_CLASS_NOTES):
+        if cls not in ALL_EQUIV_CLASSES:
+            problems.append(f"{cls}：注记里的类在 EQUIV_CLASS 里根本不存在")
+    return problems
+
+
 def equiv_class(label: str) -> str:
     """标签 → 等价类名。未登记标签抛 ``KeyError``（fail-closed）。"""
     return EQUIV_CLASS[label]

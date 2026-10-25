@@ -1,0 +1,101 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "2",
+ "rubric_version": "1.2",
+ "evaluator_version": "1046e67994aa",
+ "scorer_fingerprint": "code:28cbe88eb7e6|llm:1046e67994aa",
+ "holdout_runs": 0,
+ "version": 9,
+ "frozen_at": "2026-10-24T08:01:27+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 357,
+  "annotated": 294,
+  "site": 289,
+  "trajectory": 5,
+  "calibration": 131,
+  "regression": 60,
+  "holdout": 103
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.4456,
+  "pool_ratio": 0.6497,
+  "regression_ratio": 0.2041,
+  "holdout_ratio": 0.3503,
+  "pp_diff_from_target": 0.0003,
+  "headline_split": "calibration",
+  "regression_size": 60,
+  "regression_seed": 20261022,
+  "regression_fingerprint": "937a45f25eea"
+ },
+ "derived_from": {
+  "version": 8,
+  "counts": {
+   "candidates": 357,
+   "annotated": 294,
+   "site": 289,
+   "trajectory": 5,
+   "calibration": 131,
+   "regression": 60,
+   "holdout": 103
+  },
+  "holdout_runs": 0
+ },
+ "score_refresh": {
+  "enabled": false
+ },
+ "gold_refresh": {
+  "enabled": true,
+  "source": "annotations.jsonl",
+  "rows_matched": 294,
+  "rows_missing": 0,
+  "changed_rows": 91,
+  "per_dim": {
+   "d2": {
+    "before": {},
+    "after": {}
+   },
+   "d4": {
+    "before": {},
+    "after": {}
+   },
+   "d5": {
+    "before": {},
+    "after": {}
+   },
+   "d6": {
+    "before": {},
+    "after": {}
+   }
+  },
+  "baseline_reset": true,
+  "note": "只重挂 golden.dimension_scores；label / code / pred 侧未动。金标变动 ⇒ 与前版不可比（新基线），下一对可比是本版与它的后继"
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.9,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 37,
+  "success": 36,
+  "subscription_wall": 35,
+  "not_play_site": 31,
+  "component_unverified": 18,
+  "no_play_control": 16,
+  "blocked": 15,
+  "broken": 13,
+  "login_wall_or_blocked": 9,
+  "trailer_only": 7,
+  "trailer_suspect": 1
+ }
+}

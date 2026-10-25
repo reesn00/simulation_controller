@@ -55,13 +55,25 @@ import json
 import pathlib
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from trajectory_pipeline.evaluation.calibration.provenance import (
+    FACE_COLLECTION,
+    STATUS_NOT_APPLICABLE,
+    STATUS_UNRECORDED,
+    face_of_dimension,
+    face_record,
+    face_version_of,
+)
 from trajectory_pipeline.evaluation.golden.alignment import (
     SOFT_DIM_NAMES,
     dim_agreement,
     is_equivalent,
 )
 from trajectory_pipeline.evaluation.golden.splits import HEADLINE_SPLIT
-from trajectory_pipeline.evaluation.scorers.rubric_version import clause_of
+from trajectory_pipeline.evaluation.scorers.rubric_version import (
+    VERSION_UNRECORDED,
+    clause_of,
+    code_scorer_version,
+)
 
 #: 快照文件 schema 版本。字段增删必须升它（回归判定吃的是这份文件）。
 SNAPSHOT_SCHEMA_VERSION = "1"
@@ -96,8 +108,65 @@ HARD_DIM = "d10"
 
 #: 预测侧出处标签。**D-10 的 pred 不是当前评分器重算的**，是冻结行里采集时
 #: 写下的 ``code.branch``——把它当成本次代码的产物是这类报表最常见的误读。
+#:
+#: ⚠️ **两个 ``code:`` 前缀不是同一件事**（这是 C-11 补齐时踩出来的坑）：
+#: ``PROVIDER_FROZEN_BRANCH`` 的 ``code`` 指「**采集侧代码**判的分支」，
+#: ``PROVIDER_ROW_DIMS`` 的 ``code`` 指「**代码评分器**（D-2/D-4/D-5/D-6）」。
+#: 要判「这批 pred 出自哪一面」，**别看 provider 字符串**——看
+#: :func:`~...provenance.face_of_dimension`（按维度投影的唯一真源）。
 PROVIDER_FROZEN_BRANCH = "code:frozen_row"
 PROVIDER_ROW_DIMS = "code:row.dimension_scores"
+
+#: ``pred_provider`` 里的版本占位：**没记到**。
+#:
+#: ⚠️ 存量缺口已由**版本级台账**补上（方案 16 C-11 补齐）：
+#: 冻结行 v1–v8 是旧 ``overlay-scout`` 跑出来的，那时还不写 ``scorer_version``；
+#: 而 v1–v8 是**冻结档，一字不许改** ⇒ 逐行版本补不回来。
+#: 补法是**档外**的版本级台账（``evaluation/golden/data/scorer_provenance.jsonl``）：
+#: **重算**当前代码面、逐行比对存档里的读数 ⇒ 得出「复现得出来（可比）」
+#: 或「复现不出来（已知不可比）」。
+#: 答不出来的那一档仍然写 ``unrecorded``，**不拿当前指纹顶替**——顶替会让
+#: 「没量到」看起来像「量过且一致」，正是 M-29 那类误读。
+PRED_VERSION_UNRECORDED = VERSION_UNRECORDED
+
+
+def pred_provider_string(kind: str, version: str | None) -> str:
+    """``<kind>@<version>``——出处 + 版本（方案 16 C-11）。
+
+    §3.1 的契约原本就写着「``pred_provider`` = ``code:…`` 或
+    ``llm:<model>/<prompt_version>``」——**版本本来就该在出处里**，C-11 只是
+    把它填上。版本没记到时写 ``unrecorded``，**不省略 ``@`` 段**：省掉它，
+    「没记版本」与「有版本但没记」会长得一样。
+    """
+    return f"{kind}@{version or PRED_VERSION_UNRECORDED}"
+
+
+def provider_version(provider: str) -> str:
+    """从 ``pred_provider`` 取版本段；没有 ``@`` → ``unrecorded``。"""
+    if "@" not in provider:
+        return PRED_VERSION_UNRECORDED
+    return provider.split("@", 1)[1] or PRED_VERSION_UNRECORDED
+
+
+def provider_kind(provider: str) -> str:
+    """从 ``pred_provider`` 取**种类段**（``@`` 之前那截）；没有 → 空串。
+
+    ⚠️ **别拿整个 ``pred_provider`` 去比常量**：C-11 之后它带版本后缀
+    （``code:frozen_row@unrecorded``），整串比对**永远不相等**⇒ 依赖它的
+    判定会静默失效（worklist 的 ``_detect_rule_decided`` 就踩过这个）。
+    比种类段才对。
+    """
+    return str(provider or "").split("@", 1)[0]
+
+
+def row_scorer_version(row: Mapping[str, Any]) -> str:
+    """冻结行里记的评分面指纹；没记 → ``unrecorded``。
+
+    **不拿当前评分器的指纹顶替**：顶替会让「这行是旧评分器打的」看起来像
+    「这行是当前评分器打的」，而这两件事的可比性完全不同。
+    """
+    v = row.get("scorer_version")
+    return str(v) if v else PRED_VERSION_UNRECORDED
 
 
 def iter_site_rows(
@@ -157,6 +226,9 @@ def _entry(
     gold_value: Any,
     pred_value: Any,
     pred_provider: str,
+    pred_face: str,
+    pred_face_version: str,
+    pred_face_status: str,
     verdict: str,
     delta_kind: str | None,
     tier_gap: int | None,
@@ -175,6 +247,11 @@ def _entry(
         "gold_value": gold_value,
         "pred_value": pred_value,
         "pred_provider": pred_provider,
+        # ↓ 面感知的三栏（方案 16 C-11 补齐）：「这批 pred 出自哪一面 /
+        # 那一面是哪版 / 那一面的版本是怎么定的」。
+        "pred_face": pred_face,
+        "pred_face_version": pred_face_version,
+        "pred_face_status": pred_face_status,
         "verdict": verdict,
         "delta_kind": delta_kind,
         "tier_gap": tier_gap,
@@ -211,7 +288,17 @@ def _hard_entry(
         rubric_ref=rubric_ref,
         gold_value=gold_value,
         pred_value=pred_value,
-        pred_provider=PROVIDER_FROZEN_BRANCH,
+        # 硬分类的 pred 是**采集时**写下的 code.branch，出处是采集侧，
+        # 不是评分器 ⇒ 版本段记 ``unrecorded``（采集侧版本没进冻结行）。
+        # 拿行里的 ``scorer_version`` 顶替会是撒谎：那栏说的是「分数谁打的」。
+        pred_provider=pred_provider_string(PROVIDER_FROZEN_BRANCH, None),
+        # 面 = 采集侧。**这一面从没有过版本**：判定是采集时做的（而且
+        # ``code.source`` 可能是 ``llm``——感知层也是 LLM 判的），
+        # 判定侧的版本从未被指纹化 ⇒ 状态 ``not_applicable``：
+        # 「旧 prompt 还是新 prompt 判的」对它**不适用**，不是「不可判定」。
+        pred_face=FACE_COLLECTION,
+        pred_face_version=VERSION_UNRECORDED,
+        pred_face_status=STATUS_NOT_APPLICABLE,
         verdict=verdict,
         delta_kind=delta,
         tier_gap=None,
@@ -228,8 +315,20 @@ def _soft_entry(
     split: str,
     dimension: str,
     tolerance: int,
+    provenance_row: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """软维度条目：人工 1–5 档 ↔ 冻结行的 ``dimension_scores``。"""
+    """软维度条目：人工 1–5 档 ↔ 冻结行的 ``dimension_scores``。
+
+    **面感知**（方案 16 C-11 补齐）：这一维的 pred 出自哪一面由
+    :func:`~...provenance.face_of_dimension` 投影——D-2/D-4/D-5/D-6 是**代码**
+    打的（比代码面版本），D-3/D-9 是**LLM** 打的（比 prompt 面版本）。
+
+    版本怎么来的，两条路：
+    1. 行里记了 ``scorer_version`` ⇒ 直接取该面的段（状态 ``recorded``）；
+    2. 行里没记（存量 v1–v8）⇒ 查**版本级台账**：台账说「当前该面逐行复现
+       了本版读数」就给出版本（状态 ``reproduced``），说「复现不出」就给
+       状态 ``diverged``（**已知不可比**），没有记录就 ``unrecorded``。
+    """
     golden = row.get("golden") or {}
     gold_dims = _dim_scores(golden)
     pred_dims = _dim_scores(row)
@@ -255,6 +354,32 @@ def _soft_entry(
         else:
             verdict, delta = VERDICT_TIER_GAP, DELTA_TIER_GAP
 
+    face = face_of_dimension(dimension)
+    row_version = row_scorer_version(row)
+    if row_version != PRED_VERSION_UNRECORDED:
+        # 行里记了 ⇒ 出处写**全指纹**（``code:…|llm:…``），面版本取该面那段。
+        provider_version = row_version
+        face_version = face_version_of(row_version, face)
+        face_status = "recorded"
+    else:
+        rec = face_record(provenance_row, face)
+        status = str(rec.get("status") or STATUS_UNRECORDED)
+        provider_version = None
+        if status == "reproduced":
+            face_version = str(rec.get("version") or VERSION_UNRECORDED)
+            face_status = status
+            # 出处只写**该面**的版本（``code:<fp>``）：台账证明的只有这一面，
+            # 另一面没记录就不写——不拿当前值顶替。
+            provider_version = f"{face}:{face_version}"
+        elif status == "diverged":
+            # 已知不可比：当前该面复现不出本版读数。**版本仍不可知**
+            # （当时跑的是哪份源码没记），但「不可比」这件事是**已知的**。
+            face_version = VERSION_UNRECORDED
+            face_status = status
+        else:
+            face_version = VERSION_UNRECORDED
+            face_status = STATUS_UNRECORDED
+
     return _entry(
         golden_id=str(row.get("golden_id") or ""),
         split=split,
@@ -262,7 +387,10 @@ def _soft_entry(
         rubric_ref=rubric_ref,
         gold_value=gold_value,
         pred_value=pred_value,
-        pred_provider=PROVIDER_ROW_DIMS,
+        pred_provider=pred_provider_string(PROVIDER_ROW_DIMS, provider_version),
+        pred_face=face,
+        pred_face_version=face_version,
+        pred_face_status=face_status,
         verdict=verdict,
         delta_kind=delta,
         tier_gap=gap,
@@ -281,6 +409,8 @@ def build_snapshot(
     rubric_version: str = "",
     evaluator_version: str = "",
     tolerance: int = 1,
+    provenance: Mapping[int, Mapping[str, Any]] | None = None,
+    code_version: str = "",
 ) -> dict[str, Any]:
     """全量逐行快照。
 
@@ -291,7 +421,20 @@ def build_snapshot(
     ``rubric_version`` / ``evaluator_version`` 由调用方从 manifest 与
     ``rubric_version.evaluator_version()`` 取。老冻结档（v6 及更早）没有
     manifest 字段时传空串——**不拿当前值顶替**（方案 16 §9.2 C-01 口径 1）。
+
+    ``provenance`` 是**版本级出处台账**（``{版本号: 行}``）：给存量冻结档
+    （v1–v8，行里没记 ``scorer_version``）补「那一面的版本是哪版」。
+    台账没有的维度 ⇒ ``unrecorded``，**不拿当前指纹顶替**。
+
+    ``code_version`` 是快照取样时**代码面**的指纹——与 ``evaluator_version``
+    （prompt 面）并列，因为 D-2/D-4/D-5/D-6 的可比性比的是**它**。
+    缺省空串 ⇒ 不顶替（比不出来就写「比不出来」）。
     """
+    prov_row = (provenance or {}).get(int(golden_version))
+    if not code_version:
+        # 缺省 = **当前**代码面。这是快照这一侧的面（比 pred 那一侧新），
+        # 不是「给 pred 顶替版本」——两者别混。
+        code_version = code_scorer_version()
     entries: list[dict[str, Any]] = []
     for row in iter_site_rows(rows):
         split = str(row.get("__split__") or "")
@@ -305,6 +448,7 @@ def build_snapshot(
                     split=split,
                     dimension=dimension,
                     tolerance=tolerance,
+                    provenance_row=prov_row,
                 )
             )
     return {
@@ -313,6 +457,9 @@ def build_snapshot(
             "golden_version": int(golden_version),
             "rubric_version": rubric_version,
             "evaluator_version": evaluator_version,
+            # 代码面指纹：软维度（D-2/D-4/D-5/D-6）的可比性比的是它，
+            # 不是 prompt 面——**面感知**（方案 16 C-11 补齐）。
+            "code_version": code_version,
             "tolerance": int(tolerance),
             "success_label": success_label,
             "hard_dim": HARD_DIM,
@@ -407,6 +554,7 @@ __all__ = [
     "DELTA_TIER_GAP",
     "DIFF_VERDICTS",
     "HARD_DIM",
+    "PRED_VERSION_UNRECORDED",
     "PROVIDER_FROZEN_BRANCH",
     "PROVIDER_ROW_DIMS",
     "SNAPSHOT_SCHEMA_VERSION",
@@ -419,6 +567,10 @@ __all__ = [
     "build_snapshot",
     "iter_site_rows",
     "load_snapshot",
+    "pred_provider_string",
+    "provider_kind",
+    "provider_version",
+    "row_scorer_version",
     "summarize_snapshot",
     "verdicts_of",
     "write_snapshot",

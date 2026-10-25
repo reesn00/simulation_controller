@@ -81,6 +81,7 @@ from trajectory_pipeline.evaluation.calibration.triage import (
     load_triage,
     validate_rows as validate_triage_rows,
 )
+from trajectory_pipeline.evaluation.scorers import thresholds
 
 #: 派生快照的默认根。与 ``builder.PIPELINE_ROOT / "calibration"`` 是同一个
 #: 位置，由 ``test_快照默认根与builder同源`` 钉住——只 import builder 拿一个
@@ -879,10 +880,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--class-tolerance",
         type=float,
-        default=0.0,
+        default=thresholds.value("class_regression_tolerance"),
         help=(
             "类回归容差：某类 F1 下降超过它即驳回。默认 0（任何下降都驳回）；"
-            "放宽属阈值变更（D-C6，需 owner 签）"
+            "放宽属阈值变更（D-C6 裁定：**不算** rubric 级变更 ⇒ 不升 rubric "
+            "版本、不进 rubric 变更记录、不设签名门；但阈值改的是 "
+            "evaluation/scorers/thresholds.py 那张唯一真源）"
         ),
     )
     ap.add_argument(

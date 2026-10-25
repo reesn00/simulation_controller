@@ -1,0 +1,67 @@
+{
+ "fingerprints": {
+  "old_fingerprint": "9b3ec1c46545",
+  "new_fingerprint": "1046e67994aa",
+  "baseline_source": "trajectory_pipeline\\evaluation\\golden\\data\\v8\\manifest.json"
+ },
+ "selection_rule": "存档按文件名排序 → split_archive 切样本 → 候选按 (archive, sample_id) 排序取前 N；D-3 候选=观察充分，D-9 候选=有 rationale 且真实闸门触发",
+ "skipped_archives": [
+  "_cause_probe.json:P1ShapeError",
+  "_cause_probe2.json:P1ShapeError",
+  "_inc73_tmp.json:P1ShapeError",
+  "_paywall.json:P1ShapeError",
+  "agreement_v3_after_h1a.json:P1ShapeError",
+  "inc73_replay.json:P1ShapeError",
+  "inc73_replay_smoke.json:P1ShapeError",
+  "inc73_sheet.json:P1ShapeError",
+  "inc73_sheet_full.json:P1ShapeError",
+  "obscura_returns_baidu.json:P1ShapeError",
+  "obscura_returns_example.json:P1ShapeError",
+  "plan_batch2.json:P1ShapeError",
+  "plan_batch3.json:P1ShapeError",
+  "plan_batch3_bing.json:P1ShapeError",
+  "plan_batch3_bing_rest.json:P1ShapeError",
+  "plan_min_p0.json:P1ShapeError",
+  "plan_min_p0_bing.json:P1ShapeError",
+  "probe_observe.json:P1ShapeError",
+  "probe_observe_camoufox.json:P1ShapeError"
+ ],
+ "dims": {
+  "d3": {
+   "n": 247,
+   "n_scored_both": 247,
+   "label_agreement_old_new": 0.9595,
+   "label_agreement_new_new": 0.9433,
+   "score_agreement_old_new": 0.9636,
+   "confusion": {
+    "ambiguous -> ambiguous": 47,
+    "ambiguous -> irrelevant": 3,
+    "ambiguous -> playable": 1,
+    "irrelevant -> ambiguous": 2,
+    "irrelevant -> irrelevant": 13,
+    "nav_aggregator -> nav_aggregator": 33,
+    "nav_aggregator -> playable": 1,
+    "playable -> ambiguous": 1,
+    "playable -> nav_aggregator": 2,
+    "playable -> playable": 144
+   },
+   "diff_count": 10,
+   "elapsed_s": 3505.6
+  },
+  "d9": {
+   "n": 8,
+   "n_scored_both": 8,
+   "label_agreement_old_new": 0.875,
+   "label_agreement_new_new": 0.875,
+   "score_agreement_old_new": 0.875,
+   "confusion": {
+    "hindsight -> hindsight": 5,
+    "hindsight -> systematic": 1,
+    "systematic -> systematic": 2
+   },
+   "diff_count": 1,
+   "elapsed_s": 172.6
+  }
+ },
+ "rows": 255
+}

@@ -674,6 +674,12 @@ def decision_branch(decision: Decision) -> str:
         return "blocked"
     if access == "not_found":
         return "broken"
+    # ② 的付费墙细分（2026-10-24 方案 19 A 类）：会员视频未登录/未付费时
+    # 播放器报错（「发生了错误，请稍后再试」）而页面无显式「开通会员」
+    # 门禁短语——LLM 在②把「看不了」的真因归为付费墙时，落订阅墙，
+    # 与 login_required（登录后可免费）分开。
+    if access == "paywall":
+        return "subscription_wall"
     # ④ 的细分（2026-10-12 阶段 1）：paywall_type 标明「有免费部分」时
     # 走 partial_free——试看/预告能看一部分，与整段锁死的订阅墙
     # （subscription_wall）成因不同，训练目标也不同。

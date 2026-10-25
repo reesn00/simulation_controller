@@ -7,7 +7,9 @@
    模型原话「body 为空、元素为 0，说明未渲染」——它把采集失败
    讲成了一条通顺的错结论。
 2. **ref 白名单校验**（铁律 3）。模型会编 ref，而代码拿它去 click。
-3. **确定性事实优先**：``<video>`` 存在性不问模型。
+3. **媒体计数不许许诺成功**（2026-10-23 · M-26 改）。原先这里是
+   「确定性事实优先：``<video>`` 存在性不问模型」——那道短路是**护栏越权**
+   （代码层可以否，不能许），已删；④ 现在只走 LLM。
 
 外加实测到的三种坏输出形态（think 包裹 / markdown fence / 纯散文）
 必须仍能解析——否则一批数据会静默全落 None。
@@ -286,25 +288,44 @@ class Test不落rawCoT:
         assert "<think>" not in outcome.to_json()["evidence"]
 
 
-class TestDeterministicFirst:
-    """铁律 1：确定性事实不问模型。"""
+class Test媒体计数不许许诺成功:
+    """**媒体计数只能当必要条件，不能当充分条件**（2026-10-23 · M-26）。
 
-    def test_有video标签直接判真且不发请求(self):
-        """实测反例：iqiyi video=1 却被 LLM 判否，理由是「未渲染」。
-        存在性是代码事实，问模型只会多一个出错机会。"""
+    这里原来有一道短路：``video_tag_count >= 1`` ⇒ 直接 ``answer=True``、
+    **不问 LLM**。那是**护栏越权**——代码层可以**否**，不能**许**。
+    实测代价：优酷「试看6分钟｜开通会员看完整视频」页 ``video=1``
+    ⇒ 被读成「能看正片」⇒ **5 份存档 5 条假成功**（LLM 压根没被问过）；
+    网易号美食图文页 6 个 ``<video>`` 是**点广告之后被注入的**
+    ⇒ 同样被读成成功——那条正文里连付费形态词都没有，
+    **靠词表拦不住，只能把短路本身删掉**。
+    """
+
+    def test_有video标签也问模型(self):
+        """媒体计数不许许诺成功 ⇒ ④ 必须走 LLM。请求数为 1 是硬证据。"""
         fake = FakeLLM()
-        d = lp.LLMPerceptor(fake).decide(Q.PLAYER_OK, _obs(video_tag_count=1))
+        lp.LLMPerceptor(fake).decide(Q.PLAYER_OK, _obs(video_tag_count=1))
+        assert len(fake.calls) == 1
+
+    def test_模型判真时才算真(self):
+        """「真」只能来自 LLM（或别的语义判据），不能来自计数。"""
+        d = llm_perceptor().decide(Q.PLAYER_OK, _obs(video_tag_count=1))
         assert d.answer is True
-        assert fake.calls == []
-        assert "代码层事实" in d.evidence
+        assert "代码层事实" not in d.evidence
 
-    def test_存在性判定标了fallback(self):
-        """存在 ≠ 能正常播放。下游不能把它当语义判定。"""
-        d = llm_perceptor().decide(Q.PLAYER_OK, _obs(video_tag_count=2))
-        assert d.fallback_used is True
+    def test_付费形态加媒体计数不许答真(self):
+        """台账 M-26 验收③：付费形态 × 媒体计数 ≥1 ⇒ **不得**返回 True。
 
-    def test_无video标签时问模型(self):
-        """优酷形态：video=0 iframe=1，正文有内容——这才是 LLM 的战场。"""
+        假后端判否（页面明说要看会员），媒体计数不许把它翻成 True。"""
+        fake = FakeLLM(answers={Q.PLAYER_OK: False})
+        d = lp.LLMPerceptor(fake).decide(
+            Q.PLAYER_OK,
+            _obs(body_text="试看6分钟，开通会员看完整视频", video_tag_count=1),
+        )
+        assert d.answer is False
+        assert d.payload.get("paywall") is True
+
+    def test_无video标签时同样问模型(self):
+        """优酷形态：video=0 iframe=1，正文有内容——这本来就是 LLM 的战场。"""
         fake = FakeLLM()
         lp.LLMPerceptor(fake).decide(
             Q.PLAYER_OK, _obs(video_tag_count=0, iframe_count=1)
@@ -950,6 +971,25 @@ class Test付费墙记账:
         from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
 
         assert "subscription_wall" not in NON_SAMPLE_BRANCHES
+
+    def test_二回传paywall_落订阅墙(self):
+        """2026-10-24 方案 19 A 类：判断点②（IS_REACHABLE）的 LLM 回传
+        ``access_control_type=paywall``（会员视频未登录/未付费时播放器
+        报错、页面带会员信号），落 ``subscription_wall``——与
+        ``login_required``（登录后可免费）分开。"""
+        from trajectory_pipeline.executor.branches import decision_branch
+
+        fake = FakeLLM(
+            answers={Q.IS_REACHABLE: False},
+            access="paywall",
+            evidence="播放器显示「发生了错误」，页面带会员购导航，属会员视频",
+        )
+        d = lp.LLMPerceptor(fake).decide(
+            Q.IS_REACHABLE, _obs(body_text="首页 会员购 发生了错误，请稍后再试")
+        )
+        assert d.answer is False
+        assert d.payload["access_control_type"] == "paywall"
+        assert decision_branch(d) == "subscription_wall"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1840,12 +1880,19 @@ class TestINC43负分支付费墙救济:
         assert d.answer is None
         assert d.payload.get("paywall") is None
 
-    def test_四判真走视频快路径_不受救济影响(self):
+    def test_四判真时不因付费墙词表翻否(self):
+        """模型判真 ⇒ 词表**不救济**（救济只对 answer=False 生效）。
+
+        ⚠️ 2026-10-23（M-26）：这里原来叫「走视频快路径」——那时的
+        ④ 在 ``video_tag_count >= 1`` 时**根本不问模型**。现在媒体计数
+        不许许诺成功（见 :class:`Test媒体计数不许许诺成功`），④ 一律走
+        LLM，于是这条测的是**真·LLM 路径**：模型说 True 就 True，
+        裸 CTA「开通会员」（门禁语境不成立）不把它翻否。"""
         d = llm_perceptor().decide(
             Q.PLAYER_OK, _obs(body_text="开通会员", video_tag_count=1)
         )
         assert d.answer is True
-        assert d.payload.get("paywall") is None
+        assert d.payload.get("paywall") is False
 
 
 class TestINC43救济判据真值表:
@@ -1905,6 +1952,28 @@ class TestINC43救济判据真值表:
     def test_对照组无信号(self):
         """v.qq.com thevoice（金标 no_play_control 判对）——零命中。"""
         assert lp.paywall_evidence("腾讯视频 所有频道 登录 我看过的 上传") == ""
+
+    def test_条件式门禁_报错加会员购命中(self):
+        """2026-10-25 方案 19 A 类补漏：bilibili 会员影片未登录/未开通时
+        播放器报错「发生了错误」+ 导航「会员购」——是付费墙门禁，不是
+        broken。此前词表漏了这个形态，LLM 判 False 又没回传
+        ``access_control_type``，救济路径够不到，落 unresolved。"""
+        hit = lp.paywall_evidence("首页 会员购 发生了错误，请稍后再试")
+        assert hit != ""
+        assert "发生了错误" in hit and "会员购" in hit
+
+    def test_条件式门禁_报错独行不命中(self):
+        """「发生了错误」是极泛的错误提示（500/404/网络错误都会有），
+        无会员电商信号同现时**不**判付费墙——否则 broken 页被误判订阅墙。"""
+        assert lp.paywall_evidence("发生了错误，请稍后再试") == ""
+        assert lp.paywall_evidence("404 Not Found nginx") == ""
+        assert lp.paywall_evidence("Internal Server Error") == ""
+
+    def test_条件式门禁_报错加泛化会员标签不命中(self):
+        """「会员」二字在普通影视详情页的标签/角标里高频，**不是**会员
+        电商信号——「发生了错误」+「会员」标签不能判付费墙。只有
+        「会员购/大会员购/会员专区」这类会员专享入口才作数。"""
+        assert lp.paywall_evidence("发生了错误，请稍后再试 会员 普通话") == ""
 
     def test_语境词不得落在CTA跨度内(self):
         """表自洽守卫：语境词**不能**是任何 CTA 短语的子串。

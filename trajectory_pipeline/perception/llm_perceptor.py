@@ -3,13 +3,19 @@
 「代码层做护栏、LLM层做探索」在这里有三条可检查的落法，缺一条就会
 把采集故障写成业务结论：
 
-1. **确定性事实优先，LLM 只做语义补位。**
-   ``<video>`` 标签存在性是代码事实（``video_tag_count``），不问模型；
-   预告片词表是**用户业务规则**，模型不知道也不该猜。LLM 接管的是
-   「页面上有没有能播的东西」这类规则判不了的语义。
-   纯 LLM 实现的实测反例：iqiyi 站点页 ``video=1`` 却被判「否」，
+1. **确定性事实优先，但事实只当护栏、不当结论。**
+   预告片词表是**用户业务规则**，模型不知道也不该猜；
+   ``<video>`` 标签计数（``video_tag_count``）进 prompt 与 payload，
+   但**不据此判成功**——媒体计数是**必要条件**不是充分条件
+   （2026-10-23 · M-26：优酷「试看6分钟｜开通会员看完整视频」页 ``video=1``
+   曾被直接读成「能看正片」，产出假成功；媒体计数那道短路已删，
+   见 :meth:`decide` 里的墓碑）。
+   LLM 接管的是「页面上有没有能播的东西」这类规则判不了的语义。
+   ⚠️ 纯 LLM 实现的实测反例：iqiyi 站点页 ``video=1`` 却被判「否」，
    理由是模型说「body 为空、元素为 0，说明未渲染」——
    它把**采集不全**读成**页面不行**，然后给了一个自信的错答案。
+   这条反例的对策是**第 2 条的采集充分性预检**（不判，返回 ``None``），
+   不是「凭计数直接答真」。
 
 2. **采集充分性在代码层预检，在问模型之前。**
    :func:`_sufficiency`。这是上面那个反例的直接对策：模型不知道
@@ -96,7 +102,7 @@ CONTRACTS: Mapping[str, str] = MappingProxyType(
         Q.IS_REACHABLE: (
             '{"answer":true|false|null,'
             '"page_quotes":["原文短语1","原文短语2"],'
-            '"access_control_type":"login|region|captcha|anti_bot|not_found|null",'
+            '"access_control_type":"login|region|captcha|anti_bot|not_found|paywall|null",'
             '"evidence":"一句话，不含页面原文引用（页面引文全部进 page_quotes）"}'
         ),
         Q.FIND_PLAY_CONTROL: (
@@ -159,11 +165,13 @@ CONTRACTS: Mapping[str, str] = MappingProxyType(
     }
 )
 
-#: access_control_type 合法值集合——解析层只放行这五个，其余回 None。
+#: access_control_type 合法值集合——解析层只放行这六个，其余回 None。
 #: 这里列必须与 :func:`~trajectory_pipeline.executor.branches.decision_branch`
 #: 的细分逻辑同源：某个取值一旦出现却不在这里，回落合并态是配套的。
+#: 2026-10-24 方案 19 A 类：+ ``paywall``——会员视频未登录/未付费时播放器
+#: 报错（「发生错误」）而页面无显式门禁短语，LLM 在②把真因归为付费墙。
 ACCESS_CONTROL_TYPES: frozenset[str] = frozenset(
-    {"login", "region", "captcha", "anti_bot", "not_found"}
+    {"login", "region", "captcha", "anti_bot", "not_found", "paywall"}
 )
 
 #: paywall_type 合法值集合（仅 preview/trial 走细分；null 兜底）。
@@ -308,22 +316,24 @@ class LLMPerceptor:
                 Q.CLASSIFY_SEARCH_LINKS: self._classify_search_links,
             }[question]
 
-            # 确定性事实优先：video 标签存在性不进 LLM
-            if question == Q.PLAYER_OK and obs.video_tag_count >= 1:
-                return self._answer(
-                    spec,
-                    True,
-                    evidence=(
-                        f"存在 <video>/<audio> 标签 ×{obs.video_tag_count}"
-                        f"（iframe={obs.iframe_count}）——代码层事实，不问 LLM"
-                    ),
-                    started=started,
-                    payload={
-                        "media_count": obs.video_tag_count,
-                        "iframe_count": obs.iframe_count,
-                    },
-                    fallback=True,
-                )
+            # ⚠️ **2026-10-23（M-26）：这里原来有一道短路，已删。**
+            #
+            # 原文是「确定性事实优先：video 标签存在性不进 LLM」——
+            # ``question == Q.PLAYER_OK and obs.video_tag_count >= 1`` ⇒ 直接
+            # ``answer=True``、**不问 LLM**。
+            #
+            # **删掉的理由是护栏越权**：代码层可以**否**，不能**许**——
+            # 媒体计数只能当**必要条件**，不能当**充分条件**。
+            # 实测代价（台账 §M-26）：优酷「试看6分钟｜开通会员看完整视频」页上
+            # ``video_tag_count=1`` ⇒ 被读成「能看正片」⇒ **5 份存档 5 条假成功**
+            # （LLM 压根没被问过）；网易号美食图文页上 6 个 ``<video>`` 是
+            # **点广告之后被注入的** ⇒ 同样被读成成功——那条正文里连付费形态词
+            # 都没有，所以靠词表拦不住，**只能把短路本身删掉**。
+            #
+            # ⇒ 现在 ④ 只有一条路：问 LLM（:meth:`_player_ok`）。
+            # 媒体计数仍然进 prompt 与 payload（``payload["media_count"]``），
+            # 但它是**观察事实**，不是结论。
+            # 「页面确实是播放页」由**别的**判据保证，不由媒体计数保证。
             decision = handler(spec, obs, started)
             # 2026-10-15 INC43 · ②③ 负分支付费墙救济：LLM 已判 False
             # （页面确实不可用），但 ②③ 的负分支（login_wall_or_blocked /
@@ -484,12 +494,18 @@ class LLMPerceptor:
 
         2026-10-12 阶段 1：answer=false 时**必须**带回
         ``access_control_type``，decision_branch 据此选用细分分支
-        （login_required / blocked / broken）——payload 缺失则**落
-        ``unresolved``**（2026-10-21 增量七十四，H-15，owner 裁定
-        「只落 unresolved，不新开分支」；旧口径是回落合并态
+        （login_required / subscription_wall / blocked / broken）——
+        payload 缺失则**落 ``unresolved``**（2026-10-21 增量七十四，H-15，
+        owner 裁定「只落 unresolved，不新开分支」；旧口径是回落合并态
         ``login_wall_or_blocked``，那一支的语义是「登录墙/验证码/地区限制」，
         而**三个前提一个都没观测到**——见
         ``executor/branches.decision_branch`` 的「② 的兜底为什么不再落合并态」）。
+
+        2026-10-24 方案 19 A 类：``access_control_type`` 增 ``paywall``——
+        会员视频未登录/未付费时播放器报错（「发生错误」）而页面无显式
+        门禁短语（「开通会员观看」），LLM 在②把「看不了」的真因归为付费墙
+        时填 ``paywall``，落 ``subscription_wall``（与 login_required 的
+        「登录后可免费」分开）。
 
         解析故意 fail-soft：模型没给字段、字段值不在合法集、或
         answer=true 都没填，都按 None 走——不抛异常、不改答案。
@@ -702,7 +718,11 @@ class LLMPerceptor:
         )
 
     def _player_ok(self, spec: Question, obs: Observation, started: float) -> Decision:
-        """判断点 ④：播放页是否可用。``<video>`` 存在性已在主入口处理。
+        """判断点 ④：播放页是否可用。
+
+        ⚠️ **2026-10-23（M-26）**：原文第一句是「``<video>`` 存在性已在主入口
+        处理」——**那道主入口短路已删**。④ 现在**只有这一条路**：问模型。
+        媒体计数仍然进 prompt 与 payload，但它只是**观察事实**。
 
         **付费墙在代码层先判**（口径一「确定性事实优先」）：页面上写着
         「开通会员 / 订阅后观看」是**本项目的业务规则**，模型不知道也不该猜——
@@ -1261,8 +1281,9 @@ def _diagnosed_access(decision: Decision) -> str:
     取值来源有两条，顺序即优先级：
 
     1. ``payload["access_control_type"]``——② 的**结构化字段**，LLM 自己
-       填的（``login`` / ``region`` / ``captcha`` / ``anti_bot`` /
-       ``not_found``）。结构化字段是 LLM 的**正式结论**，任意形态都让位；
+       填的（``login`` / ``paywall`` / ``region`` / ``captcha`` /
+       ``anti_bot`` / ``not_found``）。结构化字段是 LLM 的**正式结论**，
+       任意形态都让位；
     2. evidence 里的**环境阻断形态**（地区 / 验证码 / 反爬 / 404）——
        ③ 没有这个字段，诊断只写在 evidence 里；只认**环境阻断**不认
        登录（导航栏的「请登录」与「开通会员」一样高频，让它让位会把

@@ -371,7 +371,15 @@ class TestVisitFlow:
         assert result.player_obs.url == "https://x.test/play/e5"
         assert result.player_obs.video_tag_count == 3
 
-    async def test_点击失败记_component_unverified(self):
+    async def test_点击失败记unresolved(self):
+        """点击**失败** ⇒ 从未到达播放页 ⇒「播放页上没有可验证的播放组件」
+        这个结论**没有新证据支撑**（``component_unverified`` 的前置事实是
+        「到了播放页」）⇒ 记 ``unresolved``：**采集缺件 ≠ 业务负样本**
+        （M-27）。
+
+        ⚠️ 同页守卫在这条路上**结构性无从触发**——它要点击前后两份观察，
+        而点击失败时只有一份。
+        """
         pages = {
             "https://x.test/movie": obs_at(
                 "https://x.test/movie", elements=(("e5", "button", "播放"),)
@@ -392,7 +400,43 @@ class TestVisitFlow:
         )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
-        assert ledger.outcomes[0].branch == "component_unverified"
+        out = ledger.outcomes[0]
+        assert out.branch == "unresolved"
+        assert "点击" in out.evidence, "证据要留证——那是复看的现场"
+        assert not out.is_negative_sample, "unresolved 不进负样本池"
+
+    async def test_点击后取不到快照记unresolved(self):
+        """点击**成功**了但快照取不到 ⇒ 我们**不知道**那是不是播放页
+        ⇒ 同样缺「到了播放页」这个前置事实 ⇒ 记 ``unresolved``（M-27）。
+
+        这条路原先**没有测试**——机制没修也看不出来。
+        """
+        pages = {
+            "https://x.test/movie": obs_at(
+                "https://x.test/movie", elements=(("e5", "button", "播放"),)
+            )
+        }
+
+        class Boom(FakeDriver):
+            async def observe(self, *, max_chars=None):
+                self.observe_calls += 1
+                if self.observe_calls >= 2:
+                    raise DriverError("快照取不到")
+                return self.current
+
+        d = Boom(pages)
+        p = ScriptedPerceptor(
+            {
+                Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+                Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+            }
+        )
+        ledger = RunLedger("T001")
+        await visit_site(d, p, ledger, CAND)
+        out = ledger.outcomes[0]
+        assert out.branch == "unresolved"
+        assert "取不到页面快照" in out.evidence
+        assert not out.is_negative_sample, "unresolved 不进负样本池"
 
     async def test_开_tab_失败不阻断(self):
         pages = {"https://x.test/movie": obs_at("https://x.test/movie")}
@@ -2116,17 +2160,26 @@ class TestArchivedSteps:
         模型学一个随机数，样本还永远不可回放。
 
         锁的是「不引入」而非「移除」：实测 4 份真实存档里 ``ref=`` 出现 0
-        次——它从来没进过 P1（成功路径只记 ``PLAYER_OK`` 的 evidence，
-        带 ref 的 ``FIND_PLAY_CONTROL`` 结论在成功时不记账）。所以
-        ``tag`` + ``label`` 比 P1 原来有的**更多**：原来「点了哪个元素」
-        在存档里根本没留。
+        次——它从来没进过 P1（带 ref 的 ``FIND_PLAY_CONTROL`` 结论**只在
+        失败路径上记账**，走到播放页就不记账）。所以 ``tag`` + ``label``
+        比 P1 原来有的**更多**：原来「点了哪个元素」在存档里根本没留。
 
         用真 :class:`RulePerceptor`：``ScriptedPerceptor`` 的 evidence 是
         占位串，拿它断言等于什么都没断言。
+
+        ⚠️ **2026-10-23（M-26）**：规则版的 ④ 不再凭媒体计数判成功
+        （护栏可以否、不能许），所以这里**不能**再断言 ``r.success``。
+        改断言两件**与成功无关**的事实：① 走到了播放页（否则下面的断言
+        没有意义）；② **带 ref 的 ``FIND_PLAY_CONTROL`` 结论没有进账**
+        ——那才是 ref 会泄漏的地方。
         """
         d = FakeDriver(dict(_PLAY_PAGES))
-        r = await visit_site(d, RulePerceptor(), RunLedger("T001"), CAND)
-        assert r.success, "这条链路本该跑通，否则下面的断言没有意义"
+        ledger = RunLedger("T001")
+        r = await visit_site(d, RulePerceptor(), ledger, CAND)
+        assert r.player_obs is not None, "没走到播放页，下面的断言没有意义"
+        assert not any(
+            o.question == Q.FIND_PLAY_CONTROL for o in ledger.outcomes
+        ), "带 ref 的 FIND_PLAY_CONTROL 结论被记账了——它含会话句柄"
         blob = json.dumps(
             [s.to_json(lambda o: None) for s in r.steps.steps], ensure_ascii=False
         )

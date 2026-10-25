@@ -1,5 +1,5 @@
 {
-  "collected_at": "2026-10-23T15:24:57+0800",
+  "collected_at": "2026-10-23T17:32:44+0800",
   "note": "读数取自存档原文（body_text），非临场重采 ⇒ 站点可能已漂移。form_profile 是形态组合读数，**裁定归人**。",
   "source": {
     "candidates": "trajectory_pipeline/evaluation/golden/data/candidates.jsonl",

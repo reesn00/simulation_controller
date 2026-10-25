@@ -85,9 +85,12 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
                 "- **不**写自己的推断（不写\"看起来是登录墙\"）\n"
                 "- 没看到明显短语就空数组 ``[]``\n\n"
                 "3. 仅当 **answer=false** 时**同时**给出 ``access_control_type`` 字段，"
-                "六个值之一：\n"
+                "七个值之一：\n"
                 "- ``login``      — 提示登录后可继续看（如「请登录」「登录后观看完整版」"
                 "等可绕过的登录墙，agent 没登录态因此取不到正片）\n"
+                "- ``paywall``    — 需订阅/付费/开通会员才能看正片（如「开通会员观看」"
+                "「订阅后观看」；会员视频未登录时播放器报错「发生了错误」、"
+                "页面带「会员购/会员专区」等会员信号也归这一类）\n"
                 "- ``region``     — 地区限制（如海外 IP 限制、错误码 70017001 等"
                 "特定地区码）\n"
                 "- ``captcha``    — 图形/滑动/短信验证码\n"
@@ -113,7 +116,7 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
                     # ``MappingProxyType`` 保持声明序 = 迭代序，prompt 构造
                     # 与解析容错都按这个顺序遍历。放首位 = 模型先看到 page_quotes。
                     "page_quotes": "array of str",
-                    "access_control_type": "login|region|captcha|anti_bot|not_found|null",
+                    "access_control_type": "login|region|captcha|anti_bot|not_found|paywall|null",
                 }
             ),
             confidence_threshold=0.7,

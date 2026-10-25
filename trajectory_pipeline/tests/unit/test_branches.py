@@ -131,6 +131,11 @@ class TestDecisionMapping:
         assert decision_branch(
             dec(Q.IS_REACHABLE, False, payload={"access_control_type": "not_found"})
         ) == "broken"
+        # 2026-10-24 方案 19 A 类：② 的付费墙细分落订阅墙（会员视频报错），
+        # 与 login_required（登录后可免费）分开。
+        assert decision_branch(
+            dec(Q.IS_REACHABLE, False, payload={"access_control_type": "paywall"})
+        ) == "subscription_wall"
 
     def test_二的兜底不产生负样本(self):
         """落到 unresolved ⇒ **不进负样本池**（``unresolved`` 不是负样本），
