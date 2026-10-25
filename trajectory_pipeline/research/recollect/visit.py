@@ -26,7 +26,7 @@ OUT = HERE / "outcomes.jsonl"
 DEFAULT_VERSION = 10
 
 
-def load_targets(version: int = DEFAULT_VERSION):
+def load_targets(version: int = DEFAULT_VERSION, only: list[str] | None = None):
     from trajectory_pipeline.evaluation.golden.alignment import is_equivalent
 
     manifest = {m["task_id"]: m for m in json.loads(
@@ -46,6 +46,14 @@ def load_targets(version: int = DEFAULT_VERSION):
     # select.play_sites 行的判定发生在搜索页（①），直访不等价——跳过
     visit_level = [r for r in union
                    if (r.get("code") or {}).get("question") != "select.play_sites"]
+    # 定点重采：--only 传入 golden_id 列表时，只保留这些行（2026-10-25
+    # 路径 1「付费墙弃权」——定点重采 LLM 不可用/采集降级样本，不重跑全量）。
+    if only:
+        want = set(only)
+        visit_level = [r for r in visit_level if r["golden_id"] in want]
+        missed = want - {r["golden_id"] for r in visit_level}
+        if missed:
+            print(f"  [warn] --only 指定的 {sorted(missed)} 不在并集/visit_level，忽略", flush=True)
     # manifest 同 task_id 多存档时 title 一致（E/T 系列均如此），取任一
     targets = {}
     for r in visit_level:
@@ -57,7 +65,7 @@ def load_targets(version: int = DEFAULT_VERSION):
     return targets
 
 
-async def main(version: int = DEFAULT_VERSION):
+async def main(version: int = DEFAULT_VERSION, only: list[str] | None = None):
     from trajectory_pipeline.executor.browser.mcp_client import McpClient
     from trajectory_pipeline.executor.browser.obscura_driver import ObscuraDriver
     from trajectory_pipeline.executor.branches import RunLedger
@@ -65,8 +73,17 @@ async def main(version: int = DEFAULT_VERSION):
     from trajectory_pipeline.executor.steps.visit import visit_site
     from trajectory_pipeline.perception.factory import build_perceptor
 
-    targets = load_targets(version)
+    targets = load_targets(version, only=only)
     print(f"冻结档 v{version}：待直访 (task_id, url) 对：{len(targets)}", flush=True)
+
+    # 定点重采（--only）时**合并**旧 outcomes：新采到的行覆盖同 (task_id,url)
+    # 的旧行，其余保留——避免定点重采丢掉上一轮已修复的样本。
+    old_outcomes: dict[tuple[str, str], dict] = {}
+    if only and OUT.exists():
+        for line in OUT.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                o = json.loads(line)
+                old_outcomes[(o["task_id"], o["url"])] = o
 
     client = McpClient.from_env()
     done = 0
@@ -74,6 +91,12 @@ async def main(version: int = DEFAULT_VERSION):
         driver = ObscuraDriver(client)
         perceptors = {}
         with OUT.open("w", encoding="utf-8") as fh:
+            # 先回写非本次重采的旧行（定点模式）
+            if only:
+                revisit = set(targets)
+                for (k, o) in old_outcomes.items():
+                    if k not in revisit:
+                        fh.write(json.dumps(o, ensure_ascii=False) + "\n")
             for (task_id, url) in sorted(targets):
                 title = targets[(task_id, url)]
                 if title not in perceptors:
@@ -116,5 +139,9 @@ if __name__ == "__main__":
         description="URL 直采：直访黄金集并集里的访问级 URL，产出 outcomes.jsonl")
     parser.add_argument("--version", type=int, default=DEFAULT_VERSION,
                         help=f"黄金集冻结版本号（默认 {DEFAULT_VERSION}）")
+    parser.add_argument("--only", type=str, default="",
+                        help="定点重采：逗号分隔的 golden_id 列表；只重采这些行，"
+                             "其余旧 outcomes 保留合并（默认空 = 全量重采）")
     args = parser.parse_args()
-    asyncio.run(main(args.version))
+    only = [g.strip() for g in args.only.split(",") if g.strip()] or None
+    asyncio.run(main(args.version, only=only))
