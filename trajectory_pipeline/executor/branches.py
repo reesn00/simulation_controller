@@ -72,7 +72,6 @@ BRANCH_LABELS: Mapping[str, str] = {
     # ── 路径 B/C 发现链（2026-10-16）────────────────────────────
     # 前两支是聚合站链（①B 选站 + ⑤ 确认 / ⑥ 选入口），中间两支是
     # 文章链（①C 选文 / ⑥C 选外链），后三支是站内搜索链。
-    # 见 .trae/documents/路径BC发现链实施计划.md。
     "not_aggregator": "候选不是影视聚合站 / 导航站",
     "aggregator_no_entries": "聚合站页面上没有正式影视站入口",
     "not_article": "候选不是文章 / 社区讨论页",

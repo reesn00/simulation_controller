@@ -3,7 +3,7 @@
 
 > 状态:方案 v04  ·  适用范围:`trajectory_pipeline/evaluation` + `trajectory_pipeline/evaluation/golden`  ·  编写日期:2026-10-14
 > 上游设计:`docs/设计方案/08-阶段4七层定位与黄金数据集rubric门禁方案.md`(回答 3 问 + scout 三态分流设计)
-> 替代:`docs/设计方案/07-rubric-gate改造方案.md`(原为 1 行占位,本档为其实施层细化)
+> 替代:原 `07-rubric-gate改造方案.md`(1 行占位空壳,已于 2026-10-25 废弃文本清理删除;本档为其实施层细化)
 
 ---
 

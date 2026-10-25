@@ -2688,7 +2688,7 @@ class TabbedDriver(FakeDriver):
 class Test路径BC发现链:
     """三路径分叉（direct / aggregator / article）与 B/C 首页站内搜索。
 
-    设计口径见 ``.trae/documents/路径BC发现链实施计划.md``：direct
+    设计口径（2026-10-16 路径 B/C 发现链）：direct
     不动（回归由既有测试守住），B/C 的差异落在检索词、①.5 选题、
     ①.6 中间页遍历、visit ③.5 站内搜索分叉四处。
     """

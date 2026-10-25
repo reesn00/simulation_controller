@@ -1,1 +1,0 @@
-# Rubric Gate 参考

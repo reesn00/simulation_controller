@@ -438,8 +438,7 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
 #:   ``partial_free``       ④ 的细分（Q3）：有免费部分（试看/预告），
 #:                         完整内容需付费
 #:
-#: **站内搜索链的代码判定**（2026-10-16 路径 B/C，见
-#: ``.trae/documents/路径BC发现链实施计划.md``）：
+#: **站内搜索链的代码判定**（2026-10-16 路径 B/C）：
 #:   ``site_search_no_results``  首页型候选的站内搜索**提交成功、到达了
 #:                               结果页，但没有产出任何子候选**（选题
 #:                               ``SELECT_PLAY_SITES`` 判 False 或启发式

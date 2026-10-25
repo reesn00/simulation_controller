@@ -1,6 +1,6 @@
 # 12 · Agent 执行器升级方案（最小自研循环）
 
-**外部参考**：[`agentruntime-plan.md`](agentruntime-plan.md)（用户 2026-10-16 提供的五层架构：AgentScope Runtime / LangGraph / 外部 Gatekeeper / Obscura MCP / Langfuse）
+**外部参考**：agentruntime-plan（用户 2026-10-16 提供的五层架构：AgentScope Runtime / LangGraph / 外部 Gatekeeper / Obscura MCP / Langfuse；原稿已随 2026-10-25 废弃文本清理删除）
 
 **对照对象**：`trajectory_pipeline/` v2 新树（截至 2026-10-16 快照，门禁 2411 passed；路径 B/C 发现链已落地）
 
@@ -219,7 +219,7 @@ crc32 选词本身留在代码（确定性保留），真正非确定的是 **ag
 
 ## 相关文档
 
-- [`agentruntime-plan.md`](agentruntime-plan.md) —— 外部参考方案（五层架构原稿）
+- agentruntime-plan —— 外部参考方案（五层架构原稿；原稿已随 2026-10-25 废弃文本清理删除）
 - [架构总览](../01-架构总览.md) —— 现行架构、判断点、失败分支全集
 - [`11-外部方案对账.md`](11-外部方案对账.md) —— 上一轮外部方案对账（代码控制流版本）
 - [P3-views 契约](../contracts/P3-views.md) —— agent 循环原生产出的目标视图形态

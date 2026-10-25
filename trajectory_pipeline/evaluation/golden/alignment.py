@@ -1,7 +1,6 @@
 """URL 播放黄金集标签的**语义等价类**——D10 口径 C 的唯一出处。
 
-设计来源：``docs/设计方案/06-URL播放黄金集与轨迹黄金集标签对齐方案.md``
-§4.3（D10 口径 C 升级为等价类一致）。
+设计来源：原《URL 播放黄金集与轨迹黄金集标签对齐方案》§4.3（D10 口径 C 升级为等价类一致；原稿已于 2026-10-25 随废弃文本清理删除）。
 
 为什么需要这张表：
     现有 ``builder.cmd_agreement`` 的口径 C 是**字符串相等**
@@ -133,7 +132,7 @@ EQUIV_CLASS_NOTES: Mapping[str, Mapping[str, str]] = {
         "merged": ("playable", "ads_then_playable"),
         "detail_lost": "先有广告才播 vs 直接能播（ads_then_playable 的广告前置）",
         "reason": (
-            "对齐方案 06 §4.3：VLM 标签挂入现有体系锚点，"
+            "原对齐方案 §4.3：VLM 标签挂入现有体系锚点，"
             "广告前置不改变「能不能播」的结论"
         ),
     },
@@ -142,7 +141,7 @@ EQUIV_CLASS_NOTES: Mapping[str, Mapping[str, str]] = {
         "merged": ("paywall", "partial_free"),
         "detail_lost": "有无免费部分（partial_free 的试看段长度）",
         "reason": (
-            "对齐方案 06 §4.3：partial_free 归付费类——"
+            "原对齐方案 §4.3：partial_free 归付费类——"
             "「试看一段」与「完全付费」在「本轮能不能拿到完整内容」上同解"
         ),
     },
