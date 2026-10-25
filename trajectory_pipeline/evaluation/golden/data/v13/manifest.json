@@ -1,0 +1,121 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "2",
+ "rubric_version": "1.2",
+ "evaluator_version": "1046e67994aa",
+ "scorer_fingerprint": "code:3d352641c0aa|llm:1046e67994aa",
+ "holdout_runs": 0,
+ "version": 13,
+ "frozen_at": "2026-10-25T07:46:20+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 357,
+  "annotated": 294,
+  "site": 289,
+  "trajectory": 5,
+  "calibration": 131,
+  "regression": 60,
+  "holdout": 103
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.4456,
+  "pool_ratio": 0.6497,
+  "regression_ratio": 0.2041,
+  "holdout_ratio": 0.3503,
+  "pp_diff_from_target": 0.0003,
+  "headline_split": "calibration",
+  "regression_size": 60,
+  "regression_seed": 20261022,
+  "regression_fingerprint": "a62026e696de"
+ },
+ "derived_from": {
+  "version": 12,
+  "counts": {
+   "candidates": 357,
+   "annotated": 294,
+   "site": 289,
+   "trajectory": 5,
+   "calibration": 131,
+   "regression": 60,
+   "holdout": 103
+  },
+  "holdout_runs": 0
+ },
+ "score_refresh": {
+  "enabled": false
+ },
+ "gold_refresh": {
+  "enabled": false
+ },
+ "label_refresh": {
+  "enabled": false
+ },
+ "code_refresh": {
+  "enabled": true,
+  "source": "candidates.jsonl",
+  "rows_matched": 294,
+  "rows_missing": 0,
+  "changed_rows": 26,
+  "population": "site_rows",
+  "branch_shift": {
+   "before": {
+    "unresolved": 108,
+    "unreachable_hard": 38,
+    "": 28,
+    "not_play_site": 24,
+    "login_wall_or_blocked": 21,
+    "no_play_control": 16,
+    "blocked": 15,
+    "broken": 13,
+    "component_unverified": 13,
+    "subscription_wall": 9,
+    "trailer_suspect": 2,
+    "player_unverified": 1,
+    "trailer_only": 1
+   },
+   "after": {
+    "unresolved": 113,
+    "unreachable_hard": 39,
+    "": 27,
+    "not_play_site": 24,
+    "subscription_wall": 21,
+    "blocked": 16,
+    "broken": 13,
+    "no_play_control": 13,
+    "component_unverified": 10,
+    "login_wall_or_blocked": 10,
+    "trailer_suspect": 2,
+    "trailer_only": 1
+   }
+  },
+  "baseline_reset": false,
+  "note": "只重挂 code（pred 侧分支结论）；golden / dimension_scores / scores_detail / status 未动。code 是 pred 不是金标 ⇒ 不是新基线，与前版逐行可比"
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.8,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 40,
+  "success": 38,
+  "subscription_wall": 32,
+  "not_play_site": 30,
+  "blocked": 17,
+  "component_unverified": 17,
+  "no_play_control": 17,
+  "broken": 13,
+  "trailer_only": 7,
+  "login_wall_or_blocked": 6,
+  "trailer_suspect": 1
+ }
+}

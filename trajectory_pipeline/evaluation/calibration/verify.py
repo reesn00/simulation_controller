@@ -657,11 +657,13 @@ def analyze(
         "calibration": {
             "d10": calib,
             "d10_ratio": {
-                "baseline": _ratio(_agreed(calib), int(calib["paired"])),
-                "current": _ratio(
+                # 方向：baseline = 上轮判对（agreed − fixed + regressed）；
+                # current = agreed（本轮判对）。曾把两者互换，见 D-10 口径。
+                "baseline": _ratio(
                     _agreed(calib) - int(calib["fixed"]) + int(calib["regressed"]),
                     int(calib["paired"]),
                 ),
+                "current": _ratio(_agreed(calib), int(calib["paired"])),
             },
             "per_class": per_class,
             "other_dimensions": {

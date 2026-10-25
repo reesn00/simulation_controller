@@ -10,3 +10,4 @@
 {"annotated": 294, "calibration": 131, "derived_from": 9, "frozen_at": "2026-10-24T14:13:02+00:00", "holdout": 103, "label_schema_version": "2", "regression": 60, "rubric_version": "1.2", "version": 10}
 {"annotated": 294, "calibration": 131, "derived_from": 10, "frozen_at": "2026-10-25T00:18:25+00:00", "holdout": 103, "label_schema_version": "2", "regression": 60, "rubric_version": "1.2", "version": 11}
 {"annotated": 294, "calibration": 131, "derived_from": 11, "frozen_at": "2026-10-25T01:43:16+00:00", "holdout": 103, "label_schema_version": "2", "regression": 60, "rubric_version": "1.2", "version": 12}
+{"annotated": 294, "calibration": 131, "derived_from": 12, "frozen_at": "2026-10-25T07:46:20+00:00", "holdout": 103, "label_schema_version": "2", "regression": 60, "rubric_version": "1.2", "version": 13}

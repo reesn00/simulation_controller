@@ -1309,6 +1309,125 @@ def _refresh_label(
     return new_parts, info
 
 
+def _branch_of(code: Any) -> str:
+    """取 ``code.branch``（只读视图）；没有就空串。"""
+    if isinstance(code, Mapping):
+        return str(code.get("branch") or "")
+    return ""
+
+
+def _refresh_code(
+    parts: Mapping[str, Sequence[Mapping[str, Any]]],
+    cand_path: pathlib.Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """继承式冻结时把 pred 侧的 ``code`` 按 ``golden_id`` 从 candidates 重挂。
+
+    为什么需要它（重采新分支转正的出口）
+    ------------------------------------
+    D-10 的 pred 唯一来源是冻结行的 ``code.branch``（``agreement`` 只读它、
+    不重算）。而**继承式冻结是「行内容不动」**——重采/重判得到的新 ``code``
+    走 ``--from-version`` 永远进不了新版本。软维度金标有 ``--refresh-gold``、
+    评分有 ``--refresh-scores``、D-10 label 有 ``--refresh-label``，唯独 pred
+    侧的 ``code`` 没有出口，这是重采结论转正在冻结链上断掉的那一截。
+
+    换哪一栏
+    --------
+    **只换** ``code``（整个子字典：``branch`` / ``branch_label`` / ``evidence``
+    / ``source`` 等）。``golden`` / ``dimension_scores`` / ``scores_detail`` /
+    ``status`` **一个字不动**——金标归 ``--refresh-gold`` / ``--refresh-label``、
+    评分归 ``--refresh-scores`` 管，各走各的出口。
+
+    ⚠️ ``code`` 是**被测的 pred**，不是金标：重挂它**不是**新基线
+    （manifest 落 ``baseline_reset: false``），本版与上一版仍逐行可比——
+    这与 ``--refresh-gold`` / ``--refresh-label``（金标变动 = 新基线）相反。
+
+    fail-closed
+    -----------
+    - ``golden_id`` 在 candidates 里找不到 ⇒ 退 2 并**列出全部缺失 id**，
+      绝不「找不到就留着旧 code」（那等于把过期分支结论继续盖着）。
+    - candidates 行缺 ``code`` 而冻结行有 ``code`` ⇒ 退 2：拿空覆盖只会把
+      分支结论抹掉，看起来像刷过了。
+
+    审计口径
+    --------
+    ``branch_shift`` 的 before/after 取**站点级行**（与 D-10 分母同口径）；
+    ``changed_rows`` 取**全部行**（含轨迹级）里 ``code.branch`` 变了的条数。
+    """
+    if not cand_path.exists():
+        raise GoldenError(
+            f"{cand_path} 不存在；--refresh-code 要从 candidates 重挂 code"
+        )
+    candidates = {
+        str(r.get("golden_id") or ""): r for r in _load_jsonl(cand_path)
+    }
+    missing: list[str] = []
+    new_parts: dict[str, list[dict[str, Any]]] = {}
+    before_rows: list[Mapping[str, Any]] = []
+    after_rows: list[Mapping[str, Any]] = []
+    changed_rows = 0
+    for split, rows in parts.items():
+        refreshed: list[dict[str, Any]] = []
+        for row in rows:
+            gid = str(row.get("golden_id") or "")
+            cand = candidates.get(gid)
+            if cand is None:
+                missing.append(gid)
+                continue
+            new_code = cand.get("code")
+            if new_code is None and row.get("code") is not None:
+                raise GoldenError(
+                    f"candidates 里的 {gid} 没有 code，但冻结行有；"
+                    "拿空覆盖只会把分支结论抹掉，先补齐候选的 code 再刷新"
+                )
+            old_code = row.get("code")
+            new = dict(row)
+            new["code"] = new_code
+            before_rows.append(row)
+            after_rows.append(new)
+            if _branch_of(old_code) != _branch_of(new_code):
+                changed_rows += 1
+            refreshed.append(new)
+        new_parts[split] = refreshed
+    if missing:
+        raise GoldenError(
+            "candidates.jsonl 里找不到这些 golden_id（"
+            f"{len(missing)} 个）：{' / '.join(missing)}；"
+            "**不刷新**（留着旧 code 比刷一半更糟），先补齐候选"
+        )
+
+    def _site(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        return [r for r in rows if r.get("source_kind") != "p2_sample"]
+
+    before_site = _site(before_rows)
+    after_site = _site(after_rows)
+    before_shift = collections.Counter(_branch_of(r.get("code")) for r in before_site)
+    after_shift = collections.Counter(_branch_of(r.get("code")) for r in after_site)
+    info = {
+        "enabled": True,
+        "source": cand_path.name,
+        "rows_matched": len(after_rows),
+        "rows_missing": 0,
+        "changed_rows": changed_rows,
+        "population": "site_rows",
+        "branch_shift": {
+            "before": dict(
+                sorted(before_shift.items(), key=lambda kv: (-kv[1], str(kv[0])))
+            ),
+            "after": dict(
+                sorted(after_shift.items(), key=lambda kv: (-kv[1], str(kv[0])))
+            ),
+        },
+        # code 是被测的 pred，不是金标：重挂它不换尺子，本版与前版仍逐行可比。
+        "baseline_reset": False,
+        "note": (
+            "只重挂 code（pred 侧分支结论）；golden / dimension_scores / "
+            "scores_detail / status 未动。code 是 pred 不是金标 ⇒ 不是新基线，"
+            "与前版逐行可比"
+        ),
+    }
+    return new_parts, info
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     golden_dir = pathlib.Path(args.golden_root)
     cand_path = golden_dir / CANDIDATES_FILE
@@ -1319,6 +1438,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     refresh_scores = bool(getattr(args, "refresh_scores", False))
     refresh_gold = bool(getattr(args, "refresh_gold", False))
     refresh_label = bool(getattr(args, "refresh_label", False))
+    refresh_code = bool(getattr(args, "refresh_code", False))
     if refresh_scores and not carrying:
         raise GoldenError(
             "--refresh-scores 只能配 --from-version 用：不继承的冻结本来就"
@@ -1334,11 +1454,17 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             "--refresh-label 只能配 --from-version 用：不继承的冻结本来就"
             "从 annotations 直接抄 label，没有「带过来的旧 label」这回事"
         )
+    if refresh_code and not carrying:
+        raise GoldenError(
+            "--refresh-code 只能配 --from-version 用：不继承的冻结本来就"
+            "直接读 candidates 的 code，没有「带过来的旧 code」这回事"
+        )
     src_manifest: dict[str, Any] = {}
     derived_from: dict[str, Any] = {}
     score_refresh: dict[str, Any] = {"enabled": False}
     gold_refresh: dict[str, Any] = {"enabled": False}
     label_refresh: dict[str, Any] = {"enabled": False}
+    code_refresh: dict[str, Any] = {"enabled": False}
     if carrying:
         src_vdir = golden_dir / f"v{args.from_version}"
         if not src_vdir.exists():
@@ -1358,6 +1484,8 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             parts, gold_refresh = _refresh_gold(parts, ann_path)
         if refresh_label:
             parts, label_refresh = _refresh_label(parts, ann_path)
+        if refresh_code:
+            parts, code_refresh = _refresh_code(parts, cand_path)
         if refresh_scores:
             parts, score_refresh = _refresh_scores(parts, cand_path)
         else:
@@ -1514,6 +1642,10 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         # D-10 label 是否重挂过（修正 gold_defect 金标错）。与 gold_refresh 同理，
         # ``baseline_reset=true`` 时本版是新基线（label 变了 = 与前版不可比）。
         "label_refresh": label_refresh,
+        # pred 侧 code 是否按 candidates 重挂过（重采新分支转正）。
+        # ``baseline_reset=false``：code 是被测的 pred 不是金标，重挂它不换
+        # 尺子，本版与上一版仍逐行可比（与 gold/label 刷新相反）。
+        "code_refresh": code_refresh,
         "thresholds": {
             "d10_min_agreement": D10_THRESHOLD,
             "retest_interval_days": RETEST_INTERVAL_DAYS,
@@ -1591,6 +1723,24 @@ def cmd_freeze(args: argparse.Namespace) -> int:
                 "    label 分布: "
                 f"{json.dumps(shift.get('before'), ensure_ascii=False)}"
                 f" → {json.dumps(shift.get('after'), ensure_ascii=False)}"
+            )
+        if code_refresh.get("enabled"):
+            if not code_refresh.get("changed_rows"):
+                print(
+                    "⚠️ --refresh-code 没重挂到任何变化："
+                    "candidates 的 code 与冻结行一致",
+                    file=sys.stderr,
+                )
+            code_shift = code_refresh.get("branch_shift") or {}
+            print(
+                "  code 已按 candidates 重挂（pred 侧分支结论；golden / 评分未动）: "
+                f"变动 {code_refresh.get('changed_rows')} 行"
+                "（**code 是 pred 不是金标 ⇒ 仍与前版逐行可比**）"
+            )
+            print(
+                "    branch 分布（站点级）: "
+                f"{json.dumps(code_shift.get('before'), ensure_ascii=False)}"
+                f" → {json.dumps(code_shift.get('after'), ensure_ascii=False)}"
             )
         if score_refresh.get("enabled"):
             print(
@@ -3019,8 +3169,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "继承 vN 的切分**原样重冻结**（行内容不动，只补/带回归集与三档口径）。"
             "切分不读 candidates/annotations——回头重切会重新洗牌，"
-            "「v7 与 v6 逐行可比」就没了；给了 --refresh-scores 时**只**读 candidates "
-            "的三个评分字段。源版本已有 regression.jsonl 时原样带过来。"
+            "「v7 与 v6 逐行可比」就没了；给了 --refresh-scores / --refresh-code "
+            "时读 candidates（前者三个评分字段，后者 code）。源版本已有 "
+            "regression.jsonl 时原样带过来。"
         ),
     )
     p_frz.add_argument(
@@ -3054,6 +3205,17 @@ def build_parser() -> argparse.ArgumentParser:
             "侧不动）。**label 变动 = 新基线**：manifest 落 "
             "`label_refresh.baseline_reset=true`，gate 拒绝拿本版与上一版比（退 2）。"
             "只能配 --from-version 用。"
+        ),
+    )
+    p_frz.add_argument(
+        "--refresh-code",
+        action="store_true",
+        help=(
+            "继承式冻结时把每行的 pred 侧 code 按 golden_id 从 candidates.jsonl "
+            "重挂（只动 code；golden / dimension_scores / scores_detail / status "
+            "不动）。**code 是 pred 不是金标**：manifest 落 "
+            "`code_refresh.baseline_reset=false`，本版与上一版仍逐行可比"
+            "（与 --refresh-gold / --refresh-label 相反）。只能配 --from-version 用。"
         ),
     )
     p_frz.add_argument(

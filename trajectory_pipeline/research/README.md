@@ -33,6 +33,8 @@ research/
 │  ├─ manifest.json            90 行并集的 task → title / URL 清单（直采输入）
 │  ├─ visit.py                 直访 90 行并集，产出 outcomes.jsonl（**联网 + 真浏览器 + LLM**）
 │  ├─ measure.py               离线复算：按 (task_id, url) 回填、重算 D-10 投影
+│  ├─ apply_code_writeback.py    离线：把重采 outcomes 的新判定写回 candidates.jsonl
+│  │                            的 code（v12→v13 一次性；跑完由 freeze --refresh-code 挂链）
 │  ├─ outcomes.jsonl           **当前有效轮**（INC43 轮，75 对直采命中 79 行）
 │  └─ rounds/                  历史轮次快照，**已被 outcomes.jsonl 取代**，仅留痕
 │     ├─ inc42_backup.jsonl       INC43 修复前的基线
@@ -113,6 +115,11 @@ research/
 ```powershell
 # 离线复算 D-10 投影（不需要浏览器 / key）
 uv run python trajectory_pipeline/research/recollect/measure.py
+
+# 把重采新判定写回 candidates.jsonl 的 code（离线；v12→v13 一次性）
+# ⚠️ 跑前先确认 candidates.jsonl 处于**写回前**状态（否则按 changed != 预期 fail-closed）；
+#    跑完由 freeze --version N --from-version M --refresh-code 挂链，再用 agreement 出正式读数。
+uv run python trajectory_pipeline/research/recollect/apply_code_writeback.py
 
 # A/B 与专项分析（全部离线）
 uv run python trajectory_pipeline/research/probes/inc43_ab_compare.py

@@ -60,9 +60,13 @@ THRESHOLDS: dict[str, dict[str, Any]] = {
         "where": ("evaluation/golden/builder.py",),
     },
     "class_regression_tolerance": {
-        "value": 0.0,
+        "value": 0.02,
         "status": "已定线",
-        "basis": "类 F1 下降容差：任何下降都驳回（容差 0 = 不许放水）",
+        "basis": (
+            "类 F1 下降容差（等价类 per-class F1）。原 0.0（任何下降都驳回）；"
+            "放宽至 0.02（owner 2026-10-25 裁定，D-C6 阈值变更）——认可 v13 "
+            "两处类回归均在容差内：NO_PLAY_RESOURCE -0.011、UNKNOWN -0.010"
+        ),
         "where": (
             "evaluation/calibration/verify.py",
             "evaluation/calibration/gate.py",
