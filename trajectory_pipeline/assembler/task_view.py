@@ -986,6 +986,15 @@ def build_all_task_views(
             if not existing_run_id:
                 # 文件名形如 ``T001__b3a3548a`` → run_id = ``b3a3548a``
                 stem = path.stem
+                # ⚠️ ``.reviewed`` 是**文件身份**不是 run 身份：人工复核档
+                # 叫 ``T001__b3a3548a.reviewed.json``，派生出的 run_id 必须
+                # 是 ``b3a3548a``。不剥的话同一 run 会得到两个 trajectory_id，
+                # 而 ``<run>.reviewed`` 那个对不上任何 ``trajectory_id``
+                # （scout / LS 上传按 ``<task_id>__<run_id>.json`` 查）——
+                # 死文件，且真正被查到的那份可能来自**未复核**的原档。
+                # 与 :func:`assembler.schema.run_id_of` 同一条口径。
+                if stem.endswith(".reviewed"):
+                    stem = stem[: -len(".reviewed")]
                 if "__" in stem:
                     derived_run_id = stem.split("__", 1)[1].strip()
                     if derived_run_id:

@@ -2867,6 +2867,13 @@ def cmd_task_view(args: argparse.Namespace) -> int:
     默认不覆盖已落盘的产物（与 ``cmd build`` 同款——重建批次不该把别人
     刚标好的视图抹掉）。
 
+    ⚠️ **``--all`` 走 :func:`select_archives` 解析名单**（人工复核档优先），
+    与 ``build`` / ``report`` / ``check-archives`` / ``evaluation`` 同口径。
+    以前它直接 glob 目录，于是同一条 run 出**两份 T 视图**：一份来自原档、
+    一份来自复核档，而后者的 ``run_id`` 被从文件名派生成了
+    ``<run>.reviewed``——那个 id 对不上任何 ``trajectory_id``，是死文件，
+    而真正被上传查到的那个名字来自**哪一份**只取决于文件名排序。
+
     Returns:
         始终 0（与 :func:`cmd_build` 同款纪律——跳过走 stdout 印出，
         不靠退出码传达）。跳过的条数与原因逐组印出——**「跳过」必须
@@ -2878,9 +2885,13 @@ def cmd_task_view(args: argparse.Namespace) -> int:
     root = Path(args.out) if args.out else DEFAULT_ROOT
     overwrite = bool(args.overwrite)
     if args.all:
-        # 整批：枚举 P1 存档目录
+        # 整批：**名单由 select_archives 定**（复核档优先）。直接 glob 会让
+        # 同一条 run 出两份 T 视图，其中复核档那份的 run_id 被派生成
+        # ``<run>.reviewed``——对不上任何 trajectory_id，是死文件。
+        picked = [p.name for p, _reviewed in select_archives(root)]
         results = tv.build_all_task_views(
             source_root=root, target_root=root, overwrite=overwrite,
+            archive_filter=picked,
             backfill_from_filename=bool(
                 getattr(args, "backfill_from_filename", True),
             ),

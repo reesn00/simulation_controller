@@ -336,3 +336,45 @@ class Test过渡期回填:
         assert rc == 0
         # run_id 派生出来是 "only",不是空 → 应该能跑出 T 视图
         assert (tmp_path / "task_views" / "T004__only.json").exists()
+
+
+class Test复核档优先:
+    """``--all`` 的名单**由 ``select_archives`` 定**（复核档优先）。
+
+    2026-10-26 修：以前直接 glob ``*.json``，于是同一条 run 出两份 T 视图——
+    原档一份、复核档一份，而复核档那份的 ``run_id`` 被从文件名派生成
+    ``<run>.reviewed``。那个 id 对不上任何 ``trajectory_id``（scout / LS
+    上传按 ``<task_id>__<run_id>.json`` 查），是死文件；而**真正被查到的
+    那个名字**来自哪一份，只取决于文件名排序。
+    """
+
+    def test_有复核档时用复核档且run_id不带reviewed(self, tmp_path):
+        raw = _legacy_archive("T001", "a1")
+        raw["title"] = "功夫（原档）"
+        reviewed = _legacy_archive("T001", "a1")
+        reviewed["title"] = "功夫（人工复核过）"
+        (tmp_path / "T001__a1.json").write_text(
+            json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        (tmp_path / "T001__a1.reviewed.json").write_text(
+            json.dumps(reviewed, ensure_ascii=False), encoding="utf-8")
+
+        assert cli.cmd_task_view(_ns(all=True, out=str(tmp_path))) == 0
+        files = sorted(p.name for p in (tmp_path / "task_views").glob("*.json"))
+        assert files == ["T001__a1.json"], f"同一 run 只该有一份 T 视图: {files}"
+        blob = json.loads((tmp_path / "task_views" / "T001__a1.json")
+                          .read_text(encoding="utf-8"))
+        assert blob["trajectory_id"] == "T001__a1"
+        assert "复核" in json.dumps(blob, ensure_ascii=False)
+
+    def test_只剩复核档时随select_archives一并略过(self, tmp_path):
+        """**已知边界**：``select_archives`` 只遍历原档、用复核档配对替换，
+        所以**只有复核档、没有原档**的 run 根本不在名单里（与 report /
+        evaluation 同一条口径——一处少、处处少，不会只在这条命令上丢）。
+        这条钉住「行为一致」，不是钉住「这是好行为」：真要支持孤立复核档，
+        得先改 ``select_archives`` 本身并同步所有消费方的分母。
+        """
+        reviewed = _legacy_archive("T002", "b2")
+        (tmp_path / "T002__b2.reviewed.json").write_text(
+            json.dumps(reviewed, ensure_ascii=False), encoding="utf-8")
+        assert cli.cmd_task_view(_ns(all=True, out=str(tmp_path))) == 0
+        assert not (tmp_path / "task_views" / "T002__b2.json").exists()
