@@ -468,7 +468,7 @@ D-4 对它们检查 2 判 ok，其中点击前后同页的由检查 3 判「应�
 `no_play_control` 7 / `component_unverified` 6 / `broken` 6 / `blocked` 5 /
 `subscription_wall` 4 / `player_unverified` 1 / `trailer_only` 1 / `trailer_suspect` 1。
 ⇒ **树上没有节点的 62 条**（上列里除 `null`/`no_play_control`/`component_unverified`/
-`subscription_wall`/`player_unverified` 之外的全��）。
+`subscription_wall`/`player_unverified` 之外的全部）。
 ⚠️ 而 `not_play_site` 这个节点**在这 91 条里一条都没用上**。
 
 **改稿建议**：决策树补 5–7 个节点，至少把**责任方不同**的分开：

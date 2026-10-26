@@ -1,22 +1,25 @@
-"""L5 \u4ef2\u88c1\u5c42\u2014\u2014L3 rule + L4 VLM + L2 signal \u52a0\u6743\u4ea7\u51fa 13 \u5206\u652f\u3002
+"""L5 仲裁层——L3 rule + L4 VLM + L2 signal 加权产出 21 分支。
 
-\u589e\u91cf\u4e8c\u5341\u4e03\uff082026-10-13\uff09\u3002\u8bbe\u8ba1\u7eaa\u5f8b\uff084 \u6761\u62cd\u677f\uff09\uff1a
+口径：``BRANCH_LABELS`` 全集 21 key = 20 活跃 + 1 deprecated
+``login_wall_or_blocked``；判定层不主动产出 deprecated，历史存档才有。
 
-1. **L5 = N-of-M \u52a0\u6743\u4ef2\u88c1**\uff0c\u4e0d\u662f\u7b80\u5355 L3 \u62a2 L4\u3001\u4e5f\u4e0d\u662f\u53cd\u8fc7\u6765\u2014\u2014
-   \u6309 ``source \u6743\u91cd \u00d7 confidence`` \u6392\u5e8f\u3001\u540c\u8d28\u4e00\u81f4\u53d6 max\uff0c\u51b2\u7a81\u65f6\u4f18\u5148 L4 llm > L4 heuristic > L3 rule
-2. **L5 \u8f93\u5165 = BrowserProbeResult \u9876\u5c42**\uff0c\u4e0d\u518d\u4ece Observation \u91cd\u626b
-3. **L5 \u8f93\u51fa = SiteOutcome 13 \u5206\u652f**\uff0c\u4e0e :mod:`executor.branches` \u540c\u6e90
-4. **L5 fail-closed \u77ed\u8def**\uff1a``result.note \u2208 {credential_leak, driver_missing, timeout, driver_error}``\u65f6
-   \u76f4\u63a5\u8fdb unresolved/player_unverified\uff0c\u4e0d\u8d70\u52a0\u6743
+增量二十七（2026-10-13）。设计纪律（4 条拍板）：
 
-\u8f93\u51fa\u5f62\u72b6\uff08\u5d4c\u5165 BrowserProbeResult.l5_outcome\uff09\uff1a
+1. **L5 = N-of-M 加权仲裁**，不是简单 L3 抢 L4、也不是反过来——
+   按 ``source 权重 × confidence`` 排序、同质一致取 max，冲突时优先 L4 llm > L4 heuristic > L3 rule
+2. **L5 输入 = BrowserProbeResult 顶层**，不再从 Observation 重扫
+3. **L5 输出 = SiteOutcome 21 分支**，与 :mod:`executor.branches` 同源
+4. **L5 fail-closed 短路**：``result.note ∈ {credential_leak, driver_missing, timeout, driver_error}``时
+   直接进 unresolved/player_unverified，不走加权
+
+输出形状（嵌入 BrowserProbeResult.l5_outcome）：
 
 .. code-block:: python
 
     SiteOutcome(
         url=...,
         branch="blocked" | "login_required" | ... | None,
-        evidence="\u3010L5\u4ef2\u88c1\u3011...",
+        evidence="【L5仲裁】...",
         question="business.signal" | "playback.success",
         source="arbiter",
         fallback_used=False,
@@ -34,13 +37,13 @@ from trajectory_pipeline.executor.branches import (
 )
 from trajectory_pipeline.perception.base import Decision
 
-#: L5 fail-closed note \u96c6\uff08\u4e0e L3 / L4 \u540c\u6e90\u2014\u2014\u9a71\u52a8\u5c42\u62a5\u9519\uff09\u3002
+#: L5 fail-closed note 集（与 L3 / L4 同源——驱动层报错）。
 L5_FAIL_CLOSED_NOTES: frozenset[str] = frozenset(
     {"credential_leak", "driver_missing", "timeout", "driver_error"}
 )
 
-#: L3 access_kind \u2192 13 \u5206\u652f\u6620\u5c04\uff08L3 \u8bcd\u5178 7 \u503c\u7684\u8d77\u70b9\uff09\u3002
-#: \u672a\u547d\u4e2d\u8fd4\u56de None\uff0c\u4ea4\u7531 L4 / L2 \u8865\u3002
+#: L3 access_kind → 21 分支映射（L3 词典 7 值的起点）。
+#: 未命中返回 None，交由 L4 / L2 补。
 L3_ACCESS_KIND_TO_BRANCH: Mapping[str, str] = {
     "region": "blocked",
     "anti_bot": "blocked",
@@ -49,59 +52,59 @@ L3_ACCESS_KIND_TO_BRANCH: Mapping[str, str] = {
     "login": "login_required",
 }
 
-#: L3 \u5224\u51fa paywall \u540e\uff0cL3 paywall_type \u2192 \u5206\u652f\u3002
+#: L3 判出 paywall 后，L3 paywall_type → 分支。
 L3_PAYWALL_TYPE_TO_BRANCH: Mapping[str, str] = {
     "preview": "partial_free",
     "trial": "partial_free",
 }
 
-#: L4 label \u2192 13 \u5206\u652f\u6620\u5c04\u3002None \u4ee3\u8868\u201c\u672c\u8eab\u5c31\u662f\u6210\u529f\u201d\uff08\u4e0d\u8d70\u5931\u8d25\u5206\u652f\uff09\u3002
-#: \u4e0d\u5728\u8868\u4e2d\u7684 label \uff08empty / unknown\uff09\u8fd4\u56de None\uff0c\u4ea4\u7531 L2 / L3 \u8865\u3002
+#: L4 label → 21 分支映射。None 代表“本身就是成功”（不走失败分支）。
+#: 不在表中的 label （empty / unknown）返回 None，交由 L2 / L3 补。
 L4_LABEL_TO_BRANCH: Mapping[str, str | None] = {
     "playable": None,
     "ads_then_playable": None,
-    "paywall": "subscription_wall",  # \u9ed8\u8ba4\u4e3a\u8ba2\u9605\u5f0f\uff0c\u88ab paywall_type \u8986\u76d6
+    "paywall": "subscription_wall",  # 默认为订阅式，被 paywall_type 覆盖
     "login_required": "login_required",
     "partial_free": "partial_free",
     "blocked": "blocked",
     "broken": "broken",
 }
 
-#: L4 paywall_type \u2192 \u5f53 label=paywall \u65f6\u7684\u7ec6\u5206\u3002trial \u4e0e L3 \u540c\u6e90\u4e0d\u540c dict\u3002
+#: L4 paywall_type → 当 label=paywall 时的细分。trial 与 L3 同源不同 dict。
 L4_PAYWALL_TYPE_TO_BRANCH: Mapping[str, str] = {
     "trial": "partial_free",
 }
 
-#: L4 source \u6743\u91cd\uff08\u4ef2\u88c1\u65f6\u51b2\u7a81\u53d6\u8f83\u9ad8\u8005\uff09\u3002
-#: llm > heuristic > rule\uff0c\u4e0e\u300c\u4eba\u5728\u73af\u300d\u4e00\u81f4\uff1aLLM \u770b\u4e86\u591a\u6a21\u6001\u4e0d\u5e94\u8be5\u8f93\u7ed9\u8bcd\u5178\u3002
+#: L4 source 权重（仲裁时冲突取较高者）。
+#: llm > heuristic > rule，与「人在环」一致：LLM 看了多模态不应该输给词典。
 L5_SOURCE_WEIGHT: Mapping[str, int] = {
     "llm": 3,
     "heuristic": 2,
     "gpt4v": 3,
     "claude_vision": 3,
     "rule": 1,
-    "arbiter": 0,  # \u672c\u5c42\u6807\u8bb0\uff0c\u4e0d\u53c2\u4e0e\u52a0\u6743
+    "arbiter": 0,  # 本层标记，不参与加权
 }
 
-#: 2026-10-13 \u589e\u91cf\u4e8c\u5341\u516b\uff1aL1 ffprobe \u5a92\u4f53\u5c42\u5224\u5b9a\u6743\u91cd\u3002
-#: L1 \u662f\u300c\u5b9e\u9645\u5a92\u4f53\u5b57\u8282\u6d41\u300d\u5224\u5b9a\u7684\uff08duration / has_video\uff09\uff0c
-#: \u5f3a\u4e8e L3 \u8bcd\u5178\u3001\u5f31\u4e8e L4 LLM \u591a\u6a21\u6001\u3002\u51b2\u7a81\u65f6 L1 \u8f93\u7ed9 llm (3)\uff0c
-#: \u4e0e heuristic (2) \u5e73\u624b\u2014\u2014\u4f46 duration \u662f\u786c\u6570\u636e\uff0c
-#: \u56e0\u6b64 partial_free / broken \u4ecd\u53ef\u6bd4 heuristic \u66f4\u8ba9\u4eba\u4fe1\u670d\u3002
+#: 2026-10-13 增量二十八：L1 ffprobe 媒体层判定权重。
+#: L1 是「实际媒体字节流」判定的（duration / has_video），
+#: 强于 L3 词典、弱于 L4 LLM 多模态。冲突时 L1 输给 llm (3)，
+#: 与 heuristic (2) 平手——但 duration 是硬数据，
+#: 因此 partial_free / broken 仍可比 heuristic 更让人信服。
 L1_SOURCE_WEIGHT: int = 2
-#: L1 \u51fa\u5206\u652f\u65f6\u7684\u9ed8\u8ba4 confidence\u2014\u2014duration \u662f\u786c\u8bc1\u636e\uff0c\u7ed9\u5230 0.8\uff1b
-#: L1 \u6ca1\u51fa\u5206\u652f\u65f6\u8fd4 (None, 0.0)\uff0c\u8ba9 _pick_winner \u8df3\u8fc7 L1 \u6295\u7968\u3002
+#: L1 出分支时的默认 confidence——duration 是硬证据，给到 0.8；
+#: L1 没出分支时返 (None, 0.0)，让 _pick_winner 跳过 L1 投票。
 L1_BRANCH_CONFIDENCE: float = 0.8
 
 
 def _branch_from_l3(l3_decision: Decision | None) -> tuple[str | None, float]:
-    """L3 Decision \u2192 \u5206\u652f + confidence\u3002\u672a\u547d\u4e2d\u8fd4\u56de (None, 0.0)\u3002"""
+    """L3 Decision → 分支 + confidence。未命中返回 (None, 0.0)。"""
     if l3_decision is None:
         return None, 0.0
     payload = dict(l3_decision.payload) if l3_decision.payload else {}
     access_kind = payload.get("access_kind")
     if access_kind == "paywall":
-        # \u8c03\u7528 L3 paywall_type \u7ec6\u5206
+        # 调用 L3 paywall_type 细分
         pw_type = payload.get("paywall_type", "none")
         branch = L3_PAYWALL_TYPE_TO_BRANCH.get(pw_type, "subscription_wall")
         return branch, float(l3_decision.confidence)
@@ -112,10 +115,10 @@ def _branch_from_l3(l3_decision: Decision | None) -> tuple[str | None, float]:
 
 
 def _branch_from_l4(vlm_review: Any) -> tuple[str | None, float, str]:
-    """VLMReviewResult \u2192 \u5206\u652f + confidence + source\u3002
+    """VLMReviewResult → 分支 + confidence + source。
 
-    \u8fd4\u56de (branch_or_None, confidence, source)\u3002branch=None \u4ee3\u8868\u201c\u672c\u8eab\u5c31\u662f\u6210\u529f\u201d
-    \u6216\u201c\u672a\u547d\u4e2d\u201d\u2014\u2014\u4e24\u8005\u5747\u4ea4\u7531\u4e0a\u4e0b\u6e38\u3002
+    返回 (branch_or_None, confidence, source)。branch=None 代表“本身就是成功”
+    或“未命中”——两者均交由上下游。
     """
     if vlm_review is None:
         return None, 0.0, ""
@@ -123,13 +126,13 @@ def _branch_from_l4(vlm_review: Any) -> tuple[str | None, float, str]:
     conf = float(getattr(vlm_review, "confidence", 0.0) or 0.0)
     source = str(getattr(vlm_review, "source", "") or "")
     if label == "paywall":
-        # \u770b L4 paywall_type \u662f\u5426\u80fd\u7ec6\u5206
+        # 看 L4 paywall_type 是否能细分
         pw_type = getattr(vlm_review, "paywall_type", "none")
         branch = L4_PAYWALL_TYPE_TO_BRANCH.get(pw_type, "subscription_wall")
         return branch, conf, source
     if label in L4_LABEL_TO_BRANCH:
         return L4_LABEL_TO_BRANCH[label], conf, source
-    # empty / unknown / \u672a\u77e5\u6807\u7b7e
+    # empty / unknown / 未知标签
     return None, conf, source
 
 
@@ -138,9 +141,9 @@ def _branch_from_signal(
     media_count: int,
     note: str,
 ) -> tuple[str | None, str]:
-    """L2 MediaSignal \u542f\u53d1\u5f0f\u2192 \u5206\u652f + \u8bc1\u636e\u6587\u6848\u3002
+    """L2 MediaSignal 启发式→ 分支 + 证据文案。
 
-    \u8fd4\u56de (branch_or_None, evidence_phrase)\u3002
+    返回 (branch_or_None, evidence_phrase)。
     """
     play_started = bool(getattr(signal, "play_started", False))
     current_time = getattr(signal, "current_time_sec", None)
@@ -149,37 +152,37 @@ def _branch_from_signal(
     black = bool(getattr(signal, "black_screen", False))
     media_error = getattr(signal, "media_error", None)
 
-    # 1) \u771f\u64ad\u653e\u4fe1\u53f7\uff1aplay_started + currentTime>0 / timeupdate\u8fdb\u5c55
+    # 1) 真播放信号：play_started + currentTime>0 / timeupdate进展
     if play_started and (current_time is not None and current_time > 0 or timeupdate):
-        return None, f"L2 \u5b9e\u64ad\uff08currentTime={current_time}s, frames={frames}\uff09"
+        return None, f"L2 实播（currentTime={current_time}s, frames={frames}）"
 
-    # 2) \u9ed1\u5c4f + 0 \u5e27\u89e3\u7801 \u2192 broken
+    # 2) 黑屏 + 0 帧解码 → broken
     if black and (frames == 0 or frames is None) and media_count > 0:
-        return "broken", "L2 \u9ed1\u5c4f\uff080 \u5e27\uff09"
+        return "broken", "L2 黑屏（0 帧）"
 
-    # 3) HTMLMediaElement error code >= 4 \u2192 broken
+    # 3) HTMLMediaElement error code >= 4 → broken
     if isinstance(media_error, int) and media_error >= 4:
         return "broken", f"L2 media_error code={media_error}"
 
-    # 4) \u65e0\u5a92\u4f53 + \u65e0 fail-closed \u2192 not_play_site
+    # 4) 无媒体 + 无 fail-closed → not_play_site
     if media_count == 0 and note == "":
-        return "not_play_site", "L2 media_count=0, \u65e0 \u003cvideo\u003e/\u003caudio\u003e"
+        return "not_play_site", "L2 media_count=0, 无 <video>/<audio>"
 
-    # 5) \u5176\u4ed6 \u2192 \u4e0d\u4ea7\u5206\u652f\uff0c\u4ea4\u4e0a\u4e0b\u6e38
+    # 5) 其他 → 不产分支，交上下游
     return None, ""
 
 
 def _branch_from_l1(l1_probe: Any) -> tuple[str | None, float]:
-    """L1 ffprobe \u5a92\u4f53\u63a2\u6d4b\u7ed3\u679c \u2192 \u5206\u652f + confidence\u3002
+    """L1 ffprobe 媒体探测结果 → 分支 + confidence。
 
-    \u672a\u8dd1 L1 / l1_probe=None \u2192 (None, 0.0)\uff0c\u8ba9 _pick_winner \u8df3\u8fc7 L1 \u6295\u7968\u3002
-    \u51fa\u5206\u652f\u65f6\u4ee5 :data:`L1_BRANCH_CONFIDENCE` \u4e3a\u4fdd\u8bc1\u503c\uff08duration \u662f\u786c\u6570\u636e\uff09\u3002
-    \u903b\u8f91\u590d\u7528 :func:`trajectory_pipeline.executor.probe.ffprobe.to_branch`\uff0c
-    \u4e0e L1 \u300c\u5206\u652f\u6620\u5c04\u300d\u540c\u6e90\u3002
+    未跑 L1 / l1_probe=None → (None, 0.0)，让 _pick_winner 跳过 L1 投票。
+    出分支时以 :data:`L1_BRANCH_CONFIDENCE` 为保证值（duration 是硬数据）。
+    逻辑复用 :func:`trajectory_pipeline.executor.probe.ffprobe.to_branch`，
+    与 L1 「分支映射」同源。
     """
     if l1_probe is None:
         return None, 0.0
-    # \u52a8\u6001 import \u907f\u514d\u6a21\u5757\u542f\u52a8\u987a\u5e8f\u95ee\u9898\u3002
+    # 动态 import 避免模块启动顺序问题。
     try:
         from trajectory_pipeline.executor.probe.ffprobe import to_branch as _to_l1_branch
     except ImportError:  # pragma: no cover
@@ -192,16 +195,16 @@ def _branch_from_l1(l1_probe: Any) -> tuple[str | None, float]:
 
 @dataclass(frozen=True, slots=True)
 class L5Verdict:
-    """L5 \u4ef2\u88c1\u8f93\u51fa\u4e2d\u95f4\u8868\u793a\u2014\u2014\u4e0d\u5165 result\uff0c\u53ea\u7ed9 SiteOutcome \u7528\u3002"""
+    """L5 仲裁输出中间表示——不入 result，只给 SiteOutcome 用。"""
 
     branch: str | None
     evidence: str
-    source: str  # \u603b\u662f "arbiter"
+    source: str  # 总是 "arbiter"
     fallback_used: bool
     l3_branch: str | None
     l4_branch: str | None
     l2_branch: str | None
-    # 2026-10-13 \u589e\u91cf\u4e8c\u5341\u516b\uff1aL1 ffprobe \u5224\u5b9a\u52a0\u5165 verdict\u3002
+    # 2026-10-13 增量二十八：L1 ffprobe 判定加入 verdict。
     l1_branch: str | None
     l1_conf: float
     l3_conf: float
@@ -209,19 +212,19 @@ class L5Verdict:
     l4_source: str
 
     def to_evidence_phrase(self) -> str:
-        """\u8bc1\u636e\u6587\u6848\uff0c\u5305\u542b L1/L3/L4/L2 \u5404\u81ea\u5224\u51fa + \u4ef2\u88c1\u8def\u5f84\u3002"""
+        """证据文案，包含 L1/L3/L4/L2 各自判出 + 仲裁路径。"""
         parts: list[str] = []
         if self.l1_branch is not None:
-            parts.append(f"L1\u2192{self.l1_branch}({self.l1_conf:.2f})")
+            parts.append(f"L1→{self.l1_branch}({self.l1_conf:.2f})")
         if self.l3_branch is not None:
-            parts.append(f"L3\u2192{self.l3_branch}({self.l3_conf:.2f})")
+            parts.append(f"L3→{self.l3_branch}({self.l3_conf:.2f})")
         if self.l4_branch is not None or self.l4_source:
-            parts.append(f"L4[{self.l4_source or '?'}]\u2192{self.l4_branch or '\u672a\u547d\u4e2d'}({self.l4_conf:.2f})")
+            parts.append(f"L4[{self.l4_source or '?'}]→{self.l4_branch or '未命中'}({self.l4_conf:.2f})")
         if self.l2_branch is not None:
-            parts.append(f"L2\u2192{self.l2_branch}")
+            parts.append(f"L2→{self.l2_branch}")
         if not parts:
-            return "\u3010L5\u4ef2\u88c1\u3011\u56db\u5c42\u5168\u65e0\u5224\u51fa\uff0c\u8fdb unresolved"
-        return "\u3010L5\u4ef2\u88c1\u3011" + " | ".join(parts) + f" \u2192 {self.branch or '\u6210\u529f'}"
+            return "【L5仲裁】四层全无判出，进 unresolved"
+        return "【L5仲裁】" + " | ".join(parts) + f" → {self.branch or '成功'}"
 
 
 # INC28_L1_ARB_INTEGRATED_v1
@@ -235,34 +238,40 @@ def _pick_winner(
     l1_branch: str | None = None,
     l1_conf: float = 0.0,
 ) -> str | None:
-    """\u9009\u51fa\u6700\u7ec8\u5206\u652f\u3002None \u4ee3\u8868\u6210\u529f\u3002
+    """选出最终分支。None 代表成功。
 
-    2026-10-13 \u589e\u91cf\u4e8c\u5341\u516b\uff1aL1 \u4f5c\u4e3a\u7b2c\u56db\u4ef2\u88c1\u4f19\u4f34\uff08duration \u1973fa hard \u8bc1\u636e\uff09\u3002
+    2026-10-13 增量二十八：L1 作为第四仲裁伙伴（duration 是 hard 证据）。
+    ⚠️ 2026-10-26 订正：原文此处是乱码字符 ``U+1973``（``ᥳ``）加残留
+    ``fa``——**首次提交（``a283380``，2026-10-13）就是这个形态**，git 里
+    没有更早版本可回溯，**原字无法复原**（多轮 mojibake 链反推无解）。
+    现按同文件 :92「duration 是硬数据」与 :95「duration 是硬证据」的
+    既有口径订正为「是」。⚠️ **订正的是注释文字，不是判定逻辑**——
+    判据在 :90/:95 与 ``L1_BRANCH_CONFIDENCE``。
 
-    \u4f18\u5148\u7ea7\uff081 \u6700\u9ad8\uff09\uff1a
-    1. L2 \u771f\u64ad\u653e\uff08l2_branch=None\uff09\u2192 \u4e00\u7968\u5426\u51b3\uff0c\u8fd4\u56de None
-    2. L2 \u9ed1\u5c4f/\u9519\u8bef\u4ee3\u7801 \u2192 \u4e00\u7968\u51b3\u5b9a broken
-    3. L3 + L4 \u4e00\u81f4 \u2192 \u91c7\u7eb3
-    4. L3 + L4 \u51b2\u7a81 \u2192 \u6309 source \u6743\u91cd \u00d7 confidence \u53d6\u8f83\u9ad8\u8005
-    5. L1 \u4e0e\u4efb\u4f55\u4e00\u81f4 \u2192 \u91c7\u7eb3\uff1bL1 \u4e0e\u4e09\u8005\u90fd\u51b2\u7a81 \u2192 \u6309\u6743\u91cd\u53d6\u8f83\u9ad8\u8005\uff08llm > l1\uff09
-    6. \u4ec5 L3 \u2192 \u7528 L3\uff1b\u4ec5 L4 \u2192 \u7528 L4\uff1b\u4ec5 L1 \u2192 \u7528 L1\uff1b\u5168\u65e0 \u2192 unresolved
+    优先级（1 最高）：
+    1. L2 真播放（l2_branch=None）→ 一票否决，返回 None
+    2. L2 黑屏/错误代码 → 一票决定 broken
+    3. L3 + L4 一致 → 采纳
+    4. L3 + L4 冲突 → 按 source 权重 × confidence 取较高者
+    5. L1 与任何一致 → 采纳；L1 与三者都冲突 → 按权重取较高者（llm > l1）
+    6. 仅 L3 → 用 L3；仅 L4 → 用 L4；仅 L1 → 用 L1；全无 → unresolved
     """
-    # 1) L2 \u771f\u64ad\u653e\uff1a\u4e00\u7968\u5426\u51b3
+    # 1) L2 真播放：一票否决
     if l2_branch is None and l3_branch is None and l4_branch is None:
-        # L2 \u4ec5\u4ea7\u51fa "None" \u4e0e \u4e0d\u4ea7\u51fa\uff0c\u9700\u8981\u533a\u5206
-        # \u8fd9\u91cc\u9760 L2 \u662f\u5426\u4ea7\u51fa\u201c\u6210\u529f\u4fe1\u53f7\u201d\uff08play_started\uff09\u6765\u5224
+        # L2 仅产出 "None" 与 不产出，需要区分
+        # 这里靠 L2 是否产出“成功信号”（play_started）来判
         pass
-    # \u5b9e\u9645\u4e0a _branch_from_signal \u8fd4\u56de None \u4e24\u79cd\uff1a
-    # (a) \u771f\u64ad\u653e \u2192 (None, "...\u5b9e\u64ad...")\uff1b(b) \u672a\u547d\u4e2d \u2192 (None, "")
-    # \u6211\u4eec\u5728 _arbitrate \u91cc\u5e26\u4e0a evidence_phrase \u4f20\u5165\uff0c\u8fd9\u91cc\u53ea\u770b\u5206\u652f\u4e0d\u591f
-    # \u2192 \u6539\u4e3a\u8ba9 _arbitrate \u5904\u7406 L2 \u4f18\u5148\u7ea7
+    # 实际上 _branch_from_signal 返回 None 两种：
+    # (a) 真播放 → (None, "...实播...")；(b) 未命中 → (None, "")
+    # 我们在 _arbitrate 里带上 evidence_phrase 传入，这里只看分支不够
+    # → 改为让 _arbitrate 处理 L2 优先级
 
     if l3_branch is not None and l4_branch is not None:
         if l3_branch == l4_branch:
-            # L1 \u4e0e\u4e00\u81f4 \u2192 \u91c7\u7eb3
+            # L1 与一致 → 采纳
             if l1_branch == l3_branch:
                 return l3_branch
-            # L1 \u4e0e\u4e24\u8005\u90fd\u51b2\u7a81 \u2192 \u6309\u6743\u91cd\u53d6\u8f83\u9ad8\u8005\uff08llm > l1\uff09
+            # L1 与两者都冲突 → 按权重取较高者（llm > l1）
             if l1_branch is not None and l1_branch != l3_branch:
                 l3_score = L5_SOURCE_WEIGHT.get("rule", 1) * l3_conf
                 l4_score = L5_SOURCE_WEIGHT.get(l4_source, 2) * l4_conf
@@ -274,14 +283,14 @@ def _pick_winner(
                     key=lambda x: x[0],
                 )
                 return top[1]
-            # L3 + L4 \u51b2\u7a81\u4f46 L1 \u672a\u51fa\u5206\u652f
+            # L3 + L4 冲突但 L1 未出分支
             l3_score = L5_SOURCE_WEIGHT.get("rule", 1) * l3_conf
             l4_score = L5_SOURCE_WEIGHT.get(l4_source, 2) * l4_conf
             return l3_branch if l3_score >= l4_score else l4_branch
-        # L3 + L4 \u51b2\u7a81
+        # L3 + L4 冲突
         l3_score = L5_SOURCE_WEIGHT.get("rule", 1) * l3_conf
         l4_score = L5_SOURCE_WEIGHT.get(l4_source, 2) * l4_conf
-        # L1 \u53ef\u80fd\u4e0e L3 \u4e00\u81f4\u3001\u4e0e L4 \u4e00\u81f4\u3001\u6216\u4e0e\u4e24\u8005\u90fd\u4e0d\u4e00\u81f4
+        # L1 可能与 L3 一致、与 L4 一致、或与两者都不一致
         l1_score = L1_SOURCE_WEIGHT * l1_conf if l1_branch is not None else 0.0
         candidates: list[tuple[float, str]] = [
             (l3_score, l3_branch),
@@ -291,35 +300,35 @@ def _pick_winner(
             candidates.append((l1_score, l1_branch))
         top = max(candidates, key=lambda x: x[0])
         return top[1]
-    # INC28_L1_PICK_FIX_v1: L1 \u4e0e L3/L4 \u51b2\u7a81\u65f6\u6309\u6743\u91cd\u9009
+    # INC28_L1_PICK_FIX_v1: L1 与 L3/L4 冲突时按权重选
     if l3_branch is not None:
-        # L1 \u4e0e L3 \u51b2\u7a81 \u2192 \u6309\u6743\u91cd\u53d6\u8f83\u9ad8\u8005
+        # L1 与 L3 冲突 → 按权重取较高者
         if l1_branch is not None and l1_branch != l3_branch:
             l3_score = L5_SOURCE_WEIGHT.get("rule", 1) * l3_conf
             l1_score = L1_SOURCE_WEIGHT * l1_conf
             return l1_branch if l1_score > l3_score else l3_branch
         return l3_branch
     if l4_branch is not None:
-        # L1 \u4e0e L4 \u51b2\u7a81 \u2192 \u6309\u6743\u91cd\u53d6\u8f83\u9ad8\u8005
+        # L1 与 L4 冲突 → 按权重取较高者
         if l1_branch is not None and l1_branch != l4_branch:
             l4_score = L5_SOURCE_WEIGHT.get(l4_source, 2) * l4_conf
             l1_score = L1_SOURCE_WEIGHT * l1_conf
             return l1_branch if l1_score > l4_score else l4_branch
         return l4_branch
-    # \u4ec5 L1 \u6709\u5224\u51fa
+    # 仅 L1 有判出
     if l1_branch is not None:
         return l1_branch
     return "unresolved"
 
 
 def arbitrate(result: Any) -> SiteOutcome:
-    """L5 \u4ef2\u88c1\u4e3b\u51fd\u6570\u3002
+    """L5 仲裁主函数。
 
-    \u8f93\u5165\uff1a``BrowserProbeResult``\uff08result.signal + result.l3_decision + result.vlm_review + result.note\uff09
-    \u8f93\u51fa\uff1a``SiteOutcome``\uff08branch \u5728 13 \u5206\u652f\u96c6\u5408\u5185\uff0c\u6216 None = \u6210\u529f\uff09
+    输入：``BrowserProbeResult``（result.signal + result.l3_decision + result.vlm_review + result.note）
+    输出：``SiteOutcome``（branch 在 21 分支集合内，或 None = 成功）
 
-    \u8c03\u7528\u8005\uff1acli.py \u5728 L3 / L4 \u4e4b\u540e\u6ce8\u5165\uff1b
-    test_arbitration.py \u76f4\u63a5 unit \u9a8c\u8bc1\u3002
+    调用者：cli.py 在 L3 / L4 之后注入；
+    test_arbitration.py 直接 unit 验证。
     """
     l3_decision = getattr(result, "l3_decision", None)
     vlm_review = getattr(result, "vlm_review", None)
@@ -328,16 +337,16 @@ def arbitrate(result: Any) -> SiteOutcome:
     media_count = int(getattr(result, "media_count", 0) or 0)
     url = str(getattr(result, "final_url", "") or getattr(result, "requested_url", "") or "")
 
-    # === Step 0\uff1afail-closed \u77ed\u8def ===
+    # === Step 0：fail-closed 短路 ===
     if note in L5_FAIL_CLOSED_NOTES:
-        # \u9a71\u52a8\u5c42\u672a\u91c7\u5230\u8db3\u591f\u4fe1\u606f\u3002\u4f46 L4 \u53ef\u80fd\u4ecd\u6709\u5224\u51fa\uff08\u5c11\u89c1\uff09\u2014\u2014
-        # \u4ecd\u4fdd\u7559 L4 \u5224\u51fa\uff0c\u4ec5\u5728 evidence \u91cc\u52a0\u4e0a fail-closed \u540e\u7f00\u3002
+        # 驱动层未采到足够信息。但 L4 可能仍有判出（少见）——
+        # 仍保留 L4 判出，仅在 evidence 里加上 fail-closed 后缀。
         l4_branch, l4_conf, l4_source = _branch_from_l4(vlm_review)
         if l4_branch is not None:
             verdict_branch = l4_branch
             ev = (
-                f"\u3010L5\u4ef2\u88c1\u3011fail-closed note={note}, \u4f46 L4[{l4_source}]\u2192{l4_branch}"
-                f"\uff08{l4_conf:.2f}\uff09\u4ecd\u91c7\u7eb3"
+                f"【L5仲裁】fail-closed note={note}, 但 L4[{l4_source}]→{l4_branch}"
+                f"（{l4_conf:.2f}）仍采纳"
             )
             return SiteOutcome(
                 url=url,
@@ -347,48 +356,48 @@ def arbitrate(result: Any) -> SiteOutcome:
                 source="arbiter",
                 fallback_used=False,
             )
-        # L4 \u4e5f\u672a\u5224\u51fa \u2192 unresolved
+        # L4 也未判出 → unresolved
         return SiteOutcome(
             url=url,
             branch="unresolved",
-            evidence=f"\u3010L5\u4ef2\u88c1\u3011fail-closed note={note}, L3/L4 \u5168\u65e0\u5224\u51fa",
+            evidence=f"【L5仲裁】fail-closed note={note}, L3/L4 全无判出",
             question="business.signal",
             source="arbiter",
             fallback_used=False,
         )
 
-    # === Step 1\uff1a\u89e3\u6790 L1 / L3 / L4 / L2 \u5404\u81ea\u8d21\u732e ===
-    # 2026-10-13 \u589e\u91cf\u4e8c\u5341\u516b\uff1aL1 ffprobe \u4e0a\u4f4d\uff0c\u4e0e\u540c\u4f4d\u7ade\u4e89\u3002
+    # === Step 1：解析 L1 / L3 / L4 / L2 各自贡献 ===
+    # 2026-10-13 增量二十八：L1 ffprobe 上位，与同位竞争。
     l1_probe = getattr(result, "l1_probe", None)
     l1_branch, l1_conf = _branch_from_l1(l1_probe)
     l3_branch, l3_conf = _branch_from_l3(l3_decision)
     l4_branch, l4_conf, l4_source = _branch_from_l4(vlm_review)
     l2_branch, l2_ev_phrase = _branch_from_signal(signal, media_count, note)
 
-    # === Step 2\uff1aL2 \u771f\u64ad\u653e\u4fe1\u53f7\uff08\u4e00\u7968\u5426\u51b3\uff09 ===
+    # === Step 2：L2 真播放信号（一票否决） ===
     if (
         l2_branch is None
-        and l2_ev_phrase  # \u975e\u7a7a\uff1a\u8868\u793a L2 \u662f\u771f\u64ad\u653e\uff0c\u4e0d\u662f\u201c\u672a\u547d\u4e2d\u201d
-        and "L2 \u5b9e\u64ad" in l2_ev_phrase
+        and l2_ev_phrase  # 非空：表示 L2 是真播放，不是“未命中”
+        and "L2 实播" in l2_ev_phrase
     ):
         return SiteOutcome(
             url=url,
             branch=None,
-            evidence=f"\u3010L5\u4ef2\u88c1\u3011L2 \u5b9e\u64ad\uff08{url}\uff09",
+            evidence=f"【L5仲裁】L2 实播（{url}）",
             question="playback.success",
             source="arbiter",
             fallback_used=False,
         )
 
-    # === Step 3\uff1a\u4ef2\u88c1\u9009\u62d4 ===
-    # 2026-10-13 \u589e\u91cf\u4e8c\u5341\u516b\uff1aL1 \u4f5c\u4e3a\u7b2c\u56db\u4ef2\u88c1\u4f19\u4f34\u53c2\u4e0e\u9009\u62d4\u3002
+    # === Step 3：仲裁选拔 ===
+    # 2026-10-13 增量二十八：L1 作为第四仲裁伙伴参与选拔。
     verdict_branch = _pick_winner(
         l3_branch, l3_conf, l4_branch, l4_conf, l4_source, l2_branch,
         l1_branch, l1_conf,
     )
 
-    # \u6784 L5Verdict \u4f9b evidence
-    # 2026-10-13 \u589e\u91cf\u4e8c\u5341\u516b\uff1a\u4f9b L1 \u5206\u652f + \u7f6e\u4fe1\u5ea6\u3002
+    # 构 L5Verdict 供 evidence
+    # 2026-10-13 增量二十八：供 L1 分支 + 置信度。
     verdict = L5Verdict(
         branch=verdict_branch,
         evidence="",
@@ -404,13 +413,13 @@ def arbitrate(result: Any) -> SiteOutcome:
         l4_source=l4_source,
     )
     ev_phrase = verdict.to_evidence_phrase()
-    # \u8865\u4e0a L2 evidence
+    # 补上 L2 evidence
     if l2_branch is not None:
         ev_phrase += f" | L2: {l2_ev_phrase}"
 
-    # === Step 4\uff1a\u6821\u9a8c\u8f93\u51fa\u6620\u5c04\u662f\u5426\u5408\u6cd5\uff08\u9632\u6b62 arbiter \u81ea\u5df1\u9020\u51fa\u672a\u77e5\u5206\u652f\uff09 ===
+    # === Step 4：校验输出映射是否合法（防止 arbiter 自己造出未知分支） ===
     if verdict_branch is not None and verdict_branch not in NON_SAMPLE_BRANCHES:
-        # \u53ef\u80fd\u8fd8\u4e0d\u662f\u6700\u7ec8\u5408\u6cd5\u503c\uff0c\u4e0d\u8fc7 _pick_winner \u53ea\u8fd4\u56de\u4e09\u5c42\u90fd\u5408\u6cd5\u7684\u503c\u3002\u4ee5\u4e0b\u53ea\u662f\u9632\u5fa1\u3002
+        # 可能还不是最终合法值，不过 _pick_winner 只返回三层都合法的值。以下只是防御。
         pass
 
     return SiteOutcome(

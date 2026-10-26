@@ -2,6 +2,7 @@
 =========================================
 
 > 状态:草案 v1  ·  适用范围:`trajectory_pipeline/executor` + `trajectory_pipeline/evaluation`  ·  编写日期:2026-10-14
+> ⚠️ **分支数按 2026-10-26 现状回填**：20 活跃 + 1 deprecated = 21 key / 22 类合法标签。
 
 ---
 
@@ -35,7 +36,7 @@
 几乎没交集。两路只在两处共享:
 
 1. 客户端驱动器(`ObscuraDriver` / `McpClient` / `LLMClient`)—— 但调用点不同。
-2. `executor.branches.BRANCH_LABELS` 的 13 分支名字面量 —— 同名,**但数据不共享**。
+2. `executor.branches.BRANCH_LABELS` 的 **21 分支**名字面量 —— 同名,**但数据不共享**。
 
 `evaluation.cli::select_archives` 显式只挑 `output/pipeline/<task>__*.json`(P1 形态),跳过 `staticprobe/`、`mediaprobe/`、`mediabrowse/`、`proberun/`。所以 L0–L5 事实从不进入 D-2/D-4/D-5/D-6 的分母,也不进入 D-10(74.7% 一致率)的对齐集。
 
@@ -108,7 +109,7 @@ executor.cli run
 
 ### 3.5 失败-关门(fail-closed)白名单
 
-沿用 `executor.arbitration.L5_FAIL_CLOSED_NOTES` / `executor.review_queue.AUTO_REVIEW_NOTES` 的字面量,**新增** `evaluation/scout/fail_closed.py` 镜像,**绝对导入**统一指向 `executor.branches` 的 13 分支标签。两边由 `tests/contract/test_shared_literal_sync.py` AST 监视(沿用现有 `tests/contract/test_p2_contract.py` 的风格)。
+沿用 `executor.arbitration.L5_FAIL_CLOSED_NOTES` / `executor.review_queue.AUTO_REVIEW_NOTES` 的字面量,**新增** `evaluation/scout/fail_closed.py` 镜像,**绝对导入**统一指向 `executor.branches` 的 **21 分支**标签。两边由 `tests/contract/test_shared_literal_sync.py` AST 监视(沿用现有 `tests/contract/test_p2_contract.py` 的风格)。
 
 ### 3.6 L0–L5 与 P1 的关系(本轮不改造,留接口)
 
@@ -120,7 +121,7 @@ L0–L5 仍落 `output/pipeline/mediabrowse/` 等独立子目录,本轮 **不动
 2. `evaluation/cli.py` 注册 `scout` 子命令(命名空间挂在 `evaluation` 下,**不**新建顶层 CLI)。
 3. `evaluation/golden/builder.py` 新增 `from-scout` 子命令,旧 `candidates` 加 `--deprecated` 警告。
 4. `tests/contract/test_scout_contract.py`:AST 验 `evaluation/scout/` 不反向 `import executor.cli`、不 `import trajectory_pipeline.executor`。
-5. `tests/contract/test_scout_contract.py`:验 `evaluation/scout/fail_closed.py` 与 `executor.branches` 的 13 标签 AST 字面量同步。
+5. `tests/contract/test_scout_contract.py`:验 `evaluation/scout/fail_closed.py` 与 `executor.branches` 的 21 标签 AST 字面量同步。
 6. `docs/04-运行手册.md` 增加 "阶段 4 scout 工作流" 一节。
 7. `docs/05-现状与验收.md` 的 "已跑通" 表新增 `scout → from-scout → freeze` 行。
 
@@ -134,7 +135,7 @@ L0–L5 仍落 `output/pipeline/mediabrowse/` 等独立子目录,本轮 **不动
 | 2   | **交接面是格式不是 import**:scout 只读 P2 JSON,不 import executor | `tests/contract/test_scout_contract.py` |
 | 3   | **三态**:`scored` / `undetermined` / `not_run` 处处一致         | `evaluation/scout/types.py` TypedDict |
 | 4   | **缺件 ≠ 扣分**:`score is None` 走 quarantine,不进负例         | `policy.classify()` 单元测试           |
-| 5   | **共享字面量两处必同步**:13 分支标签、fail-closed 白名单        | `tests/contract/test_shared_literal_sync.py` |
+| 5   | **共享字面量两处必同步**:**21 分支**标签、fail-closed 白名单        | `tests/contract/test_shared_literal_sync.py` |
 | 6   | **黄金集不虚构**:只接受真实 scout 产物                         | `from-scout` 拒绝任意手工拼接          |
 | 7   | **L6 人工不复用 scout**:人审仍走 `annotations.jsonl`,不走 `from-scout` | 命名空间与文件路径分开                  |
 

@@ -162,7 +162,7 @@ class BrowserProbeResult:
     l3_decision: "Decision | None" = None
     #: 2026-10-13 增量二十七：L5 仲裁层最终输出；``None`` = 未过 L5（probe_browser_media
     #: 默认空，CLI 在 ``_mediabrowse_with_driver`` 中 L3 之后注入；fail-closed 短路也走 L5）。
-    #: SiteOutcome 与 :mod:`executor.branches` 同源，13 分支或 None=成功。
+    #: SiteOutcome 与 :mod:`executor.branches` 同源，21 分支或 None=成功。
     l5_outcome: "SiteOutcome | None" = None
     #: 2026-10-13 增量二十八：L1 ffprobe 媒体解析结果；``None`` = 未跑 L1
     #: （--no-l1 关闭 / ffprobe 未装 / 凭据 fail-closed 短路）。
@@ -286,7 +286,7 @@ def dump_result(result: BrowserProbeResult, path: Path) -> Path:
         "vlm_review": (result.vlm_review.to_dict() if result.vlm_review else None),
         # 增量二十六：L3 规则层判定结果。未跑 L3 或被跳过 -> None；调过则用 dict。
         "l3_decision": (result.l3_decision.to_dict() if result.l3_decision else None),
-        # 2026-10-13 增量二十万：L5 仲裁层输出（SiteOutcome 13 分支）；
+        # 2026-10-13 增量二十七：L5 仲裁层输出（SiteOutcome 21 分支）；
         # 未过 L5 或 L5 在 fail-closed 路径上不存在 → None。to_json() 對应 site_outcome 的字段。
         "l5_outcome": (result.l5_outcome.to_json() if result.l5_outcome else None),
         # 2026-10-13 增量二十八：L1 ffprobe 媒体解析结果。

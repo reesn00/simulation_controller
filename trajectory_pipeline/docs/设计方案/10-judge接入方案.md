@@ -209,7 +209,7 @@ def score_d3(sample: Sample, *, llm_client: LLMClient | None = None) -> D3Verdic
 
 1. **首次跑全量**——对 v3 calibration 191 条站点级候选跑 `score_d3`，**不调参**，收集分布。
 2. **分桶调 prompt**——按 `category` 5 类 × `evidence_empty` 两桶分析：哪一类有系统性偏（"playable 判 nav_aggregator" 占多数）。
-3. **few-shot 注入**——从 v3 manual-review 77 条里挑 6-8 条做 few-shot prompt（**不能从 ai-assisted* 桶挑**——违反 D-9 边界③）。
+3. **few-shot 注入**——从 v3 manual-review **66** 条里挑 6-8 条做 few-shot prompt（人工合计 **82** 条，含 16 条 `reesn` 署名）（**不能从 ai-assisted* 桶挑**——违反 D-9 边界③）。
 4. **黄金集对账**——`cmd_agreement --soft-dim d3` 跑出 D-3 软维度一致率；以**先跑出分布再定阈值**的口径走，**首次阈值不写死**。
 5. **周轮复跑**——D-9 retest 14 天复盘机制同款：judge 改 prompt 后，跑校准集算一致率，若下降就回滚。
 
@@ -335,7 +335,7 @@ executor/, assembler/               ← 不动（依赖方向红线）
 | LLM judge 不接进 evaluation/cli 默认入口 | `--include-llm-judge` 关，默认只跑 4 个代码 judge；与现有 `evaluation.cli` 不破（CLAUDE.md 红线「生产链上禁止投票/集成」） |
 | 大批量跑评测的延迟（LLM 每条样本 1-3s） | D-9 仅在 `gate.failed` 或 `gate.passed + undeterminable 非空` 触发，**预期 30-40% 样本走 LLM**，其余走快路径 |
 | 双向 contract 缺位 | 与 code_scorer 同款——`tests/contract/test_observation_shortfall_consistency.py` 双向盯住 d3/d9 与 gates.py 的 `_observation_shortfall` 口径 |
-| 黄金集 few-shot 池污染 | v3 manual-review 77 条是金标准，但**不能从 `ai-assisted*` 桶挑**（违反 D-9 边界③「单人系统性偏差测不出」）；77 条够 6-8 条 few-shot 用，但若要扩到 20 条少，需新一批人工复核 |
+| 黄金集 few-shot 池污染 | v3 manual-review **66** 条（人工合计 **82** 条，含 16 条 `reesn` 署名）是金标准，但**不能从 `ai-assisted*` 桶挑**（违反 D-9 边界③「单人系统性偏差测不出」）；82 条够 6-8 条 few-shot 用，但若要扩到 20 条少，需新一批人工复核 |
 
 ---
 
@@ -346,7 +346,7 @@ executor/, assembler/               ← 不动（依赖方向红线）
 | 步骤 | 内容 | 文件 | 关键判据 |
 |---|---|---|---|
 | **第一步** | D-10 扩维 | `evaluation/cli.py` cmd_agreement + `evaluation/golden/builder.py` | v3 50 条 manual-review 上跑出软维度 d3/d9 分布；首次不发阈值 |
-| **第二步** | D-3 LLM judge | `evaluation/scorers/d3_scorer.py` + `tests/unit/test_d3_scorer.py`（~12 条 contract） | v3 calibration 191 条跑出 d3 一致率；首批 few-shot 从 manual-review 77 条挑 |
+| **第二步** | D-3 LLM judge | `evaluation/scorers/d3_scorer.py` + `tests/unit/test_d3_scorer.py`（~12 条 contract） | v3 calibration 191 条跑出 d3 一致率；首批 few-shot 从 manual-review **66** 条（人工合计 82 条）挑 |
 | **第三步** | D-9 LLM judge | `evaluation/scorers/d9_scorer.py` + `tests/unit/test_d9_scorer.py`（~10 条 contract） | 与 `gates.observation_shortfall` 双向 contract 测试（同 `code_scorer` 同款口径） |
 
 **前置**：第一步必须先于第二、三步——没有 D-10 软维度一致率，D-3/D-9 上岗后没东西对账，**judge 与 rubric 配合的闭环**就只走硬分类那一半。
@@ -356,7 +356,7 @@ executor/, assembler/               ← 不动（依赖方向红线）
 ## 七、已知后续路径（不在本批范围）
 
 1. **D-9 LLM 复检只对带 rationale 的样本**——老批次 `gate=not_run` 不判；待 38 份存档 + 后续批次带 rationale 后才有完整数据集。
-2. **few-shot 池**——v3 manual-review 77 条是金标准，但**不能从 `ai-assisted*` 桶挑**（违反 D-9 边界③）；77 条够 6-8 条 few-shot 用，若要扩到 20 条少，需新一批人工复核。
+2. **few-shot 池**——v3 manual-review **66** 条（人工合计 **82** 条，含 16 条 `reesn` 署名）是金标准，但**不能从 `ai-assisted*` 桶挑**（违反 D-9 边界③）；82 条够 6-8 条 few-shot 用，若要扩到 20 条少，需新一批人工复核。
 3. **D-3 prompt 迭代**——v3 calibration 跑出来后按「系统性偏」分桶调 prompt；这与 `perception/llm_perceptor` 的 P0-P4a 调 prompt 同源（增量二十一），可直接套用成熟链路。
 4. **judge 与 gold 的「双向 contract」**——本方案只做「gold 是真值，judge 校准」这一向；反向「judge 改 gold」未启（INC32 / INC33 都是这种**单向编辑**纪律：gold 改 label 是追溯，禁止 judge 反向改）。
 5. **`cmd_agreement` 输出接进 CI**——D-10 软维度一致率上线后，CI 门禁可加一条「软维度 d3 ≥ X%」——阈值首次跑出分布后再定，**不写死**。

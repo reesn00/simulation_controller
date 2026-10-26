@@ -298,7 +298,7 @@ def _derive_constraints(task: Mapping[str, Any], text: str) -> tuple[Constraint,
     不进探针——给没探针的要求硬造一个探针，只会制造恒过的假检查。
 
     ⚠️ **全部从表述文本反查，不从 ``output_contract`` 推导。**
-    早期版本对 ``min_results`` / ``min_urls`` 做了特判推导，结果��
+    早期版本对 ``min_results`` / ``min_urls`` 做了特判推导，结果导致
     ``has_count`` 被推出来、而用户表述里**从来没有"要 5 个"这个要求**
     （存量首轮写的是「找到…的可播放网址」，单数；条数只出现在判分标准里）。
     于是 normalizer 每条都判它丢失，实测接受率 4%——而根因不在渲染器，

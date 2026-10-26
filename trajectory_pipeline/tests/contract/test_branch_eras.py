@@ -180,13 +180,19 @@ def _output_dir() -> pathlib.Path:
 
 
 def test_盘上存档的守卫降级行落unresolved():
-    """实测断言（2026-10-26）：盘上 156 份存档里 20 行守卫降级，
+    """实测断言（2026-10-26）：盘上**顶层** 78 份 P1 存档里 20 行守卫降级
+    （intended = ``component_unverified`` 17 / ``subscription_wall`` 3），
     **全部**落 ``unresolved``。
 
     这条是「不回溯」裁定的**经验根据**：降级行不进池（``unresolved``
     是 NON_SAMPLE），而现行代码下它们**仍然**落 ``unresolved``
     （``component_unverified`` 走同页守卫、``subscription_wall`` 走
     门禁语境前置）⇒ 盘上这批行的标签**不需要改**。
+
+    ⚠️ 扫描范围是 ``output/pipeline/*.json`` **顶层**（排除
+    ``.reviewed.json``）= 97 个文件、其中 78 个是带 ``outcomes`` 的真
+    存档。子目录（``proberun/`` / ``dualrun*/`` 等）里另有 64 份存档、
+    22 行降级——**不计入**这条断言（它们不在负样本池的来源路径上）。
     """
     out = _output_dir()
     if not out.is_dir():

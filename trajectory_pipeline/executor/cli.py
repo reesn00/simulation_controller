@@ -1256,7 +1256,7 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
 
     与 ``probe`` 不同点：``probe`` 只看 driver 现场事实、不下结论；
     ``proberun`` 走完 visit 整链（perceptor → decision_branch → record），
-    落 13 活跃分支。这是「取证」与「判定」的本质区别，不要混用。
+    落 20 活跃分支。这是「取证」与「判定」的本质区别，不要混用。
     """
     if not args.from_urls:
         print("[FAIL] --from-urls <path> 是必填（每行一个 URL）", file=sys.stderr)
@@ -1358,10 +1358,10 @@ async def cmd_staticprobe(args: argparse.Namespace) -> int:
     glob 收走）。
 
     与 :func:`cmd_proberun` 的差异：proberun 走 visit 整链（perceptor
-    → decision_branch → record），下 13 活跃分支结论；staticprobe 只
+    → decision_branch → record），下 20 活跃分支结论；staticprobe 只
     跑 HTTP 层探测，**不下分支结论**——由 ``to_branch()`` 在归档后
     单独映射（只产 ``broken`` / ``blocked`` / ``None``，与阶段 1 的
-    13 活跃分支口径一致）。
+    分支口径一致——阶段 1 当时 13 活跃分支，2026-10-16 后为 20 支）。
 
     ⚠️ **生产链上不走这条路径**——这是离线验证工具，与 proberun
     同款，产物进 ``staticprobe/`` 子目录隔离。

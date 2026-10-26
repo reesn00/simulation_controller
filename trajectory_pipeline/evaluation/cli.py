@@ -8,9 +8,16 @@
     assembler ──→ storage
     evaluation ──→ storage
 
+    evaluation ──→ executor.archive    （直接：``select_archives`` / ``DEFAULT_ROOT``）
+    evaluation ──→ executor.branches   （间接：``executor.archive`` 取 ``BRANCH_LABELS``）
+    evaluation ──→ executor.gatekeeper （间接：``executor.branches`` 取 ``_same_page``）
+
+⚠️ 上面 ``evaluation ──→ executor.*`` 是**向上**依赖——方向与纪律相反，
+但**是刻意的**：评分器要读 executor 产出的 P1。
+
 ``executor → evaluation`` 是**横向依赖**且方向相反——评分器要读 executor
 产出的 P1，而 executor 不该知道下游有个评估器。挂进 ``executor.cli``
-等于让执行层 import 它的验收方，一层一���传下去。
+等于让执行层 import 它的验收方，一层一层传下去。
 
 D-2/D-4/D-5/D-6 四个评分器（~1100 行）此前**只被各自的测试 import**，
 在真实批次上一次都没跑过——与「判断点 ① 是死的」同一类病：报表上数字齐全，

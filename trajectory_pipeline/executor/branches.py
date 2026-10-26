@@ -54,7 +54,8 @@ from trajectory_pipeline.executor.gatekeeper import _same_page  # noqa: F401
 #: 2026-10-12 阶段 1：登录墙合并态拆为 ``login_required`` / ``blocked``
 #: （+ ``broken`` 承接 404）。原 ``login_wall_or_blocked`` **保留但弃用**
 #: ——历史存档要展示，故不删；新代码路径不再主动产出它。全部合法值
-#: （13 活跃 + 1 deprecated + success）= 15 类。
+#: （13 活跃 + 1 deprecated + success）= 15 类。**⚠️ 这是 2026-10-12 的
+#: 历史口径**——当前口径见下一条（2026-10-26 回填，别按这行数）。
 #:
 #: 2026-10-16 路径 B/C：+7 支发现链分支（聚合站两支、文章链两支、
 #: 站内搜索三支），活跃 13 → 20，全部合法值 = 22 类。
