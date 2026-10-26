@@ -20,8 +20,27 @@ from typing import Any
 
 import pytest
 
-from trajectory_pipeline.executor.browser import camoufox_session as mod
-from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+# ⚠️ **camoufox 执行层暂退**（2026-10-26）：`pyproject.toml` 已把
+# `camoufox==0.5.8` 移出依赖（与代码不一致 ⇒ 那条路 ImportError），
+# venv 里也没有该包。本模块的 import 是**顶层**的（`camoufox_session`
+# 在模块层就要 `AsyncCamoufox` / `Screen`）⇒ 缺包时不是「测试失败」，
+# 是**整个文件收集不起来**，那会把门禁整片拖红。
+#
+# 所以这里**显式跳过**，理由写全（不是默默少跑几个用例）：
+#   恢复 = `uv pip install camoufox==0.5.8 && camoufox fetch`
+# 这 7 个用例守的是**口径**（无头默认 / headless 进批次元数据 /
+# launch 失败不漏进程）——**恢复后必须重跑**，已记进
+# [10-TODO台账 §停点待验证](../../docs/计划进展/10-TODO台账.md)。
+pytest.importorskip(
+    "camoufox",
+    reason="camoufox 执行层暂退（2026-10-26，pyproject 已移除依赖）；"
+           "恢复：uv pip install camoufox==0.5.8 && camoufox fetch",
+)
+
+from trajectory_pipeline.executor.browser import camoufox_session as mod  # noqa: E402
+from trajectory_pipeline.executor.browser.camoufox_session import (  # noqa: E402
+    CamoufoxSession,
+)
 
 
 class _FakePage:

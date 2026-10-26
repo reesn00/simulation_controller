@@ -63,6 +63,7 @@ from trajectory_pipeline.executor.archive import (
     P1Archive,
     select_archives,
 )
+from trajectory_pipeline.executor import pool_add as pool_add_mod
 from trajectory_pipeline.executor.browser.mcp_client import (
     EXE_ENV_VAR,
     McpClient,
@@ -421,6 +422,46 @@ def _describe_failure(exc: BaseException) -> str:
     return line[:240]
 
 
+#: **执行层暂退**的恢复指令（2026-10-26）。camoufox 已从
+#: ``pyproject.toml`` 移除（依赖与代码不一致 ⇒ 那条路会 ImportError），
+#: 恢复要连浏览器二进制一起装。
+_CAMOUFOX_RESTORE_HINT = (
+    "恢复：uv pip install camoufox==0.5.8 && camoufox fetch"
+    "（重下约 2.5 GB）"
+)
+
+
+def _execution_layer_missing_reason(kind: str) -> str:
+    """执行层的**依赖**不在盘上吗？返回可读理由，``""`` = 在。
+
+    **缺件即报错，不猜**——与 ``OBSCURA_EXE``、``TRAJECTORY_LLM_*``
+    同一条纪律：能力不可用时**当场说清缺什么**，而不是让批次跑起来
+    再逐条失败。那样刷出来的一屏 ImportError 会被读成「站点的问题」，
+    而真相是「这条执行层根本没装」。
+
+    只查 **camoufox**：obscura 侧的缺件（``OBSCURA_EXE``）由
+    :meth:`McpClient.from_env` 自己报，那条路径已经写好了。
+
+    用 :func:`importlib.util.find_spec` 而不是真 import：查的是
+    「装没装」，不是「import 会不会成功」——后者会连带执行包的
+    顶层代码，探针不该有这种副作用。
+    """
+    if kind != "camoufox":
+        return ""
+    import importlib.util
+
+    try:
+        if importlib.util.find_spec("camoufox") is not None:
+            return ""
+    except (ImportError, ValueError):      # pragma: no cover —— 装坏了
+        pass
+    return (
+        "camoufox 执行层不可用：venv 里没有 camoufox 包"
+        "（2026-10-26 执行层暂退，pyproject.toml 已移除该依赖）。"
+        f"{_CAMOUFOX_RESTORE_HINT}"
+    )
+
+
 async def _launch_camoufox(*, headless: bool = True) -> Any:
     """起一个 camoufox 会话。**唯一的 launch 入口**（测试可打桩）。
 
@@ -446,7 +487,18 @@ async def _launch_camoufox(*, headless: bool = True) -> Any:
     把同一个错误拖成两遍。第二次还失败就**抛**——由调用方记账（哪条没跑
     成、为什么），不在这儿吞。
     """
-    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    try:
+        from trajectory_pipeline.executor.browser.camoufox_session import (
+            CamoufoxSession,
+        )
+    except ImportError as exc:
+        # 依赖不在 ⇒ 说清缺什么 + 怎么装，**不把 ImportError 抛给用户**
+        # （那串 "No module named 'camoufox'" 看不出「这是执行层暂退」）。
+        raise RuntimeError(
+            "camoufox 执行层不可用：venv 里没有 camoufox 包"
+            "（2026-10-26 执行层暂退，pyproject.toml 已移除该依赖）。"
+            f"{_CAMOUFOX_RESTORE_HINT}"
+        ) from exc
 
     last: Exception | None = None
     for attempt in (1, 2):
@@ -561,6 +613,14 @@ async def _run_manual(args: argparse.Namespace) -> int:
         return 2
 
     kind = getattr(args, "driver", DEFAULT_KIND)
+    # **缺件即报错，不猜**（与 ``OBSCURA_EXE`` 同一条纪律）：执行层的依赖
+    # 不在 ⇒ 整批都跑不成。而逐条失败只会刷一屏 ImportError，
+    # 让人误读成「站点的问题」——**那是能力问题，不是数据问题**。
+    # 这里当场退 2（配置错），**不启动批次**。
+    missing = _execution_layer_missing_reason(kind)
+    if missing:
+        print(f"[FAIL] {missing}")
+        return 2
     client = None
     if kind == "obscura":
         try:
@@ -714,6 +774,14 @@ async def _run_plan(args: argparse.Namespace) -> int:
         return 2
 
     kind = getattr(args, "driver", DEFAULT_KIND)
+    # **缺件即报错，不猜**（与 ``OBSCURA_EXE`` 同一条纪律）：执行层的依赖
+    # 不在 ⇒ 整批都跑不成。而逐条失败只会刷一屏 ImportError，
+    # 让人误读成「站点的问题」——**那是能力问题，不是数据问题**。
+    # 这里当场退 2（配置错），**不启动批次**。
+    missing = _execution_layer_missing_reason(kind)
+    if missing:
+        print(f"[FAIL] {missing}")
+        return 2
     client = None
     if kind == "obscura":
         try:
@@ -1093,7 +1161,18 @@ async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
     没配」的常态，camoufox 是**本仓库自己的依赖**，起不来就是环境坏了。
     """
     print("\n== camoufox 会话 ==")
-    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    try:
+        from trajectory_pipeline.executor.browser.camoufox_session import (
+            CamoufoxSession,
+        )
+    except ImportError as exc:
+        # 依赖不在 ⇒ 说清缺什么 + 怎么装，**不把 ImportError 抛给用户**
+        # （那串 "No module named 'camoufox'" 看不出「这是执行层暂退」）。
+        raise RuntimeError(
+            "camoufox 执行层不可用：venv 里没有 camoufox 包"
+            "（2026-10-26 执行层暂退，pyproject.toml 已移除该依赖）。"
+            f"{_CAMOUFOX_RESTORE_HINT}"
+        ) from exc
 
     try:
         session = await CamoufoxSession.launch(headless=headless)
@@ -2665,6 +2744,51 @@ def cmd_pool_drop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pool_add(args: argparse.Namespace) -> int:
+    """把「该进池但还没进池」的真负样本**并进池**（**默认 dry-run**）。
+
+    什么时候用：人工复核把 ``unresolved`` 改判成真负样本之后
+    （``cli review --apply``），那一条**必须**有对应的池行——
+    「每条分支都必须有对应样本入库」，负样本不是副产品。
+
+    ⚠️ **只并「站得住」的**：三条拒并条件（已拒收 / 与成功记录矛盾 /
+    池内同址另有分支）命中就**跳过并打印**——分歧必须暴露给人看，
+    不能替人投票。
+
+    ⚠️ **它只动池，不动存档**——存档侧的结论由 ``cli review --apply`` /
+    ``cli relabel`` 改。顺序永远是**先改存档、后并池**。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    out = pool_add_mod.add_from_root(root, dry_run=not args.apply)
+
+    cands = out["candidates"]
+    ok = [c for c in cands if c.ok]
+    skipped = out["skipped"]
+    if not cands:
+        print("池与存档对得上：没有欠账（已并过的键不重复报）")
+        return 0
+
+    verb = "并进" if args.apply else "**将**并进"
+    print(f"== {verb} {len(ok)} 条真负样本 ==")
+    for c in ok:
+        print(f"  {c.describe()}")
+        print(f"      {c.evidence[:110]}")
+    if skipped:
+        print(f"\n== 跳过 {len(skipped)} 条（有分歧，**不替人投票**）==")
+        for c in skipped:
+            print(f"  {c.describe()}")
+            print(f"      理由：{pool_add_mod.refusal_text(c.refuse)}")
+            if c.detail:
+                print(f"      详情：{c.detail}")
+    if not args.apply:
+        print("\n⚠ 这是 dry-run。加 --apply 才落盘。")
+        print("  顺序：**先改存档（cli review --apply）→ 再并池**。")
+    else:
+        print(f"\n已并 {out['added']} 行。接着跑："
+              "cli build --overwrite  →  cli check-archives")
+    return 0
+
+
 def cmd_review_queue(args: argparse.Namespace) -> int:
     """改**复核队列文件**本身（预填 / 收敛），不动 P1。
 
@@ -2829,6 +2953,28 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
         print(f"  [warn] {total['ignored']} 条裁定落在**非复核分支**的记录上，"
               f"已原样保留未改。真负样本/成功样本不在复核范围内，"
               f"误改会静默毁掉负样本池的纯度——检查 verdicts 文件是不是对错了存档")
+
+    # ── 并池：写入时的那一半（2026-10-26 · M-40）──────────────
+    # 人工把 ``unresolved`` 改判成真负样本 ⇒ **产生了一条新的负样本**
+    # ⇒ 它必须有对应的池行（「每条分支都必须有对应样本入库」）。
+    # 不在这里并，门禁就报 ``negative_not_pooled``（实测 29 条，
+    # 2026-10-26）。**同一次扫描也把历史欠账一起补上**——补账是
+    # 幂等的，且省得人记着「还有一条没并」。
+    try:
+        pooled = pool_add_mod.add_from_root(root, dry_run=False)
+    except Exception as exc:                      # noqa: BLE001
+        print(f"  [warn] 并池失败（{type(exc).__name__}: {exc}）——"
+              f"回填**已经落盘**了，池欠着；跑 cli pool-add 看清单")
+        return 0
+    if pooled["candidates"]:
+        print(f"  → 并池：新增 {pooled['added']} 行真负样本"
+              f"（回填产生的 + 历史欠账），"
+              f"跳过 {len(pooled['skipped'])} 条**有分歧**的")
+        for c in pooled["skipped"]:
+            print(f"      跳过 {c.describe()}："
+                  f"{pool_add_mod.refusal_text(c.refuse)}")
+            if c.detail:
+                print(f"            {c.detail}")
     return 0
 
 
@@ -3892,6 +4038,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="撤行理由，**必填**，进 pool_dropped.jsonl 审计日志")
     pdr.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
     pdr.set_defaults(func=cmd_pool_drop)
+
+    pda = sub.add_parser(
+        "pool-add",
+        help="把「该进池但还没进池」的真负样本并进池（**默认 dry-run**；只动池，不动存档）")
+    pda.add_argument("--out", default=None, help="P1 存档目录（默认 output/pipeline）")
+    pda.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
+    pda.set_defaults(func=cmd_pool_add)
 
     chk = sub.add_parser("check", help="查能力，不跑任务")
     chk.add_argument("--probe-url", default="https://example.com/")

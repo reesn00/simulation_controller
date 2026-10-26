@@ -55,6 +55,13 @@ def _stub_launch(monkeypatch, *, fail_on: set[int] | None = None):
 
     返回 ``(state, made)``：``state["n"]`` 是调用次数，``made`` 是成功
     起过的会话。
+
+    ⚠️ **顺带打桩执行层缺件预检**（2026-10-26）：批次入口会先问
+    「camoufox 在不在盘上」，不在就**启动前退 2**（缺件即报错，不猜）。
+    本文件验的是**批次韧性**（一条失败不毁整批 / 失败要记账 / 重试一次），
+    **不是**执行层可用性——而这里起浏览器整个是假的 ⇒
+    预检也必须是假的，否则这条测试会因为**环境**红，而不是因为**被测逻辑**红。
+    执行层缺件这件事有它自己的测试（``Test执行层缺件``）。
     """
     state = {"n": 0}
     made: list[_FakeSession] = []
@@ -71,6 +78,7 @@ def _stub_launch(monkeypatch, *, fail_on: set[int] | None = None):
         return s
 
     monkeypatch.setattr(cli, "_launch_camoufox", _launch)
+    monkeypatch.setattr(cli, "_execution_layer_missing_reason", lambda kind: "")
     return state, made
 
 
@@ -202,6 +210,16 @@ class Test起浏览器重试:
 
         重试成本 3 分钟，换回 10 条数据。
         """
+        # ⚠️ **camoufox 执行层暂退**（2026-10-26）：`camoufox_session`
+        # 在**模块层**就要 `AsyncCamoufox` ⇒ 缺包时这一句 import 直接
+        # ImportError（**测试报错**，不是跳过）。这里显式跳过并写明理由：
+        #   恢复 = `uv pip install camoufox==0.5.8 && camoufox fetch`
+        # 恢复后**必须重跑**（已记进 [10-TODO台账 §停点待验证]）。
+        pytest.importorskip(
+            "camoufox",
+            reason="camoufox 执行层暂退（2026-10-26，pyproject 已移除依赖）；"
+                   "恢复：uv pip install camoufox==0.5.8 && camoufox fetch",
+        )
         from trajectory_pipeline.executor.browser import camoufox_session
 
         calls = {"n": 0}
@@ -222,6 +240,12 @@ class Test起浏览器重试:
 
     async def test_连挂两次才抛(self, monkeypatch):
         """**只重试一次**：连挂说明是真问题，再试只是把同一个错误拖两遍。"""
+        # 同上：缺 camoufox 包时是 ImportError ⇒ 显式跳过（理由见上）。
+        pytest.importorskip(
+            "camoufox",
+            reason="camoufox 执行层暂退（2026-10-26，pyproject 已移除依赖）；"
+                   "恢复：uv pip install camoufox==0.5.8 && camoufox fetch",
+        )
         from trajectory_pipeline.executor.browser import camoufox_session
 
         calls = {"n": 0}
@@ -237,6 +261,63 @@ class Test起浏览器重试:
         with pytest.raises(RuntimeError):
             await cli._launch_camoufox(headless=True)
         assert calls["n"] == 2, "重试次数超了——真问题时不该一直试"
+
+
+# ─────────────── 执行层缺件 ───────────────
+
+
+class Test执行层缺件:
+    """**缺件即报错，不猜**（2026-10-26 · camoufox 执行层暂退）。
+
+    执行层的依赖不在盘上 ⇒ **整批都跑不成**。逐条失败只会刷一屏
+    ImportError，让人误读成「站点的问题」——**那是能力问题，不是数据问题**。
+    ⇒ 启动前就退 2，**不启动批次**（一条存档都不该落）。
+    """
+
+    def test_依赖不在时给出可读理由(self, monkeypatch):
+        import importlib.util
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        reason = cli._execution_layer_missing_reason("camoufox")
+        assert reason, "缺 camoufox 包却没给出理由"
+        assert "camoufox" in reason
+        # 理由里必须带**怎么装**——只说「不可用」等于把问题推回给读的人
+        assert "camoufox fetch" in reason, f"理由里没有恢复指令：{reason!r}"
+
+    def test_依赖在时没有理由(self, monkeypatch):
+        import importlib.util
+
+        monkeypatch.setattr(
+            importlib.util, "find_spec", lambda name: object())
+        assert cli._execution_layer_missing_reason("camoufox") == ""
+
+    def test_别的执行层不管(self):
+        """obscura 的可用性由 ``OBSCURA_EXE`` 管，**不归这条预检**。"""
+        assert cli._execution_layer_missing_reason("obscura") == ""
+
+    async def test_缺件时启动前就退2且不落盘(self, tmp_path, monkeypatch,
+                                             capsys):
+        """**退 2（配置错）而不是 1（跑失败）**，且**一条存档都不落**。"""
+        monkeypatch.setattr(cli, "_execution_layer_missing_reason",
+                            lambda kind: "camoufox 执行层不可用（测试）")
+        ran: list[str] = []
+        monkeypatch.setattr(cli, "Orchestrator", type("O", (), {
+            "__init__": lambda self, *a, **kw: None,
+            "run": lambda self, task_id, title, **kw: ran.append(task_id),
+        }))
+
+        out = tmp_path / "out"
+        plan = tmp_path / "plan-prod1-rest.json"
+        plan.write_text(
+            json.dumps(_plan_doc(["T001", "T002"], batch_id="plan-prod1"),
+                       ensure_ascii=False),
+            encoding="utf-8")
+
+        rc = await cli._run_plan(_args(plan, out))
+        assert rc == 2, f"缺件应当退 2（配置错），实际 {rc}"
+        assert not ran, f"缺件时不该启动批次，实际跑了 {ran}"
+        assert not list(out.glob("T*__*.json")), "缺件时不该落存档"
+        assert "camoufox" in capsys.readouterr().out
 
 
 # ─────────────── 批次身份 ───────────────

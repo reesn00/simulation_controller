@@ -321,8 +321,24 @@ class P1Archive:
 
         if not fresh:
             return 0
+        self.append_pool_rows(fresh)
+        return len(fresh)
+
+    def append_pool_rows(self, rows: list[dict[str, Any]]) -> int:
+        """把若干条**已经成型**的池行追加进池。返回写入条数。
+
+        与 :meth:`_append_negatives` 的分工：那一条从 ``record.ledger`` 取
+        outcome；本条收**已经算好的行**——给「另一个写入点」用（人工复核
+        回填：见 :mod:`trajectory_pipeline.executor.pool_add`）。
+
+        ⚠️ **池的写路径只有这一处**（追加、坏行不牵连、凭据 fail-closed
+        三条纪律都收在这里）。散开写就会出现「一处改了另一处没改」——
+        而池是训练数据的直接输入，坏行是静默的。
+        """
+        if not rows:
+            return 0
         blob = "".join(
-            json.dumps(row, ensure_ascii=False) + "\n" for row in fresh
+            json.dumps(row, ensure_ascii=False) + "\n" for row in rows
         )
         hits = scan_credentials(blob)
         if hits:
@@ -333,7 +349,7 @@ class P1Archive:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(_pool_separator(path) + blob)
-        return len(fresh)
+        return len(rows)
 
     def _negative_row(
         self, outcome: Any, task_id: str, run_id: str, record: Any

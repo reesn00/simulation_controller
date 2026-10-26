@@ -356,4 +356,6 @@ __all__ = [
     "CERTAIN_MARKERS", "UNCERTAIN_MARKERS",
     "has_certain_tone", "has_uncertain_tone",
     "resettable_text",
+    # 排版归一后的匹配键——闸门层四处比较点都调它（跨模块公开 API）。
+    "match_key",
 ]
