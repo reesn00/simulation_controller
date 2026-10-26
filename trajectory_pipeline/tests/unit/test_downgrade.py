@@ -266,6 +266,30 @@ class Test处置:
 
 
 class Test目录遍历:
+    def test_非T前缀的存档也要收(self, tmp_path):
+        """**``E``/``P``/``DR`` 前缀的存档以前结构性地降不掉。**
+
+        原先遍历是 ``root.glob("T*__*.json")``。实测（2026-10-26）生产根
+        目录 78 份存档里 28 份是 ``E``/``P`` 前缀，双跑那批判是 ``DR01__``
+        ⇒ H-17 那 7 条（全是 ``DR`` 前缀）**根本没有命令能碰**，而 CLI
+        打印的是「没有匹配的 outcome —— 归档可能已被降过（幂等），或
+        判据不匹配」：判据被冤枉，真正的成因在文件名上。
+        """
+        for name in ("E005__aa.json", "P001__bb.json", "DR01__cc.json"):
+            _write(tmp_path, _arch([_o("a.com", "no_play_control")]), name=name)
+        out = dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                               reason="r", dry_run=True)
+        assert sorted(s["archive"] for s in out) == [
+            "DR01__cc.json", "E005__aa.json", "P001__bb.json"]
+
+    def test_同目录的探针取证不算存档(self, tmp_path):
+        """``obscura_tools.json`` / ``_cause_probe.json`` 这类与 P1 同目录、
+        却不是存档（文件名里没有 ``__``）。收进来会让「降级了 N 条」里
+        混进**根本没有 run_id** 的文件，而它的改动无处可回溯。"""
+        _write(tmp_path, _arch([_o("a.com", "no_play_control")]),
+               name="_cause_probe.json")
+        assert dg.original_archive_paths(tmp_path) == []
+
     def test_不动复核档(self, tmp_path):
         """复核档是 ``review --apply`` 从原档合并出来的，在它上面改会被
         下一次 ``--apply`` **静默覆盖回去**——降级看起来做了，跑一次
