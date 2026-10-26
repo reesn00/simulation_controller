@@ -560,3 +560,70 @@ class TestOnRealObservations:
                 if label:
                     assert label in bag, f"元素 label「{label}」没进检索袋"
             break
+
+
+class Test排版归一化:
+    """全角/半角与空白的差异**不是幻觉**（2026-10-26 实测，优酷《功夫》页）。
+
+    现场形态：观察 ``page_title`` 是
+    ``功夫(周星驰: 电影全集)国语版-电影-…``，而重生成后的 rationale
+    写的是 ``功夫（周星驰：电影全集）国语版``（全角括号/冒号 + 冒号后
+    没空格）。按字面比必然落空 ⇒ 两条**如实描述页面**的 rationale 被判
+    ``unsupported_entity``。
+
+    假失败比漏判更坏：它把正确的 rationale 记成幻觉，污染负样本池，
+    而报告上只表现为「闸门拦下两条」。
+    """
+
+    #: 现场原串（半角括号 + 冒号后一个空格）
+    PAGE_TITLE = "功夫(周星驰: 电影全集)国语版-电影-高清完整正版视频在线观看-优酷"
+
+    def _obs_with(self, title: str) -> dict:
+        return _obs(page_title=title, body_text="续费会员 历史 客户端 登录 视频 讨论")
+
+    def test_全角括号与冒号命中(self):
+        """现场原例：模型写全角，页面存半角。"""
+        findings, checked, _und = gates.check_entities(
+            "当前页面标题显示《功夫（周星驰：电影全集）国语版》，点击同名入口",
+            [self._obs_with(self.PAGE_TITLE)],
+            exempt="功夫",
+        )
+        assert checked >= 1
+        assert not findings, [f.kind + ":" + f.detail for f in findings]
+
+    def test_空白差异命中(self):
+        findings, _c, _u = gates.check_entities(
+            "页面写着《功夫 周星驰 电影全集》",
+            [self._obs_with("功夫周星驰电影全集-优酷")],
+            exempt="功夫",
+        )
+        assert not findings, [f.detail for f in findings]
+
+    def test_归一化不掩盖真幻觉(self):
+        """**反例**：实体比页面上多出内容，去掉排版差异后仍然对不上。"""
+        findings, _c, _und = gates.check_entities(
+            "页面写着《功夫（周星驰：电影全集）蓝光加长版》",
+            [self._obs_with(self.PAGE_TITLE)],
+            exempt="功夫",
+        )
+        assert any(f.kind == "unsupported_entity" for f in findings), \
+            "多出来的「蓝光加长版」不是排版差异，必须仍判幻觉"
+
+    def test_时序核查同款归一(self):
+        """后见之明那查用的是同一个匹配函数——两侧都归一，
+        否则「前置有（不同排版）」会被算成「后见」。"""
+        # 实体在**第 0 步**（前置窗口）就以另一种排版出现过 ⇒ 不是后见之明
+        obs0 = self._obs_with(self.PAGE_TITLE)
+        obs1 = self._obs_with("播放页 加载中")
+        findings, _und = gates.check_temporal_at(
+            "页面显示《功夫（周星驰：电影全集）国语版》",
+            [obs0, obs1],
+            step_index=1,
+            exempt="功夫",
+        )
+        assert not findings, [f.detail for f in findings]
+
+    def test_match_key只抹排版不抹内容(self):
+        assert lexicon.match_key("A（B）：C D") == lexicon.match_key("A(B): C D")
+        assert lexicon.match_key("功夫") != lexicon.match_key("功夫 2")
+        assert lexicon.match_key("") == ""

@@ -182,7 +182,7 @@ def _bag(observations: Sequence[Mapping[str, Any]]) -> str:
     return "\n".join(lexicon.resettable_text(o) for o in observations)
 
 
-def _in_haystack(text: str, haystack_l: str) -> bool:
+def _in_haystack(text: str, haystack_l: str, haystack_key: str = "") -> bool:
     """实体 ``text`` 在已归一化的 haystack 里吗。
 
     **整串命中**，或**合成实体拆开后每段都命中**
@@ -191,13 +191,23 @@ def _in_haystack(text: str, haystack_l: str) -> bool:
     合成命中要求**每段都在**：模型把观察到的两处合并写成「A/B」时，
     A 与 B 都得真实出现过才算有据；少一段就落回整串匹配的结果
     （不命中）——所以这条是**收紧的补充**，不是放宽。
+
+    ``haystack_key`` 是 :func:`~trajectory_pipeline.rationale.lexicon.match_key`
+    归一后的同一条 haystack（NFKC + 去空白）。**它是排版差异的兜底**，
+    不是放宽：抹掉的只有全角/半角与空白，实体本身一个字都不能少。
     """
     if (text or "").lower() in haystack_l:
+        return True
+    if haystack_key and lexicon.match_key(text) in haystack_key:
         return True
     parts = lexicon.split_composite(text)
     if not parts:
         return False
-    return all(p.lower() in haystack_l for p in parts)
+    return all(
+        p.lower() in haystack_l
+        or (bool(haystack_key) and lexicon.match_key(p) in haystack_key)
+        for p in parts
+    )
 
 
 def check_entities(
@@ -262,11 +272,16 @@ def check_entities(
         lexicon.resettable_text(o) for o in later_observations
         if observation_shortfall(o)
     )
-    shaky_later_l = lexicon.strip_noise(shaky_later).lower()
+    shaky_later_text = lexicon.strip_noise(shaky_later)
+    shaky_later_l = shaky_later_text.lower()
+    shaky_later_key = lexicon.match_key(shaky_later_text)
 
     haystack = lexicon.strip_noise(complete_bag)
     haystack += "\n" + lexicon.strip_noise(exempt or "")
     haystack_l = haystack.lower()
+    # 排版归一版（NFKC + 去空白）：模型引用**同一个实体**时，全角括号/
+    # 冒号/空格常常与页面采集结果不同，按字面比会把如实描述判成幻觉。
+    haystack_key = lexicon.match_key(haystack)
 
     checked = 0
     for ent in entities:
@@ -281,13 +296,18 @@ def check_entities(
         checked += 1
         if any(v in haystack_l or v in haystack for v in variants):
             continue
+        # 排版归一版再比一次（全角/半角、空白）——同一个实体，不同排版。
+        if any(lexicon.match_key(v) in haystack_key for v in variants):
+            continue
         # 合成实体（「A/B」）：整串落空但每段都真实出现过 → 有据，不算幻觉。
-        if _in_haystack(ent.text, haystack_l):
+        if _in_haystack(ent.text, haystack_l, haystack_key):
             continue
         if undeterminable:
             # 观察不充分时不判幻觉（rubric D-9 边界规则）。
             continue
-        if any(v in shaky_later_l for v in variants):
+        if (any(v in shaky_later_l for v in variants)
+                or any(lexicon.match_key(v) in shaky_later_key
+                       for v in variants)):
             # 后续步的**不完整**观察里出现过 → 它当时**可能**就在页面上，
             # 只是没被采到（懒加载/渲染时序）。判幻觉是把**采集器的漏采**
             # 记成**模型的幻觉**——与 §3.1「观察与判定自相矛盾时一律
@@ -382,14 +402,18 @@ def check_temporal_at(
             "后续步观察不充分，无法判定「当时看不到」——"
             "实体可能当时就在页面里而只是没采到")
 
-    visible_l = lexicon.strip_noise(_bag(visible) + "\n" + (exempt or "")).lower()
-    later_l = lexicon.strip_noise(_bag(later_complete)).lower()
+    visible_text = lexicon.strip_noise(_bag(visible) + "\n" + (exempt or ""))
+    visible_l = visible_text.lower()
+    visible_key = lexicon.match_key(visible_text)
+    later_text = lexicon.strip_noise(_bag(later_complete))
+    later_l = later_text.lower()
+    later_key = lexicon.match_key(later_text)
 
     for ent in entities:
         needle = ent.text.lower()
-        if _in_haystack(needle, visible_l):
+        if _in_haystack(ent.text, visible_l, visible_key):
             continue                     # 当时就看得见，不是后见之明
-        if not _in_haystack(needle, later_l):
+        if not _in_haystack(ent.text, later_l, later_key):
             continue                     # 前后都没有 → 实体核查管它
         findings.append(Finding(
             "temporal_leak",

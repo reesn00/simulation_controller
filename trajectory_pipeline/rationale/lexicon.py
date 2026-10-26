@@ -41,6 +41,7 @@ LLM 输出形态**，模型会朝着有 rationale 的样本学，所以 rational
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Iterable, Literal, Mapping
 
@@ -114,6 +115,35 @@ _LONE_PUNCT_RE = re.compile(r"^[\s\W_]+$", re.UNICODE)
 def strip_noise(text: str) -> str:
     """剥掉 PUA 区字符与孤立标点，供实体文本归一化。"""
     return _LONE_PUNCT_RE.sub("", _PUA_RE.sub("", text or "")).strip()
+
+
+#: 所有空白（含全角空格 U+3000、NBSP U+00A0 的 NFKC 形态）。
+_ALL_SPACE_RE = re.compile(r"\s+", re.UNICODE)
+
+
+def match_key(text: str) -> str:
+    """实体匹配键：**NFKC 归一 + 去全部空白 + 小写**。
+
+    同一段文字在「模型写的」与「页面采到的」两侧排版常常不一致，
+    而它们是**同一个实体**。实测（2026-10-26，优酷《功夫》页）：
+
+    - 观察 `page_title`：``功夫(周星驰: 电影全集)国语版-…``
+    - rationale 引用：``功夫（周星驰：电影全集）国语版``
+
+    全角括号/冒号 + 冒号后一个空格的差异，让整串子串匹配必然落空 ⇒
+    两条**如实描述页面**的 rationale 被判成 ``unsupported_entity``。
+    假失败比漏判更坏：它把正确的 rationale 记成幻觉，污染负样本池。
+
+    **归一化只抹排版，不抹内容**——不拆词、不同义、不做模糊匹配。
+    删空白是这里唯一有争议的一步：它让「功夫 在线观看」与
+    「功夫在线观看」互相命中。对「这个实体在不在观察里」这个问题，
+    空白是排版而非证据，所以这一步仍然只服务「同一实体」。
+
+    Returns:
+        空串输入 → 空串（调用方据空串判「没有可比的东西」）。
+    """
+    text = unicodedata.normalize("NFKC", text or "")
+    return _ALL_SPACE_RE.sub("", _PUA_RE.sub("", text)).lower()
 
 
 def extract_entities(text: str) -> tuple[Entity, ...]:
