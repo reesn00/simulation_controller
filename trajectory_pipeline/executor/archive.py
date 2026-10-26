@@ -344,12 +344,20 @@ class P1Archive:
         （"强口语 × 长尾这类组合是不是特别容易判失败"），只有 url 与 branch
         时那份 provenance 已经不在了，而它就在同一个 ``record`` 上——
         不带过来等于白丢。
+
+        ``driver``（方案 20 §R3）——池行要能回答「这条负样本是在哪张采集面上
+        得出来的」，否则「人进得去、agent 被拦」这件事在池子里看不出来。
+        池子里的记录是**写入时的快照**：**历史行不回填**（没有证据），
+        新行从这里开始带。
         """
         provenance = dict(getattr(record, "provenance", {}) or {})
         return {
             "task_id": task_id,
             "run_id": run_id,
             "persona_id": provenance.get("persona_id", ""),
+            # 与 P1 顶层 ``driver`` 同源（``RunRecord.driver``）——
+            # 不另记一份「面」，面是 ``driver`` 的折算结果，不是第二个事实。
+            "driver": str(getattr(record, "driver", "") or ""),
             "url": outcome.url,
             "branch": outcome.branch,
             "branch_label": BRANCH_LABELS.get(outcome.branch or "", ""),

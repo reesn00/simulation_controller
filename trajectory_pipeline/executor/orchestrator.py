@@ -33,8 +33,11 @@ from trajectory_pipeline.executor.branches import (
     RunLedger,
     validate_observation_for_decision,
 )
+# 采集面词表住在 ``executor/browser/``（方案 20 §R3）：面是**驱动实现的属性**，
+# 账本与评估两侧都要用，谁也别反向 import 谁。
+from trajectory_pipeline.executor.browser import access_surface
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
-from trajectory_pipeline.executor.gatekeeper import FailClosed, intercept
+from trajectory_pipeline.executor.gatekeeper import BLOCK_VERDICTS, FailClosed, intercept
 from trajectory_pipeline.executor.mode import AGENT, EXECUTOR_MODES
 from trajectory_pipeline.executor.steps import (
     agent_intermediate,
@@ -453,7 +456,9 @@ class RunRecord:
             "search_blocked": self.search_blocked,
             # Gatekeeper 事件账本（方案 12 阶段 G）。空 list 照落——
             # 「没有拦截事件」与「没这个键」在下游是两回事（缺件代理教训）。
-            "gatekeeper_events": [dict(e) for e in self.gatekeeper_events],
+            # ``blocked_surface`` / ``attempt`` 在这里盖（方案 20 §R3）——
+            # 面从 ``driver`` 折算，见 :func:`_stamped_gatekeeper_events`。
+            "gatekeeper_events": _stamped_gatekeeper_events(self),
             # LLM 调用账本（方案 13 §3.6，A2a-4）。空 list 照落——
             # scripted 批「没问模型」与「没这个键」在下游是两回事。
             "llm_calls": [dict(c) for c in self.llm_calls],
@@ -606,6 +611,76 @@ def _stamp_llm_calls(calls: list[dict[str, Any]]) -> None:
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for entry in calls:
         entry.setdefault("ts", ts)
+
+
+def _access_surface_of(driver: str) -> str:
+    """驱动名 → 采集面；认不出的**记 ``unrecorded`` 并点名**，不为它抛。
+
+    只在**事后记账**（账本落盘）这一侧用。写金标那边（``builder.annotate`` /
+    ``freeze``）走的是 ``access_surface.surface_of_driver`` 的**抛**口径——
+    两处的差别见 :func:`_stamped_gatekeeper_events` 的 docstring。
+    """
+    try:
+        return access_surface.surface_of_driver(driver)
+    except ValueError:
+        log.warning(
+            "认不出的驱动实现名 %r：gatekeeper 账本的 blocked_surface 记 "
+            "unrecorded（不猜是哪张面）", driver,
+        )
+        return access_surface.SURFACE_UNRECORDED
+
+
+def _stamped_gatekeeper_events(record: "RunRecord") -> list[dict[str, Any]]:
+    """拦截账本 → 落盘形态，补 ``blocked_surface`` / ``attempt``（方案 20 §R3）。
+
+    两个字段回答两个不同的问题：
+
+    - ``blocked_surface`` —— **在哪张采集面上被拦**。面只从
+      ``RunRecord.driver`` 经 :func:`access_surface.surface_of_driver` 折算，
+      **不在采集点手填**：agent 循环不知道驱动实现名，让它自报就是造第二处
+      推断（CLAUDE.md 纪律 7）。
+
+      ⚠️ 认不出的 ``driver`` 在这里落 ``unrecorded`` + 一条 warning，**不抛**
+      ——这与 ``surface_of_driver`` 的「抛」不矛盾，因为**场合不同**：
+      抛的那两处（``annotate`` / ``freeze``）写的是**金标**，一笔写错会跟着
+      版本走；这里写的是**运行账本的一栏归因**，而 ``to_json`` 是落盘边界
+      ——一条认不出的驱动名（重放的历史存档 / 手搓的 record / 测试替身
+      ``FakePageDriver.name == "fake"``）不该让整份存档写不出去。生产路径上
+      这个分支只可能由手改产生：``driver`` 取自驱动类自己的 ``name``，而
+      ``--driver`` 是 ``choices=SUPPORTED_KINDS``。
+    - ``attempt`` —— **同一 verdict 在本 run 里是第几次**（1 起）。
+      不合并成一个「被拦次数」：CF 拦两次与 captcha 拦一次处置不同
+      （前者换引擎才有救，后者多半是间隔问题），合成一个数会让两种情形
+      在报表上是同一个格子（避坑 §3.7 的同一纪律：拦截率必须分桶）。
+      全 run 被拦几次 = 有 ``blocked_surface`` 的行数。
+
+    只盖 ``verdict ∈ gatekeeper.BLOCK_VERDICTS`` 的事件（四条页面侧访问控制：
+    CF 拦截 / 验证码 / 登录墙 / 付费墙）。其余一律**不盖**：
+
+    - 升配 / 驳回两档没有 verdict——它们不是「被拦」，给它们安 ``attempt``
+      会让「这次运行被拦几次」数出模型升配的次数；
+    - ``dead_loop`` 有 verdict 但那是**行为失败**，不是页面属性（见
+      :data:`~...gatekeeper.BLOCK_VERDICTS` 的说明）。
+
+    没盖的键就是没有，**不写空串**。
+
+    为什么不盖在循环里（与 :func:`_stamp_llm_calls` 同款理由）：``agent_loop``
+    刻意不引入驱动实现名的知识，事件格式在那边只有 ``stage/verdict/reason/
+    disposition`` 四栏；盖戳放在**序列化边界**，账本的生产者不参与归因。
+    """
+    surface = _access_surface_of(record.driver)
+    blocking = {v.value for v in BLOCK_VERDICTS}
+    seen: dict[str, int] = {}
+    stamped: list[dict[str, Any]] = []
+    for event in record.gatekeeper_events:
+        row = dict(event)
+        verdict = str(row.get("verdict") or "")
+        if verdict in blocking:
+            seen[verdict] = seen.get(verdict, 0) + 1
+            row.setdefault("blocked_surface", surface)
+            row.setdefault("attempt", seen[verdict])
+        stamped.append(row)
+    return stamped
 
 
 def _vocabulary_of(driver: str) -> str:

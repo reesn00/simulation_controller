@@ -1501,8 +1501,19 @@ class TestAntiScraping:
         assert ev["reason"] == "captcha"
         assert ev["disposition"]["kind"] == "fail_closed"
         assert ev["disposition"]["branch"] == ""
-        # 落盘与内存同形
-        assert rec.to_json()["gatekeeper_events"] == [ev]
+        # 落盘时**只多两栏**（方案 20 §R3：``blocked_surface`` / ``attempt``），
+        # 内存里那四栏一字不动——所以对账姿势是「补上盖的戳之后整条相等」，
+        # 而不是整条相等（整条相等会让盖戳看起来像改了事件内容）。
+        assert rec.to_json()["gatekeeper_events"] == [
+            {
+                **ev,
+                # FakePageDriver.name == "fake"：认不出的驱动名落 unrecorded，
+                # 不猜它是哪张面（与金标侧「认不出就抛」的场合差别见
+                # ``orchestrator._stamped_gatekeeper_events``）。
+                "blocked_surface": "unrecorded",
+                "attempt": 1,
+            }
+        ]
 
     async def test_未被拦时事件账本为空(self):
         d = FakeDriver(
@@ -1977,6 +1988,51 @@ class TestDomainReach:
 
 
 EL = (InteractiveElement(ref="e5", role="button", name="立即播放"),)
+
+
+class TestDomainReach拦截列:
+    """2026-10-26 · R1：``blocked`` 在报表里**单独一列**。
+
+    这张报表问的是「反检测实际通过率」，而拦截数正是它的分子侧。
+    并进「负」的话，「负 +1」既可能是「这片不在这个站」也可能是
+    「我们被拦了」——两个结论的处置完全相反（换片 vs 换出口）。
+    """
+
+    def test_拦截单独一列不算负样本(self, tmp_path):
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[
+                _o("https://cf.test/1", None),      # 同一个站，这次进去了
+                _o("https://cf.test/2", "blocked"),  # 那次被拦
+            ],
+        )
+        out = _report(tmp_path)
+        assert "拦 1" in out
+        assert "负 1" not in out
+
+    def test_零拦截不打印这一列(self, tmp_path):
+        """零值不打印：多一点格式噪音就把「这批没被拦」与「这一版才开始
+        记拦截」混成同一种样子，而跨批次比较时两者含义相反。"""
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[_o("https://a.test/1", "no_play_control")],
+        )
+        assert "拦 0" not in _report(tmp_path)
+
+    def test_只被拦过的域名不进黑名单候选(self, tmp_path):
+        """一条 ``blocked`` 对「这站有没有这片」零信息（同指纹同日实测
+        6/10 可达）。把它当零成功域名拉黑，等于把采集失败写成站点黑名单。"""
+        _arch(
+            tmp_path,
+            "T001__a.json",
+            outcomes=[
+                _o("https://cfonly.test/1", "blocked"),
+                _o("https://cfonly.test/2", "blocked"),
+            ],
+        )
+        assert "零成功域名" not in _report(tmp_path)
 
 
 class TestTargetOf:
@@ -3037,3 +3093,58 @@ class Test路径BC发现链:
             "发现链结束",
         ):
             assert marker in msgs, f"关键节点日志缺失：{marker}"
+
+
+class Test挑战页先于语义判断:
+    """2026-10-26 · R1：反爬/验证码页**不能进语义判断**。
+
+    实测代价（R0 取证）：四周前 20 次 CF 挑战页访问里，4 次被记成
+    ``no_play_control``——挑战页没有 ``<video>``、没有播放按钮，所以
+    「页面上没有播放控件」字面为真、结论全错，而且它是真负样本、
+    会直接进池。判据是机械的（标题/正文 marker），所以能够在任何
+    ``Perceptor`` 之前拦下——这里连感知层都不该被问到。
+    """
+
+    CF_TITLE = "Just a moment..."
+
+    async def test_进站即挑战页记blocked且不问感知层(self):
+        d = FakeDriver({
+            "https://x.test/movie": obs_at(
+                "https://x.test/movie", title=self.CF_TITLE,
+                body="Checking your browser before accessing the site."),
+        })
+        p = ScriptedPerceptor({
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: no(Q.FIND_PLAY_CONTROL),
+        })
+        ledger = RunLedger("T001")
+        await visit_site(d, p, ledger, CAND)
+        out = ledger.outcomes[0]
+        assert out.branch == "blocked"
+        assert "detect_block=captcha" in out.evidence
+        assert p.calls == [], "挑战页不该进语义判断——判什么都是错的"
+        # 采集侧账：不进负样本池（但那不等于不需要人看，见 review_queue）
+        assert out.is_negative_sample is False
+        assert ledger.negative_samples() == []
+
+    async def test_点击后落地挑战页不落component_unverified(self):
+        """点击成功、页面换了、看到的却是 CF 挑战页 ⇒ ``component_unverified``
+        （「到了播放页但没有可验证的播放组件」）是一句**看着专业的假话**。"""
+        d = FakeDriver({
+            "https://x.test/movie": obs_at(
+                "https://x.test/movie", elements=(("e5", "button", "播放"),)),
+            "https://x.test/play/e5": obs_at(
+                "https://x.test/play/e5", title="Attention Required! | Cloudflare",
+                body=""),
+        })
+        p = ScriptedPerceptor({
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e5"}),
+            Q.PLAYER_OK: no(Q.PLAYER_OK),
+        })
+        ledger = RunLedger("T001")
+        await visit_site(d, p, ledger, CAND)
+        out = ledger.outcomes[0]
+        assert out.branch == "blocked"
+        assert Q.PLAYER_OK not in p.calls
+        assert ledger.negative_samples() == []

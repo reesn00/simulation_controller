@@ -275,12 +275,24 @@ def align_rationales(
     return tuple(out)
 
 
+# ── rationale 口径（INC46 分代）─────────────────────────────────────
+
+#: 第 ``i`` 步的 rationale 是**执行之前的动机**（INC46，2026-10-15 起）。
+RATIONALE_ERA_PRE_ACTION = "pre_action"
+
+#: 第 ``i`` 步的 rationale 是**看完本步页面之后的反思**（INC46 之前）。
+#: 它描述的是 ``observation[i]``，而 P3 把它渲染在 ``action[i]`` **之前**
+#: ——训练在教未卜先知。这份文本**不能**按新口径的闸门去核。
+RATIONALE_ERA_POST_HOC = "post_hoc"
+
+
 def gate_of(
     rationales: Sequence[Rationale],
     *,
     action_tools: Sequence[str] = (),
     observations: Sequence[Mapping[str, Any]] = (),
     exempt: str = "",
+    rationale_era: str = RATIONALE_ERA_PRE_ACTION,
 ) -> GateMark:
     """跑闸门并汇总成**一条**标记。
 
@@ -289,9 +301,10 @@ def gate_of(
 
     - 任一步 ``failed`` → 整条 ``failed``，**理由逐条列出**（定位到第几步）；
     - 有 ``written`` 且无 hard 发现 → ``passed``；
-    - **一条 ``written`` 都没有** → ``not_run``。
+    - **一条 ``written`` 都没有** → ``not_run``；
+    - **旧口径（``post_hoc``）→ ``not_run``**，理由写明「口径不适用」。
 
-    最后一条是关键：**「没生成」绝不能渲染成「通过」**。而
+    最后两条是关键：**「没生成」绝不能渲染成「通过」**。而
     「生成了一部分」是 ``passed``/``failed`` 的一部分判定，
     没生成的那几步会通过 ``rationale_missing`` 单独可见——
     两个信号分开，别合成一个。
@@ -302,6 +315,14 @@ def gate_of(
     :func:`~trajectory_pipeline.rationale.gates.gate` 里做，
     本函数只负责**逐条调用并汇总**。调用签名不变是刻意的：
     换口径不该让「闸门怎么跑」这件事在两层里各改一遍。
+
+    ⚠️ **跨口径不判**（2026-10-25）：事后反思的文本本来就该描述
+    ``observation[i]``，用 ``[:i]`` 的窗口去核它，**必然**把「第 0 步引用了
+    本步页面内容」判成 ``temporal_leak``——实测 8 条样本这样被记成
+    ``failed``（它们全是 INC46 之前的档），**凭空造出负样本**。反过来，
+    窗口碰巧对得上的旧文本会被记 ``passed``——那是**假通过**。
+    两个方向的错都是口径切换造出来的，不是 rationale 的缺陷，所以旧口径
+    一律 ``not_run``：**不判通过、不判失败，先重生成再核**。
     """
     from trajectory_pipeline.rationale import gates
 
@@ -315,6 +336,16 @@ def gate_of(
                 "rationale 一条都没写成（状态："
                 + "、".join(sorted(set(statuses)))
                 + "）——闸门未运行",
+            ),
+        )
+    if rationale_era == RATIONALE_ERA_POST_HOC:
+        return GateMark(
+            "not_run",
+            (
+                "存量 rationale 是 INC46 之前的**事后反思**口径（本单元没有 "
+                "unit 级 ``reflection``）——INC46 闸门的可见窗口 ``[:i]`` "
+                "对它不适用，**不判通过、也不判失败**。要出分先跑 "
+                "``regenerate-rationales`` 把这一档重生成成动作前动机",
             ),
         )
 
@@ -355,6 +386,34 @@ def gate_of(
 #: W1 的样本一律是 ``not_run``——把「没跑」渲染成「通过」会让 batch 上线时
 #: 看起来像过了闸，而它根本没被检查过。
 GateStatus = Literal["passed", "failed", "not_run"]
+
+
+def rationale_era_of(
+    unit: Mapping[str, Any],
+    rationales: Sequence[Rationale],
+) -> str:
+    """一个决策单元的 rationale 属于哪一代口径。
+
+    这是 **P2 新旧混批唯一的结构判据**。两代在落盘形状上**同构**
+    （都是 :meth:`~trajectory_pipeline.rationale.writer.WriteResult.to_json`
+    的 ``status`` / ``rationale`` / ``reason`` / ``degraded``），正文里也
+    没有可以机器判定的时代印记——**不能靠读内容猜**。
+
+    判据是 **unit 级 ``reflection`` 键在不在**：INC46 的两条写路径
+    （执行期 :meth:`~trajectory_pipeline.executor.orchestrator.Orchestrator._write_reflection`
+    与存量 :func:`~trajectory_pipeline.executor.cli.cmd_regenerate_rationales`）
+    **都必写该键**（哪怕值是 ``null``），而 INC46 之前的存档从不写它。
+    所以键缺席 = 这份单元的 rationale 生成时还没有动作前动机口径。
+
+    Returns:
+        ``"pre_action"`` / ``"post_hoc"`` / ``""``。空串的含义是
+        **没有可判的 rationale**（一条 ``written`` 都没有）——与「旧口径」
+        不是一回事：前者没什么可训，后者是**有文本但口径不对**。
+    """
+    if not any(r.status == "written" for r in rationales):
+        return ""
+    return (RATIONALE_ERA_PRE_ACTION if "reflection" in unit
+            else RATIONALE_ERA_POST_HOC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,6 +546,16 @@ class Sample:
     #: 训练 CoT SFT 时会缺一整块，而报告上「gate=passed」看不出来。
     rationale_missing: bool = True
 
+    #: 这份样本的 rationale 属于哪一代**口径**（INC46，见
+    #: :func:`rationale_era_of`）：``"pre_action"``（动作前动机）/
+    #: ``"post_hoc"``（事后反思）/ ``""``（没有可判的 rationale）。
+    #:
+    #: **为什么必须逐条落盘**：两代在正文与字段形状上同构，混在一批里训练
+    #: 的后果是「有时可以未卜先知、有时不行」——那在报表上表现为「分数略降」
+    #: 而不是「坏了一批」。批次筛选、闸门分代、评估分档都要读它，
+    #: 而从 ``reflection`` 键在不在**现推**只在 P1 侧可能——P2 必须自己带。
+    rationale_era: str = ""
+
     #: 本条样本据以生成的 P1（文件名，不含目录）。批次可回溯到源存档。
     source_archive: str = ""
 
@@ -537,6 +606,7 @@ class Sample:
             },
             "gate": self.gate.to_json(),
             "rationale_missing": self.rationale_missing,
+            "rationale_era": self.rationale_era,
             "reflection": dict(self.reflection) if self.reflection else None,
             "outcome": self.outcome.to_json() if self.outcome else None,
             "degraded_from": list(self.degraded_from),
@@ -560,10 +630,19 @@ def run_id_of(archive_name: str) -> str:
 
     探针取证文件（``obscura_tools.json`` 等）没有 ``__``，那是正常形态——
     它们不是存档，走不到这里。
+
+    ⚠️ ``.reviewed`` **不算 run_id 的一部分**：``T001__x1.reviewed.json``
+    与 ``T001__x1.json`` 是**同一次 run 的两份档**（复核档是原档 + 人工裁定），
+    映射到同一个 ``sample_id`` 才对——P2 从哪一份切出来由
+    ``source_archive`` 记录下来，而不是靠 id 分叉。不剥这个后缀会切出
+    ``T001__x1.reviewed__site-1``：同一批数据在样本目录里**并存两份**，
+    而报表上看不出哪份是复核后的（2026-10-25 让 ``build`` 改读复核档时踩到）。
     """
     stem = Path(archive_name).name
     if stem.endswith(".json"):
         stem = stem[:-5]
+    if stem.endswith(".reviewed"):
+        stem = stem[: -len(".reviewed")]
     return stem.split("__", 1)[1] if "__" in stem else stem
 
 
@@ -756,6 +835,7 @@ def _sample(
     degraded: list[str],
     raw_steps: Sequence[Mapping[str, Any]] = (),
     reflection: Mapping[str, Any] | None = None,
+    unit_body: Mapping[str, Any] | None = None,
 ) -> Sample:
     task_id = str(archive.get("task_id"))
     # 工具面 = 源存档的方言（2026-10-20 方案 15 §7 R1）。认不出的驱动名
@@ -763,6 +843,11 @@ def _sample(
     surface = toolcatalog.surface_of_driver(archive.get("driver"))
     rationales = align_rationales(actions_, raw_steps)
     written = [r for r in rationales if r.status == "written"]
+    # 口径按**这一单元自己的** ``reflection`` 键判定，不看存档里别处
+    # （搜索单元在顶层、站点单元在 ``visits[i]``）。``unit_body`` 缺省取
+    # 存档顶层——单测与老调用方大量按顶层构造，而站点单元一律显式传。
+    era = rationale_era_of(unit_body if unit_body is not None else archive,
+                           rationales)
     gate = gate_of(
         rationales,
         action_tools=[a.tool for a in actions_],
@@ -771,6 +856,8 @@ def _sample(
         # 拿它们当「模型引入的实体」去核，会把每一条提到片名的
         # rationale 都判成幻觉（rationale 的豁免域，见 gates 口径二）。
         exempt=f"{archive.get('title') or ''} {archive.get('user_prompt') or ''}".strip(),
+        # 旧口径不按新窗口核（见 :func:`gate_of` 的跨口径注）。
+        rationale_era=era,
     )
     return Sample(
         sample_id=sample_id(task_id, run_id_of(source_name), unit),
@@ -788,6 +875,7 @@ def _sample(
         outcome=outcome,
         reflection=reflection,
         rationale_missing=not written,
+        rationale_era=era,
         source_archive=source_name,
         degraded_from=tuple(dict.fromkeys(degraded)),
         # 键不存在 → 空串（**不是** ``"1"``）：没有版本身份就是没有版本身份，
@@ -855,6 +943,8 @@ def split_archive(path: str | Path) -> list[Sample]:
                 raw_steps=steps,
                 # 搜索单元的 reflection 在**存档顶层**（与 steps 平级）。
                 reflection=_reflection_of(archive),
+                # 口径也看**这一单元**（顶层）的 reflection 键在不在。
+                unit_body=archive,
             )
         )
 
@@ -908,6 +998,8 @@ def split_archive(path: str | Path) -> list[Sample]:
                 raw_steps=vsteps,
                 # 站点单元的 reflection 在 ``visits[i]`` 里（与 steps 平级）。
                 reflection=_reflection_of(visit),
+                # 口径看 **visit 自己的** reflection 键，不看存档顶层。
+                unit_body=visit,
             )
         )
 
@@ -962,6 +1054,8 @@ __all__ = [
     "Sample",
     "P1ShapeError",
     "MISSING_OBSERVATION",
+    "RATIONALE_ERA_PRE_ACTION", "RATIONALE_ERA_POST_HOC",
+    "rationale_era_of",
     "sample_id",
     "run_id_of",
     "read_archive",

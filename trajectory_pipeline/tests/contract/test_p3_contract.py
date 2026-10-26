@@ -183,6 +183,10 @@ class Test视图名与渲染侧一致:
             # 2026-10-20 方案 15 §7 R1：工具面（方言轴）。同名工具在两个
             # 面里参数不同，面错了就是声明与调用对不上。
             "tool_surface",
+            # 2026-10-25 INC46 分代：人工复核/批次筛选要能一眼看出
+            # 这条的思考是「动作前动机」还是「事后反思」——判读手册里
+            # 两类文本的读法不同。
+            "rationale_era",
         }
         assert actual == expected, (
             f"to_meta 键集漂移：多 {actual - expected} / 少 {expected - actual}。"

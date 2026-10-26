@@ -227,6 +227,7 @@ class TestApplyVerdicts:
         assert set(VERDICTS) == {"confirm_success", "confirm_negative",
                                  "confirm_not_play_site", "confirm_paywall",
                                  "confirm_login", "confirm_blocked",
+                                 "confirm_collection_blocked",
                                  "confirm_broken", "confirm_partial_free",
                                  "trailer", "need_browser", "skip"}
 
@@ -323,14 +324,43 @@ class TestApplyVerdicts:
         assert st["off_question"] == 1
         assert st["confirm_login"] == 1
 
-    def test_确认环境阻断落blocked(self):
+    def test_确认环境阻断落blocked但不进池(self):
+        """2026-10-26 · R1：``blocked`` 是采集侧账（
+        :data:`branches.COLLECTION_SIDE_BRANCHES`）——人确认「被拦住了」
+        不是「这里看不了」，所以 branch 照贴、``is_negative_sample`` 恒 False，
+        另记 ``collection_status`` 把「人确认过」这句话留下来。"""
         arch = _archive([{"url": "a.com", "branch": "unresolved",
                           "question": "site.is_reachable", "evidence": "e"}])
         out, st = apply_verdicts(arch, {"a.com": {"verdict": "confirm_blocked"}})
         rec = out["outcomes"][0]
         assert rec["branch"] == "blocked"
-        assert rec["is_negative_sample"] is True
+        assert rec["is_negative_sample"] is False
+        assert rec["collection_status"] == "blocked"
         assert st["confirm_blocked"] == 1
+
+    def test_确认采集侧阻断只写collection_status不改branch(self):
+        """``confirm_collection_blocked``：人确认的是「这次没进去」——
+        原判是什么就还是什么，只多一条采集侧记账。"""
+        arch = _archive([{"url": "a.com", "branch": "blocked",
+                          "question": "site.is_reachable", "evidence": "e"}])
+        out, st = apply_verdicts(
+            arch, {"a.com": {"verdict": "confirm_collection_blocked",
+                             "reviewed_by": "reesn"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "blocked"
+        assert rec["is_negative_sample"] is False
+        assert rec["collection_status"] == "blocked"
+        assert rec["reviewed_by"] == "reesn"
+        assert st["confirm_collection_blocked"] == 1
+        assert st["collection_written"] == 1
+
+    def test_blocked进复核队列(self):
+        """**这是 R1 的另一半**：出负样本池 ≠ 没人看。只有人能回答
+        「我进得去、agent 进不去」是不是站点性质。"""
+        arch = _archive([{"url": "a.com", "branch": "blocked",
+                          "question": "site.is_reachable", "evidence": "e"}])
+        items = extract_items(arch)
+        assert [i.branch for i in items] == ["blocked"]
 
     def test_确认内容损坏落broken(self):
         arch = _archive([{"url": "a.com", "branch": "unresolved",
@@ -362,11 +392,17 @@ class TestApplyVerdicts:
         assert rec["site_verdict"] == "partial_free"
 
     def test_新增细分裁定全落在负样本池(self):
-        """四个新裁定都要入池（描述带「负样本」），否则人工确认的
-        负样本会静默丢出统计与训练信号。"""
-        for v in ("confirm_login", "confirm_blocked", "confirm_broken",
-                  "confirm_partial_free"):
+        """三个新裁定都要入池（描述带「负样本」），否则人工确认的
+        负样本会静默丢出统计与训练信号。
+
+        ⚠️ ``confirm_blocked`` **不在这一组**（2026-10-26 · R1）：它写的是
+        采集侧账，描述里明说「不进负样本池」——所以断言改成「明说」，
+        而不是「带负样本三个字」（「不进负样本池」也含这三个字，
+        用它做判据会把相反的事判成合格）。"""
+        for v in ("confirm_login", "confirm_broken", "confirm_partial_free"):
             assert "负样本" in VERDICTS[v], v
+        assert "不进负样本池" in VERDICTS["confirm_blocked"]
+        assert "不进负样本池" in VERDICTS["confirm_collection_blocked"]
 
     def test_新分支名在注册表与归属表里(self):
         """分支 id 必须登记在 BRANCH_LABELS；归属必须由 question_of_branch
@@ -808,11 +844,20 @@ class TestExtractFromBrowserResult:
 
     def test_L5_真负样本_不进(self):
         """broken / no_play_control / subscription_wall 等已下结论的
-        不进 L6 复核队列——与人工导出 review_queue.REVIEW_BRANCHES 同源。"""
+        不进 L6 复核队列——与人工导出 review_queue.REVIEW_BRANCHES 同源。
+
+        ⚠️ ``blocked`` **不在这一组**（2026-10-26 · R1）：它是采集侧账，
+        代码给不出「这是不是站点性质」的结论，正需要人看。
+        """
         for branch in ("broken", "no_play_control", "subscription_wall",
-                       "not_play_site", "blocked", "partial_free"):
+                       "not_play_site", "partial_free"):
             r = _BrowserResult(l5_outcome=_SiteOutcome(branch=branch))
             assert extract_from_browser_result(r, task_id="P036") == [], branch
+
+    def test_L5_blocked_进(self):
+        r = _BrowserResult(l5_outcome=_SiteOutcome(branch="blocked"))
+        assert [i.branch for i in extract_from_browser_result(
+            r, task_id="P036")] == ["blocked"]
 
     def test_成功_不进(self):
         """branch=None = 成功。成功不需要复核。"""

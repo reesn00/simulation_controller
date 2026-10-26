@@ -42,6 +42,9 @@ from trajectory_pipeline.executor.browser.page_driver import DriverError, PageDr
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.steps import reachability, site_search as site_search_mod
 from trajectory_pipeline.executor.steps.search import Candidate
+# 2026-10-26（R1）：反爬/验证码页的机械识别。它必须跑在**任何语义判断
+# 之前**——见 :func:`challenge_blocked`。
+from trajectory_pipeline.executor.gatekeeper import detect_block
 from trajectory_pipeline.perception.base import Observation, Perceptor, Q
 
 
@@ -100,6 +103,15 @@ async def visit_site(
     # ── ① ② 进站：与 agent 链共用的那一段（见本文件头部分工说明）──
     site_obs = await enter_site(driver, ledger, result, max_chars=max_chars)
     if site_obs is None:
+        return result
+
+    # ── ①.5 反爬/验证码页：**先于任何语义判断**（2026-10-26 R1）──
+    #    挑战页上没有 `<video>`、没有播放按钮、没有正文——无论走哪个
+    #    判断点，它都会得到一个「看起来很正常」的否定结论
+    #    （实测产出过 4 条 ``no_play_control``：CF 挑战页当然没有控件）。
+    #    脚本链**没有**通过挑战的手段（agent 链有，见 :mod:`agent_loop`），
+    #    所以这里不猜、不重试，按采集侧账记 ``blocked`` 并退出本站。
+    if _record_challenge(ledger, result, site_obs, stage="进站"):
         return result
 
     # ── ③ 判断点 ②：页面是否正常访问（语言层）──────────────────
@@ -331,6 +343,14 @@ def judge_player(
     一个负样本而不是一条假负样本。
     """
     result.player_obs = player_obs
+    # ── ⑦.0 挑战页同样先于语义判断（2026-10-26 R1）──────────────
+    #    点击后落到 CF 挑战页时，PLAYER_OK 会判 False 并落到
+    #    ``component_unverified``——「到了播放页但没有可验证的播放组件」，
+    #    理由通顺、看着专业，而真相是我们根本没看到那个播放页。
+    #    agent 链在这一步之前已有 ``gatekeeper.intercept``（每次观察都扫），
+    #    这里是**脚本链的唯一一道闸**；两条链共用本函数，加在这里不重复。
+    if _record_challenge(ledger, result, player_obs, stage="播放页"):
+        return
     player = perceptor.decide(Q.PLAYER_OK, player_obs)
     play_url = player_obs.url or result.landed_url
     if player.answer is True:
@@ -360,6 +380,41 @@ def judge_player(
                        site_url=result.candidate.url,
                        play_page_url=play_url)
     result.note(f"PLAYER_OK={player.answer}")
+
+
+def _record_challenge(
+    ledger: RunLedger,
+    result: VisitResult,
+    obs: Observation,
+    *,
+    stage: str,
+) -> bool:
+    """观察是不是反爬/验证码/限流页；是就记 ``blocked`` 并返回 ``True``。
+
+    **为什么必须先于语义判断**：挑战页是一张没有正文、没有控件、没有
+    播放器的空页。任何判断点看它都会给出一个确定的否定答案——实测里
+    它就是这样变成了 4 条 ``no_play_control``（「页面上没有播放控件」，
+    字面为真、结论全错）。分支体系里唯一诚实的记法是采集侧账
+    ``blocked``：它说的是「**这次没进去**」，不是「这里看不了」
+    （见 :data:`~executor.branches.COLLECTION_SIDE_BRANCHES`——这条分支
+    因此不进负样本池，但进人工复核队列）。
+
+    判据只复用 :func:`~executor.gatekeeper.detect_block`（URL / 标题 /
+    正文三张 marker 表），**不看语义**——「正文像不像视频站」是感知层的
+    事，而这里要的是机械事实：用户照样看得见那个「Just a moment...」。
+    """
+    reason = detect_block(obs.url, obs.page_title, obs.body_text)
+    if not reason:
+        return False
+    title = (obs.page_title or "").strip()[:60]
+    ledger.record(
+        obs.url or result.landed_url, "blocked",
+        f"{stage}遇到反爬/验证码页（detect_block={reason}，标题「{title}」）"
+        f"——脚本链无法通过挑战，按采集侧账记，**不是**站点性质",
+        site_url=result.candidate.url,
+    )
+    result.note(f"{stage}遇到反爬/验证码页: {reason}")
+    return True
 
 
 async def open_tab(driver: PageDriver, url: str, result: VisitResult) -> None:

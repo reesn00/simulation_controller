@@ -49,7 +49,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from trajectory_pipeline.assembler import observation_view
-from trajectory_pipeline.assembler.schema import Sample
+from trajectory_pipeline.assembler.schema import (
+    RATIONALE_ERA_POST_HOC,
+    RATIONALE_ERA_PRE_ACTION,
+    Sample,
+)
 
 #: 样本落盘根。**与 :data:`trajectory_pipeline.executor.archive.DEFAULT_ROOT`
 #: 同根**：所有产物收在 ``trajectory_pipeline/output/pipeline/``，与
@@ -84,6 +88,12 @@ def samples_dir(root: str | Path | None = None) -> Path:
 
 # ── 报告 ──────────────────────────────────────────────────────────
 
+#: ``--rationale-era`` 的「不过滤」取值。**不写成空串**：空串在
+#: :attr:`~trajectory_pipeline.assembler.schema.Sample.rationale_era`
+#: 里已经有含义（**没有可判的 rationale**），拿它同时表示「全部」会让
+#: 两个概念共用同一个字面量，而报表上分不出「筛了但没有」与「没筛」。
+ERA_ALL = "all"
+
 
 @dataclass(frozen=True, slots=True)
 class ArchiveBuildResult:
@@ -92,9 +102,15 @@ class ArchiveBuildResult:
     archive: str
     sample_count: int = 0
     written: int = 0
-    skipped: tuple[str, ...] = ()  # 序列化失败的 sample_id
+    skipped: tuple[str, ...] = ()  # 序列化失败 / 被口径筛掉的 sample_id
     degraded: int = 0  # degraded_from 非空的条数
     negatives: int = 0  # outcome.branch ∈ 真负样本分支的条数
+    #: 切出来的样本按 rationale 口径分代计数（**筛之前**的账）。
+    #: 筛掉的也计进来：这份报表要说的是「这批数据是什么」，
+    #: 而不只是「这次写了什么」。
+    pre_action: int = 0
+    post_hoc: int = 0
+    era_skipped: int = 0  # 被 ``--rationale-era`` 筛掉的条数
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,11 +122,24 @@ class BuildReport:
     total_written: int = 0
     total_skipped: int = 0
     sample_dir: str = ""
+    total_pre_action: int = 0
+    total_post_hoc: int = 0
+    total_era_skipped: int = 0
 
     @property
     def ok(self) -> bool:
         """没有任何样本被跳过。样本数与写出数相等就 OK。"""
         return self.total_skipped == 0
+
+    @property
+    def mixed_era(self) -> bool:
+        """这一批里**两种口径同时存在**。
+
+        混批不是「有点小瑕疵」：模型看到的是「有时可以未卜先知、有时不行」，
+        而报表上表现为分数略降——比全错更难发现。所以调用方必须把它
+        印出来，不能只在数字里存在（见 ``cmd_build``）。
+        """
+        return self.total_pre_action > 0 and self.total_post_hoc > 0
 
     def by_archive(self) -> Mapping[str, ArchiveBuildResult]:
         return {a.archive: a for a in self.archives}
@@ -178,12 +207,21 @@ def _write_one(
 #: 改名要同时改 :mod:`trajectory_pipeline.executor.branches.BRANCH_LABELS`
 #: 配套的 :data:`trajectory_pipeline.executor.branches.NEGATIVE_SAMPLE_BRANCHES`
 #: （见 executor 侧注）。
+#:
+#: ⚠️ **``blocked`` 不在这张表里**（2026-10-26 · R1）。``NON_SAMPLE_BRANCHES``
+#: 之外还有**第二段排除**：executor 侧
+#: :data:`trajectory_pipeline.executor.branches.COLLECTION_SIDE_BRANCHES`
+#: ——「这次没看到」不是「这里看不了」。一次反爬拦截对站点性质零信息
+#: （同一 camoufox 指纹、同一天，10 个判过 CF 挑战的目标里 6 个当天
+#: 就进得去），而四周前同一机制产出的 4 条「CF 挑战页 ⇒ no_play_control」
+#: 正是这套判据下最贵的那类假负样本。P2 不能 import 那张表，所以
+#: **靠 :func:`trajectory_pipeline.executor.branches.all_branches` 减掉两张表**
+#: 这条同步测试看着（``tests/unit/test_builder.py``）。
 NEGATIVE_SAMPLE_BRANCHES: frozenset[str] = frozenset(
     {
         "not_play_site",  # 判断点 ①
         "unreachable_hard",  # ② 导航失败
         "login_required",  # ② 的细分：登录后可免费看
-        "blocked",  # ② 的细分：地区/验证码/反爬
         "broken",  # ② 的细分：404；媒体损坏形态见 media_signal
         "no_play_control",  # ③
         "component_unverified",  # ④
@@ -205,14 +243,21 @@ def build_from_archive(
     *,
     root: str | Path | None = None,
     overwrite: bool = False,
+    era_filter: str = ERA_ALL,
 ) -> ArchiveBuildResult:
     """把一份 P1 存档切成 N 条样本并落盘。
 
     Args:
-        archive_path: P1 存档路径（``T001__<run_id>.json``）。
+        archive_path: P1 存档路径（``T001__<run_id>.json``，也可以是
+            ``<run_id>.reviewed.json``——**由调用方决定读哪一份**，
+            见 :func:`build_all`）。
         root: 输出根；``None`` 时取 executor 的 :data:`DEFAULT_ROOT`。
         overwrite: 目标 P2 已存在时是否覆盖。**默认 False**——重建批
             不该悄悄把别人刚标好的样本抹掉。批量重建时显式传 True。
+        era_filter: 只落这一代口径的样本（:data:`ERA_ALL` = 不筛）。
+            用它是为了**构建同口径批次**：混批的伤害见
+            :attr:`BuildReport.mixed_era`。筛掉的记进 ``skipped``
+            并单独计数，**不静默消失**。
 
     Returns:
         单份存档的落盘结果。**异常只发生在档本身坏到切不出**（已
@@ -229,7 +274,18 @@ def build_from_archive(
     skipped: list[str] = []
     degraded = 0
     neg = 0
+    era_skipped = 0
+    # 分代账按**切出来的样本**记，不受过滤与 overwrite 影响：
+    # 它描述的是「这份存档里有什么」。
+    pre_action = sum(1 for s in samples
+                     if s.rationale_era == RATIONALE_ERA_PRE_ACTION)
+    post_hoc = sum(1 for s in samples
+                   if s.rationale_era == RATIONALE_ERA_POST_HOC)
     for s in samples:
+        if era_filter != ERA_ALL and s.rationale_era != era_filter:
+            era_skipped += 1
+            skipped.append(f"{s.sample_id} (rationale_era={s.rationale_era or '无'})")
+            continue
         if not overwrite and (out_dir / f"{s.sample_id}.json").exists():
             # 不覆盖：等价于「这条已落盘」。计入 skipped 以便调用方感知
             # 「没有真重建」。理由见 overwrite 默认值注释。
@@ -252,6 +308,9 @@ def build_from_archive(
         skipped=tuple(skipped),
         degraded=degraded,
         negatives=neg,
+        pre_action=pre_action,
+        post_hoc=post_hoc,
+        era_skipped=era_skipped,
     )
 
 
@@ -278,6 +337,7 @@ def build_all(
     target_root: str | Path | None = None,
     overwrite: bool = False,
     archive_filter: Sequence[str] | None = None,
+    era_filter: str = ERA_ALL,
 ) -> BuildReport:
     """把一批 P1 存档全切全落。
 
@@ -286,8 +346,15 @@ def build_all(
         target_root: 写 P2 的根，``None`` = 同上。
         overwrite: 同 :func:`build_from_archive`。
         archive_filter: 只处理这些 archive 名（不含目录）。``None`` = 全部
-            （按文件名排序）。**不传 ``__`` 的探测取证与 ``.reviewed.json``
-            仍自动跳过**——这一条由 :func:`iter_samples` 守住。
+            （按文件名排序）。**不传 ``__`` 的探测取证自动跳过**。
+            ``.reviewed.json`` 的处理分两种：``None`` 时跳过（与
+            :func:`iter_samples` 同一条纪律：不在这里重选）；**显式列进
+            过滤名单时照读**——那份名单的挑选权已经交给了调用方
+            （生产路径是 ``cmd_build`` 用
+            :func:`~trajectory_pipeline.executor.archive.select_archives` 解析的，
+            复核档优先）。两条口径分叉过一次：重生成写复核档、build 读原档，
+            于是「跑完重生成」在 P2 上一个字节都没变。
+        era_filter: 同 :func:`build_from_archive`。
 
     Returns:
         整批 :class:`BuildReport`。**单份 P1 切不出样本不打断整批**——
@@ -313,17 +380,25 @@ def build_all(
     total_samples = 0
     total_written = 0
     total_skipped = 0
+    total_pre_action = 0
+    total_post_hoc = 0
+    total_era_skipped = 0
 
     for path in sorted(src.glob("*.json")):
         if "__" not in path.stem:
             continue
-        if path.name.endswith(".reviewed.json"):
-            continue
-        if allowed is not None and path.name not in allowed:
+        if allowed is None:
+            # 没给名单才自己挑：复核档由调用方（``select_archives``）决定。
+            if path.name.endswith(".reviewed.json"):
+                continue
+        elif path.name not in allowed:
             continue
         try:
             res = build_from_archive(
-                path, root=target_root or source_root, overwrite=overwrite
+                path,
+                root=target_root or source_root,
+                overwrite=overwrite,
+                era_filter=era_filter,
             )
         except P1ShapeError as exc:
             # 坏档：算 0 切出 0 写出、全部 skipped，让 :class:`BuildReport`
@@ -344,6 +419,9 @@ def build_all(
         total_samples += res.sample_count
         total_written += res.written
         total_skipped += len(res.skipped)
+        total_pre_action += res.pre_action
+        total_post_hoc += res.post_hoc
+        total_era_skipped += res.era_skipped
 
     return BuildReport(
         archives=tuple(per_archive),
@@ -351,6 +429,9 @@ def build_all(
         total_written=total_written,
         total_skipped=total_skipped,
         sample_dir=str(out_dir),
+        total_pre_action=total_pre_action,
+        total_post_hoc=total_post_hoc,
+        total_era_skipped=total_era_skipped,
     )
 
 
@@ -366,6 +447,7 @@ def load_sample(path: str | Path) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_SAMPLES_DIRNAME",
+    "ERA_ALL",
     "samples_dir",
     "ArchiveBuildResult",
     "BuildReport",

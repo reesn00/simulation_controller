@@ -67,7 +67,11 @@ from trajectory_pipeline.executor.browser.mcp_client import (
     McpClient,
     McpError,
 )
-from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES, RunLedger
+from trajectory_pipeline.executor.branches import (
+    COLLECTION_SIDE_BRANCHES,
+    NON_SAMPLE_BRANCHES,
+    RunLedger,
+)
 from trajectory_pipeline.executor import downgrade as downgrade_mod
 from trajectory_pipeline.executor import relabel as relabel_mod
 from trajectory_pipeline.executor import pool_drop as pool_drop_mod
@@ -2779,21 +2783,44 @@ def cmd_build(args: argparse.Namespace) -> int:
     **默认不覆盖已落盘的产物**（同 ``--apply`` 那条纪律：重建批次不该
     悄悄抹掉别人标好的东西）。要重建整批给 ``--overwrite``。
 
+    ⚠️ **读哪一份 P1 由 :func:`select_archives` 决定**（人工复核档优先）。
+    这一步以前是 builder 自己 glob 原档，于是同一条 run 有两套结论：
+    ``report`` / ``check-archives`` / ``evaluation`` 看复核档，P2 看原档——
+    重生成写复核档，而 build 读原档，**跑完重生成 P2 一个字节都不变**。
+    解析放在本层（executor 能看见 ``select_archives``，assembler 不能），
+    名单显式传给 builder，不破坏 assembler 不 import executor 的契约。
+
     返回码：0 = 全部写出；1 = 有跳过（已存在或写失败）。跳过的条数与
     原因逐条印出——**「跳过」必须看得见**，否则批次看起来只是少了几条。
     """
     root = Path(args.out) if args.out else DEFAULT_ROOT
     stage = args.stage
+    era_filter = getattr(args, "rationale_era", builder.ERA_ALL) or builder.ERA_ALL
 
     if stage in ("p2", "all"):
+        picked = [path.name for path, _reviewed in select_archives(root)]
         rep = builder.build_all(source_root=root, target_root=root,
-                                overwrite=args.overwrite)
+                                overwrite=args.overwrite,
+                                archive_filter=picked,
+                                era_filter=era_filter)
         print(f"P1 → P2：{len(rep.archives)} 份存档，"
               f"切出 {rep.total_samples} 条样本，写出 {rep.total_written} 条")
         degraded = sum(a.degraded for a in rep.archives)
         negatives = sum(a.negatives for a in rep.archives)
         print(f"  降级样本 {degraded} 条（degraded_from 非空，缺件但仍是真实数据）")
         print(f"  真负样本 {negatives} 条（branch ∈ 真负样本分支）")
+        print(f"  rationale 口径：pre_action {rep.total_pre_action} 条 / "
+              f"post_hoc {rep.total_post_hoc} 条")
+        if rep.total_era_skipped:
+            print(f"  按口径筛掉 {rep.total_era_skipped} 条"
+                  f"（--rationale-era {era_filter}）——它们在名单里，只是没落盘")
+        if rep.mixed_era:
+            # **必须显式印**，不能只躺在数字里：两代混训的后果是
+            # 「有时可以未卜先知、有时不行」，而报表上只表现为分数略降。
+            print("  ⚠️ 混批：pre_action 与 post_hoc 同时存在。"
+                  "要么跑 regenerate-rationales 把旧档重生成，"
+                  "要么 --rationale-era pre_action 构同口径批次。"
+                  "（旧口径样本的闸门记 not_run——跨口径不判）")
         bad = [a for a in rep.archives if a.sample_count == 0]
         if bad:
             print(f"\n切不出样本的存档 {len(bad)} 份"
@@ -3037,7 +3064,11 @@ def _regenerate_units(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
     （改 ``steps[i].rationale`` 与 unit 级 ``reflection``），
     两组东西的形状不同，合成一个只会让两边都别扭。
 
-    每项：``{"label": ..., "steps": [...], "set_reflection": callable}``。
+    每项：``{"label", "steps", "outcome", "unit", "write_reflection"}``。
+
+    ``unit`` 是**单元本体**（搜索单元 = 存档顶层、站点单元 = ``visits[i]``），
+    用来判它已经是哪一代口径（``reflection`` 键在不在，同
+    :func:`~trajectory_pipeline.assembler.schema.rationale_era_of` 的判据）。
     """
     units: list[dict[str, Any]] = []
 
@@ -3049,6 +3080,7 @@ def _regenerate_units(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
             "label": "search",
             "steps": top_steps(),
             "outcome": None,
+            "unit": archive,
             "write_reflection": lambda payload, arc=archive: arc.__setitem__(
                 "reflection", payload),
         })
@@ -3061,10 +3093,50 @@ def _regenerate_units(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
             "label": f"site-{i}",
             "steps": vsteps,
             "outcome": _outcome_json_in(outcomes, visit),
+            "unit": visit,
             "write_reflection": lambda payload, v=visit: v.__setitem__(
                 "reflection", payload),
         })
     return units
+
+
+def _step_written(step: Mapping[str, Any]) -> bool:
+    """这一步现有 rationale 是不是**新口径下写成了**。
+
+    ``status`` 是 ``WriteResult.to_json`` 的三态之一。缺键 / 不是 Mapping
+    一律按「没写成」处理——重写它是安全的（旧档的 rationale 要么没写成，
+    要么会被整段换掉，见 ``--only-old`` 的口径）。
+    """
+    payload = step.get("rationale")
+    return (isinstance(payload, Mapping)
+            and str(payload.get("status") or "") == "written")
+
+
+def _pending_steps(unit: Mapping[str, Any], only_old: bool) -> list[Mapping[str, Any]]:
+    """这个单元里**这一轮要重写**的步骤。
+
+    ``only_old=False`` → 全部（当前默认，兼容既有批次行为）。
+    ``only_old=True`` → 旧口径单元整段重写；已跨代单元只补没写成的那几步
+    （已有 ``written`` 的一个不动——省调用，也不会把好文本换成
+    ``unavailable``）。
+    """
+    steps = list(unit["steps"])
+    if not only_old:
+        return steps
+    if "reflection" not in unit["unit"]:
+        return steps
+    return [s for s in steps if not _step_written(s)]
+
+
+def _needs_reflection(unit: Mapping[str, Any], only_old: bool) -> bool:
+    """这一轮要不要（重）写 unit 级 reflection。
+
+    已有 reflection 键的单元在 ``--only-old`` 下**不重掷**：它是已经写好的
+    总结，补缺步骤不该顺带改结论；而旧口径单元根本没有那份总结。
+    """
+    if not only_old:
+        return True
+    return "reflection" not in unit["unit"]
 
 
 def _outcome_json_in(outcomes: Sequence[Mapping[str, Any]],
@@ -3093,12 +3165,29 @@ def cmd_regenerate_rationales(args: argparse.Namespace) -> int:
     模型学到的是「有时可以未卜先知、有时不行」——那比全错更难发现，
     因为它在报表上表现为「分数略有下降」而不是「坏了一批」。
 
-    规模账（64 档 × 480 step + 约 100 次 reflection ≈ **600 次 LLM 调用**）
-    是这条命令唯一的真实成本，所以默认口径是**先 ``--dry-run``**。
+    规模账（2026-10-25 实测：63 档旧口径 = 467 step + 309 reflection ≈
+    **776 次 LLM 调用**）是这条命令唯一的真实成本，所以默认口径是
+    **先 ``--dry-run``**，整批时加 ``--only-old``（见下）。
+
+    ⚠️ **写的是 ``select_archives`` 挑出来的那一份**（人工复核档优先）。
+    ``build`` 读的也是同一份（``cmd_build`` 显式解析名单）——两条命令
+    曾经各看各的：这条写复核档，build 读原档，于是**跑完重生成 P2 一个
+    字节都不变**。
 
     失败纪律：**单步失败落 ``status="unavailable"`` 并继续，不中断整批**。
-    一次后端抖动不该让 600 次调用里已经成功的 599 次作废，
+    一次后端抖动不该让 776 次调用里已经成功的 775 次作废，
     而缺的那些在 P2 侧会变成 ``rationale_missing``，本来就是可视的。
+
+    ``--only-old``（**整批跑时该加**）的语义：
+
+    - **还没有 unit 级 ``reflection``** 的单元（旧口径）→ 整段重写 +
+      补 reflection；
+    - **已有 reflection 但有步骤没写成** 的单元 → 只补那几步
+      （已有 ``written`` 的一个不动），reflection 不重写；
+    - 已完整跨代的单元 → **跳过**，一次调用都不花。
+
+    没有它时，每个单元都整段重写——那会把上一轮已经写好的文本重新掷一遍
+    骰子，一次后端抖动就能把好数据换成 ``unavailable``。
     """
     root = Path(args.out) if args.out else DEFAULT_ROOT
     writer, why = _make_rationale_writer()
@@ -3120,6 +3209,8 @@ def cmd_regenerate_rationales(args: argparse.Namespace) -> int:
         print(f"[FAIL] {root} 下没有可重生成的存档")
         return 2
 
+    only_old = getattr(args, "only_old", False)
+
     if args.dry_run:
         n_steps = 0
         n_reflect = 0
@@ -3130,10 +3221,15 @@ def cmd_regenerate_rationales(args: argparse.Namespace) -> int:
                 print(f"  {path.name}: 读不了（{exc}）——跳过")
                 continue
             units = _regenerate_units(arc)
-            s = sum(len(u["steps"]) for u in units)
-            n_steps += s
-            n_reflect += len(units)
-            print(f"  {path.name}: {len(units)} 单元 / {s} 步")
+            s = sum(len(_pending_steps(u, only_old)) for u in units)
+            # 「要重写几次 reflection」= 需要整段重写（旧口径）的单元数；
+            # 补缺步骤的单元只补步骤，不重掷那份已经写好的总结。
+            r = sum(1 for u in units if _needs_reflection(u, only_old))
+            if s or r:
+                n_steps += s
+                n_reflect += r
+                print(f"  {path.name}: {len(units)} 单元中待写 {s} 步 / "
+                      f"{r} 条 reflection")
         print(f"\n[DRY-RUN] 将重写 {n_steps} 条 rationale + {n_reflect} 条 "
               f"reflection ≈ {n_steps + n_reflect} 次 LLM 调用。"
               f"未写盘、未备份。")
@@ -3159,9 +3255,19 @@ def cmd_regenerate_rationales(args: argparse.Namespace) -> int:
             print(f"  {path.name}: 0 单元（没有 steps）——跳过，原档未动")
             continue
 
+        # `--only-old`：已完整跨代的单元一个字节都不动。
+        todo = [
+            u for u in units
+            if _pending_steps(u, only_old) or _needs_reflection(u, only_old)
+        ]
+        if not todo:
+            print(f"  {path.name}: 已是动作前动机口径，跳过（未写盘、未备份）")
+            continue
+        units = todo
+
         # 备份**首次写回前**做一次。已存在即跳过：重跑这条命令
         # （补跑失败的那几步）不该把上一轮的结果覆盖成「改之前的原始档」
-        # ——那会让已经重生成的 599 条退回成事后反思。
+        # ——那会让已经重生成的几百条退回成事后反思。
         backup = backup_dir / path.name
         if not backup.exists():
             backup_dir.mkdir(parents=True, exist_ok=True)
@@ -3171,7 +3277,10 @@ def cmd_regenerate_rationales(args: argparse.Namespace) -> int:
         unavailable = 0
         for unit in units:
             steps = unit["steps"]
+            pending = set(id(s) for s in _pending_steps(unit, only_old))
             for index, step in enumerate(steps):
+                if id(step) not in pending:
+                    continue
                 try:
                     payload = writer(
                         action=step.get("action") or {},
@@ -3195,7 +3304,7 @@ def cmd_regenerate_rationales(args: argparse.Namespace) -> int:
                 else:
                     unavailable += 1
             reflector = getattr(writer, "reflect", None)
-            if reflector is not None:
+            if reflector is not None and _needs_reflection(unit, only_old):
                 try:
                     unit["write_reflection"](reflector(
                         user_prompt=str(arc.get("user_prompt") or ""),
@@ -3341,6 +3450,16 @@ def _site_domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _blocked_note(bucket: Counter) -> str:
+    """「拦 N」只在真有拦截时出现。
+
+    零拦截时**不打印**而不是打印「拦 0」：这行是人读的，也是历史对比的
+    锚；多一列零会把「这一批没被拦过」与「这一版才开始记拦截」混成
+    同一种样子，而后者正是跨批次比较时要警惕的边界。
+    """
+    return f" · 拦 {bucket['blocked']}" if bucket["blocked"] else ""
+
+
 def _print_domain_reach(outcomes: list[Mapping[str, Any]]) -> None:
     """成功站点域名分布——**D7 验收项**（设计方案里标 ❌ 未做的那条）。
 
@@ -3360,6 +3479,10 @@ def _print_domain_reach(outcomes: list[Mapping[str, Any]]) -> None:
     （:meth:`~trajectory_pipeline.executor.archive.P1Archive._append_negatives`）
     **完全一致**——报表说「负」而池里没有、或反过来，两边一比就发现是口径分叉。
     老存档缺这个字段时，读它会把真负样本静默掉进「未判」桶。
+
+    2026-10-26（R1）多出**第四列「拦」**：``blocked`` 是采集侧账，出池
+    但仍是本报表的主指标——一格「拦」就是一次「这次没进去」，
+    它计数的时候恰恰**不**该被读成负样本。
     """
     print("\n== 成功站点域名分布（D7 验收：反检测实际通过率）==")
     stats: dict[str, Counter] = {}
@@ -3378,6 +3501,12 @@ def _print_domain_reach(outcomes: list[Mapping[str, Any]]) -> None:
             by_source[source or "?"] += 1
             if o.get("fallback_used"):
                 fallback_success += 1
+        elif branch in COLLECTION_SIDE_BRANCHES:
+            # blocked：**采集侧账**——这次没进去，不是「这站看不了」。
+            # 本报表问的正是「反检测实际通过率」，它是最相关的那一列，
+            # 所以**单独一列**而不是并进「负」：并进去之后「负 +1」既可能是
+            # 「这片不在这个站」也可能是「我们被拦了」，而这把尺子当场失效。
+            bucket["blocked"] += 1
         elif branch not in NON_SAMPLE_BRANCHES:
             bucket["negative"] += 1
         else:
@@ -3398,7 +3527,8 @@ def _print_domain_reach(outcomes: list[Mapping[str, Any]]) -> None:
                      key=lambda kv: (-kv[1]["success"], kv[0]))
     for domain, b in winners:
         print(f"    {domain:32s} 成功 {b['success']} / 访问 {b['visited']}"
-              f"    负 {b['negative']} · 未判 {b['unresolved']}")
+              f"    负 {b['negative']}{_blocked_note(b)}"
+              f" · 未判 {b['unresolved']}")
 
     if not winners:
         print("    **本批零成功**。规则版只认 <video>/<audio>，真实视频站"
@@ -3416,15 +3546,21 @@ def _print_domain_reach(outcomes: list[Mapping[str, Any]]) -> None:
               "正样本基线被它抬高，成功率会虚高。")
 
     dead = sorted(((d, b) for d, b in stats.items()
-                   if not b["success"] and b["visited"] >= _ZERO_SUCCESS_MIN_VISITS),
+                   if not b["success"] and b["visited"] >= _ZERO_SUCCESS_MIN_VISITS
+                   # **只被拦过的域名不进黑名单候选**（2026-10-26 R1）：
+                   # 一条 blocked 对「这站有没有这片」零信息（同指纹同日
+                   # 6/10 可达），拉黑它等于把采集失败写成站点黑名单。
+                   and b["visited"] > b["blocked"]),
                   key=lambda kv: (-kv[1]["visited"], kv[0]))
     if dead:
-        # 带上 负/未判 拆分，不只是访问数。**零成功是 W1 的常态**，
-        # 而「零成功」有两种成因——全是真负样本（这站没这部片）还是
-        # 全是 unresolved（页面拿到了但判不出播放器）——处置完全相反：
-        # 前者该拉黑，后者该换感知层。只报访问数会把它们混成一条。
+        # 带上 负/拦/未判 拆分，不只是访问数。**零成功是 W1 的常态**，
+        # 而「零成功」有三种成因——全是真负样本（这站没这部片）、
+        # 全是被拦（我们没进去）、全是 unresolved（页面拿到了但判不出
+        # 播放器）——处置完全相反：前者该拉黑，中者该换出口/慢一点再来，
+        # 后者该换感知层。只报访问数会把它们混成一条。
         detail = " · ".join(
-            f"{d} {b['visited']}（负 {b['negative']} · 未判 {b['unresolved']}）"
+            f"{d} {b['visited']}（负 {b['negative']}{_blocked_note(b)}"
+            f" · 未判 {b['unresolved']}）"
             for d, b in dead)
         print(f"  零成功域名（累计访问 ≥2，可进候选黑名单）：{detail}")
         print("    注意：这是**候选**不是判决——同站不同片结果可能不同，"
@@ -3807,6 +3943,13 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--overwrite", action="store_true",
                     help="覆盖已落盘的产物。**默认不覆盖**——重建批次不该"
                          "悄悄抹掉别人标好的样本")
+    bd.add_argument("--rationale-era",
+                    choices=(builder.ERA_ALL,
+                             "pre_action", "post_hoc"),
+                    default=builder.ERA_ALL,
+                    help="只落这一代 rationale 口径的样本。**默认 all**——"
+                         "P2 也是评估语料，默认不悄悄少数据；但 all 而两代"
+                         "并存时会显式报「混批」。同口径批次用 pre_action")
     bd.set_defaults(func=cmd_build)
 
     tv = sub.add_parser(
@@ -3853,6 +3996,10 @@ def build_parser() -> argparse.ArgumentParser:
     rg.add_argument("--dry-run", action="store_true",
                     help="**默认建议先跑它**：只打印将重写多少条，不写盘、"
                          "不备份、不调 LLM")
+    rg.add_argument("--only-old", action="store_true",
+                    help="整批跑时**该加**：只动旧口径单元（无 unit 级 "
+                         "reflection 键）与已跨代但仍有未写步骤的单元；"
+                         "已完整的单元一个字节都不动、不花 LLM 调用")
     rg.set_defaults(func=cmd_regenerate_rationales)
     return p
 

@@ -305,13 +305,87 @@ class Test契约:
         assert not offenders, f"builder 不该 import executor: {offenders}"
 
     def test_NEGATIVE_SAMPLE_BRANCHES与executor对得上(self):
-        """两份表必须含同样的真负样本分支——漂移是负样本池静默变少的源头。"""
+        """两份表必须含同样的真负样本分支——漂移是负样本池静默变少的源头。
+
+        ⚠️ executor 侧是**两段排除**（无题的兜底分支 + 采集侧账），
+        P2 这份是「进池」的正表，所以它要与**两张表都**不相交
+        （2026-10-26 · R1：``blocked`` 从真负样本表里拿掉）。"""
         from trajectory_pipeline.perception.questions import all_branches
-        from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+        from trajectory_pipeline.executor.branches import (
+            COLLECTION_SIDE_BRANCHES,
+            NON_SAMPLE_BRANCHES,
+        )
         all_b = set(all_branches())
         non_sample = set(NON_SAMPLE_BRANCHES)
         ours = builder.NEGATIVE_SAMPLE_BRANCHES
         assert ours & non_sample == frozenset(), (
             f"builder 与 executor 口径打架: {ours & non_sample}")
+        assert ours & set(COLLECTION_SIDE_BRANCHES) == frozenset(), (
+            f"builder 把采集侧账当成负样本了: "
+            f"{ours & set(COLLECTION_SIDE_BRANCHES)}")
         assert ours.issubset(all_b), (
             f"builder 列了不在 all_branches 里的分支: {ours - all_b}")
+
+
+class Test分代筛选:
+    """INC46 分代（2026-10-25）：**混批是隐性伤害**，所以构建期要报要能筛。
+
+    两代文本同构、正文里没有时代印记，判据只有 unit 级 ``reflection`` 键
+    在不在。这里钉三件事：默认产出不丢东西、逐条标记能看见、
+    ``era_filter`` 能出同口径批次。
+    """
+
+    @staticmethod
+    def _era_arc(*, new_era: bool, task_id: str = "T001"):
+        arc = _arc(task_id=task_id, steps=[{
+            "action": {"tool": "goto", "params": {"url": "https://a.test/"},
+                       "origin": "model"},
+            "observation": _obs("https://a.test/"),
+            "error": "",
+            "rationale": {"status": "written",
+                          "rationale": {"text": "先看看这个站", "conclusion": ""}},
+        }])
+        if new_era:
+            arc["reflection"] = None
+        return arc
+
+    def test_默认两代都产出并各自计数(self, tmp_path):
+        """⚠️ 默认**不筛**：旧样本照样入库（它仍是真实证据），
+        但每一份都带上自己的时代标记，报表上分得开。"""
+        _write(tmp_path, self._era_arc(new_era=True, task_id="T001"),
+               "T001__new.json")
+        _write(tmp_path, self._era_arc(new_era=False, task_id="T002"),
+               "T002__old.json")
+        rep = builder.build_all(source_root=tmp_path / "src",
+                                target_root=tmp_path, overwrite=True)
+        assert rep.total_written == 2
+        assert rep.total_pre_action == 1
+        assert rep.total_post_hoc == 1
+        assert rep.mixed_era is True
+        assert rep.total_era_skipped == 0
+
+    def test_同口径批次只收一代(self, tmp_path):
+        _write(tmp_path, self._era_arc(new_era=True, task_id="T001"),
+               "T001__new.json")
+        _write(tmp_path, self._era_arc(new_era=False, task_id="T002"),
+               "T002__old.json")
+        rep = builder.build_all(source_root=tmp_path / "src",
+                                target_root=tmp_path, overwrite=True,
+                                era_filter=schema.RATIONALE_ERA_PRE_ACTION)
+        assert rep.total_written == 1
+        assert rep.total_era_skipped == 1
+        # 筛掉的**逐条列出来**，不是静默消失
+        skipped = [s for a in rep.archives for s in a.skipped]
+        assert any("T002__old__search" in s for s in skipped)
+        assert rep.mixed_era is True, "被筛掉的那一代仍然要报出来源存档里有"
+
+    def test_时代写进P2文件(self, tmp_path):
+        _write(tmp_path, self._era_arc(new_era=False, task_id="T002"),
+               "T002__old.json")
+        builder.build_all(source_root=tmp_path / "src",
+                          target_root=tmp_path, overwrite=True)
+        blob = json.loads(
+            (builder.samples_dir(tmp_path) / "T002__old__search.json")
+            .read_text(encoding="utf-8"))
+        assert blob["rationale_era"] == "post_hoc"
+        assert blob["gate"]["status"] == "not_run"

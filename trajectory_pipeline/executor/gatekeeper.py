@@ -85,6 +85,26 @@ class Verdict(str, Enum):
     DEGRADED = "degraded"
 
 
+#: 「**被拦**」的判定集——账本盖 ``blocked_surface`` / ``attempt`` 只盖这四条
+#: （方案 20 §R3）。
+#:
+#: 四条都是**页面侧的访问控制**：CF/WAF 拦截 · 验证码 · 登录墙 · 付费墙。
+#: 报表要按 verdict 分桶（02 避坑 §3.7：真·反爬单列、登录墙单列），所以这里
+#: 只是「哪些算被拦」的**范围**，不是把四者当一类。
+#:
+#: 另外三条**不在内**，各有各的理由：
+#:
+#: - ``normal`` / ``degraded`` —— 本来就不拦（见 ``_NONTERMINATING_VERDICTS``）；
+#: - ``dead_loop`` —— **行为失败**，不是页面属性。「被拦几次」数进死循环，
+#:   会把「模型绕不出来」读成「站点在拦我们」。
+BLOCK_VERDICTS: frozenset[Verdict] = frozenset({
+    Verdict.BLOCKED_CF,
+    Verdict.CAPTCHA,
+    Verdict.LOGIN_WALL,
+    Verdict.PAYWALL,
+})
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 反爬拦截识别（自 executor/dom.py 迁入；dom.py 反向再导出）
 # ═══════════════════════════════════════════════════════════════════════

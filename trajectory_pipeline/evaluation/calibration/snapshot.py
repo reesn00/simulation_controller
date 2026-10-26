@@ -55,6 +55,7 @@ import json
 import pathlib
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from trajectory_pipeline.evaluation import access_surface
 from trajectory_pipeline.evaluation.calibration.provenance import (
     FACE_COLLECTION,
     STATUS_NOT_APPLICABLE,
@@ -76,7 +77,14 @@ from trajectory_pipeline.evaluation.scorers.rubric_version import (
 )
 
 #: 快照文件 schema 版本。字段增删必须升它（回归判定吃的是这份文件）。
-SNAPSHOT_SCHEMA_VERSION = "1"
+#:
+#: ``"2"``（方案 20 §R3）：条目加 ``gold_access_surface`` /
+#: ``pred_access_surface`` / ``surface_comparable`` 三栏——「这一条的分歧
+#: 是不是跨面读出来的」。升它的代价是**旧的 v1 快照不能再当基线**（
+#: ``verify._check_comparable`` 拒跨 schema 差分），而那是想要的：
+#: 没有面这一栏的旧快照判不出「跨面分歧」，拿它当基线，「这一轮多出来的
+#: 分歧」会被读成模型变差。
+SNAPSHOT_SCHEMA_VERSION = "2"
 
 VERDICT_AGREE = "agree"
 VERDICT_DETAIL_MISMATCH = "detail_mismatch"
@@ -186,6 +194,28 @@ def iter_site_rows(
         yield row
 
 
+def _row_surfaces(
+    row: Mapping[str, Any],
+) -> tuple[str, str, bool | None]:
+    """这一行的两个面：``(金标侧, 预测侧, 两面是否同一张)``（方案 20 §R3）。
+
+    - **金标侧** = ``golden.access_surface``：人工复核时用的是哪张面；
+    - **预测侧** = 行顶层 ``access_surface``：这条结论是哪张采集面上得出的
+      （候选行由 ``builder._scan_archives`` 从存档 ``driver`` 折算）。
+
+    三态的后一格直接走 :func:`access_surface.same_surface`——**不在这里再写
+    一遍「面相同吗」**：两侧口径各写一份，报表上就会出现两个「跨面」结论
+    （方案 20 §R3 那条「R3 的比较逻辑不许自己再写一遍」）。
+
+    历史行两侧都可能没记 ⇒ ``(unrecorded, unrecorded, None)``：不猜、不补。
+    """
+    gold = access_surface.surface_of_annotation(
+        row.get("golden") if isinstance(row.get("golden"), Mapping) else None
+    )
+    pred = access_surface.check_surface(row.get("access_surface"))
+    return gold, pred, access_surface.same_surface(gold, pred)
+
+
 def _dim_scores(side: Mapping[str, Any] | None) -> Mapping[str, Any]:
     scores = side.get("dimension_scores") if isinstance(side, Mapping) else None
     return scores if isinstance(scores, Mapping) else {}
@@ -236,6 +266,9 @@ def _entry(
     pred_reasons: Sequence[str],
     pred_evidence: str | None,
     note: str = "",
+    gold_access_surface: str = access_surface.SURFACE_UNRECORDED,
+    pred_access_surface: str = access_surface.SURFACE_UNRECORDED,
+    surface_comparable: bool | None = None,
 ) -> dict[str, Any]:
     if verdict not in VERDICTS:  # pragma: no cover - 由构造点保证
         raise ValueError(f"未登记 verdict {verdict!r}；先扩 VERDICTS")
@@ -252,6 +285,13 @@ def _entry(
         "pred_face": pred_face,
         "pred_face_version": pred_face_version,
         "pred_face_status": pred_face_status,
+        # ↓ **采集面**三栏（方案 20 §R3）：这一段的两侧是不是在**同一张浏览
+        # 身份**上读出来的。与上面三栏不是一回事——那三栏问「pred 是哪版
+        # 评分器打的」，这三栏问「两次观察是不是同一张面」。``None`` =
+        # 任一侧没记 ⇒ 不可判定（**不是**「跨面」）。
+        "gold_access_surface": gold_access_surface,
+        "pred_access_surface": pred_access_surface,
+        "surface_comparable": surface_comparable,
         "verdict": verdict,
         "delta_kind": delta_kind,
         "tier_gap": tier_gap,
@@ -281,6 +321,7 @@ def _hard_entry(
     else:
         verdict, delta = VERDICT_DISAGREE, DELTA_EQ_CLASS_MISMATCH
 
+    gold_surface, pred_surface, comparable = _row_surfaces(row)
     return _entry(
         golden_id=str(row.get("golden_id") or ""),
         split=split,
@@ -306,6 +347,9 @@ def _hard_entry(
         pred_reasons=(),
         pred_evidence=code.get("evidence"),
         note=note,
+        gold_access_surface=gold_surface,
+        pred_access_surface=pred_surface,
+        surface_comparable=comparable,
     )
 
 
@@ -380,6 +424,7 @@ def _soft_entry(
             face_version = VERSION_UNRECORDED
             face_status = STATUS_UNRECORDED
 
+    gold_surface, pred_surface, comparable = _row_surfaces(row)
     return _entry(
         golden_id=str(row.get("golden_id") or ""),
         split=split,
@@ -398,6 +443,9 @@ def _soft_entry(
         pred_reasons=_pred_reasons(row, dimension),
         pred_evidence=None,
         note=note,
+        gold_access_surface=gold_surface,
+        pred_access_surface=pred_surface,
+        surface_comparable=comparable,
     )
 
 
@@ -521,6 +569,38 @@ def summarize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_surfaces(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """快照的**采集面**读数（方案 20 §R3 的报表用）。
+
+    只数 ``HARD_DIM``（一行一条）——面是**行级**事实，按维度数会把同一行
+    数 N 遍，报表上看起来像「294 行里有 1200 个不可判定」。
+
+    三态计数 ``comparable`` 是给读报表的人看的：``none`` 大就说明这一版
+    **判不出跨面**（旧行没记面，方案 20 §R2 不回填），而不是「没有跨面问题」。
+    """
+    gold: dict[str, int] = {}
+    pred: dict[str, int] = {}
+    comparable = {"true": 0, "false": 0, "none": 0}
+    rows = 0
+    for entry in snapshot.get("entries", []):
+        if entry.get("dimension") != HARD_DIM:
+            continue
+        rows += 1
+        g = str(entry.get("gold_access_surface") or access_surface.SURFACE_UNRECORDED)
+        p = str(entry.get("pred_access_surface") or access_surface.SURFACE_UNRECORDED)
+        gold[g] = gold.get(g, 0) + 1
+        pred[p] = pred.get(p, 0) + 1
+        state = entry.get("surface_comparable")
+        key = "true" if state is True else "false" if state is False else "none"
+        comparable[key] += 1
+    return {
+        "rows": rows,
+        "gold_by_surface": dict(sorted(gold.items())),
+        "pred_by_surface": dict(sorted(pred.items())),
+        "comparable": comparable,
+    }
+
+
 def verdicts_of(snapshot: Mapping[str, Any], dimension: str) -> list[str]:
     """某维度上逐条的 verdict（测试与下钻用）。"""
     return [
@@ -572,6 +652,7 @@ __all__ = [
     "provider_version",
     "row_scorer_version",
     "summarize_snapshot",
+    "summarize_surfaces",
     "verdicts_of",
     "write_snapshot",
 ]

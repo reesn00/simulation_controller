@@ -623,6 +623,10 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         "source_archive": sample.get("source_archive", ""),
         "gate": dict(sample.get("gate") or {}),
         "rationale_missing": bool(sample.get("rationale_missing", True)),
+        # rationale 口径（INC46 分代）：``pre_action`` / ``post_hoc`` / ``""``。
+        # **批次筛选必须能看见它**——两代混在一批里，学到的会是
+        # 「有时可以未卜先知、有时不行」，而报表上只表现为分数略降。
+        "rationale_era": str(sample.get("rationale_era") or ""),
         "degraded_from": list(sample.get("degraded_from") or ()),
         "outcome": dict(sample["outcome"]) if sample.get("outcome") else None,
         "provenance": dict(six.get("provenance") or {}),

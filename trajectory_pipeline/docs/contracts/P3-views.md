@@ -195,6 +195,7 @@
 | `source_archive` | `str` | 据以生成的 P1 文件名（不含目录），批次可回溯 |
 | `gate` | `object` | **闸门三值原样透传**（`passed` / `failed` / `not_run`）——`not_run` 是「没测过」不是「通过」 |
 | `rationale_missing` | `bool` | 整条一条 rationale 都没写成。与 `gate` **分开记**：`gate=passed` 但这里为 true ⇒ 只有动作没有思考 |
+| `rationale_era` | `str` | INC46 分代（原样透传 P2）：`pre_action`（动作前动机，闸门真跑）/ `post_hoc`（事后反思，闸门 `not_run`）/ `""`（一条没写成）。**两类文本的读法不同**：`post_hoc` 的描述对象是**本步之后**的页面，按 `observation[i]` 去核才公平 |
 | `degraded_from` | `list[str]` | 非空 = 这条是降级重建的，别与新版样本同等看待 |
 | `outcome` | 对象或 null | 指回 P1 的那一条（含 `branch`）；无则 JSON null |
 | `provenance` | `object` | 采样切片轴（P2 的 `six.provenance` 原样） |

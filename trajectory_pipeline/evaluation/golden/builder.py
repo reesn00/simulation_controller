@@ -85,6 +85,10 @@ from trajectory_pipeline.evaluation.golden.splits import (
     split_of_file,
 )
 
+#: 采集面词表与判据（方案 20 §R2）：**这一行是在哪个面上看到的**。
+#: 判定「两条读数能不能比」的唯一真源，评估侧（R3）也读这一份。
+from trajectory_pipeline.evaluation import access_surface
+
 #: 软维度金标的写入规则（只动分数、不碰标签）。`annotate --dimensions-only`
 #: 与 `freeze --refresh-gold` 两条路都走这一份，不各写一套合并逻辑。
 from trajectory_pipeline.evaluation.golden.dim_scores import (
@@ -102,6 +106,10 @@ GOLDEN_ROOT = pathlib.Path(__file__).resolve().parent / "data"
 CANDIDATES_FILE = "candidates.jsonl"
 ANNOTATIONS_FILE = "annotations.jsonl"
 VERSIONS_INDEX = "versions.jsonl"
+#: 采集侧账（方案 20 §R3）：落 ``--emit-disagreements`` 目录 ``v{N}/`` 下，
+#: 与 ``disagreements.jsonl`` **分开两个文件**——拦截笔数要能直接数，
+#: 混进卡里就只能靠过滤找（02 避坑 §3.7 要求拦截率分桶单列）。
+COLLECTION_ACCOUNTS_FILE = "collection_accounts.jsonl"
 SCHEMA_VERSION = "1"
 
 #: 设计规格（总体方案 §5.2 / §5.3）
@@ -117,10 +125,65 @@ RETEST_INTERVAL_DAYS = 14  # D9 建议间隔 T（INC41 起 degrade 为纯建议�
 #: ``evaluation/scorers/thresholds.py`` 那张表，别动这一行（D-C6：
 #: 改阈值不升 rubric 版本，所以这一行也不该成为「偷偷改线」的地方）。
 D10_THRESHOLD = thresholds.value("d10_min_agreement")
-#: 标签体系版本：1 = 11 类（10 分支 + success）；2 = 15 类
-#: （BRANCH_LABELS 14 key = 13 活跃 + deprecated 合并态 + success）。
-#: freeze 写入 manifest，跨版本对比 D10 前先核对（对齐方案 §4.3 / §5.2）。
-LABEL_SCHEMA_VERSION = "2"
+#: 标签宇宙版本：**冻结时注册表的合法 label 全集**。
+#:
+#: 版本号是**序列号**（不是类数）。类数会随注册表增长而变——同一个号
+#: 先后指 15 类和 22 类，正是 2026-10-26 治的那个病：**标记声称的宇宙
+#: 与实际注册表脱钩，而「跨版本对比前先核对」这条纪律是纯人工的、
+#: 代码从不校验**。
+#:
+#: | 版本 | 类数 | 冻结于 | 覆盖的冻结档 |
+#: |---|---|---|---|
+#: | ``"1"`` | 11 | 2026-10-11 | v1（manifest 与索引层都**没有**这个字段） |
+#: | ``"2"`` | 15 | 2026-10-12 | v2 – v12 |
+#: | ``"3"`` | 22 | 2026-10-25 | v13 起 |
+#:
+#: ⚠️ **v13 是唯一的例外**：它冻结于 2026-10-25，那时注册表已是 21 key
+#: （22 类），但 manifest 沿用了旧常量 ``"2"``。**数据本身没问题**——
+#: 它实际只用了 12 类，逐档核过全部落在 15 类宇宙内——错的是**标记声称
+#: 的宇宙**。冻结档不可变（方案 11 §二：改 label 走新版本，不改历史），
+#: ⇒ v13 保持 ``"2"``；从 v14 起写 ``"3"``。
+LABEL_SCHEMA_VERSION = "3"
+
+#: 标签宇宙：**每个版本号冻结一份**当时的合法 label 全集。
+#:
+#: 为什么必须是**手抄的冻结副本**、不能从注册表现算：版本号的意义就是
+#: 「这批数据的标签取自哪一份全集」。现算的话注册表一长，号不变、集合变，
+#: 同一个号又指两种宇宙——**这就是本条要治的病本身**。
+#:
+#: ⇒ 加分支的动作因此变成三步：改注册表 → **新起一个版本号** → 在这里
+#: 加一条冻结副本。漏了第三步，contract 测试
+#: (``tests/contract/test_label_schema_version.py``) 当场红。
+#:
+#: 集合里用**字面量**而不引用 :data:`SUCCESS_LABEL`／注册表：这是快照，
+#: 引用活对象等于让它跟着活对象变——那就不是快照了。
+LABEL_UNIVERSES: dict[str, frozenset[str]] = {
+    # "1" = 2026-10-11 的注册表（10 分支）+ success
+    "1": frozenset({
+        "not_play_site", "unreachable_hard", "login_wall_or_blocked",
+        "no_play_control", "trailer_only", "trailer_suspect",
+        "component_unverified", "player_unverified", "subscription_wall",
+        "unresolved", "success",
+    }),
+    # "2" = 2026-10-12 的注册表（14 分支）+ success
+    "2": frozenset({
+        "not_play_site", "unreachable_hard", "login_wall_or_blocked",
+        "no_play_control", "trailer_only", "trailer_suspect",
+        "component_unverified", "player_unverified", "subscription_wall",
+        "unresolved", "login_required", "blocked", "broken", "partial_free",
+        "success",
+    }),
+    # "3" = 2026-10-25 的注册表（21 分支）+ success
+    "3": frozenset({
+        "not_play_site", "unreachable_hard", "login_wall_or_blocked",
+        "no_play_control", "trailer_only", "trailer_suspect",
+        "component_unverified", "player_unverified", "subscription_wall",
+        "unresolved", "login_required", "blocked", "broken", "partial_free",
+        "not_aggregator", "aggregator_no_entries", "not_article",
+        "article_no_links", "no_site_search", "site_search_no_results",
+        "site_search_routed", "success",
+    }),
+}
 NEGATIVE_BRANCH_FIELDS = (  # 负样本池可直接透传的字段
     "task_id",
     "run_id",
@@ -430,7 +493,15 @@ def _scan_archives(root: pathlib.Path) -> list[dict[str, Any]]:
     """读取 P1 存档的 outcomes，生成站点级候选。
 
     只认 ``<task_id>__<run_id>.json`` 形态（run_id 为 8 位小写 hex）；
-    ``obscura_*`` / ``plan_*`` 等非 P1 形态一律跳过。"""
+    ``obscura_*`` / ``plan_*`` 等非 P1 形态一律跳过。
+
+    ``access_surface``（方案 20 §R3）：候选行顶层的这一栏是**预测侧**的面
+    ——「这条结论是哪张采集面上得出来的」，从存档的 ``driver`` 折算
+    （:func:`access_surface.surface_of_driver`，认不出的驱动**抛**）。
+    它与 ``golden.access_surface``（**金标侧**：人是在哪张面上看到的）是两个
+    不同的面，跨面比较在 :func:`evaluation.calibration.snapshot.build_snapshot`
+    里做，不在这里判。
+    """
     import re
 
     out: list[dict[str, Any]] = []
@@ -449,6 +520,9 @@ def _scan_archives(root: pathlib.Path) -> list[dict[str, Any]]:
         outcomes = data.get("outcomes") or []
         prov = data.get("provenance")
         persona = _persona_from_provenance(prov)
+        # 一条存档一个驱动 ⇒ 一个面。空 ``driver``（2026-10-22 之前的存档）
+        # ⇒ ``unrecorded``，**不按默认面补**（方案 20 §R2 fail-closed 第 1 条）。
+        surface = access_surface.surface_of_driver(data.get("driver"))
         for i, o in enumerate(outcomes):
             url = o.get("url") or ""
             key = (m.group("task"), m.group("run"), url)
@@ -474,6 +548,10 @@ def _scan_archives(root: pathlib.Path) -> list[dict[str, Any]]:
                     "url": o.get("url") or "",
                     "site_url": o.get("site_url") or "",
                     "play_page_url": o.get("play_page_url") or "",
+                    # 预测侧采集面（方案 20 §R3）。候选行顶层——与
+                    # ``golden.access_surface``（金标侧）分居两处，因为它们是
+                    # **两个不同的面**，合成一格就没法判「跨面」了。
+                    "access_surface": surface,
                     "code": code,
                     "persona": persona,
                     "golden": None,
@@ -488,7 +566,11 @@ def _scan_negative_pool(
 ) -> list[dict[str, Any]]:
     """读取负样本池，补充 P1 outcomes 未覆盖的真实失败样本。
 
-    按 (task_id, run_id, url) 去重：P1 已有同键则跳过（P1 outcome 更完整）。"""
+    按 (task_id, run_id, url) 去重：P1 已有同键则跳过（P1 outcome 更完整）。
+
+    ``access_surface`` 从池行的 ``driver`` 折算（方案 20 §R3）。池行是
+    **2026-10-26 之后才开始带 ``driver``** 的 ⇒ 老行一律 ``unrecorded``；
+    历史池行**不回填**（并池是写入时的动作）。"""
     neg_path = root / "negative.jsonl"
     rows = _load_jsonl(neg_path)
     out: list[dict[str, Any]] = []
@@ -514,6 +596,9 @@ def _scan_negative_pool(
                 "url": key[2],
                 "site_url": key[2],
                 "play_page_url": "",
+                "access_surface": access_surface.surface_of_driver(
+                    r.get("driver")
+                ),
                 "code": {
                     "branch": r.get("branch"),
                     "branch_label": r.get("branch_label") or "",
@@ -652,6 +737,94 @@ def _load_branch_labels() -> dict[str, str]:
     return _VALID_LABELS
 
 
+def _label_of(row: Mapping[str, Any]) -> str:
+    """取一行冻结数据的黄金标签。
+
+    两种形状都认：v1 的 ``golden`` 是 dict（``{"label": ...}``），
+    v2 起是字符串。认错形状会让「这一档用了哪些标签」读成空集，
+    而空集**不越界**——于是漂移检查看起来永远是绿的。
+    """
+    golden = row.get("golden")
+    if isinstance(golden, dict):
+        return str(golden.get("label") or "")
+    if isinstance(golden, str):
+        return golden
+    return ""
+
+
+def _assert_labels_in_universe(
+    rows: Sequence[Mapping[str, Any]], *, version: str
+) -> set[str]:
+    """冻结前核：这一批的标签必须全落在**当前版本**的宇宙内。
+
+    这是「跨版本对比前先核对 ``label_schema_version``」从**人工纪律**
+    变成**代码保证**的那一步：以前它只在文档里写着，代码从不校验，
+    所以注册表长到 22 类、标记还写「15 类」这种事能一路走到 v13
+    都没人看见。
+
+    宇宙不在 :data:`LABEL_UNIVERSES` 里 ⇒ 直接抛——那是「加分支忘了
+    新起版本号」，fail-closed，不猜。
+
+    返回实际用到的标签集合（给调用方打印用）。
+    """
+    universe = LABEL_UNIVERSES.get(version)
+    if universe is None:
+        raise GoldenError(
+            f"标签体系版本 {version!r} 没在 LABEL_UNIVERSES 里登记冻结副本——"
+            "加分支要三步：改注册表 → 新起版本号 → 在 LABEL_UNIVERSES 加一条"
+        )
+    used = {lab for lab in (_label_of(r) for r in rows) if lab}
+    out = sorted(used - universe)
+    if out:
+        raise GoldenError(
+            f"标签 {out} 不在标签体系版本 {version!r} 的宇宙内"
+            f"（{len(universe)} 类）——这批数据用了该版本之外的名字，"
+            "冻结后『核对 label_schema_version』这条纪律就名存实亡了。"
+            "要么改数据，要么新起一个版本号并登记它的冻结副本。"
+        )
+    return used
+
+
+def _require_surface_fields(gid: str, row: Mapping[str, Any]) -> tuple[str, str]:
+    """校验并返回 ``(access_surface, observed_at)``——**必填**（方案 20 §R2）。
+
+    为什么写入口比读入口严：读的时候历史行本来就没这一栏（不回填，只能落
+    ``unrecorded``）；而**写**的这一刻人正拿着证据——不趁这时问「在哪张面上、
+    什么时候看的」，「人进得去 agent 被拦」这件事就永远只能归咎于模型。
+
+    两个字段是一对：只知道面不知时刻，站点漂移后那条读数照样不可用（同一张
+    面两周后可能就拦了）；所以**要么都给，要么这一行不该有 label**。
+    """
+    raw = row.get("access_surface")
+    if not access_surface.is_declared(raw):
+        raise GoldenError(
+            f"{gid} 缺 access_surface（方案 20 §R2，O-d 必填）：断言一个标签就得说出"
+            "**在哪张面上**看到的——自己开浏览器看填 "
+            f"{access_surface.SURFACE_HUMAN!r}；看的是 P1 存档里的采集结果填 "
+            f"{access_surface.SURFACE_CAMOUFOX!r} / {access_surface.SURFACE_OBSCURA!r}。"
+            "没开浏览器也没有存档证据 ⇒ 这一行不该有 label（fail-closed，不按默认面补）"
+        )
+    try:
+        surface = access_surface.check_surface(raw)
+    except ValueError as exc:
+        raise GoldenError(f"{gid} {exc}") from None
+    observed_raw = str(row.get("observed_at") or "").strip()
+    if not observed_raw:
+        raise GoldenError(
+            f"{gid} 填了 access_surface={surface!r} 却没填 observed_at："
+            "面与时刻是一对——站点会漂移，只知道面不知什么时候看的，"
+            "那条读数在跨版本/跨面对比时照样不可用"
+        )
+    try:
+        datetime.fromisoformat(observed_raw)
+    except ValueError:
+        raise GoldenError(
+            f"{gid} observed_at={observed_raw!r} 不是 ISO-8601 时刻"
+            "（例：2026-10-26T14:03:00+08:00）"
+        ) from None
+    return surface, observed_raw
+
+
 def cmd_annotate(args: argparse.Namespace) -> int:
     """合并人工标注到 annotations.jsonl。
 
@@ -659,10 +832,24 @@ def cmd_annotate(args: argparse.Namespace) -> int:
 
         {"golden_id": "...", "round": 1|2, "label": "not_play_site" | "success",
          "reviewed_by": "name", "reviewed_at": "ISO", "note": "...",
+         "access_surface": "human-browser", "observed_at": "ISO",
          "dimension_scores": {"rationale_consistency": 4}, "interval_days": null}
 
     round=2 为 retest（D9），必须带 interval_days。同一 (golden_id, round)
     重复写入时校验 label 一致，不一致需 --force。
+
+    ``access_surface`` / ``observed_at`` **必填**（方案 20 §R2，owner 裁定 O-d）：
+    断言一个标签就得说出**在哪张面上、什么时候**看到的——否则「人进得去、
+    agent 被拦」这件事永远算不清是面还是模型。两种合法来源：
+
+    - 自己开浏览器看的 ⇒ ``human-browser`` + 打开的**那一刻**；
+    - 看的是 P1 存档里的采集结果 ⇒ 那张面的代号（``camoufox-plain`` /
+      ``obscura-plain``）+ 存档里的采集时刻。
+
+    没开浏览器也没有存档证据 ⇒ **这一行不该有 label**（也就没有面可填）——
+    这正是 fail-closed 想拦住的那种「凭印象标一行」。缺栏 / 面代号认不出 /
+    时刻不是 ISO 一律退 2，**不按默认面补**（历史行不回填，`unrecorded`
+    由冻结那一步自动写，不靠人手填）。
 
     ``--dimensions-only`` 是**另一条路**（方案 16 · 填软维度金标）：输入只带
     分数，``label`` 一字不碰。补 d2/d4/d5/d6 的人手里往往没有分支裁定，
@@ -714,6 +901,7 @@ def cmd_annotate(args: argparse.Namespace) -> int:
             }
             if bad:
                 raise GoldenError(f"{gid} dimension_scores 越界 {bad}，允许 1..5")
+        surface, observed_at = _require_surface_fields(gid, r)
         prev = by_key.get((gid, rnd))
         if prev and prev.get("label") != label and not args.force:
             raise GoldenError(
@@ -728,6 +916,8 @@ def cmd_annotate(args: argparse.Namespace) -> int:
             "reviewed_by": r.get("reviewed_by") or "",
             "reviewed_at": r.get("reviewed_at") or _now_iso(),
             "note": r.get("note") or "",
+            "access_surface": surface,
+            "observed_at": observed_at,
             "dimension_scores": dims,
             "interval_days": r.get("interval_days"),
         }
@@ -823,7 +1013,13 @@ def _annotate_dimensions_only(args: argparse.Namespace, golden_root: pathlib.Pat
 def _labeled_rows(
     candidates: Sequence[Mapping[str, Any]], annotations: Sequence[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
-    """把 round=1 标注合并进候选，产出「可冻结」样本。"""
+    """把 round=1 标注合并进候选，产出「可冻结」样本。
+
+    ``access_surface`` / ``observed_at``（方案 20 §R2）**一并抄进 ``golden``**：
+    各行是在哪张面上、什么时候看到的。旧标注没有这两栏 ⇒ ``access_surface``
+    落 :data:`access_surface.SURFACE_UNRECORDED`（面未声明），**不按默认面补**
+    ——历史行不回填，跨面比较时它们本来就不可判定。
+    """
     ann1 = {r["golden_id"]: r for r in annotations if r.get("round") == 1}
     out = []
     for c in candidates:
@@ -831,16 +1027,41 @@ def _labeled_rows(
         if not a:
             continue
         row = dict(c)
-        row["golden"] = {
+        declared = access_surface.surface_of_annotation(a)
+        golden = {
             "label": a["label"],
             "label_label": a["label_label"],
             "reviewed_by": a["reviewed_by"],
             "reviewed_at": a["reviewed_at"],
             "note": a["note"],
             "dimension_scores": a.get("dimension_scores"),
+            "access_surface": declared,
         }
+        if access_surface.is_declared(declared):
+            golden["observed_at"] = str(a.get("observed_at") or "")
+        row["golden"] = golden
         out.append(row)
     return out
+
+
+def _surface_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """金标行的采集面分布（方案 20 §R2）——逐版落进 manifest。
+
+    ``unrecorded`` = **面未声明**（旧行不回填），按行数如实记，不是错误；
+    ``declared`` 是「有面可说的行数」。R3 的跨面比较读这一栏决定
+    「这一版能不能跟那一版比」，所以它必须是 manifest 里的一行字，
+    而不是靠人翻 annotations.jsonl 数。
+    """
+    counter: collections.Counter[str] = collections.Counter()
+    for r in rows:
+        counter[access_surface.surface_of_annotation(_as_gold(r))] += 1
+    by = {k: int(v) for k, v in sorted(counter.items(), key=lambda kv: (-kv[1], str(kv[0])))}
+    unrecorded = int(by.get(access_surface.SURFACE_UNRECORDED, 0))
+    return {
+        "by_surface": by,
+        "declared": sum(by.values()) - unrecorded,
+        "unrecorded": unrecorded,
+    }
 
 
 def _stratified_split(
@@ -1228,7 +1449,10 @@ def _refresh_label(
     换哪一栏
     --------
     **只换** ``golden.label`` / ``label_label`` / ``reviewed_by`` /
-    ``reviewed_at`` / ``note``（五个与 label 绑定的字段）。
+    ``reviewed_at`` / ``note`` / ``access_surface`` / ``observed_at``（与一次
+    人判绑定的那几个字段——面与时刻是同一次裁定的另一半，方案 20 §R2；
+    后两个**只在标注声明了面时才写**，没声明就不动行内容，否则 C-17 的
+    回归集指纹会因「多了一个 `unrecorded` 键」而变红）。
     ``golden.dimension_scores`` / ``code`` / pred 侧（``dimension_scores`` /
     ``scores_detail`` / ``status``）**一个字不动**——软维度金标归
     ``--refresh-gold``、评分归 ``--refresh-scores`` 管，各走各的出口。
@@ -1272,6 +1496,18 @@ def _refresh_label(
             golden["reviewed_by"] = ann.get("reviewed_by")
             golden["reviewed_at"] = ann.get("reviewed_at")
             golden["note"] = ann.get("note")
+            # 面与时刻**跟 label 同一次人判**（方案 20 §R2）：新裁了面就一起换。
+            # **只在标注真声明了面时才写**：标注里没声明（含手写补丁文件）
+            # 就把继承来的值原样留着——写一个 `unrecorded` 进去会让这一行
+            # 与源版本**逐字节不同**，而 C-17 的回归集指纹正是拿「内容没变」
+            # 当「没被改过」的证据（新增 44 条靠它挡）。没声明 = 没新信息，
+            # 不改行内容，读数侧照样读成「面未声明」。
+            declared = access_surface.surface_of_annotation(ann)
+            if access_surface.is_declared(declared):
+                golden["access_surface"] = declared
+                observed = str(ann.get("observed_at") or "").strip()
+                if observed:
+                    golden["observed_at"] = observed
             new["golden"] = golden
             after_by_label[new_label or ""] += 1
             if old_label != new_label:
@@ -1517,6 +1753,12 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     traj = [r for r in labeled if r["source_kind"] == "p2_sample"]
     if not labeled:
         raise GoldenError("没有任何已标注候选；先 annotate 至少 1 条")
+    # 标签宇宙核对（2026-10-26 起）：冻结前先核这批标签全在当前版本的
+    # 宇宙内。旧档继承来的标签也走这里——旧宇宙是当前宇宙的子集，
+    # 所以继承式重冻结不会因为「上一版就这么标的」而失败。
+    _used_labels = _assert_labels_in_universe(
+        labeled, version=LABEL_SCHEMA_VERSION
+    )
     if not site:
         print(
             "⚠️ 站点级（可支撑 D10）标注为 0；仅轨迹级样本时 D10 不可算", file=sys.stderr
@@ -1583,7 +1825,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "label_schema_version": LABEL_SCHEMA_VERSION,  # §5.2：11 类 → 15 类
+        "label_schema_version": LABEL_SCHEMA_VERSION,
         # 尺子编号（方案 16 §1.2 / C-01）：没有这两行，D10 数字无法回答
         # 「是哪版 rubric、哪版 judge prompt 量出来的」，跨版本对比会读成
         # 「质量变好了」而其实换了尺子。
@@ -1646,6 +1888,11 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         # ``baseline_reset=false``：code 是被测的 pred 不是金标，重挂它不换
         # 尺子，本版与上一版仍逐行可比（与 gold/label 刷新相反）。
         "code_refresh": code_refresh,
+        # 采集面分布（方案 20 §R2）：**这一版的金标是在哪张面上看到的**。
+        # ``unrecorded`` 是「面未声明」——旧行不回填，如实记成数，不是错误。
+        # 跨面比较（R3 的 D-10）读它决定「能不能比」，所以它必须逐版落档：
+        # 只看代码里的词表读不出「v8 里绝大多数行其实是人面看的」。
+        "access_surface": _surface_tally(labeled),
         "thresholds": {
             "d10_min_agreement": D10_THRESHOLD,
             "retest_interval_days": RETEST_INTERVAL_DAYS,
@@ -1695,6 +1942,11 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     )
     _dump_jsonl(versions_path, versions, force=True)
     print(f"→ 已冻结 v{version} 到 {vdir}/")
+    print(
+        f"  标签宇宙：{LABEL_SCHEMA_VERSION}"
+        f"（{len(LABEL_UNIVERSES[LABEL_SCHEMA_VERSION])} 类合法标签，"
+        f"本批用到 {len(_used_labels)} 种）"
+    )
     if carrying:
         print(
             f"  继承自 v{derived_from['version']}（切分原样带过来，行内容未改）"
@@ -1768,6 +2020,17 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             f"（种子 {args.regression_seed}）；一经冻结不得重切（C-17）"
         )
     print(f"  分布：{json.dumps(manifest['by_label'], ensure_ascii=False)}")
+    surf = manifest["access_surface"]
+    surf_line = f"  采集面：{json.dumps(surf['by_surface'], ensure_ascii=False)}"
+    print(surf_line)
+    if surf["unrecorded"]:
+        # 不是错误：旧行不回填。但必须喊一声——R3 跨面比较读的就是这一栏，
+        # 静默的「大面积未声明」会让「能不能跟上一版比」变成靠猜。
+        print(
+            f"    ⚠ 其中 {surf['unrecorded']} 行**面未声明**（方案 20 §R2：旧行不回填）"
+            "——跨面比较时这些行不可判定，不猜",
+            file=sys.stderr,
+        )
     print(
         f"  D10 上岗线 ≥{D10_THRESHOLD:.0%}；头条分母档 = {HEADLINE_SPLIT}"
         f"（回归集 / 持有集旁置，均不进头条）"
@@ -2323,15 +2586,25 @@ def _emit_calibration_artifacts(
     target_dir: str,
     snapshot: Mapping[str, Any] | None = None,
     cards: Sequence[Mapping[str, Any]] | None = None,
+    accounts: Sequence[Mapping[str, Any]] | None = None,
     force_snapshot: bool = False,
     provenance: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path]:
-    """落「全量快照 + 分歧卡」两份派生数据（方案 16 C-15 / C-02）。
+    """落「全量快照 + 分歧卡 + 采集侧账」三份派生数据（方案 16 C-15 / C-02）。
 
-    为什么两份一起出：回归判定问「上一轮对、这一轮错」，那一行在上一轮的
+    为什么一起出：回归判定问「上一轮对、这一轮错」，那一行在上一轮的
     分歧卡里不存在 ⇒ 只存卡判不了回归，必须先有全量快照（见
-    ``evaluation/calibration/snapshot.py`` 模块 docstring）。两者由同一次
+    ``evaluation/calibration/snapshot.py`` 模块 docstring）。三者由同一次
     计算派生，口径不会分叉。
+
+    **采集侧账为什么单独一个文件**（方案 20 §R3）：``access_surface`` 两侧
+    不等、且 pred 侧落在「采集面被拦」上的行，**不是分歧**——那是「agent
+    被拦在门外，A 面本来就没走到」，出分歧卡会把它记成「代码判错了」。它
+    也不该跟卡混在一个文件里：报表要能只数拦截笔数（见 02 避坑 §3.7，拦截
+    率**必须分桶**），混进卡里就只能靠过滤找。落 ``collection_accounts.jsonl``。
+
+    **没传 ``accounts`` 也不会静默当成 0 笔**：它跟 ``cards`` 一样从同一份
+    快照派生，缺省就地算——少写一笔账比多出一张假卡更难发现。
 
     **只读派生**：不回写 ``v{N}/*.jsonl``，产物落 ``output/``（gitignore 内）。
 
@@ -2348,8 +2621,9 @@ def _emit_calibration_artifacts(
     要重算得显式 ``--force-snapshot``。
     """
     from trajectory_pipeline.evaluation.calibration.disagreement import (
-        cards_from_snapshot,
+        cards_and_accounts_from_snapshot,
         summarize_cards,
+        write_accounts,
         write_cards,
     )
     from trajectory_pipeline.evaluation.calibration.snapshot import (
@@ -2382,9 +2656,14 @@ def _emit_calibration_artifacts(
             "的凭据改掉）。要重算加 --force-snapshot，或换个 --emit-disagreements 目录"
         )
     snap_path = write_snapshot(snap_path, snapshot)
-    if cards is None:
-        cards = cards_from_snapshot(snapshot)
+    if cards is None or accounts is None:
+        derived_cards, derived_accounts = cards_and_accounts_from_snapshot(snapshot)
+        if cards is None:
+            cards = derived_cards
+        if accounts is None:
+            accounts = derived_accounts
     cards_path = write_cards(outdir / "disagreements.jsonl", cards)
+    accounts_path = write_accounts(outdir / COLLECTION_ACCOUNTS_FILE, accounts)
 
     stats = summarize_snapshot(snapshot)
     cstats = summarize_cards(cards)
@@ -2395,8 +2674,65 @@ def _emit_calibration_artifacts(
     print(
         f"→ 已写快照 {snap_path}（{stats['entries']} 条：{verdict_str}）"
         f" · 分歧卡 {cards_path}（{cstats['n']} 张：{delta_str or '无'}）"
+        f" · 采集侧账 {accounts_path}（{len(accounts)} 笔）"
     )
     return snap_path, cards_path
+
+
+def _fmt_surface_counts(counts: Mapping[str, int]) -> str:
+    return " · ".join(f"{k} {v}" for k, v in counts.items()) or "无"
+
+
+def _report_collection_accounts(
+    accounts: Sequence[Mapping[str, Any]],
+    surfaces: Mapping[str, Any],
+) -> None:
+    """打印「采集侧账」块（方案 20 §R3）。
+
+    **这一段必须排在 D10 头条与分支路由之前**（02 避坑 §3.7）：拦截率是用来
+    决定「换不换执行层」的数，排在一致率后面会被读成「代码判错了、要改判据」。
+    分桶也是同一条纪律——这里只数采集侧，登录墙（内容侧访问控制）不并进来，
+    合并口径会在这批数据上把结论读反。
+
+    三态读数（``comparable``）要一起出：``none`` 大 = 这一版**判不出跨面**
+    （旧行没记面，R2 不回填），而不是「没有跨面问题」。
+    """
+    unrec = access_surface.SURFACE_UNRECORDED
+    n = len(accounts)
+    pairs = collections.Counter(
+        f"pred={a.get('pred_access_surface') or unrec}"
+        f" / gold={a.get('gold_access_surface') or unrec}"
+        for a in accounts
+    )
+    print("反爬拦截率（采集侧账，方案 20 §R3；按面分桶，**不进 D10 分母**）")
+    if not n:
+        print(
+            "  拦截笔数：0  —— 0 有两种来源，别读成同一种（看下面 comparable=none）："
+            "① 真没有采集面被拦；② 这一版判不出跨面"
+        )
+    else:
+        print(f"  拦截笔数：{n} 笔（每笔 = 一次访问因采集面被拦而未进分歧桌）")
+        for pair, cnt in sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"    {pair}  {cnt}")
+        print(
+            "  处置指向**换面重采**，不是改 rubric / 改 prompt——"
+            "这些读数说的是我们这张面，不是站点"
+        )
+    comp = surfaces.get("comparable") or {}
+    print(
+        f"  采集面读数（{surfaces.get('rows', 0)} 行硬维度）："
+        f"gold [{_fmt_surface_counts(surfaces.get('gold_by_surface') or {})}]"
+        f" · pred [{_fmt_surface_counts(surfaces.get('pred_by_surface') or {})}]"
+    )
+    print(
+        f"  跨面可判定性：可比 {comp.get('true', 0)} · 跨面 {comp.get('false', 0)}"
+        f" · 不可判定 {comp.get('none', 0)}"
+        + (
+            "   ⚠️ 不可判定 >0：任一侧没记面 ⇒ 判不出跨面（旧行不回填，不猜）"
+            if comp.get("none")
+            else ""
+        )
+    )
 
 
 def cmd_agreement(args: argparse.Namespace) -> int:
@@ -2521,6 +2857,33 @@ def cmd_agreement(args: argparse.Namespace) -> int:
         site, requested_dims=requested_dims, tolerance=tolerance,
     )
 
+    # ── 快照 / 分歧卡 / 采集侧账（一次算，三处用）─────────────────
+    # 提到头条之前算，是为了让「采集侧账」块排在一致率前面（方案 20 §R3 +
+    # 02 避坑 §3.7）。同一份快照后面 URL 级读数与落盘都复用它——算两遍只会
+    # 多一次漂移的机会。
+    from trajectory_pipeline.evaluation.calibration.disagreement import (
+        cards_and_accounts_from_snapshot,
+    )
+    from trajectory_pipeline.evaluation.calibration.snapshot import (
+        HARD_DIM,
+        build_snapshot,
+        summarize_surfaces,
+    )
+
+    ruler_rubric = str(manifest_meta.get("rubric_version") or "")
+    snapshot = build_snapshot(
+        rows,
+        golden_version=int(args.version or 0),
+        success_label=SUCCESS_LABEL,
+        rubric_version=ruler_rubric,
+        evaluator_version=evaluator_version(),
+        tolerance=tolerance,
+        provenance=_read_provenance_registry(golden_root),
+        code_version=code_scorer_version(),
+    )
+    cards, accounts = cards_and_accounts_from_snapshot(snapshot)
+    _report_collection_accounts(accounts, summarize_surfaces(snapshot))
+
     print(
         f"D10 与黄金集标签一致率（{label_note}，口径 C = 语义等价类一致）"
     )
@@ -2548,7 +2911,6 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     #   ② judge 指纹（机器算，当前代码的 D-3/D-9 prompt 状态）；
     #   ③ D10 的 pred 侧来源——**不是当前评分器**，是冻结行里采集时写下的
     #      code.branch。把 (2) 当成 D10 的来源是这类报表最常见的误读。
-    ruler_rubric = str(manifest_meta.get("rubric_version") or "")
     ruler_at_freeze = str(manifest_meta.get("evaluator_version") or "")
     holdout_runs = int(manifest_meta.get("holdout_runs") or 0)
     rows_by_split = {
@@ -2614,13 +2976,6 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     #      **正常事实**（站点漂移 / 地区 / 登录态），不是标注缺陷；
     #   ② 切档按行（Q-12）⇒ 持有集可能有行与调参池/回归集同 URL ⇒ 持有集
     #      不独立，「持有集 N 条」不能读成「N 条独立证据」。
-    from trajectory_pipeline.evaluation.calibration.disagreement import (
-        cards_from_snapshot,
-    )
-    from trajectory_pipeline.evaluation.calibration.snapshot import (
-        HARD_DIM,
-        build_snapshot,
-    )
     from trajectory_pipeline.evaluation.calibration.urlconflict import (
         URL_UNKNOWN,
         project_d10_rows,
@@ -2629,17 +2984,6 @@ def cmd_agreement(args: argparse.Namespace) -> int:
         url_gold_conflicts,
     )
 
-    snapshot = build_snapshot(
-        rows,
-        golden_version=int(args.version or 0),
-        success_label=SUCCESS_LABEL,
-        rubric_version=ruler_rubric,
-        evaluator_version=evaluator_version(),
-        tolerance=tolerance,
-        provenance=_read_provenance_registry(golden_root),
-        code_version=code_scorer_version(),
-    )
-    cards = cards_from_snapshot(snapshot)
     rows_by_id = {str(r.get("golden_id") or ""): r for r in rows}
     url_of = {gid: str(r.get("url") or "") for gid, r in rows_by_id.items()}
     projected = project_d10_rows(
@@ -2695,6 +3039,7 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             target_dir=args.emit_disagreements,
             snapshot=snapshot,
             cards=cards,
+            accounts=accounts,
             force_snapshot=bool(getattr(args, "force_snapshot", False)),
             provenance=_read_provenance_registry(golden_root),
         )
@@ -2725,7 +3070,13 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             "agreement_ratio": ratio,
             "threshold": D10_THRESHOLD,
             "criterion": "equiv_class",  # 口径 C：语义等价类一致（§4.3）
-            "label_schema_version": LABEL_SCHEMA_VERSION,
+            # 标签宇宙版本（2026-10-26 改口径）：**取自该冻结档的
+            # manifest**，不取当前常量——与下一行 ``rubric_version`` 同款
+            # 纪律：老档缺字段给空串，**不拿当前值顶替**（顶替等于把新
+            # 尺子的编号贴在旧数字旁边）。
+            # ⚠️ 改口径前这里用的是常量，于是「v6 的 agreement 报 22 类」
+            # 这类事一直在发生而没人看见——只因为当时常量恰好也是旧值。
+            "label_schema_version": str(manifest_meta.get("label_schema_version") or ""),
             # 尺子编号（方案 16 C-01）。老冻结档缺字段时给空串，不拿当前值顶替
             # ——顶替等于把新尺子的编号贴在旧数字旁边。
             "rubric_version": ruler_rubric,

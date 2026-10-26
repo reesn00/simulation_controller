@@ -18,6 +18,10 @@
 而指标失效是察觉不到的。三支之间也不合并：成因不同，要修的东西就不同，
 见 :data:`NON_SAMPLE_BRANCHES` 的说明。第四支 ``site_search_routed``
 （2026-10-16 路径 B/C）是另一回事：路由**记账**不是结论，见该常量说明。
+
+第五类在 :data:`COLLECTION_SIDE_BRANCHES`（2026-10-26 · R1）：``blocked``
+**有题意但证据强度不成立**——一次反爬拦截对「这站能不能看」零信息，
+出负样本池、进人工复核队列。它与上面四支是**两张表**，理由见该常量。
 """
 
 from __future__ import annotations
@@ -103,6 +107,37 @@ NON_SAMPLE_BRANCHES = frozenset(
     }
 )
 
+#: 采集侧账：**这次没看到**，不是「这里看不了」。不进负样本池，
+#: 但**进人工复核队列**。
+#:
+#: 为什么单开一张表而不并进 :data:`NON_SAMPLE_BRANCHES`：那张表的语义是
+#: 「**无题的兜底分支**」（``test_branches`` 钉死它不能与
+#: ``questions.negative_branch`` 相交），而 ``blocked`` 是判断点 ② 的
+#: **有题**负分支——它的问题**不是「没题」，是证据强度不成立**：
+#: 一次 ``blocked`` 只说明「这一次没进去」。
+#:
+#: 实测（2026-10-26 · ``research/probes/cf_access_boundary.py``，R0）：
+#: 同一 camoufox 指纹、同一天、10 个存档里判过 CF 挑战的目标 × 2 轮 →
+#: **12 可进入 / 8 仍被拦**——同一指纹、同一小时内，10 台里有 6 台
+#: 当天就进得去。
+#: ⇒ 单次拦截**对「这个站能不能看」零信息**，把它写进负样本池等于把
+#: 采集能力的上限写成站点性质；更糟的是四周前同一批里 4 条 CF 挑战页
+#: 被记成了 ``no_play_control``（挑战页当然没有播放控件）——**理由通顺的
+#: 假负样本**，人工也未必看得出。
+#:
+#: 口径（owner 裁定 2026-10-26 · O-a/O-b）：出负样本池、进复核队列。
+#: 设计依据与四条负样本判据见
+#: ``docs/设计方案/20-反爬拦截与金标观测面.md`` §3.5 / §5 R1。
+#:
+#: ⚠️ **``unreachable_hard`` 不在本表**：它与 ``blocked`` 同属「采集侧
+#: 事实」，但出池与否是另一道未裁定的题（TODO 台账 Q-17，池内 18 行）。
+#: 在裁定之前**不预先放进来**——半张表比一张表更容易让人误以为已经处理过。
+#:
+#: 消费点：:attr:`SiteOutcome.is_negative_sample`（P1 并池的唯一闸门）、
+#: ``integrity._check_archive``（并池核对）、``cli`` 的域通过率报表、
+#: ``review_queue``（该进队列）、``relabel.check_target``（不能改成这个目标）。
+COLLECTION_SIDE_BRANCHES = frozenset({"blocked"})
+
 
 class UnknownBranch(KeyError):
     """分支名不在注册表内。控制流写错就当场炸，不静默落盘。"""
@@ -162,7 +197,21 @@ class SiteOutcome:
 
     @property
     def is_negative_sample(self) -> bool:
-        return self.branch is not None and self.branch not in NON_SAMPLE_BRANCHES
+        """这个结局能不能当「这里真的看不了」入池。
+
+        两段排除，成因不同、处置也不同：
+
+        - ∉ :data:`NON_SAMPLE_BRANCHES` ——「**没判出来**」（无题的兜底分支）；
+        - ∉ :data:`COLLECTION_SIDE_BRANCHES` ——「**这次没看到**」
+          （有题意，但证据强度不成立：一次拦截不构成站点性质）。
+
+        两者都不进池，但**只有第二类进人工复核队列**——它是可复核的
+        现场（存档里有挑战页原文），不是待补代码能力的窟窿。
+        """
+        if self.branch is None:
+            return False
+        return (self.branch not in NON_SAMPLE_BRANCHES
+                and self.branch not in COLLECTION_SIDE_BRANCHES)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -488,6 +537,26 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
 }
 
 
+#: **同页守卫覆盖的分支集合**（2026-10-19 增量六十·方案 X 窄化后 = 1 支）。
+#:
+#: 原守卫集合是 5 支（``component_unverified`` / ``subscription_wall`` /
+#: ``login_required`` / ``blocked`` / ``partial_free``）。收窄的根据：
+#: ``component_unverified`` 是「已落地播放页但无组件」的兜底，需要
+#: 「点击前后是否换页」做**强证据**确认；其余 4 支是「落地即结论」语义，
+#: 与「点击前后是否变」**无关**，守卫对它们是过度延伸。
+#:
+#: ⚠️ **这四条的前置事实核验没有因此消失**——它们各自的判据在
+#: :data:`BRANCH_PRECONDITION` 与 :func:`_precondition_failed` 里各有一段
+#: （``subscription_wall`` 走**门禁语境** ``paywall_evidence``，另外三条走
+#: 「确实到了目标页」的落地证据）。收窄的只是**同页**这一条机械判据。
+#:
+#: **为什么把它提成常量**：这条集合是「分支口径断点」的一部分
+#: （2026-10-19），而 :mod:`trajectory_pipeline.executor.branch_eras`
+#: 的登记项要跟**代码现状**对账——提成常量后那份对账可以被 contract
+#: 测试盯住，而不是靠人记得。
+SAME_PAGE_GUARD_BRANCHES: frozenset[str] = frozenset({"component_unverified"})
+
+
 # 2026-10-13 增量三十二 · D10 偏差修缮：付费墙同页守卫的**强信号旁路**。
 #
 # ⚠️ **2026-10-21（H-16 修复①）这段旁路已经退役**——本模块原来的
@@ -585,7 +654,7 @@ def _precondition_failed(
                 f"页面里没有付费墙门禁证据——"
                 f"{BRANCH_PRECONDITION[branch]}"
             )
-    if branch == "component_unverified":
+    if branch in SAME_PAGE_GUARD_BRANCHES:
         if pre_obs is None:
             return ""
         if _same_page(pre_obs, obs):

@@ -90,7 +90,7 @@ def _read_pool(path):
 
 class Test目标分支:
     def test_活跃负样本通过(self):
-        ok, why = rl.check_target("blocked")
+        ok, why = rl.check_target("broken")
         assert ok and why == ""
 
     def test_未活跃分支被拒(self):
@@ -115,6 +115,14 @@ class Test目标分支:
         ok, why = rl.check_target(branch)
         assert not ok and "不是负样本" in why
 
+    def test_采集侧分支被拒(self):
+        """2026-10-26 · R1：``blocked`` **不在** ``NON_SAMPLE_BRANCHES``
+        （它有题），但同样不进负样本池——改判到它等于把一条采集失败
+        写进池里（池子的全部价值就是「这里真的看不了」）。
+        历史池行里已有的 blocked **不回填**，那是另一回事。"""
+        ok, why = rl.check_target("blocked")
+        assert not ok and "采集侧账" in why
+
     def test_空目标被拒(self):
         ok, why = rl.check_target("")
         assert not ok and why
@@ -126,21 +134,21 @@ class Test目标分支:
 class Test归属:
     def test_判断点相符放行(self):
         ok, why = rl.check_attribution(["player.ok"], "subscription_wall",
-                                       "blocked")
+                                       "broken")
         assert ok, why
 
     def test_判断点不符被拒(self):
         """``site.find_play_control`` 只产得出 ``no_play_control`` /
-        ``trailer_only`` 那一支——挂一个 ``blocked`` 上去就是造出决策树
+        ``trailer_only`` 那一支——挂一个 ``broken`` 上去就是造出决策树
         里不存在的 ``(question, branch)`` 组合（D-5 判一票否决）。"""
         ok, why = rl.check_attribution(["site.find_play_control"],
-                                       "subscription_wall", "blocked")
+                                       "subscription_wall", "broken")
         assert not ok and "site.find_play_control" in why
 
     def test_没记判断点时按源分支产地反推放行(self):
         """实测池里 **57/181** 行没记判断点。「无法核对」≠「可以贴」，
         但源分支自己就带着产地（``unreachable_hard`` 只可能出自②）。"""
-        ok, why = rl.check_attribution([], "unreachable_hard", "blocked")
+        ok, why = rl.check_attribution([], "unreachable_hard", "broken")
         assert ok, why
 
     def test_没记判断点且产地无交集被拒(self):
@@ -152,7 +160,7 @@ class Test归属:
         """同一个键在几份存档里各有一条时（按键聚合），每一条的判断点
         都要容得下目标分支——任一条不容，整组就拒。"""
         ok, why = rl.check_attribution(["player.ok", "site.find_play_control"],
-                                       "subscription_wall", "blocked")
+                                       "subscription_wall", "broken")
         assert not ok
 
 
@@ -161,8 +169,8 @@ class Test归属:
 
 class Test计划:
     def _plan(self, cands, **kw):
-        kw.setdefault("to_branch", "blocked")
-        kw.setdefault("reason", "人工复核：地区限制不是付费墙")
+        kw.setdefault("to_branch", "broken")
+        kw.setdefault("reason", "人工复核：正文是 404 不是付费墙")
         return rl.plan_relabels(cands, **kw)
 
     def test_理由必填(self):
@@ -180,7 +188,7 @@ class Test计划:
             self._plan({}, reason="带凭据 Authorization: Bearer abcdefghijklmnop")
 
     def test_已是目标分支跳过(self):
-        cands = {("T001", "u", "blocked"): rl.Candidate("T001", "u", "blocked")}
+        cands = {("T001", "u", "broken"): rl.Candidate("T001", "u", "broken")}
         plan = self._plan(cands)
         assert len(plan.skipped) == 1 and not plan.accepted
 
@@ -200,7 +208,7 @@ class Test计划:
     def test_撞已有行并入(self):
         """实测（2026-10-21 人工复核）：同一个 ``(task_id, url)`` 在池里有
         **两行**、标签还**互相矛盾**——两次跑出了两个结论。改判之后两条
-        都是 ``blocked`` ⇒ 池里两行同键 ⇒ 违反池的去重约定。
+        都是 ``broken`` ⇒ 池里两行同键 ⇒ 违反池的去重约定。
 
         ⇒ 处置是「**并入**」：保留判对了的那条，删掉贴错标签的那条，
         **不新建行**。不是「拒绝」——拒绝等于让这条错标签永远留在池里。
@@ -208,7 +216,7 @@ class Test计划:
         cands = {("T001", "u", "subscription_wall"): rl.Candidate(
             "T001", "u", "subscription_wall", questions=["player.ok"])}
         pool_keys = {("T001", "u", "subscription_wall"),
-                     ("T001", "u", "blocked")}
+                     ("T001", "u", "broken")}
         plan = self._plan(cands, pool_keys=pool_keys)
         assert not plan.accepted and len(plan.merged) == 1
         assert "并入" in plan.merged[0][1]
@@ -240,13 +248,13 @@ class Test处置:
         p = _write(tmp_path, _arch(outcomes=[
             _o("https://v.qq.com/x.html", "subscription_wall")]))
         _write_pool(tmp_path, [_pool_row()])
-        out = rl.relabel_to_root(tmp_path, to_branch="blocked",
-                                 reason="地区限制不是付费墙", dry_run=False)
+        out = rl.relabel_to_root(tmp_path, to_branch="broken",
+                                 reason="正文是 404 不是付费墙", dry_run=False)
         assert out["relabelled"] == 1 and out["pool_rows"] == 1
-        assert _read(p)["outcomes"][0]["branch"] == "blocked"
+        assert _read(p)["outcomes"][0]["branch"] == "broken"
         row = _read_pool(tmp_path / "negative.jsonl")[0]
-        assert row["branch"] == "blocked"
-        assert row["branch_label"] == BRANCH_LABELS["blocked"]
+        assert row["branch"] == "broken"
+        assert row["branch_label"] == BRANCH_LABELS["broken"]
 
     def test_留痕(self, tmp_path):
         """三样都要留：``branch_before_relabel``（原判）、evidence 追加
@@ -255,7 +263,7 @@ class Test处置:
         p = _write(tmp_path, _arch(outcomes=[
             _o("https://v.qq.com/x.html", "subscription_wall",
                evidence="原始判定正文")]))
-        rl.relabel_to_root(tmp_path, to_branch="blocked",
+        rl.relabel_to_root(tmp_path, to_branch="broken",
                            reason="取证依据在此", dry_run=False)
         rec = _read(p)["outcomes"][0]
         assert rec["branch_before_relabel"] == "subscription_wall"
@@ -269,7 +277,7 @@ class Test处置:
         A→B→C 之后它还得是 A，那才是日后要回查的东西。"""
         p = _write(tmp_path, _arch(outcomes=[
             _o("https://v.qq.com/x.html", "subscription_wall")]))
-        rl.relabel_to_root(tmp_path, to_branch="blocked", reason="第一次",
+        rl.relabel_to_root(tmp_path, to_branch="broken", reason="第一次",
                            dry_run=False)
         rl.relabel_to_root(tmp_path, to_branch="partial_free", reason="第二次",
                            dry_run=False)
@@ -284,14 +292,14 @@ class Test处置:
         p = _write(tmp_path, _arch(outcomes=[
             _o("https://v.qq.com/x.html", "subscription_wall"),
             _o("https://v.qq.com/y.html", "subscription_wall")]))
-        rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                            dry_run=False)
         led = _read(p)["ledger"]
-        assert led["by_branch"]["blocked"] == 2
+        assert led["by_branch"]["broken"] == 2
         assert "subscription_wall" not in led["by_branch"]   # 归零则删键
         assert led["negative_samples"] == 2               # 不动
         assert "subscription_wall" in led["missing_branches"]
-        assert "blocked" not in led["missing_branches"]
+        assert "broken" not in led["missing_branches"]
 
     def test_dry_run不落盘(self, tmp_path):
         p = _write(tmp_path, _arch(outcomes=[
@@ -299,7 +307,7 @@ class Test处置:
         _write_pool(tmp_path, [_pool_row()])
         before = p.read_text(encoding="utf-8")
         pool_before = (tmp_path / "negative.jsonl").read_text(encoding="utf-8")
-        out = rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        out = rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                                  dry_run=True)
         assert out["relabelled"] == 1 and out["dry_run"] is True
         assert p.read_text(encoding="utf-8") == before
@@ -319,9 +327,9 @@ class Test处置:
             _o("https://v.qq.com/x.html", "subscription_wall")]),
             name="T001__a.reviewed.json")
         _write_pool(tmp_path, [_pool_row()])
-        rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                            dry_run=False)
-        assert _read(rev)["outcomes"][0]["branch"] == "blocked"
+        assert _read(rev)["outcomes"][0]["branch"] == "broken"
 
     def test_非T前缀的存档也收(self, tmp_path):
         """真实目录里存档**不只 T 前缀**（E001 / E014 / P033 / TPIN02 …）。
@@ -331,10 +339,10 @@ class Test处置:
             _o("https://v.qq.com/x.html", "subscription_wall")]),
             name="E021__94a1392f.json")
         _write_pool(tmp_path, [_pool_row(task_id="E021")])
-        out = rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        out = rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                                  dry_run=False)
         assert out["relabelled"] == 1
-        assert _read(p)["outcomes"][0]["branch"] == "blocked"
+        assert _read(p)["outcomes"][0]["branch"] == "broken"
 
     def test_同键跨存档一起改(self, tmp_path):
         """同一个 ``(task_id, url, branch)`` 在几份存档里各有一条时必须
@@ -346,11 +354,11 @@ class Test处置:
             _o("https://v.qq.com/x.html", "subscription_wall")]),
             name="T001__b.json")
         _write_pool(tmp_path, [_pool_row()])
-        out = rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        out = rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                                  dry_run=False)
         assert out["outcomes"] == 2
-        assert _read(a)["outcomes"][0]["branch"] == "blocked"
-        assert _read(b)["outcomes"][0]["branch"] == "blocked"
+        assert _read(a)["outcomes"][0]["branch"] == "broken"
+        assert _read(b)["outcomes"][0]["branch"] == "broken"
 
     def test_并入时删旧行不新建(self, tmp_path):
         """撞键 ⇒ **删掉贴错标签的那一行**，保留判对了的那条。
@@ -359,16 +367,16 @@ class Test处置:
             _o("https://v.qq.com/x.html", "subscription_wall")]))
         _write_pool(tmp_path, [
             _pool_row(branch="subscription_wall", evidence="贴错标签那次"),
-            _pool_row(branch="blocked", evidence="判对了那次"),
+            _pool_row(branch="broken", evidence="判对了那次"),
         ])
-        out = rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        out = rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                                  dry_run=False)
         assert out["merged"] == 1 and out["pool_dropped"] == 1
         rows = _read_pool(tmp_path / "negative.jsonl")
         assert len(rows) == 1
         assert rows[0]["evidence"] == "判对了那次"      # 保留的是判对的那条
         # 存档那一侧照样改标签（否则它与池里的行对不上）
-        assert _read(p)["outcomes"][0]["branch"] == "blocked"
+        assert _read(p)["outcomes"][0]["branch"] == "broken"
 
     def test_坏行原样保留(self, tmp_path):
         """坏行可能是被人手工截断、**正等人查**的——一次改判顺手清掉
@@ -378,11 +386,11 @@ class Test处置:
         pool = _write_pool(tmp_path, [
             "{坏行不是 JSON", _pool_row(),
         ])
-        rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                            dry_run=False)
         rows = _read_pool(pool)
         assert rows[0] == "{坏行不是 JSON"
-        assert rows[1]["branch"] == "blocked"
+        assert rows[1]["branch"] == "broken"
 
     def test_反思档不被选(self, tmp_path):
         """``unresolved`` / ``trailer_suspect`` / ``player_unverified``
@@ -392,7 +400,7 @@ class Test处置:
             _o("https://v.qq.com/x.html", "unresolved",
                question="player.ok")]))
         _write_pool(tmp_path, [_pool_row(branch="unresolved")])
-        out = rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        out = rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                                  dry_run=False)
         assert out["relabelled"] == 0
         assert _read(p)["outcomes"][0]["branch"] == "unresolved"
@@ -402,7 +410,7 @@ class Test处置:
         把它拉进改判就是把人判成功的记录改成负样本。"""
         p = _write(tmp_path, _arch(outcomes=[
             _o("https://v.qq.com/x.html", None, question="player.ok")]))
-        out = rl.relabel_to_root(tmp_path, to_branch="blocked", reason="r",
+        out = rl.relabel_to_root(tmp_path, to_branch="broken", reason="r",
                                  dry_run=False)
         assert out["relabelled"] == 0
         assert _read(p)["outcomes"][0]["branch"] is None
@@ -414,7 +422,7 @@ class Test处置:
         before = p.read_text(encoding="utf-8")
         with pytest.raises(rl.RelabelError, match="凭据"):
             rl.relabel_to_root(
-                tmp_path, to_branch="blocked",
+                tmp_path, to_branch="broken",
                 reason="Authorization: Bearer abcdefghijklmnopqrst",
                 dry_run=False)
         assert p.read_text(encoding="utf-8") == before
@@ -425,25 +433,25 @@ class Test处置:
 
 class Test选择器:
     def test_按URL片段挑(self):
-        cand = rl.Candidate("T001", "https://v.qq.com/x.html", "blocked")
+        cand = rl.Candidate("T001", "https://v.qq.com/x.html", "broken")
         assert rl.select_by_url("v.qq.com")(cand)
         assert not rl.select_by_url("youku.com")(cand)
 
     def test_多片段是OR(self):
-        cand = rl.Candidate("T001", "https://v.qq.com/x.html", "blocked")
+        cand = rl.Candidate("T001", "https://v.qq.com/x.html", "broken")
         assert rl.select_by_url("youku.com", "v.qq.com")(cand)
 
     def test_按当前分支挑(self):
         cand = rl.Candidate("T001", "u", "subscription_wall")
         assert rl.select_by_branch("subscription_wall")(cand)
-        assert not rl.select_by_branch("blocked")(cand)
+        assert not rl.select_by_branch("broken")(cand)
 
     def test_按evidence只看第一段(self):
         """追加的说明里也会出现判据关键词——全文匹配会把自己刚改判的
         记录再改一次（与 :mod:`downgrade` 同一个坑）。"""
         cand = rl.Candidate("T001", "u", "subscription_wall",
                             evidence="原判正文\n\n[改判 subscription_wall → "
-                                     "blocked] 依据是「当前设备不支持播放」")
+                                     "broken] 依据是「当前设备不支持播放」")
         sel = rl.select_by_evidence([re.compile("当前设备不支持播放")])
         assert not sel(cand)
 
@@ -469,7 +477,7 @@ class Test命令行:
     都在碰目录之前就拒。抛裸 traceback 看起来像崩溃，实际只是参数写漏。"""
 
     def test_缺reason在碰盘之前就拒(self, tmp_path, capsys):
-        rc = cli.main(["relabel", "--to", "blocked", "--url", "a.com",
+        rc = cli.main(["relabel", "--to", "broken", "--url", "a.com",
                        "--out", str(tmp_path)])
         assert rc == 2
         assert "必须给 --reason" in capsys.readouterr().err
@@ -482,7 +490,7 @@ class Test命令行:
 
     def test_不给判据就拒(self, tmp_path, capsys):
         """不给判据 = 全选 = 改判池里的每一条——不能默认。"""
-        rc = cli.main(["relabel", "--to", "blocked", "--reason", "r",
+        rc = cli.main(["relabel", "--to", "broken", "--reason", "r",
                        "--out", str(tmp_path)])
         assert rc == 2
         assert "得给" in capsys.readouterr().err
@@ -492,8 +500,8 @@ class Test命令行:
             _o("https://v.qq.com/x.html", "subscription_wall")]))
         _write_pool(tmp_path, [_pool_row()])
         before = p.read_text(encoding="utf-8")
-        rc = cli.main(["relabel", "--to", "blocked", "--branch",
-                       "subscription_wall", "--reason", "地区限制不是付费墙",
+        rc = cli.main(["relabel", "--to", "broken", "--branch",
+                       "subscription_wall", "--reason", "正文是 404 不是付费墙",
                        "--out", str(tmp_path)])
         assert rc == 0
         out = capsys.readouterr().out
@@ -505,9 +513,9 @@ class Test命令行:
         p = _write(tmp_path, _arch(outcomes=[
             _o("https://v.qq.com/x.html", "subscription_wall")]))
         _write_pool(tmp_path, [_pool_row()])
-        rc = cli.main(["relabel", "--to", "blocked", "--branch",
-                       "subscription_wall", "--reason", "地区限制不是付费墙",
+        rc = cli.main(["relabel", "--to", "broken", "--branch",
+                       "subscription_wall", "--reason", "正文是 404 不是付费墙",
                        "--apply", "--out", str(tmp_path)])
         assert rc == 0
-        assert _read(p)["outcomes"][0]["branch"] == "blocked"
-        assert _read_pool(tmp_path / "negative.jsonl")[0]["branch"] == "blocked"
+        assert _read(p)["outcomes"][0]["branch"] == "broken"
+        assert _read_pool(tmp_path / "negative.jsonl")[0]["branch"] == "broken"

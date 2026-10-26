@@ -47,7 +47,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Iterable, Mapping
 
-from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+from trajectory_pipeline.executor.branches import (
+    COLLECTION_SIDE_BRANCHES,
+    NON_SAMPLE_BRANCHES,
+)
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.common.elements import (
     element_json,
@@ -122,7 +125,12 @@ VERDICTS: Final[dict[str, str]] = {
         "人工确认：登录后才能免费看（记 login_required 负样本）"
     ),
     "confirm_blocked": (
-        "人工确认：被验证码/地区限制/反爬等环境阻断挡住（记 blocked 负样本）"
+        "人工确认：被验证码/地区限制/反爬等环境阻断挡住"
+        "（记 blocked；**采集侧账，不进负样本池**）"
+    ),
+    "confirm_collection_blocked": (
+        "人工确认：这次确实是被拦挡住的（记 collection_status，"
+        "**不改 branch、不进负样本池**）——人进得去而 agent 进不去时用它"
     ),
     "confirm_broken": (
         "人工确认：内容损坏，404 或媒体不可解码（记 broken 负样本）"
@@ -161,7 +169,7 @@ VERDICTS: Final[dict[str, str]] = {
 #: ⚠️ 与 :data:`branches.BRANCH_PRECONDITION` 里那条同页守卫**不冲突**：
 #: 那张表只作用于 ``decision_branch``（代码判定路径），回填不经过它。
 
-#: 进入复核队列的分支。只有这三类需要人看。
+#: 进入复核队列的分支。只有这几类需要人看。
 #:
 #: - ``unresolved``：代码判不出来（环节①–④，还没到播放页）
 #: - ``player_unverified``：判断点④ 判不出来，**但控件点了、播放页在眼前**
@@ -173,8 +181,17 @@ VERDICTS: Final[dict[str, str]] = {
 #: ⚠️ ``player_unverified`` 必须在队列里：它拆出来是为了让复核员知道
 #: 「不确定的是组件能不能用」而不是「代码什么都判不出」，
 #: 而拆出去却不进队列 = 这批待办凭空消失，而它正是 W1 唯一的正样本来源。
+#:
+#: 2026-10-26（R1）加 ``blocked``：它是**采集侧账**
+#: （:data:`~executor.branches.COLLECTION_SIDE_BRANCHES`）——出负样本池，
+#: 但不是「没人需要看」。恰恰相反：**只有人能回答那个问题**——「我这边
+#: 进得去，agent 进不去」到底是站点性质（地区/DRM）还是这一次的运气。
+#: 代码给不出这个答案（同指纹同日实测 6/10 可达），所以它必须进队列；
+#: 而它进队列**不**等于它算负样本，对应裁定是
+#: ``confirm_collection_blocked``（写 ``collection_status``，不写 branch）。
 REVIEW_BRANCHES: Final = frozenset({
     "unresolved", "trailer_suspect", "player_unverified",
+    "blocked",
 })
 
 #: **裁定 → 想贴的分支**。``None`` 的键表示「不动分支」。
@@ -479,13 +496,27 @@ def apply_verdicts(
     核（多产地分支任一命中即合规，2026-10-16 方案 12 阶段 A1）。
 
     未裁定的项**保持原样**并计入 ``unreviewed``，不默认成成功也不默认丢弃。
+
+    ⚠️ **采集侧账写 ``collection_status``，不写 ``branch``**（2026-10-26 · R1）
+    -----------------------------------------------------------------------
+    ``blocked`` 进复核队列（:data:`REVIEW_BRANCHES`），但它**不是负样本**
+    （:data:`~executor.branches.COLLECTION_SIDE_BRANCHES`）。于是两条路：
+
+    * ``confirm_blocked`` —— 改判 ``branch="blocked"``，同时写
+      ``collection_status``，``is_negative_sample`` **恒为 False**；
+    * ``confirm_collection_blocked`` —— **不动 branch**，只写
+      ``collection_status="blocked"``：人确认的是「这次没进去」，
+      而分支早就写着 blocked 了。
+
+    两个都进 ``collection_written`` / ``branch_written`` 各自的计数，
+    报表上「人确认被拦」与「人确认看不了」永远分得开。
     """
     out = dict(archive)
     # 计数键**从 VERDICTS 派生**，不手写——手写过一次就漏了 `need_browser`
     # 与 `skip`，末尾那句 `stats[verdict] += 1` 对它们直接 KeyError。
     stats: dict[str, int] = {v: 0 for v in VERDICTS}
     stats.update(unreviewed=0, ignored=0, off_question=0, skipped=0,
-                 branch_written=0)
+                 branch_written=0, collection_written=0)
     new_outcomes: list[Mapping[str, Any]] = []
     confirmed: set[str] = set()
 
@@ -539,11 +570,28 @@ def apply_verdicts(
                 new_outcomes.append(rec)
                 continue
             rec["branch"] = want
-            rec["is_negative_sample"] = want is not None
+            # 入池判据与 :attr:`branches.SiteOutcome.is_negative_sample`
+            # **同源**，包括第二段排除（采集侧账）。写成 ``want is not None``
+            # 的话，人一贴 ``confirm_blocked`` 就把一条拦截写进负样本池——
+            # R1 的全部工作被一次人工回填抵消，而分支分布上看不出来
+            # （那一行本来就写着 blocked）。
+            rec["is_negative_sample"] = (
+                want is not None and want not in COLLECTION_SIDE_BRANCHES)
+            if want in COLLECTION_SIDE_BRANCHES:
+                rec["collection_status"] = want
             rec["source"] = "human"
             stats["branch_written"] += 1
             if want is None:
                 confirmed.add(url)
+        elif verdict == "confirm_collection_blocked":
+            # **只写采集侧账，不动 branch**。人这条裁定说的是
+            # 「这次确实被拦了」，而分支本来就是 blocked——把一句否定
+            # （不是站点性质）写成一句肯定（branch=blocked 再入池）正是
+            # 反的。原判不是 blocked 的（如 unresolved）也保持原样：
+            # 人确认的是「没进去」，不是「代码该改判成什么」。
+            rec["collection_status"] = "blocked"
+            rec["is_negative_sample"] = False
+            stats["collection_written"] += 1
         elif verdict in ("need_browser", "skip"):
             # 「没裁」与「裁了但没结论」是两种状态，各记各的：
             # ``skipped`` 是给报表看的合计数（两种加在一起），
@@ -718,9 +766,11 @@ def extract_from_browser_result(
        ——「采集 / 仲裁层主动 fail-closed」。这条是 mediabrowse 专属，
        run 路径的 P1 archive 没有 ``note`` 字段。
 
-    成功（``branch is None``）与其他 13 活跃负样本分支不进——前者按定义
+    成功（``branch is None``）与其他 12 活跃负样本分支不进——前者按定义
     不需要复核，后者按 :class:`~executor.branches.NON_SAMPLE_BRANCHES`
     反面是**代码已给出确定性结论**，复核它属于抽检（另一件事）。
+    采集侧分支（``blocked``）不在这 12 支里：它在
+    :data:`REVIEW_BRANCHES`，理由见那张表——它**不是**确定性结论。
 
     ⚠️ **dataclass 鸭子处理**——``final_url`` / ``requested_url`` /
     ``note`` 等字段在探测层不同时是空值；本函数不读隐含语义，只看字段
