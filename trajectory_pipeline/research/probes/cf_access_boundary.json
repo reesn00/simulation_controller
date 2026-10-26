@@ -1,0 +1,754 @@
+{
+  "driver": "camoufox",
+  "headless": true,
+  "settle_seconds": 4.0,
+  "rounds": 2,
+  "scanned_archives": 94,
+  "unmatched": [
+    {
+      "archive": "E006__2729220b.json",
+      "page_title": "Attention Required! | Cloudflare",
+      "host": "",
+      "visit_url": "https://www.kkday.com/zh-my/blog/188/asia-korea-jeju-food"
+    }
+  ],
+  "results": [
+    {
+      "archive": "E002__041f6d73.json",
+      "url": "http://www.xxhrr.com/1557/6655-1-12.html",
+      "page_title": "Just a moment...",
+      "archived_branch": "no_play_control",
+      "archived_question": "site.find_play_control",
+      "archived_evidence": "2 个交互元素中无一命中播放控件词表",
+      "rounds": [
+        {
+          "url": "http://www.xxhrr.com/1557/6655-1-12.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-12.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-12.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "仍被拦（captcha）"
+        },
+        {
+          "url": "http://www.xxhrr.com/1557/6655-1-12.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-12.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-12.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "仍被拦（captcha）"
+        }
+      ]
+    },
+    {
+      "archive": "E002__ddff4ace.json",
+      "url": "http://www.xxhrr.com/1557/6655-1-52.html",
+      "page_title": "Just a moment...",
+      "archived_branch": "blocked",
+      "archived_question": "",
+      "archived_evidence": "环境级阻断：blocked_cf",
+      "rounds": [
+        {
+          "url": "http://www.xxhrr.com/1557/6655-1-52.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-52.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-52.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "仍被拦（captcha）"
+        },
+        {
+          "url": "http://www.xxhrr.com/1557/6655-1-52.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-52.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "http://www.xxhrr.com/1557/6655-1-52.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "仍被拦（captcha）"
+        }
+      ]
+    },
+    {
+      "archive": "E002__ddff4ace.json",
+      "url": "http://www.xxhnc.com/1557/6655-2-25.html",
+      "page_title": "Just a moment...",
+      "archived_branch": "blocked",
+      "archived_question": "",
+      "archived_evidence": "环境级阻断：blocked_cf",
+      "rounds": [
+        {
+          "url": "http://www.xxhnc.com/1557/6655-2-25.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "http://www.xxhnc.com/1557/6655-2-25.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "http://www.xxhnc.com/1557/6655-2-25.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "仍被拦（captcha）"
+        },
+        {
+          "url": "http://www.xxhnc.com/1557/6655-2-25.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "http://www.xxhnc.com/1557/6655-2-25.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "http://www.xxhnc.com/1557/6655-2-25.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 687,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access fficdn.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block including ",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "仍被拦（captcha）"
+        }
+      ]
+    },
+    {
+      "archive": "E006__9cef9a3b.json",
+      "url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/trap",
+      "page_title": "Just a moment...",
+      "archived_branch": "blocked",
+      "archived_question": "site.is_reachable",
+      "archived_evidence": "LLM 判 False：页面被 Cloudflare 机器人验证挑战阻挡，未显示词典正文。（置信度 0.8 为代码层先验，非模型自报）",
+      "rounds": [
+        {
+          "url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/trap",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/trap",
+            "page_title": "TRAP中文(简体)翻译：剑桥词典",
+            "body_len": 3996,
+            "body_head": "AI Assistant\n词典\n\n翻译\n\n语法\n\n同义词词典\n\n剑桥词典+Plus\n\nGames\n登录 / 注册 中文 (简体)\n英语-中文（简体）\n英语-中文（繁体） 英语 英语语法\ntrap 在英语-中文（简体）词典中的翻译\n\ntrap\nnoun\nUK /træp/ US /træp/\ntrap noun (SOMETHING THAT PREVENTS ESCAPE)\nAdd to word list\nB2 [ C ]\na device or hole for catching animals or people and preventing their escape\n陷阱;夹子;捕捉器",
+            "detect_block": "",
+            "video_tag_count": 6,
+            "iframe_count": 7,
+            "elements_total": 200,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/trap",
+            "page_title": "TRAP中文(简体)翻译：剑桥词典",
+            "body_len": 3996,
+            "body_head": "AI Assistant\n词典\n\n翻译\n\n语法\n\n同义词词典\n\n剑桥词典+Plus\n\nGames\n登录 / 注册 中文 (简体)\n英语-中文（简体）\n英语-中文（繁体） 英语 英语语法\ntrap 在英语-中文（简体）词典中的翻译\n\ntrap\nnoun\nUK /træp/ US /træp/\ntrap noun (SOMETHING THAT PREVENTS ESCAPE)\nAdd to word list\nB2 [ C ]\na device or hole for catching animals or people and preventing their escape\n陷阱;夹子;捕捉器",
+            "detect_block": "",
+            "video_tag_count": 6,
+            "iframe_count": 8,
+            "elements_total": 200,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "可进入"
+        },
+        {
+          "url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/trap",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/trap",
+            "page_title": "请稍候…",
+            "body_len": 126,
+            "body_head": "dictionary.cambridge.org\n正在进行安全验证\n\n本网站使用安全服务防护恶意自动程序。在验证您不是自动程序期间，将显示此页面。\n\nRay ID: a506225ffc6f0438\n由 Cloudflare 提供的性能和安全服务\n隐私",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/trap",
+            "page_title": "TRAP中文(简体)翻译：剑桥词典",
+            "body_len": 3969,
+            "body_head": "AI Assistant\n词典\n\n翻译\n\n语法\n\n同义词词典\n\n剑桥词典+Plus\n\nGames\n登录 / 注册 中文 (简体)\n英语-中文（简体）\n英语-中文（繁体） 英语 英语语法\ntrap 在英语-中文（简体）词典中的翻译\n\ntrap\nnoun\nUK /træp/ US /træp/\ntrap noun (SOMETHING THAT PREVENTS ESCAPE)\nAdd to word list\nB2 [ C ]\na device or hole for catching animals or people and preventing their escape\n陷阱;夹子;捕捉器",
+            "detect_block": "",
+            "video_tag_count": 6,
+            "iframe_count": 4,
+            "elements_total": 200,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "可进入"
+        }
+      ]
+    },
+    {
+      "archive": "E006__9cef9a3b.json",
+      "url": "https://www.discogs.com/music/style/trap",
+      "page_title": "Just a moment...",
+      "archived_branch": "blocked",
+      "archived_question": "site.is_reachable",
+      "archived_evidence": "LLM 判 False：页面被 Cloudflare 机器人验证挑战拦截，主体内容不可达。（置信度 0.8 为代码层先验，非模型自报）",
+      "rounds": [
+        {
+          "url": "https://www.discogs.com/music/style/trap",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.discogs.com/music/style/trap",
+            "page_title": "Trap Style — 5,463 masters | Discogs",
+            "body_len": 3117,
+            "body_head": "STYLE · TRAP\n\n2001 — PRESENT\n\n5,463 MASTERS\n\nTrap\n\nTrap is a hip hop style built around rapid, rolling hi-hat patterns, deep 808 bass, and dark, minor-key melodies, named after the \"trap houses\" where drugs are sold and used.\n\nRead full history →\n\nDiscover Trap\nMost Collected\nEarly Releases\nMost Sol",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "elements_total": 132,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.discogs.com/music/style/trap",
+            "page_title": "Trap Style — 5,463 masters | Discogs",
+            "body_len": 3117,
+            "body_head": "STYLE · TRAP\n\n2001 — PRESENT\n\n5,463 MASTERS\n\nTrap\n\nTrap is a hip hop style built around rapid, rolling hi-hat patterns, deep 808 bass, and dark, minor-key melodies, named after the \"trap houses\" where drugs are sold and used.\n\nRead full history →\n\nDiscover Trap\nMost Collected\nEarly Releases\nMost Sol",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "elements_total": 132,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "可进入"
+        },
+        {
+          "url": "https://www.discogs.com/music/style/trap",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.discogs.com/music/style/trap",
+            "page_title": "Trap Style — 5,463 masters | Discogs",
+            "body_len": 3117,
+            "body_head": "STYLE · TRAP\n\n2001 — PRESENT\n\n5,463 MASTERS\n\nTrap\n\nTrap is a hip hop style built around rapid, rolling hi-hat patterns, deep 808 bass, and dark, minor-key melodies, named after the \"trap houses\" where drugs are sold and used.\n\nRead full history →\n\nDiscover Trap\nMost Collected\nEarly Releases\nMost Sol",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "elements_total": 132,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.discogs.com/music/style/trap",
+            "page_title": "Trap Style — 5,463 masters | Discogs",
+            "body_len": 3117,
+            "body_head": "STYLE · TRAP\n\n2001 — PRESENT\n\n5,463 MASTERS\n\nTrap\n\nTrap is a hip hop style built around rapid, rolling hi-hat patterns, deep 808 bass, and dark, minor-key melodies, named after the \"trap houses\" where drugs are sold and used.\n\nRead full history →\n\nDiscover Trap\nMost Collected\nEarly Releases\nMost Sol",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "elements_total": 132,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "可进入"
+        }
+      ]
+    },
+    {
+      "archive": "E021__dba5c958.json",
+      "url": "https://www.clgw555.com/guankan/249760-1-1.html",
+      "page_title": "Just a moment...",
+      "archived_branch": "login_wall_or_blocked",
+      "archived_question": "site.is_reachable",
+      "archived_evidence": "LLM 判 False：页面显示“Performing security verification”的 Cloudflare 安全验证页面，主体内容被验证墙阻挡。（置信度 0.8 为代码层先验，非模型自报）",
+      "rounds": [
+        {
+          "url": "https://www.clgw555.com/guankan/249760-1-1.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.clgw555.com/guankan/249760-1-1.html",
+            "page_title": "恭喜，站点创建成功！",
+            "body_len": 131,
+            "body_head": "恭喜, 站点创建成功！\n这是默认index.html，本页面由系统自动生成\n本页面在FTP根目录下的index.html\n您可以修改、删除或覆盖本页面\nFTP相关信息，请到“面板系统后台 > FTP” 查看\n我们为您提供了完善的数据备份功能，请到后台进行相关设置",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "elements_total": 0,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.clgw555.com/guankan/249760-1-1.html",
+            "page_title": "恭喜，站点创建成功！",
+            "body_len": 131,
+            "body_head": "恭喜, 站点创建成功！\n这是默认index.html，本页面由系统自动生成\n本页面在FTP根目录下的index.html\n您可以修改、删除或覆盖本页面\nFTP相关信息，请到“面板系统后台 > FTP” 查看\n我们为您提供了完善的数据备份功能，请到后台进行相关设置",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "elements_total": 0,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "可进入"
+        },
+        {
+          "url": "https://www.clgw555.com/guankan/249760-1-1.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.clgw555.com/guankan/249760-1-1.html",
+            "page_title": "恭喜，站点创建成功！",
+            "body_len": 131,
+            "body_head": "恭喜, 站点创建成功！\n这是默认index.html，本页面由系统自动生成\n本页面在FTP根目录下的index.html\n您可以修改、删除或覆盖本页面\nFTP相关信息，请到“面板系统后台 > FTP” 查看\n我们为您提供了完善的数据备份功能，请到后台进行相关设置",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 0,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.clgw555.com/guankan/249760-1-1.html",
+            "page_title": "恭喜，站点创建成功！",
+            "body_len": 131,
+            "body_head": "恭喜, 站点创建成功！\n这是默认index.html，本页面由系统自动生成\n本页面在FTP根目录下的index.html\n您可以修改、删除或覆盖本页面\nFTP相关信息，请到“面板系统后台 > FTP” 查看\n我们为您提供了完善的数据备份功能，请到后台进行相关设置",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 0,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "可进入"
+        }
+      ]
+    },
+    {
+      "archive": "E021__dba5c958.json",
+      "url": "https://m.tinzom.com/vodplay/22869-1-1.html",
+      "page_title": "Just a moment...",
+      "archived_branch": "login_wall_or_blocked",
+      "archived_question": "site.is_reachable",
+      "archived_evidence": "LLM 判 False：页面被 Cloudflare 安全验证拦截，主体仅显示“Performing security verification”，未加载视频内容。（置信度 0.8 为代码层先验，非模型自报）",
+      "rounds": [
+        {
+          "url": "https://m.tinzom.com/vodplay/22869-1-1.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://m.tinzom.com/vodplay/22869-1-1.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 692,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access abinliff021.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block inclu",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://m.tinzom.com/vodplay/22869-1-1.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 692,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access abinliff021.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block inclu",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "仍被拦（captcha）"
+        },
+        {
+          "url": "https://m.tinzom.com/vodplay/22869-1-1.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://m.tinzom.com/vodplay/22869-1-1.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 692,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access abinliff021.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block inclu",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://m.tinzom.com/vodplay/22869-1-1.html",
+            "page_title": "Attention Required! | Cloudflare",
+            "body_len": 692,
+            "body_head": "Sorry, you have been blocked\nYou are unable to access abinliff021.top\nWhy have I been blocked?\n\nThis website is using a security service to protect itself from online attacks. The action you just performed triggered the security solution. There are several actions that could trigger this block inclu",
+            "detect_block": "captcha",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "仍被拦（captcha）"
+        }
+      ]
+    },
+    {
+      "archive": "T025__0d6d185e.json",
+      "url": "https://www.yn-mg.cn/voddetail/71884.html",
+      "page_title": "Just a moment...",
+      "archived_branch": "login_wall_or_blocked",
+      "archived_question": "site.is_reachable",
+      "archived_evidence": "LLM 判 False：页面标题为“Just a moment...”，主体仅显示 Cloudflare 的安全机器人验证页面，目标内容尚未加载。（置信度 0.8 为代码层先验，非模型自报）",
+      "rounds": [
+        {
+          "url": "https://www.yn-mg.cn/voddetail/71884.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "请稍候…",
+            "body_len": 114,
+            "body_head": "www.yn-mg.cn\n正在进行安全验证\n\n本网站使用安全服务防护恶意自动程序。在验证您不是自动程序期间，将显示此页面。\n\nRay ID: a506232d79adf4fb\n由 Cloudflare 提供的性能和安全服务\n隐私",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 2,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "功夫-电影完整版免费在线观看高清播放-无极影视",
+            "body_len": 1996,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片 » 功夫\n功夫\n主演：\n周星驰 元秋 元华 黄圣依 梁小龙 陈国坤 田启文 林子聪 ",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "elements_total": 80,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "可进入"
+        },
+        {
+          "url": "https://www.yn-mg.cn/voddetail/71884.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "功夫-电影完整版免费在线观看高清播放-无极影视",
+            "body_len": 1996,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片 » 功夫\n功夫\n主演：\n周星驰 元秋 元华 黄圣依 梁小龙 陈国坤 田启文 林子聪 ",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 80,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "功夫-电影完整版免费在线观看高清播放-无极影视",
+            "body_len": 1996,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片 » 功夫\n功夫\n主演：\n周星驰 元秋 元华 黄圣依 梁小龙 陈国坤 田启文 林子聪 ",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 80,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "可进入"
+        }
+      ]
+    },
+    {
+      "archive": "T042__292bf1d7.json",
+      "url": "https://www.pixiv.help/hc/zh-cn",
+      "page_title": "Just a moment...",
+      "archived_branch": "login_wall_or_blocked",
+      "archived_question": "site.is_reachable",
+      "archived_evidence": "LLM 判 False：页面仅显示 Cloudflare 的安全验证（Just a moment... / Performing security verification），主体内容尚未加载。（置信度 0.8 为代码层先验，非模型自报）",
+      "rounds": [
+        {
+          "url": "https://www.pixiv.help/hc/zh-cn",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.pixiv.help/hc/zh-cn",
+            "page_title": "pixiv 帮助",
+            "body_len": 716,
+            "body_head": "帮助中心 简体中文 回到pixiv\n我们可以帮您什么忙吗？\n常见疑问： 密码丢失 无法使用高级会员功能 无法投稿作品 无法浏览作品\n常见疑问\n密码丢失\n收到了「pixiv新的登录」通知邮件\n忘记了高级会员账号怎么办？\npixiv的注册认证邮件没有收到\npixiv的邮箱地址、密码变更\n如果想变更pixiv高级会员的支付方式\nAI生成作品显示设置是什么\n关于pixiv\n\n关于注册会员\n\n关于ID/密码/登录\n\n关于pixiv高级会员\n\npixiv PREMIUM会员功能\n\n关于投稿与管理作品\n\n关于搜索作品\n\n浏览作品\n\n编辑个人信息\n\n账号安全及隐私\n\npixiv相关服务\n\n有关「赞！」\n\n有关",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 72,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.pixiv.help/hc/zh-cn",
+            "page_title": "pixiv 帮助",
+            "body_len": 716,
+            "body_head": "帮助中心 简体中文 回到pixiv\n我们可以帮您什么忙吗？\n常见疑问： 密码丢失 无法使用高级会员功能 无法投稿作品 无法浏览作品\n常见疑问\n密码丢失\n收到了「pixiv新的登录」通知邮件\n忘记了高级会员账号怎么办？\npixiv的注册认证邮件没有收到\npixiv的邮箱地址、密码变更\n如果想变更pixiv高级会员的支付方式\nAI生成作品显示设置是什么\n关于pixiv\n\n关于注册会员\n\n关于ID/密码/登录\n\n关于pixiv高级会员\n\npixiv PREMIUM会员功能\n\n关于投稿与管理作品\n\n关于搜索作品\n\n浏览作品\n\n编辑个人信息\n\n账号安全及隐私\n\npixiv相关服务\n\n有关「赞！」\n\n有关",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 72,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "可进入"
+        },
+        {
+          "url": "https://www.pixiv.help/hc/zh-cn",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.pixiv.help/hc/zh-cn",
+            "page_title": "pixiv 帮助",
+            "body_len": 716,
+            "body_head": "帮助中心 简体中文 回到pixiv\n我们可以帮您什么忙吗？\n常见疑问： 密码丢失 无法使用高级会员功能 无法投稿作品 无法浏览作品\n常见疑问\n密码丢失\n收到了「pixiv新的登录」通知邮件\n忘记了高级会员账号怎么办？\npixiv的注册认证邮件没有收到\npixiv的邮箱地址、密码变更\n如果想变更pixiv高级会员的支付方式\nAI生成作品显示设置是什么\n关于pixiv\n\n关于注册会员\n\n关于ID/密码/登录\n\n关于pixiv高级会员\n\npixiv PREMIUM会员功能\n\n关于投稿与管理作品\n\n关于搜索作品\n\n浏览作品\n\n编辑个人信息\n\n账号安全及隐私\n\npixiv相关服务\n\n有关「赞！」\n\n有关",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 72,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.pixiv.help/hc/zh-cn",
+            "page_title": "pixiv 帮助",
+            "body_len": 716,
+            "body_head": "帮助中心 简体中文 回到pixiv\n我们可以帮您什么忙吗？\n常见疑问： 密码丢失 无法使用高级会员功能 无法投稿作品 无法浏览作品\n常见疑问\n密码丢失\n收到了「pixiv新的登录」通知邮件\n忘记了高级会员账号怎么办？\npixiv的注册认证邮件没有收到\npixiv的邮箱地址、密码变更\n如果想变更pixiv高级会员的支付方式\nAI生成作品显示设置是什么\n关于pixiv\n\n关于注册会员\n\n关于ID/密码/登录\n\n关于pixiv高级会员\n\npixiv PREMIUM会员功能\n\n关于投稿与管理作品\n\n关于搜索作品\n\n浏览作品\n\n编辑个人信息\n\n账号安全及隐私\n\npixiv相关服务\n\n有关「赞！」\n\n有关",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "elements_total": 72,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "可进入"
+        }
+      ]
+    },
+    {
+      "archive": "TPIN02__1cf5deca.json",
+      "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+      "page_title": "Just a moment...",
+      "archived_branch": "unresolved",
+      "archived_question": "site.is_reachable",
+      "archived_evidence": "[原判 login_wall_or_blocked] LLM 判 False：页面标题为“Just a moment...”，主体仅显示 Cloudflare 的安全验证提示，正文内容被验证码拦截。（置信度 0.8 为代码层先验，非模型自报）\n\n同一条 URL 在当前生产执行层（camoufox）的 6 份存档里读成**可播放页**（标题《功夫-HD在线观看-无极影视》，3 个播放器 iframe）：camoufox 的第一次观察同样撞上 Cloudflare「正在进行安全验证」，但等挑战过去就落到了真实播放页；本条是**旧执行层**（存档无 driver 字段 = obscura 期）卡在挑战页上就下的结论 ⇒ 它不是页面事实，是对当前生产执行层**不成立**的结论，降为不判（unresolved 不是负样本，不进池）。证据留在存档的观察里（Cloudflare 挑战页正文仍在）。",
+      "rounds": [
+        {
+          "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+            "page_title": "功夫-HD在线观看-无极影视",
+            "body_len": 1593,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片  »  功夫  »  HD\n类型：动作  地区：大陆  年份：2004\n上一集 下一",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 3,
+            "elements_total": 71,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+            "page_title": "功夫-HD在线观看-无极影视",
+            "body_len": 1593,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片  »  功夫  »  HD\n类型：动作  地区：大陆  年份：2004\n上一集 下一",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 3,
+            "elements_total": 71,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 1,
+          "verdict": "可进入"
+        },
+        {
+          "url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+          "wait_until": "load",
+          "settle_seconds": 4.0,
+          "first": {
+            "observed_url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+            "page_title": "功夫-HD在线观看-无极影视",
+            "body_len": 1593,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片  »  功夫  »  HD\n类型：动作  地区：大陆  年份：2004\n上一集 下一",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 3,
+            "elements_total": 71,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "settled": {
+            "observed_url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+            "page_title": "功夫-HD在线观看-无极影视",
+            "body_len": 1593,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片  »  功夫  »  HD\n类型：动作  地区：大陆  年份：2004\n上一集 下一",
+            "detect_block": "",
+            "video_tag_count": 0,
+            "iframe_count": 3,
+            "elements_total": 71,
+            "degraded": [],
+            "body_source": "inner_text"
+          },
+          "round": 2,
+          "verdict": "可进入"
+        }
+      ]
+    }
+  ],
+  "fingerprint": {
+    "os": "windows",
+    "geoip": false,
+    "locale": "zh-CN",
+    "humanize": true,
+    "headless": true,
+    "screen": [
+      1920,
+      1080
+    ],
+    "window": [
+      1920,
+      955
+    ],
+    "dpr": 1,
+    "timezone": "Asia/Shanghai"
+  }
+}

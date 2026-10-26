@@ -564,6 +564,64 @@ ACCESS_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+#: **边缘挑战中间页**的指纹（方案 20 §R3）。命中 = 这一页是 **CDN / WAF 自己
+#: 发出来的中间页**，不是站点的页面。
+#:
+#: 为什么这条要单列一张表，而不是复用 :data:`ACCESS_HINTS` 的 ``anti_bot`` 档
+#: ---------------------------------------------------------------------
+#: ``ACCESS_HINTS["anti_bot"]`` 里有「just a moment...」「安全验证」这类短语，
+#: 它们的用途是**判「这页被拦了」**——而「被拦」与「拦截发生在站点侧」是
+#: 两件事（方案 20 §1 的 B / C 两个问题）。CF 的「Just a moment...」页上
+#: 一个字都不是站点说的，拿它当「站点自述地区/DRM/验证码」的证据，
+#: 就是让一条**采集面事实**冒充**站点结论**——方案 20 §1 第 3 条那个自相矛盾。
+#:
+#: 表刻意只收「只可能出现在中间页上」的短语：品牌名（cloudflare / sucuri /
+#: ddos-guard）、它们的固定文案（``ray id`` / ``cdn-cgi`` / ``checking your
+#: browser``）、以及「请开 JS 与 cookie 再继续」这种**挑战页模板**。
+#: 泛化词（「安全验证」「人机验证」）**不收**——站点自己的验证码页也这么写，
+#: 收进来会把「站点侧验证码」错判成「边缘拦截」。
+EDGE_CHALLENGE_HINTS: tuple[str, ...] = (
+    "just a moment",
+    "attention required",
+    "checking your browser",
+    "verify you are human",
+    "verifying you are human",
+    "enable javascript and cookies to continue",
+    "please wait while we verify",
+    "performing security verification",
+    "cdn-cgi/challenge-platform",
+    "performance & security by cloudflare",
+    "ray id",
+    "sorry, you have been blocked",
+    "sucuri website firewall",
+    "ddos-guard",
+    "vercel security checkpoint",
+    "checking if the site connection is secure",
+)
+
+
+def edge_challenge_evidence(title: str, text: str) -> str:
+    """这一页是不是**边缘挑战中间页**：命中则返回命中短语，空串 = 没命中。
+
+    只看标题 + 正文的**固定模板短语**（见 :data:`EDGE_CHALLENGE_HINTS`）：
+    判别的是「这段话是 CDN 说的还是站点说的」，而 CDN 的模板文案跨站点几乎
+    一字不差。不做语义判断，也不看 URL（站点可以把自己的验证码页放在任何
+    路径上）。
+
+    ⚠️ 返回空串**只说明「没命中这些模板」**，不说明「这一页一定是站点页」——
+    词表永远不全（CF 换一版文案就漏）。调用方要拿它做**否定性结论**
+    （「所以这是站点侧自述」）时，必须同时要求**肯定性证据**在场
+    （站点自述的地区 / DRM / 验证码短语）；两边都缺 ⇒ 不可判定。
+    """
+    haystack = _norm(f"{title or ''} {text or ''}")
+    if not haystack.strip():
+        return ""
+    for hint in EDGE_CHALLENGE_HINTS:
+        if _norm(hint) in haystack:
+            return hint
+    return ""
+
+
 def infer_access_from_evidence(evidence: str) -> str:
     """从 evidence 文本反推 ``access_control_type``。
 

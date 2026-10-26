@@ -101,6 +101,7 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 - [03-rubric修订与实施方案.md](trajectory_pipeline/docs/设计方案/03-rubric修订与实施方案.md) —— rubric v1.1 逐条改稿清单 + 五个代码变更（点文件、点函数）。**§9 是实施结果**（哪条做了、哪条没做、每条由哪个测试封着、方案漏掉了什么）。**要动 `branches.py` / `observation_view.py` / `integrity.py` 的先读**
 - [04-camoufox执行层替换方案.md](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md) —— **D11 修订 D7**：camoufox 取代 obscura 成为唯一执行层。含实测取证（F1–F4）、13 原语映射表、三个难点（ref 机制 / 错误三态 / 身份钉死）、两份红线、P0–P6 落地阶段。⚠️ **§6.1 的 go/no-go 门槛已被 owner 裁定覆盖（2026-10-22）**——生产链默认执行层**已切 camoufox**（`DEFAULT_KIND = "camoufox"`）；§6.1 顶部有覆盖块，六条读数的新地位写在那里。**obscura 没删**（`--driver obscura` 显式点名，工具面 `obscura-1` 只读不再产出）
 - [15-执行器与agent-runtime重新定义.md](trajectory_pipeline/docs/设计方案/15-执行器与agent-runtime重新定义.md) —— **D-A6–D-A11**：**LLM 层做探索、代码层做护栏**。感知层退位成三块静态资产，七不变式里 I3（幂等）与 I6（ref 可溯源）退役；工具声明 = agent 工具集 = camoufox 调用面（含采集面 4 条）；含方言轴与批次元数据、落地路线 R0–R5、待决项 O-1–O-4
+- [20-反爬拦截与金标观测面.md](trajectory_pipeline/docs/设计方案/20-反爬拦截与金标观测面.md) —— **「人工能进、agent 被拦」不是置信度问题，是观测面这个轴缺了**。R0 实测（同指纹同日、10 个判过 CF 挑战的目标 × 2 轮 = 12 进 / 8 拦）证明**单次拦截对站点性质零信息**；含「什么样算负样本」的四条判据、owner 五条拍板（O-a–O-e）、R0–R4 路线与 R1/R2/R3 实施结果（`blocked` 出负样本池且进复核队列；金标加 `access_surface`/`observed_at`，旧行 `unrecorded`；评估侧**跨面不出分歧卡、出采集侧账**，`d5` 的 `blocked` 加「站点侧」前置、账本补 `blocked_surface`/`attempt`）。**R4（难度轴）未做**
 - [在线视频场景rubric.md](trajectory_pipeline/docs/设计方案/在线视频场景rubric.md) —— 评分标准本体
 
 ### 存量 v1（均在 `archive/v1/` 下，按需查阅）

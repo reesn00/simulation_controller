@@ -203,19 +203,62 @@ TREE_BRANCHES: frozenset[str] = frozenset(
 #: 其中 ``question`` 恒为空——核的判据全部在代码里，没有判断题可配对。
 #:
 #: 与 :data:`CODE_ONLY_BRANCHES` 的分工：那组分支**只**由代码产生、名字
-#: 本身不与任何判断点冲突；这里的分支（``not_play_site``）**同名于**判断点
-#: ① 的负分支（``select.play_sites`` 判 False 时也记它），不能整条塞进
-#: ``CODE_ONLY_BRANCHES``——否则 ``("select.play_sites", "not_play_site")``
-#: 的配对检查会被跳过，而那一侧正是需要核「分支走错」的地方。
+#: 本身不与任何判断点冲突；这里的分支**同名于**某个判断点的负分支
+#: （``not_play_site`` 同名于 ①、``blocked`` 同名于 ②、
+#: ``login_required`` 同名于 ②、``subscription_wall`` 同名于 ④），
+#: 不能整条塞进 ``CODE_ONLY_BRANCHES``——否则
+#: ``("select.play_sites", "not_play_site")`` 这类**有题**的配对检查会被
+#: 整个跳过，而那一侧正是需要核「分支走错」的地方。
 #:
-#: 目前唯一成员来自 ``executor.orchestrator._drop_site_homepages``：搜索
-#: 结果里 path 为 ``/`` 的 URL 在**任何判断点之前**就被代码判定为站点
-#: 首页（结构上不可能是播放页），直接记 ``not_play_site`` 且不带
-#: ``question``。新增同类的确定性事实核时必须同步这里——
-#: ``tests/unit/test_d5_scorer.py::Test同源`` 盯着真实存档里出现的每一对。
+#: 三类产地（**question 为空 = 记账入口没传 ``decision``**，
+#: 见 :meth:`trajectory_pipeline.executor.branches.RunLedger.record`）：
+#:
+#: 1. ``("", "not_play_site")``——``executor.orchestrator._drop_site_homepages``：
+#:    搜索结果里 path 为 ``/`` 的 URL 在**任何判断点之前**就被代码判定为
+#:    站点首页（结构上不可能是播放页），直接记 ``not_play_site``；
+#: 2. ``("", "blocked")``——**采集侧账**（R1 裁定）：脚本链撞上反爬/验证码页
+#:    （``executor.steps.visit``，判据是 :func:`detect_block`）与 gatekeeper
+#:    的 CF/验证码判定都**不带 decision** ⇒ question 恒为空。它「有题意
+#:    但证据强度不成立」，不是「没题意」；
+#: 3. ``("", "login_required")`` / ``("", "subscription_wall")`` /
+#:    ``("", "blocked")``——**gatekeeper 代码判定的收口分支**（方案 15
+#:    「代码层做护栏」）：agent 路径上拦截由**代码**判，**没有判断点**，
+#:    于是这三支在 agent 存档里 question 恒为空。这三条**从执行层推导**
+#:    （:data:`trajectory_pipeline.executor.agent_loop.GATEKEEPER_DECIDED_BRANCHES`），
+#:    不手抄——手抄的那笔旧账是 ``questions.REGISTRY`` → 本映射漏
+#:    ``unresolved``，48 条正确结论被判成「分支走错」。
+#:
+#: 实测触发（2026-10-26 · T054 agent 批）：3 条
+#: ``question="" / branch="subscription_wall" / evidence="paywall 二次拦截"``
+#: ——``tests/unit/test_d5_scorer.py::Test同源`` 当场把这一对判成
+#: 「映射外」。**那不是数据坏了，是映射不知道 agent 路径有第三类产地。**
+#:
+#: ⚠️ **本表只回答「这一对能不能出现在盘上」，不回答「这条标签对不对」**：
+#: 前置事实核（:data:`~trajectory_pipeline.executor.branches.BRANCH_PRECONDITION`）
+#: 是另一道闸，管的是「这个页面是不是真的付费墙」。放行这一对 ≠ 认定
+#: gatekeeper 判对了——那一半由 D-5 的**证据核**与人工复核承担。
+def _gatekeeper_questionless_pairs() -> tuple[tuple[str, str], ...]:
+    """gatekeeper 代码判定的分支——**从执行层推导**，不手抄。
+
+    真源是 :data:`trajectory_pipeline.executor.agent_loop.GATEKEEPER_DECIDED_BRANCHES`
+    （agent 收口映射的值集）。延迟导入的理由与本模块里另外两处一致：
+    ``evaluation`` → ``executor`` 这条边今天**只有**「借用一张事实表」
+    这一个用途，放在模块顶部会把 import 顺序变成硬约束；而这张表
+    恰恰是**执行层的知识**（哪条 Verdict 折成哪支分支），复制一份
+    进来就是两处各写一个产地的事。
+    """
+    from trajectory_pipeline.executor.agent_loop import (
+        GATEKEEPER_DECIDED_BRANCHES,
+    )
+
+    return tuple(("", b) for b in sorted(GATEKEEPER_DECIDED_BRANCHES))
+
+
 QUESTIONLESS_PAIRS: frozenset[tuple[str, str]] = frozenset(
     {
         ("", "not_play_site"),
+        ("", "blocked"),
+        *_gatekeeper_questionless_pairs(),
     }
 )
 
@@ -319,7 +362,7 @@ REQUIRES_PLAY_PAGE_PAIRS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-#: 四处检查的节点名。**用常量而不在调用点硬编码**——下面按节点名
+#: 五处检查的节点名。**用常量而不在调用点硬编码**——下面按节点名
 #: 反查（``next(c for c in wrong if c.node == _NODE_NO_SKIP)``），
 #: 两处各写一个字符串就会让那个反查抛 ``StopIteration``。
 #: 而它抛出时的症状是「本条样本评不出来」，看起来像数据问题，不像代码问题。
@@ -327,6 +370,20 @@ _NODE_BRANCH = "分支与判断点配套"
 _NODE_REACHED = "结论的前置事实"
 _NODE_NO_SKIP = "无跳步结论"
 _NODE_EVIDENCE = "结论的证据核"
+_NODE_BLOCK_SIDE = "拦截发生在站点侧"
+
+#: ``blocked`` 节点的**专属**前置事实（方案 20 §R3；检查 5 只管这一支）。
+#:
+#: 「被拦了」是**采集面事实**（B 面），「站点不给看」才是**站点结论**（A 面）。
+#: 把前者当前者打 5 分，就是体制化地承认那颗污染——方案 20 §1 第 3 条。
+_BLOCKED_BRANCH = "blocked"
+
+#: 站点**自述**的拦截形态（``infer_access_defect`` 的取值里挑）。
+#: ``not_found`` **不算**：404 页没说「这个地区不给看」；``anti_bot`` 算
+#: （站点自己写「访问过于频繁」），但**CDN 模板文案已在前一步排除**。
+SITE_SELF_REPORT_KINDS: frozenset[str] = frozenset(
+    {"region", "captcha", "anti_bot"}
+)
 
 #: 检查 4 的两处口径。``final`` = 这条错的是**最终结论本身**
 #: （rubric 锚点 2「最终结论错误，过程部分正确」），不是「走错一步」。
@@ -691,6 +748,86 @@ def _check_claim_evidence(branch: str | None, sample: Any) -> TreeCheck:
     )
 
 
+# ── 检查 5：`blocked` 的前置事实——拦截发生在哪一侧 ────────────────
+
+
+def _observed_title(sample: Any) -> str:
+    """本样本的页面标题（观察里的 ``page_title``），空串 = 没留标题。
+
+    与 :func:`_observed_text` 同款纪律：只认**观察**，不认 ``rationales``。
+    """
+    return " ".join(
+        str(o.get("page_title") or "") for o in _observations(sample)
+    )
+
+
+def _check_block_side(branch: str | None, sample: Any) -> TreeCheck:
+    """检查 5：贴 ``blocked`` 的前提——**拦截发生在站点侧**（方案 20 §R3）。
+
+    判据是「**拿到了站点页面，且页面自述地区 / DRM / 验证码**」：两半都必须
+    在场，缺一半就落 ``undetermined``（**不出分**）。理由与 M-35 同源——
+    机器判不了「站点到底给不给看」，但**能判「我们连站点页面都没拿到」**：
+
+    - 正文/标题命中 CDN 模板（:func:`edge_challenge_evidence`，「Just a
+      moment...」「Ray ID」「Attention Required!」）⇒ 这一页**是 CDN 的中间页**，
+      一个字都不是站点说的。「采集面被拦」是 B 面事实，不构成 A 面结论；
+    - 正文里连站点自述的形态都没有（没留正文 / 只剩 404 文案）⇒ 词表可能
+      不全，也可能是边缘拦截——分不清就不出分。
+
+    只审 ``blocked``：``login_required`` / ``broken`` 的「站点侧」前提由别的
+    判据承担（登录墙要看判断点 ② 的结构化字段，broken 看 404 页本身）。
+
+    方向**单一**：这一检查只会把分数从「有」变成「没有」——**从不据此判错**。
+    采集面被拦不是模型的错，但也不是模型的功；判错会把「换执行层」这件事
+    变成「轨迹质量」问题（方案 20 §7 最后一条）。
+    """
+    if branch != _BLOCKED_BRANCH:
+        return TreeCheck(
+            _NODE_BLOCK_SIDE,
+            "skipped",
+            f"分支 {branch or '记录成功'} 不是 {_BLOCKED_BRANCH}——"
+            f"本条只管「采集面被拦 vs 站点侧墙」这一支",
+        )
+    text = _observed_text(sample)
+    if not text:
+        return TreeCheck(
+            _NODE_BLOCK_SIDE,
+            "undetermined",
+            "本样本没有留存页面正文——分不清「站点的地区/DRM/验证码提示」"
+            "与「CDN 挑战中间页」，不据此认定站点侧拦截",
+        )
+    from trajectory_pipeline.perception.rule_perceptor import (
+        edge_challenge_evidence,
+        infer_access_defect,
+    )
+
+    edge = edge_challenge_evidence(_observed_title(sample), text)
+    if edge:
+        return TreeCheck(
+            _NODE_BLOCK_SIDE,
+            "undetermined",
+            f"标题/正文命中**边缘挑战模板**「{edge}」——这一页是 CDN/WAF 发出来"
+            f"的中间页，不是站点页面。「我们这张面被拦」是采集侧事实（B 面），"
+            f"不构成「站点不给看」的结论（A 面）；换一张面可能进得去，"
+            f"所以这一维不出分（方案 20 §R3）",
+        )
+    kind = infer_access_defect(text)
+    if kind in SITE_SELF_REPORT_KINDS:
+        return TreeCheck(
+            _NODE_BLOCK_SIDE,
+            "ok",
+            f"正文是**站点自己**写的 {kind} 形态（非 CDN 中间页模板）⇒ "
+            f"「拦截发生在站点侧」这个前置事实成立",
+        )
+    return TreeCheck(
+        _NODE_BLOCK_SIDE,
+        "undetermined",
+        f"正文里找不到站点自述的地区/DRM/验证码形态（命中的是 {kind or '无'}）"
+        f"——可能是词表不全，也可能是我们压根没拿到站点页面；"
+        f"前置事实不成立就不给「站点侧拦截」这个结论，也不扣轨迹的分",
+    )
+
+
 # ── 打分 ──────────────────────────────────────────────────────────
 
 
@@ -753,6 +890,7 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
         _check_reached_precondition(branch, question, reached),
         _check_no_skip(branch, reached),
         _check_claim_evidence(branch, sample),
+        _check_block_side(branch, sample),
     )
 
     wrong = [c for c in checks if c.kind == "wrong"]

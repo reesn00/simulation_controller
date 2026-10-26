@@ -305,14 +305,24 @@ class Test契约:
         assert not offenders, f"builder 不该 import executor: {offenders}"
 
     def test_NEGATIVE_SAMPLE_BRANCHES与executor对得上(self):
-        """两份表必须含同样的真负样本分支——漂移是负样本池静默变少的源头。"""
+        """两份表必须含同样的真负样本分支——漂移是负样本池静默变少的源头。
+
+        ⚠️ executor 侧是**两段排除**（无题的兜底分支 + 采集侧账），
+        P2 这份是「进池」的正表，所以它要与**两张表都**不相交
+        （2026-10-26 · R1：``blocked`` 从真负样本表里拿掉）。"""
         from trajectory_pipeline.perception.questions import all_branches
-        from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+        from trajectory_pipeline.executor.branches import (
+            COLLECTION_SIDE_BRANCHES,
+            NON_SAMPLE_BRANCHES,
+        )
         all_b = set(all_branches())
         non_sample = set(NON_SAMPLE_BRANCHES)
         ours = builder.NEGATIVE_SAMPLE_BRANCHES
         assert ours & non_sample == frozenset(), (
             f"builder 与 executor 口径打架: {ours & non_sample}")
+        assert ours & set(COLLECTION_SIDE_BRANCHES) == frozenset(), (
+            f"builder 把采集侧账当成负样本了: "
+            f"{ours & set(COLLECTION_SIDE_BRANCHES)}")
         assert ours.issubset(all_b), (
             f"builder 列了不在 all_branches 里的分支: {ours - all_b}")
 

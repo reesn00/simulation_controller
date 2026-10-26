@@ -57,7 +57,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from trajectory_pipeline.common.atomic import write_json_atomic, write_text_atomic
-from trajectory_pipeline.executor.branches import BRANCH_LABELS, NON_SAMPLE_BRANCHES
+from trajectory_pipeline.executor.branches import (
+    BRANCH_LABELS,
+    COLLECTION_SIDE_BRANCHES,
+    NON_SAMPLE_BRANCHES,
+)
 from trajectory_pipeline.perception import questions
 
 __all__ = [
@@ -105,6 +109,11 @@ def is_negative_sample_branch(branch: str | None) -> bool:
     ⚠️ **不查** ``questions.all_branches()``：源分支可以是**已弃用**的
     合并态（``login_wall_or_blocked``，实测池里 35 条）——那正是最该
     被改判的对象。目标分支才受那条约束（见 :func:`check_target`）。
+
+    ⚠️ 采集侧分支（``blocked``）**故意算源**：R1（2026-10-26）之后它
+    不再进池，但**历史池行不回填**——那批行仍然需要能被改判成真正的
+    负分支（或走 ``pool_drop`` 出池）。把源也一起排掉，等于让旧行
+    只剩「删」这一条路。
     """
     return bool(branch) and branch not in NON_SAMPLE_BRANCHES
 
@@ -120,6 +129,13 @@ def check_target(branch: str) -> tuple[bool, str]:
     3. **是真负样本**（∉ :data:`NON_SAMPLE_BRANCHES`）——「改标签」不是
        「改结论」，而 ``unresolved`` 这类反思档**根本不在池里**，
        把一条真负样本改成它等于把它踢出池（那是 ``cli downgrade`` 的活）。
+
+    ⚠️ 2026-10-26（R1）第 3 条扩成**两张表**：采集侧分支
+    （:data:`COLLECTION_SIDE_BRANCHES`，现为 ``blocked``）同样不能当目标。
+    它 ``∉ NON_SAMPLE``（有题），但 ``∉`` 负样本池——改判到它等于
+    **把一条采集失败写进负样本池**，而池子的全部价值就是「这里真的看不了」。
+    历史上（2026-10-21）确实这么改过（E021 那三条改成 blocked），
+    **已有池行不回填**；本命令从此不再产出新的。
     """
     if not branch:
         return False, "目标分支为空"
@@ -134,6 +150,12 @@ def check_target(branch: str) -> tuple[bool, str]:
                        f"（{'、'.join(sorted(NON_SAMPLE_BRANCHES))}）——"
                        f"改判的前提是「仍是负样本」；要把一条踢出池走 "
                        f"cli downgrade")
+    if branch in COLLECTION_SIDE_BRANCHES:
+        return False, (f"目标分支 {branch!r} 是**采集侧账**，不是负样本"
+                       f"（{'、'.join(sorted(COLLECTION_SIDE_BRANCHES))}）"
+                       f"——「这次没进去」不构成站点性质，改判到它等于把"
+                       f"采集失败写进负样本池；要记这条事实走 review 的 "
+                       f"confirm_collection_blocked")
     return True, ""
 
 

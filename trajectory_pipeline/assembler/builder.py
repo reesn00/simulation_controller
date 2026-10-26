@@ -207,12 +207,21 @@ def _write_one(
 #: 改名要同时改 :mod:`trajectory_pipeline.executor.branches.BRANCH_LABELS`
 #: 配套的 :data:`trajectory_pipeline.executor.branches.NEGATIVE_SAMPLE_BRANCHES`
 #: （见 executor 侧注）。
+#:
+#: ⚠️ **``blocked`` 不在这张表里**（2026-10-26 · R1）。``NON_SAMPLE_BRANCHES``
+#: 之外还有**第二段排除**：executor 侧
+#: :data:`trajectory_pipeline.executor.branches.COLLECTION_SIDE_BRANCHES`
+#: ——「这次没看到」不是「这里看不了」。一次反爬拦截对站点性质零信息
+#: （同一 camoufox 指纹、同一天，10 个判过 CF 挑战的目标里 6 个当天
+#: 就进得去），而四周前同一机制产出的 4 条「CF 挑战页 ⇒ no_play_control」
+#: 正是这套判据下最贵的那类假负样本。P2 不能 import 那张表，所以
+#: **靠 :func:`trajectory_pipeline.executor.branches.all_branches` 减掉两张表**
+#: 这条同步测试看着（``tests/unit/test_builder.py``）。
 NEGATIVE_SAMPLE_BRANCHES: frozenset[str] = frozenset(
     {
         "not_play_site",  # 判断点 ①
         "unreachable_hard",  # ② 导航失败
         "login_required",  # ② 的细分：登录后可免费看
-        "blocked",  # ② 的细分：地区/验证码/反爬
         "broken",  # ② 的细分：404；媒体损坏形态见 media_signal
         "no_play_control",  # ③
         "component_unverified",  # ④

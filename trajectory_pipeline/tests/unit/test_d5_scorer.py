@@ -545,6 +545,95 @@ class Test证据核:
         assert ev["kind"] == "wrong"
 
 
+# ── 6′. 检查 5：`blocked` 的前置事实是「拦截发生在站点侧」（方案 20 §R3）──
+
+
+class Test采集侧拦截:
+    """``blocked`` 是个**有题意但证据强度不成立**的分支（R1 裁定），贴它
+    就得说出「拦截发生在站点侧」。而实测中 27 条 ``blocked`` 样本里有 16 条
+    页面是 **Cloudflare 的中间页**——那一段话一个字都不是站点说的，
+    「我们这张采集面被拦」是 B 面事实，不构成 A 面结论（方案 20 §2：人工
+    浏览器 12 个进得去、camoufox 8 个被拦）。
+
+    这一检查的方向**单一**：它只会把「有分」变成「没有分」，**从不判错**。
+    采集面被拦不是模型的错（所以不扣分），也不是模型的功（所以不给 5 分）。
+    """
+
+    #: 实测（``E006__9cef9a3b__site-1``）：Cloudflare 的中间页。
+    CF = (
+        "dictionary.cambridge.org Performing security verification This website "
+        "uses a security service to protect against malicious bots. This page is "
+        "displayed while the website verifies you are not a bot. "
+        "Ray ID: a4ab267b384b33a3 Performance and Security by Cloudflare"
+    )
+    #: 实测（``E017__a2878b23__site-1``）：腾讯视频站内页自述设备不支持。
+    SITE_SELF_REPORT = "当前设备不支持播放 ⏎ 重试 ⏎ 错误码： ⏎ 70017001.1"
+
+    def _check(self, branch, *, body="", title=""):
+        sample = _sample(_out(branch), body=body)
+        v = score_d5(sample)
+        c = [x for x in v.checks if x.node == d5_scorer._NODE_BLOCK_SIDE][0]
+        return v, c
+
+    def test_CF中间页落不可判定(self):
+        v, c = self._check("blocked", body=self.CF)
+        assert c.kind == "undetermined", c.why
+        assert v.score is None
+        assert "边缘挑战" in c.why and "「" in c.why, (
+            "不出分却不把命中的模板抄出来，读报告的人无法复核"
+        )
+
+    def test_站点自述地区阻断前置事实成立(self):
+        _, c = self._check("blocked", body=self.SITE_SELF_REPORT)
+        assert c.kind == "ok"
+        assert "站点" in c.why and "region" in c.why
+
+    def test_没留正文落不可判定(self):
+        """没有正文 ≠ 站点侧拦截。分不清「站点的提示」与「CDN 的中间页」，
+        就不认定这个前置事实。"""
+        v, c = self._check("blocked", body="")
+        assert c.kind == "undetermined"
+        assert v.score is None
+        assert "没有留存页面正文" in c.why
+
+    def test_正文无任何形态落不可判定(self):
+        """词表可能不全（中文 CDN 模板如「正在校验浏览器环境」还没收），
+        也可能是边缘拦截——分不清就不出分。"""
+        _, c = self._check("blocked", body="这是一个视频网站，页面正在加载内容")
+        assert c.kind == "undetermined"
+
+    def test_边缘模板优先于站点形态(self):
+        """CFW 页面常同时命中文案与 ``anti_bot`` 词（实测
+        ``E028__023b8837__site-13``：「Ray ID」+「安全服务防护恶意自动程序」）。
+        先判「这页是谁发的」，再判「它说了什么」——顺序反了会被词表骗过。"""
+        _, c = self._check("blocked", body=self.CF + " 请完成安全验证")
+        assert c.kind == "undetermined"
+
+    @pytest.mark.parametrize(
+        "branch", ["login_required", "broken", "no_play_control", "unresolved"]
+    )
+    def test_别的分支不归这条管(self, branch):
+        """登录墙的「站点侧」由判断点 ② 的结构化字段承担，``broken`` 看 404
+        页本身——这条检查只管「采集面被拦 vs 站点侧墙」这一支。"""
+        _, c = self._check(branch, body=self.CF)
+        assert c.kind == "skipped"
+
+    def test_词表只收CDN模板不收泛化词(self):
+        """``安全验证`` / ``人机验证`` 这类泛化词**刻意不收**：站点自己的验证码
+        页也这么写，收进来会把「站点侧拦截」判成「边缘拦截」（方向反了更贵）。"""
+        from trajectory_pipeline.perception.rule_perceptor import (
+            EDGE_CHALLENGE_HINTS,
+            edge_challenge_evidence,
+        )
+
+        for generic in ("安全验证", "人机验证", "请完成验证"):
+            assert generic not in EDGE_CHALLENGE_HINTS
+        for tpl in ("Just a moment...", "Attention Required! | Cloudflare"):
+            assert edge_challenge_evidence(tpl, ""), tpl
+        assert edge_challenge_evidence("", "") == ""
+        assert edge_challenge_evidence("腾讯视频", self.SITE_SELF_REPORT) == ""
+
+
 # ── 7. 真实存档回归 ───────────────────────────────────────────────
 
 
@@ -616,10 +705,13 @@ class TestOnRealSamples:
         ① 老批次 / 搜索单元没有 outcome —— 「没有决策可判」；
         ② 证据核核不了 —— 「决策有了，依据核不了」；
         ③ 树上缺口分支 —— 「决策有了，但分支不在 D-5 决策树上，
-           无法用树核对」（2026-10-24 · M-35 新增，检查 1 判 undetermined）。
+           无法用树核对」（2026-10-24 · M-35 新增，检查 1 判 undetermined）；
+        ④ 采集面被拦 —— 「贴的是 ``blocked``，但这一页是 CDN 中间页 /
+           没留正文，判不出拦截发生在站点侧」（方案 20 §R3 新增，检查 5）。
 
-        混成一个数看不出来是哪种：前者是采集器缺字段，后者是词表
-        或口径不够，第三种是决策树还没覆盖这条分支——该改的地方完全不同。"""
+        混成一个数看不出来是哪种：① 是采集器缺字段，② 是词表或口径不够，
+        ③ 是决策树还没覆盖这条分支，④ 是**我们这张采集面被挡在门外**
+        ——前三者改判据，④ 要换面重采，动作完全不同。"""
         vague = 0
         for name, doc in _real_samples():
             v = score_d5(doc)
@@ -634,8 +726,11 @@ class TestOnRealSamples:
                 ), f"{name} 不可判定，理由却没说清缺什么：{v.reasons}"
                 continue
             assert any(
-                (c.node == d5_scorer._NODE_EVIDENCE
-                 or c.node == d5_scorer._NODE_BRANCH)
+                c.node in (
+                    d5_scorer._NODE_EVIDENCE,
+                    d5_scorer._NODE_BRANCH,
+                    d5_scorer._NODE_BLOCK_SIDE,
+                )
                 and c.kind == "undetermined"
                 for c in v.checks
             ), f"{name} 有 outcome 却因别的原因不可判定：{[c.node for c in v.checks]}"

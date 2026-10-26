@@ -1029,3 +1029,41 @@ class TestBranchPrecondition:
                 f"两份 _same_page 漂移：exec={exec_same(x, y)} "
                 f"scorer={d4_scorer._same_page(as_dict(x), as_dict(y))}"
             )
+
+
+class Test采集侧账:
+    """``COLLECTION_SIDE_BRANCHES``（2026-10-26 · R1）。
+
+    负样本池的唯一入池闸门是 :attr:`SiteOutcome.is_negative_sample`，
+    而它现在有两段排除。这里钉住「第二段真的生效」以及「两张表不是
+    同一张」——并成一张会让 ``blocked`` 被当成「无题的兜底分支」，
+    而它是 ② 的**有题**负分支（见 ``test_non_sample_branches_确实不
+    在注册表的负分支里``）。
+    """
+
+    def test_表内容与两张表不相交(self):
+        from trajectory_pipeline.executor.branches import (
+            COLLECTION_SIDE_BRANCHES,
+        )
+        assert COLLECTION_SIDE_BRANCHES == frozenset({"blocked"})
+        assert not (COLLECTION_SIDE_BRANCHES & NON_SAMPLE_BRANCHES)
+        assert COLLECTION_SIDE_BRANCHES <= set(questions.all_branches())
+
+    def test_blocked不进负样本池(self):
+        ledger = RunLedger("T001")
+        ledger.record("https://x.test/", "blocked", "被 CF 挡住")
+        assert ledger.negative_samples() == []
+        assert ledger.summary()["negative_samples"] == 0
+
+    def test_真负样本照旧进池(self):
+        """排除范围不能顺手扩大——``broken`` 是货真价实的负样本。"""
+        ledger = RunLedger("T001")
+        ledger.record("https://x.test/", "broken", "404")
+        assert [o.branch for o in ledger.negative_samples()] == ["broken"]
+
+    def test_落盘字段与内存判据一致(self):
+        """P1 里的 ``is_negative_sample`` 是**写入时**的快照；它必须与
+        读档侧现算的 ``is_negative_sample`` 同值，否则报表与池子两套口径。"""
+        ledger = RunLedger("T001")
+        out = ledger.record("https://x.test/", "blocked", "被挡")
+        assert out.to_json()["is_negative_sample"] is False

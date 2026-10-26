@@ -80,6 +80,8 @@ import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from trajectory_pipeline.executor.archive import REVIEWED_SUFFIX, select_archives
+
 #: 降级的目标分支。它**不在** ``branches.NON_SAMPLE_BRANCHES`` 里——
 #: 「unresolved 不是负样本」是硬纪律，混进池里会污染它。
 TARGET_BRANCH = "unresolved"
@@ -239,6 +241,33 @@ def _atomic_write(path: pathlib.Path, payload: Any) -> None:
     os.replace(tmp, path)
 
 
+def original_archive_paths(root: pathlib.Path) -> list[pathlib.Path]:
+    """本目录下**原档**的路径（复核档折回它的原档名）。
+
+    「什么算一份存档」的口径**只有一处**：
+    :func:`~trajectory_pipeline.executor.archive.select_archives`
+    （``<task_id>__<run_id>.json`` 才算，同目录的探针取证不算）。这里
+    只多一件事——**折回原档**：降级只动原档，复核档是 ``review --apply``
+    重新合并出来的，改它会被下一次 ``--apply`` 静默覆盖回去
+    （模块 docstring 坑 1）。
+
+    ⚠️ 这个函数存在的原因是一个**真的发生在生产目录上的**漏扫：
+    这里原先是 ``root.glob("T*__*.json")``，只认 ``T`` 前缀。实测
+    （2026-10-26）生产根目录 78 份存档里 **28 份是 ``E``/``P`` 前缀**
+    （``E005__e35b7455.json`` / ``P001__…``），双跑那批判是 ``DR01__``
+    ——它们**结构性地降不掉**。而 CLI 那层什么都不说：它只会打印
+    「没有匹配的 outcome —— 归档可能已被降过（幂等），或判据不匹配」
+    ⇒ **判据被冤枉**，读的人会去改判据，改不好的。
+    """
+    out: list[pathlib.Path] = []
+    for path, reviewed in select_archives(root):
+        out.append(
+            path.with_name(path.name[: -len(REVIEWED_SUFFIX)] + ".json")
+            if reviewed else path
+        )
+    return out
+
+
 def apply_to_root(root: pathlib.Path, *,
                   select: Callable[[dict[str, Any]], list[dict[str, Any]]],
                   reason: str,
@@ -254,12 +283,12 @@ def apply_to_root(root: pathlib.Path, *,
         不同（URL 集合 / evidence 正则 / 成功与否），而**处置动作只有
         一份**，重复实现处置动作是当初三个脚本互相漂移的原因。
 
-    ⚠️ **只动原档，不动 ``.reviewed.json``**（模块 docstring 坑 1）。
+    ⚠️ **只动原档，不动 ``.reviewed.json``**（模块 docstring 坑 1）——
+    路径由 :func:`original_archive_paths` 给，别在这函数里再写一份
+    文件名判据（第一份就漏了 ``E``/``P`` 前缀，见那个函数的说明）。
     """
     out: list[dict[str, Any]] = []
-    for path in sorted(root.glob("T*__*.json")):
-        if path.name.endswith(".reviewed.json"):
-            continue
+    for path in original_archive_paths(root):
         try:
             archive = json.loads(path.read_text(encoding="utf-8"))
         except Exception:

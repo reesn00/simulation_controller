@@ -18,6 +18,10 @@
 而指标失效是察觉不到的。三支之间也不合并：成因不同，要修的东西就不同，
 见 :data:`NON_SAMPLE_BRANCHES` 的说明。第四支 ``site_search_routed``
 （2026-10-16 路径 B/C）是另一回事：路由**记账**不是结论，见该常量说明。
+
+第五类在 :data:`COLLECTION_SIDE_BRANCHES`（2026-10-26 · R1）：``blocked``
+**有题意但证据强度不成立**——一次反爬拦截对「这站能不能看」零信息，
+出负样本池、进人工复核队列。它与上面四支是**两张表**，理由见该常量。
 """
 
 from __future__ import annotations
@@ -104,6 +108,37 @@ NON_SAMPLE_BRANCHES = frozenset(
     }
 )
 
+#: 采集侧账：**这次没看到**，不是「这里看不了」。不进负样本池，
+#: 但**进人工复核队列**。
+#:
+#: 为什么单开一张表而不并进 :data:`NON_SAMPLE_BRANCHES`：那张表的语义是
+#: 「**无题的兜底分支**」（``test_branches`` 钉死它不能与
+#: ``questions.negative_branch`` 相交），而 ``blocked`` 是判断点 ② 的
+#: **有题**负分支——它的问题**不是「没题」，是证据强度不成立**：
+#: 一次 ``blocked`` 只说明「这一次没进去」。
+#:
+#: 实测（2026-10-26 · ``research/probes/cf_access_boundary.py``，R0）：
+#: 同一 camoufox 指纹、同一天、10 个存档里判过 CF 挑战的目标 × 2 轮 →
+#: **12 可进入 / 8 仍被拦**——同一指纹、同一小时内，10 台里有 6 台
+#: 当天就进得去。
+#: ⇒ 单次拦截**对「这个站能不能看」零信息**，把它写进负样本池等于把
+#: 采集能力的上限写成站点性质；更糟的是四周前同一批里 4 条 CF 挑战页
+#: 被记成了 ``no_play_control``（挑战页当然没有播放控件）——**理由通顺的
+#: 假负样本**，人工也未必看得出。
+#:
+#: 口径（owner 裁定 2026-10-26 · O-a/O-b）：出负样本池、进复核队列。
+#: 设计依据与四条负样本判据见
+#: ``docs/设计方案/20-反爬拦截与金标观测面.md`` §3.5 / §5 R1。
+#:
+#: ⚠️ **``unreachable_hard`` 不在本表**：它与 ``blocked`` 同属「采集侧
+#: 事实」，但出池与否是另一道未裁定的题（TODO 台账 Q-17，池内 18 行）。
+#: 在裁定之前**不预先放进来**——半张表比一张表更容易让人误以为已经处理过。
+#:
+#: 消费点：:attr:`SiteOutcome.is_negative_sample`（P1 并池的唯一闸门）、
+#: ``integrity._check_archive``（并池核对）、``cli`` 的域通过率报表、
+#: ``review_queue``（该进队列）、``relabel.check_target``（不能改成这个目标）。
+COLLECTION_SIDE_BRANCHES = frozenset({"blocked"})
+
 
 class UnknownBranch(KeyError):
     """分支名不在注册表内。控制流写错就当场炸，不静默落盘。"""
@@ -163,7 +198,21 @@ class SiteOutcome:
 
     @property
     def is_negative_sample(self) -> bool:
-        return self.branch is not None and self.branch not in NON_SAMPLE_BRANCHES
+        """这个结局能不能当「这里真的看不了」入池。
+
+        两段排除，成因不同、处置也不同：
+
+        - ∉ :data:`NON_SAMPLE_BRANCHES` ——「**没判出来**」（无题的兜底分支）；
+        - ∉ :data:`COLLECTION_SIDE_BRANCHES` ——「**这次没看到**」
+          （有题意，但证据强度不成立：一次拦截不构成站点性质）。
+
+        两者都不进池，但**只有第二类进人工复核队列**——它是可复核的
+        现场（存档里有挑战页原文），不是待补代码能力的窟窿。
+        """
+        if self.branch is None:
+            return False
+        return (self.branch not in NON_SAMPLE_BRANCHES
+                and self.branch not in COLLECTION_SIDE_BRANCHES)
 
     def to_json(self) -> dict[str, Any]:
         return {

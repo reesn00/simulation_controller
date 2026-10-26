@@ -119,6 +119,17 @@ class LoadedPlan:
     tasks: tuple[PlannedTask, ...]
     skips: tuple[PlanSkip, ...]
     report: Mapping[str, Any] = field(default_factory=dict)
+    #: 批次身份——**计划里写死的那个名字**（顶层 ``batch_id``）。
+    #:
+    #: 空串 = 计划没写这个键。**不是错误**：存量计划文件（``plan-ab.json``
+    #: / ``plan-camoufox-prod1.json``）顶层只有 ``report`` 与 ``instances``，
+    #: 那时批次身份只能取**文件名**（``cli._plan_batch_id`` 的退回路径）。
+    #:
+    #: 为什么值得单开一个字段：``batch_id`` 是批次报表的切片键，而
+    #: 「并池是写入时的动作、不记批次元数据就会把分布跳变读成『质量变好了』」
+    #: 正是纪律里写着的那条。**两批计划跑出来的存档必须在 ``batch_id`` 上
+    #: 分得开**——哪怕它们的任务 id 一样、文件名也一样。
+    batch_id: str = ""
 
     @property
     def total_in_file(self) -> int:
@@ -134,6 +145,7 @@ class LoadedPlan:
     def to_json(self) -> dict[str, Any]:
         return {
             "source": self.source,
+            "batch_id": self.batch_id,
             "total_in_file": self.total_in_file,
             "runnable": len(self.tasks),
             "skipped": len(self.skips),
@@ -209,11 +221,13 @@ def parse_plan(data: object, *, source: str = "<memory>",
         ))
 
     report = data.get("report")
+    batch_id = data.get("batch_id")
     return LoadedPlan(
         source=source,
         tasks=tuple(tasks),
         skips=tuple(skips),
         report=dict(report) if isinstance(report, Mapping) else {},
+        batch_id=str(batch_id or "").strip(),
     )
 
 
