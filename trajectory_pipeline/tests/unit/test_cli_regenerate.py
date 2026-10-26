@@ -259,3 +259,90 @@ class TestOnly:
         args = argparse.Namespace(out=str(tmp_path), only="NOPE__x.json",
                                   dry_run=False)
         assert cli.cmd_regenerate_rationales(args) == 2
+
+
+class TestOnlyOld:
+    """``--only-old``：整批重跑时**不许把已经写好的文本重新掷骰子**。
+
+    没有它，一轮后端抖动就能把上一轮的好数据换成 ``unavailable``，
+    而这批数据是要拿去做 CoT SFT 的。
+    """
+
+    def test_已跨代的档一个字节都不动(self, tmp_path, _patch_writer):
+        w = _FakeWriter()
+        _patch_writer["writer"] = w
+        # 两代标记都在（unit 级 reflection 键）→ 已跨代
+        arc = _arc()
+        arc["reflection"] = {"status": "written",
+                             "rationale": {"text": "已写", "conclusion": "c"}}
+        arc["visits"][0]["reflection"] = {"status": "written",
+                                          "rationale": {"text": "已写",
+                                                        "conclusion": "c"}}
+        p = tmp_path / "T001__abc123.json"
+        p.write_text(json.dumps(arc, ensure_ascii=False), encoding="utf-8")
+        before = p.read_text(encoding="utf-8")
+        args = argparse.Namespace(out=str(tmp_path), only=None, dry_run=False,
+                                  only_old=True)
+        assert cli.cmd_regenerate_rationales(args) == 0
+        assert p.read_text(encoding="utf-8") == before
+        assert w.calls == []
+        assert w.reflect_calls == []
+        # 连备份都不建：没写盘就没有「改之前」的东西要留
+        assert not (tmp_path / cli.BACKUP_DIRNAME).exists()
+
+    def test_旧口径单元整段重写(self, tmp_path, _patch_writer):
+        w = _FakeWriter()
+        _patch_writer["writer"] = w
+        p, _args = _run(tmp_path)          # 没有 reflection 键 = 旧口径
+        args = argparse.Namespace(out=str(tmp_path), only=None, dry_run=False,
+                                  only_old=True)
+        assert cli.cmd_regenerate_rationales(args) == 0
+        arc = json.loads(p.read_text(encoding="utf-8"))
+        assert len(w.calls) == 2
+        assert arc["steps"][0]["rationale"]["rationale"]["text"] == "新动机1"
+        assert arc["visits"][0]["reflection"]["status"] == "written"
+
+    def test_半截单元只补没写成的那几步且不重写总结(self, tmp_path, _patch_writer):
+        """已跨代但有步骤没写成（上一轮后端抖过）：补缺，**不重掷**
+        已写好的那几步与那份总结。"""
+        arc = _arc(steps=[
+            _step("goto", {"status": "written",
+                           "rationale": {"text": "已写好的动机", "conclusion": "c"}}),
+            _step("click", {"status": "unavailable", "rationale": None,
+                            "reason": "后端抖了一下", "degraded": []}),
+        ])
+        arc["reflection"] = {"status": "written",
+                             "rationale": {"text": "已写的总结", "conclusion": "c"}}
+        arc["visits"] = []                 # 只看搜索单元，别把站点步数算进来
+        p = tmp_path / "T001__abc123.json"
+        p.write_text(json.dumps(arc, ensure_ascii=False), encoding="utf-8")
+        w = _FakeWriter()
+        _patch_writer["writer"] = w
+        args = argparse.Namespace(out=str(tmp_path), only=None, dry_run=False,
+                                  only_old=True)
+        assert cli.cmd_regenerate_rationales(args) == 0
+        assert len(w.calls) == 1, "只该补那一条没写成的"
+        assert w.reflect_calls == [], "总结已写好，不该重掷"
+        after = json.loads(p.read_text(encoding="utf-8"))
+        assert after["steps"][0]["rationale"]["rationale"]["text"] == "已写好的动机"
+        assert after["steps"][1]["rationale"]["status"] == "written"
+
+    def test_dry_run只数待办(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "_make_rationale_writer", lambda: (None, "没配"))
+        arc = _arc(steps=[
+            _step("goto", {"status": "written",
+                           "rationale": {"text": "已写", "conclusion": "c"}}),
+            _step("click", {"status": "unavailable", "rationale": None,
+                            "reason": "", "degraded": []}),
+        ])
+        arc["reflection"] = {"status": "written",
+                             "rationale": {"text": "已写", "conclusion": "c"}}
+        arc["visits"] = []
+        p = tmp_path / "T001__abc123.json"
+        p.write_text(json.dumps(arc, ensure_ascii=False), encoding="utf-8")
+        args = argparse.Namespace(out=str(tmp_path), only=None, dry_run=True,
+                                  only_old=True)
+        cli.cmd_regenerate_rationales(args)
+        out = capsys.readouterr().out
+        assert "1 条 rationale" in out
+        assert "0 条 reflection" in out

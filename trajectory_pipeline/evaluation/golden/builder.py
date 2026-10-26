@@ -117,10 +117,68 @@ RETEST_INTERVAL_DAYS = 14  # D9 建议间隔 T（INC41 起 degrade 为纯建议�
 #: ``evaluation/scorers/thresholds.py`` 那张表，别动这一行（D-C6：
 #: 改阈值不升 rubric 版本，所以这一行也不该成为「偷偷改线」的地方）。
 D10_THRESHOLD = thresholds.value("d10_min_agreement")
-#: 标签体系版本：1 = 11 类（10 分支 + success）；2 = 15 类
-#: （BRANCH_LABELS 14 key = 13 活跃 + deprecated 合并态 + success）。
-#: freeze 写入 manifest，跨版本对比 D10 前先核对（对齐方案 §4.3 / §5.2）。
-LABEL_SCHEMA_VERSION = "2"
+#: 标签宇宙版本：**冻结时注册表的合法 label 全集**。
+#:
+#: 版本号是**序列号**（不是类数）。类数会随注册表增长而变——同一个号
+#: 先后指 15 类和 22 类，正是 2026-10-26 治的那个病：**标记声称的宇宙
+#: 与实际注册表脱钩，而「跨版本对比前先核对」这条纪律是纯人工的、
+#: 代码从不校验**。
+#:
+#: | 版本 | 类数 | 冻结于 | 覆盖的冻结档 |
+#: |---|---|---|---|
+#: | ``"1"`` | 11 | 2026-10-11 | v1（manifest 与索引层都**没有**这个字段） |
+#: | ``"2"`` | 15 | 2026-10-12 | v2 – v12 |
+#: | ``"3"`` | 22 | 2026-10-25 | v13 起 |
+#:
+#: ⚠️ **v13 是唯一的例外**：它冻结于 2026-10-25，那时注册表已是 21 key
+#: （22 类），但 manifest 沿用了旧常量 ``"2"``。**数据本身没问题**——
+#: 它实际只用了 12 类，逐档核过全部落在 15 类宇宙内——错的是**标记声称
+#: 的宇宙**。冻结档不可变（方案 11 §二：改 label 走新版本，不改历史），
+#: ⇒ **盘上现有的 v13 保持 ``"2"``，本条一个字节都不动它**。
+#: ⚠️ **但**若有人用 ``--force`` **重冻** v13，manifest 会被改写成
+#: ``"3"``——那是**更对**的（那 12 类全落在 22 类宇宙内），只是**那一档
+#: 的编号变了**，跨版本对比前得知道这件事。
+LABEL_SCHEMA_VERSION = "3"
+
+#: 标签宇宙：**每个版本号冻结一份**当时的合法 label 全集。
+#:
+#: 为什么必须是**手抄的冻结副本**、不能从注册表现算：版本号的意义就是
+#: 「这批数据的标签取自哪一份全集」。现算的话注册表一长，号不变、集合变，
+#: 同一个号又指两种宇宙——**这就是本条要治的病本身**。
+#:
+#: ⇒ 加分支的动作因此变成三步：改注册表 → **新起一个版本号** → 在这里
+#: 加一条冻结副本。漏了第三步，contract 测试
+#: (``tests/contract/test_label_schema_version.py``) 当场红。
+#:
+#: 集合里用**字面量**而不引用 :data:`SUCCESS_LABEL`／注册表：这是快照，
+#: 引用活对象等于让它跟着活对象变——那就不是快照了。
+LABEL_UNIVERSES: dict[str, frozenset[str]] = {
+    # "1" = 2026-10-11 的注册表（10 分支）+ success
+    "1": frozenset({
+        "not_play_site", "unreachable_hard", "login_wall_or_blocked",
+        "no_play_control", "trailer_only", "trailer_suspect",
+        "component_unverified", "player_unverified", "subscription_wall",
+        "unresolved", "success",
+    }),
+    # "2" = 2026-10-12 的注册表（14 分支）+ success
+    "2": frozenset({
+        "not_play_site", "unreachable_hard", "login_wall_or_blocked",
+        "no_play_control", "trailer_only", "trailer_suspect",
+        "component_unverified", "player_unverified", "subscription_wall",
+        "unresolved", "login_required", "blocked", "broken", "partial_free",
+        "success",
+    }),
+    # "3" = 2026-10-25 的注册表（21 分支）+ success
+    "3": frozenset({
+        "not_play_site", "unreachable_hard", "login_wall_or_blocked",
+        "no_play_control", "trailer_only", "trailer_suspect",
+        "component_unverified", "player_unverified", "subscription_wall",
+        "unresolved", "login_required", "blocked", "broken", "partial_free",
+        "not_aggregator", "aggregator_no_entries", "not_article",
+        "article_no_links", "no_site_search", "site_search_no_results",
+        "site_search_routed", "success",
+    }),
+}
 NEGATIVE_BRANCH_FIELDS = (  # 负样本池可直接透传的字段
     "task_id",
     "run_id",
@@ -650,6 +708,54 @@ def _load_branch_labels() -> dict[str, str]:
         _VALID_LABELS = dict(BRANCH_LABELS)
         _VALID_LABELS[SUCCESS_LABEL] = "成功（可正常播放）"
     return _VALID_LABELS
+
+
+def _label_of(row: Mapping[str, Any]) -> str:
+    """取一行冻结数据的黄金标签。
+
+    两种形状都认：v1 的 ``golden`` 是 dict（``{"label": ...}``），
+    v2 起是字符串。认错形状会让「这一档用了哪些标签」读成空集，
+    而空集**不越界**——于是漂移检查看起来永远是绿的。
+    """
+    golden = row.get("golden")
+    if isinstance(golden, dict):
+        return str(golden.get("label") or "")
+    if isinstance(golden, str):
+        return golden
+    return ""
+
+
+def _assert_labels_in_universe(
+    rows: Sequence[Mapping[str, Any]], *, version: str
+) -> set[str]:
+    """冻结前核：这一批的标签必须全落在**当前版本**的宇宙内。
+
+    这是「跨版本对比前先核对 ``label_schema_version``」从**人工纪律**
+    变成**代码保证**的那一步：以前它只在文档里写着，代码从不校验，
+    所以注册表长到 22 类、标记还写「15 类」这种事能一路走到 v13
+    都没人看见。
+
+    宇宙不在 :data:`LABEL_UNIVERSES` 里 ⇒ 直接抛——那是「加分支忘了
+    新起版本号」，fail-closed，不猜。
+
+    返回实际用到的标签集合（给调用方打印用）。
+    """
+    universe = LABEL_UNIVERSES.get(version)
+    if universe is None:
+        raise GoldenError(
+            f"标签体系版本 {version!r} 没在 LABEL_UNIVERSES 里登记冻结副本——"
+            "加分支要三步：改注册表 → 新起版本号 → 在 LABEL_UNIVERSES 加一条"
+        )
+    used = {lab for lab in (_label_of(r) for r in rows) if lab}
+    out = sorted(used - universe)
+    if out:
+        raise GoldenError(
+            f"标签 {out} 不在标签体系版本 {version!r} 的宇宙内"
+            f"（{len(universe)} 类）——这批数据用了该版本之外的名字，"
+            "冻结后『核对 label_schema_version』这条纪律就名存实亡了。"
+            "要么改数据，要么新起一个版本号并登记它的冻结副本。"
+        )
+    return used
 
 
 def cmd_annotate(args: argparse.Namespace) -> int:
@@ -1517,6 +1623,12 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     traj = [r for r in labeled if r["source_kind"] == "p2_sample"]
     if not labeled:
         raise GoldenError("没有任何已标注候选；先 annotate 至少 1 条")
+    # 标签宇宙核对（2026-10-26 起）：冻结前先核这批标签全在当前版本的
+    # 宇宙内。旧档继承来的标签也走这里——旧宇宙是当前宇宙的子集，
+    # 所以继承式重冻结不会因为「上一版就这么标的」而失败。
+    _used_labels = _assert_labels_in_universe(
+        labeled, version=LABEL_SCHEMA_VERSION
+    )
     if not site:
         print(
             "⚠️ 站点级（可支撑 D10）标注为 0；仅轨迹级样本时 D10 不可算", file=sys.stderr
@@ -1583,7 +1695,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "label_schema_version": LABEL_SCHEMA_VERSION,  # §5.2：11 类 → 15 类
+        "label_schema_version": LABEL_SCHEMA_VERSION,
         # 尺子编号（方案 16 §1.2 / C-01）：没有这两行，D10 数字无法回答
         # 「是哪版 rubric、哪版 judge prompt 量出来的」，跨版本对比会读成
         # 「质量变好了」而其实换了尺子。
@@ -1695,6 +1807,11 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     )
     _dump_jsonl(versions_path, versions, force=True)
     print(f"→ 已冻结 v{version} 到 {vdir}/")
+    print(
+        f"  标签宇宙：{LABEL_SCHEMA_VERSION}"
+        f"（{len(LABEL_UNIVERSES[LABEL_SCHEMA_VERSION])} 类合法标签，"
+        f"本批用到 {len(_used_labels)} 种）"
+    )
     if carrying:
         print(
             f"  继承自 v{derived_from['version']}（切分原样带过来，行内容未改）"
@@ -2725,7 +2842,13 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             "agreement_ratio": ratio,
             "threshold": D10_THRESHOLD,
             "criterion": "equiv_class",  # 口径 C：语义等价类一致（§4.3）
-            "label_schema_version": LABEL_SCHEMA_VERSION,
+            # 标签宇宙版本（2026-10-26 改口径）：**取自该冻结档的
+            # manifest**，不取当前常量——与下一行 ``rubric_version`` 同款
+            # 纪律：老档缺字段给空串，**不拿当前值顶替**（顶替等于把新
+            # 尺子的编号贴在旧数字旁边）。
+            # ⚠️ 改口径前这里用的是常量，于是「v6 的 agreement 报 22 类」
+            # 这类事一直在发生而没人看见——只因为当时常量恰好也是旧值。
+            "label_schema_version": str(manifest_meta.get("label_schema_version") or ""),
             # 尺子编号（方案 16 C-01）。老冻结档缺字段时给空串，不拿当前值顶替
             # ——顶替等于把新尺子的编号贴在旧数字旁边。
             "rubric_version": ruler_rubric,

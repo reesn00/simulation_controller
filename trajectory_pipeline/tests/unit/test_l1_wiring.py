@@ -1,10 +1,10 @@
-"""L1 ffprobe \u771f\u63a5\u5165 unit tests (\u589e\u91cf\u4e8c\u5341\u516b)\u3002
+"""L1 ffprobe 真接入 unit tests (增量二十八)。
 
-\u8986\u76d6\uff1a
-1. _branch_from_l1 \u8fb9\u754c (None / \u65e0\u5a92\u4f53 / \u5168\u5931\u8d25 / duration<=60 / duration>60)
-3. _pick_winner \u6b65\u5165 l1_branch / l1_conf (\u4e0d\u51b2\u7a81 / \u4e0e L3 \u4e00\u81f4 / \u4e0e L4 \u51b2\u7a81 / \u4ec5 L1)
-4. arbitrate() \u8d2f L1 \u4f1a \u4ea7\u51fa SiteOutcome
-5. BrowserProbeResult.l1_probe \u5b57\u6bb5\u5728 dump JSON \u4e2d\u51fa\u73b0
+覆盖：
+1. _branch_from_l1 边界 (None / 无媒体 / 全失败 / duration<=60 / duration>60)
+3. _pick_winner 步入 l1_branch / l1_conf (不冲突 / 与 L3 一致 / 与 L4 冲突 / 仅 L1)
+4. arbitrate() 贯 L1 会 产出 SiteOutcome
+5. BrowserProbeResult.l1_probe 字段在 dump JSON 中出现
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from trajectory_pipeline.executor.review.vlm_reviewer import VLMReviewResult
 from trajectory_pipeline.perception.base import Decision
 
 
-# ---------- \u56fa\u5b9a factory ----------
+# ---------- 固定 factory ----------
 
 def _mk_signal(
     play_started: bool = False,
@@ -56,7 +56,7 @@ def _mk_l1(
     probed: tuple[FFProbeOutput, ...] = (),
     media_urls: tuple[str, ...] = (),
 ) -> MediaProbeResult:
-    """\u9020\u4e00\u4e2a MediaProbeResult\u2014\u2014\u4ec5 probed / media_urls \u4e24\u5b57\u6bb5\u5728\u4ef2\u88c1\u91cc\u6709\u7528\u3002"""
+    """造一个 MediaProbeResult——仅 probed / media_urls 两字段在仲裁里有用。"""
     return MediaProbeResult(
         requested_url="https://example.com",
         final_url="https://example.com",
@@ -132,21 +132,21 @@ def _mk_vlm(
     )
 
 
-# ---------- _branch_from_l1 \u8fb9\u754c ----------
+# ---------- _branch_from_l1 边界 ----------
 
 class TestBranchFromL1:
-    """L1 -> branch + confidence \u8fb9\u754c\u3002"""
+    """L1 -> branch + confidence 边界。"""
 
     def test_none_returns_none_zero(self) -> None:
         assert _branch_from_l1(None) == (None, 0.0)
 
     def test_no_probed_returns_none_zero(self) -> None:
-        # \u6ca1\u89e3\u6790\u51fa\u5a92\u4f53 -> L1 \u6ca1\u7ed3\u8bba
+        # 没解析出媒体 -> L1 没结论
         l1 = _mk_l1(probed=())
         assert _branch_from_l1(l1) == (None, 0.0)
 
     def test_all_failed_returns_broken(self) -> None:
-        # \u5168\u5931\u8d25 -> \u5a92\u4f53\u4e0d\u53ef\u89e3\u7801
+        # 全失败 -> 媒体不可解码
         l1 = _mk_l1(probed=(
             FFProbeOutput(url="a.mp4", ok=False, error="exit=1"),
             FFProbeOutput(url="b.mp4", ok=False, error="timeout"),
@@ -156,7 +156,7 @@ class TestBranchFromL1:
         assert conf == L1_BRANCH_CONFIDENCE
 
     def test_short_duration_returns_partial_free(self) -> None:
-        # duration_s <= 60 -> partial_free (\u8bd5\u770b/\u9884\u544a)
+        # duration_s <= 60 -> partial_free (试看/预告)
         l1 = _mk_l1(probed=(
             FFProbeOutput(url="trailer.mp4", ok=True, duration_s=5.0, has_video=True),
         ))
@@ -165,20 +165,20 @@ class TestBranchFromL1:
         assert conf == L1_BRANCH_CONFIDENCE
 
     def test_long_duration_returns_none(self) -> None:
-        # duration_s > 60 -> L1 \u4e0d\u4e0b\u5206\u652f (\u8ba9 L2/L4 \u53bb\u8bc4)
+        # duration_s > 60 -> L1 不下分支 (让 L2/L4 去评)
         l1 = _mk_l1(probed=(
             FFProbeOutput(url="movie.mp4", ok=True, duration_s=1800.0, has_video=True),
         ))
         assert _branch_from_l1(l1) == (None, 0.0)
 
 
-# ---------- _pick_winner \u6b65\u5165 L1 ----------
+# ---------- _pick_winner 步入 L1 ----------
 
 class TestPickWinnerL1:
-    """_pick_winner \u63a5\u53d7 l1_branch / l1_conf \u540e\u7684\u8868\u73b0\u3002"""
+    """_pick_winner 接受 l1_branch / l1_conf 后的表现。"""
 
     def test_only_l1_returns_l1_branch(self) -> None:
-        # \u4ec5 L1 \u6709\u5224\u51fa -> L1 \u8d62
+        # 仅 L1 有判出 -> L1 赢
         winner = _pick_winner(
             l3_branch=None, l3_conf=0.0,
             l4_branch=None, l4_conf=0.0, l4_source="",
@@ -188,7 +188,7 @@ class TestPickWinnerL1:
         assert winner == "partial_free"
 
     def test_l1_matches_l3_returns_l3(self) -> None:
-        # L1 \u4e0e L3 \u4e00\u81f4 -> \u91c7\u7eb3
+        # L1 与 L3 一致 -> 采纳
         winner = _pick_winner(
             l3_branch="partial_free", l3_conf=0.85,
             l4_branch=None, l4_conf=0.0, l4_source="",
@@ -198,7 +198,7 @@ class TestPickWinnerL1:
         assert winner == "partial_free"
 
     def test_l1_conflicts_l3_l1_wins(self) -> None:
-        # L1 \u4e0e L3 \u51b2\u7a81 -> L1 weight 2 * 0.8 = 1.6 vs rule 1 * 0.85 = 0.85 -> L1 \u8d62
+        # L1 与 L3 冲突 -> L1 weight 2 * 0.8 = 1.6 vs rule 1 * 0.85 = 0.85 -> L1 赢
         winner = _pick_winner(
             l3_branch="blocked", l3_conf=0.85,
             l4_branch=None, l4_conf=0.0, l4_source="",
@@ -208,7 +208,7 @@ class TestPickWinnerL1:
         assert winner == "partial_free"
 
     def test_l1_conflicts_llm_loses(self) -> None:
-        # L1 \u4e0e L4 llm \u51b2\u7a81 -> llm weight 3 * 0.9 = 2.7 vs L1 2 * 0.8 = 1.6 -> L4 \u8d62
+        # L1 与 L4 llm 冲突 -> llm weight 3 * 0.9 = 2.7 vs L1 2 * 0.8 = 1.6 -> L4 赢
         winner = _pick_winner(
             l3_branch=None, l3_conf=0.0,
             l4_branch="subscription_wall", l4_conf=0.9, l4_source="llm",
@@ -218,7 +218,7 @@ class TestPickWinnerL1:
         assert winner == "subscription_wall"
 
     def test_no_l1_unchanged_behavior(self) -> None:
-        # L1 \u672a\u8dd1 -> \u4e0e\u539f\u5148\u4ef2\u88c1\u903b\u8f91\u4e00\u81f4
+        # L1 未跑 -> 与原先仲裁逻辑一致
         winner_no = _pick_winner(
             l3_branch="partial_free", l3_conf=0.85,
             l4_branch=None, l4_conf=0.0, l4_source="",
@@ -233,24 +233,24 @@ class TestPickWinnerL1:
         assert winner_no == winner_with_none == "partial_free"
 
 
-# ---------- arbitrate() \u8d2f L1 \u8f93\u51fa SiteOutcome ----------
+# ---------- arbitrate() 贯 L1 输出 SiteOutcome ----------
 
 class TestArbitrateL1:
-    """arbitrate() \u4f1a\u8bfb result.l1_probe \u4ea7\u51fa SiteOutcome\u3002"""
+    """arbitrate() 会读 result.l1_probe 产出 SiteOutcome。"""
 
     def test_l1_partial_free_alone_yields_partial_free(self) -> None:
-        # L1 partial_free \u72ec\u5b58 -> verdict = partial_free
+        # L1 partial_free 独存 -> verdict = partial_free
         l1 = _mk_l1(probed=(
             FFProbeOutput(url="t.mp4", ok=True, duration_s=5.0, has_video=True),
         ))
         result = _mk_browser_result(l1_probe=l1)
         out = arbitrate(result)
         assert out.branch == "partial_free"
-        # evidence \u5305\u542b L1 \u8d77\u59cb\u8bc1\u636e
+        # evidence 包含 L1 起始证据
         assert "L1" in out.evidence
 
     def test_l1_broken_alone_yields_broken(self) -> None:
-        # L1 broken \u72ec\u5b58 -> verdict = broken
+        # L1 broken 独存 -> verdict = broken
         l1 = _mk_l1(probed=(
             FFProbeOutput(url="a.mp4", ok=False, error="exit=1"),
             FFProbeOutput(url="b.mp4", ok=False, error="exit=1"),
@@ -260,13 +260,13 @@ class TestArbitrateL1:
         assert out.branch == "broken"
 
     def test_no_l1_unresolved_when_nothing_else(self) -> None:
-        # \u5168\u65e0 -> unresolved (\u4e0e\u539f\u5148\u4e00\u81f4)
+        # 全无 -> unresolved (与原先一致)
         result = _mk_browser_result(l1_probe=None)
         out = arbitrate(result)
         assert out.branch == "unresolved"
 
     def test_l1_conflicts_llm_llm_wins(self) -> None:
-        # L1 partial_free + L4 llm subscription_wall -> llm \u8d62
+        # L1 partial_free + L4 llm subscription_wall -> llm 赢
         l1 = _mk_l1(probed=(
             FFProbeOutput(url="t.mp4", ok=True, duration_s=5.0, has_video=True),
         ))
@@ -276,7 +276,7 @@ class TestArbitrateL1:
         assert out.branch == "subscription_wall"
 
     def test_l1_matches_l3_yields_l3_branch(self) -> None:
-        # L1 partial_free + L3 partial_free -> \u91c7\u7eb3 partial_free
+        # L1 partial_free + L3 partial_free -> 采纳 partial_free
         l1 = _mk_l1(probed=(
             FFProbeOutput(url="t.mp4", ok=True, duration_s=5.0, has_video=True),
         ))
@@ -286,10 +286,10 @@ class TestArbitrateL1:
         assert out.branch == "partial_free"
 
 
-# ---------- dump JSON \u542b l1_probe ----------
+# ---------- dump JSON 含 l1_probe ----------
 
 class TestDumpL1Field:
-    """dump_browser_result() \u7684 JSON \u8f93\u51fa\u5b57\u6bb5\u96c6\u542b l1_probe\u3002"""
+    """dump_browser_result() 的 JSON 输出字段集含 l1_probe。"""
 
     def test_dump_with_l1_contains_field(self, tmp_path: Path) -> None:
         l1 = _mk_l1(probed=(
@@ -301,7 +301,7 @@ class TestDumpL1Field:
         data = json.loads(out_path.read_text(encoding="utf-8"))
         assert "l1_probe" in data
         assert data["l1_probe"] is not None
-        # \u5b50\u5b57\u6bb5\u540d\u9a8c\u8bc1
+        # 子字段名验证
         assert "media_urls" in data["l1_probe"]
         assert "probed" in data["l1_probe"]
 

@@ -23,6 +23,7 @@
   "six": { ...七件套... },
   "gate": { "status": "passed", "reasons": ["逐条核查 1/1 步通过"] },
   "rationale_missing": false,
+  "rationale_era": "pre_action",
   "outcome": { ... },
   "reflection": { ... } | null,
   "degraded_from": []
@@ -95,11 +96,30 @@
 |---|---|
 | `passed` | 逐条核查过，无 hard 发现 |
 | `failed` | 有 hard 发现，`reasons` **定位到第几步** |
-| `not_run` | **没有可核查的 rationale**——不是「通过」 |
+| `not_run` | **没判**——不是「通过」。两种成因：①没有可核查的 rationale；②rationale 是**旧口径**（见下节 `rationale_era`），新闸门的可见窗口对它不适用 |
 
 `rationale_missing`（一条都没写成）与 `gate` **分开记**：
 `gate=passed` 但 `rationale_missing=true` 意味着样本只有动作没有思考，
 报告上看 `gate` 是看不出来的。
+
+### `rationale_era`（INC46 分代标记）
+
+`pre_action` / `post_hoc` / `""`，三值与 `rationale_missing` 互补而非重复：
+
+| 值 | 含义 |
+|---|---|
+| `pre_action` | 第 `i` 步的文本是**执行之前的动机**（INC46，2026-10-15 起）。闸门按可见窗口 `observations[:i]` 真跑 |
+| `post_hoc` | 第 `i` 步的文本是**看完本步页面之后的反思**（INC46 之前）。它描述 `observation[i]`，而 P3 把它渲染在 `action[i]` **之前**——那是训练在教未卜先知。**这份文本不能按新窗口核**，所以闸门记 `not_run`：不判通过、也不判失败 |
+| `""` | 一条 `written` 都没有（= `rationale_missing`）。没什么可判 |
+
+**判据是结构，不是内容**：看 P1 单元（搜索单元 = 存档顶层、站点单元 =
+`visits[i]`）有没有 **`reflection` 键**——INC46 的两条写路径都必写该键
+（哪怕值是 `null`），INC46 之前从不写。正文里没有可机器判定的时代印记，
+**不能靠读内容猜**。
+
+为什么必须分开记：混批训练一批「有时能未卜先知、有时不能」的数据，
+比全错更难发现——它在报表上表现为「分数略有下降」。要同口径出批，
+`build --rationale-era pre_action` 只收新口径样本（其余逐条列进 skipped）。
 
 ### `degraded_from`
 

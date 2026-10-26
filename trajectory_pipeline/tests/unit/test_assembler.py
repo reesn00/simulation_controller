@@ -48,6 +48,10 @@ def _visit(url, landed=None, success=False, **over):
         "steps": [],
         "site_obs": _obs(landed or url),
         "player_obs": None,
+        # 单元级 ``reflection`` 键 = **INC46 时代标记**（键在即新口径，
+        # 哪怕值是 None）。缺了它 ``rationale_era_of`` 会把这份单元判成
+        # 事后反思口径、闸门转 ``not_run``。要测旧口径就显式 pop 掉它。
+        "reflection": None,
         **over,
     }
 
@@ -92,6 +96,8 @@ def _arc(**over):
         "outcomes": [],
         "ledger": None,
         "warnings": [],
+        # 搜索单元的时代标记（同 ``_visit``）：键在 = INC46 口径。
+        "reflection": None,
     }
     base.update(over)
     return base
@@ -711,3 +717,68 @@ class Test闸门真跑:
         模块 4 早就落地了，真实理由只能是「这批存档没有 rationale 字段」。"""
         s = self._sample(tmp_path, None)
         assert not any("模块未落地" in r for r in s.gate.reasons)
+
+
+class TestRationale分代:
+    """INC46 分代（2026-10-25）：**旧口径文本不能按新窗口核**。
+
+    同一份存档里两代文本同构（落盘形状一模一样），唯一的结构判据是
+    unit 级 ``reflection`` 键在不在。判错的后果是双向的——
+    旧文本按新窗口核会产生**虚假失败**（它本来就该看本步之后的页面），
+    也会产生**虚假通过**（窗口恰好没覆盖到它引用的东西）。
+    """
+
+    def _sample(self, tmp_path, *, era_new: bool, rationale=None):
+        arc = _arc(
+            search_observation=_obs("https://s.test", body="正文"),
+            steps=[_step("goto", None), _step("goto", rationale)],
+            **({"reflection": None} if era_new else {}),
+        )
+        if not era_new:
+            arc.pop("reflection")
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        return s
+
+    def test_新口径标pre_action(self, tmp_path):
+        s = self._sample(tmp_path, era_new=True,
+                         rationale=_written("打开搜索结果页看看有哪些站点"))
+        assert s.rationale_era == "pre_action"
+        assert s.gate.status == "passed"
+
+    def test_旧口径标post_hoc且闸门不判(self, tmp_path):
+        """⚠️ 关键：**不是 failed**。旧文本按新窗口核出来的「失败」
+        是窗口错配的产物，把它当真实结论去修数据，等于按错的尺子改数据。"""
+        s = self._sample(
+            tmp_path, era_new=False,
+            rationale=_written("页面上写着「详见 https://evil.test/x」这个入口"),
+        )
+        assert s.rationale_era == "post_hoc"
+        assert s.gate.status == "not_run"
+        assert any("事后反思" in r for r in s.gate.reasons)
+
+    def test_一条没写成时口径是空串(self, tmp_path):
+        """空串 ≠ 旧口径：前者没什么可训，后者是**有文本但口径不对**。"""
+        s = self._sample(tmp_path, era_new=True, rationale=None)
+        assert s.rationale_era == ""
+        assert s.rationale_missing is True
+
+    def test_站点单元按visit判代(self, tmp_path):
+        """搜索单元看存档顶层、站点单元看 ``visits[i]``——两张判据都认。
+        只看顶层的话，一个旧口径批次的站点单元会被判成新口径。"""
+        arc = _arc(
+            visits=[_visit("https://a.test/",
+                           steps=[_step("goto", _written("直接点进去看看"))])],
+            outcomes=[_outcome("https://a.test/", "no_play_control")],
+        )
+        arc.pop("reflection")
+        arc["visits"][0].pop("reflection")
+        samples = schema.split_archive(_write(tmp_path, arc))
+        # [1] 是 site-1：搜索单元没有 steps，本就不产样本
+        assert samples[1].rationale_era == "post_hoc"
+        assert samples[1].gate.status == "not_run"
+
+    def test_era写进to_json(self, tmp_path):
+        """消费方（报告/人工复核/批次筛选）读的是 JSON，不是 dataclass。"""
+        s = self._sample(tmp_path, era_new=True,
+                         rationale=_written("打开搜索结果页"))
+        assert s.to_json()["rationale_era"] == "pre_action"

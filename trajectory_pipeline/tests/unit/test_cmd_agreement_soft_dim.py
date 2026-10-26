@@ -12,8 +12,9 @@
        ``agreement_ratio``；
     5. ``test_软维度读_calibration_优先于_holdout`` —— holdout 行不进软
        维度分母（contract 5）；
-    6. ``test_label_schema_version_不破`` —— 软维度接入不动
-       ``label_schema_version`` 字段（contract 6）；
+    6. ``test_label_schema_version_取自manifest而非当前常量`` —— 软维度接入
+       不动 ``label_schema_version`` 字段（contract 6）；取值口径 2026-10-26
+       改过（取自该档 manifest，不拿当前值顶替）；
     7. ``test_输出_JSON_含_soft_dims_键`` —— 报表可机器读（contract 7）。
 
 测试套路：tmp_path 造 ``calibration.jsonl`` + ``holdout.jsonl`` +
@@ -341,7 +342,18 @@ class TestCalibration优先于Holdout:
 
 
 class TestLabelSchemaVersion:
-    def test_label_schema_version_字段保留(self, tmp_path):
+    def test_label_schema_version_取自manifest而非当前常量(self, tmp_path):
+        """**取自该档的 manifest**，不拿当前值顶替（2026-10-26 改口径）。
+
+        改口径前这里用的是当前常量，于是「v6 的 agreement 报 22 类」这种
+        话一直在发生——只因为当时常量恰好也是旧值，看不出来。取值口径
+        改后与同文件里的 ``rubric_version`` 同款：老档缺字段给空串，
+        有字段就给它自己的。
+        """
+        assert builder.LABEL_SCHEMA_VERSION != "2", (
+            "当前标签体系版本又变回 '2' 了——版本号只前进不后退，"
+            "这个测试用的历史值就失去区分力了"
+        )
         calib = [_row("g0", dim_gold={"d3": 4}, dim_pred={"d3": 4})]
         golden_root = _setup_vdir(tmp_path, calib_rows=calib)
         out_path = tmp_path / "agree.json"
@@ -351,7 +363,8 @@ class TestLabelSchemaVersion:
         )
         assert rc == 0
         data = json.loads(out_path.read_text(encoding="utf-8"))
-        assert data["label_schema_version"] == builder.LABEL_SCHEMA_VERSION
+        # manifest 里写的就是 "2"（_setup_vdir 造的）
+        assert data["label_schema_version"] == "2"
 
 
 class TestJsonOutput含SoftDims键:

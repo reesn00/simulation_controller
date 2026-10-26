@@ -146,7 +146,7 @@ class PersonaLibrary:
             )
         if want_bare > len(with_std) or n - want_bare > len(with_std):
             raise LibraryError(
-                f"按 bare_ratio={bare_ratio} 切分后需要的带标���画像超过库存："
+                f"按 bare_ratio={bare_ratio} 切分后需要的带标签画像超过库存："
                 f"带标准 {len(with_std)} 条 / 裸任务 {len(bare)} 条 / 要采 {n} 条"
             )
 

@@ -1,11 +1,13 @@
-"""L5 \u4ef2\u88c1\u5c42 unit tests (\u589e\u91cf\u4e8c\u5341\u4e03)\u3002
+"""L5 仲裁层 unit tests (增量二十七)。
 
-\u8986\u76d6\uff081\uff09L3 \u2192 branch \u6620\u5c04\uff08access_kind 7 \u503c \u00d7 \u4e0a\u4e0b\u6e38\uff09\uff1b
-\uff082\uff09L4 \u2192 branch \u6620\u5c04\uff08label 9 \u503c \u00d7 paywall_type 6 \u503c\uff09\uff1b
-\uff083\uff09L2 signal \u542f\u53d1\u5f0f\uff08\u5b9e\u64ad / \u9ed1\u5c4f / \u9519\u8bef\u4ee3\u7801 / \u65e0\u5a92\u4f53\uff09\uff1b
-\uff084\uff09N-of-M \u4ef2\u88c1\u8def\u5f84\uff08\u4e00\u81f4 / \u51b2\u7a81 / \u4ec5 L3 / \u4ec5 L4 / \u5168\u65e0\uff09\uff1b
-\uff085\uff09fail-closed \u77ed\u8def\uff084 \u7c7b note\uff09\uff1b
-\uff086\uff09\u8f93\u51fa SiteOutcome \u5f62\u72b6 + 13 \u5206\u652f\u5408\u6cd5\u6027\u3002
+覆盖（1）L3 → branch 映射（access_kind 7 值 × 上下游）；
+（2）L4 → branch 映射（label 9 值 × paywall_type 6 值）；
+（3）L2 signal 启发式（实播 / 黑屏 / 错误代码 / 无媒体）；
+（4）N-of-M 仲裁路径（一致 / 冲突 / 仅 L3 / 仅 L4 / 全无）；
+（5）fail-closed 短路（4 类 note）；
+（6）输出 SiteOutcome 形状 + 21 分支合法性。
+（口径：``BRANCH_LABELS`` 全集 21 key = 20 活跃 + 1 deprecated
+``login_wall_or_blocked``；判定层不主动产出 deprecated，历史存档才有。）
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from trajectory_pipeline.executor.review.vlm_reviewer import VLMReviewResult
 from trajectory_pipeline.perception.base import Decision
 
 
-# ---------- \u56fa\u5b9a factory ----------
+# ---------- 固定 factory ----------
 
 def _mk_decision(
     question: str = "business.signal",
@@ -110,11 +112,11 @@ def _mk_result(
     )
 
 
-# ====== T01-T10 L3 \u2192 branch mapping ======
+# ====== T01-T10 L3 → branch mapping ======
 
 class TestL3ToBranch:
     def test_region_to_blocked(self):
-        l3 = _mk_decision(payload={"access_kind": "region", "hit_keyword": "\u4ec5\u9650\u4e2d\u56fd", "paywall_type": "none"})
+        l3 = _mk_decision(payload={"access_kind": "region", "hit_keyword": "仅限中国", "paywall_type": "none"})
         branch, conf = _branch_from_l3(l3)
         assert branch == "blocked"
         assert conf == 0.85
@@ -135,7 +137,7 @@ class TestL3ToBranch:
         assert branch == "broken"
 
     def test_login_to_login_required(self):
-        l3 = _mk_decision(payload={"access_kind": "login", "hit_keyword": "\u8bf7\u767b\u5f55", "paywall_type": "none"})
+        l3 = _mk_decision(payload={"access_kind": "login", "hit_keyword": "请登录", "paywall_type": "none"})
         branch, _ = _branch_from_l3(l3)
         assert branch == "login_required"
 
@@ -163,7 +165,7 @@ class TestL3ToBranch:
         assert _branch_from_l3(None) == (None, 0.0)
 
 
-# ====== T11-T18 L4 \u2192 branch mapping ======
+# ====== T11-T18 L4 → branch mapping ======
 
 class TestL4ToBranch:
     def test_playable_to_none(self):
@@ -239,16 +241,16 @@ class TestL2SignalHeuristics:
 
     def test_no_signal_no_media_with_note_to_none(self):
         sig = _mk_signal(play_started=False)
-        # \u6709 note \u4f46\u4e0d\u662f fail-closed\uff0c\u4e0d\u8be5\u4ea7\u751f not_play_site
+        # 有 note 但不是 fail-closed，不该产生 not_play_site
         branch, _ = _branch_from_signal(sig, media_count=0, note="some_warning")
         assert branch is None
 
 
-# ====== T23-T27 \u51b2\u7a81\u4ef2\u88c1 ======
+# ====== T23-T27 冲突仲裁 ======
 
 class TestConflictArbitration:
     def test_l3_l4_consistent_blocked(self):
-        # L3 region \u2192 blocked, L4 label=blocked\uff0c\u4e00\u81f4
+        # L3 region → blocked, L4 label=blocked，一致
         result = _mk_result(
             l3=_mk_decision(payload={"access_kind": "region", "hit_keyword": "x", "paywall_type": "none"}),
             vlm=_mk_vlm(label="blocked", confidence=0.65, source="heuristic"),
@@ -258,9 +260,9 @@ class TestConflictArbitration:
         assert out.source == "arbiter"
 
     def test_l3_l4_conflict_l4_llm_wins(self):
-        # L3 region \u2192 blocked, L4 login_required llm \u2192 login_required
-        # L4 weight(3) \u00d7 conf(0.85) = 2.55; L3 weight(1) \u00d7 conf(0.85) = 0.85
-        # \u2192 L4 \u80dc
+        # L3 region → blocked, L4 login_required llm → login_required
+        # L4 weight(3) × conf(0.85) = 2.55; L3 weight(1) × conf(0.85) = 0.85
+        # → L4 胜
         result = _mk_result(
             l3=_mk_decision(payload={"access_kind": "region", "hit_keyword": "x", "paywall_type": "none"}),
             vlm=_mk_vlm(label="login_required", confidence=0.85, source="llm"),
@@ -269,9 +271,9 @@ class TestConflictArbitration:
         assert out.branch == "login_required"
 
     def test_l3_l4_conflict_l4_heuristic_high_conf_wins(self):
-        # L3 access_kind=login \u2192 login_required (conf=0.65)
+        # L3 access_kind=login → login_required (conf=0.65)
         # L4 label=blocked (heuristic, conf=0.85)
-        # L3: 1 \u00d7 0.65 = 0.65; L4: 2 \u00d7 0.85 = 1.7 \u2192 L4
+        # L3: 1 × 0.65 = 0.65; L4: 2 × 0.85 = 1.7 → L4
         result = _mk_result(
             l3=_mk_decision(confidence=0.65, payload={"access_kind": "login", "hit_keyword": "y", "paywall_type": "none"}),
             vlm=_mk_vlm(label="blocked", confidence=0.85, source="heuristic"),
@@ -294,11 +296,11 @@ class TestConflictArbitration:
         assert out.branch == "blocked"
 
 
-# ====== T28-T31 \u771f\u64ad\u653e\u4e00\u7968\u5426\u51b3 + fail-closed ======
+# ====== T28-T31 真播放一票否决 + fail-closed ======
 
 class TestL2AndFailClosed:
     def test_l2_real_play_overrides_l4_blocked(self):
-        # L2 \u5b9e\u64ad\uff0cL4 \u8bf4 blocked \u2192 \u4f9d\u7136\u6210\u529f\uff08\u4e00\u7968\u5426\u51b3\uff09
+        # L2 实播，L4 说 blocked → 依然成功（一票否决）
         result = _mk_result(
             signal=_mk_signal(play_started=True, current_time_sec=3.0, frames_decoded=200),
             vlm=_mk_vlm(label="blocked", confidence=0.85, source="heuristic"),
@@ -308,7 +310,7 @@ class TestL2AndFailClosed:
         assert out.question == "playback.success"
 
     def test_credential_leak_note_with_l4_unresolved(self):
-        # credential_leak + L4 unknown \u2192 unresolved
+        # credential_leak + L4 unknown → unresolved
         result = _mk_result(
             note="credential_leak",
             vlm=_mk_vlm(label="unknown"),
@@ -318,7 +320,7 @@ class TestL2AndFailClosed:
         assert "credential_leak" in out.evidence
 
     def test_credential_leak_note_with_l4_login_required(self):
-        # credential_leak + L4 login_required \u2192 \u4f9d\u7136\u91c7\u7eb3 L4
+        # credential_leak + L4 login_required → 依然采纳 L4
         result = _mk_result(
             note="credential_leak",
             vlm=_mk_vlm(label="login_required", confidence=0.85, source="heuristic"),
@@ -338,13 +340,13 @@ class TestL2AndFailClosed:
         assert out.branch == "unresolved"
 
     def test_all_three_layers_absent_to_unresolved(self):
-        # \u5168\u65e0\uff1aL3=None, L4=None, L2 \u4e5f\u4e0d\u547d\u4e2d
+        # 全无：L3=None, L4=None, L2 也不命中
         result = _mk_result(signal=_mk_signal(play_started=False), media_count=1)
         out = arbitrate(result)
         assert out.branch == "unresolved"
 
 
-# ====== T32-T36 \u8f93\u51fa\u5f62\u72b6 + \u5408\u6cd5\u6027 ======
+# ====== T32-T36 输出形状 + 合法性 ======
 
 class TestOutputShapeAndLegality:
     def test_returns_siteoutcome_instance(self):
@@ -365,7 +367,7 @@ class TestOutputShapeAndLegality:
     def test_evidence_contains_arbiter_marker(self):
         result = _mk_result(l3=_mk_decision(payload={"access_kind": "region", "hit_keyword": "x", "paywall_type": "none"}))
         out = arbitrate(result)
-        assert "L5" in out.evidence and "\u4ef2\u88c1" in out.evidence
+        assert "L5" in out.evidence and "仲裁" in out.evidence
 
     def test_branch_in_legal_set(self):
         legal_branches = set(BRANCH_LABELS.keys()) | {None}

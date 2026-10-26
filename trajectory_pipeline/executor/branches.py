@@ -50,7 +50,8 @@ from trajectory_pipeline.executor.gatekeeper import _same_page  # noqa: F401
 #: 2026-10-12 阶段 1：登录墙合并态拆为 ``login_required`` / ``blocked``
 #: （+ ``broken`` 承接 404）。原 ``login_wall_or_blocked`` **保留但弃用**
 #: ——历史存档要展示，故不删；新代码路径不再主动产出它。全部合法值
-#: （13 活跃 + 1 deprecated + success）= 15 类。
+#: （13 活跃 + 1 deprecated + success）= 15 类。**⚠️ 这是 2026-10-12 的
+#: 历史口径**——当前口径见下一条（2026-10-26 回填，别按这行数）。
 #:
 #: 2026-10-16 路径 B/C：+7 支发现链分支（聚合站两支、文章链两支、
 #: 站内搜索三支），活跃 13 → 20，全部合法值 = 22 类。
@@ -488,6 +489,26 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
 }
 
 
+#: **同页守卫覆盖的分支集合**（2026-10-19 增量六十·方案 X 窄化后 = 1 支）。
+#:
+#: 原守卫集合是 5 支（``component_unverified`` / ``subscription_wall`` /
+#: ``login_required`` / ``blocked`` / ``partial_free``）。收窄的根据：
+#: ``component_unverified`` 是「已落地播放页但无组件」的兜底，需要
+#: 「点击前后是否换页」做**强证据**确认；其余 4 支是「落地即结论」语义，
+#: 与「点击前后是否变」**无关**，守卫对它们是过度延伸。
+#:
+#: ⚠️ **这四条的前置事实核验没有因此消失**——它们各自的判据在
+#: :data:`BRANCH_PRECONDITION` 与 :func:`_precondition_failed` 里各有一段
+#: （``subscription_wall`` 走**门禁语境** ``paywall_evidence``，另外三条走
+#: 「确实到了目标页」的落地证据）。收窄的只是**同页**这一条机械判据。
+#:
+#: **为什么把它提成常量**：这条集合是「分支口径断点」的一部分
+#: （2026-10-19），而 :mod:`trajectory_pipeline.executor.branch_eras`
+#: 的登记项要跟**代码现状**对账——提成常量后那份对账可以被 contract
+#: 测试盯住，而不是靠人记得。
+SAME_PAGE_GUARD_BRANCHES: frozenset[str] = frozenset({"component_unverified"})
+
+
 # 2026-10-13 增量三十二 · D10 偏差修缮：付费墙同页守卫的**强信号旁路**。
 #
 # ⚠️ **2026-10-21（H-16 修复①）这段旁路已经退役**——本模块原来的
@@ -585,7 +606,7 @@ def _precondition_failed(
                 f"页面里没有付费墙门禁证据——"
                 f"{BRANCH_PRECONDITION[branch]}"
             )
-    if branch == "component_unverified":
+    if branch in SAME_PAGE_GUARD_BRANCHES:
         if pre_obs is None:
             return ""
         if _same_page(pre_obs, obs):

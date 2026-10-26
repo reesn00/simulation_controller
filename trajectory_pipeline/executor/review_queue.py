@@ -718,9 +718,10 @@ def extract_from_browser_result(
        ——「采集 / 仲裁层主动 fail-closed」。这条是 mediabrowse 专属，
        run 路径的 P1 archive 没有 ``note`` 字段。
 
-    成功（``branch is None``）与其他 13 活跃负样本分支不进——前者按定义
+    成功（``branch is None``）与其他 16 活跃负样本分支不进——前者按定义
     不需要复核，后者按 :class:`~executor.branches.NON_SAMPLE_BRANCHES`
     反面是**代码已给出确定性结论**，复核它属于抽检（另一件事）。
+    （口径：活跃 20 支 − 非样本 4 支 = 16 支入库负样本；2026-10-26 回填。）
 
     ⚠️ **dataclass 鸭子处理**——``final_url`` / ``requested_url`` /
     ``note`` 等字段在探测层不同时是空值；本函数不读隐含语义，只看字段

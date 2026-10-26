@@ -35,8 +35,8 @@ from typing import Mapping
 #: 语义等价类（key = 现有体系分支名或新体系标注标签；value = 等价类名）。
 #:
 #: 覆盖两组来源：
-#:   ① 现有体系分支：``executor.branches.BRANCH_LABELS`` 的全部 14 个 key
-#:     （13 活跃 + 历史合并态 ``login_wall_or_blocked``）+ 成功标签
+#:   ① 现有体系分支：``executor.branches.BRANCH_LABELS`` 的全部 21 个 key
+#:     （20 活跃 + 历史合并态 ``login_wall_or_blocked``）+ 成功标签
 #:     ``success``（builder 的 ``SUCCESS_LABEL``）；
 #:   ② 新体系 VLM 标注标签：``playable`` / ``ads_then_playable`` /
 #:     ``paywall`` / ``empty`` / ``unknown``——历史 golden 与新代码比较时

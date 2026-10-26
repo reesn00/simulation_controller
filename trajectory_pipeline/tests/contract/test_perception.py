@@ -568,7 +568,7 @@ class TestTitleLinkSufficiency:
     负样本分支——**错标签就进了池子**，且实测已与同 URL 的成功记录矛盾。
 
     ``fail-closed`` 的 ``None`` 不入池而 ``False`` 入池，区别不在模型，
-    在**有没有能力判**——而 fail-closed 的定义正是「没能力判就返�� ``None``」。
+    在**有没有能力判**——而 fail-closed 的定义正是「没能力判就返回 ``None``」。
     """
 
     def _obs_links(self, *texts):

@@ -4,6 +4,7 @@
 > 状态:方案 v04  ·  适用范围:`trajectory_pipeline/evaluation` + `trajectory_pipeline/evaluation/golden`  ·  编写日期:2026-10-14
 > 上游设计:`docs/设计方案/08-阶段4七层定位与黄金数据集rubric门禁方案.md`(回答 3 问 + scout 三态分流设计)
 > 替代:原 `07-rubric-gate改造方案.md`(1 行占位空壳,已于 2026-10-25 废弃文本清理删除;本档为其实施层细化)
+> ⚠️ **分支数按 2026-10-26 现状回填**：20 活跃 + 1 deprecated = 21 key / 22 类合法标签。
 
 ---
 
@@ -374,7 +375,7 @@ def test_l5_fail_closed_notes_unique_source():
 | 2   | **交接面是格式不是 import**:scout 不 import executor.cli / executor 顶层  | `test_scout_contract.py`(§9.1)        |
 | 3   | **三态**:`scored` / `undetermined` / `not_run` 一致,与 `GateStatus` 同款  | `types.py` TypedDict                    |
 | 4   | **缺件 ≠ 扣分**:score=None 进 quarantine,不进负例                        | `policy.classify()` 单测 + smoke 测试    |
-| 5   | **共享字面量两处必同步**:13 分支标签、fail-closed 白名单                  | `test_shared_literal_sync.py`           |
+| 5   | **共享字面量两处必同步**:**21 分支**标签、fail-closed 白名单                  | `test_shared_literal_sync.py`           |
 | 6   | **黄金集不虚构**:只接受真实 scout 产物,`quarantine.jsonl` 永不入 candidates | `cmd_from_scout` 字段白名单 + smoke 验  |
 | 7   | **L6 人工不复用 scout**:人审走 `annotations.jsonl`,不走 `from-scout`     | 命名空间与文件路径分开                  |
 | 8   | **Score≠Undetermined**:score=0 ≠ score=None                              | `policy.classify` 不把 0 当 None 看待    |
@@ -390,7 +391,7 @@ def test_l5_fail_closed_notes_unique_source():
 | `from-scout` 入 `freeze` 路径                 | 报错只来自 IO/JSON 损坏,不来自分类逻辑                            |
 | D-10 重测(可选)                              | 纯人工子集 vs scout 驱动子集各自计一致率,二者可同向解读           |
 | `test_scout_contract` 全部 AST 断言          | 5 条契约测试全绿,关键:scout 不 import executor 顶层               |
-| `test_shared_literal_sync`                   | 13 分支标签 / 4 fail-closed note 字面量源唯一                     |
+| `test_shared_literal_sync`                   | **21 分支**标签 / 4 fail-closed note 字面量源唯一                     |
 
 ---
 
