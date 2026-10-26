@@ -46,6 +46,7 @@ import re
 import shutil
 import string
 import sys
+import traceback
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
 from types import MappingProxyType
@@ -399,6 +400,27 @@ def _per_site_timeout(args: argparse.Namespace) -> float:
     return float(value)
 
 
+#: 起浏览器失败后的**重试间隔**（秒）。
+#:
+#: 短到不打断批次的节奏，长到让上一个浏览器进程的崩溃渲染（SWGL
+#: ``RenderCompositorSWGL failed mapping default framebuffer``）把资源放掉。
+_LAUNCH_RETRY_DELAY_S = 3.0
+
+
+def _describe_failure(exc: BaseException) -> str:
+    """把异常压成**一行人话**——给人看的那一列。
+
+    **只描述，不吞**：调用方决定是记账（这一条跳过、其余继续）还是中止
+    （整批停）。取类型名 + 第一行：完整 traceback 留给真要查的人，
+    别把批次的输出刷成一片红。
+    """
+    text = str(exc).strip()
+    head = text.splitlines()[0] if text else ""
+    name = type(exc).__name__
+    line = f"{name}: {head}" if head else name
+    return line[:240]
+
+
 async def _launch_camoufox(*, headless: bool = True) -> Any:
     """起一个 camoufox 会话。**唯一的 launch 入口**（测试可打桩）。
 
@@ -412,10 +434,31 @@ async def _launch_camoufox(*, headless: bool = True) -> Any:
     另一个更根本的缝在**调用方**：测试应当显式钉住 ``--driver obscura``
     （它本来就在 monkeypatch ``cli.make_driver``），而不是靠默认值碰巧
     不联网。**默认值变了，测试就该显式钉住驱动**——这是这次切换的教训。
+
+    ⚠️ **重试一次**（2026-10-26）：实测撞到过
+    ``playwright._impl._errors.TimeoutError: BrowserType.launch: Timeout
+    180000ms exceeded`` + ``Crash Annotation GraphicsCriticalError: |[0]
+    [GFX1-]: RenderCompositorSWGL failed mapping default framebuffer``——
+    **起浏览器这一步会偶发失败**，而它一失败整批就没了（12 条计划只跑成
+    2 条，剩下 10 条全丢）。重试一次的代价是 3 分钟，换回 10 条数据。
+
+    **只重试一次**：连挂两次说明是真问题（显卡 / 内存 / 驱动），再试只是
+    把同一个错误拖成两遍。第二次还失败就**抛**——由调用方记账（哪条没跑
+    成、为什么），不在这儿吞。
     """
     from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
 
-    return await CamoufoxSession.launch(headless=headless)
+    last: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            return await CamoufoxSession.launch(headless=headless)
+        except Exception as exc:          # noqa: BLE001 —— 第二次仍失败就抛
+            last = exc
+            if attempt == 1:
+                print(f"[warn] camoufox 会话没起来（第 1 次）："
+                      f"{_describe_failure(exc)}——重试一次")
+                await asyncio.sleep(_LAUNCH_RETRY_DELAY_S)
+    raise last if last is not None else RuntimeError("camoufox 启动失败")
 
 
 @asynccontextmanager
@@ -569,6 +612,8 @@ async def _run_manual(args: argparse.Namespace) -> int:
                 collect_element_basis=getattr(args, "element_basis", False),
             )
         print(f"driver = {kind}")
+        # 同 _run_plan：**一条没跑成不毁整批**（2026-10-26）。
+        failed: list[tuple[str, str]] = []
         for title in titles:
             # **每个 task 一个 perceptor**：LLM 版的判断点 ① 需要目标片名，
             # 而片名是任务的属性不是页面的属性，靠构造注入。
@@ -576,18 +621,40 @@ async def _run_manual(args: argparse.Namespace) -> int:
             print(f"perceptor = {describe(perceptor)}")
             # camoufox 面**一个 Run 一次 launch**（见 _driver_for_run）；
             # obscura 面复用批次驱动，yield 的就是同一个对象。
-            async with _driver_for_run(
-                kind, shared=shared,
-                headless=not getattr(args, "headful", False),
-                collect_element_basis=getattr(args, "element_basis", False),
-            ) as driver:
+            async with AsyncExitStack() as task_stack:
+                try:
+                    driver = await task_stack.enter_async_context(
+                        _driver_for_run(
+                            kind, shared=shared,
+                            headless=not getattr(args, "headful", False),
+                            collect_element_basis=getattr(
+                                args, "element_basis", False),
+                        )
+                    )
+                except ValueError:
+                    raise          # 配置错误——当场抛，不降级
+                except Exception as exc:
+                    failed.append((f"{args.task_id} {title}",
+                                   _describe_failure(exc)))
+                    print(f"[FAIL] [{args.task_id}] {title}：浏览器没起来"
+                          f"（{_describe_failure(exc)}）——本条跳过，继续下一条")
+                    traceback.print_exc()
+                    continue
                 orch = Orchestrator(driver, perceptor, cfg,
                                     rationale_writer=writer,
                                     agent_backend=agent_backend)
                 print(f"\n[{args.task_id}] {title}")
-                # 不传 user_prompt：手工路径没有 persona 渲染的提问，
-                # 存档里留空串（含义与 provenance 空 dict 相同）。
-                rec = await orch.run(args.task_id, title)
+                try:
+                    # 不传 user_prompt：手工路径没有 persona 渲染的提问，
+                    # 存档里留空串（含义与 provenance 空 dict 相同）。
+                    rec = await orch.run(args.task_id, title)
+                except Exception as exc:
+                    failed.append((f"{args.task_id} {title}",
+                                   _describe_failure(exc)))
+                    print(f"[FAIL] [{args.task_id}] {title}：这一条没跑成"
+                          f"（{_describe_failure(exc)}）——继续下一条")
+                    traceback.print_exc()
+                    continue
             records.append(rec)
             path = archive.write(rec, task_id=args.task_id, batch_id=args.task_id)
             _print_summary(rec, path)
@@ -596,8 +663,8 @@ async def _run_manual(args: argparse.Namespace) -> int:
             # 但落到独立 jsonl（review_auto/l6_dispatch.jsonl）。
             _dispatch_l6_summary(rec, args.task_id)
 
-    _print_batch_footer(records)
-    return 0
+    _print_batch_footer(records, failed=failed)
+    return 1 if failed else 0
 
 
 async def _run_plan(args: argparse.Namespace) -> int:
@@ -701,35 +768,98 @@ async def _run_plan(args: argparse.Namespace) -> int:
                 collect_element_basis=getattr(args, "element_basis", False),
             )
         print(f"driver = {kind}")
+        # ⚠️ **一条没跑成不许毁整批**（2026-10-26 实测踩到）：一次 launch
+        # 超时就让 12 条计划只跑成 2 条，剩下 10 条**全丢**且不留痕。
+        # 每条**独立记账**：起浏览器失败 ⇒ 记一条、跳到下一条。
+        # 退出码仍是 1、失败清单照打——**不静默**，但也不拿一条拖死十条。
+        failed: list[tuple[str, str]] = []
         for n, task in enumerate(tasks, 1):
             # 上面的检查已保证 title 非空，这里直接取
             title = task.title
             # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
             # camoufox 面一个 Run 一次 launch（_driver_for_run）。
-            async with _driver_for_run(
-                kind, shared=shared,
-                headless=not getattr(args, "headful", False),
-                collect_element_basis=getattr(args, "element_basis", False),
-            ) as driver:
+            async with AsyncExitStack() as task_stack:
+                try:
+                    driver = await task_stack.enter_async_context(
+                        _driver_for_run(
+                            kind, shared=shared,
+                            headless=not getattr(args, "headful", False),
+                            collect_element_basis=getattr(
+                                args, "element_basis", False),
+                        )
+                    )
+                except ValueError:
+                    # **配置错误**（实现名不认识 / 句柄没给）——当场抛。
+                    # 把它降级成「这一条没跑成」会把「配错了」读成
+                    # 「浏览器偶发失败」，而这两者的处置完全不同。
+                    raise
+                except Exception as exc:
+                    failed.append((task.task_id, _describe_failure(exc)))
+                    print(f"[FAIL] [{n}/{len(tasks)}] {task.task_id}："
+                          f"浏览器没起来（{_describe_failure(exc)}）"
+                          "——本条跳过，继续下一条")
+                    traceback.print_exc()
+                    continue
                 orch = Orchestrator(driver, _make_perceptor(args, title), cfg,
                                     rationale_writer=writer,
                                     agent_backend=agent_backend)
                 print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
                       f"| {title}")
-                rec = await orch.run(
-                    task.task_id, title,
-                    search_query=task.search_query,
-                    user_prompt=task.prompt_text,
-                    provenance=dict(task.provenance),
-                )
+                try:
+                    rec = await orch.run(
+                        task.task_id, title,
+                        search_query=task.search_query,
+                        user_prompt=task.prompt_text,
+                        provenance=dict(task.provenance),
+                    )
+                except Exception as exc:
+                    # 同上：**能力不可用不中断采集**（浏览器中途崩了也算）。
+                    # 代码 bug 也会落到这里——但它会**每条都犯**，于是失败
+                    # 清单会列满整批 + 退出码 1，**不会被读成成功**。
+                    failed.append((task.task_id, _describe_failure(exc)))
+                    print(f"[FAIL] [{n}/{len(tasks)}] {task.task_id}："
+                          f"这一条没跑成（{_describe_failure(exc)}）"
+                          "——继续下一条")
+                    traceback.print_exc()
+                    continue
             records.append(rec)
-            path = archive.write(rec, task_id=task.task_id, batch_id=args.task_id)
+            path = archive.write(rec, task_id=task.task_id,
+                                 batch_id=_plan_batch_id(plan))
             _print_summary(rec, path)
             # 增量三十六：L6 自动派发——与 _run_manual 同口径。
             _dispatch_l6_summary(rec, task.task_id)
 
-    _print_batch_footer(records)
-    return 0
+    _print_batch_footer(records, failed=failed)
+    return 1 if failed else 0
+
+
+def _plan_batch_id(plan) -> str:
+    """``--plan`` 跑出来的批次 id —— **优先取计划里的 ``batch_id``**，
+    退回**计划文件名**；**不取** ``--task-id``。
+
+    ``batch_id`` 是批次报表的切片键（见 ``RunRecord.batch_id`` 的说明）。
+    而 ``run --plan`` 这条路上 ``args.task_id`` **从头到尾没被用过**，
+    它的 argparse 默认值是 ``"T001"`` ⇒ 每一批**所有** task 的存档都写着
+    ``batch_id="T001"``。实测（2026-10-26）12 实例那批：第一批存档里
+    ``batch_id`` 就是 ``"T001"``，而那一批根本不含 T001 这个 task。
+
+    后果不是崩溃，是**批次元数据退化成常数**：两批计划跑出来的存档在
+    ``batch_id`` 上分不开，而「并池是写入时的动作、不记批次元数据就会
+    把分布跳变读成『质量变好了』」正是纪律里写着的那条。
+
+    **两段式**（2026-10-26）：计划里写了顶层 ``batch_id`` 就用它，没写就
+    退回文件名（存量计划文件顶层只有 ``report`` 与 ``instances``）。
+    为什么要显式字段：一份计划**分两次跑**（12 条里前 2 条跑完浏览器
+    挂了，剩 10 条另起一份计划续跑）时，两份计划的**文件名不同**而
+    **批次身份必须相同**——否则同一批被切成两批，批次元数据反而更糊。
+    字段在 :mod:`executor.plan` 里（``LoadedPlan.batch_id``），
+    **不在这个函数里猜键名**。
+    """
+    explicit = str(getattr(plan, "batch_id", "") or "").strip()
+    if explicit:
+        return explicit
+    source = str(getattr(plan, "source", "") or "")
+    return Path(source).stem if source else ""
 
 
 def _print_plan_header(plan, tasks, *, limited: bool) -> None:
@@ -757,11 +887,26 @@ def _print_plan_header(plan, tasks, *, limited: bool) -> None:
     print("  提示：真实浏览器每条约几十秒。跑长批之前建议先 --dry-run 看一眼。")
 
 
-def _print_batch_footer(records) -> None:
+def _print_batch_footer(records, failed=None) -> None:
+    """批次小结。**失败清单必须打出来**。
+
+    「没跑成」与「跑了但没成功」是**两件事**：前者是能力问题（浏览器没起来、
+    这一条崩了），后者才是素材质量差。混在一起读会得出相反的结论——
+    而失败的那几条**在存档里压根不存在**，不打印就等于没发生过。
+    """
     total = len(records)
     ok = sum(1 for r in records if r.succeeded)
     blocked = [r for r in records if r.search_blocked]
+    failed = list(failed or [])
     print(f"\n共 {total} 个 task，成功 {ok}")
+    if failed:
+        print(f"⚠️ **{len(failed)} 个 task 没跑成**（原因在下面）——"
+              "这些**不算素材质量差**，是能力问题；"
+              "它们在存档里压根不存在，不打出来就等于没发生过：")
+        for task_id, detail in failed:
+            print(f"  - {task_id}：{detail}")
+        print("  ⇒ 续跑请另起一份计划（**带上同一个 batch_id**），"
+              "别把没跑成的当成跑过。")
     if blocked:
         print(f"⚠️ 其中 **{len(blocked)}/{total} 个被反爬拦截**"
               f"（{Counter(r.search_blocked for r in blocked)}）——"

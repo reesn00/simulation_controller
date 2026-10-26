@@ -275,6 +275,22 @@ class TestPlanCliWiring:
         assert js["query"] == _row()["search_query"]
         assert js["provenance"]["genre"] == "喜剧", "provenance 也没跟着走"
 
+    def test_batch_id_取计划名而不是task_id默认值(self, tmp_path, monkeypatch):
+        """``--plan`` 那条路**从没用过** ``args.task_id``，而它的默认值是
+        ``"T001"`` ⇒ 每一批所有存档都写着 ``batch_id="T001"``（实测
+        2026-10-26 那批 12 实例：第一批存档的 ``batch_id`` 就是 ``T001``，
+        而那一批根本不含 T001 这个 task）。
+
+        后果不是崩溃，是**批次元数据退化成常数**：两批计划跑出来的存档
+        在 ``batch_id`` 上分不开，而「并池是写入时的动作、不记批次元数据
+        就会把分布跳变读成『质量变好了』」是纪律里写着的那条。
+        """
+        files = self._run(tmp_path, monkeypatch, [_row()])
+        js = json.loads(files[0].read_text(encoding="utf-8"))
+        assert js["batch_id"] == "plan", (
+            "batch_id 没取计划文件名：批次切片键退化成了 --task-id 的默认值")
+        assert js["batch_id"] != js["task_id"]
+
 
 def _ns(**kw):
     import argparse
