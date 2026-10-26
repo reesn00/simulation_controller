@@ -414,6 +414,29 @@ _NONTERMINATING_VERDICTS: Final = frozenset({Verdict.NORMAL, Verdict.DEGRADED})
 #: 各写一个 ``"unresolved"`` 字面量，是迟早会漂移的那种重复。
 UNRESOLVED: Final = "unresolved"
 
+#: **gatekeeper 代码判定的分支集合**（``unresolved`` 除外）。
+#:
+#: 公开出口只有一处：:mod:`trajectory_pipeline.evaluation.scorers.d5_scorer`
+#: 要核「分支↔判断点」配对，而那张表得知道**哪些分支可以不带 question
+#: 记账**——本模块的收口映射正是那件事的依据。手抄一份必然漂：
+#: 那是 ``questions.REGISTRY`` → d5 映射那笔旧账（漏一条 ``unresolved``
+#: 就让 48 条正确结论被判成「分支走错」）。
+#:
+#: 收进来的三支是 ``login_required`` / ``subscription_wall`` / ``blocked``
+#: ——它们**同时**也是判断点 ② / ④ 的产物（所以不能整条塞进
+#: d5 的 ``CODE_ONLY_BRANCHES``：那一组是「只由代码产生」的分支），
+#: 但在 agent 路径上它们**由代码判出来、没有判断点**，于是
+#: ``question`` 恒为空（记账入口不传 ``decision`` ⇒ question 空串，
+#: 见 :meth:`trajectory_pipeline.executor.branches.RunLedger.record`）。
+#: 所以按**组合**放行：``("", "subscription_wall")`` 这一对。
+#:
+#: ⚠️ **本集合只回答「能不能不带 question」，不回答「这条标签对不对」**——
+#: 前置事实核（:data:`~trajectory_pipeline.executor.branches.BRANCH_PRECONDITION`）
+#: 是另一道闸，管的是「这个页面是不是真的付费墙」。两件事别混。
+GATEKEEPER_DECIDED_BRANCHES: Final[frozenset[str]] = frozenset(
+    b for b in _FALLCLOSED_BRANCH.values() if b != UNRESOLVED
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Terminal:

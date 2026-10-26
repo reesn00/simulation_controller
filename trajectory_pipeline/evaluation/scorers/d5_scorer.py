@@ -203,19 +203,62 @@ TREE_BRANCHES: frozenset[str] = frozenset(
 #: 其中 ``question`` 恒为空——核的判据全部在代码里，没有判断题可配对。
 #:
 #: 与 :data:`CODE_ONLY_BRANCHES` 的分工：那组分支**只**由代码产生、名字
-#: 本身不与任何判断点冲突；这里的分支（``not_play_site``）**同名于**判断点
-#: ① 的负分支（``select.play_sites`` 判 False 时也记它），不能整条塞进
-#: ``CODE_ONLY_BRANCHES``——否则 ``("select.play_sites", "not_play_site")``
-#: 的配对检查会被跳过，而那一侧正是需要核「分支走错」的地方。
+#: 本身不与任何判断点冲突；这里的分支**同名于**某个判断点的负分支
+#: （``not_play_site`` 同名于 ①、``blocked`` 同名于 ②、
+#: ``login_required`` 同名于 ②、``subscription_wall`` 同名于 ④），
+#: 不能整条塞进 ``CODE_ONLY_BRANCHES``——否则
+#: ``("select.play_sites", "not_play_site")`` 这类**有题**的配对检查会被
+#: 整个跳过，而那一侧正是需要核「分支走错」的地方。
 #:
-#: 目前唯一成员来自 ``executor.orchestrator._drop_site_homepages``：搜索
-#: 结果里 path 为 ``/`` 的 URL 在**任何判断点之前**就被代码判定为站点
-#: 首页（结构上不可能是播放页），直接记 ``not_play_site`` 且不带
-#: ``question``。新增同类的确定性事实核时必须同步这里——
-#: ``tests/unit/test_d5_scorer.py::Test同源`` 盯着真实存档里出现的每一对。
+#: 三类产地（**question 为空 = 记账入口没传 ``decision``**，
+#: 见 :meth:`trajectory_pipeline.executor.branches.RunLedger.record`）：
+#:
+#: 1. ``("", "not_play_site")``——``executor.orchestrator._drop_site_homepages``：
+#:    搜索结果里 path 为 ``/`` 的 URL 在**任何判断点之前**就被代码判定为
+#:    站点首页（结构上不可能是播放页），直接记 ``not_play_site``；
+#: 2. ``("", "blocked")``——**采集侧账**（R1 裁定）：脚本链撞上反爬/验证码页
+#:    （``executor.steps.visit``，判据是 :func:`detect_block`）与 gatekeeper
+#:    的 CF/验证码判定都**不带 decision** ⇒ question 恒为空。它「有题意
+#:    但证据强度不成立」，不是「没题意」；
+#: 3. ``("", "login_required")`` / ``("", "subscription_wall")`` /
+#:    ``("", "blocked")``——**gatekeeper 代码判定的收口分支**（方案 15
+#:    「代码层做护栏」）：agent 路径上拦截由**代码**判，**没有判断点**，
+#:    于是这三支在 agent 存档里 question 恒为空。这三条**从执行层推导**
+#:    （:data:`trajectory_pipeline.executor.agent_loop.GATEKEEPER_DECIDED_BRANCHES`），
+#:    不手抄——手抄的那笔旧账是 ``questions.REGISTRY`` → 本映射漏
+#:    ``unresolved``，48 条正确结论被判成「分支走错」。
+#:
+#: 实测触发（2026-10-26 · T054 agent 批）：3 条
+#: ``question="" / branch="subscription_wall" / evidence="paywall 二次拦截"``
+#: ——``tests/unit/test_d5_scorer.py::Test同源`` 当场把这一对判成
+#: 「映射外」。**那不是数据坏了，是映射不知道 agent 路径有第三类产地。**
+#:
+#: ⚠️ **本表只回答「这一对能不能出现在盘上」，不回答「这条标签对不对」**：
+#: 前置事实核（:data:`~trajectory_pipeline.executor.branches.BRANCH_PRECONDITION`）
+#: 是另一道闸，管的是「这个页面是不是真的付费墙」。放行这一对 ≠ 认定
+#: gatekeeper 判对了——那一半由 D-5 的**证据核**与人工复核承担。
+def _gatekeeper_questionless_pairs() -> tuple[tuple[str, str], ...]:
+    """gatekeeper 代码判定的分支——**从执行层推导**，不手抄。
+
+    真源是 :data:`trajectory_pipeline.executor.agent_loop.GATEKEEPER_DECIDED_BRANCHES`
+    （agent 收口映射的值集）。延迟导入的理由与本模块里另外两处一致：
+    ``evaluation`` → ``executor`` 这条边今天**只有**「借用一张事实表」
+    这一个用途，放在模块顶部会把 import 顺序变成硬约束；而这张表
+    恰恰是**执行层的知识**（哪条 Verdict 折成哪支分支），复制一份
+    进来就是两处各写一个产地的事。
+    """
+    from trajectory_pipeline.executor.agent_loop import (
+        GATEKEEPER_DECIDED_BRANCHES,
+    )
+
+    return tuple(("", b) for b in sorted(GATEKEEPER_DECIDED_BRANCHES))
+
+
 QUESTIONLESS_PAIRS: frozenset[tuple[str, str]] = frozenset(
     {
         ("", "not_play_site"),
+        ("", "blocked"),
+        *_gatekeeper_questionless_pairs(),
     }
 )
 
