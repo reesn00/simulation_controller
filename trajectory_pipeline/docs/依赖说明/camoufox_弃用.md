@@ -1,6 +1,26 @@
 # Camoufox 使用说明
 
-> **定位**：依赖使用手册 + 本机实测记录。**架构决策在别处**——v2 生产链的执行层**自 2026-10-22 owner 裁定起就是 camoufox**（`DEFAULT_KIND = "camoufox"`，见 [设计方案 04 §6.1 覆盖块](../设计方案/04-camoufox执行层替换方案.md) 与[编年史 增量七十九](../计划进展/90-增量编年史.md)）；本文只记「这个依赖怎么装、怎么配、怎么验」，**不重复**决策本身。本文不改变控制流，也不提供新的驱动入口——驱动入口是 [`executor/browser/driver_factory.py`](../../executor/browser/driver_factory.py) 的 `make_driver`。**obscura 没被删**：它是存量 P1/P2 产物的方言（`obscura-1` 面**只读不再产出**）与口径回溯参照系。
+> 🔴 **⚠️ 本依赖已退役（2026-10-26）——只读历史，不得照抄装**
+>
+> **现行执行层是 camofox-browser（走 MCP stdio 适配器）**，不是本文记的 camoufox
+> （Playwright 进程内）。现行依赖手册见
+> [camofox-browser 使用说明](camofox-browser%20使用说明.md)；
+> 接入方案见[设计方案 21 · camofox-browser 执行层接入方案](../设计方案/21-camofox-browser执行层接入方案.md)。
+>
+> owner 原话：「**禁止把原有的 camoufox 接回来**，可以做清理原有的 camoufox 代码与内容。」
+> ⇒ `camoufox` / `playwright` **已从主依赖移除**；
+> `executor/browser/camoufox_{driver,session,probe}.py` 与 `probe_f5_name.py` **已删**；
+> `--driver camoufox` **不再是合法选项**；`cloverlabs-camoufox` **只留在 `legacy` extra**
+> （只服务 v1 冻结树，且同名抢 import 名）。
+>
+> ⚠️ **本文里指向 `camoufox_probe.py` / `camoufox_driver.py` / `camoufox_session.py`
+> 的代码链接会点不开**——那些文件**已随实现一起删**。**留着是故意的**：它们记的是
+> **当时**的落点，删掉链接等于改写历史。
+>
+> ⚠️ **本文正文一个字都没删**——它记的是**旧依赖**的装法、配法与本机实测读数，
+> 是那段时间的**存量证据**。
+
+> **定位（历史）**：依赖使用手册 + 本机实测记录。**架构决策在别处**——v2 生产链的执行层**在 2026-10-22 ~ 2026-10-26 那一段是 camoufox**（当时 `DEFAULT_KIND = "camoufox"`，见 [设计方案 04 §6.1 覆盖块](../设计方案/04-camoufox执行层替换方案.md) 与[编年史 增量七十九](../计划进展/90-增量编年史.md)）；**2026-10-26 起换成 camofox-browser**（见[方案 21](../设计方案/21-camofox-browser执行层接入方案.md)）。本文只记「这个依赖怎么装、怎么配、怎么验」，**不重复**决策本身。本文不改变控制流，也不提供新的驱动入口——驱动入口是 [`executor/browser/driver_factory.py`](../../executor/browser/driver_factory.py) 的 `make_driver`。**obscura 没被删**：它是存量 P1/P2 产物的方言（`obscura-1` 面**只读不再产出**）与口径回溯参照系。
 > **适用版本**：camoufox `0.5.8` · playwright `1.62.0` · 浏览器 `v156.0.1-beta.36`（2026-10-20 本机实测）
 > **写作口径**：凡是标「实测」的，都是在本机跑出来、能重跑验证的；凡是标「源码」的，都以 `.venv/Lib/site-packages/camoufox/` 里这份 0.5.8 为准，**不以线上文档为准**（版本漂移会改行为）。
 > 交叉：[tools.md](../tools.md)（工具调用总目录）· [04-运行手册](../04-运行手册.md)（命令与环境变量）· [02-避坑指南](../02-避坑指南.md)

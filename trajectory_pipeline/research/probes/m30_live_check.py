@@ -268,23 +268,22 @@ def _targets(args: argparse.Namespace) -> list[str]:
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
-    from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
-    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
+    from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
 
     targets = _targets(args)
     report: dict[str, Any] = {
-        "driver": "camoufox",
-        "headless": not args.headful,
+        "driver": "camofox",
         "settle_seconds": args.settle,
         "targets": list(targets),
         "results": [],
     }
     archived = _archived(_all_archive_files() if args.all_archives else None)
 
-    session = await CamoufoxSession.launch(headless=not args.headful)
+    session = await CamofoxSession.launch()
     async with session:
         report["fingerprint"] = session.fingerprint
-        driver = CamoufoxDriver(session)
+        driver = CamofoxDriver(session)
         for url in targets:
             res = await _probe(driver, url, settle_seconds=args.settle)
             res["archived"] = archived.get(_norm(url), [])
@@ -306,7 +305,7 @@ def _print_one(tag: str, r: Mapping[str, Any]) -> None:
 
 
 def _print(report: Mapping[str, Any]) -> None:
-    _p(f"driver = {report['driver']}  headless = {report['headless']}  "
+    _p(f"driver = {report['driver']}  "
        f"settle = {report['settle_seconds']}s")
     for r in report["results"]:
         _p(f"\n=== {r['url']}")
@@ -330,7 +329,9 @@ def _print(report: Mapping[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="M-30 现场取证：重采那批 URL（每站两读）")
-    ap.add_argument("--headful", action="store_true", help="有头浏览器（缺省无头）")
+    # ⚠️ ``--headful`` 已撤（2026-10-26，执行层换 camofox）：camofox 的浏览器
+    # 由**上游 REST 服务**持有，有头/无头**不由本仓库决定**。留着这个开关
+    # 只会让读数看起来「切了口径」，而实际没切——所以直接删掉。
     ap.add_argument("--settle", type=float, default=DEFAULT_SETTLE_SECONDS,
                     help=f"第二读之前等几秒（缺省 {DEFAULT_SETTLE_SECONDS}）")
     ap.add_argument("--json", default=None, help="落盘路径")

@@ -247,8 +247,8 @@ class ObscuraDriver:
     async def element_basis(self) -> dict[str, int]:
         """**跨面可比的**元素枚举账目（设计方案 04 §4.9.6）。
 
-        跑的是 :data:`element_basis.SHARED_DOM_JS`——**与 camoufox 面同一段
-        JS、同一把尺子**，于是两面的数字**按构造可比**。
+        跑的是 :data:`element_basis.SHARED_DOM_JS`——**与 aria 面（camoufox /
+        camofox）同一段 JS、同一把尺子**，于是两面的数字**按构造可比**。
 
         与 :meth:`interactive` 的差别是**枚举基础**：
         这里是 **DOM 交互候选**（role/name 自己算），

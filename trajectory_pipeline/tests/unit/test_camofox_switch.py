@@ -1,25 +1,31 @@
-"""**切 camoufox 为主力执行层**之后的门禁（2026-10-22 owner 裁定）。
+"""**切 camofox-browser 为主力执行层**之后的门禁（2026-10-26 owner 裁定）。
 
 owner 裁定
 ----------
-「不计划再继续比对 obscura 与 camoufox，**选定 camoufox 做默认浏览器
-调用主力**」——理由是反爬拦截率与页面内容获取是主目标，速度次要，
-可以接受增加等待时间。
+「原 camoufox 已移除不再使用；现在浏览器工具用 camofox-browser，
+**原生支持 MCP**，用 MCP 功能接入本项目调用浏览器」——
+并明确：**禁止把原有的 camoufox 接回来**，但**可以清理**原有的 camoufox 代码与内容。
 
-本文件盯的是**这次切换留下的接缝**。切换本身是一次「默认值搬家」，
-而默认值搬家最危险的地方在于**它不报错**：
+本文件盯的是**这次切换留下的接缝**。切换本身是一次「默认值搬家 +
+一套实现删除」，而这两件事最危险的地方都在于**它们不报错**：
 
-- 默认实现改了，但**调用点没钉住** ⇒ 一条命令跑 camoufox、另一条跑
+- 默认实现改了，但**调用点没钉住** ⇒ 一条命令跑 camofox、另一条跑
   obscura，两边产出物**结构一模一样**——混池统计时**看不出来**；
 - 指纹只在 launch 那一刻确定，**事后补不回来**⇒ 没进存档，这批
   的执行层几何就永远丢了；
-- 单站超时从 90 抬到 180 是**必需**的配套：camoufox 单步慢一个量级，
-  撞 90s 上限会被记成 ``unreachable_hard``——**理由通顺的假负样本**，
-  而假负样本进了池，模型学到的是「这类站点了不得」。
+- **camoufox 那支删干净了吗**？删一半（文件删了、``SUPPORTED_KINDS``
+  里还留着名字）⇒ ``--driver camoufox`` 走**别的**实现，
+  而存档里记的是 ``driver="camoufox"``——**声明与真实调用对不上**，
+  报告上看不出异常。
 
-⚠️ **测试不许真起浏览器**。``CamoufoxSession.launch`` 会**真的下载
-fpgen 模型**并起进程——被 ``pytest-socket`` 拦成红，且慢到不可接受。
-所以本文件一律打桩 ``cli._launch_camoufox`` 这一个缝。
+⚠️ **测试不许真起浏览器**。``CamofoxSession.launch`` 会**真的起一条
+stdio 通道**并连一次 REST 服务——被 ``pytest-socket`` 拦成红，且慢到
+不可接受。所以本文件一律打桩 ``cli._launch_camofox`` 这一个缝。
+
+⚠️ **camofox 没有「有头/无头」开关**：浏览器由上游 REST 服务持有，
+本仓库只发 MCP 调用 ⇒ ``--headful`` **已作废**（传了当场报错）。
+这条单列一个测试类：作废的开关**静默忽略**是最坏的一种处理——
+老脚本以为切了有头口径，实际跑的是另一套。
 """
 
 from __future__ import annotations
@@ -39,21 +45,44 @@ from trajectory_pipeline.executor.browser.driver_factory import (
     SUPPORTED_KINDS,
 )
 from trajectory_pipeline.executor.orchestrator import RunConfig
+from trajectory_pipeline.toolcatalog import (
+    DRIVER_SURFACE,
+    LEGACY_DRIVER_SURFACE,
+    SURFACE_CAMOFOX,
+    SURFACE_CAMOUFOX,
+    surface_of_driver,
+)
 
 
 # ─────────────── 替身 ───────────────
 
 
 class _FakeSession:
-    """假 camoufox 会话。记 launch/close 次数与 headless 参数。"""
+    """假 camofox 会话。记 launch/close 次数。
+
+    ⚠️ **只实现被用到的两个口子**（``fingerprint`` / ``close``）——
+    驱动本身不在这里造（``make_driver`` 造的是真 ``CamofoxDriver``，
+    它只存引用不调 tool），所以这两个够了。
+    """
 
     def __init__(self) -> None:
         self.closed = 0
+        #: camofox 面的指纹形状：**九项实测** + ``engine`` + ``base_url``。
+        #: ⚠️ **没有** ``humanize`` / ``geoip`` / ``locale`` / ``headless``——
+        #: 那几项**由上游决定，本仓库配不了**，写成读数就是撒谎。
         self.fingerprint = {
-            "os": "windows", "screen": {"width": 1920, "height": 1080},
-            "window": {"inner_width": 1905, "inner_height": 940},
-            "dpr": 1.0, "humanize": True, "geoip": False,
-            "main_world_eval": True, "headless": True, "locale": "zh-CN",
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) "
+                          "Gecko/20100101 Firefox/156.0",
+            "platform": "Win32",
+            "language": "zh-CN",
+            "languages": ["zh-CN", "zh"],
+            "timezone": "Asia/Shanghai",
+            "screen": [1920, 1080],
+            "window": [1920, 947],
+            "dpr": 1.0,
+            "webdriver": False,
+            "engine": "camoufox",
+            "base_url": "http://localhost:9377",
         }
 
     async def close(self) -> None:
@@ -61,16 +90,18 @@ class _FakeSession:
 
 
 def _stub_launch(monkeypatch, sessions: list[_FakeSession] | None = None):
-    """打桩 ``cli._launch_camoufox``。**不真起浏览器**。"""
+    """打桩 ``cli._launch_camofox``。**不真起浏览器、不连 REST**。"""
     made = sessions if sessions is not None else []
 
-    async def _launch(*, headless: bool = True):
+    async def _launch():
+        # ⚠️ **不接任何参数**：camofox 的浏览器由上游 REST 服务持有，
+        # 本仓库**没有** headless 开关可传（``--headful`` 已作废）。
+        # 传参数 ⇒ 暗示「本仓库能切有头口径」——那是假的能力。
         s = _FakeSession()
-        s.fingerprint["headless"] = headless
         made.append(s)
         return s
 
-    monkeypatch.setattr(cli, "_launch_camoufox", _launch)
+    monkeypatch.setattr(cli, "_launch_camofox", _launch)
     return made
 
 
@@ -78,8 +109,8 @@ def _stub_launch(monkeypatch, sessions: list[_FakeSession] | None = None):
 
 
 class Test默认实现:
-    def test_默认实现是camoufox(self):
-        assert DEFAULT_KIND == "camoufox"
+    def test_默认实现是camofox(self):
+        assert DEFAULT_KIND == "camofox"
 
     def test_默认实现在白名单里(self):
         assert DEFAULT_KIND in SUPPORTED_KINDS
@@ -87,10 +118,58 @@ class Test默认实现:
     def test_两个实现都还留着(self):
         """obscura **没被删掉**——它是存量产物的方言与口径回溯参照系。
         「不再比对」≠「删掉实现」。"""
-        assert set(SUPPORTED_KINDS) == {"obscura", "camoufox"}
+        assert set(SUPPORTED_KINDS) == {"obscura", "camofox"}
+
+    def test_camoufox_不在白名单里(self):
+        """**A1 的另一半：camoufox 那一支不许接回来。**
+
+        owner 原话：「禁止把原有的 camoufox 接回来」。
+
+        ⚠️ 名字留在白名单里 ⇒ ``--driver camoufox`` **不报错**，
+        而是被**别的**实现接过去（``make_driver`` 认名字不认实现）⇒
+        存档里记 ``driver="camoufox"``、真实调用却是 camofox——
+        **声明与真实调用对不上**，而报告上看不出任何异常。
+        """
+        assert "camoufox" not in SUPPORTED_KINDS
 
 
-# ─────────────── 指纹进 P1（P6） ───────────────
+# ─────────────── 工具面（A1）───────────────
+
+
+class Test工具面:
+    def test_新批次落在camofox面(self):
+        """``driver="camofox"`` ⇒ ``camofox-1`` 面（**一对一**，不是回落）。"""
+        assert DRIVER_SURFACE["camofox"] == SURFACE_CAMOFOX
+        assert surface_of_driver("camofox") == SURFACE_CAMOFOX
+
+    def test_camoufox_不再产出(self):
+        """**A1：「不再产出」**——新存档落不出 ``camoufox-1`` 这个面。
+
+        ``DRIVER_SURFACE`` 里没有 ``camoufox`` 键 ⇒ 装配期折算不到旧面。
+        """
+        assert "camoufox" not in DRIVER_SURFACE
+        assert surface_of_driver("camofox") != SURFACE_CAMOUFOX
+
+    def test_camoufox_仍然读得懂(self):
+        """**「不再产出」不等于「读不出来」**——**退役不等于失忆**。
+
+        盘上有 430 份 P2 样本带 ``tool_surface="camoufox-1"``、
+        14 份 P1 存档记 ``driver="camoufox"``。面删了它们就读不出来，
+        复核链当场断掉——**删的是实现，不是证据**。
+
+        ⇒ 旧名走 :data:`LEGACY_DRIVER_SURFACE` 折算回旧面，
+        而**新存档永远落不到旧面上**。
+        """
+        assert LEGACY_DRIVER_SURFACE["camoufox"] == SURFACE_CAMOUFOX
+        assert surface_of_driver("camoufox") == SURFACE_CAMOUFOX
+
+    def test_认不出的驱动名照样抛(self):
+        """旧名认得、**别的**名字不认 ⇒ 旧名不是「回落表」。"""
+        with pytest.raises(ValueError):
+            surface_of_driver("camoufox-browser")
+
+
+# ─────────────── 指纹进 P1（P6）───────────────
 
 
 class Test指纹进存档:
@@ -105,8 +184,9 @@ class Test指纹进存档:
         rec = RunRecord(task_id="T001", title="x", query="q", search_url="u")
         rec.fingerprint = dict(_FakeSession().fingerprint)
         js = rec.to_json()
-        assert js["fingerprint"]["humanize"] is True
-        assert js["fingerprint"]["window"]["inner_width"] == 1905
+        assert js["fingerprint"]["engine"] == "camoufox"
+        assert js["fingerprint"]["window"] == [1920, 947]
+        assert js["fingerprint"]["base_url"] == "http://localhost:9377"
 
     def test_空指纹是空对象而非缺字段(self):
         """**缺字段与空 dict 在切片脚本里长得一样**——缺字段会被读成
@@ -121,19 +201,16 @@ class Test指纹进存档:
     def test_序列化后仍是副本(self):
         from trajectory_pipeline.executor.orchestrator import RunRecord
 
-        fp = {"humanize": True}
+        fp = {"engine": "camoufox"}
         rec = RunRecord(task_id="T001", title="x", query="q", search_url="u",
                         fingerprint=fp)
-        fp["humanize"] = False
-        assert rec.to_json()["fingerprint"]["humanize"] is True
+        fp["engine"] = "chromium"
+        assert rec.to_json()["fingerprint"]["engine"] == "camoufox"
 
     def test_编排器从驱动取指纹(self):
         """**接线点**也要钉住：``RunRecord.fingerprint`` 的来源是
         ``self._driver.fingerprint``。取错（比如取成请求值而不是实测值）
         不会报错，只会读到一份假的读数。"""
-        import ast
-        from pathlib import Path
-
         src = (Path(__file__).resolve().parents[2] / "executor"
                / "orchestrator.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
@@ -155,12 +232,11 @@ class Test指纹进存档:
 
 
 class Test单站超时:
-    def test_默认值抬到180(self):
-        """90 是 **obscura 时代**的数。
+    def test_默认值是180(self):
+        """90 是 **obscura 时代**的数，180 是 aria 面的数。
 
-        camoufox 单次点击实测上界 13.3s（真人鼠标轨迹回放），8 步
-        ≈ 122s ⇒ 90s **必然触顶**。触顶不是「超时」这么轻：它会被记成
-        ``unreachable_hard``——一条理由通顺的假负样本。
+        撞上限不是「超时」这么轻：它会被记成 ``unreachable_hard``——
+        一条理由通顺的假负样本。
         """
         assert RunConfig.per_site_timeout_s == 180.0
 
@@ -184,13 +260,7 @@ class Test单站超时:
             async def close(self):
                 return None
 
-        class _Perceptor:
-            name = "rule"
-
-            async def evaluate(self, q, obs):
-                return None
-
-        def _fake_make_driver(client, **kw):
+        def _fake_make_driver(client=None, **kw):
             return _Driver()
 
         monkeypatch.setattr(cli, "make_driver", _fake_make_driver)
@@ -250,14 +320,14 @@ class Test单站超时:
 
 
 class Test探针驱动:
-    async def test_camoufox分支起一次会话并关掉(self, monkeypatch):
+    async def test_camofox分支起一次会话并关掉(self, monkeypatch):
         made = _stub_launch(monkeypatch)
-        async with cli._probe_driver("camoufox") as driver:
-            assert driver.name == "camoufox"
+        async with cli._probe_driver("camofox") as driver:
+            assert driver.name == "camofox"
         assert len(made) == 1, "一条命令一条会话——每 URL 启一次太慢"
-        assert made[0].closed == 1, "会话没关——浏览器进程会留着"
+        assert made[0].closed == 1, "会话没关——上游的浏览器会留着"
 
-    async def test_obscura分支不起camoufox会话(self, monkeypatch):
+    async def test_obscura分支不起camofox会话(self, monkeypatch):
         made = _stub_launch(monkeypatch)
 
         class _Client:
@@ -272,7 +342,7 @@ class Test探针驱动:
         monkeypatch.setattr(cli.McpClient, "from_env", staticmethod(lambda: _Client()))
         async with cli._probe_driver("obscura") as driver:
             assert driver.name == "obscura"
-        assert not made, "obscura 分支不该起 camoufox 会话"
+        assert not made, "obscura 分支不该起 camofox 会话"
 
     async def test_认不出的实现报错不回落(self, monkeypatch):
         _stub_launch(monkeypatch)
@@ -292,8 +362,8 @@ class TestProberun落盘:
         out = tmp_path / "out"
 
         class _Driver:
-            name = "camoufox"
-            fingerprint = {"humanize": True, "os": "windows"}
+            name = "camofox"
+            fingerprint = {"engine": "camoufox", "base_url": "http://localhost:9377"}
 
             async def goto(self, url):
                 return None
@@ -329,24 +399,87 @@ class TestProberun落盘:
         args = argparse.Namespace(
             from_urls=str(urls), out=str(out), title="功夫", task_id="T001",
             engine="bing", max_chars=None, perceptor=None,
-            driver="camoufox", headful=False,
+            driver="camofox", headful=False,
         )
         rc = await cli.cmd_proberun(args)
         assert rc == 0
         files = list((out / "proberun").glob("*.json"))
         assert files, "proberun 没落盘"
         doc = json.loads(files[0].read_text(encoding="utf-8"))
-        assert doc["driver"] == "camoufox"
-        assert doc["fingerprint"] == {"humanize": True, "os": "windows"}
+        assert doc["driver"] == "camofox"
+        assert doc["fingerprint"] == {"engine": "camoufox",
+                                      "base_url": "http://localhost:9377"}
+
+
+# ─────────────── 作废的开关 ───────────────
+
+
+class Test作废的有头开关:
+    def test_传了当场报错且退2(self, capsys):
+        """**作废的开关不许静默忽略**。
+
+        静默忽略是最坏的一种处理：老脚本以为切了有头口径，
+        实际跑的是另一套——而报告上看不出任何异常。
+        """
+        rc = cli.main(["run", "--title", "功夫", "--headful"])
+        assert rc == 2, f"作废的开关该退 2（配置错），实际 {rc}"
+        err = capsys.readouterr().err
+        assert "headful" in err
+        assert "作废" in err
+
+    def test_说清为什么作废(self):
+        """理由必须说清**为什么**作废——不然读的人会以为能修。"""
+        assert "REST" in cli._HEADFUL_RETIRED_HINT
+
+
+# ─────────────── 执行层缺件 ───────────────
+
+
+class Test执行层缺件:
+    def test_路径上找不到适配器时给出可读理由(self, monkeypatch):
+        """**缺件即报错，不猜**（与 ``OBSCURA_EXE`` 同纪律）。
+
+        缺的是 **MCP 适配器可执行文件**——浏览器本身由上游 REST 服务
+        持有，本仓库不装浏览器。理由里必须带**怎么装**。
+        """
+        import shutil
+
+        monkeypatch.delenv("CAMOFOX_MCP_EXE", raising=False)
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        reason = cli._execution_layer_missing_reason("camofox")
+        assert reason, "缺适配器却没给出理由"
+        assert "camofox-browser-mcp" in reason
+        assert "npm" in reason, f"理由里没有安装指令：{reason!r}"
+
+    def test_环境变量指向的文件不存在时报出来(self, monkeypatch):
+        import shutil
+
+        monkeypatch.setenv("CAMOFOX_MCP_EXE", "/no/such/camofox-browser-mcp")
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        reason = cli._execution_layer_missing_reason("camofox")
+        assert reason
+        assert "CAMOFOX_MCP_EXE" in reason
+
+    def test_适配器在时没有理由(self, monkeypatch):
+        import shutil
+
+        monkeypatch.delenv("CAMOFOX_MCP_EXE", raising=False)
+        monkeypatch.setattr(shutil, "which",
+                            lambda name: "/usr/bin/camofox-browser-mcp")
+        assert cli._execution_layer_missing_reason("camofox") == ""
+
+    def test_别的执行层不管(self):
+        """obscura 的可用性由 ``OBSCURA_EXE`` 管，**不归这条预检**。"""
+        assert cli._execution_layer_missing_reason("obscura") == ""
 
 
 class Test调用点钉住实现:
     """**默认值搬家会静默走错实现。**
 
-    ``DEFAULT_KIND`` 从 obscura 换成 camoufox 之后，任何一处没钉住
+    ``DEFAULT_KIND`` 从 camoufox 换成 camofox 之后，任何一处没钉住
     ``kind=`` 的 ``make_driver`` 调用都会**默默地**按新默认值走：
     obscura 专属的代码路径（拿 MCP 连接造驱动）会当场抛 ``ValueError``，
-    camoufox 专属的路径会拿到一个 obscura 驱动。
+    camofox 专属的路径会拿到一个 obscura 驱动。
 
     ⚠️ **这个 bug 真的发生过**：手工路径（``run --task-id``）钉了
     ``kind="obscura"``，**计划路径（``run --plan``）漏了**——而后者才是
@@ -361,9 +494,6 @@ class Test调用点钉住实现:
         写成 AST 断言而不是逐个行为测试，是因为要防的是**下一处**漏写
         ——逐个行为测试只能守住已经写过的调用点。
         """
-        import ast
-        from pathlib import Path
-
         src = (Path(__file__).resolve().parents[2] / "executor"
                / "cli.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
@@ -376,7 +506,7 @@ class Test调用点钉住实现:
                     offenders.append(f"cli.py:{node.lineno}")
         assert not offenders, (
             "这些 make_driver 调用没显式传 kind ⇒ 它们跟着 DEFAULT_KIND 走，"
-            f"而 DEFAULT_KIND 已经变成 camoufox：{offenders}"
+            f"而 DEFAULT_KIND 已经变成 camofox：{offenders}"
         )
 
     def test_各命令的driver缺省都跟着DEFAULT_KIND(self):
@@ -416,9 +546,9 @@ class Test调用点钉住实现:
     async def test_计划路径的obscura调用点钉住了实现(self, tmp_path, monkeypatch):
         """``run --plan --driver obscura`` 必须是回溯路径，不是炸。
 
-        症状（漏钉时）：``ValueError: camoufox 实现需要 CamoufoxSession，
-        未提供``——因为 ``make_driver(client)`` 按新默认走 camoufox 分支，
-        而 camoufox 分支要的是 session 不是 client。
+        症状（漏钉时）：``ValueError: camofox 实现需要 CamofoxSession，
+        未提供``——因为 ``make_driver(client)`` 按新默认走 camofox 分支，
+        而 camofox 分支要的是 session 不是 client。
         """
         from trajectory_pipeline.executor.browser.driver_factory import (
             make_driver as real_make_driver,
@@ -489,8 +619,8 @@ def _plan_doc() -> dict:
 
 
 class TestMediabrowse:
-    async def test_camoufox分支被接上(self, tmp_path, monkeypatch):
-        """``mediabrowse --driver camoufox`` 要真的走 camoufox 会话。
+    async def test_camofox分支被接上(self, tmp_path, monkeypatch):
+        """``mediabrowse --driver camofox`` 要真的走 camofox 会话。
 
         L2 要在**真实生产面**上采两次 ``currentTime`` 判「真推进」——
         探针跑的浏览器不是生产面，结论就不能外推。
@@ -500,7 +630,7 @@ class TestMediabrowse:
         urls.write_text("https://example.test/v\n", encoding="utf-8")
 
         class _Driver:
-            name = "camoufox"
+            name = "camofox"
 
             async def goto(self, url):
                 return None
@@ -522,12 +652,12 @@ class TestMediabrowse:
 
         args = argparse.Namespace(
             from_urls=str(urls), title="功夫", out=str(tmp_path),
-            task_id="P023", driver="camoufox", headful=False,
+            task_id="P023", driver="camofox", headful=False,
             timeout=15.0, wait_s=2.0, no_l1=True, l1_timeout=10.0,
         )
         rc = await cli.cmd_mediabrowse(args)
         assert rc == 0
-        assert len(made) == 1, "mediabrowse 没走 camoufox 会话"
+        assert len(made) == 1, "mediabrowse 没走 camofox 会话"
         assert made[0].closed == 1, "会话没关"
 
 

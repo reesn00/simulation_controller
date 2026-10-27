@@ -22,6 +22,10 @@
         --before trajectory_pipeline/output/pipeline \
         --after trajectory_pipeline/output/pipeline/camoufox_prod2 \
         --driver camoufox
+
+⚠️ **``--driver`` 筛的是存档里记的 ``driver`` 字段**（离线读盘，**不选执行层、
+不联网**）——2026-10-26 执行层已换成 camofox-browser，那一代的存档里记的仍是
+``camoufox``（已退役、只读存量）；**下一次**两代对撞点名 ``camofox``。
 """
 
 from __future__ import annotations

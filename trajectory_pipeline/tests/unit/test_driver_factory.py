@@ -41,13 +41,14 @@ class _StubClient:
 
 
 class TestMakeDriver:
-    def test_默认实现是camoufox(self):
-        """**2026-10-22 owner 裁定**：生产链默认实现 = camoufox。
+    def test_默认实现是camofox(self):
+        """**2026-10-26 owner 裁定**：生产链默认实现 = camofox
+        （camofox-browser 的 MCP 适配器）。
 
         改的是 :data:`DEFAULT_KIND` 这一处事实，不是六处调用点各自的
         隐式约定——所以这条断言是「默认实现是什么」的唯一真源。
         """
-        assert DEFAULT_KIND == "camoufox"
+        assert DEFAULT_KIND == "camofox"
         assert DEFAULT_KIND in SUPPORTED_KINDS
 
     def test_默认实现仍在白名单里(self):
@@ -56,15 +57,15 @@ class TestMakeDriver:
         assert DEFAULT_KIND in SUPPORTED_KINDS
 
     def test_默认调用不带会话就报错不回落(self):
-        """默认值改成 camoufox 之后，**裸调用必须报错**。
+        """默认值改成 camofox 之后，**裸调用必须报错**。
 
         如果这里悄悄回落到 obscura，那么「忘了传 session」会跑出
-        一份 obscura 产出的数据，而调用方以为自己在跑 camoufox——
+        一份 obscura 产出的数据，而调用方以为自己在跑 camofox——
         两边产出物结构一模一样，**混池统计时看不出来**。
         """
         with pytest.raises(ValueError) as exc:
             make_driver(_StubClient())
-        assert "CamoufoxSession" in str(exc.value)
+        assert "CamofoxSession" in str(exc.value)
 
     def test_显式点名obscura仍然可用(self):
         """obscura **没被删掉**——它是存量产物的方言与口径回溯参照系。
@@ -79,12 +80,24 @@ class TestMakeDriver:
         assert "playwright" in str(exc.value)
         assert "obscura" in str(exc.value)
 
-    def test_camoufox缺会话时报错不代建(self):
-        """P1 的 camoufox 分支**不自己 launch**——一个 Run 一次 launch，
-        生命周期由调用方持有（方案 §4.3）。代建会让「谁该关浏览器」失主。"""
+    def test_camofox缺会话时报错不代建(self):
+        """camofox 分支**不自己 launch**——一个 Run 一次 launch，
+        生命周期由调用方持有（设计方案 21）。代建会让「谁该关浏览器」失主。"""
         with pytest.raises(ValueError) as exc:
-            make_driver(kind="camoufox")
-        assert "CamoufoxSession" in str(exc.value)
+            make_driver(kind="camofox")
+        assert "CamofoxSession" in str(exc.value)
+
+    def test_camoufox_不在白名单里(self):
+        """**owner 裁定：禁止把原有的 camoufox 接回来。**
+
+        名字留在白名单里 ⇒ ``--driver camoufox`` 不报错，被别的实现
+        接过去 ⇒ 存档记 ``driver="camoufox"``、真实调用却是 camofox——
+        **声明与真实调用对不上**，报告上看不出异常。
+        """
+        assert "camoufox" not in SUPPORTED_KINDS
+        with pytest.raises(ValueError) as exc:
+            make_driver(_StubClient(), kind="camoufox")
+        assert "camoufox" in str(exc.value)
 
     def test_obscura缺连接时报错不代建(self):
         with pytest.raises(ValueError) as exc:
@@ -120,7 +133,7 @@ def _violations(path: Path, names: set[str]) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
-            if module.rsplit(".", 1)[-1] in ("obscura_driver", "camoufox_driver"):
+            if module.rsplit(".", 1)[-1] in ("obscura_driver", "camofox_driver"):
                 imported = {a.name for a in node.names} & names
                 if imported:
                     found.append(
@@ -141,7 +154,7 @@ def _violations(path: Path, names: set[str]) -> list[str]:
 class TestNoHardcodedDriver:
     def test_生产代码只有一个装配入口(self):
         """第 7 处硬编码要在这里红。"""
-        names = {"ObscuraDriver", "CamoufoxDriver"}
+        names = {"ObscuraDriver", "CamofoxDriver"}
         violations = [
             v for path in _production_files() for v in _violations(path, names)
         ]

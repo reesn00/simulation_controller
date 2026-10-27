@@ -5,21 +5,21 @@
     ``probe_observe.py``   跑一次真实的 ``goto + observe``，把 :class:`Observation`
                            落盘并断言契约——喂的是「driver 能不能用」这个问题
 
-**两个实现都跑**（P3-β 起）：``--driver obscura``（缺省）或 ``--driver camoufox``。
+**两个实现都跑**（P3-β 起）：``--driver obscura``（缺省）或 ``--driver camofox``。
 同一批 URL、同一套契约断言、**同一份打印格式**——方案 04 §6 的 P2 判据
 「同一页在两个实现下 ``Observation`` 字段同口径」就是靠把两边的读数并排看
 来回答的。**探针不做判等**：`elements_total` 两面的语义差异是已知的
 （见 ``Observation.elements_total`` 注释），机判等会给出一个虚假的通过/失败。
 
 不跑网络单测的原因：obscura 的 mcp server 起来要几秒且依赖 ``OBSCURA_EXE``、
-camoufox 要起真浏览器，都属集成探针；契约本身由 ``tests/unit/test_dom.py``
+camofox 要起真浏览器（还要上游 REST 服务），都属集成探针；契约本身由 ``tests/unit/test_dom.py``
 （离线）与 ``tests/contract/``（七不变式）守。这个脚本是三者的补充，不是替代。
 
 用法::
 
     export OBSCURA_EXE=/path/to/obscura.exe
     uv run python -m trajectory_pipeline.executor.browser.probe_observe
-    uv run python -m trajectory_pipeline.executor.browser.probe_observe --driver camoufox
+    uv run python -m trajectory_pipeline.executor.browser.probe_observe --driver camofox
 """
 
 from __future__ import annotations
@@ -157,23 +157,23 @@ async def _run_obscura(report: dict[str, Any]) -> int:
     return 0
 
 
-async def _run_camoufox(report: dict[str, Any]) -> int:
-    from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
-    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+async def _run_camofox(report: dict[str, Any]) -> int:
+    from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
+    from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
 
-    session = await CamoufoxSession.launch()
+    session = await CamofoxSession.launch()
     async with session:
-        # 指纹一起落盘：两面的读数要并排看时，「这批 camoufox 是哪一次
+        # 指纹一起落盘：两面的读数要并排看时，「这批 camofox 是哪一次
         # launch」必须能答上来，否则视口抖动 ±8px 会被读成站点差异。
-        report["server"] = {"name": "camoufox", "fingerprint": session.fingerprint}
-        print(f"server = camoufox / fingerprint = {session.fingerprint}")
-        await _collect(CamoufoxDriver(session), report)
+        report["server"] = {"name": "camofox", "fingerprint": session.fingerprint}
+        print(f"server = camofox / fingerprint = {session.fingerprint}")
+        await _collect(CamofoxDriver(session), report)
     return 0
 
 
 async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--driver", choices=("obscura", "camoufox"), default="obscura",
+    parser.add_argument("--driver", choices=("obscura", "camofox"), default="obscura",
                         help="跑哪个实现（缺省 obscura；两面的读数用同一个脚本产出）")
     args = parser.parse_args(argv)
 
@@ -181,8 +181,8 @@ async def main(argv: list[str] | None = None) -> int:
     report: dict[str, Any] = {
         "driver": args.driver, "server": None, "observations": {}, "problems": {},
     }
-    if args.driver == "camoufox":
-        rc = await _run_camoufox(report)
+    if args.driver == "camofox":
+        rc = await _run_camofox(report)
     else:
         rc = await _run_obscura(report)
     if rc != 0 or report["server"] is None:

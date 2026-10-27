@@ -3,7 +3,7 @@
 > **对象**：项目依赖的所有外部/内部工具——不限于浏览器执行层。
 > **分类规则**：按**工具形态**（浏览器 MCP / LLM / 外部 CLI / HTTP 桥 / ...）分大类。
 > **每条工具**按五段式记录：参数表 / 返回形态 / 失败语义 / 驱动侧入口 / 通用陷阱。
-> **当前已收录**：浏览器 MCP（obscura 参考实现）· Agent 会话工具（QwenPaw 运行时 28 个）。其余类别为占位，按落地节奏追加。
+> **当前已收录**：浏览器 MCP（obscura 参考实现）· **浏览器 · camofox-browser（MCP 适配器）——现行生产执行层** · Agent 会话工具（QwenPaw 运行时 28 个）。其余类别为占位，按落地节奏追加。
 > 跨文档：[01-架构总览 · 执行层](01-架构总览.md) · [04-运行手册](04-运行手册.md)
 
 ---
@@ -38,8 +38,9 @@
 
 | 类别 | 当前参考实现 | 状态 |
 |---|---|---|
-| [浏览器 MCP](#浏览器-mcp) | `obscura-mcp` 0.2.4 | **本节收录** |
-| [浏览器 · Camoufox](#浏览器--camoufoxplaywright-进程内) | `camoufox` 0.5.8（Playwright **进程内**，非 MCP） | **本节收录** |
+| [浏览器 MCP](#浏览器-mcp) | `obscura-mcp` 0.2.4 | **本节收录**（只读存量，2026-10-22 起不再产出） |
+| [浏览器 · camofox-browser](#浏览器--camofox-browsermcp-适配器) | `camofox-browser` 1.18.1 + `camofox-browser-mcp`（**MCP stdio 适配器**，11 个 tool） | **本节收录**·**现行生产执行层** |
+| [浏览器 · Camoufox](#浏览器--camoufoxplaywright-进程内-已退役--只读历史2026-10-26) | `camoufox` 0.5.8（Playwright **进程内**，非 MCP） | **已退役（2026-10-26）· 只读历史** |
 | [Agent 会话工具](#agent-会话工具qwenpaw-运行时28-个) | 会话内 `tools` 模板集（28 个） | **本节收录** |
 | LLM 提供商调用 | 站内 `LLMConfig` 走 OpenAI-compatible HTTP | 待落地；详见 [04-运行手册 §环境变量](04-运行手册.md) |
 | 媒体探测 CLI | `ffprobe` 进程（`executor/probe/ffprobe.py`） | 待落地 |
@@ -208,9 +209,10 @@ ref=e1    a                      "Learn more"
 
 ## 原语 5 · 交互
 
-> ⚠️ **本节是 obscura（现役执行层）的实现口径**，
-> 记录的是**当前生产链**的事实。
-> **目标口径见** [Camoufox · 原语 5 · 元素定位与点击](#原语-5--元素定位与点击)：
+> ⚠️ **本节是 obscura 的实现口径**——它是**只读存量**面
+> （2026-10-22 起不再产出），**现行生产执行层是 camofox-browser**。
+> **目标口径见** [camofox-browser · 目标编码：`role` + `name`](#目标编码role--namecamofox-面)
+> （生产面；旧面见[已退役的 Camoufox 章 · 原语 5](#原语-5--元素定位与点击)）：
 > D12 之后目标编码从 `{ref, selector}` 变成 **`{role, name}`**，
 > 动作面不再接受会话句柄。改代码前先看清自己在改哪一层的口径。
 
@@ -233,13 +235,14 @@ ref=e1    a                      "Learn more"
 | 面 | 参数 | 实现 |
 |---|---|---|
 | obscura | `ref` \| `selector`（二选一） | `browser_fill` |
-| camoufox | `role` + `name` | `locator.fill(text)`（`exact=True`） |
+| camoufox（**已退役**） | `role` + `name` | `locator.fill(text)`（`exact=True`） |
+| **camofox（现行）** | `role` + `name` | `camofox_type`（上游默认 `mode='fill'` ⇒ **设值**） |
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `text` | `string` | ✅ | 要写入的内容 |
 | `ref` \| `selector` | `string` | obscura 面必填 | 同 `click` |
-| `role` + `name` | `string` | camoufox 面必填 | 同 `click`；`name` 是 `aria_snapshot` 给出的可访问名 |
+| `role` + `name` | `string` | camoufox / camofox 面必填 | 同 `click`；`name` 是 `aria_snapshot` 给出的可访问名 |
 
 **驱动侧选择原因**：搜索场景必须"**设值**"——往已有关键词的搜索框里追加会产生错误 query。obscura 同时提供 `browser_fill`（设值）与 `browser_type`（追加），**两个实现都做设值**。
 
@@ -253,8 +256,9 @@ ref=e1    a                      "Learn more"
 
 | 形态 | 调用 | 面 |
 |---|---|---|
-| 不带目标 | `page.keyboard.press(key)` / `browser_press_key` | 两面都有 |
-| 带 `role`/`name` | `locator.press(key)` | **仅 camoufox 面**（obscura 收到 `role`/`name` 抛 `ValueError`） |
+| 不带目标 | `page.keyboard.press(key)` / `browser_press_key` | 三面都有 |
+| 带 `role`/`name` | `locator.press(key)` | **camoufox 面**（已退役） |
+| 带 `role`/`name` 或不带 | **驱动缓存合并**（重发同文本 + `pressEnter=true`） | **camofox 面（现行）· 只支持 `Enter`**——别的键**能力降级**（`press_unsupported`），obscura 面收到 `role`/`name` 抛 `ValueError` |
 
 | 参数 | 类型 | 必填 | 取值 |
 |---|---|---|---|
@@ -400,7 +404,395 @@ async with McpClient.from_env() as mc:    # 读 OBSCURA_EXE 环境变量
 
 ---
 
-# 浏览器 · Camoufox（Playwright 进程内）
+# 浏览器 · camofox-browser（MCP 适配器）
+
+> **形态与上一节又不同**：obscura 走 **JSON-RPC over stdio**、工具名由上游所有（37 个）；
+> **camofox-browser 自带一个 MCP stdio 适配器**（`camofox-browser-mcp`，**11 个 tool**），
+> 而**浏览器本身由上游的 REST 服务持有**——**本仓库不启动浏览器**。
+> 进程拓扑：
+> `Python 进程 → MCP stdio → camofox-browser-mcp（Node）→ HTTP → camofox-browser REST（:9377）→ Camoufox 内核`。
+>
+> ⚠️ **浏览器内核仍是 camoufox**（上游依赖 `camoufox-js`）——
+> **换的是接入方式（Playwright 直连 → 上游 REST + MCP 适配器），不是内核**。
+> ⇒ 指纹能力仍在**内核**里；**收窄的是可配置面**（`humanize` / `geoip` / `locale` /
+> `headless` 这些**由上游决定，本仓库配不了**，只能**读回实测值**）。
+>
+> **参考实现**：`camofox-browser` 1.18.1（MCP 握手 `serverInfo` 实测）· 适配器命令 `camofox-browser-mcp` · 协议 `2024-11-05` · **11 个 tool**
+> **依赖手册**（11 个 tool 的参数与返回形状）：[依赖说明/camofox-browser 使用说明.md](依赖说明/camofox-browser%20使用说明.md)
+> **接入方案**（owner 裁定与逐条判断）：[设计方案 21 · camofox-browser 执行层接入方案](设计方案/21-camofox-browser执行层接入方案.md)
+> **驱动侧实现**：[`executor/browser/camofox_driver.py`](../executor/browser/camofox_driver.py) · [`executor/browser/camofox_session.py`](../executor/browser/camofox_session.py)
+> **传输层**：[`executor/browser/mcp_client.py`](../executor/browser/mcp_client.py) · **快照解析**：[`executor/browser/aria_snapshot.py`](../executor/browser/aria_snapshot.py)
+
+---
+
+## 环境变量（**只有一个是本仓库读的**）
+
+| 变量 | 谁读 | 说明 |
+|---|---|---|
+| `CAMOFOX_MCP_EXE` | **本仓库** | 适配器可执行文件的**位置**（**不是凭据**）。缺省走 `PATH` 找 `camofox-browser-mcp`；解析不出来**当场报错**（缺件即报错，不猜） |
+| `CAMOFOX_BASE_URL` | 上游适配器 | REST 服务地址，缺省 `http://localhost:9377` |
+| `CAMOFOX_USER_ID` / `CAMOFOX_SESSION_KEY` | 上游适配器 | 会话隔离标识。**默认不设**——适配器自己生成 `mcp-<uuid>`，于是「一条 MCP 通道 = 一个隔离会话」天然成立 |
+| `CAMOFOX_ACCESS_KEY` / `CAMOFOX_API_KEY` | 上游适配器 | 🚫 **凭据——只由子进程继承，本仓库一个字节都不经手**，**绝不进存档 / 测试 / 文档 / 日志** |
+
+> ⚠️ **`CAMOFOX_ACCESS_KEY` 不配会怎样**：上游 REST 设了它而 MCP 侧没配 ⇒
+> **除 Cookie 导入外的所有工具调用都被拒**（401 / 403）。
+> 而 `CAMOFOX_API_KEY` 只影响 `camofox_import_cookies`——**那一条本项目永不实现**（红线）。
+
+---
+
+## ⚠️ camofox 专属陷阱（动手前先读这十条）
+
+1. **快照自带截图** —— MCP 契约**硬编码** `includeScreenshot=true`，
+   而 MCP tool 的入参里**没有这个开关** ⇒ **每次快照都有一张 base64 PNG 穿过 stdio**，
+   驱动**丢弃 `screenshot` 字段**（只取文本块）。**这是已知成本不是 bug**——要彻底消掉得改上游
+   （owner 裁定：**不改上游**）⇒ **带宽问题留着**，但它**不进观察**。
+2. **快照是 80k 字符窗口** —— 超了返回 `hasMore` / `nextOffset` ⇒ **必须翻页收齐再合并**。
+   只读第一页 ⇒ 元素清单**缺一截**；读一半就过滤 ⇒ 「真同名」在**半页**上算 ⇒ 点错。
+3. **`[eN]` 的位置不固定** —— `- heading "示例" [e1] [level=1]`（playwright 的属性后缀会跟在后面）；
+   **名字本身也可能含 `[e3]`** ⇒ 取 ref 必须**按 `\[e\d+\]` 的形状在「行尾段」里找 token**，
+   既不能假定它紧跟 name，也**不能在整行里搜**（会取到名字里的那个 ⇒ 点到另一个元素，**报告上看不出异常**）。
+4. **名字走子串匹配，没有 `exact`** —— 上游定位是
+   `page.getByRole(role, {name}).nth(nth)` ⇒ Playwright 的 name 匹配是
+   **大小写不敏感 + 子串**。⇒ **工具声明里不许写「精确匹配」**——
+   写「精确」就是教模型一个引擎不保证的性质，而它在报告上看不出异常。
+5. **`press` 只支持回车** —— 上游**没有独立的「按键」tool**，唯一能提交表单的路径是
+   `camofox_type(..., pressEnter=true)`。别的键、或对别的元素按键 ⇒ 本层**做不到**（见下文 A2 口径）。
+6. **`tabId` 由服务端发** —— 不是本地自增的 `c1` / `c2`；**两套 id 不可互换**（同旧面的纪律）。
+7. **REST 服务是常驻的 ⇒ 跨 Run 会状态泄漏** —— 上一条 Run 的标签页 / 登录态会泄到下一条。
+   ⇒ **一个 Run 一份会话**；`close` 的语义是「**关掉本 session 的所有 tab**」，**不是「关浏览器」」。
+8. **错误三态要按 HTTP 状态码重推** —— playwright 那套「异常类型」判据没了，
+   **唯一还能判别错误种类的信号是错误文本里的 HTTP 状态码**：
+   | 状态码 | 含义 | 处置 |
+   |---|---|---|
+   | **422** | `strict mode violation`（选择器命中多个） | **页面事实 / 定位问题**——不是能力不可用 |
+   | **409** | `page_changed` | 页面在动作途中变了 ⇒ 重来（读数自检那套） |
+   | **503** | `session_expired` | **能力不可用**——上游会话失效，要重启 REST 服务 |
+   | **401 / 403** | auth | **配置错误**——`CAMOFOX_ACCESS_KEY` 两侧不一致 |
+9. **`--headful` 已作废** —— 浏览器由上游 REST 服务持有 ⇒ **有头 / 无头不由本仓库决定**。
+   旧开关**退役**：传了**报错退 2**（留着这个开关只会让读数看起来「切了口径」，而实际没切）。
+10. **REST 服务没起 ⇒ 一屏 tool 错误** —— MCP 适配器**只做转发**，
+    服务没起时**每个** tool 都失败，症状与「站点有问题」完全同形
+    ⇒ 会话层 `launch` 里**先预检**（列一次 tab），失败就**当场说清「REST 服务没起」**。
+
+---
+
+## 本项目内的实际调用形态（camofox 面）
+
+### 目标编码：`role` + `name`（camofox 面）
+
+模型看到的仍然是 `{role, name}`——与旧 camoufox 面**同方言**（`aria_role`），
+所以 P1/P2/P3 的键名投影、`target_params` 的派发、`agent_loop` 的动作组装**一个字都不用改**。
+
+| 编码 | 对应调用 | 可移植 | 判断 |
+|---|---|---|---|
+| `ref`（会话内句柄） | 无 | ❌ 换 session 即失效 | ✗ |
+| `{tag, label}` | `locator("button:has-text('立即播放')")` | ⚠️ 半（`<input>` 命不中） | ✗ |
+| **`{role, name}`** | 上游 `getByRole(role, {name}).nth(nth)` | ✅ | ✓ **采用** |
+
+⚠️ **语义与旧面不同**：旧面是 `get_by_role(role, name=name, exact=True)`（**精确**），
+本面是**大小写不敏感子串匹配**（上游没有 `exact`）⇒
+**「唯一可寻址」这件事从「引擎保证」变成「本项目保证」**。
+
+⇒ **本项目在枚举期剔掉三类**，剔完清单里给出的每个 `(role, name)` 才**唯一可寻址**：
+
+| 剔掉的理由 | 判定 | 为什么必须剔 |
+|---|---|---|
+| **真同名整组** | 同一 `(role, name)` 在整份 YAML 里出现 ≥ 2 次 ⇒ **整组丢** | 训练样本里只记 `{role, name}`，重放时命中哪一个是**赌**。与旧面同一条规则，但**理由不同**（旧面是 strict mode 报错，本面是模型分不清） |
+| **名字是别人的子串**（**本面特有**） | 同 `role` 的**更早**节点的名字**包含**本名 ⇒ 剔 | 上游的 `nth` 按**精确同名**计数，而 `getByRole(role,{name})` 命中的是**含该子串**的所有元素 ⇒ 两者对不上时 `.nth(nth)` 会落到**另一个元素**上——**点错，且报告上看不出异常**。判据用 **YAML 序**（与上游自己编号的口径一致） |
+| **上游没给句柄**（**本面特有**） | 该行**没有 `[eN]` 标注** ⇒ 剔 | 上游对一部分节点不分配句柄（名字命中 `SKIP_PATTERNS`（datepicker / calendar / date）、节点数超 `MAX_SNAPSHOT_NODES`=500、或该行不在上游的 `INTERACTIVE_ROLES` 里）⇒ 那些节点**点不到**，留在动作面里就是给模型一个**假的可点目标** |
+
+> ⚠️ **「真同名整组丢」这条不许去掉**——它同时兜住了上游自己的一个坑：
+> 上游的**注记**与它的**句柄表统计口径不同**（注记按**整份 YAML** 全局计数，
+> 句柄表对 iframe 用**每帧独立**计数）⇒ 主框架与 iframe 出现同名 `role+name` 时，
+> 注记会把主框架那一行标上 **iframe 的句柄** ⇒ 点它会点进 iframe。
+> ⇒ **但这种情形下 YAML 里 `(role, name)` 出现两次** ⇒ 被「真同名整组丢」整组丢掉
+> ⇒ **永远进不了动作面**。
+> ⇒ **推论（不可改）**：只要这条规则还在，活到动作面的 `(role, name)` 就是整份 YAML 里唯一的
+> ⇒ 上游的 `nth` 在所有口径下都是 0 ⇒ 注记一定正确。**去掉它，注记就会开始指错元素。**
+
+**筛选阶梯的分工**：共享阶梯 `element_basis.ladder_stages` 管**前三档**
+（role 词表 → 无名 → 真同名整组），**一个字都不许为某一个面改**；
+**截断必须排在最后**（先截再剔会把「本来能留的」挤掉）；
+**「名字子串歧义」与「上游没给句柄」两档是本面在共享阶梯之后自己加的**
+（`CAMOFOX_FACE_STAGES = ("unref_dropped", "name_ambiguous")`）。
+
+> ⚠️ **口径差异要记**：`elements_total` 在本面与 obscura / camoufox 面**不是同一个东西**
+> （那两面 = 整页 ARIA 树过了词表的那些；本面 = **翻页收齐后**过了词表的那些）。
+> 「面 ≠ 面可比」——不要拿两面的数字直接比。
+
+### 协议原语 → 上游 tool 映射表（13 原语逐条）
+
+| 协议原语 | 上游 tool | 补法 / 备注 |
+|---|---|---|
+| `goto` | `camofox_navigate` | 直接对应。**第一页是「建页带 URL」**（上游 `camofox_create_tab` 自带导航，比「先建空白页再导航」少一次往返） |
+| `snapshot` | `camofox_snapshot` | 返回**多字段**（`url` / `snapshot` / `totalChars` / `hasMore` / `nextOffset` / `screenshot` …）⇒ 取 `snapshot` 文本，**丢弃 `screenshot` 字段** |
+| `evaluate` | `camofox_evaluate` | **返回形态不同**：要解**两层**（MCP text → JSON → `{ok, result}` → `result`）；旧面拿的是 Python 原值（**不做 JSON 解包**）⇒ **口径差异要显式记** |
+| `click` | `camofox_click` | 经两段映射：`{role,name}` → 我们的 `eN` → 上游的 `eM`。上游**没有** `role+name` 定位，只吃 `ref` 或 `selector` |
+| `fill` | `camofox_type` | `ref` + `text`（+ `pressEnter`）。上游默认 `mode='fill'` ⇒ **设值**（先清空再写）**不是追加** |
+| `press` | ❌ 无 | **驱动缓存合并（A2）**：重发 `camofox_type(ref, 同 text, pressEnter=true)`——见下 |
+| `interactive` | `camofox_snapshot` **派生** | 解析 aria YAML 的 `[eN]` 标注；**翻页收齐 → 合并 → 过滤 → 编号**（我们的 `e1..eN` 按**留下的顺序**编，与旧面同一条规矩） |
+| `links` | ❌ 无 | 由 `camofox_evaluate` 跑链接 JS。**保留「按 href 去重」**——这是**跨实现可比性硬口径**，不许因为换了实现就松 |
+| `count` | ❌ 无 | 由 `camofox_evaluate` 跑 `querySelectorAll(...).length` |
+| `extract` | ❌ 无 | 由 `camofox_evaluate` **逐字段**跑（上游**没有**「一次调用抽多字段」的等价物）。文本取 `innerText \|\| textContent`；属性取**解析后的绝对值** |
+| `new_tab` / `close_tab` | `camofox_create_tab` / `camofox_close_tab` | **tabId 由服务端发**，不再是本地自增 `c1/c2` ⇒ `last_tab` 的口径要改 |
+| `observe` | 组合 | `snapshot + links + interactive + count(video,audio) + count(iframe)`。`degraded` **记能力名**不抄 tool 名（`links` / `interactive` / `count:<selector>` / `body_text` / `nav_unsettled` / `press_unsupported`） |
+| `close` | ❌ 无 | **Node 服务生命周期 ≠ 浏览器 tab** ⇒ `close` = 「**关掉本 session 的所有 tab**」，不是「关浏览器」 |
+
+**11 个 tool 里 4 个不进 driver**：
+
+| tool | 为什么不进 |
+|---|---|
+| `camofox_scroll` | **协议无滚动原语**（不实现；上游自己也说懒加载 / 虚拟滚动页面上滚轮事件无效） |
+| `camofox_screenshot` | **非模型可见**——但**可给 VLM 复核链**（这条链终于能接上） |
+| `camofox_list_tabs` | **与 tab 账目合并**（会话层已经维护标签页栈） |
+| `camofox_import_cookies` | 🚫 **凭据红线——永不实现**（见下文红线节） |
+
+### `press` 的口径（A2：驱动缓存合并，**不改上游**）
+
+上游没有「按键」这个 tool ⇒ **唯一**能提交表单的路径是 `camofox_type(..., pressEnter=true)`。
+所以驱动**记住最近一次 `fill` 的目标与文本**，收到 `press("Enter", 同目标)` 时**重发**那条 `type` 并附 `pressEnter=true`。
+
+| 情形 | 处置 |
+|---|---|
+| `key != "Enter"` | **能力降级**（`press_unsupported`）——本层做不到 |
+| 目标与上次 `fill` 不同 / 从没 `fill` 过 | **能力降级**——没有可重发的文本 |
+| 其余 | 重发同文本的 `type` + `pressEnter=true` |
+
+> ⚠️ **重发是安全的**：上游 `camofox_type` 默认 `mode='fill'` ⇒ `locator.fill(text)` 是**设值**
+> （先清空再写）**不是追加** ⇒ 重发不会把文本写两遍。
+>
+> ⚠️ **`press_unsupported` 不是「元素不存在」**：前者是**能力不可用**，后者是**页面事实**——
+> 两者的正确处置相反，混起来就是一条**理由通顺的假负样本**。
+> 它会被带进下一次 `observe` 的 `degraded` ⇒ **下游不判**（fail-closed）。
+
+### 快照分页：合并的三条口径
+
+上游的窗口是「**头部 + 截断标记行 + 尾部**」，**每一页都重复同一段尾部**（整份 YAML 的最后 5k 字符）：
+
+1. **尾部只取一次** —— 否则合并后尾部重复 N 遍；
+2. **最后一页的头部可能已经盖住尾部** ⇒ 尾部**按总长**裁一刀（`totalChars - len(tail)`），
+   **不靠内容猜重叠**（内容猜会在「结尾恰好重复」的页面上裁掉真内容）；
+3. **页与页的边界可能切在行中间** ⇒ 把上一块末尾的**不完整行**挪到下一块前面，那一行才不会丢。
+
+> ⚠️ **分页期间不许动作**：上游在 `offset>0` 时**复用缓存的快照**（**不刷新 ref**），
+> 所以**一次分页读取内部是自洽的**；但**下一次** `offset=0` 的读取会**重新编号** ref
+> ⇒ 「**读完再动作**」安全，「**读一半就动作**」不是。
+> ⇒ 驱动在翻页**前后各读一次文档代号**（`performance.timeOrigin`），
+> 变了就记 `nav_unsettled`——**这份元素清单横跨两个文档**，不可信。
+
+### 三层分工（camofox 面）
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| **传输层** | `executor/browser/mcp_client.py` | **通用 MCP stdio 客户端**——**不认识任何 tool 名**（obscura 专属常量留在 obscura 侧） |
+| **会话层** | `executor/browser/camofox_session.py` | MCP 子进程生命周期 · **标签页栈** · 指纹**读回** · **一个 Run 一份会话** |
+| **驱动层** | `executor/browser/camofox_driver.py` | `PageDriver` 协议实现；**目标编码 `{role,name}`**；`eN` **只在驱动内部消化** |
+| **装配层** | `executor/browser/driver_factory.py` | 装配唯一入口（`DEFAULT_KIND = "camofox"`） |
+| **上层** | `executor/steps/` · `perception/` · `orchestrator.py` | 控制流与感知——❌ **不认 camofox，也不认任何浏览器** |
+
+### 会话层骨架（项目风格 · 真实实现）
+
+> 真实实现：[`executor/browser/camofox_session.py`](../executor/browser/camofox_session.py)。
+> 下面是它的**真实形状**的骨架。
+
+```python
+# trajectory_pipeline/executor/browser/camofox_session.py
+"""camofox-browser 的执行层会话——**MCP stdio 通道 + 标签页栈 + 指纹读数**。"""
+
+CAMOFOX_BASE_URL_DEFAULT = "http://localhost:9377"
+CAMOFOX_EXE_DEFAULT = "camofox-browser-mcp"       # 走 PATH 查（上游文档给宿主注册的就是这个命令名）
+CAMOFOX_EXE_ENV_VAR = "CAMOFOX_MCP_EXE"           # ⚠️ 可执行文件的**位置**，不是凭据
+FORBIDDEN_TOOLS = frozenset({"camofox_import_cookies"})   # 🚫 硬拦，不是「不用」
+
+
+class CamofoxSession:
+    """camofox-browser 的一次执行层会话（**一个 Run 一份**）。"""
+
+    def __init__(self, client: McpClient, *, base_url: str) -> None:
+        self._client = client
+        self._pages: list[str] = []            # 标签页**栈**（上游给的 tabId），栈顶 = 当前页
+        self._fingerprint: dict[str, Any] = {} # 指纹读数（**实测**）。空 dict = **没测到**
+        self._readings: dict[str, Any] = {}    # 诊断读数（**不进批次元数据**）
+
+    @classmethod
+    async def launch(cls, *, exe="", base_url="", timeout=DEFAULT_TIMEOUT_S) -> "CamofoxSession":
+        command = resolve_executable(
+            exe or os.environ.get(CAMOFOX_EXE_ENV_VAR, "").strip() or CAMOFOX_EXE_DEFAULT,
+            env_var=CAMOFOX_EXE_ENV_VAR,
+            hint="安装：npm i -g @askjo/camofox-browser-mcp（或 cd camofox-browser/mcp && npm link）",
+        )
+        url = base_url or os.environ.get("CAMOFOX_BASE_URL", "").strip() or CAMOFOX_BASE_URL_DEFAULT
+        # ⚠️ **env 传 None**：子进程**继承**本进程环境 ⇒ 凭据天然到位，
+        # 而本模块**一个字节都不经手**（凭据不出进程）。
+        client = McpClient(command, args=(), timeout=timeout, env=None)
+        await client.__aenter__()
+        session = cls(client, base_url=url)
+        try:
+            await session._preflight()      # 列一次 tab：把「REST 服务没起」与「站点有问题」分开
+        except Exception:
+            await session.close()
+            raise
+        return session
+
+    async def call(self, tool: str, args: Mapping[str, Any] | None = None) -> Any:
+        """调一个 MCP tool，返回**解析后的 JSON**。**解析不了就抛**——形状变了就该炸穿。"""
+        if tool in FORBIDDEN_TOOLS:
+            raise RuntimeError("camofox tool 被禁用：导入 cookie 会把登录态带进采集面。")
+        result = await self._client.call(tool, dict(args or {}))
+        if result.is_error:
+            raise DriverError(f"camofox tool {tool} 返回错误: {result.text[:400]}")
+        return json.loads((result.text or "").strip())
+
+    async def snapshot(self, tab_id: str, offset: int | None = None) -> Any:
+        """取可访问性快照（**带 ``[eN]`` 句柄的注记 YAML**）。``offset`` 是上游的分页偏移。"""
+        args: dict[str, Any] = {"tabId": tab_id}
+        if offset is not None:
+            args["offset"] = int(offset)
+        return await self.call(TOOL_SNAPSHOT, args)
+```
+
+### 驱动层骨架（项目风格 · 真实实现）
+
+> 真实实现：[`executor/browser/camofox_driver.py`](../executor/browser/camofox_driver.py)。
+> 下面是它的**真实形状**的骨架。
+
+```python
+# trajectory_pipeline/executor/browser/camofox_driver.py
+class CamofoxDriver:
+    """camofox-browser 的 :class:`PageDriver` 实现（MCP 工具面）。"""
+
+    name = "camofox"
+
+    def __init__(self, session: CamofoxSession, *, collect_element_basis: bool = False) -> None:
+        self._session = session
+        #: 我们的 ``e1..eN`` → ``(role, name)``。只在采集面内部活着。
+        self._refs: dict[str, tuple[str, str]] = {}
+        #: 我们的 ``eN`` → camofox 的 ``eM``。**发动作时用**——训练数据里出去的还是 ``{role, name}``。
+        self._camo_refs: dict[str, str] = {}
+        #: ``(role, name)`` → 我们的 ``eN``。动作时按语义目标查它。
+        self._target_index: dict[tuple[str, str], str] = {}
+        #: 页面上的 ``(role, name)`` → **被本面剔掉的原因**（让「页面上没有」与
+        #: 「页面上有但本面不可寻址」分得开——两者的正确处置相反）。
+        self._dropped: dict[tuple[str, str], str] = {}
+        #: **上一次 ``fill`` 的缓存**——``press`` 的合并依据（A2）。
+        self._fill_cache: dict[str, Any] | None = None
+
+    async def interactive(self, *, limit: int = DEFAULT_LIMIT) -> tuple[InteractiveElement, ...]:
+        nodes = await self._read_annotated_nodes()      # ★ 翻页收齐再合并
+        pairs = [(n.role, n.name or "") for n in nodes]
+        unique, ledger = ladder_stages(pairs, role_vocab=ROLE_VOCAB)   # 共享阶梯（前三档）
+        # …本面在共享阶梯**之后**再加两档：无上游句柄（unref） / 名字子串歧义（name_ambiguous）…
+        # 剩下的按**留下的顺序**编我们的 ``e1..eN``（与旧面同一条规矩）
+
+    async def click(self, *, ref=None, selector=None, role=None, name=None) -> None:
+        target = self._locate("click", role=role, name=name, ref=ref, selector=selector)
+        if target is None:
+            return                                   # 业务事实（元素不在页面上）→ **不抛**
+        camo_ref = self._camo_refs[target]
+        await self._do("click", lambda: self._session.click(self._tab, camo_ref),
+                       role=role, name=name)
+
+    async def press(self, key: str, *, role=None, name=None) -> None:
+        """按键。**本层只支持「在填过的那个输入框上按回车」**（A2）。"""
+        if str(key) != "Enter":
+            self._degrade_press("press", role, name, f"key:{key}")     # 能力不可用
+            return
+        cache = self._fill_cache
+        want_role = role if role is not None else str((cache or {}).get("role") or "")
+        want_name = name if name is not None else str((cache or {}).get("name") or "")
+        if not cache or cache.get("role") != want_role or cache.get("name") != want_name:
+            self._degrade_press("press", want_role, want_name, "no_cached_text")
+            return
+        # 重发同文本 + pressEnter=true ⇒ 上游的 type 是**设值**，重发安全
+        await self._do("press", lambda: self._session.type_text(
+            self._tab, camo_ref, str(cache.get("text") or ""), press_enter=True), ...)
+```
+
+---
+
+## 🔴 红线：camofox 侧永久禁用的能力
+
+> 与[浏览器 MCP 节的红线工具](#-红线工具任何浏览器-mcp-实现永久禁)同一批——
+> **换实现不等于换红线**，本面的**等价物必须同样堵死**。
+
+| 禁项 | camofox 侧对应 | 处置 |
+|---|---|---|
+| **导入 cookie** | `camofox_import_cookies` | 🚫 **永不实现**——`FORBIDDEN_TOOLS` **硬拦**（不是不用，是不许调）。导入 cookie 等于把登录态带进采集面，而本项目的样本必须「裸奔」才有归因意义 |
+| 读 / 写 cookie | 同上（上游无独立读 cookie 的 tool） | **不包装** |
+| 浏览器 Profile | — | 本会话**不落盘**，退出即弃 |
+| 凭据 | `CAMOFOX_ACCESS_KEY` / `CAMOFOX_API_KEY` | **只由子进程继承，本仓库不碰**；`base_url` **只留 origin**（去路径 / 查询串 / **用户信息**） |
+| 截图进工具声明 | `camofox_screenshot` / 快照自带的 `screenshot` 字段 | **不进**（非模型可见）；快照自带的那个**丢弃**——观察里混进视觉数据会污染感知层口径 |
+
+**这些不是「暂时没需求」，是永不提供**——一旦暴露，将来某次「需要登录态」的临时需求
+就会把登录态写进 P1 存档，而存档是要推给 Label Studio 的。
+真出现登录墙站点，正确做法是**判 negative 并记 `login_wall_or_blocked`**，而不是绕过登录。
+
+---
+
+## ⚡ 快速调用模板（camofox 面 · MCP stdio 适配器）
+
+```python
+from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
+from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
+
+# ⚠️ 上游 REST 服务要**另外**起（cd camofox-browser && npm start，默认 :9377）
+session = await CamofoxSession.launch()          # 缺件即报错；REST 没起也当场说清
+try:
+    driver = CamofoxDriver(session)
+
+    await driver.goto("https://www.bing.com")      # 导航（第一页 = 建页带 URL）
+
+    elements = await driver.interactive(limit=50)   # ★ 翻页收齐 + 三档过滤
+    # [InteractiveElement(ref='e1', role='button', name='立即播放'), ...]
+
+    await driver.click(role="button", name="立即播放")       # 目标编码：role + name
+
+    await driver.fill(role="textbox", name="搜索", text="功夫")   # 设值，不是追加
+    await driver.press("Enter")                              # ★ 驱动缓存合并：重发同文本 + 回车
+
+    obs = await driver.observe()                             # snapshot + links + interactive + count
+finally:
+    await driver.close()                                     # 关掉本 session 的所有 tab
+```
+
+> **批注**：
+> - `CamofoxSession.launch()` 是**类方法**——它会起 MCP 子进程并**预检** REST 服务；
+>   **一个 Run 一次会话**，跨 Run 复用会把上一条样本的会话状态带进下一条。
+> - `driver.click` / `fill` / `press` **只收 `role` + `name`**；
+>   收到 `ref` / `selector`（obscura 面的词汇）会**抛 `ValueError`**——
+>   拿错面说明调用点接了错实现，**必须炸穿**（`DriverError` 会被吃成 `unreachable_hard`，
+>   接线 bug 就变成一条理由通顺的负样本）。
+> - `press("Enter")` **不带目标**也行——`agent_loop` 派发 `press` 时就不带目标，
+>   正好落在「最近一次 fill」的缓存合并口径上。
+> - 探针：`uv run python -m trajectory_pipeline.executor.browser.probe_observe --driver camofox`
+>   （真实 `goto + observe`，把 `Observation` 落盘并断言契约）。
+
+---
+
+# 浏览器 · Camoufox（Playwright 进程内）· 已退役 · 只读历史（2026-10-26）
+
+> 🔴 **⚠️ 本章已退役（2026-10-26）——只读历史，不得照抄**
+>
+> **现行执行层是 camofox-browser（MCP 适配器）**，不是本章记的 camoufox（Playwright 进程内）。
+> 接入方案见[设计方案 21 · camofox-browser 执行层接入方案](设计方案/21-camofox-browser执行层接入方案.md)；
+> 现行章见[浏览器 · camofox-browser（MCP 适配器）](#浏览器--camofox-browsermcp-适配器)。
+>
+> **本章一个字都没删**——它记的是**旧执行层**的形态（Playwright 直连、**仓库自己起窗口**、
+> 指纹参数由本仓库配），以及**当时的取证过程与踩过的坑**（依赖状态实测、调用形态、
+> 十条专属陷阱、生命周期、反检测能力那几节）。
+> **那些坑在[避坑指南](02-避坑指南.md)里仍被引用**——删掉就会让那些引用指向虚空。
+>
+> ⚠️ **但下面的事实描述的是 2026-10-26 之前的世界**：
+> `camoufox` / `playwright` **已从主依赖移除**；
+> `camoufox_{driver,session,probe}.py` 与 `probe_f5_name.py` **已删**；
+> `--driver camoufox` **不再是合法选项**；
+> `cloverlabs-camoufox` **只留在 `legacy` extra**（只服务 v1 冻结树，且同名抢 import 名）。
+> **owner 原文：「禁止把原有的 camoufox 接回来，可以做清理原有的 camoufox 代码与内容。」**
+>
+> ⚠️ **本章里指向 `camoufox_driver.py` / `camoufox_session.py` / `camoufox_probe.py`
+> 的那几个代码链接会点不开**——那三个文件**已随实现一起删**。
+> **留着是故意的**：它们记的是**当时**的落点；删掉链接等于改写历史。
+> 要看现行实现，请看上一章的[camofox-browser 章](#浏览器--camofox-browsermcp-适配器)。
 
 > **形态与上一节不同**：浏览器 MCP 走 **JSON-RPC over stdio**，工具名由上游所有（37 个）；
 > camoufox 走 **Playwright 协议（进程内）**，操作面是 Playwright 的 `Browser` / `BrowserContext` / `Page` / `Locator`。
@@ -408,7 +800,7 @@ async with McpClient.from_env() as mc:    # 读 OBSCURA_EXE 环境变量
 > 本节记的是 camoufox 侧的**具体调用、参数与陷阱**。
 >
 > **参考实现**：`camoufox` 0.5.8 · `playwright` 1.62.0 · Firefox `v156.0.1-beta.36`（2026-10-20 本机实测）
-> **依赖手册**（装 / 配 / 验收判据）：[依赖说明/camoufox.md](依赖说明/camoufox.md)
+> **依赖手册**（装 / 配 / 验收判据）：[依赖说明/camoufox_弃用.md](依赖说明/camoufox_弃用.md)
 > **对接方案**（分阶段落地）：[设计方案 04 · Camoufox 执行层替换方案](设计方案/04-camoufox执行层替换方案.md)
 > **取证脚本**（可重跑）：[`executor/browser/camoufox_probe.py`](../executor/browser/camoufox_probe.py)
 
@@ -418,7 +810,7 @@ async with McpClient.from_env() as mc:    # 读 OBSCURA_EXE 环境变量
 
 1. **指纹不在 `firefox_user_prefs`，也不在 `launch_options()` 的返回顶层**——
    它被编码进 `env["CAMOU_CONFIG_1..N"]`（**分片的一个大 JSON**，实测 6 段 / 43 键）。
-   `opts["navigator.userAgent"]` 取到的是 `None`，而「取不到」与「指纹没生成」同形。正确读法见[依赖说明 §4.3](依赖说明/camoufox.md)。
+   `opts["navigator.userAgent"]` 取到的是 `None`，而「取不到」与「指纹没生成」同形。正确读法见[依赖说明 §4.3](依赖说明/camoufox_弃用.md)。
 2. **绕过 `AsyncCamoufox` / `launch_server` 直接用 playwright 起浏览器，指纹会整个丢掉**——
    `opts["env"]` 必须传给 playwright 的 launch。
 3. **`page.evaluate` 默认跑 isolated world**——DOM 共享，但**页面 JS 的全局变量读不到**（`window.__x` → `null`）。
@@ -770,7 +1162,7 @@ async with AsyncCamoufox(os="windows", geoip=True, humanize=True, headless=False
 > 上面示例与参数表里的 `headless=False` 是 **camoufox 库自己的默认值**，
 > **不是本项目的推荐配置**——照抄会落回 headful 那条会超时的路
 > （窗口不可渲染时单次点击 5–13s）。理由与实测见
-> [依赖说明 camoufox §7.1.1](依赖说明/camoufox.md)。
+> [依赖说明 camoufox §7.1.1](依赖说明/camoufox_弃用.md)。
 
 | 参数 | 类型 | 必填 | 取值 / 默认 | 说明 |
 |---|---|---|---|---|
@@ -1384,7 +1776,7 @@ async with AsyncCamoufox(
 > **绕过 `AsyncCamoufox` / `launch_server` 直接 `playwright.firefox.launch()`，
 > 指纹会整个丢失。**
 > 因为指纹不是传给浏览器的启动参数，而是经 `env["CAMOU_CONFIG_1..N"]`
-> **分片 JSON** 送进补丁层的（见[依赖说明 §4.3](依赖说明/camoufox.md)），
+> **分片 JSON** 送进补丁层的（见[依赖说明 §4.3](依赖说明/camoufox_弃用.md)），
 > 再由 `launch_options` 组装。裸起 playwright 就没有这一步。
 
 所以本项目的三层封装里，**会话层必须走 `AsyncCamoufox`**，
@@ -1938,19 +2330,23 @@ obscura 的 MCP server 也有 `--stealth` 开关。**两者的差别是强度与
 | | 旧口径（obscura 时代） | 新口径（D12） |
 |---|---|---|
 | 目标编码 | `{tag: "button", label: "播放"}` | `{role: "button", name: "播放"}` |
-| 落到 API | `page.locator("button:has-text('播放')")` | `page.get_by_role("button", name="播放")` |
-| 能进裸 camoufox 执行 | ❌ 无对应 API | ✅ 原生 |
+| 落到 API | `page.locator("button:has-text('播放')")` | `getByRole(role, {name})`（camoufox 面是 `get_by_role(role, name=name, exact=True)`） |
+| 能进裸执行层执行 | ❌ 无对应 API | ✅ 原生 |
 | `<input>` 怎么表达 | tag 恒为 `input`，label 取 placeholder | role `textbox`/`searchbox`，name 取 placeholder |
 | 图标按钮 | 只能给空 label | name 取 `alt` |
 
 **为什么必改**：`{tag,label}` 是本项目自造的语义形态，
-模型学到后在裸 camoufox 环境里**发不出**这个动作——轨迹数据脱离本项目不成立
+模型学到后在裸执行层环境里**发不出**这个动作——轨迹数据脱离本项目不成立
 （[设计方案 04 §0.1](设计方案/04-camoufox执行层替换方案.md)）。
 
 **「不提实现名」这条红线要改口径**（P4）：
-禁的是**前任执行层**（obscura / MCP / 句柄 / isolate），**当前执行层 camoufox
-要点名**——`get_by_role` 是模型必须会用的 API，不是实现细节。
-改完要给契约测试加一条**正向断言**（camoufox 或 get_by_role 至少出现一次），
+禁的是**前任执行层**（obscura / MCP / 句柄 / isolate），**当前执行层 camofox
+要点名**——「按 role 与 name 定位」是模型必须会用的语义，不是实现细节。
+⚠️ 但 **camofox 面不许写「精确匹配」**：上游是 `getByRole(role, {name}).nth(nth)`，
+**没有 `exact`** ⇒ 名字走**大小写不敏感子串匹配**；写「精确」就是教模型一个
+引擎不保证的性质，而它在报告上看不出异常。**唯一性由本项目在枚举期保证**
+（见[camofox-browser 章 · 目标编码](#目标编码role--namecamofox-面)）。
+改完要给契约测试加一条**正向断言**（camofox 至少出现一次），
 否则哪天有人「顺手改回抽象措辞」没人拦。
 
 ## 参数 `required` 按真实存档统计

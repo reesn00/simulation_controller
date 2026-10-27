@@ -34,6 +34,18 @@ P-1/F5 的结论是**name 一律取 playwright 的结论**（[方案 04 §1.6 / 
    否则「无名字的 combobox」会被当成一个未知 role 丢掉。
 4. **``- /url: /a`` 这类属性行不是节点**：它的「role」是 ``/url``，
    不在词表里自然被过滤——**不需要特判**，但解析时不能崩。
+
+camofox 面的**行尾 ref**（2026-10-26）
+------------------------------------
+camofox-browser 把可访问性树**注上会话句柄**再吐出来：``- button "立即播放" [e3]``。
+那个 ``[e3]`` 是**上游的定位句柄**——会话内有效，**进训练数据等于让模型学随机数**
+（与 obscura 的 ``ref`` 同一条红线），所以它**只在本驱动的内部消化**。
+
+⚠️ **ref 必须在「名字之后」那一段里找，不能在整行里找**：
+名字本身可能含 ``[e3]``（``- button "标签 [e3]" [e7]``），
+整行搜索会取到**名字里的那个**——于是点到了另一个元素，而且**报告上看不出异常**。
+上游的注记格式保证 ref **紧跟在名字（或 role）之后**，
+所以只在**行尾段**（suffix）里、且**只认第一个** ``[eN]``。
 """
 
 from __future__ import annotations
@@ -46,9 +58,22 @@ from dataclasses import dataclass
 #:
 #: role 的字符集**排除冒号**：``- combobox:`` 的 role 是 ``combobox`` 不是
 #: ``combobox:``（坑 3）。也排除引号，避免把名字吞进 role。
+#:
+#: ``suffix`` 是**名字之后**的那一段（camofox 的 ``[e3]`` 就在这里），
+#: 单独捕获是为了**只在行尾段里找 ref**——理由见模块 docstring。
 _HEAD_RE = re.compile(
-    r'^[ \t]*-\s+(?P<role>[^\s":]+)(?:\s+"(?P<raw>(?:[^"\\]|\\.)*)")?'
+    r'^[ \t]*-\s+(?P<role>[^\s":]+)'
+    r'(?:\s+"(?P<raw>(?:[^"\\]|\\.)*)")?'
+    r'(?P<suffix>.*)$'
 )
+
+#: camofox 面的行尾 ref：``[e3]``。
+#:
+#: ⚠️ **只在上游保证的位置上认**：紧跟在名字（或 role）之后。
+#: 上游的注记模板是 ``${role}${nameMatch || ''} [${refId}]${suffix}``，
+#: 所以 ref 永远是 suffix 的**第一个** ``[eN]``。名字里出现的 ``[e3]``
+#: 在引号内（name 段），不在 suffix 里——本正则只看 suffix，天然躲开。
+_REF_RE = re.compile(r"^\s*\[(?P<ref>e\d+)\]")
 
 __all__ = ["AriaNode", "parse_nodes"]
 
@@ -60,10 +85,15 @@ class AriaNode:
     ``name is None`` 的含义是**该节点没有可访问名**（``- link:``），
     不是「名字是空字符串」——这两者在执行期同形（都定位不到），
     但在「页面为什么没有可交互元素」的诊断上不同，故保留 ``None``。
+
+    ``ref`` 是**上游给的会话句柄**（camofox 面的 ``e3``；playwright 面恒为
+    ``None``）。它**只在本驱动内部消化**，不进动作流、不进训练数据——
+    与 obscura 的 ``ref`` 同一条红线。
     """
 
     role: str
     name: str | None
+    ref: str | None = None
 
 
 def _unescape(raw: str) -> str:
@@ -87,6 +117,10 @@ def parse_nodes(text: str) -> tuple[AriaNode, ...]:
     ``(role, name)``，树形结构对定位没有用（定位靠 role+name）。
     但**缩进的节点照样要取**：真实页面的可访问性树几乎全是嵌套的
     （``generic`` → ``listitem`` → ``link``），只认顶格会漏掉绝大多数元素。
+
+    **camofox 面的行尾 ref 会被摘出来**（放进 :attr:`AriaNode.ref`），
+    摘不到就是 ``None``——那意味着「这个节点点不到」（上游没给它句柄），
+    调用方据此把它从动作面里剔掉，而不是拿一个不存在的句柄去点。
     """
     out: list[AriaNode] = []
     for line in (text or "").splitlines():
@@ -96,10 +130,12 @@ def parse_nodes(text: str) -> tuple[AriaNode, ...]:
         if not m:
             continue                     # 缩进更深的结构行 / 属性行，跳过
         raw = m.group("raw")
+        ref_match = _REF_RE.match(m.group("suffix") or "")
         out.append(
             AriaNode(
                 role=m.group("role"),
                 name=None if raw is None else _unescape(raw),
+                ref=ref_match.group("ref") if ref_match else None,
             )
         )
     return tuple(out)

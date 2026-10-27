@@ -69,7 +69,8 @@
 ### 动作行（`_action_line`）
 
 - 格式：`[动作] <tool>`；有参数时 `[动作] <tool>(k1=v1, k2=v2)`
-- `click` 的语义目标**并进参数**（obscura 面 `tag=…, label=…`／camoufox 面 `role=…, name=…`），
+- `click` 的语义目标**并进参数**（obscura 面 `tag=…, label=…`／camoufox 面 `role=…, name=…`／
+  **camofox 面 `role=…, name=…`**），
   不塞嵌套字段——见判断 3。
 - `params` 为空且无 target 时只有 `[动作] <tool>`。
 
@@ -89,7 +90,7 @@
 |---|---|
 | `sample_id` | 与 P2 一致，**排序即时间序** |
 | `messages` | 对话序列（见下） |
-| `tools` | 模型看得见的工具声明（**不含** `new_tab`，见判断 2）。**按样本自己的工具面渲染**（面由 P2 的 `tool_surface` 定）——同名工具在两个面里参数不同 |
+| `tools` | 模型看得见的工具声明（**不含** `new_tab`，见判断 2）。**按样本自己的工具面渲染**（面由 P2 的 `tool_surface` 定）——同名工具在三个面里参数不同（obscura 面 `tag`/`label`，两个 aria 面 `role`/`name`） |
 
 ### `messages` 的元素
 
@@ -127,7 +128,7 @@
 
 ### `tools` 元素的形状
 
-下面是 **obscura 面**的 `click`（camoufox 面同名工具的参数是
+下面是 **obscura 面**的 `click`（camoufox 面与 camofox 面同名工具的参数是
 `role` / `name`——**同名不同参**，见 P2 契约的「工具面」一节）：
 
 ```json
@@ -170,11 +171,13 @@
 - ⚠️ **`click` 的两个语义参数是必须声明的**（2026-10-20 修）：旧口径下
   `params` 就是全部入参，于是 `click` 的声明长成 `properties: {} /
   required: []`——**模型无从知道要传什么**，而真实调用里是两个槽
-  （obscura 面 `{"tag": ..., "label": ...}`、camoufox 面
+  （obscura 面 `{"tag": ..., "label": ...}`、camoufox 面与 camofox 面
   `{"role": ..., "name": ...}`；语义目标在 `target` 里，被 `arguments`
   平铺合并）。声明与调用对不上，训出来的模型就会发空参数的点击。
   **面是关键参数**：拿错面渲染出的声明与真实调用对不上，而报告上看不出
   任何异常（见 P2 契约 · 工具面一节）。
+  ⚠️ **两个 aria 面的 `description` 文字也不同**（参数相同、说明不同：
+  camofox 面的说明里不许出现 exact）——`description` 同样从 catalog 按面取。
 - **可见性由 catalog 的 `visibility` 字段决定**（不按名字黑名单）：
   `new_tab` / `close_tab` 是执行器自己的会话管理动作，不进 `tools`（判断 2）；
   其余全部声明。
@@ -202,7 +205,7 @@
 | `step_count` | `int` | 动作条数 |
 | `observation_count` | `int` | 观察条数 |
 | `infrastructure_actions` | `list[str]` | 执行器自己做的动作（`origin=infrastructure`，如 `new_tab`）的工具名清单 |
-| `tool_surface` | `str` | **工具面**（2026-10-20 方案 15 §7 R1）：这条样本的动作空间属于哪个方言（`obscura-1` / `camoufox-1`）。同名工具在两个面里参数不同，面错了 = 声明与真实调用对不上 |
+| `tool_surface` | `str` | **工具面**（2026-10-20 方案 15 §7 R1）：这条样本的动作空间属于哪个方言（`obscura-1` / `camoufox-1` / **`camofox-1`**）。同名工具在三个面里参数不同，面错了 = 声明与真实调用对不上。⚠️ **三个面 ≠ 三套方言**——方言只有两套词表（见 P2 契约 · 工具面一节） |
 | `tools_declared` | `list[str]` | 这条样本的**模型可见工具**清单（来自 P2 的 `six.tools[]`，按 catalog 的可见性过滤）。**含本条没用到的**——工具空间是整批固定的，不随样本变 |
 | `tools_unused` | `list[str]` | `tools_declared` 里**这条轨迹没用过**的工具名。⚠️ 不显眼时，读样本的人会把**能力声明**当成**已验证的动作**——看到 11 个工具就以为这批数据验证过 11 种能力，而实际只有动作流里出现过的那些被真实运行验证过。逐个列出（不合成计数） |
 | `observation_complete` | `bool` | `observation_count >= step_count`。动作多于观察 ⇒ 末步没取到观察；消息视图显式发占位回执（判断 8），但批次筛选仍要能一眼分出「观察齐全」与「有步没采到」 |
@@ -238,6 +241,7 @@
 可交互元素：
   - <tag> <label>        ← obscura 面（历史批次全是这一种）
   - [role] name          ← camoufox 面
+  - [role] name          ← camofox 面（2026-10-26 起的生产面，与 camoufox 面同形）
 …
 
 链接：

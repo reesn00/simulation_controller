@@ -233,7 +233,7 @@ class RunRecord:
     #: 归因就回答不了「这条轨迹是哪种执行器产的」。
     executor_mode: str = "scripted"
     #: **执行层（驱动实现）**（2026-10-20 方案 15 §7 R1）：``obscura`` /
-    #: ``camoufox``。
+    #: ``camofox``。
     #:
     #: 与 :attr:`executor_mode` **同一个理由单独存一份**：它是批次级属性
     #: ——「这批是哪个执行层跑的」与「这批是 scripted 还是 agent 跑的」
@@ -249,11 +249,20 @@ class RunRecord:
     #: **执行层的指纹读数**（2026-10-22 P6 批次元数据，owner 裁定切 camoufox 后
     #: 从「未开工」变「必须」）。
     #:
-    #: 九项（方案 04 §4.3）：``os`` / ``screen`` / ``window`` / ``dpr`` /
-    #: ``humanize`` / ``geoip`` / ``main_world_eval`` / ``headless`` / ``locale``。
-    #: 其中 ``screen`` / ``window`` / ``dpr`` 是**实测值**（读回来的），
-    #: 其余是**请求值**（没有可读回来的形态）——两种语义混在一份 dict 里，
-    #: 所以读侧必须知道哪几项可信。
+    #: ⚠️ **形状随执行层变**（2026-10-26 换成 camofox）：
+    #:
+    #: - **camofox 面**（现行生产面）：**九项实测**（浏览器侧读回来）
+    #:   ``user_agent`` / ``platform`` / ``language`` / ``languages`` /
+    #:   ``timezone`` / ``screen`` / ``window`` / ``dpr`` / ``webdriver``
+    #:   + 两项**本仓库能控的**（``engine`` / ``base_url``，后者是上游 REST
+    #:   服务的 **origin**，已去掉路径与凭据）。
+    #:   ⚠️ camofox 的 ``humanize`` / ``geoip`` / ``locale`` **由上游决定，
+    #:   本仓库配不了**——那不是「读数」，是「管不着的事」，**不写成读数**。
+    #: - **camoufox 面**（存量，已撤下）：九项**混合语义**——``screen`` /
+    #:   ``window`` / ``dpr`` 是**实测值**，``humanize`` / ``geoip`` /
+    #:   ``main_world_eval`` / ``headless`` / ``locale`` / ``os`` 是**请求值**
+    #:   （没有可读回来的形态）。两种语义混在一份 dict 里，所以读侧必须
+    #:   知道哪几项可信。
     #:
     #: ⚠️ **为什么它必须进存档**：指纹只在 launch 那一刻确定，
     #: **事后补不回来**。而 camoufox 的 ``window=`` 钉的是**外框**——
@@ -687,7 +696,7 @@ def _vocabulary_of(driver: str) -> str:
     """驱动实现名 → 元素词汇表。**一条轴**：``driver`` → 工具面 → 方言。
 
     认不出的驱动名**抛**（``toolcatalog`` 那两个函数都不回落）——拿默认
-    面去渲染一份 camoufox 存档，写出来的键名与真实调用对不上，而报告上
+    面去渲染一份 camofox 存档，写出来的键名与真实调用对不上，而报告上
     看不出任何异常。
     """
     return toolcatalog.dialect_of(
@@ -774,8 +783,9 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
         # 是唯一一条不补数据就必然产生反向错判的边界规则。
         "elements_total": obs.elements_total or len(obs.interactive_elements),
         "links_total": obs.links_total or len(obs.links),
-        # 键名跟着**方言**走（P4）：obscura 面写 ``{tag,label}``、camoufox 面
-        # 写 ``{role,name}``。统一键名而不统一值域，等于把两个方言写成同一种
+        # 键名跟着**方言**走（P4）：obscura 面写 ``{tag,label}``、aria 面
+        # （camoufox / camofox）写 ``{role,name}``。统一键名而不统一值域，
+        # 等于把两个方言写成同一种
         # 数据——而读档人无从判断该按哪套词表解释它。投影只有
         # :func:`common.elements.element_json` 一处。
         #

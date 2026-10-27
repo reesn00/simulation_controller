@@ -11,13 +11,13 @@
 **判据⑥ 的口径（本脚本实现的读数）**：
 
     从 P1 存档取 ``steps[]`` 里的元素定位动作
-        → 在**裸 camoufox**（新会话、无历史状态）里重放
+        → 在**裸 camofox**（新会话、无历史状态）里重放
         → 记每步的**定位结果**（0 个 / 恰好 1 个 / >1 个）
 
 ⚠️ **重放只定位，不点击**。点击**不可逆**（可能点进另一个视频、
 可能触发付费流程），而可移植性问的是「**还能不能定位到**」。
 定位读数走的是生产链**同一条判定路径**
-（:meth:`CamoufoxDriver.resolve` → :meth:`CamoufoxDriver._locate`），
+（:meth:`CamofoxDriver.resolve` → :meth:`CamofoxDriver._locate`），
 **不另写一份**——否则探针与生产链的定位口径会漂，
 而漂了之后「重放定位率」就不再是生产链的读数（判据⑥ 判错了对象）。
 
@@ -31,7 +31,13 @@
 ``not_found``       ``False``             **本来就没这条**（不是重放的问题）
 ``not_found``       — 且**没有基线**        **归因不了**（不硬塞）
 ``ambiguous``（>1） —                     **同名不可判定**（生产链 fail-closed）
+``not_addressable`` —                     **本面剔掉了**（不是页面事实，2026-10-26）
 =================  ==================  ==========================
+
+⚠️ ``not_addressable`` 是 2026-10-26 新增的一档：camofox 面会主动剔掉
+三类节点（真同名整组 / 名字是别人的子串 / 上游没给句柄）。剔掉的是
+**本面的口径**，不是「页面上没有」——所以它**不进** ``not_found`` 那一族，
+否则「面剔掉了」会被读成「名字脆」。
 
 「页面漂」= 重放时页面标题/正文长度与存档当时**不一致**
 ⇒ 站点改了版或换了内容，**不是名字的锅**。这一列不读，漂移会被
@@ -95,7 +101,7 @@ def _p(*parts: Any) -> None:
 
 
 def collect_actions(dirs: list[pathlib.Path]) -> list[dict[str, Any]]:
-    """从存档目录收集元素定位动作行（camoufox 面才有 role+name 词汇）。"""
+    """从存档目录收集元素定位动作行（aria 面才有 role+name 词汇）。"""
     rows: list[dict[str, Any]] = []
     for d in dirs:
         for rec in load_runs(d):
@@ -178,6 +184,12 @@ async def _replay_inner(
     res = await driver.resolve(role=role, name=name)
     out["outcome"] = res.get("outcome")
     out["matches"] = res.get("matches")
+    # ⚠️ **「页面上有但本面不可寻址」与「页面上没有」是两件事**（2026-10-26）：
+    # 前者是**本面的过滤口径**（真同名 / 名字子串 / 上游没给句柄），
+    # 后者是**页面事实**。混成一个 ``not_found`` 会把「面剔掉了」读成
+    # 「名字脆」——那正是判据⑥ 要拆的混淆。
+    if res.get("reason"):
+        out["not_addressable_reason"] = res.get("reason")
 
     outcome = str(res.get("outcome"))
     in_ladder = bool(out.get("archived_in_ladder"))
@@ -186,6 +198,8 @@ async def _replay_inner(
         out["verdict"] = "portable"
     elif outcome == "ambiguous":
         out["verdict"] = "ambiguous"
+    elif outcome == "not_addressable":
+        out["verdict"] = "not_addressable_face_filtered"
     elif outcome == "not_found":
         if drift is True:
             out["verdict"] = "not_found_page_drift"
@@ -202,16 +216,15 @@ async def _replay_inner(
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
-    from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
-    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
+    from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
 
     rows = collect_actions([pathlib.Path(d) for d in args.archive])
     if args.limit:
         rows = rows[: args.limit]
 
     report: dict[str, Any] = {
-        "driver": "camoufox",
-        "headless": not args.headful,
+        "driver": "camofox",
         "per_action_timeout_s": PER_ACTION_TIMEOUT_S,
         "actions_total": len(rows),
         "results": [],
@@ -220,10 +233,10 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         report["summary"] = {"total": 0, "portable": 0}
         return report
 
-    session = await CamoufoxSession.launch(headless=not args.headful)
+    session = await CamofoxSession.launch()
     async with session:
-        report["server"] = {"name": "camoufox", "fingerprint": session.fingerprint}
-        driver = CamoufoxDriver(session)
+        report["server"] = {"name": "camofox", "fingerprint": session.fingerprint}
+        driver = CamofoxDriver(session)
         for i, row in enumerate(rows, start=1):
             res = await _replay_one(driver, row)
             res["index"] = i
@@ -251,7 +264,8 @@ def _summarize(results: list[Mapping[str, Any]]) -> dict[str, Any]:
     measured = [
         r for r in results
         if str(r.get("verdict")) in
-        ("portable", "ambiguous", "not_found_page_drift",
+        ("portable", "ambiguous", "not_addressable_face_filtered",
+         "not_found_page_drift",
          "not_found_never_collected", "not_found_name_fragile",
          "not_found_unattributable")
     ]
@@ -293,12 +307,15 @@ def _print(report: Mapping[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="动作重放探针：裸 camoufox 里重放存档里的元素定位动作，"
+        description="动作重放探针：裸 camofox 里重放存档里的元素定位动作，"
                     "记每步定位结果（判据⑥ 的材料）")
     ap.add_argument("--archive", action="append", default=[],
-                    help="camoufox 面存档目录（可给多次）")
+                    help="元素定位动作所在的面（camoufox / camofox）的存档目录"
+                         "（可给多次）")
     ap.add_argument("--limit", type=int, default=0, help="只重放前 N 条")
-    ap.add_argument("--headful", action="store_true", help="有头浏览器（缺省无头）")
+    # ⚠️ ``--headful`` 已撤（2026-10-26）：camofox 的浏览器由上游 REST 服务
+    # 持有，有头/无头**不由本仓库决定**。留着这个开关只会让读数看起来
+    # 「切了口径」，而实际没切——所以直接删掉。
     ap.add_argument("--json", default=None, help="落盘路径")
     args = ap.parse_args(argv)
 

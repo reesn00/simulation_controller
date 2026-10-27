@@ -210,8 +210,8 @@ def _verdict_of(round_result: Mapping[str, Any]) -> str:
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
-    from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
-    from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
+    from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
     from trajectory_pipeline.executor.dom import detect_block
 
     found = discover(pathlib.Path(args.archive_dir))
@@ -224,8 +224,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         ]
 
     report: dict[str, Any] = {
-        "driver": "camoufox",
-        "headless": not args.headful,
+        "driver": "camofox",
         "settle_seconds": args.settle,
         "rounds": args.rounds,
         "scanned_archives": found["scanned"],
@@ -233,11 +232,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         "results": [],
     }
 
-    session = await CamoufoxSession.launch(headless=not args.headful)
+    session = await CamofoxSession.launch()
     async with session:
         # 观测面身份必须记下来——没有它，这份取证也不能跟别的批次比
         report["fingerprint"] = session.fingerprint
-        driver = CamoufoxDriver(session)
+        driver = CamofoxDriver(session)
         for t in targets:
             entry = dict(t)
             entry["rounds"] = []
@@ -295,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--url", action="append", help="只采这些（可重复）；缺省从存档发现")
     ap.add_argument("--rounds", type=int, default=2, help="重采轮数（默认 2，两次独立导航）")
     ap.add_argument("--settle", type=float, default=4.0, help="等渲染秒数")
-    ap.add_argument("--headful", action="store_true", help="开有头浏览器看现场")
+    # ⚠️ ``--headful`` 已撤（2026-10-26）：camofox 的浏览器由上游 REST 服务
+    # 持有，有头/无头**不由本仓库决定**。
     ap.add_argument("--json", default="", help="把报告写到这个文件")
     args = ap.parse_args(argv)
 

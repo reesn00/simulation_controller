@@ -6,7 +6,7 @@
     gen              模块 1 采样：骨架 × persona → 任务实例计划（不联网）
     review           从 P1 存档导出**人工复核队列**（W1 正样本的唯一来源）
     check            只查能力（不跑任务）：执行层可达性 / Perceptor 能力边界
-                     （``--driver camoufox`` 探 D11 的会话层与实测指纹）
+                     （``--driver camofox`` 探上游 REST 服务与实测指纹）
     check-persona    画像库覆盖度体检 + 判分保真探针体检（不联网）
     regenerate-rationales  存量 rationale 重生成（INC46 动作前动机口径，
                      需 TRAJECTORY_LLM_*；建议先 --dry-run）
@@ -401,11 +401,16 @@ def _per_site_timeout(args: argparse.Namespace) -> float:
     return float(value)
 
 
-#: 起浏览器失败后的**重试间隔**（秒）。
+#: ⚠️ **旧 camoufox 那支的「起浏览器重试一次」已随实现一起退场**
+#: （2026-10-26 换 camofox）。那个重试是为**偶发的浏览器启动超时**
+#: 设计的（短到不打断批次节奏，长到让上一个浏览器进程的崩溃渲染
+#: 把资源放掉）；camofox 侧起不来只有「适配器不可执行」与
+#: 「REST 服务没起」两种原因，**重试只是把同一个错误拖成两遍**。
+#: ⇒ **韧性改在批次层做**：一条起浏览器失败只毁那一条，其余照跑
+#: （见 ``executor/cli.py`` 的 ``_run_plan`` / ``_run_manual``）。
 #:
-#: 短到不打断批次的节奏，长到让上一个浏览器进程的崩溃渲染（SWGL
-#: ``RenderCompositorSWGL failed mapping default framebuffer``）把资源放掉。
-_LAUNCH_RETRY_DELAY_S = 3.0
+#: 留这一段注释是为了让下一个改这里的人**知道曾经有过重试、为什么
+#: 现在没有**——而不是以为「漏了重试」。
 
 
 def _describe_failure(exc: BaseException) -> str:
@@ -422,12 +427,13 @@ def _describe_failure(exc: BaseException) -> str:
     return line[:240]
 
 
-#: **执行层暂退**的恢复指令（2026-10-26）。camoufox 已从
-#: ``pyproject.toml`` 移除（依赖与代码不一致 ⇒ 那条路会 ImportError），
-#: 恢复要连浏览器二进制一起装。
-_CAMOUFOX_RESTORE_HINT = (
-    "恢复：uv pip install camoufox==0.5.8 && camoufox fetch"
-    "（重下约 2.5 GB）"
+#: camofox 执行层的**缺件说明**（2026-10-26）。缺的是 **MCP 适配器可执行
+#: 文件**——浏览器本身由上游的 REST 服务持有，本仓库不装浏览器。
+_CAMOFOX_MISSING_HINT = (
+    "装适配器：npm i -g @askjo/camofox-browser-mcp"
+    "（或 cd camofox-browser/mcp && npm link），"
+    "也可设 CAMOFOX_MCP_EXE=<绝对路径>；"
+    "另外 REST 服务要单独起（cd camofox-browser && npm start，默认端口 9377）"
 )
 
 
@@ -439,102 +445,85 @@ def _execution_layer_missing_reason(kind: str) -> str:
     再逐条失败。那样刷出来的一屏 ImportError 会被读成「站点的问题」，
     而真相是「这条执行层根本没装」。
 
-    只查 **camoufox**：obscura 侧的缺件（``OBSCURA_EXE``）由
+    只查 **camofox**：obscura 侧的缺件（``OBSCURA_EXE``）由
     :meth:`McpClient.from_env` 自己报，那条路径已经写好了。
 
-    用 :func:`importlib.util.find_spec` 而不是真 import：查的是
-    「装没装」，不是「import 会不会成功」——后者会连带执行包的
-    顶层代码，探针不该有这种副作用。
+    查的是「**适配器可执行文件在不在**」（``CAMOFOX_MCP_EXE`` 指向的文件，
+    或 PATH 上的 ``camofox-browser-mcp``），**不查 REST 服务**——那要连一次
+    网才知道，归 :meth:`CamofoxSession.launch` 的预检（它把「服务没起」与
+    「站点有问题」分开，报错也分开）。
     """
-    if kind != "camoufox":
+    if kind != "camofox":
         return ""
-    import importlib.util
+    import os
+    import shutil
+    from pathlib import Path
 
-    try:
-        if importlib.util.find_spec("camoufox") is not None:
+    from trajectory_pipeline.executor.browser.camofox_session import (
+        CAMOFOX_EXE_DEFAULT,
+        CAMOFOX_EXE_ENV_VAR,
+    )
+
+    exe = (os.environ.get(CAMOFOX_EXE_ENV_VAR, "") or "").strip()
+    if exe:
+        if Path(exe).exists():
             return ""
-    except (ImportError, ValueError):      # pragma: no cover —— 装坏了
-        pass
+        return (
+            f"camofox 执行层不可用：{CAMOFOX_EXE_ENV_VAR} 指向的文件不存在"
+            f"（{exe}）。{_CAMOFOX_MISSING_HINT}"
+        )
+    if shutil.which(CAMOFOX_EXE_DEFAULT):
+        return ""
     return (
-        "camoufox 执行层不可用：venv 里没有 camoufox 包"
-        "（2026-10-26 执行层暂退，pyproject.toml 已移除该依赖）。"
-        f"{_CAMOUFOX_RESTORE_HINT}"
+        f"camofox 执行层不可用：PATH 上找不到 {CAMOFOX_EXE_DEFAULT!r}，"
+        f"也没设 {CAMOFOX_EXE_ENV_VAR}。{_CAMOFOX_MISSING_HINT}"
     )
 
 
-async def _launch_camoufox(*, headless: bool = True) -> Any:
-    """起一个 camoufox 会话。**唯一的 launch 入口**（测试可打桩）。
+async def _launch_camofox() -> Any:
+    """起一个 camofox 会话。**唯一的 launch 入口**（测试可打桩）。
 
-    ⚠️ 为什么单列一支：``CamoufoxSession.launch`` 会**真的下载 fpgen 模型**
-    并起浏览器进程。测试若走生产链默认（camoufox）就会在测试里
-    拉网络 + 起进程——慢、且被 ``pytest-socket`` 拦成红。
+    ⚠️ 为什么单列一支：``CamofoxSession.launch`` 会**真的起一条 stdio 通道**
+    并连一次 REST 服务。测试若走生产链默认（camofox）就会在测试里
+    连网 + 起进程——慢、且被 ``pytest-socket`` 拦成红。
 
     单列一个函数不是为了让生产代码好写，是为了让**测试有一个可打桩的缝**：
-    测试打桩 ``cli._launch_camoufox``，就不用真起浏览器。
+    测试打桩 ``cli._launch_camofox``，就不用真起浏览器。
 
     另一个更根本的缝在**调用方**：测试应当显式钉住 ``--driver obscura``
     （它本来就在 monkeypatch ``cli.make_driver``），而不是靠默认值碰巧
     不联网。**默认值变了，测试就该显式钉住驱动**——这是这次切换的教训。
 
-    ⚠️ **重试一次**（2026-10-26）：实测撞到过
-    ``playwright._impl._errors.TimeoutError: BrowserType.launch: Timeout
-    180000ms exceeded`` + ``Crash Annotation GraphicsCriticalError: |[0]
-    [GFX1-]: RenderCompositorSWGL failed mapping default framebuffer``——
-    **起浏览器这一步会偶发失败**，而它一失败整批就没了（12 条计划只跑成
-    2 条，剩下 10 条全丢）。重试一次的代价是 3 分钟，换回 10 条数据。
-
-    **只重试一次**：连挂两次说明是真问题（显卡 / 内存 / 驱动），再试只是
-    把同一个错误拖成两遍。第二次还失败就**抛**——由调用方记账（哪条没跑
-    成、为什么），不在这儿吞。
+    ⚠️ **不重试**（与 camoufox 那支不同）：camofox 侧起不来只有两种原因——
+    **适配器不可执行**（缺件，重试没用）或 **REST 服务没起**（重试也没用，
+    要人去起服务）。camoufox 那次「重试一次」是因为撞到过**偶发**的
+    浏览器启动超时；camofox 这条链上没有那个偶发因素，重试只是把同一个
+    错误拖成两遍。
     """
-    try:
-        from trajectory_pipeline.executor.browser.camoufox_session import (
-            CamoufoxSession,
-        )
-    except ImportError as exc:
-        # 依赖不在 ⇒ 说清缺什么 + 怎么装，**不把 ImportError 抛给用户**
-        # （那串 "No module named 'camoufox'" 看不出「这是执行层暂退」）。
-        raise RuntimeError(
-            "camoufox 执行层不可用：venv 里没有 camoufox 包"
-            "（2026-10-26 执行层暂退，pyproject.toml 已移除该依赖）。"
-            f"{_CAMOUFOX_RESTORE_HINT}"
-        ) from exc
+    from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
 
-    last: Exception | None = None
-    for attempt in (1, 2):
-        try:
-            return await CamoufoxSession.launch(headless=headless)
-        except Exception as exc:          # noqa: BLE001 —— 第二次仍失败就抛
-            last = exc
-            if attempt == 1:
-                print(f"[warn] camoufox 会话没起来（第 1 次）："
-                      f"{_describe_failure(exc)}——重试一次")
-                await asyncio.sleep(_LAUNCH_RETRY_DELAY_S)
-    raise last if last is not None else RuntimeError("camoufox 启动失败")
+    return await CamofoxSession.launch()
 
 
 @asynccontextmanager
 async def _driver_for_run(kind: str, *, shared: Any = None,
-                          headless: bool = True,
                           collect_element_basis: bool = False):
     """一次 Run 的执行层句柄（P5）。**两种实现两种生命周期**：
 
     - ``obscura``：整批复用一条 MCP 连接上的驱动（``shared``）。P5 之前就是
       这样，**一行行为都不改**——把连接改成每 Run 一条，是另一件事，不该混在
       换执行层这一批里。
-    - ``camoufox``：**一个 Run 一次 launch**（设计方案 04 §4.3）——身份、
+    - ``camofox``：**一个 Run 一次 launch**（设计方案 04 §4.3）——身份、
       指纹、cookie 全随 Run 重建。跨 Run 复用会把上一部作品的会话状态带进
       下一条样本，而归因要的正是「这一条样本是在哪个身份下采到的」。
-      launch 失败**抛**（``DriverError`` / playwright 异常）——那是能力问题，
+      launch 失败**抛**（``DriverError`` / 上游连接异常）——那是能力问题，
       由调用方决定整批是否继续，不在这里吞。
 
-    ``headless`` 只对 camoufox 分支有意义（obscura 是远端 MCP，没有这个概念）：
-    **无人值守默认无头**（2026-10-21 口径反转——headful 窗口不可渲染时
-    单次点击要 5–13s，会把一半的点击打成超时假负样本，见
-    :meth:`CamoufoxSession.launch`）。``--headful`` 显式切回有头，
-    给「人守着的桌面」那条路。
+    ⚠️ **无头/有头不由本仓库决定**（2026-10-26）：camofox 的浏览器由上游
+    REST 服务持有，本仓库只发 MCP 调用。所以 ``--headful`` 这个开关
+    **已作废**（传了会当场报错），而不是「传了也没人看」。
 
-    ``collect_element_basis`` 传给 camoufox 分支的驱动；obscura 分支的驱动是
+    ``collect_element_basis`` 传给 camofox 分支的驱动；obscura 分支的驱动是
     批次级共享的（``shared``），采集开关在**造它的时候**就定下了（见
     ``_run_manual`` / ``_run_plan``）——共享对象的开关不能逐 Run 改。
 
@@ -543,17 +532,16 @@ async def _driver_for_run(kind: str, *, shared: Any = None,
     if shared is not None:
         yield shared
         return
-    session = await _launch_camoufox(headless=headless)
+    session = await _launch_camofox()
     try:
-        yield make_driver(kind=kind, camoufox_session=session,
+        yield make_driver(kind=kind, camofox_session=session,
                           collect_element_basis=collect_element_basis)
     finally:
         await session.close()
 
 
 @asynccontextmanager
-async def _probe_driver(kind: str, *, headless: bool = True,
-                        collect_element_basis: bool = False):
+async def _probe_driver(kind: str, *, collect_element_basis: bool = False):
     """探针工具的驱动会话：**整批一条**。
 
     与 :func:`_driver_for_run` 的区别是**粒度**，不是实现：
@@ -565,7 +553,7 @@ async def _probe_driver(kind: str, *, headless: bool = True,
       ``mediabrowse`` 都是这个形态）。每 URL 启一次浏览器要秒级 launch，
       慢到不可接受 ⇒ 整批复用一条会话。
 
-    ⚠️ **两种实现的会话纪律相反**（obscura 一条 MCP 连接 / camoufox 一次
+    ⚠️ **两种实现的会话纪律相反**（obscura 一条 MCP 连接 / camofox 一次
     launch），但**「一条命令一条会话」对两者都成立**——obscura 本来就是
     整批复用一条连接。
 
@@ -577,9 +565,9 @@ async def _probe_driver(kind: str, *, headless: bool = True,
             yield make_driver(client, kind="obscura",
                               collect_element_basis=collect_element_basis)
         return
-    session = await _launch_camoufox(headless=headless)
+    session = await _launch_camofox()
     try:
-        yield make_driver(kind=kind, camoufox_session=session,
+        yield make_driver(kind=kind, camofox_session=session,
                           collect_element_basis=collect_element_basis)
     finally:
         await session.close()
@@ -664,8 +652,8 @@ async def _run_manual(args: argparse.Namespace) -> int:
                   f"({client.info.tool_count} tools)")
             # obscura：整批一条连接复用（P5 前就是这条路径，行为不变）
             # **kind 必须显式写 obscura**：这条分支只在 ``kind == "obscura"``
-            # 时才走到（client 是 McpClient），而 DEFAULT_KIND 已是 camoufox
-            # ——不写就会拿 obscura 的连接去造 camoufox 的驱动。
+            # 时才走到（client 是 McpClient），而 DEFAULT_KIND 已是 camofox
+            # ——不写就会拿 obscura 的连接去造 camofox 的驱动。
             shared = make_driver(
                 client,
                 kind="obscura",
@@ -679,14 +667,13 @@ async def _run_manual(args: argparse.Namespace) -> int:
             # 而片名是任务的属性不是页面的属性，靠构造注入。
             perceptor = _make_perceptor(args, title)
             print(f"perceptor = {describe(perceptor)}")
-            # camoufox 面**一个 Run 一次 launch**（见 _driver_for_run）；
+            # camofox 面**一个 Run 一次 launch**（见 _driver_for_run）；
             # obscura 面复用批次驱动，yield 的就是同一个对象。
             async with AsyncExitStack() as task_stack:
                 try:
                     driver = await task_stack.enter_async_context(
                         _driver_for_run(
                             kind, shared=shared,
-                            headless=not getattr(args, "headful", False),
                             collect_element_basis=getattr(
                                 args, "element_basis", False),
                         )
@@ -824,9 +811,9 @@ async def _run_plan(args: argparse.Namespace) -> int:
                   f"({client.info.tool_count} tools)")
             # obscura：整批一条连接复用（行为与 P5 前一致）
             # **kind 必须显式写 obscura**：这条分支只在 ``kind == "obscura"``
-            # 时才走到（client 是 McpClient），而 DEFAULT_KIND 已是 camoufox
-            # ——不写就会拿 obscura 的连接去造 camoufox 的驱动，**当场抛
-            # ValueError**（"camoufox 实现需要 CamoufoxSession，未提供"）。
+            # 时才走到（client 是 McpClient），而 DEFAULT_KIND 已是 camofox
+            # ——不写就会拿 obscura 的连接去造 camofox 的驱动，**当场抛
+            # ValueError**（"camofox 实现需要 CamofoxSession，未提供"）。
             # ⚠️ **手工路径与计划路径是两处独立调用点**，改一处漏一处
             # ⇒ 手工路径（``run --task-id``）不炸、计划路径（``run --plan``）
             # 炸，而后者才是批量生产入口。**两处都要写。**
@@ -845,13 +832,12 @@ async def _run_plan(args: argparse.Namespace) -> int:
             # 上面的检查已保证 title 非空，这里直接取
             title = task.title
             # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
-            # camoufox 面一个 Run 一次 launch（_driver_for_run）。
+            # camofox 面一个 Run 一次 launch（_driver_for_run）。
             async with AsyncExitStack() as task_stack:
                 try:
                     driver = await task_stack.enter_async_context(
                         _driver_for_run(
                             kind, shared=shared,
-                            headless=not getattr(args, "headful", False),
                             collect_element_basis=getattr(
                                 args, "element_basis", False),
                         )
@@ -1081,11 +1067,10 @@ async def cmd_check(args: argparse.Namespace) -> int:
     print(f"  {EXE_ENV_VAR} 未设置" if not _env_ok() else f"  {EXE_ENV_VAR} 已设置")
     print(f"  禁用的 tool（{len(FORBIDDEN_TOOLS)}）: {sorted(FORBIDDEN_TOOLS)}")
 
-    if args.driver == "camoufox":
-        return await _check_camoufox(
+    if args.driver == "camofox":
+        return await _check_camofox(
             args.probe_url,
             action_smoke=getattr(args, "action_smoke", False),
-            headless=not getattr(args, "headful", False),
             collect_element_basis=getattr(args, "element_basis", False),
         )
 
@@ -1142,56 +1127,50 @@ def _print_element_basis(basis: Mapping[str, Any],
         print(f"    ⚠️ 共享口径没测到：{error}")
 
 
-async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
-                          headless: bool = True,
-                          collect_element_basis: bool = False) -> int:
-    """``check --driver camoufox``：起一次会话，打印**实测指纹**并跑一遍采集面原语。
+async def _check_camofox(probe_url: str, *, action_smoke: bool = False,
+                         collect_element_basis: bool = False) -> int:
+    """``check --driver camofox``：起一次会话，打印**实测指纹**并跑一遍采集面原语。
 
     为什么不并进上面那段：obscura 的探针是「MCP 连得上吗 + 采得到吗」，
-    camoufox 没有 MCP 连接这一层，探的是**另两件事**——
-    ①身份/几何有没有被钉住（没钉住则批次不可归因，方案 §4.3）；
+    camofox 这一层探的是**另两件事**——
+    ①上游 REST 服务通不通 + 浏览器侧身份读数是什么（没记则批次不可归因，
+      方案 §4.3）；
     ②采集面原语在真实站点上通不通（``snapshot``/``count``/``interactive``/
       ``links``），**并且**元素枚举的账目读得出来
       （P3-α：``interactive`` 的过滤丢弃是静默的，只能靠账目看）。
 
-    ``headless`` 缺省**无头**（与生产口径一致，2026-10-21）——所以这里打印的
-    指纹读数就是**无人值守批次真正的指纹**。要看有头口径的读数加 ``--headful``。
+    ⚠️ **指纹口径与 camoufox 那支不同**（2026-10-26）：camofox 的浏览器由
+    上游持有，``humanize``/``geoip``/``locale`` **由上游决定，本仓库配不了**
+    ——所以这里打印的是**实测的浏览器侧读数** + ``engine`` + REST ``origin``，
+    没有「请求值」那一栏。**配不了的事不写成读数**。
 
     失败返回 1（obscura 段不可达时返回 0）——obscura 那段不可达是「这台机器
-    没配」的常态，camoufox 是**本仓库自己的依赖**，起不来就是环境坏了。
+    没配」的常态，camofox 是**本项目的执行层**，起不来就是环境坏了。
     """
-    print("\n== camoufox 会话 ==")
-    try:
-        from trajectory_pipeline.executor.browser.camoufox_session import (
-            CamoufoxSession,
-        )
-    except ImportError as exc:
-        # 依赖不在 ⇒ 说清缺什么 + 怎么装，**不把 ImportError 抛给用户**
-        # （那串 "No module named 'camoufox'" 看不出「这是执行层暂退」）。
-        raise RuntimeError(
-            "camoufox 执行层不可用：venv 里没有 camoufox 包"
-            "（2026-10-26 执行层暂退，pyproject.toml 已移除该依赖）。"
-            f"{_CAMOUFOX_RESTORE_HINT}"
-        ) from exc
+    print("\n== camofox 会话 ==")
+    from trajectory_pipeline.executor.browser.camofox_session import (
+        CamofoxSession,
+    )
 
     try:
-        session = await CamoufoxSession.launch(headless=headless)
+        session = await CamofoxSession.launch()
     except Exception as exc:                     # noqa: BLE001
-        # launch 可能抛任何东西（playwright 启动失败 / 浏览器二进制缺失 /
-        # screen 约束不被接受），这里只报类型与消息，不分类——分类等于猜。
+        # launch 可能抛任何东西（适配器不可执行 / REST 服务没起），
+        # 这里只报类型与消息，不分类——分类等于猜。
         print(f"  [FAIL] launch 失败 — {type(exc).__name__}: {exc}")
         return 1
 
     async with session:
-        print("  指纹（批次元数据口径；os/geoip/locale/humanize 是请求值，"
-              "其余是实测值）:")
+        print("  指纹（批次元数据口径；**实测的浏览器侧读数**——"
+              "camofox 的 humanize/geoip/locale 由上游决定，本仓库配不了，"
+              "所以没有「请求值」那一栏）:")
         for k, v in session.fingerprint.items():
             print(f"    {k:<10} = {v}")
         print("  现场读数（诊断用，不进批次元数据）:")
         for k, v in session.readings.items():
             print(f"    {k:<10} = {v}")
 
-        driver = make_driver(kind="camoufox", camoufox_session=session,
+        driver = make_driver(kind="camofox", camofox_session=session,
                              collect_element_basis=collect_element_basis)
         try:
             await driver.goto(probe_url)
@@ -1231,7 +1210,7 @@ async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
                 _print_element_basis({"shared": shared, "face": dict(stats)})
 
         # 采集面剩余原语（P3-β）：只报**条数**，不在这里 dump 内容——
-        # 逐条核对走 `probe_observe --driver camoufox`（它把整份 Observation
+        # 逐条核对走 `probe --driver camofox`（它把整份 Observation
         # 落盘并跑契约断言），这里只回答「接线通不通」。
         try:
             links = await driver.links()
@@ -1243,16 +1222,21 @@ async def _check_camoufox(probe_url: str, *, action_smoke: bool = False,
                 print(f"      {link.text[:40]!r} → {link.href[:80]}")
 
         if action_smoke:
-            await _camoufox_action_smoke(driver, elements)
+            await _camofox_action_smoke(driver, elements)
     return 0
 
 
-async def _camoufox_action_smoke(driver: Any, elements: Any) -> None:
+async def _camofox_action_smoke(driver: Any, elements: Any) -> None:
     """``--action-smoke``：真填一次、真点一次，打印结果账目。
 
     为什么要在 CLI 里留这一条而不是只写单测：单测用的是假 page，
     它证明「我们调了哪几个 API」，**不证明那些 API 在真实页面上能跑**。
-    P2 的验收判据是「动作的 camoufox 调用可原样执行」——那条只能在真浏览器上量。
+    P2 的验收判据是「动作的 camofox 调用可原样执行」——那条只能在真浏览器上量。
+
+    ⚠️ **回车这一段在 camofox 面是「驱动缓存合并」**（A2）：上游没有独立的
+    「按键」tool，回车走的是「重发同文本 + 附带回车」。所以这条冒烟**顺带
+    验的就是那条合并路径**——``fill`` 之后紧跟 ``press Enter``，若缓存对不上，
+    驱动会记 ``unsupported`` 而不是提交。**看到 unsupported 就是要查的信号。**
 
     目标一律取自**当前页的枚举结果**（不写死选择器）：要验的正是
     「枚举出来的 role+name 能被动作面定位」这条闭环。**顺序有意义**：
@@ -1392,7 +1376,7 @@ async def _probe_one(driver: Any, url: str, *,
     补了现场才发现判对了，但**那次是运气**）。
 
     驱动由调用方给（:func:`_probe_driver`）——**一条命令一条会话**，
-    不每个 URL 重开浏览器（camoufox 每次 launch 要秒级）。
+    不每个 URL 重开浏览器（camofox 每次 launch 要连一次上游 REST）。
     """
     try:
         await driver.goto(url)
@@ -1454,7 +1438,7 @@ async def cmd_probe(args: argparse.Namespace) -> int:
             return 2
 
     async with _probe_driver(
-            kind, headless=not getattr(args, "headful", False)) as driver:
+            kind) as driver:
         print(f"  driver  = {driver.name}")
         for url in urls:
             print(f"\n── {url}")
@@ -1521,7 +1505,7 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
             return 2
 
     async with _probe_driver(
-            kind, headless=not getattr(args, "headful", False)) as driver:
+            kind) as driver:
         print(f"  driver    = {driver.name}")
         from trajectory_pipeline.executor.steps.search import Candidate
         for n, url in enumerate(urls, 1):
@@ -1832,21 +1816,19 @@ async def cmd_mediabrowse(args: argparse.Namespace) -> int:
         except McpError as exc:
             print(f"[FAIL] obscura MCP 连接失败: {exc}", file=sys.stderr)
             return 3
-    if driver_choice == "camoufox":
-        # **生产面**（2026-10-22 owner 裁定后）。L2 要在**真实生产面**上
+    if driver_choice == "camofox":
+        # **生产面**（2026-10-26 owner 裁定后）。L2 要在**真实生产面**上
         # 采两次 ``currentTime`` 判「真推进」——探针跑的浏览器不是生产面，
         # 结论就不能外推（与「工具声明按面取」同一条纪律）。
         try:
-            async with _probe_driver(
-                    "camoufox",
-                    headless=not getattr(args, "headful", False)) as driver_obj:
+            async with _probe_driver("camofox") as driver_obj:
                 return await _mediabrowse_with_driver(args, driver_obj)
         except RuntimeError as exc:
             print(f"[FAIL] {exc}", file=sys.stderr)
             return 3
     print(
         f"[FAIL] --driver 取值 {driver_choice!r} 不在 "
-        f"('fake', 'obscura', 'camoufox') 内",
+        f"('fake', 'obscura', 'camofox') 内",
         file=sys.stderr,
     )
     return 2
@@ -3045,7 +3027,7 @@ def cmd_check_archives(args: argparse.Namespace) -> int:
 def cmd_compare_drivers(args: argparse.Namespace) -> int:
     """双跑对账（设计方案 04 §6.1）。**只读存档，不开浏览器、不联网。**
 
-    ``--a`` 是基线（当前生产链 obscura），``--b`` 是候选（camoufox）。
+    ``--a`` 是基线（当前生产链 obscura），``--b`` 是候选（camofox）。
     退出码：0 = 机械判据全过；1 = 有判据不达标；2 = 有判不了的条目
     （例如基线中位数为 0，比值无从计算）——**「判不了」不等于「过了」**。
     """
@@ -3869,6 +3851,34 @@ def _print_domain_reach(outcomes: list[Mapping[str, Any]]) -> None:
               "拉黑前先看 negative.jsonl 里那几条的证据。")
 
 
+#: ``--headful`` 作废的说明（2026-10-26）。camofox 的浏览器由**上游 REST
+#: 服务**持有，本仓库只发 MCP 调用——「有头/无头」是上游的事，本仓库
+#: **没有这个开关**。老脚本里还写着它，所以留着这个 flag 并让它**当场报错**。
+_HEADFUL_RETIRED_HINT = (
+    "--headful 已作废：camofox 的浏览器由上游 REST 服务持有，"
+    "有头/无头不由本仓库决定（2026-10-26 执行层换成 camofox-browser 的 MCP）。"
+    "要改上游的浏览器模式，请改 camofox-browser 自己的配置。"
+)
+
+
+def _add_retired_headful(parser: argparse.ArgumentParser) -> None:
+    """挂一个**已作废**的 ``--headful``。
+
+    为什么留着一个不生效的开关：老脚本里还写着它。
+
+    - **删掉**：argparse 报 ``unrecognized arguments: --headful``——读不出
+      「为什么」，用户多半会以为装错了版本；
+    - **留着不报错**：更糟——那正是「配错了与配对了产出同一份数据」，
+      而症状在报告上看不出任何异常。
+
+    所以留着 + 传了就**当场报错**（:func:`main` 里统一查）。
+    """
+    parser.add_argument(
+        "--headful", action="store_true",
+        help=f"[已作废] {_HEADFUL_RETIRED_HINT}",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="trajectory_pipeline.executor.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -3885,8 +3895,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--per-site-timeout", type=_positive_float, default=None,
                      help="单站超时（秒）。**它落进 run_config**——"
                           "B-4（异常处置）唯一的时限判据，不落盘等于没有判据。"
-                          "缺省 180（2026-10-22 从 90 提上来：camoufox 单步慢"
-                          "一个量级，实测单次点击上界 13.3s × 8 步 ≈ 122s；"
+                          "缺省 180（2026-10-22 从 90 提上来：aria 面单步慢"
+                          "一个量级，camoufox 实测单次点击上界 13.3s × 8 步 ≈ 122s；"
                           "撞顶会被记成 unreachable_hard ——理由通顺的假负样本）"
                           "。必须是正数：0 或负数没有业务含义，放行会产出一批"
                           "「立刻超时、看起来正常的空批」")
@@ -3904,15 +3914,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
                      help="执行层实现（P5 双跑用）。默认值与 driver_factory 的 "
                           "DEFAULT_KIND 同源——切换生产链只改那一处。"
-                          "obscura 整批一条 MCP 连接，camoufox 一个 Run 一次 "
+                          "obscura 整批一条 MCP 连接，camofox 一个 Run 一次 "
                           "launch。注意：两种实现落出的存档**不是同一口径**"
                           "（元素键名与词表都随面变），不能混池")
-    run.add_argument("--headful", action="store_true",
-                     help="（仅 camoufox 面）用**有头**浏览器而不是无头。"
-                          "缺省是**无头**——无人值守时 headful 窗口一旦不可渲染"
-                          "（最小化/息屏/锁屏/遮挡），单次点击要 5–13s，"
-                          "会把一半的点击打成超时假负样本（设计方案 04 §4.9.5）。"
-                          "有头 = 人守着的桌面。两种口径都记进批次元数据")
+    _add_retired_headful(run)
     run.add_argument("--element-basis", action="store_true",
                      help="采**跨面可比的元素账目**（设计方案 04 §4.9.6）："
                           "同一段 JS + 同一把尺子在两个浏览器上各跑一次，"
@@ -4050,22 +4055,17 @@ def build_parser() -> argparse.ArgumentParser:
     chk.add_argument("--probe-url", default="https://example.com/")
     chk.add_argument(
         "--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
-        help="探哪条执行层。**缺省 = DEFAULT_KIND（camoufox，生产面）**——"
+        help="探哪条执行层。**缺省 = DEFAULT_KIND（camofox，生产面）**——"
              "自检默认探的必须是**生产面**：探的不是生产面，读数就不能外推"
              "（与「工具声明按面取」同一条纪律）。"
              "obscura 要显式点名（回溯路径，需 OBSCURA_EXE）")
     chk.add_argument(
         "--action-smoke", action="store_true",
-        help="（仅 --driver camoufox）动作面冒烟：点一次枚举出来的元素并打印账目。"
+        help="（仅 --driver camofox）动作面冒烟：点一次枚举出来的元素并打印账目。"
              "P2 的验收判据「动作可用」只有真浏览器能证明——单测用的是假 page。"
              "会改变页面状态（可能导航），故默认关",
     )
-    chk.add_argument(
-        "--headful", action="store_true",
-        help="（仅 --driver camoufox）用**有头**浏览器。缺省无头——"
-             "无人值守口径（设计方案 04 §4.9.5）。加这个开关看的是"
-             "「人守着桌面」那条路的指纹读数",
-    )
+    _add_retired_headful(chk)
     chk.add_argument(
         "--element-basis", action="store_true",
         help="采**跨面可比的元素账目**（设计方案 04 §4.9.6）并打印两本账。"
@@ -4081,13 +4081,11 @@ def build_parser() -> argparse.ArgumentParser:
     prb.add_argument("--limit", type=int, default=None, help="--from-archive 时取前 N 个")
     prb.add_argument("--preview", type=int, default=400, help="打印正文前 N 字")
     prb.add_argument("--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
-                     help="执行层实现；默认 = DEFAULT_KIND（camoufox）。"
+                     help="执行层实现；默认 = DEFAULT_KIND（camofox）。"
                           "**探针要跑在生产面上**——跑的浏览器不是生产面，"
                           "现场事实就不能外推到生产批次。"
                           "obscura 需 OBSCURA_EXE 环境变量。")
-    prb.add_argument("--headful", action="store_true",
-                     help="camoufox 显式切回有头（默认无头：无人值守时"
-                          "有头窗口不可渲染，单次点击要 5–13s）")
+    _add_retired_headful(prb)
     prb.set_defaults(func=cmd_probe)
 
     # 2026-10-12 增量十三配套：阶段 1 新分支 ground-truth 验证工具。
@@ -4110,10 +4108,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="感知层选择；与 cli run 一致")
     prn.add_argument("--out", default=None, help="P1 输出目录")
     prn.add_argument("--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
-                     help="执行层实现；默认 = DEFAULT_KIND（camoufox）。"
+                     help="执行层实现；默认 = DEFAULT_KIND（camofox）。"
                           "obscura 需 OBSCURA_EXE 环境变量。")
-    prn.add_argument("--headful", action="store_true",
-                     help="camoufox 显式切回有头（默认无头）")
+    _add_retired_headful(prn)
     prn.set_defaults(func=cmd_proberun)
 
     # 2026-10-12 增量十八配套：阶段 4 L0 静态可达性探测。HTTP 层，
@@ -4173,18 +4170,17 @@ def build_parser() -> argparse.ArgumentParser:
                      help="单 URL 浏览器探针超时（秒）；默认 15")
     mbb.add_argument("--wait-s", type=float, default=2.0,
                      help="L2 两次 currentTime 采样间隔（秒）；默认 2")
-    mbb.add_argument("--driver", choices=("fake", "obscura", "camoufox"), default="fake",
+    mbb.add_argument("--driver", choices=("fake", "obscura", "camofox"), default="fake",
                      help="PageDriver 选择；默认 fake 不联网（in-process mock，"
                           "FastPageDriver 鸭子兼容 L4 evaluate+snapshot），"
                           "obscura 真驱动经 stdio MCP 起 V8 isolate；"
                           "需 OBSCURA_EXE 环境变量指二进制位置。"
-                          "camoufox 是**生产面**（2026-10-22 owner 裁定）——"
+                          "camofox 是**生产面**（2026-10-26 owner 裁定）——"
                           "L2 要在生产面上采两次 currentTime 判「真推进」，"
                           "探针跑的浏览器不是生产面，结论就不能外推。"
                           " 增量二十四/二十五/二十九已打通 L0→L1→L2→L4→L3→L5 全链路"
                           "（obscura SSRF guard 拦截 127.0.0.1，需公开 URL）。")
-    mbb.add_argument("--headful", action="store_true",
-                     help="camoufox 显式切回有头（默认无头）")
+    _add_retired_headful(mbb)
     mbb.add_argument("--out", default=None, help="输出目录")
     # 2026-10-13 增量二十八：L1 ffprobe 真接入的开关与超时。
     # --no-l1 关闭 ffprobe 层（缺 ffprobe 二进制或调试时用）；
@@ -4229,7 +4225,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_d.add_argument("--a", required=True,
                        help="A 侧（**基线**，通常是 obscura）的 P1 存档目录")
     cmp_d.add_argument("--b", required=True,
-                       help="B 侧（候选，通常是 camoufox）的 P1 存档目录")
+                       help="B 侧（候选，通常是 camofox）的 P1 存档目录")
     cmp_d.add_argument("--a-label", default="A")
     cmp_d.add_argument("--b-label", default="B")
     cmp_d.add_argument("--json", default=None,
@@ -4316,6 +4312,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     _reconfigure_stdio()
     args = build_parser().parse_args(argv)
+    # ⚠️ **已作废的开关当场报错**（2026-10-26）：``--headful`` 在 camofox
+    # 面上没有对应物（浏览器由上游 REST 服务持有）。**静默忽略**是最坏的一种
+    # 处理——老脚本以为切了有头口径，实际跑的是另一套，而报告上看不出异常。
+    if getattr(args, "headful", False):
+        print(f"[FAIL] {_HEADFUL_RETIRED_HINT}", file=sys.stderr)
+        return 2
     # 运行日志（2026-10-16）：只在**真实 CLI 入口**配置，不在
     # ``cmd_run`` 里——测试直接调 ``cmd_run`` / ``_run_plan``（手工
     # Namespace），在那里读 ``args.log_level`` 会打出新的必填字段；

@@ -113,8 +113,9 @@ def render(obs: Mapping[str, Any] | None) -> dict[str, Any]:
 
     body, cropped, body_source = _pick_body(obs)
     elements = list(obs.get("interactive_elements") or ())
-    # 键名跟着**存档的方言**走（P4）：老存档写 ``tag``/``label``，camoufox
-    # 批次写 ``role``/``name``。这一层拿不到 ``driver``，所以按存档自己的
+    # 键名跟着**存档的方言**走（P4）：老存档写 ``tag``/``label``，aria 面
+    # （camoufox / camofox）批次写 ``role``/``name``。这一层拿不到 ``driver``，
+    # 所以按存档自己的
     # 键名判方言（:func:`vocabulary_of_archive_elements`——键名本来就是
     # 这个轴的投影，读回来不是猜）。
     #
@@ -165,7 +166,8 @@ def element_line(element: Any, vocabulary: str | None = None) -> str:
         html_tag    ``  - <button> 播放``
         aria_role   ``  - [button] 播放``
 
-    两种写法是**故意不同**的，不是审美选择：camoufox 面的 kind 槽装的是
+    两种写法是**故意不同**的，不是审美选择：aria 面（camoufox / camofox）的
+    kind 槽装的是
     ARIA role，若沿用尖括号，``<link>`` 就会被读成一个 HTML 标签——把
     「这列是标签名」这个错口径写进提示词，而提示词是模型学到的唯一口径。
     方括号标的是「这行说的是角色」，它同时是新旧样本**不混池**在提示词

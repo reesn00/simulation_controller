@@ -13,7 +13,7 @@
 | **v1 存量管线** | `archive/v1/`（原 `simulate_serve/` `orchestration/` `gdr/` `etl/` `label_studio/` `tool_runtime/` `data_refiner/`，2026-10-09 归档） | **冻结**。只读参考：可读代码抄思路，**不可 import、不可修改** |
 
 一句话区别：v1 是「**远端 QwenPaw agent 当驾驶员**，本地只当模拟用户 + 裁判」；
-v2 把那颗心脏换掉——「**本地 agent runtime 当探索者、本地代码当护栏、camoufox 当浏览器**」。
+v2 把那颗心脏换掉——「**本地 agent runtime 当探索者、本地代码当护栏、camofox 当浏览器**」。
 v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述后锚会被削弱。
 
 ---
@@ -26,7 +26,7 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 4. **跨树/外部能力走进程边界**：MCP 协议 / HTTP，与 Python 导入边无关。这条让「不 import 存量」与「能复用外部能力」同时成立。
 5. **产物隔离**：新树产物全部落 `trajectory_pipeline/output/pipeline/`。
 6. **训练侧工具声明只有一个真源**：[`trajectory_pipeline/toolcatalog/`](trajectory_pipeline/toolcatalog/)。P2 的 `six.tools`、P3 的 `openai.tools`、T 的 `openai.tools` 三处都是它的**投影**——**不许手抄第二份**（抄两份必然漂：旧口径下 `click` 的 function 定义是空参数，训出来的模型会发空参数的点击）。它挂在 `trajectory_pipeline/` 顶层而不是 `assembler/` 下，是因为 **P3 与 T 互不 import**（AST 强制），工具清单得有个两边都能用的地方。改工具清单先改 catalog，再 `cli build --overwrite` + `cli task-view --all --overwrite` 重建产物。
-7. **工具声明按「面」取，面由 P1 的 `driver` 一对一折算**（2026-10-20 方案 15 §5.5）。`click` 在 obscura 面是 `{tag,label}`、在 camoufox 面是 `{role,name}`——**同名不同参**，拿错面就是「声明与真实调用对不上」，而报告上看不出异常。面**不手填**（P1 `RunRecord.driver` → `surface_of_driver()` → P2 顶层 `tool_surface`），**认不出的 driver 直接抛**——不猜、不静默回落。
+7. **工具声明按「面」取，面由 P1 的 `driver` 一对一折算**（2026-10-20 方案 15 §5.5）。`click` 在 obscura 面是 `{tag,label}`、在 aria 面（camoufox / camofox）是 `{role,name}`——**同名不同参**，拿错面就是「声明与真实调用对不上」，而报告上看不出异常。面**不手填**（P1 `RunRecord.driver` → `surface_of_driver()` → P2 顶层 `tool_surface`），**认不出的 driver 直接抛**——不猜、不静默回落。⚠️ **「退役」的口径是「不再产出 + 仍读得懂」**：camoufox 面已退役（`DRIVER_SURFACE` 里没有 `camoufox` 键 ⇒ 新存档落不出旧面），但存量产物靠 `LEGACY_DRIVER_SURFACE` 仍读得出来——**删的是实现，不是证据**。
 
 ### 跨两棵树的红线
 
@@ -81,7 +81,7 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 | 文档 | 内容 |
 |---|---|
 | [08-常用命令速查.md](trajectory_pipeline/docs/08-常用命令速查.md) | **命令清单的唯一真源**——一行一条、复制即用，附「缺了就报错不猜」的必填项表。要跑命令先读它 |
-| [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图 + 依赖方向、控制流与四个判断点、失败分支全集、**camoufox 执行层**（obscura 保留为回溯路径）、感知层七不变式、persona 六维、模块 5/6、**存量 v1 各目录职责** |
+| [01-架构总览.md](trajectory_pipeline/docs/01-架构总览.md) | 模块地图 + 依赖方向、控制流与四个判断点、失败分支全集、**camofox 执行层**（obscura 保留为回溯路径）、感知层七不变式、persona 六维、模块 5/6、**存量 v1 各目录职责** |
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3 契约表、`steps[]` 三条口径、P1 三处「不给就不可判定」的字段 |
 | [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 每条命令「联网与否 / 作用 / 参数」口径表 + 环境变量全表、门禁与输出目录、`replay` 口径、故障排查（**命令清单本身在 08 号**） |
 | [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | **索引页**——内容已拆到 [`计划进展/`](trajectory_pipeline/docs/计划进展/)（2026-10-15） |
@@ -91,7 +91,7 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 | [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类 88 条**，症状写成终端里真正会看到的那句话，可全文搜索 |
 | [tools.md](trajectory_pipeline/docs/tools.md) | **工具调用说明**（总目录）：按工具形态分大类——浏览器 MCP / **Agent 会话工具（QwenPaw 运行时 28 个）** / LLM / 媒体 CLI / 标签平台 HTTP / VLM 等；已收录浏览器 MCP（obscura 参考实现）与会话内 tools 全集（名/参数/取值/描述）；新工具按相同五段式追加；动 `ObscuraDriver` / `mcp_client` / `McpClient.list_tools` 之前必读 |
 | [research/](trajectory_pipeline/research/) | **研究产物与复算脚本**（`recollect/` 直采主线 · `retest/` 重测 · `probes/` 探针与 A/B · `ab_baseline/` · `smoke/`）。放**证据**不放结论：脚本 + 它读的 `.jsonl`。2026-10-20 由仓库根 `tmp/`、`tmp_*` 迁入；**必须在仓库根跑**；`outcomes.jsonl` 不可平凡重建（站点已漂移）。[README](trajectory_pipeline/research/README.md) 是入口 |
-| [依赖说明/](trajectory_pipeline/docs/依赖说明/) | **外部依赖使用手册**（一依赖一文件）：CLI 全表 / Python API / 关键参数 / **本机实测记录与判据**。已收录 [camoufox.md](trajectory_pipeline/docs/依赖说明/camoufox.md)（stealth 参数、server 模式、**§11 默认值真相**——`humanize`/`geoip` 默认关、`os` 默认随机、uBO 默认装）；**注意它与 [tools.md](trajectory_pipeline/docs/tools.md) 分工不同**——tools.md 记「协议/入参/返回」，这里记「依赖怎么装怎么配怎么验」；D11 修订后执行层目标已换，但**本目录不构成选型变更** |
+| [依赖说明/](trajectory_pipeline/docs/依赖说明/) | **外部依赖使用手册**（一依赖一文件）：CLI 全表 / Python API / 关键参数 / **本机实测记录与判据**。已收录 [camofox-browser 使用说明.md](trajectory_pipeline/docs/依赖说明/camofox-browser%20使用说明.md)（**现行执行层**：MCP stdio 适配器 11 tool → REST 9377 → Camoufox 内核；**§默认值真相**——`camofox_type` 默认 `mode='fill'`、`includeScreenshot` 硬编码 true、80k 字符窗口分页）；[camoufox_弃用.md](trajectory_pipeline/docs/依赖说明/camoufox_弃用.md)（**已退役**，2026-10-26 撤下：stealth 参数、server 模式、**§11 默认值真相**——`humanize`/`geoip` 默认关、`os` 默认随机、uBO 默认装）；**注意它与 [tools.md](trajectory_pipeline/docs/tools.md) 分工不同**——tools.md 记「协议/入参/返回」，这里记「依赖怎么装怎么配怎么验」 |
 
 ### 设计方案（`trajectory_pipeline/docs/设计方案/`）
 
@@ -99,9 +99,10 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 - [01-模块3-可替换感知层.md](trajectory_pipeline/docs/设计方案/01-模块3-可替换感知层.md) —— 插件化机制完整规格 + 七不变式
 - [02-rubric与代码对齐.md](trajectory_pipeline/docs/设计方案/02-rubric与代码对齐.md) —— 评分标准 `RUB-VID-PLAY-001` 逐维度 ↔ 新树代码的对齐账。**改 rubric 或改控制流之前先读**——它记的是两侧哪里已经错位，而错位不会自己显形
 - [03-rubric修订与实施方案.md](trajectory_pipeline/docs/设计方案/03-rubric修订与实施方案.md) —— rubric v1.1 逐条改稿清单 + 五个代码变更（点文件、点函数）。**§9 是实施结果**（哪条做了、哪条没做、每条由哪个测试封着、方案漏掉了什么）。**要动 `branches.py` / `observation_view.py` / `integrity.py` 的先读**
-- [04-camoufox执行层替换方案.md](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md) —— **D11 修订 D7**：camoufox 取代 obscura 成为唯一执行层。含实测取证（F1–F4）、13 原语映射表、三个难点（ref 机制 / 错误三态 / 身份钉死）、两份红线、P0–P6 落地阶段。⚠️ **§6.1 的 go/no-go 门槛已被 owner 裁定覆盖（2026-10-22）**——生产链默认执行层**已切 camoufox**（`DEFAULT_KIND = "camoufox"`）；§6.1 顶部有覆盖块，六条读数的新地位写在那里。**obscura 没删**（`--driver obscura` 显式点名，工具面 `obscura-1` 只读不再产出）
-- [15-执行器与agent-runtime重新定义.md](trajectory_pipeline/docs/设计方案/15-执行器与agent-runtime重新定义.md) —— **D-A6–D-A11**：**LLM 层做探索、代码层做护栏**。感知层退位成三块静态资产，七不变式里 I3（幂等）与 I6（ref 可溯源）退役；工具声明 = agent 工具集 = camoufox 调用面（含采集面 4 条）；含方言轴与批次元数据、落地路线 R0–R5、待决项 O-1–O-4
+- [04-camoufox执行层替换方案.md](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md) —— **D11 修订 D7**：camoufox 取代 obscura 成为唯一执行层。含实测取证（F1–F4）、13 原语映射表、三个难点（ref 机制 / 错误三态 / 身份钉死）、两份红线、P0–P6 落地阶段。⚠️⚠️ **结论已被整体推翻（2026-10-26）——执行层再换一次，改走 camofox-browser 的 MCP**（见 [方案 21](trajectory_pipeline/docs/设计方案/21-camofox-browser执行层接入方案.md)）。⚠️ **§6.1 的 go/no-go 门槛已被 owner 裁定覆盖（2026-10-22）**——当时生产链默认执行层**已切 camoufox**（`DEFAULT_KIND = "camoufox"`）；§6.1 顶部有覆盖块，六条读数的新地位写在那里。**obscura 没删**（`--driver obscura` 显式点名，工具面 `obscura-1` 只读不再产出）。⚠️ **本文正文一律保留不改**——它记的是「为什么当初选了 camoufox」，多数机制在 camofox 上原样保留
+- [15-执行器与agent-runtime重新定义.md](trajectory_pipeline/docs/设计方案/15-执行器与agent-runtime重新定义.md) —— **D-A6–D-A11**：**LLM 层做探索、代码层做护栏**。感知层退位成三块静态资产，七不变式里 I3（幂等）与 I6（ref 可溯源）退役；工具声明 = agent 工具集 = 执行层调用面（含采集面 4 条）；含方言轴与批次元数据、落地路线 R0–R5、待决项 O-1–O-4
 - [20-反爬拦截与金标观测面.md](trajectory_pipeline/docs/设计方案/20-反爬拦截与金标观测面.md) —— **「人工能进、agent 被拦」不是置信度问题，是观测面这个轴缺了**。R0 实测（同指纹同日、10 个判过 CF 挑战的目标 × 2 轮 = 12 进 / 8 拦）证明**单次拦截对站点性质零信息**；含「什么样算负样本」的四条判据、owner 五条拍板（O-a–O-e）、R0–R4 路线与 R1/R2/R3 实施结果（`blocked` 出负样本池且进复核队列；金标加 `access_surface`/`observed_at`，旧行 `unrecorded`；评估侧**跨面不出分歧卡、出采集侧账**，`d5` 的 `blocked` 加「站点侧」前置、账本补 `blocked_surface`/`attempt`）。**R4（难度轴）未做**
+- [21-camofox-browser执行层接入方案.md](trajectory_pipeline/docs/设计方案/21-camofox-browser执行层接入方案.md) —— **执行层再换一次（2026-10-26 owner 裁定，已实施）**：camoufox 执行层**已暂退**（代码与依赖已摘，**接不回来**），改走 **camofox-browser 的原生 MCP stdio 适配器**（11 tool）→ REST 9377 → Camoufox 内核。含目标架构、**9 条设计判断**（**D1 目标编码仍是 `role`+`name`、camofox 的 `eN` ref 只在驱动内部消化** / D2 方言沿用 `aria_role`、快照是 Playwright aria YAML / **D3 工具面增第三张 `camofox-1`——已裁定，同时旧面 `camoufox-1` 转为「不再产出 + 仍读得懂」的只读存量面**）、**11 tool ↔ 13 原语的 5 处缺口**、R0–R5 路线、落点文件清单、测试与文档影响、风险 R1–R8
 - [在线视频场景rubric.md](trajectory_pipeline/docs/设计方案/在线视频场景rubric.md) —— 评分标准本体
 
 ### 存量 v1（均在 `archive/v1/` 下，按需查阅）

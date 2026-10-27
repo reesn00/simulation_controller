@@ -69,7 +69,7 @@
 
 与 P3 `_action_line` 同款：
 - `[动作] <tool>(k1=v1, k2=v2)`
-- `click` 语义目标并进 `arguments`（不嵌套，与 P3 判断 3 同款）；键名跟着方言走：obscura 面 `{tag, label}`、camoufox 面 `{role, name}`
+- `click` 语义目标并进 `arguments`（不嵌套，与 P3 判断 3 同款）；键名跟着方言走：obscura 面 `{tag, label}`、camoufox 面 `{role, name}`、**camofox 面 `{role, name}`**
 - `params` 为空且无 target 时只有 `[动作] <tool>`
 - `origin == "infrastructure"` 的步整步跳过（动作连同它的观察与思考；与 P3 判断 2 同款）
 
@@ -87,6 +87,7 @@ P3 `render_observation` 同款排版：
 可交互元素：
   - <tag> <label>        ← obscura 面（历史批次全是这一种）
   - [role] name          ← camoufox 面
+  - [role] name          ← camofox 面（2026-10-26 起的生产面，与 camoufox 面同形）
 …
 
 链接：
@@ -164,9 +165,11 @@ video 标签 <n> 个，iframe <n> 个
 - **唯一真源是 [`trajectory_pipeline/toolcatalog/`](../../toolcatalog/)**，T 与 P3
   从同一处取，所以两边的工具声明**逐字一致**（2026-10-20 起不再各抄一份）。
 - **按面取**（2026-10-20 方案 15 §7 R1）：T 读 P1，所以面从源存档的
-  `driver` 折算（`meta.tool_surface`）。同名工具在两个面里参数不同
+  `driver` 折算（`meta.tool_surface`）。同名工具在三个面里参数不同
   （`click` 是 `tag`/`label` 还是 `role`/`name`）——面错了就是**声明与真实
   调用对不上**，而报告上看不出异常。
+  ⚠️ **两个 aria 面的说明文字也不同**（参数相同、说明不同：camofox 面的
+  说明里不许出现 exact）——`description` 同样从 catalog 按面取。
 - 每个参数给 `{"type": "string", "description": "..."}`——参数语义来自 catalog。
 - `required` 按**真实存档的出现率**定（`press` 的 `tag`/`label` 只有 30% ⇒ 不必填）。
 - 可见性由 catalog 的 `visibility` 字段决定：`new_tab` / `close_tab` 是执行器
@@ -184,7 +187,7 @@ video 标签 <n> 个，iframe <n> 个
 | `task_id` / `run_id` / `title` | str | 切片轴 |
 | `source_archive` | str | 据以生成的 P1 文件名（不含目录） |
 | `schema_version` | str | T 格式版本 |
-| `tool_surface` | str | **工具面**（2026-10-20 方案 15 §7 R1）：这份轨迹的动作空间属于哪个方言（`obscura-1` / `camoufox-1`）。T 读 P1，所以面从源存档的 `driver` 折算 |
+| `tool_surface` | str | **工具面**（2026-10-20 方案 15 §7 R1）：这份轨迹的动作空间属于哪个方言（`obscura-1` / `camoufox-1` / **`camofox-1`**）。T 读 P1，所以面从源存档的 `driver` 折算。⚠️ **三个面 ≠ 三套方言**——方言只有两套词表（见 P2 契约 · 工具面一节） |
 
 ### 单元级汇总（**T 独有，P3 没有**）
 

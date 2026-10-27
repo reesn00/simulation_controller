@@ -137,15 +137,31 @@ def test_空驱动不按默认面补():
     """历史存档没记配置，且 10-22 之前默认实现还是 obscura ⇒ 补就是猜。"""
     assert A.surface_of_driver("") == A.SURFACE_UNRECORDED
     assert A.surface_of_driver(None) == A.SURFACE_UNRECORDED
+    assert A.surface_of_driver("camofox") == A.SURFACE_CAMOFOX
     assert A.surface_of_driver("camoufox") == A.SURFACE_CAMOUFOX
     assert A.surface_of_driver("obscura") == A.SURFACE_OBSCURA
     with pytest.raises(ValueError):
         A.surface_of_driver("playwright")
 
 
+def test_退役的camoufox_仍读得懂但不再产出():
+    """**退役不等于失忆**（2026-10-26）。
+
+    ``camoufox-plain`` 留在合法面集合里——盘上 2 份 P1 存档的
+    ``gatekeeper_events[].blocked_surface`` 记的就是它，删了这个代号
+    那些账本行就成了一串读不出来的字符串。
+    ⇒ 但**新面**（``DRIVER_SURFACE``）里没有 ``camoufox`` ⇒
+    新存档落不出它。
+    """
+    assert "camoufox" not in A.DRIVER_SURFACE
+    assert A.LEGACY_DRIVER_SURFACE["camoufox"] == A.SURFACE_CAMOUFOX
+    assert A.SURFACE_CAMOUFOX in A.ACCESS_SURFACES
+
+
 def test_比不了就说比不了():
     """未声明 ⇒ None（不可判定），**不是 False**（那是「两面不同」的结论）。"""
     assert A.same_surface(A.SURFACE_HUMAN, A.SURFACE_HUMAN) is True
+    assert A.same_surface(A.SURFACE_HUMAN, A.SURFACE_CAMOFOX) is False
     assert A.same_surface(A.SURFACE_HUMAN, A.SURFACE_CAMOUFOX) is False
     assert A.same_surface(A.SURFACE_HUMAN, A.SURFACE_UNRECORDED) is None
     assert A.same_surface(None, None) is None

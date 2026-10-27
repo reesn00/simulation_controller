@@ -114,7 +114,7 @@ def _name_of(action: Any) -> str:
 
     走 :func:`~trajectory_pipeline.perception.base.element_name` 而不是
     ``target.get("label")``：目标字典的键名跟着**方言**走（P4）——历史
-    批次写 ``label``，camoufox 批次写 ``name``。写死 ``label`` 的后果是
+    批次写 ``label``，aria 面（camoufox / camofox）批次写 ``name``。写死 ``label`` 的后果是
     新批次**每条 click 都取到空串**，而空串在 :func:`judge_ref` 里读作
     「执行器没解出目标」，于是整批样本被判成不可判定——看起来像执行器
     坏了，实际是读取端还停在旧方言。
@@ -205,7 +205,7 @@ def _matches(label: str, elements: Sequence[Mapping[str, Any]]) -> list[Mapping[
     要拿动作 name 的前 120 字去比，不是拿存档那侧去前缀匹配动作 name。
 
     两侧都比 **text 槽**（:func:`element_name`），不比键名：存的是哪个
-    方言由批次决定，比键名会把整批 camoufox 样本判成「引用不存在」。
+    方言由批次决定，比键名会把整批 aria 面（camoufox / camofox）样本判成「引用不存在」。
     """
     needle = label if len(label) <= LABEL_TRUNCATED_AT \
         else label[:LABEL_TRUNCATED_AT]

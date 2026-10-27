@@ -144,7 +144,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = tuple(
 #: **逐工具面**的训练动作空间（2026-10-20 方案 15 §7 R1）。
 #:
 #: 为什么多这一层：``click`` 在 obscura 面是 ``click(tag,label)``、在
-#: camoufox 面是 ``click(role,name)``——**同名不同参**。一份 P2 样本
+#: aria 面（camoufox / camofox）是 ``click(role,name)``——**同名不同参**。一份 P2 样本
 #: 只对应一个面（由源存档的 ``driver`` 决定），所以六件套第 ② 件
 #: (``tools``) 必须**按面**取，不能一份通吃。
 #:
@@ -573,7 +573,7 @@ class Sample:
     schema_version: str = ""
 
     #: **工具面**（2026-10-20 方案 15 §7 R1）——这份样本的训练动作空间
-    #: 属于哪个方言（``obscura-1`` / ``camoufox-1``）。
+    #: 属于哪个方言（``obscura-1`` / ``camoufox-1``〔只读存量〕 / ``camofox-1``）。
     #:
     #: 它来自源 P1 的 ``driver`` 字段，经
     #: :func:`~trajectory_pipeline.toolcatalog.surface_of_driver` 折算。

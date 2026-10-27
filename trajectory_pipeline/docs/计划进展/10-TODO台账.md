@@ -72,13 +72,20 @@
 
 ---
 
-## ⏸ 停点（2026-10-26 · camoufox 执行层暂退）
+## ⏸ 停点（2026-10-26 · 执行层换 camofox-browser）
 
 > **一句话**：第一梯队的**代码、门禁、数据**都已落盘并合并进 `main`；
-> **唯一没做完的是「再真跑一批」**——camoufox 依赖已从环境里移除
-> （`pyproject.toml` 早把它移出依赖，venv 里也没有），采集链现在起不了浏览器。
+> **唯一没做完的是「再真跑一批」**——执行层已从 camoufox 换成
+> **camofox-browser**（owner 裁定，走它自带的 MCP 适配器），
+> 代码侧全部落地并过门禁，**但还差一次真跑**。
 > 下面四段是**交接面**：现状 / 进度 / 设计 / 修改方案，
-> 外加**要人拍板的口径题**与**恢复后必须重跑的验证项**。
+> 外加**要人拍板的口径题**与**跑通前必须重跑的验证项**。
+>
+> ⚠️ **这一节 2026-10-26 整节重写过**：上午那版写的是
+> 「**恢复 camoufox**」（`uv pip install camoufox==0.5.8 && camoufox fetch`），
+> 那条路**已被 owner 明确禁止**（原文：「**禁止把原有的 camoufox 接回来**，
+> 可以做清理原有的 camoufox 代码与内容」）⇒ **上午那版的步骤 1 作废，
+> 照着做就是回退**。
 
 ### 现状
 
@@ -86,13 +93,15 @@
 
 | 读数 | 值 | 说明 |
 |---|---|---|
-| `camoufox`（venv） | **未安装** | `importlib.metadata` 查 `camoufox` 与 `cloverlabs-camoufox` **都**没有 |
-| `pyproject.toml` | 已移除 `camoufox==0.5.8` | 注释写「执行层暂退」，并给了恢复指令 |
-| `legacy` extra | `cloverlabs-camoufox==0.6.0` | ⚠️ **它也叫 `camoufox` 模块名** ⇒ 与代码期望的 `camoufox==0.5.8` **抢同一个 import 名** |
+| 执行层 | **camofox-browser** | owner 裁定（2026-10-26）；**camoufox 不再是执行层** |
+| `camofox-browser-mcp` | **待装/待验** | `npm i -g @askjo/camofox-browser-mcp`（或 `cd camofox-browser/mcp && npm link`）；也可设 `CAMOFOX_MCP_EXE=<绝对路径>` |
+| REST 服务 `:9377` | **待起** | `cd camofox-browser && npm start`（**本仓库不启动浏览器**——浏览器由上游服务持有） |
+| `camoufox`（venv） | **未安装**（**且不许装**） | owner 裁定「禁止接回来」；`cloverlabs-camoufox` 只留在 `legacy` extra，**只服务 v1 冻结树**，还**同名抢 import 名** |
+| `playwright` | **已从主依赖移除** | 它留在主依赖的唯一理由是 `camoufox_driver.py` import `playwright.async_api.Error`；那个模块已删 ⇒ **留着就是「声明与代码不一致」** |
 | 内存 / 提交 / 磁盘 | 物理可用 9.0 GB · 提交可用 12.2 GB · C 盘可用 595 GB | **不是资源问题**（实测 2026-10-26 15:30） |
-| `DEFAULT_KIND` | `"camoufox"` | ⇒ **生产链默认执行层当前不可用**；`obscura` 回溯路要 `OBSCURA_EXE` |
+| `DEFAULT_KIND` | `"camofox"` | ⇒ **生产链默认执行层是 camofox**；`obscura` 回溯路要 `OBSCURA_EXE` |
 
-**症状（2026-10-26 15:18 那批 10 条 agent 批）**：每条起浏览器都撞
+**上午那个症状（2026-10-26 15:18 那批 10 条 agent 批）**：每条起浏览器都撞
 
 ```
 playwright._impl._errors.TimeoutError: BrowserType.launch: Timeout 180000ms exceeded
@@ -104,14 +113,21 @@ Crash Annotation GraphicsCriticalError: |[0][GFX1-]: RenderCompositorSWGL failed
 ⚠️ **别把它读成「代码坏了」**——同一份代码在 12:56 / 13:21 / 13:57 跑成了
 E022 / T054（**agent 链**真跑，`driver=camoufox`），存档就在盘上
 （`E022__01fcb42b` / `T054__1c9b6260`）。
+⚠️ **也别把它读成「camoufox 这条路还有救」**——那 6 分钟是 **playwright 直连起
+Camoufox 内核**的代价（窗口不可渲染 ⇒ 启动超时）。camofox 那条路**浏览器由上游
+REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模式整体消失**。
+⇒ 下午换成 camofox 时**顺手退役了「起浏览器重试」**：camofox 侧起不来只有两种
+原因（适配器不可执行 / REST 没起），**都不是偶发** ⇒ 重试只是把同一个失败
+重复一遍再烧时间。
 
 ### 进度（第一梯队三项）
 
 | 项 | 状态 | 差什么 |
 |---|---|---|
-| ① 真跑一批，让 R1–R3 上真数据 | **半程** | R1/R2/R3 的**代码与门禁**全落地并已合进 `main`；**真跑只跑成 2 条**（E022 / T054，agent 链）；第 3 批 10 条因环境冲突一条没成 |
+| ① 真跑一批，让 R1–R3 上真数据 | **半程** | R1/R2/R3 的**代码与门禁**全落地并已合进 `main`；**真跑只跑成 2 条**（E022 / T054，agent 链，`driver=camoufox`）；第 3 批 10 条因环境冲突一条没成 ⇒ **那 10 条还没在 camofox 面上重跑过** |
 | ② H-17 那 7 条假负样本的「转正」路 | **成** | `downgrade` + `pool-drop` **两步**已落 + 契约测试 `tests/contract/test_pool_exit_sequence.py` 封着；**实际处置待人执行**（操作手册见 [07 §2.7](07-人工复核与判读手册.md)） |
 | ③ 文档尾巴（H-03 三处 / M-19 增量六十一 / 5 个 `tmp_probe_*.py`） | **成** | 已随 `879899a` 合进 `main` |
+| ④ **执行层换 camofox** | **代码与门禁成** | 设计见 [设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md)；**差的是环境 + 一次真跑**（见下） |
 
 ### 设计（已定，**别再改**）
 
@@ -124,43 +140,72 @@ E022 / T054（**agent 链**真跑，`driver=camoufox`），存档就在盘上
 3. **一条没跑成不许毁整批** + **批次身份不再退化成常数**：`batch_id` 取计划里的
    字段（缺省退文件名，**绝不取 `--task-id`**——那个 argparse 默认值是 `"T001"`，
    曾让 12 条那批的存档 `batch_id` 全变成 `"T001"`，而那批根本不含 T001）。
+4. **（2026-10-26 新增）三张面，两个词表**：`obscura-1`（只读存量）/
+   `camoufox-1`（**已退役，只读存量**）/ `camofox-1`（**生产面**）。
+   前两张**只读不再产出**（`DRIVER_SURFACE` 里没有它们的驱动名），
+   但**仍读得懂**（`LEGACY_DRIVER_SURFACE`）⇒ **退役不等于失忆；
+   删的是实现，不是证据**（430 份 P2 样本 + 14 份顶层 P1 存档靠这条活着）。
+   ⚠️ `camoufox-1` 与 `camofox-1` **同方言**（`aria_role`）但**不同声明**：
+   camoufox 面说 `get_by_role(role, name=name, exact=True)`（**精确**），
+   camofox 面上游是 `getByRole(role, {name}).nth(nth)`（**子串**）⇒
+   camofox 面的说明里**不许写 `exact`**。
 
 ### 修改方案（下一步按这个序做）
 
-1. **恢复 camoufox**（环境侧）：`uv pip install camoufox==0.5.8 && camoufox fetch`，
-   并**确认装的是 `camoufox` 而不是 `cloverlabs-camoufox`**（后者同名，抢 import 名）。
-2. **重跑那 10 条**：`research/ab_baseline/plan-camoufox-prod1-rest.json`
+1. **起上游 REST 服务**：`cd camofox-browser && npm start`（默认端口 9377）。
+   ⚠️ **本仓库不启动浏览器**——浏览器由上游服务持有，
+   **有头/无头不由本仓库决定**（`--headful` 已退役，见 [方案 21 §R4](../设计方案/21-camofox-browser执行层接入方案.md#r4-收尾与接线)）。
+2. **装 MCP 适配器**：`npm i -g @askjo/camofox-browser-mcp`
+   （或 `cd camofox-browser/mcp && npm link`）；也可设
+   `CAMOFOX_MCP_EXE=<绝对路径>`。
+   ⇒ 两者都齐了才跑得起来：**适配器在 PATH 上**（或由 env var 指到）**+
+   REST 服务在 9377**。缺任一个 ⇒ `cli` **启动前退 2** 并给明确安装指令
+   （`cli._execution_layer_missing_reason`），**不逐条刷 ImportError**。
+3. **重跑那 10 条**：`research/ab_baseline/plan-camoufox-prod1-rest.json`
    （T004 / T038 / T048 / E028 / T044 / T057 / T018 / T030 / T025 / E014），
    批次身份 `plan-camoufox-prod1`。
-3. **重建产物 + 门禁**：`build --overwrite` → `task-view --all --overwrite` →
+   ⚠️ **这批的批次身份仍叫 `camoufox`**——那是**计划文件名**，
+   改它会改掉与旧批次的可比性口径（`batch_id` 是历史键）⇒ **别顺手改**。
+4. **重建产物 + 门禁**：`build --overwrite` → `task-view --all --overwrite` →
    `check-archives` → **逐条打开存档读 evidence**（「结论对不对」不在门禁里）。
-4. **跑采集侧账**（方案 20 §R3）：新候选行的 pred 面不再是 `unrecorded` ⇒
+5. **跑采集侧账**（方案 20 §R3）：新候选行的 pred 面不再是 `unrecorded` ⇒
    账第一次可能非空；**但金标侧仍是 `unrecorded`** ⇒ 跨面可判定性仍多为「不可判定」
    ——那是 R2「旧行不回填」的必然结果，**不是缺陷**。
-5. **人判存量那 4 条 agent 负样本**（iqiyi / youku / v.qq.com / bilibili）——
+   ⚠️ **新批次的 pred 面会是 `camofox-plain`**，而存量那批是 `camoufox-plain`
+   ⇒ **两者不是同一张面** ⇒ 跨面比较仍多判「不可判定」，**这是对的**
+   （方案 20 §R3 的纪律：面 ≠ 面就说不清）。
+6. **人判存量那 4 条 agent 负样本**（iqiyi / youku / v.qq.com / bilibili）——
    **本轮已把四份存档的页面原文逐条读过了**（读数见 [§M-37 详解](#m-37--agent-路径贴的分支标签绕过了前置事实核)）：
    **bilibili（登录墙）与 iqiyi（门禁句）两条标签站得住**；
    **youku（续费营销 CTA）与 v.qq（广告页）两条「很可能错」**——
-   ⚠️ 但那只是**文本级读数，不是现场重采** ⇒ 改判要等恢复后现场看（§Q-20 ⑥）。
+   ⚠️ 但那只是**文本级读数，不是现场重采** ⇒ 改判要等现场看（§Q-20 ⑥）。
    ⚠️ **别急着把它们改判 `unresolved`**：`unresolved` 的意思是「**没判出来**」，
    不是「判为不是墙」⇒ 那是**另一种定性**，同样要证据。
+   ⚠️ **现场重采的脚本已换成 camofox**（`research/probes/m30_live_check.py`）。
 
-### 恢复后必须重跑的验证项（**逐条打勾，别攒着**）
+### 跑通前必须重跑的验证项（**逐条打勾，别攒着**）
 
-- [ ] **camoufox 版本**：装完先 `python -c "import camoufox; print(camoufox.__file__)"`，
-      确认路径是 `site-packages/camoufox`（**不是** `cloverlabs_camoufox` 之类）。
-- [ ] **启动自检**：`cli check --driver camoufox` 能起会话并读回指纹
-      （SWGL 那句 GFX 崩溃不再出现）。
-- [ ] **`tests/unit/test_camoufox_session.py` 那 7 个用例**：恢复后
-      **必须重跑**（现在是 `importorskip` 跳过，理由写在文件头）。
-- [ ] **`tests/unit/test_cli_batch_resilience.py::Test起浏览器重试`**：两条也依赖
-      `camoufox_session` 的 import（现在会跳过）。
+- [ ] **适配器可解析**：`camofox-browser-mcp` 在 PATH 上，或 `CAMOFOX_MCP_EXE`
+      指向一个**存在且可执行**的文件 ⇒ `cli` 的缺件预检会**启动前退 2**，
+      **不会**让你跑起来才撞 ImportError。
+- [ ] **REST 服务在 9377**：`cd camofox-browser && npm start` ⇒
+      `cli check --driver camofox` 能起会话并读回**实测指纹**。
+      ⚠️ **指纹形状与 camoufox 那支不同**（九项 → 十一项；`os`/`geoip`/`locale`/
+      `humanize`/`headless` **读不到**——服务端的配置本仓库无权声明）⇒
+      **别拿旧口径对读**（见 [方案 21 §D7](../设计方案/21-camofox-browser执行层接入方案.md#d7-指纹九项变十一项)）。
+- [ ] **`tests/unit/test_camofox_session.py` / `test_camofox_driver.py` / `test_camofox_switch.py`**：
+      随实现新建，**不是 `importorskip`** ⇒ 门禁里就是真跑的。
+- [ ] **`tests/unit/test_cli_batch_resilience.py::Test起浏览器不重试`**：
+      钉的是「camofox 侧失败一次就抛」（**不重试**）——别把它改回重试。
 - [ ] **那 10 条批次**：跑完按「逐条打开存档读 evidence」核对，**不只看门禁**。
 - [ ] **D-5 配对表**：`GATEKEEPER_DECIDED_BRANCHES` 若随执行层变过，
       契约测试 `tests/contract/test_questionless_producers.py` 会当场红。
-- [ ] **工具面声明**：`toolcatalog` 的 `fill` / `press` 转正依据是 E022 存档
-      （2 次 fill / 9 次 press）——**若那两份存档被清出 `output/pipeline/`，
+- [ ] **工具面声明**：`toolcatalog` 的 `camoufox-1` 面 `fill` / `press` 转正依据是
+      E022 存档（2 次 fill / 9 次 press）——**若那两份存档被清出 `output/pipeline/`，
       契约测试会红**（`test_标成已验证的工具在真实存档里出现过`）。
+      ⚠️ **camofox-1 面的三条（`click`/`fill`/`press`）现在是 `exercised=False`**
+      ——**还没有一次真实 camofox 运行落过盘** ⇒ 那批跑完要**重算并转正**
+      （照 camoufox 面 2026-10-26 那次的做法）。
 - [ ] **并池那一条**（M-40 新接线）：重跑批次后跑
       `cli pool-add --out trajectory_pipeline/output/pipeline`（**dry-run**）
       ⇒ **清单应为空**（真跑的负样本走 `P1Archive.write`，已并池）；
@@ -183,7 +228,7 @@ E022 / T054（**agent 链**真跑，`driver=camoufox`），存档就在盘上
 | **H-09** | 簇 C 修复的尾巴：题绑定精度 / D-10 投影 / 7 类回归 | 02 感知 / 04 探针 | 编年史 §增量六十「仍未闭环项」 · [04 §增量六十](04-探针七层域.md) | 46 行里 8 行真因是 `not_play_site`、2 行是 `subscription_wall`，被默认题绑定压成 `component_unverified`；**动态派分支触碰「信 LLM 自报」边界**，见 Q-02 |
 | **H-10** | `compare-drivers` 将候选侧缺账当成 0 | 01 采集 / 09 纪律 | [`dual_run.py:347`](../../executor/dual_run.py#L347) · [`test_dual_run.py`](../../tests/unit/test_dual_run.py) | `_ratio_diff()` 使用 `(cand or 0.0)`：`_ratio_diff(10.0, None)` 返回 `1.0`，而基线缺失返回 `None`，两侧语义不对称。候选没采到应判 `incomplete`，不能当成候选计数为 0 后判 `fail`；需补单边缺账测试，详见本文 §H-10 |
 | **H-11** | `compare-drivers` 的「同面」判定比较计数，不比较面集合 | 01 采集 / 09 纪律 | [`dual_run.py:361`](../../executor/dual_run.py#L361) · [`test_dual_run.py`](../../tests/unit/test_dual_run.py) | `_same_surface()` 直接比较 `Mapping[str, int]`：同一个面跑 2 次对 1 次会判不同面；两侧具有相同的混合面计数却会判同面。应要求每侧恰好一个已知识别面且面名相同，详见本文 §H-11 |
-| **H-12** | camoufox 枚举成功但元素全被过滤时丢失 face 账 | 01 采集 | [`camoufox_driver.py:955`](../../executor/browser/camoufox_driver.py#L955) · [`test_camoufox_driver.py`](../../tests/unit/test_camoufox_driver.py) | `face_ledger = dict(self.last_enumeration) if elements else {}` 把「枚举成功、`kept=0`」误当成「没有枚举账」。过滤档位被清空后，下游无法区分「页面确实无元素」与「元素全被过滤」；应按当前页是否成功枚举决定是否取账，详见本文 §H-12 |
+| **H-12** | camoufox 枚举成功但元素全被过滤时丢失 face 账 | 01 采集 | [`camofox_driver.py:1211`](../../executor/browser/camofox_driver.py#L1211)（⚠️ 2026-10-26 camoufox 实现已删 ⇒ **同一处代码原样搬到了 camofox 驱动**；`test_camoufox_driver.py` 随实现一起删了） | `face_ledger = dict(self.last_enumeration) if elements else {}` 把「枚举成功、`kept=0`」误当成「没有枚举账」。过滤档位被清空后，下游无法区分「页面确实无元素」与「元素全被过滤」；应按当前页是否成功枚举决定是否取账，详见本文 §H-12 |
 | **H-13** | 声明支持 Python 3.10，实际语法要求 3.12+ | 09 纪律 | [`pyproject.toml:5`](../../../pyproject.toml#L5) · [`arbitration.py:219`](../../executor/arbitration.py#L219) | `requires-python = ">=3.10"`，但该行 f-string 表达式含反斜杠；Python 3.10 编译报 `f-string expression part cannot include a backslash`。需选择重写表达式并补 3.10 门禁，或将最低版本明确提高到 `>=3.12`，详见本文 §H-13 |
 | **H-14** | ★**判据①「分支分布」在换层场景没有可比性**——A 侧 60% 的站点是「没测到」 | 01 采集 / 09 纪律 | [设计方案 04 §4.9.8.3–4](../设计方案/04-camoufox执行层替换方案.md) · [`dual_run.py`](../../executor/dual_run.py) · `research/probes/inc72_paired_compare.py` | 第二轮双跑实测：**obscura 在爱奇艺这类客户端渲染站上正文一个字都抽不出**（`body_len=0` + `degraded=['body_text']`，19 条），于是 A 的 47 个站点里 **28 个是 `unresolved`**；而两批样本**看的不是同一批页面**（按落地 URL 配对只重叠 **37/50**）。⇒ 占比差里混着「站点质量差」与「观测能力差」两件事。**缺的那一刀**：分母只取「**两面都测到的页面**」（配对子集已现成，`pair_pages` 已在 `compare-drivers` 里跑着），且 A 侧 `unresolved` 的页面要单独列而不是并进占比 |
 | **H-15** | ★**判断点② 的兼容回落把「不是墙」兜成了「墙」** ⇒ 10 条 `login_wall_or_blocked` 假负样本 | 02 感知 | [设计方案 04 §4.9.8.6](../设计方案/04-camoufox执行层替换方案.md) · `perception/llm_perceptor.py::_is_reachable` 末段 + `executor/branches.py::decision_branch`（payload 缺失 → 保持合并态） | **诊断已改（2026-10-21 增量七十三，现场重采证伪）**：原诊断是「② 的『采集未拿到内容』守卫门槛太锐（6 字符 ≠ 空 ⇒ 守卫不触发）」。**现场重采推翻了它的前提**——那 10 条的页面**今天原样还在**（现场与存档逐字一致），**不是读到残留，采集层如实采到了**（`degraded=[]` 是对的）。⇒ **真正的问题是分支映射越权**：② 答 False 且**没填 `access_control_type`**、`page_quotes` 也无阻断关键词 ⇒ `decision_branch` 走「payload 缺失 → 保持题绑定的合并态」⇒ 落进 `login_wall_or_blocked`——而**墙 / 验证码 / 反爬这三个前提一个都没观测到**。**这正是纪律里写着的「贴标签前核前置事实」被绕过了**（`BRANCH_PRECONDITION` 里根本没有 `login_wall_or_blocked` 这一条）。**正解不是调阈值**（阈值怎么调都改变不了「站点只返回了 6 个字」这个事实），而是**兜底改成 fail-closed 落 `unresolved`**。★★ **判据⑤「人判负样本成因」的材料与结论已备齐（2026-10-21 增量七十四）**：工作表 `inc73_human_review`（表一 39 条 B 面负样本，**封闭集** W1 真·墙/反爬 · W2 采集没拿到内容 · W3 不是播放页 · W4 页面坏了 · ? 说不清）**已按分支摆开**。那 10 条**逐条读出来的结论**：**LLM 自己的 evidence 就没提「登录/验证码/反爬」**（写的是「未加载出目标内容」「仅显示加载提示」「页面仅显示通用标题和即将开始的提示」）⇒ **W1 不成立**；**W2 也不成立**（现场与存档逐字一致 ⇒ 不是采集没读到，是页面当时就那样）；**A 面（obscura）对同一批 URL 落的正是 `unresolved`**（两边分歧本身就是证据）。⇒ **这 10 条在词表 W1–W4 里没有归类**——它们是「**站点返回了占位/不可用页，但没有任何拦截特征**」，正确落点是 `unresolved`（fail-closed），**不该进负样本池**（**10/39 = 26% 的池子是分支越权造出来的**）。✅ **owner 已拍板（2026-10-21 增量七十五）：兜底落 `unresolved`，**不开新支**。** 裁定理由两条：① 「站点返回了占位/不可用页」**不是一个新现象**——它就是「没判出来」，`unresolved` 的语义装得下，**新开一支等于给「说不清」发一支专用分支**，而 fail-closed 的口径就是「说不清就落 unresolved」；② **分支是 22 类封闭集**，加一支要连带改 `all_branches()` / 覆盖追踪 / rubric 对齐账（[设计方案/02](../设计方案/02-rubric与代码对齐.md)），代价与收益不成比例。**已落地**：`executor/branches.py::decision_branch` 的兜底改为「`fallback in DEPRECATED_BRANCHES` ⇒ 落 `unresolved`」——**按语义判（合并态不再兜底），不按题号判**；④ 的 `component_unverified` **刻意不动**（它不是合并态，且它的前提事实是成立的）。门禁：`test_branches.py` 新增 3 条（兜底落 `unresolved` / 带细分 payload 仍落细分分支 / 兜底不产生负样本）+ `test_visit.py` 3 条改写。⚠️ **裁定是前向的**：那 10 条**已写进存档的 `login_wall_or_blocked` 还在池里**（`negative.jsonl`），要清得走 `cli downgrade`（只改 P1，**不删池行**）或 `cli purge-run`（删存档 + 池行）——**owner 尚未就这 10 条的历史数据拍板**。⚠️ **原问法已作废**：「爱奇艺那 7 条算不算 `not_play_site`」——**不算**：它们 **video=2（有播放器标签）**，是播放页，只是正文被占位符盖住。★**判据⑤ 的成因词表已改口径（2026-10-21 增量七十六）**：旧的 **W1–W4 作废**（W1 把登录墙与反爬合在一处，而付费墙/无播放控件/组件不可验证/只有预告/导航失败**全都没有位置**；实测 10 条 `login_wall_or_blocked` 里 2 条是 404、2 条是 Cloudflare 挑战、1 条是 App 限定，**0 条能确证是登录墙**）。新词表 = **站点侧 10 项（取值就是分支名）+ 我们侧 5 项（动作码 / 非样本分支）+ `?`**，判据改为「**这条是不是站点明确说了看不了**」⇒ 站点侧留池、我们侧出池、`?` 留空。**那 10 条在新词表里的落点是 `unresolved`（没判出来）**，不是 `not_collected`（现场与存档逐字一致 ⇒ 不是「没读到」）。★**首轮人判已把这 10 条逐条判完（2026-10-21 增量七十七）**：**7 条落 `subscription_wall`**（iqiyi——人工看过是「有资源，但要登录付费才能看」）+ **3 条落 `unreachable_hard`**（`chusuiwenhua` ×2 / `9999pian`——「网页无法访问」）。⇒ **没有一条是墙**，与 H-15 的裁定一致；但同时说明**这 10 条是应该进池的真负样本**（只是标签错了）⇒ 它们要回池**必须先有「改分支」的路**（H-16 / H-17 记的缺口） |
@@ -192,7 +237,7 @@ E022 / T054（**agent 链**真跑，`driver=camoufox`），存档就在盘上
 
 | **H-19** | ★**（2026-10-24 新增）复核队列的覆盖面只到 `REVIEW_BRANCHES` 三支 ⇒「记成功」的假正样本与 `trailer_only` 的错负样本**机制看不见** | 08 存档 / 03 标签 | [07 手册 §4.6 本轮裁定记录](../07-人工复核与判读手册.md) · `executor/review_queue.py` 的 `REVIEW_BRANCHES` · 池 `output/pipeline/negative.jsonl`（260 行）· 样本 `output/pipeline/samples/E006__2729220b__site-4.json` | **2026-10-24 把 224 行复核队列逐条裁完时撞出来的**：队列只收 `{unresolved, trailer_suspect, player_unverified}` ⇒ **分支不在这三支的行压根不进队列**。已实测两类漏网：① **假正样本**——`E006/2729220b` 的网易号《济州岛美食攻略》（`163.com`）记的是**成功**，已进训练样本集（`outcome.branch=null` · `gate.status=passed`），而**它自己的 rationale 反着说**（「当前页面不是目标资源页」「目前未找到该片合集的可播放网址」）⇒ 记录的成功与 agent 自报**互相矛盾**；同 run 的 `koreabycar.com`（同类美食博客）落 `unresolved` ⇒ **进了队列被判掉** ⇒ **同一个坑，一边修得了一边修不了**；② **错负样本**——`T001/d063ddf4` 的央视网《武林外传》第 1 集**正片页**落 `trailer_only`，是**池里唯一那 1 条**（教模型「正片页 = 只有预告」，误杀，见 **M-12**）。⇒ **不是「没判完」，是「机制判不到」**：处置要么扩 `REVIEW_BRANCHES`（把「记成功」与 `trailer_only` 纳入复核面）、要么另开「正样本抽检」通道 ⇒ **都改代码 ⇒ 等 owner 拍板**。⚠️ 池里另有 **8 条 `v.qq.com` 的 `subscription_wall`**（H-16 那批 8 条，**同样不在三支里**）⇒ 扩面时一并纳入 |
 
-| **H-20** | ★**（2026-10-26 新增）camoufox 执行层暂退 ⇒ 采集链全线不可跑**（第一梯队卡在这） | 01 采集 / 09 纪律 | 本文 **§停点** · `pyproject.toml` 依赖段（已移除 `camoufox==0.5.8`，附恢复指令） · 编年史 §增量九十二 | 依赖已从 venv 移除（`camoufox` 与 `cloverlabs-camoufox` **都没装**；后者**同名抢 import 名**）⇒ `DEFAULT_KIND="camoufox"` 的生产链起不了浏览器。**代码侧已按「缺件即报错」处理**（`cli._execution_layer_missing_reason` ⇒ 启动前退 2，**不逐条刷 ImportError**）。**差的是环境**：装回 `camoufox==0.5.8` + `camoufox fetch`，再重跑 `plan-camoufox-prod1-rest.json` 那 10 条 |
+| **H-20** | ★**（2026-10-26 新增）执行层换 camofox-browser ⇒ 采集链还没在新面上真跑过**（第一梯队卡在这） | 01 采集 / 09 纪律 | 本文 **§停点** · [设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md) · `pyproject.toml` 依赖段（`playwright` 已摘） · 编年史 §增量九十三 | **代码与门禁已全部落地**（`camofox_session.py` / `camofox_driver.py` / 三张面 / `LEGACY_DRIVER_SURFACE`），**门禁绿**（4218 passed / 5 skipped）。**差的是环境 + 一次真跑**：① 装 `camofox-browser-mcp` 适配器（或设 `CAMOFOX_MCP_EXE`）；② 起上游 REST 服务（`:9377`，**本仓库不启动浏览器**）；③ 重跑 `plan-camoufox-prod1-rest.json` 那 10 条 ⇒ **camofox-1 面的 `click`/`fill`/`press` 还标着 `exercised=False`**（还没有一次真实运行落过盘），跑完要按真实调用重算并转正。⚠️ **camoufox 不许接回来**（owner 裁定）——`camoufox-1` 面**只读不再产出**，但存量 430 份 P2 样本 + 14 份顶层 P1 存档**仍读得懂**（`LEGACY_DRIVER_SURFACE`） |
 
 ---
 
@@ -222,7 +267,7 @@ E022 / T054（**agent 链**真跑，`driver=camoufox`），存档就在盘上
 | **M-22** | 共享口径的 `pass/fail` 缺少最小样本与任务配对约束 | 01 采集 / 09 纪律 | [`dual_run.py:487`](../../executor/dual_run.py#L487) · [`dual_run.py:301`](../../executor/dual_run.py#L301) | 当前只要两侧 `shared.kept` 中位数存在即可判 `pass/fail`，没有最低覆盖率、缺账阈值或同 task 配对要求。大量观察里只有 1 条共享样本，也可能决定整批判据；需明确门槛并补单样本、任务错配、低覆盖测试，详见本文 §M-22 |
 | **M-23** | `executor` 只依赖感知协议的架构约束未被代码兑现 | 01 采集 / 02 感知 / 09 纪律 | [架构总览 §依赖约束](../01-架构总览.md#L86) · [`branches.py:33`](../../executor/branches.py#L33) · [`gatekeeper.py:58`](../../executor/gatekeeper.py#L58) | 文档要求 `executor` 不依赖任何 `perception` 实现，但 `branches.py` / `gatekeeper.py` 直接引用 `perception.rule_perceptor` 的词表与纯函数。需把共享知识移到 `common`、协议或独立地基，或正式修订约束并加入 AST 门禁，详见本文 §M-23 |
 | **M-24** | ✅**已收口（2026-10-21）：xlsx 工作单删除，语义矛盾随参照物一起消失** | 09 纪律 | [09 §xlsx 测试清退](09-门禁与纪律域.md) · [`test_xlsx_backfill.py`](../../tests/unit/test_xlsx_backfill.py) · [`test_inc37_validator_pass.py`](../../tests/unit/test_inc37_validator_pass.py) | 原症状：同一份缺失工作单在 fixture 中走 `skip`，存在性测试却硬失败，INC37 又选择跳过，干净 clone 既可能红也可能静默少测。**处置**：两份 xlsx 已被人为删除且不可恢复（`.dumate/` 只剩 2026-10-12 早期快照，推不出终版），所以「xlsx 是发布必需还是可选审计输入」这个问题**没有可执行的答案了**——按「可选外部证据已永久缺失」处理：删掉 11 条拿工作单当参照物的测试（1 条永久 fail + 10 条永久 skip），保留 5 条纯 `annotations.jsonl` 断言。门禁 **0 failed / 0 skipped**（总条数当时 3398→3439，因工作区并发编辑）。详见本文 §M-24 |
-| **M-25** | ✅**判据⑥ 的工具已建并已跑出第一手读数**（2026-10-21 增量七十四）——剩下的是**材料窄**，不是没工具 | 01 采集 | [设计方案 04 §4.9.8.8](../设计方案/04-camoufox执行层替换方案.md) · [`inc73_action_replay.py`](../../research/probes/inc73_action_replay.py) · `executor/browser/camoufox_driver.py::resolve` | **工具已建**：`inc73_action_replay`（**联网**，从存档取 `steps[]` → 在裸 camoufox 里重放 → 记每步定位结果），判定走**生产链同一条路径**（新加的 `CamoufoxDriver.resolve()`：只定位不点击，走 `_locate` 的三态 `ok`/`not_found`/`ambiguous`）——探针另写一份的话「重放定位率」就不是生产链的读数。归因**三列并排**（否则把两件事混成一件）：重放结果 × **当时在不在采集面阶梯里** × **页面漂没漂**（漂 = 站点改了版，**不是名字的锅**）。**读数（16 条动作 / 13 站）**：**16/16 全部定位到（`matches=1`）**，其中 **8 条页面已漂**（标题或正文长度变了）却仍定位得到 ⇒ **动作面在 camoufox 上可移植**；**旧批次那 3 条 `click` 超时不是可移植性问题**——重放时同样目标仍定位到（超时是**窗口不可渲染**那条，已由 headless 口径反转处置）。⚠️ **材料还窄**：① **全是 `click`，没有 `fill`/`press`**；② 动作都发生在**影视详情页**上，没有「搜索框填词 + 回车」那类；③ 3 条旧存档**没有可比基线**（无标题也无正文长度）⇒ 漂移记 `null`（未知）**不许记「没漂」**。⇒ **判据⑥ 现在的读数只覆盖「在详情页点一个链接/按钮」** |
+| **M-25** | ✅**判据⑥ 的工具已建并已跑出第一手读数**（2026-10-21 增量七十四）——剩下的是**材料窄**，不是没工具 | 01 采集 | [设计方案 04 §4.9.8.8](../设计方案/04-camoufox执行层替换方案.md) · [`inc73_action_replay.py`](../../research/probes/inc73_action_replay.py) · `executor/browser/camofox_driver.py::resolve` | **工具已建**：`inc73_action_replay`（**联网**，从存档取 `steps[]` → 在裸 camofox 里重放 → 记每步定位结果），判定走**生产链同一条路径**（`CamofoxDriver.resolve()`：只定位不点击，走 `_locate` 的三态 `ok`/`not_found`/`ambiguous`——⚠️ 2026-10-26 camoufox 实现已删，**这条路径原样搬到了 camofox 驱动**）——探针另写一份的话「重放定位率」就不是生产链的读数。归因**三列并排**（否则把两件事混成一件）：重放结果 × **当时在不在采集面阶梯里** × **页面漂没漂**（漂 = 站点改了版，**不是名字的锅**）。**读数（16 条动作 / 13 站）**：**16/16 全部定位到（`matches=1`）**，其中 **8 条页面已漂**（标题或正文长度变了）却仍定位得到 ⇒ **动作面在 camoufox 上可移植**；**旧批次那 3 条 `click` 超时不是可移植性问题**——重放时同样目标仍定位到（超时是**窗口不可渲染**那条，已由 headless 口径反转处置）。⚠️ **材料还窄**：① **全是 `click`，没有 `fill`/`press`**；② 动作都发生在**影视详情页**上，没有「搜索框填词 + 回车」那类；③ 3 条旧存档**没有可比基线**（无标题也无正文长度）⇒ 漂移记 `null`（未知）**不许记「没漂」**。⇒ **判据⑥ 现在的读数只覆盖「在详情页点一个链接/按钮」** |
 
 | **H-18** | ★**门禁 `success_branch_mismatch` 报的是假阳性**——`_match_outcome` 对同一个 URL 取**第一条** outcome，而站点阶段与播放阶段**各记一条** ⇒ 拿错了那条 | 09 纪律 | [`integrity.py:233`](../../executor/integrity.py#L233) · [`integrity.py:345`](../../executor/integrity.py#L345) · 编年史 §增量八十一「仍未闭环项」 | 实测 2 份（`T001__67a05faa` / `T054__93f110b6`）：`T001` 是**存量 obscura 存档**⇒ **既存缺陷**，新批次只是让它显形。修法：同 URL 多条 outcome 时，**按 `reached_play_page` / 阶段**挑那条对应的（而不是第一条）⇒ 门禁是查「自相矛盾」，**不能自己挑错一条再报矛盾**。**修法与验收见本文 §H-18** |
 | **M-28** | ★**`unreachable_hard` 是采集失败，却进了负样本池**——22 类分支里**没有「采集失败」这一类** | 03 标签 / 08 存档 | 编年史 §增量八十一「仍未闭环项」 · `branches.BRANCH_PRECONDITION` | 本批 **13 条**：传输层 `Page.goto` 失败（`baidu.com/link?url=…` 跳转挂掉）⇒ **采集失败**不是业务结论，但它们**照进了负样本池**（教模型「这种站不可看」）。口径**还没定**：「采集失败」要不要单列一类、还是并进 `unresolved`（不进池）？⇒ **先别动，先记账**（现有 13 条在池里是**已入库的事实**）。**修法与验收见本文 §M-28** |
@@ -261,8 +306,8 @@ E022 / T054（**agent 链**真跑，`driver=camoufox`），存档就在盘上
 | **L-13** | **venv 里几个包的文件被删了**，门禁会因为「装不上」而不是「写错了」变红 | 09 纪律 | 编年史 §增量七十「门禁」 | 2026-10-21 实测：`.venv/Lib/site-packages` 里 `python-dotenv` / `pyyaml` 的 `yaml/__init__.py` / `pyjwt` / `python-multipart` 的**文件**不见了，而 `.dist-info` 还在——**`uv sync` 只看 `.dist-info` 判定「已装」，于是不重装**，症状是 `ModuleNotFoundError: dotenv` 与 `cannot import name 'CLoader' from 'yaml'`。修法：`uv sync --offline --group dev --reinstall-package <名字>`（**整包 `--reinstall` 会被权限门拦下**）。⚠️ **pyyaml 的 `.pyd` 被本机的 python 进程占着**，rename 报「拒绝访问」——绕法是 `PYTHONPATH` 指到 uv 缓存里那个已解包的目录（`archive-v0/<hash>`）。**先看是不是环境问题，再去改代码** |
 | **L-14** | `test_executor_mode` 依赖开发者本机 LLM 环境变量 | 09 纪律 | [`test_executor_mode.py:245`](../../tests/unit/test_executor_mode.py#L245) · [`test_executor_mode.py:263`](../../tests/unit/test_executor_mode.py#L263) | 同文件已有 `clean_llm_env`，但该用例未使用。保留本机六个 LLM 环境变量时通过；清空后实测 `46 passed / 1 failed`。异常参数应稳定落到空模式，不应由宿主机是否配置模型决定，详见本文 §L-14 |
 | **L-15** | replay 的 `element_basis` 清理与 fail-closed 文案不一致 | 02 感知 / 09 纪律 | [`replay.py:169`](../../perception/replay.py#L169) | 文档与注释声称形状不对时整体返回 `None`、不返回半截账，但 `{"shared":"bad","face":{"nodes":9}}` 实际返回 `{"face":{"nodes":9}}`。需明确选择「整份拒绝」或「允许部分账」，并让实现、测试和注释一致，详见本文 §L-15 |
-| **L-16** | venv 里留下一个 `yaml__broken_20261021` 目录待清 | 09 纪律 | 编年史 §增量七十二「顺带修好的环境项（L-13）」 · [依赖说明/camoufox.md §10.6](../依赖说明/camoufox.md) | 2026-10-21 修 L-13 时，Windows 不许删被占用的 `.pyd`（`拒绝访问，os error 5`），**但允许改名**——于是把 `yaml/` 改名为 `yaml__broken_20261021` 再 `uv sync` 装回。残留目录**惰性**（名字不是 `yaml`，import 不到），但**该删**——等本机那两个残留的 `cf_launch.py` 进程退出后删掉 |
-| **L-17** | **「这次动作有没有导航」事后查不到**——驱动的 `last_action`（`nav`/`settle`）没落进 P1 存档 | 01 采集 / 06 组装 | [`camoufox_driver.py::_settle`](../../executor/browser/camoufox_driver.py) （`last_action["nav"]` / `["settle"]`）· 编年史 §增量八十一「仍未闭环项」 | 实测：修复后的 camoufox 存档里 `last_action` / `settle` / `nav` / `doc_stamp` **一个都不出现**（顶层键与 `steps[]` 都没有）⇒ **只剩 `duration_ms` 一个可见痕迹**（点击 2799ms）。这不是小事：整个「读到一半」的归因链（增量八十）靠的就是「动作 → 导航 → 观察」三者的对应关系，而**存下来的只有动作与观察，中间那一步没了**。⇒ 要么给 `ActionStep` 加一个 `nav`/`settle` 字段（**P1 契约改动**，`docs/contracts/P1-observation.md` 要跟着改），要么在动作层把「有没有换文档」编码进 `params`（⚠️ **不能**塞 `params`——那是工具声明的投影，混入非声明字段就与 `toolcatalog` 对不上）。**本次不在这批验证中途改契约**（在跑的批次吃不到，改了还要重建 P2）。**修法与验收见本文 §L-17** |
+| **L-16** | venv 里留下一个 `yaml__broken_20261021` 目录待清 | 09 纪律 | 编年史 §增量七十二「顺带修好的环境项（L-13）」 · [依赖说明/camoufox_弃用.md §10.6](../依赖说明/camoufox_弃用.md) | 2026-10-21 修 L-13 时，Windows 不许删被占用的 `.pyd`（`拒绝访问，os error 5`），**但允许改名**——于是把 `yaml/` 改名为 `yaml__broken_20261021` 再 `uv sync` 装回。残留目录**惰性**（名字不是 `yaml`，import 不到），但**该删**——等本机那两个残留的 `cf_launch.py` 进程退出后删掉 |
+| **L-17** | **「这次动作有没有导航」事后查不到**——驱动的 `last_action`（`nav`/`settle`）没落进 P1 存档 | 01 采集 / 06 组装 | [`camofox_driver.py::_settle`](../../executor/browser/camofox_driver.py)（⚠️ 2026-10-26 camoufox 实现已删，**同一条 `_settle` 在 camofox 驱动里**） （`last_action["nav"]` / `["settle"]`）· 编年史 §增量八十一「仍未闭环项」 | 实测：修复后的 camoufox 存档里 `last_action` / `settle` / `nav` / `doc_stamp` **一个都不出现**（顶层键与 `steps[]` 都没有）⇒ **只剩 `duration_ms` 一个可见痕迹**（点击 2799ms）。这不是小事：整个「读到一半」的归因链（增量八十）靠的就是「动作 → 导航 → 观察」三者的对应关系，而**存下来的只有动作与观察，中间那一步没了**。⇒ 要么给 `ActionStep` 加一个 `nav`/`settle` 字段（**P1 契约改动**，`docs/contracts/P1-observation.md` 要跟着改），要么在动作层把「有没有换文档」编码进 `params`（⚠️ **不能**塞 `params`——那是工具声明的投影，混入非声明字段就与 `toolcatalog` 对不上）。**本次不在这批验证中途改契约**（在跑的批次吃不到，改了还要重建 P2）。**修法与验收见本文 §L-17** |
 | **L-18** | **「命令修好」不等于「历史数据修好」**——`purge-run` 修好之后，**修复之前回滚过的 run 要重新收一遍** | 09 纪律 | 编年史 §增量八十一 §九 · [`cli.py` `cmd_purge_run`](../../executor/cli.py) | 2026-10-22 实测：盘上 `samples/` 里有 **19 条 P2 样本的 `source_archive` 已经不在了**（`E006__3a06f63d` / `T014__200a9529` / `T020__03794f2f` 三个**早先被回滚过**的 run）⇒ 它们的僵尸**一直躺在训练集里等着被上传给 LS**。本次用修好的 `cli purge-run` 收掉了（19 条 P2 + 72 份 P3 视图）⇒ **凡是修好之前回滚过的 run，都要重新收一遍**。⚠️ 同款「修好 ≠ 修好历史」的还有**剩下的 1 条「读数打架」**（`T054` 的 `iqiyi.com/v_19rrk40ajc.html`，媒体计数变少）——**未定性**，先记着。**修法与验收见本文 §L-18** |
 | **L-19** | **分诊工作表按「版本」出、人的裁定按「内容」签** ⇒ 换一版重跑会把同一批卡再递给人一遍 | 07 评估 | 本文 §M-29 的禁区一节（`worklist build --version 8` 会把同一批卡再递给人一遍）· [`calibration/worklist.py`](../../evaluation/calibration/worklist.py) `worklist_path` / `_cmd_build` / `build_worksheet` · [`calibration/triage.py`](../../evaluation/calibration/triage.py) `add_rows` / `validate_rows` | **读码实测（2026-10-23）**：① `worklist.jsonl` / `worksheet.jsonl` 落在 `v{N}/` 下（**版本键**），而人的裁定住在**单一** `golden/data/triage/triage.jsonl`、键是 `(golden_id, dimension)`（**内容键**）；② `_cmd_build` 调 `summarize_worklist(worklist)` **不传 `triage_rows`** ⇒ 统计里 33 张卡**全算「待人判」**；③ `build_worksheet` 把 `bucket` / `triage_by` / `triage_evidence` 三栏**写成空**（只给机器建议 `suggested_bucket`）⇒ 同一批卡换个版本号再出一次表，**人会被再递一次、三栏全空**。⚠️ **再填一遍的代价不止白填**：`import_worksheet` 要求三栏全填才收 ⇒ 填完导入时 `add_rows` 用 `_same_triage`（比 `bucket`/`triage_by`/`triage_evidence`）判——**同键同理由 ⇒ 幂等跳过**；**同键但理由措辞不同 ⇒ 报错「已有分诊…默认不覆盖」**；人若改加 `--replace` ⇒ **原来那 33 条人工签名被重打的替换掉**。⇒ **要定的**：分诊工作表按**内容键**出（同一批卡跨版本只判一次、工作表预填既有裁定、覆盖率按内容算），还是按**版本键**出（每版一份表，但人重复劳动 + `--replace` 陷阱）？⚠️ **M-29 冻结 v8 后第一条命令就是 `agreement --version 8 --emit-disagreements`** ⇒ 若之后跑 `worklist build --version 8`，撞的就是这条。**建议**：按内容键——`summarize_worklist` **已经支持** `triage_rows`（覆盖率算得对），缺的只是①`_cmd_build` 把 `triage_rows` 传进去 ②`build_worksheet` 把三栏**预填**既有裁定（预填 ≠ 代人决定：人改判仍留痕） |
 
@@ -378,9 +423,9 @@ T-2 / T-3 恒测不成，抽样盘里 S2 / S3 两层总体为 0，**实抽 20 �
 
 **验收条件**：覆盖同面不同计数、同面同计数、两侧相同混合面、单侧混合面、未知面、空面六类输入；并断言混合面场景下元素差异判据为 `incomplete`。
 
-### H-12 · camoufox 空枚举丢失过滤账
+### H-12 · camoufox 空枚举丢失过滤账（⚠️ **同一处缺陷在 camofox 驱动里还在**）
 
-**代码事实**：[`observe()`](../../executor/browser/camoufox_driver.py#L948) 成功调用 `interactive()` 后，用 `if elements` 决定是否读取 [`last_enumeration`](../../executor/browser/camoufox_driver.py#L955)。当页面元素被词表、空名称或同名规则全部过滤时，`elements == ()`，但 `last_enumeration` 中仍有 `nodes`、各过滤档位和 `kept=0`，这些账目会被丢弃。
+**代码事实**：[`observe()`](../../executor/browser/camofox_driver.py#L1168) 成功调用 `interactive()` 后，用 `if elements` 决定是否读取 [`last_enumeration`](../../executor/browser/camofox_driver.py#L1211)（⚠️ 2026-10-26 camoufox 实现已删，**这处逻辑原样搬到了 camofox 驱动**）。当页面元素被词表、空名称或同名规则全部过滤时，`elements == ()`，但 `last_enumeration` 中仍有 `nodes`、各过滤档位和 `kept=0`，这些账目会被丢弃。
 
 **影响**：`Observation.element_basis.face` 变成空账，与「本次没有执行枚举」或「枚举失败」同形。归因表无法证明元素是页面不存在，还是被过滤规则全部拦掉，跨面质量判断会失去关键证据。
 
@@ -539,10 +584,10 @@ outcome 带 `site_url` / `play_page_url` ⇒ 站点阶段那条 `play_page_url` 
 
 ### L-17 · 「这次动作有没有导航」事后查不到
 
-**代码事实**：`CamoufoxDriver.last_action` 记 `op`/`role`/`name`/`outcome`
-（[`camoufox_driver.py:864`](../../executor/browser/camoufox_driver.py#L864) 起），
+**代码事实**：`CamofoxDriver.last_action` 记 `op`/`role`/`name`/`outcome`
+（[`camofox_driver.py:694`](../../executor/browser/camofox_driver.py#L694) 起），
 并在 `_settle` 里写 `nav` 与 `settle`
-（[`:926-930`](../../executor/browser/camoufox_driver.py#L926)），
+（[`:823-832`](../../executor/browser/camofox_driver.py#L823)），
 但 `RunRecord.to_json()` **不落它**。实测修复后的 camoufox 存档里
 `last_action` / `settle` / `nav` / `doc_stamp` **一个都不出现**（顶层键与
 `steps[]` 都没有）⇒ 只剩 `duration_ms` 一个可见痕迹（点击 2799ms）。
@@ -744,7 +789,7 @@ uv run python -m trajectory_pipeline.research.probes.m30_live_check \
     --json trajectory_pipeline/research/probes/m30_live_check_run2.json
 ```
 
-它把那 7 个 URL 用 **camoufox（生产执行层，`DEFAULT_KIND="camoufox"`）** 重新打开一遍，
+它把那 7 个 URL 用 **camofox（现行生产执行层，`DEFAULT_KIND="camofox"`）** 重新打开一遍，
 把**现场读数**与**存档读数**并排摆出来，并对一组与金标标签直接相关的关键词打命中。
 
 ⚠️ **两轮是独立重采，不是同一份复制**——两轮一致才算数；不一致的按「**两次访问的差异**」论。
@@ -1021,6 +1066,10 @@ D-3 候选**全体 247** 条，三臂 = 旧版提示词（指纹 `9b3ec1c46545`�
 
 ⚠️ **两条「很可能错」的读数是文本级的，不是人判的**——现场重采断网（camoufox 已卸），
 **没资格下定性**。但**不重判**它们自己也会进池 ⇒ 见「修法」里的**丙**。
+> ⚠️ **2026-10-26 补**：断网的原因是**当时那个执行层（camoufox）已卸**；
+> **现行执行层是 camofox**（`DEFAULT_KIND="camofox"`），**重采这条路是通的**
+> （`research/probes/m30_live_check.py` 已改走 camofox）⇒ 这两条要定性，
+> **先按 [07 手册](07-人工复核与判读手册.md) 的判据⑥ 在 camofox 面上重采一遍**。
 
 #### 为什么现在**不能**直接把闸开（这是本条最要紧的一段）
 

@@ -20,6 +20,51 @@
 > 它们记的是**当时的判断**（2026-10-20/21 那一轮双跑时的实况），
 > 删掉等于篡改历史。**现役口径是 camoufox**（增量七十九，
 > [编年史](../计划进展/90-增量编年史.md)）。
+>
+> ---
+>
+> ⚠️⚠️⚠️ **2026-10-26 owner 裁定：本文的结论被整体推翻——执行层再换一次，
+> 换成 camofox-browser（走 MCP）**。
+>
+> owner 原话：
+>
+> > 「A1 工具面增第三张 camofox-1；并且把原来的 camoufox-1 删除。
+> > A2 press 驱动缓存合并，不要去改上游 `C:\Users\klpc\workspace\tool\camofox-browser` 源码。
+> > 确认目标是新增 camofox-browser mcp 接入项目使用，**禁止把原有的 camoufox 接回来**，
+> > 可以做清理原有的 camoufox 代码与内容。」
+>
+> ⇒ **本文的 D11 / D12 结论（camoufox 作默认执行层、动作词汇表 = camoufox 的
+> 调用面）已不再是现役口径**。现役口径：
+>
+> | | 2026-10-22（本文的结论） | **2026-10-26（现行）** |
+> |---|---|---|
+> | 默认执行层 | `DEFAULT_KIND = "camoufox"` | **`DEFAULT_KIND = "camofox"`** |
+> | 传输层 | Playwright 协议（进程内） | **MCP stdio → 上游 REST 9377** |
+> | 工具面 | `obscura-1` / `camoufox-1` | `obscura-1` / **`camofox-1`**（生产）/ `camoufox-1`（**只读存量**） |
+> | 采集面 | `obscura-plain` / `camoufox-plain` | `obscura-plain` / **`camofox-plain`**（生产）/ `camoufox-plain`（**只读存量**） |
+> | camoufox 实现 | 在树内 | **已删**（owner 明确许可清理）；**接不回来** |
+>
+> ⚠️ **「camoufox-1 删除」的口径 = 不再产出 + 仍读得懂**：
+> 盘上 430 份已建 P2 样本 + 14 份顶层 P1 存档记着 `camoufox-1` / `driver="camoufox"`。
+> **删的是实现，不是证据**——旧面留在**只读**词表里
+> （`toolcatalog.LEGACY_DRIVER_SURFACE` / `access_surface.LEGACY_DRIVER_SURFACE`），
+> 存量产物**读得出来**；新存档**落不出**旧面（`DRIVER_SURFACE` 里没有 `camoufox` 键）。
+>
+> ✅ **现行方案的完整记录在 [21 · camofox-browser 执行层接入方案](21-camofox-browser执行层接入方案.md)**
+> （含 D1–D9 落点、R0–R5 路线、文件清单与风险）。**本文以下正文全部保留**——
+> 它记的是「为什么当初选了 camoufox、又被换成什么」，而**换掉的东西不等于
+> 没发生过**：§4 的取证、§4.9 的实测、§6.1 的六条读数仍是**存量证据**，
+> 且**多数机制在 camofox 上原样保留**（等新文档 commit、读一半判据、元素阶梯、
+> 链接去重、动作超时口径……）。
+>
+> ⚠️ **正文里指向 `camoufox_driver.py` / `camoufox_session.py` / `camoufox_probe.py`
+> 的代码链接现在点不开**——那三个文件 2026-10-26 随实现一起删了。
+> **留着是故意的**（记的是**当时**的落点；删掉链接等于改写历史）。
+>
+> ⚠️ **本文里「camoufox 原始调用」这类字样在新执行层上的对应物**：
+> `get_by_role(role, name=name, exact=True)`（**精确**）↔ camofox 上游
+> `page.getByRole(role, {name}).nth(nth)`（**大小写不敏感的子串匹配**）——
+> **同名不同参**，两面的 `click` 工具说明**不许照抄**。
 
 ---
 
@@ -90,7 +135,7 @@ D7 放弃 camoufox 的语境是「MCP 生态里 obscura 更顺、37 个 tool 会
  "screen": [1440, 900], "inner": [1425, 760], "dpr": 1.5}
 ```
 
-`webdriver=false`、UA/oscpu/platform 三者同 OS、langs/intl/tz 同地区——[依赖说明 §8.2](../依赖说明/camoufox.md)
+`webdriver=false`、UA/oscpu/platform 三者同 OS、langs/intl/tz 同地区——[依赖说明 §8.2](../依赖说明/camoufox_弃用.md)
 的判据表全部满足。
 
 ### 1.2 四个必须写进设计的实测事实
@@ -489,16 +534,16 @@ F1：camoufox 每次 launch 抽全新身份，**`screen` 尺寸逐次不同**。
 - **一个 Run = 一次 launch**（与 obscura「多站遍历复用连接」同构）→ 同 Run 内身份与 viewport 恒定。
 - **显式钉 `screen=` / `window=`**（如 `Screen(1920, 1080)` + `window=(1920, 1080)`）→
   消除逐 Run 漂移，否则响应式站点的内容分布变化**无法归因到站点变化**。
-  > ⚠️ **两个都要钉，且各管一件事**（[依赖说明 §11.4](../依赖说明/camoufox.md)）：
+  > ⚠️ **两个都要钉，且各管一件事**（[依赖说明 §11.4](../依赖说明/camoufox_弃用.md)）：
   > `screen=` 约束**指纹里**的屏幕尺寸，`window=` 才是**实际视口**——
   > `new_context()` 默认 `no_viewport=True`（视口 = 窗口尺寸），只钉 `screen` 视口仍会漂。
 - **不 pin 身份预设**（`fingerprint_preset`）：预设是「真实设备」，跨 Run 复用同一台设备会让
   一批样本带着同一指纹，反而是关联特征。**每次重抽 + 钉死几何**是更稳的组合。
-- **`persistent_context=True` 一律不开**（[依赖说明 §4.1](../依赖说明/camoufox.md) 已标「技术上可行但纪律上不做」）。
+- **`persistent_context=True` 一律不开**（[依赖说明 §4.1](../依赖说明/camoufox_弃用.md) 已标「技术上可行但纪律上不做」）。
 - **`os=` 显式钉 `"windows"`**（与宿主一致）：不传时 fpgen 在
   `["windows","macos","linux"]` 里**随机挑**，字体/GPU/核数会跟着漂。
 
-**批次元数据必增**（对齐 CLAUDE.md「并池是写入时的动作」与 [依赖说明 §9](../依赖说明/camoufox.md)）：
+**批次元数据必增**（对齐 CLAUDE.md「并池是写入时的动作」与 [依赖说明 §9](../依赖说明/camoufox_弃用.md)）：
 
 ```
 driver = "camoufox"
@@ -574,7 +619,7 @@ fingerprint: { os, geoip, locale, timezone, humanize, headless, screen, window, 
 
 ### 4.4 三个「默认关」与一个「默认装」——不显式写就等于没开
 
-源码复核结论（[依赖说明 §11](../依赖说明/camoufox.md)）：
+源码复核结论（[依赖说明 §11](../依赖说明/camoufox_弃用.md)）：
 
 | 项 | 默认 | 本项目处置 | 理由 |
 |---|---|---|---|
@@ -1780,7 +1825,7 @@ CLAUDE.md 写着「禁止投票/集成（生产链上）」。
 
 **已做（2026-10-20）**：
 
-- [x] 改 [依赖说明/camoufox.md §4.3](../依赖说明/camoufox.md) 的 **`launch_options` 读法**——
+- [x] 改 [依赖说明/camoufox_弃用.md §4.3](../依赖说明/camoufox_弃用.md) 的 **`launch_options` 读法**——
       实测 `cfg["navigator.userAgent"]` **取不到**（返回 `None`）：指纹不在
       `firefox_user_prefs`、也不在返回顶层，而是编码进 `env["CAMOU_CONFIG_1..6"]`
       （分片 JSON）。正确读法是把分片拼起来还原 config。

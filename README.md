@@ -14,7 +14,7 @@
                   │                ▲
                   │                └── Perceptor 可替换（规则 rule / LLM llm）
                   ▼
-          camoufox 浏览器（patched Firefox + Playwright 进程内 API）
+          camofox 浏览器（MCP stdio 适配器 → 上游 REST → Camoufox 内核）
 ```
 
 `executor/orchestrator.py` 里有 `if`，但**没有一句在判断业务语义**——「这是不是播放站 / 有没有播放控件 / 是不是播放页」全在 `Perceptor` 里，控制流只负责按答案分流。遍历谁、按什么顺序、点哪个、记什么、何时终止、失败样本是否入池——**全部是代码**。
@@ -32,7 +32,7 @@
 
 ① `SELECT_PLAY_SITES` 保留未删——站内搜索结果页复用 + 金标重放。
 
-> **执行层**：生产链默认 **camoufox**（`DEFAULT_KIND = "camoufox"`，2026-10-22 owner 裁定）。obscura 未删——它是存量 P1/P2 的方言，`--driver obscura` 显式点名仍可跑（回溯路径）。**两个面不混池**：元素键名与词表都随面变，详见[设计方案 04](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md)。
+> **执行层**：生产链默认 **camofox**（`DEFAULT_KIND = "camofox"`，2026-10-26 owner 裁定；走 camofox-browser 的原生 MCP 适配器）。obscura 未删——它是存量 P1/P2 的方言，`--driver obscura` 显式点名仍可跑（回溯路径）。**⚠️ camoufox 那一支已退役**（实现与依赖已摘，**接不回来**）——但它的**方言与存量证据留着**（`camoufox-1` 面 / `camoufox-plain` 面**只读不再产出**）。**面不混池**：元素键名与词表都随面变，详见[设计方案 21](trajectory_pipeline/docs/设计方案/21-camofox-browser执行层接入方案.md)。
 
 ---
 
@@ -42,7 +42,7 @@
 trajectory_pipeline/
 ├─ taskgen/       模块 1  任务生成 + persona 画像库
 ├─ executor/      模块 2  代码执行循环 —— 控制流在这里，不在任何 LLM 里
-│  ├─ browser/    执行层（PageDriver 协议 + camoufox / obscura 实现）
+│  ├─ browser/    执行层（PageDriver 协议 + camofox / obscura 实现）
 │  ├─ steps/      各环节（search / visit / aggregator / article / site_search / agent_*）
 │  ├─ review/     L4 复核层（VLM）
 │  └─ probe/      媒体探测（ffprobe / static）
@@ -84,16 +84,19 @@ evaluation ──→ {executor, assembler, perception}   ※ 唯一的例外，�
 
 ```powershell
 uv sync --group dev
-# camoufox 0.5.8 / playwright 1.62.0 已钉在主依赖里（D11 目标执行层）；
-# 首次装还要下浏览器：uv run camoufox fetch
+# ⚠️ camoufox 那一支已退役（2026-10-26）：`camoufox` / `playwright` **不在主依赖里**，
+#    **也不许装回来**（owner 裁定）。现行执行层是 camofox-browser（走 MCP）：
+#    ① 上游 REST 服务先起起来（http://localhost:9377），② MCP 适配器可执行文件
+#    在 PATH 上（`camofox-browser-mcp`）或用环境变量 `CAMOFOX_MCP_EXE` 点名。
+#    装法见[依赖说明 · camofox-browser 使用说明](trajectory_pipeline/docs/依赖说明/camofox-browser%20使用说明.md)。
 
 # OBSCURA_EXE **只在显式点名 obscura 时才需要**（回溯路径）。缺省执行层是
-# camoufox，走进程内 API，不依赖它。缺失即报错，不猜路径。
+# camofox，走 MCP，不依赖它。缺失即报错，不猜路径。
 # setx OBSCURA_EXE "C:\...\obscura.exe"
 
 # 探一次执行层能力（唯一需要真实浏览器的自检）
 uv run python -m trajectory_pipeline.executor.cli check
-uv run python -m trajectory_pipeline.executor.cli check --driver camoufox --probe-url https://www.baidu.com/
+uv run python -m trajectory_pipeline.executor.cli check --driver camofox --probe-url https://www.baidu.com/
 
 $P = trajectory_pipeline/output/pipeline
 uv run python -m trajectory_pipeline.executor.cli gen -n 20 --seed 7 --out $P/plan.json   # 采样任务，不联网
@@ -174,7 +177,8 @@ uv run python -m pytest -q
 | [06-端到端流程.md](trajectory_pipeline/docs/06-端到端流程.md) | 一条数据从骨架走到训练样本的完整路径 |
 | [07-人工复核与判读手册.md](trajectory_pipeline/docs/07-人工复核与判读手册.md) | 人工判读的操作手册——要判的事、怎么判、填哪、确认后记哪 |
 | [tools.md](trajectory_pipeline/docs/tools.md) | 工具调用说明（总目录）——按工具形态分大类 |
-| [依赖说明/camoufox.md](trajectory_pipeline/docs/依赖说明/camoufox.md) | camoufox 依赖手册：安装、配置、**本机实测记录与判据** |
+| [依赖说明/camofox-browser 使用说明.md](trajectory_pipeline/docs/依赖说明/camofox-browser%20使用说明.md) | **现行执行层**依赖手册：安装、启动 REST、MCP 接入、11 个工具 |
+| [依赖说明/camoufox_弃用.md](trajectory_pipeline/docs/依赖说明/camoufox_弃用.md) | camoufox 依赖手册（**已退役**，只读历史）：安装、配置、**本机实测记录与判据** |
 
 ### 设计方案
 
@@ -182,7 +186,8 @@ uv run python -m pytest -q
 - [01-模块3-可替换感知层.md](trajectory_pipeline/docs/设计方案/01-模块3-可替换感知层.md) —— 插件化机制完整规格 + 七不变式
 - [02-rubric与代码对齐.md](trajectory_pipeline/docs/设计方案/02-rubric与代码对齐.md) —— 评分标准逐维度 ↔ 代码的对齐账。**改 rubric 或改控制流之前先读**
 - [03-rubric修订与实施方案.md](trajectory_pipeline/docs/设计方案/03-rubric修订与实施方案.md) —— rubric v1.1 改稿清单 + 五个代码变更。**§9 是实施结果**
-- [04-camoufox执行层替换方案.md](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md) —— D11 修订 D7：camoufox 取代 obscura。含实测取证与 13 原语映射表
+- [04-camoufox执行层替换方案.md](trajectory_pipeline/docs/设计方案/04-camoufox执行层替换方案.md) —— D11 修订 D7：camoufox 取代 obscura。含实测取证与 13 原语映射表（⚠️ **结论已被整体推翻**，见方案 21）
+- [21-camofox-browser执行层接入方案.md](trajectory_pipeline/docs/设计方案/21-camofox-browser执行层接入方案.md) —— **现行执行层**接入方案：camofox-browser 的 MCP 适配器、9 条设计判断、R0–R5 路线
 - [15-执行器与agent-runtime重新定义.md](trajectory_pipeline/docs/设计方案/15-执行器与agent-runtime重新定义.md) —— 执行器 / agent runtime 分界（D-A6–D-A11），「LLM 层做探索、代码层做护栏」的完整定义
 - [14-完整任务视图与LS上传.md](trajectory_pipeline/docs/设计方案/14-完整任务视图与LS上传.md) —— T 视图设计与 LS 上传链路
 - [在线视频场景rubric.md](trajectory_pipeline/docs/设计方案/在线视频场景rubric.md) —— 评分标准本体

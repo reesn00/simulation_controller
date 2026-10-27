@@ -16,8 +16,12 @@
 
     1. **起浏览器失败只毁那一条**——其余条目照跑，存档照落；
     2. **失败要记账**——失败清单打进批次小结，退出码非 0；
-    3. **起浏览器重试一次**——偶发失败重试一次就回来（实测 3 分钟成本
-       换回 10 条数据）；连挂两次才抛。
+    3. **起浏览器这一层不重试**（2026-10-26 换 camofox 后改的）——
+       camofox 侧起不来只有两种原因：**适配器不可执行**（缺件，
+       重试没用）或 **REST 服务没起**（重试也没用，要人去起服务）。
+       旧 camoufox 那支的「重试一次」是为**偶发的浏览器启动超时**
+       设计的（实测 3 分钟成本换回 10 条数据），而 camofox 这条链上
+       **没有那个偶发因素** ⇒ 重试只是把同一个错误拖成两遍。
 
 另有一件同源的：**批次身份**（``batch_id``）。一批计划**分两次跑**
 （前半段挂了、后半段续跑）时，两份计划的文件名不同而**批次身份必须
@@ -40,25 +44,29 @@ from trajectory_pipeline.executor.orchestrator import RunRecord
 
 
 class _FakeSession:
-    """假 camoufox 会话。**不真起浏览器**。"""
+    """假 camofox 会话。**不真起浏览器**。"""
 
     def __init__(self) -> None:
         self.closed = 0
-        self.fingerprint = {"os": "windows", "headless": True}
+        self.fingerprint = {"engine": "camoufox", "base_url": "http://localhost:9377"}
 
     async def close(self) -> None:
         self.closed += 1
 
 
 def _stub_launch(monkeypatch, *, fail_on: set[int] | None = None):
-    """打桩 ``cli._launch_camoufox``。第 N 次调用起失败。
+    """打桩 ``cli._launch_camofox``。第 N 次调用起失败。
 
     返回 ``(state, made)``：``state["n"]`` 是调用次数，``made`` 是成功
     起过的会话。
 
+    ⚠️ **camofox 没有 ``headless`` 开关**（浏览器由上游 REST 服务持有），
+    所以打桩的 launch **不带参数**——带了就与生产链的调用形状对不上，
+    而「形状对不上」在本仓库的症状是「测的不是生产链」。
+
     ⚠️ **顺带打桩执行层缺件预检**（2026-10-26）：批次入口会先问
-    「camoufox 在不在盘上」，不在就**启动前退 2**（缺件即报错，不猜）。
-    本文件验的是**批次韧性**（一条失败不毁整批 / 失败要记账 / 重试一次），
+    「camofox 适配器在不在盘上」，不在就**启动前退 2**（缺件即报错，
+    不猜）。本文件验的是**批次韧性**（一条失败不毁整批 / 失败要记账），
     **不是**执行层可用性——而这里起浏览器整个是假的 ⇒
     预检也必须是假的，否则这条测试会因为**环境**红，而不是因为**被测逻辑**红。
     执行层缺件这件事有它自己的测试（``Test执行层缺件``）。
@@ -66,7 +74,7 @@ def _stub_launch(monkeypatch, *, fail_on: set[int] | None = None):
     state = {"n": 0}
     made: list[_FakeSession] = []
 
-    async def _launch(*, headless: bool = True):
+    async def _launch():
         state["n"] += 1
         if fail_on and state["n"] in fail_on:
             # 抄真实事故的那句话——报错文本要像，才能验「读得懂」
@@ -77,7 +85,7 @@ def _stub_launch(monkeypatch, *, fail_on: set[int] | None = None):
         made.append(s)
         return s
 
-    monkeypatch.setattr(cli, "_launch_camoufox", _launch)
+    monkeypatch.setattr(cli, "_launch_camofox", _launch)
     monkeypatch.setattr(cli, "_execution_layer_missing_reason", lambda kind: "")
     return state, made
 
@@ -94,7 +102,7 @@ def _stub_orchestrator(monkeypatch) -> list[str]:
             ran.append(task_id)
             return RunRecord(
                 task_id=task_id, title=title, query="q", search_url="u",
-                driver="camoufox",
+                driver="camofox",
             )
 
     monkeypatch.setattr(cli, "Orchestrator", _Orch)
@@ -135,7 +143,7 @@ def _plan_doc(task_ids: list[str], *, batch_id: str = "") -> dict:
 def _args(plan: Path, out: Path) -> argparse.Namespace:
     return argparse.Namespace(
         plan=str(plan), title=None, include_unrewritten=False,
-        limit=None, dry_run=False, driver="camoufox", executor_mode=None,
+        limit=None, dry_run=False, driver="camofox", executor_mode=None,
         engine="bing", max_candidates=1, max_chars=None,
         stop_after_success=0, discovery_path="direct",
         max_intermediates=3, max_referral_links=5,
@@ -204,102 +212,86 @@ class Test一条失败不毁整批:
         assert len(list(out.glob("T*__*.json"))) == 2
 
 
-class Test起浏览器重试:
-    async def test_第一次失败重试一次就回来(self, monkeypatch):
-        """**偶发失败重试一次**——实测的 180s launch 超时是偶发的。
+class Test起浏览器不重试:
+    """**camofox 侧起浏览器不重试**（2026-10-26）。
 
-        重试成本 3 分钟，换回 10 条数据。
-        """
-        # ⚠️ **camoufox 执行层暂退**（2026-10-26）：`camoufox_session`
-        # 在**模块层**就要 `AsyncCamoufox` ⇒ 缺包时这一句 import 直接
-        # ImportError（**测试报错**，不是跳过）。这里显式跳过并写明理由：
-        #   恢复 = `uv pip install camoufox==0.5.8 && camoufox fetch`
-        # 恢复后**必须重跑**（已记进 [10-TODO台账 §停点待验证]）。
-        pytest.importorskip(
-            "camoufox",
-            reason="camoufox 执行层暂退（2026-10-26，pyproject 已移除依赖）；"
-                   "恢复：uv pip install camoufox==0.5.8 && camoufox fetch",
-        )
-        from trajectory_pipeline.executor.browser import camoufox_session
+    旧 camoufox 那支重试一次，是因为撞到过**偶发**的浏览器启动超时
+    （实测 3 分钟成本换回 10 条数据）。camofox 这条链上**没有那个
+    偶发因素**：起不来只有两种原因——
 
-        calls = {"n": 0}
+    - **适配器不可执行**（缺件）：重试没用；
+    - **REST 服务没起**：重试也没用，要人去起服务。
 
-        async def _fake_launch(cls, *, headless: bool = True):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise RuntimeError("BrowserType.launch: Timeout 180000ms exceeded")
-            return _FakeSession()
+    ⇒ 重试只是把同一个错误拖成两遍，还把「缺件」这个**配置错**的
+    读数推迟成「跑了 6 分钟才失败」。
+    """
 
-        monkeypatch.setattr(camoufox_session.CamoufoxSession, "launch",
-                            classmethod(_fake_launch))
-        monkeypatch.setattr(cli, "_LAUNCH_RETRY_DELAY_S", 0.0)
-
-        session = await cli._launch_camoufox(headless=True)
-        assert session is not None
-        assert calls["n"] == 2, "第一次失败后没有重试"
-
-    async def test_连挂两次才抛(self, monkeypatch):
-        """**只重试一次**：连挂说明是真问题，再试只是把同一个错误拖两遍。"""
-        # 同上：缺 camoufox 包时是 ImportError ⇒ 显式跳过（理由见上）。
-        pytest.importorskip(
-            "camoufox",
-            reason="camoufox 执行层暂退（2026-10-26，pyproject 已移除依赖）；"
-                   "恢复：uv pip install camoufox==0.5.8 && camoufox fetch",
-        )
-        from trajectory_pipeline.executor.browser import camoufox_session
+    async def test_失败一次就抛不重试(self, monkeypatch):
+        from trajectory_pipeline.executor.browser import camofox_session
 
         calls = {"n": 0}
 
-        async def _fake_launch(cls, *, headless: bool = True):
+        async def _fake_launch(cls, *a, **kw):
             calls["n"] += 1
-            raise RuntimeError("BrowserType.launch: Timeout 180000ms exceeded")
+            raise RuntimeError("camofox-browser-mcp 启动失败")
 
-        monkeypatch.setattr(camoufox_session.CamoufoxSession, "launch",
+        monkeypatch.setattr(camofox_session.CamofoxSession, "launch",
                             classmethod(_fake_launch))
-        monkeypatch.setattr(cli, "_LAUNCH_RETRY_DELAY_S", 0.0)
 
         with pytest.raises(RuntimeError):
-            await cli._launch_camoufox(headless=True)
-        assert calls["n"] == 2, "重试次数超了——真问题时不该一直试"
+            await cli._launch_camofox()
+        assert calls["n"] == 1, (
+            f"起浏览器重试了 {calls['n']} 次——camofox 侧重试没有意义"
+        )
 
 
 # ─────────────── 执行层缺件 ───────────────
 
 
 class Test执行层缺件:
-    """**缺件即报错，不猜**（2026-10-26 · camoufox 执行层暂退）。
+    """**缺件即报错，不猜**（2026-10-26 · 执行层切 camofox）。
 
     执行层的依赖不在盘上 ⇒ **整批都跑不成**。逐条失败只会刷一屏
-    ImportError，让人误读成「站点的问题」——**那是能力问题，不是数据问题**。
+    报错，让人误读成「站点的问题」——**那是能力问题，不是数据问题**。
     ⇒ 启动前就退 2，**不启动批次**（一条存档都不该落）。
+
+    ⚠️ camofox 侧缺的是 **MCP 适配器可执行文件**（浏览器本身由上游的
+    REST 服务持有，本仓库不装浏览器）；**REST 服务没起**归
+    ``CamofoxSession.launch`` 的预检——它把「服务没起」与「站点有问题」
+    分开，报错也分开。
     """
 
-    def test_依赖不在时给出可读理由(self, monkeypatch):
-        import importlib.util
-
-        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-        reason = cli._execution_layer_missing_reason("camoufox")
-        assert reason, "缺 camoufox 包却没给出理由"
-        assert "camoufox" in reason
+    def test_适配器不在时给出可读理由(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_MCP_EXE", "")
+        monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+        reason = cli._execution_layer_missing_reason("camofox")
+        assert reason, "缺 camofox 适配器却没给出理由"
+        assert "camofox-browser-mcp" in reason
         # 理由里必须带**怎么装**——只说「不可用」等于把问题推回给读的人
-        assert "camoufox fetch" in reason, f"理由里没有恢复指令：{reason!r}"
+        assert "npm" in reason, f"理由里没有恢复指令：{reason!r}"
 
-    def test_依赖在时没有理由(self, monkeypatch):
-        import importlib.util
+    def test_环境变量指向的文件不存在时给出可读理由(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CAMOFOX_MCP_EXE", str(tmp_path / "没有这个"))
+        reason = cli._execution_layer_missing_reason("camofox")
+        assert reason
+        assert "CAMOFOX_MCP_EXE" in reason
 
-        monkeypatch.setattr(
-            importlib.util, "find_spec", lambda name: object())
-        assert cli._execution_layer_missing_reason("camoufox") == ""
+    def test_适配器在时没有理由(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_MCP_EXE", "")
+        monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/x")
+        assert cli._execution_layer_missing_reason("camofox") == ""
 
     def test_别的执行层不管(self):
-        """obscura 的可用性由 ``OBSCURA_EXE`` 管，**不归这条预检**。"""
+        """obscura 的可用性由 ``OBSCURA_EXE`` 管，**不归这条预检**；
+        已退役的 ``camoufox`` 也不归——它**不再产出**。"""
         assert cli._execution_layer_missing_reason("obscura") == ""
+        assert cli._execution_layer_missing_reason("camoufox") == ""
 
     async def test_缺件时启动前就退2且不落盘(self, tmp_path, monkeypatch,
                                              capsys):
         """**退 2（配置错）而不是 1（跑失败）**，且**一条存档都不落**。"""
         monkeypatch.setattr(cli, "_execution_layer_missing_reason",
-                            lambda kind: "camoufox 执行层不可用（测试）")
+                            lambda kind: "camofox 执行层不可用（测试）")
         ran: list[str] = []
         monkeypatch.setattr(cli, "Orchestrator", type("O", (), {
             "__init__": lambda self, *a, **kw: None,
@@ -317,7 +309,7 @@ class Test执行层缺件:
         assert rc == 2, f"缺件应当退 2（配置错），实际 {rc}"
         assert not ran, f"缺件时不该启动批次，实际跑了 {ran}"
         assert not list(out.glob("T*__*.json")), "缺件时不该落存档"
-        assert "camoufox" in capsys.readouterr().out
+        assert "camofox" in capsys.readouterr().out
 
 
 # ─────────────── 批次身份 ───────────────

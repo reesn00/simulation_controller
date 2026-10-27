@@ -38,7 +38,7 @@
 | `sample_id` | `<task_id>__<run_id>__<unit>` |
 | `task_id` / `unit` / `title` | 切片轴；`unit` 是 `"search"` 或 `site-N` |
 | `source_archive` | 据以生成的 P1 **文件名**（不含目录），批次可回溯 |
-| `tool_surface` | **工具面**（2026-10-20 方案 15 §7 R1）：这份样本的动作空间属于哪个方言（`obscura-1` / `camoufox-1`）。来自源 P1 的 `driver` 字段，见下节 |
+| `tool_surface` | **工具面**（2026-10-20 方案 15 §7 R1）：这份样本的动作空间属于哪个方言（`obscura-1` / `camoufox-1` / **`camofox-1`**）。来自源 P1 的 `driver` 字段，见下节。⚠️ **三个面 ≠ 三套方言**——方言只有两套词表 |
 
 
 ## 工具面（`tool_surface`）——方言轴
@@ -48,16 +48,46 @@
 它由前者**一对一折算**出来（`driver` → 面），所以不需要在 P2 里手填。
 
 为什么要分面：`click` 在 obscura 面是 `click(tag, label)`、
-在 camoufox 面是 `click(role, name)`——**同名不同参**。
+在 camoufox 面与 camofox 面是 `click(role, name)`——**同名不同参**
+（两个 aria 面之间则是**参数相同、说明不同**，见下）。
 一份 P2 样本只能属于一个面（它记录的是**真跑过**的动作），
 而渲染期拿错面就会渲染出与真实调用对不上的声明，
 训出来的模型会发「有时按标签点、有时按角色点」的点击——**报告上看不出异常**。
+
+### 三个面（2026-10-26 起）
+
+| 面 | 状态 | 方言 | 目标编码 | 读原语 |
+|---|---|---|---|---|
+| `obscura-1` | 只读存量（2026-10-22 起不再产出） | `html_tag` | `{tag,label}` | 无 |
+| `camoufox-1` | **已退役，只读存量**（2026-10-26） | `aria_role` | `{role,name}` | 有 |
+| `camofox-1` | **生产面**（2026-10-26 起） | `aria_role` | `{role,name}` | 有 |
+
+⚠️ **退役不等于失忆；删的是实现，不是证据**。camoufox 执行层已撤下
+（实现文件已删、playwright 已从主依赖移除，**禁止接回来**），
+但 catalog 里**两张表并存**：`DRIVER_SURFACE`（`obscura` / `camofox`
+——**新存档只能落在这两面**）与 `LEGACY_DRIVER_SURFACE`（`camoufox`
+——**只为读得懂存量**）。所以盘上 430 份 `camoufox-1` 的 P2 样本与
+14 份顶层 `driver="camoufox"` 的 P1 存档**照常渲染、照常切**，
+而**新跑的批次落不到旧面上**。
+
+⚠️ **方言轴松了一格**：从「一面一词表」改成「**键名互不相同**，词表可相同」
+——三个面 = **两套词表**：`obscura-1` 独自用 `html_tag`，
+`camoufox-1` 与 `camofox-1` **共用** `aria_role`。
+两个 aria 面的**键名与词表相同，但声明必须不同**：camoufox 面的定位写的是
+`get_by_role(role, name=name, exact=True)`（**精确匹配**），
+camofox 面的上游走的是 `page.getByRole(role, {name}).nth(nth)`
+（**大小写不敏感子串**）⇒ **camofox 面的声明里不许出现 exact**
+——写「精确」就是教模型一个**引擎不保证**的性质，而它在报告上看不出异常
+（见[设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md)；
+契约测试 `test_两张aria面的同名工具说明不同` 钉住这一条）。
 
 - **空串 = 这条 P2 没有工具面身份**（2026-10-20 之前建的）。
   读档时按默认面 `obscura-1` 渲染——那是那批样本**真实跑出来**的面，
   不是「兜底」。
 - **认不出的 `driver` 直接抛**（不猜、不静默回落）。`driver` 是执行层
   自己的名字，认不出意味着代码与归档口径分叉了——那属于要人看的事。
+  ⚠️ **已退役但有存量存档的实现名不抛**——它折算回自己的旧面
+  （`camoufox` → `camoufox-1`）。
 - 面的定义与投影在 [`trajectory_pipeline/toolcatalog/`](../../toolcatalog/)，
   契约由 `tests/contract/test_tool_catalog_contract.py` 逐面盯。
 
@@ -67,7 +97,7 @@
 | 键 | 类型 | 说明 |
 |---|---|---|
 | `system_prompt` | `str` | 常量，**随样本冻结**——改一次历史样本之间就不可比 |
-| `tools` | `list` | 训练侧**工具声明全集**（`toolcatalog` **当前面**的投影：obscura 面 13 条、camoufox 面 16 条；面由顶层 `tool_surface` 定）。**含 `new_tab`/`close_tab`**——它们留在动作流里（删了无法回放）；**模型可见集是渲染时按 `visibility` 过滤出来的子集**（obscura 面 11 条），过滤发生在 P3/T 的 openai 视图里，不在 P2。⚠️ 「仅 visible 的那些」是 2026-10-20 之前的**错误描述**（代码一直写的是全集）——见本文档的「口径修正」一节 |
+| `tools` | `list` | 训练侧**工具声明全集**（`toolcatalog` **当前面**的投影：obscura 面 13 条、camoufox 面 16 条、**camofox 面 16 条**；面由顶层 `tool_surface` 定）。**含 `new_tab`/`close_tab`**——它们留在动作流里（删了无法回放）；**模型可见集是渲染时按 `visibility` 过滤出来的子集**（obscura 面 11 条、camoufox 面 14 条、**camofox 面 14 条**），过滤发生在 P3/T 的 openai 视图里，不在 P2。⚠️ 「仅 visible 的那些」是 2026-10-20 之前的**错误描述**（代码一直写的是全集）——见本文档的「口径修正」一节 |
 | `user_prompt` | `str` | persona 渲染后的**用户原话**，不是检索式 |
 | `provenance` | `object` | 采样切片轴，**控制流不读它** |
 | `actions` | `list` | ④ 动作+参数。**没有 `ref`**——会话句柄不可回放 |
@@ -146,6 +176,8 @@ P1 是真值源，复制就产生第二份需要同步的副本。
 本文档早期写「`tools` = 仅 `visible_to_model()` 的那些」。**那是错的**——
 代码一直写的是**全集**（13 条，含 `new_tab` / `close_tab`），
 文档与代码长期不符，而**两边都绿**——因为没有测试盯这一条。
+⚠️ 这两个数是**默认面 `obscura-1` 的数**（下一段的 11 条同理）：
+aria 面（camoufox / camofox）是 16 条全集 / 14 条可见。
 
 为什么全集是对的：`new_tab` / `close_tab` 是真发生过的动作，
 **删了 P2 就无法回放**（动作流里有它们，但工具清单里没有，

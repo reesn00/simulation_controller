@@ -10,7 +10,13 @@
 ============  ==================================  ==========================
 obscura       上游 ``browser_interactive_elements``  上游自己的（**黑盒**）
 camoufox      ``page.aria_snapshot()`` 的可访问性树  role 词表 → 无名 → 真同名
+camofox       上游快照（同一套 aria_snapshot 文本）  role 词表 → 无名 → 真同名
 ============  ==================================  ==========================
+
+（camoufox 那一行是**只读存量面**——2026-10-26 起执行层是 camofox。
+两行的枚举基础同族：**都是 aria_snapshot 格式的可访问性树**，
+camofox 侧由上游快照解析（:mod:`...browser.aria_snapshot` 的
+:func:`~...browser.aria_snapshot.parse_nodes`）。）
 
 于是第一轮双跑记下的「105.5 → 31.5（−70%）」**不是一个可解释的量**：
 差值里混着「枚举基础不同」与「过滤规则不同」两件事，
@@ -22,18 +28,18 @@ camoufox      ``page.aria_snapshot()`` 的可访问性树  role 词表 → 无�
 
 ``SHARED_DOM_JS`` 是**唯一真源**：它按一套写死的 DOM 规则枚举交互候选，
 并给每个候选算出 ``(role, name)``。obscura 走 ``browser_evaluate``、
-camoufox 走 ``page.evaluate``——**同一段代码、同一个 DOM、同一套规则**，
+aria 面走 ``page.evaluate``——**同一段代码、同一个 DOM、同一套规则**，
 于是两面的计数**按构造可比**。残差只有「浏览器引擎的 DOM/ARIA 实现差异」，
 而那正是要量的东西。
 
 然后是**同一把尺子** :func:`filter_ladder`：role 词表 → 无名 → 真同名 → 截断。
-camoufox 面的 :meth:`CamoufoxDriver.interactive` 改成调它（**行为不变**，
+aria 面的 ``interactive`` 改成调它（**行为不变**，
 现有测试封着），共享口径也调它——**于是「规则」这一层也是同一把尺子**。
 
 三句话说清产出
 --------------
 1. ``shared`` 账目——**跨面可比**：同一个 DOM、同一段 JS、同一把尺子；
-2. ``face`` 账目——**本面自己**的枚举账目（camoufox 是 ARIA 阶梯，
+2. ``face`` 账目——**本面自己**的枚举账目（aria 面是 ARIA 阶梯，
    obscura 只有「上游给了几条」这一个数）；
 3. 两者相减 ⇒ **−70% 落在哪一档**（枚举基础？规则？还是引擎？）。
 
@@ -46,11 +52,11 @@ camoufox 面的 :meth:`CamoufoxDriver.interactive` 改成调它（**行为不变
 
 ⚠️ **共享口径的 name 是手算的，不是引擎算的
 ------------------------------------------------
-camoufox 面用 playwright 的 ``aria_snapshot``（权威，实测 91/91 = 100% 一致），
+aria 面用 playwright 的 ``aria_snapshot``（权威，实测 91/91 = 100% 一致），
 共享口径用本模块的 ``nameOf`` 手算链——**与 playwright 的一致率实测 87.9%**
-（设计方案 04 §4.5.3）。所以共享口径的**绝对值**不等于 camoufox 面的
+（设计方案 04 §4.5.3）。所以共享口径的**绝对值**不等于 aria 面的
 生产值；它要回答的是「**两个浏览器看到的同一个页面**差多少」，不是
-「camoufox 的元素表对不对」。**两者别混。**
+「aria 面的元素表对不对」。**两者别混。**
 """
 
 from __future__ import annotations
@@ -68,6 +74,7 @@ __all__ = [
     "SHARED_LIMIT",
     "ElementBasis",
     "filter_ladder",
+    "ladder_stages",
     "parse_shared_basis",
 ]
 
@@ -268,6 +275,45 @@ class ElementBasis:
         }
 
 
+def ladder_stages(
+    pairs: Iterable[Sequence[str]],
+    *,
+    role_vocab: Iterable[str] = ROLE_VOCAB,
+) -> tuple[list[tuple[str, str]], dict[str, int]]:
+    """过滤阶梯的**前四档**（role 词表 → 无名 → 真同名整组），**不含截断**。
+
+    顺序（与 camoufox 面 :meth:`CamoufoxDriver.interactive` 逐条一致）：
+    role 词表 → 无名 → 真同名整组。
+
+    同名整组**整组丢**，而不是留第一个：留哪个是赌（属「猜测」），
+    而 ``get_by_role(role, name, exact=True)`` 对同名会触发 strict mode 报错——
+    留下等于给动作面埋一颗必然失败的雷。
+
+    **为什么把截断单独摘出去**（2026-10-26）：camofox 面在「真同名」之后还有
+    **两档本面特有的过滤**（没有上游句柄的节点 / 名字子串歧义），
+    而截断必须发生在**它们之后**——先截断再剔，会把「本来能留的」挤掉。
+    共享的两把尺子**不该为某一个面改规则**，所以规则留在本函数、
+    **面特有的档由那个面自己加**、截断由调用方在最后一档之后做。
+
+    Returns:
+        ``(unique, ledger)``——``unique`` 是**未被截断**的 ``(role, name)`` 列表
+        （文档序），``ledger`` 的键是前四档。
+    """
+    vocab = frozenset(role_vocab)
+    all_pairs = [(str(r), str(n)) for r, n in pairs]
+    by_role = [p for p in all_pairs if p[0] in vocab]
+    named = [p for p in by_role if p[1]]
+    occurrences = Counter(named)
+    unique = [p for p in named if occurrences[p] == 1]
+    ledger = {
+        "role_matched": len(by_role),
+        "role_unmatched": len(all_pairs) - len(by_role),
+        "nameless_dropped": len(by_role) - len(named),
+        "ambiguous_dropped": len(named) - len(unique),
+    }
+    return unique, ledger
+
+
 def filter_ladder(
     pairs: Iterable[Sequence[str]],
     *,
@@ -279,10 +325,6 @@ def filter_ladder(
     顺序（与 camoufox 面 :meth:`CamoufoxDriver.interactive` 逐条一致）：
     role 词表 → 无名 → 真同名整组 → 截断。
 
-    同名整组**整组丢**，而不是留第一个：留哪个是赌（属「猜测」），
-    而 ``get_by_role(role, name, exact=True)`` 对同名会触发 strict mode 报错——
-    留下等于给动作面埋一颗必然失败的雷。
-
     Returns:
         ``(kept, ledger)``——``kept`` 是 ``(role, name)`` 列表，
         ``ledger`` 的键见 :data:`LADDER_STAGES`。
@@ -291,21 +333,10 @@ def filter_ladder(
         两面的基础**不是同一个东西**，硬塞进同一个键名就是
         「把两件事写成同一种数据」。
     """
-    vocab = frozenset(role_vocab)
-    all_pairs = [(str(r), str(n)) for r, n in pairs]
-    by_role = [p for p in all_pairs if p[0] in vocab]
-    named = [p for p in by_role if p[1]]
-    occurrences = Counter(named)
-    unique = [p for p in named if occurrences[p] == 1]
+    unique, ledger = ladder_stages(pairs, role_vocab=role_vocab)
     kept = unique[: max(int(limit), 0)]
-    ledger = {
-        "role_matched": len(by_role),
-        "role_unmatched": len(all_pairs) - len(by_role),
-        "nameless_dropped": len(by_role) - len(named),
-        "ambiguous_dropped": len(named) - len(unique),
-        "kept": len(kept),
-        "truncated": len(unique) - len(kept),
-    }
+    ledger["kept"] = len(kept)
+    ledger["truncated"] = len(unique) - len(kept)
     return kept, ledger
 
 

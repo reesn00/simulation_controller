@@ -21,12 +21,12 @@
 
 面 ≠ 工具面
 -----------
-``toolcatalog`` 的 ``obscura-1`` / ``camoufox-1`` 是**工具声明方言**（模型看到
-的 ``click`` 参数长什么样）；这里说的是**浏览身份**——指纹、出口 IP、是否
-登录态、有没有额外隐身层。两者今天恰好一一对应，**将来不会**：给 camoufox
-挂住宅代理 + 隐身层，工具方言一个字不变（还是 ``camoufox-1``），而采集面已经
-换了——那正是 owner 暂缓的 O-c。所以**不复用工具面的名字**，否则「加了隐身层」
-这件事在数据里看不出来。
+``toolcatalog`` 的 ``obscura-1`` / ``camoufox-1`` / ``camofox-1`` 是**工具声明
+方言**（模型看到的 ``click`` 参数长什么样）；这里说的是**浏览身份**——指纹、
+出口 IP、是否登录态、有没有额外隐身层。两者今天恰好一一对应，**将来不会**：
+给 camofox 挂住宅代理 + 隐身层，工具方言一个字不变（还是 ``camofox-1``），
+而采集面已经换了——那正是 owner 暂缓的 O-c。所以**不复用工具面的名字**，
+否则「加了隐身层」这件事在数据里看不出来。
 
 命名口径
 --------
@@ -34,9 +34,11 @@
 
 ===================  ==================================================
 ``human-browser``    复核员自己的浏览器（登录态、地区、插件都是他自己的）
-``camoufox-plain``   本仓库 ``camoufox_session`` 的固定配置：locale 钉
-                     ``zh-CN``、``humanize`` 开、``geoip`` 关、**无代理、
-                     无额外隐身层**
+``camofox-plain``    本仓库 camofox-browser 路径的固定配置：**无代理、
+                     无额外隐身层**（2026-10-26 起是生产面）
+``camoufox-plain``   同上口径的 camoufox 路径——**2026-10-26 起只读存量**：
+                     camoufox 执行层已撤下，但存量的 ``blocked_surface``
+                     记的就是它（盘上 2 份存档），**读入口要认**
 ``obscura-plain``    同上口径的 obscura 路径（2026-10-22 起降级为回溯路径）
 ===================  ==================================================
 
@@ -73,22 +75,44 @@ SURFACE_UNRECORDED: Final = "unrecorded"
 #: 标注/复核侧写下的面，只能由人声明。
 SURFACE_HUMAN: Final = "human-browser"
 
-#: 本仓库 camoufox 固定配置（见模块 docstring 的命名口径表）。
+#: 本仓库 camofox-browser 固定配置（见模块 docstring 的命名口径表）。
+#: **2026-10-26 起是生产面**——camoufox 执行层撤下（owner 裁定），
+#: 改用 camofox-browser 的 MCP 适配器。
+SURFACE_CAMOFOX: Final = "camofox-plain"
+
+#: 本仓库 camoufox 固定配置——**只读存量面**（2026-10-26 起不再产出）。
+#:
+#: 留在这里的理由与工具面 ``camoufox-1`` 同一条：**存量存档正是唯一的真实
+#: 证据**——盘上 2 份 P1 存档的 ``gatekeeper_events[].blocked_surface`` 记的
+#: 就是 ``camoufox-plain``，删了这个代号，那些账本行就成了一串读不出来的
+#: 字符串（而「被拦在哪张面上」正是方案 20 §R3 要归因的那一栏）。
 SURFACE_CAMOUFOX: Final = "camoufox-plain"
 
 #: 同上口径的 obscura 路径（回溯路径，``--driver obscura`` 显式点名）。
 SURFACE_OBSCURA: Final = "obscura-plain"
 
 #: 合法面代号（封闭集，**不含** ``unrecorded``——那是「没记」，不是一张面）。
+#:
+#: ⚠️ **含只读存量面** ``camoufox-plain``：合法 ≠ 还会被写到。
+#: 「合法」是「读得懂」的口径——存量账本里就是那个值。
 ACCESS_SURFACES: Final = frozenset(
-    {SURFACE_HUMAN, SURFACE_CAMOUFOX, SURFACE_OBSCURA}
+    {SURFACE_HUMAN, SURFACE_CAMOFOX, SURFACE_CAMOUFOX, SURFACE_OBSCURA}
 )
 
 #: 驱动实现名 → 面。键必须与 ``driver_factory.SUPPORTED_KINDS`` 一致
 #: （同步测试盯着）：多一个驱动忘登记，那条链的采集面就只能靠猜。
 DRIVER_SURFACE: Final[Mapping[str, str]] = {
-    "camoufox": SURFACE_CAMOUFOX,
+    "camofox": SURFACE_CAMOFOX,
     "obscura": SURFACE_OBSCURA,
+}
+
+#: **已退役**的驱动实现名 → 面。**只读**：只为读得懂存量存档。
+#:
+#: 2026-10-26：camoufox 执行层撤下。存量的 ``driver="camoufox"`` 存档
+#: 仍要折算回它那一张面（``camoufox-plain``）——**退役不等于失忆**。
+#: 它**不是**回落表：表里没有的名字照样**抛**。
+LEGACY_DRIVER_SURFACE: Final[Mapping[str, str]] = {
+    "camoufox": SURFACE_CAMOUFOX,
 }
 
 
@@ -115,16 +139,25 @@ def check_surface(value: Any) -> str:
 
 
 def surface_of_driver(driver: Any) -> str:
-    """P1 存档的 ``driver`` → 采集面。空 ⇒ ``unrecorded``，认不出 ⇒ **抛**。"""
+    """P1 存档的 ``driver`` → 采集面。
+
+    空 ⇒ ``unrecorded``；**退役但有存量存档的实现名** ⇒ 它的旧面
+    （:data:`LEGACY_DRIVER_SURFACE`）；其余认不出的 ⇒ **抛**。
+    """
     name = str(driver or "").strip()
     if not name:
         return SURFACE_UNRECORDED
     try:
         return DRIVER_SURFACE[name]
     except KeyError:
+        pass
+    try:
+        return LEGACY_DRIVER_SURFACE[name]
+    except KeyError:
         raise ValueError(
             f"认不出的驱动实现名 {name!r}——采集面无从确定。"
-            f"已知的：{sorted(DRIVER_SURFACE)}"
+            f"在跑的：{sorted(DRIVER_SURFACE)}；"
+            f"已退役但有存量存档的：{sorted(LEGACY_DRIVER_SURFACE)}"
         ) from None
 
 
@@ -144,6 +177,8 @@ def same_surface(left: Any, right: Any) -> bool | None:
 __all__ = [
     "ACCESS_SURFACES",
     "DRIVER_SURFACE",
+    "LEGACY_DRIVER_SURFACE",
+    "SURFACE_CAMOFOX",
     "SURFACE_CAMOUFOX",
     "SURFACE_HUMAN",
     "SURFACE_OBSCURA",

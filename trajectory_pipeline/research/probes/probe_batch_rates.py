@@ -14,6 +14,10 @@
 
 ⚠️ **它只报读数，不下结论**——「结论对不对」不在门禁里（CLAUDE.md）。
 
+⚠️ **``--surface`` 的默认值是 ``camoufox-1``**——那是**盘上存量批次**的面
+（camoufox-1 已于 2026-10-26 退役，**只读不再产出**）；**现行生产面是
+``camofox-1``**。读新批次要显式点名 ``--surface camofox-1``。
+
 用法（**必须在仓库根跑**）::
 
     python trajectory_pipeline/research/probes/probe_batch_rates.py \
@@ -77,7 +81,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--label", action="append", default=[],
                     help="``名字=目录``（可多次）。例：``修复后=output/pipeline/camoufox_prod2``")
     ap.add_argument("--surface", default="camoufox-1",
-                    help="只统计这个面的存档（默认 camoufox-1）")
+                    help="只统计这个面的存档（默认 camoufox-1）。"
+                         "⚠️ **默认值指的是盘上存量批次**（camoufox-1 是"
+                         "**已退役**的只读面）；现行生产面是 **camofox-1**，"
+                         "读新批次要显式点名它")
     ap.add_argument("--out", default="", help="把读数写成 JSON")
     args = ap.parse_args(argv)
     if not args.label:

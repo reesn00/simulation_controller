@@ -139,7 +139,7 @@ async def agent_loop(
 3. **组 prompt + LLM 决策**（`chat_messages`）；llm_calls[] 记账（§3.6）；解析失败 → 格式引导重试一次 → FailClosed
 4. **I6 ref 白名单校验**（工具层强制）：`done=false` 且 tool∈{click, fill} 时 ref 必须 ∈ 最近观察 interactive_elements 的 ref 集；不过 → 注入引导重试一次 → 仍不过 FailClosed（**编 ref 是不可逆错误，不执行**）
 5. **预算检查**：步数 / llm_calls 任一耗尽 → FailClosed（`_BudgetExhausted` 口径）
-6. **执行**：`done=true` → 返回 AgentOutcome；否则按 tool 分发 driver 原语（goto→`driver.goto`、click→`driver.click(ref=...)`、fill→`driver.fill(text=..., ref=...)`、press→`driver.press(...)`）→ `steps.act(Action(...))`。★**参数照抄 `ref` 是 obscura 面**：camoufox 面收 `role`/`name`，拿 `ref` 调它会**抛 `ValueError` 炸穿**——这是有意的（P4 迁移 I6 时这行要跟着改）
+6. **执行**：`done=true` → 返回 AgentOutcome；否则按 tool 分发 driver 原语（goto→`driver.goto`、click→`driver.click(ref=...)`、fill→`driver.fill(text=..., ref=...)`、press→`driver.press(...)`）→ `steps.act(Action(...))`。★**参数照抄 `ref` 是 obscura 面**：aria 面（`camoufox-1` / `camofox-1`）收 `role`/`name`，拿 `ref` 调它会**抛 `ValueError` 炸穿**——这是有意的（P4 迁移 I6 时这行要跟着改）
 7. **DeadLoopDetector.record(url, action, body_len)**（每步一次）
 
 **确定性纪律（方案 12 §5.3 第 1 条的落地）**：步数预算、终止判定、处置映射、事件落盘全部在代码——agent 的非确定性被限制在「页面内选哪个元素、goto 哪个链接」这一段语义决策。

@@ -185,9 +185,9 @@ class Test装配入口与内联构造等价:
 
         逐属性比，**不比 ``id``**——那是对象身份，不是行为。
 
-        ⚠️ **必须显式点名 obscura**：默认实现 2026-10-22 起是 camoufox，
-        裸调用会走 camoufox 分支（并因缺 session 报错）——那就不是
-        「obscura 装配路径的等价性」了。
+        ⚠️ **必须显式点名 obscura**：默认实现 2026-10-26 起是 camofox
+        （此前是 camoufox），裸调用会走 camofox 分支（并因缺 session
+        报错）——那就不是「obscura 装配路径的等价性」了。
         """
         client = FakeMcp(_script())
         a = make_driver(client, kind="obscura")

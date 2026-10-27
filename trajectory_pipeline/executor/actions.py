@@ -92,8 +92,8 @@ class ActionTarget:
     """语义化的交互目标。**没有 ref 字段，且刻意不加。**
 
     ``role`` / ``name`` 是**槽位名**，不是值域保证：值属于哪套词表由这批
-    存档的执行层决定（obscura 面的 ``role`` 装 HTML 标签名，camoufox 面
-    装 ARIA role，见 :data:`perception.base.ELEMENT_VOCAB_HTML_TAG`）。
+    存档的执行层决定（obscura 面的 ``role`` 装 HTML 标签名，aria 面
+    （camoufox / camofox）装 ARIA role，见 :data:`perception.base.ELEMENT_VOCAB_HTML_TAG`）。
     **存档里的键名也跟着方言走**——:meth:`to_json` 收词汇表，按它投影；
     统一键名而不统一值域，等于把两个方言写成同一种数据。
 
@@ -155,7 +155,7 @@ def target_params(
     | 面 | 参数 |
     |---|---|
     | ``html_tag``（obscura） | ``{"ref": …}`` |
-    | ``aria_role``（camoufox） | ``{"role": …, "name": …}`` |
+    | ``aria_role``（camoufox / camofox） | ``{"role": …, "name": …}`` |
 
     ``vocabulary`` 从观察自带（``Observation.element_vocabulary``），
     不是调用方猜的第二个来源——与 ``_obs_json`` 同一条纪律。
@@ -174,7 +174,7 @@ def target_params(
                 "aria_role 面按 role+name 定位，但这次动作没有语义目标"
                 "（ref 溯源不到 interactive_elements，I6 存疑）"
             )
-        # 槽位原样搬过去，**不做值翻译**：target.role 在 camoufox 面
+        # 槽位原样搬过去，**不做值翻译**：target.role 在 aria 面
         # 本来就是 ARIA role（值为证的方言见 common/elements.py）。
         return {"role": target.role, "name": target.name}
     raise ValueError(
@@ -225,7 +225,7 @@ class ActionStep:
     rationale: Mapping[str, Any] | None = None
     #: 本步的墙钟耗时（毫秒），从动作发起到观察/失败回填。
     #:
-    #: **为什么必须有它**（2026-10-21）：camoufox 面的点击超时是 5s，
+    #: **为什么必须有它**（2026-10-21）：aria 面（camoufox / camofox）的点击超时是 5s，
     #: 而「窗口不可渲染」时实测单次点击要 5–13s（研究产物
     #: ``research/probes/click_occluded.json``）——**同一个 ``error`` 文本**
     #: 背后是「刚好慢一点」还是「慢到离谱」，没有耗时字段就分不出来，

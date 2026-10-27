@@ -306,11 +306,13 @@ def _ns(**kw):
                 # 执行器模式（A3-1）：None = 走环境变量 fallback——与
                 # build_parser 的 default=None 一致，scripted 批不受影响
                 executor_mode=None,
-                # **执行层必须显式钉住**（2026-10-22 切 camoufox 后）：
-                # 默认值是 camoufox ⇒ 不钉住就会在测试里真起浏览器
-                # （launch 会下载 fpgen 模型 + 起进程，被 pytest-socket
-                # 拦成红）。本组测试 monkeypatch 的是 ``cli.make_driver``，
-                # 它**盖不住 session 的 launch**——那是另一条路。
+                # **执行层必须显式钉住**（2026-10-22 切 camoufox、
+                # 2026-10-26 再切 camofox 后）：
+                # 默认值是 camofox ⇒ 不钉住就会在测试里真起浏览器
+                # （launch 会起 MCP 通道 + 连 REST 服务，被
+                # pytest-socket 拦成红）。本组测试 monkeypatch 的是
+                # ``cli.make_driver``，它**盖不住 session 的 launch**
+                # ——那是另一条路。
                 driver="obscura",
                 # 单站超时：默认 None = 走 RunConfig 默认值（不覆写）
                 per_site_timeout=None)

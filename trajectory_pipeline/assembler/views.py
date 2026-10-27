@@ -42,7 +42,7 @@
    ``ActionView`` 是 ``{tool, params, target, origin}`` 四字段，而
    function-calling 的 ``arguments`` 是**一个 dict**。所以
    ``target`` 的两个槽平铺进 ``arguments``（obscura 面是 ``{tag, label}``、
-   camoufox 面是 ``{role, name}``——P4 起键名跟着方言走，见
+   aria 面（camoufox / camofox）是 ``{role, name}``——P4 起键名跟着方言走，见
    :func:`~trajectory_pipeline.toolcatalog.dialect_of`），
    而不是塞进一个嵌套字段——后者会让训练出来的模型学会
    往 ``arguments.target.<槽>`` 里填，而真实 API 要的是平铺。
@@ -208,7 +208,7 @@ def _openai_tool(spec: Mapping[str, Any], surface: str = toolcatalog.DEFAULT_SUR
     就是全部入参，于是 ``click`` 的 function 定义长成
     ``properties: {} / required: []``——**模型无从知道要传什么**，
     而真实调用里是两个槽（obscura 面 ``{"tag": ..., "label": ...}``，
-    camoufox 面 ``{"role": ..., "name": ...}``；语义目标在
+    aria 面 ``{"role": ..., "name": ...}``；语义目标在
     ``target`` 里，被 :func:`_arguments` 平铺进 ``arguments``）。
     声明与调用对不上，训出来的模型就会发空参数的点击。
     ``fill`` 同理少两个参数。
@@ -217,7 +217,7 @@ def _openai_tool(spec: Mapping[str, Any], surface: str = toolcatalog.DEFAULT_SUR
     ``key`` 本来就是任意按键名，加 enum 会把训练集框死在取值子集上。
 
     ⚠️ **面是必答项**：``click`` 在 obscura 面是 ``{tag,label}``、在
-    camoufox 面是 ``{role,name}``。拿错面渲染出来的声明与真实调用对不上，
+    aria 面（camoufox / camofox）是 ``{role,name}``。拿错面渲染出来的声明与真实调用对不上，
     而那正是训出「发空参数点击」的那类错。
 
     ``toolcatalog`` 里查不到这个工具时（catalog 与 P2 漂移）**不抛**——

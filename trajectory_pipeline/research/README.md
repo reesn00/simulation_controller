@@ -58,14 +58,8 @@ research/
 │  ├─ inc45_find_mojibake.py / inc45_probe_sohu.py / inc45_probe2_sohu.py
 │  ├─ inc46_E005_before.json   INC46 动作前动机口径的单档前后对照（原 `.tmp_inc46_probe/`）
 │  ├─ cluster_c_landing_check.py     簇 C 词表覆盖率前置核对（INC59）
-│  ├─ probe_new_tab_click.py          P5 点击超时·第一轮（**含一处已证伪的判读**：当时以为与「新开 tab」有关）
-│  ├─ probe_click_delivery.py         第二轮：事件到底送到没有（`data-pd` 计数器 + rAF 帧率）
-│  ├─ probe_click_latency.py          第三轮：把 timeout 放到 60s → **不是挂死，是慢过超时**
-│  ├─ probe_click_repeat.py           第四轮：重复采样，headful+humanize 出现 7→61s 与 rAF 停滞
-│  ├─ probe_click_distance.py         第五轮：对角按钮交替点 → 位移不是主因
-│  ├─ probe_click_occluded.py         第六轮：**人为最小化窗口** → 5–13s，因果定案
-│  ├─ probe_click_occlusion_prefs.py  第七轮：Firefox 偏好能不能治住（答：不能）
-│  ├─ click_*.json / new_tab_click.json   上述各轮的原始读数
+│  ├─ click_*.json / new_tab_click.json   P5「点击超时」七轮探针的**原始读数**
+│  │                                     （脚本已退役 2026-10-26，见 [§退役配方](#退役配方-2026-10-26-执行层换-camofox)）
 │  ├─ inc72_paired_compare.py         双跑**配对复算**（按落地 URL 配对；分母只取两面都测到的页面）
 │  ├─ inc72_ladder_identity.py        元素阶梯**逐观察恒等式**核对（`candidates == hidden + visible`）
 │  ├─ inc73_human_review.py + .json   ★**判据⑤ 人判工作表**（负样本成因封闭集 17 项 + 动作可移植性）；
@@ -73,8 +67,8 @@ research/
 │  ├─ inc73_human_review.filled-original.json   首轮**人填原件**（留池列还在手填时：yes 28 / no 11），审计对照
 │  ├─ inc73_field_check.py            判据⑤ 的**现场取证**（重采一遍与存档并排；联网）
 │  └─ inc73_action_replay.py          判据⑥ 的**动作重放**（从存档 steps[] 定位重放；联网）
-│  ├─ probe_doc_stamp.py              **文档代号**（`performance.timeOrigin`）能不能分「换了文档」与「只换了 URL」（联网）
-│  ├─ probe_nav_commit.py             动作之后页面**落没落定**的现场读数（联网）
+│  ├─ （文档代号 / 动作落定两个探针**已退役** 2026-10-26，
+│  │     配方与读数落点见 [§退役配方](#退役配方-2026-10-26-执行层换-camofox)）
 │  ├─ probe_settle_readings.py        存档里**有多少观察是「读到一半」的**（离线；`--exclude` 排掉批次子目录）
 │  │  ├─ settle_readings_prefix.txt   **修复前**那一代的读数（24 份 / 388 观察 / 过渡态 59（15%）/ 打架 6）
 │  │  └─ settle_readings_after.txt    **修复后**（第二批 12 份 / 218 观察 / 过渡态 8（3%）/ 打架 1 / nav_unsettled 0）
@@ -89,12 +83,13 @@ research/
 │  │                                     `both` / `neither`）+ 裸 CTA 的同句语境词（离线；M-29 收口用）
 │  └─ m30_live_check.py + m30_live_check.json + m30_live_check_run2.json
 │                                     **M-30 现场重采**：把 7 个待核 URL **真的重新打开看**
-│                                     （camoufox；**联网**），现场读数与 P1 存档读数**并排**输出
+│                                     （camofox；**联网**），现场读数与 P1 存档读数**并排**输出
 │                                     （body 字数 / video / iframe / 关键词命中）——
 │                                     用来判「现场≠存档」是**站点漂移**还是**观察时机太早**
 │                                     ⚠️ **每站读两次**（「导航一返回就观察」＋「等 4 秒再观察」，
 │                                       `--settle` 可调）；**两读之差就是「渲染时机」的证据**
 │                                     ⚠️ 两个 json 是**两轮独立重采**（独立证据，不是同一份复制）
+│                                     ⚠️ 2026-10-26 已随执行层换 camofox（`--headful` 撤）
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
 │  └─ plan-camoufox-prod1.json  **第一批 camoufox 生产批次**的 12 条计划（seed 20261022；第二批复用同一份⇒前后可比）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）
@@ -139,9 +134,7 @@ uv run python -m trajectory_pipeline.research.probes.inc73_human_review \
 uv run python trajectory_pipeline/research/recollect/visit.py
 uv run python trajectory_pipeline/research/probes/inc45_probe_sohu.py
 
-# 「读到一半」这一族（2026-10-22）：文档代号 / 动作后落定 / 存档里的半读读数
-uv run python trajectory_pipeline/research/probes/probe_doc_stamp.py        # 联网
-uv run python trajectory_pipeline/research/probes/probe_nav_commit.py --url https://www.baidu.com/   # 联网
+# 「读到一半」这一族（2026-10-22）：存档里的半读读数
 # ⚠️ 探针是 rglob 递归扫的 ⇒ **必须把批次子目录排掉**，否则两代混进一张表
 #    （现在的子目录：camoufox / camoufox_smoke / dualrun* / proberun / mediaprobe /
 #      mediabrowse / staticprobe / review_auto）。**批次存档已摊平在顶层**。
@@ -154,15 +147,19 @@ uv run python trajectory_pipeline/research/probes/probe_batch_rates.py --label �
 # ⚠️ **这一对已经跑不动了**（2026-10-22）：**修复前那一代已整代回滚** ⇒
 #    存档不在盘上 ⇒ 读数只剩 `probes/generation_collision.json` 那份**历史快照**
 #    （112 个共享 (task,url) 对 / 17 处结论矛盾）。下面是**下一次**两代对撞的写法。
+# ⚠️ `--driver` 在这个**离线**脚本里筛的是**存档里记的 driver 字段**
+#    （不选执行层、不联网）⇒ 想对撞 2026-10-22 那两代就点名 `camoufox`（它已退役、
+#    只读存量）；**下一次**两代（现行执行层 = camofox）点名 `camofox`。
+#    脚本的 `--driver` 缺省值仍是 `camoufox`（对齐那一次已完成的取证）。
 uv run python trajectory_pipeline/research/probes/compare_generations.py \
   --before trajectory_pipeline/output/pipeline --after trajectory_pipeline/output/pipeline \
-  --driver camoufox --before-run-ids <前一代 run_id 列表> --after-run-ids 15e4b195,f48c4d6c,023b8837,b441d5aa,8f1aec03,102d3554,ae6553b1,a78dc57e,dcdf616c,0680dc4a,93f110b6,c39e54c7   # 离线
+  --driver camofox --before-run-ids <前一代 run_id 列表> --after-run-ids 15e4b195,f48c4d6c,023b8837,b441d5aa,8f1aec03,102d3554,ae6553b1,a78dc57e,dcdf616c,0680dc4a,93f110b6,c39e54c7   # 离线
 
 # D-5 判 2 分的样本逐条摊开（离线；M-29 收口的「逐条读正文」那一步）
 # ⚠️ 读的是**存档原文**（observations[].body_text），不是临场重采 ⇒ 站点可能已漂移。
 uv run python trajectory_pipeline/research/probes/probe_m29_d5_two.py
 
-# M-30 现场重采：7 个待核 URL 真的重新打开看（**联网 + 真浏览器**；camoufox）
+# M-30 现场重采：7 个待核 URL 真的重新打开看（**联网 + 真浏览器**；camofox）
 # ⚠️ 必须在**仓库根**跑（读的是仓库根相对路径的存档目录）。
 # ⚠️ 有的站点 `wait_until="load"` 会把导航打断（NS_BINDING_ABORTED）⇒ 脚本自动退回
 #    `domcontentloaded` 重试一次（两轮实测都靠这条回落拿到 ixigua 的正文）。
@@ -200,16 +197,17 @@ uv run python trajectory_pipeline/research/probes/merge_batch_pool.py \
 
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、
 `probes/inc45_probe_sohu.py`、`probes/inc45_probe2_sohu.py`、
-`probes/probe_doc_stamp.py`、`probes/probe_nav_commit.py`、
-`probes/m30_live_check.py`、`probes/prompt_ab_anchor.py`（调 LLM 裁判）。
+`probes/m30_live_check.py`、`probes/cf_access_boundary.py`、
+`probes/inc73_field_check.py`、`probes/inc73_action_replay.py`、
+`probes/prompt_ab_anchor.py`（调 LLM 裁判）。
 其余全部离线。
 
-**哪些脚本会起真浏览器**：`probes/probe_new_tab_click.py`、`probe_click_delivery.py`、
-`probe_click_latency.py`、`probe_click_repeat.py`、`probe_click_distance.py`、
-`probe_click_occluded.py`、`probe_click_occlusion_prefs.py`、
-`probe_doc_stamp.py`、`probe_nav_commit.py`（camoufox，**不开网络**，
-只有第一轮与 distance 轮用到 `jijikb.com`）。后两个会**最小化它自己起的那个窗口**
-再恢复（按标题 `PROBE-MARK-*` 认窗口，不碰别的窗口）——**跑的时候别看屏幕**。
+**哪些脚本会起真浏览器**：`probes/m30_live_check.py`、`probes/cf_access_boundary.py`、
+`probes/inc73_field_check.py`、`probes/inc73_action_replay.py`
+（**camofox**：MCP 适配器 + 上游 REST 服务 ⇒ **还要上游服务起着**）。
+⚠️ 2026-10-26 起**没有 `--headful`**：camofox 的浏览器由上游 REST 服务持有，
+有头/无头**不由本仓库决定**（旧 camoufox 那批探针里「最小化自己起的那个窗口」
+那一族随之退役，见 [§退役配方](#退役配方-2026-10-26-执行层换-camofox)）。
 
 > ⚠️ **Windows 控制台先设 `PYTHONIOENCODING=utf-8`。**
 > 这些脚本会往 stdout 打 `✅` / `❌` / 中文，默认 GBK 控制台会在
@@ -227,6 +225,39 @@ uv run python trajectory_pipeline/research/probes/merge_batch_pool.py \
    当前状态看 [`../docs/计划进展/`](../docs/计划进展/) 与 `check-archives`。
 3. **改写历史文档时只加注记。** 编年史里出现的旧 `tmp/` 路径是当时发生的事实，
    不要回改成新路径（那等于篡改它当时记的事）。迁移注记已加在两份编年史顶部。
+
+---
+
+## 退役配方（2026-10-26 · 执行层换 camofox）
+
+**为什么退役**：这 12 支探针是**旧 camoufox 执行层**（playwright 直连、仓库自己
+起浏览器窗口）的取证脚本。它们要么 import 已删掉的
+`executor/browser/camoufox_{driver,session}.py`，要么 import 已卸载的
+`camoufox` 包 ⇒ **跑不起来**。而且**不是「缺个依赖」**：camofox 的浏览器由
+**上游 REST 服务**持有，仓库**不再起窗口**⇒「自己起窗口、自己最小化它、
+量 rAF 帧率」这一整套玩法**在新执行层下不存在**。
+
+⚠️ **退役的是脚本，不是证据**：读数（`.json`）与结论（docs）**全部保留**。
+下表是「配方索引」——**要重测时照着这张表重建**，别从 git 历史里刨。
+
+| 退役的脚本 | 它量了什么 | 读数落在哪 | 结论落在哪 | 要重测的话怎么重建 |
+|---|---|---|---|---|
+| `probe_new_tab_click.py` | 新开 tab 上点击挂死，定位到哪个环节不返回（第一轮；**含一处已证伪的判读**） | `probes/new_tab_click.json` | 方案 04 §4 | 新执行层**没有「自己起窗口」这件事** ⇒ 该问题（窗口遮挡 / 合成器节流）**不复存在**；要问的是「上游服务里的浏览器会不会同样慢」 |
+| `probe_click_delivery.py` | 事件到底送到没有（`data-pd` 计数器 + rAF 帧率） | `probes/click_delivery.json` | 方案 04 §4 | 同上：DOM 计数器改用 `evaluate` 取（camofox 有 `camofox_evaluate`） |
+| `probe_click_latency.py` | 挂死还是慢过超时（timeout 放到 60s 量真实完成时间） | `probes/click_latency.json` | 方案 04 §4 | 量「上游 tool 往返时延」：`camofox_click` 的往返时间 |
+| `probe_click_repeat.py` | 同一动作重复采样，摊平「慢」的分布 | `probes/click_repeat.json` | 方案 04 §4 / 避坑指南 | 同上 |
+| `probe_click_distance.py` | 位移是不是主因（对角按钮交替点） | `probes/click_distance.json` | 方案 04 §4 | 位移由**上游**做（`camofox_type`）⇒ 本仓库量不到 |
+| `probe_click_occluded.py` | **人为最小化窗口** → 5–13s，因果定案 | `probes/click_occluded.json` | 避坑指南 | **不可重建**：窗口归上游所有，本仓库无权最小化它 |
+| `probe_click_occlusion_prefs.py` | Firefox 偏好能不能治住窗口不可见导致的点击变慢（答：不能） | `probes/click_occlusion_prefs.json` | 避坑指南 | 同上（偏好也在上游） |
+| `probe_doc_stamp.py` | **文档代号**（`performance.timeOrigin`）能不能分「换了文档」与「只换了 URL」 | 无 json（stdout 读数） | 避坑指南 §文档代号 | **机制仍在**：`camofox_driver._doc_stamp()` 用同一判据；要重新量就在 camofox 下重跑一遍 |
+| `probe_nav_commit.py` | 动作之后页面**落没落定**的现场读数 | 无 json（stdout 读数） | 避坑指南 / 方案 04 | **机制仍在**：`camofox_driver._await_commit()`；同上 |
+| `probe_camoufox_launch.py` | 最小 launch 分步探针：定位 launch 卡在哪一步 | 无 json（stdout 读数） | 增量九十二的停点 | **换成 camofox 的两步**：MCP 通道起来没有（`CamofoxSession.launch` 的预检）· 上游 REST 服务通不通 |
+| `probe_bili_ep313572.py` | B 站《功夫》播放页当场复采（播放器报错 vs 会员内容） | `probes/bili_ep313572.json` | D-10 分歧卡 | 用 `m30_live_check.py --url <该 URL>` 重采（同口径：每站两读 + 关键词命中） |
+| `probe_calib_rows14_32.py` | v7 校准 14–32 行的 13 个 URL 当场复采（19 条 D-10 分歧） | `probes/calib_rows14_32.json` | D-10 分歧卡 | 用 `m30_live_check.py --targets-file <清单>` 重采 |
+
+⚠️ **为什么留着这张表而不是留脚本**：留着脚本，下一个人会去跑它 ⇒ 撞
+ImportError ⇒ 然后**去把 camoufox 装回来**（owner 已裁定「禁止把原有的
+camoufox 接回来」）。⇒ **脚本退役 + 配方留档**是这里唯一不会把人带回去的做法。
 
 ---
 

@@ -26,6 +26,8 @@ from typing import Any, Mapping
 from trajectory_pipeline.executor.browser.access_surface import (
     ACCESS_SURFACES,
     DRIVER_SURFACE,
+    LEGACY_DRIVER_SURFACE,
+    SURFACE_CAMOFOX,
     SURFACE_CAMOUFOX,
     SURFACE_HUMAN,
     SURFACE_OBSCURA,
@@ -51,6 +53,8 @@ def surface_of_annotation(row: Mapping[str, Any] | None) -> str:
 __all__ = [
     "ACCESS_SURFACES",
     "DRIVER_SURFACE",
+    "LEGACY_DRIVER_SURFACE",
+    "SURFACE_CAMOFOX",
     "SURFACE_CAMOUFOX",
     "SURFACE_HUMAN",
     "SURFACE_OBSCURA",

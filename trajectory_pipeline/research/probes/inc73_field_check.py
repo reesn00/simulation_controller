@@ -31,7 +31,7 @@ elements_total / degraded / video / iframe`` 打出来；
 **用法**（必须在仓库根跑；**联网**）：
 
     uv run python -m trajectory_pipeline.research.probes.inc73_field_check \\
-        --driver camoufox \\
+        --driver camofox \\
         --url "https://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01" \\
         --archive-dir trajectory_pipeline/output/pipeline/dualrun2/camoufox \\
         --json trajectory_pipeline/research/probes/inc73_field_check.json
@@ -133,14 +133,14 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
     archived = _archived(pathlib.Path(args.archive_dir)) if args.archive_dir else {}
 
-    if args.driver == "camoufox":
-        from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
-        from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    if args.driver == "camofox":
+        from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
+        from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
 
-        session = await CamoufoxSession.launch(headless=not args.headful)
+        session = await CamofoxSession.launch()
         async with session:
-            report["server"] = {"name": "camoufox", "fingerprint": session.fingerprint}
-            driver = CamoufoxDriver(session)
+            report["server"] = {"name": "camofox", "fingerprint": session.fingerprint}
+            driver = CamofoxDriver(session)
             for url in args.url:
                 res = await _probe(driver, url)
                 res["archived"] = archived.get(norm_url(url))
@@ -196,8 +196,9 @@ def _print(report: Mapping[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="现场取证：重新采一遍，与存档读数并排")
     ap.add_argument("--url", action="append", default=[], help="要采的 URL（可给多次）")
-    ap.add_argument("--driver", choices=("camoufox", "obscura"), default="camoufox")
-    ap.add_argument("--headful", action="store_true", help="有头浏览器（缺省无头）")
+    ap.add_argument("--driver", choices=("camofox", "obscura"), default="camofox")
+    # ⚠️ ``--headful`` 已撤（2026-10-26）：camofox 的浏览器由上游 REST 服务
+    # 持有，有头/无头**不由本仓库决定**。
     ap.add_argument("--archive-dir", default=None, help="存档目录（给了就并排摆读数）")
     ap.add_argument("--json", default=None, help="落盘路径")
     args = ap.parse_args(argv)

@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from trajectory_pipeline.executor.browser import camoufox_driver, obscura_driver
+from trajectory_pipeline.executor.browser import camofox_driver, obscura_driver
 from trajectory_pipeline.executor.browser.element_basis import (
     LADDER_STAGES,
     SHARED_BASE_STAGES,
@@ -89,8 +89,13 @@ class Test过滤阶梯:
         assert ledger["kept"] == 2
 
     def test_同名整组丢而不是留第一个(self):
-        """留第一个是赌：``get_by_role(role, name, exact=True)`` 对同名会触发
-        strict mode 报错——留下等于给动作面埋一颗必然失败的雷。"""
+        """留第一个是赌，**两个面各有各的赌注**：
+
+        - camoufox/camofox 面的上游是 ``getByRole(role, {name}).nth(nth)``
+          ——``nth`` 按**精确同名**计数，同名两个时 ``nth(0)`` 拿到的
+          **未必是清单里那个**；
+        - 留下等于给动作面埋一颗**点错元素**的雷——而点错的症状是
+          「点了但页面没变」，报告上看不出异常。"""
         kept, ledger = filter_ladder([("link", "详情"), ("link", "详情")])
         assert kept == []
         assert ledger["ambiguous_dropped"] == 2
@@ -154,14 +159,14 @@ class Test共享口径解析:
         assert ledger["kept"] == 1
 
 
-# ── 两面共用同一段 JS ──────────────────────────────────────────
+# ── 两个驱动共用同一段 JS ──────────────────────────────────────
 
 
-class Test两面共用同一段JS:
+class Test两个驱动共用同一段JS:
     def test_两个驱动跑的是同一段(self):
         """**抄两份必然漂**，而漂了之后差值又变成不可解释的量。"""
         assert obscura_driver.SHARED_DOM_JS is SHARED_DOM_JS
-        assert camoufox_driver.SHARED_DOM_JS is SHARED_DOM_JS
+        assert camofox_driver.SHARED_DOM_JS is SHARED_DOM_JS
 
     def test_共享JS是JSON字符串输出(self):
         """obscura 的 ``browser_evaluate`` 返回 JS 值的 ``toString()``——
@@ -179,27 +184,34 @@ class Test两面共用同一段JS:
 # ── 驱动层：采集与记账 ─────────────────────────────────────────
 
 
-class _FakePage:
-    """只实现 ``evaluate``——共享口径只走这一条。"""
+class _FakeCamofoxSession:
+    """假 camofox 会话——共享口径只走 ``evaluate`` 这一条。
+
+    ⚠️ **同形要求**（2026-10-26）：camofox 驱动的会话接口是
+    ``evaluate(tab_id, expression)`` + ``current``，**不是** playwright 的
+    ``page.evaluate(expr)``。这里照着**生产接口**写，别照着旧 camoufox
+    那个 ``page`` 写——形状不对，测的就不是生产链的调用路径了。
+    """
 
     def __init__(self, raw: Any) -> None:
         self.raw = raw
-        self.evals: list[str] = []
+        self.evals: list[tuple[str, str]] = []
+        #: 标签页栈（一上来就有一页——驱动每次动作都要当前页）。
+        self.stack: list[str] = ["tab-1"]
 
-    async def evaluate(self, expression: str) -> Any:
-        self.evals.append(expression)
+    @property
+    def current(self) -> str:
+        return self.stack[-1]
+
+    @property
+    def pages(self) -> tuple[str, ...]:
+        return tuple(self.stack)
+
+    async def evaluate(self, tab_id: str, expression: str) -> Any:
+        self.evals.append((tab_id, expression))
         if isinstance(self.raw, Exception):
             raise self.raw
         return self.raw
-
-
-class _FakeSession:
-    def __init__(self, page: _FakePage) -> None:
-        self._page = page
-
-    @property
-    def page(self) -> _FakePage:
-        return self._page
 
     async def close(self) -> None:
         return None
@@ -221,25 +233,23 @@ class _FakeMcp:
 
 
 class Test驱动采集:
-    async def test_camoufox跑共享口径(self):
+    async def test_camofox跑共享口径(self):
         raw = json.dumps({"nodes": 2, "hidden": 0,
                           "pairs": [["button", "播放"], ["link", "详情"]]})
-        page = _FakePage(raw)
-        driver = camoufox_driver.CamoufoxDriver(_FakeSession(page))  # type: ignore[arg-type]
+        session = _FakeCamofoxSession(raw)
+        driver = camofox_driver.CamofoxDriver(session)  # type: ignore[arg-type]
         ledger = await driver.element_basis()
-        assert page.evals == [SHARED_DOM_JS]
+        assert session.evals == [("tab-1", SHARED_DOM_JS)]
         assert ledger["kept"] == 2
         assert ledger["candidates"] == 2
 
-    async def test_camoufox共享口径坏了要抛(self):
+    async def test_camofox共享口径坏了要抛(self):
         """抛 ``DriverError``——空账会被读成「这个页面上一个交互元素都没有」，
         而真相是「没测到」。"""
-        from playwright.async_api import Error as PwError
-
         from trajectory_pipeline.executor.browser.page_driver import DriverError
 
-        page = _FakePage(PwError("页面没了"))
-        driver = camoufox_driver.CamoufoxDriver(_FakeSession(page))  # type: ignore[arg-type]
+        session = _FakeCamofoxSession(DriverError("页面没了"))
+        driver = camofox_driver.CamofoxDriver(session)  # type: ignore[arg-type]
         with pytest.raises(DriverError):
             await driver.element_basis()
 
@@ -350,12 +360,12 @@ class Test测量失败不污染降级通道:
         assert obs.element_basis_error is None
         assert obs.degraded == ()
 
-    async def test_camoufox共享口径坏了不进degraded也不丢face(self):
-        from playwright.async_api import Error as PwError
+    async def test_camofox共享口径坏了不进degraded也不丢face(self):
+        from trajectory_pipeline.executor.browser.page_driver import DriverError
 
-        page = _FakePage(PwError("页面没了"))
-        driver = camoufox_driver.CamoufoxDriver(  # type: ignore[arg-type]
-            _FakeSession(page), collect_element_basis=True)
+        session = _FakeCamofoxSession(DriverError("页面没了"))
+        driver = camofox_driver.CamofoxDriver(  # type: ignore[arg-type]
+            session, collect_element_basis=True)
         basis, basis_error = await driver._collect_basis([], {"nodes": 3, "kept": 2})
         assert basis_error, "共享口径坏了却没记原因"
         assert "shared" not in basis

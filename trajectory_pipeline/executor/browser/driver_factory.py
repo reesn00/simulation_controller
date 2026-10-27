@@ -35,7 +35,21 @@ P1 加了 ``"camoufox"`` 分支。**2026-10-22 owner 裁定：默认实现改为
 ``obscura-1`` 仍在 catalog 里），也是 replay 与口径回溯的参照系。
 「不再比对」≠「删掉实现」。
 
-camoufox 分支的会话（launch）由调用方持有：一个 Run 一次 launch（方案 §4.3），
+2026-10-26：执行层**再换一次**——camoufox（playwright 直连）暂退，
+改走 **camofox-browser 自带的 MCP 适配器**（owner 裁定，方案 21）。
+换的是**传输层与定位面**，不是控制流铁律：浏览器会话归
+:mod:`trajectory_pipeline.executor.browser.camofox_session`，动作/采集面归
+:mod:`trajectory_pipeline.executor.browser.camofox_driver`，
+传输层（:mod:`trajectory_pipeline.executor.browser.mcp_client`）**没改**。
+
+⚠️ **camoufox 那一支的代码也删了**（owner 明确许可「清理原有的 camoufox
+代码与内容」）：``camoufox_driver.py`` / ``camoufox_session.py`` 已从本树
+移除，**接不回来**。但**存量的方言与证据留着**：工具面 ``camoufox-1``
+与采集面 ``camoufox-plain`` 仍在词表里（只读），盘上 430 份 P2 样本与
+14 份 P1 存档（顶层 ``{task}__{run}.json``；连 ``.reviewed.json`` 复核副本与
+探针产物共 29 个文件带该标记）靠它们才读得懂——**删的是实现，不是证据**。
+
+camofox 分支的会话（launch）由调用方持有：一个 Run 一次 launch（方案 §4.3），
 factory 只负责把会话包成驱动，不负责起停浏览器。
 
 为什么不把 ``FakePageDriver`` 也收进来
@@ -53,21 +67,25 @@ from trajectory_pipeline.executor.browser.page_driver import PageDriver
 
 #: 当前生产链在用的实现。
 #:
-#: **2026-10-22 owner 裁定 = ``"camoufox"``**（理由见模块 docstring）。
+#: **2026-10-26 owner 裁定 = ``"camofox"``**（camoufox 执行层暂退，改走
+#: camofox-browser 的 MCP 适配器；理由见模块 docstring与设计方案 21）。
 #: 改这一处就切生产链——它不是六处调用点各自的隐式约定，
 #: 而是一个**可读、可断言、可写进批次元数据**的事实。
-DEFAULT_KIND = "camoufox"
+DEFAULT_KIND = "camofox"
 
 #: 本模块认的实现名。**逗号式的白名单，不在表里就报错**——
 #: 认不出时静默回落到默认实现，会让「配错了」与「配对了」产出同一份数据。
-SUPPORTED_KINDS = ("obscura", "camoufox")
+#:
+#: ⚠️ **只有活着的实现**（2026-10-26）：camoufox 那一支已删，**不在表里**——
+#: 所以 ``--driver camoufox`` 会**当场报错**，而不是悄悄走到别的实现上。
+SUPPORTED_KINDS = ("obscura", "camofox")
 
 
 def make_driver(
     client: McpClient | None = None,
     *,
     kind: str = DEFAULT_KIND,
-    camoufox_session: object | None = None,
+    camofox_session: object | None = None,
     collect_element_basis: bool = False,
 ) -> PageDriver:
     """按 ``kind`` 造一个 :class:`PageDriver`。
@@ -77,8 +95,9 @@ def make_driver(
             本函数不建连接、不关连接（多站遍历要复用一条连接 + tab 切换，见
             :class:`ObscuraDriver` 的 docstring）。
         kind: 实现名，见 :data:`SUPPORTED_KINDS`。
-        camoufox_session: 已 launch 的 :class:`CamoufoxSession`（仅
-            ``kind="camoufox"`` 需要）。**同样由调用方持有**——一个 Run
+        camofox_session: 已 launch 的
+            :class:`~trajectory_pipeline.executor.browser.camofox_session.CamofoxSession`
+            （仅 ``kind="camofox"`` 需要）。**同样由调用方持有**——一个 Run
             一次 launch，驱动只是它的使用者。
         collect_element_basis: **跨面可比的元素账目要不要采**
             （设计方案 04 §4.9.6）。**默认关**——它多一次 evaluate 往返，
@@ -98,12 +117,12 @@ def make_driver(
         if client is None:
             raise ValueError("obscura 实现需要 McpClient，未提供")
         return ObscuraDriver(client, collect_element_basis=collect_element_basis)
-    if camoufox_session is None:
-        raise ValueError("camoufox 实现需要 CamoufoxSession，未提供")
-    from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
+    if camofox_session is None:
+        raise ValueError("camofox 实现需要 CamofoxSession，未提供")
+    from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
 
-    # 延迟 import：camoufox 是可选依赖（D11 阶段 P1），default 路径不该因为
-    # 它没装而 import 失败——obscura 生产链必须保持能跑。
-    return CamoufoxDriver(  # type: ignore[arg-type]
-        camoufox_session, collect_element_basis=collect_element_basis,
+    # 延迟 import：camofox 走的是**另一条链**（MCP 适配器 + REST 服务），
+    # obscura 那条链必须保持能跑——不该因为另一条链的可选依赖没装而 import 失败。
+    return CamofoxDriver(  # type: ignore[arg-type]
+        camofox_session, collect_element_basis=collect_element_basis,
     )

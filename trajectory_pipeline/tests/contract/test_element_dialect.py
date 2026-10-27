@@ -1,10 +1,14 @@
 """元素方言（P4）的契约测试——**键名是方言的投影，不是随手起的字段名**。
 
 P4 之前，元素的 kind 槽叫 ``tag``、text 槽叫 ``label``，因为唯一的执行层
-obscura 给的确实是 HTML 标签名。camoufox 面给的是 ARIA role，于是名字
+obscura 给的确实是 HTML 标签名。aria 面给的是 ARIA role，于是名字
 统一成 ``{role, name}``，而**值域没有统一**——obscura 面的 ``role`` 槽里
-装的仍然是 ``input``/``button``，camoufox 面装的是 ``textbox``/``button``。
+装的仍然是 ``input``/``button``，aria 面装的是 ``textbox``/``button``。
 两者不可混池：``input`` 与 ``textbox`` 在两个词表里根本对不上。
+
+⚠️ **三张面、两种方言**（2026-10-26）：``obscura-1`` 是 ``html_tag``；
+``camoufox-1``（**已退役**，只读存量）与 ``camofox-1``（**现行生产面**）
+**共用** ``aria_role``——换掉的是执行层实现，**不是**目标编码。
 
 本模块守四件事：
 
@@ -14,6 +18,8 @@ obscura 给的确实是 HTML 标签名。camoufox 面给的是 ARIA role，于�
    报告上看不出异常。
 2. **投影而不是改名**：同一份数据按方言写出不同键名，**值原样搬**。
 3. **认不出的东西一律抛**：词汇表 / 工具面 / 驱动名。回落 = 猜。
+   ——但**已退役的 camoufox 面不抛**：盘上存量产物记着它，删了那个
+   代号它们就成了一串读不出来的字符串（**删的是实现，不是证据**）。
 4. **键名是方言的投影**：已落盘的 P1/P2 产物里，每条的元素键名都与
    **它自己声明的面**一致——不跨面。这一条同时是**探针**，而它的
    前提换过一次（2026-10-22，见 :class:`Test逐面口径` 的说明）：
@@ -25,6 +31,7 @@ obscura 给的确实是 HTML 标签名。camoufox 面给的是 ARIA role，于�
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
@@ -50,12 +57,13 @@ from trajectory_pipeline.perception.base import InteractiveElement, Observation
 
 SURFACES = tuple(toolcatalog.SURFACES)
 
-#: 两个面各自**不该出现**的参数名。面的键名是互斥的：obscura 面写
-#: ``tag``/``label``，camoufox 面写 ``role``/``name``。混进来的后果是
+#: 每个面**不该出现**的参数名。面的键名是互斥的：obscura 面写
+#: ``tag``/``label``，两张 aria 面写 ``role``/``name``。混进来的后果是
 #: 模型见到一个真实调用里不存在的参数（或反过来，声明漏掉一个真实参数）。
 OTHER_SURFACE_KEYS: dict[str, frozenset[str]] = {
     toolcatalog.SURFACE_OBSCURA: frozenset({"role", "name"}),
     toolcatalog.SURFACE_CAMOUFOX: frozenset({"tag", "label"}),
+    toolcatalog.SURFACE_CAMOFOX: frozenset({"tag", "label"}),
 }
 
 
@@ -159,13 +167,30 @@ class Test一条轴:
         assert ELEMENT_KEYS[ELEMENT_VOCAB_HTML_TAG] == ("tag", "label")
         assert ELEMENT_KEYS[ELEMENT_VOCAB_ARIA_ROLE] == ("role", "name")
 
-    def test_每个面的方言互不相同(self):
-        """两面共用一套键名 = 面这个维度消失了。"""
-        triples = [
-            (d.vocabulary, d.kind_key, d.text_key)
-            for d in toolcatalog.DIALECTS.values()
-        ]
-        assert len(set(triples)) == len(triples)
+    def test_方言按词表分组且obscura单独一组(self):
+        """**三张面、两种方言**（2026-10-26）。
+
+        原来这条是「每个面的方言互不相同」——camofox 面加进来之后
+        它**不再成立**：camofox 与 camoufox **共用** ``aria_role``
+        方言（换掉的是执行层实现，**不是**目标编码）。
+
+        但真正要守的不变式是**更强**的那条：**obscura 的方言与所有
+        aria 面的方言都不同**。两边混池 = ``input`` 与 ``textbox``
+        在两个词表里根本对不上（见模块文档）。
+
+        ⚠️ 两张 aria 面**同方言、不同语义**（上游定位 ``exact`` 与
+        子串匹配之别）——那条由 :mod:`test_tool_catalog_contract` 的
+        ``test_两张aria面的同名工具说明不同`` 守。
+        """
+        by_vocab: dict[str, set[str]] = defaultdict(set)
+        for surface, d in toolcatalog.DIALECTS.items():
+            by_vocab[d.vocabulary].add(surface)
+        assert by_vocab[ELEMENT_VOCAB_HTML_TAG] == {toolcatalog.SURFACE_OBSCURA}
+        assert by_vocab[ELEMENT_VOCAB_ARIA_ROLE] == {
+            toolcatalog.SURFACE_CAMOUFOX,
+            toolcatalog.SURFACE_CAMOFOX,
+        }
+        assert len(by_vocab) == 2
 
     def test_认不出的面与驱动名都抛(self):
         with pytest.raises(ValueError):
@@ -174,6 +199,19 @@ class Test一条轴:
             toolcatalog.surface_of_driver("playwright")
         with pytest.raises(ValueError):
             element_keys("aria")
+
+    def test_退役的camoufox_仍折得出面与方言(self):
+        """**退役不等于失读**（2026-10-26）。
+
+        盘上 430 份 P2 样本与 14 份 P1 存档记着 ``camoufox-1``；
+        那个代号读不出来 ⇒ 那些产物里逐面校验的断言全成红，
+        而它们**没坏**。⇒ 旧面**留在** ``DIALECTS`` 里，
+        只是不再由任何驱动产出。
+        """
+        assert toolcatalog.surface_of_driver("camoufox") == toolcatalog.SURFACE_CAMOUFOX
+        assert toolcatalog.surface_of_driver("camofox") == toolcatalog.SURFACE_CAMOFOX
+        legacy = toolcatalog.dialect_of(toolcatalog.surface_of_driver("camoufox"))
+        assert legacy.vocabulary == ELEMENT_VOCAB_ARIA_ROLE
 
     def test_空驱动名按默认面(self):
         """空串不是「认不出」，是「没记」——历史批次都是这样，
@@ -267,13 +305,21 @@ class Test工具声明逐面:
 
     def test_click的两个槽逐面不同名(self):
         """``click`` 是唯一在各面**同名不同参**的动作——拿错面渲染出来的
-        声明与真实调用对不上，而那正是训出「发空参数点击」的那类错。"""
+        声明与真实调用对不上，而那正是训出「发空参数点击」的那类错。
+
+        ⚠️ 两张 aria 面（camoufox / camofox）**参数相同**——那是**设计**
+        （目标编码没换），不是「抄漏了」；它们的差别在**说明**里
+        （exact vs 子串匹配），由 ``test_tool_catalog_contract`` 守。
+        """
         obscura = {p.name for p in toolcatalog.by_name(
             "click", toolcatalog.SURFACE_OBSCURA).params}
         camoufox = {p.name for p in toolcatalog.by_name(
             "click", toolcatalog.SURFACE_CAMOUFOX).params}
+        camofox = {p.name for p in toolcatalog.by_name(
+            "click", toolcatalog.SURFACE_CAMOFOX).params}
         assert obscura == {"tag", "label"}
         assert camoufox == {"role", "name"}
+        assert camofox == {"role", "name"}
 
 
 # ── 4 · 逐面口径（同时是探针） ────────────────────────────────────

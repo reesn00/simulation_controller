@@ -17,7 +17,8 @@
 词汇表
 ------
 - ``html_tag``：HTML 标签名（``input`` / ``button`` / ``a``）。obscura 面；
-- ``aria_role``：ARIA role（``textbox`` / ``button`` / ``link``）。camoufox 面（D12）。
+- ``aria_role``：ARIA role（``textbox`` / ``button`` / ``link``）。aria 面
+  （camoufox / camofox，D12）。
 
 **不可混池**：同一条 ``"button"`` 在两面分别指「标签叫 button」与
 「ARIA role 是 button」，而 ``"input"`` / ``"textbox"`` 在两个词表里

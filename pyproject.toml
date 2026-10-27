@@ -13,14 +13,15 @@ dependencies = [
     "mcp>=1.28",
     "pyyaml>=6.0",
     "pydantic>=2.0",
-    # playwright 曾是 camoufox 的传递依赖，但 `executor/browser/camoufox_driver.py`
-    # **直接** import 它的异常类型（`playwright.async_api.Error`）——直接
-    # 依赖必须直接声明，否则上游哪天换实现，报错会出现在 import 期而不是测试里。
-    # ⚠️ 2026-10-26：camoufox==0.5.8 已从本文件移除（执行层暂退），但
-    # `executor/browser/camoufox_{session,driver}.py` 仍 import 它——
-    # **此刻声明与代码不一致**，camoufox 路径会 ImportError。
-    # 恢复：`uv pip install camoufox==0.5.8` + `camoufox fetch`（重下约 2.5 GB）。
-    "playwright==1.62.0",
+    # ⚠️ **playwright 已从主依赖移除**（2026-10-26，执行层换 camofox）。
+    # 它此前在这里的理由是「`camoufox_driver.py` **直接** import 它的异常
+    # 类型（`playwright.async_api.Error`）——直接依赖必须直接声明」；
+    # 而那个模块已随 camoufox 一起退场 ⇒ **本仓库的生产代码不再 import
+    # playwright**（camofox 走 MCP 适配器 ⇒ 依赖是 `mcp`）。
+    # ⇒ 留着它就是「声明与代码不一致」——**依赖表是给读的人看的清单**，
+    # 多一条不用的依赖，读的人会以为还有一条 playwright 路径。
+    # ⚠️ **浏览器内核仍是 camoufox**（上游 camofox-browser 依赖 camoufox-js），
+    # 但那是**上游的依赖**，不是本仓库的：本仓库只跟它说 MCP。
 ]
 
 [build-system]
@@ -53,6 +54,11 @@ dev = [
 
 [project.optional-dependencies]
 # v1 归档代码（archive/v1/）手动运行所需；主环境默认不装（uv sync --extra legacy）。
+# ⚠️ **cloverlabs-camoufox 只服务 v1 冻结树**——生产链的执行层是 camofox
+# （2026-10-26 owner 裁定，见 docs/设计方案/21-camofox-browser执行层接入方案.md）。
+# ⚠️ 它**抢 import 名** `camoufox` ⇒ **别在装了本 extra 的环境里跑生产链**：
+# 那个名字会指向 cloverlabs 的包，而生产链已经不 import 它了（但会让人以为
+# 「camoufox 还在」）。
 legacy = [
     "camel-ai>=0.2.0",
     "jinja2>=3.0",

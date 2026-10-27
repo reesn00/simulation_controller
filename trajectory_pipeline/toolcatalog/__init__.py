@@ -46,17 +46,17 @@ P3 与 T 是**两种独立渲染**（D14.3 / D14.6），契约测试用 AST 禁�
      进训练数据等于让模型学一个随机数（CLAUDE.md 红线）；
    - **只说当前执行层的调用面**——D12 之后（方案 04 §5.1）这条改口径：
      禁的是**已经不是执行层**的那个实现名（obscura 面禁 obscura、
-     camoufox 面禁 obscura），而**当前**执行层（camoufox 面）**要点名**
-     ——不点名，模型学不会「匹配到多个元素时怎么办」，而那是执行期最
-     常见的失败。MCP / 句柄 / isolate 两面都禁；
+     camofox 面禁 obscura **与** camoufox），而**当前**执行层
+     （**camofox** 面）**要点名**——不点名，模型学不会「匹配到多个元素时
+     怎么办」，而那是执行期最常见的失败。MCP / 句柄 / isolate 两面都禁；
    - **不提红线能力**（Cookie / Profile / Authorization）——永久禁；
    - **不提 v1 独占形态**——v1 的 ``browser``（Browser SDK 代码）与 v2
      的 ``PageDriver`` 原语没有任何对应关系，两套不混写。
 
    由 ``tests/contract/test_tool_catalog_contract.py`` 用**按面分开的**
    禁用词表机械盯着——改 description 时忘了改禁用词表，测试会红；
-   另有一条**正向断言**：camoufox 面的说明里必须出现 ``camoufox``
-   或 ``get_by_role``，否则有人「顺手」把措辞改回抽象说法，测试不会红，
+   另有一条**正向断言**：**生产面**（camofox）的说明里必须出现 ``camofox``，
+   否则有人「顺手」把措辞改回抽象说法，测试不会红，
    而数据会静默地退回到「脱离本项目不成立」的状态。
 
 工具面（surface）——方言轴
@@ -66,8 +66,10 @@ P3 与 T 是**两种独立渲染**（D14.3 / D14.6），契约测试用 AST 禁�
 - **叫什么、调什么参数**（``click`` / ``fill`` / ``press``…）——由**执行层**
   决定。D12 之后执行层是 camoufox，动作词汇表**必须等于它的调用面**，
   目标编码从 ``{tag,label}`` 变成 ``{role,name}``（方案 04 §4.5）；
-- **在哪个方言里成立**（``obscura-1`` / ``camoufox-1``）——由**这批存档
-  是谁跑的**决定。
+  2026-10-26 执行层换成 camofox-browser，**目标编码不变**
+  （仍是 ``{role,name}``）——换的是实现，不是编码；
+- **在哪个方言里成立**（``obscura-1`` / ``camoufox-1`` / ``camofox-1``）
+  ——由**这批存档是谁跑的**决定。
 
 这两件事以前是混在一起的：catalog 只有一份，于是「obscura 时代的
 ``click(tag,label)``」与「camoufox 时代的 ``click(role,name)``」只能
@@ -83,11 +85,11 @@ P3 与 T 是**两种独立渲染**（D14.3 / D14.6），契约测试用 AST 禁�
 P2 的 ``tool_surface`` → P3 / T 按该面渲染。**一个存档一个面**，
 没有「这份样本混了两个方言」的状态。
 
-⚠️ **两个面不混池**（方案 04 §4.5.5）：目标编码不同义，
+⚠️ **不同面不混池**（方案 04 §4.5.5）：目标编码不同义，
 ``{tag,label}`` 与 ``{role,name}`` 的样本放在一起，模型学到的是
 「有时按标签点、有时按角色点」——那是**两种任务**的混合。
 
-**读原语（``snapshot`` / ``interactive`` / ``links``）只在 camoufox 面
+**读原语（``snapshot`` / ``interactive`` / ``links``）只在 aria 面
 里有**：push 模式下观察由执行器推给模型，模型没有「读」这个动作；
 pull 模式（方案 15）下模型自己决定看什么，读原语就进了动作面，
 因而也进了训练工具声明。方案 04 §2.2 末尾那句「采集面不进训练工具
@@ -199,9 +201,9 @@ class ToolDef:
     #: 落进 ``meta`` 让人工复核能分清「验证过的动作」与「告知的能力」。
     #:
     #: ⚠️ 它是**逐面**的：``click`` 在 obscura 面是 ``{tag,label}``、
-    #: 在 camoufox 面是 ``{role,name}``——**同名不同参**，两条是不同的
-    #: 声明，``exercised`` 也各自成立（obscura 面早已验证；camoufox 面
-    #: 自 2026-10-20 双跑起也已验证）。
+    #: 在 camoufox / camofox 面是 ``{role,name}``——**同名不同参**，两条是
+    #: 不同的声明，``exercised`` 也各自成立（obscura 面早已验证；camoufox 面
+    #: 自 2026-10-20 双跑起也已验证；camofox 面还没有真实运行）。
     exercised: bool = True
 
     def to_json(self) -> dict[str, Any]:
@@ -392,9 +394,100 @@ _PRESS_CAMOUFOX = ToolDef(
     exercised=True,
 )
 
-# ── camoufox 面：读原语（pull 模式，模型自己决定看什么）────────────
+# ── camofox 面：动作词汇表 = camofox-browser 的调用面（2026-10-26）────
 #
-# **只在 camoufox 面里有**：push 模式下观察由执行器推给模型，模型没有
+# camofox-browser **自带 MCP 适配器**（``camofox-browser-mcp``），本项目
+# 通过 MCP 调它（设计方案 21）。**目标编码与 camoufox 面相同**
+# （``{role,name}``）——换掉的是执行层实现，**不是**定位子句，
+# aria_role 方言不变（所以三个读原语也共用同一份声明，**不另写一份**）。
+#
+# ⚠️ 说明里**点名 camofox**（方案 04 §5.1 的口径沿用到本面）——不点名，
+# 模型学不会「匹配到多个元素时怎么办」。
+#
+# ⚠️ 但**不许写 ``get_by_role(exact=True)``**：上游的定位是
+# ``page.getByRole(role, {name}).nth(nth)``，**没有 exact** ⇒ 名字走
+# Playwright 的**大小写不敏感子串匹配**。写「精确匹配」就是教模型一个
+# 引擎不保证的性质——而它在报告上看不出异常。
+# 本面**自己**保证唯一性：枚举期把「真同名整组」「名字是别人的子串」
+# 「上游没给句柄」三类剔掉（camofox 驱动的「四条定位正确性契约」），
+# 于是**清单里给出的每个 ``(role, name)`` 都是唯一可寻址的**。
+#
+# ⚠️ ``exercised=False``：**还没有一次真实 camofox 运行**落过盘。
+# 按「有没有真实调用」的口径记 False——**标注撒谎比标注缺失更难发现**：
+# 它会让 ``required`` 口径永远不被真实数据校准。
+#
+# ⚠️ ``press`` 在本面**只支持回车**（A2 驱动缓存合并）：上游没有独立的
+# 「按键」tool，唯一能提交表单的路径是「重发同文本 + 附带回车」。
+# 别的键、或对别的元素按键，本层**做不到**——那是**能力不可用**，
+# 不是「元素不存在」，两者在采集侧记在不同的地方。
+
+_CLICK_CAMOFOX = ToolDef(
+    name="click",
+    params=(
+        ToolParam("role", "元素的无障碍角色，例如 button、link、textbox。"),
+        ToolParam(
+            "name",
+            "元素的可访问名——从元素清单里逐字照抄，不要改写、不要补全。",
+        ),
+    ),
+    instruction=(
+        "点击一个元素。camofox 按 role 与 name 定位，"
+        "两者都必须与你在清单里看到的完全一致；"
+        "name 是可访问名——图标按钮算它的 alt，输入框算它的占位提示。"
+        "定位不到时这一步不报错，页面也不会有任何变化——"
+        "重新读一遍页面，换一个清单里真有的目标，别重复点同一个。"
+        "页面上有相当一部分元素没有可访问名，那些定位不到，别选它们。"
+    ),
+    family="action",
+    exercised=False,
+)
+
+_FILL_CAMOFOX = ToolDef(
+    name="fill",
+    params=(
+        ToolParam("role", "输入框的无障碍角色，例如 textbox、searchbox。"),
+        ToolParam("name", "输入框的可访问名——搜索框常是「搜索」这类占位提示。"),
+        ToolParam("text", "要写入的文本，例如把片名填进搜索框。"),
+    ),
+    instruction=(
+        "往输入框里填文本（站内搜索：把片名填进搜索框）。"
+        "camofox 按 role 与 name 定位输入框，两者都照清单里写。"
+        "这是「设值」不是追加——框里原有的内容会被清掉。"
+        "定位不到时框里不会出现内容，别当已经填进去了，换一个清单里真有的输入框。"
+    ),
+    family="action",
+    exercised=False,
+)
+
+_PRESS_CAMOFOX = ToolDef(
+    name="press",
+    params=(
+        ToolParam("key", "按键名。本层只支持 Enter（回车提交）。"),
+        ToolParam(
+            "role",
+            "可选：这次按键作用于哪个元素。只有当它就是刚填过文本的那个输入框时才填。",
+            required=False,
+        ),
+        ToolParam(
+            "name",
+            "可选：这次按键作用于哪个元素。只有当它就是刚填过文本的那个输入框时才填。",
+            required=False,
+        ),
+    ),
+    instruction=(
+        "按一个键（站内搜索：回车提交）。"
+        "本层用 camofox 在刚填过文本的那个输入框上按回车："
+        "别的键、或对别的元素按键，这一层做不到，按下去不会生效。"
+        "要提交就先把文本填进搜索框，再回车。"
+    ),
+    family="action",
+    exercised=False,
+)
+
+# ── aria 面：读原语（pull 模式，模型自己决定看什么）────────────────
+#
+# **只在 aria 面里有**（camoufox / camofox 两张面共用这一份声明）：
+# push 模式下观察由执行器推给模型，模型没有
 # 「读」这个动作；pull 模式（方案 15 §5.4）下模型自己发起观察，读原语
 # 就进了动作面，因而也进了训练工具声明。
 #
@@ -593,24 +686,44 @@ _GLOB_SEARCH = ToolDef(
 #: ``{tag,label}``），冻结。
 #:
 #: ⚠️ **2026-10-22 owner 裁定后：只读存量面，不再产出。**
-#: 生产链默认执行层已是 camoufox（见
+#: 生产链默认执行层已是 camofox（见
 #: :data:`trajectory_pipeline.executor.browser.driver_factory.DEFAULT_KIND`），
-#: 新批次走 :data:`SURFACE_CAMOUFOX`。这个面**留在这里不删**——
+#: 新批次走 :data:`SURFACE_CAMOFOX`。这个面**留在这里不删**——
 #: 存量存档正是唯一的真实证据，而它们全在这个面上。
 SURFACE_OBSCURA = "obscura-1"
 
 #: camoufox 面的标识。目标编码 ``{role,name}`` + 三个读原语。
 #:
-#: **2026-10-22 起是生产面**（owner 裁定切 camoufox 为主力执行层）。
-#: 此前它是**目标方言的声明**（方案 15 §7 的 R2）——第一份真实数据
-#: 要等第一批 camoufox 批次落盘才出现。
+#: ⚠️ **2026-10-26 起：只读存量面，不再产出**（owner 裁定撤下 camoufox
+#: 执行层，改用 camofox-browser 的 MCP）。新批次走 :data:`SURFACE_CAMOFOX`。
+#:
+#: 这个面**留在这里不删**——理由与 obscura 面同一条：**存量存档正是唯一的
+#: 真实证据**。盘上 **430 份已建的 P2 样本**带着 ``tool_surface="camoufox-1"``，
+#: 而 :func:`trajectory_pipeline.assembler.views._surface_of` 会拿这个值去
+#: :func:`defs_of` 取声明——**面删了，那 430 份样本就渲染不出来**，
+#: 复核链会当场断掉。所以「删掉 camoufox-1」的口径是：
+#:
+#: - **不再产出**：:data:`DRIVER_SURFACE` 里**没有** ``camoufox`` 键 ⇒
+#:   新存档落不出这个面；
+#: - **仍然读得懂**：:data:`LEGACY_DRIVER_SURFACE` 让存量的
+#:   ``driver="camoufox"`` 存档仍能折算回这个面。
+#:
+#: 两者**不是**一回事：前者是「不再生产」，后者是「仍可回放」。
+#: 把「不再生产」做成「读不出来」，删的是证据，不是旧实现。
 SURFACE_CAMOUFOX = "camoufox-1"
+
+#: camofox 面的标识。目标编码 ``{role,name}`` + 三个读原语。
+#:
+#: **2026-10-26 起是生产面**（owner 裁定：camoufox 执行层撤下，改用
+#: camofox-browser 的 MCP 适配器，见设计方案 21）。目标编码与 camoufox 面
+#: **相同**——换的是执行层实现，不是定位子句。
+SURFACE_CAMOFOX = "camofox-1"
 
 #: **默认面**。没有记录方言的存档（历史批次）按它渲染。
 #:
 #: ⚠️ **它不是「生产面」**——生产面由 P1 的 ``driver`` 一对一折算
-#: （:func:`surface_of_driver`），而 2026-10-22 起生产链写的是
-#: ``driver="camoufox"`` ⇒ 折算到 :data:`SURFACE_CAMOUFOX`。
+#: （:func:`surface_of_driver`），而 2026-10-26 起生产链写的是
+#: ``driver="camofox"`` ⇒ 折算到 :data:`SURFACE_CAMOFOX`。
 #: 这个默认值服务的是**没记 driver 的历史存档**，而那批存档真实跑的
 #: 就是 obscura——所以默认取 obscura 是**如实**的，不是「保守」。
 DEFAULT_SURFACE = SURFACE_OBSCURA
@@ -618,10 +731,33 @@ DEFAULT_SURFACE = SURFACE_OBSCURA
 #: 驱动实现名 → 工具面。**1:1**——一个驱动实现只有一个调用面。
 #:
 #: ⚠️ 这张表是「方言」的**唯一**来源：不是两个独立的轴（执行器 × 编码），
-#: 而是**一个**轴。写成两个独立字段，两边就会漂——出现「driver=camoufox
+#: 而是**一个**轴。写成两个独立字段，两边就会漂——出现「driver=camofox
 #: 但编码=obscura」这种**自相矛盾**的存档，而它长得与正常存档一模一样。
+#:
+#: ⚠️ **这里只列还活着的驱动**（2026-10-26）：camoufox 执行层已撤下，
+#: 所以它**不在**这张表里——新存档落不出 ``camoufox-1`` 这个面。
+#: 存量存档的读法走 :data:`LEGACY_DRIVER_SURFACE`。
 DRIVER_SURFACE: Mapping[str, str] = {
     "obscura": SURFACE_OBSCURA,
+    "camofox": SURFACE_CAMOFOX,
+}
+
+#: **已退役**的驱动实现名 → 工具面。**只读**：只为读得懂存量存档。
+#:
+#: 2026-10-26：camoufox 执行层撤下（owner 裁定改用 camofox-browser 的
+#: MCP）。但盘上仍有 **14 份 P1 存档**记着 ``driver="camoufox"``
+#: （顶层 ``{task}__{run}.json``；**连 12 份 ``.reviewed.json`` 复核副本与
+#: 3 份探针产物**，顶层共 **29 个**文件带这个标记），
+#: 而 :func:`trajectory_pipeline.assembler.schema` 切样本时要经
+#: :func:`surface_of_driver` 折算面——**认不出就抛**，那会让这 14 份存档
+#: 切不出样本。
+#:
+#: 所以退役**不等于**失忆：这张表让旧名仍折算回旧面（旧面仍在
+#: :data:`SURFACES` 里），而**新存档**永远落不到旧面上。
+#:
+#: ⚠️ 它**不是**回落表：表里没有的名字（如 ``"fake"``、``"chromium"``）
+#: 照样**抛**——「配错了」与「配对了」不能产出同一份数据。
+LEGACY_DRIVER_SURFACE: Mapping[str, str] = {
     "camoufox": SURFACE_CAMOUFOX,
 }
 
@@ -654,6 +790,7 @@ class Dialect:
 DIALECTS: Mapping[str, Dialect] = {
     SURFACE_OBSCURA: Dialect("html_tag", "tag", "label"),
     SURFACE_CAMOUFOX: Dialect("aria_role", "role", "name"),
+    SURFACE_CAMOFOX: Dialect("aria_role", "role", "name"),
 }
 
 
@@ -674,6 +811,9 @@ def surface_of_driver(driver: str | None) -> str:
     - **空串 / ``None``** → :data:`DEFAULT_SURFACE`。那是「这份存档没记
       驱动」——历史批次都是这样。空串**不**等于「未知方言」：它是
       「没记」，按默认面渲染，且默认面**就是**那批存档真实跑出来的面；
+    - **退役但有存档的实现名** → :data:`LEGACY_DRIVER_SURFACE` 里的旧面。
+      camoufox 执行层已撤下（2026-10-26），但存量的 ``driver="camoufox"``
+      存档仍要折算回它那个面——**退役不等于失忆**；
     - **认不出的实现名** → **抛**。静默回落到默认面，会让「配错了」
       与「配对了」产出**同一份**工具声明——而声明错的那份在报告上
       看不出任何异常。与 ``driver_factory`` 同一个纪律（认不出就报错，
@@ -685,9 +825,14 @@ def surface_of_driver(driver: str | None) -> str:
     try:
         return DRIVER_SURFACE[name]
     except KeyError:
+        pass
+    try:
+        return LEGACY_DRIVER_SURFACE[name]
+    except KeyError:
         raise ValueError(
             f"认不出的驱动实现名 {name!r}——工具面无从确定。"
-            f"已知的：{sorted(DRIVER_SURFACE)}"
+            f"在跑的：{sorted(DRIVER_SURFACE)}；"
+            f"已退役但有存量存档的：{sorted(LEGACY_DRIVER_SURFACE)}"
         ) from None
 
 
@@ -730,6 +875,24 @@ SURFACES: Mapping[str, tuple[ToolDef, ...]] = {
         _NEW_TAB,
         _CLOSE_TAB,
     ),
+    SURFACE_CAMOFOX: (
+        _GOTO,
+        _CLICK_CAMOFOX,
+        _FILL_CAMOFOX,
+        _PRESS_CAMOFOX,
+        _SNAPSHOT,
+        _INTERACTIVE,
+        _LINKS,
+        _WEB_SEARCH,
+        _WEB_FETCH,
+        _VIEW_IMAGE,
+        _DESKTOP_SCREENSHOT,
+        _GET_CURRENT_TIME,
+        _READ_FILE,
+        _GLOB_SEARCH,
+        _NEW_TAB,
+        _CLOSE_TAB,
+    ),
 }
 
 #: **默认面**的声明全集。**唯一真源**。
@@ -757,7 +920,7 @@ def by_name(name: str, surface: str = DEFAULT_SURFACE) -> ToolDef | None:
 
     ⚠️ **同名不同面**：``click`` 在两个面里参数不同（``{tag,label}`` vs
     ``{role,name}``）。所以面是**必答项**——用默认面去查一份 camoufox
-    样本，会渲染出错的参数形状，而那正是「声明与调用对不上」。
+    或 camofox 样本，会渲染出错的参数形状，而那正是「声明与调用对不上」。
     """
     for d in defs_of(surface):
         if d.name == name:
@@ -860,8 +1023,10 @@ __all__ = [
     "ToolDef",
     "SURFACE_OBSCURA",
     "SURFACE_CAMOUFOX",
+    "SURFACE_CAMOFOX",
     "DEFAULT_SURFACE",
     "DRIVER_SURFACE",
+    "LEGACY_DRIVER_SURFACE",
     "DIALECTS",
     "dialect_of",
     "SURFACES",

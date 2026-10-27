@@ -1,14 +1,21 @@
 """MCP stdio 客户端——传输层。
 
 职责边界：本模块只管「把 JSON-RPC 送出去、把文本取回来」，
-**不认识 obscura 的任何 tool 名，也不解析任何返回格式**。
-obscura 的 tool 语义与返回格式知识全部在 ``obscura_driver.py``。
+**不认识任何一个 MCP server 的 tool 名，也不解析任何返回格式**。
+obscura 的 tool 语义与返回格式知识全部在 ``obscura_driver.py``；
+camofox 的在 ``camofox_driver.py``。
 
 分层理由：传输层若混入格式知识，换浏览器时（MCP server 换了）整个模块都得重写；
 而格式知识留在 driver 里，``PageDriver`` 协议对上层保持稳定。
 
 失败语义：传输失败抛 :class:`McpError`。调用方**据此 fail-closed**
 （感知层不变式 I4），不得回退到猜测或默认值。
+
+⚠️ **本模块不认识 camofox**（2026-10-26）：camofox-browser **自带 MCP 适配器**
+（``camofox-browser-mcp``，11 个 tool），所以它走的还是同一条 stdio 通道——
+**传输层一个字都不用改**，只多了 :attr:`McpClient.env`（把
+``CAMOFOX_*`` 透给子进程）与 :func:`resolve_executable`（命令名 → 绝对路径）。
+适配器的**tool 语义**在 :mod:`trajectory_pipeline.executor.browser.camofox_driver`。
 
 用法::
 
@@ -22,10 +29,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -68,12 +76,52 @@ class McpError(RuntimeError):
     """传输层失败（进程起不来 / 超时 / 协议错误）。调用方须 fail-closed。"""
 
 
-class McpClient:
-    """obscura MCP server 的异步会话。
+def resolve_executable(exe: str, *, env_var: str = "", hint: str = "") -> str:
+    """把「可执行文件」解析成一条**能直接启动**的命令。**找不到就抛**。
 
-    生命周期：一个 client 对应一条 stdio 连接和一个 obscura 进程；
+    两种形态都认：
+
+    - **路径**（含分隔符，或指向一个存在的文件）——直接用；
+    - **命令名**（``camofox-browser-mcp``）——走 ``PATH`` 查。
+
+    ⚠️ **缺件即报错，不猜**（与 ``OBSCURA_EXE``、``TRAJECTORY_LLM_*`` 同纪律）：
+    解析不出来就抛，说清「缺什么、怎么装」。静默起一个别的同名程序，
+    会让「配错了」与「配对了」产出同一份数据——而症状在报告上看不出异常。
+
+    Raises:
+        RuntimeError: 解析不出可执行文件。
+    """
+    name = str(exe or "").strip()
+    if not name:
+        raise RuntimeError(
+            f"未指定 MCP server 可执行文件。"
+            + (f"请设置 {env_var} 或把它装进 PATH。" if env_var else "")
+            + (f" {hint}" if hint else "")
+        )
+    candidate = Path(name)
+    if candidate.is_absolute() or candidate.exists():
+        return str(candidate)
+    found = shutil.which(name)
+    if found:
+        return found
+    raise RuntimeError(
+        f"找不到 MCP server 可执行文件 {name!r}"
+        + (f"（{env_var} 指向的路径不存在，且 PATH 里也没有同名命令）" if env_var
+           else "（PATH 里没有同名命令）")
+        + (f" {hint}" if hint else "")
+    )
+
+
+class McpClient:
+    """MCP server 的异步会话（**传输层**，不认任何 tool 名）。
+
+    生命周期：一个 client 对应一条 stdio 连接和一个 MCP server 进程；
     obscura 每个连接自带 V8 isolate，故**多站点遍历应复用同一连接**
     （开 tab 切换），而不是每步重连。
+
+    ⚠️ **2026-10-26：camofox-browser 也走这条通道**——它自带 stdio 适配器
+    （``camofox-browser-mcp``）。差别只有两处：``args`` 为空、
+    以及要把 ``CAMOFOX_*`` 透给子进程（:attr:`env`）。
     """
 
     def __init__(
@@ -81,10 +129,16 @@ class McpClient:
         exe: str,
         args: tuple[str, ...] = DEFAULT_ARGS,
         timeout: float = 60.0,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self._exe = exe
         self._args = tuple(args)
         self._timeout = timeout
+        #: 透给子进程的环境变量。**``None`` = 不传**（子进程继承本进程环境）；
+        #: 给一个 dict 时，SDK 会把它**叠加**在父进程环境之上
+        #: （``{**get_default_environment(), **server.env}``），
+        #: 所以不必（也不该）把整个环境抄一遍。
+        self._env = dict(env) if env is not None else None
         self._devnull: Any = None
         self._stdio_cm: Any = None
         self._session_cm: Any = None
@@ -110,9 +164,11 @@ class McpClient:
         return cls(exe, ("mcp", "--stealth") if stealth else ("mcp",), timeout)
 
     async def __aenter__(self) -> "McpClient":
-        params = StdioServerParameters(command=self._exe, args=list(self._args))
-        # obscura 的 banner / 日志走 stderr。Windows 下 sys.stderr 默认 GBK，
-        # obscura 输出 UTF-8 时会抛 UnicodeEncodeError 把整条链带崩——故丢弃而非转发。
+        params = StdioServerParameters(
+            command=self._exe, args=list(self._args), env=self._env
+        )
+        # MCP server 的 banner / 日志走 stderr。Windows 下 sys.stderr 默认 GBK，
+        # server 输出 UTF-8 时会抛 UnicodeEncodeError 把整条链带崩——故丢弃而非转发。
         self._devnull = open(os.devnull, "w", encoding="utf-8")
         try:
             self._stdio_cm = stdio_client(params, errlog=self._devnull)
@@ -123,7 +179,7 @@ class McpClient:
         except Exception as exc:
             await self.__aexit__(type(exc), exc, exc.__traceback__)
             raise McpError(
-                f"obscura MCP 连接失败（exe={self._exe}, args={self._args}）: "
+                f"MCP 连接失败（exe={self._exe}, args={self._args}）: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         return self

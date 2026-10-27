@@ -1,6 +1,14 @@
 # URL 级金标冲突清单（M-30）
 
 > **机器生成的事实块 + 人填的两列结论**。事实块由 `agreement --emit-url-conflicts` 刷新；**「定性」「裁定依据」两列由人填，机器重跑不会抹掉**。
+>
+> ⚠️ **「现场重采」那几条依据是 2026-10-23 的 camoufox 面读数**——
+> **2026-10-26 执行层已换成 camofox-browser**（owner 裁定，camoufox 那一支**已删**、
+> **接不回来**）⇒ **照着那些依据重跑要换 `--driver camofox`**，
+> 而**换面读数会不同**（aria 两面元素枚举同族但定位语义不同：
+> camoufox 是**精确**匹配、camofox 是**子串**匹配）。
+> **本清单里已有的裁定结论一个字不改**——它记的是**当时那一次访问**的事实
+> （Q-11「按访问」）。
 
 > 生成命令：`python -m trajectory_pipeline.evaluation.golden.builder agreement --version 7 --emit-url-conflicts trajectory_pipeline\evaluation\golden\data\url_gold_conflicts.md`
 

@@ -16,11 +16,25 @@
    （标错了就是撒谎）。
 
 ⚠️ **所有口径都是逐工具面（surface）的**（2026-10-20 方案 15 §7 R1）
-——``click`` 在 obscura 面是 ``click(tag,label)``、在 camoufox 面是
-``click(role,name)``，**同名不同参**。拿一个面的口径去查另一个面，
-红绿都是假的。所以下面每条按面参数化，查存档时**也按面过滤**
-（盘上现存的数据全是 obscura 面的，camoufox 面的分母是 0——
-那不是「通过」，是**还没数据**，等它有数据再开）。
+——``click`` 在 obscura 面是 ``click(tag,label)``、在两张 aria 面
+（camoufox-1 / camofox-1）是 ``click(role,name)``，**同名不同参**。
+拿一个面的口径去查另一个面，红绿都是假的。所以下面每条按面参数化，
+查存档时**也按面过滤**（盘上现存的数据全是 obscura 面的，camoufox 面的
+分母是 0——那不是「通过」，是**还没数据**，等它有数据再开）。
+
+⚠️ **三张面，各有各的生命周期**（2026-10-26 owner 裁定）：
+
+============  ==========================  ======================
+面            定位                         状态
+============  ==========================  ======================
+obscura-1     ``{tag,label}``              存量方言（回溯参照系）
+camoufox-1    ``{role,name}`` + exact     **已退役**，只读存量
+camofox-1     ``{role,name}`` + 子串匹配   **现行生产面**
+============  ==========================  ======================
+
+「退役」说的是**不再产出**，不是「读不懂」——盘上 430 份 P2 样本与
+14 份 P1 存档都记着 camoufox-1，删了这个代号那些产物就成了读不出来的
+字符串。⇒ **删的是实现，不是证据**。
 """
 
 from __future__ import annotations
@@ -56,7 +70,8 @@ DEFAULT_SURFACE = toolcatalog.DEFAULT_SURFACE
 #: - ``mcp`` —— 传输协议名，与执行层无关；
 #: - ``cookie`` / ``profile`` / ``authorization`` —— 凭据红线，永久禁。
 #:
-#: ⚠️ ``obscura`` **不在这一档**：D12 之后执行层是 camoufox，禁的是
+#: ⚠️ ``obscura`` **不在这一档**：D12 之后执行层是 camoufox（2026-10-26
+#: 起是 camofox），禁的是
 #: 「**已经不是**执行层的那个实现名」，而 obscura 恰好是所有面都要禁的
 #: 那个（它是历史实现）。见 :data:`FORBIDDEN_PER_SURFACE`。
 FORBIDDEN_COMMON: tuple[str, ...] = (
@@ -80,14 +95,18 @@ FORBIDDEN_COMMON: tuple[str, ...] = (
 #:
 #: 规则（方案 04 §5.1）：**只说当前执行层的调用面**。
 #:
-#: - 两个面都禁 ``obscura``——它已经不是执行层了；
-#: - obscura 面禁 ``camoufox``——那是**未来**的调用面，在 obscura 批的
-#:   声明里点名它，等于教模型一个它这批跑不出来的调用面；
-#: - camoufox 面**允许** ``camoufox`` / ``get_by_role``，且**必须**点名
-#:   （见 :class:`Test工具面` 的正向断言）。
+#: - 每个面都禁 ``obscura``——它已经不是执行层了；
+#: - obscura 面禁 ``camoufox`` **与** ``camofox``——那两个是**别的**调用面，
+#:   在 obscura 批的声明里点名它们，等于教模型一个它这批跑不出来的面；
+#: - camofox 面（**现行生产面**）禁 ``camoufox``——那是**已退役**的调用面；
+#: - camoufox 面（**只读存量面**）禁 ``camofox``——反过来同理；
+#: - 每个 aria 面**允许**点名**自己**的机制（``camofox`` 面点名
+#:   ``camofox``；``camoufox`` 面点名 ``camoufox`` / ``get_by_role``），
+#:   且**必须**点名（见 :class:`Test工具面` 的正向断言）。
 FORBIDDEN_PER_SURFACE: dict[str, tuple[str, ...]] = {
-    toolcatalog.SURFACE_OBSCURA: ("obscura", "camoufox"),
-    toolcatalog.SURFACE_CAMOUFOX: ("obscura",),
+    toolcatalog.SURFACE_OBSCURA: ("obscura", "camoufox", "camofox"),
+    toolcatalog.SURFACE_CAMOUFOX: ("obscura", "camofox"),
+    toolcatalog.SURFACE_CAMOFOX: ("obscura", "camoufox"),
 }
 
 
@@ -757,28 +776,37 @@ class Test工具面:
         with pytest.raises(ValueError):
             toolcatalog.surface_of_driver("playwright-never-heard-of-it")
 
-    def test_目标编码的工具必须点名camoufox(self):
-        """**正向断言**（方案 04 §5.1）。
+    def test_目标编码的工具必须点名本面(self):
+        """**正向断言**（方案 04 §5.1 沿用到 camofox 面）。
 
         目标编码从 ``{tag,label}`` 变成 ``{role,name}`` 之后，模型得知道
-        「这个 name 怎么用」——不点名 ``camoufox`` / ``get_by_role``，
-        有人「顺手」把措辞改回抽象说法时测试不会红，而数据会静默地
-        退回到「脱离本项目不成立」的状态。
+        「这个 name 怎么用」——不点名**本面的机制**，有人「顺手」把措辞
+        改回抽象说法时测试不会红，而数据会静默地退回到「脱离本项目
+        不成立」的状态。
+
+        ⚠️ **逐面点名、各自点名自己**：camofox 面（现行生产面）必须
+        点名 ``camofox``；camoufox 面（只读存量面）必须点名
+        ``camoufox`` / ``get_by_role``。在 camofox 面里点名 camoufox
+        （或反过来）⇒ 模型被教了一个**它这批跑不出来**的机制。
         """
-        target_bearing = [
-            d for d in toolcatalog.visible_defs(toolcatalog.SURFACE_CAMOUFOX)
-            if d.param("role") is not None
-        ]
-        assert target_bearing, "camoufox 面没有带 role 参数的工具——目标编码没接上"
-        for d in target_bearing:
-            blob = (d.instruction + " " + " ".join(p.desc for p in d.params)).lower()
-            assert "camoufox" in blob or "get_by_role" in blob, (
-                f"{d.name} 的说明既没点名 camoufox 也没点名 get_by_role——"
-                f"模型学不会「匹配到多个元素时怎么办」"
-            )
+        for surface, must in (
+            (toolcatalog.SURFACE_CAMOFOX, ("camofox",)),
+            (toolcatalog.SURFACE_CAMOUFOX, ("camoufox", "get_by_role")),
+        ):
+            target_bearing = [
+                d for d in toolcatalog.visible_defs(surface)
+                if d.param("role") is not None
+            ]
+            assert target_bearing, f"{surface} 面没有带 role 参数的工具——目标编码没接上"
+            for d in target_bearing:
+                blob = (d.instruction + " " + " ".join(p.desc for p in d.params)).lower()
+                assert any(w in blob for w in must), (
+                    f"{surface} 面的 {d.name} 的说明没点名 {must}——"
+                    f"模型学不会「匹配到多个元素时怎么办」"
+                )
 
     def test_两个面的同名工具参数不同(self):
-        """``click`` 在两个面里**必须**是两条不同的声明。
+        """``click`` 在 obscura 面与 aria 面里**必须**是两条不同的声明。
 
         有人图省事把两边并成一条（比如按 ``tag``/``label`` 与 ``role``/
         ``name`` 都列上）时，模型会学到「有时按标签点、有时按角色点」——
@@ -790,22 +818,52 @@ class Test工具面:
         assert {p.name for p in obsc.params} != {p.name for p in camo.params}
         assert "role" not in obsc.params and "tag" not in camo.params
 
-    def test_读原语只在camoufox面(self):
+    def test_两张aria面的同名工具说明不同(self):
+        """**同一张方言、两种语义 ⇒ 说明必须分开**（2026-10-26）。
+
+        camoufox 面与 camofox 面的 ``click`` **参数完全相同**
+        （都是 ``role``/``name``）——但**定位语义不同**：
+
+        - camoufox 面：``get_by_role(role, name=name, exact=True)``——精确；
+        - camofox 面：上游是 ``getByRole(role, {name}).nth(nth)``——
+          **没有 exact**，名字走大小写不敏感的**子串匹配**。
+
+        ⇒ 参数相同、说明必须不同。若 camofox 面照抄 camoufox 面的
+        ``exact=True``，就是教模型一个**引擎不保证**的性质——
+        「名字是别人的子串」时它会点错，而报告上看不出异常。
+        """
+        camo = toolcatalog.by_name("click", toolcatalog.SURFACE_CAMOUFOX)
+        camf = toolcatalog.by_name("click", toolcatalog.SURFACE_CAMOFOX)
+        assert camo is not None and camf is not None
+        assert {p.name for p in camo.params} == {p.name for p in camf.params}
+        assert camo.instruction != camf.instruction, (
+            "两张 aria 面的 click 说明一样——其中一个面的定位语义被写错了"
+        )
+        assert "exact" in camo.instruction.lower()
+        assert "exact" not in camf.instruction.lower(), (
+            "camofox 面写了 exact=True——上游没有 exact，是子串匹配"
+        )
+
+    def test_读原语只在aria面(self):
         """pull 模式才有「读」这个动作（方案 15 §5.4）。
 
         obscura 面是 push 模式：观察由执行器推给模型，模型没有读原语。
         把它加进 obscura 面 = 告诉模型一个它那批**调用不了**的工具，
         训出来的 ``tool_calls`` 会被运行时拒掉。
+
+        两张 aria 面（camoufox / camofox）**共用同一份**读原语声明
+        ——一个词表，不造第二套。
         """
         for d in toolcatalog.defs_of(toolcatalog.SURFACE_OBSCURA):
             assert d.family != "collection", (
                 f"obscura 面混进了读原语 {d.name}——那是 pull 模式的东西"
             )
-        cams = [d.name for d in toolcatalog.defs_of(toolcatalog.SURFACE_CAMOUFOX)
-                if d.family == "collection"]
-        assert cams == ["snapshot", "interactive", "links"], (
-            f"camoufox 面的读原语与驱动原语对不上: {cams}"
-        )
+        for surface in (toolcatalog.SURFACE_CAMOUFOX, toolcatalog.SURFACE_CAMOFOX):
+            cams = [d.name for d in toolcatalog.defs_of(surface)
+                    if d.family == "collection"]
+            assert cams == ["snapshot", "interactive", "links"], (
+                f"{surface} 面的读原语与驱动原语对不上: {cams}"
+            )
 
     def test_基础设施动作在两个面里都不可见(self):
         """``new_tab`` / ``close_tab`` 是执行器自己的动作。

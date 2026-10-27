@@ -20,7 +20,7 @@
 探针只验接线，不验业务结论：这里不比「选出的站对不对」，
 那要对着真实存档读 evidence（CLAUDE.md：每次真实运行后逐条核对）。
 
-**两个实现都能跑**（P3-β 起）：``--driver obscura|camoufox``。P3-β 的完成判据
+**两个实现都能跑**（P3-β 起）：``--driver obscura|camofox``。P3-β 的完成判据
 是「``search`` 步骤的标题抽取与 obscura 逐条对齐」——两边各跑一次，比
 ``raw 键`` / ``raw 数组长度`` / ``配成 {url:title} 对数``三行即可；
 **探针不判等**，因为两面的页面本身会因指纹/时区/locale 略有差异，
@@ -30,7 +30,7 @@
 
     export OBSCURA_EXE=/path/to/obscura.exe
     uv run python -m trajectory_pipeline.executor.browser.probe_result_titles
-    uv run python -m trajectory_pipeline.executor.browser.probe_result_titles --driver camoufox
+    uv run python -m trajectory_pipeline.executor.browser.probe_result_titles --driver camofox
 """
 
 from __future__ import annotations
@@ -100,16 +100,16 @@ async def _run(driver: Any, *, label: str) -> int:
 
 async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--driver", choices=("obscura", "camoufox"), default="obscura")
+    parser.add_argument("--driver", choices=("obscura", "camofox"), default="obscura")
     args = parser.parse_args(argv)
 
-    if args.driver == "camoufox":
-        from trajectory_pipeline.executor.browser.camoufox_driver import CamoufoxDriver
-        from trajectory_pipeline.executor.browser.camoufox_session import CamoufoxSession
+    if args.driver == "camofox":
+        from trajectory_pipeline.executor.browser.camofox_driver import CamofoxDriver
+        from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
 
-        session = await CamoufoxSession.launch()
+        session = await CamofoxSession.launch()
         async with session:
-            return await _run(CamoufoxDriver(session), label="camoufox")
+            return await _run(CamofoxDriver(session), label="camofox")
 
     # ``async with`` 不是可选的：McpClient 的 initialize 握手在 __aenter__ 里，
     # 漏掉它的症状是每一次 tool 调用都回「MCP 会话未初始化」——

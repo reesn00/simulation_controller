@@ -805,7 +805,9 @@ def _require_surface_fields(gid: str, row: Mapping[str, Any]) -> tuple[str, str]
             f"{gid} 缺 access_surface（方案 20 §R2，O-d 必填）：断言一个标签就得说出"
             "**在哪张面上**看到的——自己开浏览器看填 "
             f"{access_surface.SURFACE_HUMAN!r}；看的是 P1 存档里的采集结果填 "
-            f"{access_surface.SURFACE_CAMOUFOX!r} / {access_surface.SURFACE_OBSCURA!r}。"
+            f"{access_surface.SURFACE_CAMOFOX!r}（现行）/ "
+            f"{access_surface.SURFACE_CAMOUFOX!r}（存量）/ "
+            f"{access_surface.SURFACE_OBSCURA!r}。"
             "没开浏览器也没有存档证据 ⇒ 这一行不该有 label（fail-closed，不按默认面补）"
         )
     try:
@@ -847,8 +849,8 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     agent 被拦」这件事永远算不清是面还是模型。两种合法来源：
 
     - 自己开浏览器看的 ⇒ ``human-browser`` + 打开的**那一刻**；
-    - 看的是 P1 存档里的采集结果 ⇒ 那张面的代号（``camoufox-plain`` /
-      ``obscura-plain``）+ 存档里的采集时刻。
+    - 看的是 P1 存档里的采集结果 ⇒ 那张面的代号（``camofox-plain`` /
+      ``obscura-plain`` / ``camoufox-plain``〔只读存量〕）+ 存档里的采集时刻。
 
     没开浏览器也没有存档证据 ⇒ **这一行不该有 label**（也就没有面可填）——
     这正是 fail-closed 想拦住的那种「凭印象标一行」。缺栏 / 面代号认不出 /
