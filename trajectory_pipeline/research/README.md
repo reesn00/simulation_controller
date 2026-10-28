@@ -38,6 +38,13 @@ research/
 │  ├─ outcomes.jsonl           **当前有效轮**（INC43 轮，75 对直采命中 79 行）
 │  ├─ plan_from_corpus.py      离线：**从存量存档反推「重跑计划」**（M-44 后那批 28 条）
 │  │                            同一任务实例重跑（不是 `cli gen` 重采样新任务）
+│  ├─ plan_hardfail_rerun.py   离线：**从批次存档反推「硬故障重跑计划」**（增量九十六那 26 条）
+│  │                            ⇒ 只收「同参数重跑就会不同」的那族（B1/B2/B4a），
+│  │                            B4b（token 上限撞顶）与 B3/B5/B6 归「先调参」
+│  ├─ compare_hardfail_rerun.py  离线：**新旧两批对照**——那批硬故障现在有没有变成真结论
+│  │                              （对齐 = **两边各算 title + host，任一相等即配上**：
+│  │                              旧行多是跳转链⇒只有标题，新行多是解析后地址⇒只有 host，
+│  │                              各取一个键**永远对不上**；证据档分强弱，**软证据不与强证据混算**）
 │  └─ rounds/                  历史轮次快照，**已被 outcomes.jsonl 取代**，仅留痕
 │     ├─ inc42_backup.jsonl       INC43 修复前的基线
 │     ├─ inc43_backup.jsonl       INC44 A/B 的「旧轮」
@@ -123,6 +130,14 @@ research/
 │                                           （原 evidence 是 obscura 旧文案 + 200 字截断 ⇒ 机器码没落进去）
 │  ├─ gold_candidate_drift.py        **冻结的金标候选集 ↔ 负样本池的漂移读数**（离线；
 │  │                                  去重键 / 按行两个口径 + `--pool-before` 做「本轮新增」对照）
+│  ├─ failure_mode_profile.py        **批次失败模式画像**（离线；按证据首段把每条 outcome
+│  │                                  归到 B1/B2/B4a/B4b/遍历超时/环境级阻断/结论类；
+│  │                                  `--tasks` 做**同任务集**对照——重跑批是专挑有硬故障的
+│  │                                  任务跑的 ⇒ 整批比整批是**条件不同**的比法）
+│  ├─ h01_unresolved_rebucket.py + .json  **H-01 重测**：`unresolved` 剩余桶里有多少是
+│  │                                  「机器本可以判出来」的（**离线**；两个子族各用感知层
+│  │                                  **现成判据**——`infer_access_defect` 查页面正文 /
+│  │                                  `classify_paywall` 查 agent 叙述；只算正文真抓到了的）
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
 │  └─ plan-camoufox-prod1.json  **第一批 camoufox 生产批次**的 12 条计划（seed 20261022；第二批复用同一份⇒前后可比）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）
@@ -349,6 +364,31 @@ uv run python trajectory_pipeline/research/probes/q23_annotate_kept_rows.py --re
 
 ```
 
+```powershell
+# 硬故障重跑：先出计划，再起批（**必须串行**——上游 lock_queue 会毁掉别人的页）
+uv run python trajectory_pipeline/research/recollect/plan_hardfail_rerun.py `
+    --out trajectory_pipeline/output/pipeline/plan_rerun_hardfail.json `
+    --batch-id rerun-hardfail-2026-10-28
+
+uv run python -m trajectory_pipeline.executor.cli run `
+    --plan trajectory_pipeline/output/pipeline/plan_rerun_hardfail.json `
+    --executor-mode agent --driver camofox --perceptor llm --log-level info
+
+# 跑完：新旧对照（读存档，按「title + host 任一相等」对齐，证据档分开报）
+uv run python trajectory_pipeline/research/recollect/compare_hardfail_rerun.py
+
+# 跑完：失败模式画像（**同任务集**对照——分母一致才可比）
+uv run python trajectory_pipeline/research/probes/failure_mode_profile.py `
+    --batch rerun-prod-m44-2026-10-27 `
+    --batch rerun-hardfail-2026-10-28 `
+    --tasks E002,E017,E021,T018,T024,T025,T031,T042,T054 --compare
+
+# H-01 重测：`unresolved` 剩余桶里「机器本可以判出来」的条数（**离线**；读全库存档）
+# ⚠️ **判据不手抄词表**——两个子族各调感知层现成函数（`infer_access_defect` / `classify_paywall`）。
+# ⚠️ 子族②（agent 叙述）命中是「**线索**」不是「结论」——叙述是模型自述，口径见台账 Q-25。
+uv run python trajectory_pipeline/research/probes/h01_unresolved_rebucket.py
+```
+
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、
 `probes/inc45_probe_sohu.py`、`probes/inc45_probe2_sohu.py`、
 `probes/m30_live_check.py`、`probes/cf_access_boundary.py`、
@@ -364,14 +404,24 @@ uv run python trajectory_pipeline/research/probes/q23_annotate_kept_rows.py --re
 `probes/prompt_ab_anchor.py`（调 LLM 裁判）。
 其余全部离线。
 
-**离线但会读存档的三支**：
+**离线但会读存档的七支**：
 `probes/corpus_inventory.py`（盘上 P1 存档按 task 汇总：份数 / 面 / 形态 / 分支分布 /
 耗时——**跑之前先看清「现在有哪些任务」**）·
 `probes/gold_candidate_drift.py`（冻结的金标候选集 ↔ 负样本池的**漂移读数**——每次动池
 之后量一次；`--pool-before` 算「本轮新增漂移」）·
 `recollect/plan_from_corpus.py`（**从存量存档反推重跑计划**：同一任务实例重跑，
 不是 `cli gen` 重采样新任务；挑实例时**persona 维度齐全优先于站点数**
-——站点最多的那份常常是 p0 校准跑、provenance 已被覆盖）。
+——站点最多的那份常常是 p0 校准跑、provenance 已被覆盖）·
+`recollect/plan_hardfail_rerun.py`（**从批次存档反推硬故障重跑计划**：判据只收
+「同参数重跑就会不同」的那族；实例来源必须是**批次存档**本身 ⇒ 新旧两份才能逐行对照）·
+`recollect/compare_hardfail_rerun.py`（**新旧两批对照**：硬故障现在有没有变成真结论；
+对齐 = **两边各算 title + host，任一相等即配上**——旧行多是跳转链⇒只有标题，
+新行多是解析后地址⇒只有 host，各取一个键**永远对不上**；证据档分强弱，
+**软证据不与强证据混算**）·
+`probes/failure_mode_profile.py`（**批次失败模式画像**：按证据首段归族；
+`--tasks` 做同任务集对照——**分母一致才可比**，整批比整批会被「挑的是有硬故障的任务」带偏）·
+`probes/h01_unresolved_rebucket.py`（**H-01 重测**：`unresolved` 里「机器本可以判出来」的
+条数——两个子族各调感知层现成判据，**不手抄词表**）。
 
 **哪些脚本会起真浏览器**：`probes/m30_live_check.py`、`probes/cf_access_boundary.py`、
 `probes/inc73_field_check.py`、`probes/inc73_action_replay.py`、

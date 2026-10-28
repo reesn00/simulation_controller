@@ -197,16 +197,27 @@ def _write_one(
 
 
 #: 真负样本分支。**与 :data:`trajectory_pipeline.executor.branches.NON_SAMPLE_BRANCHES`
-#: 互补**：这里列的是「在 NCN 之外、确实进负样本池」的那部分。
+#: 和 :data:`trajectory_pipeline.executor.branches.COLLECTION_SIDE_BRANCHES`
+#: 互补**：这里列的是「既不是『没判出来』、也不是『这次没看到』、
+#: **确实进负样本池**」的那部分。
 #:
-#: 必须自己持有一份而**不 import executor**——P2 不 import executor 是契约。
-#: 两份表靠 :func:`trajectory_pipeline.executor.branches.all_branches` ↔
-#: 这里字面量间接同步。漂移的后果：报表上「负样本 +1」但负样本池没并池——
-#: 与 §5.16 静默扩大爆炸半径同源。
+#: 必须自己持有一份而**不 import executor**——P2 不 import executor 是契约
+#: （P2 同样不 import 上游的 ``perception``：P2 在感知层下游）。
+#: 两份表的**同步靠测试强制**（``tests/unit/test_builder.py`` 里
+#: ``test_NEGATIVE_SAMPLE_BRANCHES与executor对得上``）——那张测试断言的是
+#: **集合相等**，少一支多一支都红。
 #:
-#: 改名要同时改 :mod:`trajectory_pipeline.executor.branches.BRANCH_LABELS`
-#: 配套的 :data:`trajectory_pipeline.executor.branches.NEGATIVE_SAMPLE_BRANCHES`
-#: （见 executor 侧注）。
+#: ⚠️ **这张表少一支的后果是「报表少算」，不是「样本不入池」**——
+#: 并池走 executor 侧
+#: :attr:`~trajectory_pipeline.executor.branches.SiteOutcome.is_negative_sample`
+#: （两段排除），与本表**各算各的**。2026-10-28 实测：本表漏了
+#: ``subscription_wall`` 等 8 支 ⇒ ``cli build`` 报「真负样本 154 条」，
+#: 而 P2 样本里属真负分支的实为 306 条 ⇒ **少算 152 条**
+#: （113 ``subscription_wall`` + 37 ``login_wall_or_blocked``
+#: + 2 ``trailer_only``）；``cli check-archives`` 用的是 executor 侧判据
+#: ⇒ **两个报表对同一件事给出两个数**，读的人只能猜哪个对。
+#:
+#: 改名要同时改 :mod:`trajectory_pipeline.executor.branches.BRANCH_LABELS`。
 #:
 #: ⚠️ **``blocked`` 不在这张表里**（2026-10-26 · R1）。``NON_SAMPLE_BRANCHES``
 #: 之外还有**第二段排除**：executor 侧
@@ -214,18 +225,30 @@ def _write_one(
 #: ——「这次没看到」不是「这里看不了」。一次反爬拦截对站点性质零信息
 #: （同一 camoufox 指纹、同一天，10 个判过 CF 挑战的目标里 6 个当天
 #: 就进得去），而四周前同一机制产出的 4 条「CF 挑战页 ⇒ no_play_control」
-#: 正是这套判据下最贵的那类假负样本。P2 不能 import 那张表，所以
-#: **靠 :func:`trajectory_pipeline.executor.branches.all_branches` 减掉两张表**
-#: 这条同步测试看着（``tests/unit/test_builder.py``）。
+#: 正是这套判据下最贵的那类假负样本。
 NEGATIVE_SAMPLE_BRANCHES: frozenset[str] = frozenset(
     {
-        "not_play_site",  # 判断点 ①
-        "unreachable_hard",  # ② 导航失败
-        "login_required",  # ② 的细分：登录后可免费看
-        "broken",  # ② 的细分：404；媒体损坏形态见 media_signal
-        "no_play_control",  # ③
-        "component_unverified",  # ④
-        "partial_free",  # ④ 的细分：试看/预告后付费
+        # ── 判断点 ①：候选本身不是「这里看不了」的地方 ──
+        "not_play_site",  # 不是播放站点
+        "not_aggregator",  # 不是影视聚合站 / 导航站
+        "aggregator_no_entries",  # 聚合站上没有正式影视站入口
+        "not_article",  # 不是文章 / 社区讨论页
+        "article_no_links",  # 文章页没有可引荐的影视站外链
+        "no_site_search",  # 首页型候选没有站内搜索框
+        "site_search_no_results",  # 站内搜索未产出任何子候选
+        # ── 判断点 ②：站本身的问题 ──
+        "unreachable_hard",  # 站点不可达（DNS 解析失败 / 连接被拒）
+        "broken",  # 内容损坏（404 / 媒体不可解码 / duration=0）
+        "login_required",  # 登录后可免费观看（agent 无登录态）
+        "subscription_wall",  # 有播放页，但需订阅/付费
+        # ── 判断点 ③：页面上没有播放控件 ──
+        "no_play_control",
+        # ── 判断点 ④：控件在，但确认不了能不能用 ──
+        "component_unverified",
+        "partial_free",  # 有免费部分（试看/预告），完整内容需付费
+        "trailer_only",  # 只有预告片，播放资源不存在
+        # ── 已废弃的合并态：仍在池里（34 行）⇒ 仍算真负样本 ──
+        "login_wall_or_blocked",
     }
 )
 

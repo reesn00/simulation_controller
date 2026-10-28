@@ -305,11 +305,22 @@ class Test契约:
         assert not offenders, f"builder 不该 import executor: {offenders}"
 
     def test_NEGATIVE_SAMPLE_BRANCHES与executor对得上(self):
-        """两份表必须含同样的真负样本分支——漂移是负样本池静默变少的源头。
+        """两份表必须含**同样的**真负样本分支——漂移是报表口径分叉的源头。
 
         ⚠️ executor 侧是**两段排除**（无题的兜底分支 + 采集侧账），
         P2 这份是「进池」的正表，所以它要与**两张表都**不相交
-        （2026-10-26 · R1：``blocked`` 从真负样本表里拿掉）。"""
+        （2026-10-26 · R1：``blocked`` 从真负样本表里拿掉）。
+
+        ⚠️ **断言的是「集合相等」，不是「不相交 + 是子集」**
+        （2026-10-28 修）。原来的断言**少一支不红**⇒ 实测本表漏了
+        ``subscription_wall`` 等 8 支 ⇒ ``cli build`` 报「真负样本 154 条」
+        而实际 306 条 ⇒ 与 ``cli check-archives``（executor 侧判据）
+        **两个报表对同一件事给出两个数**，读的人只能猜哪个对。
+
+        ⚠️ ``login_wall_or_blocked`` 是**已废弃的合并态**（不在
+        ``all_branches`` 里），但池里仍有 34 行 ⇒ 它**仍是真负样本**，
+        显式列在这张表里；``all_branches`` 之外的分支只允许它一个。
+        """
         from trajectory_pipeline.perception.questions import all_branches
         from trajectory_pipeline.executor.branches import (
             COLLECTION_SIDE_BRANCHES,
@@ -317,14 +328,19 @@ class Test契约:
         )
         all_b = set(all_branches())
         non_sample = set(NON_SAMPLE_BRANCHES)
+        collection_side = set(COLLECTION_SIDE_BRANCHES)
         ours = builder.NEGATIVE_SAMPLE_BRANCHES
         assert ours & non_sample == frozenset(), (
             f"builder 与 executor 口径打架: {ours & non_sample}")
-        assert ours & set(COLLECTION_SIDE_BRANCHES) == frozenset(), (
-            f"builder 把采集侧账当成负样本了: "
-            f"{ours & set(COLLECTION_SIDE_BRANCHES)}")
-        assert ours.issubset(all_b), (
-            f"builder 列了不在 all_branches 里的分支: {ours - all_b}")
+        assert ours & collection_side == frozenset(), (
+            f"builder 把采集侧账当成负样本了: {ours & collection_side}")
+        # ① 活跃分支：一张都不许少（少一支 = 报表少算，池却并了）
+        active = all_b - non_sample - collection_side
+        assert active <= ours, (
+            f"builder 漏了真负样本分支: {sorted(active - ours)}")
+        # ② 也不许多（多出来的那支必须显式登记：只有已废弃的合并态）
+        assert ours - all_b <= {"login_wall_or_blocked"}, (
+            f"builder 列了不在 all_branches 里的分支: {sorted(ours - all_b)}")
 
 
 class Test分代筛选:
