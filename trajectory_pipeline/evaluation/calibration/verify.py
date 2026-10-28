@@ -145,7 +145,26 @@ class VerifyError(Exception):
 
 
 def _entry_key(entry: Mapping[str, Any]) -> tuple[str, str]:
-    return (str(entry.get("golden_id") or ""), str(entry.get("dimension") or ""))
+    """条目的**配对键** = ``(行标识, 维度)``。
+
+    ⚠️ **行标识取 ``golden_id_legacy`` 优先**（v14 起的 id 迁移）：
+    池行候选的 ``golden_id`` 换过一次口径（行号后缀 → 分支后缀），
+    换键时旧 id 留在行里的 ``golden_id_legacy`` 字段 ⇒ **同一行在迁移
+    前后是两个键**。
+
+    为什么不按新键配对：迁移只换键、不换行 ⇒ 按新键配对会让**同一行在
+    前后两版里配不上**（"这行消失了"），而它其实一个字都没变。
+    回归集尤其致命——回归集里有换键行时，``verify`` 会以「两轮回归集不是
+    同一批行」直接退 2（测不成），**整对版本从此比不了**。
+
+    ⚠️ 取 ``legacy`` 优先而不是"两键都收"：两键都收会让迁移后的行在
+    快照里占两个键 ⇒ 多出 ``only_current`` ⇒ 差分统计自己把自己算成
+    "新增了一行"。
+    """
+    row_id = str(entry.get("golden_id_legacy") or "") or str(
+        entry.get("golden_id") or ""
+    )
+    return (row_id, str(entry.get("dimension") or ""))
 
 
 def index_entries(snapshot: Mapping[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:

@@ -27,7 +27,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.base import Decision, Observation
@@ -38,6 +40,8 @@ from trajectory_pipeline.perception.rule_perceptor import (
     PRICE_PATTERN,
     STRONG_PAYWALL_KEYWORDS,
     WEAK_PAYWALL_KEYWORDS,
+    access_evidence,
+    infer_access_defect,
     paywall_evidence,
 )
 # 2026-10-16 方案 12 阶段 G：``_same_page``（同页守卫的三特征比对）所有权
@@ -711,6 +715,127 @@ def _precondition_failed(
     return ""
 
 
+#: ② 的 ``access_control_type`` → 22 分支封闭集里的名字。**唯一一处**。
+#:
+#: 两条路共用这张表：
+#:
+#: - :func:`decision_branch`——脚本化 / LLM 感知层那条（模型答②，payload 带细分）；
+#: - :func:`terminal_shape_branch`——agent 自报放弃 / 预算耗尽那条
+#:   （owner 裁定 2026-10-28 · 台账 **Q-25 甲**：收口前对最后一页正文
+#:   跑一次感知层现成判据）。
+#:
+#: ⚠️ **两张表必然漂，漂起来的表现是「同一页，一个说 404 一个说不可达」**——
+#: 而这种不一致在报表上看不出异常（两个都是负分支）。
+ACCESS_DEFECT_BRANCH: Mapping[str, str] = MappingProxyType({
+    "login": "login_required",
+    "region": "blocked",
+    "captcha": "blocked",
+    "anti_bot": "blocked",
+    "not_found": "broken",
+    "paywall": "subscription_wall",
+})
+
+
+def _page_is_error_page(obs: Observation) -> tuple[bool, str]:
+    """「这一页**就是**那张错误页」——``broken`` 的前置事实核验。
+
+    返回 ``(成立, 不成立时的说明)``。
+
+    ⚠️ **为什么需要这道核**：``broken`` **进负样本池**（真负样本）⇒
+    判错就是**训练信号被污染**（教「这个站看不了」，其实页面正常）。
+    而正文里出现「已下架」「Not Found」这类词的**正常页**并不罕见
+    （详情页里别片的角标、页脚的错误码说明）⇒ 光看正文命中不够。
+
+    ⚠️ **判据是结构事实，不是词表，也不是阈值**：错误页**没有任何可交互
+    元素**（``elements_total == 0``）也**没有视频载体**
+    （``video_tag_count == 0``）；正常内容页实测 28–200 个元素。
+    实测（2026-10-28 · 全库 1224 个观察）：正文命中 ``not_found`` 的
+    **49 条全部是真错误页**（正文「404 Not Found nginx」「403 Forbidden
+    nginx」「Internal Server Error」，正文长 13–21 字），**假阳 0 条**；
+    而这 49 条**全部**满足上面两条结构事实 ⇒ 这道核**在当前语料上零代价**，
+    它挡的是**将来**那种「正常页里恰好提到 404」的形态。
+
+    ⚠️ **刻意不用正文长度当判据**：长度是阈值，而阈值掩盖不了
+    「站点只返回了 6 个字」这件事（见 :func:`decision_branch` 的说明）。
+    """
+    if obs.degraded:
+        return False, f"观察有降级项 {list(obs.degraded)}，正文不是完整页面"
+    if obs.elements_total:
+        return False, f"这一页有 {obs.elements_total} 个可交互元素，不是错误页"
+    if obs.video_tag_count:
+        return False, f"这一页有 {obs.video_tag_count} 个 video 标签，不是错误页"
+    return True, ""
+
+
+def terminal_shape_branch(
+    obs: Observation | None, *, site_url: str = ""
+) -> tuple[str, str]:
+    """收口前的**终局形态**判据（owner 裁定 2026-10-28 · 台账 **Q-25 甲**）。
+
+    返回 ``(分支, 依据)``；**分支为空串 = 没有机器可判的终局形态**
+    ⇒ 调用方落 ``unresolved``（fail-closed：不猜）。
+
+    ⚠️ **只用页面自己的正文**（``obs.body_text``）——agent 的叙述是
+    **模型自述**，不是页面证据（感知层词表的注释自己写着：
+    「LLM evidence 是『结论+证据』混合，『视频不存在』经常是**模型自述结论
+    而非页面文案**」）⇒ 子族②（拿叙述当证据）**不在本判据内**。
+
+    ⚠️ **两道护栏**，一道管「凭什么落这条分支」、一道管「这句话说的是谁」：
+
+    1. **前置事实**（:func:`_page_is_error_page`）——``broken`` 是**进池**的
+       分支（真负样本），判错就是**训练信号被污染**；
+    2. **归因对象**（``site_url``）——agent 能 ``goto`` **任意 URL** ⇒
+       收口时它看着的那一页**可能压根不是候选站**。那一页是 404 不等于
+       候选站是 404 ⇒ 主机对不上就落 ``unresolved``。
+
+    ⚠️ **比主机必须拿「解析后的候选站」比，不是拿候选 URL 比**：候选 URL
+    常常是搜索引擎的中转链（``www.baidu.com/link?url=<密文>``），而站点
+    本身在跳转之后（实测 163/188 条当前代 give-up 的候选主机与落点主机
+    不同）⇒ 拿候选 URL 比会把**全部**真阳性判成「归因对象不明」。
+    传进来的 ``site_url`` 必须是**落地后的地址**（:attr:`Observation.url`
+    就是它）。
+
+    ⚠️ **前置事实不成立就降级**，并把「为什么不成立」写进依据——理由文本是
+    审计记录，不能吞掉。
+    """
+    if obs is None:
+        return "", ""
+    body = obs.body_text or ""
+    if not body.strip():
+        return "", ""
+    if site_url:
+        obs_host = _host_of(obs.url)
+        site_host = _host_of(site_url)
+        if not obs_host or obs_host != site_host:
+            return "", (
+                f"最后一页不在候选站内（{obs.url or '（无 URL）'} vs {site_url}）"
+                f"⇒ 归因对象不明 ⇒ 落 unresolved"
+            )
+    kind = infer_access_defect(body)
+    if not kind:
+        return "", ""
+    branch = ACCESS_DEFECT_BRANCH.get(kind, "")
+    if not branch:
+        return "", ""
+    hit = access_evidence(body, kind=kind) or kind
+    if branch == "broken":
+        ok, why = _page_is_error_page(obs)
+        if not ok:
+            return "", (
+                f"页面正文命中终局形态 {kind}（{hit}），但前置事实不成立"
+                f"（{why}）⇒ 落 unresolved"
+            )
+    return branch, f"页面正文命中终局形态 {kind}（{hit}）⇒ 落 {branch}"
+
+
+def _host_of(url: str) -> str:
+    """URL 的主机名（小写）；解析不了返回空串。"""
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
 def decision_branch(decision: Decision) -> str:
     """Decision → 分支名。``None`` → ``unresolved``，否则取题绑定的负分支。
 
@@ -752,19 +877,20 @@ def decision_branch(decision: Decision) -> str:
         return "unresolved"
     # ② 的细分（见 questions._BRANCH_QUESTION 注释）：登录后可免费看、
     # 地区/验证码/反爬、404，都与「环境导航失败」（unreachable_hard）分开。
+    #
+    # ⚠️ **映射表不在这里写死**：② 的这五种细分与
+    # :func:`terminal_shape_branch`（agent 收口那条路）**共用**同一张
+    # :data:`ACCESS_DEFECT_BRANCH`——两张表分开写必然漂，而漂起来的表现是
+    # 「同一页，一个说 404 一个说不可达」，在报表上看不出异常。
     access = decision.payload.get("access_control_type")
-    if access == "login":
-        return "login_required"
-    if access in ("region", "captcha", "anti_bot"):
-        return "blocked"
-    if access == "not_found":
-        return "broken"
-    # ② 的付费墙细分（2026-10-24 方案 19 A 类）：会员视频未登录/未付费时
-    # 播放器报错（「发生了错误，请稍后再试」）而页面无显式「开通会员」
-    # 门禁短语——LLM 在②把「看不了」的真因归为付费墙时，落订阅墙，
-    # 与 login_required（登录后可免费）分开。
-    if access == "paywall":
-        return "subscription_wall"
+    if isinstance(access, str):
+        mapped = ACCESS_DEFECT_BRANCH.get(access, "")
+        if mapped:
+            # ② 的付费墙细分（2026-10-24 方案 19 A 类）：会员视频未登录/未付费时
+            # 播放器报错（「发生了错误，请稍后再试」）而页面无显式「开通会员」
+            # 门禁短语——LLM 在②把「看不了」的真因归为付费墙时，落订阅墙，
+            # 与 login_required（登录后可免费）分开。
+            return mapped
     # ④ 的细分（2026-10-12 阶段 1）：paywall_type 标明「有免费部分」时
     # 走 partial_free——试看/预告能看一部分，与整段锁死的订阅墙
     # （subscription_wall）成因不同，训练目标也不同。

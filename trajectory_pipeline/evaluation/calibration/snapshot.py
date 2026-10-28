@@ -269,11 +269,17 @@ def _entry(
     gold_access_surface: str = access_surface.SURFACE_UNRECORDED,
     pred_access_surface: str = access_surface.SURFACE_UNRECORDED,
     surface_comparable: bool | None = None,
+    golden_id_legacy: str = "",
 ) -> dict[str, Any]:
     if verdict not in VERDICTS:  # pragma: no cover - 由构造点保证
         raise ValueError(f"未登记 verdict {verdict!r}；先扩 VERDICTS")
     return {
         "golden_id": golden_id,
+        # ⚠️ **迁移期的旧 id**（v14 起）：池行候选换过 id 口径，旧 id 留在
+        # 冻结行里 ⇒ 跨版本配对按它配（``verify._entry_key``），否则同一行
+        # 在迁移前后配不上 ⇒ 回归集里有换键行时整对版本直接"测不成"。
+        # 旧快照没有这个字段 ⇒ 空串 ⇒ 配对键就是 ``golden_id``（不变）。
+        "golden_id_legacy": golden_id_legacy,
         "split": split,
         "dimension": dimension,
         "rubric_ref": rubric_ref,
@@ -324,6 +330,7 @@ def _hard_entry(
     gold_surface, pred_surface, comparable = _row_surfaces(row)
     return _entry(
         golden_id=str(row.get("golden_id") or ""),
+        golden_id_legacy=str(row.get("golden_id_legacy") or ""),
         split=split,
         dimension=HARD_DIM,
         rubric_ref=rubric_ref,
@@ -427,6 +434,7 @@ def _soft_entry(
     gold_surface, pred_surface, comparable = _row_surfaces(row)
     return _entry(
         golden_id=str(row.get("golden_id") or ""),
+        golden_id_legacy=str(row.get("golden_id_legacy") or ""),
         split=split,
         dimension=dimension,
         rubric_ref=rubric_ref,

@@ -9,11 +9,13 @@ from __future__ import annotations
 import pytest
 
 from trajectory_pipeline.executor.branches import (
+    ACCESS_DEFECT_BRANCH,
     BRANCH_LABELS,
     NON_SAMPLE_BRANCHES,
     RunLedger,
     UnknownBranch,
     decision_branch,
+    terminal_shape_branch,
 )
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.base import Decision, Observation, Q
@@ -161,6 +163,99 @@ class TestDecisionMapping:
         # 不再落合并态 login_wall_or_blocked。
         out2 = ledger.record_from("https://y.test/", dec(Q.IS_REACHABLE, False))
         assert out2.branch == "unresolved"
+
+
+class Test终局形态判据:
+    """Q-25 甲（owner 裁定 2026-10-28）：收口前对**最后一页正文**跑一次
+    感知层现成判据，命中就落那条分支。
+
+    ⚠️ **两道护栏**：前置事实（这一页是不是错误页）与归因对象（这一页
+    是不是候选站）。任一道不成立就降 ``unresolved``，并把「为什么不成立」
+    写进依据。
+    """
+
+    def _obs(self, **kw) -> Observation:
+        base = {
+            "url": "https://x.test/v/1",
+            "page_title": "404 Not Found",
+            "body_text": "404 Not Found nginx",
+        }
+        base.update(kw)
+        return Observation(**base)  # type: ignore[arg-type]
+
+    def test_404页落broken(self):
+        branch, why = terminal_shape_branch(self._obs())
+        assert branch == "broken"
+        assert "404 Not Found" in why
+
+    def test_没命中形态返回空(self):
+        branch, why = terminal_shape_branch(
+            self._obs(body_text="欢迎来到本站，这里有好多影视资源")
+        )
+        assert branch == ""
+        assert why == ""
+
+    def test_没有观察返回空(self):
+        assert terminal_shape_branch(None) == ("", "")
+
+    def test_前置事实不成立降级(self):
+        """正文命中词表 ≠ 这一页是错误页——有元素的页面降回 ``unresolved``。"""
+        branch, why = terminal_shape_branch(
+            self._obs(body_text="该剧已下架，请浏览其它片源", elements_total=12)
+        )
+        assert branch == ""
+        assert "前置事实不成立" in why
+
+    def test_有降级项不落broken(self):
+        """观察有降级项 ⇒ 正文不是完整页面 ⇒ 前置事实不成立。"""
+        branch, why = terminal_shape_branch(
+            self._obs(degraded=("press_unsupported",))
+        )
+        assert branch == ""
+        assert "前置事实不成立" in why
+
+    def test_归因对象不明降级(self):
+        """最后一页不在候选站上 ⇒ 那一页的形态说明不了候选站。"""
+        branch, why = terminal_shape_branch(
+            self._obs(url="https://other.test/v/1"),
+            site_url="https://x.test/v/1",
+        )
+        assert branch == ""
+        assert "归因对象不明" in why
+
+    def test_同站不同路径算同站(self):
+        branch, _why = terminal_shape_branch(
+            self._obs(url="https://x.test/v/2"),
+            site_url="https://x.test/v/1",
+        )
+        assert branch == "broken"
+
+
+class Test映射表单点:
+    """② 的细分映射**只有一张表**（:data:`ACCESS_DEFECT_BRANCH`）——
+    脚本化那条路（``decision_branch``）与 agent 收口那条路
+    （``terminal_shape_branch``）共用它。
+
+    ⚠️ **两张表必然漂**，而漂起来的表现是「同一页，一个说 404 一个说
+    不可达」——在报表上看不出异常（两个都是负分支）。
+    """
+
+    def test_两条路对同一细分给同一分支(self):
+        for access, expected in ACCESS_DEFECT_BRANCH.items():
+            assert decision_branch(
+                dec(Q.IS_REACHABLE, False,
+                    payload={"access_control_type": access})
+            ) == expected, f"② 的 {access} 细分在两条路上给了不同分支"
+
+    def test_映射值全在22分支封闭集内(self):
+        assert set(ACCESS_DEFECT_BRANCH.values()) <= set(BRANCH_LABELS)
+
+    def test_非字符串细分不炸(self):
+        """payload 是模型给的 ⇒ 形状不保证。查表前先挡一道。"""
+        assert decision_branch(
+            dec(Q.IS_REACHABLE, False,
+                payload={"access_control_type": ["login"]})
+        ) == "unresolved"
 
 
 class TestSerialization:

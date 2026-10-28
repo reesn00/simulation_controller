@@ -50,6 +50,7 @@ import json
 import math
 import pathlib
 import random
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
@@ -106,6 +107,20 @@ GOLDEN_ROOT = pathlib.Path(__file__).resolve().parent / "data"
 CANDIDATES_FILE = "candidates.jsonl"
 ANNOTATIONS_FILE = "annotations.jsonl"
 VERSIONS_INDEX = "versions.jsonl"
+#: **id 迁移映射表**（v14 起）：旧 id → 新 id。
+#:
+#: 存在的理由：池行候选的 id 口径在 v14 换过一次（行号后缀 → 分支后缀），
+#: 而**历史冻结档不可改写**（方案 11 §二）⇒ v3–v13 里的旧 id 仍在流通。
+#: 这张表让「旧 id」与「新 id」指向同一次访问 ⇒ **迁移期双 id 并存**。
+#:
+#: ⚠️ 它是**迁移期**的脚手架，不是长期真源：新旧 id 都指同一次访问这件事
+#: 由**注释**（谁在什么时候核过）担保，不由映射表担保。
+ID_ALIAS_FILE = "id_alias.json"
+
+#: 池行 id 后缀（分支）的合法形态。分支名进键 ⇒ 形态得管住：
+#: 脏字符进键 = 两个不同的池行算出同一个 id（人核标签挂错行）。
+#: 分支注册表里的名字全是 ``小写字母 + 下划线``，这里只放行这一族。
+_BRANCH_IN_ID = re.compile(r"^[a-z][a-z0-9_]*$")
 #: 采集侧账（方案 20 §R3）：落 ``--emit-disagreements`` 目录 ``v{N}/`` 下，
 #: 与 ``disagreements.jsonl`` **分开两个文件**——拦截笔数要能直接数，
 #: 混进卡里就只能靠过滤找（02 避坑 §3.7 要求拦截率分桶单列）。
@@ -271,6 +286,90 @@ def _load_json(path: pathlib.Path) -> dict[str, Any]:
 
 def _url_hash(url: str) -> str:
     return hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
+
+
+# --------------------------------------------------------------------------
+# id 迁移映射表（v14）：旧 id → 新 id
+# --------------------------------------------------------------------------
+#
+# 为什么需要这张表
+# ----------------
+# 池行候选的 id 口径换过一次（行号后缀 → 分支后缀，见
+# :func:`_scan_negative_pool` 的 docstring / M-42）。而**历史冻结档不可
+# 改写**（方案 11 §二）⇒ v3–v13 里的旧 id 仍在流通。
+#
+# ⇒ 迁移期必须**双 id 并存**：旧 id 照样能查到它指的那次访问，新 id 是
+# 现役口径。这张表就是那两个口径之间的桥。
+#
+# ⚠️ **它只认表里有的**（:func:`_resolve_gid`）：不在表里的 id 原样返回，
+# 不猜、不按 url 反推——反推会把「另一条不同的访问」当成同一条。
+
+
+def _load_alias_map(golden_root: pathlib.Path | str) -> dict[str, str]:
+    """读 id 迁移映射表（旧 id → 新 id）。**没有表 = 没有迁移**，返回空。
+
+    表读不出来 ⇒ **抛**（不是空表）：映射表坏了还当没有，会让旧 id 静默
+    失联——那正是这次要治的病。
+    """
+    path = pathlib.Path(golden_root) / ID_ALIAS_FILE
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GoldenError(f"{path} 读不出来：{exc}") from exc
+    raw = data.get("map") if isinstance(data, Mapping) else None
+    if not isinstance(raw, Mapping):
+        raise GoldenError(
+            f"{path} 的 `map` 字段不是对象 ⇒ 映射表坏了；"
+            "宁可报错也不当没有（旧 id 会静默失联）"
+        )
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _resolve_gid(gid: str, alias: Mapping[str, str]) -> str:
+    """顺着映射表把旧 id 换成新 id。
+
+    **只认表里有的**；表里没有就原样返回（不猜）。
+    映射表里有环 ⇒ 停在环上不转（fail-closed：环 = 表坏了，不是「转不动
+    就用原 id」）。
+    """
+    if not alias:
+        return gid
+    seen: set[str] = set()
+    cur = gid
+    while cur in alias and cur not in seen:
+        seen.add(cur)
+        cur = alias[cur]
+    return cur
+
+
+def _rekey_rows(
+    rows: Sequence[Mapping[str, Any]], alias: Mapping[str, str]
+) -> tuple[list[dict[str, Any]], int]:
+    """把一批冻结行的 ``golden_id`` 按映射表换成新口径。
+
+    旧 id **留在行里**（``golden_id_legacy``）⇒ **双 id 并存**：旧引用
+    （历史版本、外部工作表）仍能查到这行，新口径又是统一的那一套。
+
+    返回 ``(新行, 换键行数)``。
+    """
+    if not alias:
+        return [dict(r) for r in rows], 0
+    out: list[dict[str, Any]] = []
+    changed = 0
+    for row in rows:
+        old = str(row.get("golden_id") or "")
+        new = _resolve_gid(old, alias)
+        if new == old:
+            out.append(dict(row))
+            continue
+        r = dict(row)
+        r["golden_id"] = new
+        r["golden_id_legacy"] = old
+        changed += 1
+        out.append(r)
+    return out, changed
 
 
 # --------------------------------------------------------------------------
@@ -574,11 +673,26 @@ def _scan_negative_pool(
 
     ``access_surface`` 从池行的 ``driver`` 折算（方案 20 §R3）。池行是
     **2026-10-26 之后才开始带 ``driver``** 的 ⇒ 老行一律 ``unrecorded``；
-    历史池行**不回填**（并池是写入时的动作）。"""
+    历史池行**不回填**（并池是写入时的动作）。
+
+    id 口径（v14 起）：``{task}__{run}__{url_hash}__neg_{分支}``
+    --------------------------------------------------
+    **旧口径是 ``__neg{i:02d}``，``i`` = 池文件里的行号** ⇒ 池一增删，
+    后面所有行的 id 一起前移/后移 ⇒ **人核标签（按 ``golden_id`` 挂的）
+    静默掉线**（M-42；避坑指南 §8.32）。实测那次就掉了 **6/6 全线**，
+    而报表上**看不出任何异常**——只是「D10 分母少了几条」。
+
+    新口径用**分支**做后缀：分支在同 ``(task, run, url)`` 内唯一
+    （池的去重键就是 ``(task_id, url, branch)``）⇒ id **只依赖身份**，
+    池增删不动它 ⇒ 下一次重建候选集不会再炸。
+
+    ⚠️ 分支缺失 ⇒ **直接抛**（fail-closed）：没有分支就没有身份，
+    猜一个后缀 = 把这条挂到别人身上。
+    """
     neg_path = root / "negative.jsonl"
     rows = _load_jsonl(neg_path)
     out: list[dict[str, Any]] = []
-    for i, r in enumerate(rows):
+    for r in rows:
         key = (
             str(r.get("task_id", "")),
             str(r.get("run_id", "")),
@@ -586,6 +700,16 @@ def _scan_negative_pool(
         )
         if key in existing:
             continue
+        branch = str(r.get("branch") or "")
+        if not branch:
+            raise GoldenError(
+                f"池行 {key} 没有 branch ⇒ id 无从算起（fail-closed，不猜后缀）"
+            )
+        if not _BRANCH_IN_ID.match(branch):
+            raise GoldenError(
+                f"池行 {key} 的 branch={branch!r} 不是合法 id 后缀"
+                f"（只允许小写字母/数字/下划线）⇒ 换 id 口径，别让脏字符进键"
+            )
         persona = {
             k: r[k]
             for k in ("persona_id", "content_tier", "popularity", "genre")
@@ -593,7 +717,7 @@ def _scan_negative_pool(
         } or None
         out.append(
             {
-                "golden_id": f"{key[0]}__{key[1]}__{_url_hash(key[2])}__neg{i:02d}",
+                "golden_id": f"{key[0]}__{key[1]}__{_url_hash(key[2])}__neg_{branch}",
                 "source_kind": "negative_pool",
                 "task_id": key[0],
                 "run_id": key[1],
@@ -684,6 +808,33 @@ def cmd_candidates(args: argparse.Namespace) -> int:
     if not candidates:
         print("没有生成任何候选", file=sys.stderr)
         return 0
+
+    # 门禁：重建候选集**不许**让人核标签掉线（M-42 的老洞）。
+    #
+    # 掉线长这样：标注挂在 ``golden_id`` 上 ⇒ 候选集一重建，键对不上 ⇒
+    # 标注**静默**不参与冻结（D10 分母少几条，报表上看不出原因）。
+    # ⇒ 重建前先核一遍：每条标注的 id 要么在新候选集里，要么能按 id 迁移
+    # 映射表换到一条。两条都不行 ⇒ **拒绝重建**（不猜、不自动删标注）。
+    ann_path = golden_root / ANNOTATIONS_FILE
+    if ann_path.exists():
+        alias = _load_alias_map(golden_root)
+        new_ids = {str(c.get("golden_id") or "") for c in candidates}
+        ann_ids = {
+            str(r.get("golden_id") or "") for r in _load_jsonl(ann_path)
+        }
+        orphan = sorted(
+            gid
+            for gid in ann_ids
+            if gid not in new_ids and _resolve_gid(gid, alias) not in new_ids
+        )
+        if orphan:
+            raise GoldenError(
+                f"重建候选集会让 {len(orphan)} 条人核标注挂不上（**不重建**）："
+                f"{' / '.join(orphan[:8])}{' …' if len(orphan) > 8 else ''}。"
+                "⇒ 先跑 `rekey`（把旧 id 换成新 id，并写 id_alias.json）；"
+                "若这些访问是真的从原料里没了 ⇒ 由人确认后手工删那些标注，"
+                "**机器不替人删人核数据**"
+            )
 
     dst = golden_root / CANDIDATES_FILE
     if args.dry_run:
@@ -869,10 +1020,20 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     candidates = _load_jsonl(cand_path)
     known = {c["golden_id"]: c for c in candidates}
     labels = _load_branch_labels()
+    # id 迁移映射表（v14）：人手里的工作表可能还带着**旧 id** ⇒ 按表换成
+    # 新 id 再挂。表里没有的旧 id 不认（不猜）。
+    alias = _load_alias_map(golden_root)
+    # **双 id 并存**：旧 id 也能查到它指的那条候选（候选集重建前后都成立）
+    for _old, _new in alias.items():
+        if _new in known and _old not in known:
+            known[_old] = known[_new]
 
     ann_path = golden_root / ANNOTATIONS_FILE
     existing = _load_jsonl(ann_path)
-    by_key = {(r["golden_id"], r.get("round", 1)): r for r in existing}
+    by_key = {
+        (_resolve_gid(str(r["golden_id"]), alias), r.get("round", 1)): r
+        for r in existing
+    }
 
     inp = pathlib.Path(args.input)
     if not inp.exists():
@@ -880,11 +1041,16 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     new_rows = _load_jsonl(inp)
     merged: dict[tuple[str, int], dict[str, Any]] = dict(by_key)
     accepted = 0
+    migrated = 0
     for r in new_rows:
-        gid = str(r.get("golden_id") or "")
+        raw_gid = str(r.get("golden_id") or "")
+        gid = _resolve_gid(raw_gid, alias)
+        if gid != raw_gid:
+            migrated += 1
         if gid not in known:
             raise GoldenError(
-                f"标注里 {gid} 不在 {len(candidates)} 条候选中；先 candidates 或核对 id"
+                f"标注里 {raw_gid} 不在 {len(candidates)} 条候选中；先 candidates 或核对 id"
+                + (f"（按映射表换成 {gid} 仍不在）" if gid != raw_gid else "")
             )
         rnd = int(r.get("round", 1))
         if rnd not in (1, 2):
@@ -936,6 +1102,11 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     print(
         f"→ 已写 {ann_path}：累计初测 {r1} 条、retest {r2} 条（本次合并 {accepted} 条）"
     )
+    if migrated:
+        print(
+            f"  ↻ 其中 {migrated} 条按 id 迁移映射表换了键（旧 id → 新 id）；"
+            "标签内容一个字没动"
+        )
     if r2:
         intervals = sorted(
             x["interval_days"] for x in ordered if x.get("interval_days")
@@ -973,6 +1144,15 @@ def _annotate_dimensions_only(args: argparse.Namespace, golden_root: pathlib.Pat
     rows = _load_jsonl(inp)
     if not rows:
         raise GoldenError(f"{inp} 是空的")
+    # 迁移期：工作表可能还带着**旧 id** ⇒ 先按映射表换成新 id 再合并
+    # （换不了的不动 ⇒ merge 会明说「找不到对应标注」，不静默丢）。
+    alias = _load_alias_map(golden_root)
+    if alias:
+        rows = [
+            ({**r, "golden_id": _resolve_gid(str(r.get("golden_id") or ""), alias)}
+             if r.get("golden_id") else r)
+            for r in rows
+        ]
     try:
         fills = group_fills(rows)
         if not fills:
@@ -1012,12 +1192,167 @@ def _annotate_dimensions_only(args: argparse.Namespace, golden_root: pathlib.Pat
 
 
 # --------------------------------------------------------------------------
+# 换键（rekey）：池行候选 id 的口径迁移
+# --------------------------------------------------------------------------
+#
+# 旧口径 ``__neg{i:02d}``（``i`` = 池文件行号）⇒ 池一增删，后面所有行的
+# id 一起漂 ⇒ **人核标签（按 ``golden_id`` 挂的）静默掉线**（M-42）。
+# 新口径 ``__neg_{分支}``（见 :func:`_scan_negative_pool`）⇒ id 只依赖身份。
+#
+# ⚠️ 换的是**人核数据的键** ⇒ 标签内容一个字不动，但要人签
+# （owner 2026-10-28：「改键 = 动人核数据 ⇒ 需人签，owner 此消息即为签」）。
+
+#: **旧口径**的池行 id 形态（行号后缀）。只有这种 id 会随池增删漂移 ⇒
+#: 换键只对这类行有意义（存档行按 url 哈希、P2 行按 sample_id，都稳定）。
+_OLD_POOL_ID = re.compile(r"__neg\d{2,}$")
+
+
+def cmd_rekey(args: argparse.Namespace) -> int:
+    """换键：把**旧 id**（行号口径）换成**新 id**（分支口径）。
+
+    动的是**人核数据的键**，**标签内容一个字不动**。
+
+    做三件事
+    --------
+    1. 算旧→新映射表，写 ``id_alias.json``（**迁移期双 id 并存**的桥）；
+    2. 按表把 ``annotations.jsonl`` 里的 ``golden_id`` 换掉；
+    3. 报告**换不了**的旧 id（那次访问已经不在原料里了）——**不自动删**。
+
+    ⚠️ **历史冻结档不动**（方案 11 §二：改 label 走新版本，不改历史）⇒
+    v3–v13 里的旧 id 仍在流通 ⇒ 这就是映射表存在的理由。
+
+    ⚠️ **默认 dry-run**；``--apply`` 才写盘。
+    """
+    golden_root = pathlib.Path(args.golden_root)
+    root = pathlib.Path(args.root)
+    cand_path = golden_root / CANDIDATES_FILE
+    ann_path = golden_root / ANNOTATIONS_FILE
+    if not cand_path.exists():
+        raise GoldenError(f"{cand_path} 不存在；先跑 candidates")
+    old_rows = _load_jsonl(cand_path)
+
+    # 新口径的候选集（重建一次：P1 存档 + 负样本池；P2 样例的 id 是
+    # sample_id，本来就稳定，不参与换键）。
+    archives = _scan_archives(root)
+    keys = {(a["task_id"], a["run_id"], a["url"]): a for a in archives}
+    negatives = _scan_negative_pool(root, keys)
+    by_access: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for r in archives + negatives:
+        by_access.setdefault(
+            (
+                str(r.get("task_id")),
+                str(r.get("run_id")),
+                str(r.get("url")),
+            ),
+            [],
+        ).append(r)
+
+    mapping: dict[str, str] = {}
+    dangling: list[str] = []
+    ambiguous: list[str] = []
+    for r in old_rows:
+        old = str(r.get("golden_id") or "")
+        if not _OLD_POOL_ID.search(old):
+            continue  # 存档行 / P2 行：id 口径没变，不进映射表
+        key = (
+            str(r.get("task_id")),
+            str(r.get("run_id")),
+            str(r.get("url")),
+        )
+        hits = by_access.get(key, [])
+        if len(hits) > 1:
+            ambiguous.append(f"{old} → 同一次访问有 {len(hits)} 个候选")
+            continue
+        if not hits:
+            dangling.append(f"{old} → 这次访问已不在原料里")
+            continue
+        new = str(hits[0].get("golden_id") or "")
+        if new and new != old:
+            mapping[old] = new
+    if ambiguous:
+        raise GoldenError(
+            "换键遇到歧义（不猜）：\n  " + "\n  ".join(ambiguous)
+            + "\n⇒ 同一 id 解出多条候选 ⇒ 先人工核对池里的重复行，再跑 rekey"
+        )
+
+    alias = _load_alias_map(golden_root)
+    merged = dict(alias)
+    merged.update(mapping)
+
+    annos = _load_jsonl(ann_path) if ann_path.exists() else []
+    rekeyed: list[dict[str, Any]] = []
+    moved: list[tuple[str, str]] = []
+    seen_keys: dict[tuple[str, int], str] = {}
+    for r in annos:
+        old = str(r.get("golden_id") or "")
+        new = _resolve_gid(old, merged)
+        if new != old:
+            r = {**r, "golden_id": new}
+            moved.append((old, new))
+        k = (new, int(r.get("round", 1)))
+        if k in seen_keys and seen_keys[k] != old:
+            raise GoldenError(
+                f"换键后两条标注撞在同一键 {k}（{seen_keys[k]} / {old}）⇒ "
+                "不替人挑一条当真的"
+            )
+        seen_keys[k] = old
+        rekeyed.append(r)
+
+    print(f"旧口径 id（会漂的）：{sum(1 for r in old_rows if _OLD_POOL_ID.search(str(r.get('golden_id') or '')))} 条")
+    print(f"换键映射：{len(mapping)} 条（映射表原有 {len(alias)} 条）")
+    for old, new in list(mapping.items())[:20]:
+        print(f"  {old} → {new}")
+    if dangling:
+        print(f"⚠️ 换不了的旧 id {len(dangling)} 条（**不自动删**，人工看）：")
+        for d in dangling[:20]:
+            print(f"  {d}")
+    print(f"标注换键：{len(moved)} 条（标签内容一个字没动）")
+    for old, new in moved:
+        print(f"  {old} → {new}")
+
+    if not args.apply:
+        print("[dry-run] 加 --apply 才写盘")
+        return 0
+
+    alias_doc = {
+        "schema_version": "1",
+        "created_at": _now_iso(),
+        "note": (
+            "池行候选 id 的口径迁移（旧：行号后缀 `__neg{i:02d}` → "
+            "新：分支后缀 `__neg_{分支}`）。旧 id → 新 id。"
+            "**历史冻结档不改写** ⇒ v3–v13 里的旧 id 仍在流通，"
+            "这张表就是两个口径之间的桥（迁移期双 id 并存）。"
+        ),
+        "map": dict(sorted(merged.items())),
+    }
+    alias_path = golden_root / ID_ALIAS_FILE
+    alias_path.write_text(
+        json.dumps(alias_doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
+    print(f"→ 已写 {alias_path}（{len(merged)} 条映射）")
+    if ann_path.exists():
+        ordered = sorted(
+            rekeyed,
+            key=lambda r: (str(r.get("golden_id") or ""), int(r.get("round", 1))),
+        )
+        _dump_jsonl(ann_path, ordered, force=True)
+        print(f"→ 已写 {ann_path}（{len(ordered)} 条标注，{len(moved)} 条换了键）")
+    print(
+        "下一步：`candidates --force` 重建候选集（新口径）→ "
+        "`freeze --from-version <上一版>` 冻结新版本（行会自动按映射表换键）"
+    )
+    return 0
+
+
+# --------------------------------------------------------------------------
 # 冻结（freeze）
 # --------------------------------------------------------------------------
 
 
 def _labeled_rows(
-    candidates: Sequence[Mapping[str, Any]], annotations: Sequence[Mapping[str, Any]]
+    candidates: Sequence[Mapping[str, Any]],
+    annotations: Sequence[Mapping[str, Any]],
+    alias: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """把 round=1 标注合并进候选，产出「可冻结」样本。
 
@@ -1025,11 +1360,30 @@ def _labeled_rows(
     各行是在哪张面上、什么时候看到的。旧标注没有这两栏 ⇒ ``access_surface``
     落 :data:`access_surface.SURFACE_UNRECORDED`（面未声明），**不按默认面补**
     ——历史行不回填，跨面比较时它们本来就不可判定。
+
+    ``alias``（id 迁移映射表）：标注挂在**旧 id** 上时，按表换成新 id
+    再挂 ⇒ 迁移期人核标签不丢。**两条标注解析到同一个 id ⇒ 抛**：
+    那说明有人把同一个访问核了两次且键不一致，不能挑一条当真的。
     """
-    ann1 = {r["golden_id"]: r for r in annotations if r.get("round") == 1}
+    alias = alias or {}
+    ann1: dict[str, Mapping[str, Any]] = {}
+    origin: dict[str, str] = {}
+    for r in annotations:
+        if r.get("round") != 1:
+            continue
+        raw = str(r.get("golden_id") or "")
+        gid = _resolve_gid(raw, alias)
+        if gid in ann1 and origin.get(gid) != raw:
+            raise GoldenError(
+                f"两条 round=1 标注解析到同一个 id {gid!r}"
+                f"（{origin.get(gid)!r} 与 {raw!r}）⇒ 迁移期撞键，"
+                "不替人挑一条当真的"
+            )
+        ann1[gid] = r
+        origin[gid] = raw
     out = []
     for c in candidates:
-        a = ann1.get(c["golden_id"])
+        a = ann1.get(str(c.get("golden_id") or ""))
         if not a:
             continue
         row = dict(c)
@@ -1707,6 +2061,8 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     gold_refresh: dict[str, Any] = {"enabled": False}
     label_refresh: dict[str, Any] = {"enabled": False}
     code_refresh: dict[str, Any] = {"enabled": False}
+    id_migration: dict[str, Any] = {"enabled": False}
+    alias = _load_alias_map(golden_dir)
     if carrying:
         src_vdir = golden_dir / f"v{args.from_version}"
         if not src_vdir.exists():
@@ -1722,6 +2078,36 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             raise GoldenError(
                 f"{src_vdir} 下没有 {expected} 任何一个；没有可继承的切分"
             )
+        # id 迁移（v14 起）：池行候选的 id 口径换过一次（行号后缀 → 分支
+        # 后缀）⇒ 历史冻结档里的旧 id 按映射表换成新 id。
+        # ⚠️ **历史档本身不动**（改的是新版本里的行）；旧 id 留在行里
+        # （``golden_id_legacy``）⇒ **迁移期双 id 并存**。
+        if alias:
+            total_changed = 0
+            migrated_parts: dict[str, list[dict[str, Any]]] = {}
+            for split, rows in parts.items():
+                new_rows, changed = _rekey_rows(rows, alias)
+                migrated_parts[split] = new_rows
+                total_changed += changed
+            parts = migrated_parts
+            id_migration = {
+                "enabled": True,
+                "source": ID_ALIAS_FILE,
+                "rows_rekeyed": total_changed,
+                "note": (
+                    "按 id 迁移映射表把旧 id 换成新 id（旧 id 留在 "
+                    "`golden_id_legacy` 字段）⇒ 迁移期双 id 并存。"
+                    "**键变了，行内容没变**（金标 / code / 分数一个字没动）"
+                ),
+            }
+            if total_changed:
+                print(
+                    f"⚠️ id 迁移：{total_changed} 行的 golden_id 按 {ID_ALIAS_FILE} "
+                    "换了键（旧 id 留在 golden_id_legacy）⇒ **与上一版逐行配对会少"
+                    f"这 {total_changed} 行**（与重采集同性质）；换来的是键不再随池"
+                    "增删漂移（M-42）",
+                    file=sys.stderr,
+                )
         if refresh_gold:
             parts, gold_refresh = _refresh_gold(parts, ann_path)
         if refresh_label:
@@ -1752,7 +2138,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             raise GoldenError(f"{ann_path} 不存在；先 annotate（冻结只含已人工标注样本）")
         candidates = _load_jsonl(cand_path)
         annotations = _load_jsonl(ann_path)
-        labeled = _labeled_rows(candidates, annotations)
+        labeled = _labeled_rows(candidates, annotations, alias)
         parts = {}
 
     site = [r for r in labeled if r["source_kind"] != "p2_sample"]
@@ -1894,6 +2280,10 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         # ``baseline_reset=false``：code 是被测的 pred 不是金标，重挂它不换
         # 尺子，本版与上一版仍逐行可比（与 gold/label 刷新相反）。
         "code_refresh": code_refresh,
+        # id 是否按迁移映射表换过键（M-42 的键口径迁移，v14 起）。
+        # **不是金标变动**：金标 / code / 分数一个字没动，只是键换了
+        # ⇒ 但「与上一版逐行配对」会少这几行（与重采集同性质）。
+        "id_migration": id_migration,
         # 采集面分布（方案 20 §R2）：**这一版的金标是在哪张面上看到的**。
         # ``unrecorded`` 是「面未声明」——旧行不回填，如实记成数，不是错误。
         # 跨面比较（R3 的 D-10）读它决定「能不能比」，所以它必须逐版落档：
@@ -3471,6 +3861,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="覆盖已存在的 candidates.jsonl"
     )
     p_cand.set_defaults(func=cmd_candidates)
+
+    p_rekey = sub.add_parser(
+        "rekey",
+        help=(
+            "换键：池行候选 id 从「行号口径」迁到「分支口径」——写 id_alias.json "
+            "并把 annotations.jsonl 的 golden_id 换掉（**标签内容不动**）。"
+            "默认 dry-run，--apply 才写盘"
+        ),
+    )
+    p_rekey.add_argument(
+        "--apply",
+        action="store_true",
+        help="真的写盘（默认只算不写）",
+    )
+    # ⚠️ ``--root`` / ``--golden-root`` 是**顶层**选项（子命令再定义一遍会
+    # 互相覆盖：子解析器的默认值会把顶层给的值冲掉）。
+    p_rekey.set_defaults(func=cmd_rekey)
 
     p_from_scout = sub.add_parser("from-scout", help="只读 scout 三件套 -> candidates.jsonl(quarantine 永不入)")
     p_from_scout.add_argument("--scout-dir", required=True,

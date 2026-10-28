@@ -54,6 +54,7 @@ from trajectory_pipeline.executor.browser.page_driver import (
 )
 from trajectory_pipeline.executor.steps import aggregator as aggregator_step
 from trajectory_pipeline.executor.steps import search as search_step
+from trajectory_pipeline.executor.steps.search import engine_redirect_engine
 from trajectory_pipeline.executor.steps.visit import VisitResult, enter_site
 
 
@@ -340,3 +341,110 @@ async def test_这次没打开不进池():
     await enter_site(_导航失败Driver(_这次没打开["超时"]), ledger, result)
     out = ledger.outcomes[0]
     assert out.is_negative_sample is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 判据三：跳转链上的**归因对象**（Q-24 甲 · owner 裁定 2026-10-28）
+# ═══════════════════════════════════════════════════════════════════════
+#
+# 上面两条问的是「打不开这件事是什么性质」；这一条问「**这个结论说的是谁**」。
+#
+# 百度结果给的 ``http://www.baidu.com/link?url=<密文>`` **不是站点**，是搜索
+# 引擎的中转端点。导航到它失败时，机器码证明的是「**这条中转链**打不开」，
+# 那个影视站**一次都没被识别过**（``landed_url`` 为空、call log 只有一跳）
+# ⇒ 「这个站真的看不了」这句话**没有可指的对象** ⇒ 不配记
+# ``unreachable_hard``（那是**站点性质**、进负样本池）。
+#
+# ⚠️ **机器码原文必须照录进 reason**（不丢证据）：判据从「站点不可达」降成
+# 「归因对象不明」，但「确实拒连了」这个事实要留在存档里。
+#
+# 实测代价（2026-10-28 · M-47）：那批 14 行新增池行里 **6 行（43%）** 是
+# 百度跳转链，全池 **41/407（10.1%）**。
+
+#: 百度结果给的**中转链**（形态照抄实测存档：密文是 base64url 串）。
+_百度中转链 = (
+    "http://www.baidu.com/link?url="
+    "TRj-DTQOgh8_n5pkc_N5jhk5RZsWvgq5H1VuqbeBKo-wgUB6BQ3_oLM2kThDlK7b"
+)
+
+#: 直站（不是中转链）——同样拒连，**该记的还得记**。
+_直站 = "https://movie.test/v/31445"
+
+
+async def _chain_branch(url: str, exc: Exception) -> tuple[str, str]:
+    """走 visit 链的进站段，返回 ``(分支, 证据)``。"""
+    ledger = RunLedger("T001")
+    result = VisitResult(
+        candidate=search_step.Candidate(url=url, text="电影", rank=1)
+    )
+    await enter_site(_导航失败Driver(exc), ledger, result)
+    assert ledger.outcomes, "这条链至少要记一条 outcome"
+    out = ledger.outcomes[0]
+    return str(out.branch), out.evidence
+
+
+@pytest.mark.parametrize("形态", sorted(_真不可达))
+async def test_跳转链上的拒连不记站点不可达(形态):
+    """⚠️ **归因对象不明 ⇒ 不配记 ``unreachable_hard``**（Q-24 甲）。
+
+    机器码再硬也只证明「这条链打不开」——那个影视站**一次都没被试过**。
+    """
+    branch, evidence = await _chain_branch(_百度中转链, _真不可达[形态])
+    assert branch == "unresolved", (
+        f"{形态}：中转链上的失败被记成了站点不可达——"
+        "那是把「这条链打不开」写成「那个站看不了」"
+    )
+    # 机器码原文照录（证据不丢）
+    assert "NS_ERROR" in evidence
+    assert "结果中转链" in evidence
+
+
+@pytest.mark.parametrize("形态", sorted(_真不可达))
+async def test_直站拒连仍记站点不可达(形态):
+    """⚠️ **不误伤**：直站拒连**照旧**记 ``unreachable_hard``。
+
+    护栏只拦「归因对象不明」那一种，不该把真负样本顺带降级——
+    降了就等于把「这里真的看不了」这个训练信号扔掉。
+    """
+    branch, _evidence = await _chain_branch(_直站, _真不可达[形态])
+    assert branch == "unreachable_hard"
+
+
+async def test_跳转链上的失败不进池():
+    """降级成 ``unresolved`` 之后**不进负样本池**——池里那行的断言是
+    「这里真的看不了」，而中转链失败证明不了这件事。"""
+    ledger = RunLedger("T001")
+    result = VisitResult(
+        candidate=search_step.Candidate(url=_百度中转链, text="电影", rank=1)
+    )
+    await enter_site(
+        _导航失败Driver(_真不可达["连接被拒"]), ledger, result
+    )
+    assert ledger.outcomes[0].is_negative_sample is False
+
+
+class Test中转链识别:
+    """:func:`~trajectory_pipeline.executor.steps.search.engine_redirect_engine`
+    的口径——**纯结构判断**（引擎 host + 路由 path + ``url=`` 参数键）。
+
+    ⚠️ **host 必须精确匹配**：``evil-www.baidu.com`` 也是 ``www.baidu.com``
+    的**后缀**，而那个 host 是**别的站**——把它当中转端点，就又拿别人的
+    失败替那个站背锅了。
+    """
+
+    def test_认得百度中转链(self):
+        assert engine_redirect_engine(_百度中转链) == "baidu"
+
+    def test_长得像的域名不算(self):
+        assert engine_redirect_engine(
+            "https://evil-www.baidu.com/link?url=abc"
+        ) == ""
+
+    def test_不是那个路由不算(self):
+        assert engine_redirect_engine("http://www.baidu.com/other?url=abc") == ""
+
+    def test_缺url参数不算(self):
+        assert engine_redirect_engine("http://www.baidu.com/link") == ""
+
+    def test_普通站点不算(self):
+        assert engine_redirect_engine("https://movie.test/link?url=abc") == ""

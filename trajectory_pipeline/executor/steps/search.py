@@ -267,6 +267,44 @@ def _is_result_redirect(parsed: Any, engine: str) -> bool:
     )
 
 
+def engine_redirect_engine(url: str) -> str:
+    """这个 URL 是**搜索引擎的结果中转路由**吗？返回引擎名（空串 = 不是）。
+
+    纯结构判断：**引擎 host + 路由 path + ``url=`` 参数键**三者齐备，
+    **不解密、不猜内容**——与 :func:`exclusion_reason` 同一套结构事实。
+
+    ⚠️ **为什么需要它**（台账 **Q-24 甲** · M-47）：百度结果给的
+    ``http://www.baidu.com/link?url=<密文>`` **不是站点**，是搜索引擎的
+    中转端点。导航到它失败时，机器码证明的是「**这条中转链**打不开」，
+    **不是**「那个影视站不可达」——归因对象从未被识别（``landed_url`` 为空、
+    call log 只有一跳）⇒ 「这里真的看不了」这句话**没有可指的对象**
+    ⇒ 不能记 ``unreachable_hard``（那是站点性质、进负样本池）。
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return ""
+    for engine, routes in RESULT_REDIRECT_ROUTES.items():
+        template = ENGINE_TEMPLATES.get(engine)
+        if not template:
+            continue
+        engine_host = (urlparse(template.split("{q}")[0]).hostname or "").lower()
+        # ⚠️ **精确匹配**（不用 endswith）：``evil-www.baidu.com`` 也是
+        # ``www.baidu.com`` 的后缀，而那个 host 是个**别的站**——把它当
+        # 搜索引擎的中转端点，就又拿别人的失败替那个站背锅了。
+        if host != engine_host:
+            continue
+        path = parsed.path or ""
+        if any(path == r or path.startswith(r + "/") for r in routes) and (
+            "url" in parse_qs(parsed.query or "")
+        ):
+            return engine
+    return ""
+
+
 def _is_undecodable_redirect(url: str, engine: str) -> bool:
     """是否「密文中转」链接——中转路由上 url= 存在但值**不是**明文 http。
 

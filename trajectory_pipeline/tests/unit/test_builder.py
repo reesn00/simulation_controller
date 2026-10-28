@@ -313,8 +313,9 @@ class Test契约:
 
         ⚠️ **断言的是「集合相等」，不是「不相交 + 是子集」**
         （2026-10-28 修）。原来的断言**少一支不红**⇒ 实测本表漏了
-        ``subscription_wall`` 等 8 支 ⇒ ``cli build`` 报「真负样本 154 条」
-        而实际 306 条 ⇒ 与 ``cli check-archives``（executor 侧判据）
+        ``subscription_wall`` 等分支 ⇒ 同一批 **126 存档 / 1227 条样本**下
+        旧窄表报 **155** 条、实际 **322** 条 ⇒ **少算 167 条**
+        ⇒ 与 ``cli check-archives``（executor 侧判据）
         **两个报表对同一件事给出两个数**，读的人只能猜哪个对。
 
         ⚠️ ``login_wall_or_blocked`` 是**已废弃的合并态**（不在

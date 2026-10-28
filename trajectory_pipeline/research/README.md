@@ -387,6 +387,16 @@ uv run python trajectory_pipeline/research/probes/failure_mode_profile.py `
 # ⚠️ **判据不手抄词表**——两个子族各调感知层现成函数（`infer_access_defect` / `classify_paywall`）。
 # ⚠️ 子族②（agent 叙述）命中是「**线索**」不是「结论」——叙述是模型自述，口径见台账 Q-25。
 uv run python trajectory_pipeline/research/probes/h01_unresolved_rebucket.py
+
+# v14 键迁移：重切前量四组事实（新 id 唯一吗 / 旧→新映射 1:1 吗 / 标注挂得上吗 /
+# 哪些历史版本含旧 id）——**离线**，只读
+uv run python trajectory_pipeline/research/probes/gold_candidate_rekey.py
+
+# v14 若给 `--refresh-code` 会怎样：头条 D10 读数 + 逐行改好/改坏分类（**离线**，只读）
+uv run python trajectory_pipeline/research/probes/gold_refresh_code_impact.py
+
+# Q-24 甲 / Q-25 甲两条护栏在**全库存档**上的作用面（**离线**，只读）
+uv run python trajectory_pipeline/research/probes/q24_q25_guard_replay.py
 ```
 
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、
@@ -421,7 +431,14 @@ uv run python trajectory_pipeline/research/probes/h01_unresolved_rebucket.py
 `probes/failure_mode_profile.py`（**批次失败模式画像**：按证据首段归族；
 `--tasks` 做同任务集对照——**分母一致才可比**，整批比整批会被「挑的是有硬故障的任务」带偏）·
 `probes/h01_unresolved_rebucket.py`（**H-01 重测**：`unresolved` 里「机器本可以判出来」的
-条数——两个子族各调感知层现成判据，**不手抄词表**）。
+条数——两个子族各调感知层现成判据，**不手抄词表**）·
+`probes/gold_candidate_rekey.py`（**v14 键迁移前的四组事实**：新 id 唯一吗 / 旧→新映射 1:1 吗 /
+重建后标注挂得上吗 / 哪些历史版本含旧 id）·
+`probes/gold_refresh_code_impact.py`（**「若给 `--refresh-code` 会怎样」**：头条 D10 两态读数 +
+逐行「改好 / 改坏」分类，**改坏的三族成因**分得出人核已写明分支名走错 / 金标陈旧 / 口径漂移）·
+`probes/q24_q25_guard_replay.py`（**Q-24 甲 / Q-25 甲两条护栏在全库存档上的作用面**：
+Q-24 量「`unreachable_hard` 里 URL 是中转链的条数」，Q-25 量「agent 放弃收口的 visit 里
+护栏命中 / 归因对象不明 / 前置事实不成立各多少」）。
 
 **哪些脚本会起真浏览器**：`probes/m30_live_check.py`、`probes/cf_access_boundary.py`、
 `probes/inc73_field_check.py`、`probes/inc73_action_replay.py`、

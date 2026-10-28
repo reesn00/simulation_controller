@@ -32,7 +32,10 @@ agent 包「进站后 → 走到目标 / 报出链接」这一段。它的权力
 
 - ``reached=True``  → **不落分支**（``branch=""``），由调用方拿去跑
   ``PLAYER_OK`` 判断题，成功/``player_unverified``/负分支都是那条链的产出；
-- ``gave_up``       → ``unresolved``（**无证据不记负样本**）；
+- ``gave_up``       → **默认** ``unresolved``（**无证据不记负样本**），
+  **除非最后一页的终局形态可判**（owner 裁定 2026-10-28 · 台账 Q-25 甲）：
+  页面正文自己写着「404 / 地区限制 / 验证码 / 反爬」时，落那条分支——
+  那时候证据是**页面**，不是 agent 的自述；
 - ``fail_closed``   → 查 :data:`_FALCLOSED_BRANCH` 映射表。
 
 **agent 永远不直接产出分支**（§3.3 核心规则）。这不是洁癖：22 分支封闭集
@@ -83,6 +86,7 @@ from typing import TYPE_CHECKING, Any, Callable, Final, Literal, Mapping
 from trajectory_pipeline.common.elements import ELEMENT_VOCAB_HTML_TAG
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
+from trajectory_pipeline.executor.branches import terminal_shape_branch
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.gatekeeper import (
     DeadLoopDetector,
@@ -925,15 +929,27 @@ class AgentOutcome:
 
     @classmethod
     def give_up(
-        cls, *, why: str, steps: int, calls: int, transcript: tuple
+        cls, *, why: str, steps: int, calls: int, transcript: tuple,
+        obs: Observation | None = None, site_url: str = "",
     ) -> "AgentOutcome":
-        """自报放弃——**一律 unresolved，不入负样本池**（§3.3）。
+        """自报放弃——**默认 unresolved，不入负样本池**（§3.3）。
 
         agent 说不清的，不进负样本池：它可能是站里真没有，也可能是模型
         没找到，两种成因在数据上完全同形，合并成一支负样本就是把
         「没找到」记成「这里看不了」。
+
+        ⚠️ **2026-10-28 改动（owner 裁定 · 台账 Q-25 甲）**：放弃之前先看
+        **最后一页正文**的终局形态（:func:`~.branches.terminal_shape_branch`）。
+        放弃的常见形态是「这一页就是 404」——那**页面自己说清楚了**，
+        不需要 agent 的叙述来背书 ⇒ 落 ``broken``（进池）。证据是
+        **页面正文**，不是 agent 的自述（自述是模型输出，见该函数 docstring）。
+
+        ⚠️ **两道护栏都在那条函数里**（前置事实 + 归因对象），任一道不成立
+        就回到 ``unresolved``；不成立的理由**追加进 reason**（审计记录）。
         """
-        return cls(kind="gave_up", reason=why, branch=UNRESOLVED,
+        branch, why_shape = terminal_shape_branch(obs, site_url=site_url)
+        reason = f"{why}（{why_shape}）" if why_shape else why
+        return cls(kind="gave_up", reason=reason, branch=branch or UNRESOLVED,
                    steps_taken=steps, llm_calls=calls, transcript=transcript)
 
     @classmethod
@@ -945,13 +961,18 @@ class AgentOutcome:
         steps: int,
         calls: int,
         transcript: tuple,
+        branch: str | None = None,
     ) -> "AgentOutcome":
-        """代码收口。有拦截证据查映射表，没有就落 ``unresolved``。"""
+        """代码收口。有拦截证据查映射表，没有就落 ``unresolved``。
+
+        ⚠️ ``branch`` 是**显式覆盖**（Q-25 甲那条「先查终局形态」的路径
+        把它算好了）；不给时按 ``verdict`` 查 :data:`_FALCLOSED_BRANCH`。
+        """
         return cls(
             kind="fail_closed",
             reason=reason,
             verdict=verdict.value if verdict is not None else "",
-            branch=_branch_of(verdict),
+            branch=branch or _branch_of(verdict),
             steps_taken=steps,
             llm_calls=calls,
             transcript=transcript,
@@ -1062,7 +1083,7 @@ class _Loop:
         "events", "calls", "json_of", "max_chars", "dead_loop",
         "obs", "messages", "_pending_obs", "_pending_notes",
         "_guidance_hits", "_consecutive_failures", "_steps_taken",
-        "_calls_made", "_backend", "_escalated", "_seen_hrefs",
+        "_calls_made", "_backend", "_escalated", "_seen_hrefs", "_site_url",
     )
 
     def __init__(
@@ -1092,6 +1113,11 @@ class _Loop:
         self.max_chars = max_chars
         self.dead_loop = dead_loop if dead_loop is not None else DeadLoopDetector()
         self.obs = initial_obs
+        #: **候选站解析后的地址**（落地页 URL）。Q-25 甲的「归因对象」核验
+        #: 拿它与最后一页比主机——候选 URL 本身常是搜索引擎中转链
+        #: （``www.baidu.com/link?url=<密文>``），拿它比会把全部真阳性
+        #: 判成「归因对象不明」。
+        self._site_url = initial_obs.url
         self.messages: list[dict[str, str]] = [
             {"role": "system", "content": _system_prompt(task, budget)},
             {"role": "user", "content": _task_view(task, budget)},
@@ -1133,10 +1159,18 @@ class _Loop:
 
         while True:
             # ① 预算闸放在**花钱之前**：步数用完就不再烧下一次 llm_call。
+            #
+            # ⚠️ **这两个出口查终局形态**（owner 裁定 2026-10-28 · 台账 Q-25 甲）：
+            # 「预算耗尽」意味着 agent **真的把这一页看过了**——最后一页就是
+            # 它放弃（或没走完）的那一页，而那一页的形态（404 / 地区限制 /
+            # 验证码 / 反爬）是**页面自己说的**，不是模型说的 ⇒ 那是可判的。
+            # 而「后端未作答」「动作指令连续解析失败」是**我们自己的故障**
+            #（那批该重跑，M-46），把它们算成页面负样本会让池里混进
+            # 「我们坏了」的样本，也会盖掉「该重跑」这个信号 ⇒ 那两处不动。
             if self._steps_taken >= self.budget.max_steps:
-                return self._close(reason="步数预算耗尽", verdict=None)
+                return self._close_by_page(reason="步数预算耗尽")
             if self._calls_made >= self.budget.max_llm_calls:
-                return self._close(reason="llm_calls 预算耗尽", verdict=None)
+                return self._close_by_page(reason="llm_calls 预算耗尽")
 
             # ② 决策（内部含一次格式/I6 纠正重试）
             got = await self._decide()
@@ -1159,6 +1193,8 @@ class _Loop:
                     steps=self._steps_taken,
                     calls=self._calls_made,
                     transcript=self._transcript(),
+                    obs=self.obs,
+                    site_url=self._site_url,
                 )
 
             # ④ 执行 → ⑤ 复观察 → ⑥ 记账 → ⑦ 死循环 + 拦截
@@ -1483,13 +1519,36 @@ class _Loop:
             el.ref for el in _visible_interactive(self.obs)
         )
 
-    def _close(self, *, reason: str, verdict: Verdict | None) -> AgentOutcome:
+    def _close(
+        self, *, reason: str, verdict: Verdict | None, branch: str | None = None
+    ) -> AgentOutcome:
         return AgentOutcome.close(
             reason=reason,
             verdict=verdict,
             steps=self._steps_taken,
             calls=self._calls_made,
             transcript=self._transcript(),
+            branch=branch,
+        )
+
+    def _close_by_page(self, *, reason: str) -> AgentOutcome:
+        """收口前先看**最后一页的终局形态**（台账 **Q-25 甲** · owner 裁定
+        2026-10-28）。
+
+        ⚠️ **只在「探过了」的收口上用**：agent 真的把这一页看过，最后一页
+        的形态就是证据（页面自己的正文）。「后端未作答」「动作指令连续
+        解析失败」那两处是**我们自己的故障**，不用它——理由见
+        :meth:`run` 里预算闸那段注释。
+
+        ⚠️ **不成立的理由也进 reason**：查了、没过，得让人看得见「查过」
+        （否则读档的人以为这条就是「没查」的）。判据与两道护栏见
+        :func:`~trajectory_pipeline.executor.branches.terminal_shape_branch`。
+        """
+        branch, why = terminal_shape_branch(self.obs, site_url=self._site_url)
+        if not why:
+            return self._close(reason=reason, verdict=None)
+        return self._close(
+            reason=f"{reason}（{why}）", verdict=None, branch=branch or None,
         )
 
     def _transcript(self) -> tuple[Mapping[str, str], ...]:

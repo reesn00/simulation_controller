@@ -662,6 +662,171 @@ class Test分支收敛:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 终局形态收口（Q-25 甲 · owner 裁定 2026-10-28）
+# ═══════════════════════════════════════════════════════════════════════
+#
+# 口径：收口前对**最后一页正文**跑一次感知层现成判据
+# （``infer_access_defect``）——命中就落那条分支，不命中仍落 ``unresolved``。
+#
+# ⚠️ **只用页面自己的正文**，不用 agent 的叙述（自述是模型输出，不是页面
+# 证据）。两道护栏（前置事实 / 归因对象）都在
+# :func:`~trajectory_pipeline.executor.branches.terminal_shape_branch` 里。
+
+#: nginx 默认 404 页——实测里最常见的一种（正文 19 字、零元素）。
+_404页 = _obs(
+    url="https://x.test/v/31445",
+    title="404 Not Found",
+    body="404 Not Found nginx",
+    refs=(),
+)
+
+#: **正常页里提到「已下架」**——正文命中终局形态，但这一页**有内容**
+#: ⇒ 前置事实不成立 ⇒ 不配记 ``broken``。
+_提到下架的正常页 = _obs(
+    url="https://x.test/v/31445",
+    title="影片详情",
+    body="该剧已下架，请浏览其它片源",
+    refs=("e1",),
+    elements_total=12,
+)
+
+#: 最后一页落在**别的站**上——归因对象不明 ⇒ 不配记 ``broken``。
+_外站的404页 = _obs(
+    url="https://other.test/v/31445",
+    title="404 Not Found",
+    body="404 Not Found nginx",
+    refs=(),
+)
+
+
+class Test终局形态收口:
+    async def test_放弃在404页上落broken(self):
+        """⚠️ **页面自己说清楚了** ⇒ 那就不是「agent 说不清」。
+
+        agent 放弃的常见形态是「这一页就是 404」——证据在**页面**上，
+        不在 agent 的自述里 ⇒ 落 ``broken``（进池）。
+        """
+        ctx = await _run(
+            FakeAgentLLM([
+                {"tool": "click", "ref": "e1"},
+                {"done": True,
+                 "report": {"reached": False, "why": "点进去是空的"}},
+            ]),
+            FakeDriver((_404页,)),
+        )
+        assert ctx.outcome.branch == "broken"
+        assert "404 Not Found" in ctx.outcome.reason
+        assert "点进去是空的" in ctx.outcome.reason
+
+    async def test_正常页提到下架不落broken(self):
+        """⚠️ **假阳代价**：正文命中词表 ≠ 这一页是错误页。
+
+        「已下架」在正常详情页里会出现（角标、公告）⇒ 有 12 个可交互元素
+        的那一页**不是**错误页 ⇒ 降回 ``unresolved``，并把「为什么不成立」
+        写进 reason（查过了、没过，得看得见）。
+        """
+        ctx = await _run(
+            FakeAgentLLM([
+                {"tool": "click", "ref": "e1"},
+                {"done": True,
+                 "report": {"reached": False, "why": "没有正片"}},
+            ]),
+            FakeDriver((_提到下架的正常页,)),
+        )
+        assert ctx.outcome.branch == "unresolved"
+        assert "前置事实不成立" in ctx.outcome.reason
+
+    async def test_外站的404页不落broken(self):
+        """⚠️ **归因对象**：agent 能 ``goto`` 任意 URL ⇒ 收口时它看着的
+        那一页**可能压根不是候选站**。那一页是 404 不等于候选站是 404。
+        """
+        ctx = await _run(
+            FakeAgentLLM([
+                {"tool": "click", "ref": "e1"},
+                {"done": True,
+                 "report": {"reached": False, "why": "找不到"}},
+            ]),
+            FakeDriver((_外站的404页,)),
+        )
+        assert ctx.outcome.branch == "unresolved"
+        assert "归因对象不明" in ctx.outcome.reason
+
+    async def test_步数预算耗尽也查终局形态(self):
+        """预算耗尽意味着 agent **真的把这一页看过了**——最后一页就是
+        它放弃的那一页，形态是**页面自己说的** ⇒ 落 ``broken``。"""
+        ctx = await _run(
+            FakeAgentLLM([], never_done=True),
+            FakeDriver((_404页,)),
+            budget=AgentBudget(max_steps=2, max_llm_calls=99),
+            dead_loop=DeadLoopDetector(repeat_threshold=99, empty_body_threshold=99),
+        )
+        assert ctx.outcome.branch == "broken"
+        assert "步数预算耗尽" in ctx.outcome.reason
+
+    async def test_llm_calls预算耗尽也查终局形态(self):
+        ctx = await _run(
+            FakeAgentLLM([], never_done=True),
+            FakeDriver((_404页,)),
+            budget=AgentBudget(max_steps=99, max_llm_calls=2),
+            dead_loop=DeadLoopDetector(repeat_threshold=99, empty_body_threshold=99),
+        )
+        assert ctx.outcome.branch == "broken"
+
+    async def test_后端未作答不查终局形态(self):
+        """⚠️ **「我们自己的故障」不动**：后端挂了是**运维问题**，
+        那一批该重跑（M-46）——把它算成页面负样本会让池里混进
+        「我们坏了」的样本，也会盖掉「该重跑」这个信号。"""
+        ctx = await _run(
+            FakeAgentLLM(down=True),
+            FakeDriver(),
+            initial=_404页,
+        )
+        assert ctx.outcome.branch == "unresolved"
+        assert "后端未作答" in ctx.outcome.reason
+
+    async def test_动作解析失败不查终局形态(self):
+        """同上：格式类失败是**模型能力**问题，不是页面属性。"""
+        ctx = await _run(
+            FakeAgentLLM([], bad_json=True),
+            FakeDriver(),
+            initial=_404页,
+        )
+        assert ctx.outcome.branch == "unresolved"
+
+    async def test_普通页放弃仍是unresolved(self):
+        """**没命中终局形态** ⇒ 照旧 ``unresolved``（回归护栏）。"""
+        ctx = await _run(
+            FakeAgentLLM([{"done": True,
+                           "report": {"reached": False, "why": "翻了两页没有正片"}}]),
+            FakeDriver(),
+        )
+        assert ctx.outcome.branch == "unresolved"
+        assert ctx.outcome.reason == "翻了两页没有正片"
+
+    async def test_地区限制页落blocked(self):
+        """地区 / 验证码 / 反爬形态 ⇒ 落 ``blocked``（**采集侧账**，不进池）。
+
+        ⚠️ 与 ``broken`` 的处置不同：``blocked`` 是「**这次没看到**」，
+        一次拦截对「这站能不能看」零信息（方案 20 §1）。
+        """
+        地区页 = _obs(
+            url="https://x.test/v/31445",
+            title="提示",
+            body="当前地区不支持播放该内容",
+            refs=(),
+        )
+        ctx = await _run(
+            FakeAgentLLM([
+                {"tool": "click", "ref": "e1"},
+                {"done": True,
+                 "report": {"reached": False, "why": "看不了"}},
+            ]),
+            FakeDriver((地区页,)),
+        )
+        assert ctx.outcome.branch == "blocked"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 升配（§3.4）
 # ═══════════════════════════════════════════════════════════════════════
 

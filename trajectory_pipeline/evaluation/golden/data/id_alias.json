@@ -1,0 +1,17 @@
+{
+ "schema_version": "1",
+ "created_at": "2026-10-28T08:41:18+00:00",
+ "note": "池行候选 id 的口径迁移（旧：行号后缀 `__neg{i:02d}` → 新：分支后缀 `__neg_{分支}`）。旧 id → 新 id。**历史冻结档不改写** ⇒ v3–v13 里的旧 id 仍在流通，这张表就是两个口径之间的桥（迁移期双 id 并存）。",
+ "map": {
+  "P001__2e0cec8b__10990df1__neg153": "P001__2e0cec8b__10990df1__neg_blocked",
+  "P001__36602377__a7274efb__neg154": "P001__36602377__a7274efb__neg_blocked",
+  "P001__64729047__3a869e8e__neg156": "P001__64729047__3a869e8e__neg_login_wall_or_blocked",
+  "P001__e5b60ff7__13837008__neg152": "P001__e5b60ff7__13837008__neg_blocked",
+  "P001__f9a38460__cf884eaa__neg155": "P001__f9a38460__cf884eaa__neg_login_wall_or_blocked",
+  "P015__3fda4d75__10990df1__neg158": "P015__3fda4d75__10990df1__neg_blocked",
+  "P015__59a2ea71__f2bf859d__neg161": "P015__59a2ea71__f2bf859d__neg_broken",
+  "P015__792b0ed7__f9895792__neg157": "P015__792b0ed7__f9895792__neg_blocked",
+  "P015__c0126fa5__7915a511__neg160": "P015__c0126fa5__7915a511__neg_unreachable_hard",
+  "P015__cade2b89__3a869e8e__neg159": "P015__cade2b89__3a869e8e__neg_login_wall_or_blocked"
+ }
+}

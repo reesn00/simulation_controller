@@ -210,12 +210,15 @@ def _write_one(
 #: ⚠️ **这张表少一支的后果是「报表少算」，不是「样本不入池」**——
 #: 并池走 executor 侧
 #: :attr:`~trajectory_pipeline.executor.branches.SiteOutcome.is_negative_sample`
-#: （两段排除），与本表**各算各的**。2026-10-28 实测：本表漏了
-#: ``subscription_wall`` 等 8 支 ⇒ ``cli build`` 报「真负样本 154 条」，
-#: 而 P2 样本里属真负分支的实为 306 条 ⇒ **少算 152 条**
-#: （113 ``subscription_wall`` + 37 ``login_wall_or_blocked``
+#: （两段排除），与本表**各算各的**。2026-10-28 实测（同一批
+#: **126 份存档 / 1227 条 P2 样本**，两张表各量一次）：旧窄表（7 支）
+#: 报 **155** 条，本表（16 支）报 **322** 条 ⇒ **少算 167 条**
+#: （128 ``subscription_wall`` + 37 ``login_wall_or_blocked``
 #: + 2 ``trailer_only``）；``cli check-archives`` 用的是 executor 侧判据
 #: ⇒ **两个报表对同一件事给出两个数**，读的人只能猜哪个对。
+#: ⚠️ **补进去的 9 支里只有 3 支带样本**（其余 6 支在本语料里样本数为 0）
+#: ⇒ 「改了表却没动数」是可能的 ⇒ **别拿条数当「改没改对」的证据**，
+#: 要看**分支集合**。
 #:
 #: 改名要同时改 :mod:`trajectory_pipeline.executor.branches.BRANCH_LABELS`。
 #:

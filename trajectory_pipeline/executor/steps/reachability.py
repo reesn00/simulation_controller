@@ -45,6 +45,15 @@ abort/空响应  ``NS_ERROR_ABORT``           连上了，服务器没说完
 判据（机器码表）见 :mod:`trajectory_pipeline.executor.browser.nav_failure`——
 **码表建在实测原文上**，码表认不出来的形态一律按「证明不了」处理
 （fail-closed：不确定 ⇒ 不进池）。
+
+⚠️ **第四道护栏：归因对象**（owner 裁定 2026-10-28 · 台账 **Q-24 甲**）。
+上面三档问的是「**打不开**这件事是什么性质」，这一道问的是
+「**这个结论说的是谁**」：百度结果给的
+``http://www.baidu.com/link?url=<密文>`` **不是站点**，是搜索引擎的
+中转端点——导航到它失败时，机器码证明的是「**这条链**打不开」，
+那个影视站**一次都没被识别过**（``landed_url`` 为空、call log 只有一跳）
+⇒ 「这里真的看不了」**没有可指的对象** ⇒ 不配记 ``unreachable_hard``，
+降 ``unresolved``（机器码原文照录进 reason，证据不丢）。
 """
 
 from __future__ import annotations
@@ -56,6 +65,7 @@ from trajectory_pipeline.executor.browser.page_driver import (
     DriverSessionError,
     DriverUnreachableError,
 )
+from trajectory_pipeline.executor.steps.search import engine_redirect_engine
 from trajectory_pipeline.perception.base import Observation
 
 
@@ -110,6 +120,25 @@ async def probe(driver, url: str) -> Reachability:
             session_failed=True,
         )
     except DriverUnreachableError as exc:
+        # ⚠️ **归因对象护栏**（owner 裁定 2026-10-28 · 台账 Q-24 甲）。
+        # 机器码证明的是「**我们打开的那条 URL** 打不开」——而当那条 URL
+        # 是**搜索引擎的结果中转链**（``www.baidu.com/link?url=<密文>``）时，
+        # 「那个影视站」**从头到尾没被识别过**（``landed_url`` 为空、
+        # call log 只有一跳）⇒ 「这个站真的看不了」这句话**没有可指的对象**
+        # ⇒ 不配记 ``unreachable_hard``（那是**站点性质**、进负样本池）。
+        #
+        # ⚠️ 机器码原文**照录进 reason**（不丢证据）：判据从「站点不可达」
+        # 降成「归因对象不明」，但「确实拒连了」这个事实要留在存档里。
+        engine = engine_redirect_engine(url)
+        if engine:
+            return Reachability(
+                reachable=False,
+                reason=(
+                    f"导航失败（机器码 {exc.code}；⚠️ 归因对象是{engine}的结果中转链"
+                    f"——不是站点本身，且未解析出落点 ⇒ 不配记 unreachable_hard）: {exc}"
+                ),
+                requested_url=url,
+            )
         # ⚠️ **再接这一支**：它也是 ``DriverError`` 的子类，但它是
         # **机器码证明过的站点事实**（DNS 解析不出来 / 连接被拒）
         # ⇒ 与上面那支正好相反：这一支**是**站点性质，配记
