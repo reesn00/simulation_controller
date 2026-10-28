@@ -74,14 +74,24 @@ DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "output" / "pipeline"
 #: key 字符集内、词边界不成立。凭据后面紧跟其他字符（拼接、截断、
 #: 被塞进更长的串）恰恰是最需要拦住的形态，所以统一用「前缀 + 至少 N 位」，
 #: 长度只当下限不做上限。
+#:
+#: ⚠️ **但 ``sk-`` 两条规则锚定左边界**（2026-10-28 实测踩到）：
+#: **百度跳转链接的参数是 base64url**（字符集 ``A-Za-z0-9-_``）⇒ 里面
+#: **必然偶发**出现 ``sk-`` + 一串字母数字（实测：E017 那条的
+#: ``...LxeySk-LgjTzmjWV4aeHAPQn6GLy...`` 命中，**前邻是字母数字**
+#: ⇒ 它是**编码串的一段**，不是凭据）。
+#: ⇒ 左边界要求「``sk-`` 前面**不是**字母数字」：
+#: 真 key **总是独立的一个 token**（前面是空格 / 引号 / ``=`` / ``/``），
+#: 而嵌在更长词里的 ``sk-`` 是编码串 ⇒ 两者分得开。
+#: ⇒ **这条只放宽「嵌在词里」那一种形态**，真 key 照拦。
 _CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
         r"authorization\s*[:=]",
         r"bearer\s+[A-Za-z0-9._\-]{16,}",
         r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}",     # JWT
-        r"sk-ant-[A-Za-z0-9_\-]{16,}",                      # Anthropic
-        r"sk-[A-Za-z0-9]{16,}",                             # OpenAI 风格
+        r"(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_\-]{16,}",     # Anthropic
+        r"(?<![A-Za-z0-9])sk-[A-Za-z0-9]{16,}",            # OpenAI 风格
         r"AKIA[0-9A-Z]{16,}",                               # AWS Access Key
         r"AIza[0-9A-Za-z_\-]{35,}",                         # Google API Key
         r"https?://[^\s/:@]+:[^\s/@]+@",                    # URL 内嵌口令
@@ -193,6 +203,56 @@ def credential_samples(payload: str, *, limit_chars: int = 60) -> list[str]:
     return out
 
 
+def _shape_of(text: str) -> str:
+    """把一段文本压成**字符类别**序列（``a`` / ``A`` / ``9`` / ``X``）。
+
+    ``X`` = 其它字符，**不指出是哪一种**——连符号本身都不给。
+    """
+    out: list[list[str]] = []
+    for ch in text:
+        if ch.isalpha():
+            kind = "A" if ch.isupper() else "a"
+        elif ch.isdigit():
+            kind = "9"
+        else:
+            kind = "X"
+        if out and out[-1][0] == kind:
+            out[-1][1] += 1
+        else:
+            out.append([kind, 1])
+    return "".join(k if n == 1 else f"{k}{n}" for k, n in out)
+
+
+def credential_shapes(payload: str) -> list[str]:
+    """命中特征的**脱敏形态**——**不含任何原文**。
+
+    与 :func:`scan_credentials` 的差异：后者只给「命中哪些 pattern」，
+    本函数进一步给「命中串长什么样」：**长度 + 字符类别构成 + 前邻符号**。
+
+    ⚠️ **为什么要脱敏**：:func:`credential_samples` 给的是**匹配原文**
+    ——那**就是凭据本身**，放进日志或异常消息等于把凭据复制出去
+    （红线：凭据不得复制到测试、文档或日志）。
+    ⇒ **排错只需要形态**：真 key 与误报的区别在于
+    「**前邻是什么符号**」与「**是不是嵌在更长的词里**」——
+    这两件事**形态就够判**，一个字符都不用给。
+
+    形态串形如 ``sk-[A-Za-z0-9]{16,}｜len=42｜shape=aXa9a9…a9｜prev='-'``。
+    """
+    out: list[str] = []
+    for pattern in _CREDENTIAL_PATTERNS:
+        for m in pattern.finditer(payload):
+            s = m.group(0)
+            prev = payload[m.start() - 1] if m.start() else ""
+            # 前邻是字母数字 ⇒ **嵌在更长的词里** ⇒ 强烈指向误报
+            # （``disk-xxxx`` / ``task-xxxx`` 这类）⇒ 记 ``_`` 不给字符。
+            prev_kind = "" if not prev else ("_" if prev.isalnum() else prev)
+            out.append(
+                f"{pattern.pattern}｜len={len(s)}｜shape={_shape_of(s)}"
+                f"｜prev={prev_kind!r}"
+            )
+    return out
+
+
 class P1Archive:
     """P1 存档写入器。
 
@@ -269,8 +329,12 @@ class P1Archive:
         payload = json.dumps(record_dict, ensure_ascii=False, indent=2)
         hits = scan_credentials(payload)
         if hits:
+            # ⚠️ **异常消息里只放脱敏形态**（长度 + 字符类别 + 前邻符号）——
+            # 放原文就等于把凭据复制进日志（红线：凭据不得复制到日志）。
+            shapes = credential_shapes(payload)[:3]
             raise CredentialLeak(
                 f"P1 内容命中 {len(hits)} 项凭据特征，已拒绝写盘: {hits[:3]}"
+                + (f"｜命中形态: {shapes}" if shapes else "")
             )
         path = self._write_text(self.path_for(task_id, run), payload)
         self._append_negatives(record, task_id=task_id, run_id=run)

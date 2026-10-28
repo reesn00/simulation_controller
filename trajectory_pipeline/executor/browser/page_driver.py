@@ -188,3 +188,47 @@ class DriverError(RuntimeError):
     与「元素不存在」区分开：后者是业务事实，走 ``answer=None``；
     前者是能力不可用，必须 fail-closed。
     """
+
+
+class DriverSessionError(DriverError):
+    """**执行层故障**——坏的是我们的浏览器会话/页面，**不是目标站点**。
+
+    与 :class:`DriverError` 的分界在**归属**：``DriverError`` 说
+    「这一次导航没成」（可能是站点慢、站点挂了、DNS 不通）；
+    本异常说「**坏的是我们这一侧**」——
+    手里那一页被上游销毁了、浏览器崩了、卡死被回收、
+    **连一张新页都开不出来**、或者上游**明说**「会话过期、重来即可」
+    ⇒ **与目标站点无关**。
+
+    ⚠️ **为什么必须分开**（2026-10-27 实测）：``unreachable_hard`` 的
+    定义是「**真·站点不可达**」（DNS 解析不出来 / 连接被拒）——那是
+    **站点**的传输层事实。把「我们的页被上游销毁了」也记成这一支，
+    等于把**采集侧的故障**写成**站点的性质** ⇒ 产出**理由通顺的
+    假负样本**：那一批 10 条里有一个候选连炸 9 次，9 条全进了负样本池，
+    而那个站点**一次都没被试过**。
+
+    ⇒ 分支口径：执行层故障**不记** ``unreachable_hard``，
+    记「没判出来」那一支（不进池）——**采集失败不是站点结论**。
+    """
+
+
+class DriverUnreachableError(DriverError):
+    """**真·站点不可达**——有**机器码**证明站点本身打不开。
+
+    与 :class:`DriverSessionError` 正好是一对：那一个说「坏的是我们
+    这一侧」，这一个说「**坏的是站点那一侧，而且机器码说了算**」。
+
+    ⚠️ **只有这一类可以记 ``unreachable_hard``**（M-44 裁定，
+    owner 2026-10-27）。其余一切导航失败——超时 / 打断 / abort /
+    空响应 / 建页失败 / 会话失效 / 快照失败——都只是「**这次没打开**」，
+    记 ``unresolved``（**不进负样本池**）：它们**证明不了站点不可达**，
+    而池里那条断言是「**这里真的看不了**」。
+
+    :param code: 命中的**机器码标签**（如 ``NS_ERROR_UNKNOWN_HOST``）——
+        进 evidence，让人核的时候看得出「凭什么判成站点不可达」。
+    """
+
+    def __init__(self, message: str, *, code: str = "") -> None:
+        super().__init__(message)
+        #: 机器码标签（见 :mod:`trajectory_pipeline.executor.browser.nav_failure`）。
+        self.code = code

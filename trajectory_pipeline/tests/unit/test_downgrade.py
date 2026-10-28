@@ -98,6 +98,30 @@ class Test选择器:
         arch = _arch([_o("a.com", dg.TARGET_BRANCH)])
         assert dg.select_by_url("a.com")(arch) == []
 
+    def test_URL路也认分支过滤(self):
+        """``--url`` 那条路**必须**认 ``branches``。
+
+        2026-10-28 实测踩到：CLI 的 ``--branch`` 原本只走 ``--evidence``，
+        ``--url`` 那条路**静默忽略**它 ⇒ 同一个 URL 上别的分支会被一起降级。
+        实测那批数据里一个 URL 挂着 **11 条 ``not_play_site`` + 4 条
+        ``unreachable_hard``** ⇒ 不限分支就是**误伤 11 条真负样本**，
+        而报告上只看得到「降级 15 条」——看不出误伤。
+        """
+        arch = _arch([
+            _o("x.com", "unreachable_hard"),
+            _o("x.com", "not_play_site"),
+            _o("x.com", "login_required"),
+        ])
+        sel = dg.select_by_url("x.com", branches=["unreachable_hard"])
+        assert [r["branch"] for r in sel(arch)] == ["unreachable_hard"]
+
+    def test_URL路不认unresolved作过滤(self):
+        """「不受理目标态」是**处置动作的定义**，不是可选的过滤规则——
+        两条路都得拒（见模块 docstring 坑 6：守卫挂在哪个入口，
+        就是给同一个 bug 留几个入口）。"""
+        with pytest.raises(ValueError):
+            dg.select_by_url("x.com", branches=[dg.TARGET_BRANCH])
+
     def test_已打过戳的跳过(self):
         arch = _arch([_o("a.com", "no_play_control",
                          evidence="[原判 no_play_control] 正文\n\n已降级")])
@@ -290,20 +314,65 @@ class Test目录遍历:
                name="_cause_probe.json")
         assert dg.original_archive_paths(tmp_path) == []
 
-    def test_不动复核档(self, tmp_path):
-        """复核档是 ``review --apply`` 从原档合并出来的，在它上面改会被
-        下一次 ``--apply`` **静默覆盖回去**——降级看起来做了，跑一次
-        review 就没了。"""
+    def test_复核档也改(self, tmp_path):
+        """**两层都改**（2026-10-28 改）——复核档是门禁与报表**实际读的
+        那一份**（``select_archives`` 优先取它）。
+
+        原先只动原档 ⇒ 复核档还留着旧分支 ⇒ 门禁当场报
+        ``negative_not_pooled``，而人看到的却是「已经降过级了」。
+        :mod:`executor.relabel` 早就是两份都改，理由一模一样。
+        """
         for name in ("T001__a.json", "T001__a.reviewed.json"):
             _write(tmp_path, _arch([_o("a.com", "no_play_control")]), name)
         out = dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
                                reason="r", dry_run=False)
-        assert len(out) == 1
-        assert out[0]["archive"] == "T001__a.json"
-        # 复核档仍是旧分支
-        rev = json.loads((tmp_path / "T001__a.reviewed.json")
-                         .read_text(encoding="utf-8"))
-        assert rev["outcomes"][0]["branch"] == "no_play_control"
+        assert sorted(s["archive"] for s in out) == [
+            "T001__a.json", "T001__a.reviewed.json"]
+        assert sorted(s["layer"] for s in out) == ["原档", "复核档"]
+        for name in ("T001__a.json", "T001__a.reviewed.json"):
+            rev = _read(tmp_path / name)
+            assert rev["outcomes"][0]["branch"] == "unresolved"
+            assert rev["outcomes"][0]["branch_before_downgrade"] == \
+                "no_play_control"
+            # 两层的 ledger 都要跟着走，否则报表上的负样本数比实际多
+            assert rev["ledger"]["negative_samples"] == 2
+
+    def test_带人工裁定的复核档不动(self, tmp_path):
+        """**人的裁定优先于代码侧的「判定不成立」**。
+
+        代码能说「这条标签没依据」，不能说「人判的这条不是负样本」——
+        那是另一层的结论。复核档上带 ``review_verdict`` / ``site_verdict``
+        的记录因此不受理降级（原档照降——两层各记各的）。
+        """
+        for name in ("T001__a.json", "T001__a.reviewed.json"):
+            _write(tmp_path, _arch([_o("a.com", "no_play_control")]), name)
+        rev_path = tmp_path / "T001__a.reviewed.json"
+        rev = _read(rev_path)
+        rev["outcomes"][0]["review_verdict"] = "confirm_not_play_site"
+        rev["outcomes"][0]["branch"] = "not_play_site"
+        rev_path.write_text(json.dumps(rev, ensure_ascii=False),
+                            encoding="utf-8")
+        out = dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                               reason="r", dry_run=False)
+        assert [s["archive"] for s in out] == ["T001__a.json"]
+        # 原档降了
+        assert _read(tmp_path / "T001__a.json")["outcomes"][0]["branch"] \
+            == "unresolved"
+        # 复核档的人工裁定原样保留
+        assert _read(rev_path)["outcomes"][0]["branch"] == "not_play_site"
+
+    def test_没有配对原档的复核档不算(self, tmp_path):
+        """``<run>.reviewed.json`` 这种**死文件**（对不上任何
+        ``trajectory_id``）不是复核档——改了它，改动无处可回溯。"""
+        _write(tmp_path, _arch([_o("a.com", "no_play_control")]),
+               name="T001__a.json")
+        _write(tmp_path, _arch([_o("a.com", "no_play_control")]),
+               name="T001__a.reviewed.json")
+        (tmp_path / "T001__a.json").unlink()
+        assert dg.reviewed_archive_paths(tmp_path) == []
+        out = dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                               reason="r", dry_run=False)
+        assert out == []
 
     def test_选择器就是处置判据(self, tmp_path):
         """**筛选与处置必须同一份判据**。

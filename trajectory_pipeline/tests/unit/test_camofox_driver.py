@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -34,11 +35,67 @@ from trajectory_pipeline.executor.browser.camofox_driver import (
     DOC_STAMP_NONE,
     CamofoxDriver,
 )
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.camofox_session import CamofoxToolError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverSessionError,
+    DriverUnreachableError,
+)
 from trajectory_pipeline.executor.dom import TEXT_CONTENT_EXPR
 
 
+def _tab_gone_error() -> CamofoxToolError:
+    """上游说「这一页没了」的真身（2026-10-27 实测撞到的那一条）。
+
+    上游 ``server.js`` 的 ``tabNotFoundResponse`` 对不认识的 ``tabId``
+    只给 ``404 {"error":"Tab not found"}``——**没有** ``code`` 字段。
+    """
+    return CamofoxToolError(
+        'camofox tool camofox_navigate 返回错误: camofox error: 404: '
+        '{"error":"Tab not found"}',
+        tool="camofox_navigate",
+        status=404,
+        body={"error": "Tab not found"},
+    )
+
+
 # ── 假会话 ──────────────────────────────────────────────────────
+
+
+def _is_bare_function_literal(expression: str) -> bool:
+    """这段 JS 文本是不是一个**没被调用**的函数字面量。
+
+    ## 为什么要有这个判据
+
+    上游把表达式交给 Playwright 的 ``page.evaluate(expression)``
+    （上游 ``server.js:5511``），而 **Playwright 收到字符串时按「表达式」
+    求值** ⇒ 表达式必须**求得出一个值**。
+
+    函数字面量（``() => …`` / ``function …``）求出来是**函数对象**，
+    序列化后是 ``undefined`` ⇒ 响应里**没有** ``result`` 键
+    ⇒ 本层读到的是 ``None`` ⇒ **「没测到」**。
+
+    ⚠️ 2026-10-27 那批 10 条（camofox 面）就是这么夭折的：文档代号写成
+    ``() => …`` ⇒ **每次观察都被判成「读到一半」** ⇒ ``degraded`` 非空
+    ⇒ 环节① 返回 **0 候选** ⇒ 10 条全在第一步夭折，**且零报错**。
+
+    ## 这不是 JS 引擎
+
+    本函数**只判形状**（是不是函数字面量），不执行 JS。
+    它复刻的是上游那条**语义规则**，用来挡住「把表达式写成函数字面量」
+    这一类缺陷——**不是**用来算表达式的值。
+    """
+    text = expression.strip()
+    if text.startswith("async "):
+        text = text[len("async "):].lstrip()
+    if text.startswith("function"):
+        return not text.endswith("()")
+    # 箭头函数：``(a, b) => …`` / ``a => …``
+    if re.match(r"^\(\s*[^()]*\s*\)\s*=>", text):
+        return not text.endswith("()")
+    if re.match(r"^[A-Za-z_$][\w$]*\s*=>", text):
+        return not text.endswith("()")
+    return False
 
 
 class _FakeSession:
@@ -77,6 +134,20 @@ class _FakeSession:
         self.fail_stamp = False
         #: 页面**没有** ``performance`` ⇒ 代号恒为 ``"none"``。
         self.no_performance = False
+        #: 导航时报几次「这一页没了」（上游销毁了）。0 = 不报。
+        self.tab_gone = 0
+        #: 建页时报「这一页没了」——用来模拟「会话真的死了」。
+        self.new_page_tab_gone = False
+        #: 建页失败（**任何**形状）——模拟上游那个「建页 + 导航」合并路由
+        #: 的超时（2026-10-27 实测撞到的那一条）。
+        self.new_page_error: BaseException | None = None
+        #: 导航失败（**不是**「页没了」）——模拟站点超时 / DNS 不通。
+        self.navigate_error: BaseException | None = None
+        #: 每次建页**带的 url**（空串 = 建空白页）。上游的建页路由是
+        #: ``if (url)`` ⇒ **不带 url 就只建页不导航**（见
+        #: ``_open_blank_and_navigate``）——假会话必须同形，否则测的
+        #: 就不是生产链的调用路径。
+        self.creates: list[str] = []
 
     # ── 读数 ──
 
@@ -100,14 +171,27 @@ class _FakeSession:
     # ── tool 调用 ──
 
     async def new_page(self, url: str = "") -> str:
+        if self.new_page_tab_gone:
+            raise _tab_gone_error()
+        if self.new_page_error is not None:
+            raise self.new_page_error
         self._tab_seq += 1
         tab = f"tab-{self._tab_seq}"
         self.stack.append(tab)
-        self.navigations.append((tab, url))
+        self.creates.append(url)
+        if url:
+            # 上游的建页路由**带 url 时顺带导航**（上游 ``server.js`` 的
+            # ``if (url)``）⇒ **不带 url 就只建页**——生产链走的正是后者。
+            self.navigations.append((tab, url))
         return tab
 
     async def navigate(self, tab_id: str, url: str) -> Any:
         self.navigations.append((tab_id, url))
+        if self.tab_gone:
+            self.tab_gone -= 1
+            raise _tab_gone_error()
+        if self.navigate_error is not None:
+            raise self.navigate_error
         self._navigate()
         return {"ok": True}
 
@@ -115,6 +199,13 @@ class _FakeSession:
         if tab_id in self.stack:
             self.stack.remove(tab_id)
         return True
+
+    def discard_page(self, tab_id: str) -> bool:
+        """把一页从**本地栈**里摘掉——**不通知上游**（同生产语义）。"""
+        if tab_id in self.stack:
+            self.stack.remove(tab_id)
+            return True
+        return False
 
     async def close(self) -> None:
         self.closed += 1
@@ -149,6 +240,13 @@ class _FakeSession:
         return {"ok": True}
 
     async def evaluate(self, tab_id: str, expression: str) -> Any:
+        if _is_bare_function_literal(expression):
+            # 上游的语义：**函数字面量**求值 ⇒ 函数对象 ⇒ 序列化后
+            # ``undefined`` ⇒ 响应里**没有** ``result`` 键
+            # ⇒ 本层读到的是 ``None``（「没测到」，不是「空串」）。
+            # ⚠️ 这一条**不是**假会话的宽容——它复刻的是上游
+            # ``page.evaluate(string)`` 的真实语义。
+            return None
         if expression in self.evals:
             value = self.evals[expression]
         elif expression == DOC_STAMP_EXPR:
@@ -672,6 +770,51 @@ class TestPress:
         assert DEGRADED_PRESS_UNSUPPORTED in obs.degraded
 
 
+class Test降级不跨页:
+    """**页级状态只能活一页**——降级标记尤其。
+
+    一次做不到的按键（按 ``F5``）会记 ``last_action["outcome"]="unsupported"``，
+    而 :meth:`observe` 拿它判「这一页有没有降级」。
+    ⚠️ **若 ``last_action`` 不随导航作废**，它就一路跟着走——
+    **之后每一次导航**之后的观察都挂上 ``press_unsupported``
+    ⇒ **假降级**进了 agent 的输入（``agent_loop._render_observation``
+    把 ``degraded`` 投影给模型）⇒ agent 以为「这一页没读全」。
+
+    真实批次（2026-10-27 那批 10 条）量到过：**18% 的观察**带着这个假降级
+    （T004：39 个观察里 7 个是陈旧的）。
+    """
+
+    async def test_上一页的按键降级不会挂到下一页的观察上(self):
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE], evals={
+            camofox_driver._PAGE_TEXT_JS: _page_json(innerText="正文"),
+            CamofoxDriver._LINKS_JS: "[]",
+        })
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        await driver.press("F5")
+        obs1 = await driver.observe()
+        assert DEGRADED_PRESS_UNSUPPORTED in obs1.degraded
+
+        # **换页** ⇒ 上一页那笔降级作废。
+        await driver.goto("https://example.com/other")
+        obs2 = await driver.observe()
+        assert DEGRADED_PRESS_UNSUPPORTED not in obs2.degraded
+
+    async def test_开新页也不带上一页的降级(self):
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE], evals={
+            camofox_driver._PAGE_TEXT_JS: _page_json(innerText="正文"),
+            CamofoxDriver._LINKS_JS: "[]",
+        })
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        await driver.press("F5")
+        assert DEGRADED_PRESS_UNSUPPORTED in (await driver.observe()).degraded
+
+        await driver.new_tab("https://example.com/other")
+        obs = await driver.observe()
+        assert DEGRADED_PRESS_UNSUPPORTED not in obs.degraded
+
+
 # ── resolve：只定位不动作 ───────────────────────────────────────
 
 
@@ -770,6 +913,49 @@ class TestObserve:
         obs = await driver.observe(max_chars=100)
         assert DEGRADED_NAV_UNSETTLED not in obs.degraded
 
+    async def test_文档代号表达式求得出值(self):
+        """**回归**：文档代号曾经写成 ``() => …`` ⇒ 整批 0 候选（2026-10-27）。
+
+        上游是 ``page.evaluate(expression)``（**字符串** ⇒ 按**表达式**求值）
+        ⇒ 函数字面量求出来是函数对象 ⇒ 序列化后 ``undefined``
+        ⇒ 响应里**没有** ``result`` 键 ⇒ 代号恒为空串
+        ⇒ **每次观察都被判成「读到一半」** ⇒ ``degraded`` 非空
+        ⇒ 环节① 返回 0 候选 ⇒ 10 条任务全在第一步夭折，**且零报错**。
+
+        这条断言盯的是**形状**（不是函数字面量），
+        假会话里那条上游语义规则（``_is_bare_function_literal``）是它的执行者。
+        """
+        assert not _is_bare_function_literal(DOC_STAMP_EXPR), (
+            "文档代号表达式写成了函数字面量——上游按表达式求值，"
+            "函数字面量序列化后是 undefined ⇒ 代号恒为空串 ⇒ 整批 0 候选"
+        )
+        # 假会话按上游语义求值 ⇒ 代号必须真的读得回来。
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        assert await driver._doc_stamp() == "1000"
+
+    async def test_发给上游的表达式都不是函数字面量(self):
+        """**同一条规则的通用版**：本驱动送上游的每一段 JS 都要求得出值。
+
+        一次只错一段就够了（2026-10-27 就是错了一段），
+        所以这里盯的是**全集**，不是逐个用例。
+        """
+        expressions = {
+            "DOC_STAMP_EXPR": DOC_STAMP_EXPR,
+            "_PAGE_TEXT_JS": camofox_driver._PAGE_TEXT_JS,
+            "_HTML_JS": camofox_driver._HTML_JS,
+            "_READY_STATE_JS": camofox_driver._READY_STATE_JS,
+            "_LINKS_JS": CamofoxDriver._LINKS_JS,
+            "TEXT_CONTENT_EXPR": TEXT_CONTENT_EXPR,
+        }
+        for name, expression in expressions.items():
+            assert not _is_bare_function_literal(expression), (
+                f"{name} 是函数字面量——上游按表达式求值，求不出值"
+            )
+        # 计数 / 抽取是**生成**的 JS，一并盯住。
+        generated = CamofoxDriver._pluck_js("video, audio", None)
+        assert not _is_bare_function_literal(generated)
+
 
 # ── 链接与抽取 ──────────────────────────────────────────────────
 
@@ -832,3 +1018,335 @@ class TestTabs:
         driver = _driver(session)
         with pytest.raises(DriverError):
             await driver.close_tab("c99")
+
+
+# ── 指纹时机 ──────────────────────────────────────────────────────
+
+
+class _懒测指纹会话(_FakeSession):
+    """**懒测指纹**的会话：只有 ``measure_fingerprint`` 跑过才有读数。
+
+    真会话就是这个形状——**第一次建页**时（也就是第一次 ``goto`` 里）
+    才测得到身份，之前读到的必然是空 dict。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._fp: dict[str, Any] = {}
+        self.measured = 0
+
+    @property
+    def fingerprint(self) -> dict[str, Any]:
+        return dict(self._fp)
+
+    async def measure_fingerprint(self) -> dict[str, Any]:
+        # 真会话**命中缓存就返回**（身份只测一次）⇒ 这里照抄那个形状，
+        # ``measured`` 记的是**真测了几次**，不是**被叫了几次**。
+        if not self._fp:
+            self.measured += 1
+            self._fp = {"engine": "camoufox", "base_url": "http://localhost:9377"}
+        return dict(self._fp)
+
+
+class Test指纹时机:
+    async def test_指纹在第一次导航之后才有(self):
+        """**指纹是懒测的**——第一次 ``goto`` 里第一次建页时才测得到。
+
+        钉的是「**什么时候才有**」：编排器在**导航之前**构造存档记录，
+        那一刻读到的必然是空 dict ⇒ 补读必须紧跟第一次导航
+        （见 ``test_visit.py::Test指纹补读``）。
+
+        ⚠️ 空 dict = **没测到**，不是「测出来是空的」——两者在批次元数据里
+        必须分得开（读档人会把「没记到」读成「指纹为空」）。
+        """
+        session = _懒测指纹会话()
+        driver = _driver(session)
+        assert driver.fingerprint == {}, "测之前就应当是空的"
+        await driver.goto("https://example.com/")
+        assert session.measured == 1
+        assert driver.fingerprint["engine"] == "camoufox"
+
+    async def test_指纹只测一次_后来导航不重测(self):
+        """身份在浏览器起来那一刻就定了 ⇒ **测一次就够**。
+
+        每次导航都重测会把「这一批的身份」换成「最后一个页面的身份」，
+        而后者在跨批次对读时是**没有意义的**。
+        """
+        session = _懒测指纹会话()
+        driver = _driver(session)
+        await driver.goto("https://example.com/a")
+        await driver.goto("https://example.com/b")
+        assert session.measured == 1
+
+
+
+class Test换页自愈:
+    """**上游把当前页销毁了 ⇒ 驱动换一张新页，同一个 URL 重来一次。**
+
+    ⚠️ **为什么这是必须修的**（2026-10-27 实测，10 条 camofox 批）：
+    上游 camofox-browser 在**操作超时 / 连续超时 / 页崩溃 / 锁队列超时**时
+    **销毁那一页**，而**销毁不通知客户端** ⇒ 客户端手里的 ``tabId``
+    成了死引用 ⇒ 再导航就是 ``404 {"error":"Tab not found"}``，**每一次都 404**。
+
+    实测：一个候选**连炸 9 次**，9 次全被记成 ``unreachable_hard``
+    （"站点打不开"）⇒ **九条理由通顺的假负样本进了池**，
+    而那个站点**一次都没被试过**。
+    """
+
+    async def test_页没了就换新页重来(self):
+        session = _FakeSession()
+        session.tab_gone = 1
+        driver = _driver(session)
+        await driver.goto("https://example.com/a")
+        # 死页被摘掉、栈顶换成了新页、同一个 URL 重新导航过一次
+        assert session.stack == ["tab-2"]
+        assert session.navigations == [
+            ("tab-1", "https://example.com/a"),
+            ("tab-2", "https://example.com/a"),
+        ]
+
+    async def test_自愈要记账_不许静默(self):
+        """自愈之后那一步在动作流里是**成功**的——不记就看不出
+        「这一页死过一次」，而那正是读档人判断结论可不可信的依据。"""
+        session = _FakeSession()
+        session.tab_gone = 1
+        driver = _driver(session)
+        await driver.goto("https://example.com/a")
+        assert len(driver.recoveries) == 1
+        assert driver.recoveries[0]["url"] == "https://example.com/a"
+        assert driver.recoveries[0]["tab"] == "tab-1"
+
+    async def test_没有自愈时账本是空的(self):
+        session = _FakeSession()
+        driver = _driver(session)
+        await driver.goto("https://example.com/a")
+        assert driver.recoveries == []
+
+    async def test_普通的导航失败不换页(self):
+        """**站点超时不是「页没了」**——换页重来会多打站点一次，
+        而且掩盖了「这个站真的打不开」这个事实。"""
+        session = _FakeSession()
+        session.navigate_error = DriverError(
+            "camofox tool camofox_navigate 返回错误: camofox error: 500: "
+            '{"error":"page.goto: Timeout 30000ms exceeded"}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverError):
+            await driver.goto("https://example.com/a")
+        assert session.stack == ["tab-1"], "不该换页"
+        assert driver.recoveries == []
+
+    async def test_换页也失败就是会话失效(self):
+        """连「开一张新页」都开不出来 ⇒ 会话真的死了。
+
+        ⇒ 抛 :class:`DriverSessionError`（**执行层坏了**），
+        不是普通 ``DriverError``（那是「站点打不开」）——
+        上层要靠这个类型分开记账。
+        """
+        session = _FakeSession()
+        session.tab_gone = 1
+        session.new_page_tab_gone = True
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError):
+            await driver.goto("https://example.com/a")
+
+    async def test_会话失效不许被包成普通导航失败(self):
+        """``goto`` 会把普通 ``DriverError`` 包成「camofox 导航失败: …」，
+        但**会话失效不许被包掉**——上层靠类型分账。"""
+        session = _FakeSession()
+        session.tab_gone = 1
+        session.new_page_tab_gone = True
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError) as caught:
+            await driver.goto("https://example.com/a")
+        assert "会话失效" in str(caught.value)
+
+
+# ── 归因：失败落在哪个路由 ──────────────────────────────────────
+
+
+def _session_expired_error() -> CamofoxToolError:
+    """上游明说「会话过期，重来即可」（``recovery="retry"``）的真身。
+
+    上游 ``lib/browser-errors.js`` 的 ``browserErrorRecovery``：
+    ``session_expired`` ⇒ ``recovery="retry"``；``browserErrorStatus``
+    把它映成 HTTP 503。
+    """
+    return CamofoxToolError(
+        'camofox tool camofox_navigate 返回错误: camofox error: 503: '
+        '{"error":"Browser session expired","code":"session_expired",'
+        '"retryable":true,"recovery":"retry"}',
+        tool="camofox_navigate",
+        status=503,
+        body={
+            "error": "Browser session expired",
+            "code": "session_expired",
+            "retryable": True,
+            "recovery": "retry",
+        },
+    )
+
+
+class Test归因:
+    """**失败落在哪个路由 ⇒ 那就是归属判据**（2026-10-27 实测后改）。
+
+    ⚠️ **为什么必须修**（T048 那条假负样本的成因）：上游的建页路由
+    把「建页」与「导航」塞进**同一个 30 秒预算** ⇒ 那个路由失败
+    **证明不了站点打不开**；而实测两种失败**在错误体里同形**
+    （都是 HTTP 500 + ``{"error":…,"retryable":false}``、**没有**
+    ``code`` / ``recovery``）⇒ 光看错误体**分不开**。
+
+    ⇒ 拆成「建空白页 + 导航」之后：
+    **建页**失败 ⇒ 执行层（记 ``unresolved``，**不进负样本池**）；
+    **导航**失败 ⇒ 站点事实（记 ``unreachable_hard``，真负样本要留住）。
+    """
+
+    async def test_建页与导航是两次调用且建页不带_url(self):
+        """结构判据本身：建页**不带 URL**（上游 ``if (url)`` ⇒ 只建页）。"""
+        session = _FakeSession()
+        session.stack = []
+        driver = _driver(session)
+        await driver.goto("https://example.com/a")
+        assert session.creates == [""], "建页必须不带 URL（否则又回到合并路由）"
+        assert session.navigations == [("tab-2", "https://example.com/a")]
+
+    async def test_建页失败是执行层故障_不是站点打不开(self):
+        """**T048 那条假负样本的原样形状**（``tab create timed out``）。
+
+        ⚠️ 判据是**路由**不是错误形状：建页那一趟**页面里根本没有
+        站点 URL** ⇒ 站点不可能是原因 ⇒ 抛
+        :class:`DriverSessionError` ⇒ 上层记 ``unresolved``
+        ⇒ **不进负样本池**（采集失败不是站点结论）。
+        """
+        session = _FakeSession()
+        session.stack = []
+        session.new_page_error = DriverError(
+            "camofox tool camofox_create_tab 返回错误: camofox error: 500: "
+            '{"error":"tab create timed out after 30000ms","retryable":false}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError):
+            await driver.goto("https://example.com/a")
+
+    async def test_自愈时建页失败也是执行层故障(self):
+        """**T048 的原样时序**：页没了 ⇒ 换页 ⇒「建页超时」
+        ⇒ 之前记成了 ``unreachable_hard`` ⇒ 一条**理由通顺的假负样本**
+        （而同一批的 T038 **打开了同一个 iqiyi URL**）。"""
+        session = _FakeSession()
+        session.tab_gone = 1
+        session.new_page_error = DriverError(
+            "camofox tool camofox_create_tab 返回错误: camofox error: 500: "
+            '{"error":"tab create timed out after 30000ms","retryable":false}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError):
+            await driver.goto("https://example.com/a")
+
+    async def test_导航失败仍然是站点事实(self):
+        """**DNS 不通是站点的事实** ⇒ 抛 ``DriverUnreachableError``
+        ⇒ ``unreachable_hard``（真负样本要留住，不许被降级）。
+
+        ⚠️ **类型变了**（M-44 裁定，owner 2026-10-27）：原先「站点打不开」
+        与「这次没打开」都抛普通 ``DriverError``，上层分不开 ⇒ 收窄成
+        「**机器码证明**站点不可达」才抛这个新类型。
+        """
+        session = _FakeSession()
+        session.navigate_error = DriverError(
+            "camofox tool camofox_navigate 返回错误: camofox error: 500: "
+            '{"error":"page.goto: NS_ERROR_UNKNOWN_HOST"}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverUnreachableError) as caught:
+            await driver.goto("https://example.com/a")
+        assert not isinstance(caught.value, DriverSessionError)
+        assert caught.value.code == "NS_ERROR_UNKNOWN_HOST"
+
+    async def test_连接被拒也是真站点不可达(self):
+        """**连接被拒**（公网主机 + 关闭端口 ⇒ 服务器回 RST）同样配记
+        ``unreachable_hard``——机器码 ``NS_ERROR_CONNECTION_REFUSED``
+        （实测原文见 ``research/probes/camofox_nav_failure_codes.json``）。"""
+        session = _FakeSession()
+        session.navigate_error = DriverError(
+            "camofox tool camofox_navigate 返回错误: camofox error: 500: "
+            '{"error":"page.goto: NS_ERROR_CONNECTION_REFUSED"}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverUnreachableError) as caught:
+            await driver.goto("https://example.com/a")
+        assert caught.value.code == "NS_ERROR_CONNECTION_REFUSED"
+
+    async def test_超时不算真站点不可达(self):
+        """⚠️ **超时证明不了站点不可达**（M-44）——站点可能只是慢。
+
+        ⇒ 抛普通 ``DriverError``（**不是** ``DriverUnreachableError``）
+        ⇒ 上层记 ``unresolved``（**不进负样本池**）。
+        """
+        session = _FakeSession()
+        session.navigate_error = DriverError(
+            "camofox tool camofox_navigate 返回错误: camofox error: 500: "
+            '{"error":"page.goto: NS_ERROR_NET_TIMEOUT"}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverError) as caught:
+            await driver.goto("https://example.com/a")
+        assert not isinstance(caught.value, DriverUnreachableError)
+
+    async def test_被打断不算真站点不可达(self):
+        """⚠️ **打断**的形态包含「**重定向确实发生了**」的情形
+        ⇒ 站点是通的 ⇒ 不算「站点不可达」。"""
+        session = _FakeSession()
+        session.navigate_error = DriverError(
+            "camofox tool camofox_navigate 返回错误: camofox error: 500: "
+            '{"error":"page.goto: Navigation to \\"http://a.test/\\" is '
+            'interrupted by another navigation to \\"http://b.test/\\""}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverError) as caught:
+            await driver.goto("https://example.com/a")
+        assert not isinstance(caught.value, DriverUnreachableError)
+
+    async def test_第一页的站点失败也是站点事实(self):
+        """第一页走的是「建空白页 + 导航」⇒ 站点失败仍落在**导航**路由
+        ⇒ 仍然是站点事实（别把「第一页」也一起降级）。"""
+        session = _FakeSession()
+        session.stack = []
+        session.navigate_error = DriverError(
+            "camofox tool camofox_navigate 返回错误: camofox error: 500: "
+            '{"error":"page.goto: NS_ERROR_UNKNOWN_HOST"}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverError) as caught:
+            await driver.goto("https://example.com/a")
+        assert not isinstance(caught.value, DriverSessionError)
+
+    async def test_上游明说会话过期就是执行层故障(self):
+        """上游的 ``recovery="retry"`` ⇒ **明说**「我们这边坏了，重来即可」
+        ——那个站点**一次都没被试过** ⇒ 不许记 ``unreachable_hard``。
+
+        ⚠️ 这条在改之前是**潜伏**的（实测池里 0 条命中）：上游的
+        ``session_expired`` 走 HTTP 503 且**带** ``recovery``，
+        漏判的后果与「页没了」那条一模一样。
+        """
+        session = _FakeSession()
+        session.navigate_error = _session_expired_error()
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError):
+            await driver.goto("https://example.com/a")
+
+    async def test_换页重试后站点仍然失败_仍然是站点事实(self):
+        """**换页成功、导航失败** = 在一张**干净的新页**上得到的传输层事实
+        ⇒ 仍然是 ``unreachable_hard``，不许降级成 ``unresolved``。
+
+        ⚠️ **只有「换页本身失败」才是采集侧的故障**（方案 21 §R5）。
+        """
+        session = _FakeSession()
+        session.tab_gone = 1
+        session.navigate_error = DriverError(
+            "camofox tool camofox_navigate 返回错误: camofox error: 500: "
+            '{"error":"page.goto: NS_ERROR_UNKNOWN_HOST"}'
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverError) as caught:
+            await driver.goto("https://example.com/a")
+        assert not isinstance(caught.value, DriverSessionError)
+        assert len(driver.recoveries) == 1, "换过一次页要记账"

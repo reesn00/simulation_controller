@@ -21,7 +21,10 @@ import pytest
 from trajectory_pipeline.executor.actions import TOOLS
 from trajectory_pipeline.executor.agent_loop import AgentBackend
 from trajectory_pipeline.executor.branches import RunLedger
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverUnreachableError,
+)
 from trajectory_pipeline.executor.orchestrator import RunRecord
 from trajectory_pipeline.executor.steps.agent_visit import agent_visit
 from trajectory_pipeline.executor.steps.search import Candidate
@@ -125,11 +128,15 @@ class FakeDriver:
         *,
         after: tuple[Observation, ...] = (),
         goto_fails: tuple[str, ...] = (),
+        goto_unreachable: tuple[str, ...] = (),
         observe_fails: int = 0,
     ) -> None:
         self._pages = dict(pages or {})
         self._queue = list(after)
         self._goto_fails = set(goto_fails)
+        #: 导航失败但**机器码证明**站点不可达（M-44）⇒ 记
+        #: ``unreachable_hard``（真负样本）。
+        self._goto_unreachable = set(goto_unreachable)
         self._observe_fails = observe_fails
         self.current: Observation | None = None
         self.visited: list[str] = []
@@ -141,6 +148,10 @@ class FakeDriver:
 
     async def goto(self, url: str, *, wait_until: str = "load") -> None:
         self.visited.append(url)
+        if url in self._goto_unreachable:
+            raise DriverUnreachableError(
+                f"fake: 站点不可达 {url}", code="NS_ERROR_UNKNOWN_HOST"
+            )
         if url in self._goto_fails or url not in self._pages:
             raise DriverError(f"fake: 导航失败 {url}")
         self.current = self._pages[url]
@@ -191,6 +202,7 @@ def _driver(
     *,
     after: tuple[Observation, ...] = (),
     goto_fails: tuple[str, ...] = (),
+    goto_unreachable: tuple[str, ...] = (),
     observe_fails: int = 0,
 ) -> FakeDriver:
     """进站页登记在候选 URL 上，``after`` 是点击/按键依次抵达的页面。"""
@@ -198,6 +210,7 @@ def _driver(
         {CAND_URL: entry if entry is not None else _SITE},
         after=after,
         goto_fails=goto_fails,
+        goto_unreachable=goto_unreachable,
         observe_fails=observe_fails,
     )
 
@@ -300,27 +313,45 @@ def _done(reached: bool = True, why: str = "到了播放页") -> dict:
 
 
 class Test进站段:
-    async def test_导航失败记unreachable_hard且不问模型(self):
-        """站都进不去就不该让模型进来——那一步的 llm_call 是白烧的。"""
+    async def test_导航失败记unresolved且不问模型(self):
+        """站都进不去就不该让模型进来——那一步的 llm_call 是白烧的。
+
+        ⚠️ **分支是 ``unresolved`` 而不是 ``unreachable_hard``**（M-44
+        裁定，owner 2026-10-27）：超时 / 打断 / 建页失败这些形态
+        **证明不了**站点不可达 ⇒ 记「没判出来」那一支（**不进池**）。
+        """
         ctx = await _run(
             FakeAgentLLM([{"tool": "click", "ref": "e1"}]),
             _driver(goto_fails=(CAND_URL,)),
             _player(True),
         )
-        assert ctx.branches == ["unreachable_hard"]
+        assert ctx.branches == ["unresolved"]
         assert ctx.llm.calls == []
         # 试过且失败：动作流里那一步必须带 error，否则负样本池里这条
         # 会变成「没有动作的判决」。
         assert ctx.result.steps.steps[0].action.tool == "goto"
         assert ctx.result.steps.steps[0].error
 
+    async def test_真站点不可达记unreachable_hard且不问模型(self):
+        """**机器码证明**站点不可达（DNS 解析不出来 / 连接被拒）
+        ⇒ 记 ``unreachable_hard``（真负样本要留住）。"""
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"}]),
+            _driver(goto_unreachable=(CAND_URL,)),
+            _player(True),
+        )
+        assert ctx.branches == ["unreachable_hard"]
+        assert ctx.llm.calls == []
+
     async def test_进站快照取不到同上(self):
+        """导航**成功**了 ⇒ 站点是通的 ⇒ 快照失败**证明不了**站点不可达
+        ⇒ 记 ``unresolved``（**不进池**，M-44）。"""
         ctx = await _run(
             FakeAgentLLM([{"tool": "click", "ref": "e1"}]),
             _driver(observe_fails=1),
             _player(True),
         )
-        assert ctx.branches == ["unreachable_hard"]
+        assert ctx.branches == ["unresolved"]
         assert "取不到快照" in ctx.notes
         assert ctx.llm.calls == []
 

@@ -297,8 +297,30 @@ async def enter_site(
     if not reach.reachable:
         # 记「试过且失败」。unreachable_hard 在动作流里若整段消失，
         # 负样本池里那条就会变成一条没有动作的判决，说不清模型该学什么。
+        #
+        # ⚠️ **只有「真·站点不可达」才记 unreachable_hard**（M-44 裁定，
+        # owner 2026-10-27）。这一支的语义是「**这里真的看不了**」，
+        # 进的是负样本池 ⇒ 判错就是**训练信号被污染**。而下面这些形态
+        # **都只是「这一次没打开」**，证明不了站点不可达：
+        #
+        # - **执行层会话失效**：坏的是**我们的浏览器**，那个站点
+        #   **一次都没被试过**；
+        # - **超时**：站点可能只是慢；
+        # - **打断**（``is interrupted by another navigation``）：
+        #   **重定向确实发生了** ⇒ 站点是通的；
+        # - **建页失败**：导航请求**从未发出**。
+        #
+        # ⇒ 全部降 ``unresolved``（**不进负样本池**）。
+        #
+        # ⚠️ **两个分支名都写成字面量**（不合成一个变量）：契约测试
+        # ``test_questionless_producers`` 靠 AST 静态核「无题记账点的
+        # 分支能不能静态确定」——写成变量就得去登记「动态产地」，
+        # 而登记表是给「分支来源唯一」的那几处留的，不该拿来兜这一处。
         result.steps.settle(step_goto, error=reach.reason)
-        ledger.record(url, "unreachable_hard", reach.reason, site_url=url)
+        if reach.proven_unreachable:
+            ledger.record(url, "unreachable_hard", reach.reason, site_url=url)
+        else:
+            ledger.record(url, "unresolved", reach.reason, site_url=url)
         result.note(f"导航失败: {reach.reason}")
         return None
 
@@ -306,7 +328,10 @@ async def enter_site(
         obs = await driver.observe(max_chars=max_chars)
     except DriverError as exc:
         result.steps.settle(step_goto, error=f"快照失败: {exc}")
-        ledger.record(url, "unreachable_hard", f"导航成功但取不到快照: {exc}",
+        # ⚠️ **导航已经成功了** ⇒ 站点**是通的**（哪怕快照没取到）。
+        # 记 ``unreachable_hard`` 等于说「这个站打不开」——那是**错的**：
+        # 我们**打开过**它。⇒ 记「没判出来」那一支（**不进池**）。
+        ledger.record(url, "unresolved", f"导航成功但取不到快照: {exc}",
                       site_url=url)
         result.note(f"快照失败: {exc}")
         return None

@@ -116,8 +116,13 @@ async def probe_and_observe(
 ) -> Observation | None:
     """中间页共用前置：导航 + 观察。失败记账并返回 ``None``。
 
-    不可达记 ``unreachable_hard``（与 visit 链 ① 同款）——中间页打不开
-    是传输层事实，**不是** ``not_aggregator``（后者要页面在手才能判）。
+    记账口径**与 visit 链 ① 同款**（M-44）：只有「**机器码证明**的
+    真·站点不可达」才记 ``unreachable_hard``，「这次没打开」（超时 /
+    打断 / 会话失效 / 建页失败）降 ``unresolved``（**不进池**）——
+    ⚠️ 这里原来**无条件**记 ``unreachable_hard``，于是两条链对
+    「进站失败算什么」给了**两个答案**，而它们是同一支分支，混进池里
+    看不出来。中间页打不开也**不是** ``not_aggregator``（后者要页面在
+    手才能判）。
     动作流记 ``result.steps``：中间页是独立决策单元（P2 切条），
     导航这一步属于它自己，不属于搜索单元。
     """
@@ -126,18 +131,32 @@ async def probe_and_observe(
     step_goto = result.steps.act(actions.goto(candidate.url))
     if not reach.reachable:
         result.steps.settle(step_goto, error=reach.reason)
-        ledger.record(
-            candidate.url, "unreachable_hard", reach.reason,
-            site_url=candidate.url,
-        )
+        # ⚠️ **口径与 visit 链 ① 同款**（M-44）：只有**机器码证明**的
+        # 「真·站点不可达」才记 ``unreachable_hard``；「这次没打开」
+        # （超时 / 打断 / 会话失效 / 建页失败……）一律 ``unresolved``
+        # （**不进池**）。⚠️ **这里原来是无条件记** ``unreachable_hard``
+        # ⇒ 两条链对「进站失败算什么」给出了**两个答案**，而它们是
+        # 同一支分支，混进池里看不出来。
+        if reach.proven_unreachable:
+            ledger.record(
+                candidate.url, "unreachable_hard", reach.reason,
+                site_url=candidate.url,
+            )
+        else:
+            ledger.record(
+                candidate.url, "unresolved", reach.reason,
+                site_url=candidate.url,
+            )
         result.note(f"导航失败: {reach.reason}")
         return None
     try:
         result.obs = await driver.observe(max_chars=max_chars)
     except DriverError as exc:
         result.steps.settle(step_goto, error=f"快照失败: {exc}")
+        # ⚠️ **导航已经成功了** ⇒ 站点是通的 ⇒ 快照失败**不是**
+        # 「站点不可达」⇒ 记 ``unresolved``（**不进池**）。
         ledger.record(
-            candidate.url, "unreachable_hard",
+            candidate.url, "unresolved",
             f"导航成功但取不到快照: {exc}", site_url=candidate.url,
         )
         result.note(f"快照失败: {exc}")

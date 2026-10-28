@@ -11,7 +11,10 @@
 * 2026-10-19 同页守卫从 5 支收窄到 1 支 ⇒ 被守卫拦下的行改落
   ``component_unverified``；
 * 2026-10-21 ② 的兜底不再落合并态、付费墙前置事实换成门禁语境；
-* 2026-10-23 点击失败不再记业务分支。
+* 2026-10-23 点击失败不再记业务分支；
+* 2026-10-27 ``unreachable_hard`` 收窄成「**真·站点不可达**」——
+  超时 / 打断 / 建页失败这些「**这次没打开**」的形态**降** ``unresolved``
+  ⇒ 同一批 URL 落的分支就换 ⇒ **池里那一支的成分也换**。
 
 不记这一轴，这些跳变会被读成「**质量变好了**」——
 这正是 CLAUDE.md 点名的坑：「批次边界前后分布会跳变，不记批次元数据
@@ -164,6 +167,18 @@ BRANCH_ERAS: tuple[BranchEra, ...] = (
         summary="点击失败不再记成业务分支，落 unresolved（采集缺件 ≠ 业务负样本）",
         changed_branches=("unresolved",),
         anchor="编年史 §增量八十三（M-27 闭）",
+    ),
+    BranchEra(
+        era_id="e6",
+        since="2026-10-27",
+        summary=(
+            "unreachable_hard 收窄成「真·站点不可达」（机器码证明："
+            "DNS 解析不出来 / 连接被拒）；「这次没打开」（超时 / 打断 / "
+            "abort / 空响应 / 建页失败 / 会话失效 / 快照失败）降 "
+            "unresolved（不进池）"
+        ),
+        changed_branches=("unreachable_hard", "unresolved"),
+        anchor="台账 M-44 / 编年史 §增量九十四",
     ),
 )
 

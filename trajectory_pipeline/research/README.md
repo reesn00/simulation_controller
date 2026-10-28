@@ -36,6 +36,8 @@ research/
 │  ├─ apply_code_writeback.py    离线：把重采 outcomes 的新判定写回 candidates.jsonl
 │  │                            的 code（v12→v13 一次性；跑完由 freeze --refresh-code 挂链）
 │  ├─ outcomes.jsonl           **当前有效轮**（INC43 轮，75 对直采命中 79 行）
+│  ├─ plan_from_corpus.py      离线：**从存量存档反推「重跑计划」**（M-44 后那批 28 条）
+│  │                            同一任务实例重跑（不是 `cli gen` 重采样新任务）
 │  └─ rounds/                  历史轮次快照，**已被 outcomes.jsonl 取代**，仅留痕
 │     ├─ inc42_backup.jsonl       INC43 修复前的基线
 │     ├─ inc43_backup.jsonl       INC44 A/B 的「旧轮」
@@ -66,6 +68,9 @@ research/
 │  │                                 留池列由 `cause` 派生，冲突在 `keep_conflicts` 点名
 │  ├─ inc73_human_review.filled-original.json   首轮**人填原件**（留池列还在手填时：yes 28 / no 11），审计对照
 │  ├─ inc73_field_check.py            判据⑤ 的**现场取证**（重采一遍与存档并排；联网）
+│  ├─ corpus_inventory.py             离线：盘上 P1 存档**按 task 汇总**（份数/面/形态/分支/耗时）
+│  ├─ camofox_nav_failure_codes.py    **M-44 机器码词表实测**（camofox 面：DNS 失败/拒连/超时/打断）
+│  ├─ obscura_nav_failure_codes.py    同上（obscura 面；**绕过驱动的 200 字截断**直打 MCP）
 │  └─ inc73_action_replay.py          判据⑥ 的**动作重放**（从存档 steps[] 定位重放；联网）
 │  ├─ （文档代号 / 动作落定两个探针**已退役** 2026-10-26，
 │  │     配方与读数落点见 [§退役配方](#退役配方-2026-10-26-执行层换-camofox)）
@@ -78,6 +83,23 @@ research/
 │  ├─ compare_generations.py          **两代存档逐 URL 对照**：同一页两代结论互相矛盾的条目（离线）
 │  │  └─ generation_collision.json    两代对撞读数（112 个共享 (task,url) 对 / 17 处结论矛盾）
 │  ├─ merge_batch_pool.py             批次后处理：把子目录里的 **P1 存档展平 + 负样本池并进根目录**（默认 dry-run）
+│  ├─ camofox_*.py                    第 5 轮的**执行层取证探针**（导航时序 / 销毁页自愈 / 建页与导航两条路由
+│  │                                  分开 / 归因 / 离线扫存档五验收判据 / 采集侧账）——见下面「怎么跑」
+│  ├─ camofox_r5_uh_recheck_*.json    **并发批里 6 条 `unreachable_hard` 的逐条单独复核**（3 轮重采）
+│  │  ├─ camofox_r5_uh_recheck_targets.txt   5 条 URL（从存档**程序化取**，不手抄）
+│  │  ├─ camofox_r5_uh_recheck_r1.json       第 1 轮（3 条**打得开** + 2 条**跳转链活着**）
+│  │  ├─ camofox_r5_uh_recheck_r2.json       第 2 轮（看两条链接**交替**报两种传输层错误）
+│  │  └─ camofox_r5_uh_recheck_r3.json       第 3 轮
+│  ├─ camofox_r5_step6_live_check.json      停点第 ⑥ 步那 **4 条 agent 负样本**的现场重采
+│  │  ├─ camofox_r5_step6_live_check_targets.txt   4 条 + M-43 那条
+│  │  └─ camofox_r5_step6_archive_vs_live.py + .json  **存档正文（当场）vs 现场正文（今天）**并排，
+│  │                                     各自跑一遍仓库自己的 `paywall_evidence` ⇒ 用来分「标签当时对不对」
+│  │                                     与「判据抓不抓得住」（iqiyi 那条：标签对，判据抓不住）
+│  ├─ paywall_widening_measure.py + .json  **Q-20 ② 的实测**：`paywall_evidence` 的「同句」放宽到多宽
+│  │                                     （离线；**1160 段存档正文 + 22 行金标候选**）
+│  │                                     ⇒ 三个候选（换行不切句 / 邻窗 ±1 / 邻窗 ±3）各量「新增命中 / 丢失命中」
+│  │                                     ＋ iqiyi·youku·v.qq 三个验收样例 ＋ 金标回归
+│  │                                     ⚠️ **只改粒度、不动词表**（动词表 = 口径变更 ⇒ 按 D-C7 连带改 prompt + 重跑 A/B）
 │  ├─ probe_m29_d5_two.py + m29_d5_two.json   **D-5 判 2 分的样本逐条摊开**：正文原话（`body_text`）
 │  │                                     + 命中的形态词 + 形态组合（`defect_only` / `paywall_only` /
 │  │                                     `both` / `neither`）+ 裸 CTA 的同句语境词（离线；M-29 收口用）
@@ -90,6 +112,17 @@ research/
 │                                       `--settle` 可调）；**两读之差就是「渲染时机」的证据**
 │                                     ⚠️ 两个 json 是**两轮独立重采**（独立证据，不是同一份复制）
 │                                     ⚠️ 2026-10-26 已随执行层换 camofox（`--headful` 撤）
+│  ├─ camofox_q23_uh_recheck.py + .json    **Q-23 第一轮**：池里存量 54 条 `unreachable_hard` 的
+│  │                                        **29 个 URL** 逐条真浏览器复核（**联网**；每 URL 最多 3 次）
+│  ├─ camofox_q23_uh_settle.py + .json      **Q-23 补测**：给**第一轮没打开的全部 12 个 URL** 统一加试 6 次
+│  │                                        ⇒ 取证量一致 ⇒ 判据可统一套用（**联网**；125 次尝试的另一半）
+│  ├─ q23_dispose_uh_rows.py + .json        ⚠️ **改生产池**：把裁定「不是真·站点不可达」的
+│  │                                        **26 个 URL / 40 行** 逐条**降级 + 出池**
+│  │                                        （`cli downgrade` → `cli pool-drop`；每条 dry-run，命中数必须 1:1）
+│  └─ q23_annotate_kept_rows.py + .json     ⚠️ **改生产池**：给**留池的 14 行 + 对应存档记录**补机器码读数
+│                                           （原 evidence 是 obscura 旧文案 + 200 字截断 ⇒ 机器码没落进去）
+│  ├─ gold_candidate_drift.py        **冻结的金标候选集 ↔ 负样本池的漂移读数**（离线；
+│  │                                  去重键 / 按行两个口径 + `--pool-before` 做「本轮新增」对照）
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
 │  └─ plan-camoufox-prod1.json  **第一批 camoufox 生产批次**的 12 条计划（seed 20261022；第二批复用同一份⇒前后可比）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）
@@ -176,6 +209,97 @@ uv run python -m trajectory_pipeline.research.probes.m30_live_check \
 # ⚠️ --all-archives：并排比较**全部** P1 存档（顶层 `{task_id}__{run_id}.json`，
 #    当前 78 个），不只默认那三个 run ⇒ 换 URL 批次时用这个。
 
+# camofox 面「读到一半」（nav_unsettled）现场取证（**联网 + 真浏览器**；camofox）
+# ⚠️ 必须在**仓库根**跑（`python -m`，包内相对路径）。
+# 重演 `observe()` 的读序（snapshot → links → interactive），**每一步之后取一次
+# 文档代号**（`performance.timeOrigin`）⇒ 打印「读到一半」是**时序问题**
+# （页面在换文档）还是**能力问题**（代号读不到）——两者在 P1 存档里同形。
+uv run python -m trajectory_pipeline.research.probes.camofox_nav_probe \
+  --url "https://www.baidu.com/s?wd=功夫 在线观看"
+
+# 上游销毁页之后驱动能不能自愈（**联网 + 真浏览器**；camofox）
+# ⚠️ 必须在**仓库根**跑（`python -m`，包内相对路径）。
+# 在**上游那一侧**把当前页关掉（本地栈照旧攥着它——这正是上游销毁页之后的
+# 真实状态），再导航同一个 URL ⇒ 打印「换了一张新页、同一个 URL 重来、
+# 页面真的加载出来了」还是「自愈失败」。**只读，不改任何产物**。
+uv run python -m trajectory_pipeline.research.probes.camofox_tab_recovery_probe
+
+# 上游「建页」与「导航」两个路由的失败形状**能不能分开**（**联网 + 真浏览器**；camofox）
+# ⚠️ 必须在**仓库根**跑（`python -m`，包内相对路径）。
+# 测三件事：① `camofox_create_tab` **不给 url** 能不能建出**空白页**
+#    （上游 `server.js` 的 `if (url)`）；② 空白页 + `camofox_navigate` 打
+#    DNS 不存在的域名 → 错误形状；③ 建页（**带 url**）打同一个域名 → 错误形状
+#    （**对照**）。⇒ 实测结论：**两种失败在错误体里字面同形**
+#    （500 + `{"error":…,"retryable":false}`、**无** `code`/`recovery`）
+#    ⇒ **光看错误体分不开，只有「走哪个路由」能分开**（M-43）。
+uv run python -m trajectory_pipeline.research.probes.camofox_route_split_probe \
+  --url "http://this-domain-should-not-exist-zzq7x9.invalid/"
+
+# 拆开「建页」与「导航」之后，**导航还正不正常**（**联网 + 真浏览器**；camofox）
+# ⚠️ 必须在**仓库根**跑（`python -m`，包内相对路径）。
+# 上游的 `navigate` 路由要求那一页**已注册在会话里** ⇒ 测「空白页 → 导航」
+# 这条链路上报回来的东西（`httpStatus` / `navigationOk` / 落地 URL）与
+# 原来「建页带 URL」**一样**。**只读，不改任何产物**。
+uv run python -m trajectory_pipeline.research.probes.camofox_split_nav_probe \
+  --url "https://www.baidu.com/s?wd=功夫 在线观看"
+
+# **归因**现场取证：修好之后，**失败落在哪个路由 ⇒ 那就是归属判据**
+# （**联网 + 真浏览器**；camofox）
+# ⚠️ 必须在**仓库根**跑（`python -m`，包内相对路径）。
+# 用**生产驱动**（`CamofoxDriver.goto`）跑三条真实路径，打印每一条抛出来的
+# **异常类型**——因为「归因」这件事**没有门禁**，只能现场看：
+# ① 正常站点 ⇒ 不抛，且**观察读得到正文**（证明拆开没把采集链打断）；
+# ② DNS 不存在的域名 ⇒ **普通** `DriverError`（站点事实）；
+# ③ 挂住不可路由的 IP ⇒ **普通** `DriverError`（等满 35 秒导航预算）。
+# ⚠️ **「建页失败 ⇒ 执行层」现场触发不到**（建空白页几乎不会失败）
+#    ⇒ 该条由单测覆盖，报告里标「未实测」——**不拿单测冒充现场读数**。
+uv run python -m trajectory_pipeline.research.probes.camofox_attribution_probe
+
+# **离线**扫 P1 存档：把方案 21 §R5 的验收标准**机械核一遍**（**不联网**）
+# ⚠️ 必须在**仓库根**跑（`python -m`，包内相对路径）。
+# 五条判据全是**结构**，不是猜文本：C1 指纹非空（≥11 键）· C2 建页路由的失败
+# **不得**记 `unreachable_hard` · C3 `unreachable_hard` 的失败**必须**落在导航
+# 路由上 · C4 **同一个 URL** 上同一个失败原因出现 ≥2 次（死页级联）·
+# C5 `degraded` 含 `press_unsupported` 而那一步的动作不是 press（假降级）。
+# ⚠️ **它不替人判「结论对不对」**——它只把**形状不对**的行点名。
+# ⚠️ **批次正在写盘时读到的可能是不完整的一档** ⇒ 要判批次请**跑完之后**再扫。
+uv run python -m trajectory_pipeline.research.probes.camofox_route_attribution_scan \
+  --root trajectory_pipeline/output/pipeline
+
+# **离线**算**采集侧账**读数（方案 20 §R3）：从存档的 `gatekeeper_events[]`
+# 读 `blocked_surface` / `attempt`（**面只从 `RunRecord.driver` 折算，不手填**）
+# + 从黄金集读**金标侧的面分布** ⇒ 印出「跨面账为什么是 0」。
+# ⚠️ **不联网**、**只读**；⚠️ **必须在仓库根**跑（`python -m`）。
+# ⚠️ 账的来源是**存档的闸门账本**，**不是负样本池**——方案 20 §R1 之后
+# `blocked` **不进池** ⇒ 池里看不到被拦的笔数。
+uv run python -m trajectory_pipeline.research.probes.camofox_collection_account \
+  --root trajectory_pipeline/output/pipeline \
+  --golden-root trajectory_pipeline/evaluation/golden/data
+
+# 第 5 轮的**现场重采**（**联网 + 真浏览器**；camofox）——两张证据表
+# ⚠️ **站点会漂** ⇒ 这两份 `.json` **不可重建**（重采拿到的是另一个页面）
+#    ⇒ **留在这里当证据**，结论在 [编年史 §十一](../docs/计划进展/90-增量编年史.md)。
+# ① `camofox_r5_uh_recheck_*`：**并发批里那 6 条 `unreachable_hard` 的逐条单独复核**
+#    （铁律：不许因为「它是站点打不开」就放过）。3 条**打得开**（豆瓣片单 / 爱奇艺
+#    《功夫（粤语）》/ 西瓜视频《功夫》），2 条**跳转链活着**（E028 的 baidu 链接——
+#    打断消息里点名落点 `www.ctwlpt.com/voddetail/38550.html` 与 `…/vodplay/38550-1-1.html`
+#    ⇒ 重定向确实发生了），1 条**失败在建页路由**（M-43，导航根本没发出去）。
+#    **三轮**（r1/r2/r3）是为了看出两条链接**交替**报 `NS_ERROR_NET_RESET` 与
+#    `Navigation … is interrupted by another navigation to …`。
+# ② `camofox_r5_step6_live_check.*`：停点第 ⑥ 步那 **4 条 agent 负样本**的现场重采
+#    （bilibili / v.qq / iqiyi / youku）+ M-43 那条 iqiyi。
+uv run python -m trajectory_pipeline.research.probes.m30_live_check \
+  --targets-file trajectory_pipeline/research/probes/camofox_r5_uh_recheck_targets.txt \
+  --json trajectory_pipeline/research/probes/camofox_r5_uh_recheck_r1.json \
+  --settle 4
+
+# ③ `camofox_r5_step6_archive_vs_live.py`：**存档正文 vs 现场正文**并排（**离线，不联网**）
+#    ——把 4 条 agent 负样本的**当场** `body_text`（从 `output/pipeline/samples/*.json` 取）
+#    与今天的现场正文放在一起，各自跑仓库自己的 `paywall_evidence`。
+#    ⚠️ 读的是 `output/pipeline/samples/`（**不进库**）⇒ **存档不在本机就跳过**，
+#    但已生成的 `.json` **在库里** ⇒ 证据不丢。
+uv run python trajectory_pipeline/research/probes/camofox_r5_step6_archive_vs_live.py
+
 # D-3 / D-9 提示词 A/B（方案 16 C-10 补验证）：三臂 —— `old`（现版**去掉锚点块**
 # 重建，**指纹须逐位等于** v8 manifest 的 `evaluator_version`，对不上当场停）/
 # `new`（现版）/ `new2`（同版再跑一遍 = **噪声地板**）。
@@ -193,17 +317,70 @@ uv run python trajectory_pipeline/research/probes/prompt_ab_anchor.py \
 uv run python trajectory_pipeline/research/probes/merge_batch_pool.py \
   --batch trajectory_pipeline/output/pipeline/<批次目录> \
   --root trajectory_pipeline/output/pipeline
+# 冻结的金标候选集 ↔ 负样本池 的**漂移读数**（离线；每次动池之后量一次）
+# ⚠️ 候选行的分支在 `code.branch`（**不在顶层**）⇒ 按顶层取会得到「322 个空分支键」，
+#    看着像全漂了。
+# ⚠️ `--pool-before` 给**动池之前**的池文件 ⇒ 算得出「本轮新增漂移」有多少
+#    （Q-23 那轮：撤池前 183 键 / 204 行 ⇒ 撤池后 207 键 / 230 行，★新增 24 键 / 26 行）。
+uv run python trajectory_pipeline/research/probes/gold_candidate_drift.py \
+  --pool-before trajectory_pipeline/output/q23_backup_2026-10-28/negative.jsonl
+
+# Q-23：池里存量 54 条 `unreachable_hard` 的逐条真浏览器复核（**联网 + 真浏览器**；camofox）
+# ⚠️ 必须在**仓库根**跑。① 轮：池里的 29 个 URL，每个最多 3 次；② 轮：给**全部没打开的** URL
+#    统一加试 6 次（**按「第一轮打不开」筛，不按「读数难解释」筛**——后者就是「按结果决定给谁加试」）。
+# ⚠️ 这两支**只写 .json 取证**，**不碰池**；裁定交给处置脚本。
+uv run python trajectory_pipeline/research/probes/camofox_q23_uh_recheck.py
+uv run python trajectory_pipeline/research/probes/camofox_q23_uh_settle.py --attempts 6
+
+# Q-23 处置（⚠️ **改生产池**：降级 + 撤池行；**默认 dry-run**，看清清单再加 --apply）
+# ⚠️ **每条先 dry-run，dry-run 与 apply 的命中数必须 1:1**，对不上就中止
+#    （池是 append-only 资产的唯一安全带）。
+# ⚠️ **降级必须两层都落**（原档 + 复核档）——门禁与报表读**复核档**，
+#    只改原档会当场报 `negative_not_pooled`（避坑指南 §8.36）。
+# ⚠️ **判据不另写**：处置脚本 import 复核脚本的 `_verdict` ⇒ 一份判据两处用。
+uv run python trajectory_pipeline/research/probes/q23_dispose_uh_rows.py
+uv run python trajectory_pipeline/research/probes/q23_dispose_uh_rows.py --apply
+
+# Q-23 留池行的证据补注（⚠️ **改生产池**：写存档的 evidence + 重写池文件；**默认 dry-run**）
+# ⚠️ `--replace`：**换掉**尾部已写过的补注段（计数修正后用）——否则「已补过就跳过」
+#    会把错的文本永远冻住。
+uv run python trajectory_pipeline/research/probes/q23_annotate_kept_rows.py
+uv run python trajectory_pipeline/research/probes/q23_annotate_kept_rows.py --replace --apply
+
 ```
 
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、
 `probes/inc45_probe_sohu.py`、`probes/inc45_probe2_sohu.py`、
 `probes/m30_live_check.py`、`probes/cf_access_boundary.py`、
 `probes/inc73_field_check.py`、`probes/inc73_action_replay.py`、
+`probes/camofox_nav_probe.py`、`probes/camofox_tab_recovery_probe.py`、
+`probes/camofox_route_split_probe.py`、`probes/camofox_split_nav_probe.py`、
+`probes/camofox_attribution_probe.py`、
+`probes/camofox_nav_failure_codes.py`、`probes/obscura_nav_failure_codes.py`
+（**M-44 的机器码词表实测**：两面各打 DNS 失败 / 连接被拒 / 超时 / 打断四类用例
+⇒ 判据的码**是量出来的，不是抄的**）、
+`probes/camofox_q23_uh_recheck.py`、`probes/camofox_q23_uh_settle.py`
+（**Q-23 逐条复核**：真浏览器重开池里的 `unreachable_hard` URL）、
 `probes/prompt_ab_anchor.py`（调 LLM 裁判）。
 其余全部离线。
 
+**离线但会读存档的三支**：
+`probes/corpus_inventory.py`（盘上 P1 存档按 task 汇总：份数 / 面 / 形态 / 分支分布 /
+耗时——**跑之前先看清「现在有哪些任务」**）·
+`probes/gold_candidate_drift.py`（冻结的金标候选集 ↔ 负样本池的**漂移读数**——每次动池
+之后量一次；`--pool-before` 算「本轮新增漂移」）·
+`recollect/plan_from_corpus.py`（**从存量存档反推重跑计划**：同一任务实例重跑，
+不是 `cli gen` 重采样新任务；挑实例时**persona 维度齐全优先于站点数**
+——站点最多的那份常常是 p0 校准跑、provenance 已被覆盖）。
+
 **哪些脚本会起真浏览器**：`probes/m30_live_check.py`、`probes/cf_access_boundary.py`、
-`probes/inc73_field_check.py`、`probes/inc73_action_replay.py`
+`probes/inc73_field_check.py`、`probes/inc73_action_replay.py`、
+`probes/camofox_nav_probe.py`、`probes/camofox_tab_recovery_probe.py`、
+`probes/camofox_route_split_probe.py`、`probes/camofox_split_nav_probe.py`、
+`probes/camofox_attribution_probe.py`、
+`probes/camofox_nav_failure_codes.py`、`probes/obscura_nav_failure_codes.py`
+`probes/camofox_q23_uh_recheck.py`、`probes/camofox_q23_uh_settle.py`
+（**Q-23 逐条复核**：起真浏览器重开 URL）、
 （**camofox**：MCP 适配器 + 上游 REST 服务 ⇒ **还要上游服务起着**）。
 ⚠️ 2026-10-26 起**没有 `--headful`**：camofox 的浏览器由上游 REST 服务持有，
 有头/无头**不由本仓库决定**（旧 camoufox 那批探针里「最小化自己起的那个窗口」

@@ -19,7 +19,11 @@ from trajectory_pipeline.common.elements import (
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverSessionError,
+    DriverUnreachableError,
+)
 from trajectory_pipeline.executor import orchestrator
 from trajectory_pipeline.executor.orchestrator import Orchestrator, RunConfig, RunRecord
 from trajectory_pipeline.executor.steps import search as search_step
@@ -127,6 +131,36 @@ class FakeDriver:
     async def close(self) -> None: ...
 
 
+class _会话失效Driver(FakeDriver):
+    """导航时**执行层会话失效**（我们的浏览器坏了，不是站点打不开）。
+
+    ⚠️ 与 :class:`FakeDriver` 的差别就是异常类型：``FakeDriver`` 抛的是
+    普通 ``DriverError`（= **这次没打开**，超时 / 打断那种形态），
+    本类抛 :class:`DriverSessionError`（= 执行层坏了，站点**没被试过**）。
+    两者在记账上**必须分开**——见
+    ``test_执行层会话失效不记_unreachable_hard``。
+    """
+
+    async def goto(self, url: str, *, wait_until: str = "load") -> None:
+        self.visited.append(url)
+        raise DriverSessionError("camofox 会话失效（换页重试也没成功）: 404")
+
+
+class _站点不可达Driver(FakeDriver):
+    """导航时**机器码证明**站点不可达（DNS 解析不出来 / 连接被拒）。
+
+    只有这一类配记 ``unreachable_hard``（真负样本）——见 M-44 裁定
+    （owner 2026-10-27）与 ``executor/browser/nav_failure.py``。
+    """
+
+    async def goto(self, url: str, *, wait_until: str = "load") -> None:
+        self.visited.append(url)
+        raise DriverUnreachableError(
+            "camofox 导航失败: page.goto: NS_ERROR_UNKNOWN_HOST",
+            code="NS_ERROR_UNKNOWN_HOST",
+        )
+
+
 class ScriptedPerceptor:
     """按题返回预设答案。记录调用顺序。"""
 
@@ -186,11 +220,52 @@ CAND = Candidate(url="https://x.test/movie", text="电影", rank=1)
 
 
 class TestVisitFlow:
-    async def test_导航失败记_unreachable_hard(self):
+    async def test_导航失败记_unresolved(self):
+        """⚠️ **「这次没打开」不是「站点不可达」**（M-44 裁定，owner
+        2026-10-27）。
+
+        超时 / 打断 / 建页失败这些形态**证明不了**站点不可达 ⇒ 记
+        ``unresolved``（**不进负样本池**）：池里那条断言是
+        「**这里真的看不了**」，而事实是「**这一次没打开**」。
+        """
         d = FakeDriver()  # 没有任何页面 → 全部导航失败
         ledger = RunLedger("T001")
         await visit_site(d, ScriptedPerceptor({}), ledger, CAND)
-        assert ledger.outcomes[0].branch == "unreachable_hard"
+        out = ledger.outcomes[0]
+        assert out.branch == "unresolved"
+        assert out.is_negative_sample is False, "证明不了就不该进负样本池"
+
+    async def test_真站点不可达记_unreachable_hard(self):
+        """**机器码证明**站点不可达（DNS 解析不出来 / 连接被拒）
+        ⇒ 仍是 ``unreachable_hard``（真负样本要留住，不许被降级）。"""
+        d = _站点不可达Driver()
+        ledger = RunLedger("T001")
+        await visit_site(d, ScriptedPerceptor({}), ledger, CAND)
+        out = ledger.outcomes[0]
+        assert out.branch == "unreachable_hard"
+        assert out.is_negative_sample is True
+        # 机器码要进 evidence——人核时看得出「凭什么判成站点不可达」
+        assert "NS_ERROR_UNKNOWN_HOST" in out.evidence
+
+    async def test_执行层会话失效不记_unreachable_hard(self):
+        """⚠️ **「我们的浏览器坏了」不是「站点打不开」**（2026-10-27）。
+
+        ``unreachable_hard`` 的语义是「**站点**的传输层失败」，
+        而执行层会话失效的时候，那个站点**一次都没被试过** ⇒
+        记成 ``unreachable_hard`` 就是**把采集侧的故障写成站点的性质**。
+
+        实测（10 条 camofox 批）：一个候选连炸 9 次，9 次全进了负样本池，
+        而那个站点一次都没被试过 ⇒ **九条理由通顺的假负样本**。
+
+        ⇒ 会话失效记「没判出来」那一支（``unresolved``）⇒ **不进池**。
+        """
+        d = _会话失效Driver()
+        ledger = RunLedger("T001")
+        await visit_site(d, ScriptedPerceptor({}), ledger, CAND)
+        out = ledger.outcomes[0]
+        assert out.branch == "unresolved"
+        assert out.is_negative_sample is False, "会话失效不是负样本"
+        assert "会话失效" in out.evidence
 
     async def test_页面不可达_无细分_payload_记_unresolved(self):
         """⚠️ **② 答 False 而 payload 缺失 ⇒ ``unresolved``**（2026-10-21，
@@ -1417,6 +1492,84 @@ class TestRunRecordAudit:
 
         rec = RunRecord(task_id="T001", title="t", query="q", search_url="u")
         assert rec.to_json()["run_config"] == {}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 指纹补读：时机（2026-10-27）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _懒测指纹驱动(FakeDriver):
+    """**懒测指纹**的驱动：第一次 ``goto`` 之后才有读数。
+
+    camofox 面的真形状：指纹是**第一次建页时**（也就是第一次 ``goto`` 里）
+    才测得到的，而 ``RunRecord`` 是**导航之前**构造的 ⇒ 构造那一刻读到的
+    必然是空 dict。
+    """
+
+    def __init__(self, pages: dict[str, Observation] | None = None) -> None:
+        super().__init__(pages)
+        self._fp: dict = {}
+
+    @property
+    def fingerprint(self) -> dict:
+        return dict(self._fp)
+
+    async def goto(self, url: str, *, wait_until: str = "load") -> None:
+        await super().goto(url, wait_until=wait_until)
+        self._fp = {"engine": "camoufox", "window": [1920, 947]}
+
+
+class Test指纹补读:
+    """**指纹是懒测的**——存档记录却在导航之前就构造好了。
+
+    ⚠️ **后果是静默的**：存档里 ``fingerprint`` 恒为 ``{}``，
+    而「空 dict」与「驱动没有指纹」**长得一样** ⇒ 读档人会把
+    「**没记到**」读成「指纹为空」。
+
+    ⚠️ **事后补不回来**（增量七十九）：指纹只在 launch 那一刻确定，
+    跑完再回去问已经没有这一批的读数 ⇒ 漏了这一读，
+    这一批的执行层几何就**永远丢了**，而报告上**看不出任何异常**。
+    """
+
+    async def test_导航之后才有的指纹要落进存档(self):
+        pages = {
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                url="https://www.baidu.com/s?wd=x",
+                page_title="百度",
+                body_text="搜索结果",
+                links=(LinkItem(text="功夫电影", href="https://www.a.test/movie"),),
+            ),
+            "https://www.a.test/movie": obs_at("https://www.a.test/movie"),
+        }
+        d = _懒测指纹驱动(pages)
+        rec = await Orchestrator(d, ScriptedPerceptor({}), RunConfig()).run(
+            "T001", "功夫"
+        )
+        assert rec.fingerprint == {"engine": "camoufox", "window": [1920, 947]}
+        # 落盘的形状也要对（切片脚本读的是 P1 顶层那个键）
+        assert rec.to_json()["fingerprint"]["engine"] == "camoufox"
+
+    async def test_驱动没有指纹时仍是空对象而不是缺字段(self):
+        """obscura 是远端 MCP、本地看不见指纹 ⇒ 那是「**没测到**」。
+
+        但它仍然是**一个记好的空对象**：缺字段与空 dict 在切片脚本里
+        长得一样（缺字段会被读成「未知」）。
+        """
+        pages = {
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": Observation(
+                url="https://www.baidu.com/s?wd=x",
+                page_title="百度",
+                body_text="搜索结果",
+                links=(LinkItem(text="功夫电影", href="https://www.a.test/movie"),),
+            ),
+        }
+        d = FakeDriver(pages)
+        rec = await Orchestrator(d, ScriptedPerceptor({}), RunConfig()).run(
+            "T001", "功夫"
+        )
+        assert rec.fingerprint == {}
+        assert "fingerprint" in rec.to_json()
 
 
 # ═══════════════════════════════════════════════════════════════════════

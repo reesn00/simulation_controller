@@ -24,7 +24,10 @@ from trajectory_pipeline.executor.browser.obscura_driver import (
     ObscuraDriver,
     TEXT_CONTENT_EXPR,
 )
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverUnreachableError,
+)
 
 
 class FakeMcp:
@@ -92,6 +95,76 @@ def full_script(**overrides: Any) -> dict[str, Any]:
 
 def driver_for(**overrides: Any) -> ObscuraDriver:
     return ObscuraDriver(FakeMcp(full_script(**overrides)))
+
+
+class Test站点不可达判定:
+    """⚠️ **判据必须在截断之前判**（M-44 裁定，owner 2026-10-27）。
+
+    obscura 的错误正文是 Rust/reqwest 风格的长句，机器码
+    ``ConnectError("dns error"`` 落在**第 200 字之后**——而驱动层把
+    正文砍到 200 字 ⇒ 截断之后再判，**DNS 失败会被误判成「证明不了」**。
+
+    下面的原文全部取自 ``research/probes/obscura_nav_failure_codes.json``
+    （**现场抓的完整原文**，不是照文档编的）。
+    """
+
+    _DNS = (
+        "Error: Network error: Network error: "
+        "http://this-domain-should-not-exist-zzq7x9.invalid/: error sending "
+        "request for uri (http://this-domain-should-not-exist-zzq7x9.invalid/): "
+        "client error (Connect) (source: Some(Error { kind: Connect, source: "
+        'Some(ConnectError("dns error", Os { code: 11001, kind: Uncategorized, '
+        'message: "不知道这样的主机。" })), connect_info: None }))'
+    )
+    _REFUSED = (
+        "Error: Network error: Network error: http://127.0.0.1:9/: error "
+        "sending request for uri (http://127.0.0.1:9/): client error (Connect) "
+        "(source: Some(Error { kind: Connect, source: Some(ConnectError("
+        '"tcp connect error", 127.0.0.1:9, Os { code: 10061, '
+        "kind: ConnectionRefused, message: \"由于目标计算机积极拒绝，无法连接。\" "
+        "})), connect_info: None }))"
+    )
+    _TIMEOUT = (
+        "Error: Network error: Network error: http://10.255.255.1:81/: error "
+        "sending request for uri (http://10.255.255.1:81/): client error (Connect) "
+        '(source: Some(Error { kind: Connect, source: Some(ConnectError('
+        '"tcp connect error", 10.255.255.1:81, Os { code: 10060, '
+        "kind: TimedOut, message: \"由于连接方在一段时间后没有正确答复…\" "
+        "})), connect_info: None }))"
+    )
+
+    async def test_DNS解析不出来是真站点不可达(self):
+        d = driver_for(browser_navigate=self._DNS)
+        with pytest.raises(DriverUnreachableError) as caught:
+            await d.goto("http://this-domain-should-not-exist-zzq7x9.invalid/")
+        assert caught.value.code == 'reqwest ConnectError("dns error")'
+
+    async def test_连接被拒是真站点不可达(self):
+        d = driver_for(browser_navigate=self._REFUSED)
+        with pytest.raises(DriverUnreachableError) as caught:
+            await d.goto("http://127.0.0.1:9/")
+        assert caught.value.code == "io::ErrorKind::ConnectionRefused"
+
+    async def test_超时不算真站点不可达(self):
+        """⚠️ 超时**证明不了**站点不可达（站点可能只是慢）
+        ⇒ 普通 ``DriverError`` ⇒ 上层记 ``unresolved``（**不进池**）。"""
+        d = driver_for(browser_navigate=self._TIMEOUT)
+        with pytest.raises(DriverError) as caught:
+            await d.goto("http://10.255.255.1:81/")
+        assert not isinstance(caught.value, DriverUnreachableError)
+
+    async def test_SSRF护栏拦截不算真站点不可达(self):
+        """obscura 的 SSRF 护栏拦的是**我们这一侧**的策略，不是站点性质。"""
+        d = driver_for(
+            browser_navigate=(
+                "Error: Network error: Network error: Access to private/internal "
+                "IP address 127.0.0.1 is not allowed\nLocal/private network "
+                "access is blocked by the SSRF guard."
+            )
+        )
+        with pytest.raises(DriverError) as caught:
+            await d.goto("http://127.0.0.1:9/")
+        assert not isinstance(caught.value, DriverUnreachableError)
 
 
 class TestRedline:

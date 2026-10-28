@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from trajectory_pipeline.executor import cli
+from trajectory_pipeline.executor.archive import CredentialLeak
 from trajectory_pipeline.executor.orchestrator import RunRecord
 
 
@@ -210,6 +211,62 @@ class Test一条失败不毁整批:
         rc = await cli._run_plan(_args(plan, out))
         assert rc == 0
         assert len(list(out.glob("T*__*.json"))) == 2
+
+
+class Test凭据闸门不毁整批:
+    """⚠️ **凭据闸门不许炸整批**（2026-10-28 实测踩到）。
+
+    真实事故：28 条计划跑到**第 12 条**，那条的内容命中了 ``sk-`` 形态
+    ⇒ ``CredentialLeak`` 从 ``archive.write`` **一路冒到** ``main``
+    ⇒ **整批只跑成 11 条**，剩下 16 条全丢，**且不留痕**
+    （进程直接死 ⇒ 连失败清单都没有 ⇒ 批次报表上那 16 条
+    长得和「没采过」一模一样）。
+
+    ⇒ 拒绝写盘**是对的**（凭据红线不容商量），但**炸整批是错的**：
+    一条失败只该毁那一条。
+    """
+
+    async def test_一条命中凭据特征其余照跑(self, tmp_path, monkeypatch,
+                                            capsys):
+        plan = tmp_path / "plan.json"
+        plan.write_text(json.dumps(_plan_doc(["T001", "T002", "T003"]),
+                                    ensure_ascii=False), encoding="utf-8")
+        out = tmp_path / "out"
+
+        class _命中就拒写:
+            """替身：第 2 条的内容命中凭据特征 ⇒ 拒绝写盘。"""
+
+            def __init__(self, *a, **kw):
+                self.root = out
+
+            def write(self, rec, *, task_id, run_id=None, batch_id=None):
+                if task_id == "T002":
+                    raise CredentialLeak(
+                        "P1 内容命中 1 项凭据特征，已拒绝写盘: "
+                        "['sk-[A-Za-z0-9]{16,}']"
+                    )
+                p = self.root / f"{task_id}__run.json"
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("{}", encoding="utf-8")
+                return p
+
+        monkeypatch.setattr(cli, "P1Archive", _命中就拒写)
+        _stub_launch(monkeypatch)
+        ran = _stub_orchestrator(monkeypatch)
+
+        rc = await cli._run_plan(_args(plan, out))
+        text = capsys.readouterr().out
+
+        assert ran == ["T001", "T002", "T003"], (
+            f"凭据闸门不该中断后面的条目：实际跑了 {ran}"
+        )
+        assert rc == 1, "有条目没落盘 ⇒ 退出码必须非 0"
+        archives = sorted(p.name for p in out.glob("T*__*.json"))
+        assert len(archives) == 2, f"存档只落了 {archives}——被拒的那条不该有档"
+        assert "T002" in text, f"失败清单里没有 T002：\n{text}"
+        assert "凭据" in text, (
+            f"失败理由没说是「内容命中凭据特征」：\n{text}"
+        )
 
 
 class Test起浏览器不重试:

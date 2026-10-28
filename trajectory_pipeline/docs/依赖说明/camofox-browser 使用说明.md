@@ -263,7 +263,7 @@ node scripts/mcp-run.mjs '[["camofox_create_tab",{"url":"https://example.com"}],
 
 | 探测项 | 结果 |
 | --- | --- |
-| stdio 握手 initialize | 正常，返回 serverInfo camofox-browser / 1.18.1，protocolVersion 2024-11-05 |
+| stdio 握手 initialize | 正常，返回 serverInfo camofox-browser / 1.18.1，protocolVersion 2025-11-25（2026-10-27 复核） |
 | tools/list | 返回 11 个工具，与契约 mcp/lib/tool-contracts.mjs 数量一致 |
 | camofox_create_tab | 通过，新建标签页并返回 tabId |
 | camofox_snapshot | 通过，返回无障碍快照与元素引用 |
@@ -302,6 +302,18 @@ node scripts/mcp-run.mjs '[["camofox_create_tab",{"url":"https://example.com"}],
 - 导航宏：`camofox_navigate` 的 macro 为枚举值，取值见搜索宏列表；配 query 给出检索词。使用宏时无需再传 url。
 - 滚动：`camofox_scroll` 的 direction 取值为 up、down、left、right，amount 为像素数。在懒加载或虚拟滚动页面该工具可能无效，建议改用 `camofox_evaluate` 配合 window.scrollTo。
 - 执行脚本：`camofox_evaluate` 的 expression 在页面上下文求值并返回结果，适合抽取数据、读取页面状态或调用页面 API；请求体上限由 CAMOFOX_EVALUATE_MAX_BODY_SIZE 控制，默认 1mb。
+  ⚠️ **expression 必须「求得出值」**——上游把它交给 Playwright 的
+  `page.evaluate(expression)`（上游 `server.js` 的 evaluate 路由），
+  而 **Playwright 收到字符串时按「表达式」求值**（不是当函数体）。
+  ⇒ **写成一个没被调用的函数字面量（`() => …` / `function …`）会得到
+  一个函数对象**，序列化后是 `undefined` ⇒ 响应里**没有 `result` 键**
+  ⇒ 调用方读到的值是 `None`/`undefined`（**「没测到」**）。
+  - ✅ 要写成**立即调用的 IIFE**：
+    `(function(){return String(document.title);})()`
+  - ❌ 不要写成 `() => String(document.title)`（**求出来是函数对象，不是标题**）
+  - ⚠️ 这个失败模式**没有报错**：上游照常返回 `{"ok": true, ...}`，
+    只是 `result` 不存在 ⇒ **调用方必须区分「求出了 undefined」与「没求到」**
+    （`result` 键不存在 = 没测到；`result` 存在且为 `null` = 页面里就是 null）。
 - Cookie 导入：cookiesPath 是相对于服务端 cookie 目录的相对路径，越界路径会被拒绝；domainSuffix 用于只导入指定域名后缀的 cookie。
 
 ## 5.3 搜索宏
@@ -355,4 +367,5 @@ curl -X POST http://localhost:9377/tabs/TAB_ID/navigate \
 | 所有工具调用返回 401 或 403 | 服务端设置了 CAMOFOX_ACCESS_KEY；在 MCP 侧设置同一密钥，之后会自动以 Bearer 头转发 |
 | Cookie 导入始终不可用 | 默认关闭；需在服务端与宿主同时设置 CAMOFOX_API_KEY |
 | 端口不是预期的 9377 | 仓库 run.sh 中默认端口写的是 3000，与实际不符；以服务端环境变量 CAMOFOX_PORT 或 PORT 为准 |
+| **evaluate 返回里没有 `result` 键**（读到的值恒为 `undefined`） | expression 被当**表达式**求值，而写成了**没被调用的函数字面量**（`() => …`）⇒ 求出来是函数对象 ⇒ 序列化后是 `undefined`。改写成**立即调用的 IIFE**（`(function(){return …;})()`）。**不报错**——上游照常 `{"ok":true}` |
 | 排查时版本号看起来不一致 | 仓库根 camofox.config.json 中的 version 写为 1.6.0，而实际包版本为 1.18.1；该字段与包版本无关，勿被误导 |

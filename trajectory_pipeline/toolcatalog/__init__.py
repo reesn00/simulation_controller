@@ -412,9 +412,22 @@ _PRESS_CAMOUFOX = ToolDef(
 # 「上游没给句柄」三类剔掉（camofox 驱动的「四条定位正确性契约」），
 # 于是**清单里给出的每个 ``(role, name)`` 都是唯一可寻址的**。
 #
-# ⚠️ ``exercised=False``：**还没有一次真实 camofox 运行**落过盘。
-# 按「有没有真实调用」的口径记 False——**标注撒谎比标注缺失更难发现**：
-# 它会让 ``required`` 口径永远不被真实数据校准。
+# ⚠️ ``exercised`` 逐条成立，**不是**整段一起成立（2026-10-27 转正）：
+#
+# - ``click``：**已验证**——2026-10-27 的 camofox 面生产批
+#   （``plan-camoufox-prod1-rest`` 那 10 条）真实产生过 ``{role, name}``
+#   目标的点击，**每一次都带着 role 与 name** ⇒ 两条都必填。
+# - ``fill``：**已验证**——同批存档里真实出现过 ``{role, name, text}``，
+#   **三个键每次都在** ⇒ 都必填。
+# - ``press``：**已验证**——同批存档里真实出现过 ``{key}``；
+#   ⚠️ 但**键只有 ``key`` 在场**（agent 循环派发 ``press`` 时**不带目标**）
+#   ⇒ ``role`` / ``name`` 保持**可选**。
+#
+# ⚠️ **这三条的 ``required`` 口径是按真实调用校出来的，不是猜的**——
+# 契约测试 ``test_必填参数就是每次都出现的参数`` 逐面核对**键在场率**。
+# （它们曾经一律标 ``exercised=False``，理由是「camofox 面一次都没跑过」；
+# 真实批次一落盘，那条断言立刻变红并指名了要改哪三条——
+# **标注撒谎比标注缺失更难发现**：它会让 ``required`` 口径永远不被真实数据校准。）
 #
 # ⚠️ ``press`` 在本面**只支持回车**（A2 驱动缓存合并）：上游没有独立的
 # 「按键」tool，唯一能提交表单的路径是「重发同文本 + 附带回车」。
@@ -439,7 +452,7 @@ _CLICK_CAMOFOX = ToolDef(
         "页面上有相当一部分元素没有可访问名，那些定位不到，别选它们。"
     ),
     family="action",
-    exercised=False,
+    exercised=True,
 )
 
 _FILL_CAMOFOX = ToolDef(
@@ -456,7 +469,7 @@ _FILL_CAMOFOX = ToolDef(
         "定位不到时框里不会出现内容，别当已经填进去了，换一个清单里真有的输入框。"
     ),
     family="action",
-    exercised=False,
+    exercised=True,
 )
 
 _PRESS_CAMOFOX = ToolDef(
@@ -481,7 +494,7 @@ _PRESS_CAMOFOX = ToolDef(
         "要提交就先把文本填进搜索框，再回车。"
     ),
     family="action",
-    exercised=False,
+    exercised=True,
 )
 
 # ── aria 面：读原语（pull 模式，模型自己决定看什么）────────────────

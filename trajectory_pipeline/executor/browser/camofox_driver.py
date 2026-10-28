@@ -116,14 +116,22 @@ from typing import Any, Mapping
 
 from trajectory_pipeline.common.elements import ELEMENT_VOCAB_ARIA_ROLE
 from trajectory_pipeline.executor.browser.aria_snapshot import parse_nodes
-from trajectory_pipeline.executor.browser.camofox_session import CamofoxSession
+from trajectory_pipeline.executor.browser.camofox_session import (
+    CamofoxSession,
+    CamofoxToolError,
+)
 from trajectory_pipeline.executor.browser.element_basis import (
     ROLE_VOCAB,
     SHARED_DOM_JS,
     ladder_stages,
     parse_shared_basis,
 )
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.nav_failure import site_unreachable
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverSessionError,
+    DriverUnreachableError,
+)
 from trajectory_pipeline.executor.dom import (
     IFRAME_SELECTOR,
     MEDIA_SELECTOR,
@@ -186,17 +194,30 @@ DROP_REASONS: tuple[str, ...] = (
     "name_ambiguous",   # 名字是更早同 role 名字的子串
 )
 
+#: 「页面没有 ``performance.timeOrigin``」时代号取这个值（恒定 ⇒ 永不误判）。
+DOC_STAMP_NONE = "none"
+
 #: 取**文档代号**的表达式：``performance.timeOrigin``。
 #:
 #: **每个文档一个常量**（同文档内恒定、跨文档必变），且是**原生属性**——
 #: 页面上多不出任何痕迹。⇒ 它是「读到一半」的判据（与 camoufox 面同一条）。
+#:
+#: ⚠️⚠️ **它必须是「求得出值的表达式」，不能是函数字面量**
+#: （2026-10-27 踩到，症状是整批 0 候选）：
+#: 上游把这段文本交给 Playwright 的 ``page.evaluate(expression)``
+#: （上游 ``server.js:5511``），而 **Playwright 收到字符串时按
+#: 「表达式」求值**——``() => …`` 求出来是**函数对象**，序列化后是
+#: ``undefined`` ⇒ 响应里**没有** ``result`` 键 ⇒ 本层读到的代号是
+#: **空串** ⇒ 每次观察都被判成「读到一半」⇒ ``degraded=['nav_unsettled']``
+#: ⇒ **环节① 直接返回 0 候选**（10 条任务全在这一步夭折，零报错）。
+#:
+#: ⇒ 这段文本写成**立即调用的 IIFE**，与本文件其余 JS（``_PAGE_TEXT_JS`` /
+#: ``_LINKS_JS`` / ``SHARED_DOM_JS``）**同一种形态**。
+#: 契约测试 ``test_文档代号表达式求得出值`` 盯着这件事。
 DOC_STAMP_EXPR = (
-    "() => (window.performance && performance.timeOrigin != null)"
-    " ? String(performance.timeOrigin) : 'none'"
+    "(function(){return (window.performance && performance.timeOrigin != null)"
+    f" ? String(performance.timeOrigin) : '{DOC_STAMP_NONE}';}})()"
 )
-
-#: 「页面没有 ``performance.timeOrigin``」时代号取这个值（恒定 ⇒ 永不误判）。
-DOC_STAMP_NONE = "none"
 
 #: 动作之后等新文档 **commit** 的上限（毫秒）。有界是重点：
 #: 等不到就照实记 ``last_action["nav"]="same"``，**不猜**。
@@ -227,6 +248,36 @@ _HTML_JS = "document.documentElement ? (document.documentElement.outerHTML || ''
 
 #: ``document.readyState`` 的取值——``"loading"`` 意味着文档还在解析。
 _READY_STATE_JS = "String(document.readyState || '')"
+
+
+def _tab_is_gone(exc: BaseException) -> bool:
+    """这个失败是不是「**这一页已经不在上游了**」（该换一张新页）？
+
+    判据是**上游自己给的结构**（``recovery`` / ``code`` / 状态码），
+    不是我们猜的英文短语——猜错的后果是「把一次普通的站点超时
+    当成会话失效，换页重来」，而重来会**多打站点一次**。
+
+    ⚠️ **不是** ``CamofoxToolError`` 的一律判 False：
+    别的驱动（obscura）与别的失败形态都不该走这条路。
+    """
+    return isinstance(exc, CamofoxToolError) and exc.tab_is_gone
+
+
+def _execution_fault(exc: BaseException) -> bool:
+    """这个失败是不是**上游明说的执行层故障**（不是「站点打不开」）？
+
+    与 :func:`_tab_is_gone` 同一纪律：判据是**上游自己给的结构**
+    （``recovery`` / ``code``），不是我们猜的英文短语。
+
+    上游的 ``recovery="retry"`` 一族（``session_expired`` /
+    ``concurrency_timeout`` / ``browser_launch_timeout``）说的是
+    「**我们这边坏了**，重来即可」——那个站点**一次都没被试过**
+    ⇒ 不能记 ``unreachable_hard``。
+
+    ⚠️ **不是** ``CamofoxToolError`` 的一律判 False：
+    别的驱动（obscura）与别的失败形态都不该走这条路。
+    """
+    return isinstance(exc, CamofoxToolError) and exc.execution_fault
 
 
 class CamofoxDriver:
@@ -268,6 +319,14 @@ class CamofoxDriver:
         self._nav_unsettled: bool = False
         #: 上一次动作的结果账目（``op`` / ``role`` / ``name`` / ``outcome``）。
         self.last_action: dict[str, str] = {}
+        #: **换页自愈账目**（2026-10-27）：每一次「上游把当前页销毁了，
+        #: 驱动换一张新页重试」都记一条。
+        #:
+        #: ⚠️ **它必须记**：自愈之后那一步是**成功**的，存档里看不出
+        #: 「这一页死过一次」——而「这一页死过」正是读档人判断
+        #: 「这个结论可不可信」的依据（页面被换掉 ⇒ 观察来自另一页）。
+        #: 不记就是**静默**。
+        self._recoveries: list[dict[str, Any]] = []
         #: 上一次 ``new_tab`` / ``close_tab`` 的账目。
         self.last_tab: dict[str, Any] = {}
         #: **上一次 ``fill`` 的缓存**——``press`` 的合并依据（A2）。
@@ -283,6 +342,35 @@ class CamofoxDriver:
         #: **两套 id 不可互换**（同 camoufox 的纪律）。
         self._tabs: dict[str, str] = {}
         self._tab_seq = 0
+
+    # ── 页级状态的失效 ────────────────────────────────────────────
+
+    def _reset_page_state(self) -> None:
+        """**换页即作废上一页的一切页级状态**。
+
+        这五样（ref 表 / 上游句柄表 / 目标索引 / 剔掉清单 / 填值缓存）
+        全都**只对当前页有效**——上游的 ``eN`` 是**每次快照重新编号**的，
+        导航之后旧编号指向的是**另一个元素**：点错不可逆，而且看起来完全正常。
+
+        ⚠️ **``last_action`` 也是页级状态**（2026-10-27 补进这一组）：
+        它记的是「**上一页**上那一次动作的结果」，而 :meth:`observe` 拿它
+        判「这一页有没有降级」——**不一起作废就是拿上一页的账记这一页的头**。
+
+        踩过的坑（真实批次读出来的）：一次**做不到的按键**（比如按 ``F5``）
+        记了 ``last_action["outcome"]="unsupported"`` ⇒ 之后**每一次导航**之后
+        的观察都挂上了 ``press_unsupported`` ⇒ **18% 的观察带着一个假降级**，
+        而这个假降级**直接进了 agent 的输入**（``agent_loop._render_observation``
+        把 ``degraded`` 投影给模型）⇒ agent 以为「这一页没读全」。
+
+        ⇒ **这一组状态只能一起清**：漏掉一样就是「上一页的账记到这一页头上」
+        （同一族错误，:meth:`observe` 里对 ``last_enumeration`` 已经防过一次）。
+        """
+        self._refs = {}
+        self._camo_refs = {}
+        self._target_index = {}
+        self._dropped = {}
+        self._fill_cache = None
+        self.last_action = {}
 
     # ── 读数 ──────────────────────────────────────────────────────
 
@@ -301,6 +389,17 @@ class CamofoxDriver:
         """当前页的 camofox ``tabId``。栈空 ⇒ 抛（**不猜一个空的**）。"""
         return self._session.current
 
+    @property
+    def recoveries(self) -> list[dict[str, Any]]:
+        """**换页自愈账目**（本 run 发生过几次、每次是为了哪个 URL）。
+
+        ⚠️ **空列表 ≠ 「没发生过」，是「没记到」**——与指纹同一口径。
+        它进存档的 run 级 ``warnings``（由 orchestrator 抄），
+        因为自愈之后那一步在动作流里是**成功**的，不记就看不出
+        「这一页死过一次」。
+        """
+        return [dict(item) for item in self._recoveries]
+
     # ── 原子原语 ──────────────────────────────────────────────────
 
     async def goto(self, url: str, *, wait_until: str = "load") -> None:
@@ -310,26 +409,175 @@ class CamofoxDriver:
         导航之后旧编号指向的是**另一个元素**——点错不可逆，
         而且看起来完全正常。
 
-        ⚠️ **第一页是「建页带 URL」**：上游的 ``camofox_create_tab`` 自带导航，
-        比「先建空白页再导航」少一次往返。
+        ⚠️ **建页与导航是两次调用**（2026-10-27 改）：上游的建页路由把
+        两件事塞进**同一个 30 秒预算** ⇒ 那个路由失败**证明不了站点
+        打不开** ⇒ 拆成「建空白页 + 导航」之后，失败落在**哪个路由**
+        就是归属判据。详见 :meth:`_open_blank_and_navigate`。
+
+        ⚠️ **上游把当前页销毁了 ⇒ 换一张新页重来一次**（2026-10-27）：
+        详见 :meth:`_navigate`。
         """
-        self._refs = {}
-        self._camo_refs = {}
-        self._target_index = {}
-        self._dropped = {}
-        self._fill_cache = None
+        self._reset_page_state()
         try:
-            if not self._session.pages:
-                await self._session.new_page(url)
-            else:
-                await self._session.navigate(self._tab, url)
+            await self._navigate(url)
+        except DriverSessionError:
+            # ⚠️ **会话失效不许被重新包成普通 DriverError**——上层要靠
+            # 这个类型把「执行层坏了」与「站点打不开」分开。
+            raise
         except DriverError as exc:
+            # ⚠️ **真·站点不可达要单独一个类型**（M-44）：只有**机器码
+            # 证明**站点本身打不开（DNS 解析不出来 / 连接被拒）才配记
+            # ``unreachable_hard``；超时 / 打断 / abort / 空响应这些
+            # 「这次没打开」的形态**证明不了**站点不可达 ⇒ 上层要能把
+            # 两者分开。判据见 ``nav_failure.py``（码表建在实测原文上）。
+            hit = site_unreachable(str(exc))
+            if hit is not None:
+                raise DriverUnreachableError(
+                    f"camofox 导航失败: {exc}", code=hit.code
+                ) from None
             raise DriverError(f"camofox 导航失败: {exc}") from None
         # 指纹读一次就够：身份在浏览器起来那一刻就定了。
         # 读不到**不抛**——它是**批次元数据**，不是采集内容；
         # 失败的原因记进 ``session.readings``，存档里那个字段会是空 dict
         # （= 没测到，不是「测出来是空的」）。
         await self._session.measure_fingerprint()
+
+    async def _navigate(self, url: str) -> None:
+        """导航到 ``url``。**上游把当前页销毁了 ⇒ 换一张新页重来一次**。
+
+        ⚠️ **建页与导航拆成两次调用**（2026-10-27 实测后改）：新建页一律
+        走 :meth:`_open_blank_and_navigate`（**先建空白页再导航**），
+        不再走「建页带 URL」的合并路由。理由是**归属**：
+        合并路由的失败**证明不了站点打不开**（详见
+        :meth:`_open_blank_and_navigate` 的说明）。
+
+        ⚠️ **为什么必须有这一层自愈**（2026-10-27 实测，10 条 camofox 批）：
+        上游 camofox-browser 会在**操作超时 / 连续超时 / 页崩溃 / 锁队列超时**
+        时**销毁那一页**（上游 ``server.js`` 的 ``destroyTab`` /
+        ``destroyTimedOutTab``），而**销毁不通知客户端** ⇒ 客户端手里的
+        ``tabId`` 成了死引用 ⇒ 再导航就是
+        ``404 {"error":"Tab not found"}``，**每一次都 404**。
+
+        实测症状：一个候选**连炸 9 次**，9 次全被记成 ``unreachable_hard``
+        （"站点打不开"）⇒ **九条理由通顺的假负样本进了池**，
+        而那个站点**一次都没被试过**。
+
+        ⇒ 这里在上游**明说「这一页没了」**（``recovery="create_new_tab"``
+        / 404 / 410）时，**摘掉死页 + 开一张新页 + 同一个 URL 重来一次**。
+
+        ⚠️ **为什么只有「导航」能自愈、动作不能**：动作（点击/填值）的目标
+        是**页级 ref**，换页之后 ref 空间整个变了 ⇒ 重放动作会点错元素。
+        导航能重来，是因为**目标由 URL 决定**，不依赖页内状态。
+
+        ⚠️ **重来只做一次**：重来之后还失败就是真失败——不做无限重试，
+        免得把「站点打不开」拖成一个没有尽头的循环（预算在更上层）。
+        """
+        if not self._session.pages:
+            await self._open_blank_and_navigate(url)
+            return
+        tab = self._tab
+        try:
+            await self._navigate_on(tab, url)
+        except DriverSessionError:
+            # 执行层故障（上游明说「重来就好」）：**不是**「页没了」，
+            # 换页也没用——换页只会把站点再打一次。
+            raise
+        except DriverError as exc:
+            if not _tab_is_gone(exc):
+                raise
+            # 上游说这一页没了 ⇒ 我们手里的 tabId 已经是死引用。
+            # 摘掉它（**不通知上游**——那一页已经不在了），换新页重来。
+            self._session.discard_page(tab)
+            self._recoveries.append(
+                {"url": url, "tab": tab, "reason": str(exc)[:200]}
+            )
+            try:
+                await self._open_blank_and_navigate(url)
+            except DriverSessionError as retry_exc:
+                # 换页重试也没成功 ⇒ 会话真的死了。
+                # ⇒ 抛**执行层故障**，不是「站点打不开」——
+                # 归属不同，处置就不同（见 DriverSessionError）。
+                raise DriverSessionError(
+                    f"camofox 会话失效（换页重试也没成功）: {retry_exc}"
+                ) from None
+            # ⚠️ **站点事实不许在这里被降级**：「换页成功、导航失败」
+            # 是**在一张干净的新页上**得到的传输层事实 ⇒ 仍然是
+            # 站点打不开（``unreachable_hard``）。
+            # 只有「换页本身失败」才是采集侧的故障。
+
+    async def _navigate_on(self, tab: str, url: str) -> None:
+        """在 ``tab`` 上导航，并把上游的失败**翻译成我们的归属**。
+
+        ⚠️ **为什么这里要做翻译**：上游的 ``recovery="retry"`` 一族
+        （``session_expired`` / ``concurrency_timeout`` /
+        ``browser_launch_timeout``）说的是「**我们这边坏了**，重来即可」
+        ——那个站点**一次都没被试过** ⇒ 抛
+        :class:`DriverSessionError`（⇒ 上层记 ``unresolved``，
+        **不进负样本池**），而不是普通 :class:`DriverError`
+        （那是「站点打不开」）。
+
+        ⚠️ **这里不许做别的事**：``tab_is_gone``（这一页没了）由调用方
+        判——它要换页重来，不是抛错。
+        """
+        try:
+            await self._session.navigate(tab, url)
+        except DriverError as exc:
+            if _execution_fault(exc):
+                raise DriverSessionError(
+                    f"camofox 执行层故障（不是站点打不开）: {exc}"
+                ) from None
+            raise
+
+    async def _open_blank_and_navigate(self, url: str) -> None:
+        """**先建一张空白页，再导航过去**——建页与导航**必须是两次调用**。
+
+        ⚠️ **为什么必须拆开**（2026-10-27 实测，方案 21 §R5 的处置）：
+        上游的 ``POST /tabs``（``camofox_create_tab``）把「建页」与「导航」
+        塞进**同一个 30 秒预算**（上游 ``server.js`` 的
+        ``withTimeout(..., tabCreateRequestTimeoutMs(), 'tab create')``）
+        ⇒ **那个路由失败证明不了站点打不开**——也可能是建页本身卡住了。
+
+        实测两种失败**在错误体里同形**：都是 HTTP 500 +
+        ``{"error":…, "retryable":false}``、**没有** ``code`` /
+        ``recovery`` ⇒ 光看错误体**分不开**。
+        （这正是 T048 那条假负样本的成因：``tab create timed out after
+        30000ms`` 被记成 ``unreachable_hard``，而同一批的 T038
+        **打开了同一个 iqiyi URL** ⇒ 站点是通的。）
+
+        ⇒ 唯一能分开的是**走哪个路由**。上游的建页路由在 ``url`` 为空时
+        **只建页不导航**（上游 ``server.js`` 的 ``if (url)``），
+        而导航路由（``camofox_navigate``）**只做导航**
+        ⇒ 拆成两次调用之后：
+
+        - **建页**失败 ⇒ 那一页里**根本没有站点 URL**
+          ⇒ 站点不可能是原因 ⇒ **执行层故障**
+          ⇒ :class:`DriverSessionError` ⇒ 上层记 ``unresolved``
+          （**不进负样本池**）；
+        - **导航**失败 ⇒ 才是**站点层**的事实 ⇒ 但**只有机器码证明**
+          站点不可达（DNS 解析不出来 / 连接被拒）才配记
+          ``unreachable_hard``；超时 / 打断 / 证书等形态**证明不了**
+          ⇒ 普通 :class:`DriverError` ⇒ ``unresolved``
+          （M-44 裁定，见 ``nav_failure.py``）。
+
+        ⚠️ **多一次往返，换的是「归因」**：一次建页往返实测 ~1.4 秒，
+        而它换来的是「这个站点到底打不打得开」这个事实**站得住**。
+        """
+        try:
+            tab = await self._session.new_page("")
+        except DriverError as exc:
+            raise DriverSessionError(
+                f"camofox 建页失败（执行层，不是站点打不开）: {exc}"
+            ) from None
+        try:
+            await self._navigate_on(tab, url)
+        except DriverError as exc:
+            if _tab_is_gone(exc):
+                # **刚建出来的新页就没了** ⇒ 上游在拆我们的页
+                # ⇒ 执行层故障，不是站点打不开。
+                raise DriverSessionError(
+                    f"camofox 会话失效（刚建的新页就没了）: {exc}"
+                ) from None
+            raise
 
     async def snapshot(
         self, *, max_chars: int | None = None, degraded: list[str] | None = None
@@ -1116,11 +1364,7 @@ class CamofoxDriver:
         self._tab_seq += 1
         tab_id = f"c{self._tab_seq}"
         self._tabs[tab_id] = camo_tab
-        self._refs = {}                       # 换页即换 ref 空间
-        self._camo_refs = {}
-        self._target_index = {}
-        self._dropped = {}
-        self._fill_cache = None
+        self._reset_page_state()              # 换页即换 ref 空间
         self.last_tab = {
             "op": "new_tab", "tab": tab_id,
             "pages": str(len(self._session.pages)), "outcome": "ok",
@@ -1152,11 +1396,7 @@ class CamofoxDriver:
 
         if target:
             self._tabs.pop(target, None)
-        self._refs = {}
-        self._camo_refs = {}
-        self._target_index = {}
-        self._dropped = {}
-        self._fill_cache = None
+        self._reset_page_state()              # 关页即换页
         self.last_tab = {
             "op": "close_tab", "tab": target,
             "pages": str(len(self._session.pages)),

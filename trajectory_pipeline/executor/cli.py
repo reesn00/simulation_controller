@@ -877,8 +877,29 @@ async def _run_plan(args: argparse.Namespace) -> int:
                     traceback.print_exc()
                     continue
             records.append(rec)
-            path = archive.write(rec, task_id=task.task_id,
-                                 batch_id=_plan_batch_id(plan))
+            try:
+                path = archive.write(rec, task_id=task.task_id,
+                                     batch_id=_plan_batch_id(plan))
+            except CredentialLeak as exc:
+                # ⚠️ **凭据闸门不许炸整批**（2026-10-28 实测踩到）：
+                # 一条存档的内容命中凭据特征 ⇒ 拒绝写盘（**这条本身是对的**，
+                # 凭据红线不容商量）⇒ 但异常从 ``archive.write`` 一路冒到
+                # ``main`` ⇒ **整批 28 条只跑成 11 条**，剩下 16 条全丢、
+                # 且不留痕（进程直接死 ⇒ 连失败清单都没有）。
+                # ⇒ 记一条失败、继续下一条（与「浏览器没起来」同款处置：
+                # **一条失败只毁那一条**）。
+                #
+                # ⚠️ **失败理由要说清是「内容」不是「能力」**：
+                # 「浏览器没起来」是能力问题、换台机器可能就好；
+                # 「内容命中凭据特征」是**采集结果本身**有问题
+                # （真凭据 ⇒ 那条不该进语料；误报 ⇒ 闸门太紧），
+                # 两者处置完全不同，混在一列里会被读成同一件事。
+                failed.append((task.task_id, _describe_failure(exc)))
+                print(f"[FAIL] [{n}/{len(tasks)}] {task.task_id}："
+                      "内容命中凭据特征，已拒绝写盘（**这一条不落盘**）"
+                      "——继续下一条")
+                traceback.print_exc()
+                continue
             _print_summary(rec, path)
             # 增量三十六：L6 自动派发——与 _run_manual 同口径。
             _dispatch_l6_summary(rec, task.task_id)
@@ -1545,6 +1566,17 @@ async def cmd_proberun(args: argparse.Namespace) -> int:
                     f"visit 异常: {type(exc).__name__}: {exc}"
                 )
 
+            # ── 指纹补读（2026-10-27）─────────────────────────────
+            # 同 orchestrator：**构造 record 时读到的指纹必是空的**——
+            # camofox 面在**第一次导航建页时**才测身份，而 record 是
+            # 导航之前构造的 ⇒ 空 dict 看着像「驱动没指纹」，其实是
+            # 「没记到」，且**事后补不回来**（指纹只在 launch 那一刻定）。
+            # ⇒ 补读放在 visit 之后（visit 里有第一次 goto），且放在
+            #    try/except **之外**——炸了也要补（炸在 goto 之后时
+            #    指纹已经测到了）。
+            record.fingerprint = dict(
+                getattr(driver, "fingerprint", {}) or {}
+            )
             record.ledger = ledger
             path = archive.write(record, task_id=args.task_id, run_id=run_id, batch_id=args.task_id)
             # 末段分支分布
@@ -1577,8 +1609,8 @@ async def cmd_staticprobe(args: argparse.Namespace) -> int:
     关键边界（设计文档 §6）：
     - **不复用 :mod:`executor.steps.reachability`**——后者刻意不用
       HTTP 状态码；L0 是新通道。
-    - **网络层异常不归任何分支**——``unreachable_hard`` 由 DriverError
-      触发，留给 reachability。
+    - **网络层异常不归任何分支**——``unreachable_hard`` 由 reachability
+      的**机器码判定**触发（``DriverUnreachableError``），留给 reachability。
     - **L0 HTTP 404/5xx 初筛只产 ``broken``**，不产 ``unreachable_hard``。
     """
     if not args.from_urls:
@@ -2554,7 +2586,13 @@ def cmd_downgrade(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    select = (downgrade_mod.select_by_url(*args.url) if args.url
+    # ⚠️ **两条路都要带上分支过滤**（2026-10-28 修）：原先 ``--url`` 那条路
+    # **静默忽略** ``--branch`` ⇒ ``--url`` 命中的 URL 上**别的分支**
+    # （``not_play_site`` / ``login_required`` …）会跟着一起降级。
+    # 实测那批数据里一个 URL 挂着 11 条 ``not_play_site`` + 4 条
+    # ``unreachable_hard`` ⇒ 不限分支就是误伤 11 条真负样本。
+    select = (downgrade_mod.select_by_url(*args.url, branches=args.branch or None)
+              if args.url
               else downgrade_mod.select_by_evidence(
                   patterns, branches=args.branch or None))
     summaries = downgrade_mod.apply_to_root(
@@ -2563,22 +2601,30 @@ def cmd_downgrade(args: argparse.Namespace) -> int:
     if not summaries:
         print("没有匹配的 outcome —— 归档可能已被降过（幂等），或判据不匹配")
         return 0
-    total = sum(s["downgraded"] for s in summaries)
     verb = "降级" if args.apply else "**将**降级"
-    print(f"== {verb} {total} 条 outcome → "
-          f"{downgrade_mod.TARGET_BRANCH}（{len(summaries)} 份存档）==")
+    layers: dict[str, list[dict]] = {}
+    for s in summaries:
+        layers.setdefault(str(s.get("layer") or "原档"), []).append(s)
+    head = " · ".join(
+        f"{name} {sum(x['downgraded'] for x in items)} 条（{len(items)} 份文件）"
+        for name, items in layers.items())
+    print(f"== {verb} → {downgrade_mod.TARGET_BRANCH}：{head} ==")
     for s in summaries:
         branches = " ".join(f"{k}×{v}" for k, v in sorted(s["branches"].items()))
         extra = (f" 同步 visits[].success {s['visits']} 处"
                  if s.get("visits") else "")
-        print(f"  {s['archive']:32s} {s['downgraded']:>3d} 条  {branches}{extra}")
+        layer = str(s.get("layer") or "原档")
+        print(f"  {layer} {s['archive']:34s} {s['downgraded']:>3d} 条  "
+              f"{branches}{extra}")
+    print("\n  两层都改了（2026-10-28 起）：原档记「代码原判 + 处置戳」，"
+          "复核档是门禁与报表**实际读的那一份**。")
+    print("  ⚠ **别再跑 `review --apply` 去「同步」复核档**——那是**重新合并**，"
+          "会把复核档上的新口径 rationale 与 reflection 冲掉")
     if not args.apply:
         print("\n⚠ 这是 dry-run。加 --apply 才落盘。")
-        print("  顺序：本命令 → review --verdicts ... --apply"
-              "（复核档是重新合并出来的，不受本命令影响）")
     else:
-        print("\n⚠ 只动了原档。复核档要重跑 review --apply 才会同步——"
-              "在本命令里改它是**白改**，下一次合并就被覆盖回去。")
+        print("\n⚠ 降级改的是结论。**池行要另撤**（`cli pool-drop`）："
+              "顺序是**先改存档、后撤池行**。")
     return 0
 
 

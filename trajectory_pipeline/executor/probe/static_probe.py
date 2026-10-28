@@ -9,8 +9,8 @@
 
 2. **只产 ``broken`` / ``blocked`` 初筛** —— 网络层异常
    （``timeout`` / ``tls_error`` / ``connection_error``）**不归**任何
-   分支（设计文档明确：``unreachable_hard`` 由 DriverError 触发，
-   留给 reachability）。
+   分支（设计文档明确：``unreachable_hard`` 由 reachability 的
+   **机器码判定**触发，留给 reachability）。
 
 3. **不依赖 LLM / 不依赖浏览器** —— 纯字符串事实判定，复用
    :func:`trajectory_pipeline.executor.dom.detect_block` 判定反爬特征。
@@ -96,7 +96,8 @@ def to_branch(result: StaticProbeResult) -> str | None:
     关键边界（设计文档 §6 / 增量十八）：
 
     - **L0 HTTP 404/5xx 初筛只产 ``broken``，不产 ``unreachable_hard``**
-      ——``unreachable_hard`` 由 reachability 的 DriverError 触发。
+      ——``unreachable_hard`` 由 reachability 的**机器码判定**触发
+      （``DriverUnreachableError``：DNS 解析不出来 / 连接被拒）。
     - **网络层异常（``timeout`` / ``tls_error`` / ``connection_error``）不归任何分支**
       ——L0 报"网络异常"但不下分支，留给下一层。
     - **2xx/3xx + 反爬特征 → ``blocked``**（页面被重定向到反爬页 / 限流页）。

@@ -104,6 +104,43 @@ class Test分发:
         assert rc == 0
         assert "没有匹配" in capsys.readouterr().out
 
+    def test_downgrade的URL路认分支过滤(self, tmp_path):
+        """``--url`` + ``--branch`` ⇒ **只降该分支**，别的分支不动。
+
+        2026-10-28 实测踩到：``--branch`` 原本只走 ``--evidence`` 那条路，
+        ``--url`` 那条路**静默忽略**它 ⇒ 同一个 URL 上别的分支
+        （``not_play_site`` / ``login_required`` …）跟着一起降级。
+        实测那批数据里一个 URL 挂着 11 条 ``not_play_site`` +
+        4 条 ``unreachable_hard`` ⇒ 误伤 11 条真负样本，而报告只说
+        「降级 15 条」。
+
+        ⚠️ 这条钉的是**接线**（不是选择器本身）——bug 就在接线那一行。
+        """
+        import json as _json
+
+        def _o(url, branch):
+            return {"url": url, "branch": branch, "evidence": "判定正文",
+                    "is_negative_sample": True, "reached_play_page": False}
+
+        arch = {
+            "task_id": "T001", "title": "功夫",
+            "ledger": {"by_branch": {"unreachable_hard": 1, "not_play_site": 1},
+                       "negative_samples": 2, "missing_branches": []},
+            "visits": [],
+            "outcomes": [_o("x.com", "unreachable_hard"),
+                         _o("x.com", "not_play_site")],
+        }
+        (tmp_path / "T001__r1.json").write_text(
+            _json.dumps(arch, ensure_ascii=False), encoding="utf-8")
+
+        rc = cli.main(["downgrade", "--out", str(tmp_path), "--url", "x.com",
+                       "--branch", "unreachable_hard", "--reason", "Q-23 复核",
+                       "--apply"])
+        assert rc == 0
+        after = _json.loads((tmp_path / "T001__r1.json").read_text(encoding="utf-8"))
+        branches = [o["branch"] for o in after["outcomes"]]
+        assert branches == ["unresolved", "not_play_site"], branches
+
 
 class TestProberunURLLoader:
     """2026-10-12 增量十三配套。``_load_url_lines`` 是纯 I/O 函数，

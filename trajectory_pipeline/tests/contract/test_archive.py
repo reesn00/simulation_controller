@@ -14,6 +14,7 @@ import pytest
 from trajectory_pipeline.executor.archive import (
     CredentialLeak,
     P1Archive,
+    credential_shapes,
     scan_credentials,
 )
 
@@ -45,6 +46,29 @@ LEAK_SAMPLES = [
 @pytest.mark.parametrize("leak,label", LEAK_SAMPLES)
 def test_凭据特征_逐条命中(leak, label):
     assert scan_credentials(leak), f"未识别: {label}"
+
+
+#: (内容, 里面那段**真正的秘密**)——形态与异常消息里都**不许**出现它。
+#:
+#: 与 :data:`LEAK_SAMPLES` 分开是因为那里的二元组只标「哪一类特征」，
+#: 验不了「秘密本身没被复制出去」——那要逐条知道秘密是哪一段。
+LEAK_PAYLOADS = [
+    ("Authorization: Bearer abc123", "abc123"),
+    ("token=bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig",
+     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"),
+    ("key sk-abcdefghijklmnopqrstuvwxyz1234",
+     "sk-abcdefghijklmnopqrstuvwxyz1234"),
+    ("key sk-ant-api03-abcdefghijklmnopqrstuv",
+     "sk-ant-api03-abcdefghijklmnopqrstuv"),
+    ("AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+    ("AIzaSyA1234567890A1234567890A1234567890",
+     "AIzaSyA1234567890A1234567890A1234567890"),
+    ("https://user:secretpass@example.com/x", "secretpass"),
+    ("Set-Cookie: sid=abc", "sid=abc"),
+    ("-----BEGIN RSA PRIVATE KEY-----", "BEGIN RSA PRIVATE KEY"),
+    ("ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+     "ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+]
 
 
 def test_正常内容不误报():
@@ -89,6 +113,104 @@ class TestFailClosed:
             "Authorization": "Bearer ghp_abcdefghijklmnopqrstuvwxyz0123456789"}}}]})
         with pytest.raises(CredentialLeak):
             arc.write(record, task_id="T001")
+
+
+class Test脱敏形态:
+    """⚠️ **排错要形态，不要原文**（2026-10-28 实测踩到）。
+
+    真实事故：28 条批次里一条的内容命中了 ``sk-`` 形态 ⇒ 拒绝写盘。
+    排错时**不能**把命中的原文打出来看——那**就是凭据本身**
+    （红线：凭据不得复制到测试、文档或日志）。
+    ⇒ :func:`credential_shapes` 只给 **长度 + 字符类别 + 前邻符号**。
+
+    而形态**够判**：真 key 与误报的区别在
+    ①「**前邻是不是字母数字**」（嵌在更长的词里 ⇒ 强烈指向误报）
+    ②「**有没有独立成一个 token**」。
+    这两件事形态就说得清，**一个字符都不用给**。
+    """
+
+    @pytest.mark.parametrize("payload,secret", LEAK_PAYLOADS)
+    def test_形态里没有秘密(self, payload, secret):
+        shapes = credential_shapes(payload)
+        assert shapes, "命中了却没有形态"
+        for s in shapes:
+            assert secret not in s, f"形态里漏出了秘密：{s}"
+
+    @pytest.mark.parametrize("payload,secret", LEAK_PAYLOADS)
+    def test_异常消息里没有秘密(self, tmp_path, payload, secret):
+        """异常消息会进批次日志 ⇒ 它也不许带秘密。"""
+        arc = P1Archive(tmp_path)
+        with pytest.raises(CredentialLeak) as ei:
+            arc.write(FakeRecord({"x": payload}), task_id="T001")
+        assert secret not in str(ei.value), "异常消息里漏出了秘密"
+
+    def test_前邻是字母数字就标成嵌在词里(self):
+        """前邻是字母数字 ⇒ 标成 ``_`` ⇒ 强烈指向误报。
+
+        ⚠️ 用 **Google key** 形态验这条分支——``sk-`` 那两条**已经加了左边界**
+        （见 :class:`Test左边界`）⇒ 「嵌在词里」那种形态**根本不会被拦**，
+        轮不到形态函数出场。
+        """
+        shapes = credential_shapes("xAIzaSyA1234567890A1234567890A1234567890")
+        assert any("prev='_'" in s for s in shapes), shapes
+
+    def test_独立成token就如实标出前邻符号(self):
+        shapes = credential_shapes('{"key": "sk-abcdefghijklmnopqrstuvwxyz"}')
+        assert any("prev='\"'" in s for s in shapes), shapes
+
+    def test_形态给出长度与字符类别(self):
+        """形态的**三个要素**都在：长度、字符类别构成、前邻。"""
+        shape = credential_shapes("sk-abcdefghijklmnopqrst")[0]
+        assert "len=" in shape
+        assert "shape=" in shape
+        assert "prev=" in shape
+
+
+class Test左边界:
+    """⚠️ **``sk-`` 锚定左边界**（2026-10-28 实测踩到）。
+
+    百度跳转链接的参数是 **base64url**（字符集 ``A-Za-z0-9-_``）⇒ 里面
+    **必然偶发**出现 ``sk-`` + 一串字母数字。
+    实测：E017 那条的候选 URL
+    ``.../link?url=FkNf6BD5y-B6dG1spuolNhomLxeySk-LgjTzmjWV4aeHAPQn6GLyXpw_...``
+    命中了 ``sk-`` 规则 ⇒ **整条存档被拒写盘** ⇒ 28 条批次只跑成 11 条，
+    剩下 16 条全丢且不留痕。
+
+    ⇒ 左边界要求「``sk-`` 前面**不是**字母数字」：
+    **真 key 总是独立的一个 token**（前面是空格 / 引号 / ``=`` / ``/``），
+    而嵌在更长词里的 ``sk-`` 是**编码串的一段** ⇒ 两者分得开。
+    ⇒ **只放宽「嵌在词里」那一种形态**，真 key 照拦。
+    """
+
+    #: **现场样本**（2026-10-28 从 E017 的候选 URL 里取出的 base64url 参数）。
+    BASE64_PARAM = (
+        "FkNf6BD5y-B6dG1spuolNhomLxeySk-LgjTzmjWV4aeHAPQn6GLyXpw_"
+        "38jU4AqRUuLwSj2ziI39n30H4e08ca"
+    )
+
+    def test_现场样本不再命中(self):
+        """⚠️ **这条就是今天真实毒化整批的那一条**。"""
+        assert scan_credentials(self.BASE64_PARAM) == [], (
+            "base64url 参数被当成凭据了——它不是"
+        )
+
+    def test_整条跳转链接也不再命中(self):
+        url = "http://www.baidu.com/link?url=" + self.BASE64_PARAM
+        assert scan_credentials(url) == []
+
+    @pytest.mark.parametrize("前邻", [" ", '"', "=", "/", "\n", ":", "'"])
+    def test_独立成token的真key照拦(self, 前邻):
+        key = "sk-abcdefghijklmnopqrstuvwxyz1234"
+        assert scan_credentials(f"key{前邻}{key}"), f"前邻 {前邻!r} 时漏检"
+
+    def test_嵌在更长词里的不拦(self):
+        assert scan_credentials("LxeySk-LgjTzmjWV4aeHAPQn6GLy") == []
+
+    def test_anthropic_key照拦(self):
+        assert scan_credentials("key sk-ant-api03-abcdefghijklmnopqrstuv")
+
+    def test_anthropic_key嵌在词里不拦(self):
+        assert scan_credentials("abcsk-ant-api03-abcdefghijklmnopqrstuv") == []
 
 
 class TestAtomicWrite:

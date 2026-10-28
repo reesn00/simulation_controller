@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from typing import Any, Mapping
 
@@ -59,6 +60,7 @@ from trajectory_pipeline.executor.browser.page_driver import DriverError
 
 __all__ = [
     "CamofoxSession",
+    "CamofoxToolError",
     "CAMOFOX_BASE_URL_DEFAULT",
     "CAMOFOX_EXE_ENV_VAR",
     "CAMOFOX_EXE_DEFAULT",
@@ -109,6 +111,164 @@ FORBIDDEN_TOOLS: frozenset[str] = frozenset({TOOL_IMPORT_COOKIES})
 #: MCP 适配器的默认启动超时（秒）。比 obscura 的 60s 长：
 #: 上游的 snapshot 要做一次完整的可访问性树 + 一次截图，**慢**。
 DEFAULT_TIMEOUT_S = 180.0
+
+#: 上游适配器把 REST 的错误包成 ``camofox error: {status}: {body}``
+#: （``mcp/lib/tool-contracts.mjs`` 里 ``throw new Error(`${res.status}: ${text}`)``，
+#: 适配器再包一层 ``camofox error: ${err.message}``）。
+#:
+#: ⚠️ **``body`` 是 JSON**，里面带着上游**明说的**恢复动作——
+#: ``code`` / ``retryable`` / ``recovery``。**不解析就只剩一段英文文本**，
+#: 而「没有结构」的意思是：驱动只能靠猜，猜错的后果见
+#: :class:`CamofoxToolError` 的说明。
+_ADAPTER_ERROR_RE = re.compile(r"^camofox error:\s*(\d+)\s*:\s*(.*)$", re.S)
+
+
+class CamofoxToolError(DriverError):
+    """上游 tool 调用失败——**带结构化的上游错误体**。
+
+    上游 camofox-browser 的错误体是 JSON：
+
+    .. code-block:: json
+
+        {"error": "Tab was destroyed. Open a new tab.",
+         "code": "tab_destroyed", "retryable": true,
+         "recovery": "create_new_tab"}
+
+    ``recovery`` 是上游**明说的恢复动作**：
+
+    * ``"create_new_tab"`` —— **这一页已经没了**，换一张新页；
+    * ``"retry"`` —— 整个会话过期，重来。
+
+    ⚠️ **不解析的代价**（2026-10-27 实测，10 条 camofox 批）：
+    上游会在**操作超时 / 连续超时 / 页崩溃 / 锁队列超时**时**销毁那一页**
+    （``server.js`` 的 ``destroyTab`` / ``destroyTimedOutTab``），
+    而**销毁不通知客户端** ⇒ 客户端手里的 ``tabId`` 成了死引用 ⇒
+    再导航就是 ``404 {"error":"Tab not found"}``，**每一次都 404**。
+    一个候选连炸 9 次，9 次全被记成 ``unreachable_hard``（"站点打不开"）
+    ⇒ **九条理由通顺的假负样本进了池**，而那个站点**一次都没被试过**。
+
+    ⇒ 解析出来，驱动才能按上游的指示**换页重来**（见
+    :meth:`trajectory_pipeline.executor.browser.camofox_driver.CamofoxDriver.goto`）。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool: str = "",
+        status: int = 0,
+        body: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        #: 调的是哪个 tool（诊断用）。
+        self.tool = tool
+        #: HTTP 状态码（上游 REST 那一层）。0 = 没解析出来。
+        self.status = int(status or 0)
+        #: 上游错误体（**原样**）。空 dict = 没解析出来。
+        self.body: dict[str, Any] = dict(body or {})
+
+    @property
+    def code(self) -> str:
+        """上游的机器可读错误码（``tab_destroyed`` / ``tab_unresponsive`` …）。"""
+        return str(self.body.get("code") or "")
+
+    @property
+    def retryable(self) -> bool:
+        """上游说这条可以重试吗。"""
+        return bool(self.body.get("retryable"))
+
+    @property
+    def recovery(self) -> str:
+        """上游说的恢复动作（``create_new_tab`` / ``retry``）。空 = 没明说。"""
+        return str(self.body.get("recovery") or "")
+
+    @property
+    def tab_is_gone(self) -> bool:
+        """**这一页是不是已经不在上游了**（该换一张新页）？
+
+        判据是**上游自己给的结构**（``recovery`` / ``code`` / 状态码），
+        不是我们猜的英文短语。
+
+        ⚠️ **404 为什么也要算**：上游 ``tabNotFoundResponse`` 对「不认识的
+        tabId」只给 ``{"error":"Tab not found"}``，**没有** ``code`` 字段
+        ——那是最常撞上的形态（实测 9 次连续 404 就是它），漏了它
+        就等于漏掉了整条自愈路径。
+        """
+        if self.recovery == "create_new_tab":
+            return True
+        if self.code in {"tab_destroyed", "tab_unresponsive"}:
+            return True
+        if self.status == 410:
+            return True
+        if self.status == 404:
+            return "tab not found" in str(self.body.get("error") or "").lower()
+        return False
+
+    @property
+    def execution_fault(self) -> bool:
+        """这次失败是不是**执行层/页级**的（**不是「站点打不开」**）？
+
+        判据与 :attr:`tab_is_gone` 同一纪律：**上游自己给的结构**
+        （``recovery`` / ``code``），不是我们猜的英文短语。
+
+        上游把失败分成三类（``lib/browser-errors.js`` 的
+        ``browserErrorRecovery``）——**后两类才是本方法认的那类**：
+
+        - ``create_new_tab`` ⇒ 这一页没了 ⇒ 换一张新页（:attr:`tab_is_gone`）；
+        - ``retry`` ⇒ **会话**过期 / 并发超时 / 浏览器起不来
+          ⇒ **我们这边坏了**，重来即可；
+        - ``snapshot_then_retry`` ⇒ 页级竞态 / ref 失效 ⇒ 重拍快照即可。
+
+        ⇒ 后两类都是**执行层故障**：坏的是我们的浏览器会话或那一页，
+        **不是目标站点** ⇒ 不能记 ``unreachable_hard``。
+
+        ⚠️ **为什么必须分出来**（2026-10-27 实测后补的**潜伏**缺陷）：
+        上游的 ``session_expired`` 走 HTTP 503 且**带**
+        ``recovery="retry"``——它是**明说**的。漏判的后果与「页没了」
+        那条一模一样：把采集侧的故障写成站点的性质 ⇒ 产出理由通顺的
+        假负样本。
+
+        ⚠️ **「没有 ``recovery``」不等于「站点打不开」**：上游把
+        ``code`` / ``recovery`` 设成 ``null`` 时**整个字段都不带**
+        （``sendError`` 只在有值时写键）——那种形态另有判据
+        （**走哪个路由**，见 :mod:`.camofox_driver`），不在本方法里。
+        """
+        if self.recovery in {"retry", "snapshot_then_retry"}:
+            return True
+        return self.code in {
+            "session_expired",
+            "concurrency_timeout",
+            "browser_launch_timeout",
+        }
+
+
+def _tool_error(tool: str, text: str) -> CamofoxToolError:
+    """把上游的 tool 错误文本**解析成结构化异常**。
+
+    解析不出来（不是 ``camofox error: {status}: {json}`` 那个形状）就
+    **只保留原文**——不猜、不填默认值。
+    """
+    raw = str(text or "").strip()
+    status = 0
+    payload = raw
+    matched = _ADAPTER_ERROR_RE.match(raw)
+    if matched:
+        status = int(matched.group(1))
+        payload = matched.group(2).strip()
+    body: dict[str, Any] = {}
+    if payload.startswith("{"):
+        try:
+            parsed = json.loads(payload)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, Mapping):
+            body = dict(parsed)
+    return CamofoxToolError(
+        f"camofox tool {tool} 返回错误: {raw[:400]}",
+        tool=tool,
+        status=status,
+        body=body,
+    )
 
 
 def _origin_of(base_url: str) -> str:
@@ -325,7 +485,10 @@ class CamofoxSession:
         except McpError as exc:
             raise DriverError(f"camofox tool {tool} 调用失败: {exc}") from None
         if result.is_error:
-            raise DriverError(f"camofox tool {tool} 返回错误: {result.text[:400]}")
+            # ⚠️ **解析上游的错误体**（2026-10-27）：上游在里面明说了
+            # 「这一页没了，换一张新页」——不解析就只剩一段文本，
+            # 驱动只能靠猜，猜错的后果是「拿一个已经死掉的页反复导航」。
+            raise _tool_error(tool, result.text)
         text = (result.text or "").strip()
         if not text:
             raise DriverError(f"camofox tool {tool} 返回空串")
@@ -363,6 +526,25 @@ class CamofoxSession:
         if tab_id in self._pages:
             self._pages.remove(tab_id)
         return ok
+
+    def discard_page(self, tab_id: str) -> bool:
+        """把一页从**本地栈**里摘掉——**不通知上游**。
+
+        ⚠️ **为什么不调上游的 close**：调用它的时候那一页**已经不在上游了**
+        （上游销毁的），再去关只会再拿一个 404/410 回来。栈是**我们自己的账**，
+        上游的账它自己会清。
+
+        ⚠️ **为什么必须有这一步**：上游销毁页**不通知客户端** ⇒ 客户端手里的
+        ``tabId`` 成了死引用 ⇒ 栈顶永远是那一页 ⇒ **后面每一次导航都是
+        404**（实测：一个候选连炸 9 次）。摘掉它，下一次导航才会开新页。
+
+        Returns:
+            ``True`` = 这一页本来在栈上（已摘掉）；``False`` = 栈上没有它。
+        """
+        if tab_id in self._pages:
+            self._pages.remove(tab_id)
+            return True
+        return False
 
     async def list_tabs(self) -> list[Any]:
         payload = await self.call(TOOL_LIST_TABS, {})

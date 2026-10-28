@@ -180,6 +180,27 @@ class Test出池两步:
         assert entry["row"]["url"] == URL
         assert entry["row"]["branch"] == "component_unverified"
 
+    def test_有复核档时门禁也干净(self, tmp_path):
+        """**门禁读的是复核档**（``select_archives`` 优先取它）。
+
+        只降原档 ⇒ 复核档还留着负分支 ⇒ 池行撤掉后门禁当场报
+        ``negative_not_pooled``——「撤错了」的假象。
+        ⇒ 降级必须**两层都落**（``downgrade`` 模块 docstring 坑 1）。
+        """
+        _write_archive(tmp_path)
+        _write_archive(tmp_path, name="T001__aa.reviewed.json")
+        _write_pool(tmp_path, [_pool_row()])
+
+        dg.apply_to_root(tmp_path, select=dg.select_by_url("56dy.com"),
+                         reason="人判：资源存在", dry_run=False)
+        assert "negative_not_pooled" not in _codes(integrity.check_root(tmp_path))
+
+        pd.drop_from_root(tmp_path, url_fragments=("56dy.com",),
+                          reason="人判：资源存在", dry_run=False)
+        report = integrity.check_root(tmp_path)
+        assert _codes(report) == set(), f"两步走完还报：{_codes(report)}"
+        assert report.ok
+
 
 # ── 反路：顺序颠倒会当场报 ───────────────────────────────────────
 

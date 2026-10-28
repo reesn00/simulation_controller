@@ -1,0 +1,72 @@
+{
+  "说明": "obscura 面：**绕过驱动层 200 字截断**，直接调 MCP tool 拿完整原文。「连接被拒」现场是否触发取决于那一跳有没有真的回 RST。",
+  "results": [
+    {
+      "label": "① 正常站点",
+      "url": "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB%20%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B",
+      "ok": true,
+      "is_error": false,
+      "原文": "Navigated to https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB%20%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B — \"功夫 在线观看_百度搜索\"",
+      "原文长度": 114,
+      "rust_io_kind": [],
+      "dns_phrase": false,
+      "elapsed_s": 4.75
+    },
+    {
+      "label": "② DNS 解析失败",
+      "url": "http://this-domain-should-not-exist-zzq7x9.invalid/",
+      "ok": false,
+      "is_error": true,
+      "原文": "Error: Network error: Network error: http://this-domain-should-not-exist-zzq7x9.invalid/: error sending request for uri (http://this-domain-should-not-exist-zzq7x9.invalid/): client error (Connect) (source: Some(Error { kind: Connect, source: Some(ConnectError(\"dns error\", Os { code: 11001, kind: Uncategorized, message: \"不知道这样的主机。\" })), connect_info: None }))",
+      "原文长度": 361,
+      "rust_io_kind": [
+        "Connect",
+        "Uncategorized"
+      ],
+      "dns_phrase": false,
+      "elapsed_s": 0.48
+    },
+    {
+      "label": "③ 连接被拒候选 · 127.0.0.1:9（本机 discard）",
+      "url": "http://127.0.0.1:9/",
+      "ok": false,
+      "is_error": true,
+      "原文": "Error: Network error: Network error: http://127.0.0.1:9/: error sending request for uri (http://127.0.0.1:9/): client error (Connect) (source: Some(Error { kind: Connect, source: Some(ConnectError(\"tcp connect error\", 127.0.0.1:9, Os { code: 10061, kind: ConnectionRefused, message: \"由于目标计算机积极拒绝，无法连接。\" })), connect_info: None }))",
+      "原文长度": 330,
+      "rust_io_kind": [
+        "Connect",
+        "ConnectionRefused"
+      ],
+      "dns_phrase": false,
+      "elapsed_s": 2.05
+    },
+    {
+      "label": "③ 连接被拒候选 · 127.0.0.1:1（本机 tcpmux）",
+      "url": "http://127.0.0.1:1/",
+      "ok": false,
+      "is_error": true,
+      "原文": "Error: Network error: Network error: http://127.0.0.1:1/: error sending request for uri (http://127.0.0.1:1/): client error (Connect) (source: Some(Error { kind: Connect, source: Some(ConnectError(\"tcp connect error\", 127.0.0.1:1, Os { code: 10061, kind: ConnectionRefused, message: \"由于目标计算机积极拒绝，无法连接。\" })), connect_info: None }))",
+      "原文长度": 330,
+      "rust_io_kind": [
+        "Connect",
+        "ConnectionRefused"
+      ],
+      "dns_phrase": false,
+      "elapsed_s": 2.05
+    },
+    {
+      "label": "④ 超时（不可路由 IP）",
+      "url": "http://10.255.255.1:81/",
+      "ok": false,
+      "is_error": true,
+      "原文": "Error: Network error: Network error: http://10.255.255.1:81/: error sending request for uri (http://10.255.255.1:81/): client error (Connect) (source: Some(Error { kind: Connect, source: Some(ConnectError(\"tcp connect error\", 10.255.255.1:81, Os { code: 10060, kind: TimedOut, message: \"由于连接方在一段时间后没有正确答复或连接的主机没有反应，连接尝试失败。\" })), connect_info: None }))",
+      "原文长度": 351,
+      "rust_io_kind": [
+        "Connect",
+        "TimedOut"
+      ],
+      "dns_phrase": false,
+      "elapsed_s": 21.05
+    }
+  ]
+}

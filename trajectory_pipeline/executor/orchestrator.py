@@ -1081,6 +1081,23 @@ class Orchestrator:
         step_search = record.steps.act(actions.goto(url))
         try:
             await self._driver.goto(url)
+            # ── 指纹补读（2026-10-27）─────────────────────────────
+            # 构造 record 时读到的 ``driver.fingerprint`` **可能是空的**：
+            # camofox 面的指纹是**在第一次导航里第一次建页时才测的**
+            # （``CamofoxDriver.goto`` → ``session.measure_fingerprint()``），
+            # 而本 record 是**导航之前**构造的 ⇒ 那一刻读到的必然是空 dict
+            # ⇒ **存档里指纹永远是空的**。
+            #
+            # ⚠️ **空指纹不是「没有指纹」，是「没记到」**（增量七十九）：
+            # 指纹只在 launch 那一刻确定，**事后补不回来**⇒ 漏了这一读，
+            # 这一批的执行层几何就永远丢了，而报告上**看不出任何异常**
+            # （空 dict 与「驱动没有指纹」长得一样）。
+            #
+            # ⇒ 补读必须**紧跟第一次导航**：那时指纹已落进驱动缓存，
+            # 且此后不再变（``measure_fingerprint`` 命中缓存就返回）。
+            record.fingerprint = dict(
+                getattr(self._driver, "fingerprint", {}) or {}
+            )
             record.search_obs = await self._driver.observe(
                 max_chars=self._cfg.max_chars
             )
@@ -1093,7 +1110,7 @@ class Orchestrator:
                         task_id, type(exc).__name__, exc)
             record.warnings.append(f"搜索页采集失败: {type(exc).__name__}: {exc}")
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
-            return record
+            return self._seal(record)
         record.steps.settle(step_search, record.search_obs)
         # 搜索步也补记 rationale——P2 按决策单元切条，搜索阶段是正式样本
         # （"一条 = 一个决策单元：搜索阶段一条 / 每个站点一条"），它没有
@@ -1138,7 +1155,7 @@ class Orchestrator:
                 f"直接重跑同一引擎大概率仍是验证码页"
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
-            return record
+            return self._seal(record)
 
         warn = validate_observation_for_decision(record.search_obs, "SELECT_PLAY_SITES")
         if warn:
@@ -1196,7 +1213,7 @@ class Orchestrator:
                 f"过滤掉 {record.candidate_filter}）"
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
-            return record
+            return self._seal(record)
 
         # ── 环节 ①.4.5：候选钉进窗口 —— 已删除（方案 12 阶段 A1）─────
         # 旧机制（04 方案的同源修复）：把候选按 rank 钉到 links 最前，
@@ -1262,7 +1279,7 @@ class Orchestrator:
                 f"来源 {record.candidate_source}）"
             )
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
-            return record
+            return self._seal(record)
 
         # ── 环节 ②：逐站点遍历 ────────────────────────────────────
         # B/C 的首页型候选走站内搜索（visit 链 ③.5 分叉）；direct 全程
@@ -1333,6 +1350,32 @@ class Orchestrator:
                  "warnings %d 条",
                  task_id, len(record.visits), successes, record.elapsed_ms,
                  len(record.warnings))
+        return self._seal(record)
+
+    def _seal(self, record: RunRecord) -> RunRecord:
+        """收口一条 run：把**执行层自愈**抄进 run 级 warning（不许静默）。
+
+        ⚠️ **为什么要有这一句**：换页自愈之后那一步在动作流里是
+        **成功**的——动作流看不出「这一页死过一次」。而那件事是读档人
+        判断「这个结论可不可信」的依据（页面被换掉 ⇒ 观察来自另一页）。
+
+        ⇒ 记进 ``record.warnings``（run 级状态，不进分支体系）：
+        **不是站点级失败分支**，所以不碰那个 22 类封闭集。
+
+        ⚠️ **只在真有自愈时写**：空账本不写——否则每份存档都多一条
+        恒为 0 的噪音，而噪音多了就没人看。
+        """
+        events = list(getattr(self._driver, "recoveries", []) or [])
+        if events:
+            detail = "；".join(
+                f"第{i + 1}次 {str(item.get('url') or '')}"
+                for i, item in enumerate(events[:5])
+            )
+            record.warnings.append(
+                f"执行层换页自愈 {len(events)} 次（上游销毁了当前页，"
+                f"驱动换一张新页用同一个 URL 重来）：{detail}"
+                + ("…" if len(events) > 5 else "")
+            )
         return record
 
     async def _write_rationales(

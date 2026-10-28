@@ -1,0 +1,19 @@
+{
+  "kept": [
+    {
+      "url": "https://video.friday.tw/movie/detail/1838",
+      "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：拿到过真·不可达机器码（NS_ERROR_CONNECTION_REFUSED×4、NS_ERROR_NET_TIMEOUT×5）⇒ 站点性质成立，留池（原始次数照录，不投票）"
+    },
+    {
+      "url": "https://video.friday.tw/movie/detail/29289",
+      "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：拿到过真·不可达机器码（NS_ERROR_CONNECTION_REFUSED×4、NS_ERROR_NET_TIMEOUT×4）⇒ 站点性质成立，留池（原始次数照录，不投票）"
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+      "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：拿到过真·不可达机器码（NS_ERROR_CONNECTION_REFUSED×1、NS_ERROR_NET_TIMEOUT×6）⇒ 站点性质成立，留池（原始次数照录，不投票）"
+    }
+  ],
+  "archive_evidence_appended": 34,
+  "pool_evidence_appended": 14,
+  "applied": true
+}

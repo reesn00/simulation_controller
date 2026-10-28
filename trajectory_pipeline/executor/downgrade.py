@@ -15,12 +15,26 @@
 两个判据、一个动作。动作沉成模块，判据由调用方传进来——
 因为判据是**那批数据的结论**，不是通用参数。
 
-六条踩过的坑，每一条都写进了对应函数
+八条踩过的坑，每一条都写进了对应函数
 --------------------------------------
-1. **只动原档，不动 ``.reviewed.json``**（:func:`apply_downgrades`）。
-   复核档是 ``review --apply`` 从原档重新合并出来的，在它上面改会被
-   下一次 ``--apply`` **静默覆盖回去**——降级看起来做了，跑一次 review
-   就没了。
+1. ⚠️ **两份都改**（原档 + ``.reviewed.json``）——2026-10-28 改。
+   原先只动原档，理由是「复核档是 ``review --apply`` 从原档合并出来的，
+   在它上面改会被下一次 ``--apply`` 静默覆盖回去」。
+   **那条理由只说对了一半**：复核档才是门禁与报表**实际读的那一份**
+   （:func:`executor.archive.select_archives` **优先取复核档**）⇒
+   只改原档 ⇒ 复核档还留着旧分支 ⇒ 门禁当场报 ``negative_not_pooled``，
+   而人看到的却是「已经降过级了」——**改判与门禁对不上**。
+   :mod:`executor.relabel` 早就是**两份都改**（见它的
+   ``_load_archives`` docstring，那段话就是在躲这个坑）。
+
+   **两份都改 ⇒ 下次 ``review --apply`` 覆盖不回来**（原档也降了），
+   本坑要防的那个坑仍然被躲开。
+   ⚠️ **但人工结论优先**：复核档上带 ``review_verdict`` /
+   ``site_verdict`` 的记录**不受理**代码侧的降级——那是**人的裁定**，
+   代码侧的「判定不成立」不许把它顶掉（见 :func:`_human_verdict`）。
+   原档上**不**做这条豁免：原档记的是「代码原判 + 处置戳」，
+   人工结论活在复核档那一层，两层各记各的（这正是既存的
+   「原档 ``unresolved`` / 复核档 ``not_play_site``」那 33 处分层）。
 2. **evidence 判据只看第一段**（:func:`base_evidence`）。
    ``"0 个交互元素" in "200 个交互元素"`` 是 **True**（子串），而每次降级
    追加的中文说明里**也会出现这几个字**——全文匹配会让自己刚降的记录
@@ -69,6 +83,16 @@
    ``visits[].success`` 与 ``outcome.branch`` 是否自洽）。
    ⇒ 降级成功时必须同步减 ``ledger.succeeded``（连带
    ``ledger.negative_samples``，见 :func:`apply_downgrades`）。
+8. ⚠️ **降级后别用 ``review --apply`` 去「同步」复核档**（2026-10-28 实测）。
+   ``review --apply`` 是**从原档重新合并**复核档 ⇒ 复核档上**新口径的
+   rationale 与 unit 级 ``reflection`` 整段丢失**：实测 78 份存档里
+   **56 份**的复核档是**新口径**（``pre_action``，带 ``reflection`` 键），
+   而原档是**旧口径**（``post_hoc``）——两者 rationale 正文**逐条不同**。
+   而 P2/P3/T 样本**从复核档切**（:func:`executor.cli.cmd_build` 走
+   ``select_archives``）⇒ 重新合并 = **训练样本的口径退回旧代**，
+   且 ``cmd build`` 会报「混批：pre_action 与 post_hoc 同时存在」。
+
+   ⇒ 同步复核档的**唯一**正确姿势是**两份都改**（坑 1），不是重新合并。
 """
 
 from __future__ import annotations
@@ -247,9 +271,8 @@ def original_archive_paths(root: pathlib.Path) -> list[pathlib.Path]:
     「什么算一份存档」的口径**只有一处**：
     :func:`~trajectory_pipeline.executor.archive.select_archives`
     （``<task_id>__<run_id>.json`` 才算，同目录的探针取证不算）。这里
-    只多一件事——**折回原档**：降级只动原档，复核档是 ``review --apply``
-    重新合并出来的，改它会被下一次 ``--apply`` 静默覆盖回去
-    （模块 docstring 坑 1）。
+    只多一件事——**折回原档**：原档是「代码原判 + 处置戳」那一层，
+    复核档是「人工结论」那一层（模块 docstring 坑 1）。
 
     ⚠️ 这个函数存在的原因是一个**真的发生在生产目录上的**漏扫：
     这里原先是 ``root.glob("T*__*.json")``，只认 ``T`` 前缀。实测
@@ -268,6 +291,43 @@ def original_archive_paths(root: pathlib.Path) -> list[pathlib.Path]:
     return out
 
 
+def reviewed_archive_paths(root: pathlib.Path) -> list[pathlib.Path]:
+    """本目录下**复核档**（``.reviewed.json``）的路径。
+
+    ⚠️ **只收「有配对原档」的复核档**：``<run>.reviewed.json`` 这种
+    死文件（对不上任何 ``trajectory_id``）**不是**复核档，是别的产物。
+    """
+    out: list[pathlib.Path] = []
+    for path in sorted(root.glob(f"*{REVIEWED_SUFFIX}")):
+        if "__" not in path.stem:
+            continue                      # 死文件 / 探针取证
+        base = path.name[: -len(REVIEWED_SUFFIX)]
+        if not (root / f"{base}.json").exists():
+            continue                      # 没有配对原档 ⇒ 不成对
+        out.append(path)
+    return out
+
+
+#: 复核档上**记着人工结论**的字段。带这些的记录**不受理**代码侧降级。
+#:
+#: ⚠️ **只认「人工」这两个字段，不认 ``source == "human"``**：
+#: ``source`` 也被 :mod:`executor.relabel` 写成 ``human``，而改判
+#: （「标签错了但仍是负样本」）**不是**站点级结论——它仍可被降级出池。
+#: ``review_verdict`` / ``site_verdict`` 才是**人的裁定**。
+HUMAN_VERDICT_FIELDS: tuple[str, ...] = ("review_verdict", "site_verdict")
+
+
+def _human_verdict(rec: dict[str, Any]) -> bool:
+    """这条记录上有没有**人的裁定**？
+
+    人的裁定**优先于**代码侧的「判定不成立」：代码能说「这条标签没依据」，
+    不能说「人判的这条不是负样本」——后者是**另一层**的结论
+    （模块 docstring 坑 1 末段）。
+    """
+    return any(str(rec.get(f) or "").strip() for f in HUMAN_VERDICT_FIELDS)
+
+
+
 def apply_to_root(root: pathlib.Path, *,
                   select: Callable[[dict[str, Any]], list[dict[str, Any]]],
                   reason: str,
@@ -283,17 +343,26 @@ def apply_to_root(root: pathlib.Path, *,
         不同（URL 集合 / evidence 正则 / 成功与否），而**处置动作只有
         一份**，重复实现处置动作是当初三个脚本互相漂移的原因。
 
-    ⚠️ **只动原档，不动 ``.reviewed.json``**（模块 docstring 坑 1）——
-    路径由 :func:`original_archive_paths` 给，别在这函数里再写一份
-    文件名判据（第一份就漏了 ``E``/``P`` 前缀，见那个函数的说明）。
+    ⚠️ **两层都改**（模块 docstring 坑 1）：原档 + 复核档。
+    复核档是门禁与报表**实际读的那一份**（``select_archives`` 优先取它）
+    ⇒ 只改原档 ⇒ 门禁看到的还是旧分支 ⇒ 当场报 ``negative_not_pooled``。
+    复核档上**带人工裁定**的记录**不受理**（:func:`_human_verdict`）。
+
+    路径分别由 :func:`original_archive_paths` 与
+    :func:`reviewed_archive_paths` 给，别在这函数里再写一份文件名判据
+    （第一份就漏了 ``E``/``P`` 前缀，见那个函数的说明）。
     """
     out: list[dict[str, Any]] = []
-    for path in original_archive_paths(root):
+    for path, layer in ([(p, "原档") for p in original_archive_paths(root)]
+                        + [(p, "复核档") for p in reviewed_archive_paths(root)]):
         try:
             archive = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
         hits = select(archive)
+        if layer == "复核档":
+            # 人的裁定优先于代码侧的「判定不成立」。
+            hits = [h for h in hits if not _human_verdict(h)]
         if not hits:
             continue
         # 同一个 archive 对象走完「筛选 → 处置 → 写盘」全程——
@@ -302,14 +371,16 @@ def apply_to_root(root: pathlib.Path, *,
                                    name=path.name, dry_run=dry_run)
         if not summary["downgraded"]:
             continue
+        summary["layer"] = layer
         if not dry_run:
             _atomic_write(path, archive)
         out.append(summary)
     return out
 
 
-def select_by_url(*fragments: str) -> Callable[[dict[str, Any]],
-                                                list[dict[str, Any]]]:
+def select_by_url(*fragments: str,
+                  branches: Iterable[str] | None = None,
+                  ) -> Callable[[dict[str, Any]], list[dict[str, Any]]]:
     """按 URL 片段挑 outcome。**多片段是 OR。**
 
     给「那批数据的具体 URL」用的选择器——判据在这批数据上是 URL，
@@ -318,14 +389,32 @@ def select_by_url(*fragments: str) -> Callable[[dict[str, Any]],
     ⚠️ 与 :func:`select_by_evidence` 同样**无条件排除 ``TARGET_BRANCH``**：
     「这批 URL 的判定不成立」里的「不成立」，本身就排除了已经
     ``unresolved`` 的那些——它们是结论，不是待处置的判定。
+
+    :param branches: **限定分支**（``None`` = 不限）。
+
+    ⚠️ **这个参数不是可有可无的**（2026-10-28 实测踩到）：CLI 的
+    ``--branch`` 原本只走 ``--evidence`` 那条路，``--url`` 那条路**静默忽略**
+    它 ⇒ ``downgrade --url X --branch unreachable_hard`` 会把 **X 上别的
+    分支**（``not_play_site`` / ``login_required`` / …）**一起降级**。
+    实测那批数据里一个 URL 挂着 **11 条 ``not_play_site`` + 4 条
+    ``unreachable_hard``** ⇒ 不限分支就是**误伤 11 条真负样本**，
+    而报告上只看得到「降级 15 条」。
+
+    ⇒ 分支过滤必须**跟着 URL 走**：调用方给了 ``branches`` 就照办。
     """
     if not fragments:
         raise ValueError("至少要给一个 URL 片段")
+    want = set(branches) if branches else None
+    if want and TARGET_BRANCH in want:
+        raise ValueError(
+            f"branches 不该含 {TARGET_BRANCH!r}：它已经是降级后的状态。"
+            "幂等判断看「有没有处置戳」，不靠 branch 值。")
 
     def _select(archive: dict[str, Any]) -> list[dict[str, Any]]:
         return [r for r in (archive.get("outcomes") or ())
                 if isinstance(r, dict)
                 and str(r.get("branch")) != TARGET_BRANCH
+                and (want is None or str(r.get("branch")) in want)
                 and any(f in str(r.get("url") or "") for f in fragments)
                 and not str(r.get("evidence") or "").startswith("[原判 ")]
     return _select

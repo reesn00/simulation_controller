@@ -1,0 +1,2165 @@
+{
+  "what": "Q-23 现场取证：池里存量 unreachable_hard 逐条重开",
+  "when": "2026-10-28 08:48:42",
+  "driver": "camofox",
+  "attempts_per_target": 3,
+  "settle_seconds": 4.0,
+  "pool_row_count": 54,
+  "target_count": 29,
+  "targets": [
+    {
+      "url": "http://www.baidu.com/link?url=h1vt7dL81SYbysv7HhJnu3OOg9BKYtPl7igpE6_oxYfGe-UV3YRY_WbooWjofH3ocLzj7KhWJYTZuxLQbeWgGa",
+      "pool_rows": [
+        {
+          "task_id": "TPIN02",
+          "run_id": "1cf5deca",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "TPIN02__1cf5deca",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=Oe5bmkA5vH23HnM-9PDcZ_B2AY_G71uT-Eu5ICrPUo4jxz0acz0YqvDvjrfA4q2B0cyzFvS4GD4PEjwl9a20Yq",
+      "pool_rows": [
+        {
+          "task_id": "TPIN02",
+          "run_id": "1a5e526d",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "TPIN02__1a5e526d",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=l7bZ1M85Wg5A60se2CHoqxsR1XHbbPW4rl0r0Dyw4Zq9yxcnthEhe5aQRnxccf167FLFGIVFdHkEWEhgZp8-Uc9RsbHf05Zu8Dm55lqdbSw-SOfUm41F9dLydBUUkV20",
+      "pool_rows": [
+        {
+          "task_id": "T001",
+          "run_id": "ab5b6296",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T001__ab5b6296",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "https://video.friday.tw/movie/detail/1838",
+      "pool_rows": [
+        {
+          "task_id": "T025",
+          "run_id": "7141c8de",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T040",
+          "run_id": "7b37c195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T014",
+          "run_id": "acaa3ef1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T036",
+          "run_id": "10313caf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T028",
+          "run_id": "d76e1085",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T031",
+          "run_id": "3af4e21b",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T012",
+          "run_id": "8c050356",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T011",
+          "run_id": "443c5ec0",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T033",
+          "run_id": "53ce4b49",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T018",
+          "run_id": "ad4a6065",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T037",
+          "run_id": "e33453ed",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "task_id": "T029",
+          "run_id": "0a800a3f",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T011__443c5ec0",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T011__cbdfddea",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T012__8c050356",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T014__acaa3ef1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T018__ad4a6065",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T025__7141c8de",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T028__d76e1085",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T029__0a800a3f",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T031__3af4e21b",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T031__de0c1df5",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T033__53ce4b49",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T033__c15d9abf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T036__10313caf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T037__e33453ed",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T040__7b37c195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        },
+        {
+          "archive": "T040__c9982a1c",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/1838: error sending request for uri (http"
+        }
+      ]
+    },
+    {
+      "url": "https://trtag.com/dy/dongzuo/98794/",
+      "pool_rows": [
+        {
+          "task_id": "T025",
+          "run_id": "7141c8de",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T040",
+          "run_id": "7b37c195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://trtag.com/dy/dongzuo/98794/: error sending request for uri (https://tr"
+        },
+        {
+          "task_id": "T014",
+          "run_id": "acaa3ef1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T036",
+          "run_id": "10313caf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T028",
+          "run_id": "d76e1085",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T031",
+          "run_id": "3af4e21b",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://trtag.com/dy/dongzuo/98794/: error sending request for uri (https://tr"
+        },
+        {
+          "task_id": "T012",
+          "run_id": "8c050356",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T011",
+          "run_id": "443c5ec0",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T033",
+          "run_id": "53ce4b49",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T018",
+          "run_id": "ad4a6065",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T037",
+          "run_id": "e33453ed",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://trtag.com/dy/dongzuo/98794/: error sending request for uri (https://tr"
+        },
+        {
+          "task_id": "T029",
+          "run_id": "0a800a3f",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T011__443c5ec0",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T011__cbdfddea",
+          "branch": "unresolved",
+          "evidence_head": "判断点 ① 未选中该站点，而模型未把它列入 rejected——它多半压根没看到这条链接（送进模型的是排序后的前 32 条里的一小段）。**无证据不记负样本**：判成 not_play_site 就是把「模型没答」写成「这个站看不了」。"
+        },
+        {
+          "archive": "T012__8c050356",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T014__acaa3ef1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T018__ad4a6065",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T025__7141c8de",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T028__d76e1085",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T029__0a800a3f",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T031__3af4e21b",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://trtag.com/dy/dongzuo/98794/: error sending request for uri (https://tr"
+        },
+        {
+          "archive": "T031__de0c1df5",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T033__53ce4b49",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T033__c15d9abf",
+          "branch": "unresolved",
+          "evidence_head": "LLM 判 False：页面虽标注“免费完整版”并列有多个播放源，但代码测得 video_tag_count=0、iframe_count=0，未发现实际媒体播放器。（置信度 0.8 为代码层先验，非模型自报）\n[记账降级] 本该记 component_unverified，但点击播放控件前后是同一个页面（url=ht"
+        },
+        {
+          "archive": "T036__10313caf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T037__e33453ed",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://trtag.com/dy/dongzuo/98794/: error sending request for uri (https://tr"
+        },
+        {
+          "archive": "T040__7b37c195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://trtag.com/dy/dongzuo/98794/: error sending request for uri (https://tr"
+        },
+        {
+          "archive": "T040__c9982a1c",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "https://cmgo.com/web/zh-CN/m/movie/cmgo655_%E5%8A%9F%E5%A4%AB",
+      "pool_rows": [
+        {
+          "task_id": "T040",
+          "run_id": "7b37c195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T036",
+          "run_id": "10313caf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T031",
+          "run_id": "de0c1df5",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "task_id": "T033",
+          "run_id": "c15d9abf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T011__443c5ec0",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。标题仅表明通过 CMGO app 观看电影，现有证据不足以确认该网页本身提供直接在线播放。"
+        },
+        {
+          "archive": "T011__cbdfddea",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。页面主要介绍CMGO应用，现有标题未明确表明该网页本身可直接播放《功夫》。"
+        },
+        {
+          "archive": "T012__8c050356",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。链接是 CMGO App 的电影落地页；现有摘要仅宣传可通过 App 看电影，未明确证明该网页提供完整版在线播放。"
+        },
+        {
+          "archive": "T014__acaa3ef1",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。结果仅明确这是CMGO App的电影详情或产品入口，未显示该页可直接在线播放完整影片，证据不足。"
+        },
+        {
+          "archive": "T018__ad4a6065",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。页面标题主要表明其为观看电影所用 App 的影片页，未明确显示可直接在线播放，排除为非网页播放入口。"
+        },
+        {
+          "archive": "T028__d76e1085",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。结果仅表明这是CMGO应用内的《功夫》页面，未明确证明网页本身可直接播放。"
+        },
+        {
+          "archive": "T029__0a800a3f",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。页面是CMGO应用中的影片详情入口，搜索结果未证明该网页本身可直接播放影片。"
+        },
+        {
+          "archive": "T031__3af4e21b",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。标题将CMGO描述为看片App，现有结果仅能确认是App介绍或推广页，未明确显示可直接播放。"
+        },
+        {
+          "archive": "T031__de0c1df5",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T033__53ce4b49",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。标题显示为CMGO应用中的电影详情页，现有证据不能确认该网页可直接播放影片。"
+        },
+        {
+          "archive": "T033__c15d9abf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T036__10313caf",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T037__e33453ed",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。标题主要表明这是CMGO App的电影入口，现有证据不足以确认该网页本身可直接在线播放。"
+        },
+        {
+          "archive": "T040__7b37c195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        },
+        {
+          "archive": "T040__c9982a1c",
+          "branch": "not_play_site",
+          "evidence_head": "判断点 ① 排除该站点。现有标题仅表明这是CMGO应用的影片介绍页，未明确证明该链接可直接在线播放完整版。"
+        }
+      ]
+    },
+    {
+      "url": "https://tv.cctv.com/2012/12/03/VIDA1354531513618469.shtml",
+      "pool_rows": [
+        {
+          "task_id": "T001",
+          "run_id": "d063ddf4",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T001__d063ddf4",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "https://www.mytvsuper.com/tc/programme/nezha0004_142825/%E5%93%AA%E5%90%92%E4%B9%8B%E9%AD%94%E7%AB%A5%E9%99%8D%E4%B8%96/",
+      "pool_rows": [
+        {
+          "task_id": "E017",
+          "run_id": "a2878b23",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E017__a2878b23",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "https://trtag.com/zy/167079/",
+      "pool_rows": [
+        {
+          "task_id": "E005",
+          "run_id": "e35b7455",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E005__e35b7455",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "https://trtag.com/dy/aiqing/106493/",
+      "pool_rows": [
+        {
+          "task_id": "T024",
+          "run_id": "b54092ee",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T024__6240da8e",
+          "branch": "unresolved",
+          "evidence_head": "LLM 判 False：页面仅列出“暴风播放、非凡播放、搜狐云、影视VIP”等播放源名称，且未检测到任何 video 或 iframe 媒体元素，无法正常播放。（置信度 0.8 为代码层先验，非模型自报）\n[记账降级] 本该记 component_unverified，但点击播放控件前后是同一个页面（url=https"
+        },
+        {
+          "archive": "T024__b54092ee",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "https://m.ixigua.com/video/6582085495839261192",
+      "pool_rows": [
+        {
+          "task_id": "T029",
+          "run_id": "0a800a3f",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://m.ixigua.com/video/6582085495839261192: error sending request for uri "
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T011__443c5ec0",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T011__cbdfddea",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T012__8c050356",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T014__acaa3ef1",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T018__ad4a6065",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T025__7141c8de",
+          "branch": "login_wall_or_blocked",
+          "evidence_head": "LLM 判 False：页面主体仅显示“Internal Server Error”，且没有可交互元素或视频内容。（置信度 0.8 为代码层先验，非模型自报）"
+        },
+        {
+          "archive": "T028__d76e1085",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T029__0a800a3f",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://m.ixigua.com/video/6582085495839261192: error sending request for uri "
+        },
+        {
+          "archive": "T031__3af4e21b",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T031__de0c1df5",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T033__53ce4b49",
+          "branch": "login_wall_or_blocked",
+          "evidence_head": "LLM 判 False：页面主体仅显示“Internal Server Error”，且无视频、iframe或任何交互元素，属于服务错误不可达。（置信度 0.8 为代码层先验，非模型自报）"
+        },
+        {
+          "archive": "T033__c15d9abf",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T036__10313caf",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T037__e33453ed",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T040__7b37c195",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        },
+        {
+          "archive": "T040__c9982a1c",
+          "branch": "unresolved",
+          "evidence_head": "采到 0 个交互元素（正文 100 字符）——哨兵返回无法区分「页面没渲染完」与「页面确实没控件」，不判（正文里写着「立即播放」而元素 0 个，判 False 就是把采集失败写成业务负样本）"
+        }
+      ]
+    },
+    {
+      "url": "https://tinhte.vn/thread/top-5-app-mua-hang-taobao-tieng-viet-don-gian-2024.3802865/",
+      "pool_rows": [
+        {
+          "task_id": "E014",
+          "run_id": "c27ea8c6",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E014__c27ea8c6",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: navigation exceeded 30000ms deadline"
+        }
+      ]
+    },
+    {
+      "url": "https://video.friday.tw/movie/detail/29289",
+      "pool_rows": [
+        {
+          "task_id": "T042",
+          "run_id": "df2ee261",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/29289: error sending request for uri (htt"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T042__df2ee261",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://video.friday.tw/movie/detail/29289: error sending request for uri (htt"
+        }
+      ]
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+      "pool_rows": [
+        {
+          "task_id": "P015",
+          "run_id": "c0126fa5",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: obscura tool browser_navigate 失败: Error: Network error: Network error: https://www.youtube.com/watch?v=AAAAAAAAAAA: error sending request for uri (ht"
+        }
+      ],
+      "archive_outcomes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=WvO1FsW1q4owcqW_YGlXTbn9qAzJBAgrJpE6XwBKJuxU8K31AsWU0p89cx1WmUB5C7dqPUgAulgetra6AlItpa",
+      "pool_rows": [
+        {
+          "task_id": "T054",
+          "run_id": "93f110b6",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_ABORT | Call log: | - navigating to \"http://www.baidu.com/link?url=WvO1FsW1q4owcqW_YGlXTbn9qAzJBAgrJpE6XwBKJuxU8K3"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T054__93f110b6",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_ABORT | Call log: | - navigating to \"http://www.baidu.com/link?url=WvO1FsW1q4owcqW_YGlXTbn9qAzJBAgrJpE6XwBKJuxU8K3"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+      "pool_rows": [
+        {
+          "task_id": "T038",
+          "run_id": "a78dc57e",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cd"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T038__a78dc57e",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cd"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+      "pool_rows": [
+        {
+          "task_id": "T048",
+          "run_id": "0680dc4a",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKF"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T048__0680dc4a",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKF"
+        }
+      ]
+    },
+    {
+      "url": "https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all",
+      "pool_rows": [
+        {
+          "task_id": "E028",
+          "run_id": "023b8837",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Timeout 30000ms exceeded. | Call log: | - navigating to \"https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=bai"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E017__29682a60",
+          "branch": "login_required",
+          "evidence_head": "login_wall 二次拦截"
+        },
+        {
+          "archive": "E028__023b8837",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Timeout 30000ms exceeded. | Call log: | - navigating to \"https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=bai"
+        },
+        {
+          "archive": "E028__62ca8043",
+          "branch": "login_required",
+          "evidence_head": "login_wall 二次拦截"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+      "pool_rows": [
+        {
+          "task_id": "E028",
+          "run_id": "023b8837",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDG"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E028__023b8837",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDG"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=5H1bZObpBf_O12QynQO_RrOVylqo2PKUdPX6BqoRlDBofeGuw_PYzS-5WkNknkZFaAyrktFMvsD9ftQbIBC4hq",
+      "pool_rows": [
+        {
+          "task_id": "E028",
+          "run_id": "023b8837",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=5H1bZObpBf_O12QynQO_RrOVylqo2PKUdPX6BqoRlDBofeGuw_PYzS-5WkNknkZFaAyrktFMvsD9ft"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E028__023b8837",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=5H1bZObpBf_O12QynQO_RrOVylqo2PKUdPX6BqoRlDBofeGuw_PYzS-5WkNknkZFaAyrktFMvsD9ft"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtK1trSsAAiBJoKMQ7lZVQonQCD5K-4Q2nRvGenukMHRnQm-gihhxzfaBLxlCECcvUn_",
+      "pool_rows": [
+        {
+          "task_id": "T018",
+          "run_id": "8f1aec03",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Timeout 30000ms exceeded. | Call log: | - navigating to \"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtK1trSsAAiBJoKMQ7"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T018__8f1aec03",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Timeout 30000ms exceeded. | Call log: | - navigating to \"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtK1trSsAAiBJoKMQ7"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+      "pool_rows": [
+        {
+          "task_id": "T018",
+          "run_id": "8f1aec03",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQl"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T018__8f1aec03",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQl"
+        }
+      ]
+    },
+    {
+      "url": "http://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+      "pool_rows": [
+        {
+          "task_id": "T030",
+          "run_id": "ae6553b1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Timeout 30000ms exceeded. | Call log: | - navigating to \"http://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&r"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T011__d1d70da2",
+          "branch": "unresolved",
+          "evidence_head": "判断点 ① 未选中该站点，而模型未把它列入 rejected——它多半压根没看到这条链接（送进模型的是排序后的前 111 条里的一小段）。**无证据不记负样本**：判成 not_play_site 就是把「模型没答」写成「这个站看不了」。"
+        },
+        {
+          "archive": "T013__dade3d10",
+          "branch": "unresolved",
+          "evidence_head": "判断点 ① 未选中该站点，而模型未把它列入 rejected——它多半压根没看到这条链接（送进模型的是排序后的前 111 条里的一小段）。**无证据不记负样本**：判成 not_play_site 就是把「模型没答」写成「这个站看不了」。"
+        },
+        {
+          "archive": "T025__0d6d185e",
+          "branch": "unresolved",
+          "evidence_head": "判断点 ① 未选中该站点，而模型未把它列入 rejected——它多半压根没看到这条链接（送进模型的是排序后的前 111 条里的一小段）。**无证据不记负样本**：判成 not_play_site 就是把「模型没答」写成「这个站看不了」。"
+        },
+        {
+          "archive": "T030__ae6553b1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Timeout 30000ms exceeded. | Call log: | - navigating to \"http://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&r"
+        },
+        {
+          "archive": "T035__3ab75598",
+          "branch": "unresolved",
+          "evidence_head": "判断点 ① 未选中该站点，而模型未把它列入 rejected——它多半压根没看到这条链接（送进模型的是排序后的前 110 条里的一小段）。**无证据不记负样本**：判成 not_play_site 就是把「模型没答」写成「这个站看不了」。"
+        },
+        {
+          "archive": "TPIN01__9c38dc2e",
+          "branch": "unresolved",
+          "evidence_head": "判断点 ① 未选中该站点，而模型未把它列入 rejected——它多半压根没看到这条链接（送进模型的是排序后的前 113 条里的一小段）。**无证据不记负样本**：判成 not_play_site 就是把「模型没答」写成「这个站看不了」。"
+        },
+        {
+          "archive": "TPIN02__1a5e526d",
+          "branch": "unresolved",
+          "evidence_head": "判断点 ① 未选中该站点，而模型未把它列入 rejected——它多半压根没看到这条链接（送进模型的是排序后的前 113 条里的一小段）。**无证据不记负样本**：判成 not_play_site 就是把「模型没答」写成「这个站看不了」。"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+      "pool_rows": [
+        {
+          "task_id": "T030",
+          "run_id": "ae6553b1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T030__ae6553b1",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taJ8Kl78VVw_aC3LtWBCwJfrQk-dxssuJlC4ZSsuG_buDPJAOmnXZyBtrM3N_S7IKda",
+      "pool_rows": [
+        {
+          "task_id": "T025",
+          "run_id": "102d3554",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taJ8Kl78VVw_aC3LtWBCwJfrQk-dxssuJlC4ZSsuG_buDPJAOmnXZyBtrM3"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T025__102d3554",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taJ8Kl78VVw_aC3LtWBCwJfrQk-dxssuJlC4ZSsuG_buDPJAOmnXZyBtrM3"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+      "pool_rows": [
+        {
+          "task_id": "T025",
+          "run_id": "102d3554",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqH"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T025__102d3554",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_NET_EMPTY_RESPONSE | Call log: | - navigating to \"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqH"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+      "pool_rows": [
+        {
+          "task_id": "E014",
+          "run_id": "15e4b195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6v"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E014__15e4b195",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: Navigation to \"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6v"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+      "pool_rows": [
+        {
+          "task_id": "E022",
+          "run_id": "01fcb42b",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_ABORT | Call log: | - navigating to \"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvW"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "E022__01fcb42b",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: NS_ERROR_ABORT | Call log: | - navigating to \"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvW"
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+      "pool_rows": [
+        {
+          "task_id": "T054",
+          "run_id": "1c9b6260",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: SSL_ERROR_BAD_CERT_DOMAIN | Call log: | - navigating to \"http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6"
+        }
+      ],
+      "archive_outcomes": [
+        {
+          "archive": "T054__1c9b6260",
+          "branch": "unreachable_hard",
+          "evidence_head": "导航失败（传输层）: camoufox 导航失败: Page.goto: SSL_ERROR_BAD_CERT_DOMAIN | Call log: | - navigating to \"http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "url": "http://www.baidu.com/link?url=h1vt7dL81SYbysv7HhJnu3OOg9BKYtPl7igpE6_oxYfGe-UV3YRY_WbooWjofH3ocLzj7KhWJYTZuxLQbeWgGa",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=h1vt7dL81SYbysv7HhJnu3OOg9BKYtPl7igpE6_oxYfGe-UV3YRY_WbooWjofH3ocLzj7KhWJYTZuxLQbeWgGa",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "功夫-电影完整版免费在线观看高清播放-无极影视",
+            "body_len": 1716,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片 » 功夫\n功夫\n主演：\n周星驰 元秋 元华 黄圣依 梁小龙 陈国坤 田启文 林子聪 ",
+            "elements_total": 77,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "订阅": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "功夫-电影完整版免费在线观看高清播放-无极影视",
+            "body_len": 1716,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片 » 功夫\n功夫\n主演：\n周星驰 元秋 元华 黄圣依 梁小龙 陈国坤 田启文 林子聪 ",
+            "elements_total": 77,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "订阅": 1
+            }
+          },
+          "elapsed_s": 11.94
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=Oe5bmkA5vH23HnM-9PDcZ_B2AY_G71uT-Eu5ICrPUo4jxz0acz0YqvDvjrfA4q2B0cyzFvS4GD4PEjwl9a20Yq",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=Oe5bmkA5vH23HnM-9PDcZ_B2AY_G71uT-Eu5ICrPUo4jxz0acz0YqvDvjrfA4q2B0cyzFvS4GD4PEjwl9a20Yq",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "功夫-电影完整版免费在线观看高清播放-无极影视",
+            "body_len": 1716,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片 » 功夫\n功夫\n主演：\n周星驰 元秋 元华 黄圣依 梁小龙 陈国坤 田启文 林子聪 ",
+            "elements_total": 77,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "订阅": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://www.yn-mg.cn/voddetail/71884.html",
+            "page_title": "功夫-电影完整版免费在线观看高清播放-无极影视",
+            "body_len": 1716,
+            "body_head": "热搜： 变形金刚 火影忍者 复仇者联盟 战狼 红海行动\n最近\n更新\n影片\n排行\n手机\n观看\n首页\n电影\n电视剧\n综艺\n动漫\n播放记录\n电影： 动作片| 喜剧片| 爱情片| 科幻片| 恐怖片| 剧情片| 战争片| 纪录片| 艺术片|\n电视剧： 大陆剧| 欧美剧| 韩剧| 日剧| 港澳剧| 台湾剧| 泰剧| 海外剧|\n\n温馨提示：欢迎访问\n\n无极影视，\n\n请记住网址：www.yn-mg.cn，感谢网友的支持！提供最新高清电影热播电视剧在线观看，为广大用户免费提供在线观看电影和电视剧服务。\n\n首页  »   动作片 » 功夫\n功夫\n主演：\n周星驰 元秋 元华 黄圣依 梁小龙 陈国坤 田启文 林子聪 ",
+            "elements_total": 77,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "订阅": 1
+            }
+          },
+          "elapsed_s": 6.91
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=l7bZ1M85Wg5A60se2CHoqxsR1XHbbPW4rl0r0Dyw4Zq9yxcnthEhe5aQRnxccf167FLFGIVFdHkEWEhgZp8-Uc9RsbHf05Zu8Dm55lqdbSw-SOfUm41F9dLydBUUkV20",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=l7bZ1M85Wg5A60se2CHoqxsR1XHbbPW4rl0r0Dyw4Zq9yxcnthEhe5aQRnxccf167FLFGIVFdHkEWEhgZp8-Uc9RsbHf05Zu8Dm55lqdbSw-SOfUm41F9dLydBUUkV20",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://zhidao.baidu.com/question/214717833410116245/answer/5100422567.html",
+            "page_title": "武林外传在线观看完整版免费资源_百度知道",
+            "body_len": 3838,
+            "body_head": "百度首页\n商城\n注册\n登录\n网页\n资讯\n视频\n图片\n知道\n文库\n贴吧\n采购\n地图\n更多\n搜索答案\n我要提问\n首页\n用户\n合伙人\n商城\n法律\n我的\n武林外传在线观看完整版免费资源\n我来答 分享 举报\n4个回答\n#热议# 在购买新能源车时，要注意哪些？\n文风鲁气愉1\n\n2026-09-14 · 贡献了超过232个回答\n关注\nhttps://pan.baidu.com/s/1RY8mzatjstAcK9Zwva3llw?pwd=cdgc 提取码：cdgc 武林外传是经典古装情景喜剧，讲述同福客栈众人的爆笑日常与江湖趣事。网盘资源已整理好全集，高清版本与字幕均收录其中，转存后即可直接观看，按集数选择播",
+            "elements_total": 40,
+            "video_tag_count": 0,
+            "iframe_count": 2,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "购买": 1,
+              "登录": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://zhidao.baidu.com/question/214717833410116245/answer/5100422567.html",
+            "page_title": "武林外传在线观看完整版免费资源_百度知道",
+            "body_len": 4000,
+            "body_head": "百度首页\n商城\n注册\n登录\n网页\n资讯\n视频\n图片\n知道\n文库\n贴吧\n采购\n地图\n更多\n搜索答案\n我要提问\n首页\n用户\n合伙人\n商城\n法律\n我的\n武林外传在线观看完整版免费资源\n我来答 分享 举报\n4个回答\n#热议# 在购买新能源车时，要注意哪些？\n文风鲁气愉1\n\n2026-09-14 · 贡献了超过232个回答\n关注\nhttps://pan.baidu.com/s/1RY8mzatjstAcK9Zwva3llw?pwd=cdgc 提取码：cdgc 武林外传是经典古装情景喜剧，讲述同福客栈众人的爆笑日常与江湖趣事。网盘资源已整理好全集，高清版本与字幕均收录其中，转存后即可直接观看，按集数选择播",
+            "elements_total": 53,
+            "video_tag_count": 0,
+            "iframe_count": 2,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "购买": 1,
+              "登录": 1
+            }
+          },
+          "elapsed_s": 8.41
+        }
+      ]
+    },
+    {
+      "url": "https://video.friday.tw/movie/detail/1838",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.77
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.72
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 24.48
+        }
+      ]
+    },
+    {
+      "url": "https://trtag.com/dy/dongzuo/98794/",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://trtag.com/dy/dongzuo/98794/",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://trtagy.com/dy/dongzuo/98794/",
+            "page_title": "《功夫(普通话版)》高清在线观看-动作片-免费完整版 - 影视大全",
+            "body_len": 1455,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n首页  »  动作片  »  功夫(普通话版)\n功夫(普通话版)\n主演：周星驰\n类型：动作片\n状态：正片\n导演：周星驰\n地区：中国香港\n年份：2004\n剧情简介:1940年代的上海，自小受尽欺辱的街头混混阿星（周星驰）为了能出人头地，可谓窥见机会的缝隙就往里钻，今次他盯上行动日益猖獗的黑道势力“斧头帮”，想借之大名成就大业阿星假冒“斧头帮”电视剧离婚前规则演员表成员试图在一个叫“猪笼城寨”的地方对居民敲诈，不想引来真的“斧头帮”与“猪笼最近的2019中文字幕国语电影城寨...展开\n新浪影视\n金鹰播放\n影视大全\n腾讯云\n抖音云\n全能影视\n百度云\n影视VIP\n\n如遇",
+            "elements_total": 32,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "VIP": 1,
+              "订阅": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://trtagy.com/dy/dongzuo/98794/",
+            "page_title": "《功夫(普通话版)》高清在线观看-动作片-免费完整版 - 影视大全",
+            "body_len": 1455,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n首页  »  动作片  »  功夫(普通话版)\n功夫(普通话版)\n主演：周星驰\n类型：动作片\n状态：正片\n导演：周星驰\n地区：中国香港\n年份：2004\n剧情简介:1940年代的上海，自小受尽欺辱的街头混混阿星（周星驰）为了能出人头地，可谓窥见机会的缝隙就往里钻，今次他盯上行动日益猖獗的黑道势力“斧头帮”，想借之大名成就大业阿星假冒“斧头帮”电视剧离婚前规则演员表成员试图在一个叫“猪笼城寨”的地方对居民敲诈，不想引来真的“斧头帮”与“猪笼最近的2019中文字幕国语电影城寨...展开\n新浪影视\n金鹰播放\n影视大全\n腾讯云\n抖音云\n全能影视\n百度云\n影视VIP\n\n如遇",
+            "elements_total": 32,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "VIP": 1,
+              "订阅": 1
+            }
+          },
+          "elapsed_s": 12.53
+        }
+      ]
+    },
+    {
+      "url": "https://cmgo.com/web/zh-CN/m/movie/cmgo655_%E5%8A%9F%E5%A4%AB",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://cmgo.com/web/zh-CN/m/movie/cmgo655_%E5%8A%9F%E5%A4%AB",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://cmgo.com/zh-CN/m/movie/cmgo655_%E5%8A%9F%E5%A4%AB",
+            "page_title": "CMGO",
+            "body_len": 12,
+            "body_head": "VERSION 1.52",
+            "elements_total": 0,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "settled": {
+            "observed_url": "https://cmgo.com/zh-CN/m/movie/cmgo655_%E5%8A%9F%E5%A4%AB",
+            "page_title": "CMGO",
+            "body_len": 12,
+            "body_head": "VERSION 1.52",
+            "elements_total": 0,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "elapsed_s": 10.38
+        }
+      ]
+    },
+    {
+      "url": "https://tv.cctv.com/2012/12/03/VIDA1354531513618469.shtml",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://tv.cctv.com/2012/12/03/VIDA1354531513618469.shtml",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://tv.cctv.com/2012/12/03/VIDA1354531513618469.shtml",
+            "page_title": "武林外传（电视剧）_CCTV节目官网-电视剧_央视网(cctv.com)",
+            "body_len": 1317,
+            "body_head": "视频\n\n热榜\n\n登录\n\n帮助|返回央视网\n首页\n直播\n节目单\n频道大全\n栏目大全\n片库\n4K专区\n听音\n热播榜\n微视频\nCCTV节目官网 > 武林外传（电视剧）\n武林外传（电视剧）\n\n产地：内地（大陆）\n\n集数：80\n\n类别：喜剧,古装\n\n年份：2006\n\n主演：闫妮,姚晨,倪虹洁,沙溢\n\n语种：普通话\n\n编剧：宁财神,程娇娥\n\n首播时间：2006年01月02日\n\n导演：尚敬\n\n简介：《武林外传》是一部章回体古装情景喜剧。围绕着一个在虚拟的明代（约在万历年间）小镇“七侠镇”中“同福客栈”里的女掌柜佟湘玉和她的几个伙计展开……\n\n立即观看\n分享到：\n点赞\n收藏\n剧集列表\n分集剧情\n我要评论\n图文",
+            "elements_total": 45,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "登录": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://tv.cctv.com/2012/12/03/VIDA1354531513618469.shtml",
+            "page_title": "武林外传（电视剧）_CCTV节目官网-电视剧_央视网(cctv.com)",
+            "body_len": 1317,
+            "body_head": "视频\n\n热榜\n\n登录\n\n帮助|返回央视网\n首页\n直播\n节目单\n频道大全\n栏目大全\n片库\n4K专区\n听音\n热播榜\n微视频\nCCTV节目官网 > 武林外传（电视剧）\n武林外传（电视剧）\n\n产地：内地（大陆）\n\n集数：80\n\n类别：喜剧,古装\n\n年份：2006\n\n主演：闫妮,姚晨,倪虹洁,沙溢\n\n语种：普通话\n\n编剧：宁财神,程娇娥\n\n首播时间：2006年01月02日\n\n导演：尚敬\n\n简介：《武林外传》是一部章回体古装情景喜剧。围绕着一个在虚拟的明代（约在万历年间）小镇“七侠镇”中“同福客栈”里的女掌柜佟湘玉和她的几个伙计展开……\n\n立即观看\n分享到：\n点赞\n收藏\n剧集列表\n分集剧情\n我要评论\n图文",
+            "elements_total": 45,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "登录": 1
+            }
+          },
+          "elapsed_s": 7.88
+        }
+      ]
+    },
+    {
+      "url": "https://www.mytvsuper.com/tc/programme/nezha0004_142825/%E5%93%AA%E5%90%92%E4%B9%8B%E9%AD%94%E7%AB%A5%E9%99%8D%E4%B8%96/",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://www.mytvsuper.com/tc/programme/nezha0004_142825/%E5%93%AA%E5%90%92%E4%B9%8B%E9%AD%94%E7%AB%A5%E9%99%8D%E4%B8%96/",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://www.mytvsuper.com/tc/programme/nezha0004_142825/%E5%93%AA%E5%90%92%E4%B9%8B%E9%AD%94%E7%AB%A5%E9%99%8D%E4%B8%96/",
+            "page_title": "哪吒之魔童降世 - myTV SUPER線上看",
+            "body_len": 155,
+            "body_head": "首頁\n節目表\n電視\n搜尋\n訂閱myTV SUPER最新節目及資訊\n再想想\n訂閱\n繁\n简\nEng\n© 2026 MyTV Super Limited\nTVB.com\n無綫新聞\nmyTV SUPER\nTVB Anywhere\n鄰住買\nTVB Music Group\n無綫電視暨職藝員愛心基金\n\n無綫集團有限公司成員",
+            "elements_total": 18,
+            "video_tag_count": 0,
+            "iframe_count": 2,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "settled": {
+            "observed_url": "https://www.mytvsuper.com/tc/programme/nezha0004_142825/%E5%93%AA%E5%90%92%E4%B9%8B%E9%AD%94%E7%AB%A5%E9%99%8D%E4%B8%96/",
+            "page_title": "哪吒之魔童降世 - myTV SUPER線上看",
+            "body_len": 914,
+            "body_head": "首頁\n節目表\n電視\n搜尋\n登入 / 訂購\n節目分類\n電影院\n專題限定\n免費節目\n璀璨之城專區\n愛．回家專區\n女神配對計劃2\n中年好聲音\n賽馬\nTVB | 港劇\nYOUKU (優酷)\n基本版專區\n短片香港 (免費)\nTVB Plus\n教育專區\n唱錢\nSUPER Unplugged Live\n原創 | 獨家\n訂閱myTV SUPER最新節目及資訊\n再想想\n訂閱\n哪吒之魔童降世\n元始天尊將千年混元珠煉成靈珠和魔丸，靈珠托生於陳塘關的李靖家兒子哪吒身上，為眾生斬妖除魔；誰知，被天庭鎮壓多年的龍王串通申公豹，使詐把靈珠和魔丸調包，原為靈珠轉世的哪吒，出生後變成驚世大魔王...\n開始播放\n在 Google",
+            "elements_total": 60,
+            "video_tag_count": 0,
+            "iframe_count": 2,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "elapsed_s": 12.33
+        }
+      ]
+    },
+    {
+      "url": "https://trtag.com/zy/167079/",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://trtag.com/zy/167079/",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://trtagy.com/zy/167079/",
+            "page_title": "《中国好声音第一季》高清在线观看-综艺-免费完整版 - 影视大全",
+            "body_len": 1250,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n首页  »  综艺  »  中国好声音第一季\n中国好声音第一季\n主演：刘欢 那英 杨坤 庾澄庆 华少\n类型：综艺\n状态：更新至世界巡演澳门首站\n导演：内详\n地区：大陆\n年份：2012\n剧情简介:《中国好声音》是国内首档大型励志专业音乐评论节目，也是风靡欧美的《The Voice》系列节目在中国唯一正版授权的节目盗号器下载，7月13日登陆浙江卫视，每周五晚21点播出。节目以“真声音、真音乐”为口号，集结了刘欢、那英、庾澄庆和杨坤担任音乐导师，致力于为中国音乐的发展正本清源，打造中国乐坛的未来之星。首季《中国好声音...展开\n暴风播放\n非凡播放\n索尼播放\n全能影视\n",
+            "elements_total": 52,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "订阅": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://trtagy.com/zy/167079/",
+            "page_title": "《中国好声音第一季》高清在线观看-综艺-免费完整版 - 影视大全",
+            "body_len": 1250,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n首页  »  综艺  »  中国好声音第一季\n中国好声音第一季\n主演：刘欢 那英 杨坤 庾澄庆 华少\n类型：综艺\n状态：更新至世界巡演澳门首站\n导演：内详\n地区：大陆\n年份：2012\n剧情简介:《中国好声音》是国内首档大型励志专业音乐评论节目，也是风靡欧美的《The Voice》系列节目在中国唯一正版授权的节目盗号器下载，7月13日登陆浙江卫视，每周五晚21点播出。节目以“真声音、真音乐”为口号，集结了刘欢、那英、庾澄庆和杨坤担任音乐导师，致力于为中国音乐的发展正本清源，打造中国乐坛的未来之星。首季《中国好声音...展开\n暴风播放\n非凡播放\n索尼播放\n全能影视\n",
+            "elements_total": 52,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "订阅": 1
+            }
+          },
+          "elapsed_s": 8.81
+        }
+      ]
+    },
+    {
+      "url": "https://trtag.com/dy/aiqing/106493/",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://trtag.com/dy/aiqing/106493/",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://trtagy.com/dy/aiqing/106493/",
+            "page_title": "《天使爱美丽》高清在线观看-爱情片-免费完整版 - 影视大全",
+            "body_len": 1586,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n首页  »  爱情片  »  天使爱美丽\n天使爱美丽\n主演：奥黛丽·塔图 马修·卡索维茨 吕菲斯 洛莱拉·克拉沃塔 塞尔·梅林 贾梅尔·杜布兹 克洛蒂尔德·莫莱特 克莱尔·莫里耶 伊莎贝尔·南蒂 多米尼克·皮侬 阿尔蒂斯·德·彭居埃恩 友兰达·梦露 于尔班·康塞利埃 莫里斯·贝尼舒 米歇尔·罗班 安德烈·达芒 克洛德·佩隆 阿尔梅尔 迪基·奥尔加多 凯文·迪亚士 弗洛拉·吉耶 阿莫里·巴博尔 欧仁·贝蒂埃 让·达里 马克·阿米约\n类型：爱情片\n状态：HD中字\n导演：让-皮埃尔·热内\n地区：法国,德国\n年份：2001\n剧情简介:艾米莉（奥黛丽·塔图 Audrey ",
+            "elements_total": 58,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "VIP": 1,
+              "订阅": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://trtagy.com/dy/aiqing/106493/",
+            "page_title": "《天使爱美丽》高清在线观看-爱情片-免费完整版 - 影视大全",
+            "body_len": 1586,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n首页  »  爱情片  »  天使爱美丽\n天使爱美丽\n主演：奥黛丽·塔图 马修·卡索维茨 吕菲斯 洛莱拉·克拉沃塔 塞尔·梅林 贾梅尔·杜布兹 克洛蒂尔德·莫莱特 克莱尔·莫里耶 伊莎贝尔·南蒂 多米尼克·皮侬 阿尔蒂斯·德·彭居埃恩 友兰达·梦露 于尔班·康塞利埃 莫里斯·贝尼舒 米歇尔·罗班 安德烈·达芒 克洛德·佩隆 阿尔梅尔 迪基·奥尔加多 凯文·迪亚士 弗洛拉·吉耶 阿莫里·巴博尔 欧仁·贝蒂埃 让·达里 马克·阿米约\n类型：爱情片\n状态：HD中字\n导演：让-皮埃尔·热内\n地区：法国,德国\n年份：2001\n剧情简介:艾米莉（奥黛丽·塔图 Audrey ",
+            "elements_total": 58,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "VIP": 1,
+              "订阅": 1
+            }
+          },
+          "elapsed_s": 9.06
+        }
+      ]
+    },
+    {
+      "url": "https://m.ixigua.com/video/6582085495839261192",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://m.ixigua.com/video/6582085495839261192",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://m.ixigua.com/video/6582085495839261192",
+            "page_title": "功夫 - 电影 - 高清完整版在线观看 - 西瓜视频",
+            "body_len": 100,
+            "body_head": "海量影视免费看\n打开\n功夫8.1\n功夫 动作 喜剧 / 中国大陆 / 中国香港 / 2004\n立即播放\n打开西瓜视频查看\n以下内容需下载西瓜视频查看\n查看更多\n打开西瓜视频查看更多\n\n打开抖音扫码下载",
+            "elements_total": 0,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "settled": {
+            "observed_url": "https://m.ixigua.com/video/6582085495839261192",
+            "page_title": "功夫 - 电影 - 高清完整版在线观看 - 西瓜视频",
+            "body_len": 312,
+            "body_head": "打开App看完整内容\n否\n是\n海量影视免费看\n打开\n功夫8.1\n功夫 动作 喜剧 / 中国大陆 / 中国香港 / 2004\n立即播放\n打开西瓜视频查看\n以下内容需下载西瓜视频查看\n查看更多\n12.5亿观看\n让你送外卖，你摘下高岭之花\n2.3亿观看\n她自深渊归来\n2.4亿观看\n高考后，我成了千金大小姐\n1.6亿观看\n暗冥神子\n14.3亿观看\n下山后我横扫一切\n11.3亿观看\n你不惜我弃之\n5.5亿观看\n隐狼\n3.8亿观看\n少年剑圣逆乾坤\n1.8亿观看\n嫁进豪门后，小可怜被宠上天\n2.6亿观看\n租个女婿回家见父母\n1.2亿观看\n摆烂后我成气运之子\n1.7亿观看\n重生改命从抢婚开始\n打开西瓜视频查看",
+            "elements_total": 2,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "elapsed_s": 7.64
+        }
+      ]
+    },
+    {
+      "url": "https://tinhte.vn/thread/top-5-app-mua-hang-taobao-tieng-viet-don-gian-2024.3802865/",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://tinhte.vn/thread/top-5-app-mua-hang-taobao-tieng-viet-don-gian-2024.3802865/",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://tinhte.vn/thread/top-5-app-mua-hang-taobao-tieng-viet-don-gian-2024.3802865/?__cf_chl_rt_tk=XSD7uUbPFIwkYNwungbCWxUxmHyvX9kwSjZRjpSv110-1793148693-1.0.1.1-fcUFm3C7o0vr0keobR8Pw11Z2pltjDUcL0QVliuG2VU",
+            "page_title": "Just a moment...",
+            "body_len": 58,
+            "body_head": "Just a moment... Enable JavaScript and cookies to continue",
+            "elements_total": 0,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "snapshot",
+            "keywords": {}
+          },
+          "settled": {
+            "observed_url": "https://tinhte.vn/thread/top-5-app-mua-hang-taobao-tieng-viet-don-gian-2024.3802865/",
+            "page_title": "Just a moment...",
+            "body_len": 257,
+            "body_head": "tinhte.vn\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a515f3e6de6f71e9\nPerformance and Security by Cloudflare\nPrivacy",
+            "elements_total": 2,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "elapsed_s": 11.83
+        }
+      ]
+    },
+    {
+      "url": "https://video.friday.tw/movie/detail/29289",
+      "verdict": "not_proven",
+      "verdict_reason": "混合：1/3 次拿到不可达机器码，其余不是 ⇒ 复现不成立",
+      "attempts": [
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 23.8
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.92
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "load",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 24.53
+        }
+      ]
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 24.84
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.89
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 24.77
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=WvO1FsW1q4owcqW_YGlXTbn9qAzJBAgrJpE6XwBKJuxU8K31AsWU0p89cx1WmUB5C7dqPUgAulgetra6AlItpa",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=WvO1FsW1q4owcqW_YGlXTbn9qAzJBAgrJpE6XwBKJuxU8K31AsWU0p89cx1WmUB5C7dqPUgAulgetra6AlItpa",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "http://www.ljy200471.com/w/35918-1-0.html",
+            "page_title": "播放动作片《功夫HD中字》- 在线免费观看 - 未删减 - 策驰影院",
+            "body_len": 772,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n专题\n资讯\n动作片 爱情片 科幻片 恐怖片 战争片 喜剧片 纪录片 剧情片 谍战片 预告片 悬疑片 动画片\n视频\n正在播放高清：HD中字功夫-动作片在线免费观看全集完整版\n请勿相信和网页上视频中的任何广告\n温馨提示：各线路更新不同步，可尝试切换线路查看；如果视频加载失败，可刷新页面或切换线路！\n收藏\n报错\n刷新\n4\n0\n上集\n下集\n手机\n分享\n功夫\n换线路\n5.0分 / 动作片 / 中国大陆 / 2004\nHD中字\n猜你喜欢\n同类型\n5.0分\n抢先版\n天使与恶徒\n\n2026/美国/动作片\n\n7.0分\n更新TC\n天使与恶徒2026\n\n2026/美国/动作片\n\n6.",
+            "elements_total": 71,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "正在播放": 1,
+              "预告": 1
+            }
+          },
+          "settled": {
+            "observed_url": "http://www.ljy200471.com/w/35918-1-0.html",
+            "page_title": "播放动作片《功夫HD中字》- 在线免费观看 - 未删减 - 策驰影院",
+            "body_len": 772,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n专题\n资讯\n动作片 爱情片 科幻片 恐怖片 战争片 喜剧片 纪录片 剧情片 谍战片 预告片 悬疑片 动画片\n视频\n请勿相信和网页上视频中的任何广告\n温馨提示：各线路更新不同步，可尝试切换线路查看；如果视频加载失败，可刷新页面或切换线路！\n正在播放高清：HD中字功夫-动作片在线免费观看全集完整版\n收藏\n报错\n刷新\n4\n0\n上集\n下集\n手机\n分享\n功夫\n换线路\n5.0分 / 动作片 / 中国大陆 / 2004\nHD中字\n猜你喜欢\n同类型\n5.0分\n抢先版\n天使与恶徒\n\n2026/美国/动作片\n\n7.0分\n更新TC\n天使与恶徒2026\n\n2026/美国/动作片\n\n6.",
+            "elements_total": 74,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "正在播放": 1,
+              "预告": 1
+            }
+          },
+          "elapsed_s": 11.94
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.56
+        },
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.38
+        },
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 2.88
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 3.53
+        },
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.51
+        },
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 3.09
+        }
+      ]
+    },
+    {
+      "url": "https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all",
+            "page_title": "哪吒之魔童降世 - 在线观看 - 电影 - 乐视视频",
+            "body_len": 1104,
+            "body_head": "首页 导航\n点播厅\n搜索\n\n消息\n历史\n未登录\n00:00/00:00\n努力加载中...\n评论\n1,043条\n分享\n收藏\n手机看\n哪吒之魔童降世\n剧集\n109:59\n正片\n\n哪吒之魔童降世\n\n相关推荐\n\n闯堂兔\n\n一只有趣的兔子\n\n喜羊羊与灰太狼之飞马奇遇记\n\n马年羊狼大战high翻天\n\n拯救大明星\n\n潮爷卖萌，精灵快跑！\n\n大鱼海棠\n\n十年一梦，惹人泪奔\n\n你的名字。\n\n少男少女交换身体\n\n猪猪侠之英雄猪少年\n\n每个孩子都有英雄梦\n\n玩偶奇兵\n\n玩偶们如何化险为夷\n\n狗狗的疯狂假期\n\n超燃汪星人出击嗨翻寒假\n\n新灰姑娘\n\n绝美灰姑娘不一样的童话梦\n\n勇者闯魔城\n\n爆笑勇者闯魔城\n\n精彩花絮（",
+            "elements_total": 62,
+            "video_tag_count": 1,
+            "iframe_count": 2,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "会员": 10,
+              "登录": 1,
+              "未登录": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all",
+            "page_title": "哪吒之魔童降世 - 在线观看 - 电影 - 乐视视频",
+            "body_len": 1144,
+            "body_head": "首页 导航\n点播厅\n搜索\n\n消息\n历史\n未登录\n哪吒之魔童降世\n试看6分钟，观看全片请开通会员，已是会员请登录观看\n00:00/109:59\n标清 480p\n弹\n登录\n发表\n评论\n1,043条\n分享\n收藏\n手机看\n哪吒之魔童降世\n会员\n剧集\n哪吒之魔童降世9.7分\n109:59\n会员\n\n哪吒之魔童降世\n\n会员限时4.6折>\n低至0.24元/天\n相关推荐\n\n闯堂兔\n\n一只有趣的兔子\n\n喜羊羊与灰太狼之飞马奇遇记\n\n马年羊狼大战high翻天\n\n拯救大明星\n\n潮爷卖萌，精灵快跑！\n\n大鱼海棠\n\n十年一梦，惹人泪奔\n\n你的名字。\n\n少男少女交换身体\n\n猪猪侠之英雄猪少年\n\n每个孩子都有英雄梦\n\n玩偶奇",
+            "elements_total": 64,
+            "video_tag_count": 1,
+            "iframe_count": 2,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "开通会员": 1,
+              "开通": 1,
+              "会员": 15,
+              "登录": 3,
+              "未登录": 1,
+              "试看": 1
+            }
+          },
+          "elapsed_s": 10.06
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.42
+        },
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.14
+        },
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 4.52
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=5H1bZObpBf_O12QynQO_RrOVylqo2PKUdPX6BqoRlDBofeGuw_PYzS-5WkNknkZFaAyrktFMvsD9ftQbIBC4hq",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=5H1bZObpBf_O12QynQO_RrOVylqo2PKUdPX6BqoRlDBofeGuw_PYzS-5WkNknkZFaAyrktFMvsD9ftQbIBC4hq",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://www.karalalala.com/play/35932298/3/1.html",
+            "page_title": "电影《哪吒之魔童降世》HD中字免费版 - VS影视网",
+            "body_len": 1352,
+            "body_head": "VS影视网\n首页\n电影\n电视剧\n短剧\n动漫\n综艺\nTAG\n哪吒之魔童降世\n动画电影\n\n正在播放：HD中字\n\n切换线路>\n\n哪吒之魔童降世\nHD中字\n\n类型：动画电影 地区：大陆 年份：2019\n\n播放地址\n线路7\n线路6\nHD中字\n剧情介绍\n《哪吒之魔童降世》高清完整版电影是一部2019上映的动画电影电影,想看更多:哪吒之魔童降世电影,哪吒之魔童降世免费版,哪吒之魔童降世无删减版,哪吒之魔童降世高清免费版,哪吒之魔童降世在线高清版,就来VS影视网(www.karalalala.com)免费在线观看.\n猜你喜欢\nHD\n恶搞之家：地狱欢庆万圣节\n更新至HD\n忘却之岛\nHD中字|国语\n名侦探柯南：百",
+            "elements_total": 82,
+            "video_tag_count": 0,
+            "iframe_count": 3,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "正在播放": 1
+            }
+          },
+          "settled": {
+            "observed_url": "https://www.karalalala.com/play/35932298/3/1.html",
+            "page_title": "电影《哪吒之魔童降世》HD中字免费版 - VS影视网",
+            "body_len": 1352,
+            "body_head": "VS影视网\n首页\n电影\n电视剧\n短剧\n动漫\n综艺\nTAG\n哪吒之魔童降世\n动画电影\n\n正在播放：HD中字\n\n切换线路>\n\n哪吒之魔童降世\nHD中字\n\n类型：动画电影 地区：大陆 年份：2019\n\n播放地址\n线路7\n线路6\nHD中字\n剧情介绍\n《哪吒之魔童降世》高清完整版电影是一部2019上映的动画电影电影,想看更多:哪吒之魔童降世电影,哪吒之魔童降世免费版,哪吒之魔童降世无删减版,哪吒之魔童降世高清免费版,哪吒之魔童降世在线高清版,就来VS影视网(www.karalalala.com)免费在线观看.\n猜你喜欢\nHD\n恶搞之家：地狱欢庆万圣节\n更新至HD\n忘却之岛\nHD中字|国语\n名侦探柯南：百",
+            "elements_total": 84,
+            "video_tag_count": 0,
+            "iframe_count": 3,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "正在播放": 1
+            }
+          },
+          "elapsed_s": 16.76
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtK1trSsAAiBJoKMQ7lZVQonQCD5K-4Q2nRvGenukMHRnQm-gihhxzfaBLxlCECcvUn_",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtK1trSsAAiBJoKMQ7lZVQonQCD5K-4Q2nRvGenukMHRnQm-gihhxzfaBLxlCECcvUn_",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "http://www.ljy200471.com/w/35918-1-0.html",
+            "page_title": "播放动作片《功夫HD中字》- 在线免费观看 - 未删减 - 策驰影院",
+            "body_len": 772,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n专题\n资讯\n动作片 爱情片 科幻片 恐怖片 战争片 喜剧片 纪录片 剧情片 谍战片 预告片 悬疑片 动画片\n视频\n正在播放高清：HD中字功夫-动作片在线免费观看全集完整版\n请勿相信和网页上视频中的任何广告\n温馨提示：各线路更新不同步，可尝试切换线路查看；如果视频加载失败，可刷新页面或切换线路！\n收藏\n报错\n刷新\n4\n0\n上集\n下集\n手机\n分享\n功夫\n换线路\n5.0分 / 动作片 / 中国大陆 / 2004\nHD中字\n猜你喜欢\n同类型\n5.0分\n抢先版\n天使与恶徒\n\n2026/美国/动作片\n\n7.0分\n更新TC\n天使与恶徒2026\n\n2026/美国/动作片\n\n6.",
+            "elements_total": 71,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "正在播放": 1,
+              "预告": 1
+            }
+          },
+          "settled": {
+            "observed_url": "http://www.ljy200471.com/w/35918-1-0.html",
+            "page_title": "播放动作片《功夫HD中字》- 在线免费观看 - 未删减 - 策驰影院",
+            "body_len": 772,
+            "body_head": "首页\n电影\n电视剧\n综艺\n动漫\n专题\n资讯\n动作片 爱情片 科幻片 恐怖片 战争片 喜剧片 纪录片 剧情片 谍战片 预告片 悬疑片 动画片\n视频\n请勿相信和网页上视频中的任何广告\n温馨提示：各线路更新不同步，可尝试切换线路查看；如果视频加载失败，可刷新页面或切换线路！\n正在播放高清：HD中字功夫-动作片在线免费观看全集完整版\n收藏\n报错\n刷新\n4\n0\n上集\n下集\n手机\n分享\n功夫\n换线路\n5.0分 / 动作片 / 中国大陆 / 2004\nHD中字\n猜你喜欢\n同类型\n5.0分\n抢先版\n天使与恶徒\n\n2026/美国/动作片\n\n7.0分\n更新TC\n天使与恶徒2026\n\n2026/美国/动作片\n\n6.",
+            "elements_total": 71,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "正在播放": 1,
+              "预告": 1
+            }
+          },
+          "elapsed_s": 9.66
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.42
+        },
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.39
+        },
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 3.08
+        }
+      ]
+    },
+    {
+      "url": "http://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+            "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+            "body_len": 1814,
+            "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数83.059.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们并没看懂电影的精髓所在\n02:08\n周星驰巅峰之作《功夫》\n02:46\n星爷周星驰的影帝之路\n01:32\n星爷影史最惨男主没有之一\n03:13\n武打暴力燃向踩点混剪，武林人的生死决斗！\n03:22\n周星驰再现武",
+            "elements_total": 87,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "续费会员": 1,
+              "开通": 1,
+              "VIP": 9,
+              "会员": 1,
+              "登录": 1,
+              "预告": 2
+            }
+          },
+          "settled": {
+            "observed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+            "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+            "body_len": 1936,
+            "body_head": "首页\n嫁金钗\n电视剧\n动漫\n分类\n会员特惠\n历史\n客户端\n登录\n登录/注册\n\n同步多端观看记录 尊享高清观影体验\n\n首\n3\n月每月\n12\n元，畅享精彩内容\n\n立即开通\n由于安全原因，请 登录 后继续观看\n视频\n讨论1万+\n功夫\n简介\nN刷指数83.059.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n\n语句通顺更专业\n\n广告\n\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们并",
+            "elements_total": 86,
+            "video_tag_count": 0,
+            "iframe_count": 1,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {
+              "开通": 2,
+              "VIP": 8,
+              "会员": 1,
+              "登录": 3,
+              "预告": 2
+            }
+          },
+          "elapsed_s": 11.36
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.5
+        },
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.39
+        },
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 3.52
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taJ8Kl78VVw_aC3LtWBCwJfrQk-dxssuJlC4ZSsuG_buDPJAOmnXZyBtrM3N_S7IKda",
+      "verdict": "opens",
+      "verdict_reason": "打得开（至少一次导航成功并读到页面）",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taJ8Kl78VVw_aC3LtWBCwJfrQk-dxssuJlC4ZSsuG_buDPJAOmnXZyBtrM3N_S7IKda",
+          "wait_until": "load",
+          "kind": "ok",
+          "first": {
+            "observed_url": "https://www.yn-mg.cn/playid/71884-1-1.html?__cf_chl_rt_tk=4_1Vr0ARe6th.vSJKQcmwoADybCKsF5PFlKlWYxpWyM-1793148947-1.0.1.1-cikKT4c0wF5q05dvESkIdG9m9lc5z3uTzxjWi5mIpBA",
+            "page_title": "Just a moment...",
+            "body_len": 58,
+            "body_head": "Just a moment... Enable JavaScript and cookies to continue",
+            "elements_total": 0,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "snapshot",
+            "keywords": {}
+          },
+          "settled": {
+            "observed_url": "https://www.yn-mg.cn/playid/71884-1-1.html",
+            "page_title": "Just a moment...",
+            "body_len": 260,
+            "body_head": "www.yn-mg.cn\nPerforming security verification\n\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\n\nRay ID: a515fa1aa85df554\nPerformance and Security by Cloudflare\nPrivacy",
+            "elements_total": 2,
+            "video_tag_count": 0,
+            "iframe_count": 0,
+            "degraded": [],
+            "body_source": "inner_text",
+            "keywords": {}
+          },
+          "elapsed_s": 11.48
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.52
+        },
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.41
+        },
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 3.05
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 6.19
+        },
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.17
+        },
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 4.86
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+      "verdict": "session_fault",
+      "verdict_reason": "执行层故障，未取到站点读数",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 6.0
+        },
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "domcontentloaded",
+          "kind": "session_fault",
+          "stage": "goto",
+          "error": "DriverSessionError: camofox 执行层故障（不是站点打不开）: camofox tool camofox_navigate 返回错误: camofox error: 409: {\"error\":\"page.goto: NS_ERROR_ABORT\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":true,\"code\":\"navigation_race\",\"recovery\":\"snapshot_then_retry\"}",
+          "elapsed_s": 23.06
+        },
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 24.81
+        }
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+      "verdict": "not_proven",
+      "verdict_reason": "打不开，但机器码证明不了站点不可达",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [],
+          "elapsed_s": 5.12
+        },
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [],
+          "elapsed_s": 1.83
+        },
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [],
+          "elapsed_s": 3.77
+        }
+      ]
+    }
+  ],
+  "fingerprint": {},
+  "summary": {
+    "opens": 17,
+    "not_proven": 11,
+    "session_fault": 1
+  }
+}

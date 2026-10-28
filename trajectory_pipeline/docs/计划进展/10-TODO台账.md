@@ -86,6 +86,41 @@
 > 那条路**已被 owner 明确禁止**（原文：「**禁止把原有的 camoufox 接回来**，
 > 可以做清理原有的 camoufox 代码与内容」）⇒ **上午那版的步骤 1 作废，
 > 照着做就是回退**。
+>
+> ⚠️ **2026-10-27 更新：真跑已经开始了，但连撞五个「零报错」的缺陷**——
+> 详见下面 §停点 · **R5 实跑那一段的五个缺陷**。
+> **五个都只有「逐条打开存档读 evidence」看得见**（门禁全绿、测试全绿）。
+> ⇒ 停点的形状没变（**还是差一次真跑**），但**「差一次真跑」这句话的含金量变了**：
+> 它不是「跑一下就完」，是「**跑 → 读 → 发现缺陷 → 修 → 清 → 再跑**」。
+>
+> ⚠️ **2026-10-27 追加：第 5 轮拆成**两条流并发**，并**砍到 6 条**（owner 建议）**——
+> A 流 `plan-camoufox-prod1-rest.json`（**只跑 T038 · T048 · E028**）·
+> B 流 `plan-camoufox-prod1-rest-b.json`（**T057 · E014**）；
+> 连同已跑的 T004 ⇒ **这批 6 条**。**砍掉的 4 条**（T044 · T018 · T030 · T025）
+> 是**同一个标题《功夫》、同一条检索式**的 persona 变体 ⇒ R5 的验收标准是
+> **结构性**的（指纹 / 降级归位 / 失败落在哪个路由 / 同 URL 不矛盾）⇒
+> **与 persona 无关 ⇒ 对验收零增量**；代价是这批的 persona 格从 12 降到 8
+> （这批是 12 条小样 ⇒ 试点性质，**可逆**：被砍的还在计划文件里）。
+> **`batch_id` 两边都是 `plan-camoufox-prod1`**（拆的是跑法，不是批次身份）。
+> 并发**为什么安全**（每个 Run 各起一个 MCP 适配器 ⇒ 上游各拿各的会话）
+> 与**并发带来的唯一真风险**（资源挤 ⇒ 导航 30～35 s 硬超时可能被打满 ⇒
+> **假 `unreachable_hard`**）见[编年史 §5-1](90-增量编年史.md)。
+> ⇒ **铁律：并发批里每一条 `unreachable_hard` 都要单独复核**，不许因为
+> 「它是站点打不开」就放过。**探针 / 人核与批次互斥**（上游 `lock_queue`
+> 会销毁别人的页）⇒ **并发的是两条批次流，不是批次 + 探针**。
+>
+> ⚠️ **2026-10-27 晚：M-44 口径落地 ⇒ 生产语料主力的 28 个任务开始**串行重跑**
+> （批次 `rerun-prod-m44-2026-10-27`，计划
+> `output/pipeline/plan_rerun_prod_m44.json`，**28 条 / 28 个不同 `task_id`**）。
+> 触发它的是一次**语料审查**：盘上 89 份 P1 存档里**只有 9 份在现行面
+> （camofox）+ agent 形态**下、覆盖 **6** 个 `task_id` ⇒
+> **其余 28 个任务在现行面上是空的**（逐条读数见
+> [编年史 §增量九十五](90-增量编年史.md)）。
+> ⚠️ **串行不是保守，是硬要求**：上游 `lock_queue` 会销毁别人的页 ⇒
+> 并发跑 = 互相毁页（第 4 轮那 9 条假负样本就是这么来的）。
+> ⇒ **本批跑完仍要走那一套固定动作**（逐条打开存档读 evidence → 重建产物 →
+> 门禁 → 并池干跑），**且新批次的人判读数要按代分开看**
+> （**e6** 是 M-44 的分代边界——D-10 一致率**跨代不可直接比**）。
 
 ### 现状
 
@@ -94,8 +129,8 @@
 | 读数 | 值 | 说明 |
 |---|---|---|
 | 执行层 | **camofox-browser** | owner 裁定（2026-10-26）；**camoufox 不再是执行层** |
-| `camofox-browser-mcp` | **待装/待验** | `npm i -g @askjo/camofox-browser-mcp`（或 `cd camofox-browser/mcp && npm link`）；也可设 `CAMOFOX_MCP_EXE=<绝对路径>` |
-| REST 服务 `:9377` | **待起** | `cd camofox-browser && npm start`（**本仓库不启动浏览器**——浏览器由上游服务持有） |
+| `camofox-browser-mcp` | **已装（2026-10-27 19:24 实测在 PATH）** | `npm i -g @askjo/camofox-browser-mcp`（或 `cd camofox-browser/mcp && npm link`）；也可设 `CAMOFOX_MCP_EXE=<绝对路径>` |
+| REST 服务 `:9377` | **已起（2026-10-27 19:24 实测 HTTP 200）** | `cd camofox-browser && npm start`（**本仓库不启动浏览器**——浏览器由上游服务持有） |
 | `camoufox`（venv） | **未安装**（**且不许装**） | owner 裁定「禁止接回来」；`cloverlabs-camoufox` 只留在 `legacy` extra，**只服务 v1 冻结树**，还**同名抢 import 名** |
 | `playwright` | **已从主依赖移除** | 它留在主依赖的唯一理由是 `camoufox_driver.py` import `playwright.async_api.Error`；那个模块已删 ⇒ **留着就是「声明与代码不一致」** |
 | 内存 / 提交 / 磁盘 | 物理可用 9.0 GB · 提交可用 12.2 GB · C 盘可用 595 GB | **不是资源问题**（实测 2026-10-26 15:30） |
@@ -124,10 +159,10 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 
 | 项 | 状态 | 差什么 |
 |---|---|---|
-| ① 真跑一批，让 R1–R3 上真数据 | **半程** | R1/R2/R3 的**代码与门禁**全落地并已合进 `main`；**真跑只跑成 2 条**（E022 / T054，agent 链，`driver=camoufox`）；第 3 批 10 条因环境冲突一条没成 ⇒ **那 10 条还没在 camofox 面上重跑过** |
+| ① 真跑一批，让 R1–R3 上真数据 | **半程** | R1/R2/R3 的**代码与门禁**全落地并已合进 `main`；**第 4 轮那 10 条已在 camofox 面上跑成**（run_id `734b7723` / `cd571143` / `a933bea6` …，批次 `plan-camoufox-prod1`）⇒ **camofox-1 面的工具声明已按真实调用转正**（`click`/`fill`/`press` 三条 `exercised=True`）；⚠️ **但那一批自己带出缺陷⑤**（假 `unreachable_hard`）⇒ **第 5 轮在跑**（拆开建页与导航之后重跑，同一条命令）⇒ **读数待补** |
 | ② H-17 那 7 条假负样本的「转正」路 | **成** | `downgrade` + `pool-drop` **两步**已落 + 契约测试 `tests/contract/test_pool_exit_sequence.py` 封着；**实际处置待人执行**（操作手册见 [07 §2.7](07-人工复核与判读手册.md)） |
 | ③ 文档尾巴（H-03 三处 / M-19 增量六十一 / 5 个 `tmp_probe_*.py`） | **成** | 已随 `879899a` 合进 `main` |
-| ④ **执行层换 camofox** | **代码与门禁成** | 设计见 [设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md)；**差的是环境 + 一次真跑**（见下） |
+| ④ **执行层换 camofox** | **代码与门禁成 · 真跑已跑过一轮** | 设计见 [设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md)；**环境已通**（适配器 + REST `:9377`）⇒ **真跑跑成过**；**差的是「跑 → 读 → 发现缺陷 → 修 → 清 → 再跑」这个循环走完**（已走四轮，见下 §R5 实跑那一段的五个缺陷） |
 
 ### 设计（已定，**别再改**）
 
@@ -182,6 +217,26 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
    ⚠️ **别急着把它们改判 `unresolved`**：`unresolved` 的意思是「**没判出来**」，
    不是「判为不是墙」⇒ 那是**另一种定性**，同样要证据。
    ⚠️ **现场重采的脚本已换成 camofox**（`research/probes/m30_live_check.py`）。
+   ⏳ **2026-10-27 更新**：**现场重采已做**（camofox，4 条全部重开并用仓库自己的
+   `paywall_evidence` 判据对读）⇒ 读数见 [§M-37 详解](#m-37--agent-路径贴的分支标签绕过了前置事实核)
+   与 [编年史 §十一 · 5-5](90-增量编年史.md)：
+   **bilibili 站得住**（真登录墙）；**v.qq 站不住**（只有营销 + 广告位、无门禁句，播放器 02:09 是短片）；
+   **youku 最重**（现场是**登录墙**，与池里的 `subscription_wall`、复核档的 `partial_free`
+   **两处打架**）；**iqiyi 站得住**（⭐ **复核更正**：存档 `T054__1c9b6260__site-5` 的正文
+   **当场就有**「试看 05:44 后结束，观看完整视频请 开通VIP会员」+「99分钟」正片 ⇒ **原读数说的
+   就是同一个 URL**，不是另一个；今天重采只取到营销是**页面状态漂移**，不能推翻当场读数。
+   ⚠️ 顺带查出**判据缺口**：`paywall_evidence` 对那段当场正文**也**返回空串（DOM 换行切开 ⇒ §Q-20 ②））。
+   ⇒ **材料已备，剩下的是 owner 的定性**（§Q-20 ⑥ / ①）。
+   ⭐⭐ **2026-10-27 owner 已裁并已执行**（`cli relabel --apply`，改判 **4 条记录**）：
+   **① v.qq 留池打标，改用预告片标 `trailer_only`**（落地页只有 2 分 09 秒短片，不是目标正片）；
+   **② youku 改判 `login_required`**（现场正文是「由于安全原因，请 登录 后继续观看」⇒ 登录墙）。
+   ⇒ 池 **325 行数量不变**（`subscription_wall` 46→42 · `login_required` 9→12 · `trailer_only` 1→2），
+   改判行的 evidence 带「[改判 subscription_wall → …]」且 `source=human`。
+   ⚠️ **同 URL 的第 4 行没改成**（`TPIN02` 那行，工具按 D-5 归属闸**主动拒了**）⇒ **仍挂
+   `subscription_wall`** ⇒ 要 owner 再说一句（留 / 改 / 出池）。
+   ⚠️ **两条口径开口留给 owner**：`trailer_only` 的**宽口径**（仓库的 `classify_trailer`
+   对 v.qq 判 `none`/`suspect`，**永远不会**产 `trailer_only`）＋ ② 的放宽方案与 owner 的
+   youku 定性**打架** ⇒ 详见 [§Q-20 详解](#q-20-详解--与-与-owner-2026-10-27-要的详情--问题--原因--可选做法四段)。
 
 ### 跑通前必须重跑的验证项（**逐条打勾，别攒着**）
 
@@ -203,13 +258,53 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 - [ ] **工具面声明**：`toolcatalog` 的 `camoufox-1` 面 `fill` / `press` 转正依据是
       E022 存档（2 次 fill / 9 次 press）——**若那两份存档被清出 `output/pipeline/`，
       契约测试会红**（`test_标成已验证的工具在真实存档里出现过`）。
-      ⚠️ **camofox-1 面的三条（`click`/`fill`/`press`）现在是 `exercised=False`**
-      ——**还没有一次真实 camofox 运行落过盘** ⇒ 那批跑完要**重算并转正**
-      （照 camoufox 面 2026-10-26 那次的做法）。
+      ✅ **camofox-1 面的三条（`click`/`fill`/`press`）已转正**（2026-10-27）：
+      真实 camofox 批次落盘后，契约测试**当场红并指名了要改哪三条**
+      （`test_标成能力声明的工具不该在真实存档里出现`）⇒ 按真实调用把
+      `exercised` 转 `True`，`required` 口径**逐条按真实键在场率校**：
+      `click` 的 `role`/`name` **100%** ⇒ 都必填；`fill` 的三个键 **100%**
+      ⇒ 都必填；`press` **只有 `key` 在场**（agent 循环派发 `press` 时
+      **不带目标**）⇒ `role`/`name` 保持可选。
 - [ ] **并池那一条**（M-40 新接线）：重跑批次后跑
       `cli pool-add --out trajectory_pipeline/output/pipeline`（**dry-run**）
       ⇒ **清单应为空**（真跑的负样本走 `P1Archive.write`，已并池）；
       若不为空 ⇒ 说明有写入点漏了并池，**逐条看它打印的拒并理由**。
+- [ ] ⚠️ **新的**：重跑那批的**每一档**都要核这三条（**门禁不管**）：
+      ① `fingerprint` **非空**（11 项）⇒ 空 dict 是「**没记到**」不是「指纹为空」；
+      ② 每个观察的 `degraded` **都能对上那一步的动作** ⇒ 对不上就是
+      **陈旧状态跨页**（[增量九十四](90-增量编年史.md) 缺陷③）；
+      ③ **同一档里没有一字不差重复的失败原因** ⇒ 有就是**死页级联**
+      （缺陷④），且**执行层会话失效不许记 `unreachable_hard`**（要记
+      `unresolved`）——**真·站点打不开不会九条一字不差**。
+
+### R5 实跑那一段的五个缺陷（2026-10-27，**已修**）
+
+**五个都是「零报错」的**——门禁全绿、测试全绿、退出码 0，
+**只有「逐条打开存档读 evidence」看得见**。
+
+| # | 缺陷 | 症状 | 修在哪 | 守卫 |
+|---|---|---|---|---|
+| ① | 送上游的表达式**求不出值**（写了函数字面量，Playwright 按表达式求值 ⇒ 拿不到 `result`） | 整批 **0 候选** | `camofox_driver.py` 改成 IIFE | `test_camofox_driver.py::TestObserve`（两条，含「不是函数字面量」形状判据） |
+| ② | 指纹在**导航之后**才有，存档记录在**导航之前**构造 ⇒ 恒空 | 每档 `fingerprint == {}` | `orchestrator.py` + `cli.py`（**两个构造点都补**） | `test_visit.py::Test指纹补读`（2）+ `test_camofox_driver.py::Test指纹时机`（2） |
+| ③ | 页级状态**不跨页**（`last_action` 记上一页的动作结果，却拿去判这一页有没有降级） | **18% 的观察**挂着假降级 ⇒ 进 agent 输入 + 静默关掉实体核查闸门 | `camofox_driver.py::_reset_page_state`（六个页级状态一起清） | `test_camofox_driver.py::Test降级不跨页`（2，**做过变异**） |
+| ④ | **上游销毁了那一页且不通知客户端** ⇒ 客户端 `tabId` 成死引用 ⇒ 再导航永远 404 | **同一个候选连炸 9 次**，9 条一字不差的「站点打不开」进了负样本池 | `camofox_session.py`（`CamofoxToolError` 解析上游 `code`/`retryable`/`recovery`）+ `camofox_driver.py::_navigate`（丢死页→开新页→**同一个 URL 重来**）+ `reachability.py`/`visit.py`（会话失效 ⇒ `unresolved`，**不**记 `unreachable_hard`） | `test_camofox_driver.py::Test换页自愈`（6）+ `test_camofox_session.py::Test上游错误体的结构`（5）+ `test_visit.py::test_执行层会话失效不记_unreachable_hard`（1） |
+| ⑤ | **上游把「建页」与「导航」塞进同一个路由** ⇒ **那个路由失败证明不了站点打不开**（建页路由的失败与导航路由的失败**在错误体里字面同形**） | 一条**假 `unreachable_hard`**：`T048` 的 iqiyi 记「导航失败（网络/DNS/超时）」，而**同一批 T038 打开过同一个站**、**老批 T054 真打开过同一个 URL** | `camofox_driver.py::_open_blank_and_navigate`（**建页与导航拆成两次调用** ⇒ 归属判据变成「**走哪个路由**」）+ `camofox_session.py::CamofoxToolError.execution_fault`（上游 `recovery="retry"` 那一族 ⇒ 执行层故障） | `test_camofox_driver.py::Test归因`（**7**）+ `test_camofox_session.py::Test上游错误体的结构`（**+2**）· 现场：`research/probes/camofox_attribution_probe.py` |
+
+⚠️ **缺陷④的处置全在本仓**（owner 裁定 **A2：上游不许改**）：
+适配层把上游的结构化错误**解析出来**（不是猜英文短语）⇒
+驱动只对**导航**自愈（动作目标是**页级 ref**，换页后重放会**点错元素**）
+⇒ 自愈次数进存档的**运行级 warning**（**不许静默**）。
+⚠️ **「换页也失败」记 `unresolved`**——`unresolved` **不是负样本**，
+**采集失败不是站点结论**（那是 22 类封闭集里**已有**的一支，**没新开**）。
+
+⚠️ **处置是「停 → 修 → 清 → 重跑」，不是「将就着交」**：
+坏存档**一落盘就把负样本并进池**（并池是写入时的动作）⇒
+**不清池，重跑那批的行会被判成「已在池里」而跳过**。
+⚠️ **purge 的粒度是 run_id**，不是 task_id。
+
+⚠️ **重跑不是「复制上一遍」**：环节① 的「direct 首页核」是 **LLM 分类**
+⇒ 同一批两轮的候选数**不一样**（第 2 轮 9 个进环节②，第 3 轮 8 个）
+⇒ **分支分布也会跟着变** ⇒ 跨轮比较**不能当同批复现**。
 
 ---
 
@@ -218,7 +313,7 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | ID | 事项 | 域 | 记录锚点（证据） | 现在差什么 |
 |---|---|---|---|---|
 | **H-01** | `unresolved` 剩余桶重新归因（原 36/79 = 46%） | 01 采集 / 02 感知 | [01 §未闭环](01-采集执行域.md#本域已知未闭环项) · [02 §INC44 分层](02-感知与判定域.md) · 编年史 §增量四十四 | 簇 C 已被**增量六十·方案 X** 修掉（净修 46 行，[`branches.py:593`](../../executor/branches.py#L593)），**旧的 46% 已不作数，必须重测**才能知道剩下的是谁 |
-| **H-02** | D-10 代码层 vs 黄金集一致率 76.5% → ≥90% | 07 评估 | [07 §D-10](07-评估与黄金集域.md) · [00 §四条主线](00-总览.md#一句话现状) | 缺 13.5pp；簇 1 type A（component_unverified 漏 VIP 强信号）+ type C（collection fail 8 条），要 **LLM prompt 改善 + 重采集两条路都跑**。⚠️ **先跑哪条不是拍脑袋定的**——**C-07 已出数（2026-10-23）**：`gold_defect` 14 / 评估器 12（`evaluator_logic` 11 + `evaluator_prompt` 1）/ 采集 7 / `rubric_*` 0 ⇒ **先核金标（14，属 M-30），再修评估器（12，属 M-26 / M-29），最后才是重采集（7）；「改 rubric」在这一轮没有证据**。⚠️ 但这份分布只覆盖 `d10` 一个条款、单版横截面，**别当成趋势**；并且评分器改了要等重冻结刷新分数（M-29），否则下一轮读数与改动无关 |
+| **H-02** | ✅ **已闭（2026-10-25 v13 冻结档，2026-10-27 复读）** D-10 代码层 vs 黄金集一致率 → ≥80% | 07 评估 | [07 §D-10](07-评估与黄金集域.md) · [00 §四条主线](00-总览.md#一句话现状) | ✅ **已达标**：头条 **82.8%（106/128，调参池口径 C）≥ 80% 上岗线**（上岗线真源 `evaluation/scorers/thresholds.py` 的 `d10_min_agreement`，owner 2026-10-24 从 0.90 下调）。**涨幅落在采集侧判定**：v13 冻结时 `code_refresh` 从 `candidates.jsonl` 重挂 **26 行** `code.branch`（manifest `code_refresh.changed_rows=26`），`disagree` 68 → 59。⚠️ **旧口径（三档合计）79.6% 仍差 0.4pp**——上岗判定以头条为准（C-04），别拿三档数当头条。**原诊断留档**：簇 1 type A（component_unverified 漏 VIP 强信号）+ type C（collection fail 8 条）两条路都跑过；⚠️ **先跑哪条不是拍脑袋定的**——**C-07 已出数（2026-10-23）**：`gold_defect` 14 / 评估器 12（`evaluator_logic` 11 + `evaluator_prompt` 1）/ 采集 7 / `rubric_*` 0 ⇒ **先核金标（14，属 M-30），再修评估器（12，属 M-26 / M-29），最后才是重采集（7）；「改 rubric」在这一轮没有证据**。⚠️ 但这份分布只覆盖 `d10` 一个条款、单版横截面，**别当成趋势**；并且评分器改了要等重冻结刷新分数（M-29），否则下一轮读数与改动无关。**残余偏差**仍挂 M-26 / M-29 / M-30 |
 | **H-03** | ✅ **已闭（2026-10-26）** mojibake（charset）防护**已被真实站点触发**——**且触发点在浏览器端，采集层修不了** | 01 采集 / 05 rationale | 编年史 §增量九一 · [避坑指南 §6.5](../02-避坑指南.md) · [00 §簇 B](00-总览.md#下一步做什么全域汇总) · `research/probes/probe_obscura_gbk2.py`（commit `d01ee0d`） | **证伪动作已完成**（2026-10-25，`tv.sohu.com` 真采）：sohu 的 HTML **字节本身混合损坏**（声明 GBK、夹无效字节）⇒ 浏览器按 GBK 解码即产出 U+FFFD ⇒ **不是采集层 charset 能修的，换任何执行层都救不回**（浏览器 DOM 里**已经是坏的**）⇒ **「跑一次真采」这个动作做完了，结论是「修不了」**。⚠️ **防护不撤**（`executor/dom.py::is_mojibake` + `degraded` 降级）——它仍是唯一挡住「坏正文进感知层 → 凭空造出理由通顺的假负样本」的那道闸。⚠️ **残留开口**：2026-10-10「HTTP 直取字节按 GBK 严格解码 0 替换符」与 2026-10-25「浏览器里字节是坏的」**对不上，未区分** ⇒ 要告站点得**先重取一次字节**。~~⚠️ **尾巴（文档回填）**~~ ✅ **已回填（2026-10-26）**：[05 §mojibake 防护](05-rationale与闸门域.md) 三处定点全改（①:20 表格行 ②:37–40 成因段换成两代读数并列、旧「经 MCP 传出」假说标为无独立证据 ③:285 未闭环表行改成「已触发 + 残留开口」），另**多改两处**（不在原清单里）：[01 §采集执行域](01-采集执行域.md):23 同一格旧话、[02 §感知与判定域](02-感知与判定域.md):261「转攻簇 B 采采集层 charset 修复」这条**已作废的路**。⚠️ **本行仍留台账**，只为一件事：**残留开口**——2026-10-10 的 HTTP 直取读数是好的、2026-10-25 浏览器里是坏的，**两代对不上、未区分**；对外告站点前**先重取一次字节**（同一 URL 两次取到的是不是同一批字节、有没有夹无效字节） |
 | **H-04** | JS-heavy 站真渲染失败（iqiyi；w.mgtv / sohu 反爬时变） | 01 采集 | [01 §窗口与候选集合](01-采集执行域.md) · [02 §INC43 探针](02-感知与判定域.md) · `research/probes/inc43_probe_bodies.jsonl` | 15 行判对但仍 `unresolved`，属**采集层能力边界**，不是判定规则能救的 |
 | **H-05** | **30** 条 `flagged_mismatch` **进不了 L6 复核队列** | 04 探针 / 08 存档 | [04 §未闭环](04-探针七层域.md#本域已知未闭环项) · [08 §未闭环](08-存档治理与回流域.md#本域已知未闭环项) | ⚠️ **不是「触发器没写」**：`dispatch_l6`（INC36）已在，挂在**三处**主循环末尾（[`review_queue.py:855`](../../executor/review_queue.py#L855) · `cli.py:593` / `:725` / `:1960`）。缺的是**派发条件**——只认 L5 反思档与 fail-closed 兜底，`auto-validator-l3l4-v1-flagged-mismatch` 桶**不在其中**（该串在 `review_queue.py` 零命中，2026-10-20 核）。⚠️ **原写 31 条**——2026-10-25 二次金标重核里**有 1 条已被人工判完**（转 `reesn`）⇒ 该桶现存 **30** 条 |
@@ -235,9 +330,9 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **H-16** | ✅ **已闭（2026-10-21，增量七十八）**——两处都修了：① **判据换代**（救济只认**门禁语境**）② **补路**（「改分支」有了） | 02 感知 / 08 存档 | `perception/rule_perceptor.py::paywall_evidence`（新）+ `perception/llm_perceptor.py::_diagnosed_access`（新）+ `executor/relabel.py`（新）+ `executor/cli.py::cmd_relabel`（新） · [07-人工复核与判读手册 §2.7 / §6.4](../../docs/07-人工复核与判读手册.md) · `research/probes/inc73_human_review.json` | **原症状**：`paywall_rescue_evidence` 只要求**一个完整短语**命中（`PAYWALL_WORDS` 里就有「开通会员」「续费」「打开app观看」），**不看上下文**；命中后 `_rescued_paywall_decision` 把 ②③ 的负分支**改判**成 `subscription_wall`——**连 LLM 已经诊断清楚的「地区限制」都被改掉**。**实测 12 条逐条看过，0 条是真付费墙**（8 条 `v.qq.com` 主证据是「当前设备不支持播放」+ 错误码 **70017001.1** = 地区限制，真因 `blocked`）。**修复①（判据换代，已落地）**：救济判据 `paywall_rescue_evidence` **删除**，换成**门禁语境**判据 `paywall_evidence`（两层：L1 门禁命题 / L2 CTA + **同句**观看语境）——裸 CTA（「开通会员 享更多精彩」「续费 充值」）**一律不成立**；再加**让位规则**：LLM 已给出结构化细分（② 的 `access_control_type`）**或** evidence 里有**环境阻断形态**（地区/验证码/反爬/404）时**一律不救济**（登录形态不参与让位——导航栏「请登录」与「开通会员」一样高频）；`subscription_wall` 补 `BRANCH_PRECONDITION` 前置事实核验（页面**明说**不给钱/不订阅就看不了正片）。⚠️ **登录形态不参与 evidence 让位**是刻意留的口子。**修复②（补路，已落地）**：新增 `cli relabel`（`executor/relabel.py`）——把「**判定成立但贴错支**」的记录换到另一个**真负样本**分支，**仍留在池里**；处置动作在模块、判据在命令行（与 `downgrade` 同一分工）；落盘时**存档 + 复核档 + 池行一起改**（训练侧吃的是池行；门禁查的是「键在不在池里」）；撞键**并入**不新建行；**默认 dry-run**、`--reason` 必填、凭据闸门挂入口。**仍未闭**：① **历史数据是否照 dry-run 清单执行改判**——**owner 未拍板**，本轮只交付路与清单（8 条 `subscription_wall` → `blocked`，其中 2 条并入已有行；**未 `--apply`**）；② `cause = success` 那一格 `relabel` 确实接不了（它的目标必须是真负样本）——但**处置不是「转正」**，是**出池两步**（`downgrade` + `pool-drop`），2026-10-26 在 H-17 里写清并补了契约测试（台账 **H-17**） |
 | **H-17** | ★**首轮人判揭出：池里 7 条是「假负样本」**（资源存在、我们没走到播放页），其中 **5 条机器标签是 `component_unverified`** ⇒ **同页守卫在那 5 条上没拦住**；而 **A 面（obscura）对同一批 URL 记的是 `unresolved`** —— 同一个网站、同一批 URL，两面归属不同 | 02 感知 / 09 纪律 | `executor/gatekeeper.py::_same_page` · `executor/steps/visit.py:216` · `executor/steps/visit.py:228` · `research/probes/inc73_human_review.json` | **首轮人判已判完 39/39（2026-10-21 增量七十七）**：cause 分布 `subscription_wall` 13 / `not_play_site` 12 / ★**`success` 7** / `unreachable_hard` 4 / `broken` 2 / `blocked` 1；**留池（派生）32 / 出池 7**；标签对账：cause == branch 只有 **10/39**，剔除 10 条「已弃用合并态」（`login_wall_or_blocked`）后 **19 条真·标签错**。**`success` 是新造的第三类成因**（「不是负样本」）——⚠️ **与分支体系里的 `success`（`branch is None`＝「视频播出来了」）同名不同义**，词表里必须写清，且有运行时守卫不许 `success` 进 `BRANCH_LABELS`。**7 条的机器分支**：`component_unverified` ×5 / `blocked` ×1（`yn-mg`——现场是 Cloudflare 挑战页，**人工与存档读数不一致，待看**）/ `unreachable_hard` ×1（baidu 跳转链接，A 面没配对到）。★**5 条 `component_unverified` 有两条根因（逐条开存档核过）**：① **「点击失败」路径（3 条：hfzhifei / yrhbcl / jijikb）**——`visit.py:216` 的「点击 ref=… 失败：`Locator.click: Timeout 5000ms exceeded`」**直接记 `component_unverified`**（`reached=False`，**连播放页都没到**）；这条路上**没有点击后观察 ⇒ 同页守卫结构性无从触发**。而「点击失败」就是「我们没点进去」的同义反复 ⇒ **这 3 条必然是假负样本**（人工判 `success` 完全正确）。② **同页守卫的硬判据（2 条：56dy / hnsyzg）**——点击**成功**了，但 `_same_page`（`gatekeeper.py:166-182`）判「不是同一个页面」：**56dy 元素数 37→38（差 1）**、**hnsyzg 正文 1472→1468（差 4 字）**。两次 URL 相同、`video=0`/`iframe=0` 相同，**明明是同一页**，只是页面动态让某个粗粒度特征变了 ±一点 ⇒ 守卫放行 ⇒ 负标签留下。⚠️ **与该函数自己的 docstring 自相矛盾**：它写「正文会因懒加载微调」却把正文当**逐字相等**的硬判据；元素数更不稳定（一个浮层/一个 hover 态就是一个）却没人提，也当**逐个相等**。⇒ **A/B 差别已定位**：obscura 面那几次两次观察**三项全同** ⇒ 守卫触发 ⇒ 降级 `unresolved`；camoufox 面元素枚举与 DOM 面元素集合不同（**会多出/少掉一个**）⇒ 守卫放行。**正解**（待 owner 拍板，**没动生产代码**）：① 「点击失败」与「点击后取不到快照」两条路**不许记 `component_unverified`** ⇒ 落 `unresolved`（前置事实「到了播放页」压根不成立）；② `_same_page` 的元素数/正文改**容差相等**（元素数相对差 ≤10%、正文去空白后前缀一致），让「同一页的两次快照」能被判成同页。⚠️ **处置口径 2026-10-26 纠正（原写「要转正、无路」，两头都不对）**：① **「转正」是错的目标**——这 7 份存档里**没有任何成功证据**（`reached_play_page=False`、`visits[].success=False`、evidence 写「点击失败 / 同一页面」），改成 `branch=None` 讨来的正样本是**假正样本**（教模型「点击失败也算成功」），比假负样本更坏；只改 `branch` 会被 `success_branch_mismatch` 抓住，连事实一起改就是**伪造采集事实**（`downgrade` 坑 4）。要一条真正的正样本**只能重跑那条 URL**。② **「无路」也不成立**：处置是**出池两步**——`cli downgrade --url … --apply`（存档落 `unresolved`，采集事实一律不动）→ `cli pool-drop --url … --apply`（撤池行，原行+理由进 `pool_dropped.jsonl`）；**顺序不能反**（反了门禁当场报 `negative_not_pooled`，看起来像撤错了）。契约测试钉住顺序与「转正≠改 branch」两条：`tests/contract/test_pool_exit_sequence.py`（5 条）。③ ★**顺带修掉一个真的在生产目录上漏扫的 bug**：`executor/downgrade.py::apply_to_root` 的遍历原先是 `glob("T*__*.json")`——只认 `T` 前缀。实测（2026-10-26）生产根目录 78 份存档里 **28 份是 `E`/`P` 前缀**（`E005__e35b7455.json` 这类），**双跑那批判全是 `DR01__`** ⇒ 这 7 条**根本没有命令能碰**，而 CLI 打印的是「没有匹配的 outcome —— 归档可能已被降过（幂等），或判据不匹配」：**判据被冤枉**，读的人会去改判据。现改为走 `archive.select_archives`（「什么算存档」只有一处），只额外折回原档；真数据 dry-run 实证 `E005__e35b7455.json` 已可见；`tests/unit/test_downgrade.py::Test目录遍历` 加 2 条（非 T 前缀 / 探针取证不算存档）。④ ⚠️**「池里 7 条」这个说法也不准**：那 7 条落在 `output/pipeline/dualrun{,2}/camoufox/negative.jsonl`（`DR01`–`DR03`），**生产池 `negative.jsonl` 一条都没有**；生产池里的 **28 条 `component_unverified` 是另一批**记录（同机制、不同批）——那才是要靠下面正解①② 从源头堵的。**已落地（只动研究层与文档，没动生产代码）**：词表加 `success`（第三类「不是负样本」，共 **17 项**）；「是否仍留池」那一列改**派生**（人填版与规则漂了 **4 行**——**同一个 URL 在两批里给出相反的留池值**），人填原值留 `keep_as_negative_human` 审计副本，冲突在 `keep_conflicts` 点名；★**顺带修掉「重生成工作表会把 4 条留池冲突静默抹掉」**——沿用逻辑**分不清「留池列是人填的」还是「派生的」**（两个时代用**同一个字段名**）⇒ 把**派生值**当人的值写进审计列 ⇒ 冲突 **4 → 0**，而汇总「看着正常」；现按**「审计列在不在」分两代**（旧表那一列就是人填的），并认得出**人对派生列的手改**（沿用但进冲突表点名）⇒ **重生成已幂等**（实测 39 行 / 沿用 117 格 / 冲突 4 / 逐格差异 0），测试钉在 `tests/unit/test_inc73_probes.py::Test沿用与重生成`。★**同类第二个坑**：`research/README.md` 那条命令**少列了一个 B 面存档目录**（漏 `dualrun/camoufox`）⇒ 照文档跑 **39 行变 28 行**，而落盘**覆盖**旧表 ⇒ **11 行人判消失**——同样是**静默**失败。⇒ README / 速查 / 手册三处都补了「`--a/--b` 要给全，**落盘前后各对一次行数(39)与冲突数(4)**」。⚠️ **「改分支」那条路已落地**（`executor/relabel.py`＝`cli relabel`，H-16 修复②，2026-10-21 增量七十八）——它管的是「**仍是负样本**、只是标签贴错」；这 7 条**根本不是负样本** ⇒ 走的是**出池两步**（见上），不是 `relabel`。**本行仍未闭的只剩机制侧正解①②**（「点击失败」路径不许记 `component_unverified` / `_same_page` 改容差相等）——**待 owner 拍板，没动生产代码**；处置路径这一侧 2026-10-26 已闭 |
 
-| **H-19** | ★**（2026-10-24 新增）复核队列的覆盖面只到 `REVIEW_BRANCHES` 三支 ⇒「记成功」的假正样本与 `trailer_only` 的错负样本**机制看不见** | 08 存档 / 03 标签 | [07 手册 §4.6 本轮裁定记录](../07-人工复核与判读手册.md) · `executor/review_queue.py` 的 `REVIEW_BRANCHES` · 池 `output/pipeline/negative.jsonl`（260 行）· 样本 `output/pipeline/samples/E006__2729220b__site-4.json` | **2026-10-24 把 224 行复核队列逐条裁完时撞出来的**：队列只收 `{unresolved, trailer_suspect, player_unverified}` ⇒ **分支不在这三支的行压根不进队列**。已实测两类漏网：① **假正样本**——`E006/2729220b` 的网易号《济州岛美食攻略》（`163.com`）记的是**成功**，已进训练样本集（`outcome.branch=null` · `gate.status=passed`），而**它自己的 rationale 反着说**（「当前页面不是目标资源页」「目前未找到该片合集的可播放网址」）⇒ 记录的成功与 agent 自报**互相矛盾**；同 run 的 `koreabycar.com`（同类美食博客）落 `unresolved` ⇒ **进了队列被判掉** ⇒ **同一个坑，一边修得了一边修不了**；② **错负样本**——`T001/d063ddf4` 的央视网《武林外传》第 1 集**正片页**落 `trailer_only`，是**池里唯一那 1 条**（教模型「正片页 = 只有预告」，误杀，见 **M-12**）。⇒ **不是「没判完」，是「机制判不到」**：处置要么扩 `REVIEW_BRANCHES`（把「记成功」与 `trailer_only` 纳入复核面）、要么另开「正样本抽检」通道 ⇒ **都改代码 ⇒ 等 owner 拍板**。⚠️ 池里另有 **8 条 `v.qq.com` 的 `subscription_wall`**（H-16 那批 8 条，**同样不在三支里**）⇒ 扩面时一并纳入 |
+| **H-19** | ★**（2026-10-24 新增）复核队列的覆盖面只到 `REVIEW_BRANCHES` 三支 ⇒「记成功」的假正样本与 `trailer_only` 的错负样本**机制看不见** | 08 存档 / 03 标签 | [07 手册 §4.6 本轮裁定记录](../07-人工复核与判读手册.md) · `executor/review_queue.py` 的 `REVIEW_BRANCHES` · 池 `output/pipeline/negative.jsonl`（260 行）· 样本 `output/pipeline/samples/E006__2729220b__site-4.json` | **2026-10-24 把 224 行复核队列逐条裁完时撞出来的**：队列只收 `{unresolved, trailer_suspect, player_unverified}` ⇒ **分支不在这三支的行压根不进队列**。已实测两类漏网：① **假正样本**——`E006/2729220b` 的网易号《济州岛美食攻略》（`163.com`）记的是**成功**，已进训练样本集（`outcome.branch=null` · `gate.status=passed`），而**它自己的 rationale 反着说**（「当前页面不是目标资源页」「目前未找到该片合集的可播放网址」）⇒ 记录的成功与 agent 自报**互相矛盾**；同 run 的 `koreabycar.com`（同类美食博客）落 `unresolved` ⇒ **进了队列被判掉** ⇒ **同一个坑，一边修得了一边修不了**；② **错负样本**——`T001/d063ddf4` 的央视网《武林外传》第 1 集**正片页**落 `trailer_only`，是**池里唯一那 1 条**（教模型「正片页 = 只有预告」，误杀，见 **M-12**）。⇒ **不是「没判完」，是「机制判不到」**：处置要么扩 `REVIEW_BRANCHES`（把「记成功」与 `trailer_only` 纳入复核面）、要么另开「正样本抽检」通道 ⇒ **都改代码 ⇒ 等 owner 拍板**。⚠️ 池里另有 **8 条 `v.qq.com` 的 `subscription_wall`**（H-16 那批 8 条，**同样不在三支里**）⇒ 扩面时一并纳入。⚠️ **2026-10-27 订正一处**：「队列只收三支」在**代码侧已经不成立**——`blocked` 已于 2026-10-26（方案 20 §R1）扩进 `REVIEW_BRANCHES`（`executor/review_queue.py:192`）。而盘上那份 `output/pipeline/review_queue.jsonl` 是 **10-24 18:31 导出的旧稿**（224 行、**行行带人裁定** ⇒ **不能覆盖重导**）⇒ **「队列里没有 `blocked` 行」是稿子旧，不是机制缺**：2026-10-27 只读重导实测 `待复核 515 条 = unresolved 431 · blocked 70 · player_unverified 8 · trailer_suspect 6` ⇒ **`blocked` 已经进面**。⇒ **仍等 owner 拍板的还是那两条**：① 「记成功」的**假正样本**（机制判不到）② `trailer_only` 的**错负样本**（M-12） |
 
-| **H-20** | ★**（2026-10-26 新增）执行层换 camofox-browser ⇒ 采集链还没在新面上真跑过**（第一梯队卡在这） | 01 采集 / 09 纪律 | 本文 **§停点** · [设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md) · `pyproject.toml` 依赖段（`playwright` 已摘） · 编年史 §增量九十三 | **代码与门禁已全部落地**（`camofox_session.py` / `camofox_driver.py` / 三张面 / `LEGACY_DRIVER_SURFACE`），**门禁绿**（4218 passed / 5 skipped）。**差的是环境 + 一次真跑**：① 装 `camofox-browser-mcp` 适配器（或设 `CAMOFOX_MCP_EXE`）；② 起上游 REST 服务（`:9377`，**本仓库不启动浏览器**）；③ 重跑 `plan-camoufox-prod1-rest.json` 那 10 条 ⇒ **camofox-1 面的 `click`/`fill`/`press` 还标着 `exercised=False`**（还没有一次真实运行落过盘），跑完要按真实调用重算并转正。⚠️ **camoufox 不许接回来**（owner 裁定）——`camoufox-1` 面**只读不再产出**，但存量 430 份 P2 样本 + 14 份顶层 P1 存档**仍读得懂**（`LEGACY_DRIVER_SURFACE`） |
+| **H-20** | ★**（2026-10-26 新增）执行层换 camofox-browser ⇒ 采集链还没在新面上真跑过**（第一梯队卡在这） | 01 采集 / 09 纪律 | 本文 **§停点** · [设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md) · `pyproject.toml` 依赖段（`playwright` 已摘） · 编年史 §增量九十三 · 编年史 §增量九十四 | **代码与门禁已全部落地**（`camofox_session.py` / `camofox_driver.py` / 三张面 / `LEGACY_DRIVER_SURFACE`），**门禁绿**。**环境已通**（`camofox-browser-mcp` 适配器 + 上游 REST `:9377`，**本仓库不启动浏览器**）⇒ **第 4 轮那 10 条已在 camofox 面上真跑过**（批次 `plan-camoufox-prod1`）⇒ ✅ **camofox-1 面的 `click`/`fill`/`press` 三条已按真实调用转正**（`exercised=True`；`required` 口径**逐条按真实键在场率校**：`click` 的 `role`/`name` 100% ⇒ 都必填 · `fill` 三个键 100% ⇒ 都必填 · `press` **只有 `key` 在场** ⇒ `role`/`name` 保持可选）。⚠️ **但第 4 轮自己带出了五个「零报错」的缺陷**（§停点 · R5 实跑那一段的五个缺陷）⇒ **卡点从「没跑过」变成「跑 → 读 → 修 → 清 → 再跑」这个循环还没走完**（已走四轮；**第 5 轮在跑**）⇒ 剩下的：**逐条打开存档读 evidence**（缺陷⑤ 就是这么读出来的）+ **重建产物与门禁** + **采集侧账** + **人判存量那 4 条 agent 负样本**。⭐ **2026-10-27 更新：第 5 轮已跑完**（砍到 **6 条**跑完，理由见编年史 §十一 · 5-1-1）⇒ **缺陷⑤的修法在 6 档真数据上站住**（**建页路由失败 0 次**；T048 用时 5972 s → 1619 s）⇒ **逐条读 evidence 已做**（读出 **M-43** / **M-44** 两个新开口项）⇒ **重建产物 + 门禁已做**（`build --overwrite` → `task-view --all --overwrite` → `check-archives`；`4252 passed` 全绿）⇒ **采集侧账已跑**（6 档 **61** 条打点、**单面** `camofox-plain`、跨面**结构上**为 0）⇒ **并发批的 6 条 `unreachable_hard` 已逐条单独复核并出池**（池 331 → 325）。⇒ **剩下唯一的 owner 动作**：**人判存量那 4 条 agent 负样本**（材料已备，见 §停点 ⑥）。⚠️ **camoufox 不许接回来**（owner 裁定）——`camoufox-1` 面**只读不再产出**，但存量 430 份 P2 样本 + 14 份顶层 P1 存档**仍读得懂**（`LEGACY_DRIVER_SURFACE`） |
 
 ---
 
@@ -280,10 +375,14 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **M-35** | ✅ **已闭环（2026-10-24）**——D-5 评分器只核「自洽」，从不核「分支是不是决策树上那个节点」⇒ 凡它驳不倒的分支就**白送 5 分** | 07 评估 | [`d5_scorer.py::score_d5`](../../evaluation/scorers/d5_scorer.py) · `evaluation/golden/data/triage/triage.jsonl`（11 张 d5 卡）· [07 手册 §7.5.3](../07-人工复核与判读手册.md) · 本文 §M-34 补记 G-2 / G-3 · [方案 17](../设计方案/17-M35-D5评分器树上节点核对方案.md) · 编年史 §增量九十 | **施工已完成（2026-10-24，三拍板点 owner 已裁：P-1 = A 档补树 4 节点 / P-2 = 先补树再改检查 / P-3 = 对照金标在校准回路已存在）**：① **修法②（rubric 文案）**——`在线视频场景rubric.md` 锚点 5 补上机器能力边界（只核四件事，正确性由人工/黄金集承担，判不出落 undetermined）；② **G-2 补树（A 档）**——决策树 6 → **10 节点**，新增 `unreachable_hard`（传输层失败）· `unresolved`（代码能力不足）· `blocked`（地区/DRM/反爬）· `broken`（内容缺失），均入「标记未决/排除」落点；③ **修法①（代码）**——`d5_scorer.py` 新增 `TREE_BRANCHES` 常量（10 节点，不含弃用态 `login_wall_or_blocked` 与 `trailer_*`），`_check_branch_matches_question` 里 `CODE_ONLY_BRANCHES` 从「无条件 `ok`」改为「在树上 → `ok` / 不在树上 → `undetermined`」（**不判错，但不再白送 5 分**）；同步改 3 条打红断言 + 新增「树上缺口」不可判定来源。**验证：`test_d5_scorer.py` 70 passed + 契约/校准 246 passed = 316 全绿**。<br>⚠️ **原根因（保留作记录）**：`d5_scorer` 的四处检查全过 ⇒ 给 5 分；「分支↔判断点」对 `CODE_ONLY_BRANCHES` 直接放行，「证据核」对不声称拦截/付费的分支判「本条不管辖」⇒ 凡驳不倒就满分，而 rubric 锚点 5「决策树每步分支全对」这个断言从没验过。**两形态（11 张）**：A 分支名不在树上（6 张）/ B 在树上落错节点（5 张），含 3 张 1–2 档。<br>⚠️ **仍待办（非本条的活）**：`login_wall_or_blocked`(8)/`trailer_only`(1)/`trailer_suspect`(1) 共 10 条**继续落 undetermined**，未上树，另行立项；**v10 冻结未跑**（owner 在真实数据上执行 `freeze --version 10` 后读数才动）。原「两条修法都改代码」：`d5_scorer` 的四处检查（分支↔判断点 · 已到播放页 · 未跳步 · 结论的证据核）**全过 ⇒ 给 5 分**；其中「分支↔判断点」那一核对 `CODE_ONLY_BRANCHES`（`unreachable_hard`/`trailer_only`/`trailer_suspect`/`site_search_no_results`/`site_search_routed`）**直接放行**，「证据核」对不声称拦截/付费形态的分支**判「本条不管辖」** ⇒ **凡它驳不倒的分支就满分**。而 rubric 锚点 5 的字面要求是「**决策树每步分支全对**」——**这个断言它从来没验过**。已实测（2026-10-24 逐处复算）的两种形态：① **形态 A：存档分支名压根不在树上**（6 张）——`T024`（`trailer_suspect`，正确落点 `player_unverified`）、`T001/106df089`（**正片页**落 `trailer_only`）、`T012`（落 `unresolved`，该落 `subscription_wall`）、`T033`/`T025`（404 落 `login_wall_or_blocked`）、`T031`（地区限制落 `login_wall_or_blocked`）；② **形态 B：分支名在树上但落错节点**（5 张）——`E006` 网易号文章落**成功**（`null`）、该落 `not_play_site`；`E005`/`T001-921485c8` 爱奇艺频道页落 `component_unverified`、该落 `no_play_control`；`T028` 会员页落 `component_unverified`、该落 `subscription_wall`；`TPIN02` 西瓜「打开App观看」落 `no_play_control`、该落 `subscription_wall`。**两形态的机器放行路径不同**：形态 A 里「分支↔判断点」那一核**压根没在核**——`trailer_only`/`trailer_suspect` 属 `CODE_ONLY_BRANCHES` ⇒ **直接放行**，`unresolved` 是 fail-closed 通用出口（被加进**每个** question 的允许集）⇒ 放行，`login_wall_or_blocked` 是 `site.is_reachable` 的允许分支 ⇒ 放行，且证据核对 404 / 地区限制正文判「与合并态相容」⇒ **ok**；形态 B 里那一核**核错了问题**（只问「相容吗」、从不问「该落哪个节点」），且证据核对这 5 张**全部 skipped**（`component_unverified`/`no_play_control`/`null` 都不声称拦截/付费形态）。⚠️ **11 张卡里有 3 张是 1–2 档**（`E006` / `T001-106df089` = **1 档**，`T012` = **2 档**；其余 8 张 = 3 档）⇒ **不是「措辞问题」**。⇒ **两条修法**：① 评分器**增一处检查**（把「分支↔判断点」从「放行」改成「比对本行事实对应的树上节点」）；② **改 rubric 锚点 5 的措辞**，承认它只核自洽。⚠️ **两条路都会改 d5 一致率的基线** ⇒ 与「下一对可比是 **v9 → v10**」**一起排**；⚠️ **与 G-2（树只有 6 个节点、62/91 落无节点分支）同族**——**先补树还是先补检查，两件事的次序要 owner 定** |
 | **M-36** | ★**（2026-10-26 新增）「人工能进、agent 被拦」：`blocked` 把采集失败写成了站点结论** ⇒ **R1/R2/R3 已闭环，R4 未开工 | 03 标签 / 08 存档 / 07 评估 | [设计方案 20](../设计方案/20-反爬拦截与金标观测面.md)（§2 实测 · §3.5 四条负样本判据 · §5 路线 · §6 拍板）· [`branches.py`](../../executor/branches.py) `COLLECTION_SIDE_BRANCHES` · [`steps/visit.py`](../../executor/steps/visit.py) `_record_challenge` · [`review_queue.py`](../../executor/review_queue.py) `confirm_collection_blocked` · [`research/probes/cf_access_boundary.py`](../../research/probes/cf_access_boundary.py)（R0 取证） | **实测**：94 份存档里 20 次 CF 挑战页访问 → `blocked` 10 / `login_wall_or_blocked` 4 / **`no_play_control` 4（假负样本）** / `unresolved` 1；池 `negative.jsonl` 260 行里 12 行落在这些主机上。**R0 现场取证（同 camoufox 指纹、同一天、10 目标 × 2 轮）**：**12 可进入 / 8 仍被拦** ⇒ 单次拦截对「这站能不能看」**零信息**，所以它既不能进负样本池、也不能当站点结论。**owner 已裁（§6）**：O-a `blocked` 出池 · O-b 进复核队列 · O-c 暂不上 stealth/代理 · O-d 金标加 `access_surface`/`observed_at` · O-e 只人工能进的站留下并标 `access_difficulty=4`。<br>**✅ R1 已闭环（2026-10-26）**：① `branches.COLLECTION_SIDE_BRANCHES = {"blocked"}`，`SiteOutcome.is_negative_sample` 两段排除（**不并进** `NON_SAMPLE_BRANCHES`——那张表是「无题的兜底分支」，`test_branches` 钉死不能与 `questions.negative_branch` 相交）；② `steps/visit.py::_record_challenge` 在**任何 `Perceptor` 之前**拦挑战页（①.5 进站 / ⑦.0 播放页两处），断了「CF 页 ⇒ `no_play_control`」这条产出路径；③ `REVIEW_BRANCHES += blocked` + 新裁定 `confirm_collection_blocked`（写 `collection_status`，不动 `branch`），`confirm_blocked` 的 `is_negative_sample` 恒 False；④ 连带：`builder.NEGATIVE_SAMPLE_BRANCHES` 去掉 `blocked`、`integrity` 并池核对同源、`cli` 域名报表加「拦」列且只被拦过的域名不进黑名单、`relabel.check_target` 拒绝 `blocked`。（测试：`test_branches::Test采集侧账` · `test_visit::Test挑战页先于语义判断` · `test_visit::TestDomainReach拦截列` · `test_review_queue` 三条 · `test_relabel::test_采集侧分支被拒` · `test_builder` 同步断言。）**盘面：负样本池 260 → 227**（`negative.jsonl` 实测 `blocked` 33 行；历史存档与历史池行不回填）。<br>**✅ R2 已闭环（2026-10-26 同批）**：`evaluation/access_surface.py` 持有词表（`human-browser` / `camoufox-plain` / `obscura-plain`，**不叫 default**——本仓库固定配置里 humanize 开、locale 钉、geoip 关，叫 default 会把三处反例藏进名字里）；`annotate` 整行模式**必填** `access_surface` + `observed_at`（缺栏/认不出/非 ISO 一律退 2，**不按默认面补**）；冻结侧 `golden.access_surface` + `manifest.access_surface`（`by_surface`/`declared`/`unrecorded`）+ 单独喊「N 行面未声明」；`same_surface()` 任一侧未声明时返回 `None` **不是 `False`**（`False` 是「两面不同」的结论，会把「没记」读成「跨面分歧」）。**现状 294 行金标全部 `unrecorded`**（旧行不回填，下一版新写的才带面）。（测试：`test_golden_access_surface.py` 14 条。）<br>**✅ R3 已闭环（2026-10-26 同批）**：① **预测侧的面**有了——`builder._scan_archives` / `_scan_negative_pool` 从存档 `driver` 折算行顶层 `access_surface`（负样本池行自本批起写入时带 `driver`，历史行不回填），快照每条 entry 记 `gold_access_surface` / `pred_access_surface` / `surface_comparable` 三栏（`SNAPSHOT_SCHEMA_VERSION` **升 2**，旧快照跨 schema 被 `verify._check_comparable` 拒）；② **采集侧账**——`cards_and_accounts_from_snapshot` 把「跨面 **且** pred ∈ `COLLECTION_SIDE_BRANCHES`」的分流进 `collection_accounts.jsonl`（`loop=collection` / 桶 `evidence_missing` / `owner=collector`，按 `golden_id` 聚合），`agreement` 报表**单列拦截笔数 + 分桶面读数**，且**排在 D10 头条与下钻口径 D 之前**（02 避坑 §3.7）；**`None`（任一侧没记面）不是 `False`**，照旧出卡；③ **d5 检查 5**——`blocked` 加前置事实「拦截发生在站点侧」，CDN 中间页模板（`edge_challenge_evidence`，只收固定模板、**不收**「安全验证」这类泛化词）或没留正文 ⇒ `undetermined`（不出分）；④ **账本补两栏**——`gatekeeper_events` 的 `blocked_surface` / `attempt`，只盖 `gatekeeper.BLOCK_VERDICTS` 四条（`dead_loop` 是行为失败，不算被拦），`attempt` 按 verdict 各数各的。<br>**现状读数**：`agreement --version 13` 实跑 ⇒ **拦截笔数 0 / 不可判定 289**（旧冻结档两侧都没记面，与 R2 的 294 行面未声明一致——**账要等下批真跑 + 新标注带面才有内容**）；d5 检查 5 在 522 条 P2 样本上：27 条 `blocked` 里 **11 条 ok**（腾讯「当前设备不支持播放 / 70017001.1」站点自述地区）、**16 条 undetermined**（CF 中间页 / 没留正文）；整体分布 `5 分 389→378` / `不可判定 125→136` ⇒ **11 条从 5 分变成不出分**（另 5 条本来就不可判定，只是理由换了）。（测试：`test_calibration_collection_accounts.py` 22 条 · `test_d5_scorer::Test采集侧拦截` 8 条 · `test_visit` 账本断言同步。）⚠️ **`elapsed_ms` 没加**（§5.3 列过三列，只落两个）：`agent_loop._record` 刻意不带时间源，硬凑一列会把「谁的时间」埋进数据里。<br>· **还没做**：**R4** 任务池 `access_difficulty` 轴。⚠️ **与 Q-17 / M-28 同族但不同题**：`unreachable_hard`（池内 52 行）**仍在池里**——它确实也是采集侧事实，但出池与否 owner 未裁，**别顺手一起改** |
 
-| **M-37** | ★**（2026-10-26 新增）agent 路径贴的分支标签**绕过了前置事实核** ⇒ 4 条已进负样本池** | 02 感知 / 03 标签 | 本文 **§M-37 详解** · `executor/steps/agent_visit.py:134`（裸 `ledger.record`，**无 `decision`** ⇒ 无题） · `executor/branches.py:370`（`record_from` 里**唯一**可执行的前置事实核） · `perception/rule_perceptor.py::has_strong_paywall_signal`（docstring 明写「**不用于贴分支**」） | agent 路径用**强弱信号**（拦截口径）贴了 `subscription_wall` / `login_required` 标签——**两套判据不许互相顶替**（[01 架构总览](01-架构总览.md)）：强弱信号管「这页**像**付费墙吗」，门禁语境管「这页**是不是**付费墙」。**没有成文裁定说 agent 路径免检** ⇒ 这是缺口不是设计。**待人拍板**（§Q-20）——三个修法见详解，**推荐甲**（记账前跑一次前置核，失败降级 `unresolved`），但**必须先补词表**（iqiyi 那条人判过是真的） |
-| **M-38** | ★**（2026-10-26 新增）池的去重键 `(task_id, url, branch)` 让**后跑的 agent 行被老脚本行盖住** ⇒ 那两行的 `driver` 停在 `None`** | 03 标签 / 08 存档 | 本文 **§停点 · 进度**（迁移时实测：9 条 agent 池行只并进去 **7** 条） · `executor/archive.py:316`（去重键） · `executor/archive.py:338`（`_negative_row` 落 `driver`） | agent 链那 2 条 `not_play_site`（hao123）**与脚本链老行同键** ⇒ 池里留的是老行（`driver=None`），**agent 面信息丢失**。R3 说「池行要能回答『这条负样本是在哪张采集面上得出来的』」——这条对那 2 行**不成立**。**差的是**：去重键要不要带 `driver`／`run_id`（**改了会影响存量 260+7 行的键空间**）——**属口径题，要人拍板** |
+| **M-37** | ★**（2026-10-26 新增）agent 路径贴的分支标签**绕过了前置事实核** ⇒ 4 条已进负样本池** | 02 感知 / 03 标签 | 本文 **§M-37 详解** · `executor/steps/agent_visit.py:134`（裸 `ledger.record`，**无 `decision`** ⇒ 无题） · `executor/branches.py:370`（`record_from` 里**唯一**可执行的前置事实核） · `perception/rule_perceptor.py::has_strong_paywall_signal`（docstring 明写「**不用于贴分支**」） | agent 路径用**强弱信号**（拦截口径）贴了 `subscription_wall` / `login_required` 标签——**两套判据不许互相顶替**（[01 架构总览](01-架构总览.md)）：强弱信号管「这页**像**付费墙吗」，门禁语境管「这页**是不是**付费墙」。**没有成文裁定说 agent 路径免检** ⇒ 这是缺口不是设计。**待人拍板**（§Q-20）——三个修法见详解，**推荐甲**（记账前跑一次前置核，失败降级 `unresolved`），但**必须先补词表**（iqiyi 那条人判过是真的）。⭐ **2026-10-27 补两条**：① **缺口定位到行**——`agent_loop.py:1347`（`reason = f"{verdict.value} 二次拦截"`）→ `agent_loop.py:455`（`_branch_of(verdict)` 查表得分支名）→ **`agent_visit.py:134` 裸 `ledger.record(url, branch, reason, site_url=url)`（没有 `decision=` ⇒ 不走 `branches.py:370` 的 `_precondition_failed`）** ⇒ **拦截口径**（`gatekeeper.is_paywall` → `has_strong_paywall_signal` 的强弱信号表）被**直接当成分支标签**贴出去 ⇒ `BRANCH_PRECONDITION` 里 `subscription_wall` 的门禁语境前置**一次都没跑过**。② **停点第 ⑥ 步那 4 条已现场重采（camofox）**，用仓库自己的 `paywall_evidence` 判据对读：**bilibili `BV1ibptz2Enz` 站得住**（现场「请先登录或注册」「试看30秒」⇒ 真登录墙）；**v.qq `q3242ihse1h` 站不住**（`paywall_evidence` **空串**：只有「新客VIP专享特惠」这类营销 + 广告位「VIP可关闭该广告」，**无门禁句**；播放器只有 00:00 / 02:09，是短片不是正片）；**youku `XMTQwNzMzMTc1Mg` 最重**——现场是「**由于安全原因，请 登录 后继续观看**」⇒ **登录墙**，与池里的 `subscription_wall` 和已复核档的 `partial_free` **两处打架**（M-41 那一族）；**iqiyi `v_19rrk40at8` 站得住**（⭐ **2026-10-27 复核更正**：存档 `T054__1c9b6260__site-5` 的正文**当场就有**「试看 05:44 后结束，观看完整视频请 开通VIP会员」+「99分钟」正片 ⇒ **原读数说的就是同一个 URL**（不是另一个 URL），**标签当时是对的**；今天重采只取到营销是**页面状态漂移**，**不能推翻当场的读数**。⚠️ **顺带查出判据缺口**：仓库自己的 `paywall_evidence` 对**那段当场正文**也返回**空串**——`_PAYWALL_UNIT_SPLIT` 按**换行**切句，「观看完整视频请」与「开通VIP会员」落进**两个句单元**，而「观看完整」是要求**同句**的语境词 ⇒ **该修的是判据**（§Q-20 ②），不是这一行）。⇒ **4 条里 2 站得住（bilibili、iqiyi）/ 2 站不住（v.qq、youku）** ⇒ ~~定性是 owner 的，代码一行不改~~ ⭐ **2026-10-27 owner 已裁并已执行**：**v.qq 留池打标改用 `trailer_only`** ＋ **youku 改判 `login_required`**（走 `cli relabel --apply`，改判 4 条记录；池 325 行**数量不变**，分支分布 `subscription_wall` 46→42 · `login_required` 9→12 · `trailer_only` 1→2；evidence 带「[改判 …]」且 `source=human`）⇒ **代码仍一行不改**（判据没动）⇒ ⚠️ **两条口径开口留给 owner**（`trailer_only` 的宽口径 ＋ W2 放宽与 youku 定性打架）⇒ 见 **§Q-20 详解「附带开口 A / B」**。⭐ **2026-10-27 补第三条 · 爆炸半径**：盘上池里 evidence 带「**二次拦截**」的**共 30 行**（改判后的构成：`subscription_wall`·`rule` **20** ＋ `login_required`·`rule` **6** ＋ `login_required`·`human` **3** ＋ `trailer_only`·`human` **1**；⇒ **仍由机器贴的 26 行 = 池的 8.0%**；任务分布 E022 2 / T004 7 / T038 1 / T048 3 / T054 2 / T057 7 / E028 6 / E014 2）⇒ **全部走同一个绕过口**（`agent_visit.py:134` 裸 `record`）⇒ 修法甲（把前置事实核接回 agent 路）**一次就动这 30 行**；已现场核过的 3 条 `subscription_wall` 里 **2 条站不住、1 条站得住**（iqiyi，判据缺口所致）⇒ **接核之前必须先修判据**（§Q-20 ②） |
+| **M-38** | ★**（2026-10-26 新增）池的去重键 `(task_id, url, branch)` 让**后跑的 agent 行被老脚本行盖住** ⇒ 那两行的 `driver` 停在 `None`** | 03 标签 / 08 存档 | 本文 **§停点 · 进度**（迁移时实测：9 条 agent 池行只并进去 **7** 条） · `executor/archive.py:316`（去重键） · `executor/archive.py:338`（`_negative_row` 落 `driver`） | agent 链那 2 条 `not_play_site`（hao123）**与脚本链老行同键** ⇒ 池里留的是老行（`driver=None`），**agent 面信息丢失**。R3 说「池行要能回答『这条负样本是在哪张采集面上得出来的』」——这条对那 2 行**不成立**。**差的是**：去重键要不要带 `driver`／`run_id`（**改了会影响存量 260+7 行的键空间**）——**属口径题，要人拍板**。⚠️ **2026-10-27 补一个更要紧的面向**（第 4 轮 camofox 批实测，池 299 行）：去重键**带 `branch`** ⇒ **同 task、同 URL、不同分支 ⇒ 两条都留在池里**（不是「盖住」，是「**并存**」）⇒ **同一个 URL 在同一个 task 里带着两个标签进训练集**。全池扫出 **18 个 `(task_id,url)` 键有多于一行**（15 条是存量行、**3 条涉及本批**），逐对核**等价类**（`alignment.is_equivalent`）：① `T004`+`v.qq.com/x/page/a3069hcjg17.html`：**`no_play_control`(camoufox 面) vs `subscription_wall`(camofox 面) ⇒ 不等价**；② `T004`+`vo.youku.com/v_show/id_XNDgzODkwODE5Ng==.html`：**`component_unverified`(camoufox 面) vs `login_required`(camofox 面) ⇒ 不等价**；③ `T038`+`v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html`：**`partial_free`(人判) vs `subscription_wall`(camofox 面) ⇒ 同等价类**（不是矛盾，但同一 URL 仍挂两个标签）。⇒ **①②是真矛盾**：**两张面对同一个 URL 给了互斥的结论**，而池把两条都收了 ⇒ 训练侧吃到**自相矛盾的标签**。⚠️ **禁止投票/集成** ⇒ 这两条**不替人合并、也不投票**；⇒ **「去重键要不要带 `driver`」这道口径题从「丢元数据」升级成「丢矛盾」**，**更要人拍板**（改键 = 动存量 299 行的键空间） |
 | **M-39** | ★**（2026-10-26 新增）闸门口径与工具面口径**没有分代轴** ⇒ 读数跳变无处可记 | 05 rationale / 09 纪律 | 本文 **§M-39 详解** · `assembler/schema.py::rationale_era_of`（**只有** `rationale_era` 一条时代轴） · `trajectory_pipeline/toolcatalog/__init__.py`（`exercised` 逐面） · 编年史 §增量九十二 | 本轮两道改动都**改了口径**（排版归一 ⇒ 2 条样本 `failed`→`passed`；`fill`/`press` 转正 ⇒ 声明面变了），而 P2 / P3 / T 三层产物**只有 `rationale_era` 一条轴**。CLAUDE.md 明写「批次边界前后分布会跳变，**不记批次元数据就会读成「质量变好了」**」⇒ **要么给产物加一条口径轴，要么在批次元数据里写明**。盘上现状：**已按新口径重建过**（2026-10-26 11:26–11:29），但**没有任何字段记着「这批是排版归一后的口径」** |
 | **M-40** | ★**（2026-10-26 新增）人工复核改判出的真负样本**从来没并过池** ⇒ 训练集里压根没有这批负样本 | 03 标签 / 08 存档 | 本文 **§M-40 详解** · `executor/review_queue.py::apply_verdicts`（改判写档，**不并池**） · `executor/pool_add.py`（本轮新写） · `executor/cli.py::cmd_pool_add` | `cli review --apply` 把 `unresolved` 改判成 `partial_free` / `subscription_wall` / `component_unverified` 等**真负样本**并写进复核档，**却从不并池** ⇒ 门禁报 `negative_not_pooled`（实测 **30 条** = 29 条人工补判 + 1 条历史欠账）。而**训练侧吃的是池**（`evaluation/golden.builder._scan_negative_pool`），不是存档 ⇒ 那 29 条负样本**没进训练集**。本轮已补 `executor/pool_add.py` + `cli pool-add` + `review --apply` 接线：**已并 25 条**（24 条人工裁定 + 1 条代码旧账），门禁 `negative_not_pooled` **30 → 4**；剩 4 条**有分歧**（E021 同 URL 有成功记录 / E023·T011·T054 池内留着手工改判的旧行）——**不替人投票**，处置路见 §M-40 详解 |
+| **M-41** | ★**（2026-10-27 新增）池里同一 `(task_id, url)` 挂**两个不同的负分支** ⇒ 训练信号自相矛盾，**而门禁看不见** | 03 标签 / 08 存档 | 本文 **§M-41 详解** · `executor/archive.py:316`（去重键含 `branch` ⇒ 不同分支**各存一行**） · `executor/pool_add.py::collect_candidates`（人工那条路**会**拒并 `stale_branch`） · `evaluation/golden/builder.py::_scan_negative_pool` | 池的去重键是 `(task_id, url, branch)` ⇒ **同一个 task 的同一个站，两批给出不同分支 ⇒ 两行并存**。camofox 新批实测：**T004 的 `vo.youku.com` 在老 camoufox 批是 `component_unverified`、新批是 `subscription_wall`**（同 task、同 URL、**两个矛盾标签**）。而门禁 `check-archives` 只查「池行 ↔ 成功存档」的矛盾（`negative_contradicted_by_success`），**不查「池行 ↔ 池行」**⇒ **看不见**。⚠️ **两条写入路径口径不一致**：`P1Archive.write`（自动）**不查**，`cli pool-add`（人工回填）**查并拒并**。**要人拍板**：哪些分支对算「矛盾」（`blocked` vs `login_wall_or_blocked` 是**两层**拦截，**不是**矛盾；`component_unverified` vs `subscription_wall` 是**同一层**的两个互斥结论，**是**矛盾）——判据要落在 `branches.BRANCH_PRECONDITION` 那张表上，**不替人投票** |
+| **M-42** | ★**（2026-10-27 新增）池行的 `golden_id` 里嵌的是**行号**不是**身份** ⇒ 池一增删，**人核标签就静默掉线** | 07 评估 / 08 存档 | 本文 **§M-42 详解** · `evaluation/golden/builder.py::_scan_negative_pool`（`__neg{i:02d}`，`i` = 池文件行号） · `evaluation/golden/data/annotations.jsonl`（**6 条** `__negNNN` 标注） | 跑采集侧账时撞出来：池行 id 形如 `{task}__{run}__{hash}__neg151`，那个 `151` 是**它在 `negative.jsonl` 里的行号** ⇒ 池里**任何一次增删**都会让它后面所有行 id 前移/后移 ⇒ **人工标注是按 `golden_id` 挂的** ⇒ 挂不上。**实测 6/6 全掉**：本轮两次 purge 之后，池里这 6 行是 `neg151/152/153/156/157/160`，标注里记的是 `neg152/153/154/157/158/161`（**整体差 1**）。**证据还在**（task/run/URL 都没变，**只有序号变了**）⇒ 不是「标注丢了」，是**键漂了**。⚠️ **现在还没炸**，因为入库的 `candidates.jsonl` 是**旧扫描**留下的（老序号还挂得上）⇒ **下一次重建候选集就炸**：重建后这 6 条被 `site` 过滤剔掉 ⇒ **D10 分母 289 → 283**，而报表上**看不出原因**。⭐ **2026-10-27 本轮把因果链查实了**：把 committed `candidates.jsonl` 的 **10 条 `__neg` id 与现行 builder 逐条对** ⇒ **Δ ≡ −1**（10 条**无一例外**）⇒ 池在构建之后、**池第 152 行之前**被撤过**恰好一行** ⇒ 而那行就是 **2026-10-22 撤掉的 TPIN02 `yn-mg.cn/playid/71884`**（它在池第 5 行附近 ⇒ 之后的行全体 +1）。⇒ **`candidates.jsonl` 自 2026-10-14 首次提交起就没重建过**（那 10 个 id 一直是 `neg152`–`neg161`）。⇒ **builder 的下标口径没变过**（一直是 0 基 `enumerate(rows)`）⇒ **不是代码改了，是池变了**。✅ **本轮撤的 6 行都在池第 300 行之后** ⇒ **没制造新的掉队**（本轮之前就已经掉队 6 条）。⇒ **本轮不重建 `candidates.jsonl`**（重建会把 10 个 id 全改成 −1 ⇒ 那 6 条人核标注被冲掉 ⇒ D10 分母 289 → 283）——**重建的理由远小于代价**。**要人拍板**：后缀改**分支**（`__neg_{branch}`）还是另找一个身份口径？**那 6 条人核标注的键要不要跟着改**（标签内容不动，只改键）——**改键 = 动人核数据 ⇒ 要人签**（§Q-22）。⚠️ **迁移期要双 id 并存**：改口径会让**全部 357 条候选的 id 全变** ⇒ 旧 id 得留一段（或建 `id_alias` 映射表）。**不替人投票**：现在**代码一行不改、标注一行不改**，只把缺陷摆上台面 |
+| **M-43** | ★**（2026-10-27 新增）上游把「建页」与「导航」塞进**同一个路由** ⇒ **那个路由失败证明不了站点打不开** ⇒ 一条**假 `unreachable_hard`** 进了池 | 01 采集 / 03 标签 | 本文 **§M-43 详解** · `executor/browser/camofox_driver.py::_open_blank_and_navigate`（**建页与导航拆成两次调用**）· `executor/browser/camofox_session.py::CamofoxToolError.execution_fault` · 上游 `server.js`（`POST /tabs` 的 `withTimeout` **同时**管建页与导航；`if (url)` 才导航） · `research/probes/camofox_attribution_probe.py`（现场取证） | 第 4 轮 `T048` 的 iqiyi 记「**导航失败（网络/DNS/超时）**」，而**失败落在建页路由上**（`camofox_create_tab` 超时）⇒ **那条 URL 压根没被导航过** ⇒ 站点没被试过 ⇒ **采集侧的故障被写成了站点的性质**。三条互相独立的反证：① **老批 `T054__93f110b6` 真打开过同一个 URL**（`reached_play_page=true` · 「存在 `<video>`/`<audio>` 标签 ×2」）；② **同一批 `T038` 进到了 iqiyi 《功夫》正片页**；③ **同一批的 `http://` 变体**落的是「站点遍历超时（>180.0s）」⇒ `unresolved`（**没进池**）。⇒ **修法**：**建页与导航拆成两次调用**（建**空白页** + 再导航）⇒ 归属判据变成**结构性的**（**走哪个路由**），**不是**猜错误文本：**建页**路由失败 ⇒ `unresolved`（**不进池**）／**导航**路由失败 ⇒ `unreachable_hard`（真负样本）。⚠️ **顺带补上一个潜伏缺陷**：上游 `recovery="retry"` 那一族（`session_expired`/`concurrency_timeout`/`browser_launch_timeout`）是**会话**坏了 ⇒ 缺陷④那版的解析**不认识** ⇒ 会记成 `unreachable_hard`（已补 `execution_fault`；**实测这一族还没触发过**）。✅ **存量那一条已撤（2026-10-27）**：池 `negative.jsonl` 第 **300** 行（run_id `a933bea6`）**已出池**——先 `cli downgrade`（存档侧改 `unresolved`，原判留在 `branch_before_downgrade` + evidence 的 `[原判 unreachable_hard] ` 前缀后面），再 `cli pool-drop`（`pool_dropped.jsonl` 记原行全文）；**顺序没反**。⇒ 依据是**单独重开同一 URL 打得开**（爱奇艺《功夫》页，506 ch）⇒ 那条 URL **从没被导航过**（失败在**建页路由**）⇒ 站点性质未被测到 ⇒ 行不成立。⚠️ **重跑不回填历史存档**（**并池是写入时的动作**）⇒ 这条**只能这样撤**，不能靠重跑 |
+| **M-44** | ★**（2026-10-27 新增）「导航失败」这一支太粗 ⇒ **采集侧的故障被写成站点的性质**（`unreachable_hard` 的分支名是「站点不可达」，但它收了三种**不是站点不可达**的失败） | 01 采集 / 03 标签 | 本文 **§M-44 详解** · `executor/browser/camofox_driver.py::_navigate`（错误原文进 evidence） · `executor/branches.py::BRANCH_PRECONDITION` · `executor/steps/visit.py`（失败 ⇒ 记哪支） · 上游 `server.js`（`page.goto` 的错误原样透传） | 第 5 轮**逐条单独复核**时把三种失败形态摊开了：① **建页路由失败**（M-43：`camofox_create_tab` 超时 ⇒ **导航请求从未发出**）；② **`page.goto: Navigation … is interrupted by another navigation to …`**（E028 两条 baidu 链接 ⇒ **重定向确实发生了**，打断消息里直接写出落点 `www.ctwlpt.com/voddetail/38550.html`）；③ **`NS_ERROR_NET_RESET`**（连接被重置，与 ② 交替出现）。⇒ **三种都落同一支 `unreachable_hard`**（分支标签「导航失败（网络/DNS/超时）」）⇒ 池里那条断言是「**这里真的看不了**」，而事实是「**这一次没打开**」⇒ **训练信号被污染**（教「这个站看不了」，其实只是慢 / 被打断 / 建页失败）。⚠️ **M-43 只修了「建页与导航塞进一个路由」，没修「建页失败 ⇒ 记成导航失败」这个映射** ⇒ 同一个洞留在了新代码里。⇒ **修法方向**（**不替人投票，等 owner 裁定**）：把 `unreachable_hard` 拆成「**站点不可达**（DNS 失败 / 连接被拒）」与「**这次没打开**（超时 / 打断 / 建页失败）」，后者降 `unresolved`（**不进池**）——⚠️ **并池是写入时的动作** ⇒ 改判**只影响新行**，存量 54 条要出池另走路（**Q-23**）——⭐ **裁定已落地（Q-17）+ 现场证据已到手（2026-10-28）：判据触发 20 次、20 次全部正确降级到 `unresolved`，`unreachable_hard` 0 条** ⇒ 详见本文 **§M-44 详解**（已闭环段）与[编年史 §七](90-增量编年史.md) |
 
 ---
 
@@ -1277,9 +1376,506 @@ CLAUDE.md 写着「禁止投票/集成，分歧必须暴露给人看」⇒ 命�
 4. **`review --apply` 的接线有测试**（`tests/unit/test_pool_add.py::Test回填接线`）
    ——「模块对了但接线没接」正是那 29 条的成因，**接线不测就还会再犯**。
 
+### M-41 · 池里同一 `(task_id, url)` 挂**两个不同的负分支** ⇒ 门禁看不见的自我矛盾
+
+**现象**（2026-10-27，camofox 新批实测）：T004 的
+`https://vo.youku.com/v_show/id_XNDgzODkwODE5Ng==.html?...` 在池里有**两行**：
+
+| 来源 | 分支 | evidence |
+|---|---|---|
+| 老 camoufox 批 `T004__b441d5aa` | `component_unverified` | （组件未验证） |
+| 新 camofox 批 `T004__b758be9a` | `subscription_wall` | `paywall 二次拦截` |
+
+⇒ **同一个 task、同一个站、两个互斥的结论**，两行**都在池里**。
+
+**根因**：池的去重键是 `(task_id, url, branch)`（M-38 那张表）
+⇒ **分支不同 ⇒ 键不同 ⇒ 两行并存**。
+而训练侧吃的是**池**（`evaluation/golden/builder.py::_scan_negative_pool`）
+⇒ **同一个切片里出现两条互相打架的标签**。
+
+⚠️ **门禁看不见**：`cli check-archives` 查的是「池行 ↔ **成功**存档」的矛盾
+（`negative_contradicted_by_success`），**不查「池行 ↔ 池行」**
+⇒ 这一类**一个都不报**（实测全库 **16 对** `(task_id, url)` 挂多个分支）。
+
+⚠️ **两条写入路径口径不一致**（这才是能溜进来的原因）：
+
+| 路径 | 遇到「同 (task,url) 已有别的分支」 | 实现在 |
+|---|---|---|
+| `P1Archive.write` → `_append_negatives`（**自动**，真跑那条） | **照写**（只按 `(task_id,url,branch)` 去重） | `executor/archive.py:289` |
+| `cli pool-add` → `collect_candidates`（**人工回填**） | **拒并**，理由 `stale_branch` | `executor/pool_add.py` |
+
+⇒ 同一条规则，**自动那条不查、人工那条查** ⇒ 分歧**从自动那条进来了**。
+
+⚠️ **但「两个分支」不都是矛盾**：判定要落到
+`branches.BRANCH_PRECONDITION`（贴标签前核的那张前置事实表）：
+
+| 组合 | 是不是矛盾 | 为什么 |
+|---|---|---|
+| `blocked` vs `login_wall_or_blocked` | **不是** | **两层**拦截（反爬 vs 登录）——两次观测到的是不同的东西 |
+| `component_unverified` vs `subscription_wall` | **是** | **同一层**（都声称「这页为什么看不了」）的两个互斥结论 |
+| `not_play_site` vs `unreachable_hard` | **不是** | 一个是「站点性质不对」，一个是「这次没访问到」 |
+
+⇒ **判据不能由我定**——**哪两个分支算互斥**是**口径题**，
+要落在 `BRANCH_PRECONDITION` 那张表上（那张表本来就管「贴标签前核前置事实」）。
+**不替人投票**：现在**一行都不动**（**分歧摆到台面上**，与 M-40 那 4 条同一处置）。
+
+**差的是**：① 互斥分支对的那张表；② 自动写入路径要不要也查这条；
+③ 门禁要不要加一节「池行 ↔ 池行」。**三条都属口径题，要人拍板**（见 §Q-21）。
+
+### M-42 · 池行的 `golden_id` 里嵌了**行号** ⇒ 池一改，人核标签就掉线
+
+**现象**（2026-10-27，**跑采集侧账时撞见的**）：要跑采集侧账（§停点 · 步骤 5）
+就得让候选行带上 `access_surface`（方案 20 §R3 加的那一栏）⇒ 只能重建
+`candidates.jsonl` ⇒ **重建前先试算一遍**，试算出来两件事：
+
+| 试算项 | 读数 |
+|---|---|
+| 入库的 `candidates.jsonl` | **357 行**，**每行都没有 `access_surface` 键**（那栏是 R3 之后才加的，老扫描没有） |
+| 按当前盘上原料重建 | **1157 行**（存档 577 + 孤立池行 30 + P2 样例 550） |
+| 重建会**丢**的已标注行 | **6 条**——**全是池行** |
+
+**根因**：`_scan_negative_pool` 给池行造的 id 是
+
+```
+{task_id}__{run_id}__{url_hash}__neg{i:02d}
+```
+
+那个 `i` 是 `enumerate(rows)` 的下标 ⇒ **它在 `negative.jsonl` 里的行号**
+⇒ **id 里嵌的是「计数」不是「身份」**。
+
+⇒ **池里任何一次增删**，都会让它**后面所有行**的 id 前移/后移
+⇒ **人工标注是按 `golden_id` 挂的** ⇒ **挂不上 ⇒ 标签掉线**。
+
+**实测（6/6 全掉）**：本轮两次 purge 之后——
+
+| | id |
+|---|---|
+| 池里现在这 6 行 | `neg151` / `neg152` / `neg153` / `neg156` / `neg157` / `neg160` |
+| `annotations.jsonl` 里记的 | `neg152` / `neg153` / `neg154` / `neg157` / `neg158` / `neg161` |
+
+**整体差 1**（少了一行 ⇒ 后面全部前移一位）。
+**证据一条没少**：task / run / URL 全没变，**只有序号变了**
+⇒ 这不是「标注丢了」，是**键漂了**（5 条 `blocked` + 1 条 `broken`）。
+
+⭐ **2026-10-27 把「少的那一行」查实了**（不再只是「整体差 1」的现象）：
+
+| 步骤 | 做法 | 读数 |
+|---|---|---|
+| ① | 把 committed `candidates.jsonl` 的 **10 条 `__neg` id** 与**现行 builder** 逐条对 | **Δ ≡ −1**，10 条**无一例外** |
+| ② | 查 builder 的下标口径有没有变过 | **没变**——自 2026-10-14 首次提交起就是 `enumerate(rows)` 的 **0 基** |
+| ③ | 查 committed 文件里这 10 个 id 是什么时候定的 | **2026-10-14 首次提交起就是 `neg152`–`neg161`** ⇒ 它们是在**池里还留着某一行**的时候算出来的 |
+| ④ | 那一行是谁 | **2026-10-22 撤掉的 TPIN02 `yn-mg.cn/playid/71884`**（`pool_dropped.jsonl` 第 0 条）——它在池第 5 行附近 ⇒ **之后的行全体 +1** |
+
+⇒ **不是代码改了，是池变了** ⇒ **成因链完整**：
+`candidates.jsonl` 建好后池被抽掉一行 ⇒ 后面所有 id 漂一位 ⇒
+`candidates.jsonl` **没重建** ⇒ 人核标注**挂不上**。
+
+✅ **本轮（2026-10-27 第 5 轮）撤的 6 行都在池第 300 行之后**
+⇒ **没制造新的掉队**（本轮之前就已经掉队 6 条）。
+⇒ **本轮不重建 `candidates.jsonl`**（重建 ⇒ 10 个 id 全改成 −1 ⇒ 那 6 条标注被冲掉
+⇒ D10 分母 289 → 283）——**重建的理由远小于代价**。
+
+⚠️ **为什么现在还没炸**：入库的 `candidates.jsonl` 是**旧扫描**留下的，
+里面记的还是**老序号** ⇒ 现在还挂得上。
+⇒ **下一次重建候选集就炸**：重建后这 6 条挂不上 ⇒ 被 `site` 过滤剔掉
+⇒ **D10 分母 289 → 283**，而报表上**看不出原因**（只是「条数少了」）。
+
+**为什么当初要加这个后缀**：同 `(task_id, run_id, url)` 可以挂**不同分支**的两行
+（实测池里有 **2 组**：`T025/0d6d185e` 与 `TPIN02/1cf5deca`，
+各挂 `login_wall_or_blocked` + `no_play_control`）⇒ **需要后缀**。
+⚠️ 但**后缀不该是行号**——行号是**位置**，位置会动。
+
+**候选修法（未实施）**：后缀改用**分支**——分支本身就在池的去重键里
+（`(task_id, url, branch)`）⇒ 同 `(task, run, url)` 内**分支唯一** ⇒ 天然去重：
+
+```
+{task_id}__{run_id}__{url_hash}__neg_{branch}
+```
+
+⇒ id 只依赖**身份**，池增删**不影响**它。
+⚠️ **连带**：改了 id ⇒ 那 6 条人核标注的 key 也要跟着改
+（**标签内容一个字不动，只改键**）⇒ **改键 = 动人核数据 ⇒ 要人签**。
+
+⇒ **处置**（与 M-40 / M-41 同一口径）：**代码一行不改、标注一行不改**，
+把缺陷与修法摆上台面 ⇒ **§Q-22** 等人拍板。
+
+### M-43 · 上游把「建页」与「导航」塞进同一个路由 ⇒ **那个路由失败证明不了站点打不开**
+
+#### 现象（2026-10-27，**读第 4 轮 `T048` 那份存档时撞出来的**）
+
+第 4 轮 `T048`（run_id `a933bea6`）有一条 `unreachable_hard`，
+`branch_label` 写着「**导航失败（网络/DNS/超时）**」，而 evidence 是
+
+```
+导航失败（传输层）: camofox 导航失败: camofox tool camofox_create_tab 返回错误:
+camofox error: 500: {"error":"tab create timed out after 30000ms","retryable":false}
+```
+
+⇒ **标签说「导航失败」，失败点却在 `camofox_create_tab`（建页）上**。
+**零报错**：`unreachable_hard` 是一条**正规**分支 ⇒ 门禁不报、测试不报、
+退出码 0、理由还「通顺」。
+
+#### 为什么它**不是**站点事实——三条互相独立的读数
+
+| 读数 | 出处 | 说明 |
+|---|---|---|
+| ① **老批真打开过同一个 URL** | `T054__93f110b6`（camoufox 面） | 同一 URL ⇒ `branch=null` · `reached_play_page=true` · `play_page_url` 落回 iqiyi 正片页 · 「存在 `<video>`/`<audio>` 标签 ×2（iframe=0）——代码层事实，不问 LLM」 |
+| ② **同一批 iqiyi 是通的** | 第 4 轮 `T038`（run_id `cd571143`） | `https://` 变体（经 baidu 跳转）⇒「**已进入《功夫》正片页并触发播放**，但页面持续显示"播放异常"」⇒ **进到了正片页** |
+| ③ **同一批的 `http://` 变体** | 同上 | 落的是「站点遍历超时（>180.0s）」⇒ **`unresolved`**（**没进池**）⇒ 同一批里同一个 URL **两种结论** |
+
+⇒ 而**这一条**恰恰是**建页路由**上的一次超时 ⇒ **那条 URL 一次都没被导航过**
+⇒ **站点压根没被试过** ⇒ 这是**采集侧的故障被写成了站点的性质**。
+
+#### 根因（读上游 `server.js` 得到的；⚠️ **上游不许改**，owner 裁定 **A2**）
+
+- 上游 `POST /tabs`（`camofox_create_tab`）把**建页与导航塞进同一个
+  `withTimeout(..., tabCreateRequestTimeoutMs())`**（`server.js:3051`）
+  ⇒ **这个路由失败，同时可能是「建页失败」也可能是「导航失败」**；
+- 上游 `POST /tabs/:tabId/navigate`（`camofox_navigate`）**只管导航**；
+- ⚠️ **两者在错误体里字面同形**：实测建页路由超时与导航路由 DNS 失败
+  **都是** HTTP 500 + `{"error":…,"retryable":false}`、**没有** `code`/`recovery`
+  ⇒ **光看错误体分不开** ⇒ **唯一能分开的是「走哪个路由」**。
+
+⇒ **缺陷④的换页自愈救不了这一条**：自愈是「换一张新页 + 同一个 URL 重来」，
+而**建页路由每次都失败** ⇒ 每次都超时 ⇒ 这一条的形状与缺陷④那「9 条一字不差」
+的级联**一模一样**（**同样零报错**）。
+
+#### 修法：**建页与导航拆成两次调用** ⇒ 归属判据变成**结构性的**
+
+上游 `POST /tabs` 的 body 里 **`url` 缺省就不导航**（`if (url)`，`server.js:2990`）；
+MCP server **不校验 `required`**（`mcp/server.mjs:87` 的 `args || {}`）⇒
+`JSON.stringify` 丢掉 `undefined` ⇒ `camofox_create_tab` **不带 url**
+⇒ 建一张 `about:blank` ⇒ 于是**建页失败**与**导航失败**落在**两条不同的路由**上。
+
+| 失败落在 | 归属 | 分支 |
+|---|---|---|
+| **建页**路由 | **执行层**（那一页里**根本没有站点 URL** ⇒ 站点不可能是原因） | `unresolved`（**不进池**） |
+| **导航**路由 | **站点事实**（DNS / 超时 / 证书） | `unreachable_hard`（真负样本） |
+
+⚠️ **「换页也失败」vs「换页成功、导航失败」不能记成同一个分支**：
+判据是「**那条 URL 有没有被真正导航过**」，不是「失败长什么样」。
+⚠️ **`new_tab` 刻意没拆**——它的失败**不会**进分支归属
+（`visit.py::open_tab` 与 `link_check.py` 都把它吃掉）⇒ 拆了只会让
+「当前页停在 `about:blank`」这个隐患更容易发生。
+
+**守卫**：`tests/unit/test_camofox_driver.py::Test归因`（**7 条**）+
+`tests/unit/test_camofox_session.py::Test上游错误体的结构`（**+2 条**）。
+**现场取证**：`research/probes/camofox_attribution_probe.py`——
+用**生产驱动**跑三条真实路径并打印**异常类型**（**归因没有门禁**，只能现场看）：
+① 正常站点 ⇒ 导航 + 观察成功（**3.72s**，正文 **2923 字**，**无降级**）
+⇒ **拆开没把采集链打断**；② DNS 不存在的域名 ⇒ **普通 `DriverError`**（站点事实）；
+③ 不可路由 IP ⇒ **普通 `DriverError`**（**21 秒**后失败；导航路由预算 **35 秒**）。
+⚠️ **「建页失败 ⇒ 执行层」现场触发不到**（建空白页几乎不会失败）⇒ 标「**未实测**」，
+**不拿单测冒充现场读数**。
+
+⚠️ **顺带补上一个潜伏缺陷**：上游 `lib/browser-errors.js` 的 `browserErrorRecovery`
+里另有一族 **`recovery="retry"`**（`session_expired` / `concurrency_timeout` /
+`browser_launch_timeout`）⇒ 那是**会话**坏了 ⇒ **我们这边的问题**
+⇒ 缺陷④那版的解析**不认识**这一族 ⇒ 死了会话会被记成 `unreachable_hard`。
+已补 `CamofoxToolError.execution_fault`（判据是上游**自己给的** `recovery`/`code`）。
+⚠️ **这一族实测还没触发过**（`negative.jsonl` 里那三个 code 与 503 **零命中**）
+⇒ 属**潜伏缺陷**，不是已发生的事。
+
+#### 存量那一条的处置：**出池两步**（不是「重跑就好」）
+
+⚠️ **重跑不回填历史存档**，也**不会**自动撤那条池行（**并池是写入时的动作**）
+⇒ 处置与 H-17 那 7 条**同一条路**，**顺序不能反**：
+
+```
+cli downgrade --url "http://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01" --apply
+cli pool-drop  --url "http://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01" --apply \
+                --reason "M-43：建页路由失败不是站点事实"
+```
+
+⚠️ **与 M-42 的交互（已核）**：那条池行在 `negative.jsonl` 的第 **300** 行，
+而 **6 条人核标注挂的行是 `neg151…neg160`（在它前面）** ⇒ **撤第 300 行
+不动那 6 个键** ⇒ **这一步不必等 §Q-22 拍板**。
+⚠️ **反过来说**：**任何在 `neg160` 之后的增删都会动那 6 个键** ⇒
+**Q-22 没拍板之前，别在池的后半段做增删**。
+
+⚠️ **本条不动 `unreachable_hard` 这支的口径**：**真·站点打不开**
+（导航路由失败）**该不该留在池里**是 **§Q-17**
+（**已于 2026-10-27 由 owner 裁定 ⇒ 见 M-44**）⇒
+**本条只保证「不是站点事实的失败不进池」**，**不替人投票**改那支的进出。
+
+### M-44 · 「导航失败」这一支太粗 ⇒ **采集侧的故障被写成站点的性质**
+
+**现象**（2026-10-27，第 5 轮**逐条单独复核**时摊开的）：`unreachable_hard`
+这一个分支名下面装了**三种**成因完全不同的失败，而它们**不是同一件事**：
+
+| # | 失败形态 | 原文 | 事实是什么 | 是不是站点不可达 |
+|---|---|---|---|---|
+| ① | **建页路由失败** | `camofox tool camofox_create_tab 返回错误: …`（M-43） | **导航请求从未发出** | ❌ **不是**——URL 压根没被试过 |
+| ② | **导航被二次导航打断** | `page.goto: Navigation to "…" is interrupted by another navigation to "https://www.ctwlpt.com/voddetail/38550.html"`（E028） | **重定向确实发生了**（打断消息里直接写出落点） | ❌ **不是**——站点可达，是**跳转链中途**断了 |
+| ③ | **连接被重置** | `page.goto: NS_ERROR_NET_RESET`（E028，与 ② **交替**出现） | 传输层断了 | ⚠️ **待裁**（可能仍是站点侧） |
+
+⇒ 三者**全部**落 `unreachable_hard`（分支标签「导航失败（网络/DNS/超时）」）
+⇒ 进池 ⇒ 池里那一行的断言是「**这里真的看不了**」
+⇒ 而 ① ② 的事实是「**这一次没打开**」⇒ **训练信号被污染**
+（教模型「这个站看不了」，其实只是慢 / 被打断 / 建页失败）。
+
+⚠️ **M-43 只修了一半**：它把「建页与导航塞进同一个路由」**拆成两次调用**
+⇒ **归属判据变成结构性的**（走哪个路由）⇒ 但**「建页失败 ⇒ 记成导航失败」这个映射还在**
+⇒ 同一个洞留在了新代码里（本轮 T048 的 `…/v_19rrk40at8…` 那条就是建页路由失败
+⇒ M-43 那条已出池；**机制没修**）。
+
+**为什么不能顺手改**（与 Q-17 / Q-23 同一个道理）：
+「这次没打开」与「站点不可达」的分界**不是本仓库能单方面定的**——
+DNS 失败 / 连接被拒算不可达（那也是「这一次」的观测），
+超时 / 打断 / 建页失败算「这次没打开」⇒ **裁定权在 owner**（**Q-17 / Q-23**）。
+
+**修法方向**（**待裁**）：把 `unreachable_hard` 拆成两支——
+「**站点不可达**」（DNS 失败 / 连接被拒）与「**这次没打开**」（超时 / 打断 / 建页失败），
+后者落 `unresolved`（**不进池**，也不是「判为不是墙」）。
+⚠️ **并池是写入时的动作，不回填历史存档** ⇒ **改判只影响新行**；
+存量 **54 条** 要出池得另走路（**Q-23**：逐条单独复核 ⇒ 打得开 ⇒ 出池）。
+⇒ **代码一行不改**，等 owner 裁定。
+
 ---
 
-## 待 owner 拍板（不是「还没做」，是「不能自己决定」）
+**✅ 2026-10-27 裁定（owner；Q-17 / Q-23 一并裁）**：「**先裁再跑**」——
+把「**这次没打开**」（超时 / 打断 / 建页失败 / 会话失效 / 快照失败）
+从 `unreachable_hard` **降成 `unresolved`**（**不进池**），
+只留「**真·站点不可达**」（**机器码**证明：DNS 解析不出来 / 连接被拒）。
+⇒ 因为「并池是写入时的动作、不回填历史存档」⇒ **改判只影响新行** ⇒
+**跑之前改最省事**；存量 **54 条** 另走 **Q-23** 出池（逐条单独复核）。
+
+**实施结果（2026-10-27，同日落地）**：
+
+| 落点 | 做了什么 |
+|---|---|
+| `executor/browser/nav_failure.py`（**新**） | **判据单点**：两个面各自的机器码词表 → 一个**跨面统一**的语义判据 `site_unreachable()`（命中 `dns_failure` / `connection_refused`） |
+| `executor/browser/page_driver.py` | 新增 `DriverUnreachableError`（带 `.code` 机器码，进 evidence）；`DriverError` / `DriverSessionError` 的口径随 M-44 收窄 |
+| `executor/browser/camofox_driver.py` / `obscura_driver.py` | 导航失败时**先判机器码** ⇒ 命中抛 `DriverUnreachableError`，否则抛普通 `DriverError` |
+| `executor/steps/reachability.py` | `Reachability` 增 `proven_unreachable`（**事实字段**，不是结论） |
+| `executor/steps/visit.py` / `executor/steps/aggregator.py` | 两条记分链**同口径**：`proven_unreachable` ⇒ `unreachable_hard`，否则 ⇒ `unresolved`（**不进池**） |
+| `executor/branches.py` | 分支标签改「**站点不可达（DNS 解析失败 / 连接被拒）**」（旧文案「导航失败（网络/DNS/超时）」在 M-44 之后是**一句假的话**） |
+| `executor/branch_eras.py` | 新增 **e6** 代（`since=2026-10-27`）：`changed_branches=("unreachable_hard","unresolved")` |
+| `evaluation/scorers/d5_scorer.py` | 决策树改成与代码现实一致；⚠️ **树改了、rubric 文档还是 v1.2 ⇒ 错位显式记在** [方案 02 §2.4](../设计方案/02-rubric与代码对齐.md) |
+
+**判据的机器码是实测出来的，不是抄的**：两面各一个探针
+（`research/probes/{camofox,obscura}_nav_failure_codes.py`）现场打四类用例——
+DNS 解析不出来 / 连接被拒 / 超时 / 打断——**两个面的语义对齐**
+（camofox 面 `NS_ERROR_UNKNOWN_HOST` / `NS_ERROR_CONNECTION_REFUSED`；
+obscura 面 `ConnectError("dns error")` / `kind: ConnectionRefused`），
+而 `NS_ERROR_NET_TIMEOUT` / `Timeout 30000ms exceeded` / `kind: TimedOut`
+**两侧都不算**「真·站点不可达」⇒ 落 `unresolved`。
+
+**门禁**：`4275 passed`（含 12 条新判据测试 + 5 条 recording 路径改判测试）。
+
+⭐ **2026-10-27 补一道「产地契约」**（`tests/contract/test_unreachable_hard_producers.py`，
+**10 条**）：`"unreachable_hard"` 这个**字面量**在 `executor/` 里**只准**出现在四个
+文件里（两个记账产地 + `BRANCH_LABELS` 定义 + 代记录）；两个记账点都必须在
+`proven_unreachable` 守卫之下（**AST 核**：祖先链里有一个 `if`，其判定式引用了
+`proven_unreachable`）；两条链对**同一失败形态**必须给**同一个分支**。
+
+⇒ **为什么要补这道**：**M-43 与 M-44 是同一个洞踩了两次**——M-43 把「建页与导航
+塞进同一个路由」拆成两次调用（归属判据变成结构性的），但「**建页失败 ⇒ 记成
+导航失败**」这个映射**还在** ⇒ 机制没修；M-44 把判据收成机器码，却**没留门禁**
+⇒ 下次改代码同样的洞会再开一次，**而报表上看不出来**（超时记成
+`unreachable_hard` 在报表上只是「又多了一条负样本」，分布动一点没人会去查）。
+
+⚠️ **为什么守在代码层而不是数据层**：数据层要判「这份存档是**新口径**还是
+**旧口径**」，而 **P1 存档不带时间戳**（实测 `steps` / `visits` / `outcomes` /
+`run_config` / `provenance` 全无时间字段）⇒ 只能按**文件 mtime** 判，那是**代理
+不是事实**（`branch_eras.M_TIME_CAVEAT`），且**复核一次就重写 mtime** ⇒ 旧存档
+被误升代 ⇒ 门禁要么误报要么漏报。
+⇒ **代码层才是护栏该在的地方**（CLAUDE.md：代码层做护栏、LLM 层做探索）。
+数据侧靠「**逐条打开存档读 evidence**」那套固定动作兜（人读，机器不猜）。
+
+⇒ **变异验证（不是假护栏）**：把守卫在**内存里**删掉
+（`if reach.proven_unreachable:` → `if True:`）⇒ 契约测试当场红 ⇒ 护栏有效。
+（验证脚本跑完即删；**不写回磁盘**——批次在跑，改执行层代码会让读数不可归因。）
+
+✅ **已闭环（2026-10-28 05:50）：M-44 判据的现场证据到手** —— 判据**触发 20 次、
+20 次全部正确降级到 `unresolved`**，`unreachable_hard` **0 条**
+
+（闭环依据：续跑的 17 份批次存档逐条读 evidence；完整读数见
+[编年史 §七](90-增量编年史.md)。）
+
+| 读数 | 值 |
+|---|---|
+| M-44 判据 reason 命中 | **20 条**（11 条「导航失败（这次没打开·证明不了站点不可达）」+ 9 条「执行层会话失效（不是站点打不开）」） |
+| 落 `unresolved` | **20 / 20** |
+| 落 `unreachable_hard` | **0** |
+| 「**真·站点不可达**」前缀命中 | **0 次** |
+| 批次层（**28 份**）`unreachable_hard` | **0**（`unresolved` 197） |
+| 池里 `unreachable_hard` | **54**，**全是存量** ⇒ M-44 批次贡献 **0** |
+
+**机器码**：`NS_ERROR_NET_RESET` 2 · `page.goto: Timeout 30000ms` 7 ·
+`HTTP 502` 1 · `navigate timed out after 35000ms` 1 · `tab create timed out after 30000ms` 9
+⇒ **没有一条是 DNS 解析失败 / 连接被拒** ⇒ 按新口径**全部**该落 `unresolved`
+⇒ **代码判得对**。⭐ 按**旧**口径这 20 条**会全部进池** ⇒ 教模型「这站看不了」，
+而事实只是「这次没打开」——**这正是 M-44 要治的污染**。
+
+⭐ **§五 那张「E017 重跑落盘后的必做核对清单」作废**（前提「唯一触发过判据的那条
+没落盘」已不成立）：E017 本轮**两条**判据命中都是 `NS_ERROR_NET_RESET`
+⇒ 落 `unresolved` **正确**；本轮 `unreachable_hard` **0 条**，
+上一批那条 `FkNf6BD5y` 候选**没出现在本轮候选集里**（该串全语料 **0 处**）
+⇒ ⚠️ **这不等于「它现在能打开」**，只能说明**本轮没撞上它**。
+
+⭐ **可复用的结论：判据的触发面在结构上窄，但进站失败很常见 ⇒ 判据不空转**——
+
+| 失败发生在哪里 | 走不走判据 | 落哪 |
+|---|---|---|
+| **进站**（候选站点根 URL，`visit.enter_site`，**两条链共用**） | ✅ 走 | 机器码证明 ⇒ `unreachable_hard`；否则 `unresolved` |
+| **中间页**（`aggregator.probe_and_observe`） | ✅ 走——但 **`intermediates` 恒为 `[]`** ⇒ 这条路**从未执行过** | — |
+| **agent 站内导航**（agent 自己点的深链） | ❌ **不走** | 错误进 `steps`，agent 自己用语义写 evidence ⇒ 多落 `unresolved`（**不进池**，效果对，但**不是判据的功劳**） |
+
+⇒ 门禁（契约测试 + 变异验证）证明「**代码里守得住**」；
+**现场那 20 次证明「判对了」** ⇒ 两者合起来，M-44 闭环。
+✅ **已闭环（2026-10-28 09:50）**：**Q-23 做完了**——池里**存量那 54 条**
+`unreachable_hard`（改判**之前**写进去的，**不回填**）已**逐条真浏览器复核**
+⇒ **40 条出池**（降级 `unresolved` + 撤池行）、**14 条留池**（拿到真·不可达机器码）
+⇒ 池里 `unreachable_hard` **54 → 14**。完整读数见
+[编年史 §增量九十七](90-增量编年史.md)。
+
+
+⚠️ **两条踩过的坑，别再踩**：
+
+1. **判据必须在截断之前判**——obscura 的 `dns error` 机器码落在第 **~200 字**，
+   而驱动的错误文本**截断到 200 字** ⇒ 截断后再判**认不出来**
+   （存量 **17** 条 `client error (Connect)` 行就是这么丢的证据）。
+   ⇒ 分类在 `_call` 里**先于** `text[:200]` 执行。
+2. **标签文本不是契约**——`BRANCH_LABELS` 的**值**不参与任何契约比对
+   （契约冻的是分支**名**，见 `evaluation/golden/builder.py::LABEL_UNIVERSES`）
+   ⇒ 改文案不破契约；**存量金标行留着旧字面量不回填**
+   （v13 三档共 **43** 行：calibration 20 / holdout 14 / regression 9；
+   历史版本各自快照，**本来就不该跟**）⇒ 分代边界由 **e6** 记。
+
+### M-45 · **凭据闸门的一次误报炸掉了整批 16 条** —— 两个缺陷叠在一起
+
+**现象**（2026-10-28 00:30）：28 条的 M-44 重跑批次跑到**第 12 条**（E017）时抛
+`CredentialLeak` ⇒ 异常从 `archive.write` **一路冒到 `main`**
+⇒ **整批只跑成 11 条**，剩下 **16** 条全丢，**且不留痕**
+（进程直接死 ⇒ 连失败清单都没有 ⇒ 那 16 条在批次报表上长得和「没采过」一模一样）。
+
+⇒ 这是**两个缺陷叠在一起**，缺一个都炸不出来：
+
+| # | 缺陷 | 位置 | 单独存在时的后果 |
+|---|---|---|---|
+| ① | **韧性缺陷**：`archive.write` 在 per-entry 的 try/except **之外**（那个 try 只护住 `orch.run`）⇒ **一条存档的闸门能炸整批** | `executor/cli.py::_run_plan` | 与「浏览器起不来」同款缺陷：2026-10-26 已修过一次（起浏览器失败只毁那一条），**写盘这条路漏了** |
+| ② | **误报缺陷**：`sk-[A-Za-z0-9]{16,}` **不锚定左边界** ⇒ **百度跳转链接的 base64url 参数**（字符集 `A-Za-z0-9-_`）里**必然偶发**出现 `sk-` + 一串字母数字 | `executor/archive.py::_CREDENTIAL_PATTERNS` | 一条正常存档被当成含凭据 ⇒ **被拒写盘**（那条采集结果全丢，E017 跑了 **18 分钟**） |
+
+⭐ **取证是零成本的**：存档没落盘，但**候选 URL 在批次日志里**
+⇒ 不必重跑就能定位——把日志里的候选 URL 逐条喂给扫描器：
+
+```
+命中：http://www.baidu.com/link?url=FkNf6BD5y-B6dG1spuolNhomLxeySk-LgjTzmjWV4aeHAPQn6GLyXpw_...
+形态：len=27 shape=AaXAa2Aa3A29a2A4a9A2aAa2 prev='_'
+```
+
+⇒ 命中的是 ``Lxey``**`Sk-LgjTzmjWV4aeHAPQn6GLy`**——**嵌在 base64 串中间**，
+前邻是字母数字 ⇒ **纯误报**，与凭据无关。
+
+⚠️ **为什么「嵌在词里」就能判误报、而真 key 不能**：**真 key 总是独立的一个 token**
+（前面是空格 / 引号 / `=` / `/`），而嵌在更长词里的 `sk-` 是**编码串的一段**。
+⇒ **左边界**（`(?<![A-Za-z0-9])`）恰好分开这两者。
+
+**处置（三件，都已落地）**：
+
+| 落点 | 做了什么 |
+|---|---|
+| `executor/archive.py::_CREDENTIAL_PATTERNS` | `sk-` 与 `sk-ant-` 两条**加左边界** ⇒ 只放宽「嵌在词里」那一种形态，**真 key 照拦**（前邻是空格 / 引号 / `=` / `/` 都拦） |
+| `executor/cli.py::_run_plan` | `archive.write` **纳入 per-entry 保护** ⇒ 凭据闸门**不再炸整批**；失败理由说清是「**内容**命中凭据特征」不是「**能力**」问题（两者处置完全不同，混在一列里会被读成同一件事） |
+| `executor/archive.py::credential_shapes` | **脱敏形态**（长度 + 字符类别构成 + 前邻符号）——⚠️ **排错要形态不要原文**：`credential_samples` 给的是**匹配原文**，那**就是凭据本身**，放进日志就等于把凭据复制出去（红线） |
+
+⚠️ **残留风险（明写）**：「**宁可误报**」的口径被**局部**放宽了——只对 `sk-` 两条的
+「嵌在更长词里」那一种形态。真 key 形态（前邻非字母数字）**照拦**，
+但「某个真 key 恰好被塞进一个更长的字母数字串里」这种形态**现在不拦了**
+（实测**没遇到过**，且那种东西本来也不像 key）。
+⇒ 这条放宽是**有据的**（今天的现场样本），不是「放松纪律换跑通」。
+
+**门禁**：`4321 passed`（新增 **韧性 1** 条 + **脱敏形态 11** 条 +
+**左边界 12** 条）。⚠️ 左边界那条把**今天真实毒化整批的样本**写进了测试
+（`tests/contract/test_archive.py::Test左边界::BASE64_PARAM`）⇒ 同一个洞不会再开。
+
+⚠️ **顺带查出一件待查的事**：E017 里有**一条 `unreachable_hard`**
+（百度跳转链接 `FkNf6BD5y-...` 那条）——按 M-44 新口径，**只有 DNS 失败 /
+连接被拒**才配记它 ⇒ **它的 evidence 得看**。
+⚠️ 那条存档**没落盘**（被凭据闸门拦的）⇒ **要等 E017 重跑落盘后才能判**
+⇒ 续跑计划**把 E017 排在第 1 位**（`plan_from_corpus.py` 按「有无现行面存档」
+自动识别 ⇒ 没落盘 ⇒ 仍算必要重跑 ✔）。
+
+⭐ **2026-10-28 01:05 补一条现场证据**（这条把「判据有没有在现场跑过」
+从「不知道」变成「跑过，但证据随存档一起丢了」）：
+
+```
+rerun_prod_m44.log:2423  [E017] 环节② http://www.baidu.com/link?url=FkNf6BD5y-…
+                          → unreachable_hard
+rerun_prod_m44.log:2417  [E017] 环节② …otP-tNOat15j9aGre… → unresolved
+rerun_prod_m44.log:2420  [E017] 环节② …qp0QHW_UzJhUhkzx… → unresolved
+```
+
+⇒ **M-44 判据确实在生产面上触发过并分流了**（不是空转）；
+⚠️ 但**日志只记分支名、不记 reason** ⇒ 机器码**只能靠重跑读 evidence 才知道**
+⇒ 这就是**未闭环的那一步**（见 M-44 节末的核对清单）。
+⚠️ 也因此：拿「落盘 11 条里 `unreachable_hard` 0 条」去论证判据生效或没生效，
+**两边都不成立**——**唯一触发判据的那条不在那 11 条里**。
+
+⇒ **续跑已启动**（2026-10-28 01:10）：`plan_rerun_prod_m44_cont.json`
+**17 条 / 0 跳过**，**E017 排第 1 位**（日志
+`trajectory_pipeline/output/pipeline/rerun_prod_m44_cont.log`），
+已确认起跑：E017 取回候选 19 → 保留 16 → 16 个进环节②。
+
+### M-46 · **硬故障任务重跑**（增量九十六 §7-4 那 26 条 ⇒ **9 个任务**）—— ⚠️ **B4 得拆成两半**
+
+**触发**：增量九十六 §7-4 把 28 份批次存档的 **428** 条 outcome 按「结论是不是
+采集侧造成的」分了六族，结论是 **B1 / B2 / B4 共 26 条**属于「**同参数重跑就会不同**」
+⇒ 落在 **11 个任务**上 ⇒ 那 11 个任务**必要重跑**。
+
+⚠️ **B4 不是一个族，是两个**（把它当一族是个错）：
+
+| 子族 | 证据首段 | 性质 | 该怎么办 |
+|---|---|---|---|
+| **B4a** | `后端未作答（http:500）` | **瞬时**后端故障 | ✅ **重跑**——同参数重跑就会不同 |
+| **B4b** | `后端未作答（budget:max_tokens 用尽…）` | **输出撞了 token 上限** | ⚠️ **先调参**——同一页同参数重跑**大概率同样撞**；证据原文自己写着「调大 `TRAJECTORY_LLM_MAX_TOKENS`」 |
+
+⇒ **真·值得重跑的**：B1 **11** 条 + B2 **10** 条 + B4a **2** 条 = **23** 条，
+落在 **9 个任务**上（**E021 9** · T025 3 · E017 2 · T018 2 · T031 2 · T054 2 ·
+E002 1 · T024 1 · T042 1）。
+⇒ **E001 / E005 显式跳过**（硬故障只有 B4b ⇒ 进 `skipped` 并点名
+`needs_param_tuning`——**不静默丢**）。
+
+**26 条逐条读过 evidence 的核对结果**（分类不是靠猜）：
+
+| 族 | 条数 | 实际形态 |
+|---|---|---|
+| B1 | 11 | 导航超时（`page.goto: Timeout 30000ms` / `navigate timed out after 35000ms`）· `NS_ERROR_NET_RESET` · `HTTP 502` |
+| B2 | 10 | **9 × `tab create timed out after 30000ms`**（E021 全是这条 ⇒ 执行层建页失败）· 1 × `404: Tab not found`（取不到快照） |
+| B4a | 2 | `http:500`（T025 / T042） |
+| B4b | 3 | `budget:max_tokens 用尽`（E001 / E005 / T042） |
+
+**判据单点**：`research/recollect/plan_hardfail_rerun.py::hard_kind()`
+——判据是**证据首段的固定文案**（采集侧写死的，不随站点变）⇒ 比解析自由文本稳。
+
+**实例来源**：**批次存档本身**反推（同一 `task_id` / 片名 / 检索式 / 用户原话）
+⇒ 新旧两份可**逐行对照**；实例字段的拼装与「能不能跑」的六条硬条件
+**import** `plan_from_corpus.py`（**一份判据两处用**）。
+
+**计划**：`output/pipeline/plan_rerun_hardfail.json` —— **9 条 / 0 跳过**，
+批次身份 **`rerun-hardfail-2026-10-28`**（⚠️ **与 M-44 那批不同**——
+批次边界前后分布会跳变，批次元数据就是记这件事的 ⇒ 别把两批的读数混着比）。
+
+**跑法（串行）**：
+
+```powershell
+uv run python -m trajectory_pipeline.executor.cli run \
+  --plan trajectory_pipeline/output/pipeline/plan_rerun_hardfail.json \
+  --executor-mode agent --driver camofox --perceptor llm --log-level info
+```
+
+⚠️ **串行是硬要求**——上游 `lock_queue` 会**销毁别人的页** ⇒ 并发跑 = 互相毁页。
+⚠️ **起跑前**先 `cli check --driver camofox` 探一次会话层（指纹 + 元素枚举）。
+
+**未闭环**：跑完仍要走那一套固定动作（**逐条打开存档读 evidence** → 重建产物 →
+门禁 → 并池干跑），且**新批次的人判读数要按代分开看**（**e6** 是 M-44 的分代边界）。
+
+⭐ **还欠一条 owner 裁定**：**B4b 那 3 条**（E001 1 · E005 1 · T042 1）要不要
+**调大 `TRAJECTORY_LLM_MAX_TOKENS` 后再跑**？⚠️ **调参会改 `run_config`**
+⇒ 与存量档案**不可直接比**（`max_tokens` 影响 ④ 的判定）⇒ 要么**单开一批**
+（批次身份另起、读数分开看），要么**先不调**。
+⇒ **本轮先不调**（不改存量批次的可比性）——这是**我的判断，不是裁定**。
 
 | ID | 决策 | 锚点 | 两条路的代价 |
 |---|---|---|---|
@@ -1300,11 +1896,253 @@ CLAUDE.md 写着「禁止投票/集成，分歧必须暴露给人看」⇒ 命�
 
 | **Q-15** | ★**（2026-10-24 新增）优酷 v_show 的判据边界**——同一份正文被读成三种落点 | 07 评估 / rubric · 手册 §7.2.2 O-a · 本文 §M-30 · M-30 §2 | 页面事实：`iframe=1`、`video=0`、导航栏有「续费会员」。⇒ **两种读法**：①（rubric 读法）iframe 是判据 ⇒ 有组件可确认 ⇒ 落成功；② 同页有 iframe ⇒ 组件只是**候选** ⇒ 应落**未验证**。M-30 §2 明写「这条判据边界上有两种读法」、owner 未收敛。**影响 4 行**。⚠️ 这与 M-30 已定性的 19 个 URL **不是同一件事**（那 19 个定的是 D-10 分支标签） |
 | **Q-16** | ★**（2026-10-24 新增）西瓜「打开App观看」≡「打开App看完整内容」吗** | 07 评估 / rubric · 手册 §7.2.2 O-b · M-30 §8 | 页面正文原话「打开西瓜视频，看完整高清内容」「付费」「**打开App观看**」。认 ⇒ 落 `subscription_wall`（排除）；不认 ⇒ 落 `unresolved`（未决、不入池）⇒ **结论就变了**。**影响 2 行** |
-| **Q-17** | ★**（2026-10-24 新增）`unreachable_hard`（传输层失败）该不该进负样本池** | 03 标签 / 08 存档 · 手册 §7.2.2 O-c · 本文 **M-28**（同族）· H-15 / H-17 | H-15 / H-17 的口径是「采集失败不该进负样本池」；但 `unreachable_hard` **不在** `REVIEW_BRANCHES` 里。**影响 18 行**。本轮**按「分支事实正确」记 D-5 五档**（传输层失败不是站点性质），**池归属另议** |
+| **Q-17** | ✅ **已裁定（2026-10-27，owner；Q-17 / Q-23 一并裁）：「先裁再跑」——「这次没打开」（超时 / 打断 / 建页失败 / 会话失效 / 快照失败）从 `unreachable_hard` 降成 `unresolved`（**不进池**），只留「**真·站点不可达**」（**机器码**证明：DNS 解析不出来 / 连接被拒）** | 03 标签 / 08 存档 · 手册 §7.2.2 O-c · 本文 **M-28**（同族）· H-15 / H-17 · **本文 M-44（裁定 + 实施结果）** · [方案 02 §2.4](../设计方案/02-rubric与代码对齐.md) | H-15 / H-17 的口径是「采集失败不该进负样本池」；而 `unreachable_hard` **不在** `REVIEW_BRANCHES` 里 ⇒ **采集侧的故障被装进「站点不可达」** ⇒ 池里那行的断言是「这里真的看不了」，而事实只是「这次没打开」⇒ **污染训练信号**（教模型「这个站看不了」，其实只是慢 / 被打断 / 建页失败）。⇒ 因为「**并池是写入时的动作、不回填历史存档**」⇒ **改判只影响新行** ⇒ **跑之前改最省事** ⇒ **先裁再跑**；**存量 54 条另走 Q-23 出池**（逐条单独复核）。**落地口径**：判据单点 `executor/browser/nav_failure.py::site_unreachable()`（跨面统一，两面机器码实测对齐），两条记分链（`visit` / `aggregator`）同口径；分支标签改「**站点不可达（DNS 解析失败 / 连接被拒）**」。⚠️ **rubric v1.2 的 D-5 决策树与代码树已错位** ⇒ 显式记在方案 02 §2.4；**本轮不升 rubric 版本**（v1.3 需 owner 签核） |
 | **Q-18** | ★**（2026-10-24 新增）第三方影视站（策驰影院）入不入池** | 03 标签 / rubric · 手册 §7.2.2 O-d | rubric 决策树没有这种站点形态；按 **G-2**（禁止引入内容合规/版权考量）**档位不变**（本轮 5/5）⇒ 只剩「入不入池」一个决定。**影响 1 行** |
 | **Q-19** | ★**（2026-10-24 新增）腾讯《中国好声音》专题页的 4 个 iframe 是不是播放器**——**要现场重采** | 07 评估 / 08 存档 · 手册 §7.2.2 O-e | 存档只记「4 个 iframe（性质没核）」+ 元素被裁（80/200）⇒ **否定断言撑不住**（本轮记 4 档）。重采后：确认是播放器 ⇒ 落 `player_unverified`（未决、不入池）⇒ 结论变 ⇒ 2 档；确认无 ⇒ 5 档。**影响 1 行** |
-| **Q-20** | ★★**（2026-10-26 新增）agent 路径那一整套口径**——**八个子问题，一并拍** | 02 感知 / 03 标签 / 05 rationale / 08 存档 · 本文 **§M-37 / §M-38 / §M-39 详解** · `executor/steps/agent_visit.py:134` · `executor/branches.py:370` · `executor/archive.py:316` · `perception/rule_perceptor.py::paywall_evidence` | **① agent 路要不要接前置事实核**（甲：接，先补判据 / 乙：不贴，全交人工 / 丙：单开一套 ⇒ **推荐甲**）· **② `paywall_evidence` 的「同句」放宽到多宽**（iqiyi 门禁句被 DOM 换行切开 ⇒ 现在判不出来；v.qq 的「完整版」在片名里 ⇒ 放宽会假阳）· **③ `login_required` / `blocked` / `partial_free` 的散文前置要不要升级成可执行判据**（不升级 ⇒ 甲只修一支）· **④ 池的去重键要不要带 `driver` / `run_id`**（影响存量 260+7 行的键空间）· **⑤ 产物要不要加口径轴**（M-39：现在只有 `rationale_era` 一条）· **⑥ youku / v.qq 那两条标签怎么办**（移出池 / 改判 `unresolved` / 留待人判——**没资格现场重采**，camoufox 已卸）· **⑦ iqiyi 那条保不保**（页面原文「试看…观看完整视频请开通VIP会员」⇒ 标签是对的）· **⑧ 改词表要连带改 prompt + 重跑 A/B，批不批**（D-C7 义务，见 Q-08） | ① 不接 ⇒ agent 路径**产出的负标签一律没过核**，池里会持续混进营销/广告页（youku / v.qq 就是现成例子）· ② 放宽不足 ⇒ iqiyi 这类**真付费墙被假降级**（真负样本流失）；放宽过度 ⇒ 导航栏 CTA 复活成付费墙（v.qq 的「完整版」是片名）· ⑥ 直接改判 `unresolved` ⇒ 这两条**从池里消失**（`unresolved` 不入池）——**但那也是一次未经现场复核的定性**（`unresolved` 的含义是「没判出来」，不是「判为不是墙」）⇒ **建议先留池 + 打标记**，等 camoufox 恢复后现场重采（**并池是写入时的动作，不回填历史** ⇒ 那时要新写一行，不能改旧行） |
+| **Q-20** | ★★**（2026-10-26 新增）agent 路径那一整套口径**——**八个子问题，一并拍** | 02 感知 / 03 标签 / 05 rationale / 08 存档 · 本文 **§M-37 / §M-38 / §M-39 详解** · 本文 **§Q-20 详解（① ② 的「详情/问题/原因/可选做法」四段 + 实测读数）** · `executor/steps/agent_visit.py:134` · `executor/branches.py:370` · `executor/archive.py:316` · `perception/rule_perceptor.py::paywall_evidence` | **① agent 路要不要接前置事实核**（甲：接，先补判据 / 乙：不贴，全交人工 / 丙：单开一套 ⇒ **推荐甲**）· **② `paywall_evidence` 的「同句」放宽到多宽**（iqiyi 门禁句被 DOM 换行切开 ⇒ 现在判不出来；v.qq 的「完整版」在片名里 ⇒ 放宽会假阳——⭐ **2026-10-27 已坐实**：`_PAYWALL_UNIT_SPLIT` 按**换行**切句 ⇒ 存档 `T054__1c9b6260__site-5` 正文里「后结束，观看完整视频请」与「开通VIP会员」落进**两个句单元** ⇒ `paywall_evidence` 返回**空串**；**验收样例** = 改完判据后这段正文必须**从空串变成命中**）· **③ `login_required` / `blocked` / `partial_free` 的散文前置要不要升级成可执行判据**（不升级 ⇒ 甲只修一支）· **④ 池的去重键要不要带 `driver` / `run_id`**（影响存量 260+7 行的键空间）· **⑤ 产物要不要加口径轴**（M-39：现在只有 `rationale_era` 一条）· **⑥ youku / v.qq 那两条标签怎么办**（移出池 / 改判 `unresolved` / 留待人判——⭐ **2026-10-27 已现场重采完毕（camofox）**：v.qq 只有营销 + 广告位「VIP可关闭该广告」、播放器 02:09 短片 ⇒ `subscription_wall` **站不住**；youku 现场是「由于安全原因，请 登录 后继续观看」⇒ **登录墙** ⇒ **站不住** ⇒ **只剩 owner 的定性**——⭐⭐ **owner 已裁（2026-10-27）并已执行**：**v.qq 留池打标、改用预告片标 `trailer_only`**（落地页只有 2 分 09 秒短片，不是目标正片）＋ **youku 改判 `login_required`**（现场是登录墙）⇒ 走 `cli relabel --apply`：改判 **4 条记录**（v.qq 1 + youku 3）⇒ 池 325 行**数量不变**（`subscription_wall` 46→42 · `login_required` 9→12 · `trailer_only` 1→2），evidence 带「[改判 …]」且 `source=human`；⚠️ **同 URL 的第 4 行没改成**（`TPIN02` 那行，工具按 D-5 归属闸**主动拒了**）⇒ **仍挂 `subscription_wall`** ⇒ **要 owner 再说一句**（留 / 改 / 出池）——见 §Q-20 详解「附带开口 B」；⚠️ **另带出两条口径开口**：`trailer_only` 的**宽口径**（仓库的 `classify_trailer` 对 v.qq 判 `none`/`suspect`，**永远不会**产 `trailer_only`）＋ W2 放宽会把 owner 刚裁的 3 行 youku 判成「有付费墙证据」⇒ **② 与 owner 的定性打架**——见 §Q-20 详解「附带开口 A」）· **⑦ iqiyi 那条保不保**（⭐ **2026-10-27 复核**：存档 `T054__1c9b6260__site-5` 的正文**当场就有**「试看 05:44 后结束，观看完整视频请 开通VIP会员」+「99分钟」正片 ⇒ **就是同一个 URL**（不是另一个 URL），**标签当时是对的 ⇒ 方向是「保」**；但仓库自己的 `paywall_evidence` 对那段正文**也判不出来**（DOM 换行切开 ⇒ §Q-20 ②）⇒ **这条同时是补判据的验收样例**）· **⑧ 改词表要连带改 prompt + 重跑 A/B，批不批**（D-C7 义务，见 Q-08） | ① 不接 ⇒ agent 路径**产出的负标签一律没过核**，池里会持续混进营销/广告页（youku / v.qq 就是现成例子）· ② 放宽不足 ⇒ iqiyi 这类**真付费墙被假降级**（真负样本流失）；放宽过度 ⇒ 导航栏 CTA 复活成付费墙（v.qq 的「完整版」是片名）· ⑥ 直接改判 `unresolved` ⇒ 这两条**从池里消失**（`unresolved` 不入池）——**但那也是一次未经现场复核的定性**（`unresolved` 的含义是「没判出来」，不是「判为不是墙」）⇒ ⭐ **2026-10-27：现场重采已做完**（camofox 执行层，v.qq / youku **当场与今天都站不住**）⇒ **现在只剩 owner 的定性**（移出池 / 改判 `unresolved` / 留待人判）；**并池是写入时的动作，不回填历史** ⇒ 若改判要**新写一行**，不能改旧行 |
+| **Q-21** | ★**（2026-10-27 新增）池里同一 `(task_id, url)` 挂两个不同的负分支**——**哪些分支对算「矛盾」？自动写入路径要不要也查？门禁要不要加一节？** | 03 标签 / 08 存档 · 本文 **§M-41 详解** · `executor/archive.py:316`（去重键含 `branch`） · `executor/pool_add.py::collect_candidates`（人工那条路拒并 `stale_branch`） · `branches.BRANCH_PRECONDITION`（前置事实那张表） | 实测：T004 的 `vo.youku.com` 同 task 同 URL，老 camoufox 批记 `component_unverified`、新 camofox 批记 `subscription_wall` ⇒ **两条互斥标签同在池里**，而门禁**不查「池行 ↔ 池行」**⇒ 全库 **16 对**看不见。⚠️ **不是所有多分支都是矛盾**：`blocked` vs `login_wall_or_blocked` 是**两层**拦截（不是）；`component_unverified` vs `subscription_wall` 是**同一层**的互斥结论（是）。**三条**：① **互斥分支对的那张表**放哪（建议落 `BRANCH_PRECONDITION`，那张表本来就管「贴标签前核前置事实」）· ② 自动写入路径要不要也查（不查 ⇒ 分歧从自动那条进来；查 ⇒ 要定「拒并还是并但打标」）· ③ 门禁要不要加一节「池行 ↔ 池行」。**不替人投票**：现在**一行都不动**（分歧摆上台面） |
+| **Q-22** | ★**（2026-10-27 新增）池行 `golden_id` 的行号后缀要不要改成分支后缀？那 **6 条掉线**的人核标签要不要跟着改键？** | 07 评估 / 08 存档 · 本文 **§M-42 详解** · `evaluation/golden/builder.py::_scan_negative_pool`（`__neg{i:02d}`，`i` = 池文件行号） · `evaluation/golden/data/annotations.jsonl`（**6 条** `__negNNN` 标注） · `evaluation/golden/data/candidates.jsonl`（**旧扫描**，还挂得上） | 实测：id 里的 `{i}` 是**池文件里的行号** ⇒ 池一增删，后面所有行 id 前移/后移 ⇒ **6 条人核标注（6/6 全掉）静默失联**（池里 `neg151…neg160`，标注里 `neg152…neg161`，**整体差 1**；证据一条没少，**只有序号变了**）。⚠️ **现在还没炸**（入库的 `candidates.jsonl` 还是旧扫描，老序号还挂得上）⇒ **下一次重建候选集就炸**：这 6 条被 `site` 过滤剔掉 ⇒ **D10 分母 289 → 283**，报表上**看不出原因**。**两条**：① **后缀改成分支**（`__neg_{branch}`——分支在同 `(task,run,url)` 内唯一 ⇒ 天然去重；id 只依赖身份 ⇒ 池增删不动它）还是**另找一个身份口径**（如带上 `run_id`）？② **那 6 条标注的键要不要跟着改**（**标签内容一个字不动，只改键**）——**改键 = 动人核数据 ⇒ 要人签**；不改 ⇒ 下次重建就掉线。⚠️ **不替人投票**：现在**代码一行不改、标注一行不改**（键不改、缺陷摆上台面）。⭐ **2026-10-27 补**：**成因链已查实**（committed `candidates.jsonl` 的 10 条 `__neg` id 与现行 builder 逐条对 ⇒ **Δ ≡ −1**、10 条无一例外；builder 下标口径**没变过**；那 10 个 id **自 2026-10-14 起就是 `neg152`–`neg161`** ⇒ 它们算出来时池里**还留着 TPIN02 `yn-mg.cn/playid/71884` 那行**——**2026-10-22 撤掉它** ⇒ 后面全体 −1 ⇒ `candidates.jsonl` 没重建 ⇒ 标注挂不上）⇒ **不是代码改的，是池改的**。⇒ **本轮撤的 6 行都在池第 300 行之后 ⇒ 没制造新的掉队** ⇒ **本轮不重建**。⇒ ⚠️ **改口径会让全部 357 条候选的 id 全变** ⇒ **迁移期要双 id 并存**（旧 id 留一段，或建 `id_alias` 映射表） |
+| **Q-23** | ✅ **已闭环（2026-10-28 09:50）**：口径问题 2026-10-27 已裁定（随 Q-17 一并裁）；**「存量出池」那一半本轮做完**——池里 **54 条** `unreachable_hard` **逐条真浏览器复核** ⇒ **40 条出池**（降级 `unresolved` + 撤池行）、**14 条留池**（真·不可达机器码）⇒ 池里 `unreachable_hard` **54 → 14** | 03 标签 / 08 存档 · 本文 **§十一（读数）** · **本文 M-44（裁定 + 实施结果）** · `executor/branches.py::BRANCH_PRECONDITION` · `executor/browser/nav_failure.py::site_unreachable()`（**裁定后的判据单点**） · `research/probes/{camofox_q23_uh_recheck,camofox_q23_uh_settle,q23_dispose_uh_rows,q23_annotate_kept_rows}.py` | 第 5 轮**同一个 URL 两条分支**：`http://www.iqiyi.com/v_19rrk40at8.html…` 在 **T038（单独跑）**落 `unresolved`（站点遍历超时 >180 s ⇒ **页面打得开**），在 **T048（与另一条流并发）**落 **`unreachable_hard`**（导航 30 s 超时 ⇒ **进池**）；ixigua 同款。⇒ **导航超时证明的是「这次没打开」，不是「站点不可达」**（DNS 失败 / 连接被拒才是不可达）。⚠️ **并发只是候选成因**（站点限流同样是）⇒ **先单独重开那几条**：打得开 ⇒ **出池**（池第 **308 / 309** 行，出池前）；仍超时 ⇒ 事实成立。⇒ **更大的那条**：现池 **56 条** `unreachable_hard`（39 直站 + 17 百度跳转）**都受这条影响** ⇒ **要不要把「导航超时」降成 `unresolved`（不进池）**？**不替人投票**：代码一行不改、池一行不动，等 owner 裁定。<br>⭐ **2026-10-27 本轮已按铁律逐条单独复核完（第 5 轮那 5 条 + M-43 那 1 条 = 6 条，**全部证伪**）**：3 条**单独重开打得开**（T004 豆瓣片单 / T048 爱奇艺《功夫（粤语）》/ T048 西瓜视频《功夫》）＋ 2 条**跳转链活着**（E028 两条 baidu 链接：打断消息里点名落点 `www.ctwlpt.com/voddetail/38550.html` 与 `…/vodplay/38550-1-1.html`；三轮重开**交替**报 `NS_ERROR_NET_RESET` 与 `Navigation … is interrupted by another navigation to …`）＋ M-43 那条**失败在建页路由、导航根本没发出去**。⇒ **处置已执行**：**6 次降级 + 6 次撤池**（先 `cli downgrade` 后 `cli pool-drop`，`pool_dropped.jsonl` 有原行全文）⇒ **池 331 → 325**，`unreachable_hard` **60 → 54**（16 百度跳转 + 38 直站）。⇒ **那 56 条的系统性口径问题已于 2026-10-27 由 owner 裁定**（**降级规则**：超时 / 打断 / 建页失败 ⇒ `unresolved` 不进池；只留 DNS 失败 / 连接被拒 ⇒ `unreachable_hard`；**只影响新行** ⇒ **已实施**，见 **Q-17** 与 **M-44 实施结果**）⇒ ⭐ **2026-10-28「存量出池」那一半做完了（Q-23 闭环）**：**29 个 URL / 54 条池行**逐条**真开浏览器**复核（camofox 面；`lock_queue` 独占 ⇒ 与采集批次错开跑的）⇒ **共 125 次尝试**（① 轮 29 URL × ≤3 次 = 53 次；② 轮给**全部没打开的 12 个 URL** 统一加试 6 次 = 72 次——⚠️ **按「第一轮打不开」筛，不按「读数难解释」筛**，后者就是「按结果决定给谁加试」）⇒ **判据用的就是执行器自己那把尺**（`executor/steps/reachability.py::probe`：单次导航里**机器码**证明 DNS 解析不出来 / 连接被拒 ⇒ `unreachable_hard`；其余（超时 / 打断 / 空响应 / 建页失败 / 会话失效）⇒ `unresolved`）⇒ **裁定**：`opens` **17** 个 URL / **31 行**（打得开 ⇒ 「站点不可达」不成立）· `not_proven` **9** 个 URL / **9 行**（9 次尝试全是 `NS_ERROR_NET_EMPTY_RESPONSE` / `NS_ERROR_NET_RESET` / `SSL_ERROR_BAD_CERT_DOMAIN` / 超时 ⇒ **证明不了**）· `site_unreachable` **3** 个 URL / **14 行**（`NS_ERROR_CONNECTION_REFUSED` 出现过 ⇒ 站点性质成立）⇒ **40 条出池 + 14 条留池**。⚠️ **不投票**：机器码的**原始次数照录进 reason**（「×4 / ×5」——⚠️ 初版按**字段**累加写成「×8」，那是**同一次尝试的码在 `code` 与 `ns_error_codes` 两个字段里各记了一遍** ⇒ 已改成**按尝试去重计数**，**理由文本是审计记录，不能带这个错**），**不设复现率阈值** ⇒ 「出现过一次拒连」就是一次站点事实，与执行器单次导航同口径。⇒ **处置顺序照旧**（先 `cli downgrade` 后 `cli pool-drop`，**每条 dry-run 与 apply 的命中数必须 1:1**）⇒ **两层都落**（原档 + 复核档：门禁与报表读的是复核档，只改原档会当场报 `negative_not_pooled`）⇒ ⚠️ **降级必须两层都落**这条已进避坑指南 **§8.36**（只改原档 ⇒ 门禁读复核档 ⇒ 当场报 `negative_not_pooled`）。⇒ **留池那 14 行补了机器码读数**（原 evidence 是 obscura 面的旧文案 + **200 字截断** ⇒ `site_unreachable()` **命中 0 条** ⇒ 不补的话留池行与刚撤掉的行**长得一模一样**，审计链断在池文件里）。⇒ **门禁读数与基线逐项一致**（`negative_not_pooled` **4 → 3**、其余七项不变、`exit=1` 不变）。⚠️ **顺带浮出一条待人判的**：撤池腾空了 (T011, trtag) 的槽位 ⇒ 一条**人裁过的**真负样本（`confirm_not_play_site` · reesn）**这才第一次能并池** ⇒ 已并（池 **432 → 393**，并进去的是那条人裁的，不是新判的）。⚠️ **冻结的金标候选集因此多了 24 个指向空池行的键**（**实测**：`research/probes/gold_candidate_drift.py` ⇒ 候选集 357 行 / 322 个去重键；漂移**撤池前 183 键 / 204 行** ⇒ **撤池后 207 键 / 230 行**，★**本轮新增 24 键 / 26 行，全是 `unreachable_hard`**）⇒ **重切候选集要人签**（§8.32：改键 = 动人核数据）⇒ **本轮不动**。 |
 
+
+---
+
+## Q-20 详解 · ① 与 ②（owner 2026-10-27 要的「详情 / 问题 / 原因 / 可选做法」四段）
+
+> **为什么单开一节**：§M-37 详解记的是**机制**（缺什么、为什么缺），
+> 而 Q-20 ① / ② 要 owner 拍的是**要不要修、修多宽** ⇒ 要的是**取舍账**，不是机制复述。
+>
+> ⭐ **本节的读数全部是实测**（§M-37 详解原话：「**放宽幅度只能靠实测定，不能靠论证定**」）
+> ⇒ 复算脚本 `research/probes/paywall_widening_measure.py`
+> ⇒ 读数落盘 `research/probes/paywall_widening_measure.json`
+> （**1160 段存档正文** + **22 行**金标候选；**不联网、不含凭据**）。
+>
+> ⚠️ **代码一行不改、池一行不动**——本节只摆事实与做法，**等 owner 裁定**。
+
+### ① agent 路要不要接前置事实核
+
+#### 详情
+
+**同一个账本，两条记账路径，前置事实核只有一条走到**：
+
+| | scripted 路 | **agent 路** |
+|---|---|---|
+| 入口 | `judge_player` → `ledger.record_from(decision)` | `executor/steps/agent_visit.py:134` 裸 `ledger.record(url, outcome.branch, reason, site_url=url)` |
+| 带 `decision=` 吗 | 带 ⇒ `question` 有值 | **不带** ⇒ `question=""` |
+| 走 `_precondition_failed` 吗 | **走**（`executor/branches.py:370`，全仓**唯一**可执行调用点） | **不走** |
+
+**agent 路的标签是闸门给的**：`executor/agent_loop.py:455` 的 `_branch_of(verdict)` 查
+`_FALLCLOSED_BRANCH` 表 ⇒ 判据是 `executor/gatekeeper.py::is_paywall` / `is_login_wall`
+⇒ `perception/rule_perceptor.py::has_strong_paywall_signal`（**强弱信号表**）。
+那个函数的 docstring 自己写着「⚠️ **不用于贴分支**」⇒
+**拦截口径的结论被直接当成分支标签贴了出去**。
+
+**盘上现状**（2026-10-27 实测，池 325 行）：evidence 带「**二次拦截**」的 **30 行**
+⇒ 这 30 行**全部**走这个绕过口：
+
+| 分支 | 行数 | `source` | 备注 |
+|---|---|---|---|
+| `subscription_wall` | 20 | `rule` | 机器贴的 |
+| `login_required` | 6 | `rule` | 机器贴的 |
+| `login_required` | 3 | `human` | 2026-10-27 owner 改判来的（evidence 仍留原「二次拦截」字样） |
+| `trailer_only` | 1 | `human` | 2026-10-27 owner 改判来的（同上） |
+
+⇒ **仍由机器贴出来的 26 行** = 池的 **8.0%**；改判过的 4 行分支已换、字样还在。
+
+#### 问题
+
+1. **agent 路径的负标签一律没过核** ⇒ 池里混进「营销页 / 广告页」——
+   v.qq 那条现场是广告位 + 会员营销，youku 那条现场是**登录墙** + 续费营销，
+   而这两条在 2026-10-27 之前**都标着 `subscription_wall`**。
+2. **同一个池里两种口径混存**（scripted 过的、agent 没过的）⇒
+   从产物上看不出来（`source` 都是 `rule`），门禁里也**没有任何一节在查这件事**。
+3. **`BRANCH_PRECONDITION` 里 `login_required` / `blocked` / `partial_free`
+   三条只有散文、没有代码** ⇒ 这三条分支**在哪条路径上都没有核**
+   ⇒ 甲方案**只接得动 `subscription_wall` 一支**（③ 是它的前置）。
+4. **接核的时点被 ② 卡死**：今天直接把 `_precondition_failed` 接到 agent 路，
+   iqiyi 那条**当场**带教科书门禁句的正文会被**假降级**成 `unresolved`
+   （真负样本流失）⇒ **必须先补判据**。
+
+#### 原因
+
+1. **「无题」被当成了「免检」**：agent 路径设计上没有判断题（探索权在 agent runtime）
+   ⇒ `question=""` ⇒ 而 `_precondition_failed` 恰恰**挂在有题的那条记账入口上**
+   ⇒ 「不贴题」顺带把「不核事实」也免了。
+   ⚠️ **没有任何成文裁定说过 agent 路免检**——这是**默认行为**，不是**决定**。
+2. **闸门那条路被设计成可以直接给分支**：
+   `GATEKEEPER_DECIDED_BRANCHES = {login_required, subscription_wall, blocked}`
+   （契约测试 `tests/contract/test_questionless_producers.py` 把它钉死了）
+   ⇒ 「谁给标签」与「标签有没有核」被拆成两件事，而第二件**没人做**。
+3. **口径有两套且从没被强制对齐**：
+   `has_strong_paywall_signal`（强弱信号，答「这页**像**付费墙吗」，用来**拦页面**）
+   与 `paywall_evidence`（门禁语境，答「这页**是不是**付费墙」，用来**贴分支**）
+   ——**同一个仓库里两套口径**，`rule_perceptor` 模块头那段注释自己写着
+   「这是这类错判能活这么久的原因」。
+
+#### 可选做法
+
+| | 做法 | 代价 | 实测读数 | 判读 |
+|---|---|---|---|---|
+| **甲** | 记账前先跑一次前置事实核，不成立降级 `unresolved`（把 `agent_visit.py:134` 那处裸 `record` 改成走一个「先核再记」的入口） | **必须先补判据**（②），否则假降级 iqiyi；且 **③ 不做就只修一支** | 「二次拦截」那 30 行在 ② 的 **W2** 下：**14 行活下来 / 16 行降级**（降级里有 owner 已裁的 v.qq 广告页 5 行 ⇒ 降级**对**；也有 bilibili 登录墙 3 行 ⇒ 若 ③ 误用付费墙判据去核 `login_required` 会**假降级**） | ⭐ **推荐**，但**序不能乱**：① → ② → ③ |
+| **乙** | agent 路**不贴负标签**，一律记 `unresolved` + 把闸门判定原文写进 evidence ⇒ 全部交人工 | agent 路**产不出负样本**（采集量掉一半）；`unresolved` **不入池** ⇒ 池只能靠 scripted 路长 | 同上 30 行**全部**降级 | ❌ **不推荐**：池的意义是「这里真的看不了」，而 `unresolved` 的含义是「**没判出来**」，不是「判为不是墙」 |
+| **丙** | 承认 agent 路**单开一套**「强信号即可贴」的口径 | 放弃「贴标签前核前置事实」这条纪律 | 「强弱信号」在 youku / v.qq 上**已经误判**（这两条就是它贴出来的）⇒ 丙等于把**已知错误制度化** | ❌ **明确不推荐** |
+
+**验收判据**（沿用 §M-37 详解那三条，**补**第 4 条）：
+
+1. iqiyi 那条**仍然成立**（不许假降级）；
+2. youku / v.qq 那两条**不再成立**（降级 `unresolved` ⇒ 不进池）；
+3. 金标里已判 `subscription_wall` / `login_required` 的行**不掉**（词表改动不许伤旧金标）；
+4. ⭐ **补**：「二次拦截」那 **30 行逐条**在新判据下重跑，出一张「活下来 / 降级」的对照表
+   ⇒ **不替人投票**：活下来的仍要人核一遍——**尤其那 14 行里 owner 刚裁成 `login_required`
+   的 3 行 youku**（**判据说订阅墙、owner 说登录墙**，见下节 ② 的「附带开口 B」）。
+
+### ② `paywall_evidence` 的「同句」放宽到多宽
+
+#### 详情
+
+**判据真源**：`perception/rule_perceptor.py::_find_paywall_hit`，三层：
+
+- **L1** `PAYWALL_GATE_PHRASES`（门禁短语本身是完整命题 ⇒ **无条件命中**）；
+- **L2** `PAYWALL_CTA_PHRASES`（CTA）**必须配同句**的 `PAYWALL_CONTEXT_WORDS`
+  （观看语境词）⇒ 裸 CTA（「开通会员」独行）**不算**；
+- **L1.5** `PAYWALL_ERROR_GATE_PHRASES` + `PAYWALL_ERROR_CONTEXT_WORDS`
+  （播放器报错 + 会员电商信号**同页同现**）。
+
+**「同句」是怎么定的**：`_PAYWALL_UNIT_SPLIT = re.compile(r"[\n\r。！？；;!?]+")`
+⇒ **换行也算切句符**；`_context_outside` 要求语境词落在
+**CTA 所在的那个句单元内**（且不在 CTA 短语自己的跨度内）。
+
+⭐ **实测**（存档 `T054__1c9b6260__site-5` 的**当场**正文，DOM 拼出来就是这样）：
+
+```
+试看
+05:44
+后结束，观看完整视频请
+开通VIP会员
+功夫（粤语） 99分钟 客户端流畅播放 …
+```
+
+⇒ 「观看完整」与「开通VIP会员」被**换行**切成两个单元
+⇒ `paywall_evidence` 返回**空串**
+⇒ **教科书级门禁句判不出来**（`PAYWALL_CTA_PHRASES` 里「开通vip」本来就有，
+缺的只是「同句」）。
+
+#### 问题
+
+1. **真阳性漏判** ⇒ 甲方案的验收判据 1 直接过不了（iqiyi 会被假降级）。
+2. **「同句」这个要求本身被 DOM 节点边界打败**：真实页面里一句门禁命题
+   会被拆成 2–4 个短节点——**不是 iqiyi 一家**
+   （全库实测 1160 段正文，基线只命中 **79 段 / 65 个文件**）。
+3. **放宽有反向代价，而且代价不均匀**：
+   - v.qq 的语境词「完整版」来自**片名**「三傻大闹宝莱坞完整版」，
+     与导航栏 CTA 隔十几个换行 ⇒ 窗口开大就会假阳；
+   - 「**纯续费营销**」按 `BRANCH_PRECONDITION` 明写**不是**付费墙
+     （人工复核 2026-10-21：池里 12 条 `subscription_wall` 没有一条站得住，
+     成因全是 CTA 裸命中与地区限制）
+     ⇒ 任何把「续费 + 全集/正片」凑到一起的放宽，都会把营销页复活成付费墙。
+
+#### 原因
+
+1. **切句单位选的是「渲染单元」（DOM 节点边界）而不是「语义单元」**——
+   一句门禁命题在 DOM 里是 2–4 个节点，在人读起来是一句。
+2. L2 的设计前提是「同句里既有 CTA 又有观看语境 ⇒ 是门禁」，
+   本意是**排除裸 CTA**（导航栏广告）；
+   DOM 一拆，**这个排除手段与真阳性被同一个原因打中**
+   ⇒ 排除手段失效不是设计错误，是**粒度选错**。
+3. **词表本身没问题**——缺的不是词，是「CTA 与语境词在哪儿挨着」的规则。
+
+#### 可选做法（三个候选，只改**粒度**、**不动词表**）
+
+> ⚠️ **词表一改就是口径变更** ⇒ 按 D-C7 要连带改 prompt + 重跑 A/B（⑧）。
+> 下面三个都**只动粒度**（怎么切句 / 语境词允许落在哪），**绕开这条义务**。
+> 复算：`research/probes/paywall_widening_measure.py`
+> ⇒ 读数：`research/probes/paywall_widening_measure.json`
+
+| | 做法 | 新增命中（文件） | 丢失命中 | iqiyi 验收 | youku / v.qq 验收 | 判读 |
+|---|---|---|---|---|---|---|
+| **基线** | 现行：按 `[\n\r。！？；;!?]+` 切句，语境词须**同单元** | 79 段 / 65 文件 | — | ❌ **空串** | ✅ 空串 | — |
+| **W1** | **换行不算句界**（只在句读处切）⇒ 整页变成大块 | **+36** | **0** | ✅ 命中 | ✅ 空串 | ❌ **不推荐**：多出来的 36 个里 **30 个**是 youku(v-wb) 与 ixigua，命中词全是「**打开app观看** + 看完/完整内容」「**续费** + 全集/正片」⇒ ① 把「纯续费营销」复活成付费墙 ② 顺带把 **Q-16**（「打开App观看」≡「打开App看完整内容」吗，**还挂着**）**一起答了** |
+| **W2** | **邻窗 ±1**：保留现行切句，语境词允许落在 CTA 单元的**相邻单元** | **+6** | **0** | ✅ 命中 | ✅ 空串 | ⭐ **推荐** |
+| **W3** | 邻窗 **±3** | +6 | **0** | ✅ 命中 | ✅ 空串 | 与 W2 **完全相同**（多带 **0** 个）⇒ **窗口旋钮在 ±1 就饱和**，不必开更大 |
+
+> ⚠️ **「youku / v.qq 验收」列只针对那两个验收样例**
+> （`T054__1c9b6260__site-8` 与 `E022__01fcb42b__site-9`）——
+> **同一个 youku URL 的别的存档**在**基线**下**就已经**命中「有付费墙证据」
+> ⇒ 见下面「附带要求 2」，别把这一列读成「W2 下 youku 全都干净」。
+
+**W2 那 6 个新增命中是什么**（逐个读过正文）：
+
+| 文件 | 页面 | W2 命中词 | 判读 |
+|---|---|---|---|
+| `T054__1c9b6260__site-5` | iqiyi `v_19rrk40at8` | 开通vip + **观看完整** | ✅ **验收样例本人**——命中词正是被换行切开的那句「后结束，观看完整视频请 / 开通VIP会员」 |
+| `E014__6761bdce__site-2/3` | iqiyi `v_19rrkqj66k` | 开通vip + **观看完整** | ✅ 同款门禁句 |
+| `E028__62ca8043__site-3` | iqiyi `v_19rrcuke28` | 开通vip + **观看完整** | ✅ 同款 |
+| `T057__058fb16a__site-8` | iqiyi `v_1nvdvo4f38k` | 开通会员 + **解锁** | ⚠️ 「解锁」取自**营销行**（形如「解锁会员权益」）⇒ **结论对、证据指错** |
+| `E028__62ca8043__site-6` | mgtv `/b/328192/6609060` | 开通vip + **解锁** | ⚠️ 同上：真门禁句是「**免费试看5分钟，会员可看完整版**」，但 W2 的证据指向「免前贴片广告，解锁会员权益」那行 |
+
+⇒ **W2 带来两个附带要求**：
+
+1. **evidence 必须带原句**（现在只写「命中哪个短语 + 哪个语境词」，
+   人**核不了指错行**）⇒ 属 ③「散文升级成可执行判据」那一步的**产出格式**要求；
+2. ⭐ **「同一个 youku URL 分不开」的根因是 ③，不是 ②**——**基线**就已经把那个 URL
+   判成「有付费墙证据」了，**W2 一个都没加**（W2 的 6 个新增全是 iqiyi/mgtv）：
+   - **该 youku URL 的 5 份**存档正文含「**试看6分钟 / 开通会员看完整视频**」那段 ⇒ CTA「开通会员」与
+     语境词「**看完**」落在**同一单元**（「开通会员看完整视频」）⇒ **基线**就命中；
+     其中 **4 份**对应池里的 `partial_free` 行（evidence 记的是代码层事实：存在 `<video>` ×1）。
+   - owner 刚裁成 `login_required` 的 **3 份**存档（run `1c9b6260` / `cd571143` / `a933bea6`）
+     正文**没有**这段（读数**空串**）⇒ owner 现场重采看到的是
+     「**由于安全原因，请 登录 后继续观看**」那一版。
+   - ⇒ **同一 URL、两种渲染形态、两种读数** ⇒ 那个 URL 才会同时挂上 `login_required`
+     （owner 的裁法）与 `subscription_wall` / `partial_free`（机器判、更早的人判）。
+   - ⇒ ⇒ **② 不能单独上**：只要 ③ 没给 `login_required` 一条**自己的**可执行判据，
+     「登录墙 + 会员营销」的页面在付费墙判据下就**同时**成立 ⇒ ② 放宽到多宽都会撞上这个洞。
+   - ⚠️ **顺带暴露一个词表级事实**：语境词「**看完**」是在「开通会员看**完**整视频」里
+     **跨词边界**命中的（「看」+「完」）⇒ 语境词表有隐形的**子串**风险
+     （属 ③ 的范围，**不是** ② 的粒度问题）。
+   - ⇒ 这也解释了**为什么 ② 与 ① 要一起拍**：① 甲的落地效果**取决于**② 放宽到多宽，
+     而② 放宽到多宽又**取决于**③ 的分支判据边界。
+
+**金标回归**（金标候选集里判 `subscription_wall` / `login_required` 的 **22 行**）：
+
+- 基线命中 **10** 行 ⇒ W1 / W2 / W3 下**丢失 0 行**（放宽是**超集**）✅；
+- ⚠️ 但「基线只命中 **10/22**」本身也是读数：另 **12 行**在基线下正文里
+  就抓不到门禁证据 ⇒ 那 12 行当初是**人判**的（人工看页面）
+  ⇒ 它们是**判据的召回缺口**，不是误判。
+
+### ⚠️ 两条要 owner 补裁的附带开口（①② 带出来的，不是它们本身）
+
+**开口 A · `trailer_only` 的口径比分支名宽**（owner 2026-10-27 用它给 v.qq 打标时带出来的）
+
+- owner 的定性：「落地页只有 2 分 09 秒短片《三傻大闹宝莱坞6》，不是目标正片 ⇒ 用预告片标」。
+- 但仓库自己的口径：`classify_trailer` 判的是**控件文本**（短标签），
+  `TRAILER_KEYWORDS` = 预告片 / 预告 / 抢先看 / 先导片 / 花絮 / 片花 / 片段 …
+  ⇒ 实测 v.qq 那份存档里**每一个控件标签**判出来都是 `none`，
+  2000 字的正文判出来是 `suspect`（命中的是推荐位里的「三傻大闹宝莱坞_高光片段」）
+  ⇒ `is_trailer_only('三傻大闹宝莱坞6')` = **False**。
+- ⇒ **仓库的代码自己永远不会产出 `trailer_only` 给这个页面**
+  （它会产 `trailer_suspect`，而 `trailer_suspect` **不是负样本、不入池**）。
+- ⇒ owner 这一裁用的是**更宽的口径**（「落地页是短片/片段，不是目标正片」）
+  ⇒ **分支名与代码口径对不上** ⇒ 要么给 `trailer_only` 补一条「落地页只有短片」的判据（属 ③），
+  要么在 `BRANCH_PRECONDITION` 里写清它的**宽口径**是什么
+  （现在它**连散文条目都没有** ⇒ 连口径说明都不存在）。
+- ⚠️ **现状**：池里 `trailer_only` **2 行**——另一行（T001 cctv，evidence「1 个候选控件全为预告：['片段']」）
+  是**窄口径**（控件文本）⇒ **两行不是同一个口径**。
+
+**开口 B · 同一个 youku URL 还挂着一行 `subscription_wall`（`TPIN02`，池第 292 行）**
+
+- owner 2026-10-27 裁的是「youku 那条 ⇒ `login_required`」，
+  `cli relabel` 已改判 **3 行**（T038 / T048 / T054）⇒ 但**同 URL 的第 4 行没改成**，
+  工具**主动拒了**：「目标分支 'login_required' 归属判断点 ['site.is_reachable']，
+  而本条记的是 'player.ok'」（D-5 归属闸）。
+- 那行的来历**也不同**：它是**更早的人工裁定**
+  （`review_verdict=confirm_paywall` · `reviewed_by=reesn`，
+  正文原话「正片 | VIP」+「首3月9.9元/月 立即开通」）
+  ⇒ **owner 今天的裁法与 reesn 更早的裁法不一致**（一个说登录墙、一个说纯会员墙）。
+- ⇒ 那 URL 现在挂着 **10 行**：`partial_free` 4 行（`confirm_partial_free`）·
+  `login_required` 4 行（1 行 `llm` + 3 行 owner 改判）·
+  `subscription_wall` 1 行（上面那行）· `unreachable_hard` 1 行
+  ⇒ **四支并存**（M-41 那一族）。
+- ⇒ **要 owner 说一句**：留 / 改 / 出池。
 
 ---
 

@@ -26,7 +26,11 @@ import json
 from typing import Any, Mapping
 
 from trajectory_pipeline.executor.browser.mcp_client import McpClient, McpError
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.nav_failure import site_unreachable
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverUnreachableError,
+)
 from trajectory_pipeline.executor.dom import (
     IFRAME_SELECTOR,        # noqa: F401  （定义已迁 dom.py；此处再导出供既有引用）
     INNER_TEXT_EXPR,        # noqa: F401  （定义已迁 dom.py；此处再导出供既有引用）
@@ -153,6 +157,17 @@ class ObscuraDriver:
         text = result.text
         if looks_like_error(text, result.is_error):
             if on_error == "raise":
+                # ⚠️ **判据必须在截断之前判**（M-44）：obscura 的错误正文
+                # 是 Rust/reqwest 风格的长句，``dns error`` 那个机器码
+                # 恰好落在**第 200 字之后** ⇒ 拿截断后的原文判，
+                # **DNS 失败会被误判成「证明不了站点不可达」**。
+                # ⇒ 先用**完整原文**判，再把消息截短（存档文本格式不变）。
+                hit = site_unreachable(text)
+                if hit is not None:
+                    raise DriverUnreachableError(
+                        f"obscura tool {tool} 失败: {text.strip()[:200]}",
+                        code=hit.code,
+                    ) from None
                 raise DriverError(f"obscura tool {tool} 失败: {text.strip()[:200]}")
             if degraded is not None:
                 degraded.append(tool)

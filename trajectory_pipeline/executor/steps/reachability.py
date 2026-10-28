@@ -16,13 +16,46 @@
 要用 ``browser_network_requests`` 补一次调用，但那个列表混着页面自己发起的
 全部资源请求，从中挑出主文档的那一条要靠启发式——**用一个猜出来的信号
 去判失败分支，比不用更糟**。
+
+⚠️ **第二档失败：执行层会话失效**（2026-10-27 补）。本模块原来只有
+「传输层失败」一档，而「**我们的那一页被上游销毁了**」既不是站点事实、
+也不是语义问题——那个站点**一次都没被试过**。把它塞进 ``unreachable_hard``
+就是**把采集侧的故障写成站点的性质**：实测一个候选连炸 9 次，
+9 条全进了负样本池，而站点一次都没被试过。
+⇒ 单独一档 :attr:`Reachability.session_failed`，由调用方记成
+「没判出来」那一支（**不进池**）。
+
+⚠️ **第三档失败：这次没打开 ≠ 站点不可达**（M-44 裁定，owner
+2026-10-27）。「传输层失败」这一档原来太粗——它把**四种成因完全
+不同**的失败全收进来：
+
+============  ==========================  ==========================
+形态          例子                        归属
+============  ==========================  ==========================
+超时          ``NS_ERROR_NET_TIMEOUT``    站点可能只是慢
+打断          ``is interrupted by …``      **重定向确实发生了**
+abort/空响应  ``NS_ERROR_ABORT``           连上了，服务器没说完
+传输层其它    ``client error (Connect)``   **证明不了**站点不可达
+============  ==========================  ==========================
+
+⇒ 池里那条断言是「**这里真的看不了**」，而事实是「**这一次没打开**」
+⇒ **训练信号被污染**（教「这个站看不了」，其实只是慢 / 被打断）。
+⇒ 收窄成：**只有机器码证明站点本身不可达**（DNS 解析不出来 /
+连接被拒）才留 ``unreachable_hard``，其余降 ``unresolved``（**不进池**）。
+判据（机器码表）见 :mod:`trajectory_pipeline.executor.browser.nav_failure`——
+**码表建在实测原文上**，码表认不出来的形态一律按「证明不了」处理
+（fail-closed：不确定 ⇒ 不进池）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverSessionError,
+    DriverUnreachableError,
+)
 from trajectory_pipeline.perception.base import Observation
 
 
@@ -32,6 +65,16 @@ class Reachability:
 
     ``redirected_to`` 是**诊断信息**不是判据：点击后被重定向到别处是业务事实
     （比如点了播放按钮跳到登录页），落进 P1 存档供人工复核。
+
+    ⚠️ ``session_failed`` 把**执行层故障**与**站点传输层失败**分开
+    （2026-10-27）：前者坏的是**我们的浏览器会话或页面**（页被上游
+    销毁 / 开不出新页 / 上游明说「会话过期、重来即可」），那个站点
+    **一次都没被试过** ⇒ 不能记成 ``unreachable_hard``（那是站点性质）。
+
+    ⚠️ ``proven_unreachable`` 是 M-44 之后**唯一**能记
+    ``unreachable_hard`` 的凭据：**机器码证明**站点本身不可达
+    （DNS 解析不出来 / 连接被拒）。它与 ``session_failed`` **互斥**：
+    一个说「坏的是站点那一侧」，一个说「坏的是我们这一侧」。
     """
 
     reachable: bool
@@ -39,6 +82,13 @@ class Reachability:
     requested_url: str
     landed_url: str = ""
     redirected: bool = False
+    #: 失败是**执行层故障**（会话失效 / 开不出新页 / 上游明说的重试类），
+    #: **不是**站点打不开。
+    session_failed: bool = False
+    #: 失败是**真·站点不可达**——**机器码证明**（DNS 解析不出来 /
+    #: 连接被拒）。只有这一档配记 ``unreachable_hard``；其余一律
+    #: ``unresolved``（**不进池**）。
+    proven_unreachable: bool = False
 
 
 async def probe(driver, url: str) -> Reachability:
@@ -50,10 +100,34 @@ async def probe(driver, url: str) -> Reachability:
     """
     try:
         await driver.goto(url)
-    except DriverError as exc:
+    except DriverSessionError as exc:
+        # ⚠️ **先接这一支**：它是 ``DriverError`` 的子类，顺序反了就
+        # 又被当成「传输层失败」⇒ 执行层的故障被写成站点的性质。
         return Reachability(
             reachable=False,
-            reason=f"导航失败（传输层）: {exc}",
+            reason=f"执行层会话失效（不是站点打不开）: {exc}",
+            requested_url=url,
+            session_failed=True,
+        )
+    except DriverUnreachableError as exc:
+        # ⚠️ **再接这一支**：它也是 ``DriverError`` 的子类，但它是
+        # **机器码证明过的站点事实**（DNS 解析不出来 / 连接被拒）
+        # ⇒ 与上面那支正好相反：这一支**是**站点性质，配记
+        # ``unreachable_hard``。机器码标签进 reason，人核时看得出
+        # 「凭什么判成站点不可达」。
+        return Reachability(
+            reachable=False,
+            reason=f"导航失败（真·站点不可达·机器码 {exc.code}）: {exc}",
+            requested_url=url,
+            proven_unreachable=True,
+        )
+    except DriverError as exc:
+        # ⚠️ **兜底这一档 = 「这次没打开」**：超时 / 打断 / abort /
+        # 空响应 / 建页失败……它们**证明不了**站点不可达 ⇒
+        # 调用方按 ``unresolved`` 记（**不进池**）。
+        return Reachability(
+            reachable=False,
+            reason=f"导航失败（这次没打开·证明不了站点不可达）: {exc}",
             requested_url=url,
         )
     return Reachability(reachable=True, reason="导航成功", requested_url=url)

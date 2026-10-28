@@ -6,7 +6,8 @@ rubric v1.1 把 D-5 的管辖层定为**代码断言**，判据是一条**决策
 每个节点都标注了代码分支名::
 
     非播放站/无关站        → 排除 ✅  branch=not_play_site
-    传输层失败（没打开）    → 标记"未决" ✅  branch=unreachable_hard
+    真·站点不可达（DNS失败/拒连）→ 排除 ✅  branch=unreachable_hard
+    这次没打开（超时/打断/建页失败）→ 标记"未决" ✅  branch=unresolved
     代码能力不足（没走到判断）→ 标记"未决" ✅  branch=unresolved
     地区/DRM/验证码/反爬    → 排除 ✅  branch=blocked
     内容不存在（404/媒体损坏）→ 排除 ✅  branch=broken
@@ -15,6 +16,17 @@ rubric v1.1 把 D-5 的管辖层定为**代码断言**，判据是一条**决策
     播放页但需订阅/付费     → 排除 ✅  branch=subscription_wall
     有组件但无法确认可用    → 标记"未验证" ✅  branch=player_unverified
     有组件且可确认          → 记录 ✅  branch=null
+
+⚠️ **这棵树与 rubric 文档（v1.2）已经不一致了**（M-44 裁定，
+owner 2026-10-27）：rubric 里那一行是
+``传输层失败（没打开）→ 标记"未决" branch=unreachable_hard``，
+而**代码**在 M-44 之后把「这次没打开」落 ``unresolved``、
+``unreachable_hard`` 收窄成「机器码证明的**真·站点不可达**」。
+⇒ 上面的树抄的是**代码现状**；**rubric 文档本身还没升版**
+（升 v1.3 要按变更记录列契约填「分歧卡」与「可证伪预期效果」，
+那是**owner 签字**的事）⇒ 两侧错位**显式记在**
+``docs/设计方案/02-rubric与代码对齐.md`` §2.4 与台账 M-44，
+**不许默认它已经对齐**。
 
 这条树**不需要人来对照**——每个节点都是一个可机械验证的谓词。
 它要核的是三件事，每件都能从存档里算出来：
@@ -188,7 +200,7 @@ CODE_ONLY_BRANCHES: frozenset[str] = frozenset(
 TREE_BRANCHES: frozenset[str] = frozenset(
     {
         "not_play_site",          # 非播放站/无关站
-        "unreachable_hard",       # 传输层失败（采集失败，非站点性质）
+        "unreachable_hard",       # 真·站点不可达（M-44：机器码证明的站点性质）
         "unresolved",             # 代码能力不足（没走到判断）
         "blocked",                # 地区/DRM/验证码/反爬
         "broken",                 # 内容不存在（404/媒体损坏）

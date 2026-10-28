@@ -33,7 +33,9 @@ from trajectory_pipeline.executor.browser.camofox_session import (
     TOOL_EVALUATE,
     TOOL_IMPORT_COOKIES,
     TOOL_LIST_TABS,
+    TOOL_NAVIGATE,
     CamofoxSession,
+    CamofoxToolError,
 )
 from trajectory_pipeline.executor.browser.mcp_client import (
     McpError,
@@ -270,6 +272,141 @@ class TestTool失败语义:
         try:
             with pytest.raises(DriverError):
                 await session.list_tabs()
+        finally:
+            await session.close()
+
+
+class Test上游错误体的结构:
+    """**上游明说了该怎么办**——不解析就只剩一段文本。
+
+    ⚠️ **为什么必须解析**（2026-10-27 实测）：上游在**操作超时 / 连续超时 /
+    页崩溃 / 锁队列超时**时**销毁那一页**，而**销毁不通知客户端** ⇒
+    客户端手里的 ``tabId`` 成了死引用 ⇒ 再导航就是 404，**每一次都 404**。
+    实测一个候选连炸 9 次，9 次全被记成 ``unreachable_hard``
+    ⇒ 九条理由通顺的假负样本进了池，而站点一次都没被试过。
+    """
+
+    async def test_错误体被解析成结构(self, fake_mcp: _FakeMcpFactory) -> None:
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_NAVIGATE] = _err(
+            'camofox error: 410: {"error":"Tab was destroyed. Open a new tab.",'
+            '"code":"tab_destroyed","retryable":true,'
+            '"recovery":"create_new_tab"}'
+        )
+        try:
+            with pytest.raises(CamofoxToolError) as caught:
+                await session.navigate("t1", "https://example.com/a")
+        finally:
+            await session.close()
+        err = caught.value
+        assert err.status == 410
+        assert err.code == "tab_destroyed"
+        assert err.retryable is True
+        assert err.recovery == "create_new_tab"
+        assert err.tab_is_gone is True
+
+    async def test_404_页没了也算页没了(self, fake_mcp: _FakeMcpFactory) -> None:
+        """上游 ``tabNotFoundResponse`` 对不认识的 tabId **只给 404 + 英文**，
+        **没有** ``code`` 字段——而那是最常撞上的形态（实测 9 次连 404）。"""
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_NAVIGATE] = _err(
+            'camofox error: 404: {"error":"Tab not found"}'
+        )
+        try:
+            with pytest.raises(CamofoxToolError) as caught:
+                await session.navigate("t1", "https://example.com/a")
+        finally:
+            await session.close()
+        assert caught.value.status == 404
+        assert caught.value.tab_is_gone is True
+
+    async def test_站点超时不是页没了(self, fake_mcp: _FakeMcpFactory) -> None:
+        """**别把站点超时当成会话失效**——换页重来会多打站点一次，
+        而且掩盖了「这个站真的打不开」这个事实。"""
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_NAVIGATE] = _err(
+            'camofox error: 500: {"error":"page.goto: Timeout 30000ms exceeded"}'
+        )
+        try:
+            with pytest.raises(CamofoxToolError) as caught:
+                await session.navigate("t1", "https://example.com/a")
+        finally:
+            await session.close()
+        assert caught.value.tab_is_gone is False
+
+    async def test_上游明说会话过期就是执行层故障(
+        self, fake_mcp: _FakeMcpFactory
+    ) -> None:
+        """上游 ``recovery="retry"`` ⇒ **明说**「我们这边坏了，重来即可」。
+
+        ⚠️ **为什么不许漏**（2026-10-27）：上游的 ``session_expired``
+        走 HTTP 503 且**带** ``recovery``——它是**明说**的，
+        漏判的后果与「页没了」那条一模一样：把采集侧的故障
+        写成站点的性质 ⇒ 产出**理由通顺的假负样本**。
+
+        ⇒ 而它**不是**「页没了」：换页重来也没用（整个会话都过期了）。
+        """
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_NAVIGATE] = _err(
+            'camofox error: 503: {"error":"Browser session expired",'
+            '"code":"session_expired","retryable":true,"recovery":"retry"}'
+        )
+        try:
+            with pytest.raises(CamofoxToolError) as caught:
+                await session.navigate("t1", "https://example.com/a")
+        finally:
+            await session.close()
+        err = caught.value
+        assert err.execution_fault is True
+        assert err.tab_is_gone is False, "会话过期不是「这一页没了」"
+
+    async def test_站点超时不是执行层故障(self, fake_mcp: _FakeMcpFactory) -> None:
+        """**裸 500（没有 ``code`` / ``recovery``）不是执行层故障**——
+        那是「这个 URL 打不开」的传输层事实（DNS / 超时）⇒
+        真负样本要留住，不许降级成 ``unresolved``。
+
+        ⚠️ **别用错误体去判「是不是站点打不开」**：实测建页超时与
+        DNS 失败**在错误体里同形** ⇒ 判据是**走哪个路由**
+        （见 ``camofox_driver._open_blank_and_navigate``）。
+        """
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_NAVIGATE] = _err(
+            'camofox error: 500: {"error":"page.goto: NS_ERROR_UNKNOWN_HOST"}'
+        )
+        try:
+            with pytest.raises(CamofoxToolError) as caught:
+                await session.navigate("t1", "https://example.com/a")
+        finally:
+            await session.close()
+        assert caught.value.execution_fault is False
+        assert caught.value.tab_is_gone is False
+
+    async def test_解析不出来就只留原文(self, fake_mcp: _FakeMcpFactory) -> None:
+        """不是那个形状就**不猜**——body 空、status 0，但原文一字不改。"""
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_LIST_TABS] = _err("stdio 断了")
+        try:
+            with pytest.raises(CamofoxToolError) as caught:
+                await session.list_tabs()
+        finally:
+            await session.close()
+        err = caught.value
+        assert err.status == 0
+        assert err.body == {}
+        assert err.tab_is_gone is False
+        assert "stdio 断了" in str(err)
+
+    async def test_摘页不动上游(self, fake_mcp: _FakeMcpFactory) -> None:
+        """**摘页不能去通知上游**——那一页已经不在了，
+        再去关只会再拿一个 404/410 回来。"""
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_CREATE_TAB] = _ok({"tabId": "t1"})
+        try:
+            await session.new_page("https://example.com/a")
+            assert session.pages == ("t1",)
+            assert session.discard_page("t1") is True
+            assert session.pages == ()
+            assert session.discard_page("t1") is False
         finally:
             await session.close()
 

@@ -1,0 +1,789 @@
+{
+  "driver": "camofox",
+  "settle_seconds": 4.0,
+  "targets": [
+    "https://www.bilibili.com/video/BV1ibptz2Enz/",
+    "https://v.qq.com/x/page/q3242ihse1h.html",
+    "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+    "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+    "http://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01"
+  ],
+  "results": [
+    {
+      "url": "https://www.bilibili.com/video/BV1ibptz2Enz/",
+      "wait_until": "load",
+      "settle_seconds": 4.0,
+      "first": {
+        "observed_url": "https://www.bilibili.com/video/BV1ibptz2Enz/",
+        "page_title": "【9.2分/4k未删减】三傻大闹宝莱坞 (2009)_哔哩哔哩_bilibili",
+        "body_len": 1713,
+        "body_head": "首页\n番剧\n直播\n游戏中心\n会员购\n漫画\n赛事\n投稿\n【9.2分/4k未删减】三傻大闹宝莱坞 (2009)\n86.9万\n1.1万\n2025-09-17 20:56:27\n未经作者授权，禁止转载\n1.4万\n6875\n2万\n3973\n防止丢失，视频素材：https://pan.quark.cn/s/5ce5ea50ffc2\n创作不易，本号除充电外无任何收益，有年度大会员朋友，每个月可以白嫖5B币券，可以用这个劵来给up主充电回回血，带来动力。 https://account.bilibili.com/account/big/myPackage\n本片根据印度畅销书作家奇坦·巴哈特（Chetan Bh",
+        "body_full": "首页\n番剧\n直播\n游戏中心\n会员购\n漫画\n赛事\n投稿\n【9.2分/4k未删减】三傻大闹宝莱坞 (2009)\n86.9万\n1.1万\n2025-09-17 20:56:27\n未经作者授权，禁止转载\n1.4万\n6875\n2万\n3973\n防止丢失，视频素材：https://pan.quark.cn/s/5ce5ea50ffc2\n创作不易，本号除充电外无任何收益，有年度大会员朋友，每个月可以白嫖5B币券，可以用这个劵来给up主充电回回血，带来动力。 https://account.bilibili.com/account/big/myPackage\n本片根据印度畅销书作家奇坦·巴哈特（Chetan Bhagat）的处女作小说《五点人》（Five Point Someone）改编而成。法兰（马德哈万 R Madhavan 饰）、拉杜（沙曼·乔希 Sharman Joshi 饰）与兰乔（阿米尔·汗 Aamir Khan 饰）是皇家工程学院的学生，三人共居一室，结为好友。在以严格著称的学院里，兰乔是个非常与众不同的学生，他不死记硬背，甚至还公然顶撞校长“病毒”（波曼·伊拉尼 Boman Irani 饰），质疑他的教学方法。他不仅鼓动法兰与拉杜去勇敢追寻理想，还劝说校长的二女儿碧雅（卡琳娜·卡普 Kareena Kapoor 饰）离开满眼铜臭的未婚夫。兰乔的特立独行引起了模范学生“消音器”（奥米·维嘉 Omi Vaidya 饰）的不满，他约定十年后再与兰乔一决高下，看哪种生活方式更能取得成功。\n印度电影\n经典电影\n喜剧\n阿米尔汗\n经典珍藏系列\n发消息\n裙号：715633657 经典永不过时！感谢关注(˵¯͒〰¯͒˵)\n接下来播放\n自动连播\n\n4K修復 譯製片 印度電影【三傻大閙寶莱塢】2009 國語 全屏 60幀 髙品質 (中英雙字)\n\n天霸周世顺\n1.5万\n10\n\n【1080P/印度/中字/合集】摔跤吧！爸爸 2016\n\n無丶Germ丶\n14.8万\n6\n\n惊!《三傻大闹宝莱坞》里的两大死对头查尔图和兰彻合体拍广告啦？!他们会擦出什么火花呢嘻嘻嘻\n\n米粉味Monica\n9924\n0\n\n考古阿米尔·汗《三傻大闹宝莱坞》花絮，太有趣了！\n\n蒋小牧的电影沙发\n7.1万\n28\n\n【傲慢与偏见】百年经典再现绝美爱情\n\n哔哩哔哩电影\n1200.7万\n6.8万\n\n神秘巨星（2017）【阿米尔·汗/塞伊拉·沃西】\n\n哔哩哔哩电影\n268.7万\n4.5万\n\n【夏洛特烦恼】开心麻花巅峰代表作\n\n哔哩哔哩电影\n3602.7万\n27万\n\n【中文】摔跤吧！爸爸（2016）\n\n哔哩哔哩电影\n248.6万\n1.2万\n\n哈利·波特与魔法石（2001）\n\n哔哩哔哩电影\n7477.3万\n108万\n\n【剧情】阿甘正传（1994）【奥斯卡最佳影片】\n\n哔哩哔哩电影\n3178.3万\n36.8万\n\n【传记/犯罪】猫鼠游戏（2002）【莱昂纳多·迪卡普里奥/汤姆·汉克斯】\n\n哔哩哔哩电影\n2265.6万\n18.6万\n\n【阿米尔汗】【舞蹈】米叔现场跳「三傻大闹宝莱坞」插曲All Is Well\n\n犭良没有黑眼圈\n20.6万\n183\n\n【喜剧】小萝莉的猴神大叔（2015）【萨尔曼·汗】\n\n哔哩哔哩电影\n548.6万\n7.2万\n\n怦然心动（2010）\n\n哔哩哔哩电影\n2486.9万\n20.4万\n\n盗梦空间（2010）【莱昂纳多·迪卡普里奥/克里斯托弗·诺兰】\n\n哔哩哔哩电影\n3655.5万\n10万\n\n阿米尔·汗曾拒绝《三傻大闹宝莱坞》直言：“会毁了这部电影！”\n\n蒋小牧的电影沙发\n94.8万\n178\n\n【阿米尔汗】【熟肉】惊!米蜀黍在新加坡国际电影节透露，《三傻大闹宝莱坞2》剧本完成啦!估计不久问世!\n\n米粉味Monica\n2416\n0\n\n当幸福来敲门（2006）【豆瓣9.1高分经典】\n\n哔哩哔哩电影\n708.2万\n3.4万\n\n【科幻】楚门的世界（1998）【金·凯瑞】\n\n哔哩哔哩电影\n2792万\n16万\n\n【喜剧/传记】绿皮书（2018）【第91届奥斯卡最佳影片】\n\n哔哩哔哩电影\n3831.2万\n29万\n展开\n寻找下一位影视新星！",
+        "elements_total": 38,
+        "video_tag_count": 1,
+        "iframe_count": 2,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "会员": 2
+        }
+      },
+      "settled": {
+        "observed_url": "https://www.bilibili.com/video/BV1ibptz2Enz/",
+        "page_title": "【9.2分/4k未删减】三傻大闹宝莱坞 (2009)_哔哩哔哩_bilibili",
+        "body_len": 2024,
+        "body_head": "首页\n番剧\n直播\n游戏中心\n会员购\n漫画\n赛事\n科学晚\n\nS16\n\nS16\n\n下载客户端\n登录\n大会员\n消息\n动态\n收藏\n历史\n创作中心\n投稿\n【9.2分/4k未删减】三傻大闹宝莱坞 (2009)\n86.9万\n1.1万\n2025-09-17 20:56:27\n未经作者授权，禁止转载\n恭喜您发现宝藏了\n中秋节快乐！\n好看吗\n登录 免费享高清视频\n试看30秒\n0:00:05 / 4:13:58\n自动\n倍速\n144人正在看\n请先登录或注册\n弹幕礼仪\n发送\n1.4万\n6875\n2万\n3973\n稿件举报\n记笔记\n防止丢失，视频素材：https://pan.quark.cn/s/5ce5ea50ffc2\n",
+        "body_full": "首页\n番剧\n直播\n游戏中心\n会员购\n漫画\n赛事\n科学晚\n\nS16\n\nS16\n\n下载客户端\n登录\n大会员\n消息\n动态\n收藏\n历史\n创作中心\n投稿\n【9.2分/4k未删减】三傻大闹宝莱坞 (2009)\n86.9万\n1.1万\n2025-09-17 20:56:27\n未经作者授权，禁止转载\n恭喜您发现宝藏了\n中秋节快乐！\n好看吗\n登录 免费享高清视频\n试看30秒\n0:00:05 / 4:13:58\n自动\n倍速\n144人正在看\n请先登录或注册\n弹幕礼仪\n发送\n1.4万\n6875\n2万\n3973\n稿件举报\n记笔记\n防止丢失，视频素材：https://pan.quark.cn/s/5ce5ea50ffc2\n创作不易，本号除充电外无任何收益，有年度大会员朋友，每个月可以白嫖5B币券，可以用这个劵来给up主充电回回血，带来动力。 https://account.bilibili.com/account/big/myPackage\n本片根据印度畅销书作家奇坦·巴哈特（Chetan Bhagat）的处女作小说《五点人》（Five Point Someone）改编而成。法兰（马德哈万 R Madhavan 饰）、拉杜（沙曼·乔希 Sharman Joshi 饰）与兰乔（阿米尔·汗 Aamir Khan 饰）是皇家工程学院的学生，三人共居一室，结为好友。在以严格著称的学院里，兰乔是个非常与众不同的学生，他不死记硬背，甚至还公然顶撞校长“病毒”（波曼·伊拉尼 Boman Irani 饰），质疑他的教学方法。他不仅鼓动法兰与拉杜去勇敢追寻理想，还劝说校长的二女儿碧雅（卡琳娜·卡普 Kareena Kapoor 饰）离开满眼铜臭的未婚夫。兰乔的特立独行引起了模范学生“消音器”（奥米·维嘉 Omi Vaidya 饰）的不满，他约定十年后再与兰乔一决高下，看哪种生活方式更能取得成功。\n展开更多\n印度电影\n经典电影\n喜剧\n阿米尔汗\n经典珍藏系列\n发消息\n裙号：715633657 经典永不过时！感谢关注(˵¯͒〰¯͒˵)\n充电\n关注 27.9万\n弹幕列表\n接下来播放\n自动连播\n2:50:07\n\n4K修復 譯製片 印度電影【三傻大閙寶莱塢】2009 國語 全屏 60幀 髙品質 (中英雙字)\n\n天霸周世顺\n1.5万\n10\n2:41:01\n\n【1080P/印度/中字/合集】摔跤吧！爸爸 2016\n\n無丶Germ丶\n14.8万\n6\n00:19\n\n惊!《三傻大闹宝莱坞》里的两大死对头查尔图和兰彻合体拍广告啦？!他们会擦出什么火花呢嘻嘻嘻\n\n米粉味Monica\n9924\n0\n01:59\n\n考古阿米尔·汗《三傻大闹宝莱坞》花絮，太有趣了！\n\n蒋小牧的电影沙发\n7.1万\n28\n2:06:40\n\n【傲慢与偏见】百年经典再现绝美爱情\n\n哔哩哔哩电影\n1200.7万\n6.8万\n2:29:48\n\n神秘巨星（2017）【阿米尔·汗/塞伊拉·沃西】\n\n哔哩哔哩电影\n268.7万\n4.5万\n1:39:48\n\n【夏洛特烦恼】开心麻花巅峰代表作\n\n哔哩哔哩电影\n3602.7万\n27万\n2:19:58\n\n【中文】摔跤吧！爸爸（2016）\n\n哔哩哔哩电影\n248.6万\n1.2万\n2:38:51\n\n哈利·波特与魔法石（2001）\n\n哔哩哔哩电影\n7477.3万\n108万\n2:20:37\n\n【剧情】阿甘正传（1994）【奥斯卡最佳影片】\n\n哔哩哔哩电影\n3178.3万\n36.8万\n2:20:45\n\n【传记/犯罪】猫鼠游戏（2002）【莱昂纳多·迪卡普里奥/汤姆·汉克斯】\n\n哔哩哔哩电影\n2265.6万\n18.6万\n02:20\n\n【阿米尔汗】【舞蹈】米叔现场跳「三傻大闹宝莱坞」插曲All Is Well\n\n犭良没有黑眼圈\n20.6万\n183\n2:20:17\n\n【喜剧】小萝莉的猴神大叔（2015）【萨尔曼·汗】\n\n哔哩哔哩电影\n548.6万\n7.2万\n1:29:42\n\n怦然心动（2010）\n\n哔哩哔哩电影\n2486.9万\n20.4万\n2:28:09\n\n盗梦空间（2010）【莱昂纳多·迪卡普里奥/克里斯托弗·诺兰】\n\n哔哩哔哩电影\n3655.5万\n10万\n01:00\n\n阿米尔·汗曾拒绝《三傻大闹宝莱坞》直言：“会毁了这部电影！”\n\n蒋小牧的电影沙发\n94.8万\n178\n00:33\n\n【阿米尔汗】【熟肉】惊!米蜀黍在新加坡国际电影节透露，《三傻大闹宝莱坞2》剧本完成啦!估计不久问世!\n\n米粉味Monica\n2416\n0\n1:57:28\n\n当幸福来敲门（2006）【豆瓣9.1高分经典】\n\n哔哩哔哩电影\n708.2万\n3.4万\n1:42:55\n\n【科幻】楚门的世界（1998）【金·凯瑞】\n\n哔哩哔哩电影\n2792万\n16万\n2:10:12\n\n【喜剧/传记】绿皮书（2018）【第91届奥斯卡最佳影片】\n\n哔哩哔哩电影\n3831.2万\n29万\n展开\n寻找下一位影视新星！",
+        "elements_total": 40,
+        "video_tag_count": 1,
+        "iframe_count": 2,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "会员": 3,
+          "登录": 3,
+          "请先登录": 1,
+          "试看": 1,
+          "免费": 1
+        }
+      },
+      "archived": [
+        {
+          "archive": "E022__01fcb42b.json",
+          "landed_url": "https://www.bilibili.com/video/BV1ibptz2Enz/",
+          "obs_url": "https://www.bilibili.com/video/BV1ibptz2Enz/",
+          "page_title": "【9.2分/4k未删减】三傻大闹宝莱坞 (2009)_哔哩哔哩_bilibili",
+          "body_len": 1632,
+          "body_head": "首页\n番剧\n直播\n游戏中心\n会员购\n漫画\n赛事\n投稿\n【9.2分/4k未删减】三傻大闹宝莱坞 (2009)\n86.5万\n1.1万\n2025-09-17 20:56:27\n未经作者授权，禁止转载\n1.4万\n6841\n2万\n3951\n防止丢失，视频素材：https://pan.quark.cn/s/5ce5ea50ffc2\n创作不易，本号除充电外无任何收益，有年度大会员朋友，每个月可以白嫖5B币券，可",
+          "elements_total": 38,
+          "video_tag_count": 1,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "会员": 2
+          }
+        }
+      ]
+    },
+    {
+      "url": "https://v.qq.com/x/page/q3242ihse1h.html",
+      "wait_until": "load",
+      "settle_seconds": 4.0,
+      "first": {
+        "observed_url": "https://v.qq.com/x/page/q3242ihse1h.html",
+        "page_title": "腾讯视频",
+        "body_len": 81,
+        "body_head": "电视剧\n电影\n综艺\n动漫\n少儿\n短剧\n纪录片\n全部\n会员专区\n游戏\n快捷访问\n历史\n创作\n应用\n下载客户端\n播放更流畅\n腾讯视频\n00:00\n/\n00:00\n倍速",
+        "body_full": "电视剧\n电影\n综艺\n动漫\n少儿\n短剧\n纪录片\n全部\n会员专区\n游戏\n快捷访问\n历史\n创作\n应用\n下载客户端\n播放更流畅\n腾讯视频\n00:00\n/\n00:00\n倍速",
+        "elements_total": 12,
+        "video_tag_count": 4,
+        "iframe_count": 2,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "会员": 1
+        }
+      },
+      "settled": {
+        "observed_url": "https://v.qq.com/x/page/q3242ihse1h.html",
+        "page_title": "三傻大闹宝莱坞6_高清1080P在线观看平台_腾讯视频",
+        "body_len": 1226,
+        "body_head": "电视剧\n电影\n综艺\n动漫\n少儿\n短剧\n纪录片\n全部\n会员专区\n游戏\n快捷访问\n历史\n创作\n应用\n下载客户端\n登录\n腾讯视频\n客户端播放\n登录发个友善的弹幕吧！\n00:00\n/\n02:09\n倍速\n720P\n开会纪要、数据整理，Workbuddy 一键处理\nWorkbuddy我帮你\n点击画面，立即体验\n10 VIP可关闭该广告\n三傻大闹宝莱坞6\n讨论\n登录参与讨论\n暂无评论，快来说两句吧\n参与评论\n三傻大闹宝莱坞6\n491次播放 · 2021年4月28日上传\n新客VIP专享特惠！\n好剧热综持续更新，会员畅享精彩内容\n开通会员\n播放列表\n02:09\n三傻大闹宝莱坞6\n为你推荐\n自动连播\n01:16\n",
+        "body_full": "电视剧\n电影\n综艺\n动漫\n少儿\n短剧\n纪录片\n全部\n会员专区\n游戏\n快捷访问\n历史\n创作\n应用\n下载客户端\n登录\n腾讯视频\n客户端播放\n登录发个友善的弹幕吧！\n00:00\n/\n02:09\n倍速\n720P\n开会纪要、数据整理，Workbuddy 一键处理\nWorkbuddy我帮你\n点击画面，立即体验\n10 VIP可关闭该广告\n三傻大闹宝莱坞6\n讨论\n登录参与讨论\n暂无评论，快来说两句吧\n参与评论\n三傻大闹宝莱坞6\n491次播放 · 2021年4月28日上传\n新客VIP专享特惠！\n好剧热综持续更新，会员畅享精彩内容\n开通会员\n播放列表\n02:09\n三傻大闹宝莱坞6\n为你推荐\n自动连播\n01:16\n时间阻碍女孩睡懒觉，女孩一气之下杀了它，没有时间的世界太可怕#电影HOT短视频大赛 第二阶段#\n豆浆爱电影\n00:54\n美军：问个路，差点给自己送走了#集结号 #鹅滴神片 #经典剧好看\n小编正在摸鱼\n03:25\n请你看着我的眼睛\n元元讲电影\n00:21\n\"这世间哪有那么多两情相悦的人呀，不过都是一厢情愿... ”\n芒果爱剪影\n05:09\n漫威假如第二季大结局，超级英雄和反派的混战\n一梦影视江湖\n00:26\n这个片段真是太精彩了\n小美\n01:36\n太帅了，想变成她这样有特异功能的人吗，\n欢仔带你看影视\n01:09\n丧尸擂台被攻破，所有奴隶得到解放，柔道小哥携丧尸基友逃出生天\n逍遥郎看电影\n02:08\n阿汤哥亲自驾驶飞机从二战经典到梦幻科技，美国海军装备真机拍摄\n杨先生\n01:59\n劫匪与富豪之间的一场心理博弈\n小陈说电影呀\n00:35\n张小斐真的是一个狠人呐！张小斐突然上热搜了！这次不是因为贾玲，而是她竟然为了拍《功夫女足》封闭训练了大半年。\n浮生剧场\n01:42\n麻辣学院-08，熊孩子开表彰大会 糊弄家长\n刷片宝\n02:26\n发型飘逸且压迫感十足的萨拉查船长，竟是因为选对了洗发水！\n这货不是阿晨Aa\n02:36\n2022年真实事件改编，一名护士利用职务之便，杀害300多名病人！\n伦帝电影说\n特色推荐\n杀毒软件\n灵芽社区\n软件下载\n手机版\nWindows版\nMac版\niPad版\nTV版\n服务\n客服\n反馈\n侵权投诉\nVIP采购\n腾讯视频隐私保护指引\n腾讯视频用户服务协议\n腾讯视频第三方SDK目录\n腾讯视频第三方信息共享清单\n腾讯视频已收集个人信息清单\n腾讯儿童隐私保护声明\n腾讯视频VIP会员服务协议\n腾讯视频SVIP会员服务协议\n粤网文[2017]6138-1456号 | 网络视听许可证1904073号 | 增值电信业务经营许可证：粤B2-20090059 | 粤公网安备 44030002000001号\n关于腾讯 | About Tencent | 服务条款 | 广告服务 | 腾讯招聘 | 客服中心\nCopyright © 1998 - 2026 Tencent. All Rights Reserved.\n腾讯公司 版权所有",
+        "elements_total": 45,
+        "video_tag_count": 4,
+        "iframe_count": 3,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "开通会员": 1,
+          "开通": 1,
+          "VIP": 5,
+          "会员": 5,
+          "登录": 3
+        }
+      },
+      "archived": [
+        {
+          "archive": "E022__01fcb42b.json",
+          "landed_url": "https://v.qq.com/x/page/q3242ihse1h.html",
+          "obs_url": "https://v.qq.com/x/page/q3242ihse1h.html",
+          "page_title": "三傻大闹宝莱坞6_高清1080P在线观看平台_腾讯视频",
+          "body_len": 506,
+          "body_head": "电视剧\n电影\n综艺\n动漫\n少儿\n短剧\n纪录片\n全部\n会员专区\n游戏\n快捷访问\n历史\n创作\n应用\n下载客户端\n播放更流畅\n腾讯视频\n登录发个友善的弹幕吧！\n00:00\n/\n02:09\n倍速\n720P\n静音播放中，点击 恢复音量\n点击画面，了解详情\nReachMax\n14 您可在4秒后关闭该广告\n三傻大闹宝莱坞6\n486次播放 · 2021年4月28日上传\n播放列表\n02:09\n三傻大闹宝莱坞6\n为你",
+          "elements_total": 13,
+          "video_tag_count": 4,
+          "iframe_count": 2,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "会员": 1,
+            "登录": 1
+          }
+        }
+      ]
+    },
+    {
+      "url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+      "wait_until": "load",
+      "settle_seconds": 4.0,
+      "first": {
+        "observed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+        "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+        "body_len": 6,
+        "body_head": "精彩即将开始",
+        "body_full": "精彩即将开始",
+        "elements_total": 0,
+        "video_tag_count": 2,
+        "iframe_count": 0,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {}
+      },
+      "settled": {
+        "observed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+        "page_title": "功夫（粤语）-电影-完整版视频在线观看-爱奇艺",
+        "body_len": 539,
+        "body_head": "首页\n小城良方\n电视剧\n短剧\n电影\n综艺\n会员中心\n筛选\n搜你想看的\n搜索\n会员\n游戏\n客户端\n使用爱奇艺Windows客户端\n享更佳视听体验\n高清视频\n杜比音效\n离线下载视频\n下载客户端\n查看更多\n快捷访问\n消息\n历史\n上传\n登录\n精彩即将开始\n正在缓冲，请稍候\n功夫（粤语）\n客户端流畅播放\n功夫（粤语）\n详情\n9.1\n分\n2004年\n周星驰\n黄圣依\n喜剧\n犯罪\n动作\n加追\n下载\n分享\n黄金会员首月低至12元\n新朋友，开通享精彩内容\n开通会员\n功夫（双语）\n普通话\n粤语\n9.1\n功夫（粤语）\n纯绿色打金鬼服！长期稳定运营，爆率高，回血快！\n广告 专属高爆版本\n猜你喜欢\n7.3\n中华赌侠\n古天",
+        "body_full": "首页\n小城良方\n电视剧\n短剧\n电影\n综艺\n会员中心\n筛选\n搜你想看的\n搜索\n会员\n游戏\n客户端\n使用爱奇艺Windows客户端\n享更佳视听体验\n高清视频\n杜比音效\n离线下载视频\n下载客户端\n查看更多\n快捷访问\n消息\n历史\n上传\n登录\n精彩即将开始\n正在缓冲，请稍候\n功夫（粤语）\n客户端流畅播放\n功夫（粤语）\n详情\n9.1\n分\n2004年\n周星驰\n黄圣依\n喜剧\n犯罪\n动作\n加追\n下载\n分享\n黄金会员首月低至12元\n新朋友，开通享精彩内容\n开通会员\n功夫（双语）\n普通话\n粤语\n9.1\n功夫（粤语）\n纯绿色打金鬼服！长期稳定运营，爆率高，回血快！\n广告 专属高爆版本\n猜你喜欢\n7.3\n中华赌侠\n古天乐化身赌神\n8.5\n赌圣\n时装赌片票房巅峰\n7.8\n千王之王2000\n星爷演绎千王重出江湖\n7.8\n赌神3\n黎明千术学艺之旅\n8.4\n破坏之王\n古拳法拯救穷小子\n8.7\n逃学威龙\n周星驰经典系列\n广告 专属高爆版本\n纯绿色打金鬼服！长期稳定运营，爆率高，回血快！\n9.1\n功夫\n一支穿云箭千军来相见\n8.5\n逃学威龙2\n周星驰重返校园战黑帮\n7.9\n算死草\n国内无厘头早期代表作\n8.5\n审死官\n星爷秀三寸不烂之舌\n视频\n讨论\n1990\n游戏\n签到赚金币，可提现\n赚钱\n帮助反馈",
+        "elements_total": 26,
+        "video_tag_count": 2,
+        "iframe_count": 2,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "开通会员": 1,
+          "开通": 2,
+          "会员": 4,
+          "登录": 1
+        }
+      },
+      "archived": [
+        {
+          "archive": "T025__0d6d185e.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        },
+        {
+          "archive": "T025__0d6d185e.reviewed.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        },
+        {
+          "archive": "T054__1c9b6260.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 6,
+          "body_head": "精彩即将开始",
+          "elements_total": 0,
+          "video_tag_count": 2,
+          "iframe_count": 0,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {}
+        },
+        {
+          "archive": "T054__1c9b6260.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 6,
+          "body_head": "精彩即将开始",
+          "elements_total": 0,
+          "video_tag_count": 2,
+          "iframe_count": 0,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {}
+        },
+        {
+          "archive": "TPIN02__1a5e526d.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        },
+        {
+          "archive": "TPIN02__1a5e526d.reviewed.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        },
+        {
+          "archive": "TPIN02__1cf5deca.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        },
+        {
+          "archive": "TPIN02__1cf5deca.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        },
+        {
+          "archive": "TPIN02__1cf5deca.reviewed.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        },
+        {
+          "archive": "TPIN02__1cf5deca.reviewed.json",
+          "landed_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "obs_url": "https://www.iqiyi.com/v_19rrk40at8.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+          "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+          "body_len": 0,
+          "body_head": "",
+          "elements_total": 0,
+          "video_tag_count": 1,
+          "iframe_count": 0,
+          "degraded": [
+            "body_text"
+          ],
+          "body_source": "snapshot",
+          "keywords": {}
+        }
+      ]
+    },
+    {
+      "url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+      "wait_until": "load",
+      "settle_seconds": 4.0,
+      "first": {
+        "observed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+        "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+        "body_len": 1829,
+        "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们并没看懂电影的精髓所在\n02:08\n周星驰巅峰之作《功夫》\n02:46\n星爷周星驰的影帝之路\n01:32\n星爷影史最惨男主没有之一\n03:13\n武打暴力燃向踩点混剪，武林人的生死决",
+        "body_full": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们并没看懂电影的精髓所在\n02:08\n周星驰巅峰之作《功夫》\n02:46\n星爷周星驰的影帝之路\n01:32\n星爷影史最惨男主没有之一\n03:13\n武打暴力燃向踩点混剪，武林人的生死决斗！\n03:22\n周星驰再现武林绝学 火云邪神落荒而逃\n02:05\n预告\n老片新看，画面过于逼真，听说如来神掌和3D更配哦\n00:32\n预告\n周星驰经典巨献，那些年我们没看懂的功夫，竟然是这样！\n01:40\n【优酷独家·音轨弹幕】关灯拆电影1: 1同声评论 精华放送\n06:54\n功夫拍摄花絮，厉害了！\n03:01\n功夫竟然是这样拍的\n15:58\n未曝光拍摄片段\n15:58\n周星驰黄圣依经典镜头，星女郎黄圣依的颜值巅峰\n02:05\n周星驰作品《功夫》北京首映式\n34:18\n影史最强追逐战！包租婆赛过博尔特\n01:09\n死鸭子嘴硬！阿星一人霸凌所有武林高手\n01:53\n阿星挑衅火云邪神，被沙包大的拳头打得口吐鲜血\n01:47\n周星驰被包租婆追的满街跑！这真的一部经典之作啊！\n04:32\n叫警察出来洗地？你们是真的黑社会怕了怕了！\n03:43\n为你推荐\n周星驰\n元华\n梁小龙\n董志华\n赵志凌\n释彦能\n陈国坤\n高清经典\n豆瓣\n8.2分\n逃学威龙\n高清经典\n豆瓣\n7.4分\n龙的传人\n高清经典\n豆瓣\n7.3分\n无敌幸运星\n高清经典\n豆瓣\n8.8分\n唐伯虎点秋香\n高清经典\n豆瓣\n7.8分\n赌侠2之上海滩赌圣\n高清经典\n豆瓣\n7.0分\n千王之王2000\n高清经典\n豆瓣\n8.2分\n武状元苏乞儿\n高清经典\n豆瓣\n8.0分\n整蛊专家\n高清经典\n豆瓣\n7.4分\n新精武门1991\n高清经典\n豆瓣\n8.8分\n九品芝麻官之白面包青天\nVIP\n豆瓣\n7.2分\n师兄撞鬼\n高清经典\n豆瓣\n9.2分\n大话西游之大圣娶亲\n高清经典\n豆瓣\n7.0分\n算死草\n高清经典\n豆瓣\n7.0分\n行运一条龙\nVIP\n新喜剧之王\nVIP\n豆瓣\n7.9分\n新乌龙院\nVIP\n熊猫计划之部落奇遇记\nVIP\n票房破\n11亿\n澳门风云3\nVIP\n豆瓣\n7.4分\n举起手来\nVIP\n笑功震武林\nVIP\n赌圣2之街头赌圣\n高清经典\n豆瓣\n7.1分\n赌神3之少年赌神\n高清经典\n豆瓣\n7.4分\n富贵列车\n高清经典\n赌霸\n高清经典\n百花奖\n霍元甲\n关于我们\n关于我们在线反馈帧享设备说明优酷视频云优酷社会责任报告AI合成标识公告Youku.tv\n协议声明\n用户协议历史协议文本知识产权声明隐私政策反盗链声明\n服务合作\n广告合作优酷内容开放平台入驻优酷娱盘\n营业执照信息网络传播视听节目许可证：0108283号网络文化经营许可证：京网文（2024）0368-017号网络出版服务许可证：（署）网出证（京）字第266号出版物经营许可证：新出发京批字第直150118号(京)网药械信息备字（2022）第00032号广播电视节目制作经营许可证：（京）字第00670号食品经营许可证：JY11108122976214互联网宗教信息服务许可证：京（2022）0000083©2006-现在 Youku.com 版权所有京ICP证060288号京ICP备06050721号-1经营性网站备案信息京公网安备11010502062683号网络110报警服务北京互联网举报中心北京12345文化市场举报热线扫黄打非举报入口中国互联网举报中心网上有害信息举报专区暴恐音视频举报专区全国扫黑办智能化举报平台公安部网络违法犯罪举报平台网络举报APP下载违规不良信息举报:电话4008100580、邮箱youkujubao@service.alibaba.com网络内容从业者违规举报：youkujubao-zx@alibaba-inc.com未成年人有害信息举报邮箱:youkujubao-minors@service.alibaba.com廉正举报入口廉正举报邮箱：wenyulianzheng@alibaba-inc.com算法公示",
+        "elements_total": 83,
+        "video_tag_count": 0,
+        "iframe_count": 1,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "续费会员": 1,
+          "VIP": 9,
+          "会员": 1,
+          "登录": 1,
+          "预告": 2
+        }
+      },
+      "settled": {
+        "observed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+        "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+        "body_len": 1953,
+        "body_head": "首页\n嫁金钗\n电视剧\n动漫\n分类\n会员特惠\n历史\n客户端\n登录\n登录/注册\n\n同步多端观看记录 尊享高清观影体验\n\n首\n3\n月每月\n12\n元，畅享精彩内容\n\n立即开通\n由于安全原因，请 登录 后继续观看\n视频\n讨论1万+\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n\n2026零氪打金服\n\n广告\n\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》",
+        "body_full": "首页\n嫁金钗\n电视剧\n动漫\n分类\n会员特惠\n历史\n客户端\n登录\n登录/注册\n\n同步多端观看记录 尊享高清观影体验\n\n首\n3\n月每月\n12\n元，畅享精彩内容\n\n立即开通\n由于安全原因，请 登录 后继续观看\n视频\n讨论1万+\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n\n2026零氪打金服\n\n广告\n\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们并没看懂电影的精髓所在\n02:08\n周星驰巅峰之作《功夫》\n02:46\n星爷周星驰的影帝之路\n01:32\n星爷影史最惨男主没有之一\n03:13\n武打暴力燃向踩点混剪，武林人的生死决斗！\n03:22\n周星驰再现武林绝学 火云邪神落荒而逃\n02:05\n预告\n老片新看，画面过于逼真，听说如来神掌和3D更配哦\n00:32\n预告\n周星驰经典巨献，那些年我们没看懂的功夫，竟然是这样！\n01:40\n【优酷独家·音轨弹幕】关灯拆电影1: 1同声评论 精华放送\n06:54\n功夫拍摄花絮，厉害了！\n03:01\n功夫竟然是这样拍的\n15:58\n未曝光拍摄片段\n15:58\n周星驰黄圣依经典镜头，星女郎黄圣依的颜值巅峰\n02:05\n周星驰作品《功夫》北京首映式\n34:18\n影史最强追逐战！包租婆赛过博尔特\n01:09\n死鸭子嘴硬！阿星一人霸凌所有武林高手\n01:53\n阿星挑衅火云邪神，被沙包大的拳头打得口吐鲜血\n01:47\n周星驰被包租婆追的满街跑！这真的一部经典之作啊！\n04:32\n叫警察出来洗地？你们是真的黑社会怕了怕了！\n03:43\n为你推荐\n周星驰\n元华\n梁小龙\n董志华\n赵志凌\n释彦能\n陈国坤\n高清经典\n豆瓣\n8.2分\n逃学威龙\n高清经典\n豆瓣\n7.4分\n龙的传人\n高清经典\n豆瓣\n7.3分\n无敌幸运星\n高清经典\n豆瓣\n8.8分\n唐伯虎点秋香\n高清经典\n豆瓣\n7.8分\n赌侠2之上海滩赌圣\n高清经典\n豆瓣\n7.0分\n千王之王2000\n高清经典\n豆瓣\n8.2分\n武状元苏乞儿\n\n广告\n\n豆包-AI助手，一站式解决多种需求\n高清经典\n豆瓣\n7.4分\n新精武门1991\n高清经典\n豆瓣\n8.8分\n九品芝麻官之白面包青天\nVIP\n豆瓣\n7.2分\n师兄撞鬼\n高清经典\n豆瓣\n9.2分\n大话西游之大圣娶亲\n高清经典\n豆瓣\n7.0分\n算死草\n高清经典\n豆瓣\n7.0分\n行运一条龙\nVIP\n新喜剧之王\nVIP\n豆瓣\n7.9分\n新乌龙院\nVIP\n熊猫计划之部落奇遇记\nVIP\n票房破\n11亿\n澳门风云3\nVIP\n豆瓣\n7.4分\n举起手来\n\n广告\n\n豆包-AI助手，一站式解决多种需求\nVIP\n赌圣2之街头赌圣\n高清经典\n豆瓣\n7.1分\n赌神3之少年赌神\n高清经典\n豆瓣\n7.4分\n富贵列车\n高清经典\n赌霸\n高清经典\n百花奖\n霍元甲\n关于我们\n关于我们在线反馈帧享设备说明优酷视频云优酷社会责任报告AI合成标识公告Youku.tv\n协议声明\n用户协议历史协议文本知识产权声明隐私政策反盗链声明\n服务合作\n广告合作优酷内容开放平台入驻优酷娱盘\n营业执照信息网络传播视听节目许可证：0108283号网络文化经营许可证：京网文（2024）0368-017号网络出版服务许可证：（署）网出证（京）字第266号出版物经营许可证：新出发京批字第直150118号(京)网药械信息备字（2022）第00032号广播电视节目制作经营许可证：（京）字第00670号食品经营许可证：JY11108122976214互联网宗教信息服务许可证：京（2022）0000083©2006-现在 Youku.com 版权所有京ICP证060288号京ICP备06050721号-1经营性网站备案信息京公网安备11010502062683号网络110报警服务北京互联网举报中心北京12345文化市场举报热线扫黄打非举报入口中国互联网举报中心网上有害信息举报专区暴恐音视频举报专区全国扫黑办智能化举报平台公安部网络违法犯罪举报平台网络举报APP下载违规不良信息举报:电话4008100580、邮箱youkujubao@service.alibaba.com网络内容从业者违规举报：youkujubao-zx@alibaba-inc.com未成年人有害信息举报邮箱:youkujubao-minors@service.alibaba.com廉正举报入口廉正举报邮箱：wenyulianzheng@alibaba-inc.com算法公示",
+        "elements_total": 86,
+        "video_tag_count": 0,
+        "iframe_count": 1,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "开通": 1,
+          "VIP": 8,
+          "会员": 1,
+          "登录": 3,
+          "预告": 2
+        }
+      },
+      "archived": [
+        {
+          "archive": "T018__8f1aec03.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1837,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美",
+          "elements_total": 82,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 11,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T018__8f1aec03.reviewed.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1837,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美",
+          "elements_total": 82,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 11,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T025__102d3554.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1837,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美",
+          "elements_total": 82,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 11,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T025__102d3554.reviewed.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1837,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n年卡约5.1折\n提前续费 续享大屏超清观看体验\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美",
+          "elements_total": 82,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 11,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T038__a78dc57e.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1703,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n最低6元/月升SVIP\n与家人共享电视端极致观看体验\n立即升级\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电",
+          "elements_total": 76,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 7,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T038__a78dc57e.reviewed.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1703,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n最低6元/月升SVIP\n与家人共享电视端极致观看体验\n立即升级\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电",
+          "elements_total": 76,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 7,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T038__be8dc2ba.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1814,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n会员6天后到期\n续费享首年5折\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但",
+          "elements_total": 83,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 9,
+            "会员": 2,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T038__cd571143.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1673,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n最低6元/月升SVIP\n与家人共享电视端极致观看体验\n立即升级\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电",
+          "elements_total": 82,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 9,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T044__dcdf616c.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1918,
+          "body_head": "首页\n嫁金钗\n电视剧\n动漫\n分类\n会员特惠\n历史\n客户端\n登录\n登录/注册\n\n同步多端观看记录 尊享高清观影体验\n\n首\n3\n月每月\n12\n元，畅享精彩内容\n\n立即开通\n由于安全原因，请 登录 后继续观看\n视频\n讨论1万+\n进站必看\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元",
+          "elements_total": 87,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "开通": 2,
+            "VIP": 10,
+            "会员": 1,
+            "登录": 3,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T044__dcdf616c.reviewed.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1918,
+          "body_head": "首页\n嫁金钗\n电视剧\n动漫\n分类\n会员特惠\n历史\n客户端\n登录\n登录/注册\n\n同步多端观看记录 尊享高清观影体验\n\n首\n3\n月每月\n12\n元，畅享精彩内容\n\n立即开通\n由于安全原因，请 登录 后继续观看\n视频\n讨论1万+\n进站必看\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元",
+          "elements_total": 87,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "开通": 2,
+            "VIP": 10,
+            "会员": 1,
+            "登录": 3,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T048__0680dc4a.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1808,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n进站必看\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们",
+          "elements_total": 82,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "开通": 1,
+            "VIP": 10,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T048__0680dc4a.reviewed.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1808,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n进站必看\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们",
+          "elements_total": 82,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "开通": 1,
+            "VIP": 10,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T048__0caf6d0b.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1814,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n会员6天后到期\n续费享首年5折\n立即续费\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但",
+          "elements_total": 83,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 9,
+            "会员": 2,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T048__a933bea6.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1786,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n进站必看\n功夫\n简介\nN刷指数83.829.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电影让美国喜剧界默哀，但他们",
+          "elements_total": 86,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "开通": 1,
+            "VIP": 12,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T054__1c9b6260.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1814,
+          "body_head": "历史\n客户端\n更清晰\n客户端\n更流畅\n客户端\n登录\n视频\n讨论1万+\n进站必看\n功夫\n简介\nN刷指数83.839.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月每月12元\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部",
+          "elements_total": 87,
+          "video_tag_count": 1,
+          "iframe_count": 2,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "开通": 1,
+            "VIP": 9,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T054__93f110b6.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1703,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n最低6元/月升SVIP\n与家人共享电视端极致观看体验\n立即升级\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电",
+          "elements_total": 76,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 7,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "T054__93f110b6.reviewed.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1703,
+          "body_head": "续费会员\n历史\n客户端\n登录\n视频\n讨论\n功夫\n简介\nN刷指数85.329.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n最低6元/月升SVIP\n与家人共享电视端极致观看体验\n立即升级\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一部电",
+          "elements_total": 76,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "VIP": 7,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "TPIN02__1cf5deca.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1678,
+          "body_head": "首页\n繁星\n电视剧\n动漫\n分类\n续费会员\n历史\n客户端\n登录\n视频\n讨论1万+\n功夫\n简介\nN刷指数86.339.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月9.9元/月\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一",
+          "elements_total": 128,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "开通": 1,
+            "VIP": 8,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        },
+        {
+          "archive": "TPIN02__1cf5deca.reviewed.json",
+          "landed_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+          "obs_url": "https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+          "page_title": "功夫-电影-高清完整正版视频在线观看-优酷",
+          "body_len": 1678,
+          "body_head": "首页\n繁星\n电视剧\n动漫\n分类\n续费会员\n历史\n客户端\n登录\n视频\n讨论1万+\n功夫\n简介\nN刷指数86.339.5分8.9分金马奖无厘头喜剧动作喜剧\n小混混阿星假冒斧头帮成员混迹猪笼城寨，却意外卷入正邪大战，他能否悟透功夫真谛？\n首3月9.9元/月\n立即开通\n语言选择\n普通话\n粤语\n同声评论\n正片\nVIP\n功夫\n周边视频\n周星驰巅峰之作，看小混混如何成为黑帮老大\n03:17\n3分钟看完《功夫》一",
+          "elements_total": 128,
+          "video_tag_count": 0,
+          "iframe_count": 1,
+          "degraded": [],
+          "body_source": "inner_text",
+          "keywords": {
+            "续费会员": 1,
+            "开通": 1,
+            "VIP": 8,
+            "会员": 1,
+            "登录": 1,
+            "预告": 2
+          }
+        }
+      ]
+    },
+    {
+      "url": "http://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+      "wait_until": "load",
+      "settle_seconds": 4.0,
+      "first": {
+        "observed_url": "https://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+        "page_title": "爱奇艺-在线视频网站-海量正版高清视频在线观看",
+        "body_len": 6,
+        "body_head": "精彩即将开始",
+        "body_full": "精彩即将开始",
+        "elements_total": 0,
+        "video_tag_count": 2,
+        "iframe_count": 0,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {}
+      },
+      "settled": {
+        "observed_url": "https://www.iqiyi.com/v_19rrk40ajc.html?vfm=2008_aldbd&fc=828fb30b722f3164&fv=p_02_01",
+        "page_title": "功夫-电影-完整版视频在线观看-爱奇艺",
+        "body_len": 506,
+        "body_head": "首页\n小城良方\n电视剧\n短剧\n电影\n综艺\n会员中心\n筛选\n搜你想看的\n搜索\n会员\n游戏\n客户端\n快捷访问\n消息\n历史\n上传\n登录\n精彩即将开始\n正在缓冲，请稍候\n功夫\n客户端流畅播放\n功夫\n详情\n9.1\n分\n2004年\n周星驰\n奇幻喜剧\n动作\n金像奖\n加追\n下载\n分享\n黄金会员首月低至12元\n新朋友，开通享精彩内容\n开通会员\n周星驰电影大全\n7.6\n功夫女足\n9.1\n功夫\n7.8\n千王之王2000\n查看全部 (16)\n纯绿色打金鬼服！长期稳定运营，爆率高，回血快！\n广告 专属高爆版本\n猜你喜欢\n8.5\n赌圣\n时装赌片票房巅峰\n7.8\n千王之王2000\n星爷演绎千王重出江湖\n7.8\n赌神3\n黎明",
+        "body_full": "首页\n小城良方\n电视剧\n短剧\n电影\n综艺\n会员中心\n筛选\n搜你想看的\n搜索\n会员\n游戏\n客户端\n快捷访问\n消息\n历史\n上传\n登录\n精彩即将开始\n正在缓冲，请稍候\n功夫\n客户端流畅播放\n功夫\n详情\n9.1\n分\n2004年\n周星驰\n奇幻喜剧\n动作\n金像奖\n加追\n下载\n分享\n黄金会员首月低至12元\n新朋友，开通享精彩内容\n开通会员\n周星驰电影大全\n7.6\n功夫女足\n9.1\n功夫\n7.8\n千王之王2000\n查看全部 (16)\n纯绿色打金鬼服！长期稳定运营，爆率高，回血快！\n广告 专属高爆版本\n猜你喜欢\n8.5\n赌圣\n时装赌片票房巅峰\n7.8\n千王之王2000\n星爷演绎千王重出江湖\n7.8\n赌神3\n黎明千术学艺之旅\n9.0\n唐伯虎点秋香\n周星驰巩俐鸳鸯配\n8.7\n逃学威龙\n周星驰经典系列\n8.5\n逃学威龙2\n周星驰重返校园战黑帮\n广告 高爆攻速打金服\n传奇已死？试试这款刚上线的新传奇~\n8.5\n整蛊专家\n星爷刘天王联手整蛊\n7.9\n算死草\n国内无厘头早期代表作\n8.7\n武状元苏乞儿\n周星驰演绎经典苏乞儿\n8.5\n审死官\n星爷秀三寸不烂之舌\n视频\n讨论\n2.3w\n二创\n游戏\n签到赚金币，可提现\n赚钱\n帮助反馈",
+        "elements_total": 24,
+        "video_tag_count": 2,
+        "iframe_count": 2,
+        "degraded": [],
+        "body_source": "inner_text",
+        "keywords": {
+          "开通会员": 1,
+          "开通": 2,
+          "会员": 4,
+          "登录": 1
+        }
+      },
+      "archived": []
+    }
+  ],
+  "fingerprint": {}
+}

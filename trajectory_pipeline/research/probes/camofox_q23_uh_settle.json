@@ -1,0 +1,874 @@
+{
+  "what": "Q-23 补测：给第一轮没打开的 URL 统一追加尝试（取证量一致 ⇒ 判据统一）",
+  "when": "2026-10-28 09:17:26",
+  "driver": "camofox",
+  "attempts_per_target": 6,
+  "targets": [
+    "https://video.friday.tw/movie/detail/1838",
+    "https://video.friday.tw/movie/detail/29289",
+    "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+    "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+    "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+    "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+    "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+    "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+    "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+    "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+    "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+    "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi"
+  ],
+  "results": [
+    {
+      "url": "https://video.friday.tw/movie/detail/1838",
+      "attempts": [
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.92
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "domcontentloaded",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 22.73
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 24.3
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "domcontentloaded",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 22.5
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "load",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 22.67
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/1838",
+          "wait_until": "domcontentloaded",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/1838\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 26.45
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 2,
+        "site_unreachable": 4
+      },
+      "unreachable_code_hits": 4,
+      "unreachable_codes": [
+        "NS_ERROR_CONNECTION_REFUSED"
+      ]
+    },
+    {
+      "url": "https://video.friday.tw/movie/detail/29289",
+      "attempts": [
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "load",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 22.66
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.84
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 30.72
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "domcontentloaded",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 22.75
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "load",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 22.53
+        },
+        {
+          "url": "https://video.friday.tw/movie/detail/29289",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: Timeout 30000ms exceeded.\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://video.friday.tw/movie/detail/29289\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [],
+          "elapsed_s": 31.53
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 3,
+        "site_unreachable": 3
+      },
+      "unreachable_code_hits": 3,
+      "unreachable_codes": [
+        "NS_ERROR_CONNECTION_REFUSED"
+      ]
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+      "attempts": [
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 23.05
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: Timeout 30000ms exceeded.\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [],
+          "elapsed_s": 31.69
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 23.02
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.98
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "load",
+          "kind": "site_unreachable",
+          "code": "NS_ERROR_CONNECTION_REFUSED",
+          "error": "DriverUnreachableError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_CONNECTION_REFUSED\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_CONNECTION_REFUSED"
+          ],
+          "elapsed_s": 22.62
+        },
+        {
+          "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: Timeout 30000ms exceeded.\\nCall log:\\n\\u001b[2m  - navigating to \\\"https://www.youtube.com/watch?v=AAAAAAAAAAA\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [],
+          "elapsed_s": 31.66
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 5,
+        "site_unreachable": 1
+      },
+      "unreachable_code_hits": 1,
+      "unreachable_codes": [
+        "NS_ERROR_CONNECTION_REFUSED"
+      ]
+    },
+    {
+      "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.86
+        },
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.7
+        },
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.92
+        },
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.7
+        },
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.75
+        },
+        {
+          "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.81
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.8
+        },
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.97
+        },
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.61
+        },
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.66
+        },
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.89
+        },
+        {
+          "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.89
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 4.08
+        },
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.83
+        },
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.67
+        },
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.69
+        },
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.89
+        },
+        {
+          "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.78
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.62
+        },
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.7
+        },
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.72
+        },
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.81
+        },
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.8
+        },
+        {
+          "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.61
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.64
+        },
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.8
+        },
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.94
+        },
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.92
+        },
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 2.08
+        },
+        {
+          "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.8
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.81
+        },
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.77
+        },
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.69
+        },
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.7
+        },
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.89
+        },
+        {
+          "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_EMPTY_RESPONSE\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_EMPTY_RESPONSE"
+          ],
+          "elapsed_s": 1.67
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 4.14
+        },
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 4.12
+        },
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.27
+        },
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 4.98
+        },
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 2.72
+        },
+        {
+          "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.73
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_RESET"
+          ],
+          "elapsed_s": 3.19
+        },
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.98
+        },
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 23.39
+        },
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 23.02
+        },
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 23.12
+        },
+        {
+          "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+          "ns_error_codes": [
+            "NS_ERROR_NET_TIMEOUT"
+          ],
+          "elapsed_s": 22.95
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+      "attempts": [
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [
+            "SSL_ERROR_BAD_CERT_DOMAIN"
+          ],
+          "elapsed_s": 4.39
+        },
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [
+            "SSL_ERROR_BAD_CERT_DOMAIN"
+          ],
+          "elapsed_s": 2.2
+        },
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [
+            "SSL_ERROR_BAD_CERT_DOMAIN"
+          ],
+          "elapsed_s": 2.34
+        },
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [
+            "SSL_ERROR_BAD_CERT_DOMAIN"
+          ],
+          "elapsed_s": 2.31
+        },
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "load",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [
+            "SSL_ERROR_BAD_CERT_DOMAIN"
+          ],
+          "elapsed_s": 2.14
+        },
+        {
+          "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+          "wait_until": "domcontentloaded",
+          "kind": "not_open",
+          "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 502: {\"error\":\"SSL certificate error: page.goto: SSL_ERROR_BAD_CERT_DOMAIN\",\"code\":\"ssl_error\",\"recoverable\":false}",
+          "ns_error_codes": [
+            "SSL_ERROR_BAD_CERT_DOMAIN"
+          ],
+          "elapsed_s": 2.14
+        }
+      ],
+      "kind_histogram": {
+        "not_open": 6
+      },
+      "unreachable_code_hits": 0,
+      "unreachable_codes": []
+    }
+  ],
+  "fingerprint": {}
+}

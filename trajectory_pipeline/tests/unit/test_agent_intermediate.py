@@ -31,7 +31,10 @@ from trajectory_pipeline.executor.agent_loop import (
     AgentTask,
 )
 from trajectory_pipeline.executor.branches import BRANCH_LABELS, RunLedger
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverUnreachableError,
+)
 from trajectory_pipeline.executor.steps.agent_intermediate import (
     visit_aggregator_agent,
     visit_article_agent,
@@ -140,12 +143,16 @@ class FakeDriver:
         *,
         after: tuple[Observation, ...] = (),
         goto_fails: tuple[str, ...] = (),
+        goto_unreachable: tuple[str, ...] = (),
         tab_fails: tuple[str, ...] = (),
         observe_fails: int = 0,
     ) -> None:
         self._pages = dict(pages or {})
         self._queue = list(after)
         self._goto_fails = set(goto_fails)
+        #: 导航失败但**机器码证明**站点不可达（M-44）⇒ 记
+        #: ``unreachable_hard``（真负样本），与「这次没打开」分开。
+        self._goto_unreachable = set(goto_unreachable)
         self._tab_fails = set(tab_fails)
         self._observe_fails = observe_fails
         self.current: Observation | None = None
@@ -156,6 +163,10 @@ class FakeDriver:
 
     async def goto(self, url: str, *, wait_until: str = "load") -> None:
         self.visited.append(url)
+        if url in self._goto_unreachable:
+            raise DriverUnreachableError(
+                f"fake: 站点不可达 {url}", code="NS_ERROR_UNKNOWN_HOST"
+            )
         if url in self._goto_fails or url not in self._pages:
             raise DriverError(f"fake: 导航失败 {url}")
         self.current = self._pages[url]
@@ -343,22 +354,43 @@ async def _run_post(
 
 
 class Test进站:
-    async def test_进站导航失败记unreachable_hard(self):
+    async def test_进站导航失败记unresolved(self):
+        """⚠️ **「这次没打开」不是「站点不可达」**（M-44 裁定，owner
+        2026-10-27）。
+
+        超时 / 打断 / 建页失败这些形态**证明不了**站点不可达 ⇒ 记
+        ``unresolved``（**不进负样本池**）：池里那条断言是
+        「**这里真的看不了**」，而事实是「**这一次没打开**」⇒
+        记成前者就是**训练信号被污染**（教「这个站看不了」）。
+        """
         ctx = await _run_agg(FakeAgentLLM(kind=TASK_ENTRIES),
                              goto_fails=(AGG_URL,))
-        assert ctx.branches == ["unreachable_hard"]
+        assert ctx.branches == ["unresolved"]
         assert ctx.candidates == []
         # 动作流里那一步的 error 是非空的——「试过且失败」要看得见
         assert ctx.result.steps.steps[0].action.tool == "goto"
         assert ctx.result.steps.steps[0].error
 
-    async def test_进站快照失败也记unreachable_hard(self):
+    async def test_进站真站点不可达记unreachable_hard(self):
+        """**机器码证明**站点不可达（DNS 解析不出来 / 连接被拒）
+        ⇒ 仍是 ``unreachable_hard``（真负样本要留住，不许被降级）。"""
+        ctx = await _run_agg(FakeAgentLLM(kind=TASK_ENTRIES),
+                             goto_unreachable=(AGG_URL,))
+        assert ctx.branches == ["unreachable_hard"]
+        assert ctx.candidates == []
+
+    async def test_进站快照失败也记unresolved(self):
         """导航成功但取不到快照，与打不开是**同一种**记账：
-        两者都是「中间页没拿到手」，而不是「这个聚合站不行」。"""
+        两者都是「中间页没拿到手」，而不是「这个聚合站不行」。
+
+        ⚠️ 分支从 ``unreachable_hard`` 改成 ``unresolved``（M-44）：
+        导航**已经成功** ⇒ 站点**是通的** ⇒ 快照失败**证明不了**
+        站点不可达 ⇒ 不该进负样本池。
+        """
         ctx = await _run_agg(
             FakeAgentLLM(kind=TASK_ENTRIES), observe_fails=1
         )
-        assert ctx.branches == ["unreachable_hard"]
+        assert ctx.branches == ["unresolved"]
         assert ctx.candidates == []
 
     async def test_进站失败就不问模型(self):

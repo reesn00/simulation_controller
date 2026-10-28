@@ -1,0 +1,205 @@
+[
+  {
+    "url": "http://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://v.youku.com/v_show/id_XMTQwNzMzMTc1Mg==.html?source=baidu&refer=sousuotoufang_market.qrwang_00002944_000000_QJFFvi_19031900&s=cc04434c962411de83b1，标题「功夫-电影-高清完整正版视频在线观看-优酷」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=5H1bZObpBf_O12QynQO_RrOVylqo2PKUdPX6BqoRlDBofeGuw_PYzS-5WkNknkZFaAyrktFMvsD9ftQbIBC4hq",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://www.karalalala.com/play/35932298/3/1.html，标题「电影《哪吒之魔童降世》HD中字免费版 - VS影视网」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=AqZoPCxliguOVF3shBzJkGmfllfs52wpKFFlryshN9g6ugNGw38A39j_EboYOnrFt7g6gIjkYFpKxmhINH8ug_",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_EMPTY_RESPONSE×9）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=F5hqy9ou6kp68oHEdWs_2gkHtTF3ECAzW9osf6iRVeGz-zbQzOKuo3QuJH6KP8VAWNyNAU2QAyx_vbKLfxwFLa",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_EMPTY_RESPONSE×9）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=O7DP4oVhLQePh752fyFRxsIWTcw5QeFqa6kiXdGRjCARLvWlcCBXyGPQzdoROonpocjc9VFI0ddGg69Ppunqb_",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_RESET×2、NS_ERROR_NET_TIMEOUT×6）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=OGfPdlFvkE2OWiZb77knxL_nmcLbAhzTQeb6fY3T8wJ6lOYVTsyMEnKFToe9UJ-89VGJIHb6e0rew9109_Zd7h7Zvv4bDtfGiAyUt2fE3oi",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（SSL_ERROR_BAD_CERT_DOMAIN×6）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=Oe5bmkA5vH23HnM-9PDcZ_B2AY_G71uT-Eu5ICrPUo4jxz0acz0YqvDvjrfA4q2B0cyzFvS4GD4PEjwl9a20Yq",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://www.yn-mg.cn/voddetail/71884.html，标题「功夫-电影完整版免费在线观看高清播放-无极影视」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taEmdvA2P7e0dqHSfKzE9Zw3yHfF0i85H85HKjup32xa71G2zgZziE-22OdkIorGVvK",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_EMPTY_RESPONSE×9）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=V_DErjWkps7cyCaAuf1taJ8Kl78VVw_aC3LtWBCwJfrQk-dxssuJlC4ZSsuG_buDPJAOmnXZyBtrM3N_S7IKda",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://www.yn-mg.cn/playid/71884-1-1.html?__cf_chl_rt_tk=4_1Vr0ARe6th.vSJKQcmwoADybCKsF5PFlKlWYxpWyM-1793148947-1.0.1.1-cikKT4c0wF5q05dvESkIdG9m9lc5z3uTzxjWi5mIpBA，标题「Just a moment...」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=WvO1FsW1q4owcqW_YGlXTbn9qAzJBAgrJpE6XwBKJuxU8K31AsWU0p89cx1WmUB5C7dqPUgAulgetra6AlItpa",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 http://www.ljy200471.com/w/35918-1-0.html，标题「播放动作片《功夫HD中字》- 在线免费观看 - 未删减 - 策驰影院」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtK1trSsAAiBJoKMQ7lZVQonQCD5K-4Q2nRvGenukMHRnQm-gihhxzfaBLxlCECcvUn_",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 http://www.ljy200471.com/w/35918-1-0.html，标题「播放动作片《功夫HD中字》- 在线免费观看 - 未删减 - 策驰影院」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=_PyfhvE9JUzgz7RTjPxtKAtpYSuAT8xJQlmmvSI1pM7ebKaeqd4Lg2ZpzBcsv0iqhDQB3KtpuNoDOiJafEzTsa",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_EMPTY_RESPONSE×9）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=c0JJbm58vXFVVcKtk1CfZse5fI5hMbTmGiMhRzsjCBkDwe2X-jurXoWlxhzop5wufjJhQiFdbbGXDGPwtWisfK",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_RESET×9）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=d9UHUC4nllyj-UYjtpvNZyy5sRZai809cddNKzzS8PmyMSRwQq9l5t_ewRT7Pc5ZHvLbKziAR99JGObR-Yr8N_",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_EMPTY_RESPONSE×9）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=h1vt7dL81SYbysv7HhJnu3OOg9BKYtPl7igpE6_oxYfGe-UV3YRY_WbooWjofH3ocLzj7KhWJYTZuxLQbeWgGa",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://www.yn-mg.cn/voddetail/71884.html，标题「功夫-电影完整版免费在线观看高清播放-无极影视」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=jjwThqXCMGJQWZv3rHwVd7SFsLutFFbNDgCmQHOOkqS9_xQwm-BHrTlOIEGVxCEBouBw-yA5Tx9u6vzTdqlcsK",
+    "verdict": "not_proven",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：机器码**证明不了**站点不可达（NS_ERROR_NET_RESET×9）⇒ 「这次没打开」，按 M-44 口径落 unresolved（不进池）",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "http://www.baidu.com/link?url=l7bZ1M85Wg5A60se2CHoqxsR1XHbbPW4rl0r0Dyw4Zq9yxcnthEhe5aQRnxccf167FLFGIVFdHkEWEhgZp8-Uc9RsbHf05Zu8Dm55lqdbSw-SOfUm41F9dLydBUUkV20",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://zhidao.baidu.com/question/214717833410116245/answer/5100422567.html，标题「武林外传在线观看完整版免费资源_百度知道」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://cmgo.com/web/zh-CN/m/movie/cmgo655_%E5%8A%9F%E5%A4%AB",
+    "verdict": "opens",
+    "pool_rows": 4,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://cmgo.com/zh-CN/m/movie/cmgo655_%E5%8A%9F%E5%A4%AB，标题「CMGO」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://m.ixigua.com/video/6582085495839261192",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://m.ixigua.com/video/6582085495839261192，标题「功夫 - 电影 - 高清完整版在线观看 - 西瓜视频」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://tinhte.vn/thread/top-5-app-mua-hang-taobao-tieng-viet-don-gian-2024.3802865/",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://tinhte.vn/thread/top-5-app-mua-hang-taobao-tieng-viet-don-gian-2024.3802865/?__cf_chl_rt_tk=XSD7uUbPFIwkYNwungbCWxUxmHyvX9kwSjZRjpSv110-1793148693-1.0.1.1-fcUFm3C7o0vr0keobR8Pw11Z2pltjDUcL0QVliuG2VU，标题「Just a moment...」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://trtag.com/dy/aiqing/106493/",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://trtagy.com/dy/aiqing/106493/，标题「《天使爱美丽》高清在线观看-爱情片-免费完整版 - 影视大全」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://trtag.com/dy/dongzuo/98794/",
+    "verdict": "opens",
+    "pool_rows": 12,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://trtagy.com/dy/dongzuo/98794/，标题「《功夫(普通话版)》高清在线观看-动作片-免费完整版 - 影视大全」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://trtag.com/zy/167079/",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://trtagy.com/zy/167079/，标题「《中国好声音第一季》高清在线观看-综艺-免费完整版 - 影视大全」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://tv.cctv.com/2012/12/03/VIDA1354531513618469.shtml",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://tv.cctv.com/2012/12/03/VIDA1354531513618469.shtml，标题「武林外传（电视剧）_CCTV节目官网-电视剧_央视网(cctv.com)」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://video.friday.tw/movie/detail/1838",
+    "verdict": "site_unreachable",
+    "pool_rows": 12,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：拿到过真·不可达机器码（NS_ERROR_CONNECTION_REFUSED×8、NS_ERROR_NET_TIMEOUT×5）⇒ 站点性质成立，留池（原始次数照录，不投票）",
+    "action": "kept"
+  },
+  {
+    "url": "https://video.friday.tw/movie/detail/29289",
+    "verdict": "site_unreachable",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：拿到过真·不可达机器码（NS_ERROR_CONNECTION_REFUSED×8、NS_ERROR_NET_TIMEOUT×4）⇒ 站点性质成立，留池（原始次数照录，不投票）",
+    "action": "kept"
+  },
+  {
+    "url": "https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://www.le.com/ptv/vplay/31639140.html?ch=baidu_ffdsj&from=baidu_so&site=baidu_all，标题「哪吒之魔童降世 - 在线观看 - 电影 - 乐视视频」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://www.mytvsuper.com/tc/programme/nezha0004_142825/%E5%93%AA%E5%90%92%E4%B9%8B%E9%AD%94%E7%AB%A5%E9%99%8D%E4%B8%96/",
+    "verdict": "opens",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器）：打得开——落地 https://www.mytvsuper.com/tc/programme/nezha0004_142825/%E5%93%AA%E5%90%92%E4%B9%8B%E9%AD%94%E7%AB%A5%E9%99%8D%E4%B8%96/，标题「哪吒之魔童降世 - myTV SUPER線上看」⇒ 「真·站点不可达」不成立，原判是「这次没打开」",
+    "action": "downgraded+pool_dropped"
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=AAAAAAAAAAA",
+    "verdict": "site_unreachable",
+    "pool_rows": 1,
+    "reason": "Q-23 现场复核（2026-10-28，camofox 真开浏览器，试 9 次、0 次打开）：拿到过真·不可达机器码（NS_ERROR_CONNECTION_REFUSED×2、NS_ERROR_NET_TIMEOUT×6）⇒ 站点性质成立，留池（原始次数照录，不投票）",
+    "action": "kept"
+  }
+]

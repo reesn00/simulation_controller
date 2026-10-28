@@ -1,0 +1,25 @@
+{
+  "driver": "camofox",
+  "settle_seconds": 4.0,
+  "targets": [
+    "http://www.baidu.com/link?url=Q2BHVCtAxUy4tZYW5r3mkpRClF287Z2CjsHSQ-RHg9SAsvymLsOkRQjYoMywwB_lypeMJtsLliahJwsY1_yfy_",
+    "http://www.baidu.com/link?url=ExCy7iZH9xFmThkcSKav0OPx3_rYNKanZueIyhNBCSzVxjnuReonyJr5n7vYkP1zygFkn78DE2h__464MuuUua"
+  ],
+  "results": [
+    {
+      "url": "http://www.baidu.com/link?url=Q2BHVCtAxUy4tZYW5r3mkpRClF287Z2CjsHSQ-RHg9SAsvymLsOkRQjYoMywwB_lypeMJtsLliahJwsY1_yfy_",
+      "wait_until": "domcontentloaded",
+      "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=Q2BHVCtAxUy4tZYW5r3mkpRClF287Z2CjsHSQ-RHg9SAsvymLsOkRQjYoMywwB_lypeMJtsLliahJwsY1_yfy_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+      "first_error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=Q2BHVCtAxUy4tZYW5r3mkpRClF287Z2CjsHSQ-RHg9SAsvymLsOkRQjYoMywwB_lypeMJtsLliahJwsY1_yfy_\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+      "archived": []
+    },
+    {
+      "url": "http://www.baidu.com/link?url=ExCy7iZH9xFmThkcSKav0OPx3_rYNKanZueIyhNBCSzVxjnuReonyJr5n7vYkP1zygFkn78DE2h__464MuuUua",
+      "wait_until": "domcontentloaded",
+      "error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: NS_ERROR_NET_RESET\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=ExCy7iZH9xFmThkcSKav0OPx3_rYNKanZueIyhNBCSzVxjnuReonyJr5n7vYkP1zygFkn78DE2h__464MuuUua\\\", waiting until \\\"commit\\\"\\u001b[22m\\n\",\"retryable\":false}",
+      "first_error": "DriverError: camofox 导航失败: camofox tool camofox_navigate 返回错误: camofox error: 500: {\"error\":\"page.goto: Navigation to \\\"http://www.baidu.com/link?url=ExCy7iZH9xFmThkcSKav0OPx3_rYNKanZueIyhNBCSzVxjnuReonyJr5n7vYkP1zygFkn78DE2h__464MuuUua\\\" is interrupted by another navigation to \\\"http://www.ctwlpt.com/vodplay/38550-1-1.html\\\"\\nCall log:\\n\\u001b[2m  - navigating to \\\"http://www.baidu.com/link?url=ExCy7iZH9xFmThkcSKav0OPx3_rYNKanZueIyhNBCSzVxjnuReonyJr5n7vYkP1z",
+      "archived": []
+    }
+  ],
+  "fingerprint": {}
+}
