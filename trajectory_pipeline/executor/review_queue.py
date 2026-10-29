@@ -50,6 +50,7 @@ from typing import Any, Final, Iterable, Mapping
 from trajectory_pipeline.executor.branches import (
     COLLECTION_SIDE_BRANCHES,
     NON_SAMPLE_BRANCHES,
+    TERMINAL_SHAPE_BRANCHES,
 )
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.common.elements import (
@@ -237,6 +238,23 @@ def _fits(want: str | None, question: str, belongs: list[str]) -> bool:
     ⚠️ **``question`` 为空时一律拒绝**：老存档压根没记是哪个判断点，
     「无法核对」不等于「可以贴」。
 
+    ⚠️ **但终局形态那两支是例外**（2026-10-29 · Q-25 甲护栏落地后暴露）：
+    ``broken`` / ``blocked`` **压根不属于任何判断点**——它们是**代码层对
+    页面正文的事实核**（404 / 地区限制 / 验证码），**不回答任何一道题**
+    ⇒ 执行层自己落这种行时 **question 恒为空**（实测本批 12 行
+    ``broken`` 全是空 question）。于是上面那条「空 question 一律拒绝」
+    会把**执行层自己能产出的形状**挡在人工回填之外 ⇒ **人裁不了执行层
+    已经判出来的东西**（实测 28 行 kmslxsh 的 404 页就卡在这儿：
+    代码判得出，人一裁就变成「只落 site_verdict、分支不动」）。
+
+    而 D-5 早就接受 ``("", "broken")`` / ``("", "blocked")``
+    （``d5_scorer.QUESTIONLESS_PAIRS`` 从
+    ``executor.branches.TERMINAL_SHAPE_BRANCHES`` 推导）⇒ **两处口径
+    必须一致**，否则就是同一个仓库里两套规矩（H-16 记的那类）。
+    ⚠️ 例外**只给终局形态这两支**：判断点分支（``not_play_site`` /
+    ``component_unverified`` / …）仍然拒收空 question——它们**真的要归属
+    到某道题**，贴错了会造出决策树里不存在的组合。
+
     ``belongs`` 是 :func:`~trajectory_pipeline.perception.questions.questions_of_branch`
     的**全部产地**（2026-10-16 方案 12 阶段 A1 起为复数）：多产地分支
     （``not_play_site`` 由 ① ``select.play_sites`` 与 ①.5
@@ -248,6 +266,8 @@ def _fits(want: str | None, question: str, belongs: list[str]) -> bool:
         return True                          # 通用 fail-closed 出口
     if want is None:
         return question == questions.Q.PLAYER_OK
+    if not question and want in TERMINAL_SHAPE_BRANCHES:
+        return True                          # 终局形态：没有归属判断点
     return any(b == question for b in belongs)
 
 #: 交互元素样本条数。复核员判断"有没有播放按钮"主要看这个，
@@ -547,7 +567,14 @@ def apply_verdicts(
         rec["review_verdict"] = verdict
         rec["reviewed_by"] = str((v or {}).get("reviewed_by") or "")
         rec["review_note"] = str((v or {}).get("note") or "")
-        rec["branch_before_review"] = outcome.get("branch")
+        # ⚠️ **回填可以叠加，但「代码原判」不许被覆盖**（2026-10-29）：
+        # 同一份存档被裁过两轮时，第二轮的输入是**上一轮的复核档**⇒
+        # ``outcome["branch"]`` 已经是**人改过的**分支 ⇒ 直接拿它当
+        # ``branch_before_review`` 会把**代码原判**抹成上一轮的人裁，
+        # 「人工与代码的分歧率」从此不可测。已有就保留已有的。
+        prior = outcome.get("branch_before_review")
+        rec["branch_before_review"] = (
+            prior if prior is not None else outcome.get("branch"))
 
         # 这个裁定想要贴上去的分支。``None`` 表示「成功」。
         if verdict in _WANTED_BRANCH:

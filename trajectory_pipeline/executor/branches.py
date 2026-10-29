@@ -37,6 +37,7 @@ from trajectory_pipeline.perception.base import Decision, Observation
 # 这里反向导入再导出——executor → perception 单向依赖不破，且旧引用
 # （``branches.STRONG_PAYWALL_KEYWORDS`` 等）继续解析。
 from trajectory_pipeline.perception.rule_perceptor import (
+    ACCESS_DEFECT_KINDS,
     PRICE_PATTERN,
     STRONG_PAYWALL_KEYWORDS,
     WEAK_PAYWALL_KEYWORDS,
@@ -734,6 +735,24 @@ ACCESS_DEFECT_BRANCH: Mapping[str, str] = MappingProxyType({
     "not_found": "broken",
     "paywall": "subscription_wall",
 })
+
+#: **Q-25 甲护栏（:func:`terminal_shape_branch`）能产出的分支全集**。
+#:
+#: 推导自两张表，不是手抄的清单：
+#: :func:`~trajectory_pipeline.perception.rule_perceptor.infer_access_defect`
+#: **只**返回 :data:`~trajectory_pipeline.perception.rule_perceptor.ACCESS_DEFECT_KINDS`
+#: 里的四类（**不含** ``login``、**不含** ``paywall``），再经
+#: :data:`ACCESS_DEFECT_BRANCH` 折成分支 ⇒ 护栏**只可能**产两支：
+#: ``blocked``（region/captcha/anti_bot）与 ``broken``（not_found）。
+#:
+#: 这张表是**给下游用的**：``evaluation.scorers.d5_scorer`` 要登记
+#: 「question 为空的合法组合」（代码层确定性事实核没有判断题可配对）。
+#: 真源放在这里——复制一份进评分器就是**两处各写一个产地**，漏登记那一支
+#: ⇒ 它在 agent 存档里会被判成「映射外的组合」（真跑 2026-10-28 那批
+#: 15 条 ``broken`` 就是这么被门禁拦下的）。
+TERMINAL_SHAPE_BRANCHES: frozenset[str] = frozenset(
+    ACCESS_DEFECT_BRANCH[k] for k in ACCESS_DEFECT_KINDS
+)
 
 
 def _page_is_error_page(obs: Observation) -> tuple[bool, str]:

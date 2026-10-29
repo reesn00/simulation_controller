@@ -1093,3 +1093,74 @@ class TestExtractFromP1Archive:
         items = extract_from_p1_archive(arch)
         assert len(items) == 1
         assert items[0].branch == "unresolved"
+
+
+class Test无题产地的终局形态:
+    """**无 question 的行也要能裁**（2026-10-29 · Q-25 甲护栏落地后暴露）。
+
+    ⚠️ 背景：Q-25 甲护栏（``executor/branches.py::terminal_shape_branch``）
+    落的是**代码层对页面正文的事实核**（404 / 地区限制 / 验证码）⇒
+    **不回答任何一道题** ⇒ 它写出来的行 **question 恒为空**（实测本批
+    12 行 ``broken`` 全是空 question）。
+
+    而 :func:`_fits` 原来有一条「question 为空时一律拒绝」⇒ **人裁不了
+    执行层自己已经判出来的东西**：实测 28 行 kmslxsh 的 404 页卡在这儿
+    ——代码判得出，人一裁就变成「只落 site_verdict、分支不动」⇒ 真负样本
+    永远进不了池。
+
+    而 D-5 早就接受 ``("", "broken")`` / ``("", "blocked")``（从
+    ``executor.branches.TERMINAL_SHAPE_BRANCHES`` 推导）⇒ **两处口径必须
+    一致**，否则就是同一个仓库里两套规矩（H-16 记的那类）。
+    """
+
+    def test_无题的unresolved能改判成broken(self):
+        arch = _archive([{"url": "https://kmslxsh.com/v/31445/x.html",
+                          "branch": "unresolved",
+                          "evidence": "页面正文命中终局形态 not_found"}])
+        out, st = apply_verdicts(arch, {
+            "https://kmslxsh.com/v/31445/x.html": {
+                "verdict": "confirm_broken", "reviewed_by": "reesn",
+                "note": "现场复核：404 Not Found"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "broken"
+        assert rec["is_negative_sample"] is True
+        assert rec["source"] == "human"
+        assert rec["branch_before_review"] == "unresolved"
+        assert st["branch_written"] == 1
+        assert st["off_question"] == 0
+
+    def test_无题的判断点分支仍然拒收(self):
+        """⚠️ **例外只给终局形态那两支**。
+
+        ``not_play_site`` 说的是「**这个判断点**上判出了这个结论」⇒
+        它**真的要归属到某道题** ⇒ 空 question 照样拒收（只落
+        ``site_verdict``，分支不动）。放它进来会造出决策树里不存在的
+        组合，而那种破坏在报告上看不出异常。
+        """
+        arch = _archive([{"url": "https://www.hao123.com/",
+                          "branch": "unresolved", "evidence": "导航首页"}])
+        out, st = apply_verdicts(arch, {"https://www.hao123.com/": {
+            "verdict": "confirm_not_play_site"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "unresolved"
+        assert rec["site_verdict"] == "not_play_site"
+        assert st["off_question"] == 1
+        assert st["branch_written"] == 0
+
+    def test_叠加回填保留代码原判(self):
+        """回填可以叠加，但 ``branch_before_review`` 记的必须是**代码原判**。
+
+        ⚠️ ``blocked`` 在 ``REVIEW_BRANCHES`` 里 ⇒ 第一轮裁成 ``blocked``
+        的行**第二轮还能再裁** ⇒ 那时 ``outcome["branch"]`` 已经是
+        人改过的分支 ⇒ 不保留就会把「代码原判」抹成上一轮的人裁，
+        「人工与代码的分歧率」从此不可测。
+        """
+        arch = _archive([{"url": "https://a.com/x.html",
+                          "branch": "unresolved", "evidence": "e"}])
+        first, _ = apply_verdicts(arch, {"https://a.com/x.html": {
+            "verdict": "confirm_blocked", "reviewed_by": "reesn"}})
+        second, _ = apply_verdicts(first, {"https://a.com/x.html": {
+            "verdict": "confirm_broken", "reviewed_by": "李"}})
+        rec = second["outcomes"][0]
+        assert rec["branch"] == "broken"
+        assert rec["branch_before_review"] == "unresolved"

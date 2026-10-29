@@ -239,6 +239,15 @@ TREE_BRANCHES: frozenset[str] = frozenset(
 #:    （:data:`trajectory_pipeline.executor.agent_loop.GATEKEEPER_DECIDED_BRANCHES`），
 #:    不手抄——手抄的那笔旧账是 ``questions.REGISTRY`` → 本映射漏
 #:    ``unresolved``，48 条正确结论被判成「分支走错」。
+#: 4. ``("", "blocked")`` / ``("", "broken")``——**Q-25 甲护栏（终局形态）
+#:    代码判定的收口分支**（owner 裁定 2026-10-28 · 台账 Q-25 甲）：agent
+#:    自报放弃 / 预算耗尽时，对**最后一页正文**跑一次感知层现成判据
+#:    （:func:`trajectory_pipeline.executor.branches.terminal_shape_branch`），
+#:    命中就落那条分支——那是**代码层确定性事实核**（页面自己的证据），
+#:    **没有判断点**可配对 ⇒ question 恒为空。这一组同样**从执行层推导**
+#:    （:data:`trajectory_pipeline.executor.branches.TERMINAL_SHAPE_BRANCHES`），
+#:    不手抄——真跑 2026-10-28 那批 15 条 ``broken`` 就是漏登记这一支，
+#:    被门禁判成「映射外的组合」。
 #:
 #: 实测触发（2026-10-26 · T054 agent 批）：3 条
 #: ``question="" / branch="subscription_wall" / evidence="paywall 二次拦截"``
@@ -266,11 +275,27 @@ def _gatekeeper_questionless_pairs() -> tuple[tuple[str, str], ...]:
     return tuple(("", b) for b in sorted(GATEKEEPER_DECIDED_BRANCHES))
 
 
+def _terminal_shape_questionless_pairs() -> tuple[tuple[str, str], ...]:
+    """Q-25 甲护栏（终局形态）代码判定的分支——**从执行层推导**，不手抄。
+
+    真源是 :data:`trajectory_pipeline.executor.branches.TERMINAL_SHAPE_BRANCHES`
+    （``terminal_shape_branch`` 能产出的分支全集）。理由与
+    :func:`_gatekeeper_questionless_pairs` 同款：这张表是**执行层的知识**
+    （护栏判据能折出哪几条分支），复制一份进来就是两处各写一个产地的事
+    ——漏一处的后果不是「少记一条」，而是**那一支在 agent 存档里被判成
+    「映射外的组合」**（真跑 2026-10-28 那批 15 条 ``broken`` 就是如此）。
+    """
+    from trajectory_pipeline.executor.branches import TERMINAL_SHAPE_BRANCHES
+
+    return tuple(("", b) for b in sorted(TERMINAL_SHAPE_BRANCHES))
+
+
 QUESTIONLESS_PAIRS: frozenset[tuple[str, str]] = frozenset(
     {
         ("", "not_play_site"),
         ("", "blocked"),
         *_gatekeeper_questionless_pairs(),
+        *_terminal_shape_questionless_pairs(),
     }
 )
 

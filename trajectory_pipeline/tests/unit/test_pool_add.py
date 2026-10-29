@@ -334,3 +334,36 @@ class Test回填接线:
         after = integrity.check_root(tmp_path)
         assert "negative_not_pooled" not in {f.code for a in after.archives
                                              for f in a.findings}
+
+    def test_only限定回填范围且不动别人的复核档(self, tmp_path):
+        """**裁第二轮必须能钉死范围**——否则整目录重算会把上一轮的人裁定冲掉。
+
+        ⚠️ 2026-10-24 那轮落了 78 份复核档；``review --apply`` 不加限定时
+        会把目录里**每一份原档**都重算成复核档 ⇒ 那 78 份里的改分支
+        会被**原档内容覆盖**（人裁定被静默还原成代码原判）。
+        """
+        url = "https://v.youku.com/x.html"
+        _write(tmp_path, _arch(outcomes=[_o(url, "unresolved")]))
+        other = _arch(task_id="T002",
+                      outcomes=[_o("https://b.com/y.html", "unresolved")])
+        _write(tmp_path, other, name="T002__r2.json")
+        prev = tmp_path / "T002__r2.reviewed.json"
+        prev.write_text(json.dumps({**other, "review_note": "上一轮裁过"},
+                                   ensure_ascii=False), encoding="utf-8")
+        vf = tmp_path / "verdicts.jsonl"
+        vf.write_text(json.dumps({"landed_url": url, "verdict": "confirm_paywall",
+                                  "reviewed_by": "reesn", "note": "开通会员"},
+                                 ensure_ascii=False) + "\n", encoding="utf-8")
+
+        rc = cli.cmd_apply_review(argparse.Namespace(
+            out=str(tmp_path), verdicts=str(vf), only=["T001__r1"]))
+
+        assert rc == 0
+        assert (tmp_path / "T001__r1.reviewed.json").exists()
+        # 点名的这份改了分支
+        done = json.loads(
+            (tmp_path / "T001__r1.reviewed.json").read_text(encoding="utf-8"))
+        assert done["outcomes"][0]["branch"] == "subscription_wall"
+        # ⚠️ **没点名的复核档原样不动**——上一轮的人裁定不许被冲掉
+        assert json.loads(prev.read_text(encoding="utf-8"))["review_note"] \
+            == "上一轮裁过"

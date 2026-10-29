@@ -24,10 +24,15 @@
 用法（**必须在仓库根跑**）::
 
     uv run python trajectory_pipeline/research/probes/q24_q25_guard_replay.py
+
+    # 只看某一批（护栏上线后真跑的那批）⇒ 与「上线前的旧批」逐条对照
+    uv run python trajectory_pipeline/research/probes/q24_q25_guard_replay.py --batch guard-rerun-2026-10-28
+    uv run python trajectory_pipeline/research/probes/q24_q25_guard_replay.py --batch A,B --tasks T011,T013
 """
 
 from __future__ import annotations
 
+import argparse
 import collections
 import json
 import pathlib
@@ -63,6 +68,15 @@ def _last_observation(visit: dict) -> dict:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description="Q-24 甲 / Q-25 甲 护栏回放读数")
+    ap.add_argument("--batch", default="",
+                    help="只看这些 batch_id（逗号分隔）；留空 = 全库")
+    ap.add_argument("--tasks", default="",
+                    help="只看这些 task_id（逗号分隔）；留空 = 全部")
+    args = ap.parse_args()
+    want_batches = {b.strip() for b in args.batch.split(",") if b.strip()}
+    want_tasks = {t.strip() for t in args.tasks.split(",") if t.strip()}
+
     archives = sorted(PIPELINE.glob("*.json"))
     print(f"扫描存档 {len(archives)} 份（{PIPELINE}）")
 
@@ -74,11 +88,21 @@ def main() -> int:
     give_up_no_obs = 0
     give_up_other_host = 0
     give_up_kinds: collections.Counter[str] = collections.Counter()
+    scanned = 0
 
     for path in archives:
         data = _load(path)
         if not data:
             continue
+        if want_batches and str(data.get("batch_id") or "") not in want_batches:
+            continue
+        if want_tasks and str(data.get("task_id") or "") not in want_tasks:
+            continue
+        if not (data.get("outcomes") or data.get("visits")):
+            # **不是 P1 存档**（执行计划等杂项）——不算进「扫描存档」份数，
+            # 否则按 batch 过滤时计划文件会被算成存档（份数对不上，读数会被疑）。
+            continue
+        scanned += 1
         visits = data.get("visits") or []
 
         for out in data.get("outcomes") or ():
@@ -142,6 +166,7 @@ def main() -> int:
                 )
 
     print("\n=== Q-24 甲（归因对象护栏） ===")
+    print(f"  实际扫描存档 {scanned} 份")
     print(f"  全库 unreachable_hard outcome：{uh_total} 条")
     print(f"  其中 URL 是搜索引擎结果中转链：{len(uh_redirect)} 条"
           f" ⇒ 这 {len(uh_redirect)} 条会被降为 unresolved（不再进池）")

@@ -138,6 +138,51 @@ research/
 │  │                                  「机器本可以判出来」的（**离线**；两个子族各用感知层
 │  │                                  **现成判据**——`infer_access_defect` 查页面正文 /
 │  │                                  `classify_paywall` 查 agent 叙述；只算正文真抓到了的）
+│  ├─ q24_q25_guard_rerun_plan.py      **两条护栏真跑批次的执行计划**：把 19 个「有 give-up 命中」的任务
+│  │                                   汇成一份可跑计划（**16 个按 task_id 从 `plan_rerun_prod_m44.json`
+│  │                                   过滤** + **3 个取 `ab_baseline/plan-camoufox-prod1-rest.json`**）；
+│  │                                   **实例不重新反推**（缺一条就报错，不拿别的顶）⇒ 校验走**生产侧
+│  │                                   同一个 loader**（不自己另写一套判据）⚠️ **只拼计划不开浏览器**
+│  ├─ q24_q25_guard_replay.py          **两条护栏在存档上的回放读数**（**离线**）：拿**已落盘的存档** +
+│  │                                   **同一把新判据**再判一遍 ⇒ 量的是「护栏会动哪些行」
+│  │                                   ⚠️ **不是真跑读数**（读的是旧存档、用的是新判据）；
+│  │                                   `--batch` / `--tasks` 可过滤
+│  └─ q24_q25_guard_realrun_reading.py **护栏真跑读数**（**离线**）：读**存档里实际记下的分支**
+│                                      （`outcomes[].branch` / `evidence`），分 §A Q-25 甲（终局形态）/
+│                                      §B Q-24 甲（归因对象）/ §C 上线前后读数差（同 task_id + 同 url）
+│                                      ⚠️ §C 的差值**混着站点漂移** ⇒ **不是干净的护栏效应**，
+│                                      要连 evidence 一起读
+│  ├─ q24_q25_guard_host403_probe.txt  **E021 那行的现场取证**（`cli probe` 的原始读数，**联网**）：
+│  │                                   `m.xacjs.com` 的 **5 个路径**（根 / `/index.html` / `/weihu/` /
+│  │                                   `/weihu/1416804.html` / `/voddetail/1.html`）**全部**返回
+│  │                                   「403 Forbidden\nnginx」⇒ **host 级 403**，不是「单条视频死了」
+│  │                                   ⚠️ **这是事实不是结论**——贴什么分支仍需人工裁定
+│  ├─ q24_q25_guard_host403_recheck_2026-10-29.txt
+│  │                                   **E021 的复测**（`cli probe` 原始读数，**联网**，生产面 camofox）：
+│  │                                   5 个路径**仍全**是「403 Forbidden\nnginx」、
+│  │                                   `元素=0` · `video=0` · `降级=[]`（⇒ **前置事实成立**）
+│  ├─ q24_q25_guard_facecheck.py       **面依赖检查**（**联网**）：同一台机器、同一出口 IP，
+│  │                                   **只换请求头**（`chrome` UA / `bare` 无 UA / `referer`）
+│  │                                   打同一批 URL ⇒ **换面会不会变**，是判「这是站点的事实
+│  │                                   还是我们这个面的事实」的那把尺子
+│  │                                   ⚠️ **只记事实不下结论**；**`set-cookie` 一律不记**（红线）
+│  ├─ q24_q25_guard_facecheck_xacjs_2026-10-29.txt
+│  │                                   **E021 的换面读数**（**24** 次请求 = 7 个 URL × 3 客户端）：
+│  │                                   `m.xacjs.com` 的 5 个路径 + `www` + apex ⇒ **21/21 HTTP 403
+│  │                                   Forbidden（server=nginx）**；对照站 `m.dinggetv.com` **同刻 200 OK**
+│  ├─ q24_q25_guard_facecheck_pool_broken_2026-10-29.txt
+│  │                                   **池里全部 10 个 `broken` 唯一 URL 的换面读数**
+│  │                                   （**30** 次请求）⇒ 换面**结论变了**的有 **3** 个
+│  │                                   （`m.dinggetv.com` 电影页 · `104.143.94.74` 播放页 ·
+│  │                                   `bilibili/bangumi` 外壳）⇒ 逐条判读见
+│  │                                   [编年史 §八](../docs/计划进展/90-增量编年史.md)
+│  └─ q24_q25_guard_kmslxsh_probe.txt  **T011 改判的现场取证**（`cli probe` 的原始读数，**联网**）：
+│                                      `kmslxsh.com` 的 **3 个路径**（`/v/31445/6a6568e66c316.html` /
+│                                      `/v/17807/6a6553bbc6bfd.html` / 站点根）**全部**返回
+│                                      「404 Not Found\nnginx」，`元素=0` · `video=0` · `降级=[]`
+│                                      ⇒ **前置事实成立**（当初那条观察若没带 `press_unsupported`，
+│                                      护栏本就会落 `broken`）⇒ owner 据此裁定 T011 改判成 `broken`
+│                                      ⚠️ **这是事实不是结论**——贴什么分支仍需人工裁定
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
 │  └─ plan-camoufox-prod1.json  **第一批 camoufox 生产批次**的 12 条计划（seed 20261022；第二批复用同一份⇒前后可比）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）

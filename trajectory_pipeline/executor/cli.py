@@ -2920,6 +2920,16 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
     回填是基于一份判断，可能整批作废；覆盖原档就没有回头路了。
     """
     root = Path(args.out) if args.out else DEFAULT_ROOT
+    # ⚠️ **``--only``：只回填点名的存档**（2026-10-29）。
+    # 没有它时这条命令会把目录里**每一份**原档都重算出一份复核档 ⇒
+    # 已有复核档的存档被**原档内容覆盖**（实测 2026-10-24 那轮落了
+    # 78 份复核档；第二轮若整目录重算，这 78 份里的 33 处改分支 +
+    # 9 处 site_verdict 会被**静默还原成代码原判**）。裁第二轮时
+    # 只能用它把范围钉死。
+    only: set[str] | None = None
+    if getattr(args, "only", None):
+        only = {n if n.endswith(".json") else f"{n}.json"
+                for n in args.only}
     verdicts, conflicts = _load_verdicts(args.verdicts)
     if conflicts:
         print(f"[stop] 同一 URL 出现了**互相冲突**的人工裁定 {len(conflicts)} 处。"
@@ -2937,12 +2947,29 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
     for path in sorted(root.glob("*.json")):
         if path.name.endswith(REVIEWED_SUFFIX):
             continue
+        if only is not None and path.name not in only:
+            continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except ValueError:
             continue
         if not isinstance(data, dict) or "outcomes" not in data:
             continue
+        # ⚠️ **输入取「生效的那一份」**（2026-10-29）：已有复核档时读
+        # **复核档**而不是原档 ⇒ 同一份存档裁第二轮不会把第一轮的人
+        # 裁定冲掉（实测 2026-10-24 那轮落了 78 份复核档，第二轮若从
+        # 原档重算，这 78 份里 33 处改分支 + 9 处 site_verdict 会被
+        # **静默还原成代码原判**——人工判读是一次性动作，不是可重入的）。
+        src = path
+        prev = path.with_suffix(REVIEWED_SUFFIX)
+        if prev.exists():
+            try:
+                data = json.loads(prev.read_text(encoding="utf-8"))
+            except ValueError:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            src = prev
+            if not isinstance(data, dict) or "outcomes" not in data:
+                continue
         merged, stats = apply_verdicts(data, verdicts)
         for k, v in stats.items():
             total[k] = total.get(k, 0) + v
@@ -2952,6 +2979,9 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
         written += 1
 
     print(f"回填 {written} 个存档，合计 {dict(total)}")
+    if only is not None:
+        print(f"  （--only 限定：只回填这 {len(only)} 份里的 "
+              f"{written} 份；其余存档的复核档**原样不动**）")
     if total["off_question"]:
         # **这一段必须先说**：裁定数 ≠ 写进分支的数。跨判断点的裁定没写
         # branch，只落在 site_verdict 上。不先讲清楚，后面那句
@@ -4030,6 +4060,10 @@ def build_parser() -> argparse.ArgumentParser:
     rev.add_argument("--write", default=None, help="复核队列 jsonl 落盘路径")
     rev.add_argument("--verdicts", default=None, help="人工裁定 jsonl（--apply 时读）")
     rev.add_argument("--apply", action="store_true", help="把裁定回填进 P1")
+    rev.add_argument("--only", nargs="+", default=None,
+                     help="只回填点名的存档（文件名，可带 .json）——"
+                          "**裁第二轮必须用它**：不加时整目录都会被重算，"
+                          "已有复核档会被原档内容覆盖")
     rev.add_argument("--show", type=int, default=0, help="打印前 N 条详情")
     rev.set_defaults(func=cmd_review)
 
