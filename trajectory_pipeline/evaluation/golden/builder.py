@@ -1081,6 +1081,11 @@ def cmd_annotate(args: argparse.Namespace) -> int:
                 f"新标 {label!r} 不一致；确认后 --force"
             )
         merged[(gid, rnd)] = {
+            # ⚠️ **先带旧的其余字段**：合并不是替换。软维度的
+            # ``dimension_note`` / ``dimension_reviewed_by`` /
+            # ``dimension_reviewed_at`` 是**另一笔账**（整行模式不该动它们，
+            # 也不该把它们清掉——清掉不报错，只是那一行的理由悄悄没了）。
+            **(prev or {}),
             "golden_id": gid,
             "round": rnd,
             "label": label,
@@ -1095,7 +1100,17 @@ def cmd_annotate(args: argparse.Namespace) -> int:
         }
         accepted += 1
 
-    ordered = [merged[k] for k in sorted(merged, key=lambda k: (k[0], k[1]))]
+    # ⚠️ **行序按原文件来**：整表重排会把 306 行全动 ⇒ diff 里看不见真正
+    # 改的那一行。新键（这次新标的）按 (golden_id, round) 排序追加在后面。
+    order: list[tuple[str, int]] = []
+    for r in existing:
+        key = (_resolve_gid(str(r.get("golden_id") or ""), alias), int(r.get("round", 1)))
+        if key not in order:
+            order.append(key)
+    for key in sorted(merged, key=lambda k: (k[0], k[1])):
+        if key not in order:
+            order.append(key)
+    ordered = [merged[k] for k in order]
     _dump_jsonl(ann_path, ordered, force=True)
     r1 = sum(1 for x in ordered if x["round"] == 1)
     r2 = sum(1 for x in ordered if x["round"] == 2)
@@ -1905,6 +1920,146 @@ def _refresh_label(
     return new_parts, info
 
 
+def _refresh_surface(
+    parts: Mapping[str, Sequence[Mapping[str, Any]]],
+    ann_path: pathlib.Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """继承式冻结时把 **gold 侧的观测面与观测时刻**按 ``golden_id`` 从标注重挂。
+
+    为什么需要它（方案 20 §R2 断掉的那一截）
+    ----------------------------------------
+    「金标加 ``access_surface`` / ``observed_at``」是方案 20 §R2 写下的要求，
+    写入口（``annotate``）从 2026-10-26 起**强制**这两栏；但**继承式冻结是
+    「行内容不动」** ⇒ 今天声明的面走 ``--from-version`` 永远进不了新版本。
+    ``--refresh-label`` 虽能带上这两栏，却**只在 label 变了的时候**才跑
+    （label 没变 ⇒ 退 2「刷空等于什么都没做」）——于是「人复核了一遍、标签
+    一个字没改、只补记了在哪张面上看到的」这件事在冻结链上**没有出口**。
+
+    v13 / v14 的 294 行**一个都没声明**（manifest 里 ``declared: 0``）⇒ 这条
+    出口补上之前，「金标是在哪张面上看到的」永远是 ``unrecorded``。
+
+    换哪一栏
+    --------
+    **只换** ``golden.access_surface`` + ``golden.observed_at``。
+    ``golden.label`` / ``label_label`` / ``reviewed_by`` / ``reviewed_at`` /
+    ``note`` / ``golden.dimension_scores`` / ``code`` / pred 侧**一个字不动**。
+
+    ⚠️ **面与时刻只在标注真声明了面时才写**（与 :func:`_refresh_label` 同一条
+    规矩）：没声明 = 没新信息 ⇒ 行内容与源版本逐字节相同 ⇒ C-17 的回归集
+    指纹不因「多了一个 ``unrecorded`` 键」而变红。
+
+    ⚠️ **不换尺子 ⇒ 不是新基线**：label 一个字没动 ⇒ D-10 的尺子没换 ⇒ 本版
+    与上一版**仍逐行可比** ⇒ manifest 落 ``baseline_reset: false``（与
+    ``--refresh-gold`` / ``--refresh-label`` 相反）。
+
+    fail-closed：
+    * 标注里的 label 与冻结行**不一致** ⇒ 退 2（那条要改标签 ⇒ 走
+      ``--refresh-label``；两条出口各管各的，不互相顶）；
+    * 声明了面却没给时刻 ⇒ 退 2（面与时刻是一对）；
+    * 回归集里的行要改 ⇒ 退 2（C-17：回归集一经冻结，其**内容**不得改动）；
+    * 一条都没变 ⇒ 退 2（刷空等于什么都没做，却把版本号用掉了）。
+
+    ⚠️ **没有标注的行不是错误**：这条出口只补「声明了面」的行——没有标注
+    = 没有新信息 ⇒ 行内容原样带过（**行集合不变**）。这与 ``--refresh-label``
+    不同：它要**整表**重挂 label ⇒ 缺一行都算「这一版重挂不了」。
+    （真实数据正是这样：``annotations.jsonl`` 只有 2 条，而冻结档有 294 行。）
+    """
+    annotations = {
+        str(r.get("golden_id") or ""): r
+        for r in _load_jsonl(ann_path)
+        if int(r.get("round", 1)) == 1
+    }
+    if not annotations:
+        raise GoldenError(
+            f"{ann_path} 里没有 round=1 标注；先 annotate 再 --refresh-surface"
+        )
+
+    missing: list[str] = []
+    conflicts: list[str] = []
+    new_parts: dict[str, list[dict[str, Any]]] = {}
+    changed_rows = 0
+    declared_rows = 0
+    reg_changed: list[str] = []
+    for split, rows in parts.items():
+        refreshed: list[dict[str, Any]] = []
+        for row in rows:
+            gid = str(row.get("golden_id") or "")
+            ann = annotations.get(gid)
+            if ann is None:
+                # ⚠️ **没有标注 ≠ 出错**：这条出口只补「声明了面」的行。
+                # 没有标注 = 没有新信息 ⇒ 行内容原样带过（**行集合不变**）。
+                # （``--refresh-label`` 是另一回事：它要整表重挂 label ⇒
+                # 缺一行都算「这一版重挂不了」。）
+                missing.append(gid)
+                refreshed.append(row)
+                continue
+            new = dict(row)
+            golden = dict(row.get("golden") or {})
+            old_label = golden.get("label")
+            if str(ann.get("label") or "") != str(old_label or ""):
+                conflicts.append(
+                    f"{gid}（冻结 {old_label!r} / 标注 {ann.get('label')!r}）"
+                )
+            else:
+                try:
+                    declared = access_surface.surface_of_annotation(ann)
+                except ValueError as exc:
+                    raise GoldenError(f"{gid} {exc}") from None
+                if access_surface.is_declared(declared):
+                    observed = str(ann.get("observed_at") or "").strip()
+                    if not observed:
+                        raise GoldenError(
+                            f"{gid} 声明了 access_surface={declared!r} 却没给 observed_at："
+                            "面与时刻是一对——站点会漂移，只知道面不知什么时候看的，"
+                            "那条读数在跨版本/跨面对比时照样不可用"
+                        )
+                    old_surface = str(golden.get("access_surface") or "")
+                    old_observed = str(golden.get("observed_at") or "")
+                    golden["access_surface"] = declared
+                    golden["observed_at"] = observed
+                    declared_rows += 1
+                    if old_surface != declared or old_observed != observed:
+                        changed_rows += 1
+                        if split == SPLIT_REGRESSION:
+                            reg_changed.append(gid)
+            new["golden"] = golden
+            refreshed.append(new)
+        new_parts[split] = refreshed
+    if conflicts:
+        raise GoldenError(
+            "这些行的标注 label 与冻结行不一致（"
+            f"{len(conflicts)} 个）：{' / '.join(conflicts)}；"
+            "改标签走 --refresh-label（那是新基线），--refresh-surface 只补面与时刻"
+        )
+    if reg_changed:
+        raise GoldenError(
+            "回归集里的行要改观测面（C-17：回归集一经冻结，其**内容**不得改动）："
+            f"{' / '.join(reg_changed)}；要改就先把这一行挪出回归集"
+        )
+    if changed_rows == 0:
+        raise GoldenError(
+            "annotations.jsonl 里的面/时刻与冻结行完全一致：没有需要重挂的观测面"
+            "（刷空等于什么都没做，却把版本号用掉了）；"
+            "先 annotate 补 access_surface + observed_at 再 --refresh-surface"
+        )
+    info = {
+        "enabled": True,
+        "source": ann_path.name,
+        "rows_matched": sum(len(v) for v in new_parts.values()),
+        "rows_missing": len(missing),
+        "declared_rows": declared_rows,
+        "changed_rows": changed_rows,
+        # ⚠ label 一个字没动 ⇒ 尺子没换 ⇒ 本版与上一版仍逐行可比。
+        "baseline_reset": False,
+        "note": (
+            "只重挂 golden.access_surface / golden.observed_at；"
+            "label / reviewed_by / note / dimension_scores / code / pred 侧未动。"
+            "**观测面变了不等于金标变了** ⇒ 不换尺子，本版与上一版仍逐行可比"
+        ),
+    }
+    return new_parts, info
+
+
 def _branch_of(code: Any) -> str:
     """取 ``code.branch``（只读视图）；没有就空串。"""
     if isinstance(code, Mapping):
@@ -2035,6 +2190,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     refresh_gold = bool(getattr(args, "refresh_gold", False))
     refresh_label = bool(getattr(args, "refresh_label", False))
     refresh_code = bool(getattr(args, "refresh_code", False))
+    refresh_surface = bool(getattr(args, "refresh_surface", False))
     if refresh_scores and not carrying:
         raise GoldenError(
             "--refresh-scores 只能配 --from-version 用：不继承的冻结本来就"
@@ -2055,12 +2211,24 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             "--refresh-code 只能配 --from-version 用：不继承的冻结本来就"
             "直接读 candidates 的 code，没有「带过来的旧 code」这回事"
         )
+    if refresh_surface and not carrying:
+        raise GoldenError(
+            "--refresh-surface 只能配 --from-version 用：不继承的冻结本来就"
+            "从 annotations 直接抄金标，没有「带过来的旧观测面」这回事"
+        )
+    if refresh_surface and refresh_label:
+        raise GoldenError(
+            "--refresh-surface 与 --refresh-label 互斥：前者只补观测面"
+            "（label 一字不动 ⇒ 不换尺子），后者改 label（换尺子 ⇒ 新基线）；"
+            "一行只走一条路"
+        )
     src_manifest: dict[str, Any] = {}
     derived_from: dict[str, Any] = {}
     score_refresh: dict[str, Any] = {"enabled": False}
     gold_refresh: dict[str, Any] = {"enabled": False}
     label_refresh: dict[str, Any] = {"enabled": False}
     code_refresh: dict[str, Any] = {"enabled": False}
+    surface_refresh: dict[str, Any] = {"enabled": False}
     id_migration: dict[str, Any] = {"enabled": False}
     alias = _load_alias_map(golden_dir)
     if carrying:
@@ -2112,6 +2280,8 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             parts, gold_refresh = _refresh_gold(parts, ann_path)
         if refresh_label:
             parts, label_refresh = _refresh_label(parts, ann_path)
+        if refresh_surface:
+            parts, surface_refresh = _refresh_surface(parts, ann_path)
         if refresh_code:
             parts, code_refresh = _refresh_code(parts, cand_path)
         if refresh_scores:
@@ -2276,6 +2446,9 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         # D-10 label 是否重挂过（修正 gold_defect 金标错）。与 gold_refresh 同理，
         # ``baseline_reset=true`` 时本版是新基线（label 变了 = 与前版不可比）。
         "label_refresh": label_refresh,
+        # 观测面（方案 20 §R2）是否重挂过。**不是金标变动**：label 一字未动
+        # ⇒ 尺子没换 ⇒ 本版与上一版仍逐行可比（baseline_reset=false）。
+        "surface_refresh": surface_refresh,
         # pred 侧 code 是否按 candidates 重挂过（重采新分支转正）。
         # ``baseline_reset=false``：code 是被测的 pred 不是金标，重挂它不换
         # 尺子，本版与上一版仍逐行可比（与 gold/label 刷新相反）。
@@ -2372,6 +2545,13 @@ def cmd_freeze(args: argparse.Namespace) -> int:
                 f"{json.dumps(shift.get('before'), ensure_ascii=False)}"
                 f" → {json.dumps(shift.get('after'), ensure_ascii=False)}"
             )
+        if surface_refresh.get("enabled"):
+            print(
+                "  ℹ 观测面已按 annotations 重挂（**label 一个字没动**）: "
+                f"声明面 {surface_refresh.get('declared_rows')} 行 / "
+                f"变动 {surface_refresh.get('changed_rows')} 行"
+                "（**观测面变了不等于金标变了** ⇒ 尺子没换，本版与上一版仍逐行可比）"
+            )
         if code_refresh.get("enabled"):
             if not code_refresh.get("changed_rows"):
                 print(
@@ -2434,6 +2614,13 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     print(
         f"  D9 建议间隔 {RETEST_INTERVAL_DAYS} 天、"
         f"重测 {RETEST_FRACTION[0]:.0%}–{RETEST_FRACTION[1]:.0%}"
+    )
+    # M-53：「冻结了但没人推」要看得见。⚠️ **只提醒，不判断**——builder 不 import
+    # golden_ls（依赖方向是 golden_ls → golden），欠账由 `golden_ls pending` 算。
+    print(
+        "  ⇢ 若本版要上 LS：跑 `python -m trajectory_pipeline.evaluation.golden_ls "
+        "pending` 看欠账（冻结了但还没建项目的版本），"
+        f"再 `init-project --version {version}` + `upload --version {version}`"
     )
     return 0
 
@@ -3969,6 +4156,19 @@ def build_parser() -> argparse.ArgumentParser:
             "侧不动）。**label 变动 = 新基线**：manifest 落 "
             "`label_refresh.baseline_reset=true`，gate 拒绝拿本版与上一版比（退 2）。"
             "只能配 --from-version 用。"
+        ),
+    )
+    p_frz.add_argument(
+        "--refresh-surface",
+        action="store_true",
+        help=(
+            "继承式冻结时把每行的 **gold 侧观测面与观测时刻**按 golden_id 从 "
+            "annotations.jsonl 重挂（只动 golden.access_surface / golden.observed_at；"
+            "label / reviewed_by / note / code / pred 侧不动）。"
+            "**观测面变了不等于金标变了** ⇒ manifest 落 "
+            "`surface_refresh.baseline_reset=false`，本版与上一版仍逐行可比"
+            "（与 --refresh-gold / --refresh-label 相反）。"
+            "与 --refresh-label 互斥。只能配 --from-version 用。"
         ),
     )
     p_frz.add_argument(

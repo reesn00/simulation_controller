@@ -271,20 +271,18 @@ def observation_digest(
     }
 
 
-def card_digest(
-    card: Mapping[str, Any],
+def _archive_and_steps(
     row: Mapping[str, Any],
     *,
     p2_root: pathlib.Path | str | None = None,
     preview_chars: int = DEFAULT_PREVIEW_CHARS,
-) -> dict[str, Any]:
-    """一张分歧卡的**完整读数**（冻结行 + 现场 + 定位说明）。
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """冻结行 → ``(存档读数, 每步读数, 样本 dict)``。
 
-    ``card`` 与 ``row`` 分开传：卡来自 worklist（派生），冻结行来自黄金集
-    （真值）。两者按 ``golden_id`` 配对——配不上是**版本错配**，不是「没数据」。
+    **配对逻辑只有这一份。** 「动作与观察逐步配对」是这段代码里最容易漂的
+    地方（两份查找逻辑必然漂，而漂了不会报错——只会读到别的版本的观察）。
+    分歧卡（:func:`card_digest`）与行级读数（:func:`row_digest`）都走它。
     """
-    code = row.get("code") if isinstance(row.get("code"), Mapping) else {}
-    golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
     located = locate_sample(row, p2_root=p2_root)
     sample = located.get("sample") or {}
     six = sample.get("six") if isinstance(sample, Mapping) else {}
@@ -300,6 +298,71 @@ def card_digest(
             "action": dict(action) if isinstance(action, Mapping) else None,
             "observation": observation_digest(obs, preview_chars=preview_chars),
         })
+
+    archive = {
+        "kind": located.get("kind") or "",
+        "path": located.get("path") or "",
+        "unit": located.get("unit") or "",
+        #: **现场有没有读到**。没有 ≠ 现场是空的（见模块 docstring），
+        #: 所以它必须是一个显式的布尔，而不是「有没有 sample 键」。
+        "found": located.get("sample") is not None,
+        "note": located.get("note") or "",
+        "candidates": list(located.get("candidates") or []),
+        "degraded_from": list(
+            (sample.get("degraded_from") or []) if isinstance(sample, Mapping) else []
+        ),
+    }
+    return archive, steps, sample
+
+
+def row_digest(
+    row: Mapping[str, Any],
+    *,
+    p2_root: pathlib.Path | str | None = None,
+    preview_chars: int = DEFAULT_PREVIEW_CHARS,
+) -> dict[str, Any]:
+    """**行级**读数（不依赖分歧卡也要现场时用）。
+
+    与 :func:`card_digest` 的差别只在**轴**：卡以「分歧」为轴（一个
+    ``golden_id`` 可能出多张卡），行以「这一条 URL 判成什么」为轴。
+    现场读数本身共用 :func:`_archive_and_steps`——**不抄第二份**。
+
+    键：``golden_id`` / ``site`` / ``archive`` / ``steps``。
+    ``site.title`` 是存档里的任务标题（不是页面标题；页面标题在每步观察里）。
+    """
+    archive, steps, sample = _archive_and_steps(
+        row, p2_root=p2_root, preview_chars=preview_chars
+    )
+    return {
+        "golden_id": str(row.get("golden_id") or ""),
+        "site": {
+            "url": str(row.get("url") or ""),
+            "site_url": str(row.get("site_url") or ""),
+            "play_page_url": str(row.get("play_page_url") or ""),
+            "title": str(sample.get("title") or "") if isinstance(sample, Mapping) else "",
+        },
+        "archive": archive,
+        "steps": steps,
+    }
+
+
+def card_digest(
+    card: Mapping[str, Any],
+    row: Mapping[str, Any],
+    *,
+    p2_root: pathlib.Path | str | None = None,
+    preview_chars: int = DEFAULT_PREVIEW_CHARS,
+) -> dict[str, Any]:
+    """一张分歧卡的**完整读数**（冻结行 + 现场 + 定位说明）。
+
+    ``card`` 与 ``row`` 分开传：卡来自 worklist（派生），冻结行来自黄金集
+    （真值）。两者按 ``golden_id`` 配对——配不上是**版本错配**，不是「没数据」。
+    """
+    code = row.get("code") if isinstance(row.get("code"), Mapping) else {}
+    golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
+    archive, steps, sample = _archive_and_steps(
+        row, p2_root=p2_root, preview_chars=preview_chars
+    )
 
     return {
         "golden_id": str(row.get("golden_id") or card.get("golden_id") or ""),
@@ -335,19 +398,7 @@ def card_digest(
             "play_page_url": str(row.get("play_page_url") or ""),
             "title": str(sample.get("title") or "") if isinstance(sample, Mapping) else "",
         },
-        "archive": {
-            "kind": located.get("kind") or "",
-            "path": located.get("path") or "",
-            "unit": located.get("unit") or "",
-            #: **现场有没有读到**。没有 ≠ 现场是空的（见模块 docstring），
-            #: 所以它必须是一个显式的布尔，而不是「有没有 sample 键」。
-            "found": located.get("sample") is not None,
-            "note": located.get("note") or "",
-            "candidates": list(located.get("candidates") or []),
-            "degraded_from": list(
-                (sample.get("degraded_from") or []) if isinstance(sample, Mapping) else []
-            ),
-        },
+        "archive": archive,
         "steps": steps,
     }
 
@@ -706,5 +757,6 @@ __all__ = [
     "parse_clauses",
     "render_card",
     "render_compact",
+    "row_digest",
     "scene_summary",
 ]

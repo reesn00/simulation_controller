@@ -1,0 +1,107 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "3",
+ "rubric_version": "1.2",
+ "evaluator_version": "1046e67994aa",
+ "scorer_fingerprint": "code:81b3982f8e19|llm:1046e67994aa",
+ "holdout_runs": 0,
+ "version": 15,
+ "frozen_at": "2026-10-29T09:11:11+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 357,
+  "annotated": 294,
+  "site": 289,
+  "trajectory": 5,
+  "calibration": 131,
+  "regression": 60,
+  "holdout": 103
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.4456,
+  "pool_ratio": 0.6497,
+  "regression_ratio": 0.2041,
+  "holdout_ratio": 0.3503,
+  "pp_diff_from_target": 0.0003,
+  "headline_split": "calibration",
+  "regression_size": 60,
+  "regression_seed": 20261022,
+  "regression_fingerprint": "3418ebd05a4c"
+ },
+ "derived_from": {
+  "version": 14,
+  "counts": {
+   "candidates": 357,
+   "annotated": 294,
+   "site": 289,
+   "trajectory": 5,
+   "calibration": 131,
+   "regression": 60,
+   "holdout": 103
+  },
+  "holdout_runs": 0
+ },
+ "score_refresh": {
+  "enabled": false
+ },
+ "gold_refresh": {
+  "enabled": false
+ },
+ "label_refresh": {
+  "enabled": false
+ },
+ "surface_refresh": {
+  "enabled": true,
+  "source": "annotations.jsonl",
+  "rows_matched": 294,
+  "rows_missing": 0,
+  "declared_rows": 1,
+  "changed_rows": 1,
+  "baseline_reset": false,
+  "note": "只重挂 golden.access_surface / golden.observed_at；label / reviewed_by / note / dimension_scores / code / pred 侧未动。**观测面变了不等于金标变了** ⇒ 不换尺子，本版与上一版仍逐行可比"
+ },
+ "code_refresh": {
+  "enabled": false
+ },
+ "id_migration": {
+  "enabled": true,
+  "source": "id_alias.json",
+  "rows_rekeyed": 0,
+  "note": "按 id 迁移映射表把旧 id 换成新 id（旧 id 留在 `golden_id_legacy` 字段）⇒ 迁移期双 id 并存。**键变了，行内容没变**（金标 / code / 分数一个字没动）"
+ },
+ "access_surface": {
+  "by_surface": {
+   "unrecorded": 293,
+   "human-browser": 1
+  },
+  "declared": 1,
+  "unrecorded": 293
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.8,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 40,
+  "success": 38,
+  "subscription_wall": 32,
+  "not_play_site": 30,
+  "blocked": 17,
+  "component_unverified": 17,
+  "no_play_control": 17,
+  "broken": 13,
+  "trailer_only": 7,
+  "login_wall_or_blocked": 6,
+  "trailer_suspect": 1
+ }
+}
