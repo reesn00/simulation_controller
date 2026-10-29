@@ -17,6 +17,7 @@ import 路径与配置类型。
     POST   /api/projects/{id}/import/predictions
     POST   /api/projects/{id}/validate/
     GET    /api/projects/{id}/tasks?page_size=N
+    GET    /api/tasks?project={id}&page_size=N&page=P
 
 约定: **client 用完即弃, 不做模块级单例**。LS 项目配置（label_config /
 project_id）落 LS 端自身, 进程内不缓存任何状态 —— 推送失败后重跑
@@ -51,6 +52,10 @@ log = logging.getLogger(__name__)
 
 #: LS 单次 import 的任务上限（服务端硬限 250K, 这里保守取小）。
 MAX_TASKS_PER_IMPORT = 1000
+
+#: 翻页取 task 的页数上限（**兜底**，不是业务上限）——
+#: 一版黄金集 294 条 ⇒ 100/页 也就 3 页；这个数只是防「翻页翻到手抽筋」。
+_MAX_TASK_PAGES = 1000
 
 #: access token 提前多久刷新（秒）。LS 的 access token 只活 ~5 分钟, 留出余量
 #: 免得请求发出时刚好过期 —— 那会表现为毫无规律的间歇性 401。
@@ -298,13 +303,15 @@ class LabelStudioClient:
         title: str,
         label_config: str,
         project_type: str = "DocumentClassification",
+        description: str | None = None,
     ) -> dict[str, Any]:
         return self._request(
             "POST",
             "/api/projects",
             json_body={
                 "title": title,
-                "description": "trajectory_pipeline scout 候选 + scorecard.v2 质量评审",
+                "description": description
+                or "trajectory_pipeline scout 候选 + scorecard.v2 质量评审",
                 "label_config": label_config,
                 "project_type": project_type,
             },
@@ -420,6 +427,248 @@ class LabelStudioClient:
             tasks = payload.get("tasks") or payload.get("results") or []
             return [item for item in tasks if isinstance(item, dict)]
         return []
+
+    def list_project_tasks(
+        self, project_id: int, *, page_size: int = 100
+    ) -> list[dict[str, Any]]:
+        """``GET /api/tasks?project={id}`` —— **分页**取该项目的全部 task。
+
+        ⚠️ **为什么不用 ``/api/projects/{id}/tasks``**：LS 1.23 里那个端点
+        **不分页**（``page_size`` 只是截断，且返回的是**倒序**的一段）⇒
+        一版 294 条只能拿到前 N 条，剩下的**静默少掉**。
+        ``/api/tasks`` 返回 ``{"tasks": [...], "total": N}`` 且**支持
+        ``page``** ⇒ 按 ``total`` 翻页取完。
+
+        ⚠️ **为什么不能拿 export 端点代替**：``/api/projects/{id}/export``
+        **只给已标注的 task**（一条标注都没有时是 ``[]``）⇒
+        「**没复核的行也要出一行**」这条要求根本满足不了——漏掉没复核的那些
+        会让「覆盖率」读成 100%。
+
+        ⚠️ **翻页翻到头就停**：``total`` 与「这页没满」两个条件任一成立即止；
+        两者都不成立而页码还在涨 ⇒ **抛错**（不静默截断——截断出来的
+        「导出」看起来是完整的）。
+        """
+        collected: list[dict[str, Any]] = []
+        page = 1
+        total: int | None = None
+        while True:
+            payload = self._request(
+                "GET",
+                f"/api/tasks?project={int(project_id)}"
+                f"&page_size={int(page_size)}&page={page}",
+            )
+            if not isinstance(payload, dict):
+                raise LabelStudioError(
+                    f"project {project_id} 的 task 列表形态异常（期望 dict, 得到 "
+                    f"{type(payload).__name__}）"
+                )
+            batch = payload.get("tasks")
+            batch = batch if isinstance(batch, list) else []
+            collected.extend(t for t in batch if isinstance(t, dict))
+            if total is None:
+                raw_total = payload.get("total")
+                total = int(raw_total) if isinstance(raw_total, int) else None
+            if not batch or len(batch) < int(page_size):
+                break
+            if total is not None and len(collected) >= total:
+                break
+            page += 1
+            if page > _MAX_TASK_PAGES:
+                raise LabelStudioError(
+                    f"project {project_id} 翻页超过 {_MAX_TASK_PAGES} 页仍未取完"
+                    "（total 与实取数对不上）——不静默截断"
+                )
+        return collected
+
+    def list_task_annotations(self, task_id: int) -> list[dict[str, Any]]:
+        """``GET /api/tasks/{id}/annotations`` —— 这条 task 的**全部**标注。
+
+        ⚠️ **为什么需要它**：任务列表（``/api/tasks?project=``）里的
+        ``annotations`` 数组**恒为空**（实测：``total_annotations=1`` 而
+        ``annotations=[]``）⇒ 从任务列表里读标注**永远读到 0 条**，
+        而那读起来跟「一条都没复核」**一模一样**（静默的错）。
+
+        ⚠️ **端点名别猜**：``/api/annotations?task=3`` 在 LS 1.23 里是
+        **404**；``/api/tasks/3/annotations`` 才是真的。
+
+        ⚠️ **它也是唯一带 ``created_username`` 的地方**（实测形态：
+        ``" reesn@qq.com, 1"``）⇒ 批量端点给的那份只有数字
+        ``completed_by``⇒ **只读批量端点，署名栏会读成「1」**。
+        """
+        payload = self._request("GET", f"/api/tasks/{int(task_id)}/annotations")
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            items = payload.get("annotations") or payload.get("results")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+            # ⚠️ 有的部署回**单条**标注对象（带 ``result`` / ``task``）⇒
+            # 别当「没有标注」——那会把一条标注静默丢掉。
+            if "result" in payload or "task" in payload:
+                return [payload]
+            return []
+        return []
+
+    def export_project_json(self, project_id: int) -> dict[str, Any]:
+        """整个项目的 task + annotation 快照（**口径见** :meth:`list_project_tasks`）。
+
+        返回 ``{"tasks": [...], "annotations": [...], "mismatches": [...]}``：
+        ``tasks`` 是该项目的**全部** task（含未标注的），``annotations`` 是全部
+        标注的扁平列表（每条都带 ``task`` 字段指回 LS 侧 task id），
+        ``mismatches`` 是**两个端点对不上账**的地方（见下）。
+
+        **存在的理由**：client 里原本**没有任何读 annotation 的方法**——要导出
+        人工裁定（裁定④：annotator 身份单列一栏）就得靠这个端点。
+
+        ⚠️⚠️ **实测（LS 1.23.0，2026-10-29）打翻了初稿的两处写法**：
+
+        1. ``GET /api/projects/{id}/export?exportType=JSON`` 返回的是
+           **list**（不是初稿假设的 dict），且**只含已标注的 task**
+           ——一条标注都没有时是 ``[]``；
+        2. 任务列表里的 ``annotations`` **恒为空**（``total_annotations=1``
+           而 ``annotations=[]``）⇒ **从任务列表里读标注永远读到 0 条**。
+
+        ⚠️⚠️ **第三个坑（也是最贵的那个）：两个端点给的「同一条标注」字段
+        **不一样**——**身份字段只在一处有**：
+
+        =======================  ==========================  ==================
+        字段                     ``/export``（批量端点）      ``/api/tasks/{id}``
+        =======================  ==========================  ==================
+        ``id`` / ``task``        有                          有
+        ``result``（裁决四栏）    有                          有
+        ``created_username``     **没有**（实测键集里不存在）  **有**（``" 账号, id"``）
+        ``completed_by``         有（**只有数字 id**）        有
+        =======================  ==========================  ==================
+
+        ⇒ 只读批量端点 ⇒ **署名栏读出来是「1」**（数字 id），而不是账号——
+        而裁定④要的就是「谁在复核」。⇒ **每条有标注的 task 都去逐条端点
+        取一份**，两边**按 annotation id 合并**（逐条那份补上批量那份缺的字段）。
+
+        ⚠️ **不是「信任逐条端点」而是「两边对账」**：条数与任务列表说的
+        ``total_annotations`` 对不上时，**记进 ``mismatches``**（不静默、
+        也不静默吞掉）——少报比多报更难发现：它读起来像「没复核」。
+        """
+        tasks = self.list_project_tasks(project_id)
+
+        bulk_by_task: dict[Any, list[dict[str, Any]]] = {}
+        exported = self._request(
+            "GET", f"/api/projects/{int(project_id)}/export"
+        )
+        if isinstance(exported, list):
+            for item in exported:
+                if not isinstance(item, dict):
+                    continue
+                for annotation in item.get("annotations") or []:
+                    if isinstance(annotation, dict):
+                        bulk_by_task.setdefault(item.get("id"), []).append(annotation)
+
+        annotations: list[dict[str, Any]] = []
+        mismatches: list[dict[str, Any]] = []
+        for task in tasks:
+            task_id = task.get("id")
+            expected = int(task.get("total_annotations") or 0)
+            got = list(bulk_by_task.get(task_id, []))
+            # ⚠️ 任务对象里**可能**内联着 annotations（LS 1.23 实测恒为空，
+            # 但别的版本/别的端点不保证）⇒ 一并收进来，按 id 去重。
+            nested = task.get("annotations")
+            if isinstance(nested, list):
+                got.extend(item for item in nested if isinstance(item, dict))
+            if expected > 0 or got:
+                # ⚠️ 有标注 ⇒ 去逐条端点取一份（**身份字段只在那儿**）。
+                try:
+                    single = self.list_task_annotations(task_id)
+                except LabelStudioError as exc:
+                    single = []
+                    mismatches.append(
+                        {"task": task_id, "reason": "逐条端点失败", "detail": str(exc)}
+                    )
+                merged = _merge_annotations(got, single)
+                if expected and len(merged) != expected:
+                    mismatches.append(
+                        {
+                            "task": task_id,
+                            "reason": "条数对不上",
+                            "expected": expected,
+                            "got": len(merged),
+                        }
+                    )
+                got = merged
+            for annotation in got:
+                item = dict(annotation)
+                # ⚠️ 标注**没有** `task` 字段时，**补上它所属的 task id**——
+                # 否则下游按 `annotation["task"]` 配对会**一条都配不上**，
+                # 而那读起来跟「一条都没复核」**一模一样**（静默的错）。
+                if not item.get("task"):
+                    item["task"] = task_id
+                annotations.append(item)
+        return {
+            "tasks": tasks,
+            "annotations": annotations,
+            "mismatches": mismatches,
+        }
+
+
+def _is_empty(value: Any) -> bool:
+    """「这个字段等于没给」——``None`` / 空串 / 空 list / 空 dict。
+
+    ⚠️ **不是 falsy 判定**：``0`` 与 ``False`` 是**有值**（LS 的
+    ``completed_by=0`` 少见，但 ``result`` 里的空 list 得跟「没这个键」
+    分开——混起来会把「有但为空」误判成「没有」，于是**静默拿别处的值
+    填进去**。
+    """
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _merge_annotation_fields(
+    base: dict[str, Any], extra: dict[str, Any]
+) -> dict[str, Any]:
+    """两条**同一条标注**的字段合并（``extra`` 补 ``base`` 的空缺）。
+
+    ⚠️ **只填空缺，不覆盖已有值**——但有一个例外：``result`` 取**更长**的
+    那份（批量端点偶尔会给裁过的 result，逐条端点给全的）。
+
+    ⚠️ 为什么需要它：**同一个 annotation 在两个端点上的字段集不一样**
+    （见 :meth:`LabelStudioClient.export_project_json` 的表）⇒ 只读一个
+    端点就会**少一整个字段**（身份字段），而少的那份读起来像「没复核人」。
+    """
+    merged = dict(base)
+    for key, value in extra.items():
+        if _is_empty(value):
+            continue
+        current = merged.get(key)
+        if _is_empty(current):
+            merged[key] = value
+        elif (
+            key == "result"
+            and isinstance(current, list)
+            and isinstance(value, list)
+            and len(value) > len(current)
+        ):
+            merged[key] = value
+    return merged
+
+
+def _merge_annotations(
+    bulk: list[dict[str, Any]], single: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """按 annotation ``id`` 合并两份标注列表（``single`` 补 ``bulk``）。
+
+    ⚠️ **没有 ``id`` 的标注不合并**：宁当两条，也不当一条——把两条不同的
+    标注并成一条，比多报一条更坏（少报**看不出**来）。
+    """
+    order: list[Any] = []
+    merged: dict[Any, dict[str, Any]] = {}
+    for item in list(bulk) + list(single):
+        if not isinstance(item, dict):
+            continue
+        ident = item.get("id")
+        key: Any = ident if ident is not None else ("__no_id__", len(order))
+        if key not in merged:
+            merged[key] = dict(item)
+            order.append(key)
+        else:
+            merged[key] = _merge_annotation_fields(merged[key], item)
+    return [merged[key] for key in order]
 
 
 def _task_count_from(payload: Any) -> int | None:

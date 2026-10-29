@@ -1,0 +1,2975 @@
+{
+  "version": 15,
+  "project_id": 79,
+  "title": "golden-v15",
+  "tasks": 294,
+  "expected_tasks": 294,
+  "predictions": 0,
+  "annotations": 0,
+  "expected_annotations": 0,
+  "annotations_self_reported": 0,
+  "mismatches": [],
+  "label_config": {
+    "ledger_sha": "376f822addb1",
+    "local_file": "trajectory_pipeline\\output\\pipeline\\calibration\\v15\\label_config.xml",
+    "local_sha": "376f822addb1",
+    "server_sha": "367e54dbeee3",
+    "content_match": true,
+    "note": "LS 存的那份去掉了末尾换行 ⇒ 比内容不比 sha"
+  },
+  "per_task": [
+    {
+      "ls_task_id": 297,
+      "golden_id": "E006__2729220b__e9b9542b",
+      "sample_id": "E006__2729220b__e9b9542b",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 298,
+      "golden_id": "P015__792b0ed7__f9895792__neg_blocked",
+      "sample_id": "P015__792b0ed7__f9895792__neg_blocked",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 299,
+      "golden_id": "P001__2e0cec8b__10990df1__neg_blocked",
+      "sample_id": "P001__2e0cec8b__10990df1__neg_blocked",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 300,
+      "golden_id": "P015__59a2ea71__f2bf859d__neg_broken",
+      "sample_id": "P015__59a2ea71__f2bf859d__neg_broken",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 301,
+      "golden_id": "P015__3fda4d75__10990df1__neg_blocked",
+      "sample_id": "P015__3fda4d75__10990df1__neg_blocked",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 302,
+      "golden_id": "P001__36602377__a7274efb__neg_blocked",
+      "sample_id": "P001__36602377__a7274efb__neg_blocked",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 303,
+      "golden_id": "P001__e5b60ff7__13837008__neg_blocked",
+      "sample_id": "P001__e5b60ff7__13837008__neg_blocked",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 304,
+      "golden_id": "T012__8c050356__e287b390",
+      "sample_id": "T012__8c050356__e287b390",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 305,
+      "golden_id": "T001__67a05faa__4b7920bb",
+      "sample_id": "T001__67a05faa__4b7920bb",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 306,
+      "golden_id": "E006__2729220b__55573b12",
+      "sample_id": "E006__2729220b__55573b12",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 307,
+      "golden_id": "T001__d063ddf4__6840db4b",
+      "sample_id": "T001__d063ddf4__6840db4b",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 308,
+      "golden_id": "T014__acaa3ef1__e287b390",
+      "sample_id": "T014__acaa3ef1__e287b390",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 309,
+      "golden_id": "T042__292bf1d7__429127d4",
+      "sample_id": "T042__292bf1d7__429127d4",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 310,
+      "golden_id": "TPIN02__1cf5deca__910a8b86",
+      "sample_id": "TPIN02__1cf5deca__910a8b86",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 311,
+      "golden_id": "T031__3af4e21b__e287b390",
+      "sample_id": "T031__3af4e21b__e287b390",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 312,
+      "golden_id": "T018__ad4a6065__e287b390",
+      "sample_id": "T018__ad4a6065__e287b390",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 313,
+      "golden_id": "T042__292bf1d7__39f586fa",
+      "sample_id": "T042__292bf1d7__39f586fa",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 314,
+      "golden_id": "T011__443c5ec0__e287b390",
+      "sample_id": "T011__443c5ec0__e287b390",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 315,
+      "golden_id": "E005__e35b7455__feb5257a",
+      "sample_id": "E005__e35b7455__feb5257a",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 316,
+      "golden_id": "TPIN02__1cf5deca__87597866",
+      "sample_id": "TPIN02__1cf5deca__87597866",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 317,
+      "golden_id": "TPIN02__1a5e526d__db4899cd",
+      "sample_id": "TPIN02__1a5e526d__db4899cd",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 318,
+      "golden_id": "E017__a2878b23__95f0a368",
+      "sample_id": "E017__a2878b23__95f0a368",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 319,
+      "golden_id": "E023__4d175424__a7f0eaaf",
+      "sample_id": "E023__4d175424__a7f0eaaf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 320,
+      "golden_id": "E014__f50809fb__7493f4e0",
+      "sample_id": "E014__f50809fb__7493f4e0",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 321,
+      "golden_id": "E017__a2878b23__1e5490ea",
+      "sample_id": "E017__a2878b23__1e5490ea",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 322,
+      "golden_id": "TPIN02__1cf5deca__3dcdbc14",
+      "sample_id": "TPIN02__1cf5deca__3dcdbc14",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 323,
+      "golden_id": "T001__d063ddf4__106df089",
+      "sample_id": "T001__d063ddf4__106df089",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 324,
+      "golden_id": "E001__57bbf995__6e8d5d31",
+      "sample_id": "E001__57bbf995__6e8d5d31",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 325,
+      "golden_id": "T001__ab5b6296__90f399f1",
+      "sample_id": "T001__ab5b6296__90f399f1",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 326,
+      "golden_id": "E005__e35b7455__de84d997",
+      "sample_id": "E005__e35b7455__de84d997",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 327,
+      "golden_id": "T001__ab5b6296__f8c110ff",
+      "sample_id": "T001__ab5b6296__f8c110ff",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 328,
+      "golden_id": "T001__ab5b6296__c8a5431c",
+      "sample_id": "T001__ab5b6296__c8a5431c",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 329,
+      "golden_id": "TPIN02__1a5e526d__fab8371e",
+      "sample_id": "TPIN02__1a5e526d__fab8371e",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 330,
+      "golden_id": "T001__ab5b6296__15a7e42d",
+      "sample_id": "T001__ab5b6296__15a7e42d",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 331,
+      "golden_id": "T001__67a05faa__1327452f",
+      "sample_id": "T001__67a05faa__1327452f",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 332,
+      "golden_id": "T001__67a05faa__1a0943a9",
+      "sample_id": "T001__67a05faa__1a0943a9",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 333,
+      "golden_id": "T040__c9982a1c__5c2c73cf",
+      "sample_id": "T040__c9982a1c__5c2c73cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 334,
+      "golden_id": "T001__ab5b6296__1487aa47",
+      "sample_id": "T001__ab5b6296__1487aa47",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 335,
+      "golden_id": "T025__0d6d185e__1efaa919",
+      "sample_id": "T025__0d6d185e__1efaa919",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 336,
+      "golden_id": "T001__ab5b6296__eed8ef5e",
+      "sample_id": "T001__ab5b6296__eed8ef5e",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 337,
+      "golden_id": "T001__67a05faa__11e1faf9",
+      "sample_id": "T001__67a05faa__11e1faf9",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 338,
+      "golden_id": "T001__ab5b6296__a74c9670",
+      "sample_id": "T001__ab5b6296__a74c9670",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 339,
+      "golden_id": "T001__ab5b6296__70d1cfec",
+      "sample_id": "T001__ab5b6296__70d1cfec",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 340,
+      "golden_id": "T037__e33453ed__f9895792",
+      "sample_id": "T037__e33453ed__f9895792",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 341,
+      "golden_id": "TPIN02__1a5e526d__417199e7",
+      "sample_id": "TPIN02__1a5e526d__417199e7",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 342,
+      "golden_id": "E021__94a1392f__3f85df8a",
+      "sample_id": "E021__94a1392f__3f85df8a",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 343,
+      "golden_id": "E005__e35b7455__3bd50dfb",
+      "sample_id": "E005__e35b7455__3bd50dfb",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 344,
+      "golden_id": "T040__7b37c195__5c2c73cf",
+      "sample_id": "T040__7b37c195__5c2c73cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 345,
+      "golden_id": "T018__ad4a6065__f9895792",
+      "sample_id": "T018__ad4a6065__f9895792",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 346,
+      "golden_id": "T024__b54092ee__6ff76654",
+      "sample_id": "T024__b54092ee__6ff76654",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 347,
+      "golden_id": "E014__f50809fb__30062587",
+      "sample_id": "E014__f50809fb__30062587",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 348,
+      "golden_id": "E023__4d175424__9d49aca1",
+      "sample_id": "E023__4d175424__9d49aca1",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 349,
+      "golden_id": "T014__acaa3ef1__5c2c73cf",
+      "sample_id": "T014__acaa3ef1__5c2c73cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 350,
+      "golden_id": "E014__f50809fb__cf884eaa",
+      "sample_id": "E014__f50809fb__cf884eaa",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 351,
+      "golden_id": "T024__b54092ee__10990df1",
+      "sample_id": "T024__b54092ee__10990df1",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 352,
+      "golden_id": "E014__f50809fb__dec0b09f",
+      "sample_id": "E014__f50809fb__dec0b09f",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 353,
+      "golden_id": "TPIN02__1cf5deca__ad5971d1",
+      "sample_id": "TPIN02__1cf5deca__ad5971d1",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 354,
+      "golden_id": "TPIN02__1cf5deca__417199e7",
+      "sample_id": "TPIN02__1cf5deca__417199e7",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 355,
+      "golden_id": "E021__94a1392f__2ab12498",
+      "sample_id": "E021__94a1392f__2ab12498",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 356,
+      "golden_id": "TPIN02__1a5e526d__ad5971d1",
+      "sample_id": "TPIN02__1a5e526d__ad5971d1",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 357,
+      "golden_id": "T012__8c050356__22e0fb36",
+      "sample_id": "T012__8c050356__22e0fb36",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 358,
+      "golden_id": "E017__a2878b23__9a9dc9bf",
+      "sample_id": "E017__a2878b23__9a9dc9bf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 359,
+      "golden_id": "TPIN02__1cf5deca__fb7b373d",
+      "sample_id": "TPIN02__1cf5deca__fb7b373d",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 360,
+      "golden_id": "E021__94a1392f__d41fe4ac",
+      "sample_id": "E021__94a1392f__d41fe4ac",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 361,
+      "golden_id": "E021__94a1392f__2b9c7618",
+      "sample_id": "E021__94a1392f__2b9c7618",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 362,
+      "golden_id": "T024__6240da8e__10990df1",
+      "sample_id": "T024__6240da8e__10990df1",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 363,
+      "golden_id": "E021__129c3fae__13837008",
+      "sample_id": "E021__129c3fae__13837008",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 364,
+      "golden_id": "P033__88d78b22__41d4e5a5",
+      "sample_id": "P033__88d78b22__41d4e5a5",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 365,
+      "golden_id": "E023__a6a2ad3e__41d4e5a5",
+      "sample_id": "E023__a6a2ad3e__41d4e5a5",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 366,
+      "golden_id": "T042__df2ee261__a7274efb",
+      "sample_id": "T042__df2ee261__a7274efb",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 367,
+      "golden_id": "T029__0a800a3f__db330971",
+      "sample_id": "T029__0a800a3f__db330971",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 368,
+      "golden_id": "T029__0a800a3f__965be8ec",
+      "sample_id": "T029__0a800a3f__965be8ec",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 369,
+      "golden_id": "T033__53ce4b49__db330971",
+      "sample_id": "T033__53ce4b49__db330971",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 370,
+      "golden_id": "T025__0d6d185e__2d99fba8",
+      "sample_id": "T025__0d6d185e__2d99fba8",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 371,
+      "golden_id": "T014__acaa3ef1__965be8ec",
+      "sample_id": "T014__acaa3ef1__965be8ec",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 372,
+      "golden_id": "T028__d76e1085__965be8ec",
+      "sample_id": "T028__d76e1085__965be8ec",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 373,
+      "golden_id": "T031__3af4e21b__60bef0c3",
+      "sample_id": "T031__3af4e21b__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 374,
+      "golden_id": "T028__d76e1085__60bef0c3",
+      "sample_id": "T028__d76e1085__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 375,
+      "golden_id": "TPIN01__9c38dc2e__910a8b86",
+      "sample_id": "TPIN01__9c38dc2e__910a8b86",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 376,
+      "golden_id": "T001__67a05faa__52e8c5ca",
+      "sample_id": "T001__67a05faa__52e8c5ca",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 377,
+      "golden_id": "T025__7141c8de__60bef0c3",
+      "sample_id": "T025__7141c8de__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 378,
+      "golden_id": "T014__acaa3ef1__db330971",
+      "sample_id": "T014__acaa3ef1__db330971",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 379,
+      "golden_id": "T014__acaa3ef1__60bef0c3",
+      "sample_id": "T014__acaa3ef1__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 380,
+      "golden_id": "T040__c9982a1c__60bef0c3",
+      "sample_id": "T040__c9982a1c__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 381,
+      "golden_id": "T025__0d6d185e__910a8b86",
+      "sample_id": "T025__0d6d185e__910a8b86",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 382,
+      "golden_id": "E001__57bbf995__site-2",
+      "sample_id": "E001__57bbf995__site-2",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 383,
+      "golden_id": "T011__d1d70da2__ff7185a5",
+      "sample_id": "T011__d1d70da2__ff7185a5",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 384,
+      "golden_id": "TPIN02__1a5e526d__49bd481c",
+      "sample_id": "TPIN02__1a5e526d__49bd481c",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 385,
+      "golden_id": "T025__0d6d185e__bf4b6ae1",
+      "sample_id": "T025__0d6d185e__bf4b6ae1",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 386,
+      "golden_id": "T001__67a05faa__22952790",
+      "sample_id": "T001__67a05faa__22952790",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 387,
+      "golden_id": "T035__3ab75598__ff7185a5",
+      "sample_id": "T035__3ab75598__ff7185a5",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 388,
+      "golden_id": "T035__3ab75598__910a8b86",
+      "sample_id": "T035__3ab75598__910a8b86",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 389,
+      "golden_id": "TPIN02__1a5e526d__9909f526",
+      "sample_id": "TPIN02__1a5e526d__9909f526",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 390,
+      "golden_id": "T011__443c5ec0__60bef0c3",
+      "sample_id": "T011__443c5ec0__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 391,
+      "golden_id": "T001__67a05faa__8c5732dc",
+      "sample_id": "T001__67a05faa__8c5732dc",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 392,
+      "golden_id": "TPIN01__9c38dc2e__ff7185a5",
+      "sample_id": "TPIN01__9c38dc2e__ff7185a5",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 393,
+      "golden_id": "TPIN02__1a5e526d__910a8b86",
+      "sample_id": "TPIN02__1a5e526d__910a8b86",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 394,
+      "golden_id": "T035__3ab75598__db4899cd",
+      "sample_id": "T035__3ab75598__db4899cd",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 395,
+      "golden_id": "T001__67a05faa__9ac484de",
+      "sample_id": "T001__67a05faa__9ac484de",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 396,
+      "golden_id": "T029__0a800a3f__60bef0c3",
+      "sample_id": "T029__0a800a3f__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 397,
+      "golden_id": "E001__57bbf995__search",
+      "sample_id": "E001__57bbf995__search",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 398,
+      "golden_id": "T013__dade3d10__db4899cd",
+      "sample_id": "T013__dade3d10__db4899cd",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 399,
+      "golden_id": "T035__3ab75598__search",
+      "sample_id": "T035__3ab75598__search",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 400,
+      "golden_id": "T011__d1d70da2__910a8b86",
+      "sample_id": "T011__d1d70da2__910a8b86",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 401,
+      "golden_id": "T025__0d6d185e__ff7185a5",
+      "sample_id": "T025__0d6d185e__ff7185a5",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 402,
+      "golden_id": "T018__ad4a6065__60bef0c3",
+      "sample_id": "T018__ad4a6065__60bef0c3",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 403,
+      "golden_id": "T028__d76e1085__db330971",
+      "sample_id": "T028__d76e1085__db330971",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 404,
+      "golden_id": "T001__67a05faa__7d40c22a",
+      "sample_id": "T001__67a05faa__7d40c22a",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 405,
+      "golden_id": "T025__0d6d185e__9909f526",
+      "sample_id": "T025__0d6d185e__9909f526",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 406,
+      "golden_id": "T001__67a05faa__9f511766",
+      "sample_id": "T001__67a05faa__9f511766",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 407,
+      "golden_id": "T031__de0c1df5__f9895792",
+      "sample_id": "T031__de0c1df5__f9895792",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 408,
+      "golden_id": "T014__acaa3ef1__22e0fb36",
+      "sample_id": "T014__acaa3ef1__22e0fb36",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 409,
+      "golden_id": "T029__0a800a3f__22e0fb36",
+      "sample_id": "T029__0a800a3f__22e0fb36",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 410,
+      "golden_id": "T031__3af4e21b__f9895792",
+      "sample_id": "T031__3af4e21b__f9895792",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 411,
+      "golden_id": "T028__d76e1085__22e0fb36",
+      "sample_id": "T028__d76e1085__22e0fb36",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 412,
+      "golden_id": "T001__d063ddf4__921485c8",
+      "sample_id": "T001__d063ddf4__921485c8",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 413,
+      "golden_id": "T031__de0c1df5__22e0fb36",
+      "sample_id": "T031__de0c1df5__22e0fb36",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 414,
+      "golden_id": "T040__c9982a1c__22e0fb36",
+      "sample_id": "T040__c9982a1c__22e0fb36",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 415,
+      "golden_id": "T025__7141c8de__131419cf",
+      "sample_id": "T025__7141c8de__131419cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 416,
+      "golden_id": "T031__de0c1df5__131419cf",
+      "sample_id": "T031__de0c1df5__131419cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 417,
+      "golden_id": "T033__53ce4b49__2ebb68ad",
+      "sample_id": "T033__53ce4b49__2ebb68ad",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 418,
+      "golden_id": "T024__b54092ee__f68fdcc9",
+      "sample_id": "T024__b54092ee__f68fdcc9",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 419,
+      "golden_id": "TPIN02__1a5e526d__56ae30f8",
+      "sample_id": "TPIN02__1a5e526d__56ae30f8",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 420,
+      "golden_id": "T018__ad4a6065__2ebb68ad",
+      "sample_id": "T018__ad4a6065__2ebb68ad",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 421,
+      "golden_id": "T040__c9982a1c__2ebb68ad",
+      "sample_id": "T040__c9982a1c__2ebb68ad",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 422,
+      "golden_id": "T040__7b37c195__131419cf",
+      "sample_id": "T040__7b37c195__131419cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 423,
+      "golden_id": "T031__3af4e21b__2ebb68ad",
+      "sample_id": "T031__3af4e21b__2ebb68ad",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 424,
+      "golden_id": "T001__ab5b6296__9d610347",
+      "sample_id": "T001__ab5b6296__9d610347",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 425,
+      "golden_id": "T001__d063ddf4__3c02c4df",
+      "sample_id": "T001__d063ddf4__3c02c4df",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 426,
+      "golden_id": "T037__e33453ed__2ebb68ad",
+      "sample_id": "T037__e33453ed__2ebb68ad",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 427,
+      "golden_id": "T033__53ce4b49__131419cf",
+      "sample_id": "T033__53ce4b49__131419cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 428,
+      "golden_id": "T011__443c5ec0__131419cf",
+      "sample_id": "T011__443c5ec0__131419cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 429,
+      "golden_id": "T037__e33453ed__131419cf",
+      "sample_id": "T037__e33453ed__131419cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 430,
+      "golden_id": "T018__ad4a6065__131419cf",
+      "sample_id": "T018__ad4a6065__131419cf",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 431,
+      "golden_id": "T024__b54092ee__cac9ea9f",
+      "sample_id": "T024__b54092ee__cac9ea9f",
+      "split": "calibration",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 432,
+      "golden_id": "E005__e35b7455__a4844373",
+      "sample_id": "E005__e35b7455__a4844373",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 433,
+      "golden_id": "E005__e35b7455__b8513a71",
+      "sample_id": "E005__e35b7455__b8513a71",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 434,
+      "golden_id": "E006__2729220b__5aaa565e",
+      "sample_id": "E006__2729220b__5aaa565e",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 435,
+      "golden_id": "E014__f50809fb__75b59063",
+      "sample_id": "E014__f50809fb__75b59063",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 436,
+      "golden_id": "E014__f50809fb__a8a5df5d",
+      "sample_id": "E014__f50809fb__a8a5df5d",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 437,
+      "golden_id": "E017__a2878b23__b771c9f0",
+      "sample_id": "E017__a2878b23__b771c9f0",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 438,
+      "golden_id": "E021__94a1392f__13837008",
+      "sample_id": "E021__94a1392f__13837008",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 439,
+      "golden_id": "P033__8b4287d0__7754b3d2",
+      "sample_id": "P033__8b4287d0__7754b3d2",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 440,
+      "golden_id": "P033__9491c34b__10990df1",
+      "sample_id": "P033__9491c34b__10990df1",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 441,
+      "golden_id": "P033__973522fc__965be8ec",
+      "sample_id": "P033__973522fc__965be8ec",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 442,
+      "golden_id": "P033__f65b179e__13837008",
+      "sample_id": "P033__f65b179e__13837008",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 443,
+      "golden_id": "T001__67a05faa__461950f0",
+      "sample_id": "T001__67a05faa__461950f0",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 444,
+      "golden_id": "T001__67a05faa__c093cdb1",
+      "sample_id": "T001__67a05faa__c093cdb1",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 445,
+      "golden_id": "T001__67a05faa__e36cd95b",
+      "sample_id": "T001__67a05faa__e36cd95b",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 446,
+      "golden_id": "T001__ab5b6296__2c56f63a",
+      "sample_id": "T001__ab5b6296__2c56f63a",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 447,
+      "golden_id": "T001__ab5b6296__910a8b86",
+      "sample_id": "T001__ab5b6296__910a8b86",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 448,
+      "golden_id": "T001__d063ddf4__63dd8658",
+      "sample_id": "T001__d063ddf4__63dd8658",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 449,
+      "golden_id": "T011__443c5ec0__5c2c73cf",
+      "sample_id": "T011__443c5ec0__5c2c73cf",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 450,
+      "golden_id": "T011__d1d70da2__9909f526",
+      "sample_id": "T011__d1d70da2__9909f526",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 451,
+      "golden_id": "T012__8c050356__60bef0c3",
+      "sample_id": "T012__8c050356__60bef0c3",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 452,
+      "golden_id": "T013__dade3d10__9909f526",
+      "sample_id": "T013__dade3d10__9909f526",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 453,
+      "golden_id": "T013__dade3d10__f73ce362",
+      "sample_id": "T013__dade3d10__f73ce362",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 454,
+      "golden_id": "T014__acaa3ef1__2ebb68ad",
+      "sample_id": "T014__acaa3ef1__2ebb68ad",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 455,
+      "golden_id": "T018__ad4a6065__5c2c73cf",
+      "sample_id": "T018__ad4a6065__5c2c73cf",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 456,
+      "golden_id": "T024__b54092ee__71d6cdf2",
+      "sample_id": "T024__b54092ee__71d6cdf2",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 457,
+      "golden_id": "T025__0d6d185e__3b521045",
+      "sample_id": "T025__0d6d185e__3b521045",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 458,
+      "golden_id": "T025__0d6d185e__417199e7",
+      "sample_id": "T025__0d6d185e__417199e7",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 459,
+      "golden_id": "T025__0d6d185e__db4899cd",
+      "sample_id": "T025__0d6d185e__db4899cd",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 460,
+      "golden_id": "T025__7141c8de__22e0fb36",
+      "sample_id": "T025__7141c8de__22e0fb36",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 461,
+      "golden_id": "T025__7141c8de__2ebb68ad",
+      "sample_id": "T025__7141c8de__2ebb68ad",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 462,
+      "golden_id": "T025__7141c8de__5c2c73cf",
+      "sample_id": "T025__7141c8de__5c2c73cf",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 463,
+      "golden_id": "T028__d76e1085__5c2c73cf",
+      "sample_id": "T028__d76e1085__5c2c73cf",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 464,
+      "golden_id": "T029__0a800a3f__2ebb68ad",
+      "sample_id": "T029__0a800a3f__2ebb68ad",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 465,
+      "golden_id": "T029__0a800a3f__5c2c73cf",
+      "sample_id": "T029__0a800a3f__5c2c73cf",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 466,
+      "golden_id": "T031__3af4e21b__db330971",
+      "sample_id": "T031__3af4e21b__db330971",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 467,
+      "golden_id": "T031__de0c1df5__2ebb68ad",
+      "sample_id": "T031__de0c1df5__2ebb68ad",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 468,
+      "golden_id": "T031__de0c1df5__db330971",
+      "sample_id": "T031__de0c1df5__db330971",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 469,
+      "golden_id": "T033__53ce4b49__22e0fb36",
+      "sample_id": "T033__53ce4b49__22e0fb36",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 470,
+      "golden_id": "T033__53ce4b49__60bef0c3",
+      "sample_id": "T033__53ce4b49__60bef0c3",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 471,
+      "golden_id": "T036__10313caf__131419cf",
+      "sample_id": "T036__10313caf__131419cf",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 472,
+      "golden_id": "T036__10313caf__22e0fb36",
+      "sample_id": "T036__10313caf__22e0fb36",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 473,
+      "golden_id": "T036__10313caf__60bef0c3",
+      "sample_id": "T036__10313caf__60bef0c3",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 474,
+      "golden_id": "T036__10313caf__e287b390",
+      "sample_id": "T036__10313caf__e287b390",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 475,
+      "golden_id": "T036__10313caf__f9895792",
+      "sample_id": "T036__10313caf__f9895792",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 476,
+      "golden_id": "T037__e33453ed__db330971",
+      "sample_id": "T037__e33453ed__db330971",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 477,
+      "golden_id": "T037__e33453ed__e287b390",
+      "sample_id": "T037__e33453ed__e287b390",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 478,
+      "golden_id": "T040__7b37c195__22e0fb36",
+      "sample_id": "T040__7b37c195__22e0fb36",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 479,
+      "golden_id": "T040__7b37c195__db330971",
+      "sample_id": "T040__7b37c195__db330971",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 480,
+      "golden_id": "T040__7b37c195__e287b390",
+      "sample_id": "T040__7b37c195__e287b390",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 481,
+      "golden_id": "T040__c9982a1c__db330971",
+      "sample_id": "T040__c9982a1c__db330971",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 482,
+      "golden_id": "T040__c9982a1c__f9895792",
+      "sample_id": "T040__c9982a1c__f9895792",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 483,
+      "golden_id": "T042__292bf1d7__688e3588",
+      "sample_id": "T042__292bf1d7__688e3588",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 484,
+      "golden_id": "T042__292bf1d7__7b260baa",
+      "sample_id": "T042__292bf1d7__7b260baa",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 485,
+      "golden_id": "TPIN01__9c38dc2e__f73ce362",
+      "sample_id": "TPIN01__9c38dc2e__f73ce362",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 486,
+      "golden_id": "TPIN02__1a5e526d__bf4b6ae1",
+      "sample_id": "TPIN02__1a5e526d__bf4b6ae1",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 487,
+      "golden_id": "TPIN02__1cf5deca__42ce4312",
+      "sample_id": "TPIN02__1cf5deca__42ce4312",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 488,
+      "golden_id": "TPIN02__1cf5deca__aa537eb5",
+      "sample_id": "TPIN02__1cf5deca__aa537eb5",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 489,
+      "golden_id": "TPIN02__1cf5deca__bab5e7fc",
+      "sample_id": "TPIN02__1cf5deca__bab5e7fc",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 490,
+      "golden_id": "TPIN02__1cf5deca__ff7185a5",
+      "sample_id": "TPIN02__1cf5deca__ff7185a5",
+      "split": "regression",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 491,
+      "golden_id": "T024__b54092ee__a96ea853",
+      "sample_id": "T024__b54092ee__a96ea853",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 492,
+      "golden_id": "T029__0a800a3f__e287b390",
+      "sample_id": "T029__0a800a3f__e287b390",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 493,
+      "golden_id": "TPIN02__1a5e526d__2c7db88b",
+      "sample_id": "TPIN02__1a5e526d__2c7db88b",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 494,
+      "golden_id": "E006__2729220b__10352791",
+      "sample_id": "E006__2729220b__10352791",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 495,
+      "golden_id": "T040__c9982a1c__e287b390",
+      "sample_id": "T040__c9982a1c__e287b390",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 496,
+      "golden_id": "E006__2729220b__60e5c64f",
+      "sample_id": "E006__2729220b__60e5c64f",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 497,
+      "golden_id": "E006__2729220b__8e1a6470",
+      "sample_id": "E006__2729220b__8e1a6470",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 498,
+      "golden_id": "T033__53ce4b49__e287b390",
+      "sample_id": "T033__53ce4b49__e287b390",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 499,
+      "golden_id": "E001__57bbf995__910a8b86",
+      "sample_id": "E001__57bbf995__910a8b86",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 500,
+      "golden_id": "E006__2729220b__0db2fb36",
+      "sample_id": "E006__2729220b__0db2fb36",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 501,
+      "golden_id": "T028__d76e1085__e287b390",
+      "sample_id": "T028__d76e1085__e287b390",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 502,
+      "golden_id": "TPIN02__1a5e526d__ff7185a5",
+      "sample_id": "TPIN02__1a5e526d__ff7185a5",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 503,
+      "golden_id": "E001__57bbf995__6a28d60d",
+      "sample_id": "E001__57bbf995__6a28d60d",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 504,
+      "golden_id": "T025__0d6d185e__633dcfb2",
+      "sample_id": "T025__0d6d185e__633dcfb2",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 505,
+      "golden_id": "E017__a2878b23__95b7b892",
+      "sample_id": "E017__a2878b23__95b7b892",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 506,
+      "golden_id": "E005__e35b7455__aa3626fb",
+      "sample_id": "E005__e35b7455__aa3626fb",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 507,
+      "golden_id": "T001__ab5b6296__bc3de231",
+      "sample_id": "T001__ab5b6296__bc3de231",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 508,
+      "golden_id": "T001__ab5b6296__01389f0f",
+      "sample_id": "T001__ab5b6296__01389f0f",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 509,
+      "golden_id": "T001__ab5b6296__864de3a8",
+      "sample_id": "T001__ab5b6296__864de3a8",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 510,
+      "golden_id": "T037__e33453ed__5c2c73cf",
+      "sample_id": "T037__e33453ed__5c2c73cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 511,
+      "golden_id": "TPIN02__1a5e526d__1efaa919",
+      "sample_id": "TPIN02__1a5e526d__1efaa919",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 512,
+      "golden_id": "T001__ab5b6296__79219c59",
+      "sample_id": "T001__ab5b6296__79219c59",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 513,
+      "golden_id": "T001__67a05faa__1edd45d0",
+      "sample_id": "T001__67a05faa__1edd45d0",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 514,
+      "golden_id": "T001__ab5b6296__d09c4305",
+      "sample_id": "T001__ab5b6296__d09c4305",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 515,
+      "golden_id": "T031__de0c1df5__5c2c73cf",
+      "sample_id": "T031__de0c1df5__5c2c73cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 516,
+      "golden_id": "E005__e35b7455__49e41ed3",
+      "sample_id": "E005__e35b7455__49e41ed3",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 517,
+      "golden_id": "T001__ab5b6296__cc21e1c8",
+      "sample_id": "T001__ab5b6296__cc21e1c8",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 518,
+      "golden_id": "TPIN02__1cf5deca__1efaa919",
+      "sample_id": "TPIN02__1cf5deca__1efaa919",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 519,
+      "golden_id": "T001__d063ddf4__1a473949",
+      "sample_id": "T001__d063ddf4__1a473949",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 520,
+      "golden_id": "T031__3af4e21b__5c2c73cf",
+      "sample_id": "T031__3af4e21b__5c2c73cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 521,
+      "golden_id": "E023__4d175424__88efde54",
+      "sample_id": "E023__4d175424__88efde54",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 522,
+      "golden_id": "T001__ab5b6296__80bf72f8",
+      "sample_id": "T001__ab5b6296__80bf72f8",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 523,
+      "golden_id": "T040__7b37c195__f9895792",
+      "sample_id": "T040__7b37c195__f9895792",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 524,
+      "golden_id": "T033__53ce4b49__5c2c73cf",
+      "sample_id": "T033__53ce4b49__5c2c73cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 525,
+      "golden_id": "T024__b54092ee__50c89bfd",
+      "sample_id": "T024__b54092ee__50c89bfd",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 526,
+      "golden_id": "E023__4d175424__33a0fe40",
+      "sample_id": "E023__4d175424__33a0fe40",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 527,
+      "golden_id": "T012__8c050356__5c2c73cf",
+      "sample_id": "T012__8c050356__5c2c73cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 528,
+      "golden_id": "E017__a2878b23__7fd1a252",
+      "sample_id": "E017__a2878b23__7fd1a252",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 529,
+      "golden_id": "E021__94a1392f__728b7785",
+      "sample_id": "E021__94a1392f__728b7785",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 530,
+      "golden_id": "T018__ad4a6065__22e0fb36",
+      "sample_id": "T018__ad4a6065__22e0fb36",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 531,
+      "golden_id": "T036__10313caf__5c2c73cf",
+      "sample_id": "T036__10313caf__5c2c73cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 532,
+      "golden_id": "T011__443c5ec0__f9895792",
+      "sample_id": "T011__443c5ec0__f9895792",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 533,
+      "golden_id": "TPIN02__1a5e526d__f73ce362",
+      "sample_id": "TPIN02__1a5e526d__f73ce362",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 534,
+      "golden_id": "E021__94a1392f__08347b3f",
+      "sample_id": "E021__94a1392f__08347b3f",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 535,
+      "golden_id": "E014__f50809fb__5f00a90d",
+      "sample_id": "E014__f50809fb__5f00a90d",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 536,
+      "golden_id": "E023__4d175424__7754b3d2",
+      "sample_id": "E023__4d175424__7754b3d2",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 537,
+      "golden_id": "T025__0d6d185e__3dcdbc14",
+      "sample_id": "T025__0d6d185e__3dcdbc14",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 538,
+      "golden_id": "P033__9d005954__a7274efb",
+      "sample_id": "P033__9d005954__a7274efb",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 539,
+      "golden_id": "P033__6beb8e05__7fd1a252",
+      "sample_id": "P033__6beb8e05__7fd1a252",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 540,
+      "golden_id": "T025__7141c8de__db330971",
+      "sample_id": "T025__7141c8de__db330971",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 541,
+      "golden_id": "T033__53ce4b49__965be8ec",
+      "sample_id": "T033__53ce4b49__965be8ec",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 542,
+      "golden_id": "T012__8c050356__965be8ec",
+      "sample_id": "T012__8c050356__965be8ec",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 543,
+      "golden_id": "TPIN02__1cf5deca__2d99fba8",
+      "sample_id": "TPIN02__1cf5deca__2d99fba8",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 544,
+      "golden_id": "TPIN02__1a5e526d__2d99fba8",
+      "sample_id": "TPIN02__1a5e526d__2d99fba8",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 545,
+      "golden_id": "T001__67a05faa__299c3382",
+      "sample_id": "T001__67a05faa__299c3382",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 546,
+      "golden_id": "T025__0d6d185e__f73ce362",
+      "sample_id": "T025__0d6d185e__f73ce362",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 547,
+      "golden_id": "T037__e33453ed__60bef0c3",
+      "sample_id": "T037__e33453ed__60bef0c3",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 548,
+      "golden_id": "T001__67a05faa__eed8ef5e",
+      "sample_id": "T001__67a05faa__eed8ef5e",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 549,
+      "golden_id": "T011__443c5ec0__db330971",
+      "sample_id": "T011__443c5ec0__db330971",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 550,
+      "golden_id": "TPIN01__9c38dc2e__db4899cd",
+      "sample_id": "TPIN01__9c38dc2e__db4899cd",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 551,
+      "golden_id": "T035__3ab75598__9909f526",
+      "sample_id": "T035__3ab75598__9909f526",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 552,
+      "golden_id": "T035__3ab75598__f73ce362",
+      "sample_id": "T035__3ab75598__f73ce362",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 553,
+      "golden_id": "T036__10313caf__db330971",
+      "sample_id": "T036__10313caf__db330971",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 554,
+      "golden_id": "T013__dade3d10__910a8b86",
+      "sample_id": "T013__dade3d10__910a8b86",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 555,
+      "golden_id": "T040__7b37c195__60bef0c3",
+      "sample_id": "T040__7b37c195__60bef0c3",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 556,
+      "golden_id": "T001__67a05faa__4795871d",
+      "sample_id": "T001__67a05faa__4795871d",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 557,
+      "golden_id": "T001__67a05faa__680816da",
+      "sample_id": "T001__67a05faa__680816da",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 558,
+      "golden_id": "T018__ad4a6065__db330971",
+      "sample_id": "T018__ad4a6065__db330971",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 559,
+      "golden_id": "T025__7141c8de__b39e80b0",
+      "sample_id": "T025__7141c8de__b39e80b0",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 560,
+      "golden_id": "T001__67a05faa__910a8b86",
+      "sample_id": "T001__67a05faa__910a8b86",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 561,
+      "golden_id": "T011__d1d70da2__db4899cd",
+      "sample_id": "T011__d1d70da2__db4899cd",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 562,
+      "golden_id": "T031__de0c1df5__60bef0c3",
+      "sample_id": "T031__de0c1df5__60bef0c3",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 563,
+      "golden_id": "T011__d1d70da2__f73ce362",
+      "sample_id": "T011__d1d70da2__f73ce362",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 564,
+      "golden_id": "T013__dade3d10__ff7185a5",
+      "sample_id": "T013__dade3d10__ff7185a5",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 565,
+      "golden_id": "E001__57bbf995__site-1",
+      "sample_id": "E001__57bbf995__site-1",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 566,
+      "golden_id": "T025__0d6d185e__ad5971d1",
+      "sample_id": "T025__0d6d185e__ad5971d1",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 567,
+      "golden_id": "T001__ab5b6296__463677f7",
+      "sample_id": "T001__ab5b6296__463677f7",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 568,
+      "golden_id": "E001__57bbf995__site-3",
+      "sample_id": "E001__57bbf995__site-3",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 569,
+      "golden_id": "T012__8c050356__db330971",
+      "sample_id": "T012__8c050356__db330971",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 570,
+      "golden_id": "TPIN01__9c38dc2e__9909f526",
+      "sample_id": "TPIN01__9c38dc2e__9909f526",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 571,
+      "golden_id": "T025__0d6d185e__09b59d12",
+      "sample_id": "T025__0d6d185e__09b59d12",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "not_found",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 572,
+      "golden_id": "T025__7141c8de__965be8ec",
+      "sample_id": "T025__7141c8de__965be8ec",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 573,
+      "golden_id": "T031__3af4e21b__22e0fb36",
+      "sample_id": "T031__3af4e21b__22e0fb36",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 574,
+      "golden_id": "T001__d063ddf4__62248ddb",
+      "sample_id": "T001__d063ddf4__62248ddb",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 575,
+      "golden_id": "T037__e33453ed__22e0fb36",
+      "sample_id": "T037__e33453ed__22e0fb36",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 576,
+      "golden_id": "T011__443c5ec0__22e0fb36",
+      "sample_id": "T011__443c5ec0__22e0fb36",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 577,
+      "golden_id": "T024__b54092ee__b053183c",
+      "sample_id": "T024__b54092ee__b053183c",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 578,
+      "golden_id": "T012__8c050356__2ebb68ad",
+      "sample_id": "T012__8c050356__2ebb68ad",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 579,
+      "golden_id": "T028__d76e1085__131419cf",
+      "sample_id": "T028__d76e1085__131419cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 580,
+      "golden_id": "T012__8c050356__131419cf",
+      "sample_id": "T012__8c050356__131419cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 581,
+      "golden_id": "T028__d76e1085__2ebb68ad",
+      "sample_id": "T028__d76e1085__2ebb68ad",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 582,
+      "golden_id": "T031__3af4e21b__131419cf",
+      "sample_id": "T031__3af4e21b__131419cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 583,
+      "golden_id": "T040__7b37c195__2ebb68ad",
+      "sample_id": "T040__7b37c195__2ebb68ad",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 584,
+      "golden_id": "T040__c9982a1c__131419cf",
+      "sample_id": "T040__c9982a1c__131419cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 585,
+      "golden_id": "T029__0a800a3f__131419cf",
+      "sample_id": "T029__0a800a3f__131419cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 586,
+      "golden_id": "TPIN02__1cf5deca__bf4b6ae1",
+      "sample_id": "TPIN02__1cf5deca__bf4b6ae1",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 587,
+      "golden_id": "T031__de0c1df5__e287b390",
+      "sample_id": "T031__de0c1df5__e287b390",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 588,
+      "golden_id": "T036__10313caf__2ebb68ad",
+      "sample_id": "T036__10313caf__2ebb68ad",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 589,
+      "golden_id": "T011__443c5ec0__2ebb68ad",
+      "sample_id": "T011__443c5ec0__2ebb68ad",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    },
+    {
+      "ls_task_id": 590,
+      "golden_id": "T014__acaa3ef1__131419cf",
+      "sample_id": "T014__acaa3ef1__131419cf",
+      "split": "holdout",
+      "missing_blocks": [],
+      "scene_status": "located",
+      "predictions": 0,
+      "total_annotations": 0
+    }
+  ],
+  "per_annotation": [],
+  "checks": {
+    "任务条数": true,
+    "九条区块齐全": true,
+    "LS 端 label_config 内容一致": true,
+    "留底文件 sha 与台账一致": true,
+    "一条 prediction 都没有": true,
+    "人工标注条数与期望一致": true,
+    "LS 自称的标注条数与读到的一致": true,
+    "每条标注都配得回它的 task": true,
+    "每条标注都有复核人身份": true,
+    "两个端点没有对不上账": true
+  }
+}

@@ -383,6 +383,9 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **M-42** | ★**（2026-10-27 新增）池行的 `golden_id` 里嵌的是**行号**不是**身份** ⇒ 池一增删，**人核标签就静默掉线** | 07 评估 / 08 存档 | 本文 **§M-42 详解** · `evaluation/golden/builder.py::_scan_negative_pool`（`__neg{i:02d}`，`i` = 池文件行号） · `evaluation/golden/data/annotations.jsonl`（**6 条** `__negNNN` 标注） | 跑采集侧账时撞出来：池行 id 形如 `{task}__{run}__{hash}__neg151`，那个 `151` 是**它在 `negative.jsonl` 里的行号** ⇒ 池里**任何一次增删**都会让它后面所有行 id 前移/后移 ⇒ **人工标注是按 `golden_id` 挂的** ⇒ 挂不上。**实测 6/6 全掉**：本轮两次 purge 之后，池里这 6 行是 `neg151/152/153/156/157/160`，标注里记的是 `neg152/153/154/157/158/161`（**整体差 1**）。**证据还在**（task/run/URL 都没变，**只有序号变了**）⇒ 不是「标注丢了」，是**键漂了**。⚠️ **现在还没炸**，因为入库的 `candidates.jsonl` 是**旧扫描**留下的（老序号还挂得上）⇒ **下一次重建候选集就炸**：重建后这 6 条被 `site` 过滤剔掉 ⇒ **D10 分母 289 → 283**，而报表上**看不出原因**。⭐ **2026-10-27 本轮把因果链查实了**：把 committed `candidates.jsonl` 的 **10 条 `__neg` id 与现行 builder 逐条对** ⇒ **Δ ≡ −1**（10 条**无一例外**）⇒ 池在构建之后、**池第 152 行之前**被撤过**恰好一行** ⇒ 而那行就是 **2026-10-22 撤掉的 TPIN02 `yn-mg.cn/playid/71884`**（它在池第 5 行附近 ⇒ 之后的行全体 +1）。⇒ **`candidates.jsonl` 自 2026-10-14 首次提交起就没重建过**（那 10 个 id 一直是 `neg152`–`neg161`）。⇒ **builder 的下标口径没变过**（一直是 0 基 `enumerate(rows)`）⇒ **不是代码改了，是池变了**。✅ **本轮撤的 6 行都在池第 300 行之后** ⇒ **没制造新的掉队**（本轮之前就已经掉队 6 条）。⇒ **本轮不重建 `candidates.jsonl`**（重建会把 10 个 id 全改成 −1 ⇒ 那 6 条人核标注被冲掉 ⇒ D10 分母 289 → 283）——**重建的理由远小于代价**。**要人拍板**：后缀改**分支**（`__neg_{branch}`）还是另找一个身份口径？**那 6 条人核标注的键要不要跟着改**（标签内容不动，只改键）——**改键 = 动人核数据 ⇒ 要人签**（§Q-22）。⚠️ **迁移期要双 id 并存**：改口径会让**全部 357 条候选的 id 全变** ⇒ 旧 id 得留一段（或建 `id_alias` 映射表）。**不替人投票**：现在**代码一行不改、标注一行不改**，只把缺陷摆上台面 |
 | **M-43** | ★**（2026-10-27 新增）上游把「建页」与「导航」塞进**同一个路由** ⇒ **那个路由失败证明不了站点打不开** ⇒ 一条**假 `unreachable_hard`** 进了池 | 01 采集 / 03 标签 | 本文 **§M-43 详解** · `executor/browser/camofox_driver.py::_open_blank_and_navigate`（**建页与导航拆成两次调用**）· `executor/browser/camofox_session.py::CamofoxToolError.execution_fault` · 上游 `server.js`（`POST /tabs` 的 `withTimeout` **同时**管建页与导航；`if (url)` 才导航） · `research/probes/camofox_attribution_probe.py`（现场取证） | 第 4 轮 `T048` 的 iqiyi 记「**导航失败（网络/DNS/超时）**」，而**失败落在建页路由上**（`camofox_create_tab` 超时）⇒ **那条 URL 压根没被导航过** ⇒ 站点没被试过 ⇒ **采集侧的故障被写成了站点的性质**。三条互相独立的反证：① **老批 `T054__93f110b6` 真打开过同一个 URL**（`reached_play_page=true` · 「存在 `<video>`/`<audio>` 标签 ×2」）；② **同一批 `T038` 进到了 iqiyi 《功夫》正片页**；③ **同一批的 `http://` 变体**落的是「站点遍历超时（>180.0s）」⇒ `unresolved`（**没进池**）。⇒ **修法**：**建页与导航拆成两次调用**（建**空白页** + 再导航）⇒ 归属判据变成**结构性的**（**走哪个路由**），**不是**猜错误文本：**建页**路由失败 ⇒ `unresolved`（**不进池**）／**导航**路由失败 ⇒ `unreachable_hard`（真负样本）。⚠️ **顺带补上一个潜伏缺陷**：上游 `recovery="retry"` 那一族（`session_expired`/`concurrency_timeout`/`browser_launch_timeout`）是**会话**坏了 ⇒ 缺陷④那版的解析**不认识** ⇒ 会记成 `unreachable_hard`（已补 `execution_fault`；**实测这一族还没触发过**）。✅ **存量那一条已撤（2026-10-27）**：池 `negative.jsonl` 第 **300** 行（run_id `a933bea6`）**已出池**——先 `cli downgrade`（存档侧改 `unresolved`，原判留在 `branch_before_downgrade` + evidence 的 `[原判 unreachable_hard] ` 前缀后面），再 `cli pool-drop`（`pool_dropped.jsonl` 记原行全文）；**顺序没反**。⇒ 依据是**单独重开同一 URL 打得开**（爱奇艺《功夫》页，506 ch）⇒ 那条 URL **从没被导航过**（失败在**建页路由**）⇒ 站点性质未被测到 ⇒ 行不成立。⚠️ **重跑不回填历史存档**（**并池是写入时的动作**）⇒ 这条**只能这样撤**，不能靠重跑 |
 | **M-44** | ★**（2026-10-27 新增）「导航失败」这一支太粗 ⇒ **采集侧的故障被写成站点的性质**（`unreachable_hard` 的分支名是「站点不可达」，但它收了三种**不是站点不可达**的失败） | 01 采集 / 03 标签 | 本文 **§M-44 详解** · `executor/browser/camofox_driver.py::_navigate`（错误原文进 evidence） · `executor/branches.py::BRANCH_PRECONDITION` · `executor/steps/visit.py`（失败 ⇒ 记哪支） · 上游 `server.js`（`page.goto` 的错误原样透传） | 第 5 轮**逐条单独复核**时把三种失败形态摊开了：① **建页路由失败**（M-43：`camofox_create_tab` 超时 ⇒ **导航请求从未发出**）；② **`page.goto: Navigation … is interrupted by another navigation to …`**（E028 两条 baidu 链接 ⇒ **重定向确实发生了**，打断消息里直接写出落点 `www.ctwlpt.com/voddetail/38550.html`）；③ **`NS_ERROR_NET_RESET`**（连接被重置，与 ② 交替出现）。⇒ **三种都落同一支 `unreachable_hard`**（分支标签「导航失败（网络/DNS/超时）」）⇒ 池里那条断言是「**这里真的看不了**」，而事实是「**这一次没打开**」⇒ **训练信号被污染**（教「这个站看不了」，其实只是慢 / 被打断 / 建页失败）。⚠️ **M-43 只修了「建页与导航塞进一个路由」，没修「建页失败 ⇒ 记成导航失败」这个映射** ⇒ 同一个洞留在了新代码里。⇒ **修法方向**（**不替人投票，等 owner 裁定**）：把 `unreachable_hard` 拆成「**站点不可达**（DNS 失败 / 连接被拒）」与「**这次没打开**（超时 / 打断 / 建页失败）」，后者降 `unresolved`（**不进池**）——⚠️ **并池是写入时的动作** ⇒ 改判**只影响新行**，存量 54 条要出池另走路（**Q-23**）——⭐ **裁定已落地（Q-17）+ 现场证据已到手（2026-10-28）：判据触发 20 次、20 次全部正确降级到 `unresolved`，`unreachable_hard` 0 条** ⇒ 详见本文 **§M-44 详解**（已闭环段）与[编年史 §七](90-增量编年史.md) |
+| **M-51** | ★**（2026-10-29 新增）增量版本的上传通路**没跑通** ⇒ 「每冻结一版就推一版」还是纸面纪律 | 07 评估 / 09 纪律 | 本文 **§M-51 详解** · [设计方案/22 §9 · R3](../设计方案/22-冻结黄金集上传LabelStudio方案.md) · `evaluation/golden_ls/diff.py`（变更标记四态）· `evaluation/golden_ls/cli.py`（`--only-changed`） | ✅ **已跑通（2026-10-29，owner 授权后）**：v15 项目独立（**pid=79**，title `golden-v15`）⇒ `--only-changed` 实推 **7 条**（`changed` 1 + `id_migrated` 6，**与标记逐条对得上**）⇒ 全量补推 `tasks_pushed=287` + `skipped_duplicate=7` = **294** ⇒ `pending --strict` **欠账归零（退 0）** ⇒ 回读探针 **十项全绿（exit 0）**。⚠️ **顺带修了一处判据**：`content_key` 原本不含 `golden.access_surface` / `golden.observed_at` ⇒ E006 那两栏变了却标 `unchanged` ⇒ **页面显示与标记对不上** ⇒ 已补（只补这两栏，**不补** `reviewed_at`/`reviewed_by`/`note` ⇒ 时间戳一动标记就废）。⚠️ **不影响既有版本对**（v13/v14 的 294 行**一个都没带**这两栏 ⇒ v14 项目不受影响） |
+| **M-52** | ★**（2026-10-29 新增）LS 裁定**回流金标**的那条路**整条没做** ⇒ 复核完了也进不了金标 | 07 评估 / 08 存档 | 本文 **§M-52 详解** · [设计方案/22 §0.3 第 1 条 · R9](../设计方案/22-冻结黄金集上传LabelStudio方案.md) · `evaluation/golden_ls/verdicts.py`（导出，**不写金标**）· `evaluation/golden_ls/reflow.py`（**回流**，2026-10-29 新增）· `evaluation/golden/builder.py`（`annotate` 整行模式） | ✅ **已落（2026-10-29）**：新模块 `evaluation/golden_ls/reflow.py`——LS 裁定 → **回流工作表**（三栏留空给**人**填：面 / 时刻 / 改判时的金标侧署名）→ 校验（**fail-closed 五条**）→ 写回 `annotations.jsonl`（走 `builder annotate` **整行模式**，**不另写一套合并逻辑**）。⭐ **两类裁定两条路**：**确认型**（标签不变 ⇒ 只补观测面 ⇒ `freeze --refresh-surface`，**不换尺子**）／**改判型**（标签要改 ⇒ `freeze --refresh-label`，**换尺子 ⇒ 新基线 ⇒ gate 退 2 是对的**）⇒ **「金标变动 = 新基线」只对改判型成立**。**实跑**：5 条裁定 → 2 条确认写回（E006）⇒ **v15 冻结**（只 1 行变、采集面 `unrecorded 293 / human-browser 1`、回归集指纹未变）。⚠️ **T001 被扣下**：面与时刻**推不出来**（P1 存档无 `driver`、无采集时刻）⇒ fail-closed，留在工作表里下轮办。⚠️ **只回流 calibration + regression**（holdout 的裁定**不许**进金标——它要保持没被人看过）。⚠️ **并池/回流都是写入时的动作** ⇒ **不回填历史存档**。⚠️ **改判型那条路只有单测走过**（真实裁定里没有「不等价的 disagree」） |
+| **M-53** | ★**（2026-10-29 新增）「冻结 → 上传」两步纪律**只有文档、**没有门禁** ⇒ 下一版仍可能冻结完就没人推 | 09 纪律 | 本文 **§M-53 详解** · [设计方案/22 §2.2](../设计方案/22-冻结黄金集上传LabelStudio方案.md) · `evaluation/golden_ls/cli.py`（`pending --strict`）· `evaluation/golden/builder.py`（`freeze` 收尾提醒）· [08 速查「黄金集上传 LS」段](../08-常用命令速查.md) | ✅ **已落（2026-10-29）**：owner 裁定「①每个增量版本都上传 + ③holdout 也上传」⇒ 欠账不能只靠人记 ⇒ 两条看得见的口子：① `golden_ls pending --strict`：**欠账非空 ⇒ 退 1**（是**状态**不是用法错误 ⇒ 不是 2）；缺省**退 0**（它是给人看的清单，不能当门禁跑）；② `builder freeze` 收尾**提醒**一句「若本版要上 LS：跑 `golden_ls pending` 看欠账」。⚠️ **提醒只改 stdout、不改退出码**——把「上不上 LS」变成冻结的前置条件 ⇒ 人为了过门禁就得建项目 ⇒ 裁定③与「攒几版一起上」的自由度会被挤掉 ⇒ **看得见 ≠ 卡得住**。⚠️ **没接进 `check-archives`**（owner 未要求；`check-archives` 是**存档**门禁，LS 欠账是**另一件事**，混进去会让「存档坏了」与「LS 没推」两种失败混成一条） |
 
 ---
 
@@ -2090,6 +2093,173 @@ pred 是「全部存档的 branch 名」**：含旧代 obscura / LLM 感知层�
 
 | **Q-24** | ★**（2026-10-28 新增）机器码命中在**搜索引擎跳转链**上时，算不算「真·站点不可达」？** | 03 标签 / 08 存档 · 本文 **§M-47 详解** · `executor/steps/reachability.py::probe` · `executor/browser/nav_failure.py::site_unreachable()` · 存档 `E017__039d3c57.json` · 编年史 §增量九十八 §六 | 实测：M-46 批次里 E017 出了一条 `unreachable_hard`，**URL 是百度跳转链**、call log **只有一跳**、`landed_url` **为空** ⇒ **归因对象（那个影视站）从未被识别** ⇒ 「不可达」没有可指的对象，且池行 URL 是一次性跳转链（**本身无效**）。⚠️ 全库 `unreachable_hard` 共 18 条，跳转链的**只此 1 条** ⇒ 单点新形态。**甲（推荐）**：`probe()` 加「归因对象」护栏——跳转链且未解析出落点 ⇒ 不配记 `proven_unreachable` ⇒ 降 `unresolved`（不进池）；⚠️ 代价 = 机器码命中的「连接被拒」这个**站点事实**被丢掉 ⇒ 机器码原文要照录进 reason。**乙**：只出池这 1 条 ⇒ 治标，下批还会出。⚠️ **不替人投票**：本轮代码一行不改、池一行不动<br>⭐ **2026-10-28 批次跑完后的实测代价**（M-46 那批 9 个任务全跑完）：池 **393 → 407**（**+14 行**），**新增 14 行里 6 行（43%）是百度跳转链**（E017 ×2 `not_play_site` + T042 ×2 `not_play_site` 等）⇒ 全池 **41 / 407（10.1%）**的池行 URL 是跳转链（40 `not_play_site` + 1 `unreachable_hard`）⇒ **这不是「一条新形态」，是已经成规模的一面**。⚠️ **去重键拦不住它**：去重键是 `(task_id, url, branch)`（`archive.py::_append_negatives`）⇒ **同一个站换了一条跳转链，键就不同 ⇒ 又是一行新池行**（T042 那两行就是同一个百度知道帖子的**两个不同跳转 URL**）⇒ **M-47 有第二个面**：不只是「归因对象错了」，还有「**同一个站的记录会按跳转链的次数重复堆积**」⇒ 甲方案只治前者，后者要另治（跳转链本身：要么解析落点后按落点去重，要么不入池）<br>✅ **2026-10-28 已实施（owner 裁「甲」）**：`executor/steps/reachability.py::probe` 加「**归因对象**」护栏——被导航的 URL 是**搜索引擎的结果中转链**（新函数 `executor/steps/search.py::engine_redirect_engine`：**引擎 host 精确匹配** + 路由 path + `url=` 参数键，**不解密、不猜内容**）⇒ **不配记** `proven_unreachable` ⇒ 降 `unresolved`（**不进池**）；**机器码原文照录进 reason**（「确实拒连了」这个事实留在存档里，不随分支一起消失）。⭐ **回放实测**（`research/probes/q24_q25_guard_replay.py`，全库 **223** 份存档）：`unreachable_hard` outcome 共 **35 条**，URL 是中转链的**只此 1 条**（`E017__039d3c57` 的 baidu 链）⇒ **这条护栏当前只动 1 行**——但它是**先例**（同形态再出现就不进池了）。⚠️ **护栏只治「归因对象错」**，**不治**「同一个站换条跳转链就多一行池行」（去重键 `(task_id,url,branch)` 拦不住）⇒ 那一面见 §M-47，另治<br>⭐ **2026-10-29 · 第一次真跑读数**（批次 `guard-rerun-2026-10-28`，19 个 give-up 命中任务 · 串行 · 约 7.5 小时）：本批 outcome **287** 条 ⇒ 导航/会话类失败 **25** 条（**13** 会话失效档 + **12**「这次没打开」兜底档）⇒ **机器码证明不可达（`DriverUnreachableError`）= 0 条** ⇒ ⚠️ **Q-24 甲的触发条件一次没出现 ⇒ 护栏真跑触发 0 次**（**既没被触发、也没被证伪** ⇒ **它的真跑读数仍然是空的**）。落在**百度中转链**上的失败 **14** 条 ⇒ **全部落 `unresolved` ⇒ 中转链一行没进池** —— ⚠️ 但**那是被 M-44 更宽的两档兜住的**（会话失效 / 这次没打开），**不是**被 Q-24 甲的归因对象判据兜住的 ⇒ **「效果达到了」≠「护栏起了作用」**。⇒ 要等「机器码证明不可达 **且** URL 是中转链」这个形态真的出现，Q-24 甲才有真跑读数 |
 | **Q-25** | ★**（2026-10-28 新增）「agent 自报放弃 / 预算耗尽」收口时，**要不要先查终局形态**（404 / 付费墙 / 环境阻断）再落 `unresolved`？** | 02 感知 / 03 标签 · 本文 **H-01**（重测读数） · 编年史 §增量九十八 · `executor/agent_loop.py::give_up`（:927） · `executor/agent_loop.py::close`（:948） · `perception/rule_perceptor.py::infer_access_defect` · `perception/rule_perceptor.py::classify_paywall` | 实测（**当前代** agent/camofox）：**40 条** `unresolved` 属于「**机器本可以判出来**」——**子族① 36 条**：页面**正文**里就有终局形态（`infer_access_defect` 命中，**全是 404 页**；正文**抓到了**、`degraded=[]`；规则词表里明写 `404 Not Found` / `nginx`，**注释举的例子正是 `kmslxsh.com`**）；**子族② 4 条**：agent 叙述里引用了门禁短语（`classify_paywall` 对那段叙述判命中）。**根因一条**：[`give_up`](../../executor/agent_loop.py#L927) **一律落 `unresolved`、不查任何判据**（[`close()`](../../executor/agent_loop.py#L948) 查 verdict 映射表 ⇒ 那条路查得到）⇒ **机器可判的形态被丢弃 ⇒ 真负样本不进池**。⚠️ **代际回退**：旧代（LLM 感知层）把同一个 404 判成 `broken` ⇒ **进池 9 行**；当前代 **25 次全 `unresolved` ⇒ 一行没进池** ⇒ 不是「一直不行」，是「换代后退了」。⭐ **子族② 的数完全取决于口径——这是本轮量出来的**（**同一条 `unresolved`，三种口径差 27 条**）：**规范判据 `classify_paywall` ⇒ 4 条** · **裸词表**（叙述里出现「付费墙/VIP/会员/订阅」）⇒ **29 条** · **「裸词表命中但规范判据不命中」⇒ 27 条**（几乎全是 E002 的爱奇艺/腾讯叙述：「VIP付费墙挡住了视频」「页面被会员付费墙遮挡」）⇒ **差在「判据用错了地方」，不是「词表太窄」**：`classify_paywall` 是**为页面正文写的**（判据形态 = CTA「开通会员」+ **同句**观看语境），拿它去判 agent 叙述（模型自述）**压根不该命中** ⇒ **乙方案不是「有风险」，是「判据用错地方」**（拿叙述当页面证据 = 把词表注释自己警告的坑再踩一遍：注释明写「LLM evidence 是『结论+证据』混合，『视频不存在』经常是**模型自述结论而非页面文案**」）⇒ **子族①（36 条）是唯一「机器本可判」的族**；子族② 要修得**另设口径**（人核 / 二次观察 / agent 自报带引文），**不是放宽 `classify_paywall`**。**甲（推荐·只修子族①）**：收口前对**最后一页正文**跑一次 `infer_access_defect`，命中就落那条分支（404 ⇒ `broken`），不命中仍落 `unresolved` ⇒ **只动机器可判的形态，且只用页面自己的正文**；⚠️ 代价 = `infer_access_defect` 的**假阳**（正文出现「Not Found」等词但页面正常）会把正常页判成 `broken` ⇒ 要配前置事实核验。**乙**：子族②也修 ⇒ ⚠️ **不建议**（见上：判据用错地方；且叙述是模型自述）⇒ 要修得另设口径（人核 / 二次观察 / agent 自报带引文）。**丙**：不改，接受「没确认播放 ⇒ 没结论」。⚠️ **不替人投票**：本轮代码一行不改、池一行不动<br>✅ **2026-10-28 已实施（owner 裁「甲」）**：新函数 `executor/branches.py::terminal_shape_branch` —— 收口前对**最后一页的正文**跑一次 `infer_access_defect`，命中就落那条分支（404 ⇒ `broken`）、不命中仍落 `unresolved`；**只用页面自己的正文**，**agent 叙述不作为证据**（子族②不修，理由见上：判据用错地方）。**两道护栏**：① **前置事实**（`broken` 是**进池**的分支 ⇒ 判错就是**训练信号被污染** ⇒ 要「**零交互元素 + 零 video 标签 + 无降级项**」的**结构事实**，不靠词表也不靠长度阈值）② **归因对象**（agent 能 `goto` **任意 URL** ⇒ 收口时它看着的那一页**可能压根不是候选站** ⇒ 主机对不上就落 `unresolved`；⚠️ 比主机要拿**解析后的候选站**比、**不是**拿候选 URL 比——候选 URL 常是搜索中转链，拿它比会把**全部真阳性**判成「不明」）。接入点两处：`agent_loop.py::give_up`（agent 自述放弃）与 `agent_loop.py::_close_by_page`（**步数 / llm_calls 预算耗尽**——那两处 agent **真的把这一页看过**了）；⚠️ **「后端未作答」「动作指令连续解析失败」那两处不动**（那是**我们自己的故障**，算成页面负样本会让池里混进「我们坏了」的样本，还会盖掉「该重跑」这个信号）。⭐ **回放实测**（同上探针，全库 **223** 份存档）：「agent 放弃收口」的 visit 共 **210 条**（**207** 自述放弃 + **3** 预算耗尽）⇒ **护栏命中 30 条（去重 8 个落地页）**：**28 `broken`**（404 / nginx）＋ **2 `blocked`**（地区限制）；**12 条「归因对象不明」** ⇒ 仍落 `unresolved`；**168 条不命中**（其中 **5 条正文命中但前置事实不成立**——`degraded=['press_unsupported']` ⇒ 正文不是完整页面 ⇒ **降级而不是改判**）⇒ 仍落 `unresolved`。⚠️ **捞出来的那 30 条仍要人核**——护栏只保证「机器**可判**」，不保证「判**对**」<br>⭐ **2026-10-29 · 第一次真跑读数**（批次 `guard-rerun-2026-10-28`，19 个 give-up 命中任务 · 串行 · 约 7.5 小时）：本批「agent 放弃收口」的 visit **79** 条（**78** 自述放弃 + **1** 步数预算耗尽）⇒ **护栏判据命中 17**（**15** 落 `broken` + **2** 前置事实不成立降级 `unresolved`〔`degraded=['press_unsupported']`〕）+ **6** 条归因对象不明 + **56** 条不命中 ⇒ **护栏真跑触发了**（落在 **4 个落地页**：kmslxsh 12 · wanminggangguan 2 · xacjs 1 · dinggetv 1）。**15 条 `broken` 全部在池里**。池 **407 → 437（+30）**，那 **30 行全是本批 run 写的**（按 `run_id` 反查）——其中 **9 行**是护栏落的 `broken`，其余 21 行是本批的其它判定 ⇒ ⚠️ 那 15 条里有 **6 条**撞旧代老行被去重（`source=llm` · T018 · T025 · T030 · T044 · T048 · T054）⇒ **池里留的是旧代 LLM 的 evidence**，看池行看不出来源是护栏。⭐ **上线前后差**（同 task_id + 同 url，两批都有记录 183 条 ⇒ 分支不同 **57** 条）里**只有 15 条是护栏效应**（全是 `unresolved` → `broken`）⇒ 其余 **42 条混着站点漂移**，**不能算在护栏头上**。⚠️ **门禁当场红了**：Q-25 甲落 `broken` 时 **question 恒为空**（代码层确定性事实核）⇒ 是一类**新的「无题产地」**，而 `d5_scorer.QUESTIONLESS_PAIRS` **漏登记** ⇒ `test_d5_scorer.py::Test同源` 把 `("", "broken")` 判成「映射外的组合」（`1 failed, 4417 passed`）⇒ ✅ **已修**（**从执行层推导**，不手抄：`executor/branches.py::TERMINAL_SHAPE_BRANCHES` = `{ACCESS_DEFECT_BRANCH[k] for k in ACCESS_DEFECT_KINDS}` ⇒ {blocked, broken}；`d5_scorer._terminal_shape_questionless_pairs()`）⇒ 门禁 **4418 passed**。补登记后复算：**15 条全 5 分**，且 5 分是**证据核从页面正文独立复核**出来的（不是读护栏的理由文本）⇒ ⚠️ **但 5 分只说「标签与页面一致」，那 15 行仍要人核**——3 件待裁见 [编年史 §增量一百 §五](90-增量编年史.md#增量一百--两条护栏的第一次真跑guard-rerun-2026-10-28--19-个任务--q-25-甲真命中-15-条--q-24-甲一次没触发--顺带撞出同-url-出两支)：**E021** 的 host 级 403（`broken` 进池 vs `blocked` 不进池；⭐ 现场取证：该 host **5 个路径全是 403** ⇒ host 级，留痕 `research/probes/q24_q25_guard_host403_probe.txt`）、**E014** 同 URL 两代分歧（池说 broken / 最新存档说 unresolved）、**T011** 同 URL 出两支<br>⭐ **2026-10-29 · 第 3 件（T011）已裁并已实施**（owner 裁定「改判成 `broken` 再并池」）：⚠️ **`cli relabel` 改不了 `unresolved`**（它只取**负样本分支**，`unresolved` ∈ `NON_SAMPLE_BRANCHES`）⇒ **唯一合规路径是人工复核通道**（手册 §4.5 · `cli review --verdicts … --apply`，**落盘时自动并池**）。⭐ **现场取证**（留痕 `research/probes/q24_q25_guard_kmslxsh_probe.txt`）：该 URL · `/v/17807/…` · 站点根 **3/3** 返回「404 Not Found\nnginx」、`elements_total=0` · `video_tag_count=0` · `degraded=[]` ⇒ **前置事实成立** ⇒ 当初那条观察若没带 `press_unsupported`，护栏本就会落 `broken` ⇒ 人核的是「**站点确实死了**」这个**站点事实**，不是「护栏判得对」。⇒ `T011__78621699`：`unresolved` → **`broken`** · `source=human` · `branch_before_review=unresolved` 保留；池 **437 → 438**；P2 样本 `T011__78621699__site-10.json` 同步（`branch=broken` · `question=""`）。⚠️ **执行这一条撞出两个机制缺口（都修了，各有测试）**：① **`review_queue._fits` 对无题产地一律拒** ⇒ **Q-25 甲落的 `broken`（`question` 恒为空）人裁通道够不着**（执行层认的组合人核层不认 = 两本规则书）⇒ 改为**只**给 `TERMINAL_SHAPE_BRANCHES`（`broken`/`blocked`，**从 `branches.py` 导入不手抄**）开口子，**判断点类分支空 question 仍拒**；✅ **owner 已追认（2026-10-29）**：这两处机制改动是**执行这一条裁定的必要条件**（改的是**复核通道的准入与范围**，**护栏判据一行没动**）；② **`review --apply` 不加限定会把每份原档重算成复核档** ⇒ **2026-10-24 那轮 78 份人裁定会被原档静默覆盖** ⇒ 改为**读生效档**（有 `.reviewed.json` 就以它为底）+ 新增 **`--only`** 钉死范围（**裁第二轮必须用它**）。⇒ **残余**：同 URL 另有 **27** 条 `unresolved` 分布在 **20** 个任务上（**全裁只新增 6 行**池行：E028 · T012 · T028 · T033 · T036 · T040；另 21 条撞键去重）⇒ 全裁后 kmslxsh 的 **50** 条 outcome 行里 **47** 条落 `broken`（另 3 条 `login_wall_or_blocked` 不变、`unresolved` 清零）、**T011 同 URL 两支**消除 ⇒ **待 owner 再裁**（本轮授权只覆盖 T011 这一行）。⚠️ **门禁退出码更正**：`cli check-archives` 实测 **exit 1**（46 条 `negative_contradicted_by_success` 是 `Severity.FATAL` ⇒ `report.ok=False`）——此前 §增量一百 记的「exit 0」是**量错了**（`$?` 取的是管道末端 `tail` 的状态）；那 46 条**全是存量**（`subscription_wall` 32 · `partial_free` 13 · `component_unverified` 1）⇒ **0 条**落在 `broken` / kmslxsh 上；归档级另有 **3 条 `negative_not_pooled`（DEGRADED，非 FATAL）**＝ `pool-add` 干跑那 8 条里的 3 条（E021 被判成功**矛盾** / E023 · T054 池内同址**已有别的分支**）⇒ **存量的人工分歧，不是本轮引入**<br>⭐ **2026-10-29 · E021 已用浏览器实看，并立了「换面会不会变」这把尺子**（owner：「人工用浏览器看一眼，给出完整 url」）：**完整 url** = `https://m.xacjs.com/weihu/1416804.html`（全库 `m.xacjs.com` 只有这 **1** 个站点地址；两条 run 的跳转链 `http://www.baidu.com/link?url=fF_mLv2j_CGIezOu0HDKjCUXNi-A4CGCwu2Mjv0oxuNwjw-fNI_xPjOI2XhyakIr` / `http://www.baidu.com/link?url=DXsjd367aDwviTqDGDsY6rQWXVhhSn5fWgdj3mg0G1jcoxhSjzGl30Y5JEwzxLMR`）。**生产面实看**（camofox，**5** 个路径）**5/5 = 「403 Forbidden / nginx」**、元素 0 · video 0 · `降级=[]`（留痕 `research/probes/q24_q25_guard_host403_recheck_2026-10-29.txt`）⇒ 前置事实成立。⭐ **新工具：面依赖检查**（`research/probes/q24_q25_guard_facecheck.py` —— 同一台机器、同一出口 IP，**只换请求头**）：`chrome`/`bare`/`referer` 三种客户端 × **7** 个 xacjs URL ⇒ **21/21 HTTP 403**；⚠️ **同机同出口的对照站 `m.dinggetv.com` 同刻 200 OK** ⇒ 403 是**站点对本机出口**的拒绝、不是本地网络问题（留痕 `…_facecheck_xacjs_2026-10-29.txt`）⇒ **判读口径三选一**：**换面不变** ⇒ 站点的事实（真负样本成立）· **换面变了** ⇒ **我们这个面的事实**，不能外推成「站点看不了」· **换面仍是拒绝** ⇒ **始终没看到站点页面** ⇒ fail-closed、**不是**真负样本。⭐ **把池里全部 10 个 `broken` 唯一 URL 都查了一遍**（**30** 次请求 · `…_facecheck_pool_broken_2026-10-29.txt`）⇒ kmslxsh ✓ / wanminggangguan ✓ **不变（站点事实）**；`v.qq.com/error.html`·`bilibili.com/error.html`（URL 本身就是错误页）✓；`104.143.94.74/guocanju/wulinwaichuan/`·`bilibili.com/bangumi/play/ep693415`（普通客户端 200，但裁的是 `player.ok` 级「媒体解不了」）**不是反证** ⇒ **两行站不住**：`m.xacjs.com/weihu/1416804.html`（403 ⇒ fail-closed ⇒ `broken` 不成立）、**`m.dinggetv.com/dingge/84421.html`（E014 —— 普通客户端拿到 HTTP 200 + **80 KB** 真页面《…大话西游之大圣娶亲国语版…免费在线观看全集》⇒ 旧代那条 `broken` 是**面产物** ⇒ ⚠️ **先前「E014 不用动」的结论是错的**，那是没换面的前提下说的）**。⇒ **两条待 owner 批的处置**（E021 与 E014 出池）：`cli downgrade`（→ `unresolved`，理由进 evidence）＋ `cli pool-drop`（写审计日志）——⚠️ **复核通道够不着**：`apply_verdicts` 只对 `REVIEW_BRANCHES` 生效，`broken` ∉ ⇒ 那行会被原样忽略；`cli relabel --to blocked` 又拒（`blocked` 是采集侧分支、不是真负样本）⇒ **出池两步是唯一合规路径**。⇒ **判据层还开着一个口**：`ACCESS_DEFECT_KINDS` 里**没有 403**（`region`/`captcha`/`anti_bot`/`not_found`）⇒ 403 错误页含 `nginx` ⇒ 被 `not_found` 旁证命中 ⇒ 落 `broken`（**采集侧的东西进了真负样本池**）⇒ **今天再跑一遍 E021 还会再写一行错的** ⇒ 「加一类 `forbidden` ⇒ 403 落 `blocked`（不进池）」是**另一个 owner 决定**，**判据一行没动**。⇒ **三件的人核状态（截至 2026-10-29）**：**T011 已裁已实施**（见上）· **E021 已取证、待 owner 批出池** · **E014 已翻案、待 owner 批出池** ⇒ 详见 [编年史 增量一百 §八](90-增量编年史.md) |
+
+---
+
+## 2026-10-29 新增开口项详解（黄金集 → LS 上传 · 方案 22）
+
+> 这一组**同源**：**R1（试点）已过，R2 也已过**（2026-10-29：v14 全量 **294 条**已落在 pid=78 ⇒ **M-50 闭环**，结论折回 [设计方案 22 §9 · R2](../设计方案/22-冻结黄金集上传LabelStudio方案.md) 与 [编年史 · 增量一百一](90-增量编年史.md#增量一百一--冻结黄金集--label-studio-上传通路落地方案-22--r0r1r4--实测打翻初稿三处端点假设--两套署名分列)）⇒ **这一组的现状（2026-10-29 晚）**：**三条全部闭环**——**M-52**（LS 裁定回流金标已落地，确认型实跑过一遍 ⇒ 产出 v15）· **M-53**（`pending --strict` + `freeze` 收尾提醒 ⇒ 「冻结了没人推」看得见了）· **M-51**（v15 项目独立 pid=79、`--only-changed` 实推 7 条、全量 287+7=294、`pending` 归零、回读十项全绿 ⇒ **增量上传通路第一次走完**）。
+> 方案本体见 [设计方案/22-冻结黄金集上传LabelStudio方案](../设计方案/22-冻结黄金集上传LabelStudio方案.md)，
+> 人工怎么判见 [07 手册 §8](../07-人工复核与判读手册.md)。
+
+### M-51 · 增量版本的上传通路（**已跑通**）
+
+**现象**：`init-project`（按版本号建**独立**项目）+ `--only-changed`（只推
+相对上一版有变化的行）在代码里，但**只在 v14 上跑过**——而 **v14 是存量首版
+⇒ 没有上一版可比 ⇒ 变更标记那条路一行都没执行过**。
+
+**现在的状态**（2026-10-29）：**v15 冻结出来了**（M-52 的回流产物）
+⇒ **「上一版可比」这个前提第一次成立**。v14 → v15 的变更分布**已经量得出**：
+
+| 项 | 读数 |
+|---|---|
+| v15 总行数 | **294**（三档：131 调参 / 60 回归 / 103 持有） |
+| **相对 v14 变化的行** | **1**（`E006__2729220b__e9b9542b`——只多了 `golden.access_surface` + `golden.observed_at` 两栏，**标签/署名/理由/软维度分/code/pred 侧一字不动**） |
+| 变更标记 | `new` = 0 · **`changed` = 1** · `id_migrated` = 6（v14 的键迁移）· `unchanged` = 287 |
+| `--only-changed` 的条数 | **7**（= `changed` 1 + `id_migrated` 6；`id_migrated` 也算「要人看」——§2.4 的表里明写「键变了，内容没变 ⇒ 看」） |
+| 回归集指纹 | `3418ebd05a4c` ⇒ **v14 → v15 未变**（C-17 守住） |
+
+⚠️ **`changed` 的口径本轮修过一次**（2026-10-29）：`content_key` 原本**不含**
+`golden.access_surface` / `golden.observed_at` ⇒ E006 那两栏明明变了却标
+`unchanged` ⇒ **页面上显示的东西与标记对不上** ⇒ 标记的用处（一眼看出哪几行
+新变了）就没了。⇒ 补进 `content_key`；**只补这两栏**，**不补**
+`reviewed_by` / `reviewed_at` / `note`（那三栏每次重新标注都动 ⇒ 放进来标记
+就废了 ⇒ **判据要宽，宽在「人看到的东西变了」上，不宽在「时间戳动了」上**）。
+⚠️ **不影响既有版本对**：v13 / v14 的 294 行**一个都没带**这两栏 ⇒ v14 相对
+v13 的标记**逐条不变** ⇒ 已推上 LS 的 v14 项目**不受影响**。
+
+**已跑通**（2026-10-29，owner 授权后）：
+
+```
+python -m trajectory_pipeline.evaluation.golden_ls init-project --version 15
+    → project_id=79 title=golden-v15 created=True sha=376f822addb1
+python -m trajectory_pipeline.evaluation.golden_ls upload --version 15 --only-changed \
+    --p2-root <主树>/trajectory_pipeline/output/pipeline \
+    --task-views-root <主树>/trajectory_pipeline/output/pipeline
+    → tasks_pushed=7 batches=1 skipped_duplicate=0     ← 与标记逐条对得上
+python -m trajectory_pipeline.evaluation.golden_ls upload --version 15 <同上两个根>
+    → tasks_pushed=287 batches=6 skipped_duplicate=7     ← 287 + 7 = 294
+python -m trajectory_pipeline.evaluation.golden_ls pending --strict
+    → 欠账归零，退出码 0
+python -m trajectory_pipeline.research.probes.golden_ls_r1_readback --version 15 --expect 294 --expect-annotations 0
+    → 十项判据全绿（exit 0）
+```
+
+⚠️ **`--task-views-root` 给的是「产物根」**，实现会**自己接 `task_views/`**
+⇒ 多给一层 `task_views/` ⇒ 它去找 `task_views/task_views/*.json` ⇒
+**T 视图可得率静默变成 0%**（我第一次 dry-run 就踩了：0/294；改正后 288/294 =
+98.0%）。⇒ 两个根**都指 `output/pipeline`**。
+
+⚠️ **两个根必须显式指到主树**：worktree 里 `output/` 是空的 ⇒ 现场/轨迹
+可得率会静默变成 **0%** ⇒ 推上去的是**空块**（方案 22 §7.1）。
+
+⚠️ **`--only-changed` 先推、全量后推**：先推那 7 条是为了**验证过滤条数
+对不对**（= R3 的完成判据之一），再推全量 294 条是为了让**这个项目本身
+完整可复核**（方案 22 §2.4：增量版本默认推该版全量）⇒ 第二次推时那 7 条
+被本地判重台账挡下（`skipped_duplicate=7`，按 `sample_id = golden_id`）
+⇒ **287 + 7 = 294**，不重复。
+
+**锚点**：方案 22 §2.2 / §9（R3）· `evaluation/golden_ls/diff.py`（变更标记
+四态 `new`/`changed`/`unchanged`/`id_migrated`）· `evaluation/golden_ls/cli.py`
+（`--only-changed` / `pending`）。
+
+### M-52 · LS 裁定**回流金标**的那条路整条没做
+
+**现象**：LS 侧的人工裁定**只落在 `output/` 的 `ls_annotations.jsonl`
+（**可复核的记录**）⇒ **它不是金标**，也不回流 `annotations.jsonl`。
+
+**现在的状态**（2026-10-29）：✅ **已落**，且**确认型那条路实跑过一遍**。
+
+**落点**：新模块 `evaluation/golden_ls/reflow.py`（+ CLI 的
+`reflow worksheet` / `reflow apply` 两个子命令）。三步不变：
+
+1. `golden.builder annotate` **整行模式**（每行除 `label` / `reviewed_by` 外
+   **还必须带 `access_surface` + `observed_at`**——在哪个面看的、什么时候看
+   的；**缺一栏退 2**，不按默认面补）；
+2. **只回流 calibration + regression**（holdout 的裁定**不许**进金标——它要
+   保持没被人看过）；
+3. **重冻结出新版本**。
+
+⭐ **第 3 步分裂成两条出口**（这是本条最要紧的修正）：**「金标变动 = 新基线」
+只对改判型成立**——
+
+| 裁定类型 | 金标变不变 | 冻结出口 | 对上一版可比？ | gate |
+|---|---|---|---|---|
+| **确认型**（`agree`，或 `disagree` 但给的分支与金标**等价**） | **不变**（只补观测面两栏） | `freeze --refresh-surface`（**新开**） | **仍逐行可比**（落 `surface_refresh.baseline_reset=false`） | 不因这件事退 2 |
+| **改判型**（`disagree` 且分支**不等价**） | 变 | `freeze --refresh-label` | 不可比（新基线） | **退 2 是对的** |
+
+⇒ 原来 M-52 写的「重冻结 ⇒ gate 退 2 是对的」**只覆盖改判型**；确认型走
+`--refresh-surface` ⇒ **尺子没换**（C-17 的回归集指纹逐版未变，实测
+`3418ebd05a4c` ⇒ `3418ebd05a4c`）。
+
+**实跑读数**（LS 侧 5 条裁定 → v15）：
+
+| 项 | 读数 |
+|---|---|
+| 裁定总数 | 5 |
+| **确认型** | **2**（`T001__d063ddf4__106df089` · `E006__2729220b__e9b9542b`） |
+| 改判型 | **0**（现有裁定里没有「不等价的 disagree」） |
+| 跳过 | 3（`not_reviewed` ×2 · **holdout** ×1 ⇒ 裁定③只上传不回流） |
+| **写回** | **1 条**（E006：面 `human-browser` + 时刻 = 同一次人判的 `reviewed_at`） |
+| **被扣下** | **1 条**（T001 ⇒ fail-closed，见下） |
+| v15 相对 v14 变的行 | **1**（就是 E006） |
+| 采集面 | `unrecorded: 294` → **`unrecorded: 293 / human-browser: 1`** |
+
+⚠️ **T001 为什么被扣下**（fail-closed 的样本）：它的面与时刻**推不出来**——
+P1 存档 `T001__d063ddf4.json` 里**既没有 `driver` 也没有任何采集时刻**
+（里面的 `2026-07-15 14:00:24` 是 CCTV 页面**自己的「更新时间」**，
+`2026-10-28` 是 Q-23 现场复核＝**另一个观测事件**）⇒ P2 样本的
+`tool_surface=obscura-1` 只给得出面、给不出时刻 ⇒ **面与时刻是一对**
+⇒ 一起缺 ⇒ **不猜**、不按默认面补 ⇒ 该行**留在工作表里**（`submit: false`），
+下轮补齐时刻再回流。
+
+⚠️ **gate 对 v15 退 1**：净改善 0（修好 0 − 反转 0）——**v15 只动了金标的
+观测面，pred 侧一行没动** ⇒ 配对读数与 v14 逐条相同 ⇒ 这是**「什么都没变」
+那一类**，不是「变坏了」。
+
+⚠️ **改判型那条路只有单测走过**（真实裁定里没有「不等价的 disagree」）⇒
+它的**真实行为未经现场验证**——第一次真出现改判时，**必须人看 `reflow apply`
+的干跑输出**再 `--write`。
+
+⚠️ **回流是写入时的动作 ⇒ 不回填历史存档**。
+
+**锚点**：方案 22 §0.3 第 1 条 / §4.4 / §9（R5）· `evaluation/golden_ls/reflow.py`
+（回流本体）· `evaluation/golden_ls/verdicts.py`（导出，**不写金标**）·
+`evaluation/golden/builder.py`（`annotate` 整行模式 + `--refresh-surface`）·
+[08 速查「黄金集上传 LS」段](../08-常用命令速查.md)（`reflow` 那几行）。
+
+### M-53 · 「冻结 → 上传」两步纪律**只有文档、没有门禁**
+
+**现象**：方案 22 §2.2 定的是**纪律**（冻结完就推）⇒ **代码不会拦**。
+
+**已落**（2026-10-29）：
+- [08 速查](../08-常用命令速查.md) 的 `freeze` 那行后面加了「🔗 冻结完就推 LS」，
+  并新增「**黄金集上传 LS**」命令段（**命令清单的唯一真源**）；
+- [07 手册 §8](../07-人工复核与判读手册.md) 新增「冻结黄金集 · LS 复核面」
+  （**第 8 种复核面**：怎么用、**两套署名的区别**、回流哪一步、常见坑）；
+- `golden_ls pending` 能列欠账（**只算 ≥v14**）。
+
+**补上「看得见」的那一半**（owner 裁定①「每个增量版本都上传」+ ③「holdout
+也上传」⇒ 欠账不能只靠人记 ⇒ 两条口子）：
+
+| 机制 | 行为 | 为什么是这个形态 |
+|---|---|---|
+| `golden_ls pending --strict` | 欠账非空 ⇒ **退 1**（错误走 stderr）；**缺省退 0** | 欠账是**状态**不是用法错误 ⇒ 不是 2；缺省退 0 ⇒ 它还能当「给人看的清单」跑，不会把 CI 变红 |
+| `builder freeze` 收尾提醒 | 多打一句「若本版要上 LS：跑 `golden_ls pending` 看欠账」+ **本版版本号** | **只改 stdout、不改退出码** |
+
+⚠️ **提醒刻意不做成门禁**：把「上不上 LS」变成冻结的前置条件 ⇒ 人为了
+过门禁就得建项目 ⇒ ① 裁定③（holdout 也上）与「攒几版一起上」的自由度
+会被挤掉 ② 真出故障时**冻结本身**会被一个不相干的问题挡住 ⇒
+**看得见 ≠ 卡得住**（能卡住的那一半是 `pending --strict`，由人/CI 决定跑不跑）。
+
+⚠️ **没接进 `check-archives`**（owner 未要求）：`check-archives` 是**存档**
+门禁（存档坏没坏），LS 欠账是**另一件事** ⇒ 混进去会让「存档坏了」与
+「LS 没推」两种失败混成一条 ⇒ 排障时指不到真正的原因。
+
+**锚点**：方案 22 §2.2 / §8（R10）/ §9（R4）· `evaluation/golden_ls/cli.py::_cmd_pending`
+· `evaluation/golden/builder.py::cmd_freeze`（收尾提醒）
+· `tests/unit/test_golden_ls_pending_gate.py`（5 条）
+· [08 速查](../08-常用命令速查.md) · [07 手册 §8](../07-人工复核与判读手册.md)。
 
 ---
 
