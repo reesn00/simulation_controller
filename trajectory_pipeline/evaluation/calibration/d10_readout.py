@@ -935,19 +935,32 @@ def render_text(report: Mapping[str, Any]) -> str:
     check = report.get("self_check")
     if check:
         lines.append("")
+        scope_note = (
+            "（分母全量，含双方都没结论的行）"
+            if meta.get("sealed_shown")
+            else "（分母 = 本次读数范围的全量行）"
+        )
         lines.append("── 自检：快照派生的现口径列 vs 从原始行重算 ──")
         for c in check["checks"]:
             got = c["recomputed_from_rows"]
             derived = c["snapshot_derived"]
             flag = "✓" if c["matches"] else "✗"
+            # ⚠️ ``__all__`` 这一行的含义**跟着读数范围走**：默认只读调参池
+            # 时它是「本次范围内的全体」，不是「三档合计 289」——写成后者
+            # 会让人以为自检核的是全库。
+            label = (
+                "全部（本次范围）"
+                if c["split"] == "__all__" and not meta.get("sealed_shown")
+                else c["split"]
+            )
             lines.append(
-                f"{flag} {c['split']:<12} "
+                f"{flag} {label:<14} "
                 f"快照 {derived['agreed']}/{derived['n']}"
                 f"  重算 {got['agreed']}/{got['n']}"
             )
         lines.append(
             "（✓ = 现口径列与 golden/builder.py 的 cmd_agreement 逐字一致；"
-            "不等说明快照与 builder 已对不上）"
+            f"不等说明快照与 builder 已对不上）{scope_note}"
         )
     head = report.get("headline") or {}
     line_block = report.get("line") or {}
