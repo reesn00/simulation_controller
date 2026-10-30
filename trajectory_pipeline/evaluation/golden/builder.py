@@ -86,6 +86,24 @@ from trajectory_pipeline.evaluation.golden.splits import (
     split_of_file,
 )
 
+#: 三态判定与金标署名分类——**判定层与分类层各只有一份**（owner
+#: 2026-10-30 裁定：上岗线绑「人工署名子集 × 三态口径」）。
+#:
+#: - ``alignment.hard_agreement``：把「没结论」从「不等价」里拆出来
+#:   （``unresolved`` 这类 fail-closed 弃权不该被算成「判错」）；
+#: - ``signatures.classify_signature``：**谁写的这一行**（human /
+#:   automated / unknown 三分）——「人工署名子集」用它定义，**不另划一套**。
+from trajectory_pipeline.evaluation.golden.alignment import (
+    STATE_AGREE,
+    STATE_DISAGREE,
+    STATE_UNDETERMINED,
+    hard_agreement,
+)
+from trajectory_pipeline.evaluation.golden.signatures import (
+    KIND_HUMAN,
+    classify_signature,
+)
+
 #: 采集面词表与判据（方案 20 §R2）：**这一行是在哪个面上看到的**。
 #: 判定「两条读数能不能比」的唯一真源，评估侧（R3）也读这一份。
 from trajectory_pipeline.evaluation import access_surface
@@ -140,6 +158,71 @@ RETEST_INTERVAL_DAYS = 14  # D9 建议间隔 T（INC41 起 degrade 为纯建议�
 #: ``evaluation/scorers/thresholds.py`` 那张表，别动这一行（D-C6：
 #: 改阈值不升 rubric 版本，所以这一行也不该成为「偷偷改线」的地方）。
 D10_THRESHOLD = thresholds.value("d10_min_agreement")
+
+
+def _three_state_reading(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    gold_label_of,
+    code_branch_of,
+) -> dict[str, Any]:
+    """一组冻结行的**三态一致率**（口径：``agree`` + ``disagree`` 进分母）。
+
+    与口径 C 的差别只有一处，但那一处是全部：**「没结论」不算「一致」
+    也不算「不一致」**——它不进分母，而是单独记成**弃权率**。
+
+    ⚠️ **弃权率必须与一致率并排报**：只报一致率，会把「把弃权行从分母里
+    拿掉」读成「质量提升」——那是把排除项当成绩。
+
+    口径定义在 :mod:`trajectory_pipeline.evaluation.golden.alignment`
+    （判定层，单一真源）——本函数只**用它**，不另写一份判定。
+    """
+    states = [
+        hard_agreement(gold_label_of(r), code_branch_of(r)) for r in rows
+    ]
+    agree = sum(1 for s in states if s.state == STATE_AGREE)
+    disagree = sum(1 for s in states if s.state == STATE_DISAGREE)
+    undetermined = sum(1 for s in states if s.state == STATE_UNDETERMINED)
+    denominator = agree + disagree
+    n = len(rows)
+    return {
+        "n": n,
+        "agree": agree,
+        "disagree": disagree,
+        "undetermined": undetermined,
+        "denominator": denominator,
+        # 分母为 0 ⇒ **不可判定**（None），不是 0.0、也不是 1.0
+        # （``None ≠ 0``）。
+        "ratio": (agree / denominator) if denominator else None,
+        "abstention_rate": (undetermined / n) if n else None,
+    }
+
+
+def _split_by_signature_class(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """按 :func:`classify_signature` 把行分成（人工, 自动）两组。
+
+    「人工署名子集」= ``golden.reviewed_by`` 分类为 ``human``
+    （``HUMAN_SIGNATURES`` = ``manual-review`` / ``reesn``）。
+
+    ⚠️ **AI 辅助不算人核**（``ai-assisted-inc33`` 归 ``automated``）：
+    模型起草、人没逐条看——把它算进人工子集，上岗线读的就是**自证**
+    （验证器从同一条 ``code.branch`` 派生标签，一致率接近 1 不是质量高）。
+
+    分组只走 ``classify_signature`` 一个判据——「人工子集」和「自动子集」
+    是**同一个划分的两面**，不许各自判一次（两处判法漂了就对不上账）。
+    """
+    human: list[Mapping[str, Any]] = []
+    automated: list[Mapping[str, Any]] = []
+    for r in rows:
+        signature = str((r.get("golden") or {}).get("reviewed_by") or "")
+        if classify_signature(signature) == KIND_HUMAN:
+            human.append(r)
+        else:
+            automated.append(r)
+    return human, automated
+
 #: 标签宇宙版本：**冻结时注册表的合法 label 全集**。
 #:
 #: 版本号是**序列号**（不是类数）。类数会随注册表增长而变——同一个号
@@ -3494,16 +3577,126 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     print(
         f"D10 与黄金集标签一致率（{label_note}，口径 C = 语义等价类一致）"
     )
+    # ── 上岗线判定对象：调参池 × 人工署名子集 × 三态口径 ─────────
+    # owner 2026-10-30 裁定：上岗线的**判定对象**改成「调参池 × 人工署名
+    # 子集 × 三态口径」，**阈值数值仍是 0.80**（没裁新数值）。
+    #
+    # 为什么绑人工子集：自动署名行（``auto-validator-*``）的标签是
+    # **验证器从同一条 code.branch 派生**的⇒ 它的一致率接近**自证**，
+    # 拿它当上岗线的读数，读的是「验证器同意验证器」。人署名的行
+    # （``manual-review`` / ``reesn``）才是独立裁定。
+    #
+    # 为什么**只读调参池**：上岗线是**调参依据**（它决定这条管线能不能
+    # 上岗）⇒ 只能读调参池。C-04 已定「头条 = 调参池」；持有集
+    # （D-C5「每个 rubric 版本只跑一次，平时只报条数」）与回归集
+    # （D-C8「冻结、永不作调参依据」）是**封存面**——读它们 = 拿封存面
+    # 调参 = 看一眼就回不去。
+    #
+    # ⚠️ **旧口径读数一并留着**（不删不改）：跨版本对比要用它，而且
+    # 「口径 C 头条」是历史报表里印过的数——删了就读不成「质量变了」。
+    human_headline, automated_headline = _split_by_signature_class(headline)
+    ts_headline = _three_state_reading(
+        headline, gold_label_of=gold_label_of, code_branch_of=code_branch_of
+    )
+    ts_human = _three_state_reading(
+        human_headline, gold_label_of=gold_label_of, code_branch_of=code_branch_of
+    )
+    ts_automated = _three_state_reading(
+        automated_headline, gold_label_of=gold_label_of, code_branch_of=code_branch_of
+    )
+    # 同一批行上的**旧口径**读数——用来对照「记账口径的差 ≠ 质量的差」。
+    legacy_human_agree, legacy_human_ratio = _score(human_headline)
+    # 弃权行的**代码侧分支**：证明这些行是「代码判不出来」，而不是
+    # 「金标与代码打架」——这句话要由产物自己支撑，不能只写在文档里。
+    abstained_branches: dict[str, int] = {}
+    for r in human_headline:
+        state = hard_agreement(gold_label_of(r), code_branch_of(r))
+        if state.state != STATE_UNDETERMINED:
+            continue
+        branch = str(code_branch_of(r) or "")
+        abstained_branches[branch] = abstained_branches.get(branch, 0) + 1
+
+    def _fmt_ratio(value: float | None) -> str:
+        return "—" if value is None else f"{value:.1%}"
+
     print(
         f"  口径 C（头条，分母 = {HEADLINE_SPLIT if has_split else '全部站点级'} "
-        f"{len(headline)} 条）：{agree}/{len(headline)} = {ratio:.1%}  "
-        f"{f'✅ ≥{D10_THRESHOLD:.0%} 上岗' if ratio >= D10_THRESHOLD else f'❌ 未达 {D10_THRESHOLD:.0%} 上岗线'}"
+        f"{len(headline)} 条）：{agree}/{len(headline)} = {ratio:.1%}"
+        "   ← 旧读数，保留（跨版本对比用；不再是上岗线的判定对象）"
     )
     if has_split:
         print(
             f"  口径 C（旧口径，三档合计 {len(site)} 条）："
             f"{legacy_agree}/{len(site)} = {legacy_ratio:.1%}"
             "   ← 与 v6 及更早的报表对齐用（C-04 换分母，不是质量变了）"
+        )
+    print(
+        f"  三态口径（调参池全体 {ts_headline['n']} 条，分母 = 双方都有结论 "
+        f"{ts_headline['denominator']} 条）："
+        f"{ts_headline['agree']}/{ts_headline['denominator']} = "
+        f"{_fmt_ratio(ts_headline['ratio'])}"
+        f"   弃权 {ts_headline['undetermined']} 条"
+        f"（{_fmt_ratio(ts_headline['abstention_rate'])}）"
+    )
+    print(
+        f"  三态口径（调参池 · 人工署名子集 {ts_human['n']} 条，分母 = 双方都有结论 "
+        f"{ts_human['denominator']} 条）："
+        f"{ts_human['agree']}/{ts_human['denominator']} = {_fmt_ratio(ts_human['ratio'])}"
+        f"   弃权 {ts_human['undetermined']} 条"
+        f"（{_fmt_ratio(ts_human['abstention_rate'])}）"
+        "   ← 上岗线判定对象"
+    )
+    # 上岗线判定：**调参池 × 人工署名子集 × 三态口径**。
+    # 分母为 0 ⇒ 不可判定，**不判过线**（``None ≠ 0``）。
+    if ts_human["ratio"] is None:
+        d10_on_duty = "⚠ 不可判定（分母为 0：人工署名子集里没有双方都有结论的行）"
+    elif ts_human["ratio"] >= D10_THRESHOLD:
+        d10_on_duty = f"✅ ≥{D10_THRESHOLD:.0%} 上岗"
+    else:
+        d10_on_duty = f"❌ 未达 {D10_THRESHOLD:.0%} 上岗线"
+    print(f"  上岗线判定：≥{D10_THRESHOLD:.0%}　{d10_on_duty}")
+    # 绑定对象**从阈值表取**（不在这儿再写一遍）——表是唯一真源，写两处
+    # 就会漂（而且漂的是「线到底读什么」这一句，最要命）。
+    print(
+        "  上岗线绑定对象（阈值表 scope）："
+        f"{thresholds.scope('d10_min_agreement')}"
+    )
+    print(
+        "  上岗线绑定对象（读法）："
+        f"{thresholds.scope_text('d10_min_agreement')}"
+    )
+    # ⓘ 理由**写在输出里**（不只写在代码注释里）——「88.9% 过线」这句话
+    # 必须自带「它读的是哪一档、为什么不读别的档」的答案。
+    print(
+        "  ⓘ 为什么只读调参池：上岗线是**调参依据**（它决定这条管线能不能"
+        "上岗）⇒ 只能读调参池。C-04 定「头条 = 调参池」；持有集（D-C5「每个 "
+        "rubric 版本只跑一次，平时只报条数」）与回归集（D-C8「冻结、永不作"
+        "调参依据」）是**封存面**——读它们 = 拿封存面调参 = 看一眼就回不去。"
+    )
+    if ts_human["denominator"]:
+        print(
+            f"  ⚠ 分母薄：这条线的结论只有 {ts_human['denominator']} 行"
+            f"（人工 {ts_human['n']} 行里 {ts_human['undetermined']} 行被代码弃权）"
+            "⇒ 抽样波动大。"
+            + (
+                "　└ 弃权行的代码侧分支："
+                + " · ".join(f"{k} {v}" for k, v in sorted(
+                    abstained_branches.items(), key=lambda kv: (-kv[1], kv[0])
+                ))
+                + " ⇒ 全是「代码判不出来」⇒ 指向 **H-01**（unresolved 剩余桶"
+                "重新归因）——**下一步是让分母变厚，不是调线**"
+                if abstained_branches
+                else ""
+            )
+        )
+    if human_headline:
+        print(
+            f"  ⇢ 口径对照：旧口径 C 在同一批 {len(human_headline)} 行上读 "
+            f"{legacy_human_agree}/{len(human_headline)} = {legacy_human_ratio:.1%}"
+            f"（{ts_human['undetermined']} 条弃权被算成「不一致」）；三态口径读 "
+            f"{ts_human['agree']}/{ts_human['denominator']} = "
+            f"{_fmt_ratio(ts_human['ratio'])} ⇒ 差在**记账口径**"
+            "（弃权算不算不一致），不是代码质量的差。"
         )
     print(
         "  下钻口径 D（分支路由，micro P/R/F1）："
@@ -3711,6 +3904,51 @@ def cmd_agreement(args: argparse.Namespace) -> int:
                 "criterion": "all_splits",
             },
             "report": report,
+            # ── 三态口径读数（owner 2026-10-30）────────────────────
+            # **机器侧也要看得见**：上岗线绑的判定对象不是「口径 C 头条」，
+            # 只在 stdout print 的话，``--json-out`` 的消费方拿到的仍是旧
+            # 口径——那才是真正被下游读的东西。
+            #
+            # 每个 reading 的字段：``n`` / ``agree`` / ``disagree`` /
+            # ``undetermined`` / ``denominator`` / ``ratio`` /
+            # ``abstention_rate``。⚠️ **``ratio`` 分母为 0 时是 ``null``**
+            #（JSON 的 ``null``），**不许写 0.0**——``None ≠ 0``。
+            #
+            # ⚠️ **载荷里只有调参池**：持有集（D-C5）与回归集（D-C8）是
+            # **封存面**，它们的**三态**读数是**新信息**（会顺带把封存面
+            # 的量读出来）⇒ 不进载荷。封存面的**条数**在
+            # ``site_rows_by_split`` 里（只报条数，既有纪律）。
+            "three_state": {
+                "criterion": (
+                    "三态口径：agree + disagree 进分母；未判定行进弃权率，"
+                    "不进分母（None ≠ 0）"
+                ),
+                "headline": ts_headline,
+                "split": HEADLINE_SPLIT if has_split else "all",
+                "headline_human": ts_human,
+                "headline_automated": ts_automated,
+                # 同一批行上的**旧口径**读数——差在记账口径，不是质量。
+                "legacy_headline_human": {
+                    "n": len(human_headline),
+                    "agreed": legacy_human_agree,
+                    "ratio": legacy_human_ratio,
+                },
+            },
+            # 上岗线判定：**判定对象 + 结论**一起给机器。
+            "on_duty": {
+                "threshold": D10_THRESHOLD,
+                "ratio": ts_human["ratio"],
+                # ``determinable`` = 分母非 0（读得出数）；``passed`` = 读过线。
+                # 分母为 0 时 ``passed`` 是 ``null``——**不判过线**。
+                "determinable": ts_human["ratio"] is not None,
+                "passed": (
+                    None
+                    if ts_human["ratio"] is None
+                    else bool(ts_human["ratio"] >= D10_THRESHOLD)
+                ),
+                "scope": thresholds.scope("d10_min_agreement"),
+                "scope_text": thresholds.scope_text("d10_min_agreement"),
+            },
             # plan §三·第一步 contract 7「输出 JSON 含 soft_dims 键」——
             # 不出数字的 dim 不进 dict（N=0 不计入，contract 3）。
             # contract 6「manifest_schema_version 不破」——上层的

@@ -19,7 +19,11 @@
 5. **现口径列要复现现读数**：从原始行按 ``cmd_agreement`` 的公式重算，
    必须与快照派生的现口径列**逐字相等**——不等就是快照与 builder 已经
    对不上了；
-6. **只读**：跑一次读数**不落任何文件**。
+6. **只读**：跑一次读数**不落任何文件**；
+7. **行集口径**：读数只认「站点级已标注行」（与 builder 的 ``site``
+   同一判据），排除掉的行数**要报出来**；
+8. **上岗线绑定**：读数必须给出这条线**读的是哪一档 × 哪个口径**
+   （阈值表的 ``scope``），并按绑定对象算过线与否。
 """
 
 from __future__ import annotations
@@ -446,17 +450,371 @@ def test_版本台账读不出来_报错():
         d10_readout.latest_version(pathlib.Path("不存在的目录"))
 
 
+# ── 7. 行集口径：只认站点级已标注行 ──────────────────────────
+
+
+def test_行集只认站点级已标注行():
+    """轨迹级样本（``p2_sample``）与未标注行**不在这把尺子上**。
+
+    它们不是「判错」，是「没有可比的东西」——与 builder 的 ``site``
+    同一判据（``calibration.snapshot.iter_site_rows``，同一处，不抄第二份）。"""
+    rows = [
+        _row("g1"),
+        _row("g2", source_kind="p2_sample"),
+        _row("g3", gold_label="success", branch="success"),
+    ]
+    rows[2]["golden"] = None  # 未标注
+    site, excluded = d10_readout.site_rows_of(rows)
+    assert [r["golden_id"] for r in site] == ["g1"]
+    assert excluded == 2
+
+
+def test_行集口径写进读数的meta():
+    """排除的行数**要报出来**——「分母怎么少了几行」不能靠猜。"""
+    rows = [
+        _row("g1"),
+        _row("g2", source_kind="p2_sample"),
+    ]
+    entries = [_entry("g1", gold_value="success", pred_value="success")]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    report = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+    )
+    assert report["meta"]["rows_site"] == 1
+    assert report["meta"]["rows_read"] == 2
+    assert report["meta"]["rows_excluded"] == 1
+
+
+def test_站点级行在快照里没有_报错():
+    """**反向**也要核：冻结档有、快照没有 ⇒ 快照漏了行。
+
+    只对上一个方向的话，「读数少了几行」会静静溜过去。"""
+    rows = [_row("g1"), _row("g2")]
+    entries = [_entry("g1", gold_value="success", pred_value="success")]
+    with pytest.raises(d10_readout.ReadoutError, match="没有对应条目"):
+        d10_readout.classify_rows(rows, _snapshot(entries))
+
+
+def test_站点级行golden_id重复_报错():
+    rows = [_row("g1"), _row("g1")]
+    entries = [_entry("g1", gold_value="success", pred_value="success")]
+    with pytest.raises(d10_readout.ReadoutError, match="重复"):
+        d10_readout.classify_rows(rows, _snapshot(entries))
+
+
+# ── 8. 上岗线绑定 ────────────────────────────────────────────
+
+
+def test_上岗线绑定对象_调参池人工子集():
+    """线读的是**调参池 × 人工署名子集 × 三态口径**（owner 2026-10-30）。
+
+    读数必须自己算出这个绑定对象的读数与过线与否——不是「线该绑什么」
+    由别人替它决定。
+
+    ⚠️ **只有调参池**：上岗线是**调参依据**⇒ 只能读调参池。回归档
+    （D-C8 冻结面）的人工行**不进**这条线——它连读都不该被读到，
+    更不该进判定。"""
+    rows = [
+        _row("h1", reviewed_by="manual-review"),
+        _row("h2", reviewed_by="manual-review", gold_label="success", branch="paywall"),
+        _row("h3", reviewed_by="reesn", split="regression"),
+        _row("h4", reviewed_by="manual-review"),
+        _row("h5", reviewed_by="manual-review"),
+        _row("a1", reviewed_by="auto-validator-x"),
+    ]
+    entries = [
+        _entry("h1", gold_value="success", pred_value="success"),
+        _entry("h2", gold_value="success", pred_value="paywall", verdict="disagree"),
+        _entry("h3", gold_value="success", pred_value="success", split="regression"),
+        _entry("h4", gold_value="success", pred_value="success"),
+        _entry("h5", gold_value="success", pred_value="success"),
+        _entry("a1", gold_value="success", pred_value="success"),
+    ]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    report = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+    )
+    line = report["line"]
+    assert line["scope"] == "headline_split+human_signed+three_state"
+    # 调参池人工行：h1/h4/h5 一致、h2 冲突 ⇒ 3/4 = 75%
+    assert line["reading"]["n"] == 4
+    assert line["reading"]["agree"] == 3
+    assert line["reading"]["disagree"] == 1
+    assert line["reading"]["denominator"] == 4
+    assert line["determinable"] is True
+    assert line["passed"] is False  # 3/4 = 75% < 80%
+    # **回归档那行不进这条线**（h3）：封存面既不读也不判
+    assert line["reading"]["n"] == 4
+    # 自动署名的那行**不进**这条线
+    assert line["reading"]["n"] == 4
+
+
+def test_封存面默认不读():
+    """持有集（D-C5）/ 回归集（D-C8）是**封存面**——默认不输出。
+
+    它们的**三态**读数是**新信息**，报出来就等于拿封存面调参（看一眼
+    就回不去）。要看得显式 ``--show-sealed``。"""
+    rows = [
+        _row("c1", reviewed_by="manual-review"),
+        _row("r1", reviewed_by="manual-review", split="regression"),
+        _row("h1", reviewed_by="manual-review", split="holdout"),
+    ]
+    entries = [
+        _entry("c1", gold_value="success", pred_value="success"),
+        _entry("r1", gold_value="success", pred_value="success", split="regression"),
+        _entry("h1", gold_value="success", pred_value="success", split="holdout"),
+    ]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    report = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+    )
+    assert report["meta"]["split_scope"] == "calibration"
+    assert report["meta"]["sealed_shown"] is False
+    # 只有调参池那一档进读数
+    assert set(report["by_split"]) == {"calibration"}
+    assert report["overall"]["n"] == 1
+    # 人工子集的分支分布也只看调参池（否则等于把封存面的构成读出来）
+    assert report["human_subset"]["n"] == 1
+
+
+def test_破封开关打开才展开封存面_且不进判定():
+    """``--show-sealed`` 只作**展示**，**不进任何判定**。
+
+    开了开关之后判定读数必须**一模一样**（还是调参池 × 人工 × 三态）——
+    「封存面的行进了判定」是最坏的一种误用：它把破封偷偷变成改线。"""
+    rows = [
+        _row("c1", reviewed_by="manual-review"),
+        _row("c2", reviewed_by="manual-review", gold_label="success", branch="paywall"),
+        _row("c3", reviewed_by="manual-review"),
+        _row("c4", reviewed_by="manual-review"),
+        # 回归档人工行：全冲突 —— 若它进了判定，结论会从 75% 掉到 50%
+        _row("r1", reviewed_by="manual-review", gold_label="success", branch="paywall", split="regression"),
+    ]
+    entries = [
+        _entry("c1", gold_value="success", pred_value="success"),
+        _entry("c2", gold_value="success", pred_value="paywall", verdict="disagree"),
+        _entry("c3", gold_value="success", pred_value="success"),
+        _entry("c4", gold_value="success", pred_value="success"),
+        _entry("r1", gold_value="success", pred_value="paywall", verdict="disagree", split="regression"),
+    ]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    sealed = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+        sealed=True,
+    )
+    assert sealed["meta"]["sealed_shown"] is True
+    assert set(sealed["by_split"]) == {"calibration", "regression"}
+    # ⚠️ **判定读数不变**：封存面那行不进判定
+    assert sealed["line"]["reading"]["n"] == 4
+    assert sealed["line"]["reading"]["agree"] == 3
+    assert sealed["line"]["reading"]["denominator"] == 4
+    assert sealed["line"]["passed"] is False
+    # 分档切片也只有调参池（判定对象的切片）
+    assert set(sealed["line"]["by_split"]) == {"calibration"}
+
+
+def test_人工子集的分支分布_说明弃权是谁给的():
+    """「这条线为什么不过」要**由产物自己说**。
+
+    弃权行的金标**全都有结论** ⇒ 是代码没判出来（采集侧的 unresolved
+    桶），不是金标与代码打架，也不是模型变差。"""
+    rows = [
+        _row("h1", reviewed_by="manual-review", gold_label="subscription_wall", branch="unresolved"),
+        _row("h2", reviewed_by="manual-review", gold_label="success", branch="unresolved"),
+        _row("h3", reviewed_by="manual-review", gold_label="success", branch="success"),
+    ]
+    entries = [
+        _entry("h1", gold_value="subscription_wall", pred_value="unresolved", verdict="disagree"),
+        _entry("h2", gold_value="success", pred_value="unresolved", verdict="disagree"),
+        _entry("h3", gold_value="success", pred_value="success"),
+    ]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    report = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+    )
+    human = report["human_subset"]
+    assert human["n"] == 3
+    assert human["pred_branch_distribution"]["unresolved"] == 2
+    assert human["gold_label_distribution"]["success"] == 2
+    abstention = human["abstention"]
+    assert abstention["n"] == 2
+    assert abstention["gold_conclusive"] == 2
+    text = d10_readout.render_text(report)
+    assert "分支分布" in text
+    assert "代码没判出来" in text
+
+
+def test_上岗线绑定_分母为0不判过线():
+    """分母为 0 ⇒ **不可判定**，不判过线（``None ≠ 0``）。"""
+    rows = [_row("h1", gold_label="success", branch="unresolved")]
+    entries = [_entry("h1", gold_value="success", pred_value="unresolved", verdict="disagree")]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    report = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+    )
+    line = report["line"]
+    assert line["reading"]["denominator"] == 0
+    assert line["reading"]["ratio"] is None
+    assert line["determinable"] is False
+    assert line["passed"] is None
+
+
+def test_人读输出必须写明绑定对象与分档切片():
+    """「88.9% 过线」这句话必须自带**对象**与**分档切片**。
+
+    只印一个数 ⇒ 读者不知道它读的是哪一档 × 哪个口径，换个口径还会
+    读成同一个数（2026-10-30 的教训）。"""
+    rows = [
+        _row("h1", reviewed_by="manual-review"),
+        _row("h2", reviewed_by="manual-review", gold_label="success", branch="paywall"),
+    ]
+    entries = [
+        _entry("h1", gold_value="success", pred_value="success"),
+        _entry("h2", gold_value="success", pred_value="paywall", verdict="disagree"),
+    ]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    report = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+    )
+    text = d10_readout.render_text(report)
+    assert "headline_split+human_signed+three_state" in text
+    assert "站点级" in text
+    assert "calibration" in text
+    # 封存面默认不读：**理由与范围**都要写在输出里
+    assert "封存面" in text
+    assert "只读调参池" in text
+
+
+def test_人读输出_旧读数并排印且标不再是判定对象():
+    """旧读数**保留**（跨版本对比用），但必须标「不再是上岗线的判定对象」。
+
+    删掉旧读数就读不成「质量变了」；留着不标就���读成两个数都是判定。"""
+    rows = [
+        _row("h1", reviewed_by="manual-review"),
+        _row("h2", reviewed_by="manual-review", gold_label="success", branch="paywall"),
+    ]
+    entries = [
+        _entry("h1", gold_value="success", pred_value="success"),
+        _entry("h2", gold_value="success", pred_value="paywall", verdict="disagree"),
+    ]
+    views = d10_readout.classify_rows(rows, _snapshot(entries))
+    report = d10_readout.summarize(
+        views,
+        version=16,
+        snapshot_path=pathlib.Path("x"),
+        golden_root=pathlib.Path("y"),
+        rows=rows,
+        success_label="success",
+    )
+    text = d10_readout.render_text(report)
+    assert "旧读数" in text
+    assert "不再是上岗线的判定对象" in text
+    # 口径对照必须在输出里（记账口径的差 ≠ 质量的差）
+    assert "口径对照" in text
+    assert "记账口径" in text
+
+
+# ── 9. 阈值表的 scope ────────────────────────────────────────
+
+
+def test_scope_读法展开():
+    """``scope`` 的 value 是**能直接判的组合**，读法走 ``SCOPE_LEGEND``。"""
+    from trajectory_pipeline.evaluation.scorers import thresholds
+
+    assert thresholds.scope("d10_min_agreement") == (
+        "headline_split+human_signed+three_state"
+    )
+    text = thresholds.scope_text("d10_min_agreement")
+    assert "头条档" in text
+    assert "人工署名子集" in text
+    assert "三态口径" in text
+
+
+def test_scope_记号不认识_报错():
+    """记号改了而读法没跟上 ⇒ 报错（fail-closed）。
+
+    错的读法比没有读法更坏。"""
+    from trajectory_pipeline.evaluation.scorers import thresholds
+
+    original = thresholds.THRESHOLDS["d10_min_agreement"]["scope"]
+    try:
+        thresholds.THRESHOLDS["d10_min_agreement"]["scope"] = (
+            "human_signed+not_registered_token"
+        )
+        with pytest.raises(KeyError, match="不认识"):
+            thresholds.scope_text("d10_min_agreement")
+    finally:
+        thresholds.THRESHOLDS["d10_min_agreement"]["scope"] = original
+
+
+def test_scope_未登记的线_报错():
+    from trajectory_pipeline.evaluation.scorers import thresholds
+
+    with pytest.raises(KeyError):
+        thresholds.scope("没登记过的线")
+
+
+def test_每条线都有非空scope():
+    """线**必须有绑定对象**——表里每条都要写。"""
+    from trajectory_pipeline.evaluation.scorers import thresholds
+
+    for name, spec in thresholds.THRESHOLDS.items():
+        assert str(spec.get("scope") or "").strip(), name
+
+
 # ── 6. CLI：只读 ──────────────────────────────────────────────
 
 
 def _write_golden(root: pathlib.Path, rows: list[dict], version: int = 16) -> None:
     vdir = root / f"v{version}"
     vdir.mkdir(parents=True)
-    calib = [r for r in rows if r["__split__"] == "calibration"]
-    (vdir / "calibration.jsonl").write_text(
-        "\n".join(json.dumps(r, ensure_ascii=False) for r in calib) + "\n",
-        encoding="utf-8",
-    )
+    for split, filename in (
+        ("calibration", "calibration.jsonl"),
+        ("regression", "regression.jsonl"),
+        ("holdout", "holdout.jsonl"),
+    ):
+        subset = [r for r in rows if r["__split__"] == split]
+        if not subset:
+            continue
+        (vdir / filename).write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in subset) + "\n",
+            encoding="utf-8",
+        )
     (root / "versions.jsonl").write_text(
         json.dumps({"version": version}) + "\n", encoding="utf-8"
     )
@@ -522,6 +880,163 @@ def test_cli_快照缺失_退2(tmp_path, capsys):
     )
     assert rc == 2
     assert "不存在" in capsys.readouterr().err
+
+
+def test_cli_封存面默认不输出_破封要显式开关(tmp_path):
+    """CLI 层也要守封存纪律：默认**不**印持有集/回归集。
+
+    破封必须显式 ``--show-sealed``，且开了要打**醒目警告**。"""
+    rows = [
+        _row("c1", reviewed_by="manual-review"),
+        _row("r1", reviewed_by="manual-review", split="regression"),
+        _row("h1", reviewed_by="manual-review", split="holdout"),
+    ]
+    golden_root = tmp_path / "golden"
+    _write_golden(golden_root, rows)
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            _snapshot(
+                [
+                    _entry("c1", gold_value="success", pred_value="success"),
+                    _entry("r1", gold_value="success", pred_value="success", split="regression"),
+                    _entry("h1", gold_value="success", pred_value="success", split="holdout"),
+                ]
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    base = [
+        "--version",
+        "16",
+        "--golden-root",
+        str(golden_root),
+        "--snapshot",
+        str(snapshot_path),
+    ]
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = d10_readout.main(base)
+    assert rc == 0
+    out = buf.getvalue()
+    # 默认：封存面**不出现**
+    assert "regression" not in out
+    assert "holdout" not in out
+    assert "封存面" in out  # 但「为什么不读」要写出来
+
+    buf2 = io.StringIO()
+    with redirect_stdout(buf2):
+        rc2 = d10_readout.main(base + ["--show-sealed"])
+    assert rc2 == 0
+    out2 = buf2.getvalue()
+    assert "regression" in out2
+    assert "holdout" in out2
+    # ⚠️ 破封要打**醒目警告**且说清「不进判定」
+    assert "封存面读数已展开" in out2
+    assert "不进任何判定" in out2
+
+
+def test_cli_json载荷带读数与判定_比例分母为0是null(tmp_path):
+    """JSON 载荷是**机器侧真正读的东西**——读数与判定都得在里面。
+
+    ⚠️ ``ratio`` 分母为 0 时必须是 ``null``，**不许写 0.0**（``None ≠ 0``）。"""
+    rows = [
+        _row("c1", reviewed_by="manual-review"),
+        # 分母为 0 的一行：代码弃权 ⇒ 三态分母 0
+        _row("c2", reviewed_by="manual-review", gold_label="success", branch="unresolved"),
+    ]
+    golden_root = tmp_path / "golden"
+    _write_golden(golden_root, rows)
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            _snapshot(
+                [
+                    _entry("c1", gold_value="success", pred_value="success"),
+                    _entry("c2", gold_value="success", pred_value="unresolved", verdict="disagree"),
+                ]
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = d10_readout.main(
+            [
+                "--version",
+                "16",
+                "--golden-root",
+                str(golden_root),
+                "--snapshot",
+                str(snapshot_path),
+                "--json",
+            ]
+        )
+    assert rc == 0
+    payload = json.loads(buf.getvalue())
+    line = payload["line"]
+    assert set(line["reading"]) == {
+        "n",
+        "agree",
+        "disagree",
+        "undetermined",
+        "denominator",
+        "ratio",
+        "abstention_rate",
+    }
+    # 分母 1（只有 c1 有结论）⇒ ratio 有值
+    assert line["reading"]["denominator"] == 1
+    assert line["reading"]["ratio"] == 1.0
+    assert line["passed"] is True
+    assert line["scope"] == "headline_split+human_signed+three_state"
+    assert "scope_text" in line
+    # meta 记着读数范围与封存状态
+    assert payload["meta"]["split_scope"] == "calibration"
+    assert payload["meta"]["sealed_shown"] is False
+
+
+def test_cli_json_分母为0时ratio是null不是0(tmp_path):
+    """分母为 0 ⇒ ``ratio`` 是 ``null``（JSON）——**不写 0.0**。
+
+    ``None ≠ 0``：0.0 会被下游读成「一致率 0%」，那是「读不出数」被
+    读成「全错」——两种完全相反的结论。"""
+    rows = [_row("c1", reviewed_by="manual-review", gold_label="success", branch="unresolved")]
+    golden_root = tmp_path / "golden"
+    _write_golden(golden_root, rows)
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            _snapshot(
+                [
+                    _entry("c1", gold_value="success", pred_value="unresolved", verdict="disagree"),
+                ]
+            ),
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = d10_readout.main(
+            [
+                "--version",
+                "16",
+                "--golden-root",
+                str(golden_root),
+                "--snapshot",
+                str(snapshot_path),
+                "--json",
+            ]
+        )
+    assert rc == 0
+    payload = json.loads(buf.getvalue())
+    line = payload["line"]
+    assert line["reading"]["denominator"] == 0
+    assert line["reading"]["ratio"] is None
+    assert line["determinable"] is False
+    assert line["passed"] is None
 
 
 def test_cli_默认版本取台账最新(tmp_path):
