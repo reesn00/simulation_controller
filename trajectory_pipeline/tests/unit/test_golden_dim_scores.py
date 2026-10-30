@@ -5,7 +5,9 @@
 守的是七件事（每一条都对应一个踩过的坑，不是风格偏好）：
 
 1. **只认白名单维度**：拼错的 dim 混进 `dimension_scores` 等于把那一维的价值
-   丢掉，而报告上看不出来——所以 `dimension_scores: {d7: 3}` 直接炸；
+   丢掉，而报告上看不出来——所以 `dimension_scores: {d11: 3}` 直接炸；
+   **批次级维度（d7 / d8）同样炸**：rubric v1.1 把它们移到批次级，
+   样本级填了也是白填（白名单 = 样本级软维度，见 `alignment.SOFT_DIM_NAMES`）；
 2. **`True` / `4.5` / `"4"` 一律拒**：`True` 是 `int` 的子类，放过它会静默变成
    1 分；
 3. **`null` 是结论、空串是没填、整栏省掉是错误**——三者必须分得开：
@@ -48,9 +50,12 @@ def test_越界的分数拒(bad):
 
 
 def test_白名单外的维度拒():
-    # 白名单是 d2..d9；`d11` 拼错/不存在，必须炸（静默放过 = 那一维白填）
-    with pytest.raises(ds.DimScoreError, match="白名单"):
-        ds.normalize_scores({"d11": 3})
+    # 白名单 = **样本级**软维度 {d2,d3,d4,d5,d6,d9}；`d11` 拼错/不存在，
+    # `d7`/`d8` 是**批次级**维度（rubric v1.1 移出样本级）⇒ 两者都必须炸
+    # （静默放过 = 那一维白填，而且报告上看不出来）。
+    for bad in ("d11", "d7", "d8", "d1", "d10"):
+        with pytest.raises(ds.DimScoreError, match="白名单"):
+            ds.normalize_scores({bad: 3})
 
 
 @pytest.mark.parametrize("bad", [None, {}, []])
@@ -251,6 +256,77 @@ def test_输入行不被就地改动():
         ann, [{"golden_id": "g1", "dimension_scores": {"d5": 3}, "reviewed_by": "甲"}]
     )
     assert ann[0]["dimension_scores"] == {"d4": 2}
+
+
+# ── 「只补凭据」的补丁（2026-10-30）──────────────────────────
+#
+# 来由：2026-10-25 的**整行** annotate 会把 dimension_scores 一起带进库，
+# 却不写 dimension_note / dimension_reviewed_by / dimension_reviewed_at
+# ⇒ **分数在、判读理由不在** ⇒ 判读凭据只活在 gitignored 的工作表里。
+
+
+def test_只补凭据的补丁要留下_空分数不等于没填():
+    rows = [{"golden_id": "g1", "dimension_scores": {}, "note": "判读理由", "reviewed_by": "甲"}]
+    fills = ds.group_fills(rows)
+    assert len(fills) == 1
+    assert fills[0]["dimension_scores"] == {}
+    assert fills[0]["note"] == "判读理由"
+
+
+def test_只补凭据_分数一格不动_只写理由与署名():
+    ann = [_ann(dimension_scores={"d2": 5, "d4": 4, "d5": 4, "d6": 5})]
+    fill = [
+        {
+            "golden_id": "g1",
+            "dimension_scores": {},
+            "reviewed_by": "reesn",
+            "reviewed_at": "2026-10-24T15:59:55+08:00",
+            "note": "判读理由",
+        }
+    ]
+    merged, stats = ds.merge_dimension_scores(ann, fill)
+    row = merged[0]
+    assert row["dimension_scores"] == {"d2": 5, "d4": 4, "d5": 4, "d6": 5}  # **没动**
+    assert row["dimension_note"] == "判读理由"
+    assert row["dimension_reviewed_by"] == "reesn"
+    assert row["dimension_reviewed_at"] == "2026-10-24T15:59:55+08:00"
+    assert stats["changed"] == 1 and stats["evidence_only"] == 1
+    assert stats["per_dim"] == {}  # 一个格子都没补
+    assert stats["judged_na"] == 0
+
+
+def test_只补凭据_已有理由不覆盖():
+    ann = [_ann(dimension_scores={"d5": 4}, dimension_note="原理由", dimension_reviewed_by="乙")]
+    fill = [
+        {"golden_id": "g1", "dimension_scores": {}, "reviewed_by": "甲", "note": "新理由"}
+    ]
+    merged, stats = ds.merge_dimension_scores(ann, fill)
+    assert merged[0]["dimension_note"] == "原理由"  # **不覆盖**
+    assert merged[0]["dimension_reviewed_by"] == "乙"
+    assert stats["changed"] == 0 and stats["unchanged"] == 1
+
+
+def test_空分数又没理由就拒_不能靠空补丁蒙过去():
+    with pytest.raises(ds.DimScoreError):
+        ds.merge_dimension_scores(
+            [_ann()], [{"golden_id": "g1", "dimension_scores": {}, "reviewed_by": "甲"}]
+        )
+
+
+def test_只补凭据也必须有人签():
+    with pytest.raises(ds.DimScoreError, match="reviewed_by"):
+        ds.merge_dimension_scores(
+            [_ann()], [{"golden_id": "g1", "dimension_scores": {}, "note": "理由"}]
+        )
+
+
+def test_只补凭据_连分数都没有的行不接凭据():
+    """判读理由要挂在判读结论上——否则库里会多出「有理由、没结论」的怪东西。"""
+    with pytest.raises(ds.DimScoreError, match="一条软维度分数都没有"):
+        ds.merge_dimension_scores(
+            [_ann()],
+            [{"golden_id": "g1", "dimension_scores": {}, "reviewed_by": "甲", "note": "理由"}],
+        )
 
 
 # ── coverage ─────────────────────────────────────────────────

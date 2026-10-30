@@ -53,7 +53,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from trajectory_pipeline.assembler.schema import split_archive
+from trajectory_pipeline.assembler.schema import run_id_of, split_archive
 from trajectory_pipeline.evaluation.scorers.code_scorer import score_d2
 from trajectory_pipeline.evaluation.scorers.d3_scorer import score_d3
 from trajectory_pipeline.evaluation.scorers.d4_scorer import score_d4
@@ -271,7 +271,18 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
                                    # 缺键与空值在 P2 里同形，只有这里分得开。
                                    "p1_missing_fields": list(
                                        getattr(outcome, "p1_missing_fields",
-                                               ()) or ())}
+                                               ()) or ()),
+                                   # ⚠️ **配对键必须自带**（M-56）：judge 的逐行
+                                   # 读数要跟黄金集的 ``golden_id`` 配对，而
+                                   # ``golden_id`` 的第三段是 **url 的 md5**
+                                   # （``golden/builder.py::_url_hash``）⇒
+                                   # **没有 url 就配不上**。
+                                   # 以前这行只有 ``sample_id``（``<task>__<run>__<unit>``）
+                                   # ⇒ 转换器只能靠猜，而猜出来的配对会让 kappa
+                                   # 建在一个配不上的分母上。
+                                   "url": str(getattr(outcome, "url", "") or ""),
+                                   "task_id": str(getattr(sample, "task_id", "") or ""),
+                                   "run_id": run_id_of(path.name)}
             for dim in dims:
                 verdict = dispatch[dim](sample)
                 row[dim] = verdict.to_json()

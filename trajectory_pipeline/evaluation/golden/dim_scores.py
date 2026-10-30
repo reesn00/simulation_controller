@@ -109,6 +109,12 @@ def group_fills(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     空格子（``""``）跳过——**没填不是判不了**。一条样本一个维度都没填时
     整条跳过，不产出空补丁（空补丁会被 :func:`merge_dimension_scores` 拒掉，
     但那句话对填表的人没有意义）。
+
+    ⚠️ **例外：补丁形态的「只补凭据」**（2026-10-30）。补丁行带
+    ``dimension_scores: {}``（**空 dict**）但带 ``note`` 时**要留下**——
+    它不是「什么都没填」，而是「**分数已经在库里了，只缺判读凭据**」
+    （2026-10-25 整行 annotate 带进来的分数没有署名与理由）。
+    工作表形态**没有**这个例外：工作表行的 ``gold_score`` 为空就是「没填」。
     """
     order: list[str] = []
     grouped: dict[str, dict[str, Any]] = {}
@@ -157,6 +163,9 @@ def group_fills(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 continue
             if not isinstance(raw, Mapping):
                 raise DimScoreError(f"{gid} dimension_scores 须为 dict")
+            if not raw:
+                # **只补凭据**的补丁：分数一个格子都不带。
+                bucket["note_only"] = True
             for dim, value in raw.items():
                 if str(dim) in bucket["dimension_scores"]:
                     raise DimScoreError(f"{gid} / {dim} 在输入里出现了两次")
@@ -165,7 +174,7 @@ def group_fills(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for gid in order:
         bucket = grouped[gid]
-        if bucket["dimension_scores"]:
+        if bucket["dimension_scores"] or (bucket.get("note_only") and bucket["note"]):
             out.append(bucket)
     return out
 
@@ -186,6 +195,11 @@ def merge_dimension_scores(
 
     fail-closed 的两处：找不到 round=1 标注 ⇒ 列出**全部**缺失 id；同键已有
     非空分且不同 ⇒ 报错（``--force`` 才覆盖）。**留着旧分不说，比报错更糟**。
+
+    ⚠️ **「只补凭据」的补丁**（2026-10-30）：补丁带 ``note`` 但
+    ``dimension_scores`` 是**空 dict** ⇒ **只写署名与理由，一个分数都不碰**。
+    来由：整行 annotate 会把分数带进库却**不写**凭据 ⇒ 分数在、理由不在
+    ⇒ 判读依据只活在过程件里。**已有 note 的行不会被覆盖**（凭据不重复写）。
     """
     merged = [dict(r) for r in annotations]
     index: dict[str, int] = {}
@@ -209,6 +223,7 @@ def merge_dimension_scores(
         "judged_na": 0,
         "per_dim": {},
         "overwritten": 0,
+        "evidence_only": 0,
     }
     for fill in fills:
         gid = str(fill.get("golden_id") or "")
@@ -220,7 +235,16 @@ def merge_dimension_scores(
         row = merged[index[gid]]
         previous = row.get("dimension_scores")
         previous = dict(previous) if isinstance(previous, Mapping) else {}
-        incoming = normalize_scores(fill.get("dimension_scores"), where=gid)
+        raw_scores = fill.get("dimension_scores")
+        if raw_scores:
+            incoming = normalize_scores(raw_scores, where=gid)
+        elif str(fill.get("note") or ""):
+            # **只补凭据**：分数一个格子都不带 ⇒ 不碰分数（2026-10-30）。
+            incoming = {}
+        else:
+            raise DimScoreError(
+                f"{gid} dimension_scores 须为非空 dict（{{dim: 1..5|null}}）"
+            )
         patch: dict[str, Any] = {}
         for dim, value in incoming.items():
             # 「有没有判过」看**键在不在**，不看值：`{"d5": None}` 是「人判
@@ -240,6 +264,28 @@ def merge_dimension_scores(
             stats["per_dim"][dim] = stats["per_dim"].get(dim, 0) + 1
             patch[dim] = value
         if not patch:
+            # **只有凭据、没有分数格子** ⇒ 补凭据**不碰分数**（2026-10-30）。
+            # 这条路的来由：2026-10-25 的**整行** annotate 会把
+            # ``dimension_scores`` 一起带进库，但**不写**署名与理由
+            # ⇒ 分数在、凭据不在 ⇒ 判读依据只活在 gitignored 的工作表里。
+            if not previous:
+                # 连分数都没有的行**不接凭据**：判读理由要挂在判读结论上，
+                # 否则库里会多出一行「有理由、没结论」的怪东西。
+                raise DimScoreError(
+                    f"{gid} 一条软维度分数都没有，却要「只补凭据」——"
+                    "判读理由要挂在判读结论上；先把分数写进去"
+                )
+            if str(fill.get("note") or "") and not str(row.get("dimension_note") or ""):
+                row["dimension_note"] = str(fill["note"])
+                if fill.get("reviewed_by"):
+                    row["dimension_reviewed_by"] = str(fill["reviewed_by"])
+                if fill.get("reviewed_at"):
+                    row["dimension_reviewed_at"] = str(fill["reviewed_at"])
+                stats["changed"] += 1
+                stats["evidence_only"] += 1
+            else:
+                # 已经有凭据 ⇒ 幂等跳过（**凭据不重复写**：理由不覆盖）。
+                stats["unchanged"] += 1
             continue
         if all(dim in previous and previous[dim] == v for dim, v in patch.items()):
             stats["unchanged"] += 1

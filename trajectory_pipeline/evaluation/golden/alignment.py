@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from trajectory_pipeline.evaluation.scorers.rubric_version import TIERED_DIMS
+
 #: 语义等价类（key = 现有体系分支名或新体系标注标签；value = 等价类名）。
 #:
 #: 覆盖两组来源：
@@ -350,13 +352,30 @@ def dim_agreement(
 
 
 #: 软维度名白名单——黄金集 ``dimension_scores`` 的合法 key。
-#: 路由 plan §三·第一步 contract 1「软维度名在 ``d2..d9`` 子集」，
-#: 写死全集而不是散落在调用方散落校验。
-#: D-3 / D-9 judge 未建，但白名单里**预留**——本批接入后扩到 d3 / d9
-#: 不需要改对齐层（fail-closed 同步：白名单外抛 ``ValueError``）。
-SOFT_DIM_NAMES: frozenset[str] = frozenset(
-    {f"d{i}" for i in range(2, 10)}
-)
+#:
+#: ⚠️ **白名单 = 样本级软维度**，不是「d2..d9 全集」：rubric v1.1 把
+#: **D-1 / D-7 / D-8 移到批次级**（B-1 / B-2 / B-4）⇒ **样本级永远不该有它们**
+#: ⇒ 白名单里就不放（放进去 = 允许给批次级维度写逐行金标，而报告上看不出来——
+#: 填进去的那一格会一路算进一致率，分母也跟着变）。
+#:
+#: ⚠️ **派生而不是手抄**：``rubric_version.TIERED_DIMS`` 是「有 1–5 分档的条款」
+#: 的唯一真源（d7 / d8 的 B 条款**不出分数**，天然不在里面）⇒ 这里减掉硬分类
+#: 维度 d10（它走 ``calibration.snapshot.HARD_DIM``，不在软维度这一套里）
+#: 就是全部样本级软维度。手抄一份 ⇒ rubric 改层级时这份清单不会跟着动
+#: （**白名单漂移**，而且漂得悄无声息）。
+#:
+#: ⚠️ **白名单 ≠ 今天真的填了的维度**（这两件事别混）：
+#:
+#: - **填了的只有 d2 / d4 / d5 / d6**——那是 pred 侧唯一产出的四个维度
+#:   （``builder.OVERLAY_DIMS``）⇒ 真源 ``dimension_scores`` 里现在也只有这四个键；
+#: - **d3 / d9 是 judge 侧**（``evaluation/cli.py::LLM_SCORERS`` 里的 D-3 / D-9
+#:   **judge 已建**）⇒ 缺的**不是 judge**，是**逐行读数没落盘**
+#:   （转换器已补：``calibration/judge_pairs.py``）＋ **d3 / d9 的金标还没填**；
+#: - **d7 / d8 被挡在门外**——批次级维度，样本级填了也是白填。
+#:
+#: fail-closed 同步：白名单外抛 ``ValueError``（填表路径
+#: ``golden/dim_scores.py`` 也据此拒收）。
+SOFT_DIM_NAMES: frozenset[str] = frozenset(TIERED_DIMS - {"d10"})
 
 
 def validate_soft_dim_name(dim: str) -> str:

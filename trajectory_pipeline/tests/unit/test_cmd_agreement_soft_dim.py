@@ -32,6 +32,7 @@ import pytest
 
 from trajectory_pipeline.evaluation.golden import alignment
 from trajectory_pipeline.evaluation.golden import builder
+from trajectory_pipeline.evaluation.scorers import rubric_version
 
 
 def _row(
@@ -126,10 +127,18 @@ def _run_cmd(
 
 
 class TestDimCoverage:
-    def test_白名单是d2到d9_共8个(self):
+    def test_白名单是样本级软维度(self):
+        """白名单 = **样本级**软维度（rubric v1.1 把 D-1/D-7/D-8 移到批次级）。
+
+        派生自 ``rubric_version.TIERED_DIMS`` 减掉硬分类维度 d10 ⇒
+        rubric 改层级时它跟着动（台账 M-55）。
+        """
         assert alignment.SOFT_DIM_NAMES == frozenset(
-            {f"d{i}" for i in range(2, 10)}
+            {"d2", "d3", "d4", "d5", "d6", "d9"}
         )
+        assert alignment.SOFT_DIM_NAMES == rubric_version.TIERED_DIMS - {"d10"}
+        for dim in ("d1", "d7", "d8", "d10"):
+            assert dim not in alignment.SOFT_DIM_NAMES
 
     def test_白名单外名_fail_closed_抛ValueError(self):
         with pytest.raises(ValueError, match="不在白名单"):

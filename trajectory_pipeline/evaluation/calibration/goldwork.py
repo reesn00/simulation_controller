@@ -58,6 +58,7 @@ from trajectory_pipeline.evaluation.calibration.worklist import (
     load_frozen_rows,
 )
 from trajectory_pipeline.evaluation.golden.builder import GOLDEN_ROOT, PIPELINE_ROOT, _load_jsonl
+from trajectory_pipeline.evaluation.golden.alignment import SOFT_DIM_NAMES
 from trajectory_pipeline.evaluation.golden.dim_scores import coverage
 from trajectory_pipeline.evaluation.golden.splits import SPLIT_CALIBRATION, SPLITS
 from trajectory_pipeline.evaluation.scorers.rubric_version import clause_of, rubric_tier_text
@@ -70,6 +71,55 @@ GOLD_DIMS: tuple[str, ...] = tuple(
 )
 
 GOLD_WORKSHEET_FILE = "gold_worksheet.jsonl"
+
+#: **可填的维度** = 样本级软维度（白名单）∩ 面表已登记。
+#:
+#: ⚠️ **默认只出代码面那几维**（:data:`GOLD_DIMS`）——那是「评估器自己打的
+#: 分」所在的面；**D-3 / D-9 是 LLM 裁判面**，它们的金标要**人**另填（T-2
+#: 的 judge 侧就是这两维）⇒ 用 ``--dimensions d3,d9`` 单独出那张表。
+#:
+#: 白名单从 ``alignment.SOFT_DIM_NAMES`` 派生 ⇒ **D-7 / D-8（批次级）与
+#: D-10（硬分类 ⇒ 金标是分支名不是分数）一律拒收**，填表路径当场炸，
+#: 而不是「填了白填」。
+FILLABLE_DIMS: tuple[str, ...] = tuple(
+    dim for dim in sorted(SOFT_DIM_NAMES) if dim in DIM_FACES
+)
+
+
+def parse_dims(raw: str | None) -> tuple[str, ...]:
+    """把 ``--dimensions`` 的字符串解析成要出表的维度列表。**fail-closed。**
+
+    - 缺省（空）⇒ :data:`GOLD_DIMS`（代码面那几维，**保持旧行为**）；
+    - 维度没登记在面表 ⇒ 抛（认不出的维度不猜）；
+    - 维度不在**样本级软维度白名单** ⇒ 抛（D-7 / D-8 是批次级、
+      D-10 是硬分类 ⇒ 填了也是白填）；
+    - 重复的维度去掉，**顺序保留**（出表逐行确定）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return GOLD_DIMS
+    out: list[str] = []
+    for piece in text.split(","):
+        dim = piece.strip()
+        if not dim:
+            continue
+        if dim not in DIM_FACES:
+            raise WorklistError(
+                f"维度 {dim!r} 没登记在 DIM_FACES 里，不能出金标表"
+                "（**D-7 / D-8 是批次级维度**——rubric v1.1 把它们移到 B-1 / B-2 / B-4"
+                "⇒ 本来就不出逐行分数）"
+            )
+        if dim not in SOFT_DIM_NAMES:
+            raise WorklistError(
+                f"维度 {dim!r} 不是**样本级软维度**（白名单 {sorted(SOFT_DIM_NAMES)}）"
+                "⇒ d7 / d8 是批次级（rubric v1.1）、d10 是硬分类（金标是分支名，"
+                "不是分数）⇒ 都不能填"
+            )
+        if dim not in out:
+            out.append(dim)
+    if not out:
+        raise WorklistError("--dimensions 给了空值（逗号分隔，例：d3,d9）")
+    return tuple(out)
 
 
 def anchors_of(dimension: str) -> dict[str, str]:
@@ -239,8 +289,20 @@ def summarize(sheet: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     另给 ``by_reviewer``：**已判格**（``filled`` + ``judged_na``）按署名人分桶。
     用途是**提交前最后一眼**——「这 364 格是人核过的还是 AI 判的」光看
     计数看不出来：全是 AI 名 ⇒ 人没核过就提交了。
+
+    ⚠️ **按表里实际有的维度分桶**（2026-10-30），不写死 :data:`GOLD_DIMS`：
+    写死的话，出 ``--dimensions d3,d9`` 的表会印出「D-2 待填 0 · D-4 待填 0 …」
+    而**表里其实有 92 行 D-3/D-9** ⇒ **报表说「待填 0」，实际一条没填**
+    ——读数骗人比没有读数更坏。
     """
-    per_dim = {dim: {"to_fill": 0, "filled": 0, "judged_na": 0} for dim in GOLD_DIMS}
+    dims: list[str] = []
+    for row in sheet:
+        dim = str(row.get("dimension") or "")
+        if dim and dim not in dims:
+            dims.append(dim)
+    if not dims:
+        dims = list(GOLD_DIMS)
+    per_dim = {dim: {"to_fill": 0, "filled": 0, "judged_na": 0} for dim in dims}
     by_reviewer: dict[str, int] = {}
     for row in sheet:
         dim = str(row.get("dimension") or "")
@@ -302,14 +364,16 @@ def _cmd_worksheet(args: argparse.Namespace) -> int:
     split = str(args.split or "")
     if split and split not in SPLITS:
         raise WorklistError(f"--split {split!r} 不是三档之一：{list(SPLITS)}")
+    dims = parse_dims(getattr(args, "dimensions", ""))
     sheet_rows = [r for r in rows if not split or str(r.get("__split__")) == split]
     scenes = build_scenes(
-        [{"golden_id": str(r.get("golden_id") or ""), "dimension": GOLD_DIMS[0]} for r in sheet_rows],
+        [{"golden_id": str(r.get("golden_id") or ""), "dimension": dims[0]} for r in sheet_rows],
         sheet_rows,
         p2_root=args.pipeline_root,
     )
     sheet, stats = build_gold_worksheet(
         rows,
+        dims=dims,
         annotations=load_annotations(args.golden_root),
         scenes=scenes,
         split=split,
@@ -348,6 +412,7 @@ def _cmd_worksheet(args: argparse.Namespace) -> int:
         "  填法：`gold_score` 填 1–5 的整数；判不了写 null；**没看就留空**。"
         "填完跑 `annotate --dimensions-only --input <这张表>`（label 不会被碰）"
     )
+    print(f"  本表维度：{list(dims)}")
     return 0
 
 
@@ -376,9 +441,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="goldwork",
         description=(
-            "软维度金标的填表盘（方案 16）：出 d2/d4/d5/d6 的一维一行工作表"
+            "软维度金标的填表盘（方案 16）：出一维一行工作表"
             "（带 rubric 锚点原文 + 现场），人填完后交给 "
-            "`annotate --dimensions-only` 导入。**本命令不写 annotations.jsonl**"
+            "`annotate --dimensions-only` 导入。**本命令不写 annotations.jsonl**。"
+            f"缺省出代码面那几维 {list(GOLD_DIMS)}；"
+            "**D-3 / D-9（LLM 裁判面）用 `--dimensions d3,d9` 单独出表**"
         ),
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -403,6 +470,16 @@ def main(argv: list[str] | None = None) -> int:
         "--pipeline-root", default=str(PIPELINE_ROOT), help="P1 存档根（scene 栏从这儿读）"
     )
     p_ws.add_argument(
+        "--dimensions",
+        default="",
+        help=(
+            "要出表的维度（逗号分隔，例 d3,d9）；缺省 = 代码面那几维 "
+            f"{list(GOLD_DIMS)}。**D-3 / D-9 是 LLM 裁判面** ⇒ 它们的金标要人另填"
+            f"（T-2 的 judge 侧就是这两维）⇒ 用这个开关单独出那张表；"
+            f"只收样本级软维度 {list(FILLABLE_DIMS)} ⇒ d7/d8（批次级）与 d10（硬分类）拒收"
+        ),
+    )
+    p_ws.add_argument(
         "--path", default="", help="显式指定表路径（缺省 {--out}/v{N}/gold_worksheet.jsonl）"
     )
     p_ws.add_argument("--force", action="store_true", help="已存在也重出")
@@ -425,10 +502,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
+    "FILLABLE_DIMS",
     "GOLD_DIMS",
     "GOLD_WORKSHEET_FILE",
     "anchors_of",
     "build_gold_worksheet",
+    "parse_dims",
     "summarize",
 ]
 
