@@ -1,0 +1,73 @@
+== 面依赖检查 · 同一台机器、同一出口 IP，三种客户端（**只记事实，不下结论**）==
+  URL 数 = 8   profile = chrome, bare, referer
+  ⚠ 只记状态行 / server / content-type / 正文前 200 字；**set-cookie 不记**（红线）
+
+── https://m.xacjs.com/weihu/1416804.html
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+
+── https://m.xacjs.com/
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+
+── https://m.xacjs.com/index.html
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+
+── https://m.xacjs.com/weihu/
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+
+── https://m.xacjs.com/voddetail/1.html
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+
+── https://www.xacjs.com/
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+
+── https://xacjs.com/
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 200: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly err'
+
+── https://m.dinggetv.com/dingge/84421.html
+  [chrome] HTTP 200 OK  server=nginx  type=text/html;charset=utf-8  len=-
+      正文前 200: '<!DOCTYPE html>\n<html>\n<head>\n\t<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n<title>《大话西游之大圣娶亲国语版》电影免费'
+  [bare] HTTP 200 OK  server=nginx  type=text/html;charset=utf-8  len=-
+      正文前 200: '<!DOCTYPE html>\n<html>\n<head>\n\t<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n<title>《大话西游之大圣娶亲国语版》电影免费'
+  [referer] HTTP 200 OK  server=nginx  type=text/html;charset=utf-8  len=-
+      正文前 200: '<!DOCTYPE html>\n<html>\n<head>\n\t<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n<title>《大话西游之大圣娶亲国语版》电影免费'
+
+⚠ 上面是**事实**。同一台机器、同一出口 IP，**只换请求头**——
+  · 换面**结论不变**（都 404 / 都 403）⇒ **站点的事实**；
+  · 换面**结论变了**（普通客户端拿到页面）⇒ **我们这个面的事实**，不能外推成「站点看不了」；
+  · 换面**仍是拒绝**（都 403）⇒ 我们**始终没看到站点页面** ⇒ fail-closed，**不能**写成真负样本。
+  **结论仍需人工裁定**（review --verdicts ... --apply）。

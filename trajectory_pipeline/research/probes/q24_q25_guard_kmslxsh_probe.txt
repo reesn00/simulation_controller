@@ -1,0 +1,31 @@
+== 取证探针 · 3 个 URL（全部走现场，不读存档证据）==
+  driver  = camofox
+
+── https://kmslxsh.com/v/31445/6a6568e66c316.html
+  落地 URL   : https://kmslxsh.com/v/31445/6a6568e66c316.html
+  页面标题   : 404 Not Found
+  video=0  iframe=1  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 300: '404 Not Found\nnginx'
+
+── https://kmslxsh.com/v/17807/6a6553bbc6bfd.html
+  落地 URL   : https://kmslxsh.com/v/17807/6a6553bbc6bfd.html
+  页面标题   : 404 Not Found
+  video=0  iframe=0  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 300: '404 Not Found\nnginx'
+
+── https://kmslxsh.com/
+  落地 URL   : https://kmslxsh.com/
+  页面标题   : 404 Not Found
+  video=0  iframe=0  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 300: '404 Not Found\nnginx'
+
+⚠ 上面是**事实**，不是结论。贴标签仍需人工裁定（review --verdicts ... --apply）

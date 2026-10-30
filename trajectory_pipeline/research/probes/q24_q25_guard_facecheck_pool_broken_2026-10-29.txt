@@ -1,0 +1,89 @@
+== 面依赖检查 · 同一台机器、同一出口 IP，三种客户端（**只记事实，不下结论**）==
+  URL 数 = 10   profile = chrome, bare, referer
+  ⚠ 只记状态行 / server / content-type / 正文前 260 字；**set-cookie 不记**（红线）
+
+── http://104.143.94.74/guocanju/wulinwaichuan/
+  [chrome] HTTP 200 OK  server=nginx  type=text/html; charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html><html lang="zh-CN"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><meta name="renderer" content="webkit|ie-comp|ie-stand"><meta http-equiv="X-UA-Compatible" content="IE=edge" /><meta content="width=device-width, initi'
+  [bare] HTTP 200 OK  server=nginx  type=text/html; charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html><html lang="zh-CN"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><meta name="renderer" content="webkit|ie-comp|ie-stand"><meta http-equiv="X-UA-Compatible" content="IE=edge" /><meta content="width=device-width, initi'
+  [referer] HTTP 200 OK  server=nginx  type=text/html; charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html><html lang="zh-CN"><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><meta name="renderer" content="webkit|ie-comp|ie-stand"><meta http-equiv="X-UA-Compatible" content="IE=edge" /><meta content="width=device-width, initi'
+
+── http://www.wanminggangguan.com/ming/170472-1-1.html
+  [chrome] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: '<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found.</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>'
+  [bare] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: '<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found.</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>'
+  [referer] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: '<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found.</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>'
+
+── https://apkct.com/normal/index.html
+  [chrome] HTTP 404 Not Found  server=nginx  type=text/html  len=620
+      正文前 260: '<!DOCTYPE html>\n<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">\t\n\t<meta name="renderer" content="webkit">\n\t<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">\t\n\t<title>404错误页面</title>\n\t<meta name="keywords" content="4'
+  [bare] HTTP 404 Not Found  server=nginx  type=text/html  len=620
+      正文前 260: '<!DOCTYPE html>\n<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">\t\n\t<meta name="renderer" content="webkit">\n\t<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">\t\n\t<title>404错误页面</title>\n\t<meta name="keywords" content="4'
+  [referer] HTTP 404 Not Found  server=nginx  type=text/html  len=620
+      正文前 260: '<!DOCTYPE html>\n<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">\t\n\t<meta name="renderer" content="webkit">\n\t<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">\t\n\t<title>404错误页面</title>\n\t<meta name="keywords" content="4'
+
+── https://kmslxsh.com/v/31445/6a6568e66c316.html
+  [chrome] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: "<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found</h1></center>\n<hr><center>nginx</center>\n<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script"
+  [bare] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: "<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found</h1></center>\n<hr><center>nginx</center>\n<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script"
+  [referer] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: "<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found</h1></center>\n<hr><center>nginx</center>\n<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script"
+
+── https://m.dinggetv.com/dingge/84421.html
+  [chrome] HTTP 200 OK  server=nginx  type=text/html;charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html>\n<html>\n<head>\n\t<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n<title>《大话西游之大圣娶亲国语版》电影免费在线观看全集_完整版 - 定格网 - 免费影院_高清电影网_热播电视剧_影视大全</title>\n<meta name='
+  [bare] HTTP 200 OK  server=nginx  type=text/html;charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html>\n<html>\n<head>\n\t<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n<title>《大话西游之大圣娶亲国语版》电影免费在线观看全集_完整版 - 定格网 - 免费影院_高清电影网_热播电视剧_影视大全</title>\n<meta name='
+  [referer] HTTP 200 OK  server=nginx  type=text/html;charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html>\n<html>\n<head>\n\t<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />\n<title>《大话西游之大圣娶亲国语版》电影免费在线观看全集_完整版 - 定格网 - 免费影院_高清电影网_热播电视剧_影视大全</title>\n<meta name='
+
+── https://m.xacjs.com/weihu/1416804.html
+  [chrome] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 260: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly error page -->\r\n<!-- a padding to disable MSIE and Chrome frien'
+  [bare] HTTP 403 Forbidden  server=nginx  type=text/html  len=146
+      正文前 260: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'
+  [referer] HTTP 403 Forbidden  server=nginx  type=text/html  len=548
+      正文前 260: '<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly error page -->\r\n<!-- a padding to disable MSIE and Chrome frien'
+
+── https://v.qq.com/error.html
+  [chrome] HTTP 200 OK  server=Apache  type=text/html  len=98820
+      正文前 260: '<html lang="zh-CN"><!--<![endif]--><head itemprop="video" itemscope itemtype="http://schema.org/VideoObject"><meta http-equiv="X-UA-Compatible" content="IE=Edge,chrome=1"><meta name="renderer" content="webkit"><meta http-equiv="content-type" content="text/html'
+  [bare] HTTP 200 OK  server=Apache  type=text/html  len=98820
+      正文前 260: '<html lang="zh-CN"><!--<![endif]--><head itemprop="video" itemscope itemtype="http://schema.org/VideoObject"><meta http-equiv="X-UA-Compatible" content="IE=Edge,chrome=1"><meta name="renderer" content="webkit"><meta http-equiv="content-type" content="text/html'
+  [referer] HTTP 200 OK  server=Apache  type=text/html  len=98820
+      正文前 260: '<html lang="zh-CN"><!--<![endif]--><head itemprop="video" itemscope itemtype="http://schema.org/VideoObject"><meta http-equiv="X-UA-Compatible" content="IE=Edge,chrome=1"><meta name="renderer" content="webkit"><meta http-equiv="content-type" content="text/html'
+
+── https://www.bilibili.com/bangumi/play/ep693415
+  [chrome] HTTP 200 OK  server=-  type=text/html; charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html><html lang="zh-Hans"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width"/><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/><meta name="referrer" content="no-referrer-when-downgrade"/><link rel="shor'
+  [bare] HTTP 200 OK  server=-  type=text/html; charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html><html lang="zh-Hans"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width"/><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/><meta name="referrer" content="no-referrer-when-downgrade"/><link rel="shor'
+  [referer] HTTP 200 OK  server=-  type=text/html; charset=utf-8  len=-
+      正文前 260: '<!DOCTYPE html><html lang="zh-Hans"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width"/><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/><meta name="referrer" content="no-referrer-when-downgrade"/><link rel="shor'
+
+── https://www.bilibili.com/error.html
+  [chrome] HTTP 404 Not Found  server=openresty  type=text/html  len=-
+      正文前 260: '\x1f�\x08\x00\x00\x00\x00\x00\x04\x03�\x18�n���}�b���2`����������"\x05�f�uQ�I\x18�Cj�!�\x19\x0e}I�om�� \x08��Ѿ�@[ �C�\x07E?"��>�\x17z\x0eIQC��\x1d$4,Q3g��:���\x1f\x1c����\ty����ȋ\x1f������e�\ue3e7G�{|z\\o<v�\x13r�hVp�eF����:|0[�T\x10A�ķ>Z�a\x06k��ht���3K��d�un�\x0fK~�[/h��L3e�P�w�}+\x10,�*���RQ$Ꮭ�m�v\x1b�+��\r����}z�3\x03�fW�E���pAU��_��~�a&�)�\x0b�.s��U��'
+  [bare] HTTP 404 Not Found  server=openresty  type=text/html  len=-
+      正文前 260: '\x1f�\x08\x00\x00\x00\x00\x00\x04\x03�\x18�n���}�b���2`����������"\x05�f�uQ�I\x18�Cj�!�\x19\x0e}I�om�� \x08��Ѿ�@[ �C�\x07E?"��>�\x17z\x0eIQC��\x1d$4,Q3g��:���\x1f\x1c����\ty����ȋ\x1f������e�\ue3e7G�{|z\\o<v�\x13r�hVp�eF����:|0[�T\x10A�ķ>Z�a\x06k��ht���3K��d�un�\x0fK~�[/h��L3e�P�w�}+\x10,�*���RQ$Ꮭ�m�v\x1b�+��\r����}z�3\x03�fW�E���pAU��_��~�a&�)�\x0b�.s��U��'
+  [referer] HTTP 404 Not Found  server=openresty  type=text/html  len=-
+      正文前 260: '\x1f�\x08\x00\x00\x00\x00\x00\x04\x03�\x18�n���}�b���2`����������"\x05�f�uQ�I\x18�Cj�!�\x19\x0e}I�om�� \x08��Ѿ�@[ �C�\x07E?"��>�\x17z\x0eIQC��\x1d$4,Q3g��:���\x1f\x1c����\ty����ȋ\x1f������e�\ue3e7G�{|z\\o<v�\x13r�hVp�eF����:|0[�T\x10A�ķ>Z�a\x06k��ht���3K��d�un�\x0fK~�[/h��L3e�P�w�}+\x10,�*���RQ$Ꮭ�m�v\x1b�+��\r����}z�3\x03�fW�E���pAU��_��~�a&�)�\x0b�.s��U��'
+
+── https://www.wanminggangguan.com/wan/170472.html
+  [chrome] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: '<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found.</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>'
+  [bare] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: '<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found.</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>'
+  [referer] HTTP 404 Not Found  server=cloudflare  type=text/html  len=-
+      正文前 260: '<html>\n<head><title>404 Not Found</title></head>\n<body>\n<center><h1>404 Not Found.</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>'
+
+⚠ 上面是**事实**。同一台机器、同一出口 IP，**只换请求头**——
+  · 换面**结论不变**（都 404 / 都 403）⇒ **站点的事实**；
+  · 换面**结论变了**（普通客户端拿到页面）⇒ **我们这个面的事实**，不能外推成「站点看不了」；
+  · 换面**仍是拒绝**（都 403）⇒ 我们**始终没看到站点页面** ⇒ fail-closed，**不能**写成真负样本。
+  **结论仍需人工裁定**（review --verdicts ... --apply）。
