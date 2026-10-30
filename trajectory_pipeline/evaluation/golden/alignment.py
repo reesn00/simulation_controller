@@ -30,7 +30,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, NamedTuple
 
 from trajectory_pipeline.evaluation.scorers.rubric_version import TIERED_DIMS
 
@@ -310,6 +310,137 @@ def is_equivalent(true_label: str, pred_label: str) -> bool:
         )
     """
     return equiv_class(true_label) == equiv_class(pred_label)
+
+
+# ---------------------------------------------------------------------------
+# 三态判定（owner 2026-10-30 裁定：上岗线绑人工署名子集 × 三态口径）
+# ---------------------------------------------------------------------------
+#
+# **口径 C 只说「等价 / 不等价」，没说「这一条到底有没有结论」。**
+#
+# 三态把「没结论」从「不等价」里拆出来，因为两者的**含义**不同：
+#
+# ==========================  ==================================  ==========
+# 情形                        语义                                口径 C
+# ==========================  ==================================  ==========
+# 两侧都有结论且等价            **真一致**                          agree
+# **两侧都没结论**              谁都没判出来——**不是「一致」**       agree ✗
+# **一侧弃权、另一侧有结论**     弃权方的**能力边界**——不是「判错」   disagree ✗
+# 两侧都有结论但不等价          **真冲突**                          disagree
+# ==========================  ==================================  ==========
+#
+# 「弃权」指标签落在 :data:`NON_CONCLUSIVE_CLASSES` 里——采集侧按
+# fail-closed「判不出就不判」留下的分支。它被口径 C 算成 ``disagree``，
+# 等于**惩罚守纪律的那一方**（v16 实测 289 条 D-10 行里 43 条是这种）。
+#
+# ⚠️ **本节不改变口径 C 本身**。:func:`is_equivalent` 是快照 verdict 的
+# 判定依据，而快照是 ``calibration/verify.py`` 的**回归基线**——改它的
+# 语义会让「这轮多出来的分歧」被读成模型变差。三态是**旁挂**：多问一句
+# 「有没有结论」，判定层原样复用。
+
+#: **不表达结论**的等价类（**类名**，不是标签列表）。
+#:
+#: - ``UNKNOWN``（``unresolved`` / ``player_unverified`` / ``unknown``）：
+#:   采集侧按 fail-closed「判不出就不判」留下的分支——**没有结论**。
+#: - ``ROUTED``（``site_search_routed``）：**分支记账**——派发了子候选，
+#:   结论由子候选自己的 visit 记（NON_SAMPLE，不入池）。父行上的它不是
+#:   「这个 URL 能不能播」的结论。
+#:
+#: ⚠️ **这里写的是类名，标签由 :data:`EQUIV_CLASS` 派生**（:func:`equiv_class`
+#: 查表）——**不手抄标签列表**：抄一份就必然漂（新增 ``unresolved_v2`` 时
+#: 手抄的那份不会跟着动，漂得悄无声息）。
+#:
+#: ⚠️ **``TRAILER`` 不在其中**：``trailer_suspect``（「疑似预告」）虽然
+#: **不是负样本**（那是「不进训练负样本池」的意思，见
+#: :data:`EQUIV_CLASS_NOTES` 的合并注记），但它**是**一个结论（不是可播
+#: 资源）。把「不是负样本」读成「没有结论」是两件事——本表按「有没有
+#: 结论」分，不按「进不进负样本池」分。
+#:
+#: ⚠️ **新等价类默认「表达结论」**：加进 :data:`EQUIV_CLASS` 的新类**不会**
+#: 自动落进这张表。若新类其实不表达结论（例如「超时未判」另立一类），
+#: 忘了登记 ⇒ 它的行会带着「没有结论」的性质进分母——**要把新类加进来，
+#: 并且在契约测试里核到**。
+NON_CONCLUSIVE_CLASSES: frozenset[str] = frozenset({"UNKNOWN", "ROUTED"})
+
+#: 三种状态。
+STATE_AGREE = "agree"
+STATE_DISAGREE = "disagree"
+STATE_UNDETERMINED = "undetermined"
+
+#: ``undetermined`` 的归因方向——**是谁没给出结论**。
+SIDE_BOTH = "both"        # 两侧都没结论
+SIDE_PRED = "pred"        # 采集侧（代码）没结论
+SIDE_GOLD = "gold"        # 判读侧（金标）没结论
+SIDE_MISSING = "missing"  # 任一侧压根没值
+
+#: 一致但**标签字面不同**（同一等价类）——细分对账要它。
+DETAIL_LABEL_MISMATCH = "detail_mismatch"
+
+
+class HardAgreement(NamedTuple):
+    """一条硬分类对比的三态判定结果。"""
+
+    #: ``agree`` / ``disagree`` / ``undetermined``。
+    state: str
+    #: ``undetermined`` 时的归因方向（见 :data:`SIDE_*`）；其余状态为空串。
+    side: str
+    #: ``agree`` 且标签字面不同时为 ``detail_mismatch``，否则空串。
+    detail: str
+
+    @property
+    def counts_in_denominator(self) -> bool:
+        """这一条**进不进一致率分母**。
+
+        只有 ``agree`` / ``disagree`` 进——「没结论」不是「一致」也不是
+        「不一致」，它**不进分母**（同 :func:`dim_agreement` 的 ``None``
+        口径：``None ≠ 0``）。
+        """
+        return self.state in (STATE_AGREE, STATE_DISAGREE)
+
+
+def is_conclusive(label: str | None) -> bool:
+    """这个标签**表达结论**吗。
+
+    ``False`` ⇔ 标签的等价类在 :data:`NON_CONCLUSIVE_CLASSES` 里，或标签为空。
+
+    未登记的标签 → ``KeyError``（fail-closed，:func:`equiv_class` 的口径）：
+    静默当成「有结论」会让新分支悄悄进分母。
+    """
+    text = (label or "").strip()
+    if not text:
+        return False
+    return equiv_class(text) not in NON_CONCLUSIVE_CLASSES
+
+
+def hard_agreement(
+    gold_label: str | None, pred_label: str | None
+) -> HardAgreement:
+    """金标标签 ↔ 代码分支的三态判定。
+
+    - 两侧都有结论且同等价类 → ``agree``（标签字面不同再记
+      ``detail_mismatch``）；
+    - 两侧都有结论但不同等价类 → ``disagree``；
+    - 任一侧没结论 → ``undetermined`` + 归因方向。
+
+    ⚠️ 空标签判 ``undetermined`` / ``missing``——**不进分母**。空标签不是
+    「双方一致」。
+    """
+    gold = (gold_label or "").strip()
+    pred = (pred_label or "").strip()
+    if not gold or not pred:
+        return HardAgreement(STATE_UNDETERMINED, SIDE_MISSING, "")
+    gold_conclusive = is_conclusive(gold)
+    pred_conclusive = is_conclusive(pred)
+    if not gold_conclusive and not pred_conclusive:
+        return HardAgreement(STATE_UNDETERMINED, SIDE_BOTH, "")
+    if not pred_conclusive:
+        return HardAgreement(STATE_UNDETERMINED, SIDE_PRED, "")
+    if not gold_conclusive:
+        return HardAgreement(STATE_UNDETERMINED, SIDE_GOLD, "")
+    if equiv_class(gold) == equiv_class(pred):
+        detail = "" if gold == pred else DETAIL_LABEL_MISMATCH
+        return HardAgreement(STATE_AGREE, "", detail)
+    return HardAgreement(STATE_DISAGREE, "", "")
 
 
 def dim_agreement(
