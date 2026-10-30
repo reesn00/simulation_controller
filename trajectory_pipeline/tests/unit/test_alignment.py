@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from trajectory_pipeline.evaluation.golden import alignment
+from trajectory_pipeline.evaluation.scorers import rubric_version
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
 from trajectory_pipeline.perception import questions
 
@@ -143,13 +144,23 @@ def test_dim_agreement_非数值类型返None():
 # --------------------------------------------------------------------------
 
 
-def test_SOFT_DIM_NAMES_是d2到d9子集():
-    """白名单是 ``d2..d9`` 共 8 个。d1 不在——是路径占位，不是评分维度。"""
+def test_SOFT_DIM_NAMES_是样本级软维度():
+    """白名单 = **样本级**软维度，不是 ``d2..d9`` 全集。
+
+    rubric v1.1 把 D-1 / D-7 / D-8 移到**批次级**（B-1 / B-2 / B-4）
+    ⇒ 样本级永远不该有它们 ⇒ 白名单里就不放（台账 M-55）。
+
+    白名单**派生**自 ``rubric_version.TIERED_DIMS``（有 1–5 分档的条款）
+    减掉硬分类维度 d10 ⇒ rubric 改层级时它跟着动，不靠人记得改。
+    """
     assert alignment.SOFT_DIM_NAMES == frozenset(
-        {f"d{i}" for i in range(2, 10)}
+        {"d2", "d3", "d4", "d5", "d6", "d9"}
     )
-    assert "d1" not in alignment.SOFT_DIM_NAMES
-    assert "d10" not in alignment.SOFT_DIM_NAMES
+    # 批次级维度不在白名单里
+    for dim in ("d1", "d7", "d8", "d10"):
+        assert dim not in alignment.SOFT_DIM_NAMES
+    # 派生关系（不许手抄第二份）
+    assert alignment.SOFT_DIM_NAMES == rubric_version.TIERED_DIMS - {"d10"}
 
 
 def test_validate_soft_dim_name_白名单内_原样返回():

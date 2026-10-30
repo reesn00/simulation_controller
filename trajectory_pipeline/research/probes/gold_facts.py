@@ -47,9 +47,9 @@ OUT_JSON = os.path.join(
 )
 
 
-def _load_rows() -> dict[str, dict]:
+def _load_rows(worksheet: str = WORKSHEET) -> dict[str, dict]:
     rows: dict[str, dict] = {}
-    with open(WORKSHEET, encoding="utf-8") as fh:
+    with open(worksheet, encoding="utf-8") as fh:
         for line in fh:
             if not line.strip():
                 continue
@@ -112,9 +112,9 @@ def _media(obs: dict) -> dict:
     }
 
 
-def build() -> dict:
+def build(worksheet: str = WORKSHEET) -> dict:
     out: dict[str, dict] = {}
-    for gid, by_dim in sorted(_load_rows().items()):
+    for gid, by_dim in sorted(_load_rows(worksheet).items()):
         record = by_dim["d5"]["record"]
         arch = _arch_of(record) or {}
         found = _sample_file(record)
@@ -163,20 +163,26 @@ def build() -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="软维度金标的事实底稿")
     ap.add_argument("--dump", default="", help="只打印某个 golden_id 的事实")
+    ap.add_argument(
+        "--worksheet",
+        default=WORKSHEET,
+        help="读哪张填表工作表（缺省 v8 那张；**回归集用 v15/regression 那张**）",
+    )
+    ap.add_argument("--out", default=OUT_JSON, help="事实底稿落哪")
     args = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # pragma: no cover
         pass
 
-    facts = build()
+    facts = build(args.worksheet)
     if args.dump:
         for gid in facts:
             if args.dump in gid:
                 print(json.dumps({gid: facts[gid]}, ensure_ascii=False, indent=1))
         return 0
 
-    with open(OUT_JSON, "w", encoding="utf-8") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(facts, fh, ensure_ascii=False, indent=1)
     stale = [g for g, f in facts.items() if f["stale_pred"]]
     amb = [g for g, f in facts.items() if f["outcome_ambiguous"]]
@@ -184,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     for f in facts.values():
         b = str(f["outcome"]["branch"])
         branches[b] = branches.get(b, 0) + 1
-    print("→ %s（%d 条）" % (OUT_JSON, len(facts)))
+    print("→ %s（%d 条）" % (args.out, len(facts)))
     print("存档分支分布：%s" % dict(sorted(branches.items(), key=lambda kv: -kv[1])))
     print("底料已 relabel（pred_branch ≠ 存档 branch）：%d 条 %s" % (len(stale), stale))
     print("同 url 多条 outcome（按 site_url 对齐）：%d 条 %s" % (len(amb), amb))

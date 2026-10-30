@@ -207,6 +207,45 @@ def test_补丁形态也能导(tmp_path):
     assert rows["g1"]["dimension_scores"] is None  # 没提的行不动
 
 
+def test_只补凭据的补丁只写理由_分数一格不动(tmp_path):
+    """**分数在、理由不在** ⇒ 补理由的路子（2026-10-30）。
+
+    来由：整行 ``annotate`` 会把 ``dimension_scores`` 带进库、却不写
+    ``dimension_*`` 三栏 ⇒ 判读凭据只活在过程件里。这条路把凭据补回真源，
+    **且一个分数都不碰**。
+    """
+    root = _fixture(tmp_path)
+    _dump(
+        root / builder.ANNOTATIONS_FILE,
+        [
+            _ann("g1", dimension_scores={"d2": 5, "d4": 4, "d5": 4, "d6": 5}),
+            _ann("g2"),
+            _ann("g3"),
+        ],
+    )
+    sheet = _sheet(
+        root,
+        [
+            {
+                "golden_id": "g1",
+                "dimension_scores": {},
+                "note": "判读理由",
+                "reviewed_by": "reesn",
+                "reviewed_at": "2026-10-24T15:59:55+08:00",
+            }
+        ],
+    )
+    rc, out, _ = _run(
+        ["--golden-root", str(root), "annotate", "--dimensions-only", "--input", str(sheet)]
+    )
+    assert rc == 0
+    rows = {r["golden_id"]: r for r in _read(root / builder.ANNOTATIONS_FILE)}
+    assert rows["g1"]["dimension_scores"] == {"d2": 5, "d4": 4, "d5": 4, "d6": 5}
+    assert rows["g1"]["dimension_note"] == "判读理由"
+    assert rows["g1"]["dimension_reviewed_by"] == "reesn"
+    assert "只补凭据" in out
+
+
 # ── freeze --refresh-gold ───────────────────────────────────
 
 
@@ -236,6 +275,32 @@ def test_继承式冻结把填好的分数带进新版本(tmp_path):
     assert manifest["gold_refresh"]["baseline_reset"] is True
     assert manifest["gold_refresh"]["changed_rows"] == 2
     assert "新基线" in out
+
+
+def test_refresh_gold的per_dim审计栏不是空的(tmp_path):
+    """``gold_refresh.per_dim`` 是**审计栏**：它得说清「金标从什么变成什么」。
+
+    ⚠️ 2026-10-30：这一栏之前**恒为 ``{}``**——口径取错了地方
+    （读的是行顶层的 ``dimension_scores``＝**pred 侧**，而 gold 侧的分住在
+    ``golden.dimension_scores`` 里）⇒ 审计那一栏等于没写。
+    """
+    root = _fixture(tmp_path)
+    _dump(
+        root / builder.ANNOTATIONS_FILE,
+        [
+            _ann("g1", dimension_scores={"d5": 4, "d4": None}),
+            _ann("g2"),
+            _ann("g3", dimension_scores={"d5": 3}),
+        ],
+    )
+    _run(["--golden-root", str(root), "freeze", "--from-version", "7", "--refresh-gold"])
+    manifest = json.loads((root / "v8" / "manifest.json").read_text(encoding="utf-8"))
+    per_dim = manifest["gold_refresh"]["per_dim"]
+    # 源版本（v7）的 gold 侧没有软维度分 ⇒ before 空
+    assert per_dim["d5"]["before"] == {}
+    # 刷完：g1=4、g3=3；g2 没有分、g1 的 d4 是 null ⇒ 都不进分布（非空口径）
+    assert per_dim["d5"]["after"] == {"4": 1, "3": 1}
+    assert per_dim["d4"]["after"] == {}
 
 
 def test_refresh_gold必须配from_version():

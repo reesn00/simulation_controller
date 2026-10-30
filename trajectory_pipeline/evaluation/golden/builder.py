@@ -1197,6 +1197,11 @@ def _annotate_dimensions_only(args: argparse.Namespace, golden_root: pathlib.Pat
         f"（幂等跳过 {stats['unchanged']} 条 · 人判判不了 {stats['judged_na']} 格）"
     )
     print(f"  本次补的格子：{per_dim}")
+    if stats["evidence_only"]:
+        print(
+            f"  只补凭据（**分数一格未动**）：{stats['evidence_only']} 条"
+            "——分数早就在库里、判读理由不在 ⇒ 把理由补回"
+        )
     if stats["overwritten"]:
         print(f"  ⚠ 覆盖已有分数 {stats['overwritten']} 格（--force）")
     print(
@@ -1594,6 +1599,31 @@ def _dim_dist(rows: Sequence[Mapping[str, Any]], dim: str) -> dict[str, int]:
     }
 
 
+def _gold_dim_dist(rows: Sequence[Mapping[str, Any]], dim: str) -> dict[str, int]:
+    """**gold 侧**一维的取值分布（**只算非空**；空值不进分布）。
+
+    ⚠️ **不能用 :func:`_dim_dist`**：那个读的是行**顶层**的 ``dimension_scores``
+    （**pred 侧**），而 gold 侧的分住在 ``golden.dimension_scores`` 里 ⇒ 用错口径
+    ⇒ ``before``/``after`` **恒为空**（2026-10-30 发现：v16 的
+    ``gold_refresh.per_dim`` 四个维度全是 ``{}``，审计那一栏等于没写）。
+
+    「只算非空」与打印口径一致（``d5（金标非空）``）：判不了的格子（``null``）
+    不是分数，不进分布。
+    """
+    counter: collections.Counter = collections.Counter()
+    for row in rows:
+        golden = row.get("golden")
+        golden = golden if isinstance(golden, Mapping) else {}
+        value = (golden.get("dimension_scores") or {}).get(dim)
+        if value is None:
+            continue
+        counter[value] += 1
+    return {
+        ("null" if k is None else str(k)): v
+        for k, v in _sorted_score_dist(counter).items()
+    }
+
+
 def _refresh_scores(
     parts: Mapping[str, Sequence[Mapping[str, Any]]],
     cand_path: pathlib.Path,
@@ -1775,14 +1805,8 @@ def _refresh_gold(
     per_dim: dict[str, Any] = {}
     for dim in OVERLAY_DIMS:
         per_dim[dim] = {
-            "before": _dim_dist(
-                [_as_gold(r) for r in before_rows if _as_gold(r).get(dim) is not None],
-                dim,
-            ),
-            "after": _dim_dist(
-                [_as_gold(r) for r in after_rows if _as_gold(r).get(dim) is not None],
-                dim,
-            ),
+            "before": _gold_dim_dist(before_rows, dim),
+            "after": _gold_dim_dist(after_rows, dim),
         }
     info = {
         "enabled": True,

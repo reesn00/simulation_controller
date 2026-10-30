@@ -246,7 +246,110 @@ def test_维度名不在面表就报错():
         goldwork.build_gold_worksheet([_row()], dims=["d99"], split="calibration")
 
 
-# ── 6. 只读 ─────────────────────────────────────────────────
+# ── 6. --dimensions（LLM 裁判面那两维的金标，2026-10-30）────
+
+
+def test_缺省还是代码面那几维_旧行为不变():
+    assert goldwork.parse_dims("") == goldwork.GOLD_DIMS
+    assert goldwork.parse_dims(None) == goldwork.GOLD_DIMS
+
+
+def test_可以单独出LLM裁判面那两维():
+    """D-3 / D-9 的 pred 出自 LLM judge ⇒ 它们的金标只能由人另填。
+
+    没有这个开关 ⇒ **T-2 的 judge 侧没有金标可比**（人想填都没地方填）。
+    """
+    assert goldwork.parse_dims("d3,d9") == ("d3", "d9")
+    assert set(goldwork.FILLABLE_DIMS) == {"d2", "d3", "d4", "d5", "d6", "d9"}
+
+
+def test_批次级与硬分类维度拒收():
+    """d7 / d8 是批次级（rubric v1.1）· d10 是硬分类 ⇒ 填了也是白填。
+
+    两条拒绝路径**分别报各自的原因**（d7/d8 压根没登记在面表里；
+    d10 登记了但不是样本级软维度）⇒ 人看到消息就知道自己错在哪。
+    """
+    for bad in ("d7", "d8"):
+        with pytest.raises(WorklistError, match="DIM_FACES"):
+            goldwork.parse_dims(bad)
+    with pytest.raises(WorklistError, match="样本级软维度"):
+        goldwork.parse_dims("d10")
+
+
+def test_没登记的维度拒收():
+    with pytest.raises(WorklistError, match="DIM_FACES"):
+        goldwork.parse_dims("d99")
+
+
+def test_重复维度去重_顺序保留():
+    assert goldwork.parse_dims("d9,d3,d9") == ("d9", "d3")
+
+
+def test_出表只出指定的那几维():
+    rows = [_row("g1")]
+    sheet, _ = goldwork.build_gold_worksheet(
+        rows, dims=goldwork.parse_dims("d3,d9"), scenes={"g1": _SCENE}, split="calibration"
+    )
+    assert {r["dimension"] for r in sheet} == {"d3", "d9"}
+    # 锚点五档都在（rubric 原文）
+    for cell in sheet:
+        assert set(cell["anchors"]) == {"5", "4", "3", "2", "1"}
+
+
+def test_CLI_worksheet_带dimensions_出的是那两维(tmp_path):
+    paths = _fixture(tmp_path)
+    rc, out = _main(
+        [
+            "worksheet", "--version", "7", "--golden-root", paths["golden"],
+            "--out", paths["out"], "--dimensions", "d3,d9",
+        ]
+    )
+    assert rc == 0
+    sheet = pathlib.Path(paths["out"]) / "v7" / goldwork.GOLD_WORKSHEET_FILE
+    rows = [json.loads(x) for x in sheet.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert {r["dimension"] for r in rows} == {"d3", "d9"}
+    assert "本表维度：['d3', 'd9']" in out
+
+
+def test_CLI_worksheet_批次级维度退2(tmp_path):
+    paths = _fixture(tmp_path)
+    rc, _ = _main(
+        [
+            "worksheet", "--version", "7", "--golden-root", paths["golden"],
+            "--out", paths["out"], "--dimensions", "d7",
+        ]
+    )
+    assert rc == 2
+
+
+def test_计数按表里实际的维度分桶_不写死代码面那几维():
+    """写死 ``GOLD_DIMS`` 的话，出 d3/d9 的表会印「D-2 待填 0 …」而**表里有 92 行**
+    ⇒ 报表说「待填 0」、实际一条没填 ⇒ **报表骗人比没有读数更坏**。"""
+    sheet = [
+        {"dimension": "d3", "state": "to_fill", "reviewed_by": ""},
+        {"dimension": "d9", "state": "to_fill", "reviewed_by": ""},
+    ]
+    stats = goldwork.summarize(sheet)
+    assert set(stats["per_dim"]) == {"d3", "d9"}
+    assert stats["totals"]["to_fill"] == 2
+
+
+def test_CLI_worksheet_d3d9的计数印的是D3D9(tmp_path):
+    paths = _fixture(tmp_path)
+    rc, out = _main(
+        [
+            "worksheet", "--version", "7", "--golden-root", paths["golden"],
+            "--out", paths["out"], "--dimensions", "d3,d9",
+        ]
+    )
+    assert rc == 0
+    assert "D-3: 待填 1" in out
+    assert "D-9: 待填 1" in out
+    assert "D-2:" not in out
+    assert "合计：待填 2 / 已填 0 / 判不了 0" in out
+
+
+# ── 7. 只读 ─────────────────────────────────────────────────
 
 
 def test_出表不碰annotations(tmp_path, monkeypatch):
