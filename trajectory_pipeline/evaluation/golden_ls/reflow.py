@@ -80,6 +80,18 @@ SKIP_REGRESSION = "regression_not_reflowed"
 SKIP_LABEL_DRIFT = "label_drift"
 SKIP_NO_GOLD = "no_gold_row"
 SKIP_NO_ANNOTATION = "no_annotation_row"
+#: **定不出档**（头部站点认不出 ⇒ 跨档轨迹算不出它属于哪一档）。
+#: ⚠️ **fail-closed**：解不出来 ⇒ **不放行**。
+#: ⚠️⚠️ **不是**「没有档 ⇒ 放行」——「解不出来」不等于「没有限制」⇒ 猜不得。
+#: ⚠️ **实测（v16 · 50 条轨迹）**：**9 条**定不出档 ⇒ 其中 **5 条**的档集是
+#: 「纯 calibration」⇒ 挡掉它们**不涉及封存面**，只是**少收了 5 条干净数据**
+#: ⇒ 「补数据」补的就是这 5 条。
+#: ⚠️ **9 条不是同一类**（逐条核过）：**6 条是负样本池行**
+#: （`source_kind: "negative_pool"` ⇒ **从来就不是轨迹** · 没有 P1 存档）·
+#: **3 条是头部站点配不到**（那个访问点没进冻结集）⇒ 拆开见台账 Q-26。
+#: ⚠️ **封存面泄漏在另一边**：② 放行的 13 条里 **11 条含 holdout 站点**
+#: （见 `rows.headline_split` 的 docstring）⇒ **那是 owner 裁 ② 的代价**。
+SKIP_NO_SPLIT = "split_unresolved"
 
 #: LS 表单上三个裁决值（与 label_config 同源）。
 VERDICT_AGREE = "agree"
@@ -183,10 +195,20 @@ def build_worksheet(
 
     轨迹级（裁定④）那一路的两个差别
     ------------------------------
-    1. **档闸取严**：轨迹跨档（实测 28/50 条三档全跨）⇒ 按
-       :func:`evaluation.golden.rows.strict_split` 取**最严**的那一档。
-       沾上 holdout / regression 的轨迹，**裁定不进金标**（裁定③ · C-17）
+    1. **档闸按「头部站点」定档**（owner 2026-11-01 裁的 ② · 台账 Q-26）：
+       轨迹跨档（实测 28/50 条三档全跨）⇒ 按
+       :func:`evaluation.golden.rows.headline_split` 取**末条结论所在的那个站**
+       的档（**不再取严**）。头部站点定不出档 ⇒ **fail-closed 跳过**
+       （:data:`SKIP_NO_SPLIT`）。
+       ⚠️ 沾上 holdout / regression 的轨迹，**裁定不进金标**（裁定③ · C-17）
        ——**显式跳过并记原因**，不是静默丢弃。
+       ⚠️⚠️ **封存面泄漏面 = 11/13**：② 放行的 13 条里 **11 条含 holdout
+       站点** ⇒ 它们的轨迹级标签回流后，**holdout 站点的事实进了 calibration**
+       ⇒ 这与裁定③「holdout 的裁定不进金标」相抵。
+       ⚠️ **这个数字是 owner 裁 ② 之「后」核对出来的**——裁的时候台账里只有
+       「13 vs 7」⇒ **不是「owner 知情下裁的」** ⇒ 数字已摆到台账 Q-26
+       ⇒ **要收回（回取严）或加兜底（「沾 holdout 就不回流」）就改这一处**
+       （`rows.headline_split` 与这里的档闸）。
     2. **可以「新建」**：轨迹级标注**大部分还不存在**（人核的单元刚从
        站点级换成轨迹级）⇒ 人判的第一条**没有原标注可改** ⇒ 这一行
        是**新建**（``creates_gold: true``），且**必须由人署名**
@@ -208,8 +230,18 @@ def build_worksheet(
             continue
         is_trajectory = rows_mod.is_trajectory_row(gold_row)
         if is_trajectory:
-            # ⚠️ **档闸取严**（轨迹跨档 ⇒ 没有单一档位）。
-            gate = rows_mod.strict_split(gold_row)
+            # ⚠️ **档闸按「头部站点」定档**（owner 2026-11-01 裁的 ②）⇒
+            # 跨档轨迹按**末条结论所在的那个站**的档算（**不再取严**）。
+            # ⚠️ **两个数不是宽严关系**：取严 7 条 vs ② 13 条，**交集只有 2 条**
+            # ⇒ ② 是**换了一批数据**；且 ② 放行的 13 条里 **11 条含 holdout
+            # 站点** ⇒ 详见 `rows.headline_split` 的 docstring。
+            gate = rows_mod.headline_split(gold_row)
+            if not gate:
+                # ⚠️ **fail-closed**：定不出档 ⇒ **不放行**（**不是**「没有档 ⇒
+                # 放行」）——解不出来的那 9 条里，**5 条是纯 calibration**
+                # （不涉封存面）⇒ 挡掉只是少收 5 条干净数据，不是漏放。
+                skipped.append({"golden_id": gid, "reason": SKIP_NO_SPLIT})
+                continue
             if gate == SPLIT_HOLDOUT:
                 skipped.append({"golden_id": gid, "reason": SKIP_HOLDOUT})
                 continue
@@ -335,10 +367,14 @@ def validate(
         kind = str(row.get("kind") or "")
         gold_row = gold_rows.get(gid)
         if gold_row is not None and rows_mod.is_trajectory_row(gold_row):
-            # ⚠️ **轨迹行没有单一档位** ⇒ 取严（holdout > regression > calibration）。
-            split = rows_mod.strict_split(gold_row)
+            # ⚠️ **档闸按「头部站点」定档**（owner 2026-11-01 裁的 ②）。
+            split = rows_mod.headline_split(gold_row)
         else:
             split = str((gold_row or {}).get("__split__") or row.get("split") or "")
+        if not split and gold_row is not None and rows_mod.is_trajectory_row(gold_row):
+            # ⚠️ **fail-closed**：定不出档 ⇒ **报错**，不是放行。
+            errors.append(f"{gid}：定不出档（头部站点认不出）——不许回流")
+            continue
         if split == SPLIT_HOLDOUT:
             errors.append(f"{gid}：holdout 的裁定不进金标（裁定③只上传，不回流）")
             continue
@@ -474,6 +510,7 @@ __all__ = [
     "SKIP_NO_ANNOTATION",
     "SKIP_NO_BRANCH",
     "SKIP_NO_GOLD",
+    "SKIP_NO_SPLIT",
     "SKIP_NOT_REVIEWED",
     "SKIP_REGRESSION",
     "SKIP_UNVERIFIABLE",

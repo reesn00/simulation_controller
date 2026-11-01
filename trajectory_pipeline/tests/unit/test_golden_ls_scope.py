@@ -8,9 +8,11 @@
    自己在判一条轨迹还是判一个站点；
 3. **站点级的 label_config 一个字节都不动**（已推上 LS 的 v14/v15 认得出
    自己的配置）；
-4. **轨迹行没有单一档位** ⇒ 跨档时**取严**（holdout > regression > calibration）；
+4. **轨迹行没有单一档位** ⇒ 跨档时按**头部站点**定档（owner 2026-11-01
+   裁的 ② · 台账 Q-26）——**取严**口径保留作对照（``rows.strict_split``）；
 5. **整条推**：一条轨迹的所有档位都得在本次范围内（半条轨迹推不上去）；
-6. **档闸取严**：沾上 holdout / regression 的轨迹**不进金标**（裁定③ · C-17）；
+6. **档闸按头部站点**：头部站点在 holdout / regression ⇒ **不进金标**
+   （裁定③ · C-17）；**认不出头部站点 ⇒ fail-closed 不放行**；
 7. **可以「新建」**：轨迹级标注大部分还不存在 ⇒ 新建行**必须由人署名**；
 8. **逐站金标进内容键**：页面上的东西变了，变更标记就得跟着变。
 """
@@ -54,8 +56,19 @@ def _traj_row(
     label: str = "success",
     branch: str = "success",
     site_labels: list[str] | None = None,
+    head_split: str | None = None,
+    head_missing: bool = False,
 ) -> dict:
-    """轨迹级行（方案 23 的新形状）：站点明细收在 ``site_outcomes[]`` 里。"""
+    """轨迹级行（方案 23 的新形状）：站点明细收在 ``site_outcomes[]`` 里。
+
+    ``head_split``：**头部站点（裁定② 的末条结论所在的那个站）**是哪一档。
+    头部站点由 ``code_index`` 指出（它 = 末条 outcome 的下标，与站点明细的
+    ``outcome_index`` **同一坐标系**）⇒ 想知道「头部站点在不在调参池」就
+    点名它那一档。
+
+    ``head_missing``：模拟**认不出头部站点**（``code_index`` 指不到任何站点）
+    ⇒ 档闸必须 **fail-closed**（定不出档 ⇒ 不放行）。
+    """
     splits = splits if splits is not None else {"calibration": 2}
     sites = []
     for i, (split, n) in enumerate(sorted(splits.items())):
@@ -73,13 +86,21 @@ def _traj_row(
                     },
                 }
             )
+    code_index = 0
+    if head_missing:
+        code_index = 9999  # 指不到任何站点 ⇒ 认不出头部站点
+    elif head_split is not None:
+        for s in sites:
+            if s["split"] == head_split:
+                code_index = s["outcome_index"]
+                break
     return {
         "golden_id": gid,
         "source_kind": rows_mod.SOURCE_TRAJECTORY,
         "task_id": "T001",
         "run_id": "abcd1234",
         "splits": dict(splits),
-        "code_index": 0,
+        "code_index": code_index,
         "site_outcomes": sites,
         "golden": {"label": label, "label_label": "成功"},
         "code": {"branch": branch},
@@ -208,6 +229,49 @@ class TestSplitPolicy:
         assert rows_mod.splits_within(row, ["calibration"]) is False
 
 
+# ── 4b. 头部站点定档（owner 2026-11-01 裁的 ②）────────────────
+
+
+class TestHeadlineSplit:
+    """**头部站点定档**（台账 Q-26 · owner 裁的 ② 口径）。
+
+    ⚠️ 口径换过一次：原来档闸用**取严** ⇒ v16 的 50 条轨迹里只有 **7** 条
+    够格进金标（**全是「纯 calibration」的**）⇒ owner 2026-11-01 裁 **②**。
+    ⚠️⚠️ **但两个数不是「宽严关系」**（同日逐条核对实测）：**交集只有 2 条**
+    ⇒ ② 是**换了一批数据**；且 ② 放行的 **13** 条里 **11 条含 holdout
+    站点** ⇒ **封存面泄漏面 11/13**。
+    """
+
+    def test_头部站点是末条结论所在的那个站(self) -> None:
+        row = _traj_row(splits={"calibration": 1, "holdout": 1}, head_split="holdout")
+        head = rows_mod.headline_site(row)
+        assert head is not None
+        assert head["split"] == "holdout"
+
+    def test_头部站点的档就是这一行的档(self) -> None:
+        row = _traj_row(splits={"calibration": 1, "holdout": 1}, head_split="holdout")
+        assert rows_mod.headline_split(row) == "holdout"
+        row = _traj_row(splits={"calibration": 1, "holdout": 1}, head_split="calibration")
+        assert rows_mod.headline_split(row) == "calibration"
+
+    def test_认不出头部站点就返回空串(self) -> None:
+        """**fail-closed**：解不出来 ⇒ 返回 ``""`` ⇒ 调用方**必须**不放行。"""
+        row = _traj_row(splits={"calibration": 1}, head_missing=True)
+        assert rows_mod.headline_site(row) is None
+        assert rows_mod.headline_split(row) == ""
+
+    def test_站点级行没有头部站点(self) -> None:
+        """站点级行（旧形状）压根不是「一条轨迹」⇒ 头部站点不存在。"""
+        assert rows_mod.headline_site(_site_row()) is None
+        assert rows_mod.headline_split(_site_row()) == ""
+
+    def test_与取严口径是两个不同的数(self) -> None:
+        """② ≠ 取严：同一条轨迹，两个口径给两个答案（这是 ② 的性质，不是 bug）。"""
+        row = _traj_row(splits={"calibration": 1, "holdout": 1}, head_split="calibration")
+        assert rows_mod.strict_split(row) == "holdout"
+        assert rows_mod.headline_split(row) == "calibration"
+
+
 # ── 5. 逐站金标进内容键 ──────────────────────────────────────
 
 
@@ -287,21 +351,80 @@ def _record(gid: str, **over) -> dict:
 
 
 class TestReflowTrajectoryGate:
-    def test_沾封存面的轨迹不进金标(self) -> None:
-        row = _traj_row("T001__a", splits={"calibration": 1, "holdout": 1})
+    """**档闸按「头部站点」定档**（owner 2026-11-01 裁的 ② · 台账 Q-26）。
+
+    ⚠️ 口径换过一次：原来**取严**（沾上 holdout / regression 就整条不进金标）
+    ⇒ 现在按**裁定② 的末条结论所在的那个站**（头部站点）的档算。
+    ⚠️⚠️ **两个数不是宽严关系**（同日逐条核对实测）：取严 7 条 vs ② 13 条，
+    **交集只有 2 条** ⇒ ② 是**换了一批数据**；且 ② 放行的 13 条里 **11 条
+    含 holdout 站点** ⇒ **封存面泄漏面 11/13**。
+    """
+
+    def test_头部站点在封存面就不进金标(self) -> None:
+        row = _traj_row(
+            "T001__a", splits={"calibration": 1, "holdout": 1}, head_split="holdout"
+        )
         rows, summary = reflow_mod.build_worksheet(
             [_record("T001__a")], gold_rows={"T001__a": row}, ann_rows={}
         )
         assert rows == []
         assert summary["skipped_detail"][0]["reason"] == reflow_mod.SKIP_HOLDOUT
 
-    def test_沾回归集的轨迹不进金标(self) -> None:
-        row = _traj_row("T001__a", splits={"calibration": 1, "regression": 1})
+    def test_头部站点在回归集就不进金标(self) -> None:
+        row = _traj_row(
+            "T001__a", splits={"calibration": 1, "regression": 1}, head_split="regression"
+        )
         rows, summary = reflow_mod.build_worksheet(
             [_record("T001__a")], gold_rows={"T001__a": row}, ann_rows={}
         )
         assert rows == []
         assert summary["skipped_detail"][0]["reason"] == reflow_mod.SKIP_REGRESSION
+
+    def test_头部站点在调参池就放行_哪怕整条还沾着封存面(self) -> None:
+        """② 的口径**就是这样**：放行只看**头部站点**那一档。
+
+        ⚠️ **这条是「封存面泄漏面 11/13」的机制**（实测：② 放行的 13 条里
+        11 条含 holdout 站点）⇒ 不是「取严的放宽」，是**换了一批数据**。
+        ⚠️ **要收回（回取严）或加兜底（「沾 holdout 就不回流」）就改
+        `rows.headline_split` 与 `golden_ls/reflow.py` 的档闸**（两处）。
+        """
+        row = _traj_row(
+            "T001__a", splits={"calibration": 1, "holdout": 1}, head_split="calibration"
+        )
+        rows, summary = reflow_mod.build_worksheet(
+            [_record("T001__a")], gold_rows={"T001__a": row}, ann_rows={}
+        )
+        assert summary["skipped"] == 0
+        assert len(rows) == 1
+
+    def test_认不出头部站点就不放行(self) -> None:
+        """**fail-closed**：定不出档 ⇒ 不放行（**不是**「没有档 ⇒ 放行」）。"""
+        row = _traj_row("T001__a", splits={"calibration": 1}, head_missing=True)
+        rows, summary = reflow_mod.build_worksheet(
+            [_record("T001__a")], gold_rows={"T001__a": row}, ann_rows={}
+        )
+        assert rows == []
+        assert summary["skipped_detail"][0]["reason"] == reflow_mod.SKIP_NO_SPLIT
+
+    def test_认不出头部站点时校验也退2(self) -> None:
+        """`validate` 是**第二道闸** ⇒ 认不出档 ⇒ 报错，不许回流。"""
+        row = _traj_row("T001__a", splits={"calibration": 1}, head_missing=True)
+        errors = reflow_mod.validate(
+            [
+                {
+                    "kind": reflow_mod.KIND_CONFIRM,
+                    "golden_id": "T001__a",
+                    "split": "calibration",
+                    "label": "success",
+                    "reviewed_by": "",
+                    "access_surface": "human-browser",
+                    "observed_at": "2026-10-29T14:03:00+08:00",
+                    "creates_gold": True,
+                }
+            ],
+            gold_rows={"T001__a": row},
+        )
+        assert any("定不出档" in e for e in errors)
 
     def test_没有原标注的行是新建(self) -> None:
         """轨迹级标注大部分还不存在 ⇒ 人判的第一条是**新建**。"""

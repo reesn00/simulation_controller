@@ -595,7 +595,8 @@ def _traj_split_text(row: Mapping[str, Any]) -> str:
 
     ⚠️ **一条轨迹没有单一档位**（实测 28/50 条三档全跨）⇒ 这里给的是
     「各档几条」，**不是**「它属于哪一档」——后者由
-    :func:`evaluation.golden.rows.strict_split` 按取严口径给。
+    :func:`evaluation.golden.rows.headline_split` 按**头部站点口径**给
+    （owner 2026-11-01 裁的 ②；取严口径 `strict_split` 只作**对照**）。
     """
     splits = row.get("splits")
     if not isinstance(splits, Mapping) or not splits:
@@ -823,7 +824,8 @@ def build_trajectory_task_data(
         "golden_id": golden_id,
         # ⚠️ **轨迹行没有单一档位**（实测 28/50 条三档全跨）⇒ 页眉这一栏
         # 摆的是「各档几条」，**不是**「它属于哪一档」。机器要判档位用
-        # ``splits``（dict）或 :func:`evaluation.golden.rows.strict_split`。
+        # ``splits``（dict）或 :func:`evaluation.golden.rows.headline_split`
+        # （**头部站点口径** · owner 2026-11-01 裁的 ②）。
         "split": _traj_split_text(row),
         "splits": dict(splits) if isinstance(splits, Mapping) else {},
         "task_id": str(row.get("task_id") or ""),

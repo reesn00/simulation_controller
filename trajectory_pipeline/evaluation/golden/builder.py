@@ -2151,6 +2151,23 @@ def _build_trajectory_dataset(
         sites = sites_by_traj[tid]
         cand = cand_by_id.get(tid) or {}
         head = sites[0]
+        # ⚠️ **头部站点要认得出** ⇒ 明细条目得带 `outcome_index`
+        # （`rows.headline_site` 按它对齐 `code_index`；`code_index` = 末条
+        # outcome 的下标，两者**同一坐标系**）。
+        # ⚠️ **冻结的站点行不带它**（实测 0/131 行有）⇒ 从**候选行**的明细
+        # 按 `golden_id` 回填。⚠️ **它不是「冻结时的事实」**，只是**对齐键**
+        # ⇒ 回填**不动** `split` / `golden` / `code` 任何一个。
+        # 键两侧**逐字相同**（M-60 实测：A−C = 0 / C−A = 0）⇒ 对得齐。
+        idx_by_gid = {
+            str(s.get("golden_id") or ""): s["outcome_index"]
+            for s in (cand.get("site_outcomes") or ())
+            if s.get("golden_id") and "outcome_index" in s
+        }
+        for s in sites:
+            if s.get("outcome_index") is None:
+                got = idx_by_gid.get(str(s.get("golden_id") or ""))
+                if got is not None:
+                    s["outcome_index"] = got
         row: dict[str, Any] = {
             "golden_id": tid,
             "source_kind": rows_mod.SOURCE_TRAJECTORY,
