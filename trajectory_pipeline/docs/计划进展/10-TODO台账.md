@@ -426,7 +426,7 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **M-57** | ★★**（2026-10-30 新增）金标标签没跟上已完成的 Q-23 复核**——**26 行**金标仍写 `unreachable_hard`，而 Q-23 已逐条真浏览器判「打得开」⇒ 该落 `unresolved`（**不进池**） | 07 评估 / 08 存档 | 本文 **§2026-10-30 补记 · 优先级** · 脚本 [`gold_regression_branch_drift.py`](../../research/probes/gold_regression_branch_drift.py)（实测）· 台账 **M-48 族 B**（同一件事的族级说法）· **Q-17 / Q-23**（裁定已闭） | **裁定已闭、只是金标没跟上** ⇒ 执行**不需要新定性**，要**人签 + 改标签**（调参池 12 / 回归集 7 / 持有集 7）。⚠️ **软维度读数看不见它**（D-5 两侧都按 relabel 后的落点判 ⇒ 一致）⇒ **只能靠这条单独核**。⚠️ 另有 **11 行**金标写 `success` 而今天存档说「没打开/内容坏/组件未验证」⇒ **假正样本嫌疑**，要人看（回归集 `TPIN02__1cf5deca__aa537eb5` 最扎眼：底料是「导航失败（传输层）· 超时」，金标却写成功） |
 
 | **M-58** | ★**（2026-11-01 新增）「一个任务一个轨迹」在盘上还不是事实** —— 代码已按 per-Run 读写，但**主树的 P2 产物还是旧的 per-unit 份** | 06 组装 / 07 评估 | 本文 **§2026-11-01 新增开口项详解** · [方案 23 §0 / §7](../设计方案/23-每任务一轨迹.md) · `evaluation/golden/builder.py:869`（per-Run 之后的 `sample_id`）· `evaluation/golden_ls/scope.py` | ⚠️ **主树 `trajectory_pipeline/output/pipeline/samples/` 里仍是 1510 份旧 per-unit 样本文件**（`sample_id` = `<task>__<run>__<unit>`）⇒ 读数会**静默走旧形状**。⇒ 跑 `cli build --overwrite` 重出；⚠️ **worktree 的 `output/` 是空的**（数据在主树）⇒ **必须显式指 `--p2-root`**，否则读数会变成 0% 而不是报错。⚠️ **旧 id 仍读得懂**（前两段相同 ⇒ 轨迹 id 取前两段）⇒ 重出前后都能跑，但**新档的行数会变**（per-unit 份数 ⇒ per-Run 份数） |
-| **M-59** | ★**（2026-11-01 新增）per-Run 的契约文档与避坑指南还没跟上** —— **P2 契约仍写「一条 = 一个决策单元」** | 06 组装 / 07 评估 / 09 纪律 | 本文 **§2026-11-01 新增开口项详解** · [方案 23 §7](../设计方案/23-每任务一轨迹.md) · `docs/contracts/P2-sample.md` · `docs/03-数据契约.md` | 待补：`docs/contracts/P2-sample.md`（`sample_id` 形态）· `docs/03-数据契约.md`（P1/P2/P3/T 契约表）· `docs/02-避坑指南.md`（**轨迹行没有 `__split__`** / `source_kind` 不是 `p2_sample` / **两种粒度两个 LS 项目** / **整条推**）· `docs/06-端到端流程.md` · `docs/07-人工复核与判读手册.md`（**一个标注单元 = 一条轨迹**，且「新建」那条回流路**要人署名**）· `docs/08-常用命令速查.md`（`--scope` 开关）。✅ **契约测试已改**（`tests/contract/test_p2_contract.py` / `test_p3_contract.py` / `test_t_contract.py`）——**代码已按新形状走，文档落后** |
+| **M-59** | ✅ **已补（2026-11-01）per-Run 的契约文档与避坑指南** —— 原来 **P2 契约仍写「一条 = 一个决策单元」** | 06 组装 / 07 评估 / 09 纪律 | 本文 **§2026-11-01 新增开口项详解** · [方案 23 §7](../设计方案/23-每任务一轨迹.md) · `docs/contracts/P2-sample.md` · `docs/03-数据契约.md` | ✅ **六处全补**：`contracts/P2-sample.md`（`sample_id` 形态 · `site_outcomes` 元素 · 轨迹级 `reflection`）· `contracts/P3-views.md`（**动作流是一条摊平的流** · `meta` 去 `unit` 加 `site_outcomes`）· `contracts/T-task-view.md`（`trajectory_id` ≡ P2 `sample_id` ≡ P1 存档名 · `task_gate`/`overall_branch` 按裁定②）· `03-数据契约.md`（**P1/P2/P3/T 主键逐字相同**）· `02-避坑指南.md` §8.37–§8.48（**轨迹行没有 `__split__`** / `source_kind` 不是 `p2_sample` / **两种粒度两个 LS 项目** / **整条推** / **两个「28」不是同一批** / **`index` ≠ 候选行那个同义键** / **两粒度的产物文件名要分开**）· `06-端到端流程.md`（**per-Run 的完整交付路径**）· `07-人工复核与判读手册.md` §8.6–§8.9（**一个标注单元 = 一条轨迹**，「新建」那条回流路**要人署名**）· `08-常用命令速查.md`（`--scope` 开关 + `migrate-trajectory`）。✅ **契约测试已改并全绿**（`tests/contract/` 929 passed / 24 skipped）——**文档与代码现已同步**。⚠️ **行尾按各文件既有口径写**（仓库无 `.gitattributes` ⇒ 逐文件统一行尾；契约三份与避坑指南历来是 CRLF，**没做全文件转 LF** ⇒ diff 无整文件改写） |
 | **M-60** | ✅ **已修（2026-11-01）两张 id 迁移表合成一张** ⇒ **同一个 `golden_id` 在冻结档里出现两次**（同档内 + **跨档**）⇒ **报表上完全看不出异常** | 07 评估 / 09 纪律 | 本文 **§2026-11-01 新增开口项详解 · M-60** · [避坑指南 §8.46](../02-避坑指南.md) · `evaluation/golden/builder.py::ID_ALIAS_FILE` / `ID_ALIAS_TRAJECTORY_FILE` / `_assert_unique_golden_ids` · `tests/unit/test_golden_migrate_trajectory.py`（10 条） | **根因**：`id_alias.json` 是 **1:1 的行键迁移表**（代码拿它给**冻结行**换键），per-Run 的迁移表是**多对一**的**合并**表 ⇒ 合成一张 ⇒ 冻结行被按**合并**语义换键 ⇒ 实测 holdout 里 `E001__57bbf995` 出现 **2 次**、且 `E001__57bbf995__6a28d60d` **同时落在 calibration 与 holdout**（**一行进两个分母**）。✅ **修法三件**：① 迁移改写 `id_alias_trajectory.json`（**不碰** `id_alias.json`，字节不变）；② 冻结前加**主键门禁**（`golden_id` 全档唯一 ⇒ 撞了**不冻结**，退 2）；③ 旧 per-unit 行**保留自己的旧 id**（**不替它们编新 id**）。✅ **实测（主树真数据）**：v17 三份切分档与 **v16 逐字节一致**（回归指纹 `929fedc596da` 未变）⇒ **D-10 128/106/22 = 82.8% 与 strict 294/201/93 = 68.37% 全部不变**；`trajectories.jsonl` 50 行**档内零重复**。⚠️ **残余的口径题**：那 **5 条占位的 per-unit 行**（无 URL 无 evidence）留不留 ⇒ 见 **Q-30** |
 | **M-61** | ✅ **已修（2026-11-01）`golden_ls` CLI 在 main 上整体起不来** —— `--task-views-root` 的 help 串结尾写 `0%`，argparse 拿 help 串做 `%` 格式化 ⇒ **建 parser 就炸** ⇒ **所有子命令都进不去**（含 `--help`） | 07 评估 / 09 纪律 | 本文 **§2026-11-01 新增开口项详解 · M-61** · [避坑指南 §8.47](../02-避坑指南.md) · `evaluation/golden_ls/cli.py::_build_parser` · 引入 commit **`c87b862`**（**在 main 上** ⇒ **main 的 LS 上传通路当前是废的**） | **症状**：`ValueError: badly formed help string` ⇒ 看起来像「这个 CLI 整个坏了」。**修法一个字**：那个 `0%` 写成 `0%%`（argparse 的硬规矩）⇒ ✅ 实测 `golden_ls --help` / `projects` / `pending` 全部正常。⚠️ **它一直没人发现，是因为 LS 上传本来就要联网 + 要 owner 授权** ⇒ 离线单测是唯一的守门 ⇒ 这 11 条测试**在 main 上就是红的**（`test_golden_ls_cli.py` 8 条 + `test_golden_ls_pending_gate.py` 3 条）。⇒ **本分支的修法要一起进 main**，否则 main 继续带着一个废掉的 CLI |
 
@@ -2845,7 +2845,7 @@ d5 **69/80 = 86.2%** · d6 **45/45**；`gate --current-version 9` ⇒ **退 2**
 | 站点级冻结行 | **294** | `v16/{calibration,regression,holdout}.jsonl` |
 | 轨迹级（per-Run） | **50** | `research/probes/per_run_frozen_shape.py` |
 | 跨档轨迹 | **33/50**（其中 **28** 三档全跨） | `research/probes/per_run_split_membership.py` |
-| 站点标签互相冲突的轨迹 | **28/50** | `research/probes/per_run_site_join.py` |
+| 站点标签互相冲突的轨迹 | **28/50** | `research/probes/per_run_golden_shape.py` |
 | 取严后够格进金标的轨迹 | **7**（6 回归 / 37 封存） | `evaluation/golden/rows.py::strict_split` |
 | 口径 C 的 url 键集合 vs v1–v16 | **A−C = 0 / C−A = 0**（1512 键） | `research/probes/per_run_site_key.py` |
 | 「按头部站点定档」的分布 | cal **13** / reg 13 / hold 15 / 配不到 3 / 存档缺失 6 | `research/probes/per_run_split_membership.py` |
@@ -2857,6 +2857,16 @@ d5 **69/80 = 86.2%** · d6 **45/45**；`gate --current-version 9` ⇒ **退 2**
 已订正并把坑写进探针 docstring ⇒ **这类读数必须能对着源码复核**。
 ⚠️ **A−C = C−A = 0** ⇒ **迁移不动人核标签的键集合**（只挪挂载位置 ⇒ 仍需
 签字，见 Q-27）。
+
+⚠️⚠️ **表里有两个「28」，是**不同**的两个集合，数值撞了而已**：一个是
+**档位面**的「三档全跨」（第 3 行 ⇒ 决定 Q-26 怎么裁），一个是**标签面**的
+「站点级标签互相冲突」（第 4 行 ⇒ 决定 Q-28 ⇒ 轨迹级标签只能人填）。
+⚠️ **它们不是同一批轨迹**：实测**交集 24 条，各差 4 条**——
+只标签冲突的 4 条 = `E001__57bbf995` / `E023__4d175424` / `T036__10313caf` /
+`T042__292bf1d7`（都只跨 2 档）；只三档全跨的 4 条 = `E006__2729220b` /
+`T011__d1d70da2` / `T013__dade3d10` / `TPIN01__9c38dc2e`（标签不冲突）。
+⇒ **读 Q-26 与 Q-28 时别把这两个 28 混成一个数**（复算：
+`research/probes/per_run_golden_shape.py` 末段「两个『28』的关系（防混）」）。
 
 ### 2. 五条开口（要 owner 拍板）
 
@@ -2876,7 +2886,8 @@ d5 **69/80 = 86.2%** · d6 **45/45**；`gate --current-version 9` ⇒ **退 2**
 - **M-58**：**盘上还不是事实** —— 主树的 P2 产物仍是旧的 per-unit 份
   ⇒ 要 `cli build --overwrite` 重出；⚠️ **worktree 的 `output/` 是空的**
   ⇒ 读数必须显式指 `--p2-root`。
-- **M-59**：**文档落后于代码** —— 契约 / 避坑 / 流程 / 手册 / 速查五处还没改。
+- **M-59**：✅ **已补（2026-11-01）** —— 契约三份 / 03 / 避坑 §8.37–§8.48 /
+  06 / 07 §8.6–§8.9 / 08 全改完，契约测试全绿（见下）。
 - **M-60**：✅ **已修**（见 §4）。
 - **M-61**：✅ **已修**（见 §6）—— ⚠️ **这个缺陷在 main 上**（`c87b862` 引入）
   ⇒ **main 的 `golden_ls` CLI 当前整个是废的** ⇒ 本分支的修法**要一起进 main**。

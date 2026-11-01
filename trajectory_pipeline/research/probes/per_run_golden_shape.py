@@ -95,6 +95,20 @@ def main() -> int:
     for t, s in sorted(span.items())[:10]:
         print(f"    {t} → {sorted(s)}")
 
+    # ── 5：两个「28」**不是同一批轨迹**（标签面 vs 档位面）───────────────
+    # ⚠️ 「28/50 条轨迹的站点级标签互相冲突」（Q-28 · 标签面）与
+    # 「28 条轨迹三档全跨」（§8.37 · 档位面）**数值撞了** ⇒ 读 Q-26 与
+    # Q-28 时极易混成一个数 ⇒ 这里把两个集合摆出来（可复算，别靠记忆）。
+    conflict_set = {traj for traj, _labels, _n in conflicting}
+    all3 = {t for t, s in traj_splits.items() if len(s) == 3}
+    print("\n两个「28」的关系（防混）：")
+    print(f"  标签互相冲突的轨迹 {len(conflict_set)} 条 · 三档全跨的轨迹 {len(all3)} 条")
+    print(f"  交集 {len(conflict_set & all3)} 条")
+    print(f"  只标签冲突（不三档全跨）{len(conflict_set - all3)} 条："
+          f"{sorted(conflict_set - all3)[:5]}")
+    print(f"  只三档全跨（标签不冲突）{len(all3 - conflict_set)} 条："
+          f"{sorted(all3 - conflict_set)[:5]}")
+
     # 被标注站点在各档的分布（D-10 分母的构成）
     ann_ids = {str(a.get("golden_id") or "") for a in anns}
     dist = collections.Counter(
