@@ -31,7 +31,9 @@
 「三档全跨 33 条」⇒ 台账 **Q-26** 裁的就是「跨档轨迹按哪一档算」。
 ⭐ **Q-26 已裁（owner 2026-11-01）：按「头部站点」定档** ⇒ 档闸见
 :func:`headline_split`（⚠️ 与取严的**交集只有 2 条**，且封存面泄漏面
-11/13 ⇒ 详见该函数的 docstring）。
+11/13 ⇒ **已加「整条沾着封存面/回归面就不放行」的兜底**
+（:func:`non_reflow_splits`）⇒ 实测放行数 **13 ⇒ 2** ⇒ 详见该函数的
+docstring）。
 
 按轨迹重切档 ⇒ D-10 的分母整个换掉（当前头条 106/128 = 82.8%），
 而那个分母是**绑定口径**（门禁只读调参池；分母薄不是改口径的理由）。
@@ -43,6 +45,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 __all__ = [
+    "NON_REFLOW_SPLITS",
     "SITE_SCOPE",
     "STRICT_ORDER",
     "TRAJECTORY_SCOPE",
@@ -52,6 +55,7 @@ __all__ = [
     "headline_split",
     "index_site_entries",
     "is_trajectory_row",
+    "non_reflow_splits",
     "row_splits",
     "site_entries_of",
     "site_ids_of",
@@ -200,6 +204,24 @@ def headline_split(row: Mapping[str, Any]) -> str:
     ⇒ **要收回（回取严）或加兜底（「沾 holdout 就不回流」）就改本函数**
     （与 `golden_ls/reflow.py` 的档闸）。
 
+    ⭐ **兜底已加（owner 2026-11-01「泄露做兜底」）**
+    ------------------------------------------------------
+    「头部站点在调参池」**不够**：其余站点里的封存事实会跟着轨迹级标签一起
+    进调参池 ⇒ **封存面作废** ⇒ 加一道**整条沾着封存面/回归面就不放行**
+    的兜底（:func:`non_reflow_splits`）。
+
+    ⚠️⚠️ **读数（v16 · 走产品代码路径实测）**：
+
+    - ② 无兜底放行 **13** ⇒ **加兜底后只剩 2**（被挡 11 条：2 条只沾
+      holdout · 9 条 holdout+regression 都沾）；
+    - 取严放行 **7** ⇒ **② + 兜底（2）比取严（7）还少**——差的 5 条是
+      **「头部站点认不出」的残缺轨迹**（被 ② 的 fail-closed 挡，**不是被兜底挡**）；
+    - ⇒ **② + 兜底 ⊂ 取严**（交集 2）。
+
+    ⚠️ **兜底量的是「冻结集里那些站点」的档** ⇒ 挡得住「已冻结的封存站点」，
+    挡不住「没冻结过的访问点里藏着封存事实」——那是**冻结集覆盖不到**的问题
+    （另一件事，见台账 Q-26）。
+
     ⇒ **取严口径保留**（:func:`strict_split`）作对照，不再是档闸用的那个。
 
     ⚠️ **fail-closed**：头部站点认不出 ⇒ 返回 **``""``** ⇒ 调用方**必须**把
@@ -296,6 +318,32 @@ def row_splits(row: Mapping[str, Any]) -> dict[str, int]:
 STRICT_ORDER: tuple[str, ...] = ("holdout", "regression", "calibration")
 
 
+#: **不许回流**的两档：**封存面**（holdout · D-C5「只在最终验收跑一次」·
+#: 裁定③「只上传、只被人看，但不回流」）与**回归面**（regression · D-C8
+#: 「改了 rubric 才跑」· C-17「回归集里的行不得改动」）。
+#:
+#: ⚠️ **这两档不是「更严一点」——是「不许进金标」**：进了金标 = 进了调参池
+#: ⇒ 封存面作废、回归面不再独立。
+NON_REFLOW_SPLITS: tuple[str, ...] = ("holdout", "regression")
+
+
+def non_reflow_splits(row: Mapping[str, Any]) -> set[str]:
+    """这一行**沾着**哪些「不许回流」的档（封存面 / 回归面）。
+
+    用途：**兜底**（owner 2026-11-01 在裁了 ② 头部站点口径之后追加的一条）——
+    「头部站点在调参池」**不够**：其余站点里的封存事实会跟着轨迹级标签
+    一起进调参池 ⇒ 封存面作废 ⇒ **一条轨迹只要沾着封存面 / 回归面的站点，
+    整条不进金标**。
+
+    ⚠️ **量的是「冻结集里那些站点」的档**（轨迹行的顶层 ``splits`` /
+    ``site_outcomes[].split``）⇒ **没被冻结的访问点不在其中**——这是
+    「分档留在站点级」的**测量底座**决定的（全仓库口径一致），不是漏。
+    ⇒ 这条兜底挡得住「已冻结的封存站点」，挡不住「没冻结过的访问点里藏着
+    封存事实」——那属于**冻结集覆盖不到**的问题（另一件事）。
+    """
+    return set(row_splits(row)) & set(NON_REFLOW_SPLITS)
+
+
 def strict_split(row: Mapping[str, Any]) -> str:
     """这一行的**取严档**（跨档时取最严的那一档）。
 
@@ -323,8 +371,11 @@ def strict_split(row: Mapping[str, Any]) -> str:
     （改用 :func:`headline_split`）⇒ 本函数**保留作对照口径**。
     ⚠️⚠️ **两个数不是「宽严关系」**（同日逐条核对）：**交集只有 2 条** ⇒
     ② 是**换了一批数据**，不是「放宽」；且 ② 放行的 13 条里 **11 条含
-    holdout 站点** ⇒ **封存面泄漏面 11/13**。⇒ **要回取严口径**就改档闸
-    那**一处**（`golden_ls/reflow.py` 的两处档闸），不是散着改。
+    holdout 站点** ⇒ **封存面泄漏面 11/13** ⇒ **已加兜底**
+    （:func:`non_reflow_splits`）⇒ 实测放行数 **13 ⇒ 2**（**比本口径的 7 还少**
+    ——少的 5 条是「头部站点认不出」的残缺轨迹，被 ② 的 fail-closed 挡）。
+    ⇒ **要回取严口径**就改档闸那**一处**（`golden_ls/reflow.py` 的档闸 +
+    兜底），不是散着改。
     """
     splits = row_splits(row)
     for split in STRICT_ORDER:

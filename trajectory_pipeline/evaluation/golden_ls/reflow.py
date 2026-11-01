@@ -40,6 +40,12 @@ LS 表单里**没有**观测面控件 ⇒ 面与时刻**推不出来** ⇒ 工�
 ----------
 * **holdout** —— 裁定③让 holdout 也上传、也被人看，但**裁定不许进金标**
   （它要保持「没被人看过」的封存状态）；
+* **regression** —— C-17「回归集里的行不得改动」；
+* ⚠️⚠️ **轨迹级还有一层「兜底」**（owner 2026-11-01「泄露做兜底」）：
+  **整条轨迹**只要沾着 holdout / regression 的站点 ⇒ **整条不进金标**
+  （哪怕**头部站点**在调参池）——「头部在调参池」**不够**：其余站点里的
+  封存事实会跟着**轨迹级标签**一起进调参池 ⇒ 封存面作废。判据见
+  :func:`evaluation.golden.rows.non_reflow_splits`；
 * **判不了的裁定**（``unverifiable``）—— 那是「这里读不出结论」，不是结论；
 * **没复核的行** —— 「没复核」与「复核了但没结论」是两件事。
 
@@ -75,7 +81,16 @@ SKIP_NOT_REVIEWED = "not_reviewed"
 SKIP_UNVERIFIABLE = "unverifiable"
 SKIP_NO_BRANCH = "no_branch"
 SKIP_BRANCH_NA = "branch_not_applicable"
+#: **封存面不回流**（裁定③）。
+#: ⚠️ **两个触发点**（同一原因码，不同判据）：
+#: - **站点级**（:func:`classify`）：这一行**自己**的档是 holdout；
+#: - **轨迹级**（:func:`build_worksheet` / :func:`validate` 的兜底）：**整条
+#:   轨迹**沾着 holdout 站点（:func:`evaluation.golden.rows.non_reflow_splits`）
+#:   ⇒ 哪怕**头部站点**在调参池也不放行——「头部在调参池」**不够**，其余
+#:   站点里的封存事实会跟着轨迹级标签一起进调参池 ⇒ **封存面作废**。
 SKIP_HOLDOUT = "holdout_not_reflowed"
+#: **回归面不回流**（C-17「回归集里的行不得改动」）。
+#: ⚠️ 触发点同 :data:`SKIP_HOLDOUT`（站点级「自己这一行」/ 轨迹级「整条沾着」）。
 SKIP_REGRESSION = "regression_not_reflowed"
 SKIP_LABEL_DRIFT = "label_drift"
 SKIP_NO_GOLD = "no_gold_row"
@@ -89,8 +104,9 @@ SKIP_NO_ANNOTATION = "no_annotation_row"
 #: ⚠️ **9 条不是同一类**（逐条核过）：**6 条是负样本池行**
 #: （`source_kind: "negative_pool"` ⇒ **从来就不是轨迹** · 没有 P1 存档）·
 #: **3 条是头部站点配不到**（那个访问点没进冻结集）⇒ 拆开见台账 Q-26。
-#: ⚠️ **封存面泄漏在另一边**：② 放行的 13 条里 **11 条含 holdout 站点**
-#: （见 `rows.headline_split` 的 docstring）⇒ **那是 owner 裁 ② 的代价**。
+#: ⚠️ **封存面泄漏由「兜底」挡在另一边**（owner 2026-11-01「泄露做兜底」）：
+#: ② 放行的 13 条里 **11 条含 holdout 站点** ⇒ 兜底把它们挡掉 ⇒ **兜底后
+#: 只剩 2 条**（见 `rows.non_reflow_splits` 与台账 Q-26）。
 SKIP_NO_SPLIT = "split_unresolved"
 
 #: LS 表单上三个裁决值（与 label_config 同源）。
@@ -195,20 +211,21 @@ def build_worksheet(
 
     轨迹级（裁定④）那一路的两个差别
     ------------------------------
-    1. **档闸按「头部站点」定档**（owner 2026-11-01 裁的 ② · 台账 Q-26）：
-       轨迹跨档（实测 28/50 条三档全跨）⇒ 按
-       :func:`evaluation.golden.rows.headline_split` 取**末条结论所在的那个站**
-       的档（**不再取严**）。头部站点定不出档 ⇒ **fail-closed 跳过**
+    1. **档闸按「头部站点」定档 + 封存面兜底**（owner 2026-11-01 裁的 ② ·
+       台账 Q-26，并追加「泄露做兜底」）：轨迹跨档（实测 28/50 条三档全跨）⇒
+       按 :func:`evaluation.golden.rows.headline_split` 取**末条结论所在的那个
+       站**的档（**不再取严**）；头部站点定不出档 ⇒ **fail-closed 跳过**
        （:data:`SKIP_NO_SPLIT`）。
-       ⚠️ 沾上 holdout / regression 的轨迹，**裁定不进金标**（裁定③ · C-17）
-       ——**显式跳过并记原因**，不是静默丢弃。
-       ⚠️⚠️ **封存面泄漏面 = 11/13**：② 放行的 13 条里 **11 条含 holdout
-       站点** ⇒ 它们的轨迹级标签回流后，**holdout 站点的事实进了 calibration**
-       ⇒ 这与裁定③「holdout 的裁定不进金标」相抵。
-       ⚠️ **这个数字是 owner 裁 ② 之「后」核对出来的**——裁的时候台账里只有
-       「13 vs 7」⇒ **不是「owner 知情下裁的」** ⇒ 数字已摆到台账 Q-26
-       ⇒ **要收回（回取严）或加兜底（「沾 holdout 就不回流」）就改这一处**
-       （`rows.headline_split` 与这里的档闸）。
+       ⚠️⚠️ **兜底**：**整条**沾着封存面 / 回归面的站点 ⇒ **不进金标**
+       （:func:`evaluation.golden.rows.non_reflow_splits`）——「头部站点在
+       调参池」**不够**：其余站点里的封存事实会跟着轨迹级标签一起进调参池
+       ⇒ 封存面作废（裁定③ · C-17）。
+       ⚠️ **显式跳过并记原因**（`SKIP_HOLDOUT` / `SKIP_REGRESSION`），不是静默丢弃。
+       ⚠️⚠️ **读数（v16 实测 · 走产品代码路径）**：② 无兜底放行 **13** ⇒
+       **加兜底后只剩 2**（被挡的 11 条：2 条只沾 holdout · 9 条两样都沾）⇒
+       **比取严的 7 条还少**（取严能放行的那 5 条是「头部站点认不出」的残缺
+       轨迹 ⇒ **挡它们的是 ② 的 fail-closed，不是兜底**）⇒ 数字已摆到台账
+       Q-26 ⇒ **要改口径就改档闸那两处**。
     2. **可以「新建」**：轨迹级标注**大部分还不存在**（人核的单元刚从
        站点级换成轨迹级）⇒ 人判的第一条**没有原标注可改** ⇒ 这一行
        是**新建**（``creates_gold: true``），且**必须由人署名**
@@ -242,10 +259,16 @@ def build_worksheet(
                 # （不涉封存面）⇒ 挡掉只是少收 5 条干净数据，不是漏放。
                 skipped.append({"golden_id": gid, "reason": SKIP_NO_SPLIT})
                 continue
-            if gate == SPLIT_HOLDOUT:
+            # ⚠️⚠️ **兜底（owner 2026-11-01「泄露做兜底」）**：**整条**沾着
+            # 封存面 / 回归面 ⇒ **不进金标**——「头部站点在调参池」**不够**：
+            # 其余站点里的封存事实会跟着轨迹级标签一起进调参池 ⇒ 封存面作废。
+            # ⚠️ 头部站点自己落在封存面 / 回归面的那些，**被这一条一并覆盖**
+            # ⇒ **不要**再单独加一道（两处都改就会漂）。
+            sealed = rows_mod.non_reflow_splits(gold_row)
+            if SPLIT_HOLDOUT in sealed:
                 skipped.append({"golden_id": gid, "reason": SKIP_HOLDOUT})
                 continue
-            if gate == SPLIT_REGRESSION:
+            if SPLIT_REGRESSION in sealed:
                 skipped.append({"golden_id": gid, "reason": SKIP_REGRESSION})
                 continue
         ann = ann_rows.get(gid)
@@ -353,6 +376,13 @@ def validate(
 
     另加两条硬约束：标签必须在标签宇宙内、**holdout 与回归集不回流**
     （C-17：回归集内容一经冻结不得改动）。
+
+    ⚠️⚠️ **轨迹级还有一道「兜底」**（owner 2026-11-01「泄露做兜底」）：
+    **整条轨迹**沾着 holdout / regression 的站点 ⇒ **报错**，不是放行
+    ——哪怕**头部站点**在调参池（「头部在调参池」**不够**：其余站点里的封存
+    事实会跟着轨迹级标签一起进调参池 ⇒ 封存面作废）。判据见
+    :func:`evaluation.golden.rows.non_reflow_splits`；与 :func:`build_worksheet`
+    那侧**同一道闸**。
     """
     errors: list[str] = []
     from trajectory_pipeline.executor.branches import BRANCH_LABELS
@@ -375,6 +405,22 @@ def validate(
             # ⚠️ **fail-closed**：定不出档 ⇒ **报错**，不是放行。
             errors.append(f"{gid}：定不出档（头部站点认不出）——不许回流")
             continue
+        if gold_row is not None and rows_mod.is_trajectory_row(gold_row):
+            # ⚠️⚠️ **兜底（owner 2026-11-01「泄露做兜底」）**：整条沾着封存面 /
+            # 回归面 ⇒ **报错**，不是放行（与工作表那侧同一道闸）。
+            sealed = rows_mod.non_reflow_splits(gold_row)
+            if SPLIT_HOLDOUT in sealed:
+                errors.append(
+                    f"{gid}：轨迹里沾着 holdout 站点的裁定——封存面不进金标"
+                    "（兜底：裁定③只上传，不回流）"
+                )
+                continue
+            if SPLIT_REGRESSION in sealed:
+                errors.append(
+                    f"{gid}：轨迹里沾着回归集的站点——回归集不得改动（C-17）"
+                    "——要改就先把那一行挪出回归集"
+                )
+                continue
         if split == SPLIT_HOLDOUT:
             errors.append(f"{gid}：holdout 的裁定不进金标（裁定③只上传，不回流）")
             continue

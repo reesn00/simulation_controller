@@ -272,6 +272,37 @@ class TestHeadlineSplit:
         assert rows_mod.headline_split(row) == "calibration"
 
 
+class TestNonReflowSplits:
+    """**兜底**：一条轨迹只要**沾着**封存面 / 回归面 ⇒ 整条不进金标。
+
+    owner 2026-11-01「泄露做兜底」——「头部站点在调参池」**不够**：其余站点里的
+    封存事实会跟着**轨迹级标签**一起进调参池 ⇒ 封存面作废。
+    """
+
+    def test_两档就是不许回流的两档(self) -> None:
+        assert rows_mod.NON_REFLOW_SPLITS == ("holdout", "regression")
+
+    def test_沾着封存面就报出来(self) -> None:
+        row = _traj_row(splits={"calibration": 1, "holdout": 1})
+        assert rows_mod.non_reflow_splits(row) == {"holdout"}
+
+    def test_两样都沾着就都报出来(self) -> None:
+        row = _traj_row(splits={"calibration": 1, "holdout": 1, "regression": 1})
+        assert rows_mod.non_reflow_splits(row) == {"holdout", "regression"}
+
+    def test_纯调参池就什么都不沾(self) -> None:
+        row = _traj_row(splits={"calibration": 2})
+        assert rows_mod.non_reflow_splits(row) == set()
+
+    def test_站点级行按它自己的档算(self) -> None:
+        assert rows_mod.non_reflow_splits(_site_row(split="holdout")) == {"holdout"}
+        assert rows_mod.non_reflow_splits(_site_row(split="calibration")) == set()
+
+    def test_没冻结的行不沾任何档(self) -> None:
+        """「没冻结」≠「沾封存面」⇒ 兜底不误伤（它是**另一道**闸）。"""
+        assert rows_mod.non_reflow_splits(_site_row(split="")) == set()
+
+
 # ── 5. 逐站金标进内容键 ──────────────────────────────────────
 
 
@@ -351,13 +382,20 @@ def _record(gid: str, **over) -> dict:
 
 
 class TestReflowTrajectoryGate:
-    """**档闸按「头部站点」定档**（owner 2026-11-01 裁的 ② · 台账 Q-26）。
+    """**档闸按「头部站点」定档 + 封存面兜底**（owner 2026-11-01 裁的 ② ·
+    台账 Q-26，并追加「泄露做兜底」）。
 
-    ⚠️ 口径换过一次：原来**取严**（沾上 holdout / regression 就整条不进金标）
-    ⇒ 现在按**裁定② 的末条结论所在的那个站**（头部站点）的档算。
-    ⚠️⚠️ **两个数不是宽严关系**（同日逐条核对实测）：取严 7 条 vs ② 13 条，
-    **交集只有 2 条** ⇒ ② 是**换了一批数据**；且 ② 放行的 13 条里 **11 条
-    含 holdout 站点** ⇒ **封存面泄漏面 11/13**。
+    ⚠️ 口径换过两次：
+
+    1. 原来**取严**（沾上 holdout / regression 就整条不进金标）⇒ 改按**裁定②
+       的末条结论所在的那个站**（头部站点）的档算；
+    2. **又加「兜底」**：**整条**沾着封存面 / 回归面 ⇒ 整条不进金标
+       （哪怕头部站点在调参池）——「头部在调参池」**不够**：其余站点里的
+       封存事实会跟着轨迹级标签一起进调参池 ⇒ 封存面作废。
+
+    ⚠️⚠️ **读数（v16 · 走产品代码路径实测）**：② 无兜底放行 **13** ⇒
+    **加兜底后只剩 2**（被挡 11 条）⇒ **比取严的 7 条还少**——少的 5 条是
+    「头部站点认不出」的残缺轨迹（被 ② 的 fail-closed 挡，**不是被兜底挡**）。
     """
 
     def test_头部站点在封存面就不进金标(self) -> None:
@@ -380,17 +418,38 @@ class TestReflowTrajectoryGate:
         assert rows == []
         assert summary["skipped_detail"][0]["reason"] == reflow_mod.SKIP_REGRESSION
 
-    def test_头部站点在调参池就放行_哪怕整条还沾着封存面(self) -> None:
-        """② 的口径**就是这样**：放行只看**头部站点**那一档。
+    def test_头部在调参池但整条沾着封存面就不进金标(self) -> None:
+        """**兜底**（owner 2026-11-01「泄露做兜底」）。
 
-        ⚠️ **这条是「封存面泄漏面 11/13」的机制**（实测：② 放行的 13 条里
-        11 条含 holdout 站点）⇒ 不是「取严的放宽」，是**换了一批数据**。
-        ⚠️ **要收回（回取严）或加兜底（「沾 holdout 就不回流」）就改
-        `rows.headline_split` 与 `golden_ls/reflow.py` 的档闸**（两处）。
+        ⚠️ **这条正是「封存面泄漏面 11/13」的封堵**：② 只看头部站点那一档
+        ⇒ 其余站点里的 holdout 事实会跟着轨迹级标签一起进调参池 ⇒ 封存面
+        作废 ⇒ **整条挡掉**。
+        ⚠️ **头部站点自己落在封存面 / 回归面的那些，被这一条一并覆盖**
+        ⇒ 不要在两处各改一次（会漂）。
         """
         row = _traj_row(
             "T001__a", splits={"calibration": 1, "holdout": 1}, head_split="calibration"
         )
+        rows, summary = reflow_mod.build_worksheet(
+            [_record("T001__a")], gold_rows={"T001__a": row}, ann_rows={}
+        )
+        assert rows == []
+        assert summary["skipped_detail"][0]["reason"] == reflow_mod.SKIP_HOLDOUT
+
+    def test_头部在调参池但整条沾着回归集就不进金标(self) -> None:
+        """回归面同理（C-17「回归集里的行不得改动」）。"""
+        row = _traj_row(
+            "T001__a", splits={"calibration": 1, "regression": 1}, head_split="calibration"
+        )
+        rows, summary = reflow_mod.build_worksheet(
+            [_record("T001__a")], gold_rows={"T001__a": row}, ann_rows={}
+        )
+        assert rows == []
+        assert summary["skipped_detail"][0]["reason"] == reflow_mod.SKIP_REGRESSION
+
+    def test_整条纯调参池就放行(self) -> None:
+        """兜底**只挡封存面/回归面** ⇒ 纯 calibration 的照常放行。"""
+        row = _traj_row("T001__a", splits={"calibration": 2}, head_split="calibration")
         rows, summary = reflow_mod.build_worksheet(
             [_record("T001__a")], gold_rows={"T001__a": row}, ann_rows={}
         )
@@ -425,6 +484,49 @@ class TestReflowTrajectoryGate:
             gold_rows={"T001__a": row},
         )
         assert any("定不出档" in e for e in errors)
+
+    def test_整条沾着封存面时校验也退2(self) -> None:
+        """`validate` 是**第二道闸** ⇒ 兜底在它这儿也得拦（同一道闸）。"""
+        row = _traj_row(
+            "T001__a", splits={"calibration": 1, "holdout": 1}, head_split="calibration"
+        )
+        errors = reflow_mod.validate(
+            [
+                {
+                    "kind": reflow_mod.KIND_CONFIRM,
+                    "golden_id": "T001__a",
+                    "split": "calibration",
+                    "label": "success",
+                    "reviewed_by": "",
+                    "access_surface": "human-browser",
+                    "observed_at": "2026-10-29T14:03:00+08:00",
+                    "creates_gold": True,
+                }
+            ],
+            gold_rows={"T001__a": row},
+        )
+        assert any("封存面不进金标" in e for e in errors)
+
+    def test_整条沾着回归集时校验也退2(self) -> None:
+        row = _traj_row(
+            "T001__a", splits={"calibration": 1, "regression": 1}, head_split="calibration"
+        )
+        errors = reflow_mod.validate(
+            [
+                {
+                    "kind": reflow_mod.KIND_CONFIRM,
+                    "golden_id": "T001__a",
+                    "split": "calibration",
+                    "label": "success",
+                    "reviewed_by": "",
+                    "access_surface": "human-browser",
+                    "observed_at": "2026-10-29T14:03:00+08:00",
+                    "creates_gold": True,
+                }
+            ],
+            gold_rows={"T001__a": row},
+        )
+        assert any("回归集不得改动" in e for e in errors)
 
     def test_没有原标注的行是新建(self) -> None:
         """轨迹级标注大部分还不存在 ⇒ 人判的第一条是**新建**。"""
