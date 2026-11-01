@@ -66,7 +66,7 @@ def _click(label: str, tag: str = "button", origin: str = "model") -> ActionView
 
 def _sample(*actions: ActionView, observations=(), **kw) -> Sample:
     base = dict(
-        sample_id="T001__a__site-1", task_id="T001", unit="site-1",
+        sample_id="T001__a", task_id="T001",
         title="功夫", system_prompt=schema.SYSTEM_PROMPT, tools=schema.TOOL_SPECS,
         user_prompt="有没有能看正片的", provenance={"genre": "喜剧"},
         actions=tuple(actions), observations=tuple(observations),

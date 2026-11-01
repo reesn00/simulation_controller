@@ -3,20 +3,30 @@
 > 交接面是**格式**，不是 Python 对象——本文描述 `task_views/<task_id>__<run_id>.json` 的字段，
 > 任何一侧改形状都应在此同步。
 > **渲染源是 P1**，不从 P2 反推（D14.3，见[设计方案 14](../设计方案/14-完整任务视图与LS上传.md)）。
-> 「T 渲染不读 P2」由 `tests/contract/test_t_contract.py::TestNoP2Import` 用 AST 强制。
+> 「T 渲染不读 P2」由 `tests/contract/test_t_contract.py::Test模块图::test_task_view不读P2` 用 AST 强制。
+>
+> ⚠️ **2026-10-30 · 方案 23（per-Run）**：T 本来就是 per-Run，但**P3 也改成
+> per-Run 了** ⇒ T 的 `trajectory_id` 与 P2 的 `sample_id` **逐字相同**
+> （也与 P1 存档名相同）。任务级结论同步换成裁定 ②「**看最后一个结论**」。
 
 ## 与 P3 的对照
 
-| 维度 | P3 (per-unit) | T (per-run) |
+> ⚠️ **2026-10-30 · 方案 23（per-Run）**：**P3 也改成 per-Run 了**——
+> 以前 P3 是「一个决策单元一条样本」，现在是「一个任务一条轨迹」。
+> ⇒ 两边的**主键逐字相同**，且都与 P1 存档名相同。
+
+| 维度 | P3（per-Run） | T（per-Run） |
 |---|---|---|
-| 主键 | `<task_id>__<run_id>__<unit>` | `<task_id>__<run_id>` |
+| 主键 | `<task_id>__<run_id>` | `<task_id>__<run_id>` —— **与 P3 逐字相同** |
 | 落点 | `output/pipeline/views/<id>_{messages,openai,meta}.json` | `output/pipeline/task_views/<task_id>__<run_id>.json` |
 | 消费方 | SFT 训练 | LS 上传 / L4 任务级复核 / 人工复核 |
-| 渲染源 | P2（per-unit） | P1（per-run） |
-| 切条逻辑 | `split_archive` 一个决策单元一条 | **不切条**——per-run 完整一份 |
-| `step_index` | unit 内（0..n-1） | 全 run 重编（0..N-1） |
-| `tool_call_id` | `call_<step>` per unit | `call_<step>` 全局稠密重编 |
-| 缺件标记 | `degraded_from`（per-unit 缺件） | `degraded_from`（整条任务缺件，集合并集） |
+| 渲染源 | P2（per-Run 样本） | P1（per-Run 存档） |
+| 切条逻辑 | `split_archive` **0 或 1 条**（一个 Run 一条轨迹） | **不切条**——per-run 完整一份 |
+| `step_index` | 轨迹内全局（0..N-1，整条流摊平） | 全 run 重编（0..N-1） |
+| `tool_call_id` | `call_<step>` 全局稠密 | `call_<step>` 全局稠密重编 |
+| 缺件标记 | `degraded_from`（**轨迹级**缺件） | `degraded_from`（**恒为 `[]`**，见下） |
+| 任务级结论 | `outcome`（裁定 ②：末条结论） | `overall_branch`（**同一条口径**） |
+| 站点级明细 | `site_outcomes`（带全局步号区间） | `unit_outcomes`（按访问点枚举，带 `matched`） |
 
 ---
 
@@ -37,7 +47,7 @@
 
 | 顶层键 | 类型 | 说明 |
 |---|---|---|
-| `trajectory_id` | str | `<task_id>__<run_id>` —— 排序即时间序，从 id 反查 P1 |
+| `trajectory_id` | str | `<task_id>__<run_id>` —— 排序即时间序，从 id 反查 P1。⚠️ **per-Run 之后它与 P2 的 `sample_id` 逐字相同**（也与 P1 存档名相同）——这是 per-Run 化才**新成立**的性质：以前 T 是 `<task>__<run>`、P3 是 `<task>__<run>__<unit>`，两边对不上，要从 T 反查 P3 得靠 `unit_sample_ids` 拼 |
 | `task_id` / `run_id` / `title` | str | 切片轴 |
 | `schema_version` | str | T 格式版本（写入时记录），与 P1 `schema_version` 同款纪律 |
 | `messages` | array | 通用 `{role, content}` 序列 |
@@ -54,10 +64,10 @@
 
 | 顺序 | `role` | 来源 | 规则 |
 |---|---|---|---|
-| 1 | `system` | P1 `SYSTEM_PROMPT` | 空则不发（与 P3 同款） |
+| 1 | `system` | T 自声明的 `_TASK_SYSTEM_PROMPT`（与 `assembler.schema.SYSTEM_PROMPT` 逐字一致） | 空则不发（与 P3 同款） |
 | 2 | `user` | P1 `user_prompt`（persona 渲染后） | **只发一次**；空 `user_prompt` 不发空消息（与 P3 判断 4 同款） |
 | 3..N | `assistant` / `user` 交替 | P1 顶层 `steps[]` + `visits[i].steps[]`（按时间序） | 每步一条；assistant 内容 = `[动作] <tool>(…)` + 该步 `rationale`；user 内容 = 该步观察渲染文本（见 §3） |
-| 末尾 | `assistant` | 任务级 summary | **没有 `tool_calls`**；内容从 `outcomes[]` + `ledger.by_branch` + 全局 outcome 聚合派生 |
+| 末尾 | `assistant` | 任务级 summary | **没有 `tool_calls`**；内容从 `outcomes[]` 的**末条结论** + `ledger.by_branch` 派生 |
 
 ### 拼接顺序与时序
 
@@ -97,22 +107,35 @@ P3 `render_observation` 同款排版：
 video 标签 <n> 个，iframe <n> 个
 ```
 
-三条规则与 P3 一致：① 空观察渲染成 `（本步没有取到页面内容）`，不空串；② 带 `degraded` 时末尾追加 `[采集降级: …]`；带 `truncated` 时追加 `[内容不完整: …]`；③ T 不动裁剪（裁剪在 P3 侧完成；T 从 P1 拿的是**取证态全文**，按 P3 渲染口径裁剪到训练态）。
+三条规则与 P3 一致：① 空观察渲染成 `（本步没有取到页面内容）`，不空串；② 带 `degraded` 时末尾追加 `[采集降级: …]`；带 `truncated` 时追加 `[内容不完整: …]`。
+
+③ **裁剪口径与 P3 同款，但 T 自己跑一遍**：P1 的观察是**取证态**（全文
+6000 字符 / 80 元素 / 50 链接），T 先经 `observation_view.render` 裁到训练态
+（2000 / 40 / 30）再排版；P3 那边则是从 P2 已裁好的形态接过来。
+（排版函数 T 也**自己写一份**——T 不 import `assembler.views`，交接面是格式
+不是对象。）
 
 ### 任务级 summary（末尾 assistant 消息）
 
 **确定性合成，无模板**。内容来源：
 
-1. `outcomes[]` 聚合 → 处置词表（与 `_CLOSING_DISPOSITION` 同款，自行声明）；
-2. `ledger.by_branch` 摘要（如「3 站访问 · 1 成功 · 2 失败」）；
-3. **不读 unit 级 `reflection`**——T 层级高于 P1 顶层 / visits 一层的 reflection ；
-5. **空 trajectory**（即零可见模型动作）不编总结。
+1. `outcomes[]` 的**末条结论** → 处置词表（与 `_CLOSING_DISPOSITION` 同款，自行声明）；
+2. `ledger.by_branch` 摘要（如「broken=1 · no_play_control=2」）；
+3. **不读 unit 级 `reflection`**——T 层级高于 P1 顶层 / visits 一层的 reflection；
+4. **空 trajectory**（即零可见模型动作）不编总结。
 
-判定规则（与 P3 判断 7 同款）：
+判定规则（裁定 ②，**看最后一个结论**——与 P3 判断 7、与 P2 的任务级标签
+**同一条**）：
 
-- 任一 `outcomes[i].branch is None` ⇒ success 处置词；
-- `outcomes[i].branch is not None` ⇒ 失败处置词（取首个失败 unit 的分支名进词表）；
-- 全部 `outcomes[]` 为空 ⇒ "无可访问站点" 处置词。
+- **末条**结论 `outcomes[-1].branch is None` ⇒ success 处置词
+  （`记录该网址为可播放资源：<url>`）；
+- **末条**结论 `outcomes[-1].branch is not None` ⇒ 失败处置词（分支名进词表，
+  未知分支照实写出分支名——不能静默消失）；
+- 全部 `outcomes[]` 为空 ⇒ `无可访问站点（total_sites=<N>）` 处置词。
+
+⚠️ **2026-10-30 · 方案 23**：处置词从「任一成功 ⇒ 成功」改成**最后一个
+结论**（裁定 ②）。旧口径会把「中途成功过、后来又失败」的轨迹报成成功——
+而那正是训练侧要学的东西。
 
 ---
 
@@ -171,7 +194,8 @@ video 标签 <n> 个，iframe <n> 个
   ⚠️ **两个 aria 面的说明文字也不同**（参数相同、说明不同：camofox 面的
   说明里不许出现 exact）——`description` 同样从 catalog 按面取。
 - 每个参数给 `{"type": "string", "description": "..."}`——参数语义来自 catalog。
-- `required` 按**真实存档的出现率**定（`press` 的 `tag`/`label` 只有 30% ⇒ 不必填）。
+- `required` 按**真实存档的出现率**定（`press` 的 `key` 是 100%、`click` 的
+  `tag`/`label` 只有 30% ⇒ 不必填）。
 - 可见性由 catalog 的 `visibility` 字段决定：`new_tab` / `close_tab` 是执行器
   自己的会话管理动作，不进。
 
@@ -185,25 +209,26 @@ video 标签 <n> 个，iframe <n> 个
 |---|---|---|
 | `trajectory_id` | str | 与顶层一致 |
 | `task_id` / `run_id` / `title` | str | 切片轴 |
-| `source_archive` | str | 据以生成的 P1 文件名（不含目录） |
+| `source_archive` | str | 据以生成的 P1 文件名（不含目录）——⚠️ **当前恒为空串**：`to_task_meta` 与 `build_task_view` 都只留了注入位（代码里写着「由调用方在批量场景下注入文件名」），实际没填 |
 | `schema_version` | str | T 格式版本 |
 | `tool_surface` | str | **工具面**（2026-10-20 方案 15 §7 R1）：这份轨迹的动作空间属于哪个方言（`obscura-1` / `camoufox-1` / **`camofox-1`**）。T 读 P1，所以面从源存档的 `driver` 折算。⚠️ **三个面 ≠ 三套方言**——方言只有两套词表（见 P2 契约 · 工具面一节） |
 
-### 单元级汇总（**T 独有，P3 没有**）
+### 单元级汇总（T 独有的一层；P3 的对应物是 `site_outcomes`）
 
 | 键 | 类型 | 说明 |
 |---|---|---|
-| `unit_count` | int | 单元数（search + 全部 site-N） |
-| `unit_sample_ids` | list[str] | 各单元的 P3 `sample_id` —— **从 T 反查 P3 的入口** |
-| `unit_outcomes` | list[object] | 每个 unit 的 outcome 摘要（**完整不省略**） |
+| `unit_count` | int | 单元数（search + 全部 site-N）——**T 仍是按单元读的**（P1 顶层 `steps[]` + `visits[i].steps[]`），但单元**不是交付粒度** |
+| `unit_sample_ids` | list[str] | P3 的 `sample_id` 列表 —— **从 T 反查 P3 的入口**。⚠️ **per-Run 之后只有一项**：`<task_id>__<run_id>`（就是这条轨迹自己的 P3 样本 id）。键名保留 `unit_sample_ids` 是为了不牵动下游读档脚本 |
+| `unit_outcomes` | list[object] | 每个访问点的 outcome 摘要（**完整不省略**） |
 | `ledger_summary` | object | P1 `ledger` 原样（`total_sites` / `succeeded` / `negative_samples` / `by_branch` / `missing_branches` / `heuristic_candidates`） |
-| `task_gate` | object | 整条任务的闸门汇总：`passed` 当且仅当全部 unit `gate=passed` 且无 degraded；否则 `failed` |
-| `gate_breakdown` | list[{unit, gate, rationale_missing}] | 逐 unit 闸门状态 |
+| `task_gate` | object | **任务级**闸门（裁定 ②）：末条结论分支为空 ⇒ `passed`；非空 ⇒ `failed`；一个站点结论都没有 ⇒ `not_run`（判不出来，不算通过） |
+| `gate_breakdown` | list[{unit, gate, rationale_missing}] | 逐访问点闸门状态。`gate` 三值：配到了结论且分支为空 ⇒ `passed`；配到了且分支非空 ⇒ `failed`；**没配到结论 ⇒ `not_run`**（缺件，不是成功） |
 
 ### `unit_outcomes` 元素
 
 ```json
 {"unit": "site-2",
+ "matched": true,
  "branch": "no_play_control" | null,
  "branch_label": "找不到播放控件" | "成功",
  "evidence": "...",
@@ -211,16 +236,28 @@ video 标签 <n> 个，iframe <n> 个
  "play_page_url": "..."}
 ```
 
-`branch is None` = 成功（与 P1 ledger 同款口径）。
+| 元素键 | 含义 |
+|---|---|
+| `unit` | `site-N`（访问序号，从 1 起） |
+| `matched` | **配到结论了没有**——`false` 是**缺件**，**不是**成功 |
+| `branch` | 分支名；**为空 = 成功**（与 P1 ledger 同款口径） |
+| `branch_label` / `evidence` / `site_url` / `play_page_url` | P1 outcome 的对应字段原样 |
+
+⚠️ **2026-10-30 · 方案 23：配对规则换了**。以前 T **按位置**配
+（`visits[i]` ↔ `outcomes[i]`），而那两条序列**不是一一对应**的（孤儿记账、
+候选阶段记账、多轮访问）——实测在 109/127 份真实存档（86%）上与 P2 的 URL
+配对给出**不同**的结论，其中一份把**成功报成了失败**。现在统一到
+`trajectory_pipeline/outcomerules`（**候选 → 落地 → 播放页**逐档试，每档匹
+`site_url` **或** `url`，同档取末条）——**T 与 P2 与评估侧读的是同一份口径**。
 
 ### 可用性 / 结论
 
 | 键 | 类型 | 说明 |
 |---|---|---|
 | `gate` | object | **任务级**闸门（与 `task_gate` 同义，保留以保持 P3 字段对齐） |
-| `rationale_missing` | bool | 整条任务**任一** step 缺 rationale 记 true |
-| `degraded_from` | list[str] | 整条任务缺件（集合并集：任一 unit 缺件计入） |
-| `overall_branch` | str \| null | 任务级聚合分支：`success` / `failed_<x>` / `unknown`（详细聚合策略见设计方案 14 §4.3） |
+| `rationale_missing` | bool | 整条轨迹**一条** rationale 都没写成时为 true（**缺一条不算**——那是 `rationale_steps` 里少一行的口径，两件事分开记） |
+| `degraded_from` | list[str] | **恒为 `[]`**——T 视图**不**做 per-unit 缺件聚合（那是 P2 的事）；整条任务的缺件由 `gate` / `task_gate` 表达 |
+| `overall_branch` | str | **任务级分支**（裁定 ②：末条结论）：`success`（末条结论分支为空）/ **末条结论的分支名** / `unresolved`（一个站点结论都没有 ⇒ 判不出来，不是成功） |
 
 ### 可回放性自查
 
@@ -250,16 +287,22 @@ video 标签 <n> 个，iframe <n> 个
 
 ### 与 P3 的口径差异
 
-| 维度 | P3 (per-unit) | T (per-run) |
+| 维度 | P3（per-Run） | T（per-Run） |
 |---|---|---|
-| `degraded_from` 来源 | 单 unit 缺件键集合 | **集合并集**：任一 unit 缺件计入 |
-| `task_gate` 计算 | `passed` 当且仅当本 unit 闸门通过 | `passed` 当且仅当**全部** unit 闸门通过且 `degraded_from` 为空 |
-| 缺观察处理 | 显示**该 unit** 的回执 | 显示**全局**的回执；meta `missing_observation_count` 是全局计数 |
+| `degraded_from` 来源 | **整条轨迹**的缺件键集合 | **恒为 `[]`**（T 视图不做缺件聚合） |
+| 任务级闸门 | `gate`：P2 的闸门三值**原样透传** | `task_gate` / `gate`：**末条结论**分支为空 ⇒ `passed`，非空 ⇒ `failed`，一个结论都没有 ⇒ `not_run` |
+| 逐点闸门 | `site_outcomes` 只带步号区间（不逐点给闸门） | `gate_breakdown` 逐访问点给 `gate`（**没配到结论 ⇒ `not_run`**，不是 `passed`） |
+| 缺观察处理 | 显示**全局**的回执 | 显示**全局**的回执；meta `missing_observation_count` 是全局计数 |
 
 ### 行为合约：缺件必须看得见
 
-- **P1 没有的键**记进 `degraded_from`（与 P2 同款：`steps` / `user_prompt` / `run_config` / 全文正文等）；
-- **P1 字段缺失但不阻断渲染**：仍渲染出 T 视图，缺件必须**显式可见**（`degraded_from` / `gate=not_run` / `meta.task_gate=failed`）；
+- **P1 没有的键**由 **P2** 记进 `degraded_from`（与 P2 同款：`steps` /
+  `user_prompt` / `run_config` / 全文正文等）；**T 视图自己不算这层**——
+  它的 `degraded_from` 恒为 `[]`，缺件在 T 侧靠 `gate` / `task_gate` /
+  `gate_breakdown` **显式可见**；
+- **P1 字段缺失但不阻断渲染**：仍渲染出 T 视图，缺件必须**显式可见**
+  （`gate=not_run` / `meta.task_gate=failed` / `gate_breakdown` 里那条
+  `not_run`）；
 - **fail-closed 在训练侧的对应物**：与 P3 同款——降级带 `[采集降级: …]` 后缀，模型要学会看到「这块信息不完整」时说判不了。
 
 ---
@@ -270,14 +313,16 @@ T 视图**自行声明**该词表，**不 import executor**。键集与 `executo
 
 ```python
 _CLOSING_DISPOSITION: dict[str, str] = {
-    "no_play_site": "搜索结果里没有匹配的资源站点。",
-    "unreachable_hard": "尝试访问的站点不可达。",
-    "login_wall_or_blocked": "...",
-    # ... 其他分支对应处置词
+    "not_play_site": "不是播放站点，排除",
+    "unreachable_hard": "导航失败，排除",
+    "no_play_control": "页面上没有播放控件，排除",
+    "login_wall_or_blocked": "登录墙/验证码/地区限制，排除",
+    # ... 其余分支对应处置词（共 21 条，键集与 executor 的分支标签一一对应）
 }
 ```
 
-未命中分支的 word 槽用 default："任务未能完成。"
+未命中分支的处置词用 default：`不予记录（分支：<branch>）`——**照实写出
+分支名**，不能静默消失（词表没跟上的新分支在这里要看得见）。
 
 成功处置词（``success``）**不在该词表里**——T 视图的成功处置是手写字符串
 ``记录该网址为可播放资源：<url>``，不通过 ``_CLOSING_DISPOSITION`` 查表。
@@ -288,14 +333,21 @@ _CLOSING_DISPOSITION: dict[str, str] = {
 
 ## 系统提示词与工具声明（`_TASK_SYSTEM_PROMPT` / `_TASK_TOOL_SPECS`）
 
-T 视图**自行声明**系统提示词与工具空间，**不 import `assembler.schema`**（T 不读
-P2，D14.3）。字面字符串与 `assembler.schema.SYSTEM_PROMPT` / `assembler.schema.TOOL_SPECS`
-**逐字一致**——由契约测试 `tests/contract/test_t_contract.py::Test常量同步` 盯住：
+T 视图**不 import `assembler.schema`**（T 不读 P2，D14.3），因此两样东西
+各自有来源：
 
-- 改了 schema 的 prompt，T 这边**必须**同步改；
-- 改了 `TOOL_SPECS` 的工具名/参数/指令，T 这边**必须**同步改。
+- **系统提示词**：`task_view.py::_TASK_SYSTEM_PROMPT` **自己声明**，
+  字面字符串与 `assembler.schema.SYSTEM_PROMPT` **逐字一致**——由契约测试
+  `tests/contract/test_t_contract.py::Test常量同步::test_SYSTEM_PROMPT与schema一致` 盯住。
+  改了 schema 的 prompt，T 这边**必须**同步改。
+- **工具声明**：⚠️ **不再自己抄**（2026-10-20 改）。以前 T 抄了一份
+  `_TASK_TOOL_SPECS`，靠「复现一次 + 契约测试盯同步」防漂移；工具从 6 条
+  扩到 13 条、每条多两个字段之后，手抄两份必漂。现在 `_TASK_TOOL_SPECS`
+  **从 `trajectory_pipeline/toolcatalog` 派生**——那份是唯一真源，P2 / P3 / T
+  三方都从它取，**漂移在结构上不可能**。catalog 是跨层地基（不 import 任何
+  功能模块），取它**不违反**「T 不 import `assembler.schema`」。
 
-这条同步纪律很关键——T 视图与 P3 是**两种不同的渲染**（T 是 P1 的另一份渲染，
+这条纪律很关键——T 视图与 P3 是**两种不同的渲染**（T 是 P1 的另一份渲染，
 P3 是 P2 的另一份渲染），如果改了一边忘改另一边，LS 上传视图与 SFT 训练
 视图用的就是不同 prompt，模型看到的「系统」飘忽不定。
 
@@ -306,7 +358,7 @@ P3 是 P2 的另一份渲染），如果改了一边忘改另一边，LS 上传�
 | 数据 | T 用什么 | 不干什么 |
 |---|---|---|
 | P1 存档 | **直接读** —— 唯一渲染源（D14.3） | 不读仓库根 `output/`（D8） |
-| P2 样本 | **不读** —— `TestNoP2Import` AST 强制 | 不 import `assembler.schema` |
+| P2 样本 | **不读** —— `Test模块图::test_task_view不读P2` AST 强制 | 不 import `assembler.schema` |
 | P3 视图 | **不读** —— T 与 P3 是 P1 / P2 的对称渲染 | 不 import `assembler.views` |
 | T 视图 | 本文描述的形态 | 重建时不依赖 executor / builder / views 当前版本 |
 
@@ -315,6 +367,7 @@ P3 是 P2 的另一份渲染），如果改了一边忘改另一边，LS 上传�
 ## 相关文档
 
 - [设计方案 14](../设计方案/14-完整任务视图与LS上传.md) —— D14.1–D14.6 决策基线
+- [设计方案 23](../设计方案/23-每任务一轨迹.md) —— per-Run 改造（owner 裁定 ①②③）：粒度改成「一个任务一条轨迹」、任务级结论看最后一个、站点级明细留在轨迹内
 - [P1 契约](P1-observation.md) —— T 的渲染源
 - [P2 契约](P2-sample.md) —— P3 的渲染源
 - [P3 契约](P3-views.md) —— SFT 训练视图

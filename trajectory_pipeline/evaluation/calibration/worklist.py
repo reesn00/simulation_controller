@@ -433,7 +433,7 @@ def build_scenes(
             scenes[golden_id] = {
                 "found": False,
                 "status": "not_read",
-                "unit": "",
+                "site": "",
                 "note": "卡与冻结档配不上（版本错配）⇒ 没读现场",
                 "degraded": [],
                 "title": "",
@@ -470,7 +470,7 @@ def build_worksheet(
         scene = scene_map.get(golden_id) or {
             "found": False,
             "status": "not_read",
-            "unit": "",
+            "site": "",
             "note": "**没生成现场读数**（build 时没取存档）——"
             "这一栏空着不等于页面是空的",
             "degraded": [],

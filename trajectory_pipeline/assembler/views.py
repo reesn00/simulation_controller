@@ -426,10 +426,11 @@ def _closing_text(
     """动作流结束后的「任务总结」。**只派生，不编新事实**。
 
     - **空轨迹不编总结**：没有可见的模型动作，就没有可总结的事；
-    - 处置只看 ``outcome``：``branch=None`` 记成功（带播放页地址），
-      已知分支查 :data:`_CLOSING_DISPOSITION`，**未知分支照实写出
-      分支名**——词表没跟上的新分支在这里不能静默消失；
-    - 结论来自 unit 级 :attr:`reflection <Sample.reflection>` 的
+    - 处置只看 ``outcome``：那是**任务级结论**（裁定 ②：最后一个结论）——
+      ``branch=None`` 记成功（带播放页地址），已知分支查
+      :data:`_CLOSING_DISPOSITION`，**未知分支照实写出分支名**——
+      词表没跟上的新分支在这里不能静默消失；
+    - 结论来自 :attr:`reflection <Sample.reflection>` 的
       ``rationale.conclusion``——那是模型自己写下的总结，不是本模块编的。
 
     ⚠️ INC46（2026-10-15）：结论来源从「末步 ``rationale.conclusion``」
@@ -440,6 +441,11 @@ def _closing_text(
 
     没有 reflection 时退回**纯 disposition 话术**，不拿末步 rationale
     顶替——顶替就是拿「预期」冒充「结论」，比没有更坏。
+
+    ⚠️ **2026-10-30 · 方案 23**：``outcome`` 现在是**轨迹级**的
+    （末条结论），不再是某个访问点的。处置话术跟着任务级标签走，
+    而「模型自己写的总结」取自**末个访问点**的反思——那正是这条轨迹
+    的落点。
     """
     if not steps:
         return None
@@ -452,8 +458,14 @@ def _closing_text(
 
     outcome = sample.get("outcome")
     if not isinstance(outcome, Mapping):
-        # 搜索单元没有 outcome——它的「总结」就是进入下一步。
-        disposition = "接下来逐一打开候选站点核验"
+        # 这条轨迹**没有任务级结论**（一个站点结论都没有）——判不出来，
+        # 不是成功（fail-closed）。
+        #
+        # ⚠️ 这里**不能**沿用旧口径的「接下来逐一打开候选站点核验」：
+        # 那是**搜索单元**的收尾话术，而搜索单元不再是样本的粒度。
+        # 拿它顶替等于把「判不出来」说成「还在进行中」——训练出来的
+        # 模型会以为没结论是正常的中间态。
+        disposition = "本轨迹没有站点结论，判不出来"
     else:
         branch = outcome.get("branch")
         if branch is None:
@@ -577,13 +589,18 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
 
     四组：
 
-    - **来源**：``sample_id`` / ``task_id`` / ``unit`` / ``source_archive``——
+    - **来源**：``sample_id`` / ``task_id`` / ``title`` / ``source_archive``——
       从 id 就能反查 P1，不必开文件。
     - **可用性**：``gate`` / ``rationale_missing`` / ``degraded_from``——
       决定这条能不能进训练集。
-    - **结论**：``outcome``（含 ``branch``）——批次级断言的原料。
+    - **结论**：``outcome``（**任务级**，含 ``branch``）——批次级断言的原料；
+      ``site_outcomes`` 是**轨迹内的站点级明细**（裁定 ③），
+      回答「这条轨迹里到底在哪一步走不通」。
     - **可回放性自查**：``step_count`` / ``observation_count`` /
       ``infrastructure_actions``——见下。
+
+    ⚠️ **2026-10-30 · 方案 23**：``unit`` 键**没了**——一个任务一条轨迹，
+    不再按决策单元切分。站点级明细改挂 ``site_outcomes``。
     """
     six = sample.get("six") or {}
     actions = list(six.get("actions") or ())
@@ -618,7 +635,6 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "sample_id": sample.get("sample_id", ""),
         "task_id": sample.get("task_id", ""),
-        "unit": sample.get("unit", ""),
         "title": sample.get("title", ""),
         "source_archive": sample.get("source_archive", ""),
         "gate": dict(sample.get("gate") or {}),
@@ -628,7 +644,11 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         # 「有时可以未卜先知、有时不行」，而报表上只表现为分数略降。
         "rationale_era": str(sample.get("rationale_era") or ""),
         "degraded_from": list(sample.get("degraded_from") or ()),
+        # 任务级结论（裁定 ②：最后一个结论）。
         "outcome": dict(sample["outcome"]) if sample.get("outcome") else None,
+        # 站点级明细（裁定 ③）：轨迹内每个访问点的结论。
+        # **给人看的**——训练侧只消费上面的 ``outcome``。
+        "site_outcomes": list(sample.get("site_outcomes") or ()),
         "provenance": dict(six.get("provenance") or {}),
         # 可回放性：动作与观察必须成对（末步失败允许少一个观察）
         "step_count": len(actions),

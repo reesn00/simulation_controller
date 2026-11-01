@@ -55,7 +55,7 @@ def _out(branch, source="llm", question="select.play_sites", reached=True):
 
 def _sample(outcome, observations=()):
     return Sample(
-        sample_id="T001__a1__site-1", task_id="T001", unit="site-1",
+        sample_id="T001__a1", task_id="T001",
         title="功夫", system_prompt="s", tools=(), user_prompt="u",
         provenance={}, actions=(), observations=tuple(observations),
         gate=GateMark("not_run"), outcome=outcome,

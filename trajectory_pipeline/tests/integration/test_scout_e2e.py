@@ -47,9 +47,9 @@ def _archive(
 ) -> pathlib.Path:
     """写一份最小可切样本的 P1 存档。
 
-    ``split_archive`` 会按 :func:`sample_id` 把样本 id 编成
-    ``<task_id>__<run_id>__<unit>``(:func:`run_id_of` 从文件名取 run_id,
-    unit 通常是 "search")。所以 ``T001__r1__a.json`` → ``T001__r1__a__search``。
+    ⚠️ **2026-10-30 · 方案 23**：``sample_id`` 现在是
+    ``<task_id>__<run_id>``（:func:`run_id_of` 从文件名取 run_id），
+    **不带单元后缀**。所以 ``T001__r1__a.json`` → ``T001__r1__a``。
     """
     p = tmp_path / name
     p.write_text(
@@ -101,7 +101,6 @@ def _p2_sample(
                 "task_id": "T001",
                 "run_id": "r1",
                 "source_archive": source_archive,
-                "unit": "site-1",
                 "title": "功夫",
                 "user_prompt": "我要看功夫",
                 "outcomes": [],
@@ -154,8 +153,9 @@ class TestRunScoutThreeBuckets:
         # 1 个 archive 含 3 个不同的 sample_id(三个独立 Sample)
         for sid in ("a", "b", "c"):
             _archive(tmp_path, f"T001__r1__{sid}.json")
-            # split_archive 生成的 sample_id = T001__r1__{sid}__search
-            full_id = f"T001__r1__{sid}__search"
+            # ⚠️ **2026-10-30 · 方案 23**：一个 Run 一条轨迹 ⇒
+            # sample_id = <task_id>__<run_id>（与 P1 存档名逐字相同）。
+            full_id = f"T001__r1__{sid}"
             _p2_sample(tmp_path, full_id, source_archive=f"T001__r1__{sid}.json")
 
         # 按 sample_id 装不同的 scoring —— 实际跑时同一个 _SCORERS 全局,
@@ -180,9 +180,9 @@ class TestRunScoutThreeBuckets:
         def mux(dim: str):
             def _f(sample):
                 table = {
-                    "T001__r1__a__search": {"d2": 4, "d4": 4, "d5": 4, "d6": 4},
-                    "T001__r1__b__search": {"d2": 2, "d4": 4, "d5": 4, "d6": 4},
-                    "T001__r1__c__search": {"d2": None, "d4": 4, "d5": 4, "d6": 4},
+                    "T001__r1__a": {"d2": 4, "d4": 4, "d5": 4, "d6": 4},
+                    "T001__r1__b": {"d2": 2, "d4": 4, "d5": 4, "d6": 4},
+                    "T001__r1__c": {"d2": None, "d4": 4, "d5": 4, "d6": 4},
                 }[sample.sample_id]
                 return _V(table[dim])
             return _f
@@ -205,9 +205,9 @@ class TestRunScoutThreeBuckets:
         pos = [json.loads(l) for l in (tmp_path / "out" / "positive_candidates.jsonl").read_text(encoding="utf-8").splitlines() if l]
         neg = [json.loads(l) for l in (tmp_path / "out" / "negative_candidates.jsonl").read_text(encoding="utf-8").splitlines() if l]
         qua = [json.loads(l) for l in (tmp_path / "out" / "quarantine.jsonl").read_text(encoding="utf-8").splitlines() if l]
-        assert [r["sample_id"] for r in pos] == ["T001__r1__a__search"]
-        assert [r["sample_id"] for r in neg] == ["T001__r1__b__search"]
-        assert [r["sample_id"] for r in qua] == ["T001__r1__c__search"]
+        assert [r["sample_id"] for r in pos] == ["T001__r1__a"]
+        assert [r["sample_id"] for r in neg] == ["T001__r1__b"]
+        assert [r["sample_id"] for r in qua] == ["T001__r1__c"]
 
         # 关键:negative 那条的 tag 必须带 d2_failed
         assert neg[0]["tags"] == ["d2_failed"]
@@ -218,7 +218,7 @@ class TestRunScoutThreeBuckets:
         # scout.jsonl 包含全部 3 条(顺序不锁)
         overview = [json.loads(l) for l in (tmp_path / "out" / "scout.jsonl").read_text(encoding="utf-8").splitlines() if l]
         assert {r["sample_id"] for r in overview} == {
-            "T001__r1__a__search", "T001__r1__b__search", "T001__r1__c__search",
+            "T001__r1__a", "T001__r1__b", "T001__r1__c",
         }
 
         # _clean 必须剥掉临时字段
@@ -264,7 +264,7 @@ class TestRunScoutSkip:
         # 此处直接由 verdict.score=None 走 undetermined → quarantine,与 not_run
         # 不同路径。后续如果接入 fail-closed 注入,这条用例需要扩展。
         _archive(tmp_path, "T001__r1.json")
-        _p2_sample(tmp_path, "T001__r1__search", source_archive="T001__r1.json")
+        _p2_sample(tmp_path, "T001__r1", source_archive="T001__r1.json")
         _install_scorers(monkeypatch, d2=None)  # 全 None → quarantine(本用例标记已知 gap)
         out = scout_io.run_scout(tmp_path, tmp_path / "out")
         # 现状:None 走 quarantine;not_run 路径需要 fail-closed 注入才能触发,见 v04 §11.2
@@ -277,7 +277,7 @@ class TestRunScoutVetoAndNegative:
 
     def test_veto_走negative_且tag只含veto(self, tmp_path: pathlib.Path, monkeypatch):
         _archive(tmp_path, "T001__r1.json")
-        _p2_sample(tmp_path, "T001__r1__search", source_archive="T001__r1.json")
+        _p2_sample(tmp_path, "T001__r1", source_archive="T001__r1.json")
         _install_scorers(monkeypatch, d5_veto=True)
         out = scout_io.run_scout(tmp_path, tmp_path / "out")
         assert out["negative"] == 1
@@ -286,7 +286,7 @@ class TestRunScoutVetoAndNegative:
 
     def test_多维低分_tag按dim升序(self, tmp_path: pathlib.Path, monkeypatch):
         _archive(tmp_path, "T001__r1.json")
-        _p2_sample(tmp_path, "T001__r1__search", source_archive="T001__r1.json")
+        _p2_sample(tmp_path, "T001__r1", source_archive="T001__r1.json")
         _install_scorers(monkeypatch, d2=1, d4=2, d5=4, d6=4)
         out = scout_io.run_scout(tmp_path, tmp_path / "out")
         assert out["negative"] == 1
@@ -299,7 +299,7 @@ class TestRunScoutEvidenceSupplement:
 
     def test_有mediabrowse_挂到evidence_supplement(self, tmp_path: pathlib.Path, monkeypatch):
         _archive(tmp_path, "T001__r1.json")
-        _p2_sample(tmp_path, "T001__r1__search", source_archive="T001__r1.json")
+        _p2_sample(tmp_path, "T001__r1", source_archive="T001__r1.json")
         _install_scorers(monkeypatch)
         # mediabrowse 索引里 (task_id, url) → l5
         mb = tmp_path / "mb"
@@ -328,7 +328,7 @@ class TestRunScoutEvidenceSupplement:
 
     def test_无mediabrowse_evidence_supplement为空dict(self, tmp_path: pathlib.Path, monkeypatch):
         _archive(tmp_path, "T001__r1.json")
-        _p2_sample(tmp_path, "T001__r1__search", source_archive="T001__r1.json")
+        _p2_sample(tmp_path, "T001__r1", source_archive="T001__r1.json")
         _install_scorers(monkeypatch)
         out = scout_io.run_scout(tmp_path, tmp_path / "out")
         rec = json.loads((tmp_path / "out" / "positive_candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])

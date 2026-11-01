@@ -41,6 +41,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
+from trajectory_pipeline import outcomerules
 from trajectory_pipeline.executor.archive import select_archives
 from trajectory_pipeline.executor.branches import (
     COLLECTION_SIDE_BRANCHES,
@@ -238,17 +239,25 @@ def _match_outcome(
 ) -> Mapping[str, Any] | None:
     """按 url 找 outcome，候选 url 与落地 url 都试。
 
-    与 ``schema._outcome_for`` 同一条纪律且同一条实测依据：站点做 ``http→https``
-    跳转时 ``visits[i].url`` 与 ``outcomes[j].url`` 不等（实测 4 份真实存档的
-    每个 run 都有 3 个访问点对不上）。只查一个的后果是**静默**的：找不到 → ``None``，
-    而 ``None`` 与「搜索阶段本来就没有 outcome」同形，于是每次都报
-    ``outcome_missing``，报错多到没人看。
+    ⚠️ **2026-10-30 · 方案 23：口径收敛到单一真源**。
+
+    旧口径只匹 ``url``、**取首个**。它有两个已知缺陷：
+
+    - 站点做 ``http→https`` 跳转时 ``visits[i].url`` 与 ``outcomes[j].url``
+      不等（实测 4 份真实存档的每个 run 都有 3 个访问点对不上）——只查一个
+      的后果是**静默**的：找不到 → ``None``，而 ``None`` 与「搜索阶段本来
+      就没有 outcome」同形，于是每次都报 ``outcome_missing``，报错多到没人看；
+    - 「取首个」会把**候选阶段**的中间结论当成这个站点的最终结论
+      （实测 29 个访问上与「取末条」分支不同）。
+
+    现在与 P2、T、评估侧读**同一份**规则：
+    :func:`trajectory_pipeline.outcomerules.resolve`——**候选 → 落地 →
+    播放页**逐档试，每档匹 ``site_url`` **或** ``url``，**同档取末条**。
+
+    ⇒ 本模块与 P2 的配对结果**逐条一致**：门禁报的 ``outcome_missing`` /
+    ``success_branch_mismatch`` 说的就是 P2 落进 ``degraded_from`` 的那两条。
     """
-    wanted = {u for u in urls if u}
-    for o in outcomes:
-        if str(o.get("url") or "") in wanted:
-            return o
-    return None
+    return outcomerules.resolve(outcomes, *urls)
 
 
 # ── 单份存档 ───────────────────────────────────────────────────────
@@ -345,8 +354,19 @@ def check_archive(
         for key in ("site_obs", "player_obs"):
             _obs_degraded(visit.get(key), f"{wv}.{key}", out, name)
 
+        # ⚠️ **三档 URL，与 P2 逐档同序**（候选 → 落地 → 播放页）：
+        # 少一档就会与 P2 的配对结果分叉，而分叉之后门禁报的
+        # ``outcome_missing`` 与 P2 落进 ``degraded_from`` 的那一条
+        # 就不是同一件事了。
+        player_obs = visit.get("player_obs")
+        player_url = (
+            str(player_obs.get("url") or "")
+            if isinstance(player_obs, Mapping)
+            else ""
+        )
         outcome = _match_outcome(outcomes, str(visit.get("url") or ""),
-                                 str(visit.get("landed_url") or ""))
+                                 str(visit.get("landed_url") or ""),
+                                 player_url)
         if outcome is None:
             out.append(Finding("outcome_missing", Severity.DEGRADED, name,
                                wv, "该访问点查不到 outcome —— 这条没有分支结论"))

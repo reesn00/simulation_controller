@@ -1,15 +1,19 @@
-"""P2 切分的单元测试——**一个决策单元一条**。
+"""P2 切分的单元测试——**一个任务一条轨迹**。
+
+⚠️ **2026-10-30 · 方案 23**：粒度从「一个决策单元一条」改成
+**「一个任务一条轨迹」**——一份 P1 存档切出 **0 或 1** 条样本。
 
 重点不是「能切出几条」，而是四件切错了就静默的事：
 
-1. **粒度**：搜索与每个站点各自成条。压成长轨迹会把「选哪个站」与
-   「这个站行不行」塞进同一次预测里。
+1. **粒度**：一份存档一条轨迹，站点级结论降级成**轨迹内明细**
+   （``site_outcomes``），不再被切成独立样本。
 2. **outcome 配对**：存档里 ``visits[i].url`` 是候选链接，
    ``outcomes[j].url`` 是落地地址，跳转过的站两者不等——配不上就是
    每条负样本都显示成「无结论」，报表上负样本一条不少、分子全空。
+   口径在 ``trajectory_pipeline.outcomerules``（单一真源）。
 3. **降级可见**：老存档缺 ``steps`` / ``user_prompt`` / 全文正文，
    这些样本必须**自带标记**，不能和新存档的样本混着用。
-4. **被反爬拦的 run 不切搜索单元**：那一步的观察是验证码页，
+4. **被反爬拦的 run 不产出轨迹**：那一步的观察是验证码页，
    切成「模型该怎么做」的样本只会教它对着验证码页编答案。
 """
 
@@ -79,7 +83,17 @@ def _arc(**over):
         "search_url": "https://s.test",
         "search_observation": _obs("https://s.test"),
         "search_blocked": "",
-        "steps": [],
+        # 搜索阶段**一步**（实测 145 份真实存档：138 份顶层恰好 1 步、
+        # 7 份 0 步——而那 7 份**同时**没有 ``search_observation``，
+        # 即「有快照必有动作步」是实测常态）。fixture 按真实形态给，
+        # 否则观察流会与动作流**对不上**（动作 0 份、观察 1 份）。
+        "steps": [{
+            "action": {"tool": "goto", "params": {"url": "https://s.test"},
+                       "origin": "model"},
+            "observation": _obs("https://s.test"),
+            "error": "",
+            "rationale": None,
+        }],
         "provenance": {"genre": "喜剧"},
         # 健康存档**有**运行参数快照：批次级断言 B-2（覆盖完整性）的分母
         # 取自 run_config.max_candidates。缺它会被 ``run_config_missing``
@@ -140,20 +154,51 @@ class TestSchemaVersion:
 
 
 class TestGranularity:
-    def test_搜索与每个站点各自成条(self, tmp_path):
-        arc = _arc(visits=[_visit("https://a.test/"), _visit("https://b.test/")])
-        units = [s.unit for s in schema.split_archive(_write(tmp_path, arc))]
-        assert units == ["search", "site-1", "site-2"]
+    """⚠️ **2026-10-30 · 方案 23**：粒度从「一个决策单元一条」改成
+    **「一个任务一条轨迹」**——一份 P1 存档切出 **0 或 1** 条样本。"""
 
-    def test_搜索单元在前(self, tmp_path):
-        """顺序即时间序。乱序会让按 id 排序的批次读起来像时序错乱。"""
-        arc = _arc(visits=[_visit("https://a.test/")])
-        assert schema.split_archive(_write(tmp_path, arc))[0].unit == "search"
+    def test_一份存档切出一条轨迹(self, tmp_path):
+        arc = _arc(visits=[_visit("https://a.test/"), _visit("https://b.test/")])
+        samples = schema.split_archive(_write(tmp_path, arc))
+        assert len(samples) == 1
+        # id = <task_id>__<run_id>，与 P1 存档名、与 T 的 trajectory_id 同构
+        assert samples[0].sample_id == "T001__abc123"
+
+    def test_站点级明细留在轨迹里(self, tmp_path):
+        """裁定 ③：站点级结论**不再被切成独立样本**，但**不能丢**——
+        它回答「这条轨迹里到底在哪一步走不通」。"""
+        arc = _arc(
+            visits=[_visit("https://a.test/"), _visit("https://b.test/")],
+            outcomes=[
+                _outcome("https://a.test/", "no_play_control"),
+                _outcome("https://b.test/", "subscription_wall"),
+            ],
+        )
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert [o.index for o in s.site_outcomes] == [1, 2]
+        assert [o.outcome.branch for o in s.site_outcomes] == [
+            "no_play_control",
+            "subscription_wall",
+        ]
+
+    def test_动作流是摊平的(self, tmp_path):
+        """搜索阶段的步在前、站点步在后，接成**一条**流——
+        ``step_index`` 是全局序号（否则第 5 步的 rationale 会撞上
+        第 1 个单元的第 5 步，静默丢思考）。"""
+        arc = _arc(
+            steps=[_step("goto", url="https://s.test")],
+            visits=[_visit("https://a.test/", steps=[_step("click", url="x")])],
+        )
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert [a.tool for a in s.actions] == ["goto", "click"]
 
     def test_站点单元带落地前后两个观察(self, tmp_path):
         """观察**逐步对位**取自 ``steps[].observation``（2026-10-15 改，
         原取 ``(site_obs, player_obs)`` 去重快照对）——那对快照与动作流
-        不等长，``new_tab`` 步的 null 观察会被真值过滤丢掉，整段错位。"""
+        不等长，``new_tab`` 步的 null 观察会被真值过滤丢掉，整段错位。
+
+        ⚠️ **2026-10-30 · 方案 23**：观察流是**整条轨迹**摊平的——
+        搜索阶段那一步的观察排在最前，后面才是站点的两步。"""
         arc = _arc(
             visits=[
                 _visit(
@@ -168,11 +213,29 @@ class TestGranularity:
                 )
             ]
         )
-        site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert [o["url"] for o in site.observations] == [
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert [o["url"] for o in s.observations] == [
+            "https://s.test",
             "https://a.test",
             "https://a.test/play",
         ]
+
+    def test_搜索快照没有动作步时不进样本(self, tmp_path):
+        """退化形态：**有搜索页快照、顶层没有动作步**。
+
+        真实批次里 138/145 份存档「顶层恰好 1 步 + 有快照」同生共死
+        （那 7 份 0 步的**同时**没有快照），所以这条形态走不到线上。
+
+        处置：快照**不进 P2**——P2 的观察流与动作流是**一一对应**的，
+        一份没有动作配对的观察会让后面每一步的「动作↔观察」整段错位
+        （E005 那个老坑）。宁可少一份，也不错位；但这份存档会被
+        ``steps`` 降级标记点名，不让它悄悄混进干净样本堆。
+        """
+        arc = _arc(steps=[], search_observation=_obs("https://s.test"))
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.observations == ()
+        assert s.actions == ()
+        assert "steps" in s.degraded_from
 
     def test_null观察顶占位保持对位(self, tmp_path):
         """E005 错位的根因：``new_tab`` 步 observation=null 被真值过滤
@@ -197,26 +260,32 @@ class TestGranularity:
             visits=[dict(_visit("https://a.test/"), steps=steps)],
             outcomes=[_outcome("https://a.test/", "no_play_control")],
         )
-        site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert len(site.actions) == 3
-        assert len(site.observations) == 3, "缺位观察被丢掉就会再次错位"
-        assert site.observations[1]["degraded"] == ["observation_missing"]
-        assert site.observations[1], "占位必须真值为真（防下游 if o 再丢）"
-        assert site.observations[2]["url"] == "https://a.test/play"
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        # 4 个动作 = 搜索阶段 1 步 + 站点 3 步；4 份观察逐一对位
+        assert len(s.actions) == 4
+        assert len(s.observations) == 4, "缺位观察被丢掉就会再次错位"
+        assert s.observations[2]["degraded"] == ["observation_missing"]
+        assert s.observations[2], "占位必须真值为真（防下游 if o 再丢）"
+        assert s.observations[3]["url"] == "https://a.test/play"
 
     def test_没有观察的单元不产出(self, tmp_path):
         """两者皆空 → 切不出东西。抛出来而不是给一条空样本。"""
         p = _write(tmp_path, _arc(visits=[], search_observation=None))
-        with pytest.raises(P1ShapeError, match="切不出样本"):
+        with pytest.raises(P1ShapeError, match="切不出轨迹"):
             schema.split_archive(p)
 
-    def test_搜索阶段无outcome(self, tmp_path):
-        """搜索阶段不记站点级 outcome。给它硬配一条是编造。"""
+    def test_没有结论时任务级outcome为None(self, tmp_path):
+        """一条站点结论都没有 → **判不出来**（fail-closed），
+        不是成功。``outcome=None`` 与「成功」（``branch=None``）是两回事。"""
         s = schema.split_archive(_write(tmp_path, _arc()))[0]
         assert s.outcome is None
 
 
 class TestOutcomePairing:
+    """⚠️ **2026-10-30 · 方案 23**：配对口径收敛到
+    :mod:`trajectory_pipeline.outcomerules`（候选 → 落地 → 播放页逐档试，
+    每档匹 ``site_url`` 或 ``url``，**同档取末条**）。"""
+
     def test_跳转过的站按落地地址配(self, tmp_path):
         """实测存档：4 个 run 各有 3 个访问点是 http→https 跳转过的，
         候选 url 与 outcome url 对不上。只按候选 url 配的后果是静默的——
@@ -225,9 +294,9 @@ class TestOutcomePairing:
             visits=[_visit("http://x.test/movie", "https://x.test/movie")],
             outcomes=[_outcome("https://x.test/movie", "no_play_control")],
         )
-        site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert site.outcome is not None
-        assert site.outcome.branch == "no_play_control"
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.outcome is not None
+        assert s.outcome.branch == "no_play_control"
 
     def test_候选地址也能配(self, tmp_path):
         arc = _arc(
@@ -235,16 +304,29 @@ class TestOutcomePairing:
             outcomes=[_outcome("https://x.test/movie", "no_play_control")],
         )
         assert (
-            schema.split_archive(_write(tmp_path, arc))[1].outcome.branch
+            schema.split_archive(_write(tmp_path, arc))[0].outcome.branch
             == "no_play_control"
         )
 
+    def test_同档取末条(self, tmp_path):
+        """同一个候选先记过一条中间结论、后记过最终结论——**末条**才是
+        最终结论（取首个会拿到中间那条）。"""
+        arc = _arc(
+            visits=[_visit("https://x.test/movie")],
+            outcomes=[
+                _outcome("https://x.test/movie", "unresolved"),
+                _outcome("https://x.test/movie", "subscription_wall"),
+            ],
+        )
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.outcome.branch == "subscription_wall"
+
     def test_配不上要留痕(self, tmp_path):
-        """静默 None 与「搜索阶段本来就没有 outcome」同形。"""
+        """静默 None 与「这条轨迹本来就没有结论」同形。"""
         arc = _arc(visits=[_visit("https://x.test/movie")], outcomes=[])
-        site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert site.outcome is None
-        assert "outcome_missing" in site.degraded_from
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.outcome is None
+        assert "outcome_missing" in s.degraded_from
 
     def test_成功即无分支(self, tmp_path):
         """``ledger`` 只记失败分支，成功的访问不记账——
@@ -253,8 +335,8 @@ class TestOutcomePairing:
             visits=[_visit("https://x.test/", success=True)],
             outcomes=[_outcome("https://x.test/", None)],
         )
-        site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert site.outcome.succeeded is True
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.outcome.succeeded is True
 
     def test_成功与分支对不上要留痕(self, tmp_path):
         """「成功」直接决定样本进不进训练集，而它必须只有一个来源说了算。
@@ -263,8 +345,8 @@ class TestOutcomePairing:
             visits=[_visit("https://x.test/", success=True)],
             outcomes=[_outcome("https://x.test/", "no_play_control")],
         )
-        site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert "success_branch_mismatch" in site.degraded_from
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert "success_branch_mismatch" in s.degraded_from
 
     def test_不从存档的is_negative_sample取判据(self, tmp_path):
         """那份判据由 executor 的 ``NON_SAMPLE_BRANCHES`` 定义，assembler
@@ -273,30 +355,38 @@ class TestOutcomePairing:
         o = _outcome("https://x.test/", None)
         o["is_negative_sample"] = True
         arc = _arc(visits=[_visit("https://x.test/", success=True)], outcomes=[o])
-        site = schema.split_archive(_write(tmp_path, arc))[1]
-        assert site.outcome.branch is None
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.outcome.branch is None
 
 
 class TestBlockedRun:
-    def test_被反爬拦时不切搜索单元(self, tmp_path):
+    """搜索阶段被拦 / 采集失败 ⇒ **整条轨迹产出零条**。
+
+    ⚠️ **2026-10-30 · 方案 23**：旧口径下「搜索单元不产出、站点单元仍
+    产出」。现在一条轨迹是一个整体——搜索页是验证码页的轨迹，第一步
+    就是「模型对着验证码页看」，那样的样本只会教它对着验证码编答案。
+
+    而「被拦但还有访问记录」在执行端**不可能发生**：拦截发生在取候选
+    之前，一收口就整条 run 结束（``executor/orchestrator.py`` 的
+    ``record.search_blocked = blocked`` 之后直接 return）。实测 145 份
+    真实存档里 14 份被拦，**0 份**带访问记录。
+    """
+
+    def test_被反爬拦时不产出轨迹(self, tmp_path):
         """拦截发生在取候选之前，那一步的观察是验证码页。切成样本只会
         教模型对着验证码页编答案。"""
         arc = _arc(search_blocked="captcha", visits=[])
-        units = [s.unit for s in schema.split_archive(_write(tmp_path, arc))]
-        assert units == []
+        assert schema.split_archive(_write(tmp_path, arc)) == []
 
-    def test_被拦但还有访问记录时站点仍成条(self, tmp_path):
-        """拦截的是搜索页，已访问的站点不受影响。"""
+    def test_被拦即使有访问记录也不产出(self, tmp_path):
         arc = _arc(
             search_blocked="captcha",
             visits=[_visit("https://a.test/")],
             outcomes=[_outcome("https://a.test/", "unresolved")],
         )
-        assert [s.unit for s in schema.split_archive(_write(tmp_path, arc))] == [
-            "site-1"
-        ]
+        assert schema.split_archive(_write(tmp_path, arc)) == []
 
-    def test_搜索页采集失败时不切搜索单元(self, tmp_path):
+    def test_搜索页采集失败时不产出轨迹(self, tmp_path):
         """T048 这类坏档：``search_blocked`` 为空，但 warnings 记了
         「搜索页采集失败」（网络错误），同样没有进入决策——零条是
         正常形态，不能抛。"""
@@ -307,17 +397,14 @@ class TestBlockedRun:
         )
         assert schema.split_archive(_write(tmp_path, arc)) == []
 
-    def test_采集失败但还有访问记录时站点仍成条(self, tmp_path):
-        """失败的只是搜索页，已访问过的站点不受影响。"""
+    def test_采集失败即使有访问记录也不产出(self, tmp_path):
         arc = _arc(
             search_observation=None,
             visits=[_visit("https://a.test/")],
             outcomes=[_outcome("https://a.test/", "unresolved")],
             warnings=["搜索页采集失败: DriverError: Network error"],
         )
-        assert [s.unit for s in schema.split_archive(_write(tmp_path, arc))] == [
-            "site-1"
-        ]
+        assert schema.split_archive(_write(tmp_path, arc)) == []
 
 
 class TestDegradedMarkers:
@@ -393,11 +480,16 @@ class TestDegradedMarkers:
 
     def test_标记去重且有序(self, tmp_path):
         arc = _arc(visits=[_visit("https://a.test/")])
-        s = schema.split_archive(_write(tmp_path, arc))[1]
+        s = schema.split_archive(_write(tmp_path, arc))[0]
         assert list(s.degraded_from) == list(dict.fromkeys(s.degraded_from))
 
     def test_新存档零降级(self, tmp_path):
-        """一条干净的样本必须能一眼认出来。标记若总在，整条标记就失效了。"""
+        """一条干净的样本必须能一眼认出来。标记若总在，整条标记就失效了。
+
+        ⚠️ **2026-10-30 · 方案 23**：降级标记是**轨迹级**的——访问点配不
+        到 outcome 会把整条轨迹标成「outcome_missing」（旧口径下只是那个
+        站点单元降级）。所以这条夹具必须给访问点配一条 outcome，
+        才算「干净存档」。"""
         arc = _arc(
             steps=[
                 {
@@ -428,25 +520,28 @@ class TestDegradedMarkers:
                     ],
                 )
             ],
+            outcomes=[_outcome("https://a.test/", "no_play_control")],
         )
         assert schema.split_archive(_write(tmp_path, arc))[0].degraded_from == ()
 
 
 class TestSampleId:
     def test_格式可反查源存档(self, tmp_path):
+        """⚠️ **2026-10-30 · 方案 23**：id = ``<task_id>__<run_id>``——
+        与 P1 存档名、与 T 的 ``trajectory_id`` **逐字相同**。
+        从 id 就能反查源存档，不必开文件。"""
         sid = schema.split_archive(_write(tmp_path, _arc()))[0].sample_id
-        assert sid == "T001__abc123__search"
-        task, run, unit = sid.split("__")
-        assert (task, unit) == ("T001", "search")
+        assert sid == "T001__abc123"
+        task, run = sid.split("__")
+        assert task == "T001"
         assert run
 
-    def test_同批次内按unit单调(self, tmp_path):
+    def test_一份存档一条id(self, tmp_path):
+        """12 个访问点仍是**一条**轨迹、一个 id。"""
         arc = _arc(visits=[_visit(f"https://a{i}.test/") for i in range(12)])
-        units = [
-            s.sample_id.split("__")[2]
-            for s in schema.split_archive(_write(tmp_path, arc))
-        ]
-        assert units == ["search"] + [f"site-{i}" for i in range(1, 13)]
+        samples = schema.split_archive(_write(tmp_path, arc))
+        assert [s.sample_id for s in samples] == ["T001__abc123"]
+        assert len(samples[0].site_outcomes) == 12
 
     def test_取run_id(self):
         assert schema.run_id_of("T001__004b6be9.json") == "004b6be9"
@@ -470,7 +565,7 @@ class TestIterSamples:
         _write(tmp_path, _arc(), "T001__a1.json")
         _write(tmp_path, _arc(), "T001__a1.reviewed.json")
         assert [s.sample_id for s in schema.iter_samples(tmp_path)] == [
-            "T001__a1__search"
+            "T001__a1"
         ]
 
     def test_按文件名排序(self, tmp_path):
@@ -599,9 +694,8 @@ class TestRationale对齐:
             outcomes=[_outcome("https://a.test/", "no_play_control")],
         )
         samples = schema.split_archive(_write(tmp_path, arc))
-        # [0] 是搜索单元、[1] 是 site-1——**取错单元是这里最容易踩的坑**，
-        # 而症状是「rationale 一条都没有」（搜索单元的 steps 本来就是空的）。
-        return samples[1]
+        # ⚠️ **2026-10-30 · 方案 23**：一条轨迹一条样本，**没有单元之分**。
+        return samples[0]
 
     def test_逐条对齐不压成一条(self, tmp_path):
         s = self._site_sample(
@@ -611,7 +705,10 @@ class TestRationale对齐:
                 _step("click", _written("页面里有播放按钮，点它")),
             ],
         )
-        assert [r.step_index for r in s.rationales] == [0, 1]
+        # ⚠️ **2026-10-30 · 方案 23**：``step_index`` 是**全局**序号——
+        # 搜索阶段那一步占了 0，所以站点的两步是 1、2。旧口径每个单元
+        # 各自从 0 数起，第 5 步的 rationale 会撞上第 1 个单元的第 5 步。
+        assert [r.step_index for r in s.rationales] == [1, 2]
         assert s.rationales[1].text == "页面里有播放按钮，点它"
         assert s.rationale_missing is False
 
@@ -627,7 +724,7 @@ class TestRationale对齐:
             ],
         )
         got = {r.step_index: r.text for r in s.rationales}
-        assert got == {0: "第 0 步", 2: "第 2 步"}
+        assert got == {1: "第 0 步", 3: "第 2 步"}
 
     def test_未写成的步骤三态透传(self, tmp_path):
         s = self._site_sample(
@@ -762,20 +859,21 @@ class TestRationale分代:
         assert s.rationale_era == ""
         assert s.rationale_missing is True
 
-    def test_站点单元按visit判代(self, tmp_path):
-        """搜索单元看存档顶层、站点单元看 ``visits[i]``——两张判据都认。
-        只看顶层的话，一个旧口径批次的站点单元会被判成新口径。"""
+    def test_轨迹按存档顶层判代(self, tmp_path):
+        """⚠️ **2026-10-30 · 方案 23**：口径按**存档顶层**的 ``reflection``
+        键判——不再分单元。
+
+        依据：实测 145 份真实存档，顶层与各 visit 的 ``reflection`` 键
+        **总是同时在或同时不在**，所以轨迹级口径不会混代。"""
         arc = _arc(
             visits=[_visit("https://a.test/",
                            steps=[_step("goto", _written("直接点进去看看"))])],
             outcomes=[_outcome("https://a.test/", "no_play_control")],
         )
         arc.pop("reflection")
-        arc["visits"][0].pop("reflection")
         samples = schema.split_archive(_write(tmp_path, arc))
-        # [1] 是 site-1：搜索单元没有 steps，本就不产样本
-        assert samples[1].rationale_era == "post_hoc"
-        assert samples[1].gate.status == "not_run"
+        assert samples[0].rationale_era == "post_hoc"
+        assert samples[0].gate.status == "not_run"
 
     def test_era写进to_json(self, tmp_path):
         """消费方（报告/人工复核/批次筛选）读的是 JSON，不是 dataclass。"""

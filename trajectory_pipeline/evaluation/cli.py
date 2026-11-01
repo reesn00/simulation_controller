@@ -277,7 +277,8 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
                                    # ``golden_id`` 的第三段是 **url 的 md5**
                                    # （``golden/builder.py::_url_hash``）⇒
                                    # **没有 url 就配不上**。
-                                   # 以前这行只有 ``sample_id``（``<task>__<run>__<unit>``）
+                                   # 以前这行只有 ``sample_id``（per-Run 之前是
+                                   # ``<task>__<run>__<unit>``，现在是 ``<task>__<run>``）
                                    # ⇒ 转换器只能靠猜，而猜出来的配对会让 kappa
                                    # 建在一个配不上的分母上。
                                    "url": str(getattr(outcome, "url", "") or ""),

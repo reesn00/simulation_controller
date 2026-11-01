@@ -19,11 +19,20 @@
    dataclass 字段就可能让半年前那批 P2 重建不出来，而重建不出来的那批就是
    永久损失。契约测试 ``tests/contract/test_assembler.py`` 盯着这条。
 
-2. **一条样本 = 一个决策单元**（``search`` 阶段一条 / 每个站点一条）。
-   设计方案写「单站点验证、单搜索任务各自独立成条」，早期措辞里还有
-   「前几步走摘要」，两者互相矛盾；按决策单元切则唯一确定：
-   搜索与遍历本来就是两种不同的选择，合成一条长轨迹会把「选哪个站」和
-   「这个站行不行」压进同一次预测里。
+2. **一条样本 = 一个任务的一条轨迹**（2026-10-30 · 方案 23 改）。
+   ⚠️ **2026-10-30 之前是「一条样本 = 一个决策单元」**（``search`` 阶段一条 /
+   每个站点一条）——那是 2026-10-15 的设计（设计方案 §3.5「单站点验证、
+   单搜索任务各自独立成条」），当时担心「合成一条长轨迹会把『选哪个站』和
+   『这个站行不行』压进同一次预测里」。
+
+   改判的理由：**下游真正要的是「一个任务一条轨迹」**——训练样本、
+   Label Studio 上传的合成数据、黄金集三边对齐到同一个粒度键
+   ``(task_id, run_id)``，而按站点切时三边对不齐（黄金集一直是站点级、
+   LS 上传是轨迹级），对不齐就没法把「这条轨迹在训练里长什么样」与
+   「人给它打了几分」对上。
+
+   决策单元**没有消失**，它降级成**轨迹内的结构**：站点级结论保留在
+   :attr:`Sample.site_outcomes` 里（裁定 ③），只是不再被切成独立样本。
 
 3. **缺件必须看得见，不能是 ``None``。**
    W1 没有 rationale 模块（模块 4 待建），六件套第 ⑥ 件整个拿不到。
@@ -53,6 +62,7 @@ from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from trajectory_pipeline import toolcatalog
+from trajectory_pipeline import outcomerules
 
 #: ① 系统提示词。**随样本一起冻结**（进 P2 文件），不是渲染时读全局常量——
 #: 常量改一次，历史样本的系统提示词就全变了，而样本之间原本是可比的。
@@ -500,12 +510,147 @@ class OutcomeRef:
 
 
 @dataclass(frozen=True, slots=True)
+class SiteOutcomeView:
+    """轨迹内**一个访问**的结论（2026-10-30 · 方案 23）。
+
+    为什么它回到轨迹里：裁定 ③「负样本池保留站点级行作**轨迹内细节**，
+    训练侧只消费任务级标签」——站点级结论不再被切成独立的样本，
+    但**不能丢**：它回答「这条轨迹里到底在哪一步走不通」。
+
+    ``outcome is None`` = **没配到** outcome（缺件），**不是**成功——
+    成功是 ``outcome.branch is None``。两件事在报表上差得很远。
+    """
+
+    #: 访问序号，从 1 起（与 P1 的 ``visits[i]`` 对齐）。
+    index: int
+    #: 候选链接（搜索结果给的地址）。
+    url: str
+    #: 落地后的地址（可能与候选不同）。
+    landed_url: str
+    #: 配到的结论（``None`` = 没配到）。
+    outcome: OutcomeRef | None
+    #: 这个访问点占**全局步号**的起点（含）。
+    step_start: int = 0
+    #: 这个访问点占全局步号的终点（**不含**）。区间为空 = 该站点没有动作步。
+    #:
+    #: 为什么必须带区间：站点级结论回到轨迹里之后，「这个站点是轨迹里
+    #: 哪一段」就成了必须能回答的问题。靠 url 反推是**猜**——两个站点
+    #: 跳到同一个地址时会撞，而撞了报告上看不出异常。
+    step_end: int = 0
+    #: 配到的 outcome 在 P1 ``outcomes[]`` 里的下标（``-1`` = 没配到）。
+    #:
+    #: **这是候选集站点行与本访问点之间的唯一对齐身份**：候选行按
+    #: **url** 建键、访问点按**访问顺序**枚举，两边光靠 url 会撞
+    #: （两个站点跳到同一个地址）。下标是两边**共有**的事实，不是推出来的。
+    outcome_index: int = -1
+
+    @property
+    def matched(self) -> bool:
+        return self.outcome is not None
+
+    @property
+    def is_success(self) -> bool:
+        return self.outcome is not None and self.outcome.branch is None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "url": self.url,
+            "landed_url": self.landed_url,
+            "outcome": self.outcome.to_json() if self.outcome else None,
+            "step_start": self.step_start,
+            "step_end": self.step_end,
+            "outcome_index": self.outcome_index,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SiteView:
+    """一个访问点在轨迹内的**站点级视图**——评分用（2026-10-30 · 方案 23）。
+
+    为什么需要它
+    ------------
+    v1–v16 的**站点级** ``dimension_scores``（D-2/D-4/D-5/D-6）是**逐站点**
+    打出来的：打分的输入是那个站点**自己的**动作步、**自己的**观察、
+    **自己的**结论（那时一条 P2 样本 = 一个决策单元）。
+
+    per-Run 之后一条存档只切出**一条**轨迹样本 ⇒ 直接拿它打分，得到的是
+    **轨迹级**分数 ⇒ 站点行的分数从「这个站点的分」变成「整条轨迹的分」，
+    而 **D-10 的分母与历史读数是绑定口径**（门禁只读调参池；分母薄不是
+    改口径的理由）。
+
+    ⇒ 站点行要打分，就得先把轨迹**切回站点那一段**：动作步与观察按
+    :attr:`SiteOutcomeView.step_start` / ``step_end`` 切片，结论换成
+    **该站点自己的**那条。
+
+    ⚠️ **它不是一条 P2 样本**
+    ----------------------
+    它没有 ``system_prompt`` / ``tools`` / ``user_prompt`` / ``gate`` /
+    ``rationales``——那些是**轨迹级**的东西，站点视图里给一半就是给假。
+    所以它**不是** :class:`Sample`，也不落 ``samples/`` 目录：
+    per-unit 样本的形态**不回来**（那正是方案 23 要拆掉的）。
+
+    打分器读的是 ``actions`` / ``observations`` / ``outcome`` / ``title``
+    四个面（见 ``evaluation/scorers/``）——这四个都在。
+    """
+
+    #: 视图 id = ``{task}__{run}__site-{访问序号}``。
+    #:
+    #: ⚠️ 与**旧 per-unit 样本 id 同形**（``{task}__{run}__site-1``）——
+    #: 这是有意的：旧冻结档里那些 id 还能被认出来（"这是第几个访问点"），
+    #: 而新口径下它明确**只是视图**，不落盘、不进 ``samples/``。
+    sample_id: str
+    task_id: str
+    run_id: str
+    #: 轨迹片名（评分器 D-6 要用）。
+    title: str
+    #: 访问序号（从 1 起）。
+    index: int
+    #: 候选链接。
+    url: str
+    #: 落地后的地址。
+    landed_url: str
+    #: 这个访问点占的全局步号区间（``[step_start, step_end)``）。
+    step_start: int
+    step_end: int
+    #: 配到的 outcome 在 P1 ``outcomes[]`` 里的下标（``-1`` = 没配到）。
+    outcome_index: int
+    #: **这个站点自己的**动作步（切片自轨迹）。
+    actions: tuple[ActionView, ...]
+    #: **这个站点自己的**观察（切片自轨迹）。
+    observations: tuple[Mapping[str, Any], ...]
+    #: **这个站点自己的**结论（``None`` = 没配到，属缺件）。
+    outcome: OutcomeRef | None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "sample_id": self.sample_id,
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "title": self.title,
+            "index": self.index,
+            "url": self.url,
+            "landed_url": self.landed_url,
+            "step_start": self.step_start,
+            "step_end": self.step_end,
+            "outcome_index": self.outcome_index,
+            "actions": [a.to_json() for a in self.actions],
+            "observations": [dict(o) for o in self.observations],
+            "outcome": self.outcome.to_json() if self.outcome else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Sample:
-    """P2 单条样本。字段顺序即六件套顺序。"""
+    """P2 单条样本 = **一条轨迹**（一个任务的一次运行）。
+
+    ⚠️ **粒度变了**（2026-10-30 · 方案 23）：2026-10-30 之前一条样本是
+    一个**决策单元**（搜索阶段一条、每个站点一条），同一份 P1 存档切出
+    N 条样本。现在**一份 P1 存档切出 0 或 1 条**——一个任务一条轨迹。
+    """
 
     sample_id: str
     task_id: str
-    unit: str  # "search" | 站点序（"site-3"）
     title: str
 
     system_prompt: str
@@ -525,20 +670,28 @@ class Sample:
     #: 默认 ``not_run`` 而非 ``passed``——**「没跑」不是「通过」**。
     #: 这个模块级的实例是 frozen 的，可安全作默认值。
     gate: GateMark = GateMark("not_run", ("闸门未运行",))
+
+    #: **轨迹级结论**（2026-10-30 · 方案 23 裁定 ②：看最后一个结论）。
+    #:
+    #: ⚠️ 它是**整条轨迹**的结论，不是某一个站点的：``branch is None``
+    #: = 成功（末条结论是成功），``branch`` 非空 = 末条结论的分支。
+    #: 逐站点的结论在 :attr:`site_outcomes` 里。
     outcome: OutcomeRef | None = None
 
-    #: **本决策单元的终局反思**（INC46）。P1 里与 ``steps`` **平级**
-    #: （搜索单元在存档顶层、站点单元在 ``visits[i]`` 里），形状同
-    #: ``WriteResult.to_json``——于是与 ``steps[i].rationale`` **同构**，
-    #: 这里用一个 dict 装下，不做第二次建模。
+    #: **本轨迹的终局反思**（INC46）。
     #:
-    #: 它是 **unit 级**而不是 step 级：动作前动机把事后口吻从每一步赶了
-    #: 出去，而收尾那一句总结本来就该是看完整个单元之后写的。
-    #: ``views._closing_text`` 读它的 ``rationale.conclusion``；没有它时
-    #: 退回纯 disposition 话术——**不编**一句总结出来。
+    #: ⚠️ **P1 里没有轨迹级反思**——``reflection`` 是 **unit 级**的
+    #: （搜索阶段在存档顶层、站点单元在 ``visits[i]`` 里），形状同
+    #: ``WriteResult.to_json``。
     #:
-    #: 默认 ``None`` 而不是 ``{}``：「没有反思」与「有反思但内容是空的」
-    #: 在下游是两回事，合成一个空 dict 就把前者记成了后者。
+    #: 这里取**末个单元**的那一份（裁定 ②「看最后的结论」同款）：它说的
+    #: 是模型对**最后核验的那个站点**的判断，而那正是这条轨迹的落点。
+    #: 搜索阶段的反思（存档顶层）说的是「找到了哪些候选」，不是结论，
+    #: 所以**排在末位之后**时不会被取到。
+    #:
+    #: 取不到（有反思的单元一个都没有）→ ``None``。「没有反思」与
+    #: 「有反思但内容是空的」在下游是两回事，合成一个空 dict 就把
+    #: 前者记成了后者。
     reflection: Mapping[str, Any] | None = None
 
     #: **一条 rationale 都没写成**（模块 4 未落地 / 后端不可用 / 全被拒写）。
@@ -586,11 +739,68 @@ class Sample:
     #: 训出「有时按标签点、有时按角色点」的模型，而那在报告上看不出异常。
     tool_surface: str = ""
 
+    #: **轨迹内的站点级明细**（2026-10-30 · 方案 23 裁定 ③）。
+    #:
+    #: 站点级结论**不再被切成独立的样本**，但**不能丢**——它回答
+    #: 「这条轨迹里到底在哪一步走不通」。训练侧只消费
+    #: :attr:`outcome`（任务级标签），这一层是**给人看的**。
+    site_outcomes: tuple[SiteOutcomeView, ...] = ()
+
+    def site_views(self) -> tuple[SiteView, ...]:
+        """这条轨迹的**站点级视图**（每个访问点一条）。
+
+        动作步与观察按 :attr:`SiteOutcomeView.step_start` / ``step_end``
+        **切片**，结论换成该访问点自己的那条 ⇒ 与 per-unit 时代的
+        「站点样本」在**评分器读的那四个面**上逐字等价。
+
+        ⚠️ **区间可能为空**：某次访问一步都没走（搜索页直接给了结论、
+        或访问被拦在导航之前）⇒ 该站点**没有动作步**。这时视图照样给出来
+        （观察为空、结论在），但**打分器会因「没有观察」而弃权**——
+        这与「压根没访问过这个站点」不是一回事，不许混。
+
+        ⚠️ **步号越界不静默**：``step_end`` 超出轨迹长度说明存档与切条
+        对不上（降级重建、存档被改过）⇒ 那时**不切**，返回空区间，
+        由调用方看到「这个站点切不出来」。**不猜**。
+        """
+        views: list[SiteView] = []
+        n = len(self.actions)
+        for s in self.site_outcomes:
+            start = max(0, s.step_start)
+            end = min(s.step_end, n)
+            if s.step_start < 0 or s.step_end < s.step_start or start > end:
+                # 区间与轨迹对不上 ⇒ 不切（空区间），不静默截断成「看着像
+                # 对得上」的一段——那会让评分打在别人的步上。
+                start = end = 0
+            views.append(
+                SiteView(
+                    sample_id=f"{self.sample_id}__site-{s.index}",
+                    task_id=self.task_id,
+                    run_id=run_id_of(self.sample_id),
+                    title=self.title,
+                    index=s.index,
+                    url=s.url,
+                    landed_url=s.landed_url,
+                    step_start=start,
+                    step_end=end,
+                    outcome_index=s.outcome_index,
+                    actions=tuple(self.actions[start:end]),
+                    observations=tuple(self.observations[start:end]),
+                    outcome=s.outcome,
+                )
+            )
+        return tuple(views)
+
+    def site_view(self, index: int) -> SiteView | None:
+        """按**访问序号**取站点视图（从 1 起）。取不到返回 ``None``。"""
+        for v in self.site_views():
+            if v.index == index:
+                return v
+        return None
+
     def to_json(self) -> dict[str, Any]:
         return {
             "sample_id": self.sample_id,
             "task_id": self.task_id,
-            "unit": self.unit,
             "title": self.title,
             "source_archive": self.source_archive,
             "schema_version": self.schema_version,
@@ -609,6 +819,7 @@ class Sample:
             "rationale_era": self.rationale_era,
             "reflection": dict(self.reflection) if self.reflection else None,
             "outcome": self.outcome.to_json() if self.outcome else None,
+            "site_outcomes": [s.to_json() for s in self.site_outcomes],
             "degraded_from": list(self.degraded_from),
         }
 
@@ -616,13 +827,18 @@ class Sample:
 # ── sample_id ──────────────────────────────────────────────────────────
 
 
-def sample_id(task_id: str, run_id: str, unit: str) -> str:
-    """``<task_id>__<run_id>__<unit>``。
+def sample_id(task_id: str, run_id: str) -> str:
+    """``<task_id>__<run_id>``。
 
-    与 P1 的 ``<task_id>__<run_id>`` 同构，加一段 unit：**排序即时间序**
-    （同一批里 unit 单调），且从 id 就能反查源存档，不必开文件。
+    ⚠️ **2026-10-30 · 方案 23**：原来是 ``<task_id>__<run_id>__<unit>``
+    （一个决策单元一条样本）。现在**一个任务一条轨迹**，粒度键就是
+    ``(task_id, run_id)`` ⇒ id 与 P1 存档名**逐字相同**。
+
+    为什么这样最省事：id 与存档名同构 ⇒ 从 id 就能反查源存档、不必开文件；
+    批次筛选、产物目录、``purge-run`` 的 glob 全都沿用同一把尺子；
+    而 T 视图的 ``trajectory_id`` 本来就是这个形式——两边**终于**对齐了。
     """
-    return f"{task_id}__{run_id}__{unit}"
+    return f"{task_id}__{run_id}"
 
 
 def run_id_of(archive_name: str) -> str:
@@ -757,53 +973,47 @@ def _actions_of(steps: Sequence[Mapping[str, Any]]) -> tuple[ActionView, ...]:
     return tuple(out)
 
 
+def _outcome_ref(raw: Mapping[str, Any] | None) -> OutcomeRef | None:
+    """一条原始 outcome → :class:`OutcomeRef`。``None`` 进 ``None`` 出。
+
+    「键不存在」逐条记，不靠值推断（避坑指南 §2.3）：``site_url`` /
+    ``play_page_url`` 缺了就记进 :attr:`OutcomeRef.p1_missing_fields`，
+    下游据此判**不可判定**。
+    """
+    if raw is None:
+        return None
+    missing = tuple(k for k in ("site_url", "play_page_url") if k not in raw)
+    return OutcomeRef(
+        url=str(raw.get("url")),
+        branch=raw.get("branch"),
+        source=str(raw.get("source") or ""),
+        fallback_used=bool(raw.get("fallback_used")),
+        question=str(raw.get("question") or ""),
+        reached_play_page=bool(raw.get("reached_play_page")),
+        site_url=str(raw.get("site_url") or ""),
+        play_page_url=str(raw.get("play_page_url") or ""),
+        p1_missing_fields=missing,
+    )
+
+
 def _outcome_for(
     outcomes: Sequence[Mapping[str, Any]], *urls: str
 ) -> OutcomeRef | None:
-    """按 url 找那条 outcome。**先候选 url、再落地 url、最后播放页 url。**
+    """按 url 找那条 outcome。**口径在** :mod:`trajectory_pipeline.outcomerules`。
 
-    两个都要试，顺序不能反：存档里 ``visits[i].url`` 是**候选链接**，
-    而 ``outcomes[j].url`` 记的是**落地后的地址**——站点做 ``http→https``
-    跳转时两者不等。实测 4 份真实存档里的每个 run 都有 3 个访问点对不上：
+    ⚠️ **2026-10-30 · 方案 23**：配对规则**收敛到单一真源**
+    （候选 → 落地 → 播放页，逐档匹 ``site_url`` **或** ``url``，
+    **同档取末条**——末条才是这个站点的最终结论）。
+    本函数**不再自己写匹配规则**，只做 dict → :class:`OutcomeRef` 的转换。
 
-        visits[1].url  = 'http://www.iqiyi.com/...?vfm=...'
-        outcomes[1].url = 'https://www.iqiyi.com/...?vfm=...'
-
-    只按候选 url 匹配的后果是**静默**的：找不到就返回 ``None``，
-    而 ``None`` 与「搜索阶段本来就没有 outcome」长得一模一样——
-    于是每条负样本都显示成「无结论」，报表上一条负样本都不少，
-    只是全都查不到分支。分母没错、分子为空，没人会发现。
-
-    第三档试 ``player_obs.url``（INC59）：访问从根候选**导航到播放页**
-    时 outcome 记在播放页地址上（judge_player ⑦ 记的是判断发生的地方），
-    候选/落地两个 url 一个都配不上——A3-3 守卫实测 scripted 与 agent
-    的成功换址访问双双 ``outcome_missing``。成功访问丢了 outcome，
-    D-5/D-10 在这批样本上失明。
+    旧口径（只匹 ``url``、取首个）在真实存档上把**同一个站点的中间结论**
+    当成了最终结论：实测 29 个访问上与新口径分支不同。
 
     刻意**不看**存档里的 ``is_negative_sample`` 字段——那份判据由
     :data:`~trajectory_pipeline.executor.branches.NON_SAMPLE_BRANCHES` 定义，
     而 assembler 不 import executor，就不能保证两份口径同步。
-    从 ``branch`` 现推：``unresolved`` / ``trailer_suspect`` 不是负样本。
     """
-    for want in urls:
-        if not want:
-            continue
-        for o in outcomes or ():
-            if o.get("url") == want:
-                # 「键不存在」逐条记，不靠值推断（避坑指南 §2.3）。
-                missing = tuple(k for k in ("site_url", "play_page_url") if k not in o)
-                return OutcomeRef(
-                    url=str(o.get("url")),
-                    branch=o.get("branch"),
-                    source=str(o.get("source") or ""),
-                    fallback_used=bool(o.get("fallback_used")),
-                    question=str(o.get("question") or ""),
-                    reached_play_page=bool(o.get("reached_play_page")),
-                    site_url=str(o.get("site_url") or ""),
-                    play_page_url=str(o.get("play_page_url") or ""),
-                    p1_missing_fields=missing,
-                )
-    return None
+    return _outcome_ref(outcomerules.resolve(outcomes, *urls))
 
 
 def _reflection_of(unit: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -824,30 +1034,113 @@ def _reflection_of(unit: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return dict(r)
 
 
-def _sample(
+# ── 决策单元（P1 的结构，不是 P2 的粒度）────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _Unit:
+    """P1 的一个**决策单元**：搜索阶段，或一个访问过的站点。
+
+    单元是 **P1 的结构**——P2 现在整条轨迹一条样本，但读 P1 仍要按单元读
+    （每个单元有自己的 ``steps`` 与自己的 ``reflection``）。
+    """
+
+    #: 单元名（``"search"`` / ``"site-N"``）。**不出现在 P2 里**——
+    #: 单元不再是样本的粒度，只是 P1 的分段。
+    name: str
+    #: 该单元的动作步（每步带自己的 ``observation`` 与 ``rationale``）。
+    steps: tuple[Mapping[str, Any], ...]
+    #: 单元本体（判口径用：看它有没有 ``reflection`` 键）。
+    body: Mapping[str, Any]
+
+
+def _units_of(archive: Mapping[str, Any]) -> tuple[_Unit, ...]:
+    """把一份 P1 拆成决策单元序列：搜索阶段 + 每个访问过的站点。"""
+    units: list[_Unit] = []
+
+    search_steps = tuple(archive.get("steps") or ())
+    search_obs = archive.get("search_observation")
+    if search_steps and isinstance(search_obs, Mapping) and len(search_steps) == 1:
+        # 搜索阶段只有一步，而存档顶层另有一份「搜索页快照」。两份内容
+        # 实测只差 ``links``（39/138 份），但那份快照是 P2 现行契约用的
+        # 那份——沿用它，别在改粒度的同时换观察来源。
+        #
+        # ⚠️ 「只有一步」是**实测**结论（145 份真实存档：138 份顶层恰好
+        # 1 步、7 份 0 步），不是结构保证。所以这段有长度判断：万一哪天
+        # 出现多步的搜索阶段，就退回逐 step 的观察（宁可少一份快照，
+        # 也不能让动作与观察对不上）。
+        step = dict(search_steps[0])
+        step["observation"] = dict(search_obs)
+        search_steps = (step,)
+    units.append(_Unit("search", search_steps, archive))
+
+    for i, visit in enumerate(archive.get("visits") or (), 1):
+        units.append(
+            _Unit(f"site-{i}", tuple(visit.get("steps") or ()), visit)
+        )
+    return tuple(units)
+
+
+def _obs_of(step: Mapping[str, Any]) -> Mapping[str, Any]:
+    """一步的观察。缺（或为 null）→ :data:`MISSING_OBSERVATION` 占位。
+
+    **占位必须真值为真**（见 :data:`MISSING_OBSERVATION` 的注）：
+    ``None`` / ``{}`` 会在下游任何 ``if o`` 真值过滤里被再次丢掉，
+    错位原样复发。
+    """
+    o = step.get("observation")
+    return dict(o) if o else dict(MISSING_OBSERVATION)
+
+
+def _last_reflection_of(units: Sequence[_Unit]) -> Mapping[str, Any] | None:
+    """轨迹级反思：**末个单元**的反思（裁定 ②「看最后的结论」同款）。
+
+    P1 里**没有**轨迹级反思——``reflection`` 是单元级的。所以这里取
+    末个单元的那一份，作为轨迹的收尾文本来源。
+
+    为什么不是「把每个单元的反思拼起来」：那是单元结论的堆砌，
+    不是轨迹结论——而收尾那一句要回答「这条任务最后怎么了」。
+    """
+    for unit in reversed(units):
+        r = _reflection_of(unit.body)
+        if r is not None:
+            return r
+    return None
+
+
+def _run_sample(
     *,
     archive: Mapping[str, Any],
     source_name: str,
-    unit: str,
-    actions_: tuple[ActionView, ...],
-    observations: tuple[Mapping[str, Any], ...],
-    outcome: OutcomeRef | None,
+    units: Sequence[_Unit],
     degraded: list[str],
-    raw_steps: Sequence[Mapping[str, Any]] = (),
-    reflection: Mapping[str, Any] | None = None,
-    unit_body: Mapping[str, Any] | None = None,
+    outcome: OutcomeRef | None,
+    site_outcomes: tuple[SiteOutcomeView, ...],
+    reflection: Mapping[str, Any] | None,
 ) -> Sample:
+    """把一条轨迹（一个 Run）组装成一条 P2 样本。"""
     task_id = str(archive.get("task_id"))
     # 工具面 = 源存档的方言（2026-10-20 方案 15 §7 R1）。认不出的驱动名
     # 在这里**抛**：渲染期才发现会晚一步，而那一步已经把错声明写进样本了。
     surface = toolcatalog.surface_of_driver(archive.get("driver"))
-    rationales = align_rationales(actions_, raw_steps)
+
+    # 全部单元的步**摊平成一条流**：搜索阶段 → 站点 1 → …（时间序）。
+    # 摊平之后 ``step_index`` 就是**全局**序号——闸门、渲染、复核三处
+    # 都按它对齐，而不再是「每个单元各自从 0 数起」（那会让第 5 步的
+    # rationale 在字典查找里撞上第 1 个单元的第 5 步，**静默丢思考**）。
+    steps: list[Mapping[str, Any]] = []
+    observations: list[Mapping[str, Any]] = []
+    for unit in units:
+        steps.extend(unit.steps)
+        observations.extend(_obs_of(s) for s in unit.steps)
+    actions_ = _actions_of(steps)
+
+    rationales = align_rationales(actions_, steps)
     written = [r for r in rationales if r.status == "written"]
-    # 口径按**这一单元自己的** ``reflection`` 键判定，不看存档里别处
-    # （搜索单元在顶层、站点单元在 ``visits[i]``）。``unit_body`` 缺省取
-    # 存档顶层——单测与老调用方大量按顶层构造，而站点单元一律显式传。
-    era = rationale_era_of(unit_body if unit_body is not None else archive,
-                           rationales)
+    # 口径按**整条轨迹**判：看存档顶层有没有 ``reflection`` 键。
+    # 实测（2026-10-30 · 145 份真实存档）顶层与各 visit 的 ``reflection``
+    # 键**总是同时在或同时不在**，所以轨迹级口径不会混代。
+    era = rationale_era_of(archive, rationales)
     gate = gate_of(
         rationales,
         action_tools=[a.tool for a in actions_],
@@ -860,16 +1153,15 @@ def _sample(
         rationale_era=era,
     )
     return Sample(
-        sample_id=sample_id(task_id, run_id_of(source_name), unit),
+        sample_id=sample_id(task_id, run_id_of(source_name)),
         task_id=task_id,
-        unit=unit,
         title=str(archive.get("title") or ""),
         system_prompt=SYSTEM_PROMPT,
         tools=TOOL_SPECS_BY_SURFACE[surface],
         user_prompt=str(archive.get("user_prompt") or ""),
         provenance=dict(archive.get("provenance") or {}),
         actions=actions_,
-        observations=observations,
+        observations=tuple(observations),
         rationales=rationales,
         gate=gate,
         outcome=outcome,
@@ -884,128 +1176,39 @@ def _sample(
         # 工具面：源存档记了驱动就按那个方言走，没记就按默认面
         # （历史批次都是 obscura 面）。**面认不出 → 上面已经抛了**。
         tool_surface=surface,
+        site_outcomes=site_outcomes,
     )
 
 
 def split_archive(path: str | Path) -> list[Sample]:
-    """把一份 P1 存档切成若干条样本（一个决策单元一条）。
+    """把一份 P1 存档切成**一条**样本（一个 Run = 一条轨迹）。
 
-    产出条数 = 1（搜索阶段）+ N（每个访问过的站点）。搜索阶段在
-    ``search_blocked`` 非空或搜索页采集失败（网络错误）时**不产出**——
-    被反爬拦 / 没搜到任何东西的 run 压根没进入决策：前者那一步的观察
-    是验证码页，切成「模型该怎么做」的样本只会教它对着验证码页编答案；
-    后者连搜索观察都没有。这与 executor 把反爬单开字段、不进分支体系
-    是同一条纪律的延续。
+    产出条数 = **0 或 1**：
+
+    - **0**：搜索阶段被反爬拦（``search_blocked`` 非空）或搜索页采集失败
+      （网络错误）——那一步压根没进入决策：前者那一步的观察是验证码页，
+      切成「模型该怎么做」的样本只会教它对着验证码页编答案；后者连搜索
+      观察都没有。这与 executor 把反爬单开字段、不进分支体系是同一条
+      纪律的延续。
+    - **1**：其余情况。
+
+    ⚠️ **2026-10-30 · 方案 23**：这条函数以前切出「1（搜索阶段）+ N（每个
+    站点）」条——一个**决策单元**一条样本。现在**一个任务一条轨迹**：
+    决策单元仍在 P1 里（见 :func:`_units_of`），但它不再是样本的粒度，
+    只作为轨迹内的分段与 :attr:`Sample.site_outcomes` 的来源。
+
+    ⚠️ **动作流是摊平的**（搜索阶段 → 站点 1 → …）：搜索阶段的每一步
+    与每个站点的每一步接成**一条**流，``step_index`` 是全局序号。
+    以前每个单元各自从 0 数起，于是第 5 步的 rationale 在字典查找里
+    会撞上第 1 个单元的第 5 步——**静默丢思考**。
     """
     p = Path(path)
     archive = read_archive(p)
     source_name = p.name
     task_id = str(archive.get("task_id"))
-    base_degraded: list[str] = []
-    if not archive.get("user_prompt"):
-        base_degraded.append("user_prompt")
-    if not archive.get("run_config"):
-        # 与 ``executor.integrity`` 的 ``run_config_missing`` 同码——
-        # 两张表由 ``tests/unit/test_integrity.py::TestDegradedMarkersMatchSplit``
-        # 双向盯着，谁先改谁就红。
-        #
-        # 它不进 P2 的训练视图（那六件套里没有运行参数），
-        # 但样本仍要知道「这份数据是降级重建的」，
-        # 否则老批次与新批次会被当成同等样本混着用。
-        base_degraded.append("run_config")
 
-    steps = archive.get("steps") or []
-    if not steps:
-        base_degraded.append("steps")
-
-    out: list[Sample] = []
-
-    # ── 单元 1：搜索阶段 ────────────────────────────────────────────
-    search_obs = archive.get("search_observation")
-    if (
-        search_obs
-        and not archive.get("search_blocked")
-        and not _search_collection_failed(archive)
-    ):
-        degraded = list(base_degraded)
-        miss = _obs_missing(search_obs)
-        if miss:
-            degraded.append(miss)
-        out.append(
-            _sample(
-                archive=archive,
-                source_name=source_name,
-                unit="search",
-                actions_=_actions_of(steps),
-                observations=(dict(search_obs),),
-                outcome=None,  # 搜索阶段不记站点级 outcome
-                degraded=degraded,
-                raw_steps=steps,
-                # 搜索单元的 reflection 在**存档顶层**（与 steps 平级）。
-                reflection=_reflection_of(archive),
-                # 口径也看**这一单元**（顶层）的 reflection 键在不在。
-                unit_body=archive,
-            )
-        )
-
-    # ── 单元 2..N：每个站点 ────────────────────────────────────────
-    outcomes = archive.get("outcomes") or []
-    for i, visit in enumerate(archive.get("visits") or (), 1):
-        vsteps = visit.get("steps") or []
-        degraded = list(base_degraded)
-        if not vsteps:
-            degraded.append("steps")
-        for key in ("site_obs", "player_obs"):
-            miss = _obs_missing(visit.get(key))
-            if miss:
-                degraded.append(miss)
-        player_obs = visit.get("player_obs")
-        player_url = (str(player_obs.get("url") or "")
-                      if isinstance(player_obs, Mapping) else "")
-        outcome = _outcome_for(
-            outcomes, str(visit.get("url") or ""),
-            str(visit.get("landed_url") or ""), player_url,
-        )
-        if outcome is None:
-            # 站点级样本查不到 outcome = 这条没有分支结论。它不能只是
-            # ``None``：那与「搜索阶段本来就没有 outcome」同形。
-            degraded.append("outcome_missing")
-        else:
-            succeeded = bool(visit.get("success"))
-            if succeeded != (outcome.branch is None):
-                # 「成功」只有一个来源说了算。两个来源对不上时标记出来，
-                # 而不是挑一个——挑一个就是在猜，而这条样本进不进训练集
-                # 全看它。
-                degraded.append("success_branch_mismatch")
-            outcome = replace(outcome, succeeded=succeeded)
-        out.append(
-            _sample(
-                archive=archive,
-                source_name=source_name,
-                unit=f"site-{i}",
-                actions_=_actions_of(vsteps),
-                # 观察**逐步对位**取自 ``steps[].observation``，缺失顶
-                # :data:`MISSING_OBSERVATION`——**不**取 ``(site_obs,
-                # player_obs)``：那对是「去重后的两份快照」，与动作流
-                # 不等长（``new_tab`` 步的 null 会被真值过滤丢掉），
-                # 动作与观察按下标配对时整段错位（见常量注）。
-                observations=tuple(
-                    dict(o) if o else dict(MISSING_OBSERVATION)
-                    for o in (s.get("observation") for s in vsteps)
-                ),
-                outcome=outcome,
-                degraded=degraded,
-                raw_steps=vsteps,
-                # 站点单元的 reflection 在 ``visits[i]`` 里（与 steps 平级）。
-                reflection=_reflection_of(visit),
-                # 口径看 **visit 自己的** reflection 键，不看存档顶层。
-                unit_body=visit,
-            )
-        )
-
-    if not out and (
-        archive.get("search_blocked") or _search_collection_failed(archive)
-    ):
+    # ── 采集侧退场：没进入决策的 run 产出零条 ──────────────────────
+    if archive.get("search_blocked") or _search_collection_failed(archive):
         # 搜索阶段没进决策的 run 产出零条**是正常形态**，不是错误：
         # 要么被反爬拦（观察是验证码页），要么搜索页采集失败（网络错误，
         # T048 这类坏档连搜索观察都没有）。抛出去会让 :func:`iter_samples`
@@ -1013,12 +1216,116 @@ def split_archive(path: str | Path) -> list[Sample]:
         # （反爬见 executor 里「直接重跑同一引擎大概率仍是验证码页」那条
         # 警告，网络错误见真实存档 ``T048__5aa34cf7.json``）。
         return []
-    if not out:
+
+    units = _units_of(archive)
+    steps = archive.get("steps") or []
+    visits = archive.get("visits") or ()
+
+    if not archive.get("search_observation") and not visits:
         raise P1ShapeError(
             f"{source_name}: task_id={task_id} 的存档里既没有搜索观察也没有访问记录，"
-            f"切不出样本（warnings={archive.get('warnings')!r}）"
+            f"切不出轨迹（warnings={archive.get('warnings')!r}）"
         )
-    return out
+
+    # ── 降级标记 ──────────────────────────────────────────────────
+    # 与 ``executor.integrity.check_archive`` 的缺件集合**逐条相等**
+    # （``tests/unit/test_integrity.py::TestDegradedMarkersMatchSplit``
+    # 双向盯着，谁先改谁就红）。
+    #
+    # 轨迹级只有一条样本，所以这份集合就是**整条轨迹**的缺件：以前是
+    # 「那个站点降级」，现在是「这条轨迹降级」——降级会传染到整条，
+    # 而报告上「一个站点正文截短」读成「整条轨迹降级」正是要避免的
+    # 那种含糊，所以这里保留**站点级**的明细在 :attr:`Sample.site_outcomes`
+    # 的 outcome 里，而 ``degraded_from`` 只回答「这条能不能当成完整样本用」。
+    degraded: list[str] = []
+    if not archive.get("user_prompt"):
+        degraded.append("user_prompt")
+    if not archive.get("run_config"):
+        # 与 ``executor.integrity`` 的 ``run_config_missing`` 同码。
+        # 它不进 P2 的训练视图（那六件套里没有运行参数），
+        # 但样本仍要知道「这份数据是降级重建的」，
+        # 否则老批次与新批次会被当成同等样本混着用。
+        degraded.append("run_config")
+    if not steps:
+        degraded.append("steps")
+    miss = _obs_missing(archive.get("search_observation"))
+    if miss:
+        degraded.append(miss)
+
+    # ── 站点级明细（裁定 ③：留作轨迹内细节，不切成独立样本）─────────
+    outcomes = archive.get("outcomes") or []
+    site_outcomes: list[SiteOutcomeView] = []
+    # 全局步号：搜索阶段的步在前，各站点的步按访问顺序接上。
+    # 站点级明细带着**自己的步区间**——「这个站点是轨迹里哪一段」必须
+    # 能直接回答，靠 url 反推是猜（两个站点跳到同一地址时会撞）。
+    cursor = len(units[0].steps) if units else 0
+    for i, visit in enumerate(visits, 1):
+        unit = units[i] if i < len(units) else None
+        n_steps = len(unit.steps) if unit is not None else 0
+        step_start, step_end = cursor, cursor + n_steps
+        cursor = step_end
+        if not (visit.get("steps") or ()):
+            degraded.append("steps")
+        for key in ("site_obs", "player_obs"):
+            m = _obs_missing(visit.get(key))
+            if m:
+                degraded.append(m)
+        player_obs = visit.get("player_obs")
+        player_url = (str(player_obs.get("url") or "")
+                      if isinstance(player_obs, Mapping) else "")
+        hit = outcomerules.resolve_at(
+            outcomes,
+            str(visit.get("url") or ""),
+            str(visit.get("landed_url") or ""),
+            player_url,
+        )
+        raw = hit[1] if hit is not None else None
+        ref = _outcome_ref(raw)
+        if ref is None:
+            # 站点查不到 outcome = 这个访问点没有分支结论。它不能只是
+            # ``None``：那与「这条轨迹压根没有结论」同形。
+            degraded.append("outcome_missing")
+        else:
+            succeeded = bool(visit.get("success"))
+            if succeeded != (ref.branch is None):
+                # 「成功」只有一个来源说了算。两个来源对不上时标记出来，
+                # 而不是挑一个——挑一个就是在猜，而这条样本进不进训练集
+                # 全看它。
+                degraded.append("success_branch_mismatch")
+            ref = replace(ref, succeeded=succeeded)
+        site_outcomes.append(
+            SiteOutcomeView(
+                index=i,
+                url=str(visit.get("url") or ""),
+                landed_url=str(visit.get("landed_url") or ""),
+                outcome=ref,
+                step_start=step_start,
+                step_end=step_end,
+                outcome_index=hit[0] if hit is not None else -1,
+            )
+        )
+
+    # ── 任务级结论（裁定 ②：看最后一个结论）────────────────────────
+    conclusion = outcomerules.task_conclusion(archive)
+    task_outcome = _outcome_ref(conclusion.outcome)
+    if task_outcome is not None:
+        # 轨迹级的 ``succeeded`` 只有一个来源说了算——分支为空即成功。
+        # 站点级的**第二个**来源（``visits[i].success``）在上面的循环里
+        # 比对过了，对不上时记 ``success_branch_mismatch``，不在这里
+        # 替它挑一个。
+        task_outcome = replace(task_outcome, succeeded=task_outcome.branch is None)
+
+    return [
+        _run_sample(
+            archive=archive,
+            source_name=source_name,
+            units=units,
+            degraded=degraded,
+            outcome=task_outcome,
+            site_outcomes=tuple(site_outcomes),
+            reflection=_last_reflection_of(units),
+        )
+    ]
 
 
 def iter_samples(root: str | Path, pattern: str = "*.json") -> Iterable[Sample]:
@@ -1052,6 +1359,8 @@ __all__ = [
     "GateMark",
     "OutcomeRef",
     "Sample",
+    "SiteOutcomeView",
+    "SiteView",
     "P1ShapeError",
     "MISSING_OBSERVATION",
     "RATIONALE_ERA_PRE_ACTION", "RATIONALE_ERA_POST_HOC",

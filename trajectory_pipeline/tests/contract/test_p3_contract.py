@@ -160,7 +160,6 @@ class Test视图名与渲染侧一致:
         expected = {
             "sample_id",
             "task_id",
-            "unit",
             "title",
             "source_archive",
             "gate",
@@ -187,6 +186,10 @@ class Test视图名与渲染侧一致:
             # 这条的思考是「动作前动机」还是「事后反思」——判读手册里
             # 两类文本的读法不同。
             "rationale_era",
+            # 2026-10-30 方案 23：粒度改成「一个任务一条轨迹」——
+            # ``unit`` 键整个没了（单元不再是样本的粒度），站点级结论
+            # 降级成轨迹内明细，挂在 ``site_outcomes`` 上。
+            "site_outcomes",
         }
         assert actual == expected, (
             f"to_meta 键集漂移：多 {actual - expected} / 少 {expected - actual}。"

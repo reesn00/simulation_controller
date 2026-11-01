@@ -541,6 +541,391 @@ def era_note_for(row: Mapping[str, Any]) -> str:
     )
 
 
+# --------------------------------------------------------------------------
+# 轨迹级导出（方案 23 · 裁定 ④：一个标注单元 = 一条轨迹）
+# --------------------------------------------------------------------------
+#
+# 站点级那一路（:func:`export_golden_rows`）推的是「一条站点行 = 一个 LS 任务」。
+# 裁定 ④ 之后**人核的单元是一条轨迹** ⇒ LS 任务也按轨迹推。
+#
+# 九个块**一个不少**（:data:`BLOCK_CONTROLS` 是契约）——但 ②③④⑤⑥ 的内容
+# 换成轨迹口径：② 摆**整条轨迹**的站点清单，③ 摆**轨迹级**金标（人核的那一笔），
+# ④ 摆**裁定 ② 的末条结论** + 逐站点结论，⑥ 摆**整条轨迹**的步流（不切片）。
+#
+# ⚠️ **站点级明细仍然摆在块里**：人核整条轨迹时要知道「它经过了这几个站、
+# 每个站判成什么」——只给末条结论，人就只能凭末条判整条。
+
+#: 轨迹行里站点明细的键。
+_TRAJ_SITES_KEY = "site_outcomes"
+
+
+def _traj_sites(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """轨迹行里的站点明细（**原样**，不摊平）。"""
+    return [
+        dict(s)
+        for s in (row.get(_TRAJ_SITES_KEY) or ())
+        if isinstance(s, Mapping)
+    ]
+
+
+def _branch_text(code: Mapping[str, Any] | None) -> str:
+    """分支的人话（``None`` = 成功）。"""
+    if not code:
+        return "（无）"
+    branch = code.get("branch")
+    if branch is None:
+        return "成功（branch=null ⇒ 记成功）"
+    label = str(code.get("branch_label") or "")
+    return f"{branch}（{label}）" if label else str(branch)
+
+
+def _gold_text(golden: Mapping[str, Any] | None) -> str:
+    """金标的人话。"""
+    if not golden:
+        return "（人核这一格是空的 ⇒ **待人核**）"
+    label = str(golden.get("label") or "")
+    label_text = str(golden.get("label_label") or "")
+    if not label:
+        return "（人核这一格是空的 ⇒ **待人核**）"
+    return f"{label}（{label_text}）" if label_text else label
+
+
+def _traj_split_text(row: Mapping[str, Any]) -> str:
+    """这条轨迹的**档位分布**（人话）。
+
+    ⚠️ **一条轨迹没有单一档位**（实测 28/50 条三档全跨）⇒ 这里给的是
+    「各档几条」，**不是**「它属于哪一档」——后者由
+    :func:`evaluation.golden.rows.strict_split` 按取严口径给。
+    """
+    splits = row.get("splits")
+    if not isinstance(splits, Mapping) or not splits:
+        counter: dict[str, int] = {}
+        for site in _traj_sites(row):
+            split = str(site.get("split") or "")
+            if split:
+                counter[split] = counter.get(split, 0) + 1
+        splits = counter
+    if not splits:
+        return ""
+    return "　".join(f"{k}×{v}" for k, v in sorted(splits.items()))
+
+
+def _site_lines(row: Mapping[str, Any]) -> list[str]:
+    """逐站点的一行清单（url / 代码结论 / 人核 / 所属档）。"""
+    lines: list[str] = []
+    for i, site in enumerate(_traj_sites(row), 1):
+        code = site.get("code") if isinstance(site.get("code"), Mapping) else {}
+        golden = site.get("golden") if isinstance(site.get("golden"), Mapping) else {}
+        lines.append(
+            f"  访问点 {i}：{site.get('url') or '（无 url）'}"
+        )
+        lines.append(
+            f"      代码判定 {_branch_text(code)}　"
+            f"人核 {_gold_text(golden)}　"
+            f"档 {site.get('split') or '（未冻结）'}"
+        )
+        note = str(golden.get("note") or "")
+        if note:
+            lines.append(f"      人核备注：{note}")
+    return lines
+
+
+def render_trajectory_site_block(row: Mapping[str, Any]) -> str:
+    """② 轨迹与来源（**站点级那一块的轨迹口径版**）。
+
+    与 :func:`render_site_block` 的差别：这里**没有单个 url**——一条轨迹经过
+    几个站，每个站一行。**档也是逐站的**（实测 33/50 条轨迹的站点跨着三档）。
+    """
+    splits = row.get("splits")
+    split_text = _traj_split_text(row)
+    lines = [
+        _line("任务", row.get("task_id") or ""),
+        _line("Run", row.get("run_id") or ""),
+        _line("trajectory_id", row.get("trajectory_id") or row.get("golden_id") or ""),
+        _line("来源类型", row.get("source_kind") or ""),
+        _line("样本状态", row.get("status") or ""),
+        _line("所属档", split_text or "（未冻结）"),
+        _line("采集面", row.get("access_surface") or ""),
+        "",
+        "── 这条轨迹经过的站点（逐站一行）──",
+    ]
+    sites = _site_lines(row)
+    lines.extend(sites or ["  （没有站点明细）"])
+    return "\n".join(lines)
+
+
+def render_trajectory_gold_block(row: Mapping[str, Any]) -> str:
+    """③ 轨迹级金标（人核整条轨迹的那一笔）+ 逐站金标。"""
+    golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
+    lines = [
+        "── 轨迹级金标（**这一格是人核整条轨迹的结论**）──",
+        _line("金标标签", _gold_text(golden)),
+    ]
+    note = str(golden.get("note") or "")
+    if note:
+        lines.append(_line("金标备注", note))
+    if golden:
+        lines.append(_line("金标署名", golden.get("reviewed_by") or ""))
+        lines.append(_line("金标时刻", golden.get("reviewed_at") or ""))
+    else:
+        lines.append(
+            "⚠ **这一格还没有人核过**——请判这条轨迹最后落到哪，"
+            "然后在下面的裁决里给结论。"
+        )
+    lines.append("")
+    lines.append("── 逐站金标（历史判断，**不是**这条轨迹的结论）──")
+    for i, site in enumerate(_traj_sites(row), 1):
+        sg = site.get("golden") if isinstance(site.get("golden"), Mapping) else {}
+        lines.append(f"  访问点 {i}：{_gold_text(sg)}")
+    return "\n".join(lines)
+
+
+def render_trajectory_code_block(row: Mapping[str, Any]) -> str:
+    """④ 轨迹级代码判定（**裁定 ②：末条结论**）+ 逐站结论。
+
+    ⚠️ **末条结论的取法写在这里**：owner 裁定 ② = 任务级结论看最后一个结论。
+    ``code_reason`` 记着它为什么是末条——不写，人会以为这是随便挑的一条。
+    """
+    code = row.get("code") if isinstance(row.get("code"), Mapping) else {}
+    lines = [
+        "── 轨迹级结论（代码判定；owner 裁定 ② = 看**最后一个**结论）──",
+        _line("代码分支", _branch_text(code)),
+        _line("判断点", code.get("question") or ""),
+        _line("判定来源", code.get("source") or ""),
+        _line("到达播放页", code.get("reached_play_page")),
+        _line("用了兜底", code.get("fallback_used")),
+        _line("取末条的理由", row.get("code_reason") or ""),
+        _line("证据原文", ""),
+        str(code.get("evidence") or "（无证据原文）"),
+        "",
+        "── 逐站结论（这条轨迹经过的每个站各判了什么）──",
+    ]
+    for i, site in enumerate(_traj_sites(row), 1):
+        sc = site.get("code") if isinstance(site.get("code"), Mapping) else {}
+        lines.append(f"  访问点 {i}：{_branch_text(sc)}")
+    return "\n".join(lines)
+
+
+def render_trajectory_scores_block(row: Mapping[str, Any]) -> str:
+    """⑤ 维度分数（轨迹级 + 逐站）。**三种「没有」分开写**（M-29 的病）。"""
+    top = row.get("dimension_scores", None)
+    detail = row.get("scores_detail", None)
+    lines: list[str] = []
+    if "dimension_scores" not in row and "scores_detail" not in row:
+        lines.append(
+            "⚠ **该冻结档的轨迹行没有维度分数字段**——不是「没测」，是**没这字段**。"
+        )
+    else:
+        if top is None:
+            lines.append("轨迹级维度分数: **null（弃权）**")
+        elif not top:
+            lines.append("轨迹级维度分数: **空（没测）**")
+        else:
+            lines.append("轨迹级维度分数:")
+            lines.append(json.dumps(top, ensure_ascii=False, indent=2))
+        if detail is None:
+            lines.append("scores_detail: **null（弃权）**")
+        elif not detail:
+            lines.append("scores_detail: **空（没测）**")
+        else:
+            lines.append("scores_detail:")
+            lines.append(json.dumps(detail, ensure_ascii=False, indent=2))
+    lines.append("")
+    lines.append("── 逐站维度分数（站点级）──")
+    for i, site in enumerate(_traj_sites(row), 1):
+        ss = site.get("dimension_scores")
+        if not ss:
+            lines.append(f"  访问点 {i}：（空 / 没测）")
+        else:
+            lines.append(f"  访问点 {i}：{json.dumps(ss, ensure_ascii=False)}")
+    return "\n".join(lines)
+
+
+def render_trajectory_scene_block(scene: Mapping[str, Any]) -> str:
+    """⑥ 整条轨迹的现场读数（**不切片**）。"""
+    lines: list[str] = []
+    status = str(scene.get("status") or "")
+    found = bool(scene.get("found"))
+    if found:
+        lines.append(_line("现场状态", f"{status}（读到了 · 整条轨迹）"))
+    else:
+        lines.append(_line("现场状态", f"{status or 'not_found'}"))
+        lines.append(
+            "⚠ **没读到现场**——这**不是**「页面里没有播放控件」。"
+            "定位说明与候选见下面；判不了就在裁决里选「判不了」。"
+        )
+    lines.append(_line("定位说明", scene.get("note") or ""))
+    degraded = list(scene.get("degraded") or [])
+    if degraded:
+        lines.append(_line("存档降级标记", "/".join(degraded)))
+    title = str(scene.get("title") or "")
+    if title:
+        lines.append(_line("页面标题", title))
+    steps = list(scene.get("steps") or [])
+    if steps:
+        lines.append("")
+        lines.append(f"── 每步观察（整条轨迹 {len(steps)} 步）──")
+        lines.extend(f"  {s}" for s in steps)
+    else:
+        lines.append("")
+        lines.append("  （这条轨迹没有观察读数）")
+    candidates = list(scene.get("candidates") or [])
+    if candidates:
+        lines.append("")
+        lines.append("── 存档里现有的访问点与 url ──")
+        lines.extend(f"  {c}" for c in candidates)
+    body = str(scene.get("body") or "")
+    body_from = str(scene.get("body_from") or "")
+    if body:
+        lines.append("")
+        lines.append(f"── 正文预览（来自 {body_from or '未标注来源步'}）──")
+        lines.append(body)
+    else:
+        lines.append("")
+        lines.append("── 正文预览 ──")
+        lines.append("  （没读到正文）")
+    return "\n".join(lines)
+
+
+def build_trajectory_task_data(
+    row: Mapping[str, Any],
+    *,
+    version_meta: Mapping[str, Any],
+    clauses: Mapping[str, str],
+    marker: str = "",
+    scene: Mapping[str, Any] | None = None,
+    trajectory: Mapping[str, Any] | None = None,
+    branches: Mapping[str, str] | None = None,
+    preconditions: Mapping[str, str] | None = None,
+    era_note: str = "",
+    generated_at: str = "",
+) -> dict[str, Any]:
+    """一条**轨迹行** → ``task.data``（九个块，**纯函数**，不联网）。
+
+    与 :func:`build_golden_task_data` 的差别只在**块的内容**：②③④⑤⑥ 换成
+    轨迹口径。**块的键一个不少、一个不改**（:data:`BLOCK_CONTROLS` 是契约，
+    契约测试盯住两处）。
+    """
+    if branches is None:
+        from trajectory_pipeline.executor.branches import BRANCH_LABELS
+
+        branches = BRANCH_LABELS
+    if preconditions is None:
+        from trajectory_pipeline.executor.branches import BRANCH_PRECONDITION
+
+        preconditions = BRANCH_PRECONDITION
+
+    golden_id = str(row.get("golden_id") or "")
+    version = version_meta.get("version", "")
+    splits = row.get("splits")
+    data: dict[str, Any] = {
+        "sample_id": golden_id,
+        "golden_id": golden_id,
+        # ⚠️ **轨迹行没有单一档位**（实测 28/50 条三档全跨）⇒ 页眉这一栏
+        # 摆的是「各档几条」，**不是**「它属于哪一档」。机器要判档位用
+        # ``splits``（dict）或 :func:`evaluation.golden.rows.strict_split`。
+        "split": _traj_split_text(row),
+        "splits": dict(splits) if isinstance(splits, Mapping) else {},
+        "task_id": str(row.get("task_id") or ""),
+        "run_id": str(row.get("run_id") or ""),
+        "version_label": f"v{version}",
+        "version_block": render_version_block(row, version_meta=version_meta, marker=marker),
+        "site_block": render_trajectory_site_block(row),
+        "gold_block": render_trajectory_gold_block(row),
+        "code_block": render_trajectory_code_block(row),
+        "scores_block": render_trajectory_scores_block(row),
+        "scene_block": render_trajectory_scene_block(scene or {}),
+        "rubric_block": render_rubric_block(
+            clauses=clauses,
+            branches=branches,
+            preconditions=preconditions,
+            era_note=era_note,
+        ),
+        "trajectory_block": render_trajectory_block(
+            trajectory, tid=f"{row.get('task_id')}__{row.get('run_id')}"
+        ),
+        "persona_block": render_persona_block(row),
+        "generated_at": generated_at,
+        "uploaded_at": _now_iso(),
+    }
+    missing = [c for c in BLOCK_CONTROLS if c not in data]
+    if missing:  # pragma: no cover - 结构性错误，跑一次就该炸
+        raise ValueError(f"task.data 缺展示块: {missing}")
+    return data
+
+
+def read_trajectory_scene(
+    row: Mapping[str, Any],
+    *,
+    p2_root: str | Path | None = None,
+    preview_chars: int = evidence.DEFAULT_PREVIEW_CHARS,
+) -> dict[str, Any]:
+    """轨迹行 → 整条轨迹的现场摘要（**只读**）。"""
+    digest = evidence.trajectory_digest(
+        row, p2_root=p2_root, preview_chars=preview_chars
+    )
+    return evidence.scene_summary(digest)
+
+
+def export_trajectory_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    version_meta: Mapping[str, Any],
+    clauses: Mapping[str, str],
+    markers: Mapping[str, str] | None = None,
+    only_changed: bool = False,
+    p2_root: str | Path | None = None,
+    task_views_root: str | Path | None = None,
+    scan_settings: CredentialScanSettings | None = None,
+) -> GoldenExportResult:
+    """一批**轨迹行** → :class:`GoldenExportResult`（**不联网**）。
+
+    凭据扫描覆盖 **task.data 全文**——现场正文预览也在范围内。命中即
+    **fail-closed 拒推**（记 ``rejected``）。
+    """
+    scan = scan_settings if scan_settings is not None else CredentialScanSettings()
+    marker_map = markers or {}
+    result = GoldenExportResult()
+
+    for row in diff_mod.filter_changed(rows, marker_map, only_changed=only_changed):
+        gid = str(row.get("golden_id") or "")
+        marker = marker_map.get(gid, "")
+        scene = read_trajectory_scene(row, p2_root=p2_root)
+        trajectory = read_trajectory(row, task_views_root=task_views_root)
+        data = build_trajectory_task_data(
+            row,
+            version_meta=version_meta,
+            clauses=clauses,
+            marker=marker,
+            scene=scene,
+            trajectory=trajectory,
+            era_note=era_note_for(row),
+            generated_at=generated_at_of(row, task_views_root=task_views_root),
+        )
+        hits: list[ScanHit] = scan_for_credentials(
+            data, view="task_data", settings=scan
+        )
+        golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
+        signature = str(golden.get("reviewed_by") or "")
+        stat: dict[str, Any] = {
+            "golden_id": gid,
+            "split": _traj_split_text(row),
+            "marker": marker,
+            "scene_found": bool(scene.get("found")),
+            "scene_status": str(scene.get("status") or ""),
+            "trajectory_found": trajectory is not None,
+            "signature": signature,
+            "signature_kind": classify_signature(signature),
+            "rejected": bool(hits),
+        }
+        result.rows.append(stat)
+        if hits:
+            result.plan.rejected.append((gid, hits))
+            continue
+        result.plan.tasks.append(build_task(data))
+    return result
+
+
 __all__ = [
     "DEFAULT_CLAUSES",
     "SCORES_ABSENT",
@@ -549,11 +934,14 @@ __all__ = [
     "SCORES_NULL",
     "GoldenExportResult",
     "build_golden_task_data",
+    "build_trajectory_task_data",
     "era_note_for",
     "export_golden_rows",
+    "export_trajectory_rows",
     "generated_at_of",
     "read_scene",
     "read_trajectory",
+    "read_trajectory_scene",
     "render_code_block",
     "render_gold_block",
     "render_persona_block",
@@ -562,5 +950,9 @@ __all__ = [
     "render_site_block",
     "render_scores_block",
     "render_trajectory_block",
+    "render_trajectory_code_block",
+    "render_trajectory_gold_block",
+    "render_trajectory_scene_block",
+    "render_trajectory_site_block",
     "render_version_block",
 ]

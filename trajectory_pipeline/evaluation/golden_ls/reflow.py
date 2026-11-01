@@ -56,8 +56,13 @@ from trajectory_pipeline.evaluation.access_surface import (
     check_surface,
     is_declared,
 )
+from trajectory_pipeline.evaluation.golden import rows as rows_mod
 from trajectory_pipeline.evaluation.golden.signatures import HUMAN_SIGNATURES
-from trajectory_pipeline.evaluation.golden.splits import SPLIT_HOLDOUT, SPLIT_REGRESSION
+from trajectory_pipeline.evaluation.golden.splits import (
+    SPLIT_CALIBRATION,
+    SPLIT_HOLDOUT,
+    SPLIT_REGRESSION,
+)
 from trajectory_pipeline.evaluation.golden_ls.label_config import NOT_APPLICABLE
 from trajectory_pipeline.evaluation.golden_ls.verdicts import UNKNOWN
 
@@ -71,6 +76,7 @@ SKIP_UNVERIFIABLE = "unverifiable"
 SKIP_NO_BRANCH = "no_branch"
 SKIP_BRANCH_NA = "branch_not_applicable"
 SKIP_HOLDOUT = "holdout_not_reflowed"
+SKIP_REGRESSION = "regression_not_reflowed"
 SKIP_LABEL_DRIFT = "label_drift"
 SKIP_NO_GOLD = "no_gold_row"
 SKIP_NO_ANNOTATION = "no_annotation_row"
@@ -148,6 +154,20 @@ def _gold_label_of(row: Mapping[str, Any]) -> str:
     return ""
 
 
+def _code_label_of(row: Mapping[str, Any]) -> str:
+    """代码判的标签（**轨迹级 = 裁定② 的末条结论**）。
+
+    轨迹级行**还没有人核标签**时，「现在是什么」= 代码的轨迹级结论
+    ——人判「agree」就是确认它，判「disagree」就是改它。
+    """
+    from trajectory_pipeline.evaluation.golden.builder import SUCCESS_LABEL
+
+    code = row.get("code")
+    if isinstance(code, Mapping):
+        return str(code.get("branch") or SUCCESS_LABEL)
+    return ""
+
+
 def build_worksheet(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -161,12 +181,24 @@ def build_worksheet(
     **原标注原样带出**（标签 / 署名 / 时刻 / 理由 / 软维度分）——回流是
     「整行模式」的一行，原样带出才不会在写回时把别的字段清空。
 
+    轨迹级（裁定④）那一路的两个差别
+    ------------------------------
+    1. **档闸取严**：轨迹跨档（实测 28/50 条三档全跨）⇒ 按
+       :func:`evaluation.golden.rows.strict_split` 取**最严**的那一档。
+       沾上 holdout / regression 的轨迹，**裁定不进金标**（裁定③ · C-17）
+       ——**显式跳过并记原因**，不是静默丢弃。
+    2. **可以「新建」**：轨迹级标注**大部分还不存在**（人核的单元刚从
+       站点级换成轨迹级）⇒ 人判的第一条**没有原标注可改** ⇒ 这一行
+       是**新建**（``creates_gold: true``），且**必须由人署名**
+       （「谁定了这个标签」是人的事实）。
+
     Returns:
         ``(工作表行, 读数)``。读数里 ``skipped`` 逐条记原因。
     """
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     counts = {KIND_CONFIRM: 0, KIND_RELABEL: 0}
+    creates = 0
 
     for record in records:
         gid = str(record.get("golden_id") or "")
@@ -174,17 +206,37 @@ def build_worksheet(
         if gold_row is None:
             skipped.append({"golden_id": gid, "reason": SKIP_NO_GOLD})
             continue
+        is_trajectory = rows_mod.is_trajectory_row(gold_row)
+        if is_trajectory:
+            # ⚠️ **档闸取严**（轨迹跨档 ⇒ 没有单一档位）。
+            gate = rows_mod.strict_split(gold_row)
+            if gate == SPLIT_HOLDOUT:
+                skipped.append({"golden_id": gid, "reason": SKIP_HOLDOUT})
+                continue
+            if gate == SPLIT_REGRESSION:
+                skipped.append({"golden_id": gid, "reason": SKIP_REGRESSION})
+                continue
         ann = ann_rows.get(gid)
-        if ann is None:
+        is_create = ann is None and is_trajectory
+        if ann is None and not is_create:
             skipped.append({"golden_id": gid, "reason": SKIP_NO_ANNOTATION})
             continue
         gold_label = _gold_label_of(gold_row)
-        split = str(gold_row.get("__split__") or record.get("split") or "")
+        if not gold_label and is_trajectory:
+            # 还没有轨迹级人核标签 ⇒ 「现在是什么」= 代码的轨迹级结论。
+            gold_label = _code_label_of(gold_row)
+        if is_trajectory:
+            split = SPLIT_CALIBRATION
+        else:
+            split = str(gold_row.get("__split__") or record.get("split") or "")
+        annotation_label = (
+            str(ann.get("label") or "") if ann else gold_label
+        )
         kind, reason = classify(
             record,
             gold_label=gold_label,
             split=split,
-            annotation_label=str(ann.get("label") or ""),
+            annotation_label=annotation_label,
         )
         if kind == "skip":
             skipped.append({"golden_id": gid, "reason": reason})
@@ -200,23 +252,25 @@ def build_worksheet(
             # 这一轮**不回流**（它的三栏还没齐——比如采集时刻要另外取）。
             # 跳过的行**留在工作表里**，不删 ⇒ 下轮接着办。
             "submit": True,
-            "round": int(ann.get("round", 1)),
+            "round": int((ann or {}).get("round", 1)),
             # ⚠️ 标签一律取**冻结档**的（我们要改的是 v{N} 的金标）
             "label": gold_label,
             "label_label": str(golden_map.get("label_label") or ""),
             # 署名 / 时刻 / 理由：确认型**原样带出**（标签没变，署名就不该变）；
             # 改判型留空，由人填——「谁重新定了这个标签」是人的事实。
             "reviewed_by": (
-                "" if kind == KIND_RELABEL else str(ann.get("reviewed_by") or "")
+                ""
+                if (kind == KIND_RELABEL or is_create)
+                else str((ann or {}).get("reviewed_by") or "")
             ),
-            "reviewed_at": str(ann.get("reviewed_at") or ""),
-            "note": str(ann.get("note") or ""),
+            "reviewed_at": str((ann or {}).get("reviewed_at") or ""),
+            "note": str((ann or {}).get("note") or ""),
             # ⚠️ 两栏必须由人填（推不出来）
             "access_surface": "",
             "observed_at": "",
             # 软维度分原样带出（不覆盖人填的分数）
-            "dimension_scores": ann.get("dimension_scores"),
-            "interval_days": ann.get("interval_days"),
+            "dimension_scores": (ann or {}).get("dimension_scores"),
+            "interval_days": (ann or {}).get("interval_days"),
             # 留痕（**不进 annotations.jsonl**，cmd_annotate 不取这两栏）
             "ls_annotator": str(record.get("annotator") or ""),
             "ls_verdict": str(record.get("verdict") or ""),
@@ -226,6 +280,11 @@ def build_worksheet(
             "reflow_reviewed_at": str(record.get("annotated_at") or ""),
             "why": reason,
         }
+        if is_create:
+            # ⚠️ **新建的轨迹级标注**：这一条以前没有标签 ⇒ 「谁定了它」
+            # 就是这次判的人 ⇒ 署名必须由人填（见 validate）。
+            row["creates_gold"] = True
+            counts["create"] = counts.get("create", 0) + 1
         if kind == KIND_RELABEL:
             # 改标签要**显式确认**（不是「有差异就改」）
             row["confirm_label_change"] = False
@@ -235,6 +294,7 @@ def build_worksheet(
         "total_records": len(records),
         "confirm": counts.get(KIND_CONFIRM, 0),
         "relabel": counts.get(KIND_RELABEL, 0),
+        "create": counts.get("create", 0),
         "skipped": len(skipped),
         "skipped_detail": skipped,
     }
@@ -274,7 +334,11 @@ def validate(
         gid = str(row.get("golden_id") or "")
         kind = str(row.get("kind") or "")
         gold_row = gold_rows.get(gid)
-        split = str((gold_row or {}).get("__split__") or row.get("split") or "")
+        if gold_row is not None and rows_mod.is_trajectory_row(gold_row):
+            # ⚠️ **轨迹行没有单一档位** ⇒ 取严（holdout > regression > calibration）。
+            split = rows_mod.strict_split(gold_row)
+        else:
+            split = str((gold_row or {}).get("__split__") or row.get("split") or "")
         if split == SPLIT_HOLDOUT:
             errors.append(f"{gid}：holdout 的裁定不进金标（裁定③只上传，不回流）")
             continue
@@ -316,16 +380,18 @@ def validate(
                     f"{gid}：软维度分这一栏空着——原标注有 {dict(old_dims)}，"
                     "整行模式不带它就等于把它清掉（清掉不报错，只是分数悄悄没了）"
                 )
-        if kind == KIND_RELABEL:
+        if kind == KIND_RELABEL or row.get("creates_gold"):
             signer = str(row.get("reviewed_by") or "").strip()
             if not signer:
-                errors.append(f"{gid}：改判要署金标侧的名字（reviewed_by 不能空）")
+                what = "改判" if kind == KIND_RELABEL else "新建的轨迹级标注"
+                errors.append(f"{gid}：{what}要署金标侧的名字（reviewed_by 不能空）")
             elif signer not in HUMAN_SIGNATURES:
                 errors.append(
                     f"{gid}：reviewed_by={signer!r} 不在人的署名集合里"
                     f"（{sorted(HUMAN_SIGNATURES)}）——否则这条会从「人核」"
                     "静默退化成「机器写的」"
                 )
+        if kind == KIND_RELABEL:
             if not row.get("confirm_label_change"):
                 errors.append(
                     f"{gid}：改判需要显式确认（confirm_label_change=true）"
@@ -409,6 +475,7 @@ __all__ = [
     "SKIP_NO_BRANCH",
     "SKIP_NO_GOLD",
     "SKIP_NOT_REVIEWED",
+    "SKIP_REGRESSION",
     "SKIP_UNVERIFIABLE",
     "build_worksheet",
     "classify",

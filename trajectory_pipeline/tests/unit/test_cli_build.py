@@ -93,20 +93,20 @@ class Test默认不覆盖:
         _write_batch(tmp_path, _archive())
         cli.cmd_build(_ns(out=str(tmp_path), overwrite=True))
         # 把 P2 改成明显坏的内容
-        (tmp_path / "samples" / "T001__a1__search.json").write_text(
+        (tmp_path / "samples" / "T001__a1.json").write_text(
             "坏", encoding="utf-8")
         cli.cmd_build(_ns(out=str(tmp_path)))
         # 没被覆盖回去
-        assert (tmp_path / "samples" / "T001__a1__search.json").read_text(
+        assert (tmp_path / "samples" / "T001__a1.json").read_text(
             encoding="utf-8") == "坏"
 
     def test_显式overwrite才覆盖(self, tmp_path):
         _write_batch(tmp_path, _archive())
         cli.cmd_build(_ns(out=str(tmp_path), overwrite=True))
-        (tmp_path / "samples" / "T001__a1__search.json").write_text(
+        (tmp_path / "samples" / "T001__a1.json").write_text(
             "坏", encoding="utf-8")
         cli.cmd_build(_ns(out=str(tmp_path), overwrite=True))
-        json.loads((tmp_path / "samples" / "T001__a1__search.json")
+        json.loads((tmp_path / "samples" / "T001__a1.json")
                    .read_text(encoding="utf-8"))
 
 
@@ -172,7 +172,7 @@ class Test复核档优先:
         # sample_id 里的 run_id **不带** ``.reviewed``——带上的话同一份存档
         # 在复核前后会产出两套 id，批次去重就失效了
         assert ".reviewed" not in blob["sample_id"]
-        assert files[0].name == "T001__a1__search.json"
+        assert files[0].name == "T001__a1.json"
 
 
 def _written_step():
@@ -210,4 +210,4 @@ class Test分代报警:
         assert cli.cmd_build(_ns(out=str(tmp_path), stage="p2",
                                  rationale_era="pre_action")) == 0
         names = sorted(p.name for p in (tmp_path / "samples").glob("*.json"))
-        assert names == ["T001__a1__search.json"]
+        assert names == ["T001__a1.json"]

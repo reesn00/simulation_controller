@@ -25,6 +25,14 @@ import**——交接面是格式不是对象）：
    这不违反「T 不 import assembler.schema」：catalog 是**跨层地基**
    （不 import 任何功能模块），不是组装端点的模块。
 
+   ⚠️ **outcome 配对口径也不再自己写**（2026-10-30 · 方案 23）：以前 T
+   **按位置**配（``visits[i]`` ↔ ``outcomes[i]``），而那两条序列**不是
+   一一对应**的（孤儿记账、候选阶段记账、多轮访问）——实测在 109/127 份
+   真实存档（86%）上与 P2 的 URL 配对给出**不同**的结论，其中一份把
+   **成功报成了失败**。现在 T 与 P2 都从
+   :mod:`trajectory_pipeline.outcomerules` 取——同一个**纯模块**
+   （不 import 任何功能模块），理由与 catalog 同款。
+
 4. **P1 observation 是取证态**（full 6000 字符 / 80 元素 / 50 链接），
    经 :func:`~trajectory_pipeline.assembler.observation_view.render`
    裁到训练态再经 :func:`~trajectory_pipeline.assembler.views.render_observation`
@@ -50,7 +58,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from trajectory_pipeline import toolcatalog
+from trajectory_pipeline import outcomerules, toolcatalog
 from trajectory_pipeline.assembler import observation_view
 
 #: 路径权威的 re-export：T 渲染端不许自己拼 ``output/pipeline/task_views``
@@ -364,17 +372,22 @@ def _closing_text(archive: Mapping[str, Any]) -> str | None:
 
     与 :func:`~trajectory_pipeline.assembler.views._closing_text` 同款
     形态但**来源不同**——T 从 ``outcomes[]`` + ``ledger.by_branch`` 派生，
-    P3 从 unit outcome + unit reflection 派生。
+    P3 从**任务级** outcome + 末个单元的 reflection 派生。
 
     - **空 trajectory**（零可见模型动作）不编总结；
-    - 任一 ``outcomes[i].branch is None`` ⇒ success 处置词；
-    - ``outcomes[i].branch is not None`` ⇒ 失败处置词（首个失败的分支名
-      进词表，未知分支照实写出分支名——不能静默消失）；
+    - **最后一个结论** ``branch is None`` ⇒ success 处置词；
+    - **最后一个结论** ``branch is not None`` ⇒ 失败处置词（分支名进词表，
+      未知分支照实写出分支名——不能静默消失）；
     - 全部 outcomes 为空 ⇒ "无可访问站点" 处置词。
 
     ⚠️ INC46（2026-10-15）后 T 也**不读 unit 级 reflection**——T 是任务级
     视图，unit 级 reflection 是事后反思，写 unit 级 conclusion 当任务级
     结论会把跨单元的整体判断抹成单点（与 P3 同款教训）。
+
+    ⚠️ **2026-10-30 · 方案 23**：处置词从「任一成功 ⇒ 成功」改成
+    **最后一个结论**（裁定 ②）——与 T 的 ``overall_branch``、与 P2 的
+    任务级标签**同一条**。旧口径会把「中途成功过、后来又失败」的轨迹
+    报成成功，而那正是训练侧要学的东西。
     """
     units = _flatten_units(archive)
     has_visible_action = any(
@@ -400,25 +413,18 @@ def _closing_text(archive: Mapping[str, Any]) -> str | None:
         total_sites = ledger.get("total_sites", 0)
         disposition = f"无可访问站点（total_sites={total_sites}）"
     else:
-        # 任一 success ⇒ success 处置词
-        success = next((o for o in outcomes if o.get("branch") is None), None)
-        if success is not None:
-            url = str(success.get("play_page_url") or success.get("site_url") or "")
+        # 最后一个结论（裁定 ②）。
+        last = outcomes[-1]
+        branch = last.get("branch")
+        if branch is None:
+            url = str(last.get("play_page_url") or last.get("site_url") or "")
             disposition = (
                 f"记录该网址为可播放资源：{url}" if url else "记录为可播放资源"
             )
         else:
-            # 取首个失败的分支
-            first_failure = next(
-                (o for o in outcomes if o.get("branch") is not None), None
+            disposition = _CLOSING_DISPOSITION.get(str(branch)) or (
+                f"不予记录（分支：{branch}）"
             )
-            if first_failure is not None:
-                branch = str(first_failure.get("branch") or "")
-                disposition = _CLOSING_DISPOSITION.get(branch) or (
-                    f"不予记录（分支：{branch}）"
-                )
-            else:
-                disposition = "任务未能完成"
 
     # by_branch 摘要
     by_branch = ledger.get("by_branch") or {}
@@ -576,20 +582,43 @@ def _aggregate_unit_outcomes(
 ) -> list[dict[str, Any]]:
     """按 visits 顺序把 outcomes 配到 site-N unit 上（per-Run 聚合）。
 
-    visits[i] ↔ outcomes[i] 的对齐由 ``_outcome_for`` 决定（站点 URL 三
-    字段配对）——这里**只按位置**取（取``visit[i]`` → ``outcomes[i]``），
-    因为执行器 (``VisitResult`` + ``RunRecord.ledger``) 的 to_json 已经按
-    顺序对齐了；重写匹配会引入新拼接风险。
+    ⚠️ **2026-10-30 · 方案 23：配对规则换了**。
 
-    没 outcome 时记 ``outcome=None``（缺件标记）。
+    旧口径**按位置**取（``visit[i]`` → ``outcomes[i]``），理由是
+    「执行器的 to_json 已经按顺序对齐了」。那个前提**不成立**：
+    ``outcomes[]`` 里混着**孤儿记账**（``_drop_site_homepages`` 造的
+    ``not_play_site``）、**候选阶段记账**（每个候选一条 ``unresolved``），
+    与 ``visits[]`` **不是一一对应**。实测 T 的按位置配对与 P2 的 URL
+    配对在 **109/127 份真实存档（86%）** 上给出**不同**的结论，
+    其中一份把**成功报成了失败**。
+
+    现在统一到 :mod:`trajectory_pipeline.outcomerules`：**候选 → 落地 →
+    播放页**逐档试，每档匹 ``site_url`` **或** ``url``，**同档取末条**
+    （末条才是这个站点的最终结论）。口径在**单一真源**里，
+    T 与 P2 与评估侧读的是同一份。
+
+    没 outcome 时记 ``outcome=None``（缺件标记）——**不是**成功：
+    成功是 ``branch is None``，缺件是压根没配到。
     """
     out: list[dict[str, Any]] = []
     outcomes = list(archive.get("outcomes") or ())
     for i, visit in enumerate(archive.get("visits") or (), 1):
-        outcome = outcomes[i - 1] if i - 1 < len(outcomes) else None
+        player_obs = visit.get("player_obs")
+        player_url = (
+            str(player_obs.get("url") or "")
+            if isinstance(player_obs, Mapping)
+            else ""
+        )
+        outcome = outcomerules.resolve(
+            outcomes,
+            str(visit.get("url") or ""),
+            str(visit.get("landed_url") or ""),
+            player_url,
+        )
         if isinstance(outcome, Mapping):
             out.append({
                 "unit": f"site-{i}",
+                "matched": True,
                 "branch": outcome.get("branch"),
                 "branch_label": outcome.get("branch_label"),
                 "evidence": str(outcome.get("evidence") or ""),
@@ -599,6 +628,10 @@ def _aggregate_unit_outcomes(
         else:
             out.append({
                 "unit": f"site-{i}",
+                # **没配到 outcome**（缺件）——不是成功。``branch=None``
+                # 在「配到了」的前提下才是成功；这里明确标出来，
+                # 下游（``gate_breakdown``）才不会把缺件读成「过了」。
+                "matched": False,
                 "branch": None,
                 "branch_label": None,
                 "evidence": "",
@@ -609,19 +642,22 @@ def _aggregate_unit_outcomes(
 
 
 def _task_sample_ids(archive: Mapping[str, Any]) -> list[str]:
-    """按 units 顺序生成对应 P3 ``sample_id`` 列表（便于从 T 反查 P3）。
+    """对应 P3 ``sample_id`` 列表（便于从 T 反查 P3）。
 
-    不读 P2（纪律）——只根据 P1 顶层切片轴拼出对应的 P3 sample_id 形式
-    ``<task_id>__<run_id>__<unit>``，便于人查；P3 文件本身不在 T 时扫。
+    ⚠️ **2026-10-30 · 方案 23**：以前是「每个决策单元一个 id」
+    （``<task_id>__<run_id>__search`` / ``__site-N``），现在**一个任务
+    一条轨迹**，P3 的 ``sample_id`` 就是 ``<task_id>__<run_id>``——
+    与 P1 存档名、与本视图的 ``trajectory_id`` **逐字相同**。
+
+    仍返回**列表**而不是字符串：键名 ``unit_sample_ids`` 已被契约文档
+    与下游读档脚本引用，改键名要同步一串地方；而「列表里只有一项」
+    与「这项就是这条轨迹」是同一件事。
     """
     task_id = str(archive.get("task_id") or "")
     run_id = str(archive.get("run_id") or "")
     if not task_id or not run_id:
         return []
-    return [f"{task_id}__{run_id}__search"] + [
-        f"{task_id}__{run_id}__site-{i}"
-        for i in range(1, len(list(archive.get("visits") or ())) + 1)
-    ]
+    return [f"{task_id}__{run_id}"]
 
 
 def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
@@ -666,26 +702,34 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
     unit_outcomes = _aggregate_unit_outcomes(archive)
     ledger = dict(archive.get("ledger") or {})
 
-    # task_gate: 全部 unit ``gate=passed``（整条任务级）才算 passed
-    # 简化为——没访问成功的 unit 也算 failed（与 P3 同款 returner）
-    any_branch = next(
-        (o.get("branch") for o in unit_outcomes if isinstance(o, Mapping)),
-        None,
-    )
-    if any_branch is None and not unit_outcomes:
-        # outcomes 为空（被反爬拦 / 搜索失败）——task_gate 不算通过
+    # ── 任务级结论（裁定 ②：看最后一个结论）────────────────────────
+    # 口径在 :mod:`trajectory_pipeline.outcomerules`（单一真源）。
+    #
+    # ⚠️ **2026-10-30 · 方案 23**：旧口径是「任一 unit 成功 ⇒ 任务成功，
+    # 否则取**首个**失败分支」。现在改成**最后一个结论**——
+    # 与 P2 的任务级标签、与训练侧消费的那个标签**同一条**。
+    # 旧口径会把「中途成功过、后来又失败」的轨迹报成成功。
+    conclusion = outcomerules.task_conclusion(archive)
+    if not conclusion.has_conclusion:
+        # 一个站点结论都没有（被反爬拦 / 搜索失败 / 全是路由记账）
+        # ——判不出来，不算通过。
         task_gate_status = "not_run"
-    elif any(o.get("branch") is None for o in unit_outcomes):
+        overall_branch = outcomerules.UNRESOLVED
+    elif conclusion.branch is None:
         task_gate_status = "passed"
+        overall_branch = "success"
     else:
         task_gate_status = "failed"
+        overall_branch = str(conclusion.branch)
 
     gate_breakdown = [
         {
             "unit": f"site-{i}",
-            "gate": ("passed" if (i - 1 < len(unit_outcomes)
-                                   and unit_outcomes[i - 1].get("branch") is None)
-                     else "failed"),
+            # **没配到 outcome = 缺件**，不是成功——读成「过了」会把
+            # 一条没结论的访问点记成通过了。
+            "gate": ("not_run" if not unit_outcomes[i - 1].get("matched")
+                     else ("passed" if unit_outcomes[i - 1].get("branch") is None
+                           else "failed")),
             "rationale_missing": rationale_missing,
         }
         for i in range(1, len(visits) + 1)
@@ -697,23 +741,6 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
             "gate": "passed" if not rationale_missing else "not_run",
             "rationale_missing": rationale_missing,
         })
-
-    # overall_branch（任务级聚合）
-    success = next(
-        (o for o in unit_outcomes if isinstance(o, Mapping) and o.get("branch") is None),
-        None,
-    )
-    if success is not None:
-        overall_branch = "success"
-    else:
-        first_failure = next(
-            (o for o in unit_outcomes
-             if isinstance(o, Mapping) and o.get("branch") is not None),
-            None,
-        )
-        overall_branch = (
-            str(first_failure.get("branch")) if first_failure else "unknown"
-        )
 
     # 「模型被告知但这条轨迹没用过」的工具名。
     #

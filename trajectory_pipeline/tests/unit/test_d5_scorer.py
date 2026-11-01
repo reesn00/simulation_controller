@@ -44,17 +44,18 @@ from trajectory_pipeline.evaluation.scorers.d5_scorer import score_d5
 
 def _sample(
     outcome: dict | None,
-    unit: str = "site-1",
     *,
     body: str = "",
     rationale: str = "",
 ) -> Sample:
     """``body`` 落进观察正文（**证据核只认这一路**）；
-    ``rationale`` 落进 ``rationales``（**动作前动机，不算证据**）。"""
+    ``rationale`` 落进 ``rationales``（**动作前动机，不算证据**）。
+
+    ⚠️ **2026-10-30 · 方案 23**：没有 ``unit`` 了——一个任务一条轨迹
+    （``sample_id`` = ``<task_id>__<run_id>``）。"""
     return Sample(
-        sample_id=f"T001__a1__{unit}",
+        sample_id="T001__a1",
         task_id="T001",
-        unit=unit,
         title="功夫",
         system_prompt="s",
         tools=(),
@@ -289,10 +290,15 @@ class Test输入形态:
         o = _out("no_play_control", question="site.find_play_control", reached=False)
         assert score_d5(_sample(o)).score == score_d5(_dict_sample(o)).score
 
-    def test_搜索单元无outcome判不可判定(self):
-        """搜索阶段本来就没有 outcome——那是「没有决策可判」，
-        不是「决策错了」。"""
-        v = score_d5(_sample(None, unit="search"))
+    def test_无结论判不可判定(self):
+        """这条轨迹没有结论——那是「没有决策可判」，
+        不是「决策错了」。
+
+        ⚠️ **2026-10-30 · 方案 23**：旧口径下这条样本是「搜索单元」
+        （搜索阶段本来就没有 outcome）。现在样本是**整条轨迹**，
+        ``outcome=None`` 的含义变成「这条轨迹没有结论」——
+        不可判定的读法不变。"""
+        v = score_d5(_sample(None))
         assert v.score is None and v.kind == "undetermined"
 
     def test_缺question判不可判定(self):

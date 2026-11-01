@@ -58,14 +58,23 @@ def _sample(**over):
         "rationale": None,
     }
     base = {
-        "sample_id": "T001__abc123__site-1",
-        "task_id": "T001", "unit": "site-1", "title": "功夫",
+        # ⚠️ **2026-10-30 · 方案 23**：一个任务一条轨迹——``sample_id``
+        # 不再带单元后缀，``unit`` 字段整个消失。
+        "sample_id": "T001__abc123",
+        "task_id": "T001", "title": "功夫",
         "source_archive": "T001__abc123.json",
         "six": six,
         "gate": {"status": "not_run", "reasons": ["rationale 模块未落地"]},
         "rationale_missing": True,
         "outcome": {"url": "https://x.test", "branch": "no_play_control",
                     "source": "rule", "fallback_used": False, "succeeded": False},
+        "site_outcomes": [
+            {"index": 0, "url": "https://x.test", "landed_url": "https://x.test",
+             "outcome": {"url": "https://x.test", "branch": "no_play_control",
+                         "source": "rule", "fallback_used": False,
+                         "succeeded": False},
+             "matched": True, "is_success": False},
+        ],
         "degraded_from": ["run_config"],
     }
     for k, v in over.items():
@@ -322,10 +331,15 @@ class Test收尾总结:
         s = _sample(outcome={"url": "https://x.test", "branch": "future_branch"})
         assert "不予记录（分支：future_branch）" in self._closing(s)
 
-    def test_搜索单元没有outcome(self):
-        """搜索的「总结」就是进入下一步。"""
+    def test_没有站点结论判不出来(self):
+        """⚠️ **2026-10-30 · 方案 23**：样本不再有「搜索单元」这种形态——
+        一条样本就是**整条轨迹**，它的结论要么有、要么没有。
+
+        没有结论时**不说「接下来逐一打开候选站点核验」**：那句是搜索阶段
+        的过渡语，拿它当轨迹收尾会让人以为「后面还有活要干」，而这条
+        轨迹已经跑完了。判不出来就**判不出来**（fail-closed）。"""
         s = _sample(outcome=None)
-        assert self._closing(s) == "任务总结：接下来逐一打开候选站点核验。"
+        assert self._closing(s) == "任务总结：本轨迹没有站点结论，判不出来。"
 
     def test_reflection的conclusion带上(self):
         """INC46：结论来源是 unit 级 ``reflection``，不是末步 rationale。
@@ -449,7 +463,12 @@ class TestMeta:
         m = views.to_meta(_sample())
         assert m["source_archive"] == "T001__abc123.json"
         assert m["task_id"] == "T001"
-        assert m["unit"] == "site-1"
+        # ⚠️ **2026-10-30 · 方案 23**：``unit`` 字段没了（单元不再是样本
+        # 粒度）；站点级明细改挂在 ``site_outcomes`` 上——训练侧只吃
+        # 轨迹级结论，站点明细是**轨迹内部的细节**。
+        assert "unit" not in m
+        assert m["site_outcomes"][0]["url"] == "https://x.test"
+        assert m["site_outcomes"][0]["matched"] is True
 
     def test_outcome带进meta(self):
         m = views.to_meta(_sample())
@@ -554,9 +573,9 @@ class Test落盘:
         assert res.written == 3
         out = views.views_dir(tmp_path)
         assert sorted(p.name for p in out.glob("*.json")) == [
-            "T001__abc123__site-1_messages.json",
-            "T001__abc123__site-1_meta.json",
-            "T001__abc123__site-1_openai.json",
+            "T001__abc123_messages.json",
+            "T001__abc123_meta.json",
+            "T001__abc123_openai.json",
         ]
 
     def test_每份都是合法JSON(self, tmp_path):

@@ -28,6 +28,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import pytest
 
 from trajectory_pipeline.evaluation.golden import builder
+from trajectory_pipeline.evaluation.golden import rows as rows_mod
 
 
 # ── 工具 ────────────────────────────────────────────────────────
@@ -374,12 +375,17 @@ class Test换键命令:
             ]
         )
         assert rc == 0, err
-        ids = {
-            r["golden_id"] for r in _read_jsonl(golden_root / builder.CANDIDATES_FILE)
-        }
+        rows = _read_jsonl(golden_root / builder.CANDIDATES_FILE)
+        # ⚠️ **2026-10-30 · 方案 23**：候选集改成**轨迹级**——顶层
+        # ``golden_id`` 是轨迹 id（``{task}__{run}``），站点级的 id 收在
+        # ``site_outcomes[]`` 里。⇒ 池行的 id 到明细里找。
+        ids = {r["golden_id"] for r in rows}
+        site_ids: set[str] = set()
+        for r in rows:
+            site_ids |= rows_mod.site_ids_of(r)
         assert old_gid.endswith("__neg00")
-        assert not any(i.endswith("__neg00") for i in ids)
-        assert any(i.endswith("__neg_blocked") for i in ids)
+        assert not any(i.endswith("__neg00") for i in site_ids)
+        assert any(i.endswith("__neg_blocked") for i in site_ids)
 
 
 # ── 判据四：冻结时行自动换键（历史档不动，新版本换键） ──────────

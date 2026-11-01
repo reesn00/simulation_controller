@@ -32,6 +32,11 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Mapping
 
+from trajectory_pipeline.evaluation.golden_ls.scope import (
+    SCOPES,
+    SCOPE_SITE,
+    SCOPE_TRAJECTORY,
+)
 from trajectory_pipeline.evaluation.ls_bridge.exporter import TASK_ANCHOR_CONTROL
 
 #: 九个只读展示块。**与 task.data 的键逐字一致**（契约测试盯住两处）。
@@ -69,6 +74,35 @@ VERDICT_CHOICES: tuple[tuple[str, str], ...] = (
 #: 「人给的分支」里的「不适用」——代码判定没错时不必硬选一个分支。
 NOT_APPLICABLE = "not_applicable"
 
+#: 页眉第二行（**两种粒度两行文案**）。
+#:
+#: ⚠️ 标注员得知道自己**在判一条轨迹还是判一个站点**——写错了他就会
+#: 按另一种粒度去判（把「这条轨迹最后落到哪」判成「这个站点是不是播放站」）。
+_SUB_HEADER: dict[str, str] = {
+    SCOPE_SITE: "══ 站点 ══ task $task_id / run $run_id",
+    SCOPE_TRAJECTORY: "══ 轨迹 ══ task $task_id / run $run_id（一条轨迹一个标注单元）",
+}
+
+#: 九个块的标题（**站点级**那一份是冻结的——历史档的 sha 记在台账里）。
+_HEADERS_SITE: dict[str, str] = {
+    "version_block": "══ ① 版本与金标署名 ══ 机器署名的金标要特别当心",
+    "site_block": "══ ② 站点与来源 ══",
+    "gold_block": "══ ③ 金标（人工真值）══",
+    "code_block": "══ ④ 代码判定与证据 ══",
+    "scores_block": "══ ⑤ 维度分数 ══",
+    "scene_block": "══ ⑥ 现场读数 ══ 页面标题 / 每步观察 / 正文预览",
+    "rubric_block": "══ ⑦ 尺子 ══ 条款原文 / 分支表 / 分支前置事实",
+    "trajectory_block": "══ ⑧ 轨迹 ══ T 视图（per-Run 完整任务视图）",
+    "persona_block": "══ ⑨ persona ══",
+}
+
+#: 轨迹级那一份**只改文案**（键、控件、块数一个不改）。
+_HEADERS_TRAJECTORY: dict[str, str] = {
+    "site_block": "══ ② 轨迹与来源 ══ 这条轨迹经过的站点「逐站一行」",
+    "gold_block": "══ ③ 金标（人工真值）══ 这一格是「人核整条轨迹」的结论",
+    "code_block": "══ ④ 代码判定与证据 ══ 裁定②：看「最后一个」结论",
+}
+
 
 def _esc(text: Any) -> str:
     """XML 属性值转义。"""
@@ -81,25 +115,39 @@ def _esc(text: Any) -> str:
     )
 
 
-def render_label_config(*, branches: Mapping[str, str] | None = None) -> str:
+def render_label_config(
+    *,
+    branches: Mapping[str, str] | None = None,
+    scope: str = SCOPE_SITE,
+) -> str:
     """渲染 label_config 全文。
 
     Args:
         branches: 分支 → 中文标签。**默认现读**
             :data:`executor.branches.BRANCH_LABELS`（真源）；测试可注入
             固定映射以免依赖被执行层状态。
+        scope: 标注单元的粒度（``site`` / ``trajectory``）。**只影响文案**
+            ——九个块的**键一个不改**（:data:`BLOCK_CONTROLS` 是契约）。
+
+    ⚠️ **站点级的渲染结果与本函数加 scope 之前逐字相同**：历史档
+    （v14/v15/v16）的 ``label_config_sha`` 记在台账里，**改一个字**
+    ⇒ 事后核对会说「配置漂了」⇒ 白推一遍。⇒ 站点级那一份是**冻结的**，
+    轨迹级另出一份（页眉写「轨迹」而不是「站点」——标注员得知道自己
+    在判一条轨迹还是判一个站点）。
     """
     if branches is None:
         from trajectory_pipeline.executor.branches import BRANCH_LABELS
 
         branches = BRANCH_LABELS
+    if scope not in SCOPES:
+        raise ValueError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
 
     lines: list[str] = []
     add = lines.append
 
     add("<View>")
     add('  <Header value="══ 版本 $version_label · 档 $split · 行 $golden_id ══"/>')
-    add('  <Header value="══ 站点 ══ task $task_id / run $run_id"/>')
+    add(f'  <Header value="{_esc(_SUB_HEADER[scope])}"/>')
     add("")
     add("  <!-- 隐藏锚点（LS 1.23 实测硬约束，理由见模块 docstring）：")
     add("       TextArea 的 toName 必须指向真实存在的 tag；")
@@ -111,17 +159,9 @@ def render_label_config(*, branches: Mapping[str, str] | None = None) -> str:
     add("  </View>")
     add("")
 
-    headers = {
-        "version_block": "══ ① 版本与金标署名 ══ 机器署名的金标要特别当心",
-        "site_block": "══ ② 站点与来源 ══",
-        "gold_block": "══ ③ 金标（人工真值）══",
-        "code_block": "══ ④ 代码判定与证据 ══",
-        "scores_block": "══ ⑤ 维度分数 ══",
-        "scene_block": "══ ⑥ 现场读数 ══ 页面标题 / 每步观察 / 正文预览",
-        "rubric_block": "══ ⑦ 尺子 ══ 条款原文 / 分支表 / 分支前置事实",
-        "trajectory_block": "══ ⑧ 轨迹 ══ T 视图（per-Run 完整任务视图）",
-        "persona_block": "══ ⑨ persona ══",
-    }
+    headers = dict(_HEADERS_SITE)
+    if scope == SCOPE_TRAJECTORY:
+        headers.update(_HEADERS_TRAJECTORY)
     rows = {
         "version_block": 8, "site_block": 6, "gold_block": 6, "code_block": 8,
         "scores_block": 10, "scene_block": 16, "rubric_block": 20,

@@ -122,19 +122,84 @@ def clause_text(clause_id: str, clauses: Mapping[str, str]) -> str:
 # --------------------------------------------------------------------------
 
 
+def _site_label(site: Mapping[str, Any]) -> str:
+    """访问点的人话标签（``site-3``）。"""
+    return f"site-{int(site.get('index') or 0)}"
+
+
+def _match_site(
+    sample: Mapping[str, Any], url: str
+) -> tuple[dict[str, Any], str]:
+    """在**一条轨迹**里找 ``url`` 落在哪个访问点上。
+
+    ⚠️ **2026-10-30 · 方案 23**：以前是「切出 N 条站点样本，按 url 挑一条」。
+    现在一个 Run 只切出**一条**轨迹样本，于是问题变成「这条 URL 是轨迹里
+    哪一段」——答案取自 ``site_outcomes`` 里每个访问点的**步区间**
+    （``step_start`` / ``step_end``，全局步号）。
+
+    匹配三层，依次放宽：
+
+    1. 访问点自己的地址（候选 / 落地）；
+    2. 它的结论地址（``outcome.url``）；
+    3. 它的步区间里有观察的 url 命中（候选与落地对不上时兜底）。
+
+    第 3 层用**步区间**而不是「哪条观察的 url 一样」——区间是 P2 记的
+    事实，不是猜的。两个站点跳到同一地址时区间不会撞。
+
+    返回 ``(site, note)``：``site`` 为空 dict 表示没匹配上。
+    """
+    sites = [s for s in (sample.get("site_outcomes") or []) if isinstance(s, Mapping)]
+    if not url:
+        return {}, "冻结行没有 url ⇒ 无法定位访问点"
+
+    for s in sites:
+        urls = {str(s.get("url") or ""), str(s.get("landed_url") or "")}
+        outcome = s.get("outcome")
+        if isinstance(outcome, Mapping):
+            urls.add(str(outcome.get("url") or ""))
+        if url in urls:
+            label = _site_label(s)
+            return dict(s), f"按访问点地址匹配到轨迹内的 {label}"
+
+    # 第 3 层：按步区间里的观察 url 兜底。
+    observations = ((sample.get("six") or {}) or {}).get("observations") or []
+    hit_steps = [
+        i for i, obs in enumerate(observations)
+        if isinstance(obs, Mapping) and str(obs.get("url") or "") == url
+    ]
+    for s in sites:
+        start = int(s.get("step_start") or 0)
+        end = int(s.get("step_end") or 0)
+        if any(start <= i < end for i in hit_steps):
+            label = _site_label(s)
+            return dict(s), f"按观察里的 url 匹配到轨迹内的 {label}（该访问点没有分支结论 ⇒ 结论要另找来源）"
+
+    if hit_steps:
+        # 命中的观察不在任何访问点的区间里 ⇒ 它属于**搜索阶段**。
+        return {}, (
+            f"按观察里的 url 匹配到轨迹的第 {hit_steps[0] + 1} 步"
+            "（搜索阶段，不属于任何访问点）"
+        )
+    return {}, ""
+
+
 def locate_sample(
     row: Mapping[str, Any], *, p2_root: pathlib.Path | str | None = None
 ) -> dict[str, Any]:
-    """把冻结行反查成「存档里的那条样本」。
+    """把冻结行反查成「这条 URL 在那条轨迹里的位置」。
 
     返回 dict，键：
 
     - ``kind``     —— 冻结行的 ``source_kind``；
     - ``path``     —— 定位到的文件（找不到时为空串）；
-    - ``sample``   —— 样本 dict（``Sample.to_json()`` 的形态）；找不到为 ``None``；
-    - ``unit``     —— 单元名（``site-3`` 之类）；
+    - ``sample``   —— **轨迹**样本 dict（``Sample.to_json()`` 的形态）；
+      读不到为 ``None``；
+    - ``site``     —— 命中的**访问点**（轨迹内的第几个 + 它的步区间）；
+      没命中为 ``{}``；
+    - ``url_found``—— **这条 URL 的现场读到了没有**。轨迹读到了但 URL
+      不在其中时它是 ``False``——「有轨迹」与「有这一页」是两回事；
     - ``note``     —— **人话说明**（定位到了也要说「怎么定位到的」）；
-    - ``candidates`` —— 存档里现有的单元与 url（对不上时列出来）。
+    - ``candidates`` —— 轨迹里现有的访问点与 url（对不上时列出来）。
 
     三种 ``source_kind`` 分别处理：``archive_outcome`` 切 P1 存档按 url 匹配；
     ``p2_sample`` 直接读那份样本 JSON；``negative_pool`` 只有 outcome 行，
@@ -151,40 +216,47 @@ def locate_sample(
         path = root / "samples" / f"{sample_id}.json"
         if not path.exists():
             return {
-                "kind": kind, "path": str(path), "sample": None, "unit": "",
+                "kind": kind, "path": str(path), "sample": None, "site": {},
+                "url_found": False,
                 "note": f"P2 样本文件不存在：{path}", "candidates": [],
             }
         data = json.loads(path.read_text(encoding="utf-8"))
+        site, why = _match_site(data, url)
         return {
             "kind": kind, "path": str(path), "sample": data,
-            "unit": str(data.get("unit") or ""),
-            "note": f"P2 样本 {data.get('sample_id')}",
-            "candidates": [],
+            "site": site, "url_found": bool(site),
+            "note": f"P2 轨迹样本 {data.get('sample_id')}"
+                    + (f"；{why}" if why else "；**这条 url 不在轨迹里**"),
+            "candidates": _candidates_of(data),
         }
 
     if kind == "negative_pool":
         return {
-            "kind": kind, "path": "", "sample": None, "unit": "",
+            "kind": kind, "path": "", "sample": None, "site": {},
+            "url_found": False,
             "note": "负样本池行：只有 outcome 行，没有可切的存档 ⇒ **读不到现场**",
             "candidates": [],
         }
 
     if kind != "archive_outcome":
         return {
-            "kind": kind, "path": "", "sample": None, "unit": "",
+            "kind": kind, "path": "", "sample": None, "site": {},
+            "url_found": False,
             "note": f"source_kind={kind!r} 不认识（不猜）", "candidates": [],
         }
 
     if not (task_id and run_id):
         return {
-            "kind": kind, "path": "", "sample": None, "unit": "",
+            "kind": kind, "path": "", "sample": None, "site": {},
+            "url_found": False,
             "note": "冻结行缺 task_id / run_id ⇒ 无法定位存档", "candidates": [],
         }
 
     path = root / f"{task_id}__{run_id}.json"
     if not path.exists():
         return {
-            "kind": kind, "path": str(path), "sample": None, "unit": "",
+            "kind": kind, "path": str(path), "sample": None, "site": {},
+            "url_found": False,
             "note": f"P1 存档不存在：{path}", "candidates": [],
         }
 
@@ -194,41 +266,42 @@ def locate_sample(
         samples = split_archive(path)
     except Exception as exc:  # noqa: BLE001 —— 切不开要说切不开
         return {
-            "kind": kind, "path": str(path), "sample": None, "unit": "",
+            "kind": kind, "path": str(path), "sample": None, "site": {},
+            "url_found": False,
             "note": f"存档切不开（{type(exc).__name__}: {exc}）", "candidates": [],
         }
 
-    # 按 url 匹配站点样本：先 outcome.url，再退回观察里的 url。
-    # 两级都试是因为「outcome 缺失」本身是降级标记（outcome_missing），
-    # 那时候页面**看过**，只是没记分支结论——现场还在。
-    for s in samples:
-        if s.outcome is not None and s.outcome.url == url:
-            return {
-                "kind": kind, "path": str(path), "sample": s.to_json(),
-                "unit": s.unit, "note": f"按 outcome.url 匹配到 unit={s.unit}",
-                "candidates": [],
-            }
-    for s in samples:
-        for obs in s.observations:
-            if str(obs.get("url") or "") == url:
-                return {
-                    "kind": kind, "path": str(path), "sample": s.to_json(),
-                    "unit": s.unit,
-                    "note": (
-                        f"按观察里的 url 匹配到 unit={s.unit}"
-                        "（该单元 outcome 缺失 ⇒ 分支结论要另找来源）"
-                    ),
-                    "candidates": [],
-                }
+    if not samples:
+        # ⚠️ **2026-10-30 · 方案 23**：一个 Run 切出 **0 或 1** 条轨迹。
+        # 0 条 = 搜索阶段被反爬拦 / 搜索页采集失败——那一步压根没进决策。
+        return {
+            "kind": kind, "path": str(path), "sample": None, "site": {},
+            "url_found": False,
+            "note": "存档切不出轨迹（搜索阶段被反爬拦或搜索页采集失败）",
+            "candidates": [],
+        }
 
+    data = samples[0].to_json()
+    site, why = _match_site(data, url)
     return {
-        "kind": kind, "path": str(path), "sample": None, "unit": "",
-        "note": "存档里没有匹配该 url 的站点样本",
-        "candidates": [
-            f"{s.unit}: " + (s.outcome.url if s.outcome is not None else "(无 outcome)")
-            for s in samples
-        ],
+        "kind": kind, "path": str(path), "sample": data,
+        "site": site, "url_found": bool(site),
+        "note": why or "存档里没有匹配该 url 的访问点",
+        "candidates": _candidates_of(data),
     }
+
+
+def _candidates_of(sample: Mapping[str, Any]) -> list[str]:
+    """轨迹里现有的访问点（对不上时列出来让人判断）。"""
+    out: list[str] = []
+    for s in sample.get("site_outcomes") or []:
+        if not isinstance(s, Mapping):
+            continue
+        outcome = s.get("outcome")
+        url = (str(outcome.get("url") or "") if isinstance(outcome, Mapping)
+               else "(无 outcome)")
+        out.append(f"{_site_label(s)}: {url}")
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -282,13 +355,29 @@ def _archive_and_steps(
     **配对逻辑只有这一份。** 「动作与观察逐步配对」是这段代码里最容易漂的
     地方（两份查找逻辑必然漂，而漂了不会报错——只会读到别的版本的观察）。
     分歧卡（:func:`card_digest`）与行级读数（:func:`row_digest`）都走它。
+
+    ⚠️ **2026-10-30 · 方案 23**：步流是**整条轨迹**摊平的，而冻结行是
+    **站点级**的。所以这里按命中访问点的**步区间**切片——人看到的是
+    「这一页是在轨迹的哪几步看的」，不是整条轨迹的流水账。
     """
     located = locate_sample(row, p2_root=p2_root)
     sample = located.get("sample") or {}
     six = sample.get("six") if isinstance(sample, Mapping) else {}
     six = six if isinstance(six, Mapping) else {}
+    site = located.get("site") or {}
     actions = list(six.get("actions") or [])
     observations = list(six.get("observations") or [])
+
+    if site:
+        start = int(site.get("step_start") or 0)
+        end = int(site.get("step_end") or 0)
+        actions = actions[start:end]
+        observations = observations[start:end]
+    else:
+        # 没命中访问点 ⇒ **这一步没有现场**。给整条轨迹的流水账会让人
+        # 以为「这一页长这样」——而这一页压根不在轨迹里。
+        actions = []
+        observations = []
 
     steps: list[dict[str, Any]] = []
     for i, obs in enumerate(observations):
@@ -302,10 +391,15 @@ def _archive_and_steps(
     archive = {
         "kind": located.get("kind") or "",
         "path": located.get("path") or "",
-        "unit": located.get("unit") or "",
+        "site": dict(site),
+        "site_label": _site_label(site) if site else "",
         #: **现场有没有读到**。没有 ≠ 现场是空的（见模块 docstring），
         #: 所以它必须是一个显式的布尔，而不是「有没有 sample 键」。
-        "found": located.get("sample") is not None,
+        #:
+        #: ⚠️ **2026-10-30 · 方案 23**：判据从「样本读到没有」改成
+        #: 「**这一页**读到没有」——轨迹读到了但这一页不在其中时，
+        #: 现场仍然是空的。
+        "found": bool(located.get("url_found")),
         "note": located.get("note") or "",
         "candidates": list(located.get("candidates") or []),
         "degraded_from": list(
@@ -346,6 +440,116 @@ def row_digest(
     }
 
 
+# --------------------------------------------------------------------------
+# 轨迹级读数（方案 23 · 裁定 ④：一个标注单元 = 一条轨迹）
+# --------------------------------------------------------------------------
+
+
+def locate_trajectory(
+    row: Mapping[str, Any],
+    *,
+    p2_root: pathlib.Path | str | None = None,
+) -> dict[str, Any]:
+    """轨迹行 → **轨迹样本**（**不切片**）。
+
+    与 :func:`locate_sample` 的差别：**不按 url 找访问点**——轨迹级卡给人看的
+    是**整条轨迹**，不是「这一页」。按 url 切片会让人以为这条轨迹只做了那一站。
+
+    键：``path`` / ``sample`` / ``found`` / ``note`` / ``candidates``。
+    """
+    task_id = str(row.get("task_id") or "")
+    run_id = str(row.get("run_id") or "")
+    root = pathlib.Path(p2_root) if p2_root else PIPELINE_ROOT
+    if not (task_id and run_id):
+        return {
+            "path": "", "sample": None, "found": False,
+            "note": "轨迹行缺 task_id / run_id ⇒ 无法定位存档", "candidates": [],
+        }
+    path = root / f"{task_id}__{run_id}.json"
+    if not path.exists():
+        return {
+            "path": str(path), "sample": None, "found": False,
+            "note": f"P1 存档不存在：{path}", "candidates": [],
+        }
+
+    from trajectory_pipeline.assembler.schema import split_archive
+
+    try:
+        samples = split_archive(path)
+    except Exception as exc:  # noqa: BLE001 —— 切不开要说切不开
+        return {
+            "path": str(path), "sample": None, "found": False,
+            "note": f"存档切不开（{type(exc).__name__}: {exc}）", "candidates": [],
+        }
+    if not samples:
+        return {
+            "path": str(path), "sample": None, "found": False,
+            "note": "存档切不出轨迹（搜索阶段被反爬拦或搜索页采集失败）",
+            "candidates": [],
+        }
+    data = samples[0].to_json()
+    return {
+        "path": str(path), "sample": data, "found": True,
+        "note": f"轨迹样本 {data.get('sample_id')}",
+        "candidates": _candidates_of(data),
+    }
+
+
+def trajectory_digest(
+    row: Mapping[str, Any],
+    *,
+    p2_root: pathlib.Path | str | None = None,
+    preview_chars: int = DEFAULT_PREVIEW_CHARS,
+) -> dict[str, Any]:
+    """**整条轨迹**的读数（**不切片**）。
+
+    与 :func:`row_digest` 的差别只有一处：**不按访问点切步区间**。
+    站点级卡给人看的是「这一页」，轨迹级卡给人看的是「整条轨迹」。
+
+    形状与 :func:`row_digest` **一致**（``golden_id`` / ``site`` / ``archive`` /
+    ``steps``）⇒ 下游的 :func:`scene_summary` 一份就够，不抄第二套渲染。
+    """
+    located = locate_trajectory(row, p2_root=p2_root)
+    sample = located.get("sample") or {}
+    six = sample.get("six") if isinstance(sample, Mapping) else {}
+    six = six if isinstance(six, Mapping) else {}
+    actions = list(six.get("actions") or [])
+    observations = list(six.get("observations") or [])
+
+    steps: list[dict[str, Any]] = []
+    for i, obs in enumerate(observations):
+        action = actions[i] if i < len(actions) else None
+        steps.append({
+            "index": i + 1,
+            "action": dict(action) if isinstance(action, Mapping) else None,
+            "observation": observation_digest(obs, preview_chars=preview_chars),
+        })
+
+    archive = {
+        "kind": "trajectory",
+        "path": located.get("path") or "",
+        "site": {},
+        "site_label": "",
+        "found": bool(located.get("found")),
+        "note": located.get("note") or "",
+        "candidates": list(located.get("candidates") or []),
+        "degraded_from": list(
+            (sample.get("degraded_from") or []) if isinstance(sample, Mapping) else []
+        ),
+    }
+    return {
+        "golden_id": str(row.get("golden_id") or ""),
+        "site": {
+            "url": "",
+            "site_url": "",
+            "play_page_url": "",
+            "title": str(sample.get("title") or "") if isinstance(sample, Mapping) else "",
+        },
+        "archive": archive,
+        "steps": steps,
+    }
+
+
 def card_digest(
     card: Mapping[str, Any],
     row: Mapping[str, Any],
@@ -358,6 +562,7 @@ def card_digest(
     ``card`` 与 ``row`` 分开传：卡来自 worklist（派生），冻结行来自黄金集
     （真值）。两者按 ``golden_id`` 配对——配不上是**版本错配**，不是「没数据」。
     """
+
     code = row.get("code") if isinstance(row.get("code"), Mapping) else {}
     golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
     archive, steps, sample = _archive_and_steps(
@@ -462,7 +667,8 @@ def scene_summary(digest: Mapping[str, Any]) -> dict[str, Any]:
       但那一步没有观察）/ ``not_found``（找了，没找到）/ ``not_read``（压根没去
       读）。**四态而不是一个布尔**：``not_found`` 与 ``not_read`` 归到一起就
       分不清「存档里没有」与「没查」，而这两种的修法完全不同；
-    - ``unit``      —— 匹配到的决策单元（``site-4`` 之类）；
+    - ``site``      —— 命中的访问点标签（``site-4`` 之类）。轨迹里命中的是
+      第几个访问点；
     - ``note``      —— **怎么定位到的**（或为什么定位不到；``located_no_steps``
       时会说明**为什么那一步没有观察**）；
     - ``degraded``  —— 存档自报的降级标记（``steps`` / ``outcome_missing` …）；
@@ -529,7 +735,7 @@ def scene_summary(digest: Mapping[str, Any]) -> dict[str, Any]:
         # 所以「这页长什么样」（title / steps）排在前面，长正文排最后。
         "found": bool(archive.get("found")),
         "status": status,
-        "unit": str(archive.get("unit") or ""),
+        "site": str(archive.get("site_label") or ""),
         "note": note,
         "degraded": degraded,
         "title": title,
@@ -628,7 +834,7 @@ def render_card(digest: Mapping[str, Any], clauses: Mapping[str, str]) -> str:
     if site.get("play_page_url"):
         add(f"播放页 {site.get('play_page_url')}")
     if archive.get("path"):
-        add(f"存档   {archive['path']} · unit={archive.get('unit') or '—'}")
+        add(f"存档   {archive['path']} · site={archive.get('site_label') or '—'}")
     add(f"定位   {archive.get('note')}")
     if archive.get("degraded_from"):
         add(f"       存档降级标记 {'/'.join(archive['degraded_from'])}")
@@ -732,7 +938,7 @@ def render_compact(digest: Mapping[str, Any], *, index: int = 0, total: int = 0)
             counts += f"→{iframes[-1]}"
     archive = digest.get("archive") or {}
     if archive.get("found"):
-        counts += f"  unit={archive.get('unit') or '—'}"
+        counts += f"  site={archive.get('site_label') or '—'}"
     else:
         # 读不到现场：**说读不到**，并把存档里的候选列出来（人好判断是
         # 「没访问过」还是「url 对不上」）。空读数会被读成「页面是空的」。

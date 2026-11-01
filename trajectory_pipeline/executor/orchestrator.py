@@ -1112,10 +1112,10 @@ class Orchestrator:
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return self._seal(record)
         record.steps.settle(step_search, record.search_obs)
-        # 搜索步也补记 rationale——P2 按决策单元切条，搜索阶段是正式样本
-        # （"一条 = 一个决策单元：搜索阶段一条 / 每个站点一条"），它没有
-        # rationale 会让整条搜索样本恒 gate=not_run、D-9 永远不可判定。
-        # 失败路径（search_obs=None）不产 search 样本，无须补记。
+        # 搜索步也补记 rationale——per-Run 之后（P2 一条轨迹一个样本）
+        # 搜索阶段是**这条轨迹的头一段**，它没有 rationale 会让整条轨迹
+        # 恒 gate=not_run、D-9 永远不可判定。
+        # 失败路径（search_obs=None）不产搜索段，无须补记。
         await self._write_rationales(record.steps, record, "搜索页")
 
         # ── 环节 0.5：反爬拦截 ─────────────────────────────────────
@@ -1392,9 +1392,10 @@ class Orchestrator:
 
         调用点有两处：**搜索步**（``record.steps``，label="搜索页"）与
         **逐站点访问步**（``result.steps``，label=站点 URL 截断）。搜索步
-        也走同一 writer——P2 按决策单元切条，搜索阶段是正式的一条样本，
-        它没有 rationale 会让整条搜索样本恒 ``gate=not_run``、D-9 永远
-        不可判定（2026-10-11 裁定为漏生成而非设计豁免，见 rubric 对齐账）。
+        也走同一 writer——per-Run 之后（P2 一条轨迹一个样本）搜索阶段是
+        **这条轨迹的头一段**，它没有 rationale 会让整条轨迹恒
+        ``gate=not_run``、D-9 永远不可判定（2026-10-11 裁定为漏生成而非
+        设计豁免，见 rubric 对齐账）。
         ``StepLog`` 是通用动作流，两个调用点都能 ``attach_rationale``。
 
         **D2 的实质是「生成时能看到那一步的动作与观察」，而不是

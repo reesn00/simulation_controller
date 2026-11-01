@@ -40,9 +40,10 @@ def _obs(body="页面正文 功夫 在线观看", title="功夫 在线观看", *
     return base
 
 
-def _sample(outcome=None, observations=(), title="功夫", unit="site-1"):
+def _sample(outcome=None, observations=(), title="功夫"):
+    """⚠️ **2026-10-30 · 方案 23**：没有 ``unit`` 了——一个任务一条轨迹。"""
     return Sample(
-        sample_id=f"T001__a1__{unit}", task_id="T001", unit=unit, title=title,
+        sample_id="T001__a1", task_id="T001", title=title,
         system_prompt="s", tools=(), user_prompt="u", provenance={},
         actions=(), observations=tuple(observations),
         gate=GateMark("not_run"),
@@ -54,7 +55,7 @@ def _sample(outcome=None, observations=(), title="功夫", unit="site-1"):
 
 
 def _dict_sample(outcome: dict | None, observations=(), title="功夫"):
-    return {"sample_id": "T001__a1__site-1", "task_id": "T001", "unit": "site-1",
+    return {"sample_id": "T001__a1", "task_id": "T001",
             "title": title,
             "six": {"observations": list(observations)},
             "outcome": outcome}
@@ -156,10 +157,14 @@ class Test缺字段不等于空值:
 # ── 3. 搜索单元 ───────────────────────────────────────────────────
 
 
-class Test搜索单元:
+class Test没有播放页地址的结论:
     def test_无outcome判不可判定(self):
-        """它没有「记录」可核。判 2 分是把「不适用」当「不合格」。"""
-        s = _sample(outcome=OutcomeRef(url="u", branch=None), unit="search")
+        """它没有「记录」可核。判 2 分是把「不适用」当「不合格」。
+
+        ⚠️ **2026-10-30 · 方案 23**：旧口径下这条样本是「搜索单元」
+        （搜索阶段本来就没有 outcome）。现在样本是**整条轨迹**，
+        判据不变——结论里没有播放页地址就不可判定。"""
+        s = _sample(outcome=OutcomeRef(url="u", branch=None))
         v = score_d6(s)
         assert v.score is None and v.kind == "undetermined"
         assert not v.missing_fields

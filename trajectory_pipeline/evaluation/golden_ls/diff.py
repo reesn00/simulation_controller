@@ -77,6 +77,12 @@ def content_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
     §2.4 的「金标变了」就包括它们）⇒ 不含 ⇒ 页面显示与标记对不上。
     ⚠️ **不含 ``reviewed_by`` / ``reviewed_at`` / ``note``**：那三栏每次重新
     标注都会动 ⇒ 含进去标记就废了（见模块 docstring）。
+
+    ⚠️ **含逐站金标**（轨迹级行）：轨迹行的页面②③摆着**每个站**的人核
+    标签与档位 ⇒ 那些变了就是「人看到的东西变了」⇒ 不算进去 ⇒
+    页面写着新的站点金标、标记却写着 ``unchanged`` ⇒ **标记就废了**
+    （标记的全部意义是「让人一眼看出哪几行要重看」）。
+    站点级行没有 ``site_outcomes`` ⇒ 这一项恒为空元组，**既有判据不变**。
     """
     gold = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
     code = row.get("code") if isinstance(row.get("code"), Mapping) else {}
@@ -90,7 +96,32 @@ def content_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
         code.get("branch"),
         code.get("branch_label"),
         code.get("evidence"),
+        _site_content_key(row),
     )
+
+
+def _site_content_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    """轨迹级行的**逐站内容**（站点级行 ⇒ 空元组）。
+
+    逐站取：站点 id · 人核标签 · 观测面 · 观测时刻 · 软维度分。
+    ⚠️ **不取档位**：档位是冻结时分的，改档是「换了测量口径」，
+    不是「这一行的内容变了」——两件事分开判。
+    """
+    out: list[Any] = []
+    for site in row.get("site_outcomes") or ():
+        if not isinstance(site, Mapping):
+            continue
+        gold = site.get("golden") if isinstance(site.get("golden"), Mapping) else {}
+        out.append(
+            (
+                str(site.get("golden_id") or ""),
+                gold.get("label"),
+                _stable(gold.get("access_surface")),
+                _stable(gold.get("observed_at")),
+                _stable(gold.get("dimension_scores")),
+            )
+        )
+    return tuple(out)
 
 
 def _stable(value: Any) -> str:

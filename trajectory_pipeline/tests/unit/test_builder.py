@@ -49,7 +49,16 @@ def _arc(**over):
         "task_id": "T001", "title": "功夫", "query": "功夫 在线观看",
         "user_prompt": "有没有能看正片的", "search_url": "https://s.test",
         "search_observation": _obs("https://s.test"), "search_blocked": "",
-        "steps": [], "provenance": {"genre": "喜剧"},
+        # 搜索阶段**一步**——真实存档实测「有搜索快照必有这一步」
+        # （145 份里 138 份顶层恰好 1 步，其余 7 份连快照也没有）。
+        "steps": [{
+            "action": {"tool": "goto", "params": {"url": "https://s.test"},
+                       "origin": "model"},
+            "observation": _obs("https://s.test"),
+            "error": "",
+            "rationale": None,
+        }],
+        "provenance": {"genre": "喜剧"},
         "run_config": {"engine": "baidu", "max_candidates": 20,
                        "max_chars": None, "stop_after_success": 0,
                        "per_site_timeout_s": 90.0},
@@ -73,9 +82,11 @@ class Test落盘形状:
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
         files = sorted(p.name for p in out.glob("*.json"))
-        assert files == ["T001__abc123__search.json"]
+        assert files == ["T001__abc123.json"]
 
-    def test_多单元切出多文件(self, tmp_path):
+    def test_多访问点仍切出一条(self, tmp_path):
+        """⚠️ **2026-10-30 · 方案 23**：一个任务一条轨迹——
+        2 个访问点仍只落 **1 个文件**（旧口径落 3 个：search + site-1 + site-2）。"""
         src = _write(tmp_path, _arc(
             visits=[_visit("https://a.test/"), _visit("https://b.test/")],
             outcomes=[_outcome("https://a.test/", "no_play_control"),
@@ -84,15 +95,16 @@ class Test落盘形状:
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
         files = sorted(p.name for p in out.glob("*.json"))
-        assert files == ["T001__abc123__search.json",
-                         "T001__abc123__site-1.json",
-                         "T001__abc123__site-2.json"]
+        assert files == ["T001__abc123.json"]
+        # 站点级明细留在轨迹里（裁定 ③）
+        sample = json.loads((out / "T001__abc123.json").read_text(encoding="utf-8"))
+        assert len(sample["site_outcomes"]) == 2
 
     def test_写出JSON可读(self, tmp_path):
         src = _write(tmp_path, _arc())
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
-        sample_file = out / "T001__abc123__search.json"
+        sample_file = out / "T001__abc123.json"
         json.loads(sample_file.read_text(encoding="utf-8"))
 
     def test_写入UTF8可直读中文(self, tmp_path):
@@ -103,7 +115,7 @@ class Test落盘形状:
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
         sample = json.loads(
-            (out / "T001__abc123__search.json").read_text(encoding="utf-8")
+            (out / "T001__abc123.json").read_text(encoding="utf-8")
         )
         assert sample["six"]["user_prompt"] == "有没有能看正片的 给个链接呗"
         assert "功夫" in sample["six"]["observations"][0]["body_text"]
@@ -115,7 +127,7 @@ class Test原子写:
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
         assert not list(out.glob("*.tmp"))
-        assert not (out / "T001__abc123__search.json.tmp").exists()
+        assert not (out / "T001__abc123.json.tmp").exists()
 
     def test_samples目录自动建(self, tmp_path):
         src = _write(tmp_path, _arc())
@@ -132,7 +144,7 @@ class Test观察裁剪:
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
         sample = json.loads(
-            (out / "T001__abc123__search.json").read_text(encoding="utf-8")
+            (out / "T001__abc123.json").read_text(encoding="utf-8")
         )
         elem = sample["six"]["observations"][0]["interactive_elements"][0]
         assert "ref" not in elem
@@ -144,7 +156,7 @@ class Test观察裁剪:
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
         sample = json.loads(
-            (out / "T001__abc123__search.json").read_text(encoding="utf-8")
+            (out / "T001__abc123.json").read_text(encoding="utf-8")
         )
         obs = sample["six"]["observations"][0]
         assert obs["body_chars"] == 2000
@@ -155,12 +167,26 @@ class Test观察裁剪:
 class Test负样本计数:
     def test_真负样本分支计入(self, tmp_path):
         src = _write(tmp_path, _arc(
+            visits=[_visit("https://a.test/")],
+            outcomes=[_outcome("https://a.test/", "no_play_control")],
+        ))
+        res = builder.build_from_archive(src, root=tmp_path, overwrite=True)
+        assert res.negatives == 1
+
+    def test_按末条结论判负样本(self, tmp_path):
+        """⚠️ **2026-10-30 · 方案 23（裁定 ②）**：轨迹的标签看**最后一个
+        结论**——前面撞过付费墙、最后停在 ``unresolved`` 的轨迹，
+        **不算**负样本。
+
+        站点级的那条负样本**仍在池子里**（裁定 ③：池保留站点级行作
+        轨迹内细节），只是**训练侧**消费的是任务级标签。"""
+        src = _write(tmp_path, _arc(
             visits=[_visit("https://a.test/"), _visit("https://b.test/")],
             outcomes=[_outcome("https://a.test/", "no_play_control"),
                       _outcome("https://b.test/", "unresolved")],
         ))
         res = builder.build_from_archive(src, root=tmp_path, overwrite=True)
-        assert res.negatives == 1
+        assert res.negatives == 0
 
     def test_成功访问不计入(self, tmp_path):
         src = _write(tmp_path, _arc(
@@ -197,16 +223,16 @@ class TestOverwrite:
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         res2 = builder.build_from_archive(src, root=tmp_path)
         assert res2.written == 0
-        assert "T001__abc123__search" in res2.skipped[0]
+        assert "T001__abc123" in res2.skipped[0]
 
     def test_显式overwrite才覆盖(self, tmp_path):
         src = _write(tmp_path, _arc())
         builder.build_from_archive(src, root=tmp_path, overwrite=True)
         out = builder.samples_dir(tmp_path)
-        (out / "T001__abc123__search.json").write_text("坏", encoding="utf-8")
+        (out / "T001__abc123.json").write_text("坏", encoding="utf-8")
         res = builder.build_from_archive(src, root=tmp_path, overwrite=True)
         assert res.written == 1
-        json.loads((out / "T001__abc123__search.json").read_text(encoding="utf-8"))
+        json.loads((out / "T001__abc123.json").read_text(encoding="utf-8"))
 
 
 class TestBuildAll:
@@ -244,12 +270,14 @@ class Test报告:
         ))
         res = builder.build_from_archive(src, root=tmp_path, overwrite=True)
         assert res.archive == "T001__abc123.json"
-        assert res.sample_count == 2
-        assert res.written == 2
+        # ⚠️ **2026-10-30 · 方案 23**：一个 Run 一条轨迹——这份存档有
+        # 一个访问点，切出**一条**样本（以前是「搜索单元 + 站点单元」两条）。
+        assert res.sample_count == 1
+        assert res.written == 1
         assert res.negatives == 1
-        # fixture 故意 _arc(steps=[])：两条样本都缺 steps 走降级。
+        # fixture 故意 _arc(steps=[])：这条轨迹缺 steps 走降级。
         # 真实批次里只要 P1 有 steps[]，degraded=0。
-        assert res.degraded == 2
+        assert res.degraded == 1
 
     def test_BuildReport_ok(self, tmp_path):
         _write(tmp_path, _arc(), "T001__a.json")
@@ -393,7 +421,7 @@ class Test分代筛选:
         assert rep.total_era_skipped == 1
         # 筛掉的**逐条列出来**，不是静默消失
         skipped = [s for a in rep.archives for s in a.skipped]
-        assert any("T002__old__search" in s for s in skipped)
+        assert any("T002__old" in s for s in skipped)
         assert rep.mixed_era is True, "被筛掉的那一代仍然要报出来源存档里有"
 
     def test_时代写进P2文件(self, tmp_path):
@@ -402,7 +430,7 @@ class Test分代筛选:
         builder.build_all(source_root=tmp_path / "src",
                           target_root=tmp_path, overwrite=True)
         blob = json.loads(
-            (builder.samples_dir(tmp_path) / "T002__old__search.json")
+            (builder.samples_dir(tmp_path) / "T002__old.json")
             .read_text(encoding="utf-8"))
         assert blob["rationale_era"] == "post_hoc"
         assert blob["gate"]["status"] == "not_run"

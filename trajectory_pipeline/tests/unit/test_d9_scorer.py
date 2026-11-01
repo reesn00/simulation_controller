@@ -70,7 +70,7 @@ def _finding(kind="unsupported_entity", detail="引用了不在观察里的 X",
 
 def _sample(rationales=(), observations=(), gate=None):
     return Sample(
-        sample_id="T001__a1__site-1", task_id="T001", unit="site-1",
+        sample_id="T001__a1", task_id="T001",
         title="功夫", system_prompt="s", tools=(), user_prompt="u",
         provenance={}, actions=(), observations=tuple(observations),
         rationales=tuple(rationales),
@@ -464,7 +464,7 @@ class Test边界:
             ActionView, Rationale, Sample,
         )
         s = Sample(
-            sample_id="s", task_id="T", unit="u", title="t",
+            sample_id="s", task_id="T", title="t",
             source_archive="a", system_prompt="sp", user_prompt="up",
             tools=(), provenance={},
             actions=(ActionView("goto", {"url": "https://x.test"}),),

@@ -493,11 +493,15 @@ class Test形状不变量:
         meta = task_view.to_task_meta(archive)
         assert meta["unit_count"] == 1 + 3  # search + 3 sites
         assert len(meta["unit_outcomes"]) == 3
-        assert meta["overall_branch"] == "success"  # 任一 success → overall=success
-        assert meta["task_gate"]["status"] == "passed"
+        # ⚠️ **2026-10-30 · 方案 23**：任务级结论 = **最后一个结论**
+        # （owner 裁定 ②）。旧口径是「任一 success ⇒ 成功」——它会把
+        # 「中途成功过、后来又失败」的轨迹报成成功。
+        assert meta["overall_branch"] == "unreachable_hard"
+        assert meta["task_gate"]["status"] == "failed"
 
-    def test_meta_overall_branch取首个失败(self):
-        """全失败时 overall_branch = 首个失败 unit 的分支名。"""
+    def test_meta_overall_branch取最后一个结论(self):
+        """⚠️ **2026-10-30 · 方案 23**：任务级结论看**最后一个**结论
+        （owner 裁定 ②）——旧口径是「取首个失败分支」。"""
         search_steps = [
             _step(action=_action("goto"), observation=_obs_full(),
                   rationale={"status": "written"}),
@@ -510,21 +514,22 @@ class Test形状不变量:
         archive = _archive(search_steps=search_steps, visits=visits, outcomes=outcomes,
                            ledger={"by_branch": {"broken": 1, "no_play_control": 1}})
         meta = task_view.to_task_meta(archive)
-        assert meta["overall_branch"] == "broken"
+        assert meta["overall_branch"] == "no_play_control"
 
     def test_meta_unit_sample_ids反查P3(self):
-        """``unit_sample_ids`` 给出从 T 反查 P3 的入口。"""
+        """``unit_sample_ids`` 给出从 T 反查 P3 的入口。
+
+        ⚠️ **2026-10-30 · 方案 23**：一个任务一条轨迹 ⇒ P3 的
+        ``sample_id`` 就是这条轨迹的 id（与 P1 存档名逐字相同），
+        所以这里**只有一项**。
+        """
         archive = _archive(
             visits=[_visit([]), _visit([])],
             outcomes=[{"branch": "broken", "evidence": "x", "site_url": "a", "play_page_url": ""},
                       {"branch": None, "evidence": "y", "site_url": "b", "play_page_url": "c"}],
         )
         meta = task_view.to_task_meta(archive)
-        assert meta["unit_sample_ids"] == [
-            "T001__b98b3e56__search",
-            "T001__b98b3e56__site-1",
-            "T001__b98b3e56__site-2",
-        ]
+        assert meta["unit_sample_ids"] == ["T001__b98b3e56"]
 
     def test_meta_step_count_observation_count(self):
         """step_count 与 observation_count 是全局（不是 per-unit）。"""

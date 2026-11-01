@@ -57,6 +57,7 @@ from trajectory_pipeline.evaluation.calibration.worklist import (
     WorklistError,
     load_frozen_rows,
 )
+from trajectory_pipeline.evaluation.golden import rows as rows_mod
 from trajectory_pipeline.evaluation.golden.builder import GOLDEN_ROOT
 
 #: LLM judge 的两个维度——只有 ``--include-llm-judge`` 才产出。
@@ -222,7 +223,8 @@ def row_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
     """一份样本行的配对键 ``(task_id, run_id, url)``。
 
     ``task_id`` / ``run_id`` 从行上的字段取；没有就**从 ``sample_id`` 拆**
-    （``<task_id>__<run_id>__<unit>``，见 ``assembler.schema.sample_id``）。
+    （per-Run 之后是 ``<task_id>__<run_id>``；老数据是
+    ``<task_id>__<run_id>__<unit>``——**前两段一样**，所以拆法不用改）。
     ⚠️ **url 不许猜**：没有就是没有 ⇒ 那一行配不上，报出来。
     """
     task = str(row.get("task_id") or "")
@@ -242,25 +244,36 @@ def build_index(
     """冻结档 ⇒ ``(task_id, run_id, url) → golden_id`` 与 ``golden_id → 行``。
 
     ⚠️ **只收站点级行**（``source_kind != "p2_sample"``）：judge 逐行读数是
-    **站点级**的（``split_archive`` 切出来的 site 单元），轨迹级样本的
-    ``golden_id`` 是另一个命名空间（``<task>__<run>__<unit>``）⇒ 混进来
-    会让同一个 url 挂上两个键，配对时不知道该选哪个。
+    **站点级**的（``split_archive`` 切出来的 site 单元），per-unit 时代的
+    轨迹占位行的 ``golden_id`` 是另一个命名空间
+    （``<task>__<run>__<unit>``）⇒ 混进来会让同一个 url 挂上两个键，
+    配对时不知道该选哪个。
+
+    ⚠️ **轨迹级行要摊平成站点视图**（方案 23）：候选集改成「一条轨迹一行」
+    之后，站点级 id 住在 ``site_outcomes[]`` 里 ⇒ 不摊平就**一个都配不上**
+    （而配不上的行进 ``unmatched``，读数上看起来像「judge 判得少」）。
+    摊平后的键与旧的站点级行**逐字一致** ⇒ 配对口径不变。
     """
     index: dict[tuple[str, str, str], str] = {}
     by_gid: dict[str, Mapping[str, Any]] = {}
     for row in rows:
-        if str(row.get("source_kind") or "") == "p2_sample":
+        if rows_mod.is_trajectory_row(row):
+            views: Sequence[Mapping[str, Any]] = rows_mod.site_rows(row)
+        elif str(row.get("source_kind") or "") == "p2_sample":
             continue
-        gid = str(row.get("golden_id") or "")
-        if not gid:
-            continue
-        by_gid[gid] = row
-        key = (
-            str(row.get("task_id") or ""),
-            str(row.get("run_id") or ""),
-            str(row.get("url") or ""),
-        )
-        index.setdefault(key, gid)
+        else:
+            views = [row]
+        for view in views:
+            gid = str(view.get("golden_id") or "")
+            if not gid:
+                continue
+            by_gid[gid] = view
+            key = (
+                str(view.get("task_id") or ""),
+                str(view.get("run_id") or ""),
+                str(view.get("url") or ""),
+            )
+            index.setdefault(key, gid)
     return index, by_gid
 
 

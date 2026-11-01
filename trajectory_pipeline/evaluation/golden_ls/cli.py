@@ -37,6 +37,7 @@ import pathlib
 import sys
 from typing import Any, Sequence
 
+from trajectory_pipeline.evaluation.golden import rows as rows_mod
 from trajectory_pipeline.evaluation.golden.builder import PIPELINE_ROOT
 from trajectory_pipeline.evaluation.golden.splits import SPLITS
 from trajectory_pipeline.evaluation.golden_ls import dataset
@@ -51,6 +52,11 @@ from trajectory_pipeline.evaluation.golden_ls.projects import (
     GoldenProjectIndex,
     pending_versions,
     project_title,
+)
+from trajectory_pipeline.evaluation.golden_ls.scope import (
+    SCOPES,
+    SCOPE_SITE,
+    SCOPE_TRAJECTORY,
 )
 
 #: 本包的产物目录（**包内相对**，不跟 cwd 走——与 ``ls_bridge.push_index``
@@ -87,6 +93,36 @@ def _write_text_bytes(path: pathlib.Path, text: str) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
+
+
+def _scope_of(args: argparse.Namespace) -> str:
+    """本次的**标注单元粒度**（``site`` / ``trajectory``）。
+
+    ⚠️ **默认 ``trajectory``**：owner 裁定 ④（方案 23）= **一个标注单元 = 一条
+    轨迹**。站点级那一路是**历史口径**（v1–v16 推上去的那些），要用得显式
+    点名 ``--scope site``。
+
+    ⚠️ **两种粒度两个项目**（标题不同）：混在一个项目里，标注员分不清自己
+    在判一条轨迹还是判一个站点。
+    """
+    scope = str(getattr(args, "scope", "") or SCOPE_TRAJECTORY)
+    if scope not in SCOPES:
+        raise GoldenCliError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
+    return scope
+
+
+def _label_config_name(scope: str) -> str:
+    """label_config **留底**的文件名（按粒度分开）。
+
+    ⚠️ **两个粒度必须各留各的**：同名 ⇒ 后建的那次把前一次的留底覆盖掉
+    ⇒ 事后拿留底复算 sha 时，**对不上的是哪一份就说不清了**（而 sha 对不上
+    正是「配置漂了」的唯一证据）。
+    """
+    if scope == SCOPE_TRAJECTORY:
+        return "label_config.traj.xml"
+    if scope == SCOPE_SITE:
+        return "label_config.xml"
+    raise GoldenCliError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
 
 
 def _select_splits(args: argparse.Namespace) -> list[str]:
@@ -187,13 +223,15 @@ def _cmd_projects(args: argparse.Namespace) -> int:
         return 0
     print(f"台账: {index.path}")
     for version in index.versions():
-        record = index.get(version)
-        assert record is not None
-        print(
-            f"  v{record.version}: project_id={record.project_id} "
-            f"title={record.title} frozen_at={record.frozen_at or '-'} "
-            f"counts={record.counts or '-'} splits={list(record.splits) or '-'}"
-        )
+        for scope in SCOPES:
+            record = index.get(version, scope)
+            if record is None:
+                continue
+            print(
+                f"  v{record.version}[{record.scope}]: project_id={record.project_id} "
+                f"title={record.title} frozen_at={record.frozen_at or '-'} "
+                f"counts={record.counts or '-'} splits={list(record.splits) or '-'}"
+            )
     return 0
 
 
@@ -213,11 +251,23 @@ def _cmd_pending(args: argparse.Namespace) -> int:
     没人推」能进 CI/门禁，而不是靠人记得看。
     """
     index = GoldenProjectIndex.load(_ledger_path(args))
-    pending = pending_versions(index, golden_root=args.golden_root)
+    # ⚠️ **缺省 = 两种粒度建过任一个就算「建过」**：这道闸问的是
+    # 「这一版上没上 LS」，不是「两个粒度都上了没」。窄化用 ``--scope``。
+    scope = str(getattr(args, "scope", "") or "").strip() or None
+    if scope is not None and scope not in SCOPES:
+        raise GoldenCliError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
+    pending = pending_versions(index, golden_root=args.golden_root, scope=scope)
     all_versions = dataset.frozen_versions(root=args.golden_root)
     exempt = [v for v in all_versions if v < UPLOAD_BASELINE_VERSION]
     print(f"已冻结版本: {all_versions or '（无）'}")
-    print(f"已建项目:   {index.versions() or '（无）'}")
+    # ⚠️ **「已建项目」要按粒度筛**（`--scope` 给了就按它筛）：不筛的话
+    # 读者会看到「已建 [14, 15] / 欠账 [14, 15, 16]」这种**自相矛盾**的
+    # 输出——矛盾其实来自「两个粒度两个项目」，不点破就会以为是 bug。
+    print(f"已建项目:   {index.versions(scope) or '（无）'}")
+    if scope:
+        print(f"粒度:       {scope}")
+    else:
+        print("粒度:       （不筛：两种粒度建过任一个就算「建过」）")
     print(
         f"欠账(≥v{UPLOAD_BASELINE_VERSION}): "
         f"{pending or '（无）—— 该传的版本都建过项目了'}"
@@ -248,10 +298,11 @@ def _cmd_init_project(args: argparse.Namespace) -> int:
     )
 
     version = int(args.version)
+    scope = _scope_of(args)
     client, _settings = _client(args)
-    xml = render_label_config()
+    xml = render_label_config(scope=scope)
     sha = label_config_sha(xml)
-    title = project_title(version)
+    title = project_title(version, scope)
 
     existing = find_project_by_title(client, title)
     if existing is not None:
@@ -274,13 +325,13 @@ def _cmd_init_project(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    # 渲染结果留底（可核对、可复现）。
+    # 渲染结果留底（可核对、可复现）。**按粒度分文件**——两个粒度各留各的。
     out_dir = _version_dir(version)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _write_text_bytes(out_dir / "label_config.xml", xml)
+    _write_text_bytes(out_dir / _label_config_name(scope), xml)
 
     index = GoldenProjectIndex.load(_ledger_path(args))
-    if not index.has(version):
+    if not index.has(version, scope):
         meta = dataset.version_meta(version, root=args.golden_root)
         index.record(
             index.new_record(
@@ -292,10 +343,11 @@ def _cmd_init_project(args: argparse.Namespace) -> int:
                 evaluator_version=str(meta.get("evaluator_version") or ""),
                 counts=dict(meta.get("counts") or {}),
                 splits=tuple(SPLITS),
+                scope=scope,
             )
         )
     print(f"project_id={project_id} title={title} created={created} sha={sha}")
-    print(f"label_config 留底: {out_dir / 'label_config.xml'}")
+    print(f"label_config 留底: {out_dir / _label_config_name(scope)}")
     return 0
 
 
@@ -305,6 +357,7 @@ def _select_by_ids(
     *,
     selected: Sequence[str],
     version: int,
+    scope: str = SCOPE_SITE,
 ) -> list[dict[str, Any]]:
     """按 ``golden_id`` 点名挑行（**试点用**）。
 
@@ -314,6 +367,11 @@ def _select_by_ids(
     （两件事都是「输入不成立」，不是「少推一点」）。
 
     重复点名的 id **只推一次**（保持第一次出现的顺序）。
+
+    ⚠️ **档的判据按粒度不同**：站点行按 ``__split__``；轨迹行**跨档**
+    ⇒ 判据是「**整条**的档都在本次选中的档里」（见
+    :func:`evaluation.golden.rows.splits_within`）——半条轨迹推不上去，
+    页面摆的是整条轨迹。
     """
     by_id: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -324,11 +382,16 @@ def _select_by_ids(
             f"v{version} 里没有这些 golden_id: {unknown}；"
             "点错了 id 就不推（试点要覆盖到哪条就得是确的那条）"
         )
-    outside = [
-        gid
-        for gid in wanted
-        if str(by_id[gid].get("__split__") or "") not in selected
-    ]
+    if scope == SCOPE_TRAJECTORY:
+        outside = [
+            gid for gid in wanted if not rows_mod.splits_within(by_id[gid], selected)
+        ]
+    else:
+        outside = [
+            gid
+            for gid in wanted
+            if str(by_id[gid].get("__split__") or "") not in selected
+        ]
     if outside:
         raise GoldenCliError(
             f"这些 golden_id 不在本次要传的档 {list(selected)} 里: {outside}；"
@@ -347,8 +410,18 @@ def _select_by_ids(
 def _cmd_upload(args: argparse.Namespace) -> int:
     """推送某一版的冻结行到它的 LS 项目。"""
     version = int(args.version)
-    rows = _load_version(version, golden_root=args.golden_root)
+    scope = _scope_of(args)
     selected = _select_splits(args)
+    if scope == SCOPE_TRAJECTORY:
+        return _cmd_upload_trajectory(args, version, selected)
+    return _cmd_upload_site(args, version, selected)
+
+
+def _cmd_upload_site(
+    args: argparse.Namespace, version: int, selected: Sequence[str]
+) -> int:
+    """站点级上传（**历史口径**：一条站点行 = 一个 LS 任务）。"""
+    rows = _load_version(version, golden_root=args.golden_root)
 
     prev_version = _previous_version(version, golden_root=args.golden_root)
     prev_rows = (
@@ -366,7 +439,7 @@ def _cmd_upload(args: argparse.Namespace) -> int:
     ]
     if wanted_ids:
         export_rows = _select_by_ids(
-            rows, wanted_ids, selected=selected, version=version
+            rows, wanted_ids, selected=selected, version=version, scope=SCOPE_SITE
         )
     if args.limit is not None:
         export_rows = export_rows[: max(0, int(args.limit))]
@@ -387,8 +460,8 @@ def _cmd_upload(args: argparse.Namespace) -> int:
 
     out_dir = _version_dir(version)
     out_dir.mkdir(parents=True, exist_ok=True)
-    xml = render_label_config()
-    _write_text_bytes(out_dir / "label_config.xml", xml)
+    xml = render_label_config(scope=SCOPE_SITE)
+    _write_text_bytes(out_dir / _label_config_name(SCOPE_SITE), xml)
     _write_plan(
         out_dir, version, result, markers, selected, prev_version, label_config_sha(xml)
     )
@@ -397,7 +470,7 @@ def _cmd_upload(args: argparse.Namespace) -> int:
     if args.dry_run:
         print("[dry-run] 未推送。去掉 --dry-run 执行实际推送。")
     else:
-        pushed = _push(args, version, result)
+        pushed = _push(args, version, result, scope=SCOPE_SITE)
 
     plan = report_mod.plan_report(
         version=version,
@@ -410,6 +483,112 @@ def _cmd_upload(args: argparse.Namespace) -> int:
         pushed=pushed,
     )
     print(report_mod.render_report(plan))
+    for gid, hits in result.plan.rejected[:10]:
+        print(f"  rejected: {gid} — {'; '.join(h.describe() for h in hits)}")
+    print(f"推送计划留底: {out_dir / 'ls_upload_plan.jsonl'}")
+    return 0
+
+
+def _load_trajectories(
+    version: int, *, golden_root: pathlib.Path | str | None = None
+) -> list[dict[str, Any]]:
+    """某一版的**轨迹级数据集**（一条轨迹一行）。
+
+    ⚠️ **读不到就报错，不拿站点行拼一份**：v1–v16 是**站点级**冻结档，
+    没有 ``trajectories.jsonl``。拼出来的那份不是冻结时落的事实 ⇒
+    推上 LS 的会是一批「看起来像轨迹、其实不是」的行。
+    """
+    try:
+        rows = dataset.load_trajectories(version, root=golden_root)
+    except Exception as exc:  # noqa: BLE001 —— 读不出要说得清
+        raise GoldenCliError(f"读不到 v{version} 的轨迹级数据集: {exc}") from exc
+    if not rows:
+        raise GoldenCliError(
+            f"v{version} 没有轨迹级数据集（{dataset.TRAJECTORIES_FILE} 不存在或为空）"
+            "——v1–v16 是**站点级**冻结档；轨迹级那一路（裁定④）要等 per-Run "
+            "之后冻结出的版本才有"
+        )
+    return rows
+
+
+def _cmd_upload_trajectory(
+    args: argparse.Namespace, version: int, selected: Sequence[str]
+) -> int:
+    """轨迹级上传（**现行口径**：一条轨迹 = 一个 LS 任务 = 一个标注单元）。"""
+    rows = _load_trajectories(version, golden_root=args.golden_root)
+
+    prev_version = _previous_version(version, golden_root=args.golden_root)
+    prev_rows = (
+        dataset.load_trajectories(prev_version, root=args.golden_root)
+        if prev_version is not None
+        else []
+    )
+    markers = diff_mod.mark_changes(rows, prev_rows)
+
+    # ⚠️ **整条都在本次范围内才推**：一条轨迹跨档（实测 28/50 条三档全跨）
+    # ⇒ 「有交集就行」会把一条沾着封存内容的轨迹整个推上去。
+    export_rows = [r for r in rows if rows_mod.splits_within(r, selected)]
+    wanted_ids = [
+        s.strip()
+        for s in str(getattr(args, "golden_ids", "") or "").split(",")
+        if s.strip()
+    ]
+    if wanted_ids:
+        export_rows = _select_by_ids(
+            rows,
+            wanted_ids,
+            selected=selected,
+            version=version,
+            scope=SCOPE_TRAJECTORY,
+        )
+    if args.limit is not None:
+        export_rows = export_rows[: max(0, int(args.limit))]
+
+    from trajectory_pipeline.evaluation.calibration import evidence as evidence_mod
+
+    clauses = evidence_mod.load_clauses()
+    meta = dataset.version_meta(version, root=args.golden_root)
+    result = exporter.export_trajectory_rows(
+        export_rows,
+        version_meta=meta,
+        clauses=clauses,
+        markers=markers,
+        only_changed=bool(args.only_changed),
+        p2_root=args.p2_root,
+        task_views_root=args.task_views_root,
+    )
+
+    out_dir = _version_dir(version)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    xml = render_label_config(scope=SCOPE_TRAJECTORY)
+    _write_text_bytes(out_dir / _label_config_name(SCOPE_TRAJECTORY), xml)
+    _write_plan(
+        out_dir, version, result, markers, selected, prev_version, label_config_sha(xml)
+    )
+
+    pushed = 0
+    if args.dry_run:
+        print("[dry-run] 未推送。去掉 --dry-run 执行实际推送。")
+    else:
+        pushed = _push(args, version, result, scope=SCOPE_TRAJECTORY)
+
+    plan = report_mod.trajectory_plan_report(
+        version=version,
+        rows=rows,
+        markers=markers,
+        stats=result.rows,
+        selected_splits=selected,
+        previous_version=prev_version,
+        planned=result.count,
+        pushed=pushed,
+    )
+    print(report_mod.render_trajectory_report(plan))
+    skipped = len(rows) - len(export_rows)
+    if skipped:
+        print(
+            f"  ⚠ {skipped} 条轨迹**没有推**（跨档 ⇒ 整条不在本次范围内；"
+            "或者被 --golden-ids / --limit 收窄）"
+        )
     for gid, hits in result.plan.rejected[:10]:
         print(f"  rejected: {gid} — {'; '.join(h.describe() for h in hits)}")
     print(f"推送计划留底: {out_dir / 'ls_upload_plan.jsonl'}")
@@ -487,13 +666,21 @@ def _with_batch_size(settings: Any, batch_size: int) -> Any:
 
 
 def _push(
-    args: argparse.Namespace, version: int, result: exporter.GoldenExportResult
+    args: argparse.Namespace,
+    version: int,
+    result: exporter.GoldenExportResult,
+    *,
+    scope: str = SCOPE_SITE,
 ) -> int:
     """真正推（**联网**）。
 
     复用 ``ls_bridge.exporter.push_batch``：判重台账按 **project_id** 分
     文件（``push_index__<pid>.jsonl``），``sample_id = golden_id`` ⇒ 同版
     重跑不重复推。
+
+    ⚠️ **按粒度找项目**：同一版有**两个项目**（站点级 / 轨迹级）⇒
+    只按版本找会把轨迹级的任务推进站点级的项目里 ⇒ 两种粒度的行混在
+    一页 ⇒ 标注员分不清自己在判什么。
     """
     from trajectory_pipeline.evaluation.ls_bridge.exporter import push_batch
     from trajectory_pipeline.evaluation.ls_bridge.push_index import PushIndex
@@ -501,10 +688,11 @@ def _push(
 
     client, settings = _client(args)
     index = GoldenProjectIndex.load(_ledger_path(args))
-    record = index.get(version)
+    record = index.get(version, scope)
     if record is None:
         raise GoldenCliError(
-            f"v{version} 还没有 LS 项目；先跑 `init-project --version {version}`"
+            f"v{version} 还没有 {scope} 粒度的 LS 项目；"
+            f"先跑 `init-project --version {version} --scope {scope}`"
         )
     project_id = record.project_id
 
@@ -534,32 +722,65 @@ def _push(
     return int(pushed["tasks_pushed"])
 
 
+def _annotations_export_name(scope: str) -> str:
+    """LS 裁定导出的**文件名**（按粒度分开）。
+
+    ⚠️ 同名 ⇒ 两个粒度的裁定**互相覆盖** ⇒ 回流时读到的是另一个粒度的
+    记录（**静默**——文件存在、内容合法，只是内容不对）。
+    """
+    if scope == SCOPE_TRAJECTORY:
+        return "ls_annotations.traj.jsonl"
+    if scope == SCOPE_SITE:
+        return "ls_annotations.jsonl"
+    raise GoldenCliError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
+
+
+def _worksheet_name(scope: str) -> str:
+    """回流工作表的**文件名**（按粒度分开）。
+
+    ⚠️ 同名 ⇒ 一个粒度的工作表把另一个粒度的**盖掉** ⇒ 人在工作表里填的
+    三栏（观测面 / 观测时刻 / 署名）**填到另一个粒度的行上**——而两栏一空
+    一填都**不报错**（只有 apply 阶段才退 2）⇒ 白填一轮。
+    """
+    if scope == SCOPE_TRAJECTORY:
+        return "reflow_worksheet.traj.jsonl"
+    if scope == SCOPE_SITE:
+        return "reflow_worksheet.jsonl"
+    raise GoldenCliError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
+
+
 def _cmd_export_annotations(args: argparse.Namespace) -> int:
     """导出 LS 侧的人工裁定（**联网**读项目导出）。
 
-    落 ``output/pipeline/calibration/v{N}/ls_annotations.jsonl``，每行含
-    **两套分列的署名**（``annotator`` = LS 侧复核人；``gold.reviewed_by`` =
-    金标侧原署名）——方案 22 §4.4 / 裁定④。
+    落 ``output/pipeline/calibration/v{N}/ls_annotations.jsonl``（轨迹级是
+    ``ls_annotations.traj.jsonl``），每行含**两套分列的署名**
+    （``annotator`` = LS 侧复核人；``gold.reviewed_by`` = 金标侧原署名）
+    ——方案 22 §4.4 / 裁定④。
     """
     version = int(args.version)
+    scope = _scope_of(args)
     client, _settings = _client(args)
     index = GoldenProjectIndex.load(_ledger_path(args))
-    record = index.get(version)
+    record = index.get(version, scope)
     if record is None:
         raise GoldenCliError(
-            f"v{version} 还没有 LS 项目；先跑 `init-project --version {version}`"
+            f"v{version} 还没有 {scope} 粒度的 LS 项目；"
+            f"先跑 `init-project --version {version} --scope {scope}`"
         )
     payload = client.export_project_json(record.project_id)
 
     from trajectory_pipeline.evaluation.golden_ls import verdicts as verdicts_mod
 
-    rows = _load_version(version, golden_root=args.golden_root)
+    if scope == SCOPE_TRAJECTORY:
+        rows = _load_trajectories(version, golden_root=args.golden_root)
+    else:
+        rows = _load_version(version, golden_root=args.golden_root)
     gold_rows = {str(r.get("golden_id") or ""): r for r in rows}
     records = verdicts_mod.parse_export(payload, gold_rows=gold_rows)
 
     out_dir = _version_dir(version)
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "ls_annotations.jsonl"
+    path = out_dir / _annotations_export_name(scope)
     _write_text_bytes(path, verdicts_mod.dump_jsonl(records))
 
     summary = verdicts_mod.summarize(records)
@@ -631,12 +852,16 @@ def _cmd_reflow_worksheet(args: argparse.Namespace) -> int:
     from trajectory_pipeline.evaluation.golden_ls import reflow as reflow_mod
 
     version = int(args.version)
-    rows = _load_version(version, golden_root=args.golden_root)
+    scope = _scope_of(args)
+    if scope == SCOPE_TRAJECTORY:
+        rows = _load_trajectories(version, golden_root=args.golden_root)
+    else:
+        rows = _load_version(version, golden_root=args.golden_root)
     gold_rows = {str(r.get("golden_id") or ""): r for r in rows}
     ann_rows = _load_annotations(args.golden_root)
 
     export_path = pathlib.Path(args.export) if args.export else (
-        _version_dir(version) / "ls_annotations.jsonl"
+        _version_dir(version) / _annotations_export_name(scope)
     )
     records = _read_ls_verdicts(export_path)
 
@@ -645,12 +870,13 @@ def _cmd_reflow_worksheet(args: argparse.Namespace) -> int:
     )
     out_dir = _version_dir(version)
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "reflow_worksheet.jsonl"
+    path = out_dir / _worksheet_name(scope)
     _write_text_bytes(path, reflow_mod.dump_jsonl(worksheet))
 
     print(f"裁定记录 {summary['total_records']} 条（来源 {export_path}）")
     print(
         f"  可回流：确认型 {summary['confirm']} 条 / 改判型 {summary['relabel']} 条"
+        + (f" / **新建** {summary.get('create', 0)} 条" if summary.get("create") else "")
     )
     print(f"  跳过 {summary['skipped']} 条（逐条原因见 {path}.skipped 明细）")
     for item in summary["skipped_detail"][:20]:
@@ -676,7 +902,11 @@ def _cmd_reflow_apply(args: argparse.Namespace) -> int:
     from trajectory_pipeline.evaluation.golden_ls import reflow as reflow_mod
 
     version = int(args.version)
-    rows = _load_version(version, golden_root=args.golden_root)
+    scope = _scope_of(args)
+    if scope == SCOPE_TRAJECTORY:
+        rows = _load_trajectories(version, golden_root=args.golden_root)
+    else:
+        rows = _load_version(version, golden_root=args.golden_root)
     gold_rows = {str(r.get("golden_id") or ""): r for r in rows}
 
     path = pathlib.Path(args.worksheet)
@@ -784,6 +1014,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="欠账非空就退 1(默认退 0——它是给人看的清单,不是门禁)",
     )
+    p_pend.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default=None,
+        help=(
+            "只算这一个粒度的欠账(缺省=**两种粒度都算**——"
+            "站点级那批还没建项目时,清单得把它列出来)"
+        ),
+    )
 
     p_reflow = sub.add_parser(
         "reflow", help="LS 裁定 → 金标回流(单独一步,不与上传混做)"
@@ -794,7 +1033,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ws.add_argument(
         "--export",
         default=None,
-        help="LS 裁定导出路径(缺省 v{N}/ls_annotations.jsonl)",
+        help="LS 裁定导出路径(缺省按粒度取 v{N}/ls_annotations[.traj].jsonl)",
+    )
+    p_ws.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default=None,
+        help="标注单元粒度(缺省 trajectory——裁定④; 历史口径用 site)",
     )
     p_ap = reflow_sub.add_parser("apply", help="核对工作表并写回 annotations.jsonl")
     p_ap.add_argument("--worksheet", required=True, help="reflow worksheet 产出的路径")
@@ -802,12 +1047,37 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ap.add_argument(
         "--write", action="store_true", help="真写(缺省只核对,不写金标)"
     )
+    p_ap.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default=None,
+        help="标注单元粒度(缺省 trajectory——裁定④; 历史口径用 site)",
+    )
 
     p_init = sub.add_parser("init-project", help="建/复用这一版的 LS 项目(联网)")
     p_init.add_argument("--version", type=int, required=True)
+    p_init.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default=None,
+        help=(
+            "标注单元粒度(缺省 trajectory——裁定④)。"
+            "**两种粒度两个项目**,标题分别是 golden-v{N} / golden-v{N}-traj"
+        ),
+    )
 
     p_up = sub.add_parser("upload", help="推送某一版的冻结行")
     p_up.add_argument("--version", type=int, required=True)
+    p_up.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default=None,
+        help=(
+            "标注单元粒度(缺省 trajectory——裁定④)。"
+            "⚠️ 轨迹级**整条推**(一条轨迹一个标注单元),"
+            "半条轨迹推不上去"
+        ),
+    )
     p_up.add_argument(
         "--splits",
         default=None,
@@ -832,7 +1102,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "**产物根**(其下会自动接 task_views/); 缺省包内 output/pipeline。"
             "⚠️ **别多给一层 task_views/**——那会去找 task_views/task_views/*.json "
-            "⇒ T 视图可得率静默变成 0%"
+            "⇒ T 视图可得率静默变成 0%%"
+            # ⚠️ `0%%` 不是笔误：argparse 拿 help 串做 `%` 格式化 ⇒ 写 `0%`
+            # 会让**建 parser 就炸**（ValueError: badly formed help string）
+            # ⇒ **整个 golden_ls CLI 的所有子命令都进不去**（含 `--help`）。
+            # ⇒ 「help 串里有 `%` 就写 `%%`」是 argparse 的硬规矩。
         ),
     )
     p_up.add_argument(
@@ -847,6 +1121,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_exp = sub.add_parser("export-annotations", help="导出 LS 侧人工裁定(联网)")
     p_exp.add_argument("--version", type=int, required=True)
+    p_exp.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default=None,
+        help="标注单元粒度(缺省 trajectory——裁定④; 历史口径用 site)",
+    )
     return ap
 
 

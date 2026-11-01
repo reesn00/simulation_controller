@@ -118,8 +118,10 @@ class TestNoRefInActions:
         assert '"ref"' not in blob, "会话句柄漏进训练数据：换个 session 就失效"
 
     def test_点击目标是语义化的(self, tmp_path):
-        site = [s for s in _split(tmp_path) if s.unit == "site-1"][0]
-        click = [a for a in site.actions if a.tool == "click"]
+        # ⚠️ **2026-10-30 · 方案 23**：一个 Run 一条轨迹，**没有单元之分**——
+        # 点击动作直接在这条轨迹里找。
+        s = _split(tmp_path)[0]
+        click = [a for a in s.actions if a.tool == "click"]
         assert click, "夹具里就该有一个点击"
         assert set(click[0].target or {}) == {"tag", "label"}
 

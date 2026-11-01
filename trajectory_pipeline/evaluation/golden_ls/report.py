@@ -53,6 +53,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from trajectory_pipeline.evaluation.golden import rows as rows_mod
 from trajectory_pipeline.evaluation.golden.alignment import is_equivalent
 from trajectory_pipeline.evaluation.golden.builder import SUCCESS_LABEL
 from trajectory_pipeline.evaluation.golden.splits import HEADLINE_SPLIT, SPLITS
@@ -333,7 +334,186 @@ __all__ = [
     "marker_distribution",
     "plan_report",
     "render_report",
+    "render_trajectory_report",
     "signature_distribution",
     "split_counts",
     "strict_agreement",
+    "trajectory_agreement",
+    "trajectory_plan_report",
+    "trajectory_split_profile",
 ]
+
+
+# --------------------------------------------------------------------------
+# 轨迹级读数（方案 23 · 裁定 ④）
+# --------------------------------------------------------------------------
+#
+# 站点级那一路的读数**不能直接套到轨迹行上**：
+# ``__split__``（每行一档）⇒ 轨迹行压根没有这个键（它跨档），
+# ``is_site_row``（``source_kind != "p2_sample"``）⇒ 轨迹行的
+# ``source_kind == "trajectory"``，会被**误当成站点行**算进 D-10 的分母。
+#
+# ⇒ 轨迹级另有一套读数，**站点级的数字一个都不改**（D-10 的分母是绑定口径）。
+
+
+def trajectory_split_profile(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """轨迹的**档位组合分布**（``"calibration+holdout"`` → 条数）。
+
+    ⚠️ **不是「各档多少条」**：一条轨迹可以同时属于几档（实测 50 条里
+    28 条三档全跨）⇒ 按档计数会把一条轨迹数三次 ⇒ 分母虚高。
+    ⇒ 按**组合**计数，一��轨迹只落一个桶。
+    """
+    counts: dict[str, int] = {}
+    for row in rows:
+        combo = "+".join(sorted(rows_mod.row_splits(row)))
+        key = combo or "（未冻结）"
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def trajectory_agreement(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """**轨迹级一致率**：人核的轨迹级标签 vs 代码的轨迹级结论。
+
+    分母 = **有轨迹级人核标签**的轨迹（没被核过的轨迹**不是「判错」**，
+    是「还没判」——把它们塞进分母等于把「没判」读成「判错」）。
+
+    ⚠️ 这个数与 D-10 的站点级数**不是同一件事**：D-10 量的是「同一个站
+    上代码判的与人核的是否一致」；这里量的是「这条轨迹**最后落到哪**，
+    代码判的与人核的是否一致」（裁定② 的末条结论）。
+    """
+    scored: list[Mapping[str, Any]] = []
+    for row in rows:
+        golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
+        if not golden.get("label"):
+            continue
+        scored.append(row)
+    same = 0
+    unregistered = 0
+    for row in scored:
+        golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
+        code = row.get("code") if isinstance(row.get("code"), Mapping) else {}
+        label = str(golden.get("label") or "")
+        branch = str(code.get("branch") or SUCCESS_LABEL)
+        if label == branch:
+            same += 1
+            continue
+        try:
+            if is_equivalent(label, branch):
+                same += 1
+        except KeyError:
+            # 标签不在等价类注册表里 ⇒ 判不了等价（fail-closed）。
+            # **留在分母里、单列**——「判不了」不是「判对了」。
+            unregistered += 1
+    total = len(scored)
+    return {
+        "total": total,
+        "agree": same,
+        "disagree": total - same,
+        "ratio": (same / total) if total else 0.0,
+        "unregistered": unregistered,
+        "unlabeled": len(rows) - total,
+    }
+
+
+def _site_views(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """轨迹行 ⇒ **站点视图**（把 ``split`` 映射成 ``__split__``）。
+
+    ⚠️ 站点级那一路的读数是拿 ``__split__`` 过滤档的；轨迹行的站点明细
+    带的是 ``split``（冻结时写的档）⇒ 不映射的话 D-10 的头条档会读成
+    「（未切档）」⇒ 头条分母变成全档 ⇒ **读数是假的**。
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        for site in rows_mod.site_rows(row):
+            view = dict(site)
+            if not view.get("__split__"):
+                view["__split__"] = str(view.get("split") or "")
+            out.append(view)
+    return out
+
+
+def trajectory_plan_report(
+    *,
+    version: int,
+    rows: Sequence[Mapping[str, Any]],
+    markers: Mapping[str, str],
+    stats: Sequence[Mapping[str, Any]],
+    selected_splits: Sequence[str],
+    previous_version: int | None,
+    planned: int,
+    pushed: int,
+) -> dict[str, Any]:
+    """轨迹级推送的**完整读数**（结构与 :func:`plan_report` 对齐）。
+
+    ⚠️ **站点级的 D-10 数字照算**（从 ``site_outcomes[]`` 展开）——它是
+    **绑定口径**，换算方式变了读数就得对不上；轨迹级化**不许动它**。
+    """
+    sites = _site_views(rows)
+    return {
+        "version": version,
+        "scope": "trajectory",
+        "previous_version": previous_version,
+        "selected_splits": list(selected_splits),
+        "trajectories": len(rows),
+        "split_profile": trajectory_split_profile(rows),
+        "trajectory_agreement": trajectory_agreement(rows),
+        "sites": len(sites),
+        "splits": split_counts(sites),
+        "agreement": d10_agreement(sites),
+        "coverage": coverage(stats),
+        "signatures": signature_distribution(stats),
+        "markers": marker_distribution(rows, markers),
+        "planned": planned,
+        "pushed": pushed,
+    }
+
+
+def render_trajectory_report(report: Mapping[str, Any]) -> str:
+    """轨迹级读数 → 人读文本。"""
+    version = report.get("version")
+    agreement = report.get("agreement") or {}
+    headline = agreement.get("headline") or {}
+    traj = report.get("trajectory_agreement") or {}
+    profile = report.get("split_profile") or {}
+    cover = report.get("coverage") or {}
+    markers = report.get("markers") or {}
+
+    lines = [
+        f"── v{version} 推送计划读数（**轨迹级**）──",
+        f"轨迹条数: {report.get('trajectories')}（站点明细 {report.get('sites')} 条）",
+        "档位组合分布(全版): "
+        + " / ".join(f"{k}={v}" for k, v in profile.items()),
+        (
+            f"一致率·轨迹级(有人核标签的 {traj.get('total')} 条轨迹, 语义等价类): "
+            f"{traj.get('agree')}/{traj.get('total')} "
+            f"= {float(traj.get('ratio') or 0):.1%}"
+            f" ｜ 还没人核 {traj.get('unlabeled')} 条"
+        ),
+        (
+            f"一致率·D-10 口径 C(站点级 {agreement.get('total')} 行, 等价类): "
+            f"头条 {agreement.get('split')} "
+            f"{headline.get('agree')}/{headline.get('total')} "
+            f"= {float(headline.get('ratio') or 0):.1%} ｜ "
+            f"三档合计 {agreement.get('agree')}/{agreement.get('total')} "
+            f"= {float(agreement.get('ratio') or 0):.1%}"
+        ),
+        (
+            f"现场可得率(本次导出 {cover.get('total')} 条): "
+            f"{cover.get('scene_found')}/{cover.get('total')} "
+            f"= {float(cover.get('scene_ratio') or 0):.1%}"
+            f" ｜ T 视图可得率: {cover.get('trajectory_found')}/{cover.get('total')} "
+            f"= {float(cover.get('trajectory_ratio') or 0):.1%}"
+        ),
+        "变更分布(全版): "
+        + " / ".join(f"{k}={v}" for k, v in markers.items() if not k.startswith("__")),
+        f"计划 {report.get('planned')} 条 / 已推送 {report.get('pushed')} 条",
+    ]
+    unregistered = int(agreement.get("unregistered") or 0)
+    if unregistered:
+        lines.append(
+            f"⚠ 标签未登记(判不了等价) {unregistered} 条 —— 留在分母里, 单列"
+        )
+    rejected = int(cover.get("rejected") or 0)
+    if rejected:
+        lines.append(f"⚠ 凭据扫描拒推 {rejected} 条（fail-closed, 不推半份）")
+    return "\n".join(lines)

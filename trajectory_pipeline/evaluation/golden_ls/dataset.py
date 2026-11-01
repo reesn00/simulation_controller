@@ -80,6 +80,41 @@ def load_rows(
     return load_frozen_rows(golden_root(root), int(version))
 
 
+#: 轨迹级数据集的文件名（一条轨迹一行 · 方案 23）。
+TRAJECTORIES_FILE = "trajectories.jsonl"
+
+
+def load_trajectories(
+    version: int, *, root: pathlib.Path | str | None = None
+) -> list[dict[str, Any]]:
+    """某一版的**轨迹级数据集**（一条轨迹一行）。
+
+    读的是 ``v{N}/trajectories.jsonl``——冻结时落的那份（站点级明细收在
+    每一行的 ``site_outcomes[]`` 里）。
+
+    ⚠️ **这份文件可能不存在**：冻结档 v1–v16 是**站点级**的，没有它。
+    读不到 ⇒ 返回空列表（调用方据此说「这一版没有轨迹级数据集」），
+    **不猜、不用站点行拼一份**——拼出来的那份不是冻结时落的事实。
+    """
+    path = version_dir(version, root=root) / TRAJECTORIES_FILE
+    if not path.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise DatasetError(
+                f"v{version} 的 {TRAJECTORIES_FILE} 读不出来（{path}）：{exc}"
+            ) from exc
+        if isinstance(data, dict):
+            out.append(data)
+    return out
+
+
 def frozen_versions(*, root: pathlib.Path | str | None = None) -> list[int]:
     """真源区里存在的全部版本号（升序）。
 
@@ -105,10 +140,12 @@ def frozen_versions(*, root: pathlib.Path | str | None = None) -> list[int]:
 
 __all__ = [
     "DatasetError",
+    "TRAJECTORIES_FILE",
     "VERSION_DIR_PREFIX",
     "frozen_versions",
     "golden_root",
     "load_rows",
+    "load_trajectories",
     "read_manifest",
     "version_dir",
     "version_meta",

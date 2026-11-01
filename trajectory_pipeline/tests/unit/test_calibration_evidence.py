@@ -234,18 +234,24 @@ def test_观察读数把降级标记带出来():
 # ── 3. 定位：读不到就说读不到 ─────────────────────────────
 
 
-def test_按url匹配到站点样本(tmp_path):
+def test_按url匹配到轨迹里的访问点(tmp_path):
+    """⚠️ **2026-10-30 · 方案 23**：一个 Run 一条轨迹，所以「匹配到站点样本」
+    变成「匹配到**轨迹里的第几个访问点**」。"""
     _archive(tmp_path)
     located = evidence.locate_sample(_row(), p2_root=tmp_path)
     assert located["sample"] is not None
-    assert located["unit"] == "site-1"
+    assert located["url_found"] is True
+    assert located["site"]["index"] == 1
     assert "匹配" in located["note"]
 
 
 def test_url对不上时列候选而不是给空读数(tmp_path):
+    """⚠️ **2026-10-30 · 方案 23**：轨迹读到了，但**这一页**不在轨迹里——
+    现场仍然是空的。判据是 ``url_found``，不是「样本读到没有」。"""
     _archive(tmp_path)
     located = evidence.locate_sample(_row(url="https://other.test/z"), p2_root=tmp_path)
-    assert located["sample"] is None
+    assert located["url_found"] is False
+    assert located["site"] == {}
     assert "没有匹配" in located["note"]
     assert located["candidates"]
 
@@ -277,12 +283,18 @@ def test_缺定位字段时明说(tmp_path):
 
 
 def test_p2_sample按样本文件读(tmp_path):
+    """⚠️ **2026-10-30 · 方案 23**：P2 样本文件名就是**轨迹 id**
+    （``<task>__<run>``），不再有单元后缀。"""
     (tmp_path / "samples").mkdir()
-    (tmp_path / "samples" / "T001__r1__site-1.json").write_text(
+    (tmp_path / "samples" / "T001__r1.json").write_text(
         json.dumps(
             {
-                "sample_id": "T001__r1__site-1",
-                "unit": "site-1",
+                "sample_id": "T001__r1",
+                "site_outcomes": [
+                    {"index": 1, "url": "https://x.test/a",
+                     "landed_url": "https://x.test/a", "outcome": None,
+                     "step_start": 0, "step_end": 0},
+                ],
                 "six": {"actions": [], "observations": []},
             },
             ensure_ascii=False,
@@ -290,10 +302,11 @@ def test_p2_sample按样本文件读(tmp_path):
         encoding="utf-8",
     )
     located = evidence.locate_sample(
-        _row(source_kind="p2_sample", sample_id="T001__r1__site-1"), p2_root=tmp_path
+        _row(source_kind="p2_sample", sample_id="T001__r1"), p2_root=tmp_path
     )
     assert located["sample"] is not None
-    assert located["unit"] == "site-1"
+    assert located["site"]["index"] == 1
+    assert located["url_found"] is True
 
 
 # ── 4. 读数组装与渲染 ──────────────────────────────────────
@@ -428,7 +441,7 @@ def test_scene_summary把现场摊成可读的几行(tmp_path):
     scene = evidence.scene_summary(digest)
     assert scene["found"] is True
     assert scene["status"] == "located"
-    assert scene["unit"] == "site-1"
+    assert scene["site"] == "site-1"
     assert scene["title"] == "测试页"
     assert len(scene["steps"]) == 1
     assert "goto" in scene["steps"][0]

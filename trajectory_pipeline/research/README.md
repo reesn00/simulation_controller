@@ -176,13 +176,22 @@ research/
 │  │                                   （`m.dinggetv.com` 电影页 · `104.143.94.74` 播放页 ·
 │  │                                   `bilibili/bangumi` 外壳）⇒ 逐条判读见
 │  │                                   [编年史 §八](../docs/计划进展/90-增量编年史.md)
-│  └─ q24_q25_guard_kmslxsh_probe.txt  **T011 改判的现场取证**（`cli probe` 的原始读数，**联网**）：
-│                                      `kmslxsh.com` 的 **3 个路径**（`/v/31445/6a6568e66c316.html` /
-│                                      `/v/17807/6a6553bbc6bfd.html` / 站点根）**全部**返回
-│                                      「404 Not Found\nnginx」，`元素=0` · `video=0` · `降级=[]`
-│                                      ⇒ **前置事实成立**（当初那条观察若没带 `press_unsupported`，
-│                                      护栏本就会落 `broken`）⇒ owner 据此裁定 T011 改判成 `broken`
-│                                      ⚠️ **这是事实不是结论**——贴什么分支仍需人工裁定
+│  ├─ q24_q25_guard_kmslxsh_probe.txt  **T011 改判的现场取证**（`cli probe` 的原始读数，**联网**）：
+│  │                                   `kmslxsh.com` 的 **3 个路径**（`/v/31445/6a6568e66c316.html` /
+│  │                                   `/v/17807/6a6553bbc6bfd.html` / 站点根）**全部**返回
+│  │                                   「404 Not Found\nnginx」，`元素=0` · `video=0` · `降级=[]`
+│  │                                   ⇒ **前置事实成立**（当初那条观察若没带 `press_unsupported`，
+│  │                                   护栏本就会落 `broken`）⇒ owner 据此裁定 T011 改判成 `broken`
+│  │                                   ⚠️ **这是事实不是结论**——贴什么分支仍需人工裁定
+│  ├─ per_run_frozen_shape.py       **方案 23 的形状读数**：冻结档里有几条**轨迹**（per-Run）
+│  │                                （离线；读**已入库**的 v16 ⇒ 干净 clone 也能复算）
+│  ├─ per_run_golden_shape.py       **黄金集的行形状**：哪些行是轨迹级、哪些是站点级（离线）
+│  ├─ per_run_site_key.py           **站点键集合**：口径 C 的 url 键 vs v1–v16 的键（**A−C / C−A**）
+│  ├─ per_run_site_join.py          **同轨的站点标签互相冲突吗**（**28/50** ⇒ 轨迹级标签推不出来）
+│  ├─ per_run_split_membership.py   **轨迹跨档**：取严 vs 头部站点定档，**两个口径都能算**（Q-26）
+│  └─ per_run_placeholder_rows.py   **Q-30**：那 **5 条**「占位的 per-unit 行」**留 / 不留**
+│                                   （两个口径各量一遍：严格一致 vs D-10 ⇒ **只有严格一致会动**，
+│                                   而且是**分母变小** ⇒ 不是「口径变好」）
 ├─ ab_baseline/plan-ab.json    A/B 两批共用的执行计划输入（`cli gen` 产物，挪而非删）
 │  └─ plan-camoufox-prod1.json  **第一批 camoufox 生产批次**的 12 条计划（seed 20261022；第二批复用同一份⇒前后可比）
 └─ smoke/_test_short.mp4       ffprobe 烟测物料（05/07 文档引为凭证）
@@ -442,6 +451,15 @@ uv run python trajectory_pipeline/research/probes/gold_refresh_code_impact.py
 
 # Q-24 甲 / Q-25 甲两条护栏在**全库存档**上的作用面（**离线**，只读）
 uv run python trajectory_pipeline/research/probes/q24_q25_guard_replay.py
+
+# 方案 23（每任务一轨迹）的六支复算——**全部离线**，读**已入库**的 v16
+#    ⇒ 干净 clone 也能复算（**必须在仓库根跑**）
+uv run python -m trajectory_pipeline.research.probes.per_run_frozen_shape
+uv run python -m trajectory_pipeline.research.probes.per_run_golden_shape
+uv run python -m trajectory_pipeline.research.probes.per_run_site_key trajectory_pipeline/output/pipeline trajectory_pipeline/evaluation/golden/data
+uv run python -m trajectory_pipeline.research.probes.per_run_site_join
+uv run python -m trajectory_pipeline.research.probes.per_run_split_membership
+uv run python -m trajectory_pipeline.research.probes.per_run_placeholder_rows
 ```
 
 **哪些脚本必须联网**：`recollect/visit.py`、`probes/inc43_probe_body.py`、

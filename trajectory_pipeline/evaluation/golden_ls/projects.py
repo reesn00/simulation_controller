@@ -28,6 +28,11 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from trajectory_pipeline.evaluation.golden_ls import dataset
+from trajectory_pipeline.evaluation.golden_ls.scope import (
+    SCOPES,
+    SCOPE_SITE,
+    SCOPE_TRAJECTORY,
+)
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +49,11 @@ LEDGER_NAME = "golden_projects.jsonl"
 #: 全推上去，而历史版本的判定与 v14 不同、复核了也并不到当前基线上）。
 #: 裁定变了就改这一个数。
 UPLOAD_BASELINE_VERSION = 14
+
+#: **标注单元的粒度**（方案 23 · 裁定 ④）——真源在
+#: :mod:`trajectory_pipeline.evaluation.golden_ls.scope`，这里**转出**一份，
+#: 好让「从 projects 取粒度常量」的老写法继续能用（**同一批对象**，
+#: 不是抄一份——抄一份必然漂）。
 
 
 def default_ledger_path(root: pathlib.Path | str | None = None) -> pathlib.Path:
@@ -71,6 +81,16 @@ class GoldenProject:
     counts: dict[str, int] = field(default_factory=dict)
     splits: tuple[str, ...] = ()
     created_at: str = ""
+    #: **标注单元的粒度**（方案 23 · 裁定 ④）：
+    #:
+    #: - ``site`` —— 一条站点行一个 LS 任务（v1–v16 的历史口径）；
+    #: - ``trajectory`` —— **一条轨迹一个 LS 任务**（per-Run 之后的口径）。
+    #:
+    #: ⚠️ **同一个版本可以有两个项目**（两个粒度各一个）⇒ 台账按
+    #: ``(version, scope)`` 找项目，**不是**只按版本找——只按版本找会把
+    #: 轨迹级的任务推进站点级的项目里（两种粒度的行混在一页，标注员分不清
+    #: 自己在判一条轨迹还是判一个站点）。
+    scope: str = SCOPE_SITE
 
     def to_line(self) -> str:
         return json.dumps(
@@ -83,6 +103,7 @@ class GoldenProject:
                 "evaluator_version": self.evaluator_version,
                 "counts": dict(self.counts),
                 "splits": list(self.splits),
+                "scope": self.scope,
                 "created_at": self.created_at,
             },
             ensure_ascii=False,
@@ -101,6 +122,9 @@ class GoldenProject:
             return None
         counts = raw.get("counts")
         splits = raw.get("splits")
+        scope = str(raw.get("scope") or SCOPE_SITE)
+        if scope not in SCOPES:
+            return None
         return cls(
             version=version_i,
             project_id=project_id_i,
@@ -110,18 +134,21 @@ class GoldenProject:
             evaluator_version=str(raw.get("evaluator_version") or ""),
             counts=dict(counts) if isinstance(counts, Mapping) else {},
             splits=tuple(str(s) for s in splits) if isinstance(splits, Sequence) else (),
+            scope=scope,
             created_at=str(raw.get("created_at") or ""),
         )
 
 
 class GoldenProjectIndex:
-    """``version → project`` 的本地台账。**只增不改**。"""
+    """``(version, scope) → project`` 的本地台账。**只增不改**。"""
 
     def __init__(
-        self, path: pathlib.Path, records: dict[int, GoldenProject] | None = None
+        self,
+        path: pathlib.Path,
+        records: dict[tuple[int, str], GoldenProject] | None = None,
     ) -> None:
         self.path = pathlib.Path(path)
-        self._records: dict[int, GoldenProject] = records or {}
+        self._records: dict[tuple[int, str], GoldenProject] = records or {}
 
     @classmethod
     def default_path(cls, root: pathlib.Path | str | None = None) -> pathlib.Path:
@@ -130,7 +157,7 @@ class GoldenProjectIndex:
     @classmethod
     def load(cls, path: pathlib.Path | str) -> "GoldenProjectIndex":
         """读台账。**坏行跳过，不抛**——台账是索引，LS 才是真相。"""
-        records: dict[int, GoldenProject] = {}
+        records: dict[tuple[int, str], GoldenProject] = {}
         p = pathlib.Path(path)
         if not p.is_file():
             return cls(p, records)
@@ -148,21 +175,46 @@ class GoldenProjectIndex:
             if record is None:
                 skipped += 1
                 continue
-            records[record.version] = record
+            records[(record.version, record.scope)] = record
         if skipped:
             log.warning("GoldenProjectIndex: %s 有 %d 行无法解析, 已跳过", p, skipped)
         return cls(p, records)
 
     # -- 查询 ---------------------------------------------------------------
 
-    def get(self, version: int) -> GoldenProject | None:
-        return self._records.get(int(version))
+    def get(self, version: int, scope: str | None = None) -> GoldenProject | None:
+        """查项目。
 
-    def has(self, version: int) -> bool:
-        return int(version) in self._records
+        ``scope=None`` ⇒ 站点级的优先（历史口径）；两个粒度都没有 ⇒ ``None``。
 
-    def versions(self) -> list[int]:
-        return sorted(self._records)
+        ⚠️ **按粒度查，不按版本查**：同一版可以有两个项目（两个粒度各一个），
+        只按版本查会把轨迹级的任务推进站点级的项目里。
+        """
+        v = int(version)
+        if scope is not None:
+            return self._records.get((v, str(scope)))
+        return self._records.get((v, SCOPE_SITE)) or self._records.get(
+            (v, SCOPE_TRAJECTORY)
+        )
+
+    def has(self, version: int, scope: str | None = None) -> bool:
+        return self.get(version, scope) is not None
+
+    def versions(self, scope: str | None = None) -> list[int]:
+        """台账里**建过项目**的版本（升序）。
+
+        ⚠️ **按粒度筛**（``scope``）：站点级建过项目**不等于**轨迹级建过
+        ——两个粒度两个项目（见 :func:`project_title`）。``scope=None``
+        ⇒ 两种粒度建过任一个就算「建过」（历史口径）。
+
+        ⚠️ **为什么这个筛法要紧**：``pending`` 命令同时打「已建项目」与
+        「欠账」两行 ⇒ 若「已建」不按粒度筛，读者会看到
+        「已建 [14, 15] / 欠账 [14, 15, 16]」这种**自相矛盾**的输出，
+        而**看不出**矛盾来自「两个粒度两个项目」。
+        """
+        if scope is None:
+            return sorted({v for v, _s in self._records})
+        return sorted({v for v, s in self._records if s == scope})
 
     def __len__(self) -> int:
         return len(self._records)
@@ -183,7 +235,7 @@ class GoldenProjectIndex:
         with self.path.open("ab") as handle:
             handle.write(payload.encode("utf-8"))
         for record in batch:
-            self._records[record.version] = record
+            self._records[(record.version, record.scope)] = record
 
     def record(self, record: GoldenProject) -> None:
         self.append([record])
@@ -199,6 +251,7 @@ class GoldenProjectIndex:
         evaluator_version: str = "",
         counts: Mapping[str, int] | None = None,
         splits: Sequence[str] = (),
+        scope: str = SCOPE_SITE,
     ) -> GoldenProject:
         """造一条新记录（**不落盘**——调用方决定要不要 :meth:`record`）。"""
         return GoldenProject(
@@ -210,6 +263,7 @@ class GoldenProjectIndex:
             evaluator_version=evaluator_version,
             counts=dict(counts or {}),
             splits=tuple(str(s) for s in splits),
+            scope=str(scope),
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
 
@@ -217,9 +271,23 @@ class GoldenProjectIndex:
         return f"GoldenProjectIndex(path={self.path}, records={len(self._records)})"
 
 
-def project_title(version: int) -> str:
-    """LS 项目标题。**确定性**——``find_project_by_title`` 是精确匹配。"""
-    return f"golden-v{int(version)}"
+def project_title(version: int, scope: str = SCOPE_SITE) -> str:
+    """LS 项目标题。**确定性**——``find_project_by_title`` 是精确匹配。
+
+    ⚠️ **两个粒度两个标题**（``golden-v14`` / ``golden-v14-traj``）：
+    标题相同会让两个粒度**共用一个项目**⇒ 两种粒度的行混在一页，
+    标注员分不清自己在判一条轨迹还是判一个站点（裁定 ④ 的前提就是
+    「一个标注单元 = 一条轨迹」）。
+
+    缺省 ``scope`` = 站点级 ⇒ 标题与历史档逐字一致（``golden-v14``），
+    **已经建好的老项目不会因为这个函数改了而认不出来**。
+    """
+    base = f"golden-v{int(version)}"
+    if scope == SCOPE_TRAJECTORY:
+        return f"{base}-traj"
+    if scope != SCOPE_SITE:
+        raise ValueError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
+    return base
 
 
 def pending_versions(
@@ -227,6 +295,7 @@ def pending_versions(
     *,
     golden_root: pathlib.Path | str | None = None,
     baseline: int = UPLOAD_BASELINE_VERSION,
+    scope: str | None = None,
 ) -> list[int]:
     """**冻结了但没推**的版本（升序）。
 
@@ -236,13 +305,22 @@ def pending_versions(
     ⚠️ **只算 ``baseline`` 及以上的版本**：低于它的按裁定 O-1 **不上 LS**
     （存量只上传 v14），**不算欠账**。把它们列进来就是在发一条会违反
     owner 裁定的指令。
+
+    ⚠️ **按粒度查**（``scope``）：站点级建过项目**不等于**轨迹级建过
+    ——两个粒度两个项目（见 :func:`project_title`）。``scope=None``
+    ⇒ 两种粒度建过任一个就算「建过」（历史口径）。
     """
     all_versions = dataset.frozen_versions(root=golden_root)
-    return [v for v in all_versions if v >= int(baseline) and not index.has(v)]
+    return [
+        v for v in all_versions if v >= int(baseline) and not index.has(v, scope)
+    ]
 
 
 __all__ = [
     "LEDGER_NAME",
+    "SCOPES",
+    "SCOPE_SITE",
+    "SCOPE_TRAJECTORY",
     "UPLOAD_BASELINE_VERSION",
     "GoldenProject",
     "GoldenProjectIndex",

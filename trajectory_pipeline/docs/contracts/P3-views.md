@@ -12,7 +12,8 @@
 > P3 的输入是 **P2 的 JSON dict**，不是
 > :class:`~trajectory_pipeline.assembler.schema.Sample`——P2 便宜、P3 更便宜，
 > 重建一批 P3 必须能脱离 `executor` 与 `builder` 的当前版本独立完成。
-> 由 `tests/contract/test_p3_contract.py::TestNoExecutorImport` 用 AST 强制。
+> 由 `tests/contract/test_p3_contract.py::Test模块图::test_views不import执行端点`
+> 用 AST 强制。
 
 ---
 
@@ -26,8 +27,15 @@
    人工复核与批次筛选必须看它**）。
 2. **以 `sample_id` 为唯一文件主键**：三份文件名
    `<sample_id>_{messages,openai,meta}.json`。`sample_id` 与 P2 完全一致
-   （`<task_id>__<run_id>__<unit>`），排序即时间序，从 id 就能反查 P1，
+   （`<task_id>__<run_id>`），排序即时间序，从 id 就能反查 P1，
    不必开文件。
+
+   ⚠️ **2026-10-30 · 方案 23（per-Run）**：粒度从「一个决策单元一条」
+   改成**一个任务一条轨迹** ⇒ `sample_id` **不再带单元后缀**，与
+   **P1 存档名逐字相同**（`T001__b98b3e56.json` ⇒
+   `sample_id = "T001__b98b3e56"`）。旧存档里那些带 __search /
+   __site-N 后缀的 id **仍读得懂**，但那是**历史口径**——本文以下的
+   「一条样本」一律指**一条轨迹**。
 3. **降级样本照常渲染，缺件必须看得见**：`degraded_from` 非空的样本是
    真实数据只是缺件，渲染照常；但 `meta.json` 必须把降级、rationale
    缺失、闸门状态**显式**记下来——因为降级静默渲染等于让缺件不可见。
@@ -60,11 +68,24 @@
 | `role: "user"`（首轮） | `{"role", "content"}` | 有 `user_prompt` 才发；**空 `user_prompt` 不发空消息**（见判断 4） |
 | `role: "assistant"` | `{"role", "content"}` | 每步动作一条；`content` = 该步思考段（若有）+ `[动作] <tool>(…)` |
 | `role: "user"`（观察回执） | `{"role", "content"}` | 动作与观察一一配对；**观察不足时显式发占位** `（本步没有取到页面内容）`（判断 8）；观察多于动作时多出的照实补上 |
-| `role: "assistant"`（收尾） | `{"role", "content"}` | **每条轨迹以「任务总结」终结**（判断 7）：从 `outcome` 与 unit 级 `reflection.rationale.conclusion` 确定性派生，无动作（INC46 起不再读末步 rationale） |
+| `role: "assistant"`（收尾） | `{"role", "content"}` | **每条轨迹以「任务总结」终结**（判断 7）：从**任务级** `outcome` 与**轨迹级** `reflection.rationale.conclusion`（末个访问点的反思）确定性派生，无动作（INC46 起不再读末步 rationale） |
 
 工具调用在这里**降级成纯文本** `[动作] goto(url=…)`——这份视图的定位是
 「训练框架不认识 tool_calls 时的保底」，要精确的函数调用形态读 `openai.json`。
 `role` 只有四种取值：`system` / `user` / `assistant` / `tool`（见各消息行）。
+
+### 动作流是**一条摊平的流**（2026-10-30 · 方案 23）
+
+P2 的一条样本 = **一条轨迹**（一个任务的一次运行），所以消息流里的动作
+是**一条连续的流**：搜索段 → 站点 1 → 站点 2 → …，**不再按决策单元分段**。
+
+- `step_index` 是**轨迹内全局序号**（0..N-1），**不是**「每个单元各自从 0
+  数起」——后者会让第 5 步的 rationale 在字典查找里撞上搜索段的第 5 步，
+  **静默丢思考**（`schema.py::_run_sample` 的摊平注释记着这条）。
+- `six.actions` / `six.observations` / `six.rationales` 三段**等长且一一
+  对齐**（P2 契约保证），P3 只按序取用。
+- **单元边界不体现在消息流里**——要回看「哪几步属于哪个访问点」，读
+  `meta.json` 的 `site_outcomes`（每个访问点带自己的步号区间）。
 
 ### 动作行（`_action_line`）
 
@@ -81,14 +102,14 @@
 顶层是对象：
 
 ```json
-{"sample_id": "T001__b98b3e56__site-5",
+{"sample_id": "T001__b98b3e56",
  "messages": [...],
  "tools": [...]}
 ```
 
 | 键 | 说明 |
 |---|---|
-| `sample_id` | 与 P2 一致，**排序即时间序** |
+| `sample_id` | 与 P2 一致（`<task_id>__<run_id>`），**排序即时间序**；per-Run 之后与 P1 存档名**逐字相同** |
 | `messages` | 对话序列（见下） |
 | `tools` | 模型看得见的工具声明（**不含** `new_tab`，见判断 2）。**按样本自己的工具面渲染**（面由 P2 的 `tool_surface` 定）——同名工具在三个面里参数不同（obscura 面 `tag`/`label`，两个 aria 面 `role`/`name`） |
 
@@ -189,20 +210,26 @@
 顶层是对象，四组职责：**来源**（从 id 反查 P1）、**可用性**（能否进训练集）、
 **结论**（批次级断言原料）、**可回放性自查**（动作与观察是否成对）。
 
+⚠️ **2026-10-30 · 方案 23（per-Run）**：`unit` 键**整个没了**——一个任务
+一条轨迹，不再按决策单元切分。单元降级成**轨迹内的结构**：站点级结论
+留在 `site_outcomes` 里（裁定 ③），**任务级**结论进 `outcome`（裁定 ②）。
+`unit` 这个键名**只出现在历史存档里**，仍读得懂（读出来是历史口径的
+单元名），但**新产出的视图不再有它**。
+
 | 键 | 类型 | 说明 |
 |---|---|---|
-| `sample_id` | `str` | 与 P2 一致 |
+| `sample_id` | `str` | 与 P2 一致（`<task_id>__<run_id>`） |
 | `task_id` | `str` | 切片轴 |
-| `unit` | `str` | `"search"` 或 `site-N` |
 | `title` | `str` | 任务标题 |
 | `source_archive` | `str` | 据以生成的 P1 文件名（不含目录），批次可回溯 |
 | `gate` | `object` | **闸门三值原样透传**（`passed` / `failed` / `not_run`）——`not_run` 是「没测过」不是「通过」 |
 | `rationale_missing` | `bool` | 整条一条 rationale 都没写成。与 `gate` **分开记**：`gate=passed` 但这里为 true ⇒ 只有动作没有思考 |
 | `rationale_era` | `str` | INC46 分代（原样透传 P2）：`pre_action`（动作前动机，闸门真跑）/ `post_hoc`（事后反思，闸门 `not_run`）/ `""`（一条没写成）。**两类文本的读法不同**：`post_hoc` 的描述对象是**本步之后**的页面，按 `observation[i]` 去核才公平 |
-| `degraded_from` | `list[str]` | 非空 = 这条是降级重建的，别与新版样本同等看待 |
-| `outcome` | 对象或 null | 指回 P1 的那一条（含 `branch`）；无则 JSON null |
+| `degraded_from` | `list[str]` | 非空 = 这条是降级重建的，别与新版样本同等看待。⚠️ per-Run 后它是**轨迹级**的集合（整条轨迹的缺件），不再是「某个单元的缺件」 |
+| `outcome` | 对象或 null | **任务级结论**（裁定 ②：末条结论）——含 `branch`（分支为空 = 成功）；一个站点结论都没有时为 JSON null |
+| `site_outcomes` | `list[object]` | **轨迹内的站点级明细**（裁定 ③）——每个访问点一条，含该访问点自己的结论与它占的**全局步号区间**。**给人看的**：训练侧只消费上面的 `outcome` |
 | `provenance` | `object` | 采样切片轴（P2 的 `six.provenance` 原样） |
-| `step_count` | `int` | 动作条数 |
+| `step_count` | `int` | 动作条数（**整条轨迹**，不是某个单元） |
 | `observation_count` | `int` | 观察条数 |
 | `infrastructure_actions` | `list[str]` | 执行器自己做的动作（`origin=infrastructure`，如 `new_tab`）的工具名清单 |
 | `tool_surface` | `str` | **工具面**（2026-10-20 方案 15 §7 R1）：这条样本的动作空间属于哪个方言（`obscura-1` / `camoufox-1` / **`camofox-1`**）。同名工具在三个面里参数不同，面错了 = 声明与真实调用对不上。⚠️ **三个面 ≠ 三套方言**——方言只有两套词表（见 P2 契约 · 工具面一节） |
@@ -212,6 +239,32 @@
 | `missing_observation_count` | `int` | 缺失观察占位（P2 `MISSING_OBSERVATION`，`degraded` 含 `observation_missing`）的条数。占位多的样本观察面薄，复核优先级该高 |
 | `closing_summary` | `bool` | 是否带「任务总结」收尾（判断 7）。false 即「这条一个可见模型动作都没有」 |
 | `rationale_steps` | `list[{step_index, status}]` | **逐条**列出每步 rationale 的状态——不合成一个计数：合成之后就分不出「缺中间那步」与「缺最后那步」，而两者的处置不同 |
+
+### `site_outcomes` 元素
+
+P3 **原样透传** P2 的 `Sample.site_outcomes`（`views.py::to_meta` 只做
+`list(sample.get("site_outcomes") or ())`，不重排、不改字段），所以元素形状
+**以 P2 契约为准**（`schema.py::SiteOutcomeView.to_json`）。形状长这样：
+
+```json
+{"index": 1, "url": "https://x.test", "landed_url": "https://x.test",
+ "outcome": {"url": "https://x.test", "branch": "no_play_control"},
+ "step_start": 3, "step_end": 9, "outcome_index": 4}
+```
+
+元素字段（**P2 层的名字**，P3 只透传，故本文不复述其形状）：
+
+| 元素字段 | 含义 |
+|---|---|
+| index | 访问序号（从 1 起，与 P1 的访问点数组同序） |
+| url / landed_url | 候选链接 / 落地后的地址（两者可能不同） |
+| outcome | **这个访问点自己的**结论（值为 null = 没配到，属**缺件**，**不是**成功；成功是 `branch` 为空） |
+| step_start / step_end | 这个访问点占的**全局步号**区间 `[起点, 终点)`——空区间 = 该站点没有动作步 |
+| outcome_index | 配到的结论在 P1 结论数组里的下标（`-1` = 没配到） |
+
+⚠️ **为什么要带步号区间**：站点级结论回到轨迹里之后，「这个站点是轨迹里
+哪一段」必须能直接回答——靠 url 反推是**猜**（两个站点跳到同一个地址时会
+撞，而撞了报告上看不出异常）。区间是**共有事实**，不是推出来的。
 
 ### `rationale_steps` 元素
 
@@ -223,6 +276,10 @@
 `step_index` 取**条目自带值**（动作的步号），不按列表位置重编——
 `align_rationales` 的产出是稀疏序列（中间步没写成就跳号），重编会把
 「缺中间那步」抹成「缺最后那步」，而两者的处置不同。
+
+⚠️ **per-Run 之后这个步号是轨迹内全局的**（搜索段 → 站点 1 → …，摊平成
+一条流），**不是**「每个单元各自从 0 数起」——按单元数起会让第 5 步的
+rationale 撞上搜索段的第 5 步，**静默丢思考**。
 
 ---
 
@@ -310,7 +367,7 @@ video 标签 <n> 个，iframe <n> 个
    「后见」；step 0 窗口为空，实体核查显式早退，不判幻觉。
 7. **每条轨迹以「任务总结」收尾。** 动作流结束后确定性合成一条
    **没有 `tool_calls` 的 assistant 消息**（`_closing_text`）：内容只从
-   `outcome`（分支 → 处置词表 `_CLOSING_DISPOSITION`）与 unit 级
+   `outcome`（分支 → 处置词表 `_CLOSING_DISPOSITION`）与**轨迹级**
    `reflection.rationale.conclusion` 派生，不编新事实。没有收尾的轨迹会教模型
    「发完最后一个动作就结束」，而真实的助手行为是对用户有个交代
    （2026-10-15 拍板补入——此前 302/304 条样本全部以动作终结）。
@@ -322,6 +379,12 @@ video 标签 <n> 个，iframe <n> 个
    处置词表是渲染侧**自己声明**的，与 `executor.branches.BRANCH_LABELS`
    键集的同步由契约测试盯（不 import executor）。**空轨迹不编总结**：
    一个可见动作都没有的样本没有可总结的事。
+
+   ⚠️ **2026-10-30 · 方案 23（per-Run）**：`outcome` 现在是**任务级**的
+   （裁定 ②：末条结论），处置词表跟着**任务级标签**走；而
+   `reflection` 取的是**末个访问点**的反思——那正是这条轨迹的落点。
+   一个站点结论都没有时，收尾话术是「本轨迹没有站点结论，判不出来」
+   （fail-closed，**不是**成功、也不是「还在进行中」）。
 8. **缺观察的步显式发占位回执，不留悬空 `tool_calls`。** 末步失败没取到
    观察时也发一条「（本步没有取到页面内容）」的 tool 消息——一个发出去
    就没回音的 `tool_calls` 是不合法的 function-calling 序列，训练框架读它
@@ -336,8 +399,13 @@ video 标签 <n> 个，iframe <n> 个
 | 数据 | 落点 | P3 用什么 | 不干什么 |
 |---|---|---|---|
 | P1 存档 | `output/pipeline/<task_id>__<run_id>.json` | **不直接读**——只经 P2 间接承接 | 不读仓库根 `output/`（D8 隔离） |
-| P2 样本 | `output/pipeline/samples/<sample_id>.json` | **唯一输入**：`six` 七件套 + `gate` + `outcome` + `degraded_from` 等 | 不 import `executor`、不 import `builder`（交接面是格式） |
+| P2 样本 | `output/pipeline/samples/<sample_id>.json` | **唯一输入**：`six` 六件套（system_prompt / tools / user_prompt / provenance / actions / observations / rationales）+ `gate` + `outcome` + `site_outcomes` + `degraded_from` 等 | 不 import `executor`、不 import `builder`（交接面是格式） |
 | P3 视图 | `output/pipeline/views/<sample_id>_{messages,openai,meta}.json` | 本文描述的三种形状 | 重建 P3 时**不依赖** executor/builder 的当前版本 |
+
+⚠️ **一份 P1 存档切出 0 或 1 条 P2**（`schema.py::split_archive`）：一个 Run
+= 一条轨迹。**0 条**的两种情形（搜索阶段被反爬拦 / 搜索页采集失败）是
+**正常形态**，不是错误——那一步压根没进入决策。因此 P3 侧**不按单元切分**，
+一条 P2 渲染出**一组三份视图**。
 
 落盘规则（与 `builder.py` 同款）：**写原子化**、样本级错误只进 `skipped`
 不打断整批、`overwrite` 默认不覆盖已存在的视图。
@@ -348,4 +416,5 @@ video 标签 <n> 个，iframe <n> 个
 
 - [数据契约](../03-数据契约.md) —— P1/P2/P3 的分工与切分口径
 - [架构总览](../01-架构总览.md) —— 模块地图与控制流
+- [设计方案 23](../设计方案/23-每任务一轨迹.md) —— per-Run 改造（owner 裁定 ①②③）：粒度改成「一个任务一条轨迹」、任务级结论看最后一个、站点级明细留在轨迹内
 - [P1 契约](P1-observation.md) / [P2 契约](P2-sample.md) —— 上游两层的字段级契约
