@@ -92,6 +92,21 @@
 > ⇒ 细节见 **§2026-11-01 新增开口项详解 · M-61**。
 > 过程与读数见 **§2026-11-01 新增开口项详解**。
 >
+> ⭐⭐ **2026-11-01 补记（本分支已合回 main · 分支已退役）**：owner 裁
+> 「本分支内容合回main，本分支之后删除掉」⇒ **per-Run 改造已落 main**
+> （合并提交 `e341805`，其后 `7f2146b`）⇒ **分支
+> `worktree-feature+per-run-trajectory` 与它的工作树已删**。
+> ⇒ ✅ **M-61 的最后一步随之完成**（`0%%` 那处修法随合并进 main，
+> `golden_ls --help` 实测退出码 0）⇒ **不再需要 owner 跑那条
+> `git merge --ff-only`**。
+> ⚠️ **合并后新查到一件事并当场修了**：per-Run 之后
+> **「`degraded_from` 含 `steps`」不再等于「这条样本没有模型动作」**
+> ⇒ D-2 真存档那条测试的判据（拿标记当代理）失效 ⇒ **改判事实**
+> ⇒ 详见 **§2026-11-01 合并与分支退役**。
+> ⚠️ **顺带量到一处性能代价**：per-Run 让 **rationale 闸门慢约 26 倍**
+> （切档 145 份真存档：5s → 144s）⇒ 登记为 **L-21**（**不是 bug**，是
+> 语义变强的代价；要不要优化待 owner 拍板）。
+>
 > **每条一行，四栏**：`事项` / `记录锚点`（证据在哪，点进去能核对）/ `现在差什么`。
 > **不带锚点的 TODO 不收**——「记得还有件事」这种条目没人能复核，等于没记。
 
@@ -470,6 +485,7 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **L-19** | **分诊工作表按「版本」出、人的裁定按「内容」签** ⇒ 换一版重跑会把同一批卡再递给人一遍 | 07 评估 | 本文 §M-29 的禁区一节（`worklist build --version 8` 会把同一批卡再递给人一遍）· [`calibration/worklist.py`](../../evaluation/calibration/worklist.py) `worklist_path` / `_cmd_build` / `build_worksheet` · [`calibration/triage.py`](../../evaluation/calibration/triage.py) `add_rows` / `validate_rows` | **读码实测（2026-10-23）**：① `worklist.jsonl` / `worksheet.jsonl` 落在 `v{N}/` 下（**版本键**），而人的裁定住在**单一** `golden/data/triage/triage.jsonl`、键是 `(golden_id, dimension)`（**内容键**）；② `_cmd_build` 调 `summarize_worklist(worklist)` **不传 `triage_rows`** ⇒ 统计里 33 张卡**全算「待人判」**；③ `build_worksheet` 把 `bucket` / `triage_by` / `triage_evidence` 三栏**写成空**（只给机器建议 `suggested_bucket`）⇒ 同一批卡换个版本号再出一次表，**人会被再递一次、三栏全空**。⚠️ **再填一遍的代价不止白填**：`import_worksheet` 要求三栏全填才收 ⇒ 填完导入时 `add_rows` 用 `_same_triage`（比 `bucket`/`triage_by`/`triage_evidence`）判——**同键同理由 ⇒ 幂等跳过**；**同键但理由措辞不同 ⇒ 报错「已有分诊…默认不覆盖」**；人若改加 `--replace` ⇒ **原来那 33 条人工签名被重打的替换掉**。⇒ **要定的**：分诊工作表按**内容键**出（同一批卡跨版本只判一次、工作表预填既有裁定、覆盖率按内容算），还是按**版本键**出（每版一份表，但人重复劳动 + `--replace` 陷阱）？⚠️ **M-29 冻结 v8 后第一条命令就是 `agreement --version 8 --emit-disagreements`** ⇒ 若之后跑 `worklist build --version 8`，撞的就是这条。**建议**：按内容键——`summarize_worklist` **已经支持** `triage_rows`（覆盖率算得对），缺的只是①`_cmd_build` 把 `triage_rows` 传进去 ②`build_worksheet` 把三栏**预填**既有裁定（预填 ≠ 代人决定：人改判仍留痕） |
 
 | **L-20** | 三条同族的小尾巴：**①** `meta.source_archive` 承诺了却**从没注入**（盘上 78 份 T 视图全为空串）· **②** `cli task-view --p1` 与 `--all` **不对称**（legacy 档 `--p1 <run>.reviewed.json` 必然 skipped）· **③** `.reviewed` 这条规则已有**第 4 份拷贝**（`task_view.py`） | 06 组装 / 08 存档 | `assembler/task_view.py:850-851`（承诺）· `executor/cli.py`（`--p1` 分支无回填无 `.reviewed` 处理）· `executor/archive.py:102`（`REVIEWED_SUFFIX` 真源） · `assembler/schema.py:644` · `assembler/builder.py:383` | ① 本轮把「读哪一份 P1（复核档优先）」定成重要口径，产物里**却没有字段记录读的是哪一份**——**口径没落进产物就等于没有口径**。③ 的正解是把常量下沉到 `trajectory_pipeline/common/`（**受 AST 契约限制**：`assembler` 不能 import `executor`，`common` 是两边都能 import 的低层）。三条都不阻塞主线 |
+| **L-21** | **per-Run 让 rationale 闸门慢约 26 倍**（切档 145 份真存档 **5s → 144s**；门禁全量 **1 分钟 → 8 分半**） | 02 感知 / 09 纪律 | 本文 **§2026-11-01 合并与分支退役 §四** · [`rationale/gates.py::gate()`](../../rationale/gates.py) 的 `check_temporal_at` + `check_entities` | **不是 bug，是语义变强的代价**：闸门按「rationales × observations」两两查，而 per-Run 把轨迹拉长约 10 倍（一条 rationale 从看本单元 10 条观察变成看全轨迹 150 条）⇒ **平方级放大**。⚠️ 时序核查因此**从段内升到轨迹内**（判得更严是**要的**）。⇒ **修法只能走「同语义换实现」**（把逐 rationale 扫全部观察改成预置索引）⇒ **动的是幻觉闸门** ⇒ 不许顺手改 ⇒ **待 owner 拍板要不要开**。⚠️ **现状可忍受**：P2 重出 145 份约 2.5 分钟 |
 
 ---
 
@@ -2917,7 +2933,9 @@ fail-closed 挡、**不是被兜底挡**）⇒ **补齐那 5 条 ⇒ 2 → 7**
   06 / 07 §8.6–§8.9 / 08 全改完，契约测试全绿（见下）。
 - **M-60**：✅ **已修**（见 §4）。
 - **M-61**：✅ **已修**（见 §6）—— ⚠️ **这个缺陷在 main 上**（`c87b862` 引入）
-  ⇒ **main 的 `golden_ls` CLI 当前整个是废的** ⇒ 本分支的修法**要一起进 main**。
+  ⇒ **main 的 `golden_ls` CLI 当前整个是废的** ⇒ 本分支的修法**要一起进 main**
+  ⇒ ⭐ **2026-11-01 已随合并落进 main**（`e341805`）⇒ **main 的 LS 上传通路
+  不再是废的**（`golden_ls --help` 退出码 0）。
 
 ### 4. M-60 · 两张 id 迁移表合成一张 ⇒ **同一个 `golden_id` 出现两次**
 
@@ -3033,16 +3051,93 @@ ValueError: badly formed help string
 **✅ owner 已批准 cherry-pick 到 main（2026-11-01）** ⇒ 已做成**独立提交
 `321728a`**（父提交 = main 的 `09507e8` · 只动 `cli.py` 一个文件 · **5+/1-** ·
 那一处与本分支**逐字相同** ⇒ 将来把本分支合进 main 时**不会撞**）。
-⇒ **还差最后一步**：`321728a` 所在的分支 `fix/m61-golden-ls-cli` **还没落到 main**
-⇒ 在**主树**里跑一句即可（**快进** ⇒ 主树的索引与工作区自动跟上）：
+⭐ **2026-11-01 已落地 main** —— owner 裁「本分支内容合回main」后，
+**本分支合并（`e341805`）时把那一处一起带进了 main** ⇒ 实测
+`golden_ls --help` **退出码 0**、`projects` / `pending` 正常
+⇒ **owner 那条 `git merge --ff-only fix/m61-golden-ls-cli` 不用跑了**。
+
+---
+
+## 2026-11-01 合并与分支退役（per-Run → main）
+
+> owner 2026-11-01 裁：「**本分支内容合回main，本分支之后删除掉**」。
+> 本节记**合并这件事本身**与**合并时才发现的那两件事**。
+> 读数口径见上面 §1（基线）与 §2（裁定的落点），本节不重述。
+
+### 一 · 合并拓扑
+
+| 项 | 值 |
+|---|---|
+| 合并提交 | **`e341805`**（双亲：`59b0856` 本分支末 + `09507e8` main 末） |
+| main 当前位置 | **`7f2146b`**（合并后紧跟的 D-2 判据修正，见 §三） |
+| 冲突 | **4 处**，全部按「**分支 ⊇ main**」或「**main 侧为空**」解（逐条见 §二） |
+| 自动合并留下的重复 import | **1 处**（`evaluation/golden/alignment.py` 的 `TIERED_DIMS` 导入两次）⇒ 已删 |
+| **两个「fix」提交树完全相同** | `286448d`（分支）= `b7fc01e`（main）⇒ 同一处改动两边各提交一次 ⇒ 合并后**不会重复计入历史** |
+| 分支 / 工作树 | **`worktree-feature+per-run-trajectory` 与其工作树已删**（owner 指令） |
+| ⚠️ **合并方式** | **不是** `git push . <branch>:main`——那会被「当前分支不可更新」的闸门拒（**该拒绝是对的**，不许把闸门关掉）⇒ 改为**先退出工作树、在主树里 `git merge --ff-only`** ⇒ 主树的索引与工作区自动跟上，**零 `reset --hard`** |
+
+⚠️ **门禁是绿的这件事有个前提**：工作树里 `output/` 是空的 ⇒ 真存档那几类
+测试会 **skip** ⇒ **在主树跑才是真读数**。合并后主树全量 **4745 passed / 1 failed**
+⇒ 那 1 条就是下面 §三 记的 D-2 判据失效 ⇒ **修完 → 全绿**。
+
+### 二 · 四处冲突怎么解的
+
+| 文件 | 解法 | 依据 |
+|---|---|---|
+| `evaluation/calibration/judge_pairs.py` | `git checkout --ours`（取分支版） | `git diff main:file HEAD:file` 只多 8 行 docstring/说明、**无删改** ⇒ 分支 ⊇ main |
+| `docs/07-人工复核与判读手册.md` | `git checkout --ours`（取分支版） | +162/−6 ⇒ 分支 ⊇ main |
+| `evaluation/cli.py` | **手改**（一处注释冲突） | 代码行两侧一致 ⇒ 只留分支口径的注释（per-Run 之后主键是 `<task>__<run>`） |
+| `docs/计划进展/10-TODO台账.md` | **手改 3 处** | **三处 main 侧都是空的**（分支把旧句整段换掉了）⇒ 保留分支写法；main 独有的 **158 行**新增**全部在位**（逐行核过） |
+
+### 三 · 合并时才发现的：**「`degraded` 含 `steps`」不再等于「没有模型动作」**
+
+**症状**：合并后主树全量跑，**1 条真存档测试红了**：
 
 ```
-git merge --ff-only fix/m61-golden-ls-cli
+test_code_scorer.py::TestOnRealArchives::test_老存档没有动作流时不可判定而非满分
 ```
 
-⇒ ⚠️ **为什么没代跑**：本会话是 **worktree 隔离**的 ⇒ 任何指向**别的 worktree**
-的分支操作（`git push . …:main` / `git update-ref` / `git branch -f`）都被闸门
-拒掉 ⇒ **不是不愿意，是做不了** ⇒ 交回 owner 一条命令。
+**根因不是数据变好，是**「粒度变了」**。那条测试拿 `degraded_from` 里有没有
+`steps` 当「这条样本没有模型动作」的**代理**——而这个等价关系是
+**per-unit 时代的副产物**：
+
+| | `steps` 标记答的是 | 动作流是什么 |
+|---|---|---|
+| per-unit（改造前） | 「**这个单元**缺动作流」 | 该单元自己的动作 ⇒ 二者等价 |
+| per-Run（现在） | 「轨迹里**某一段**缺动作流」（**降级传染到整条**，与 `executor.integrity` 的 `steps_missing` 逐条同码） | 各段**摊平**后的**并集** ⇒ 二者**不等价** |
+
+⇒ 老存档里「访问点有动作、顶层 `steps` 缺」的那批：**整条轨迹有动作**，
+却**仍然带 `steps` 标记** ⇒ 代理失效。
+
+**实测（145 份真存档 → 131 条轨迹，per-Run 口径）**
+
+| 读数 | 值 |
+|---|---|
+| 样本条数 | 145 份存档 → **131 条**轨迹（14 份被反爬拦 / 搜索页采集失败 ⇒ 零条） |
+| 带 `steps` 标记的轨迹 | **38** 条 ⇒ 其中 **31 条有模型动作** ⇒ **代理失效** |
+| 无模型动作的轨迹 | **18** 条 ⇒ 全部判不可判定 ✓ |
+| D-2 判出分的 | **110** 条（改判据前后**一个数都不动**） |
+
+**修法：改判据，不改代码。** 判据从**标记**改成**事实**——模型可见的 click
+动作为空 ⇒ 必须不可判定；**并补上反向那条**（**判了分 ⇒ 确实有模型可见的
+click 动作可核**）⇒ 两头堵死「凭空白发通行证」。反向那条在真存档上**恒有
+样本可验**（113/131 条有模型动作）⇒ 不会退化成空断言。
+
+⚠️ **本条不改任何读数**：阈值 / 档闸 / D-10 数值一律未动。变的只是
+「哪些真实样本会被 D-2 判出分」——per-Run 把各站点动作摊平成一条轨迹后，
+同一条底层动作从「按站点打分」变成「按轨迹打分」（scored 690 → 110、
+样本 1510 → 131）⇒ **这是方案 23 的既定口径，不是新判据带来的**。
+
+### 四 · 顺带量到的一处性能代价 ⇒ **L-21**
+
+per-Run 让 **rationale 闸门慢约 26 倍**：切档 145 份真存档 **5s → 144s**
+⇒ 门禁全量 **1 分钟 → 8 分半**。热点在 `rationale/gates.py::gate()` 的
+`check_temporal_at` + `check_entities`（按「rationales × observations」两两查）
+⇒ per-Run 把轨迹拉长约 10 倍 ⇒ **平方级放大**。
+⚠️ **这不是 bug，是语义变强的代价**：时序核查从**段内**升到**轨迹内**
+（per-unit 时一条 rationale 只看本单元的 10 条观察，现在看全轨迹的 150 条）
+⇒ 判得更严是**要的**。**改法只能走「同语义换实现」**（把逐 rationale 扫
+全部观察改成预置索引）⇒ **动的是幻觉闸门** ⇒ 不在本轮顺手改 ⇒ 登记 **L-21**。
 
 ---
 
