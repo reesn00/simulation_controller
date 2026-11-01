@@ -420,21 +420,63 @@ class TestOnRealArchives:
                 assert verdict.kind in ("scored", "undetermined"), path.name
                 assert verdict.score is None or 1 <= verdict.score <= 5, path.name
 
-    def test_老存档没有动作流时不可判定而非满分(self):
-        """现存真实存档全部跑在 ``steps[]`` 落地**之前**。它们没有任何
-        模型动作——判 5 分等于凭空白发了通行证，而那批数据正是要用来
-        补动作流的，不能因为「看起来干净」就当通过了。"""
-        from trajectory_pipeline.assembler import schema
+    def test_没有模型动作的样本不可判定而非满分(self):
+        """一条轨迹**没有模型可见的 click 动作**时，D-2 必须判不可判定
+        ——判 5 分等于凭空白发了通行证。
 
-        scored = []
+        ⚠️ 判据是**事实**（模型动作为空），**不是** ``degraded_from`` 里
+        有没有 ``steps``：**方案 23（per-Run）之后这两件事不再是一回事**。
+
+        ``steps`` 标记答的是「轨迹里**某一段**缺动作流」（降级传染到整条，
+        与 ``executor.integrity`` 的 ``steps_missing`` 逐条同码）；而动作
+        流是各段**摊平**后的并集。老存档里「访问点有动作、顶层 ``steps``
+        缺」的那批：per-Run 之前切出的**搜索单元**没有动作（不可判定），
+        per-Run 之后整条轨迹有动作（可判定）——**是粒度变了，不是数据变
+        好了**：那条轨迹的 ``degraded_from`` 仍然带 ``steps``，它进训练集
+        照样要过降级那道闸。
+
+        ⇒ 实测（145 份真存档 → 131 条轨迹）：per-Run 之前「标记含 steps
+        ⇒ 不可判定」成立，per-Run 之后不成立（38 条带 ``steps`` 的轨迹里
+        有 31 条有模型动作）。这条测试因此从**标记**改判**事实**：标记与
+        动作流之间不再有等价关系，拿标记当代理就是在测一件已经不成立的
+        事。
+        """
+        from trajectory_pipeline.assembler import schema
+        from trajectory_pipeline.evaluation.scorers.code_scorer import _click_actions
+
+        verdicts = []
         for path in self._archives():
             for sample in schema.split_archive(path):
-                if sample.degraded_from and "steps" in sample.degraded_from:
-                    scored.append(score_d2(sample))
-        if not scored:
-            pytest.skip("现有真实存档都已带 steps[]，没有老形状可验")
-        assert all(v.kind == "undetermined" for v in scored)
-        assert all(v.score is None for v in scored)
+                if _click_actions(sample):
+                    continue
+                verdicts.append((path.name, score_d2(sample)))
+        if not verdicts:
+            pytest.skip("现有真实存档每条都有模型动作，没有无动作的样本可验")
+        assert all(v.kind == "undetermined" for _, v in verdicts), (
+            f"{len(verdicts)} 条无模型动作的样本被判出了分")
+        assert all(v.score is None for _, v in verdicts)
+
+    def test_判了分的样本必有模型可见的动作(self):
+        """上一条的反向：**判了分 ⇒ 确实有模型可见的 click 动作可核**。
+
+        两条合起来把「凭空白发通行证」两头堵死：没有动作不给分（上一条），
+        给了分就一定核过东西（这一条）。这一条在真存档上**恒有样本**可验
+        （实测 113/131 条有模型动作），所以它不像上一条会退化成空断言。
+        """
+        from trajectory_pipeline.assembler import schema
+        from trajectory_pipeline.evaluation.scorers.code_scorer import _click_actions
+
+        checked = 0
+        for path in self._archives():
+            for sample in schema.split_archive(path):
+                verdict = score_d2(sample)
+                if verdict.kind != "scored":
+                    continue
+                assert _click_actions(sample), (
+                    f"{path.name}: 判了分却没有模型可见的 click 动作")
+                checked += 1
+        if not checked:
+            pytest.skip("现有真实存档一条都没判出分，没有可核的样本")
 
     def test_真存档里不出现凭据(self):
         """打分器只读不写，但它的 ``reason`` 会把观察里的 label 原样带出来。
