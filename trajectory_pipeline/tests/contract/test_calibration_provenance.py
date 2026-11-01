@@ -41,6 +41,48 @@ def test_阈值表每条都有定线状态与依据():
         assert spec["where"], name
 
 
+def test_阈值表每条都有非空scope():
+    """**线必须有绑定对象**——「这条线读的是哪一档 × 哪个口径」。
+
+    2026-10-30 的教训：「82.8% 过线」不说是哪条线读的那个数，换了分母
+    还读成同一个数（82.8% 过线 vs 72.2% 不过线，数值没动、对象变了）。
+    """
+    for name, spec in thresholds.THRESHOLDS.items():
+        assert str(spec.get("scope") or "").strip(), name
+
+
+def test_scope_未登记的线直接报错():
+    """fail-closed：取未登记的名字 → ``KeyError``。
+
+    与 :func:`value` / :func:`status` / :func:`basis` / :func:`where`
+    同向——**不返回默认值，也不猜**。
+    """
+    with pytest.raises(KeyError):
+        thresholds.scope("没登记过的线")
+    with pytest.raises(KeyError):
+        thresholds.scope_text("没登记过的线")
+
+
+def test_判定对象_从阈值表取而不是各写一份():
+    """上岗线的**绑定对象**必须从阈值表取。
+
+    各写一份 ⇒ 「线到底读什么」会漂，而漂的那一句最要命（报表上看不出
+    异常，只是数变了）。契约测试钉住：判定处**真的调了**
+    ``thresholds.scope(...)``，且**没有**把 scope 值抄成字面量。
+    """
+    src = (
+        _REPO_ROOT / "trajectory_pipeline" / "evaluation" / "golden" / "builder.py"
+    ).read_text(encoding="utf-8")
+    assert "thresholds.scope(" in src, "判定处没从阈值表取绑定对象"
+    assert "thresholds.scope_text(" in src, "判定处没从阈值表取绑定对象的读法"
+    # 上岗线的 scope 值不许在 builder 里被抄成字面量
+    scope_value = thresholds.scope("d10_min_agreement")
+    assert scope_value not in src, (
+        f"builder.py 里抄了 scope 值 {scope_value!r}——"
+        "它只该存在于阈值表"
+    )
+
+
 def test_阈值表每条都被声明的使用处真的引用():
     """「表里那条确实被用到」——表不腐靠这条。
 

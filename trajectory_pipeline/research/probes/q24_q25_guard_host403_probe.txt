@@ -1,0 +1,49 @@
+== 取证探针 · 5 个 URL（全部走现场，不读存档证据）==
+  driver  = camofox
+
+── https://m.xacjs.com/
+  落地 URL   : https://m.xacjs.com/
+  页面标题   : 403 Forbidden
+  video=0  iframe=0  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 400: '403 Forbidden\nnginx'
+
+── https://m.xacjs.com/index.html
+  落地 URL   : https://m.xacjs.com/index.html
+  页面标题   : 403 Forbidden
+  video=0  iframe=0  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 400: '403 Forbidden\nnginx'
+
+── https://m.xacjs.com/weihu/
+  落地 URL   : https://m.xacjs.com/weihu/
+  页面标题   : 403 Forbidden
+  video=0  iframe=0  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 400: '403 Forbidden\nnginx'
+
+── https://m.xacjs.com/weihu/1416804.html
+  落地 URL   : https://m.xacjs.com/weihu/1416804.html
+  页面标题   : 403 Forbidden
+  video=0  iframe=0  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 400: '403 Forbidden\nnginx'
+
+── https://m.xacjs.com/voddetail/1.html
+  落地 URL   : https://m.xacjs.com/voddetail/1.html
+  页面标题   : 403 Forbidden
+  video=0  iframe=0  元素=0  正文=19字  降级=[]
+  付费墙词表 : 「（未命中）」
+  播放控件词表命中 0 个: []
+  正文出现   : []
+  正文前 400: '403 Forbidden\nnginx'
+
+⚠ 上面是**事实**，不是结论。贴标签仍需人工裁定（review --verdicts ... --apply）
