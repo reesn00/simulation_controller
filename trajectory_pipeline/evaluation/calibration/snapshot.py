@@ -182,9 +182,25 @@ def iter_site_rows(
 ) -> Iterator[Mapping[str, Any]]:
     """站点级已标注行——**与 ``cmd_agreement`` 的 ``site`` 同一判据**。
 
-    轨迹级样本（``source_kind == "p2_sample"``）没有可比的人工标签，
-    未标注的行（``golden`` 为空）无从判对错。两处过滤必须一致，
+    未标注的行（``golden`` 为空）无从判对错；per-unit 时代的**占位轨迹行**
+    （``source_kind == "p2_sample"``）也没有可比的人工标签。两处过滤必须一致，
     否则快照的分母和头条的分母是两个数（见模块 docstring 的同源要求）。
+
+    ⚠️ **口径变更（方案 23 · per-Run，2026-11-01 订正）**：``source_kind`` 现在
+    有**三种**值——``archive_outcome`` / ``negative_pool``（站点级行）·
+    ``"trajectory"``（**per-Run 的轨迹级行**，带 ``site_outcomes[]``）·
+    ``"p2_sample"``（**旧口径的占位轨迹行**：没有 url、没有现场、label 恒为
+    ``unresolved``，per-Run 之后**不再产出**）。
+
+    ⇒ **本函数跳过的是占位行，不是轨迹级行** ⇒ 轨迹级行**会**进这个分母。
+    ✅ **但它到不了这里**：喂进来的行在进本函数之前**已经摊平**
+    （``golden/rows.py::expand_site_rows`` / ``builder._labeled_rows``）
+    ⇒ 到这里拿到的都是站点级行 ⇒ 判据与 ``cmd_agreement`` 的 ``site``
+    **逐字一致**（同源要求仍然成立）。
+
+    ⚠️ **别把 ``"p2_sample"`` 读成「P2 样本」**：轨迹级行的 ``source_kind``
+    是 ``"trajectory"``（``golden/rows.py::SOURCE_TRAJECTORY``）⇒ 照旧口径读
+    会把轨迹级行算进站点级分母，而**报表上看不出异常**（避坑 §8.38）。
     """
     for row in rows:
         if row.get("source_kind") == "p2_sample":
