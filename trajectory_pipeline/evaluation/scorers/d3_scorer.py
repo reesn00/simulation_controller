@@ -17,11 +17,19 @@ category ∈ 契约 5 类 + evidence 泛泛描述           4       否
 category == "ambiguous"                           3       否
 category 不在契约 5 类（判错）；playable 但         2       否
   subtype 不在 4 类内也归 2
-LLM 调不通 / JSON 解析失败 **且** 观察充分           1       **是**
+LLM 调不通 / JSON 解析失败 **且** 观察充分           1       否
 ===============================================  ======  ======
 
-``is_veto`` 是 rubric G-1「样本级一票否决」的接入点：score=1 时整条样本
-转「负面池」，其余维度停止打分。
+``is_veto`` **恒为 False**（rubric v1.3 起）：G-1 的一票否决项是
+**D-5 / D-10**，D-3 不在其中。此前本模块在 score=1 时返回 True，
+与 rubric G-1 直接矛盾——D-3 的 1 档是「未判且本可判」，属**该维扣分**，
+不是整条样本作废。
+
+⚠️ **本版只改否决面，不改分档语义**：1 档「LLM 调不通 → 1 分」这件事
+本身仍是**未闭环的漂移**——rubric 的 1 档说的是「采集侧未判且本可判」，
+本模块实现的是「裁判没判出来」，两者不是一回事（把评估器的失败记成轨迹
+的缺陷）。改它属**改尺子**，要 owner 签字 + 独立批次（见台账），
+不在本版里顺手改掉——顺手改掉会让「D-3 分数逐位不变」这句承诺当场变假。
 
 ## 三态纪律（与 d4/d5/d6 同款）
 
@@ -60,12 +68,12 @@ evidence 拼装前必 :func:`trajectory_pipeline.llm.schema_parse.strip_think`
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from trajectory_pipeline.assembler.observation_view import element_line
 from trajectory_pipeline.assembler.schema import Sample
+from trajectory_pipeline.evaluation import observation_match
 from trajectory_pipeline.llm.client import LLMClient
 from trajectory_pipeline.common.elements import (
     element_name,
@@ -122,8 +130,15 @@ class D3Verdict:
 
     @property
     def is_veto(self) -> bool:
-        """rubric G-1 接入点：1 档 = 整条样本转「负面池」。"""
-        return self.score == 1
+        """**恒为 False**——D-3 不是 rubric G-1 的一票否决项。
+
+        rubric v1.3 的 G-1：一票否决项是 **D-5 / D-10**。D-3 的 1 档
+        （未判且本可判）是**该维扣分**，不是整条样本作废——它转「负面池」
+        会把「这一维判得不好」放大成「这条轨迹是负样本」，粒度不对。
+
+        （D-9 早就是恒 False，见 ``d9_scorer.D9Verdict.is_veto``。）
+        """
+        return False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -326,18 +341,23 @@ def _parse_response(raw: str | None) -> tuple[dict[str, Any] | None, str]:
 
 
 # ── evidence 「concrete」启发式 ────────────────────────────────────
-
-
-_NUMBER_RE = re.compile(r"\d+")
+#
+# 判据在 ``evaluation/observation_match.py``（**唯一出处**）——B-4 ③
+# 「止损理由锚定观察」问的是同一个问题。
 
 
 def _is_evidence_concrete(evidence: str,
                           observations: list[Mapping[str, Any]]) -> bool:
     """evidence 是否引用了观察中的具体短语。
 
+    判据在 :mod:`trajectory_pipeline.evaluation.observation_match`
+    （**唯一出处**）——B-4 ③「止损理由锚定观察」问的是同一个问题，
+    抄两份必然漂：一边放宽、另一边收紧 ⇒ 同一份依据在 D-3 与 B-4 判出
+    不同结果，而报告上看不出异常。
+
     三类信号（任一成立即视为具体）：
       (a) evidence 含某条观察 ``body_text`` 的 ≥4 字连续子串；
-      (b) evidence 含某条观察 ``interactive_elements`` 的 ``label``；
+      (b) evidence 含某条观察 ``interactive_elements`` 的元素名；
       (c) evidence 提到具体数字（``video_tag_count`` / ``iframe_count``
           之一 > 0 时的数字本身）。
 
@@ -345,37 +365,7 @@ def _is_evidence_concrete(evidence: str,
     evidence 可信度由 contract 7「rubric v1.2 对齐」+ raw CoT 红线
     钉住，本启发式只用来在 5/4 两档之间二选一。
     """
-    if not evidence or not observations:
-        return False
-
-    for obs in observations:
-        body = str(obs.get("body_text") or "")
-        if body:
-            for start in range(0, len(body) - 3):
-                piece = body[start:start + 4]
-                if piece and piece in evidence:
-                    return True
-        for elem in (obs.get("interactive_elements") or ()):
-            if not isinstance(elem, Mapping):
-                continue
-            label = element_name(elem).strip()
-            if label and len(label) >= 2 and label in evidence:
-                return True
-        media = int(obs.get("video_tag_count") or 0)
-        iframe = int(obs.get("iframe_count") or 0)
-        if media > 0 and str(media) in evidence:
-            return True
-        if iframe > 0 and str(iframe) in evidence:
-            return True
-        for n in _NUMBER_RE.findall(evidence):
-            try:
-                if int(n) == media and media > 0:
-                    return True
-                if int(n) == iframe and iframe > 0:
-                    return True
-            except ValueError:
-                pass
-    return False
+    return observation_match.evidence_anchored(evidence, observations)
 
 
 # ── 打分 ──────────────────────────────────────────────────────────

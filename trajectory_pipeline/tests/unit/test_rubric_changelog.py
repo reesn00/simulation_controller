@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -64,12 +65,28 @@ def _entries(*rows: str) -> list[cl.Entry]:
 # ---------------------------------------------------------------------------
 
 
-def test_解析真实文档_三个版本四行():
+def test_解析真实文档_四个版本六行():
+    """真实文档的版本序列与行数。
+
+    ⚠️ **版本号写死是有意的**：改版必须在这里留一行（``§5.5`` 只增不删），
+    所以这条会随改版变红——**那正是它该做的**。另有一条**版本无关**的
+    守卫在 ``tests/contract/test_rubric_traceability.py``（``RUBRIC_VERSION``
+    必须在表里），两条分工：这条管「表长什么样」，那条管「当前版有没有
+    落进表」。
+    """
     entries = cl.parse_entries()  # 读真文档
-    assert cl.versions(entries) == ["1.0", "1.1", "1.2"]
-    assert len(entries) == 4, "v1.2 有补记，同一版本两行"
-    assert entries[-1].label == "补记，2026-10-17"
+    assert cl.versions(entries) == ["1.0", "1.1", "1.2", "1.3"]
+    # 6 行 = v1.0 / v1.1 / v1.2 正文 / v1.2 补记×2 / v1.3
+    assert len(entries) == 6, "v1.2 有两行补记，同一版本三行"
+    assert entries[-1].version == "1.3"
+    assert entries[-1].clauses == ("D-10", "G-1", "B-5")
     assert entries[0].clauses == ("*",)
+    # v1.3 起进入追溯线：预期效果 + 分歧卡 + 责任区分声明三栏都非空
+    latest = entries[-1]
+    assert latest.expected_effect and latest.disagreement_ids and latest.responsibility
+    # 补记行的版本括号说明照旧解析（v1.2 有两行补记）
+    labels = [e.label for e in entries if e.version == "1.2" and e.label]
+    assert labels == ["补记，2026-10-17", "补记，2026-10-24"]
 
 
 def test_多值单元格按中文标点拆分():
@@ -254,7 +271,7 @@ def test_非首版不写责任声明驳回():
 
 def test_当前版本必须在变更记录里():
     entries = _entries(_row(version="v1.4"))
-    with pytest.raises(cl.ChangelogError, match="没有 v1.2"):
+    with pytest.raises(cl.ChangelogError, match=re.escape(f"没有 v{cl.RUBRIC_VERSION}")):
         cl.check_current(entries)
 
 
@@ -413,12 +430,29 @@ def test_卡文件缺了要说核不了而不是通过(tmp_path):
     assert len(problems) == 1 and "核不了" in problems[0][1]
 
 
-def test_一条卡号都没引时不印对号(capsys):
-    """真实文档今天 4 行全是 `—`（追溯线之前）——核了 0 条 ≠ 全对得上。"""
-    assert cl.main(["check", "--verify-cards"]) == 0
-    out = capsys.readouterr().out
+def test_一条卡号都没引时不印对号():
+    """核了 0 条 ≠ 全对得上——**绝不印 ✓**。
+
+    ⚠️ 这条**不读真实文档**：真实文档自 v1.3 起已经引了 3 张卡，CLI 那条
+    分支再也走不到。而它恰恰是最容易被误加回来的（「反正过了就行」）——
+    所以规矩抽成 :func:`render_card_verdict` 单测覆盖。
+    """
+    out = cl.render_card_verdict(0)
     assert "没有任何卡号可核" in out
     assert "✓" not in out
+
+
+def test_引了卡才印对号():
+    assert "✓" in cl.render_card_verdict(3)
+    assert "核了 3 条" in cl.render_card_verdict(3)
+
+
+def test_真实文档引了卡所以印对号(capsys):
+    """真实文档走 CLI 这条路：v1.3 引了卡 ⇒ 印 ✓ 且核了几条。"""
+    assert cl.main(["check", "--verify-cards"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ 引用的分歧卡全部存在" in out
+    assert "没有任何卡号可核" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +471,8 @@ def _write_snap(root, version: int, rubric_version: str, *entries) -> None:
 
 def test_cli_check通过(capsys):
     assert cl.main(["check"]) == 0
-    assert "RUBRIC_VERSION = 1.2" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"RUBRIC_VERSION = {cl.RUBRIC_VERSION}" in out
 
 
 def test_cli_audit未列条款不动就通过(tmp_path, capsys):

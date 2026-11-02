@@ -108,11 +108,14 @@ COLUMNS: tuple[str, ...] = (
 EMPTY_CELL = "—"
 
 #: 条款号体系的三个族（rubric 文档里 ``G-1..G-7`` 全局规则、``D-1..D-10``
-#: 样本级维度、``B-1..B-4`` 批次级断言）。族规模是**结构事实**：加一条
+#: 样本级维度、``B-1..B-5`` 批次级断言）。族规模是**结构事实**：加一条
 #: G-8 要同时改这里与文档，契约测试盯着两边一致。
+#:
+#: ⚠️ **B-5 是 v1.3 新增的**（结论错率）——此前 D-10 卡里指向的「B-10」是
+#: **悬空引用**（文档里从来没有 B-10），v1.3 把它修正为 B-5 并补上这条断言。
 GLOBAL_CLAUSES: tuple[str, ...] = tuple(f"G-{i}" for i in range(1, 8))
 SAMPLE_CLAUSES: tuple[str, ...] = tuple(f"D-{i}" for i in range(1, 11))
-BATCH_CLAUSES: tuple[str, ...] = tuple(f"B-{i}" for i in range(1, 5))
+BATCH_CLAUSES: tuple[str, ...] = tuple(f"B-{i}" for i in range(1, 6))
 
 #: rubric 文档里写着的条款号（不含档位）。
 BASE_CLAUSES: tuple[str, ...] = GLOBAL_CLAUSES + SAMPLE_CLAUSES + BATCH_CLAUSES
@@ -733,6 +736,26 @@ def render_check(entries: Sequence[Entry], *, version: str = RUBRIC_VERSION) -> 
     return "\n".join(lines)
 
 
+def render_card_verdict(cited: int) -> str:
+    """核了几张卡 → 结论行。
+
+    **核了 0 条绝不印 ✓**——「没得核」与「核过了」不是一回事（同
+    ``n/a 不算通过``）。追溯线之前的老行本来就填 ``—``，所以这里不判红，
+    但也不能印对号，否则「0 条」会被读成「全对得上」。
+
+    单独抽出来是为了让这条规矩**可被单测覆盖**：真实文档一旦引用了卡，
+    「一条都没引」这条分支就再也走不到了——而它恰恰是最容易被人误加回来
+    的那条。
+    """
+    if not cited:
+        return (
+            "⚠ 没有任何卡号可核（追溯线 "
+            f"{TRACEABLE_SINCE} 之前的行允许填 `—`）"
+            "——**核不了 ≠ 核过了**"
+        )
+    return f"✓ 引用的分歧卡全部存在（核了 {cited} 条）"
+
+
 def render_audit(report: Mapping[str, Any]) -> str:
     before, after = report["before"], report["after"]
     lines = [
@@ -863,17 +886,7 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"错误：分歧卡 {card_id} {why}", file=sys.stderr)
                     return 2
                 cited = sum(len(e.disagreement_ids) for e in entries)
-                if not cited:
-                    # 一条卡号都没引：核过 0 条不等于核过了。追溯线之前的老行
-                    # 本来就该是 `—`，所以这里**不判红**（否则 1.3 之前是死门），
-                    # 但绝不印 ✓——那会把「没得核」读成「全对得上」。
-                    print(
-                        "⚠ 没有任何卡号可核（追溯线 "
-                        f"{TRACEABLE_SINCE} 之前的行允许填 `—`）"
-                        "——**核不了 ≠ 核过了**"
-                    )
-                else:
-                    print(f"✓ 引用的分歧卡全部存在（核了 {cited} 条）")
+                print(render_card_verdict(cited))
         except ChangelogError as exc:
             print(f"错误：{exc}", file=sys.stderr)
             return 2
@@ -995,6 +1008,7 @@ __all__ = [
     "main",
     "parse_entries",
     "render_audit",
+    "render_card_verdict",
     "render_check",
     "validate_entries",
     "verify_card_ids",

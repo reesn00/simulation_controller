@@ -221,15 +221,18 @@ def test_锚点表与rubric文档逐档对齐():
     """改 rubric 某档而不改锚点表 ⇒ 这里红。
 
     这是 D-C7 的核心：**「改档不改 anchor」必须是个错误，而不只是疏忽。**
+
+    ⚠️ **d10 也在表里**（rubric v1.3 新增）——D-10 的五档释义同样是
+    「表 = 文档」的逐字对照。
     """
-    for dim in ("d3", "d9"):
+    for dim in ("d3", "d9", "d10"):
         drift = rubric_version.anchors_drift(dim)
         assert drift == [], f"{dim} 锚点表与 rubric 文档不一致：{drift}"
 
 
 def test_锚点表对每档都能问出条款号():
     """条款号**投影**自 DIM_CLAUSES（不手抄），且都在合法条款词表里。"""
-    for dim in ("d3", "d9"):
+    for dim in ("d3", "d9", "d10"):
         for tier in sorted(rubric_version.ANCHOR_TABLES[dim]):
             clause = rubric_version.clause_of(dim, tier)
             assert clause in rubric_changelog.known_clauses(), clause
@@ -242,15 +245,49 @@ def test_prompt里的锚点段是从表渲染的():
     渲染结果里含表里每一档的释义原文；少一档、抄一档、措辞不同，都会红。
     """
     from trajectory_pipeline.evaluation.scorers import d3_scorer, d9_scorer
+    from trajectory_pipeline.evaluation.scorers import d10_scorer
 
     for dim, prompt in (
         ("d3", d3_scorer.D3_SYSTEM_PROMPT),
         ("d9", d9_scorer.D9_SYSTEM_PROMPT),
+        ("d10", d10_scorer.D10_SYSTEM_PROMPT),
     ):
         block = rubric_version.render_anchor_block(dim)
         assert block in prompt, f"{dim} 的 prompt 里没有渲染出来的锚点段"
         for tier, anchor in rubric_version.ANCHOR_TABLES[dim].items():
             assert f"- {tier} = {anchor}" in prompt, f"{dim} 档 {tier} 的释义不在 prompt 里"
+
+
+def test_D10五档映射表与文档逐格对齐():
+    """D-10 的**五档映射表**（因子 A × 因子 B → 档）也走「表 = 文档」。
+
+    这张表决定档位——改了它而不同步文档（或反之），就会出现
+    「文档说的档」与「代码算的档」各走各的，而报告上看不出异常。
+    """
+    drift = rubric_version.d10_mapping_drift()
+    assert drift == [], f"D-10 五档映射表与 rubric 文档不一致：{drift}"
+
+
+def test_D10因子表与映射表同源():
+    """两张因子表（一致侧 / 不一致侧）**互不相交**，且都只覆盖自己的状态。
+
+    让同一个提示词同时问「依据准不准」与「成因对不对」，裁判会挑好答的
+    答——所以两张表不许交叉，这条钉死它。
+    """
+    agree = rubric_version.D10_EVIDENCE_FACTORS
+    cause = rubric_version.D10_CAUSE_FACTORS
+    assert not set(agree) & set(cause), "两张因子表有交集"
+    assert set(agree) == {
+        label for label, tier in rubric_version.D10_FACTORS_BY_STATE[
+            rubric_version.D10_STATE_AGREE].items()
+    }
+    assert set(cause) == {
+        label for label, tier in rubric_version.D10_FACTORS_BY_STATE[
+            rubric_version.D10_STATE_DISAGREE].items()
+    }
+    # 一致侧的档是 3/4/5、不一致侧是 1/2——两段不重叠
+    assert min(agree.values()) >= 3
+    assert max(cause.values()) <= 2
 
 
 def test_fewshot每条都挂着表里有的锚点():

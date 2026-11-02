@@ -44,6 +44,7 @@ import hashlib
 import json
 import pathlib
 import re
+from typing import Mapping
 
 #: rubric 文档（与代码同版本控制）。解析它的 ``**版本**: vN`` 行。
 RUBRIC_DOC = (
@@ -54,7 +55,7 @@ RUBRIC_DOC = (
 )
 
 #: 当前 rubric 版本。**改 rubric 必须同时改这里**（contract test 盯着）。
-RUBRIC_VERSION = "1.2"
+RUBRIC_VERSION = "1.3"
 
 #: 文档版本行格式：``**版本**: v1.2 | **生效日期**: ...``
 _VERSION_RE = re.compile(r"^\*\*版本\*\*[:：]\s*v([0-9]+(?:\.[0-9]+)*)", re.MULTILINE)
@@ -78,19 +79,23 @@ def documented_rubric_version(text: str | None = None) -> str:
 
 
 def evaluator_version() -> str:
-    """D-3 / D-9 判分面的指纹（sha256 前 12 位）。
+    """D-3 / D-9 / D-10 判分面的指纹（sha256 前 12 位）。
 
-    纳入：rubric 版本、锚点表、两段 system prompt、契约枚举（类别 / 子类 /
+    纳入：rubric 版本、锚点表、各段 system prompt、契约枚举（类别 / 子类 /
     verdict）、few-shot 池（按内容排序后序列化，顺序变化也算变化）。
 
     锚点表单列一份（哪怕它已经在 prompt 里）——**表的变动要能被指纹看见**，
     否则「改了表但 prompt 渲染没跟上」会静悄悄地过去。
+
+    ⚠️ **D-10 的五档映射表也进指纹**（:data:`D10_EVIDENCE_FACTORS` /
+    :data:`D10_CAUSE_FACTORS`）——它决定档位，改它就是改尺子，指纹必须变。
 
     惰性 import scorers：本函数被 CLI 调用时才加载 LLM 侧常量，
     避免 `builder` 的其它子命令被拖慢。
     """
     from trajectory_pipeline.evaluation.scorers import d3_scorer
     from trajectory_pipeline.evaluation.scorers import d9_scorer
+    from trajectory_pipeline.evaluation.scorers import d10_scorer
 
     parts = {
         "rubric_version": RUBRIC_VERSION,
@@ -104,6 +109,9 @@ def evaluator_version() -> str:
             json.dumps(d9_scorer.D9_FEW_SHOT_EXAMPLES, ensure_ascii=False, sort_keys=True,
                        default=str)
         ),
+        "d10_prompt": d10_scorer.D10_SYSTEM_PROMPT,
+        "d10_evidence_factors": dict(D10_EVIDENCE_FACTORS),
+        "d10_cause_factors": dict(D10_CAUSE_FACTORS),
     }
     blob = json.dumps(parts, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:12]
@@ -260,6 +268,62 @@ ANCHOR_TABLES: dict[str, dict[int, str]] = {
         2: "系统性不符或套话替代推理",
         1: "思考编造关键事实并驱动错误动作（与 D-2 联动）",
     },
+    # D-10（rubric v1.3 新增）——五档由**分判两因子**合成：因子 A 一致性
+    # （代码断言，语义等价类三态）+ 因子 B 依据陈述（LLM 裁判）。
+    # 表里只有**因子 B 的取值 → 档**；因子 A 那一列由
+    # :data:`D10_EVIDENCE_FACTORS` / :data:`D10_CAUSE_FACTORS` 的归属隐含。
+    "d10": {
+        5: "一致，依据陈述准确",
+        4: "一致，依据陈述有瑕疵",
+        3: "一致，但依据引用了观察之外的来源",
+        2: "不一致，但成因判断正确（如站点已下线）",
+        1: "不一致**且**由错误判据链导致；或结论与过程矛盾",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# D-10 的五档映射（rubric v1.3）——因子 A × 因子 B → 档
+# ---------------------------------------------------------------------------
+#
+#: **唯一真源**：因子 B 的取值集合与它对应的档位，只在这里定义一次。
+#:
+#: - :data:`D10_EVIDENCE_FACTORS`——因子 A 判**一致**时，LLM 判依据陈述质量；
+#: - :data:`D10_CAUSE_FACTORS`——因子 A 判**不一致**时，LLM 改成因判断对错。
+#:
+#: 两张表**不交叉**：一致时谈「依据说得准不准」，不一致时谈「成因判得对不对」
+#: ——让裁判在同一个提示词里同时回答两个不同的问题，它会挑好答的那个答。
+#:
+#: ⚠️ **取值用中文**：它们直接进 LLM 的输出契约与 rubric 文档的映射表，
+#: 中文让「文档那一格」与「契约那一项」**逐字可核**（:func:`d10_mapping_drift`
+#: 现读文档比对）。改这里而不改文档（或反之）⇒ 契约测试红。
+D10_EVIDENCE_FACTORS: Mapping[str, int] = {
+    "依据准确": 5,
+    "依据有瑕疵": 4,
+    "依据引用观察外来源": 3,
+}
+
+D10_CAUSE_FACTORS: Mapping[str, int] = {
+    "成因判断正确": 2,
+    "成因判断错误": 1,
+}
+
+#: 因子 A 的三种状态（**机器状态名**，与
+#: :mod:`trajectory_pipeline.evaluation.golden.alignment` 的三态同名）。
+D10_STATE_AGREE = "agree"
+D10_STATE_DISAGREE = "disagree"
+D10_STATE_UNDETERMINED = "undetermined"
+
+#: 文档映射表里因子 A 那一列的中文写法 → 机器状态名。
+D10_STATE_LABELS: Mapping[str, str] = {
+    "一致": D10_STATE_AGREE,
+    "不一致": D10_STATE_DISAGREE,
+    "未判定": D10_STATE_UNDETERMINED,
+}
+
+#: 因子 A 状态 → 该状态下因子 B 合法取值的那张表。
+D10_FACTORS_BY_STATE: Mapping[str, Mapping[str, int]] = {
+    D10_STATE_AGREE: D10_EVIDENCE_FACTORS,
+    D10_STATE_DISAGREE: D10_CAUSE_FACTORS,
 }
 
 #: rubric 文档里维度卡的表头：``**D-3 播放站识别正确性** | …``。
@@ -373,6 +437,116 @@ def anchors_drift(dimension: str, text: str | None = None) -> list[str]:
     return drift
 
 
+#: rubric 文档里 D-10 卡的「五档映射」小节标题。
+_D10_MAPPING_HEAD = "五档映射"
+
+
+def _d10_mapping_rows(card: str) -> list[tuple[str, str, str]]:
+    """取 D-10 卡里「五档映射」表的行 → ``(因子A, 因子B, 档位格)``。
+
+    表认的是**小节标题那一行**（``- **五档映射（v1.3 新增）**``）之后的第一张
+    管道表；表头行与分隔行跳过。找不到表 → 空列表（调用方据此报「表不见了」，
+    不当成「表内容一致」）。
+    """
+    lines = card.splitlines()
+    start = None
+    for idx, line in enumerate(lines):
+        if _D10_MAPPING_HEAD in line and line.lstrip().startswith("- **"):
+            start = idx
+            break
+    if start is None:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    started = False
+    for line in lines[start + 1:]:
+        text = line.strip()
+        if not text:
+            # 表**前面**的空行要跳过（表与小节标题之间常隔一空行）；
+            # 表**开始后**的空行即表尾，结束。
+            if started:
+                break
+            continue
+        if not text.startswith("|"):
+            break
+        started = True
+        cells = [c.strip() for c in text.strip("|").split("|")]
+        if len(cells) != 3:
+            break
+        if set(cells[0]) <= set("-: "):
+            continue  # 分隔行
+        if cells[0].startswith("因子 A"):
+            continue  # 表头行
+        rows.append((cells[0], cells[1], cells[2]))
+    return rows
+
+
+def d10_mapping_drift(text: str | None = None) -> list[str]:
+    """D-10 五档映射表与代码不一致的清单（空列表 = 对齐）。
+
+    与 :func:`anchors_drift` 同款纪律：**现读 rubric 文档**比对。
+    改文档的映射表而不改 :data:`D10_EVIDENCE_FACTORS` /
+    :data:`D10_CAUSE_FACTORS`（或反之）⇒ 这里非空 ⇒ 契约测试红 ⇒
+    「文档说的档」与「代码算的档」不再各走各的。
+    """
+    if text is None:
+        if not RUBRIC_DOC.exists():
+            raise ValueError(f"rubric 文档不存在：{RUBRIC_DOC}")
+        text = RUBRIC_DOC.read_text(encoding="utf-8")
+    try:
+        card = _dimension_card(text, clause_of("d10"))
+    except ValueError as exc:
+        return [f"D-10：{exc}"]
+
+    rows = _d10_mapping_rows(card)
+    if not rows:
+        return ["D-10：卡里找不到「五档映射」表"]
+
+    expected: dict[tuple[str, str], int] = {}
+    for state, factors in D10_FACTORS_BY_STATE.items():
+        for label, tier in factors.items():
+            expected[(state, label)] = tier
+
+    found: dict[tuple[str, str], int] = {}
+    drift: list[str] = []
+    for a_label, b_label, tier_cell in rows:
+        state = D10_STATE_LABELS.get(a_label)
+        if state is None:
+            drift.append(f"映射表：因子 A 那一格 {a_label!r} 不是已知状态")
+            continue
+        if state == D10_STATE_UNDETERMINED:
+            continue  # 未判定不落任何档
+        match = re.search(r"[1-5]", tier_cell)
+        if not match:
+            drift.append(f"映射表：{a_label}/{b_label} 的档位格 {tier_cell!r} 里没有 1–5")
+            continue
+        found[(state, b_label)] = int(match.group(0))
+
+    for key, tier in sorted(expected.items()):
+        got = found.get(key)
+        if got is None:
+            drift.append(f"映射表：缺「{key[0]}/{key[1]}」这一行（代码期望 {tier} 档）")
+        elif got != tier:
+            drift.append(f"映射表：「{key[0]}/{key[1]}」档位 表={tier} 文档={got}")
+    for key in sorted(found):
+        if key not in expected:
+            drift.append(f"映射表：多出「{key[0]}/{key[1]}」→ {found[key]}（代码里没有这一项）")
+    return drift
+
+
+def d10_tier(state: str, factor: str) -> int | None:
+    """(因子 A, 因子 B) → 档位。未知组合 → ``None``（fail-closed）。
+
+    ``None`` 表示「**这一格不落分档**」——因子 A 是「未判定」时、
+    或因子 B 的取值不在该状态的合法集合里（裁判给了契约外的值、
+    或自报「无法判定」）。**不是 0、不是 1**：1 档是 ★ 一票否决面，
+    猜不得。
+    """
+    table = D10_FACTORS_BY_STATE.get(state)
+    if table is None:
+        return None
+    return table.get(factor)
+
+
 def anchor_clauses(dimension: str) -> tuple[str, ...]:
     """该维锚点表覆盖的条款号（由档位投影，**不手抄**）。
 
@@ -432,6 +606,13 @@ def code_part(fingerprint: str) -> str:
 __all__ = [
     "ANCHOR_TABLES",
     "CODE_SCORER_MODULES",
+    "D10_CAUSE_FACTORS",
+    "D10_EVIDENCE_FACTORS",
+    "D10_FACTORS_BY_STATE",
+    "D10_STATE_AGREE",
+    "D10_STATE_DISAGREE",
+    "D10_STATE_LABELS",
+    "D10_STATE_UNDETERMINED",
     "DIM_CLAUSES",
     "RUBRIC_DOC",
     "RUBRIC_VERSION",
@@ -442,6 +623,8 @@ __all__ = [
     "clause_of",
     "code_part",
     "code_scorer_version",
+    "d10_mapping_drift",
+    "d10_tier",
     "documented_rubric_version",
     "evaluator_version",
     "llm_part",

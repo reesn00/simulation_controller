@@ -175,6 +175,18 @@ THRESHOLDS: dict[str, dict[str, Any]] = {
             "evaluation/calibration/gate.py",
         ),
     },
+    "d3_batch_agreement_min": {
+        "value": 0.85,
+        "status": "已定线",
+        "scope": "批次级 B-3 的**站点类型判定一致率**（每 run 一份，分母 = "
+                 "本批进入站点类型判定的样本数）",
+        "basis": (
+            "rubric v1.3 B-3 卡：「与黄金集人工类别标注的一致率，阈值 ≥85%"
+            "（LLM 裁判资质领证线）」——线是 rubric 写定的，本表只是它的"
+            "机器可读副本（D-C6：改线只改表，不升 rubric 版本、不进变更记录）"
+        ),
+        "where": ("evaluation/batch/asserts.py",),
+    },
 }
 
 

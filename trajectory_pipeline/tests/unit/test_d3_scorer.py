@@ -154,13 +154,17 @@ class Test五档映射:
         assert v.playable_subtype == "pay_per_view"
 
     def test_1分_未判且可判(self):
-        """1 档 + is_veto：观察充分 + LLM 调不通 → fail-closed。"""
+        """1 档 + **不否决**：观察充分 + LLM 调不通 → fail-closed。
+
+        rubric v1.3 G-1：一票否决项是 **D-5 / D-10**；D-3 的 1 档是
+        「该维扣分」，不是整条样本作废 ⇒ ``is_veto`` 恒 False。
+        """
         obs = _obs(body="这里是某导航", elements=3)
         stub = _StubLLM(content=None, return_none=True)
         v = score_d3(_sample(_out(branch=None), observations=[obs]),
                      llm_client=stub)
         assert v.score == 1
-        assert v.is_veto is True
+        assert v.is_veto is False
         assert "锚点 1" in v.reasons[0]
 
     def test_解析失败仍判1分(self):
@@ -170,7 +174,7 @@ class Test五档映射:
         v = score_d3(_sample(_out(branch=None), observations=[obs]),
                      llm_client=stub)
         assert v.score == 1
-        assert v.is_veto is True
+        assert v.is_veto is False
 
 
 # ── 2. 三态纪律 ───────────────────────────────────────────────────
@@ -265,9 +269,13 @@ class TestRubric对齐:
         assert d3_scorer.VerdictKind == Literal["scored", "undetermined"]
 
     def test_协议_字段(self):
-        """D3Verdict 必须含 is_veto + to_json。"""
+        """D3Verdict 必须含 is_veto + to_json。
+
+        rubric v1.3 G-1：**D-3 不是一票否决项** ⇒ ``is_veto`` 恒 False
+        （1 档也不例外——1 档是「该维扣分」，不是整条样本作废）。
+        """
         v = D3Verdict(score=1, kind="scored")
-        assert v.is_veto is True
+        assert v.is_veto is False
         j = v.to_json()
         assert j["dimension"] == "D-3"
         assert j["score"] == 1
