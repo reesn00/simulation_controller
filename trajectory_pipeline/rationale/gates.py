@@ -224,9 +224,12 @@ def check_entities(
         observations: **前置步**的观察（按时间序，INC46 起**不含本步**）。
         exempt: 任务给的豁免文本（片名 / 用户诉求）。rationale 引用
             这里的词**不是幻觉**——它来自任务，不是模型看来的。
-        later_observations: **后续步**观察。只用于一个判断：
-            某个实体在后续步的**不完整**观察里出现过 → 它当时**可能**
-            就在页面上而只是没采到，所以本步查不到它**不能判幻觉**。
+        later_observations: **后续步**观察。只用于两个判断：
+            ① 某个实体在后续步的**不完整**观察里出现过 → 它当时**可能**
+               就在页面上而只是没采到，所以本步查不到它**不能判幻觉**；
+            ② 某个实体在后续步的**完整**观察里出现过 → 它**确实存在**
+               （只是本步还没出现）⇒ 那是**后见之明**，归
+               :func:`check_temporal_at` 管，这里**不重复**记幻觉候选。
 
     Returns:
         ``(findings, checked_count, undeterminable)``。
@@ -252,17 +255,17 @@ def check_entities(
         # 但若整段是套话，交给 :func:`check_boilerplate` 处理。
         return findings, 0, undeterminable
 
-    # 前置步任一份观察不充分 → 该实体不可判定。
-    # **不是「全部不充分才算」**：只要有一份完整的就能定案，
-    # 而一份都不完整时**不能**判幻觉（rubric D-9 边界规则）。
-    complete_bag = ""
-    for obs in observations:
-        if not observation_shortfall(obs):
-            complete_bag += lexicon.resettable_text(obs) + "\n"
-    if not complete_bag.strip():
+    # 观察文本只算一遍——闸门在热路径上（L-21：per-Run 让闸门慢了约 26 倍）。
+    obs_texts = [lexicon.resettable_text(o) for o in observations]
+    shortfalls = [observation_shortfall(o) for o in observations]
+
+    # 「查不到」是**否定结论**，要由**完整**的观察兜底：可见窗口里一份
+    # 完整观察都没有 ⇒ 不判幻觉（rubric D-9 边界规则），只记「查不了」。
+    # **不是「全部不完整才算」**：只要有一份完整的就能定案。
+    if all(shortfalls):
         reason = "；".join(
-            f"第{i + 1}份观察：{observation_shortfall(o)}"
-            for i, o in enumerate(observations)) or "没有可核的观察"
+            f"第{i + 1}份观察：{s}" for i, s in enumerate(shortfalls)
+        ) or "没有可核的观察"
         undeterminable.append(f"观察不充分，实体核查无法判定（{reason}）")
 
     # 后续步的**不完整**观察：命中它说明「当时可能就在而没采到」。
@@ -276,7 +279,25 @@ def check_entities(
     shaky_later_l = shaky_later_text.lower()
     shaky_later_key = lexicon.match_key(shaky_later_text)
 
-    haystack = lexicon.strip_noise(complete_bag)
+    # 后续步的**完整**观察：命中它说明「实体**确实存在**，只是本步还没出现」
+    # ⇒ 那是**后见之明**，归 :func:`check_temporal_at` 管。
+    # **懒算**：绝大多数实体在前置步就命中了，走不到这里。
+    later_complete_bag: list[str] | None = None
+
+    # 存在性检索袋 = 可见窗口的**全部**观察。
+    # 截断/裁剪/降级**采到的那部分是真的**：rubric D-9 保护的是「落在截断
+    # 外的实体」，采到的实体有据。此前这里只收**完整**观察的文本 ⇒
+    # 「明明采到了却查不到」被当成幻觉——与 §5.5「判断建立在残缺事实上
+    # 时，正确做法是记不可判定，而不是拿残缺事实去指控」正相反：这里是
+    # 拿记录的**不完整**去否认**已经采到**的证据。
+    # 这个缺陷**不是 per-Run 引入的**：旧 per-unit 产物里就有 18 条
+    # `unsupported_entity`（1510 份样本里 31 条 failed）⇒ 它一直在。
+    # per-Run 只是把可见窗口摊平**变长**（一条轨迹几十份观察），而**原始**
+    # 观察里约 1/3 带缺件（DOM 截断 / 元素裁剪 / 采集降级）⇒ 被排除出
+    # 检索袋的文本比例跟着涨 ⇒ 命中变多、变显眼。
+    # `check_temporal_at` 判「当时就看得见」用的就是全部可见观察
+    # （`_bag(visible)`）——同一个文件里同一个问题两种口径。
+    haystack = lexicon.strip_noise("\n".join(obs_texts))
     haystack += "\n" + lexicon.strip_noise(exempt or "")
     haystack_l = haystack.lower()
     # 排版归一版（NFKC + 去空白）：模型引用**同一个实体**时，全角括号/
@@ -316,6 +337,28 @@ def check_entities(
                 f"实体「{ent.text}」在后续步的不完整观察里出现过，"
                 f"本步查不到它——可能是当时就在而没采到（懒加载/渲染时序），"
                 f"不判幻觉")
+            continue
+        # 后续步的**完整**观察里出现过 ⇒ 该实体**确实存在**，只是本步还没
+        # 出现 ⇒ 那是**后见之明**（`check_temporal_at` 的活），不是幻觉：
+        #
+        # - rubric D-9 里「幻觉」与「后见之明」是**两个锚点**，同一实体
+        #   记两次 = 惩罚算重；
+        # - 幻觉候选那条措辞是「更不在后续步的任何观察里」——实体**在**
+        #   后续步观察里时，这句话是**假的**，写进负样本池会误导人核。
+        #
+        # 判定用 `check_temporal_at` **同一套规则**（`_in_haystack`）⇒
+        # 时序核查会**同时**判它 `temporal_leak`（硬发现）⇒ **不丢结论**，
+        # 只是换到对的桶里。
+        if later_complete_bag is None:
+            later_complete = "\n".join(
+                lexicon.resettable_text(o) for o in later_observations
+                if not observation_shortfall(o)
+            )
+            later_complete = lexicon.strip_noise(later_complete)
+            later_complete_bag = [later_complete.lower(),
+                                  lexicon.match_key(later_complete)]
+        if _in_haystack(ent.text, later_complete_bag[0],
+                        later_complete_bag[1]):
             continue
         findings.append(Finding(
             "unsupported_entity",

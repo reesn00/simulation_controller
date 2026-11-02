@@ -371,6 +371,108 @@ class Test实体核查:
         assert r.status == "passed"
         assert r.undeterminable
 
+    # ── 存在性检索袋：采到了就是有据（2026-11-02 修）──────────────
+
+    def test_采到的实体在截断观察里不判幻觉(self):
+        """**采到了的那部分是真的**——rubric D-9 保护的是「落在截断**外**的
+        实体」，采到的实体有据。
+
+        修复前检索袋只收**完整**观察的文本 ⇒ 实体明明在截断观察里，却因
+        「那份观察不完整」被判成幻觉：拿记录的**不完整**去否认**已经采到**
+        的证据，与 §5.5「判断建立在残缺事实上时，正确做法是记不可判定，
+        而不是拿残缺事实去指控」正相反。
+
+        per-Run 之前每条样本只有一份观察，整窗不完整 ⇒ 走「查不了」早退，
+        缺陷被掩盖；多观察窗口才把它逼出来。
+        """
+        trunc = _obs(truncated=True,
+                     body_text="电视剧 电影 立即观看",
+                     interactive_elements=[{"tag": "button",
+                                            "label": "立即观看"}],
+                     elements_total=1)
+        obs = [trunc, _obs(), _obs()]
+        r = gates.gate("页面上有「立即观看」按钮。", action_tool="goto",
+                       observations=obs, step_index=2, exempt="功夫")
+        assert r.status == "passed", "截断观察里采到的实体被判成幻觉"
+        assert "unsupported_entity" not in [f.kind for f in r.hard_findings]
+
+    def test_采到的实体在被裁剪的观察里不判幻觉(self):
+        """裁剪（``elements_total > len(elements)``）同理：采到的元素有据，
+        被裁掉的那部分才是「查不了」。"""
+        cropped = _obs(elements_total=99,
+                       interactive_elements=[{"tag": "button",
+                                              "label": "立即观看"}])
+        obs = [cropped, _obs(), _obs()]
+        r = gates.gate("页面上有「立即观看」按钮。", action_tool="goto",
+                       observations=obs, step_index=2, exempt="功夫")
+        assert r.status == "passed", "被裁剪的观察里采到的元素被判成幻觉"
+
+    def test_同一窗口里采到的放行没采到的仍判幻觉(self):
+        """一正一反同时钉住：修复没有把闸门放空。
+
+        「查不到」是**否定结论**，仍由**完整**观察兜底（口径未动）——
+        实体哪儿都没有就判幻觉，且只判那一个。
+        """
+        trunc = _obs(truncated=True,
+                     body_text="电视剧 电影 立即观看",
+                     interactive_elements=[{"tag": "button",
+                                            "label": "立即观看"}],
+                     elements_total=1)
+        obs = [trunc, _obs(), _obs()]
+        r = gates.gate("页面上有「立即观看」和「立即收藏」两个按钮。",
+                       action_tool="goto", observations=obs, step_index=2,
+                       exempt="功夫")
+        kinds = [f.kind for f in r.hard_findings]
+        assert kinds == ["unsupported_entity"]
+        assert "立即观看" not in r.hard_findings[0].detail
+        assert "立即收藏" in r.hard_findings[0].detail
+
+    def test_实体核查与时序核查对同一份数据给同一个答案(self):
+        """**同一个文件里同一个问题不能有两种口径**。
+
+        时序核查判「当时就看得见」用的是**全部**可见观察（``_bag``），
+        实体核查此前只用**完整**观察 ⇒ 同一份数据：时序说不算后见之明，
+        实体核查却说不存在于观察里，两个相反结论。
+        """
+        trunc = _obs(truncated=True,
+                     body_text="电视剧 电影 立即观看",
+                     interactive_elements=[{"tag": "button",
+                                            "label": "立即观看"}],
+                     elements_total=1)
+        later_obs = _obs(body_text="电视剧 电影 立即观看",
+                         interactive_elements=[{"tag": "button",
+                                                "label": "立即观看"}],
+                         elements_total=1)
+        obs = [trunc, _obs(), later_obs]
+        r = gates.gate("页面上有「立即观看」按钮。", action_tool="goto",
+                       observations=obs, step_index=2, exempt="功夫")
+        kinds = [f.kind for f in r.hard_findings]
+        assert "unsupported_entity" not in kinds
+        assert "temporal_leak" not in kinds
+
+    def test_实体只在后续步出现记后见之明不记幻觉(self):
+        """只在后续步出现的实体**确实存在** ⇒ 是**后见之明**，不是幻觉。
+
+        rubric D-9 里「幻觉」与「后见之明」是**两个锚点**，同一实体记两次
+        = 惩罚算重；且幻觉候选那条措辞（「更不在后续步的任何观察里」）
+        在这种情形下是**假的**——它会原样进负样本池误导人核。
+
+        ⚠️ **结论不丢**：抑制幻觉候选的判定用时序核查**同一套规则**
+        ⇒ 时序核查会同时判它 ``temporal_leak``（硬发现）⇒ 样本照样 fail，
+        只是理由从「两条」变成「一条」。
+        """
+        later_obs = _obs(body_text="电视剧 电影 立即观看",
+                         interactive_elements=[{"tag": "button",
+                                                "label": "立即观看"}],
+                         elements_total=1)
+        obs = [_obs(), later_obs]
+        r = gates.gate("页面上有「立即观看」按钮。", action_tool="goto",
+                       observations=obs, step_index=1, exempt="功夫")
+        kinds = [f.kind for f in r.hard_findings]
+        assert "unsupported_entity" not in kinds
+        assert "temporal_leak" in kinds
+        assert len(r.hard_findings) == 1, "同一实体不该在两个锚点上重复计罚"
+
 
 # ═══════════════════════════════════════════════════════════════════
 # 闸门：查二 因果核查
