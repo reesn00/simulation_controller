@@ -2233,7 +2233,7 @@ pred 是「全部存档的 branch 名」**：含旧代 obscura / LLM 感知层�
 | **Q-30** | ✅ **已裁定 + 已实施（2026-11-02，owner）：两段都发，且必须一致**（T 顶层 `messages` 纯文本、观察挂 `role=user` vs `openai.messages` function-calling） | 06 组装 · 本文 **H-24** · [方案 23 §7 O-5](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) · [`task_view.py:484`](../../assembler/task_view.py#L484) | 裁定「**都发**」，且 `openai.messages` 与 `messages`（留给 LS 给人看）**必须一致**——同一动作序列 / 同一观察内容 / 同一收尾，差异**只允许形态**。⇒ **R5-2 改了形状**（不是「只发一段」），外加 **R2-2 收尾同一句话**；验收 **A14**（两段逐条对齐）· 风险 **R-9**（投影会漂 ⇒ 测试钉住）。**✅ R5-2 代码已落地（2026-11-02）**：校验实现 [`projection.py`](../../projection.py)（顶层跨层地基，`ls_bridge` 禁 import assembler 故不挂 `assembler/`）；落盘前 `build_task_view` 不一致 ⇒ 不写半份，导出前 `export_trajectory_one` 不一致 ⇒ 抛 `ProjectionMismatch` 且 `export_batch` 记「两段投影不一致」（不并入「T 视图缺失」）。**A14 存量实测 145/145 一致**；门禁 **4692 passed / 45 skipped** |
 | **Q-31** | ✅ **已裁定（2026-11-02，owner）：方案 A——A7 改绑窄口径，分母用筛后保留步**（宽口径「同 unit 内同动作 ≥2 次」35.7% / 21.3% 与 R3-2「只标记不剔」不匹配） | 06 组装 · 本文 **H-25** · [方案 23 §3 R3](../设计方案/23-训练轨迹语料整改方案.md#r3--数据筛选闸门死循环--无效步--混池) | 裁定口径：**同一 unit 内同动作且观察逐字相同（不要求相邻）的重复步 / 保留步 ≤10%**；R3-2 仍**只标记不剔**。存量读数（camofox-1 65 份，临时脚本重算，未落盘）：P3 **274/3910 = 7.0%** · T **98/3928 = 2.5%**，均 ✓（原件数 435/4071 · 241/4071，相邻部分已由 R3-1 剔）。宽口径 **35.7% / 21.3%** 降为**审计基线**。备选 B（取消占比线、只认 A6=0）与 C（宽口径下剔非相邻步，破坏观察因果链）**未采用**。**代码不改**（R3-1/R3-2 已覆盖）；文档同步方案 23 / 06 域 / 编年史 |
 | **Q-33** | ★**（2026-11-03 新增）A13 批次并入主树后，**交付集有两套口径并存**——主树用 main 口径（per-Run、**不**剔 `excluded_platforms`），LS 上那 8 行是分支口径（按 per-unit 拼、R4-2 剔了被排除平台单元）⇒ **8 条里 7 条的任务级结论相反** | 06 组装 / 07 评估 · 本文 **§Q-33 详解** · [方案 23 §7 O-1 / O-3](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) · `assembler/excluded.py` · `assembler/task_view.py`（`_excluded_unit_map`） | **两个问题待 owner 拍板**：① **交付集以哪套口径为准**——main（per-Run 全量、含被排除平台的单元）还是分支（per-Run + R4-2 整 unit 剔除）？⚠️ **不是等价选项**：R4-2 剔掉的恰是 `excluded_platforms` 上的单元，而在「看最后一个结论」口径下**被剔的那个单元常常就是决定结论的那个**（`T016` / `E013` / `E027` 三条因此从 `success` 变 `unresolved`/`subscription_wall`）⇒ **两套口径读出来的是两个结论**，训练侧与复核侧会各拿一个。② **LS 上那 8 行要不要重推**：现推的是分支口径（**更窄**：E029 只有 11 条消息 vs main 的 105 条）；重推要 owner 授权，且 `push_index` 按 `sample_id` 去重 ⇒ 先查清是「更新」还是「跳过」。**不擅自投票、不擅自重推**<br>✅ **已裁 + 已实施（2026-11-03 · owner「分支 merge 进 main；要重判」）**：**选甲（剔）** ⇒ ① 分支 `trajectory_rationale` 快进并进 `main`（两边同在 `6cc4d7e`；⚠️ **main 仍领先 `origin/main` 33 个提交 ⇒ 未 push**）② 主树生产根**按甲口径重出**（交付面 `camofox-1` **73 样本 / 219 视图 / 73 T 视图** + `legacy/` 旧面 66 样本 ⇒ 合计 139/417/153，**总份数与重出前一致**）③ 负样本池 **476 → 355**（撤 **121** 行 / **58** 组）④ **LS 项目 77 的 67 行就地重推**（task + 预标注，task id 不变，孤儿行 664 不动）⇒ **交付集 / 池 / LS 三处同口径**。⚠️ **残余**：撤完 121 行后池里**仍有 17 行**落在被排除平台上（R4-2 是**访问点级**剔除 ⇒ 孤儿 outcome 与人核行够不着）⇒ 见 **Q-34** |
-| **Q-34** | ★**（2026-11-03 新增）R4-2 的剔除是「**访问点级**」，池行的身份是「**outcome 级**」⇒ 撤完 121 行后池里**仍有 17 行**落在其任务的被排除平台上 | 03 标签 / 08 存档 · 本文 **§Q-34 详解** · `assembler/excluded.py::excluded_outcome_indices` · `executor/negative_rules.py::pool_member_keys` · `executor/pool_drop.py::select_rows` | **17 行拆成三类**（逐条查过）：① **3 行是「孤儿 outcome」**——`outcomes[]` 里配不到 `visits[]` 的行（E021__94a1392f / E023__4d175424 / E021__dba5c958，三条都是 `not_play_site`）⇒ 访问点级剔除够不着它 ⇒ 产品代码判它是**池成员**（不是漏剔，是规则够不着）② **6 行**的 `(url, branch)` 键**在任何存档里都配不到**（E021__129c3fae · T024__6240da8e · E023__a6a2ad3e · E014__15e4b195 · T018__8f1aec03 · T025__102d3554）③ **8 行是人核行**（`source=human` · `run_id` 空）⇒ **人核结论不经过采集侧剔除**。⚠️ **待 owner 裁**（本轮**不擅自撤**）：① 这 17 行算不算「落在被排除平台上的训练样本」（M-67 的 A10「训练集里访问被排除平台的步 = 0」是**采集步**口径，不是池行口径）？② 要撤的话，③里那 **8 行是人核结论** ⇒ 撤人核行要单独授权（`cli pool-drop` 按 URL 片段选行，够不到 run_id 为空的键）③ ①那 3 条孤儿 outcome 在报表里查不到来源（`visits[]` 配不到）⇒ 要不要在采集侧补一条可见性 |
+| **Q-34** | ★**（2026-11-03 新增）R4-2 的剔除是「**访问点级**」，池行的身份是「**outcome 级**」⇒ 撤完 121 行后池里**仍有 17 行**落在其任务的被排除平台上 | 03 标签 / 08 存档 · 本文 **§Q-34 详解** · `assembler/excluded.py::excluded_outcome_indices` · `executor/negative_rules.py::pool_member_keys` · `executor/pool_drop.py::select_rows` | **⭐ 根因不是判断，是撤行时的**存档集用窄了**：那 121 行的判据只扫了**顶层 `.json`**，没扫 **`.reviewed.json` 复核档** ⇒ 人核键（人判把分支从 `unresolved`/`login_wall_or_blocked` 改成池成员分支 ⇒ **只存在于复核档里**）压根没进撤行集合。改用产品自己的 `select_archives`（顶层、**复核档优先**）重算**同一条**判据 ⇒ **10 行 `source=human` 全部落进「被 R4-2 剔掉的键」**（150 键里就有）⇒ **按同一条甲口径判据就该撤，不需要另一套裁定**。⚠️ **台账上一版写的「③ 8 行是人核行」数错了**：`source=human` 其实是 **10 行**（那 8 行是「人核 **且** `run_id` 为空」的子集，另 2 行带 `run_id`）⇒ **以本行为准**。✅ **已撤（2026-11-03，owner 授权「撤（推荐）：干跑 → 落盘」）**：10 行逐条 `cli pool-drop --task-id/--url/--branch --apply`（**先干跑**，每行各选中 **1** 行）⇒ 池 **355 → 345**，`pool_dropped.jsonl` **+10**（共 **179** 行），**3240 个存档文件 sha256 逐字节未动**（复核档里的人核结论原样保留）⇒ 按修正判据复核「应撤未撤」= **0**。⚠️ **残余 7 行**（**另一类**，不在这次判据里）：**3 行 `not_play_site`**（`www.iqiyi.com/so/q_…` 搜索结果页 · `v.qq.com/x/cover/8lvnb7aiio1crpd` ⇒ 该 URL 从未作为「被剔访问点」出现在任何存档 ⇒ **键配不到任何存档**）· **4 行 `blocked`**（`blocked` 是**采集侧账分支** `COLLECTION_SIDE_BRANCHES` ⇒ **本就不是池成员分支** ⇒ 这 4 行是**旧口径时期**写进池的历史遗留，现在 `pool_add` 会拒它们）。⚠️ **待 owner 裁**：① 残余 7 行算不算「落在被排除平台上的训练样本」（A10 是**采集步**口径，池行口径没写过）？② 那 4 行 `blocked` 要不要按「非池成员分支」清掉？③ **系统性缺口**：池是 append-only、**旧行不回查** ⇒ 每次口径改完都得手写脚本撤行 ⇒ 要不要给 `pool-drop` 加一个 `--by-criterion` 入口（按 `select_archives` + `excluded_pool_keys` 反算）？ |
 
 | **Q-26** | ★**（2026-11-01 新增）轨迹级的档位口径：跨档轨迹按哪一档算？** —— 现有实现取**严**（`holdout` > `regression` > `calibration`），v16 的 **50 条轨迹里只有 7 条**够格进金标（6 回归 / 37 封存） | 07 评估 · 本文 **§2026-11-01 新增开口项详解** · [方案 23 §4 / §8 O-1](../设计方案/23-每任务一轨迹.md) · `evaluation/golden/rows.py::headline_split`（档闸）· `strict_split`（对照） | **替代口径「按头部站点定档」也能算**（2026-11-01 订正：早先「44/50 配不到」是**探针键形状 bug**——`split_of_url` 用 `(task__run, url)` 两段键，探针按三段查 ⇒ 永远查不到；改回后 **41/44 可配**）：calibration **13** / regression 13 / holdout 15 / 配不到 3 / **存档不在盘上 6** ⇒ 够格进金标的 **13 条**。⚠️ 选它就得接受**另有 9 条档位定不下来**。⇒ **三条路**：① **接受 7/50**（金标扩得慢，但封存面绝不泄漏）；② **换成头部站点口径 13/50**（那 9 条得先补数据）；③ **彻底分家**（轨迹级金标只从 `calibration` 来，站点级金标继续按站点档走 ⇒ 同一个「金标」概念出现两套口径，**评估侧要显式声明用哪套**）<br>✅ **owner 已裁（2026-11-01）：② 头部站点口径 13/50**，**并接受它的前置条件**（「那 9 条得先补数据」）⇒ **档闸改用 `rows.headline_split`**（`golden_ls/reflow.py` 的 `build_worksheet` + `validate` 两处；认不出头部站点 ⇒ `SKIP_NO_SPLIT` · fail-closed 不放行）⇒ **取严 `strict_split` 保留作对照口径**。⚠️⚠️ **裁 ② 的代价照实记**（2026-11-01 逐条核对 v16 实测 · **走产品代码路径** `builder._scan_archives` + `_build_trajectory_dataset` + `rows.headline_split`）：**与取严的交集只有 2 条** ⇒ ② **不是「放宽」，是换了一批数据**；**② 放行的 13 条里 11 条含 holdout 站点** ⇒ **封存面泄漏面 11/13**（9 条含 regression）；**② 判死了 5 条「纯 calibration」的**（头部站点的访问点没进冻结集）⇒ **要收回（回取严）或加兜底（「沾 holdout 就不回流」）⇒ 只改档闸那两处**。⚠️ **「补数据」的前置条件要重述**：那 9 条**不是同一类**——**6 条是负样本池行**（`source_kind: "negative_pool"` ⇒ **从来就不是轨迹**：每个只有 1 个站点行、无 P1 存档；3 条的存档在 `output/pipeline/proberun/` 下 · 3 条 `P015__*` 盘上压根没有 ⇒ **补采一条真轨迹**，不是「把存档搬回来」）· **3 条是头部站点配不到**（`E021__129c3fae` / `T042__df2ee261` 的 url 压根没被标注过 · `T024__6240da8e` 的 url 在冻结集里但**属于别的轨迹**〔同 url 换 run〕⇒ **给人核补标注 + 重冻**，**要人**）<br>⭐⭐ **owner 同日追加裁定（2026-11-01「泄露做兜底」）**：**加第二道闸**——**整条**沾着封存面 / 回归面的站点 ⇒ **不进金标**（`rows.non_reflow_splits` ⇒ `SKIP_HOLDOUT` / `SKIP_REGRESSION`；工作表与 `validate` **各一道**）⇒ **理由**：「头部站点在调参池」**不够**——其余站点里的封存事实会跟着**轨迹级标签**一起进调参池 ⇒ **封存面作废** ⇒ **宁可少回流，不许错回流**。⚠️⚠️ **加了兜底后的实测读数**（走产品代码路径）：**放行 13 ⇒ 2/50**（被挡 **11** 条：2 条只沾 holdout · 9 条 holdout+regression 都沾）⇒ ⚠️ **比取严的 7 还少**——**差的 5 条全部是「头部站点认不出」的残缺轨迹**（被 ② 的 fail-closed 挡、**不是被兜底挡**）⇒ **补齐那 5 条 ⇒ 放行 2 → 7**（与取严齐平）。⚠️ **兜底的边界**：量的是「**冻结集里那些站点**」的档 ⇒ 挡得住「已冻结的封存站点」，**挡不住**「没冻结过的访问点里藏着封存事实」⇒ 那是**冻结集覆盖不到**的问题（另一件事） |
 | **Q-27** | ⚠️**（2026-11-01 新增）迁移改的是「人核数据的键」** —— 站点明细从顶层挪进 `site_outcomes[]` ⇒ **同 `cmd_rekey` 的规矩：需 owner 签字** | 07 评估 / 08 存档 · 本文 **§2026-11-01 新增开口项详解** · [方案 23 §8 O-2](../设计方案/23-每任务一轨迹.md) · `evaluation/golden/builder.py::cmd_migrate_trajectory` | ✅ **键集合逐字不变**（口径 C 的 url 键集合与 v1–v16 **A−C = 0 / C−A = 0**，1512 个键）⇒ **所有人核标注都还挂得上**；⚠️ **但挂载位置变了** ⇒ 「人核数据被动过」这条红线**照样触发** ⇒ **owner 此消息即为签**（比照 Q-22 的先例）<br>✅ **owner 已签（2026-11-01）**：owner「2 项接受推荐留」那条消息**即为签字**（本行的「owner 此消息即为签」本身就是推荐项 ⇒ 接受推荐 = 签）⇒ **`cmd_migrate_trajectory` 动「人核数据挂载位置」已获授权**。⚠️ **签字的范围**：**键集合逐字不变**（A−C = 0 / C−A = 0 · **1512 个键**）⇒ **所有人核标注一条都还挂得上**；**签字不覆盖「改键」本身**（那要另裁） |
@@ -3930,7 +3930,9 @@ DEGRADED 段**新档零条目**。
 per-Run）——✅ 已 re-base（`cb26135`）且已 **merge 进 main**（同在 `6cc4d7e`）
 ③ 并入产物是 **main 口径**，分支落地后 **R4-2 剔除**生效 ⇒ **主树产物还要再
 重出一次**——✅ **已按甲口径重出**（读数见 **§重判执行** ②）。
-⚠️ **新开口**：**Q-34**（撤完 121 行后池里仍有 17 行落在被排除平台上）。
+⚠️ **新开口**：**Q-34**（撤完 121 行后池里仍有 17 行落在被排除平台上）——✅ **已
+部分闭合**（2026-11-03 同日：根因查明 ⇒ 10 行人核行按修正判据撤出 ⇒ 池 355 → **345**；
+残余 **7** 行是另一类 ⇒ 见 **§Q-34 详解**）。
 
 ### re-base 与口径裁定（2026-11-03 续）
 
@@ -4222,7 +4224,12 @@ per-unit 形状的 `sample_id`** ✔ ② 用分支代码重切 A13 那 8 档 ⇒
 （`executor/negative_rules.py::pool_member_keys` 反算「被 R4-2 剔掉的键」）
 ⇒ **不是**「URL 看起来在被排除平台上就撤」⇒ 撤完按同一判据复核 **0 残留**。
 ⚠️ **但按「池行 URL 的平台 ∈ 该任务名单」这条更粗的判据复核，仍有 17 行** ⇒
-**口径缺口**，见 **Q-34**（**未动，待 owner 裁**）。
+**口径缺口**，见 **Q-34**（✅ **同日已部分闭合**：根因是**撤行时存档集用窄了**——
+只扫了顶层 `.json`，没扫 `.reviewed.json` 复核档 ⇒ 人核键压根没进撤行集合；
+改用产品自己的 `select_archives`（复核档优先）重算**同一条**判据 ⇒ 那 **10 行
+`source=human`** 全部落进「被 R4-2 剔掉的键」⇒ 已撤（owner 授权「撤（推荐）：
+干跑 → 落盘」）⇒ 池 **355 → 345**，**3240 个存档文件逐字节未动** ⇒ 按修正判据
+复核「应撤未撤」= **0**；**残余 7 行**是另一类 ⇒ **仍待 owner 裁**）。
 
 **④ LS 项目 77 重推**（owner 授权「授权 PATCH 67 行（推荐）」）：**67 行** =
 交付面 **65** + 旧面 **2**（`E002__ddff4ace` / `E005__e35b7455`，它们的 T 视图在
@@ -4262,31 +4269,74 @@ per-unit 形状的 `sample_id`** ✔ ② 用分支代码重切 A13 那 8 档 ⇒
 `negative_not_pooled ×2`（E023__4d175424.reviewed.json · T054__93f110b6.reviewed.json，
 **存量**）⇒ **exit 1**（存量 FATAL 造成的，不是本轮）。
 
-### Q-34 · R4-2 剔的是「访问点」，池行的身份是「outcome」⇒ 17 行漏网
+### Q-34 · R4-2 剔的是「访问点」，池行的身份是「outcome」⇒ 17 行漏网（**已部分闭合**）
 
 **现象**：按甲口径撤完 121 行后，池里**仍有 17 行**的 URL 落在**其任务声明的
 `excluded_platforms`** 上（用产品代码 `excluded.py::platform_of_url` +
 `excluded_platforms(task_id)` 复核）。
 
-**为什么撤不到**（三行一个根因的不同表现）：
+**⭐ 根因（2026-11-03 查明，与上表初判不同）**：**不是判断问题，是撤行时的存档集用窄了**。
+那 121 行的判据（`excluded_pool_keys` 反算「被 R4-2 剔掉的键」）**只扫了顶层 `.json`，
+没扫 `.reviewed.json` 复核档** ⇒ **人核键压根没进撤行集合**。为什么人核键只在复核档里：
+人核把 outcome 的分支从 `unresolved` / `login_wall_or_blocked`（**非池成员分支**）
+改成了 `subscription_wall` / `partial_free` / `component_unverified` / `broken`
+（**池成员分支**）⇒ **原档里同一个 outcome 不满足「池成员 ∧ 被剔」**，
+**只有复核档里才满足**。
+⇒ 用产品自己的 `select_archives`（顶层、**复核档优先**）重算**同一条**判据：
+撤行键 **139 → 150**，那 10 行人核键**全部落进来** ⇒ **按同一条甲口径判据就该撤**，
+不需要另一套裁定，也不需要推翻人核结论。
 
-| 类 | 条数 | 是什么 | 为什么够不着 |
+**已撤（2026-11-03 · owner 授权「撤（推荐）：干跑 → 落盘」）**：
+
+| 项 | 结果 |
+|---|---|
+| 撤行方式 | 逐条 `cli pool-drop --task-id <task> --url <整条 URL> --branch <分支> --reason "…" --apply`（**先干跑**，每行各选中 **1** 行 ⇒ 无误伤） |
+| 池规模 | **355 → 345**（撤 **10** 行） |
+| 审计留痕 | `pool_dropped.jsonl` **+10**（共 **179** 行，带原行 + 理由 + 时间 + 判据） |
+| **存档侧** | **3240 个存档文件 sha256 逐字节未动**（撤行只动池；**复核档里的人核结论原样保留**） |
+| 复核 | 按修正判据（`select_archives` + `excluded_pool_keys`）复核「应撤未撤」= **0** |
+| 门禁 | 153 存档 / 1485 访问点 / 1707 outcome / 412 真负样本，池内 **345**；FATAL 33 + DEGRADED 2 **未变**（存量），exit 1 |
+
+**撤回的 10 行**（`source=human` · `reviewed_by=reesn`）：
+
+| # | task | branch | 裁定 | URL | 人判落在哪个复核档 |
+|---|---|---|---|---|---|
+| 1 | E005 | broken | confirm_broken | bilibili ep693415 | `E005__e35b7455.reviewed.json` outcomes[4] |
+| 2 | E014 | component_unverified | confirm_negative | le.com/movie/10075153 | `E014__f50809fb.reviewed.json` outcomes[2] |
+| 3 | E017 | component_unverified | confirm_negative | le.com/movie/10043396 | `E017__a2878b23.reviewed.json` outcomes[4] |
+| 4 | T011 | subscription_wall | confirm_paywall | bilibili ep313573 | `T011__cbdfddea.reviewed.json` outcomes[4] |
+| 5 | T012 | subscription_wall | confirm_paywall | bilibili ep313572 | `T012__8c050356.reviewed.json` outcomes[3] |
+| 6 | T018 | partial_free | confirm_partial_free | v.youku XMTQwNzMzMTc1Mg | `T018__8f1aec03.reviewed.json` outcomes[8] |
+| 7 | T018 | subscription_wall | confirm_paywall | bilibili ep313572 | `T018__ad4a6065.reviewed.json` outcomes[3] |
+| 8 | T024 | subscription_wall | confirm_paywall | vo.youku XODQ5OTc4Mjc2 | `T024__6240da8e.reviewed.json` outcomes[2] |
+| 9 | T025 | partial_free | confirm_partial_free | v.youku XMTQwNzMzMTc1Mg | `T025__102d3554.reviewed.json` outcomes[8] |
+| 10 | T033 | subscription_wall | confirm_paywall | bilibili ep313572 | `T033__53ce4b49.reviewed.json` outcomes[3] |
+
+⚠️ **台账上一版写的「③ 人核行 = 8 行」数错了**：`source=human` 实际 **10 行**
+（那 8 行是「人核 **且** `run_id` 为空」的子集，另 2 行带 `run_id`：T018/8f1aec03 ·
+T025/102d3554）⇒ **以本表为准**。
+
+**残余 7 行（另一类，不在这次判据里）**：
+
+| 类 | 条数 | 是什么 | 为什么这条判据够不着 |
 |---|---|---|---|
-| ① 孤儿 outcome | **3** | E021__94a1392f · E023__4d175424 · E021__dba5c958（都是 `not_play_site`） | R4-2 的剔除**从 `visits[]` 出发**（`excluded_unit_map` → 被剔的访问点 → 按 URL 配对到 `outcomes[]` 下标）；这三条的 outcome **配不到任何访问点**（实测 E021__94a1392f：访问点只配到 outcome 下标 1–6，**下标 0 是孤儿**）⇒ **访问点级剔除够不着它** ⇒ 产品代码判它是**池成员**（不是漏剔，是规则够不着） |
-| ② 键配不到任何存档 | **6** | E021__129c3fae · T024__6240da8e · E023__a6a2ad3e · E014__15e4b195 · T018__8f1aec03 · T025__102d3554 | 它们的 `(url, branch)` 键**在任何一份存档的 `outcomes[]` 里都配不到** ⇒ 反算「被剔键」时自然落空 |
-| ③ 人核行 | **8** | `source=human` · `run_id` 为空（E005__ / E014__ / E017__ / T011__ / T012__ / T018__ / T024__ / T033__） | 人核结论是**人给某个 URL 的定性**，不经过采集侧 ⇒ R4-2 这条路够不着 |
+| ① 键配不到任何存档 | **3** | `not_play_site`：E021 的 `www.iqiyi.com/so/q_…` · E023 的 `www.iqiyi.com/so/q_…` · E021 的 `v.qq.com/x/cover/8lvnb7aiio1crpd` | R4-2 的剔除**从 `visits[]` 出发**（被剔访问点 → 按 URL 配对到 `outcomes[]` 下标）；这三条的 URL **从未作为被剔访问点出现在任何存档**（其中两条是**搜索结果页**）⇒ 反算「被剔键」时自然落空 ⇒ 产品代码判它们是**池成员**（不是漏剔，是规则够不着） |
+| ② 非池成员分支 | **4** | `blocked`：E021__129c3fae · E014__15e4b195 · E023__a6a2ad3e · T024__6240da8e | `blocked` 属 `COLLECTION_SIDE_BRANCHES`（**采集侧账**）⇒ `is_pool_member_branch('blocked')` = **False** ⇒ **它本就不是池成员分支** ⇒ 这 4 行是**旧口径时期**写进池的历史遗留（现在的 `pool_add.collect_candidates` 会拒它们） |
 
-**待 owner 裁（本轮不擅自撤）**：
-① **这 17 行算不算「落在被排除平台上的训练样本」**——M-67 的 A10「训练集里访问
-被排除平台的步 = 0」是**采集步**口径，**池行口径没写过**；
-② 要撤的话，③里那 **8 行是人核结论** ⇒ 撤人核行要**单独授权**（`cli pool-drop`
-按 URL 片段选行，够不到 `run_id` 为空的键）；
-③ ①那 3 条孤儿 outcome 在报表里**查不到来源**（`visits[]` 配不到）⇒ 要不要在
-采集侧补一条可见性。
+**仍待 owner 裁**：
+① 残余 7 行算不算「落在被排除平台上的训练样本」（A10「训练集里访问被排除平台的步 = 0」
+是**采集步**口径，**池行口径没写过**）；
+② 那 4 行 `blocked` 要不要按「非池成员分支」清掉（它们本来就不该在池里）；
+③ **系统性缺口**：池是 append-only、**旧行不回查** ⇒ 每次口径改完都得手写脚本撤行
+⇒ 要不要给 `pool-drop` 加一个 `--by-criterion` 入口（按 `select_archives` +
+`excluded_pool_keys` 反算）？**这正是这次漏掉 10 行的直接原因。**
 
 **锚点**：`assembler/excluded.py::excluded_outcome_indices`（按 URL 配对给下标，
-**配不到就不占下标**）· `executor/negative_rules.py::pool_member_keys` ·
-`executor/pool_drop.py::select_rows` · 主树 `output/pipeline/negative.jsonl`（**355** 行）
+**配不到就不占下标**）· `executor/negative_rules.py::pool_member_keys` /
+`excluded_pool_keys` · `executor/archive.py::select_archives`（**顶层、复核档优先**
+——撤行判据必须走它）· `executor/pool_drop.py::select_rows` · 主树
+`output/pipeline/negative.jsonl`（**345** 行）· `output/pipeline/pool_dropped.jsonl`
+（**179** 行）
 
 ---
 
