@@ -510,8 +510,8 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **M-63** | 批次级 **B-3 恒「测不成」** —— 分母不存在：黄金集里**没有**「播放站 / 导航站 / 无关站」的人工类别标注，D-3 的 judge 逐行读数也**还没落盘** | 07 评估 | 本文 **§2026-11-02** · `evaluation/batch/asserts.py::_assert_b3` · `evaluation/golden/alignment.py::SOFT_DIM_NAMES` · `tests/unit/test_batch_asserts.py::TestB3语义一致率` | 实测 **145 / 145 测不成**（**不是 0%**——分母不存在 ≠ 一条都没对）。⇒ 要它有读数得**先有**「(人工类别, 本批判定类别)」对子：**①** 黄金集补一列**人工站点类别**（取值域 = `d3_scorer.D3_CATEGORIES` 五类：playable / nav_aggregator / review / irrelevant / ambiguous）——**数据缺口，人做**；**②** D-3 的 judge 逐行读数落盘（`judge_pairs convert --dimensions d3` 那条路已有，缺的是跑批 + 落盘）。⇒ 依赖 [方案 24 §2.2](../../设计方案/24-rubric对齐优化方案.md) 的第 2 批 |
 | **M-64** | 批次级 **B-5 恒「测不成」** —— 本 run 的黄金集行**不在调参池档**里（D-10 逐行读数没落盘 + 行没按 run 归集）⇒ 分母为 0 | 07 评估 | 本文 **§2026-11-02** · `evaluation/batch/asserts.py::_assert_b5` / `rows_for_run` · `tests/unit/test_batch_asserts.py::TestB5结论错率` | 实测 **145 / 145 测不成**。⚠️ **不是 bug**：默认只读**调参池**（持有集 D-C5 / 回归集 D-C8 是**封存面**，读它们 = 拿封存面调参）⇒ 11/50 个 run 在调参池里**没有行**。⇒ 要它有读数：**①** D-10 的 judge 逐行读数落盘；**②** 黄金集行按 **run_id** 归集（`rows_for_run` 已按 `task_id` + `run_id` **双键**挑 —— 两个都认，免得两个任务撞上同一哈希时两批行混进一个分母）。⚠️ **rubric v1.3 变更记录承诺的「B-5 从『无此断言』到『每个 run 一条错率读数』」只兑现了一半**：每个 run **有一条记录**，但记录的内容是「测不成」，**不是错率数** ⇒ **这条预期效果未兑现**，记在这里 |
 | **M-65** | **D-3 锚点 1 的「该站本可判」归属没定死** —— rubric 写「未判（fail-closed）**且该站本可判**」，代码把它实现成「**观察充分**」（观察不足 ⇒ 落 `undetermined` 而不是 1 档）⇒ 「本可判」是「**观察够判**」还是「**站点性质本身可判**」，两种读法会给出不同的 1 档 | 07 评估 | `evaluation/scorers/d3_scorer.py`（`_observation_shortfall` → `undetermined`；LLM 失败 → 1 档）· `rubric_version.ANCHOR_TABLES["d3"][1]` · `tests/unit/test_d3_scorer.py::Test五档映射::test_1分_未判且可判` | **读法一**（观察够判）下代码是对的 ⇒ 缺的只是**把 rubric 措辞对齐到「观察充分」这个口径**；**读法二**（站点性质本身可判）下，代码会把「站点本就模糊」也算进 1 档 ⇒ **1 档量的是「judge 失效率」，不是 rubric 要的「可判却没判的失效率」**。⚠️ **不是代码 bug，是判据归属未写定** ⇒ **措辞改法是 rubric 级改动，要 owner 签**（见 **Q-32**） |
-| **M-66** | ★**（2026-11-03 新增）分支的 R0–R5 实现还在 per-unit 基线上**，与 main 的 per-Run 交付口径**不可直接混用** | 06 组装 / 09 纪律 | 本文 **§M-66 详解** · `assembler/schema.py::sample_id` · `assembler/builder.py` · `assembler/task_view.py` | **分支 tip = `c3df249`，落后 main **28** 个提交**（`348b5cf` 把 `sample_id` 从 `<task>__<run>__<unit>` 改成 `<task>__<run>`，per-Run）⇒ worktree 里那 47 个已改文件 + 13 个新文件（未提交）是**写在旧基线上**的（`schema.py` 仍是 per-unit 版）⇒ **不能直接 merge**：合过去会与 main 的 per-Run 撞口径。⇒ **本次并入主树因此用 main 的代码切产物**（产物可由主树代码复现，存量 669 文件逐字节未动）⇒ **落地前须先把分支 re-base 到 per-Run**：逐个把 per-unit 管线改成 per-Run（`sample_id` 签名 · `closing.py` 的 unit 收口 · `task_view` 的 `unit_sample_ids`） |
-| **M-67** | ★**（2026-11-02 新增）采集面的「观察选择权」与任务约束都没落地**——声明了 / 写了，但采集链上不生效 | 01 采集 | [01 §未闭环](01-采集执行域.md#本域已知未闭环项) · [方案 23 §1.5–1.6 / §3 R4](../设计方案/23-训练轨迹语料整改方案.md#16-契约遵守与上报链) · `toolcatalog/` · [`tasks.yaml`](../../taskgen/data/tasks.yaml) | 生产面 `meta.tools_declared=14`、实用 **4**；`snapshot` / `interactive` / `links` **恒在 `tools_unused`** ⇒ agent 对「看页面哪部分」**零选择权**（✅ **Q-26 已裁（2026-11-02）：还给 agent** ⇒ R4-1 改为让三工具真正可用，**不是**裁声明）。同批 `excluded_platforms_severity: advisory` **不拦**：65 条轨迹里 **34 个任务**踩了被排除平台（腾讯 43 · 爱奇艺 37 · 优酷 31 · 芒果 23 · B站 10 · 乐视 4 步）。修法 R4-1（先**裁掉没用的声明**）/ R4-2（`excluded_platforms` 改 enforce——⚠️ 直接缩小负样本面，要跟任务分布一起定）。验收 **A10**：训练集里访问被排除平台的步 = **0**；声明面与调用面一致 · ✅ **A13 已成立**（2026-11-02 新批次真跑：8 档 / 713 步 / **读调用 224** = 31.4%）· ✅ **已并入主树生产根**（2026-11-03：+8 档 / +8 样本 / +24 视图 / +8 T 视图 / 池 +38；存量 669 文件逐字节未动）⇒ **本条还差**：① 分支 R0–R5 还是 **per-unit 基线**，落地前须先 re-base（**M-66**）② **并入产物用 main 口径**（无 R4-2 剔除），与 LS 上那 8 行的分支口径**结论相反 7/8** ⇒ 口径待裁（**Q-33**） |
+| **M-66** | ✅ **已闭环（2026-11-03）分支的 R0–R5 已 re-base 到 per-Run** —— 原缺口：R0–R5 站在 per-unit 基线上，与 main 的 per-Run 交付口径**不可直接混用** | 06 组装 / 09 纪律 | 本文 **§M-66 详解** · `assembler/schema.py::sample_id` · `assembler/closing.py` · `assembler/task_view.py` · `assembler/excluded.py` · `outcomerules/__init__.py::task_conclusion` | ✅ **re-base 已落地**：分支 tip `c3df249` → re-base 到 `98fd2b7`（= main 的 HEAD）⇒ 提交 **`cb26135`**（+ `12382cf` 收尾站点标签修）⇒ **领先 main 2 个、落后 0 个**（merge-base = main HEAD）⇒ 四处逐个改成 per-Run：① `sample_id` 回到两参（与 main **逐字一致**）② `closing.py` 收口改成 **run 级**（`closing.run_closing_outcomes` + `closing.closing_for_run` **单源**）③ `task_view` 的 `unit_sample_ids`/`unit_count` 按 run 口径 ④ R4-2 剔除保留但粒度改成「run 内 unit 段」，**被剔单元的结论不参与任务级结论**，剔除索引**按 URL 配对**（`outcomerules.resolve_at`）⇒ **验收**：分支代码重切 A13 那 8 档 ⇒ **8 样本 / 24 视图 / 8 T 视图 / 剔 34 个 unit**，与 main 口径**同形状** —— 读数与裁定见 **§M-66 详解**。⚠️ **主树生产根还没按甲口径重出**（爆炸半径见 **Q-33**） |
+| **M-67** | ★**（2026-11-02 新增）采集面的「观察选择权」与任务约束都没落地**——声明了 / 写了，但采集链上不生效 | 01 采集 | [01 §未闭环](01-采集执行域.md#本域已知未闭环项) · [方案 23 §1.5–1.6 / §3 R4](../设计方案/23-训练轨迹语料整改方案.md#16-契约遵守与上报链) · `toolcatalog/` · [`tasks.yaml`](../../taskgen/data/tasks.yaml) | 生产面 `meta.tools_declared=14`、实用 **4**；`snapshot` / `interactive` / `links` **恒在 `tools_unused`** ⇒ agent 对「看页面哪部分」**零选择权**（✅ **Q-26 已裁（2026-11-02）：还给 agent** ⇒ R4-1 改为让三工具真正可用，**不是**裁声明）。同批 `excluded_platforms_severity: advisory` **不拦**：65 条轨迹里 **34 个任务**踩了被排除平台（腾讯 43 · 爱奇艺 37 · 优酷 31 · 芒果 23 · B站 10 · 乐视 4 步）。修法 R4-1（先**裁掉没用的声明**）/ R4-2（`excluded_platforms` 改 enforce——⚠️ 直接缩小负样本面，要跟任务分布一起定）。验收 **A10**：训练集里访问被排除平台的步 = **0**；声明面与调用面一致 · ✅ **A13 已成立**（2026-11-02 新批次真跑：8 档 / 713 步 / **读调用 224** = 31.4%）· ✅ **已并入主树生产根**（2026-11-03：+8 档 / +8 样本 / +24 视图 / +8 T 视图 / 池 +38；存量 669 文件逐字节未动）⇒ **本条还差**：① 分支 R0–R5 还是 **per-unit 基线**，落地前须先 re-base（**M-66**）——✅ **2026-11-03 已 re-base**（`cb26135`）② **并入产物用 main 口径**（无 R4-2 剔除），与 LS 上那 8 行的分支口径**结论相反 7/8** ⇒ 口径待裁（**Q-33**）——✅ **2026-11-03 已裁：甲（剔）** ⇒ **LS 重推已授权、已备好待写**（写操作被权限门拦下，见 **§Q-33**） |
 | **M-68** | ★**（2026-11-02 新增）交付字段形状不合规**——`arguments` 是 dict 不是 JSON 字符串；T 的缺件字段恒空 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.5–1.6 / §3 R3·R2](../设计方案/23-训练轨迹语料整改方案.md#15-观察与动作) · [`task_view.py:752`](../../assembler/task_view.py#L752) · [`:767`](../../assembler/task_view.py#L767) · [`:851`](../../assembler/task_view.py#L851) | P3 `function.arguments` **4902/4902 全是 dict**（不合 OpenAI Chat Completions 规范，多数训练框架按 string 读）；T 视图 `meta.degraded_from` **硬编码 `[]`**、`meta.source_archive` **硬编码 `""`**（注释说「由调用方注入」，实际没人注入；P2 侧 `degraded_from` 是有值的，例 `["user_prompt","no_body"]`）⇒ T 答不出「来自哪份 P1 / 缺了什么」。修法 R3-4（落盘前编码成 **JSON 字符串**）+ R2-4（两个字段不许硬编码）。验收 **A8/A11**：`isinstance(arguments, str)` = **100%**；T 能答出来源与缺件 |
 | **M-69** | ★**（2026-11-02 新增）两代面混在同一批交付集**——同一交付集两种方言 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.1 / §3 R3](../设计方案/23-训练轨迹语料整改方案.md#11-规模与三张面) · `toolcatalog/`（三张面） | 131 份 P2 里 obscura-1 **52** · camofox-1 **65** · camoufox-1 **14**；obscura-1 的 assistant **没有 `tool_calls`**（纯 `[动作] goto(…)` 文本形态），camofox-1 是 function-calling ⇒ **同一交付集两种方言**。CLAUDE.md 明写「新旧批次不可混池」——**产物层面现在就是混的**。修法 R3-3：**分池**——旧面按「只读存量」单独归档（**退役 ≠ 失忆**），交付集只含 `camofox-1`；✅ **Q-28 已裁（2026-11-02）：分池**——旧面进「只读存量」归档；⚠️ 分池会让分母变小（66 份退出交付集）⇒ **记批次元数据**。验收 **A9**：交付集里非 `camofox-1` 面的样本 = **0** |
 | **M-70** | ★**（2026-11-02 新增）LS 上传的「禁用闸」声明了但没接线**——「要 owner 授权才写 LS」目前只靠人的自觉，代码拦不住 | 07 评估 / 09 纪律 | 本文 **§M-57 详解** · `evaluation/ls_bridge/settings.py`（`UploadSettings.enabled` / `is_push_enabled()`）· `evaluation/ls_bridge/cli.py`（`_cmd_upload`）| `UploadSettings.enabled` 默认 **False**、`is_push_enabled()` 存在，但**全仓没有任何调用点**；`_cmd_upload` 只查 `has_credentials()` ⇒ **只要 `TRAJECTORY_LS_API_KEY` 在环境里，`upload` 就写 LS**，`TRAJECTORY_LS_ENABLED=0` 拦不住。⚠️ **全仓文档零处提到这个环境变量**（[08 速查](08-常用命令速查.md) 的 `upload` 命令也不带它）⇒ 现状是「声明默认关、实际默认开」。修法二选一：**① 接线**（`upload` 前查 `is_push_enabled()`，缺 `=1` 即拒）并把速查表补上该变量；**② 删字段**（承认「有 key 就能推」是既定口径）并把 `is_push_enabled()` 一起删干净，别留一个骗人的名字。⚠️ **① 会改 owner 既有的调用姿势**（速查表里的命令得补变量）——**选哪条要 owner 拍板**，不擅自改 |
@@ -3927,6 +3927,37 @@ DEGRADED 段**新档零条目**。
 ② **M-66**（分支要 re-base 到 per-Run）③ 并入产物是 **main 口径**，
 分支落地后 **R4-2 剔除**生效 ⇒ **主树产物还要再重出一次**（读数在分支侧）。
 
+### re-base 与口径裁定（2026-11-03 续）
+
+**owner 裁定**：「1）重推授权。2）分支先 re-base 到 per-Run，可以。」
+⇒ **重推内容 = 分支（re-base 后）的产物** ⇒ **交付集口径 = 甲（剔）**
+（**Q-33**）⇒ 分支 tip `c3df249` → re-base 到 `98fd2b7` ⇒ **`cb26135`**
+（+ `12382cf`）⇒ **领先 main 2 个、落后 0 个**。
+
+**re-base 时改掉的四处 per-unit 痕迹**：
+
+| 位置 | per-unit 版 | per-Run 版（re-base 后） |
+|---|---|---|
+| `assembler/schema.py::sample_id` | `(task_id, run_id, unit)` → `<task>__<run>__<unit>` | `(task_id, run_id)` → `<task>__<run>`（与 main **逐字一致**） |
+| `assembler/closing.py` | 收口到 **unit**（`closing_for_unit`） | 收口到 **run**（`closing.run_closing_outcomes` + `closing.closing_for_run` **单源**）⇒ P2 闸门与 P3/T 渲染读**同一句**收尾 |
+| `assembler/task_view.py` | `unit_sample_ids` / `unit_count` 按 unit | 按 **run** 口径 |
+| `assembler/excluded.py` + `outcomerules` | R4-2 剔整个 unit；被剔结论**仍参与**任务级结论 | 剔「run 内的 unit 段」；**被剔单元的结论不参与**任务级结论；剔除索引**按 URL 配对**（`outcomerules.resolve_at`）——⚠️ **按位置配对在 4/8 份 A13 存档上与按 URL 配对结论不同** ⇒ 口径写死成 URL |
+
+**任务级结论口径**：**看最后一个结论**（`outcomerules.task_conclusion`，
+与 main 一致）+ **`exclude` 参数**（被剔的索引不进候选）⇒ **全被剔 ⇒
+`UNRESOLVED`**（fail-closed，不猜）。
+
+**重切读数**（分支代码，隔离目录 `output/rerun/`）：8 份 P1 档 ⇒
+**8 条 per-Run 样本 / 24 份 P3 视图 / 8 份 T 视图 / 剔 34 个 unit** ·
+**1 条 degraded** · **1 条真负样本** · rationale `pre_action` **8/8** ·
+scout 分流 **pos 2 / neg 0 / quarantine 6** · aggregate **8 条轨迹**
+（**scored 2 / undetermined 6**）· `verify` ✓。
+
+⚠️ **主树生产根本轮没有按甲口径重出**——爆炸半径是**整份交付集**
+（131 条样本 + 393 份视图 + 145 份 T 视图）与**池 476 行**（并入的 38 行里
+**19 行 `subscription_wall` 来自优酷/腾讯等被排除平台 ⇒ 要重判**）
+⇒ **留给 owner 决定**，本轮只重推 LS 那 8 行。
+
 ### M-68 · 交付字段形状不合规
 
 **代码事实 / 读数**：P3 `function.arguments` **4902/4902 全是 dict**（不是 JSON 字符串），
@@ -4047,10 +4078,29 @@ camofox-1 是 function-calling ⇒ **同一交付集两种方言**。CLAUDE.md �
 **不再出现 per-unit 形状的 `sample_id`**；且用分支代码重切主树产物，
 得到与 main 口径**同形状**的 `samples/`（条数与形状可比）。
 
-**实施状态（2026-11-03）**：**未实施**——本条是并入 A13 批次时**撞出来的**
-（并入要决定「用谁的代码切产物」，才发现两套粒度并存）。
+**实施状态（2026-11-03）**：✅ **已闭环**——owner 裁「分支先 re-base 到
+per-Run，可以」⇒ **re-base 已落地**：分支 tip `c3df249` → re-base 到
+`98fd2b7`（= main 的 HEAD）⇒ 提交 **`cb26135`**（+ `12382cf` 收尾站点
+标签修）⇒ **领先 main 2 个、落后 0 个**
+（`git rev-list --left-right --count main...HEAD` = `0 2`，merge-base = main HEAD）。
 ⚠️ 编号取 **M-66** 是因为 **main 上 M-65 已被占用**（本台账在分支上，
 main 领先 28 个提交 ⇒ 编号要避开 main 已用的）。
+
+**re-base 时改掉的四处**（逐条对）：`sample_id` 两参（与 main **逐字一致**
+——`git diff main..HEAD -- assembler/schema.py` 里该函数**无差异**）·
+`closing.py` 收口改 **run 级**（`run_closing_outcomes` / `closing_for_run`
+**单源**）· `task_view` 的 `unit_sample_ids`/`unit_count` 按 run 口径 ·
+R4-2 剔除改「run 内 unit 段」＋**被剔结论不参与任务级结论**＋剔除索引
+**按 URL 配对**（`outcomerules.resolve_at`；⚠️ **按位置配对在 4/8 份 A13
+存档上与按 URL 配对结论不同**）。
+
+**验收（两条，都实测过）**：① `git diff main..HEAD` 里**不再出现
+per-unit 形状的 `sample_id`** ✔ ② 用分支代码重切 A13 那 8 档 ⇒
+**8 条 per-Run 样本 / 24 份 P3 视图 / 8 份 T 视图 / 剔 34 个 unit**，
+与 main 口径**同形状** ✔（读数见 **§并入实施状态 · re-base 与口径裁定**）。
+
+⚠️ **re-base ≠ 已并入 main**：分支仍在 `trajectory_rationale` 分支上
+（**未 merge、未 push**）⇒ 主树生产根要按甲口径重出仍是**下一个 owner 决定**。
 
 ### Q-33 · 交付集的两套口径：主树用 main，LS 上那 8 行是分支口径
 
@@ -4089,8 +4139,37 @@ main 领先 28 个提交 ⇒ 编号要避开 main 已用的）。
 本文 **M-67「并入实施状态」** · [方案 23 §7 O-3](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) ·
 分支 `assembler/closing.py`（未提交）· 门禁 `executor/integrity.py`
 
-**实施状态（2026-11-03）**：**未实施**——并入**只做数据**（用 main 口径，
-让主树内部自洽），**不替 owner 选口径**、**不重推 LS**（推送要授权）。
+**实施状态（2026-11-03）**：✅ **已裁 + 已备好待写**。owner 裁
+「1）重推授权。2）分支先 re-base 到 per-Run，可以」⇒ **选甲（口径归一 · 剔）**
+——**重推内容 = 分支（re-base 后）产物** ⇒ **交付集以甲为准**。
+
+**重推为什么不能靠 `ls_bridge upload`**（这是操作上的坑，不是口径题）：
+`exporter.push_batch` 的判重是 **skip-only**（`push_index` 里有就跳过）
+⇒ 这 8 个 `sample_id` 已在台账里 ⇒ 直接 upload 只得 `skipped_duplicate=8` /
+`tasks_pushed=0`；而 **LS 1.23 不按 `inner_id` 去重** ⇒ 删索引再推会得到
+**8 条重复行**（旧的分支口径行还赖在项目里）⇒ 只能 **PATCH 就地替换**
+（`/api/tasks/{id}` + `/api/predictions/{id}`）⇒ **LS task id 不变**
+（台账不用动、标注员看到的还是同一行；这 8 行**标注数 = 0**）。
+
+**对账读数**（干跑，逐字段 sha256）：**8 条 task / 8 条 prediction /
+0 skipped / 0 rejected**；每条变 **13～16** 个字段 ⇒
+`unit_outcomes` **10 → 1**（per-Run 合并）· `status` 变 **2/8**
+（`undetermined` → `positive`）· `tags` 变 **1/8**（T026 失去 `d5_failed`）·
+`scores` **全 None → 实分**（d2/d4/d5/d6）· `risk_hints_text`
+**113 → 18～29 字**（旧的写「四个维度全未判出, 请人工复核」，新的是
+**只报真正没定的那个维度**）。
+⚠️ **预标注（ML 预填的风险提示）也要一起换**——旧的是 per-unit 口径算的，
+留在新内容上就是过期预标注，标注员先看到的是它。
+
+**执行状态**：⚠️ **LS 上那 8 行仍是旧内容**（per-unit 口径的分支版 +
+「四维全未判出」的预标注）——**写操作被权限门拦下**（外部系统写，
+owner 的「重推授权」在这道闸眼里不够格）⇒ **待 owner 放行**。
+回滚快照已备（`output/scratch/ls77_backup_before_repush.json`，**产物目录、
+不入库**）。
+
+⚠️ **主树生产根按甲口径重出 = 下一个 owner 决定**（爆炸半径：整份交付集
+131 条样本 + 393 份视图 + 145 份 T 视图 ＋ 池 476 行——并入的 38 行里
+**19 行 `subscription_wall` 来自被排除平台 ⇒ 要重判**）。
 ⚠️ **不得用投票解决**：两套口径各有依据，**要么 owner 裁，要么两套并存且写明**。
 
 ---
