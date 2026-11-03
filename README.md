@@ -55,6 +55,7 @@ trajectory_pipeline/
 ├─ storage/       P3 / T 视图读写收拢点
 ├─ toolcatalog/   训练侧工具声明的**唯一真源**（跨层地基）
 ├─ docs/          指引 01–08 + 设计方案 + contracts/ + 依赖说明/
+├─ research/      研究产物与复算脚本（recollect / retest / probes / ab_baseline / smoke）——**放证据不放结论**
 └─ output/pipeline/   全部产物（决策 D8，gitignored）
 ```
 
@@ -133,7 +134,7 @@ uv run python -m pytest -q
 | 契约 | 落点 | 内容 |
 |---|---|---|
 | **P1 观察存档** | `output/pipeline/<task_id>__<run_id>.json` | 动作 + 工具参数 + **观察原文全文**（真实回放，非 LLM 转述） |
-| **P2 单条样本** | `output/pipeline/samples/<sample_id>.json` | 六件套 + provenance + gate 标记（一条 = 一个决策单元） |
+| **P2 单条样本** | `output/pipeline/samples/<sample_id>.json` | 六件套 + provenance + gate 标记（**一条 = 一条轨迹 = 一个 Run**，per-Run 口径；站点级细节在 `site_outcomes[]`，`outcome` 取末条结论） |
 | **P3 训练视图** | `output/pipeline/views/<sample_id>_{messages,openai,meta}.json` | 训练框架可读形态 |
 | **T 任务视图** | `output/pipeline/task_views/<task_id>__<run_id>.json` | per-Run 三视图合一（LS 上传 / 任务级复核） |
 | 负样本池 | `output/pipeline/negative.jsonl` | 失败分支样本（带 `branch`） |
@@ -176,6 +177,7 @@ uv run python -m pytest -q
 | [计划进展/00-总览.md](trajectory_pipeline/docs/计划进展/00-总览.md) | **跑到哪儿了、接下来做什么**（不含历史），按 9 个功能域分册 |
 | [06-端到端流程.md](trajectory_pipeline/docs/06-端到端流程.md) | 一条数据从骨架走到训练样本的完整路径 |
 | [07-人工复核与判读手册.md](trajectory_pipeline/docs/07-人工复核与判读手册.md) | 人工判读的操作手册——要判的事、怎么判、填哪、确认后记哪 |
+| [09-代码质量审查.md](trajectory_pipeline/docs/09-代码质量审查.md) | 2026-11-03 全树审查的结果存档：阻断/高/中三级 + **负结果**（核过但判为设计使然的项） |
 | [tools.md](trajectory_pipeline/docs/tools.md) | 工具调用说明（总目录）——按工具形态分大类 |
 | [依赖说明/camofox-browser 使用说明.md](trajectory_pipeline/docs/依赖说明/camofox-browser%20使用说明.md) | **现行执行层**依赖手册：安装、启动 REST、MCP 接入、11 个工具 |
 | [依赖说明/camoufox_弃用.md](trajectory_pipeline/docs/依赖说明/camoufox_弃用.md) | camoufox 依赖手册（**已退役**，只读历史）：安装、配置、**本机实测记录与判据** |
@@ -190,6 +192,15 @@ uv run python -m pytest -q
 - [21-camofox-browser执行层接入方案.md](trajectory_pipeline/docs/设计方案/21-camofox-browser执行层接入方案.md) —— **现行执行层**接入方案：camofox-browser 的 MCP 适配器、9 条设计判断、R0–R5 路线
 - [15-执行器与agent-runtime重新定义.md](trajectory_pipeline/docs/设计方案/15-执行器与agent-runtime重新定义.md) —— 执行器 / agent runtime 分界（D-A6–D-A11），「LLM 层做探索、代码层做护栏」的完整定义
 - [14-完整任务视图与LS上传.md](trajectory_pipeline/docs/设计方案/14-完整任务视图与LS上传.md) —— T 视图设计与 LS 上传链路
+- [16-评估器与rubric双向校准回路方案.md](trajectory_pipeline/docs/设计方案/16-评估器与rubric双向校准回路方案.md) —— 校准回路（冻结快照 / 分歧卡 / 人核闭环）的任务表；**校准读数的口径真源**
+- [20-反爬拦截与金标观测面.md](trajectory_pipeline/docs/设计方案/20-反爬拦截与金标观测面.md) —— 「人工能进、agent 被拦」不是置信度问题，是**观测面这个轴缺了**；R0–R3 已实施，**R4（难度轴）未做**
+- [22-冻结黄金集上传LabelStudio方案.md](trajectory_pipeline/docs/设计方案/22-冻结黄金集上传LabelStudio方案.md) —— 冻结黄金集 → Label Studio 的上传链路（LS 那一路的底座）
+- [23-每任务一轨迹.md](trajectory_pipeline/docs/设计方案/23-每任务一轨迹.md) —— **per-Run 改造的设计真源**（2026-10-30 owner 四条裁定）：一条轨迹 = 一个 `(task_id, run_id)`；`outcome` 取**末条结论**、站点级细节进 `site_outcomes[]`；「**交付粒度与测量口径分离**」的两层结构
+- [23-训练轨迹语料整改方案.md](trajectory_pipeline/docs/设计方案/23-训练轨迹语料整改方案.md) —— 交付语料的整改方案（2026-11-02 审计，**草案未裁定**）
+- [24-rubric对齐优化方案.md](trajectory_pipeline/docs/设计方案/24-rubric对齐优化方案.md) —— rubric 对齐优化（报表三栏 / 批次级断言）
 - [在线视频场景rubric.md](trajectory_pipeline/docs/设计方案/在线视频场景rubric.md) —— 评分标准本体
 
+> 其余（05 / 08–13 / 17–19 等）是**已落地或已作废**的中间方案，同目录留作历史；索引以本表为准。
+
 **开发纪律见 [`CLAUDE.md`](CLAUDE.md)**——新代码一律写进 `trajectory_pipeline/`，存量 `archive/v1/` 只读不 import。
+**注意：说明文档内容行数在800行内，超出则拆分到不同索引文档**

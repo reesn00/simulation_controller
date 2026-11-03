@@ -132,7 +132,7 @@ N interactive element(s) registered. Call browser_interactive_elements to list, 
 
 **驱动侧三套用法**（与具体实现无关，是契约级需求）：
 1. **取主路径正文**：`"document.body.innerText"`
-2. **取 fallback 正文**：克隆 body、剥 `<script>/<style>/<noscript>/<template>`、再 `textContent`（[90-增量编年史 · 增量四十三](../计划进展/90-增量编年史.md)）
+2. **取 fallback 正文**：克隆 body、剥 `<script>/<style>/<noscript>/<template>`、再 `textContent`（[90-增量编年史 · 增量四十三](计划进展/90-增量编年史.md)）
 3. **通用 evaluate**：返回值能 `json.loads` 就解析，不能就原样返回
 
 **通用陷阱**：异常表达式 → `Error: <message>`

@@ -15,7 +15,14 @@ from typing import Any
 from trajectory_pipeline.evaluation.scout.io import run_scout
 
 
-#: 默认 P2 根。与 :data:`trajectory_pipeline.evaluation.cli.DEFAULT_ROOT_PATH` 同源。
+#: 默认 P2 根。
+#:
+#: ⚠️ **这个缺省是 cwd 相对**（``output/pipeline``），**不是**
+#: :data:`trajectory_pipeline.evaluation.cli.DEFAULT_ROOT_PATH`（后者是包内锚定的绝对路径
+#: ``<包>/output/pipeline``）。**两者不同源**——2026-11-03 按实现校正注释。
+#: 后果：在仓库根跑 ``scout.cli run`` 不带 ``--p2-root`` ⇒ 读到**仓库根**那个
+#: ``output/pipeline/``（2026-10-25 的陈旧产物）⇒ **静默给错语料的打分**。
+#: ⇒ 生产上**必须显式** ``--p2-root trajectory_pipeline/output/pipeline``。
 DEFAULT_P2_ROOT = pathlib.Path("output/pipeline")
 
 

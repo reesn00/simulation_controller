@@ -3162,8 +3162,10 @@ def cmd_build(args: argparse.Namespace) -> int:
     解析放在本层（executor 能看见 ``select_archives``，assembler 不能），
     名单显式传给 builder，不破坏 assembler 不 import executor 的契约。
 
-    返回码：0 = 全部写出；1 = 有跳过（已存在或写失败）。跳过的条数与
-    原因逐条印出——**「跳过」必须看得见**，否则批次看起来只是少了几条。
+    返回码：**恒为 0**。「跳过」**不算失败**：跳过的条数与原因逐条印出
+    （**「跳过」必须看得见**，否则批次看起来只是少了几条），但退出码不变。
+    （本 docstring 早期写「1 = 有跳过」，**与实现不符**——函数体里没有
+    ``return 1``；2026-11-03 按实现校正。）
     """
     root = Path(args.out) if args.out else DEFAULT_ROOT
     stage = args.stage

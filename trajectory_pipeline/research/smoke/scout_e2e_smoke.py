@@ -6,19 +6,24 @@ be architecturally correct).
 
 Two tracks:
 
-- ``--mode real`` (default): run ``freeze / agreement`` against the existing 357
-  candidates and 294 annotations in ``evaluation/golden/data/`` (preserves v3,
-  produces v4 with the same data — confirms the commands run).
+- ``--mode real`` (default): run ``freeze / agreement`` against the **existing**
+  candidates / annotations in ``evaluation/golden/data/`` (preserves the current
+  version, produces the next one with the same data — confirms the commands run).
+  ⚠️ **不写死条数**——条数会漂（2026-11-03 实测：candidates 2495 行 / annotations 306 行）。
 - ``--mode scout``: stand up a clean ``p2_root`` from ``output/scout_fixture/``,
   produce P2 samples, run ``scout``, ``from-scout``, generate synthetic
   annotations, ``freeze`` and ``agreement`` in an isolated ``golden_root``.
 - ``--mode overlay``: run ``cmd_overlay_scout --dry-run`` against the existing
-  357 candidates and verify ``dimension_scores`` coverage (Task ② path).
+  candidates and verify ``dimension_scores`` coverage (Task ② path).
   Non-destructive by default; pass ``--overlay-apply`` to actually write back.
 - ``--mode both``: do both.
 
 Run with ``$env:PYTHONPATH='.'`` from the repo root, or invoke as
-``python tools/scripts/scout_e2e_smoke.py``.
+``python trajectory_pipeline/research/smoke/scout_e2e_smoke.py``.
+
+⚠️ **2026-11-03 搬进新树**（原先在仓库根 ``tools/scripts/``）——
+仓库纪律「新代码一律写入 ``trajectory_pipeline/``」。搬动只改了路径解析
+（``REPO_ROOT`` 深了一级、fixture 根收进新树），**行为未变**。
 """
 from __future__ import annotations
 
@@ -32,9 +37,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+#: ⚠️ 搬进新树后深度变了一级（``parents[3]`` 才是仓库根）。
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GOLDEN_ROOT = REPO_ROOT / "trajectory_pipeline" / "evaluation" / "golden" / "data"
-FIXTURE_ARCHIVES = REPO_ROOT / "output" / "scout_fixture"
+#: fixture 根收进新树（D8：v2 产物不落仓库根 ``output/``）。
+FIXTURE_ARCHIVES = REPO_ROOT / "trajectory_pipeline" / "output" / "scout_fixture"
 PIPELINE_ROOT = REPO_ROOT / "trajectory_pipeline" / "output" / "pipeline"
 
 
@@ -426,7 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=["real", "scout", "overlay", "both"],
         default="real",
-        help="real = run freeze/agreement on existing 357 candidates; "
+        help="real = run freeze/agreement on existing candidates; "
              "scout = full chain on fixture data in isolated golden_root; "
              "overlay = run cmd_overlay_scout --dry-run on existing candidates "
              "and verify dimension_scores coverage; "

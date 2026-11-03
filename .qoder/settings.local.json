@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la && echo \"---\" && git log --oneline -5 && echo \"---\" && find . -type f -name \"*.md\" -not -path \"./.git/*\" | head -50)",
+      "Bash(git ls-files | head -200 && echo \"---TOTAL---\" && git ls-files | wc -l)",
+      "Bash(git ls-files | grep -v \"^archive/\" | grep -v \"^\\\\.venv\" | grep -v \"docs/\" | grep -v \"research/\" | grep -v \"golden/data\" | grep -v \"tests/\" | grep \"\\\\.py$\" | xargs wc -l 2>/dev/null | sort -rn | head -60)",
+      "Bash(git ls-files | grep -v \"^archive/\" | grep -v \"^\\\\.venv\" | grep \"trajectory_pipeline\" | grep \"\\\\.py$\" | grep -v \"research/\" | sed -n '1,400p' | awk -F/ '{print $2}' | sort | uniq -c | sort -rn)",
+      "Bash(cd \"C:/Users/klpc/workspace/code/items/simulation_controller\" && ls trajectory_pipeline/docs/ && echo \"=== README 文档索引段 ===\" && grep -n \"01-架构总览\\\\|08-常用命令速查\\\\|07-人工复核\" README.md | head -10)",
+      "Bash(cd \"C:/Users/klpc/workspace/code/items/simulation_controller\" && grep -n \"08-常用命令速查\\\\|02-避坑指南\\\\|docs/\" CLAUDE.md | sed -n '1,40p')",
+      "Bash(cd /c/Users/klpc/workspace/code/items/simulation_controller/trajectory_pipeline && wc -l output/pipeline/negative.jsonl && python - <<'PY'\nimport json, collections\np='output/pipeline/negative.jsonl'\nrows=[]\nfor line in open\\(p, encoding='utf-8'\\):\n    line=line.strip\\(\\)\n    if line: rows.append\\(json.loads\\(line\\)\\)\nprint\\('total', len\\(rows\\)\\)\nprint\\(collections.Counter\\(r.get\\('branch'\\) for r in rows\\)\\)\nprint\\(collections.Counter\\(r.get\\('source'\\) for r in rows\\)\\)\nPY)",
+      "Bash(cd /c/Users/klpc/workspace/code/items/simulation_controller/trajectory_pipeline && find output -path '*golden*' -name '*.jsonl' | head -50)"
+    ]
+  }
+}
