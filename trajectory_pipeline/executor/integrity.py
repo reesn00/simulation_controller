@@ -42,11 +42,8 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from trajectory_pipeline import outcomerules
+from trajectory_pipeline.executor import negative_rules
 from trajectory_pipeline.executor.archive import select_archives
-from trajectory_pipeline.executor.branches import (
-    COLLECTION_SIDE_BRANCHES,
-    NON_SAMPLE_BRANCHES,
-)
 
 #: 替换字符。**出现即证据链断裂且不可恢复**。
 #:
@@ -417,15 +414,21 @@ def check_archive(
             ))
 
     # ── 并池 ────────────────────────────────────────────────────
-    # 两段排除与 :attr:`SiteOutcome.is_negative_sample` **逐字同源**：
-    # 无题的兜底分支（unresolved 等）与采集侧账（blocked）。这里只排除
-    # 一半的话，门禁会把一条正确的「没并池」报成 ``negative_not_pooled``
-    # ——报表全红，而池子是对的。
+    # **两段排除都走同一份判定**
+    # （:mod:`trajectory_pipeline.executor.negative_rules`）：① 分支口径
+    # （无题的兜底分支与采集侧账）② 任务级剔除（落在任务声明的
+    # ``excluded_platforms`` 上的访问点——它本来就不该在池里）。
+    # 这里只排除一半的话，门禁会把一条正确的「没并池」报成
+    # ``negative_not_pooled``——报表全红，而池子是对的。
+    #
+    # ⚠️ **第二段漏掉的后果实测过**（2026-11-03）：121 条正确的「没并池」
+    # 被报成错（甲口径下那批行被撤池，门禁却还按旧口径要求它们在池里）。
+    members = negative_rules.pool_member_keys(doc)
     negatives = [
         (j, o) for j, o in enumerate(outcomes)
         if o.get("branch") is not None
-        and o.get("branch") not in NON_SAMPLE_BRANCHES
-        and o.get("branch") not in COLLECTION_SIDE_BRANCHES
+        and negative_rules.is_pool_member_branch(o.get("branch"))
+        and (str(o.get("url") or ""), str(o.get("branch") or "")) in members
     ]
     if pool_keys is not None:
         for j, o in negatives:

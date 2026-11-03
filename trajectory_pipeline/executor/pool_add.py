@@ -36,9 +36,10 @@
    替人把分歧投票掉了。
 3. **口径与门禁一致**——存档集、负样本判定、去重键三样都照
    :func:`trajectory_pipeline.executor.integrity.check_archive` 的写法
-   （复核档优先、``NON_SAMPLE_BRANCHES`` 与 ``COLLECTION_SIDE_BRANCHES``
-   排除、键 ``(task_id, url, branch)``）。**口径不同 ⇒ 门禁说「已并池」而
-   这里说「没并」**，那种分歧比没并池更难查。
+   （复核档优先；负样本判定走
+   :func:`trajectory_pipeline.executor.negative_rules.pool_member_keys`
+   ——**分支口径 + 任务级剔除**两段；键 ``(task_id, url, branch)``）。
+   **口径不同 ⇒ 门禁说「已并池」而这里说「没并」**，那种分歧比没并池更难查。
 """
 
 from __future__ import annotations
@@ -48,12 +49,9 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from trajectory_pipeline.executor import negative_rules
 from trajectory_pipeline.executor.archive import P1Archive, select_archives
-from trajectory_pipeline.executor.branches import (
-    BRANCH_LABELS,
-    COLLECTION_SIDE_BRANCHES,
-    NON_SAMPLE_BRANCHES,
-)
+from trajectory_pipeline.executor.branches import BRANCH_LABELS
 
 __all__ = [
     "Candidate",
@@ -234,8 +232,9 @@ def collect_candidates(
     """扫出「该进池但还没进池」的真负样本，**逐条给判定**。
 
     口径与门禁一致：存档集取 :func:`executor.archive.select_archives`
-    （顶层、复核档优先），负样本判定照 ``branch ∉ NON_SAMPLE_BRANCHES ∪
-    COLLECTION_SIDE_BRANCHES``，去重键 ``(task_id, url, branch)``。
+    （顶层、复核档优先），负样本判定走
+    :func:`trajectory_pipeline.executor.negative_rules.pool_member_keys`
+    （**两段**：分支口径 + 任务级剔除），去重键 ``(task_id, url, branch)``。
 
     已在池里的键**不出现**在结果里（幂等：跑第二次是空清单）。
     """
@@ -262,17 +261,24 @@ def collect_candidates(
         if not isinstance(doc, dict):
             continue
         task_id = str(doc.get("task_id") or "")
+        # ⚠️ **两段排除同源**（:mod:`trajectory_pipeline.executor.negative_rules`）：
+        # 分支口径 + **任务级剔除**（落在任务声明的 ``excluded_platforms``
+        # 上的访问点——那批行本来就不该在池里）。漏掉第二段 ⇒ 回填会把
+        # 剔掉的行**又并回池里**（池里混进不该训的站），而且**不报错**。
+        members = negative_rules.pool_member_keys(doc)
         for outcome in doc.get("outcomes") or []:
             if not isinstance(outcome, dict):
                 continue
             branch = outcome.get("branch")
             if branch is None:
                 continue
-            if branch in NON_SAMPLE_BRANCHES or branch in COLLECTION_SIDE_BRANCHES:
+            if not negative_rules.is_pool_member_branch(branch):
                 continue
             url = str(outcome.get("url") or "").strip()
             if not url:
                 continue
+            if (url, str(branch)) not in members:
+                continue                      # 落在被排除平台上 ⇒ 不并池
             if (task_id, url, str(branch)) in pool_keys:
                 continue                      # 已在池里——幂等，不重复报
             if (task_id, url, str(branch)) in seen:

@@ -33,6 +33,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from trajectory_pipeline.executor import negative_rules
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
 
 #: 产物根目录。**默认指向新树自己的 output/**，不碰仓库根 ``output/``
@@ -337,7 +338,10 @@ class P1Archive:
                 + (f"｜命中形态: {shapes}" if shapes else "")
             )
         path = self._write_text(self.path_for(task_id, run), payload)
-        self._append_negatives(record, task_id=task_id, run_id=run)
+        self._append_negatives(
+            record, task_id=task_id, run_id=run,
+            members=negative_rules.pool_member_keys(record_dict),
+        )
         return path
 
     # ── 负样本池 ──────────────────────────────────────────────────
@@ -350,7 +354,10 @@ class P1Archive:
         """
         return self._root / "negative.jsonl"
 
-    def _append_negatives(self, record: Any, *, task_id: str, run_id: str) -> int:
+    def _append_negatives(
+        self, record: Any, *, task_id: str, run_id: str,
+        members: set[tuple[str, str]] | None = None,
+    ) -> int:
         """把这次运行的**真负样本**并入池子，返回新增条数。
 
         追加而非覆盖：负样本池是**跨 run 累积**的资产，而 P1 是每 run
@@ -366,11 +373,24 @@ class P1Archive:
         只并入 ``is_negative_sample`` 的条目：``unresolved`` 与
         ``trailer_suspect`` 是「没判出来」，混进池子会毁掉「这里真的看不了」
         这条信号（见 :class:`~trajectory_pipeline.executor.branches.SiteOutcome`）。
+
+        ⚠️ **任务级剔除**（2026-11-03，方案 23 R4-2 / Q-33 裁「甲」）：
+        落在任务声明的 ``excluded_platforms`` 上的访问点**整条剔掉** ⇒
+        它的失败不是「这个任务里这个站看不了」，是「这个站本来就不在范围里」
+        ⇒ **不进池**。判据在 :mod:`trajectory_pipeline.executor.negative_rules`
+        （**一条判定三处同源**：写入路径 / 门禁 / 回填），
+        ``members`` 传进来的是那个判定算出的**键集合**
+        （``(url, branch)``；池的身份是键，不是行）。
         """
         ledger = getattr(record, "ledger", None)
         if ledger is None:
             return 0
         negatives = [o for o in ledger.negative_samples() if o.is_negative_sample]
+        if members is not None:
+            negatives = [
+                o for o in negatives
+                if (str(o.url or ""), str(o.branch or "")) in members
+            ]
         if not negatives:
             return 0
 
