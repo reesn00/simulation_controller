@@ -1103,10 +1103,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "**产物根**(其下会自动接 task_views/); 缺省包内 output/pipeline。"
             "⚠️ **别多给一层 task_views/**——那会去找 task_views/task_views/*.json "
             "⇒ T 视图可得率静默变成 0%%"
-            # ⚠️ `0%%` 不是笔误：argparse 拿 help 串做 `%` 格式化 ⇒ 写 `0%`
-            # 会让**建 parser 就炸**（ValueError: badly formed help string）
-            # ⇒ **整个 golden_ls CLI 的所有子命令都进不去**（含 `--help`）。
-            # ⇒ 「help 串里有 `%` 就写 `%%`」是 argparse 的硬规矩。
         ),
     )
     p_up.add_argument(

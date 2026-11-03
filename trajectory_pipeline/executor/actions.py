@@ -81,7 +81,17 @@ from trajectory_pipeline.perception.base import (
 #: 收窄是刻意的：P2 会拿这份清单当**训练动作空间**。列宽了就会训出
 #: 一批执行流从未产生过的动作，而那类样本永远不会被真实运行验证过。
 #: 控制流哪天真的发了新原语，这里跟着加——加的时候那条原语就有真实存档兜底。
-TOOLS: tuple[str, ...] = ("goto", "click", "new_tab", "fill", "press", "close_tab")
+TOOLS: tuple[str, ...] = (
+    "goto", "click", "new_tab", "fill", "press", "close_tab",
+    # 读原语（方案 15 §5.2 / 方案 23 R4-1）：pull 模式下模型主动发起观察，
+    # 于是「读」是动作而不是执行器推的回执。**只读、无副作用**，名字与
+    # ``PageDriver.snapshot`` / ``.interactive`` / ``.links`` 逐字相同。
+    "snapshot", "interactive", "links",
+)
+
+#: 三条读原语。抽成常量是因为「读」在热路径上有**三处不同处置**
+#: （不更新整页观察、不记死循环、不触发拦截），三处必须认同同一份清单。
+READ_TOOLS: tuple[str, ...] = ("snapshot", "interactive", "links")
 
 #: 动作来源。``model`` = 模型会选的动作；``infrastructure`` = 执行器自己做的。
 ActionOrigin = Literal["model", "infrastructure"]
@@ -251,6 +261,30 @@ class ActionStep:
         }
 
 
+#: ``steps[i].rationale.reason`` 的来源标记之一：**agent 决策时写下的原生
+#: think**。另一个来源是 writer 补记（成功时 ``reason=""``；失败时是错误
+#: 文本）。它是「这条 CoT 是不是模型自己的」在 P1 里的唯一机器可读标记
+#: （A3 的同分不同质核对读的就是它）。
+#:
+#: 放在本模块而不是 :mod:`~trajectory_pipeline.executor.agent_loop`：
+#: :class:`StepLog` 是 rationale 槽位的拥有者，**写入口与守卫必须认同
+#: 同一个字面值**；而 ``agent_loop`` 已经 import 本模块（反向 import 会成环）。
+NATIVE_THINK_REASON = "native-think"
+
+
+def is_native_think(rationale: Mapping[str, Any] | None) -> bool:
+    """这条 rationale 是不是 agent 的原生 think。
+
+    **只认 ``reason``，不认 ``status``**：「谁写的」与「写成了没有」是两个
+    轴。混成一个判断，将来原生 think 多出一种非 ``written`` 形态时，守卫
+    会在那个形态下静默失效。
+    """
+    return (
+        isinstance(rationale, Mapping)
+        and rationale.get("reason") == NATIVE_THINK_REASON
+    )
+
+
 class StepLog:
     """动作流记录器。挂在 :class:`~trajectory_pipeline.executor.steps.visit.VisitResult`
     与 :class:`~trajectory_pipeline.executor.orchestrator.RunRecord` 上。
@@ -314,7 +348,18 @@ class StepLog:
         两者混在一个方法里，调用方就会以为「挂上就说明这一步成功」——
         而 writer 的三种状态（``written`` / ``unavailable`` / ``empty``）
         与这一步有没有错无关。
+
+        **原生 think 不许被覆盖（R0-3 双保险）**：原生 think 是 agent
+        **决策当时**写下的证据；事后补记盖上去，等于把「另一个 LLM 事后
+        配的理由」冒充成决策者的 CoT，而报告上完全看不出异常。补记路径
+        已在 ``orchestrator._write_rationales`` 跳过这类步，但
+        ``attach_rationale`` 的调用方不止一个——守卫要落在槽位本身。
+
+        writer 自己的产物仍可重写（``reason=""``）：那是再生路径，
+        与「覆盖另一个来源的证据」不是一回事。
         """
+        if is_native_think(self.steps[index].rationale):
+            return
         self.steps[index] = replace(self.steps[index], rationale=rationale)
 
 
@@ -359,8 +404,24 @@ def close_tab() -> Action:
     return Action(tool="close_tab", params={}, origin="infrastructure")
 
 
+def read(kind: str) -> Action:
+    """读原语（``snapshot`` / ``interactive`` / ``links``）。
+
+    ``origin="model"``：**看什么由模型决定**（方案 15 O-3），所以读是动作、
+    进训练 ``tool_calls``；执行器推的整页回执则不进。参数一律为空——
+    条数/字数上限是执行层护栏，模型说了不算（catalog 同款口径）。
+
+    Raises:
+        ValueError: 认不出的读原语。**不猜成 snapshot**：猜错会让模型以为
+            自己读了正文，实际拿到的是元素表——而报告上只看到一次成功读取。
+    """
+    if kind not in READ_TOOLS:
+        raise ValueError(f"认不出的读原语 {kind!r}；已知的：{READ_TOOLS}")
+    return Action(tool=kind, params={}, origin="model")
+
+
 __all__ = [
-    "TOOLS", "ActionOrigin", "ActionTarget", "Action", "ActionStep",
+    "TOOLS", "READ_TOOLS", "ActionOrigin", "ActionTarget", "Action", "ActionStep",
     "StepLog", "target_of", "target_params", "UnaddressableTarget",
-    "goto", "new_tab", "click", "fill", "press", "close_tab",
+    "goto", "new_tab", "click", "fill", "press", "close_tab", "read",
 ]

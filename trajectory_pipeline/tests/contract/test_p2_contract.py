@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from trajectory_pipeline import toolcatalog
 from trajectory_pipeline.assembler import observation_view, schema
 
 PKG = Path(schema.__file__).parent
@@ -156,12 +157,21 @@ class TestToolSpaceDrift:
         **AST 解析而不是 import**——import 会把 assembler 与执行端焊死
         （A1 禁的就是这个），而这里要的就是「读它的字面量」这件事本身。
         顺带这条测试**不会空跑**：``TOOLS`` 是常量，任何时候都读得到。
+
+        ⚠️ **比的是生产面，不是默认面**（2026-11-02 · R4-1）：三条读原语
+        只在 aria 面声明，而 ``schema.TOOL_SPECS`` 是 **obscura 面**（没记
+        driver 的历史存档按它渲染）。拿默认面去比会把「读原语只在 pull
+        模式的面里」读成漂移。新存档由 P1 ``driver="camofox"`` 折算出
+        ``camofox-1``，它必须**声明全部**执行端原语。
         """
-        declared = {t.name for t in schema.TOOL_SPECS}
+        declared = {
+            t.name for t in
+            schema.TOOL_SPECS_BY_SURFACE[toolcatalog.SURFACE_CAMOFOX]
+        }
         src = (PKG.parent / "executor" / "actions.py").read_text(encoding="utf-8")
         native = _literal_tuple(_find_assign(src, "TOOLS"))
         assert native, "读不到 executor.actions.TOOLS 的字面量（模块改名了？）"
-        assert native <= declared, f"执行器会发但训练空间没声明: {native - declared}"
+        assert native <= declared, f"执行器会发但生产面没声明: {native - declared}"
 
     def test_存档里出现过的动作都在声明内(self):
         """控制流真发过的动作，训练空间里必须都有。
@@ -230,8 +240,11 @@ class TestTruncationIsVisible:
 
     def test_没裁剪时不谎报(self):
         out = observation_view.render({"url": "u", "body_text": "短"})
-        assert out["limits"] == {"body_chars": None, "elements": None,
-                                 "links": None, "cropped": False}
+        assert out["limits"] == {
+            "body_chars": None, "elements": None, "links": None,
+            "body_lines_dropped": None, "elements_dropped": None,
+            "links_dropped": None, "cropped": False,
+        }
         assert out["truncated"] == {"source": False, "view": False}
 
     def test_上游截断透传且与本层分列(self):

@@ -1,6 +1,6 @@
 """``assembler.views`` 的单元测试——P3 三视图的渲染口径。
 
-这个模块的价值全在**八条设计判断**上（见 ``views.py`` 模块 docstring）。
+这个模块的价值全在**九条设计判断**上（见 ``views.py`` 模块 docstring）。
 它们逐条都是「看起来可以随便选、选错了不报错、只是训练数据悄悄变差」，
 所以每条配至少一条断言：
 
@@ -10,8 +10,9 @@
 4. 空 ``user_prompt`` 不发空 user 消息
 5. 降级样本照常渲染，``meta`` 必须带 ``degraded_from``
 6. ``rationale`` 缺失时 assistant 无思考段，meta 记 ``rationale_missing``
-7. 每条轨迹以「任务总结」收尾（无 ``tool_calls`` 的 assistant 消息）
+7. 每条轨迹以面向用户的答复收尾（无 ``tool_calls`` 的 assistant 消息）
 8. 缺观察的步显式发占位回执，不留悬空 ``tool_calls``
+9. 死循环步（相邻同动作 + 观察逐字相同）剔出训练视图；重复动作在 meta 标记
 
 外加一条**产物根**断言——那条曾经真实发生过：``parents[2]`` 写成
 ``parents[1]`` 的兄弟（差一级），落点从 ``trajectory_pipeline/output/``
@@ -42,6 +43,26 @@ def _obs(url="https://x.test", **kw):
     return base
 
 
+def _site_outcome(outcome, *, index=1, step_start=0, step_end=1):
+    """一条站点级明细——形状同 :meth:`SiteOutcomeView.to_json`。
+
+    ⚠️ **2026-11-03 · re-base 到 per-Run**：per-Run 之后收尾是**整条轨迹**
+    的，站点级明细要参与收尾的生成 ⇒ 夹具里必须带 ``step_start`` /
+    ``step_end``（重复判定的边界靠它）。
+    """
+    return {
+        "index": index,
+        "url": "https://x.test",
+        "landed_url": "https://x.test",
+        "outcome": outcome,
+        "matched": outcome is not None,
+        "is_success": outcome is not None and outcome.get("branch") is None,
+        "step_start": step_start,
+        "step_end": step_end,
+        "outcome_index": 0,
+    }
+
+
 def _sample(**over):
     six = {
         "system_prompt": "系统提示词",
@@ -63,18 +84,13 @@ def _sample(**over):
         "sample_id": "T001__abc123",
         "task_id": "T001", "title": "功夫",
         "source_archive": "T001__abc123.json",
+        # 交付面（方案 23 R3-3）：P3 按 tool_surface 分池落盘，夹具走交付面
+        "tool_surface": "camofox-1",
         "six": six,
         "gate": {"status": "not_run", "reasons": ["rationale 模块未落地"]},
         "rationale_missing": True,
         "outcome": {"url": "https://x.test", "branch": "no_play_control",
                     "source": "rule", "fallback_used": False, "succeeded": False},
-        "site_outcomes": [
-            {"index": 0, "url": "https://x.test", "landed_url": "https://x.test",
-             "outcome": {"url": "https://x.test", "branch": "no_play_control",
-                         "source": "rule", "fallback_used": False,
-                         "succeeded": False},
-             "matched": True, "is_success": False},
-        ],
         "degraded_from": ["run_config"],
     }
     for k, v in over.items():
@@ -82,6 +98,15 @@ def _sample(**over):
             six.update(v)
         else:
             base[k] = v
+    # 站点级明细**跟着任务级结论走**（真实样本里两者同源）：不一致会造出
+    # 一条「任务成功但站点全失败」的假样本，收尾文本会自相矛盾。
+    if "site_outcomes" not in over:
+        # 站点区间**覆盖全部动作步**——夹具里没有独立的「搜索段」，
+        # 而重复判定的边界就是 unit（方案 23 R3-1/R3-2）：边界落在
+        # site-1 里，这些步才同属一个单元。
+        base["site_outcomes"] = [
+            _site_outcome(dict(base["outcome"]), step_end=len(six["actions"]))
+        ]
     return base
 
 
@@ -224,6 +249,72 @@ class Test基础设施动作:
         assert views.to_meta(s)["infrastructure_actions"] == ["new_tab"]
 
 
+# ── 判断 9：死循环与重复动作（方案 23 R3-1 / R3-2）───────────────
+
+
+def _click(name="立即播放"):
+    return {"tool": "click", "params": {},
+            "target": {"role": "button", "name": name}, "origin": "model"}
+
+
+class Test死循环与重复动作:
+    def test_openai视图剔掉相邻同动作同观察(self):
+        s = _sample(six={
+            "actions": [_click(), _click()],
+            "observations": [_obs(), _obs()],
+        })
+        calls = [m for m in views.to_openai_messages(s) if m.get("tool_calls")]
+        assert len(calls) == 1
+        # 剔一步后序号仍然稠密——训练流里不存在的动作不占号
+        assert calls[0]["tool_calls"][0]["id"] == "call_0"
+
+    def test_messages视图同样剔掉(self):
+        s = _sample(six={
+            "actions": [_click(), _click()],
+            "observations": [_obs(), _obs()],
+        })
+        msgs = views.to_messages(s)
+        acts = [m for m in msgs if m["role"] == "assistant"
+                and m["content"].startswith("[动作]")]
+        assert len(acts) == 1
+
+    def test_观察变了就不是死循环(self):
+        """页面刷新 / 滚动加载后是同动作不同观察——必须留着。"""
+        s = _sample(six={
+            "actions": [_click(), _click()],
+            "observations": [_obs(), _obs(body_text="第二屏")],
+        })
+        calls = [m for m in views.to_openai_messages(s) if m.get("tool_calls")]
+        assert len(calls) == 2
+
+    def test_meta逐条记下剔了哪几步(self):
+        s = _sample(six={
+            "actions": [_click(), _click(), _click()],
+            "observations": [_obs(), _obs(), _obs()],
+        })
+        meta = views.to_meta(s)
+        assert meta["deduped_steps"] == [1, 2]
+        assert meta["deduped_step_count"] == 2
+
+    def test_meta标记留在训练集里的重复动作(self):
+        """A/B/A 不相邻，但不是死循环（观察不同）——只标不剔。"""
+        s = _sample(six={
+            "actions": [
+                _click(),
+                {"tool": "press", "params": {"key": "Enter"}, "target": None,
+                 "origin": "model"},
+                _click(),
+            ],
+            "observations": [_obs(), _obs(body_text="乙"), _obs(body_text="丙")],
+        })
+        meta = views.to_meta(s)
+        assert meta["deduped_steps"] == []
+        assert meta["repeat_actions"] == [{
+            "step_index": 2, "unit": "site-1", "tool": "click", "occurrence": 2,
+        }]
+        assert meta["repeat_step_count"] == 1
+
+
 # ── 判断 3：click 的 target 平铺 ──────────────────────────────────
 
 
@@ -238,7 +329,7 @@ class Test点击目标:
             "observations": [_obs()],
         })
         msgs = views.to_openai_messages(s)
-        args = msgs[2]["tool_calls"][0]["function"]["arguments"]
+        args = json.loads(msgs[2]["tool_calls"][0]["function"]["arguments"])
         assert args == {"tag": "button", "label": "立即播放"}
 
     def test_params与target合并(self):
@@ -250,7 +341,9 @@ class Test点击目标:
                          "origin": "model"}],
             "observations": [_obs()],
         })
-        args = views.to_openai_messages(s)[2]["tool_calls"][0]["function"]["arguments"]
+        args = json.loads(
+            views.to_openai_messages(s)[2]["tool_calls"][0]["function"]["arguments"]
+        )
         assert args == {"page": "1", "tag": "a", "label": "下一页"}
 
     def test_空target不产生空键(self):
@@ -261,9 +354,26 @@ class Test点击目标:
                          "target": {"tag": "a", "label": ""}, "origin": "model"}],
             "observations": [_obs()],
         })
-        args = views.to_openai_messages(s)[2]["tool_calls"][0]["function"]["arguments"]
+        args = json.loads(
+            views.to_openai_messages(s)[2]["tool_calls"][0]["function"]["arguments"]
+        )
         assert "label" not in args
         assert args == {"tag": "a"}
+
+    def test_arguments是JSON字符串(self):
+        """OpenAI Chat Completions 里 ``function.arguments`` 是**字符串**
+        （方案 23 R3-4）。落成 dict 的下游会在 ``json.loads`` 处崩，
+        或者更糟——静默按 Python 对象用掉，训出来的模型学会发 dict。"""
+        s = _sample(six={
+            "actions": [{"tool": "click", "params": {},
+                         "target": {"tag": "button", "label": "播放"},
+                         "origin": "model"}],
+            "observations": [_obs()],
+        })
+        raw = views.to_openai_messages(s)[2]["tool_calls"][0]["function"]["arguments"]
+        assert isinstance(raw, str)
+        # 中文不转义（ensure_ascii=False），与真机 token 口径一致
+        assert "播放" in raw
 
     def test_actions里没有ref(self):
         """ref 是会话句柄（见 ``executor/actions.py``）——
@@ -301,7 +411,12 @@ class Test用户轮次:
 
 class Test收尾总结:
     """2026-10-15 拍板补入——此前 302/304 条样本全部以动作终结，
-    教模型「发完最后一个动作就结束」。"""
+    教模型「发完最后一个动作就结束」。
+
+    2026-11-02（方案 23 R2）：收尾从「任务总结：… 处置：…」改成**面向
+    用户的答复**——成功给网址，失败给已排除的站点与原因；分支枚举名、
+    分支计数一律不进文本（审计 G3）。
+    """
 
     def _closing(self, sample):
         msgs = views.to_openai_messages(sample)
@@ -310,8 +425,11 @@ class Test收尾总结:
         assert "tool_calls" not in last
         return last["content"]
 
-    def test_已知分支按词表给处置(self):
-        assert self._closing(_sample()) == "任务总结：页面上没有播放控件，排除。"
+    def test_已知分支给排除原因(self):
+        assert self._closing(_sample()) == (
+            "没有找到《功夫》的可播放网址，"
+            "已排除的站点：x.test（页面上没有播放控件，排除）。"
+        )
 
     def test_成功记播放页地址(self):
         s = _sample(outcome={"url": "https://x.test", "branch": None,
@@ -319,17 +437,29 @@ class Test收尾总结:
                              "source": "rule", "fallback_used": False,
                              "succeeded": True})
         assert self._closing(s) == \
-            "任务总结：记录该网址为可播放资源：https://x.test/play。"
+            "找到了《功夫》的可播放网址：https://x.test/play。"
 
     def test_成功缺play_page_url退回落地地址(self):
         s = _sample(outcome={"url": "https://x.test", "branch": None,
                              "succeeded": True})
         assert "https://x.test" in self._closing(s)
 
-    def test_未知分支照实写出分支名(self):
-        """词表没跟上的新分支不能静默消失。"""
+    def test_未知分支不写分支名(self):
+        """分支枚举名是并池口径，不是助手语言（R2-1）。
+
+        未知分支**不能静默消失**——它退化成「原因未能确认」，分支本身
+        仍在 ``outcome`` / ``ledger`` 里可查。
+        """
         s = _sample(outcome={"url": "https://x.test", "branch": "future_branch"})
-        assert "不予记录（分支：future_branch）" in self._closing(s)
+        text = self._closing(s)
+        assert "future_branch" not in text
+        assert "原因未能确认" in text
+
+    def test_收尾不带分支计数(self):
+        """旧收尾的「分支分布：k=v · …」是台账播报，不许再出现。"""
+        text = self._closing(_sample())
+        assert "分支分布" not in text
+        assert "=" not in text
 
     def test_没有站点结论判不出来(self):
         """⚠️ **2026-10-30 · 方案 23**：样本不再有「搜索单元」这种形态——
@@ -338,8 +468,15 @@ class Test收尾总结:
         没有结论时**不说「接下来逐一打开候选站点核验」**：那句是搜索阶段
         的过渡语，拿它当轨迹收尾会让人以为「后面还有活要干」，而这条
         轨迹已经跑完了。判不出来就**判不出来**（fail-closed）。"""
-        s = _sample(outcome=None)
-        assert self._closing(s) == "任务总结：本轨迹没有站点结论，判不出来。"
+        s = _sample(outcome=None, site_outcomes=[])
+        assert self._closing(s) == "没有找到《功夫》的可访问站点。"
+
+    def test_站点结论缺失如实说原因未能确认(self):
+        """访问过站点但没配到 outcome = **缺件**，不是成功。
+
+        **不编原因**，也不拿搜索话术顶替——缺件要说「原因未能确认」。"""
+        s = _sample(outcome=None, site_outcomes=[_site_outcome(outcome=None)])
+        assert self._closing(s) == "没有找到《功夫》的可播放网址，原因未能确认。"
 
     def test_reflection的conclusion带上(self):
         """INC46：结论来源是 unit 级 ``reflection``，不是末步 rationale。
@@ -351,37 +488,55 @@ class Test收尾总结:
                                 "rationale": {"text": "这一趟确认没有正片",
                                               "conclusion": "这站没有播放入口"},
                                 "reason": "", "degraded": []})
-        assert self._closing(s) == \
-            "任务总结：这站没有播放入口 处置：页面上没有播放控件，排除。"
+        assert self._closing(s) == (
+            "没有找到《功夫》的可播放网址，"
+            "已排除的站点：x.test（页面上没有播放控件，排除）。"
+            "这站没有播放入口。"
+        )
+
+    def test_结论内部的句号不被截断(self):
+        """结论本身可能是多句——按最后一个句号截断会只剩半句。"""
+        s = _sample(reflection={"status": "written",
+                                "rationale": {"conclusion": "先看了首页。再点了播放"},
+                                "reason": "", "degraded": []})
+        assert self._closing(s).endswith("先看了首页。再点了播放。")
 
     def test_末步rationale不再充当收尾(self):
         """反过来仍成立（§7.1）：有末步 conclusion 但**没有** reflection
-        时，收尾是纯 disposition 话术——**不拿预期冒充结论**。"""
+        时，收尾不提它——**不拿预期冒充结论**。"""
         s = _sample(six={
             "rationales": [
                 {"step_index": 0, "text": "找了一圈", "conclusion": "我打算点开看看",
                  "status": "written", "reason": ""},
             ],
         })
-        assert self._closing(s) == "任务总结：页面上没有播放控件，排除。"
+        text = self._closing(s)
+        assert "我打算点开看看" not in text
+        assert text.startswith("没有找到")
 
-    def test_reflection未写成时退回纯处置话术(self):
+    def test_reflection未写成时不带结论(self):
         """``unavailable`` 的 reflection 没有文本，与「没有」同路。"""
         s = _sample(reflection={"status": "unavailable", "rationale": None,
                                 "reason": "LLM 不可用", "degraded": []})
-        assert self._closing(s) == "任务总结：页面上没有播放控件，排除。"
+        assert self._closing(s) == (
+            "没有找到《功夫》的可播放网址，"
+            "已排除的站点：x.test（页面上没有播放控件，排除）。"
+        )
 
     def test_空轨迹不编总结(self):
         """一个可见模型动作都没有的样本没有可总结的事。"""
         s = _sample(six={"actions": [], "observations": []})
         msgs = views.to_openai_messages(s)
-        assert all("任务总结" not in (m.get("content") or "") for m in msgs)
+        assert all("没有找到" not in (m.get("content") or "") for m in msgs)
         assert views.to_meta(s)["closing_summary"] is False
 
     def test_messages视图同样收尾(self):
         msgs = views.to_messages(_sample())
         assert msgs[-1]["role"] == "assistant"
-        assert msgs[-1]["content"].startswith("任务总结：")
+        assert msgs[-1]["content"] == (
+            "没有找到《功夫》的可播放网址，"
+            "已排除的站点：x.test（页面上没有播放控件，排除）。"
+        )
 
 
 # ── 判断 8：缺观察显式发占位回执 ──────────────────────────────────

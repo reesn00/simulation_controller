@@ -30,6 +30,8 @@ def _obs(url="u", **kw):
 def _archive(task_id="T001", run_id="a1", **over):
     base = {
         "task_id": task_id, "run_id": run_id, "title": "功夫",
+        # 交付面（方案 23 R3-3）：分池后交付池只认 camofox-1
+        "driver": "camofox",
         "query": "功夫 在线观看",
         "user_prompt": "有没有能看正片的", "search_url": "https://s.test",
         "search_observation": _obs("https://s.test"), "search_blocked": "",
@@ -106,6 +108,16 @@ class TestAll整批:
         out_path = (tmp_path / "task_views" / "T001__a1.json")
         assert out_path.exists()
 
+    def test_source_archive是P1文件名(self, tmp_path):
+        """``meta.source_archive`` 要答得出「这份视图来自哪份 P1」
+        （方案 23 R2-4）。批量路径从 ``path.name`` 注入。"""
+        _write_batch(tmp_path, _archive("T001", "a1"))
+        cli.cmd_task_view(_ns(all=True, out=str(tmp_path)))
+        payload = json.loads(
+            (tmp_path / "task_views" / "T001__a1.json").read_text(encoding="utf-8")
+        )
+        assert payload["meta"]["source_archive"] == "T001__a1.json"
+
 
 # ── 2. --p1 指定 ───────────────────────────────────────────────────
 
@@ -118,6 +130,15 @@ class TestP1指定:
         out = capsys.readouterr().out
         assert "T001__a1" in out
         assert (tmp_path / "task_views" / "T001__a1.json").exists()
+
+    def test_source_archive是P1文件名(self, tmp_path):
+        """单文件路径同样注入文件名（方案 23 R2-4）。"""
+        p = _write_batch(tmp_path, _archive("T001", "a1")) / "T001__a1.json"
+        cli.cmd_task_view(_ns(p1=[str(p)], out=str(tmp_path)))
+        payload = json.loads(
+            (tmp_path / "task_views" / "T001__a1.json").read_text(encoding="utf-8")
+        )
+        assert payload["meta"]["source_archive"] == "T001__a1.json"
 
     def test_多文件(self, tmp_path, capsys):
         p1 = _write_batch(tmp_path, _archive("T001", "a1")) / "T001__a1.json"

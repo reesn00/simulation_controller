@@ -63,6 +63,7 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from trajectory_pipeline import toolcatalog
 from trajectory_pipeline import outcomerules
+from trajectory_pipeline.assembler import closing, contracts, excluded
 
 #: ① 系统提示词。**随样本一起冻结**（进 P2 文件），不是渲染时读全局常量——
 #: 常量改一次，历史样本的系统提示词就全变了，而样本之间原本是可比的。
@@ -797,6 +798,15 @@ class Sample:
                 return v
         return None
 
+    #: 每步动作的**失败原因**（P1 ``steps[i].error``），与 :attr:`actions`
+    #: 按下标对齐。空串 = 这一步没报错。
+    #:
+    #: 它**不进** :meth:`to_json` 的六件套，而是渲染期作为
+    #: ``action_error`` 挂到观察上（方案 23 R1-2）：训练侧要能区分
+    #: 「这块信息没采到」（``degraded``）与「这个动作白做」（本条）。
+    #: 两者混成一个标记，模型会把「点了没反应」学成「页面没内容」。
+    step_errors: tuple[str, ...] = ()
+
     def to_json(self) -> dict[str, Any]:
         return {
             "sample_id": self.sample_id,
@@ -1108,6 +1118,100 @@ def _last_reflection_of(units: Sequence[_Unit]) -> Mapping[str, Any] | None:
     return None
 
 
+def _conclusion_of(reflection: Mapping[str, Any] | None) -> str:
+    """reflection 的结论（模型自己写的），没有就是空串。"""
+    if isinstance(reflection, Mapping):
+        rat = reflection.get("rationale")
+        if isinstance(rat, Mapping):
+            return str(rat.get("conclusion") or "").strip()
+    return ""
+
+
+def _apply_output_contract(
+    gate: GateMark,
+    *,
+    task_id: str,
+    title: str,
+    outcome: OutcomeRef | None,
+    site_outcomes: Sequence[SiteOutcomeView],
+    reflection: Mapping[str, Any] | None,
+    has_visible_action: bool,
+) -> GateMark:
+    """终局验收读**最终回复**（方案 23 R2-3，owner 裁定 O-2）。
+
+    判据只有一条：任务库 ``output_contract.min_urls ≥ 1``，而这条样本的
+    收尾答复里**没有 URL** ⇒ **不许判 ``passed``**。
+
+    - 只作用于**有任务级结论**的样本（``outcome is not None``）：搜索阶段
+      就被拦 / 一个候选都没访问的 run 没有「答复」可读；
+    - 只降 ``passed``：``failed`` 已经是失败，``not_run`` 是「没判」——
+      两者都不许被这条判据改写（``not_run`` 不是通过，见 :func:`gate_of`）；
+    - 读的文本是 :func:`~trajectory_pipeline.assembler.closing.closing_for_run`
+      的产出，**与 P3 渲染的末条 assistant 是同一句话**——分开写的那天，
+      验收读的就不是模型看到的那句了（事实的算法在
+      :func:`~trajectory_pipeline.assembler.closing.run_closing_outcomes`，
+      三侧共用）；
+    - 任务库读不到 / 未知 ``task_id`` / 合同没写 ``min_urls`` ⇒
+      ``None`` ⇒ **不改判定**（fail-closed：判据不适用 ≠ 判通过）。同理，
+      没有可见模型动作就没有收尾文本，也就没有可验收的「最终回复」。
+    """
+    if outcome is None or not has_visible_action:
+        return gate
+    if gate.status != "passed":
+        return gate
+    min_urls = contracts.min_urls_of(task_id)
+    if min_urls is None:
+        return gate
+    text = _run_closing_text(
+        title=title,
+        outcome=outcome,
+        site_outcomes=site_outcomes,
+        reflection=reflection,
+    )
+    found = closing.count_urls(text)
+    if found >= min_urls:
+        return gate
+    return GateMark(
+        "failed",
+        gate.reasons
+        + (
+            f"终局答复未兑现输出契约：合同要求至少 {min_urls} 个网址，"
+            f"答复里只有 {found} 个",
+        ),
+    )
+
+
+def _run_closing_text(
+    *,
+    title: str,
+    outcome: OutcomeRef | None,
+    site_outcomes: Sequence[SiteOutcomeView],
+    reflection: Mapping[str, Any] | None,
+) -> str:
+    """这条轨迹的收尾答复——**P2 与 P3 读的是同一句**。
+
+    P3 侧的同一个函数在 :mod:`assembler.views`（``_closing_text``），
+    那边读的是 P2 落盘后的 JSON，这边读的是内存里的对象。事实一样 ⇒
+    文本一样 ⇒ P2 的终局验收判的**就是**模型最后看到的那句。
+
+    ⚠️ 事实的算法在 :func:`assembler.closing.run_closing_outcomes`——
+    **不在这里重写一遍**。
+    """
+    decisive = outcome.to_json() if outcome is not None else None
+    sites = [
+        s.outcome.to_json() if s.outcome is not None else None
+        for s in site_outcomes
+    ]
+    return closing.closing_for_run(
+        title=title,
+        outcomes=closing.run_closing_outcomes(
+            decisive=decisive,
+            site_outcomes=sites,
+        ),
+        conclusion=_conclusion_of(reflection),
+    )
+
+
 def _run_sample(
     *,
     archive: Mapping[str, Any],
@@ -1152,6 +1256,18 @@ def _run_sample(
         # 旧口径不按新窗口核（见 :func:`gate_of` 的跨口径注）。
         rationale_era=era,
     )
+    # 终局验收读最终回复（方案 23 R2-3）：闸门只判过 outcome，不读文本，
+    # 于是「回复必须含可播放网址」这条合同从未被执行（审计 G4：44/49 违约
+    # 而 gate 仍 passed）。这里补的是**读回复**，不是第二条 rationale 闸。
+    gate = _apply_output_contract(
+        gate,
+        task_id=task_id,
+        title=str(archive.get("title") or ""),
+        outcome=outcome,
+        site_outcomes=site_outcomes,
+        reflection=reflection,
+        has_visible_action=any(a.origin != "infrastructure" for a in actions_),
+    )
     return Sample(
         sample_id=sample_id(task_id, run_id_of(source_name)),
         task_id=task_id,
@@ -1177,7 +1293,24 @@ def _run_sample(
         # （历史批次都是 obscura 面）。**面认不出 → 上面已经抛了**。
         tool_surface=surface,
         site_outcomes=site_outcomes,
+        # 逐Step的动作失败原因（R1-2）：与 actions 对齐，渲染期挂到观察上。
+        # ⚠️ 对齐的是**摊平后的步流**（``steps``）——``_actions_of`` 一步一条
+        # 动作、不跳步，所以这里的下标与 ``actions`` 逐条对得上。
+        step_errors=tuple(str(s.get("error") or "") for s in steps),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SplitResult:
+    """一份 P1 的切条结果 + 被访问级过滤器剔掉的 unit。
+
+    ``excluded`` 是 ``(unit, platform)`` 对：**整条 unit 被丢弃**，因为
+    outcome / reflection 指向被排除平台而训练步里没有它，会让因果链在
+    样本中间断掉（见 :mod:`assembler.excluded`）。
+    """
+
+    samples: tuple[Sample, ...] = ()
+    excluded: tuple[tuple[str, str], ...] = ()
 
 
 def split_archive(path: str | Path) -> list[Sample]:
@@ -1201,6 +1334,32 @@ def split_archive(path: str | Path) -> list[Sample]:
     与每个站点的每一步接成**一条**流，``step_index`` 是全局序号。
     以前每个单元各自从 0 数起，于是第 5 步的 rationale 在字典查找里
     会撞上第 1 个单元的第 5 步——**静默丢思考**。
+
+    ⚠️ **2026-11-03 · re-base 到 per-Run**：**访问级剔除**（方案 23 A10 /
+    R4-2(b)）在这条路径上**整条 unit 地生效**——访问了任务声明的被排除
+    平台的站点，它的**步与它的结论都不进这条轨迹**。于是「看最后一个
+    结论」的任务级标签是在**剔后**的结论集合上取的（这是 R4-2 的必然
+    结果，不是 bug）。要看得见剔了哪些，用 :func:`split_archive_report`。
+    """
+    return list(split_archive_report(path).samples)
+
+
+def split_archive_report(path: str | Path) -> SplitResult:
+    """切条 + 访问级剔除，并返回剔除明细。
+
+    与 :func:`split_archive` 同一条切条路径；差别只在「剔掉的 unit 是否
+    要报出来」。P2 落盘（builder）用本函数记账，其它读样本的调用方仍可
+    用 :func:`split_archive`。
+
+    ⚠️ **per-Run 口径**（2026-11-03 re-base）：剔的是**整条 unit**——
+    被排除平台的站点，它的步与它的 outcome **都不进这条轨迹**。于是：
+
+    - 步区间按**剔后**的步流重编（``site_outcomes[i].step_start`` 指向
+      剔完之后的全局序号）；
+    - 任务级结论取**剔后**的末条结论（:func:`outcomerules.task_conclusion`
+      的 ``exclude`` 参数）；
+    - T 侧读同一份剔除账（:func:`assembler.excluded.excluded_unit_map`），
+      所以 P2 与 T 的结论**同源**。
     """
     p = Path(path)
     archive = read_archive(p)
@@ -1215,7 +1374,7 @@ def split_archive(path: str | Path) -> list[Sample]:
         # 在遍历目录时整批中断——而一批里混进几个这样的 run 是常态
         # （反爬见 executor 里「直接重跑同一引擎大概率仍是验证码页」那条
         # 警告，网络错误见真实存档 ``T048__5aa34cf7.json``）。
-        return []
+        return SplitResult()
 
     units = _units_of(archive)
     steps = archive.get("steps") or []
@@ -1252,24 +1411,32 @@ def split_archive(path: str | Path) -> list[Sample]:
     if miss:
         degraded.append(miss)
 
+    # ── 访问级剔除（R4-2）：整条 unit 剔，不是只剔命中那一步 ──────
+    # 判定读模型动作的 goto 网址与观察 URL；new_tab 这类 infrastructure
+    # 动作不算（见 :func:`assembler.excluded.unit_excluded_platform`）。
+    #
+    # 判定**只有一份**（:func:`assembler.excluded.excluded_unit_map`）：
+    # P2 与 T 两侧看同一份证据，否则同一条访问点一个剔一个留，而报告上
+    # 只会显示「少了一条」。
+    blocked = excluded.excluded_unit_map(archive)
+    dropped = tuple((name, blocked[name]) for name in sorted(blocked))
+    kept_units = tuple(u for u in units if u.name not in blocked)
+
     # ── 站点级明细（裁定 ③：留作轨迹内细节，不切成独立样本）─────────
     outcomes = archive.get("outcomes") or []
     site_outcomes: list[SiteOutcomeView] = []
+    # 被剔站点对应的 outcome 在 ``outcomes[]`` 里的下标——任务级结论要
+    # 在**剔后**的集合上取（见本函数 docstring）。
+    excluded_outcome_indices: set[int] = set()
     # 全局步号：搜索阶段的步在前，各站点的步按访问顺序接上。
     # 站点级明细带着**自己的步区间**——「这个站点是轨迹里哪一段」必须
     # 能直接回答，靠 url 反推是猜（两个站点跳到同一地址时会撞）。
-    cursor = len(units[0].steps) if units else 0
+    #
+    # ⚠️ 步号在**剔后**重编：被剔的 unit 不进这条轨迹，它的步也不占号。
+    cursor = len(kept_units[0].steps) if kept_units and kept_units[0].name == "search" else 0
     for i, visit in enumerate(visits, 1):
         unit = units[i] if i < len(units) else None
         n_steps = len(unit.steps) if unit is not None else 0
-        step_start, step_end = cursor, cursor + n_steps
-        cursor = step_end
-        if not (visit.get("steps") or ()):
-            degraded.append("steps")
-        for key in ("site_obs", "player_obs"):
-            m = _obs_missing(visit.get(key))
-            if m:
-                degraded.append(m)
         player_obs = visit.get("player_obs")
         player_url = (str(player_obs.get("url") or "")
                       if isinstance(player_obs, Mapping) else "")
@@ -1279,6 +1446,21 @@ def split_archive(path: str | Path) -> list[Sample]:
             str(visit.get("landed_url") or ""),
             player_url,
         )
+        if f"site-{i}" in blocked:
+            # 整条 unit 剔：不进轨迹，也不进站点明细。它的 outcome 也不
+            # 参与任务级结论——否则「被排除平台上的结论」会替这条轨迹
+            # 定标签，而那个平台的步根本不在轨迹里。
+            if hit is not None:
+                excluded_outcome_indices.add(hit[0])
+            continue
+        step_start, step_end = cursor, cursor + n_steps
+        cursor = step_end
+        if not (visit.get("steps") or ()):
+            degraded.append("steps")
+        for key in ("site_obs", "player_obs"):
+            m = _obs_missing(visit.get(key))
+            if m:
+                degraded.append(m)
         raw = hit[1] if hit is not None else None
         ref = _outcome_ref(raw)
         if ref is None:
@@ -1305,8 +1487,10 @@ def split_archive(path: str | Path) -> list[Sample]:
             )
         )
 
-    # ── 任务级结论（裁定 ②：看最后一个结论）────────────────────────
-    conclusion = outcomerules.task_conclusion(archive)
+    # ── 任务级结论（裁定 ②：看最后一个结论），**在剔后取** ─────────
+    conclusion = outcomerules.task_conclusion(
+        archive, exclude=excluded_outcome_indices
+    )
     task_outcome = _outcome_ref(conclusion.outcome)
     if task_outcome is not None:
         # 轨迹级的 ``succeeded`` 只有一个来源说了算——分支为空即成功。
@@ -1315,17 +1499,20 @@ def split_archive(path: str | Path) -> list[Sample]:
         # 替它挑一个。
         task_outcome = replace(task_outcome, succeeded=task_outcome.branch is None)
 
-    return [
-        _run_sample(
-            archive=archive,
-            source_name=source_name,
-            units=units,
-            degraded=degraded,
-            outcome=task_outcome,
-            site_outcomes=tuple(site_outcomes),
-            reflection=_last_reflection_of(units),
-        )
-    ]
+    return SplitResult(
+        samples=(
+            _run_sample(
+                archive=archive,
+                source_name=source_name,
+                units=kept_units,
+                degraded=degraded,
+                outcome=task_outcome,
+                site_outcomes=tuple(site_outcomes),
+                reflection=_last_reflection_of(kept_units),
+            ),
+        ),
+        excluded=dropped,
+    )
 
 
 def iter_samples(root: str | Path, pattern: str = "*.json") -> Iterable[Sample]:
@@ -1361,6 +1548,7 @@ __all__ = [
     "Sample",
     "SiteOutcomeView",
     "SiteView",
+    "SplitResult",
     "P1ShapeError",
     "MISSING_OBSERVATION",
     "RATIONALE_ERA_PRE_ACTION", "RATIONALE_ERA_POST_HOC",

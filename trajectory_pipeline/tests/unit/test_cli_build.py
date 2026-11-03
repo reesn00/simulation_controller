@@ -29,6 +29,8 @@ def _obs(url="u", **kw):
 def _archive(task_id="T001", run_id="a1", **over):
     base = {
         "task_id": task_id, "title": "功夫", "query": "功夫 在线观看",
+        # 交付面（方案 23 R3-3）：分池后交付池只认 camofox-1
+        "driver": "camofox",
         "user_prompt": "有没有能看正片的", "search_url": "https://s.test",
         "search_observation": _obs("https://s.test"), "search_blocked": "",
         "steps": [{"action": {"tool": "goto", "params": {"url": "https://s.test"},

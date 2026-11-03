@@ -411,6 +411,15 @@ class TestPromptContent:
         assert "之前" in sys_text
         assert "还没有执行" in sys_text
 
+    def test_历史非空时禁止无历史措辞(self):
+        """R0-2 的提示词侧：补记的 history 已是 run 级，模型不得再写
+        「首次操作 / 没有历史」——那句话会与它手里的 ``previous_actions``
+        直接矛盾，而组装后的对话里矛盾更露骨（方案 23 §1.3）。"""
+        sys_text = writer.SYSTEM
+        assert "首次操作" in sys_text
+        assert "没有历史" in sys_text
+        assert "只有历史为空时" in sys_text
+
 
 # ── shortfall 只有一个定义 ────────────────────────────────────────
 

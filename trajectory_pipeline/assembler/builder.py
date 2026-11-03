@@ -13,8 +13,9 @@
    ``tests/contract/test_p2_contract.py::TestNoExecutorImport`` 用 AST 强制。
 3. **训练态观察走 :mod:`~trajectory_pipeline.assembler.observation_view`，
    不重新发明裁剪。** P1 是**取证态**（全文 6000 字符、80 元素、50 链接），
-   P2 是**训练态**（裁到 2000/40/30）。两边各取所需，但裁剪规则只在
-   observation_view 一处。builder 调 ``render()``，不调 ``view.limits``。
+   P2 是**训练态**（320 字摘要 / 10 元素 / 4 链接，方案 23 R1）。两边各取
+   所需，但裁剪规则只在 observation_view 一处。builder 调 ``render()``，
+   不调 ``view.limits``。
 4. **写原子化。** 先写 ``.json.tmp``、``os.replace`` 覆盖目标。
    批次中断不会留下半截 P2 文件——而半截 P2 比缺 P2 更难查（文件名
    存在但读不出 JSON）。
@@ -48,10 +49,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from trajectory_pipeline.assembler import observation_view
+from trajectory_pipeline.assembler import observation_view, pool
 from trajectory_pipeline.assembler.schema import (
     RATIONALE_ERA_POST_HOC,
     RATIONALE_ERA_PRE_ACTION,
+    ActionView,
     Sample,
 )
 
@@ -111,6 +113,11 @@ class ArchiveBuildResult:
     pre_action: int = 0
     post_hoc: int = 0
     era_skipped: int = 0  # 被 ``--rationale-era`` 筛掉的条数
+    #: **访问级剔除**（方案 23 A10 / R4-2）：整条 unit 访问了任务声明的
+    #: 被排除平台。``excluded_units`` 是条数，``excluded_detail`` 是
+    #: ``(unit, platform)`` 明细——只报数会让「剔了哪些」不可审计。
+    excluded_units: int = 0
+    excluded_detail: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +132,8 @@ class BuildReport:
     total_pre_action: int = 0
     total_post_hoc: int = 0
     total_era_skipped: int = 0
+    #: 访问级剔除的总账（R4-2）：整条 unit 没了，不是单步。
+    total_excluded_units: int = 0
 
     @property
     def ok(self) -> bool:
@@ -148,6 +157,38 @@ class BuildReport:
 # ── 单样本 → JSON ──────────────────────────────────────────────────
 
 
+def _action_keep(action: ActionView) -> tuple[str, ...]:
+    """一个动作的**可读目标**（点击名 / 导航网址），用于观察渲染保真。
+
+    R1-2 的硬要求：下一步动作的目标必须在同一条训练回执里看得见。
+    目标进 ``keep`` 后由 :func:`observation_view.render` 无条件保留；
+    否则限量会把「点了一个观察里没有的东西」写进训练样本。
+    """
+    target = action.target or {}
+    name = str(target.get("name") or target.get("label") or "").strip()
+    url = str((action.params or {}).get("url") or "").strip()
+    return tuple(x for x in (name, url) if x)
+
+
+def _observation_keeps(actions: Sequence[ActionView], count: int) -> list[tuple[str, ...]]:
+    """第 ``i`` 条观察之后**下一个可见动作**的目标。
+
+    ``infrastructure`` 步不产生训练消息（P3 第 2 条判断），所以跳过它们。
+    最后一条观察之后没有动作 ⇒ 空元组。
+    """
+    keeps: list[tuple[str, ...]] = []
+    for i in range(count):
+        keep: tuple[str, ...] = ()
+        for action in actions[i + 1:]:
+            if action.origin == "infrastructure":
+                continue
+            keep = _action_keep(action)
+            if keep:
+                break
+        keeps.append(keep)
+    return keeps
+
+
 def _sample_to_json(sample: Sample) -> dict[str, Any]:
     """把 :class:`Sample` 序列化成可落盘 dict。
 
@@ -156,9 +197,27 @@ def _sample_to_json(sample: Sample) -> dict[str, Any]:
     裁剪项如实带进 ``limits``。**不**直接 ``sample.to_json()`` 的
     ``observations`` 字段，因为那条会保留 P1 全文——而 P2 是给模型看的，
     不是给门禁看的。
+
+    三条随样本传下去的口径（方案 23 R1）：
+
+    - ``focus``：任务片名——正文摘要优先保留相关行；
+    - ``keep``：**下一个可见动作的目标**——限量不许把它裁掉；
+    - ``action_error``：本步动作的失败原因——与采集降级分列。
     """
     base = sample.to_json()
-    base["six"]["observations"] = observation_view.render_all(list(sample.observations))
+    observations = list(sample.observations)
+    focus = (sample.title,) if sample.title else ()
+    keeps = _observation_keeps(list(sample.actions), len(observations))
+    errors = [
+        sample.step_errors[i] if i < len(sample.step_errors) else ""
+        for i in range(len(observations))
+    ]
+    base["six"]["observations"] = observation_view.render_all(
+        observations,
+        focuses=[focus] * len(observations),
+        keeps=keeps,
+        action_errors=errors,
+    )
     return base
 
 
@@ -290,11 +349,14 @@ def build_from_archive(
         :class:`P1ShapeError` 形态）；**写盘失败**走 :attr:`ArchiveBuildResult.skipped`。
     """
     p = Path(archive_path)
-    out_dir = samples_dir(root)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # 分池（方案 23 R3-3）：交付面落 ``samples/``，旧面落
+    # ``legacy/<surface>/samples/``。面来自样本自己的 ``tool_surface``
+    # （P2 schema 折算，永远是具体面）——认不出的面 :func:`pool.pool_root` 抛。
+    base_root = samples_dir(root).parent
 
     name = p.name
-    samples = list(_split_one(p))
+    split = _split_one(p)
+    samples = list(split.samples)
 
     written = 0
     skipped: list[str] = []
@@ -312,6 +374,8 @@ def build_from_archive(
             era_skipped += 1
             skipped.append(f"{s.sample_id} (rationale_era={s.rationale_era or '无'})")
             continue
+        out_dir = samples_dir(pool.pool_root(base_root, s.tool_surface))
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not overwrite and (out_dir / f"{s.sample_id}.json").exists():
             # 不覆盖：等价于「这条已落盘」。计入 skipped 以便调用方感知
             # 「没有真重建」。理由见 overwrite 默认值注释。
@@ -337,15 +401,21 @@ def build_from_archive(
         pre_action=pre_action,
         post_hoc=post_hoc,
         era_skipped=era_skipped,
+        excluded_units=len(split.excluded),
+        excluded_detail=split.excluded,
     )
 
 
-def _split_one(p: Path) -> Iterable[Sample]:
-    """对单文件调 :func:`split_archive` 并校验。坏档抛 :class:`P1ShapeError`。"""
-    from trajectory_pipeline.assembler.schema import split_archive, P1ShapeError
+def _split_one(p: Path):
+    """对单文件调 :func:`split_archive_report` 并校验。坏档抛 :class:`P1ShapeError`。"""
+    from trajectory_pipeline.assembler.schema import (
+        P1ShapeError,
+        SplitResult,
+        split_archive_report,
+    )
 
     try:
-        return list(split_archive(p))
+        return split_archive_report(p)
     except P1ShapeError:
         raise
     except (OSError, ValueError) as exc:
@@ -399,6 +469,10 @@ def build_all(
 
     out_dir = samples_dir(target_root or source_root)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # 分池（方案 23 R3-3）：先把**已存在**的旧面样本挪出交付目录——
+    # 「并池是写入时的动作，不是读取时的推导」。放在构建之前，
+    # 这样 ``overwrite=False`` 的存在性检查看的是它真正该在的目录。
+    migration = pool.migrate_samples(out_dir)
 
     allowed = set(archive_filter) if archive_filter is not None else None
 
@@ -409,6 +483,7 @@ def build_all(
     total_pre_action = 0
     total_post_hoc = 0
     total_era_skipped = 0
+    total_excluded_units = 0
 
     for path in sorted(src.glob("*.json")):
         if "__" not in path.stem:
@@ -448,6 +523,12 @@ def build_all(
         total_pre_action += res.pre_action
         total_post_hoc += res.post_hoc
         total_era_skipped += res.era_skipped
+        total_excluded_units += res.excluded_units
+
+    # 池账（面 + 计数 + 时间）：分母从 131 掉到 65 不是质量变好（R-5）
+    pool.record_pool(
+        out_dir, moved=migration.moved, unclassified=migration.unclassified
+    )
 
     return BuildReport(
         archives=tuple(per_archive),
@@ -458,6 +539,7 @@ def build_all(
         total_pre_action=total_pre_action,
         total_post_hoc=total_post_hoc,
         total_era_skipped=total_era_skipped,
+        total_excluded_units=total_excluded_units,
     )
 
 

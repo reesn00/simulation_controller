@@ -36,17 +36,19 @@ import**——交接面是格式不是对象）：
 4. **P1 observation 是取证态**（full 6000 字符 / 80 元素 / 50 链接），
    经 :func:`~trajectory_pipeline.assembler.observation_view.render`
    裁到训练态再经 :func:`~trajectory_pipeline.assembler.views.render_observation`
-   排版——与 P3 同款裁剪口径（2000/40/30），只是 T 这边**自己跑一遍裁剪**，
+   排版——与 P3 同款裁剪口径（320/10/4），只是 T 这边**自己跑一遍裁剪**，
    而 P3 那边是从 P2 已裁好的形态接过来。
 
 5. **观察 / 动作 / 思考逐步对齐**（同 P3 第 6 条判断）。``infrastructure``
    步整步跳过——消息流里不存在的动作不该占号（与 P3 第 2 条判断同款）。
 
-6. **任务级 summary 收尾**（同 P3 第 7 条判断）：来源 ``outcomes[]`` +
-   ``ledger.by_branch``，**不读 unit 级 reflection**（T 层级高于 unit）。
-   处置词表 ``_CLOSING_DISPOSITION`` 自行声明，**与
-   ``executor.branches.BRANCH_LABELS + {"success"}`` 键集同步由契约测试盯住**
-   ——不 import executor，交接面是格式不是 import。
+6. **任务级 summary 收尾**（同 P3 第 7 条判断）：来源 ``outcomes[]``，
+   **不读 unit 级 reflection**（T 层级高于 unit）。收尾文本与 P3
+   **共用同一个函数** :func:`~trajectory_pipeline.assembler.closing.closing_text`
+   （方案 23 R2-2：两侧必须说同一句话，差异只放附加信息）。处置词表
+   ``_CLOSING_DISPOSITION`` 是 :data:`closing.CLOSING_DISPOSITION` 的
+   别名，**键集与 ``executor.branches.BRANCH_LABELS`` 的同步由契约测试
+   盯住**——不 import executor，交接面是格式不是 import。
 
 T 落盘由 :func:`trajectory_pipeline.storage.task_views.write_task_view`
 接管（与 ``write_p3.write_views`` 同款纪律：原子写、默认不覆盖）。
@@ -55,11 +57,22 @@ T 落盘由 :func:`trajectory_pipeline.storage.task_views.write_task_view`
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from trajectory_pipeline import outcomerules, toolcatalog
-from trajectory_pipeline.assembler import observation_view
+from trajectory_pipeline.assembler import (
+    closing,
+    excluded,
+    observation_view,
+    pool,
+    screen,
+)
+#: 两段投影一致性口径挂在顶层（方案 23 R5-2 / O-5）：ls_bridge 是
+#: evaluation 层，契约禁止它 import assembler，而校验两边都要用。
+#: 本模块 re-export，``task_view.projection_problems`` 仍可用。
+from trajectory_pipeline.projection import projection_problems
 
 #: 路径权威的 re-export：T 渲染端不许自己拼 ``output/pipeline/task_views``
 #: 字面量。改存储布局只动 ``trajectory_pipeline.storage.task_views_dir``
@@ -71,6 +84,7 @@ __all__ = [
     "to_task_messages",
     "to_task_openai_messages",
     "to_task_meta",
+    "projection_problems",
     "build_task_view",
     "build_all_task_views",
     "TaskViewRenderResult",
@@ -144,32 +158,53 @@ def task_tools(surface: str = toolcatalog.DEFAULT_SURFACE) -> list[dict[str, Any
 # ── P1 → units 拆条 ────────────────────────────────────────────────
 
 
+def _excluded_unit_map(archive: Mapping[str, Any]) -> dict[str, str]:
+    """``unit -> 被访问的排除平台``（方案 23 A10 / R4-2(b)）。
+
+    与 P2 :func:`assembler.schema.split_archive_report` 共用
+    :mod:`assembler.excluded` 的判定，**不各写一份**——同一条访问点一个剔
+    一个留，而报告上只会显示「少了一条」。**整条 unit 剔**：只剔命中步会
+    留下半条轨迹，前面的步还在为这个平台服务。
+    """
+    return excluded.excluded_unit_map(archive)
+
+
 def _flatten_units(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """把 P1 拆成 search + N 个 site 的 unit 列表。
+    """把 P1 拆成 search + N 个 site 的 unit 列表（**已做访问级剔除**）。
 
     每个 unit 含 ``unit`` / ``actions`` / ``observations`` / ``rationales``
-    三段，每段都是**等长**数组（与 P2 的 ``actions`` / ``observations`` /
-    ``rationales`` 同款对齐）。
+    / ``errors`` 四段，每段都是**等长**数组（与 P2 的 ``actions`` /
+    ``observations`` / ``rationales`` 同款对齐）。``errors`` 是 P1 的
+    ``steps[i].error``——R1-2 要拿它渲染「本步动作无效」。
+
+    访问被排除平台的 unit 在这里就整条不出现：``unit`` 名保留原始
+    ``site-i`` 编号，不重排（P2 的 sample_id 用的是同一套编号）。
     """
     out: list[dict[str, Any]] = []
+    blocked = _excluded_unit_map(archive)
 
     # ── 单元 1：search ──
     search_steps = list(archive.get("steps") or ())
-    out.append({
-        "unit": "search",
-        "actions": [s.get("action") or {} for s in search_steps],
-        "observations": [s.get("observation") for s in search_steps],
-        "rationales": [s.get("rationale") for s in search_steps],
-    })
+    if "search" not in blocked:
+        out.append({
+            "unit": "search",
+            "actions": [s.get("action") or {} for s in search_steps],
+            "observations": [s.get("observation") for s in search_steps],
+            "rationales": [s.get("rationale") for s in search_steps],
+            "errors": [str(s.get("error") or "") for s in search_steps],
+        })
 
     # ── 单元 2..N：sites ──
     for i, visit in enumerate(archive.get("visits") or (), 1):
+        if f"site-{i}" in blocked:
+            continue
         site_steps = list(visit.get("steps") or ())
         out.append({
             "unit": f"site-{i}",
             "actions": [s.get("action") or {} for s in site_steps],
             "observations": [s.get("observation") for s in site_steps],
             "rationales": [s.get("rationale") for s in site_steps],
+            "errors": [str(s.get("error") or "") for s in site_steps],
         })
     return out
 
@@ -197,28 +232,67 @@ def _render_observation_text(obs: Mapping[str, Any]) -> str:
     if title or url:
         parts.append(f"标题：{title}\n网址：{url}")
 
-    body = str(obs.get("body_text") or "")
-    parts.append(f"正文：\n{body}" if body else "正文：（空）")
-
-    elems = obs.get("interactive_elements") or []
-    if elems:
-        lines = [observation_view.element_line(e) for e in elems]
-        parts.append("可交互元素：\n" + "\n".join(lines))
+    # 读步只排版被读的那一块（方案 23 R4-1）。与
+    # :func:`views.render_observation` **逐字同款**，由
+    # ``test_t_contract.py::TestRenderObservationSync`` 盯住。
+    read = str(obs.get("read") or "")
+    if read in ("snapshot", "interactive", "links"):
+        label = {
+            "snapshot": "正文",
+            "interactive": "可交互元素",
+            "links": "链接",
+        }[read]
+        parts.append(f"[读取: {label}]")
+        if read == "snapshot":
+            body = str(obs.get("body_text") or "")
+            parts.append(f"正文：\n{body}" if body else "正文：（空）")
+        elif read == "interactive":
+            elems = obs.get("interactive_elements") or []
+            if elems:
+                lines = [observation_view.element_line(e) for e in elems]
+                parts.append("可交互元素：\n" + "\n".join(lines))
+            else:
+                parts.append("可交互元素：（空）")
+        else:
+            links = obs.get("links") or []
+            if links:
+                lines = [
+                    f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip()
+                    for l in links
+                ]
+                parts.append("链接：\n" + "\n".join(lines))
+            else:
+                parts.append("链接：（空）")
     else:
-        parts.append("可交互元素：（空）")
+        body = str(obs.get("body_text") or "")
+        parts.append(f"正文：\n{body}" if body else "正文：（空）")
 
-    links = obs.get("links") or []
-    if links:
-        lines = [
-            f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip() for l in links
-        ]
-        parts.append("链接：\n" + "\n".join(lines))
+        elems = obs.get("interactive_elements") or []
+        if elems:
+            lines = [observation_view.element_line(e) for e in elems]
+            parts.append("可交互元素：\n" + "\n".join(lines))
+        else:
+            parts.append("可交互元素：（空）")
 
-    counts = (
-        f"video 标签 {obs.get('video_tag_count', 0)} 个，"
-        f"iframe {obs.get('iframe_count', 0)} 个"
-    )
-    parts.append(counts)
+        links = obs.get("links") or []
+        if links:
+            lines = [
+                f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip() for l in links
+            ]
+            parts.append("链接：\n" + "\n".join(lines))
+
+        counts = (
+            f"video 标签 {obs.get('video_tag_count', 0)} 个，"
+            f"iframe {obs.get('iframe_count', 0)} 个"
+        )
+        parts.append(counts)
+
+    # 「动作白做」与「信息没采到」分列（方案 23 R1-2），同 P3。
+    error = str(obs.get("action_error") or "").strip()
+    if error:
+        if len(error) > 120:
+            error = error[:119] + "…"
+        parts.append(f"[本步动作无效: {error}]")
 
     degraded = list(obs.get("degraded") or ())
     if degraded:
@@ -234,20 +308,127 @@ def _render_observation_text(obs: Mapping[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def _render_observation(obs: Mapping[str, Any] | None) -> str:
+def _render_observation(
+    obs: Mapping[str, Any] | None,
+    *,
+    focus: Sequence[str] = (),
+    keep: Sequence[str] = (),
+    action_error: str = "",
+) -> str:
     """P1 取证态 observation → 训练态文本。
 
     两段：① 经 :func:`observation_view.render` 把 P1 的 full body_text /
-    80 元素 / 50 链接裁到 P3 同款训练态（2000/40/30）；② 再经
+    80 元素 / 50 链接裁到 P3 同款训练态（320/10/4）；② 再经
     :func:`_render_observation_text` 排版成 ``标题：... 网址：...`` 形态。
+
+    ``focus`` / ``keep`` / ``action_error`` 同 P2 的
+    :func:`~trajectory_pipeline.assembler.builder._sample_to_json`：
+    任务相关词、下一步动作目标、本步动作错误——T 读 P1，不经过 P2，
+    所以这三样必须在这里再算一遍。
 
     空 obs 走 :func:`observation_view.render` 的 None 路径，输出
     ``degraded=["observation_missing"]`` 的占位 dict，再由
     ``_render_observation_text`` 渲染成 ``（本步没有取到页面内容）``——
     与 P3 第 8 条判断同款。
     """
-    train_view = observation_view.render(obs)
+    train_view = observation_view.render(
+        obs, focus=focus, keep=keep, action_error=action_error
+    )
     return _render_observation_text(train_view)
+
+
+def _action_keep(action: Mapping[str, Any]) -> tuple[str, ...]:
+    """一个动作的可读目标（点击名 / 导航网址）——同 P2 口径。"""
+    target = action.get("target") or {}
+    name = str(target.get("name") or target.get("label") or "").strip()
+    url = str((action.get("params") or {}).get("url") or "").strip()
+    return tuple(x for x in (name, url) if x)
+
+
+def _next_keep(actions: Sequence[Mapping[str, Any]], index: int) -> tuple[str, ...]:
+    """第 ``index`` 条观察之后**下一个可见动作**的目标。"""
+    for action in actions[index + 1:]:
+        if action.get("origin") == "infrastructure":
+            continue
+        keep = _action_keep(action)
+        if keep:
+            return keep
+    return ()
+
+
+# ── 训练步筛选（方案 23 R3-1 / R3-2）─────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _TaskStep:
+    """筛选后留下的一步。
+
+    ``step_index`` 是**全局原始序号**（跨 unit 连续、infrastructure 步
+    也占号），与 meta 的 ``rationale_steps.step_index`` 同一坐标系——
+    复核时能直接对上「第几步」。
+    """
+
+    step_index: int
+    action: Mapping[str, Any]
+    observation: str
+    rationale: Any
+
+
+def _screened_task_steps(
+    archive: Mapping[str, Any],
+) -> tuple[list[_TaskStep], screen.Screening]:
+    """整条 run 的可见步 + 训练筛选（死循环剔出 / 重复标记）。
+
+    **两段投影共用这一份结果**（``messages`` 与 ``openai.messages``）：
+    筛选如果各做各的，两段就会在「哪些步还在」上分叉，而 O-5 要求
+    两段逐条一致。观察文本在这里**只渲染一次**，比较对象与最终进语料
+    的文本是同一份（与 P3 侧 :func:`views._screened_steps` 同款口径）。
+
+    观察的 ``keep``（下一步动作目标）仍按**原始动作序列**算，不按筛选后
+    的序列——否则筛一步会改写它前面那一步的观察文本，前后两次渲染
+    （比较用 / 落盘用）就对不上了。
+    """
+    units = _flatten_units(archive)
+    focus = (str(archive.get("title") or ""),) if archive.get("title") else ()
+    staged: list[screen.Step] = []
+    runtime: dict[int, _TaskStep] = {}
+    global_index = 0
+    for unit in units:
+        actions = unit["actions"]
+        observations = unit["observations"]
+        errors = unit["errors"]
+        rationales_by_index = {
+            int(i): r for i, r in enumerate(unit["rationales"]) if r is not None
+        }
+        for i, action in enumerate(actions):
+            gi = global_index
+            global_index += 1
+            if action.get("origin") == "infrastructure":
+                # infrastructure 步整步跳过（同 P3 第 2 条判断）；但仍占
+                # 原始步号，保证 step_index 与 rationale_steps 对得上。
+                continue
+            obs = observations[i] if i < len(observations) else None
+            text = _render_observation(
+                obs or {},
+                focus=focus,
+                keep=_next_keep(actions, i),
+                action_error=errors[i] if i < len(errors) else "",
+            )
+            staged.append(screen.Step(
+                step_index=gi,
+                unit=unit["unit"],
+                action=action,
+                observation=text,
+            ))
+            runtime[gi] = _TaskStep(
+                step_index=gi,
+                action=action,
+                observation=text,
+                rationale=rationales_by_index.get(i),
+            )
+
+    result = screen.screen(staged)
+    return [runtime[s.step_index] for s in result.steps], result
 
 
 # ── 渲染辅助函数（与 views.py 同款，刻意不复用 ——交接面是格式） ──
@@ -295,7 +476,10 @@ def _action_line(act: Mapping[str, Any]) -> str:
 
 
 def _arguments(act: Mapping[str, Any]) -> dict[str, Any]:
-    """动作 → function-calling 的 ``arguments``（与 :func:`views._arguments` 同款）。"""
+    """动作 → function-calling 的 ``arguments``（平铺后的 dict，与 :func:`views._arguments` 同款）。
+
+    **落盘形态不是这个 dict**，见 :func:`_arguments_json`。
+    """
     args: dict[str, Any] = dict(act.get("params") or {})
     target = act.get("target")
     if isinstance(target, Mapping):
@@ -305,37 +489,26 @@ def _arguments(act: Mapping[str, Any]) -> dict[str, Any]:
     return args
 
 
+def _arguments_json(act: Mapping[str, Any]) -> str:
+    """动作 → 落盘的 ``arguments`` **JSON 字符串**（OpenAI Chat Completions 契约）。
+
+    ``function.arguments`` 在协议里是**字符串**，模型侧发的也是字符串。
+    落成 dict 会让按协议解析 ``json.loads`` 的下游崩，或者更糟——静默按
+    Python 对象用掉，训出来的模型学会发 dict。改前全量 4902/4902 是 dict
+    （2026-11-02 审计，方案 23 R3-4）。``ensure_ascii=False`` 保留中文原样。
+    """
+    return json.dumps(_arguments(act), ensure_ascii=False)
+
+
 # ── 任务级 summary 处置词表（自行声明，不 import executor） ──────────
 
 
-#: 分支 → 收尾处置话术。**本模块自己声明**，与
-#: ``executor.branches.BRANCH_LABELS + {"success"}`` 的键集同步由契约测试
-#: 盯住——不 import executor，交接面是格式不是 import（同 P3 同款纪律）。
-#: 字面字符串与 :data:`trajectory_pipeline.assembler.views._CLOSING_DISPOSITION`
-#: **逐字一致**（由 ``tests/contract/test_t_contract.py::TestClosingDispositionSync` 盯住）
-_CLOSING_DISPOSITION: dict[str, str] = {
-    "not_play_site": "不是播放站点，排除",
-    "unreachable_hard": "导航失败，排除",
-    "no_play_control": "页面上没有播放控件，排除",
-    "trailer_only": "只有预告片，没有正片资源，排除",
-    "trailer_suspect": "疑似预告，判不准，不予记录",
-    "component_unverified": "点开后没有可验证的播放组件，排除",
-    "player_unverified": "有播放组件但确认不了能不能用，标记未验证，不入正式记录",
-    "subscription_wall": "有播放页但需订阅/付费，排除",
-    "unresolved": "无法确认能否播放，不予记录",
-    "login_required": "登录后可免费观看（无登录态），排除",
-    "blocked": "地区限制/验证码/反爬阻断，排除",
-    "broken": "内容损坏，排除",
-    "partial_free": "完整内容需付费，排除",
-    "not_aggregator": "候选不是影视聚合站，排除",
-    "aggregator_no_entries": "聚合站页面上没有正式影视站入口，排除",
-    "not_article": "候选不是文章/社区讨论页，排除",
-    "article_no_links": "文章里没有可引荐的影视站外链，排除",
-    "no_site_search": "首页上没有站内搜索框，无法按片名定位，排除",
-    "site_search_no_results": "站内搜索没有找到该片的资源，排除",
-    "site_search_routed": "经站内搜索找到候选，转入结果页继续核验",
-    "login_wall_or_blocked": "登录墙/验证码/地区限制，排除",
-}
+#: 分支 → 面向用户的排除原因。字面量的**真源**在
+#: :data:`trajectory_pipeline.assembler.closing.CLOSING_DISPOSITION`
+#: （P3 与 T 共用，方案 23 R2-2）；这里保留同名别名只是为了既有调用方
+#: 与测试的读法。与 ``executor.branches.BRANCH_LABELS + {"success"}`` 的
+#: 键集同步仍由契约测试盯住——不 import executor，交接面是格式不是 import。
+_CLOSING_DISPOSITION: dict[str, str] = closing.CLOSING_DISPOSITION
 
 
 #: 必须存在的分支全集。T 视图处置词表与 :data:`_CLOSING_DISPOSITION` 的
@@ -368,17 +541,22 @@ _REQUIRED_DISPOSITION_KEYS: tuple[str, ...] = (
 
 
 def _closing_text(archive: Mapping[str, Any]) -> str | None:
-    """T 视图的任务级 summary。**只派生，不编新事实**。
+    """T 视图的任务级收尾——**面向用户的答复**（方案 23 R2-1 / R2-2）。
 
-    与 :func:`~trajectory_pipeline.assembler.views._closing_text` 同款
-    形态但**来源不同**——T 从 ``outcomes[]`` + ``ledger.by_branch`` 派生，
-    P3 从**任务级** outcome + 末个单元的 reflection 派生。
+    与 :func:`~trajectory_pipeline.assembler.views._closing_text` 调**同一个**
+    :func:`~trajectory_pipeline.assembler.closing.closing_text`：同一套模板
+    与同一份原因词表。⚠️ **2026-11-03 · re-base 到 per-Run**：per-unit 时代
+    P3 只带**本单元**的 outcome、T 带整条 run；per-Run 之后**两边的事实
+    一样**（整条 run 的站点清单 + 同一个决定性结论）⇒ 两边说的是
+    **同一句话**。
 
     - **空 trajectory**（零可见模型动作）不编总结；
-    - **最后一个结论** ``branch is None`` ⇒ success 处置词；
-    - **最后一个结论** ``branch is not None`` ⇒ 失败处置词（分支名进词表，
-      未知分支照实写出分支名——不能静默消失）；
-    - 全部 outcomes 为空 ⇒ "无可访问站点" 处置词。
+    - **决定性结论**（裁定 ②：任务级标签，剔后取的末条结论）说成功就说
+      找到了，说失败就说没找到——**中途成功过不算成功**；
+    - **分支枚举名与分支计数不进文本**——那是并池口径，不是助手该对
+      用户说的话（审计 G3）；
+    - 一个站点都没访问到 ⇒ 如实说「没有找到可访问站点」，不输出
+      ``total_sites=N`` 这类内部计数。
 
     ⚠️ INC46（2026-10-15）后 T 也**不读 unit 级 reflection**——T 是任务级
     视图，unit 级 reflection 是事后反思，写 unit 级 conclusion 当任务级
@@ -398,42 +576,34 @@ def _closing_text(archive: Mapping[str, Any]) -> str | None:
     if not has_visible_action:
         return None
 
-    outcomes = list(archive.get("outcomes") or ())
-    total_sites = int((archive.get("ledger") or {}).get("total_sites") or 0)
-    if not outcomes and total_sites == 0:
-        # 真没访问过任何站点——closing 也不发（search 单元有动作但
-        # 检索阶段就被反爬拦了 / 全无候选）。closing 在「有结果要总结」
-        # 时才有意义。
-        return None
-    ledger = archive.get("ledger") or {}
-
-    if not outcomes:
-        # 全部 outcomes 为空：要么没访问任何站点，要么都是「正在处理中」
-        # （路径 B/C 路由记账）。处置词取自 by_branch 的判断。
-        total_sites = ledger.get("total_sites", 0)
-        disposition = f"无可访问站点（total_sites={total_sites}）"
-    else:
-        # 最后一个结论（裁定 ②）。
-        last = outcomes[-1]
-        branch = last.get("branch")
-        if branch is None:
-            url = str(last.get("play_page_url") or last.get("site_url") or "")
-            disposition = (
-                f"记录该网址为可播放资源：{url}" if url else "记录为可播放资源"
-            )
-        else:
-            disposition = _CLOSING_DISPOSITION.get(str(branch)) or (
-                f"不予记录（分支：{branch}）"
-            )
-
-    # by_branch 摘要
-    by_branch = ledger.get("by_branch") or {}
-    if by_branch:
-        branch_summary = " · ".join(
-            f"{k}={v}" for k, v in sorted(by_branch.items())
-        )
-        return f"任务总结：处置：{disposition}。分支分布：{branch_summary}。"
-    return f"任务总结：处置：{disposition}。"
+    blocked = _excluded_unit_map(archive)
+    # 站点级结论按 **URL 配对**（:mod:`trajectory_pipeline.outcomerules`），
+    # 不按位置——位置口径实测与 P2 在 **86%** 的存档上给出不同结论。
+    kept = [
+        c for c in outcomerules.site_conclusions(archive)
+        if f"site-{c.index}" not in blocked
+    ]
+    site_outcomes = [c.outcome for c in kept if isinstance(c.outcome, Mapping)]
+    # 决定性结论 = 任务级标签那条（裁定 ②，**剔后**取）。
+    conclusion = outcomerules.task_conclusion(
+        archive, exclude=excluded.excluded_outcome_indices(archive)
+    )
+    decisive = (
+        conclusion.outcome
+        if isinstance(conclusion.outcome, Mapping)
+        else None
+    )
+    return closing.closing_for_run(
+        title=str(archive.get("title") or ""),
+        outcomes=closing.run_closing_outcomes(
+            decisive=decisive,
+            site_outcomes=site_outcomes,
+        ),
+        # 一个站点都没访问到（有动作，但全在搜索阶段）——不说「没找到
+        # 可播放网址」，说「没找到可访问站点」：前者是看过了没有，后者
+        # 是压根没看。
+        no_sites=not kept,
+    )
 
 
 # ── messages 视图（通用形态） ──────────────────────────────────────
@@ -449,6 +619,10 @@ def to_task_messages(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
     行为但**输入是 P1**（不是 P2）：动作流从 P1 顶层 ``steps[]`` +
     ``visits[i].steps[]`` 取；观察按 ``step_index`` 全局重编（在拼装过程
     中**自动实现**——拼接时按出现顺序编）。
+
+    **训练筛选**：死循环步（相邻同动作 + 观察逐字相同）整步剔出，
+    重复动作在 meta 里标记（方案 23 R3-1 / R3-2）；规则见
+    :func:`_screened_task_steps`，两段投影共用同一份结果。
     """
     msgs: list[dict[str, Any]] = []
 
@@ -461,31 +635,18 @@ def to_task_messages(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
         msgs.append({"role": "user", "content": user})
     # 空 user_prompt 不发空消息（同 P3 第 4 条判断）。
 
-    units = _flatten_units(archive)
-    has_visible_action = False
-    for unit in units:
-        actions = unit["actions"]
-        observations = unit["observations"]
-        rationales_by_index = {
-            int(i): r for i, r in enumerate(unit["rationales"]) if r is not None
-        }
-        for i, action in enumerate(actions):
-            if action.get("origin") == "infrastructure":
-                # infrastructure 步整步跳过（同 P3 第 2 条判断）。
-                continue
-            has_visible_action = True
-            obs = observations[i] if i < len(observations) else None
-            rationale = rationales_by_index.get(i)
-            msgs.append({
-                "role": "assistant",
-                "content": _rationale_text(rationale) + _action_line(action),
-            })
-            # 缺观察也显式发占位回执，不留没有回音的动作（同 P3 第 8 条）。
-            msgs.append({"role": "user", "content": _render_observation(obs or {})})
+    steps, _screening = _screened_task_steps(archive)
+    for step in steps:
+        msgs.append({
+            "role": "assistant",
+            "content": _rationale_text(step.rationale) + _action_line(step.action),
+        })
+        # 缺观察也显式发占位回执，不留没有回音的动作（同 P3 第 8 条）。
+        msgs.append({"role": "user", "content": step.observation})
 
-    closing = _closing_text(archive)
-    if closing is not None and has_visible_action:
-        msgs.append({"role": "assistant", "content": closing})
+    closing_text = _closing_text(archive)
+    if closing_text is not None and steps:
+        msgs.append({"role": "assistant", "content": closing_text})
     return msgs
 
 
@@ -510,7 +671,8 @@ def to_task_openai_messages(
     ``tool_call_id`` 由 **可见步序号** 派生（``call_0`` / ``call_1``…），
     不取自 P1 的任何字段——P1 里没有可用的调用 id，而 seq 是**确定**的
     不是猜的。``infrastructure`` 步整步跳过后序号仍**稠密**——
-    消息流里不存在的动作不该占号。
+    消息流里不存在的动作不该占号。训练筛选同
+    :func:`to_task_messages`（同一份 :func:`_screened_task_steps`）。
 
     Args:
         archive: P1 JSON dict。
@@ -529,45 +691,32 @@ def to_task_openai_messages(
     if user:
         out.append({"role": "user", "content": user})
 
-    units = _flatten_units(archive)
-    seq = 0
-    has_visible_action = False
-    for unit in units:
-        actions = unit["actions"]
-        observations = unit["observations"]
-        rationales_by_index = {
-            int(i): r for i, r in enumerate(unit["rationales"]) if r is not None
-        }
-        for i, action in enumerate(actions):
-            if action.get("origin") == "infrastructure":
-                continue
-            has_visible_action = True
-            obs = observations[i] if i < len(observations) else None
-            rationale = rationales_by_index.get(i)
-            text = _rationale_text(rationale).strip() or None
-            out.append({
-                "role": "assistant",
-                "content": text,
-                "tool_calls": [{
-                    "id": f"call_{seq}",
-                    "type": "function",
-                    "function": {
-                        "name": str(action.get("tool") or ""),
-                        "arguments": _arguments(action),
-                    },
-                }],
-            })
-            # 缺观察也显式发占位回执（同 P3 第 8 条）。
-            out.append({
-                "role": "tool",
-                "tool_call_id": f"call_{seq}",
-                "content": _render_observation(obs or {}),
-            })
-            seq += 1
+    steps, _screening = _screened_task_steps(archive)
+    for seq, step in enumerate(steps):
+        text = _rationale_text(step.rationale).strip() or None
+        out.append({
+            "role": "assistant",
+            "content": text,
+            "tool_calls": [{
+                "id": f"call_{seq}",
+                "type": "function",
+                "function": {
+                    "name": str(step.action.get("tool") or ""),
+                    # 落盘是 JSON 字符串，不是 dict（方案 23 R3-4）
+                    "arguments": _arguments_json(step.action),
+                },
+            }],
+        })
+        # 缺观察也显式发占位回执（同 P3 第 8 条）。
+        out.append({
+            "role": "tool",
+            "tool_call_id": f"call_{seq}",
+            "content": step.observation,
+        })
 
-    closing = _closing_text(archive)
-    if closing is not None and has_visible_action:
-        out.append({"role": "assistant", "content": closing})
+    closing_text = _closing_text(archive)
+    if closing_text is not None and steps:
+        out.append({"role": "assistant", "content": closing_text})
     # **不返回 tools**——``to_task_openai_messages`` 只生成 messages 段，
     # 顶层 ``{"trajectory_id", "messages", "tools"}`` 由 :func:`to_task_meta`
     # 同款的包装在落盘处组装。
@@ -602,7 +751,12 @@ def _aggregate_unit_outcomes(
     """
     out: list[dict[str, Any]] = []
     outcomes = list(archive.get("outcomes") or ())
+    blocked = _excluded_unit_map(archive)
     for i, visit in enumerate(archive.get("visits") or (), 1):
+        if f"site-{i}" in blocked:
+            # 访问级剔除（R4-2）：这条 unit 不在训练集里，outcome 也不能
+            # 参与任务级聚合——否则分类结论仍然指向被排除平台。
+            continue
         player_obs = visit.get("player_obs")
         player_url = (
             str(player_obs.get("url") or "")
@@ -660,11 +814,133 @@ def _task_sample_ids(archive: Mapping[str, Any]) -> list[str]:
     return [f"{task_id}__{run_id}"]
 
 
-def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
+#: T 的 ``degraded_from`` 词表。**与 P2 :func:`assembler.schema.split_archive`
+#: 的 per-unit 词表同款**（契约文档 T 第 261 行），只是 T 取整条任务的并集。
+#: T 不 import schema（纪律），词表在这里自己声明；同步由契约测试盯住。
+_TASK_DEGRADED_VOCAB: tuple[str, ...] = (
+    "user_prompt",
+    "run_config",
+    "steps",
+    "no_body",
+    "body_preview_only",
+    "outcome_missing",
+    "success_branch_mismatch",
+)
+
+
+def _body_missing_of(obs: Any) -> str | None:
+    """这条观察缺了什么正文；不缺 / 没有这条观察返回 ``None``。
+
+    与 P2 :func:`assembler.schema._obs_missing` 同款：``body_text`` 在就不缺；
+    只有 400 字符的 ``body_preview`` 记 ``body_preview_only``（**不是**
+    ``no_body``——「正文被截短」与「没有正文」对下游影响不同）；都没有
+    记 ``no_body``。``obs`` 为空（没采到这条快照）**不记**：那是
+    ``missing_observation_count`` 的账，不是「有观察但正文缺」。
+    """
+    if not obs or not isinstance(obs, Mapping):
+        return None
+    body = obs.get("body_text")
+    if isinstance(body, str) and body:
+        return None
+    legacy = obs.get("body_preview")
+    if isinstance(legacy, str) and legacy:
+        return "body_preview_only"
+    return "no_body"
+
+
+def _outcome_for_visit(
+    visit: Mapping[str, Any], outcomes: list[Any]
+) -> Mapping[str, Any] | None:
+    """按 **候选 url → 落地 url → 播放页 url** 找 visit 对应的 outcome。
+
+    与 P2 :func:`assembler.schema._outcome_for` 的同一条匹配顺序
+    （INC59：成功换址访问的 outcome 记在播放页 url 上）。T 不 import
+    schema，这里重写一遍；顺序错了会静默把成功访问判成 ``outcome_missing``。
+    """
+    player_obs = visit.get("player_obs")
+    player_url = (
+        str(player_obs.get("url") or "") if isinstance(player_obs, Mapping) else ""
+    )
+    wanted = (
+        str(visit.get("url") or ""),
+        str(visit.get("landed_url") or ""),
+        player_url,
+    )
+    for want in wanted:
+        if not want:
+            continue
+        for outcome in outcomes:
+            if isinstance(outcome, Mapping) and outcome.get("url") == want:
+                return outcome
+    return None
+
+
+def _task_degraded_from(archive: Mapping[str, Any]) -> list[str]:
+    """整条任务**缺了什么**——P2 per-unit 缺件标记的并集（方案 23 R2-4）。
+
+    T 视图的 ``degraded_from`` 曾经硬编码为空列表：一份缺 ``user_prompt``
+    或缺正文的 P1 渲染出来与全须全尾的一模一样。现在从 P1 事实现算，
+    词表见 :data:`_TASK_DEGRADED_VOCAB`，顺序按词表固定（同 P2 的
+    ``dict.fromkeys`` 去重口径）。
+
+    **不在这里判的**：``observation_missing``（那条账在
+    ``missing_observation_count`` / ``observation_complete`` 上）、
+    ``rationale_missing``（独立字段）、采集期 ``degraded``（P1 里
+    ``degraded`` 非空是**信任度**问题，不是缺件——P2 也只在闸门消费它）。
+    """
+    found: set[str] = set()
+    if not archive.get("user_prompt"):
+        found.add("user_prompt")
+    if not archive.get("run_config"):
+        found.add("run_config")
+
+    if not list(archive.get("steps") or ()):
+        found.add("steps")
+
+    miss = _body_missing_of(archive.get("search_observation"))
+    if miss:
+        found.add(miss)
+
+    outcomes = list(archive.get("outcomes") or ())
+    blocked = _excluded_unit_map(archive)
+    for i, visit in enumerate(archive.get("visits") or (), 1):
+        if f"site-{i}" in blocked:
+            # 被访问级剔除的 unit 不参与缺件账：它的缺陷不会进训练集，
+            # 记进来只会让「这条轨迹还缺什么」指向一段不存在的语料。
+            continue
+        if not isinstance(visit, Mapping):
+            continue
+        if not list(visit.get("steps") or ()):
+            found.add("steps")
+        for key in ("site_obs", "player_obs"):
+            miss = _body_missing_of(visit.get(key))
+            if miss:
+                found.add(miss)
+        outcome = _outcome_for_visit(visit, outcomes)
+        if outcome is None:
+            found.add("outcome_missing")
+        elif bool(visit.get("success")) != (outcome.get("branch") is None):
+            # 「成功」只有一个来源说了算；两个来源对不上时标记，不挑一个
+            # （挑一个就是在猜，而这条样本进不进训练集全看它——P2 同款）。
+            found.add("success_branch_mismatch")
+
+    return [k for k in _TASK_DEGRADED_VOCAB if k in found]
+
+
+def to_task_meta(
+    archive: Mapping[str, Any], *, source_archive: str = ""
+) -> dict[str, Any]:
     """元数据（per-Run）。训练代码不看它，人工复核与批次筛选看它。
 
     四组：来源 / 单元级汇总 / 可用性 / 可回放性自查。详见契约文档
     :mod:`trajectory_pipeline.docs.contracts.T-task-view`。
+
+    Args:
+        archive: P1 JSON dict。
+        source_archive: 据以生成的 P1 文件名（不含目录）。**由调用方注入**
+            ——archive dict 里没有自己的文件名，猜不出来；批量路径传
+            ``path.name``，单文件路径传 ``p.name``，直接调本函数时为 ``""``
+            （契约允许空串，「不知道」不冒充一个文件名）。
     """
     task_id = str(archive.get("task_id") or "")
     run_id = str(archive.get("run_id") or "")
@@ -709,7 +985,13 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
     # 否则取**首个**失败分支」。现在改成**最后一个结论**——
     # 与 P2 的任务级标签、与训练侧消费的那个标签**同一条**。
     # 旧口径会把「中途成功过、后来又失败」的轨迹报成成功。
-    conclusion = outcomerules.task_conclusion(archive)
+    #
+    # ⚠️ **2026-11-03 · re-base 到 per-Run**：结论取**剔后**的集合
+    # （R4-2）——被排除平台的站点不进这条轨迹，它的结论也不该替这条
+    # 轨迹定标签。剔除账与 P2 侧**同一份**（:mod:`assembler.excluded`）。
+    conclusion = outcomerules.task_conclusion(
+        archive, exclude=excluded.excluded_outcome_indices(archive)
+    )
     if not conclusion.has_conclusion:
         # 一个站点结论都没有（被反爬拦 / 搜索失败 / 全是路由记账）
         # ——判不出来，不算通过。
@@ -722,20 +1004,23 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
         task_gate_status = "failed"
         overall_branch = str(conclusion.branch)
 
+    blocked = _excluded_unit_map(archive)
+    # 从**剔后**的 unit_outcomes 出账：``site-i`` 保留原始编号，
+    # 被排除平台的 unit 不出现（R4-2）。
     gate_breakdown = [
         {
-            "unit": f"site-{i}",
+            "unit": str(o.get("unit") or ""),
             # **没配到 outcome = 缺件**，不是成功——读成「过了」会把
             # 一条没结论的访问点记成通过了。
-            "gate": ("not_run" if not unit_outcomes[i - 1].get("matched")
-                     else ("passed" if unit_outcomes[i - 1].get("branch") is None
+            "gate": ("not_run" if not o.get("matched")
+                     else ("passed" if o.get("branch") is None
                            else "failed")),
             "rationale_missing": rationale_missing,
         }
-        for i in range(1, len(visits) + 1)
+        for o in unit_outcomes
     ]
     # search 单元单独记一条（gate_breakdown 第一条 = search unit）
-    if visits:
+    if visits and "search" not in blocked:
         gate_breakdown.insert(0, {
             "unit": "search",
             "gate": "passed" if not rationale_missing else "not_run",
@@ -771,19 +1056,31 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
                 })
             seq_index += 1
 
+    # 训练筛选的账（方案 23 R3-1 / R3-2）：与两段投影共用同一份筛选
+    # 结果（:func:`_screened_task_steps`），所以 meta 报的「剔了哪几步」
+    # 就是两段消息里实际少掉的步。
+    _, screening = _screened_task_steps(archive)
+
     return {
         "trajectory_id": trajectory_id,
         "task_id": task_id,
         "run_id": run_id,
         "title": title,
-        "source_archive": "",  # 由 build_task_view 注入
+        "source_archive": source_archive,
         "schema_version": "task-view.v1",
         # 工具面（2026-10-20 方案 15 §7 R1）：这份轨迹的训练动作空间属于
         # 哪个方言。同名工具在两个面里参数不同，面错了就是声明与调用对不上。
         "tool_surface": _surface_of(archive),
         # 单元级汇总（T 独有）
-        "unit_count": 1 + len(visits),  # search + N sites
+        "unit_count": len(units),  # search + 未被剔除的 sites
         "unit_sample_ids": _task_sample_ids(archive),
+        # 访问级剔除明细（方案 23 A10 / R4-2）：被剔的 unit 不在
+        # ``messages`` / ``unit_sample_ids`` 里，但必须留下账——
+        # 「样本为什么少了一条」要能从 T 自己看出来。
+        "excluded_units": [
+            {"unit": unit, "platform": platform}
+            for unit, platform in blocked.items()
+        ],
         "unit_outcomes": unit_outcomes,
         "ledger_summary": ledger,
         "task_gate": {"status": task_gate_status, "reasons": []},
@@ -791,7 +1088,8 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
         # 可用性 / 结论
         "gate": {"status": task_gate_status, "reasons": []},
         "rationale_missing": rationale_missing,
-        "degraded_from": [],  # T 视图无 per-unit degraded（P3 的事），整条任务级标记
+        # 整条任务缺件 = 各 unit 缺件的并集（与 P2 词表同款；方案 23 R2-4）
+        "degraded_from": _task_degraded_from(archive),
         "overall_branch": overall_branch,
         # 可回放性自查
         "step_count": len(all_actions),
@@ -804,6 +1102,13 @@ def to_task_meta(archive: Mapping[str, Any]) -> dict[str, Any]:
         "observation_complete": len(all_observations) >= len(all_actions),
         "closing_summary": _closing_text(archive) is not None
         and any(a.get("origin") != "infrastructure" for a in all_actions),
+        # 训练筛选（方案 23 R3-1 / R3-2）。``step_index`` 与
+        # ``rationale_steps`` 同一坐标系（全局原始序号，infrastructure
+        # 占号）；``repeat_actions`` 只标留在训练集里的步。
+        "deduped_step_count": len(screening.deduped),
+        "deduped_steps": list(screening.deduped),
+        "repeat_step_count": len(screening.repeats),
+        "repeat_actions": [dict(r) for r in screening.repeats],
         "rationale_steps": rationale_steps,
     }
 
@@ -837,6 +1142,7 @@ def build_task_view(
     *,
     root: str | Path | None = None,
     overwrite: bool = False,
+    source_archive: str = "",
 ) -> TaskViewRenderResult:
     """把一份 P1 JSON dict 渲染成 T 视图 dict + 落盘到 storage。
 
@@ -853,6 +1159,9 @@ def build_task_view(
             重建时传 ``tmp_path`` / 别的根,与 P3 :func:`assembler.views.build_views`
             同款参数约定。
         overwrite: 已存在时是否覆盖。
+        source_archive: 据以生成的 P1 文件名（不含目录），写进
+            ``meta.source_archive``。批量/单文件路径传 ``path.name``；
+            默认空串（「不知道」不冒充文件名）。
 
     Returns:
         :class:`TaskViewRenderResult`——``written`` 1 表示落盘成功，
@@ -871,11 +1180,23 @@ def build_task_view(
         )
 
     trajectory_id = f"{task_id}__{run_id}"
+    # 分池（方案 23 R3-3）：交付面落 ``task_views/``，旧面落
+    # ``legacy/<surface>/task_views/``。面从源存档的 ``driver`` 折算
+    # （:func:`_surface_of`）——认不出的 driver 直接抛，不回落。
+    target_root = pool.pool_root(storage_task_views_dir(root).parent, _surface_of(archive))
     messages = to_task_messages(archive)
     openai_msgs = to_task_openai_messages(archive)
-    meta = to_task_meta(archive)
-    # meta 顶部 source_archive 字段填 P1 文件名（若有）
-    meta["source_archive"] = ""  # 由调用方在批量场景下注入文件名
+    # 两段投影一致才落盘（方案 23 R5-2 / O-5）：不一致的视图不该进交付集
+    # ——训练侧与 LS 侧会看到两个故事，而报表上看不出异常。fail-closed：
+    # 不写半份，skipped 带原因（CLI 会打印）。
+    problems = projection_problems(messages, openai_msgs)
+    if problems:
+        return TaskViewRenderResult(
+            trajectory_id=trajectory_id,
+            written=0,
+            skipped=("投影不一致: " + "；".join(problems[:3]),),
+        )
+    meta = to_task_meta(archive, source_archive=source_archive)
 
     payload = {
         "trajectory_id": trajectory_id,
@@ -891,7 +1212,9 @@ def build_task_view(
         },
         "meta": meta,
     }
-    rep = write_task_view(payload, trajectory_id, root=root, overwrite=overwrite)
+    rep = write_task_view(
+        payload, trajectory_id, root=target_root, overwrite=overwrite
+    )
     return TaskViewRenderResult(
         trajectory_id=rep.trajectory_id,
         written=rep.written,
@@ -981,6 +1304,9 @@ def build_all_task_views(
     src = Path(source_root)
     out_dir = storage_task_views_dir(target_root)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # 分池（方案 23 R3-3）：先把**已存在**的旧面任务视图挪出交付目录。
+    # 放在构建之前，``overwrite=False`` 的存在性检查才看对目录。
+    migration = pool.migrate_task_views(out_dir)
 
     allowed = set(archive_filter) if archive_filter is not None else None
     log = logging.getLogger(__name__)
@@ -1031,10 +1357,18 @@ def build_all_task_views(
                             "(archive.write 增量六十一修复后新 P1 不再缺;记录留痕)",
                             path.name, derived_run_id,
                         )
-        res = build_task_view(archive, root=target_root, overwrite=overwrite)
+        res = build_task_view(
+            archive,
+            root=target_root,
+            overwrite=overwrite,
+            source_archive=path.name,
+        )
         results.append(res)
         total_written += res.written
         total_skipped += len(res.skipped)
+    pool.record_pool(
+        out_dir, moved=migration.moved, unclassified=migration.unclassified
+    )
     return TaskViewBatchReport(
         tuple(results), total_written, total_skipped, str(out_dir),
     )

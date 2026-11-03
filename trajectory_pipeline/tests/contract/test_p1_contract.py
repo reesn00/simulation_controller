@@ -130,6 +130,11 @@ class Test字段集一致:
             # degraded 是内容块的降级通道（下游只判它非空），把测量失败
             # 混进去，一把坏尺子就能作废整批数据。
             "element_basis_error",
+            # 2026-11-02 方案 23 R4-1：读标记。空串 = 整页观察（执行器
+            # 推的回执）；`snapshot`/`interactive`/`links` = 模型主动读的
+            # 那一块。**其余字段为空/0 表示「这次没读」，不是「页面上没有」**
+            # ——这两种「没有」必须分开读，所以标记得跟着观察一起落盘。
+            "read",
         }
         assert actual == expected, (
             f"观察字段漂移：多 {actual - expected} / 少 {expected - actual}"
@@ -217,7 +222,7 @@ class Test文档不是摆设:
         "url", "page_title", "body_text", "body_len", "body_source",
         "truncated", "raw_len", "stripped_ratio", "degraded",
         "video_tag_count", "iframe_count", "elements_total", "links_total",
-        "interactive_elements", "links",
+        "interactive_elements", "links", "read",
         "landed_url", "success", "notes", "site_obs", "player_obs",
         "site_url", "play_page_url", "branch", "branch_label", "evidence",
         "question", "source", "fallback_used", "reached_play_page",

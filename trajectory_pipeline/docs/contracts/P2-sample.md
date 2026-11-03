@@ -20,6 +20,52 @@
 **轨迹内全局序号**，不是「每个单元各自从 0 数起」——后者会让第 5 步的
 rationale 在字典查找里撞上搜索段的第 5 步，**静默丢思考**。
 
+## 访问级剔除（方案 23 A10 / R4-2(b)）
+
+任务库（`tasks.yaml`）里的 `excluded_platforms` 在 v1 是**答案级**约束
+（不许把某平台当答案）；2026-11-02 起在 v2 是**访问级**约束——
+**训练集里访问被排除平台的步必须是 0**。owner 裁定走 **(b) 数据层剔除**
+（不是答案级 enforce，也不是采集层拦截）。
+
+- **判据**：`assembler/excluded.py`。平台 → 域名表（`PLATFORM_DOMAINS`），
+  按 hostname `==` 或 `endswith("." + domain)` 匹配——子串匹配会把仿冒域
+  也剔掉，是一条静默的错。域名表与 `tasks.yaml` 的平台名一一对应。
+- **证据是「步」**：模型动作的 `goto` 网址 + **逐步** `observation.url`。
+  `origin="infrastructure"` 的 `new_tab` / `close_tab` 不算访问（那是执行器
+  的会话管理，不是模型选的路径）；但跳转后的页面若真被看到，紧随其后的
+  观察会把它记下来（观察 URL 仍参与判定）。
+- **判定必须读 P1 原始 `steps[]`**，不能读 `Sample.observations`：搜索单元
+  的后者只有一张汇总 `search_observation`（与动作不等长），拿它判会漏掉
+  「搜索阶段点进被排除平台」那一类。
+- **整条 unit 剔，不是只剔命中步**。只剔命中步会把一个 unit 截成前半段：
+  前面的步还在为这个平台服务，outcome 却已经被扔掉——因果断裂。
+- **编号不重排**：`site-3` 被剔后剩下的仍叫 `site-1` / `site-2` / `site-4`
+  （`sample_id` 与 T 的 `unit_sample_ids` 共用这套编号，重排会让两边对不上）。
+- **任务没声明 `excluded_platforms` 就不判**（不猜）。
+- **P1 存档一个字不动**——剔的是训练样本，证据仍在存档里。
+
+落点：`schema.split_archive_report` 返回 `SplitResult(samples, excluded)`
+（`split_archive` 仍是老形态的 `list`）；`builder` 把剔除条数与明细记进
+`BuildReport.total_excluded_units` / `ArchiveBuildResult.excluded_detail`。
+⚠️ **`excluded` 是账不是失败**：剔了多少条要在 `cli build` 的输出与报告里
+看得见，否则「这批样本怎么少了」只能靠人翻存档。
+
+## 分池（方案 23 R3-3）
+
+交付集**只含 `camofox-1`**；旧面（`obscura-1` / `camoufox-1`）按 O-3
+进「只读存量」归档（**移动而非删除**）：
+
+```
+output/pipeline/samples/<sample_id>.json                      # 交付面
+output/pipeline/legacy/<surface>/samples/<sample_id>.json     # 只读存量
+output/pipeline/pool_meta.json                                # 批次账
+```
+
+分池是**写入时的动作**：`build_all` 先把已存在的非交付面样本挪进 legacy，
+再按每条样本自己的 `tool_surface` 落盘。读取端不需要再按字段过滤。
+`pool_meta.json` 记各面计数——**池变小不是质量变好**（风险 R-5），
+分母变小时先看这一段。
+
 ## 顶层结构
 
 ```json
@@ -121,13 +167,53 @@ camofox 面的上游走的是 `page.getByRole(role, {name}).nth(nth)`
 | `user_prompt` | `str` | persona 渲染后的**用户原话**，不是检索式 |
 | `provenance` | `object` | 采样切片轴，**控制流不读它** |
 | `actions` | `list` | ④ 动作+参数。**没有 `ref`**——会话句柄不可回放 |
-| `observations` | `list` | ⑤ 观察原文（可长于训练态渲染） |
+| `observations` | `list` | ⑤ **训练态观察**（已裁，方案 23 R1；形状见下节）。P1 全文只在源存档里 |
 | `rationales` | `list` | ⑥ 思考+结论，**与 `actions` 按 `step_index` 对齐**（见下） |
 
 ⚠️ **`reflection` 不在 `six` 里**——它是**顶层键**（`six` 只有上面这 7 个）。
 早期版本的本文档把它列在「六件套」表里，而代码一直写在顶层 ⇒ 文档与代码
 不符（两边都绿，因为没有测试盯这一条）。**2026-10-30 订正**：见下面的
 「`reflection`」一节。
+
+### ⑤ `observations`（训练态，方案 23 R1）
+
+P2 落的是**训练态观察**——不是 P1 全文；全文仍只在源存档里。
+每条观察的字段：
+
+| 键 | 类型 | 说明 |
+|---|---|---|
+| `url` / `page_title` | `str` | 原样 |
+| `read` | `str` | **这条观察是「谁要的」**（方案 23 R4-1）：`""` = 执行器推的整页回执；`snapshot` / `interactive` / `links` = 模型主动读的那一块。非空时**只有被读的块有内容**，其余字段为空/0 表示「这次没读」，不是「页面上没有」 |
+| `body_text` | `str` | **任务相关正文摘要**，≤ 320 字（读步 ≤ 2000，见下）；按原行序保留，不是重排后的摘要 |
+| `body_source` | `str` | `body_text` / `body_preview_only`（老存档只有前 400 字符）/ `missing` |
+| `body_chars` | `int` | 摘要实际字数 |
+| `truncated` | `{source, view}` | `source` = P1 的 dom 层预算用尽；`view` = 本层裁剪触顶（正文/元素/链接任一） |
+| `degraded` | `list[str]` | **采集降级**（这块信息没采到），如 `observation_missing` / links_empty |
+| `interactive_elements` | `list` | ≤ 10 条（读步 ≤ 50），去噪去重；键名跟方言走（`{tag,label}` / `{role,name}`），**不带 `ref`** |
+| `links` | `list` | ≤ 4 条（读步 ≤ 50），去不可导航项与噪声；`{text, href}` |
+| `video_tag_count` / `iframe_count` | `int` | 原样 |
+| `action_error` | `str` | **本步动作失败原因**（P1 `steps[i].error`），空串 = 没报错 |
+| `limits` | `object` | 本层**全部**裁剪事实，见下 |
+
+`limits` 的六个计数 + 一个布尔（`None` = 未裁，与「裁了 0 条」区分开）：
+
+- `body_chars` / `elements` / `links`：**上限触发**时记下限（普通步 320 / 10 / 4，
+  读步 2000 / 50 / 50——见 `observation_view.VIEW_*` 与 `VIEW_READ_*`）；
+- `body_lines_dropped` / `elements_dropped` / `links_dropped`：**噪声与去重**丢掉的条数；
+- `cropped`：任一项非空即为真。
+
+**读步的窗口为什么更宽**：读原语的存在意义就是「整页回执被压缩后看不见
+的东西，模型要能主动去拉」。还按 320/10/4 压，`snapshot` 读回来的正文与
+普通回执没有差别（`snapshot` 与普通回执就只剩一个 `read` 标记之差），
+读这一步等于白走。
+
+两条硬口径：
+
+1. **下一步动作的目标无条件保留**（`render(..., keep=...)`）。限量若把点击名 /
+   导航网址裁掉，训练样本里就会出现「点了一个观察里没有的东西」——那是在
+   教模型编目标。`keep` 命中项即使属于导航词、即使排在第 30 位，也进观察。
+2. **`action_error` 与 `degraded` 分列**。「动作白做」和「信息没采到」是
+   两件事；混成一个标记，模型会把点击失败学成「页面没内容」。
 
 ### ⑥ `rationales`（2026-10-10 由单值 `rationale` 改来）
 
@@ -148,9 +234,22 @@ camofox 面的上游走的是 `page.getByRole(role, {name}).nth(nth)`
 
 | 状态 | 含义 |
 |---|---|
-| `passed` | 逐条核查过，无 hard 发现 |
-| `failed` | 有 hard 发现，`reasons` **定位到第几步** |
+| `passed` | 逐条核查过，无 hard 发现，**且终局答复兑现了输出契约** |
+| `failed` | 有 hard 发现（`reasons` **定位到第几步**），**或终局答复没兑现契约** |
 | `not_run` | **没判**——不是「通过」。两种成因：①没有可核查的 rationale；②rationale 是**旧口径**（见下节 `rationale_era`），新闸门的可见窗口对它不适用 |
+
+**终局验收读最终回复**（方案 23 R2-3，owner 裁定 O-2）：任务库
+`output_contract.min_urls` 要求 N 个网址，而这条样本的收尾答复
+（P3/T 渲染的末条 assistant，同一个函数产出）里**可交付网址少于 N 个**
+⇒ 不许判 `passed`，降为 `failed`，理由写
+「终局答复未兑现输出契约：合同要求至少 N 个网址，答复里只有 M 个」。
+
+- 判据读**文本**，不读 `outcome` 字段：字段里有网址 ≠ 答复里说了；
+- 只作用于**站点单元**（`outcome is not None`）且有可见模型动作的样本
+  ——搜索单元的收尾是「接下来核验候选」，不是任务答复；
+- 只降 `passed`：`failed` 已是失败，`not_run` 是「没判」，都不被改写；
+- 任务库读不到 / 未知 `task_id` / 合同没写 `min_urls` ⇒ 判据**不适用**，
+  判定原样（fail-closed：不适用 ≠ 判通过）。
 
 `rationale_missing`（一条都没写成）与 `gate` **分开记**：
 `gate=passed` 但 `rationale_missing=true` 意味着样本只有动作没有思考，

@@ -173,10 +173,14 @@ class TaskConclusion:
     outcome: Mapping[str, Any] | None
     #: 末条 outcome 在 ``outcomes[]`` 里的下标；``-1`` = 没有 outcome。
     index: int
-    #: 这条轨迹共有多少条 outcome。
+    #: 这条轨迹共有多少条 outcome（**含**被剔除的那些——``total`` 说的是
+    #: 这条轨迹记了多少账，不是「参与取结论的有多少条」）。
     total: int
     #: 取这条的理由（审计用：为什么是它）。
     reason: str
+    #: 有多少条 outcome 因**访问级剔除**（方案 23 R4-2）被排除在取结论
+    #: 之外。``0`` = 没剔过。
+    excluded: int = 0
 
     @property
     def is_success(self) -> bool:
@@ -359,7 +363,11 @@ def site_entries(archive: Mapping[str, Any]) -> tuple[SiteEntry, ...]:
 # ── 任务级结论 ────────────────────────────────────────────────────
 
 
-def task_conclusion(archive: Mapping[str, Any]) -> TaskConclusion:
+def task_conclusion(
+    archive: Mapping[str, Any],
+    *,
+    exclude: Sequence[int] | set[int] = (),
+) -> TaskConclusion:
     """一条轨迹的**任务级结论**（owner 裁定 ②：看最后一个结论）。
 
     取 ``outcomes[]`` 的**末条**——那是记账顺序上的最后一条决策，
@@ -372,8 +380,16 @@ def task_conclusion(archive: Mapping[str, Any]) -> TaskConclusion:
 
     **判不出来时** ``branch`` 是 :data:`UNRESOLVED` 而不是 ``None``——
     「没判出来」与「成功」在报表上差得很远，合成一个就看不出废样本。
+
+    ``exclude``：**访问级剔除**（方案 23 A10 / R4-2）剔掉的 outcome 下标
+    ——访问了任务声明的被排除平台的站点，它的结论不参与取任务级结论。
+    剔的是**下标**而不是「位置」：``outcomes[]`` 与 ``visits[]`` 不是
+    一一对应的（孤儿记账、候选阶段记账），按位置剔会剔错行。
+    下标由 :func:`trajectory_pipeline.assembler.excluded.excluded_outcome_indices`
+    用 **URL 配对**给出——与本模块的配对口径同一份。
     """
-    outcomes = archive.get("outcomes") or []
+    outcomes = list(archive.get("outcomes") or [])
+    dropped = {int(i) for i in exclude}
     if not outcomes:
         return TaskConclusion(
             branch=UNRESOLVED,
@@ -382,11 +398,30 @@ def task_conclusion(archive: Mapping[str, Any]) -> TaskConclusion:
             total=0,
             reason="本轨迹没有任何站点结论——判不出来（fail-closed）",
         )
-    last = outcomes[-1]
+    kept = [(i, o) for i, o in enumerate(outcomes) if i not in dropped]
+    if not kept:
+        # 全被剔了 ⇒ 剔后压根没有结论。**判不出来**，不是成功、
+        # 也不是「被排除平台上的失败」——那个平台的步根本不在轨迹里。
+        return TaskConclusion(
+            branch=UNRESOLVED,
+            outcome=None,
+            index=-1,
+            total=len(outcomes),
+            reason=(
+                f"{len(outcomes)} 条结论全部因访问级剔除被排除"
+                "——剔后没有结论，判不出来（fail-closed）"
+            ),
+            excluded=len(dropped),
+        )
+    index, last = kept[-1]
+    reason = f"取末条结论（{len(outcomes)} 条里的第 {index + 1} 条）"
+    if dropped:
+        reason += f"；已剔除 {len(dropped)} 条（访问级剔除）"
     return TaskConclusion(
         branch=last.get("branch"),
         outcome=last,
-        index=len(outcomes) - 1,
+        index=index,
         total=len(outcomes),
-        reason=f"取末条结论（{len(outcomes)} 条里的第 {len(outcomes)} 条）",
+        reason=reason,
+        excluded=len(dropped),
     )

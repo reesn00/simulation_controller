@@ -145,6 +145,7 @@
 | `links` | `list[{text,href}]` | `text` 裁到 80 字符 |
 | `element_basis` | `dict \| null` | **跨面可比的元素账目**（设计方案 04 §4.9.6，2026-10-21）。**新增的一列，不改 `elements_total`**。结构 `{"shared": {...}, "face": {...}}`——**两本账平级**：`shared` 是**同一段 JS + 同一把尺子**在两个浏览器上各跑一次的结果（**按构造可比**），`face` 是本面自己的枚举账目（obscura 面只有 `nodes`/`kept` 两条，给不出「role 命中几条 / 无名丢掉几条」——**缺就是缺，不填 0**）。档位名见 `executor/browser/element_basis.py` 的 `LADDER_STAGES` / `SHARED_BASE_STAGES`。**`null` = 这一批没开 `--element-basis`**，不是「页面上没有元素」——这两种「没有」必须分开读。由 `cli run --element-basis` / `cli check --element-basis` 显式开启（**默认关**：多一次 evaluate 往返，是测量仪器不是生产链必需项）。⚠️ **空的账不落盘**：某一本账没测到时**缺键**，不落 `{}`——空账会被读成「测了，什么都没有」 |
 | `element_basis_error` | `str \| null` | **共享口径没测到的原因**（2026-10-21）。⚠️ **它与 `degraded` 分开**——`degraded` 是**内容块**的降级通道，下游只判它非空（`steps/search.extract_candidates` 见到降级就**不取候选**、`gatekeeper` 见到降级就拦），把**测量失败**混进去等于让一把坏尺子**作废整批数据**。三种状态分开读：`element_basis=null` 且本列 `null` → **没开开关**；`element_basis` 缺 `shared` 键且本列非空 → **开了但没测到**（face 账目仍在）；`element_basis` 完整 → **测到了** |
+| `read` | `"" \| "snapshot" \| "interactive" \| "links"` | **这条观察是「谁要的」**（2026-11-02 · 方案 23 R4-1）。空串 = **执行器推的整页回执**（普通动作后的那一份，也是老存档的唯一形态）；非空 = **模型主动读的那一块**。⚠️ **读步只带被读的那一块**——`body_text` 空、`interactive_elements`/`links` 空、`elements_total`/`links_total` 为 0 表示「**这次没读**」，**不是「页面上没有」**。要判「页面上到底有没有」只能看该步之前最近一次整页回执，或者让模型再读一次。落盘上限随标记放宽：读 `interactive` 存到 200 条、读 `links` 存到 200 条（普通步仍是 80/50，见 `executor/orchestrator.py` 的 `OBS_*` 常量） |
 
 ### `elements_total` / `links_total` 为什么是 P0
 
@@ -169,18 +170,20 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 
 | 字段 | 语义 |
 |---|---|
-| `action.tool` | `goto` / `click` / `fill` / `press` / `new_tab` / `close_tab`（封闭六值，与 `executor/actions.py` 的 `TOOLS` 同源；`observe` 不是动作） |
-| `action.params` | `goto`/`new_tab` 是 `{"url": ...}`；`fill` 是 `{"text": ...}`；`press` 是 `{"key": ...}`；`click`/`close_tab` 是 `{}` |
+| `action.tool` | `goto` / `click` / `fill` / `press` / `new_tab` / `close_tab` / `snapshot` / `interactive` / `links`（封闭九值，与 `executor/actions.py` 的 `TOOLS` 同源；`observe` 不是动作）。**后三条是读原语**（2026-11-02 · 方案 23 R4-1）：模型主动拉取页面的一块内容，**是动作、进训练 `tool_calls`**——与「执行器推的回执」不是一回事 |
+| `action.params` | `goto`/`new_tab` 是 `{"url": ...}`；`fill` 是 `{"text": ...}`；`press` 是 `{"key": ...}`；`click`/`close_tab`/`snapshot`/`interactive`/`links` 是 `{}`（读原语无参数，窗口由执行层护栏决定） |
 | `action.origin` | `"model"`（模型会选）/ `"infrastructure"`（执行器自己做的会话隔离：`new_tab` / `close_tab`） |
 | `action.target` | `click`/`fill` 的语义化目标 `{tag, label}`（obscura 面）／`{role, name}`（camoufox 面）／`{role, name}`（camofox 面），**没有 `ref`**；目标为 `None` 时照实记——那是 I6 被违反的现场，不编目标补上。`press` 可带：回车等全局按键提交时 `null`（点「搜索」按钮提交走 `click`，不走这里）。`goto`/`new_tab`/`close_tab` 无此字段 |
-| `observation` | 上一个动作的观察回执。**`observe` 不是动作**——记成动作会让模型学出「调用 observe」 |
+| `observation` | 上一个动作的观察回执。**`observe` 不是动作**——记成动作会让模型学出「调用 observe」。读原语是例外中的例外：它们是**模型发起的动作**，所以既有 `action.tool` 也有 `observation`，且后者的 `read` 标记非空 |
 | `error` | 非空 = 动作本身失败。与 `observation: null` 是两回事：前者是证据，后者是采集失败 |
 | `rationale` | 本步的思考+结论（`WriteResult.to_json()` 形状：`status` / `rationale:{text,conclusion}` / `reason` / `degraded`）。**scripted 形态** = rationale writer 产物（2026-10-17 INC46 起为动作前动机，`reason=""`）；**agent 形态** = 循环的原生 think（A3-3 / INC58，`reason="native-think"`——来源标记，两形态在 P1 里可区分）。`null` = 该步没有思考文本（执行器自己的步、或 scripted 未接 writer），**不与「写了但为空」相混** |
 | `duration_ms` | **本步的墙钟耗时（毫秒）**，从动作发起到观察/失败回填（2026-10-21 起）。**不是动作单独那几秒**——成功路径上它含随后的观察耗时；失败路径上动作一抛就收口，整步 ≈ 动作耗时。**为什么必须有**：camoufox 面的点击超时（5s）与「页面没有播放器」在证据上同形，都是一条 `error` 非空的步骤，没有耗时字段就分不出「慢了一点」与「慢到离谱」，只能靠猜。`null` = 这一步没走到收口（中途异常），**不与「0 毫秒」相混**。**新增可选字段，不动 `schema_version`** |
 
-### `action.tool` 六值的来历
+### `action.tool` 九值的来历
 
 `goto` / `click` / `new_tab` 是 direct 路径的三件套；`fill`（把片名填进搜索框）与 `press`（回车提交检索）自 2026-10-16 路径 B/C 的站内搜索链获得真实产地，`close_tab` 同轮随外链校验（`new_tab` 开、看完关）获得产地。**语义层与驱动层自 2026-10-20 起同名**（驱动侧旧名 `type_text`/`press_key` 已随 D12 改掉，见[设计方案 04 §4.6](../设计方案/04-camoufox执行层替换方案.md)）。P2/P3 链路早已渲染 fill/press 步——契约文字此前停在旧三值，是**文档没跟上代码**，不是契约变更（A2a-0 / INC49 收口；文档 ↔ 代码的双向同步由 `test_p1_contract.py` 的漂移守卫钉住）。
+
+后三值 `snapshot` / `interactive` / `links` 是 2026-11-02 方案 23 R4-1 加的**读原语**：整页回执被 320 字压缩后，模型看不见第 11 个元素之后的东西，只能猜；读原语把「看哪一块」还给 agent（方案 15 D-A7 / O-3）。三条都**无参数**，差别只在读什么：`snapshot` 读正文、`interactive` 读可交互元素、`links` 读链接。读步**计入步数与 `llm_calls` 预算**，但**不进死循环检测、不触发拦截**——反复读同一块不产生新信息，却也不算「点了又点」。
 
 ---
 

@@ -25,10 +25,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from trajectory_pipeline.executor import actions
-from trajectory_pipeline.executor.actions import StepLog
+from trajectory_pipeline.executor.actions import ActionStep, StepLog
 from trajectory_pipeline.executor.branches import (
     RunLedger,
     validate_observation_for_decision,
@@ -75,6 +75,14 @@ log = logging.getLogger(__name__)
 #: 哪天这里改成 100 而别处还按 80 判断，D-2 会静默地把裁剪当成不存在。
 OBS_ELEMENT_LIMIT = 80
 OBS_LINK_LIMIT = 50
+#: **读原语**（``interactive`` / ``links``）的落盘上限（方案 23 R4-1）。
+#: 读窗口本来就比推送窗口宽（agent 侧 200 条），P1 若仍按 80/50 落盘，
+#: 读到的第 81–200 条就会「模型看过、证据里没有」——训练侧引用的东西
+#: 在取证侧查不到，是可归因的红线。所以读步单独放宽；普通步不变。
+#: 与 ``agent_loop._READ_ELEMENT_LIMIT`` / ``_READ_LINK_LIMIT`` 逐字对齐，
+#: 由 ``tests/unit/test_agent_loop.py`` 的常量同步测试盯住。
+OBS_READ_ELEMENT_LIMIT = 200
+OBS_READ_LINK_LIMIT = 200
 #: 落盘的**元素名**裁到多少字符（``tag``/``label`` 时代的 ``label[:120]``）。
 #: 名字本身不截断在内存里——P1 是证据，裁的只是落盘那份。
 OBS_ELEMENT_NAME_LIMIT = 120
@@ -724,6 +732,33 @@ def _run_observations(record: "RunRecord") -> list[Observation | None]:
     return out
 
 
+#: 补记 history 的 run 级窗口（**只取最近这么多步**）。
+#:
+#: R0-2（2026-11-02）：补记的 history 作用域从「当前站点单元」改成
+#: 「整条 run 已走完的步」。不跨单元累积时，第二个候选站的首步会对着
+#: 空 history 写下「首次操作 / 没有历史」，而组装后的对话里前面明明
+#: 已有若干轮观察（方案 23 §1.3）。
+#:
+#: 上限是 prompt 预算（风险 R-2）：窗口非空就足以否掉「没有历史」，
+#: 更早的动作对当前动机的边际价值低于它挤掉的正文预算。
+RATIONALE_HISTORY_MAX_STEPS = 40
+
+
+def _rationale_history(record: "RunRecord") -> list[ActionStep]:
+    """这条 run 里**已经走完**的步，按时间顺序，取最近一段。
+
+    搜索单元 → 中间页 → 已完成的站点访问。当前正在写 rationale 的单元
+    **不在** ``record.visits`` 里（调用点在 ``append`` 之前），所以不会
+    把本单元的步重复喂给 writer。
+    """
+    steps: list[ActionStep] = list(record.steps.steps)
+    for ir in record.intermediates:
+        steps.extend(ir.steps.steps)
+    for v in record.visits:
+        steps.extend(v.steps.steps)
+    return steps[-RATIONALE_HISTORY_MAX_STEPS:]
+
+
 def _vocabulary_of_run(record: "RunRecord") -> str:
     """整条 run 的元素词汇表。
 
@@ -765,6 +800,15 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
     """
     if obs is None:
         return None
+    # 读步的落盘上限随 ``obs.read`` 走（R4-1）：模型读到 200 条，证据就得
+    # 存得下 200 条；否则训练侧引用的一条 ref 在 P1 里查不到，归因链断在
+    # 最不该断的地方。普通步仍是 80/50，口径不变。
+    element_limit = (
+        OBS_READ_ELEMENT_LIMIT if obs.read == "interactive" else OBS_ELEMENT_LIMIT
+    )
+    link_limit = (
+        OBS_READ_LINK_LIMIT if obs.read == "links" else OBS_LINK_LIMIT
+    )
     return {
         "url": obs.url,
         "page_title": obs.page_title,
@@ -775,6 +819,8 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
         "raw_len": obs.raw_len,
         "stripped_ratio": round(obs.stripped_ratio, 4),
         "degraded": list(obs.degraded),
+        # 读标记（R4-1）：空串 = 执行器推的整页观察；非空 = 读原语。
+        "read": obs.read,
         "video_tag_count": obs.video_tag_count,
         "iframe_count": obs.iframe_count,
         # 落盘的条数（可能被裁）与**采到的条数**（可能被驱动层 limit 截断）
@@ -795,10 +841,10 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
         "interactive_elements": [
             element_json(e, obs.element_vocabulary,
                          name_limit=OBS_ELEMENT_NAME_LIMIT)
-            for e in obs.interactive_elements[:OBS_ELEMENT_LIMIT]
+            for e in obs.interactive_elements[:element_limit]
         ],
         "links": [
-            {"text": l.text[:80], "href": l.href} for l in obs.links[:OBS_LINK_LIMIT]
+            {"text": l.text[:80], "href": l.href} for l in obs.links[:link_limit]
         ],
         # **跨面可比的元素账目**（设计方案 04 §4.9.6）——**新增的一列，
         # 不改 ``elements_total``**。
@@ -1303,7 +1349,8 @@ class Orchestrator:
                 title=record.title,
             )
             await self._write_rationales(
-                result.steps, record, result.candidate.url[:60]
+                result.steps, record, result.candidate.url[:60],
+                history_prefix=_rationale_history(record),
             )
             # 站点单元的终局反思：放在逐步 rationale **之后**——它要看的
             # 是全单元历史与最终判定，而判定此时才记进 ledger。
@@ -1379,7 +1426,12 @@ class Orchestrator:
         return record
 
     async def _write_rationales(
-        self, steps_log: Any, record: RunRecord, label: str
+        self,
+        steps_log: Any,
+        record: RunRecord,
+        label: str,
+        *,
+        history_prefix: Sequence[ActionStep] = (),
     ) -> None:
         """为一段动作流的**每一步**生成 rationale（模块 4，D2「边写边生成」）。
 
@@ -1398,6 +1450,16 @@ class Orchestrator:
         设计豁免，见 rubric 对齐账）。
         ``StepLog`` 是通用动作流，两个调用点都能 ``attach_rationale``。
 
+        **R0（2026-11-02）两条口径**：
+
+        ① **已有原生 think 的步跳过**（``reason="native-think"``）。那是
+        agent 决策当时的原文；补记只兜没有它的路径（scripted / 壳层步）。
+        覆盖它等于把另一个 LLM 事后配的理由冒充成决策者的 CoT——而报告上
+        看不出异常。
+        ② ``history_prefix`` 是本 run **已走完**的步（run 级，见
+        :func:`_rationale_history`）。补记的 history 与组装后的对话同为
+        run 作用域，模型才不会对着已有观察写「首次操作 / 没有历史」。
+
         **D2 的实质是「生成时能看到那一步的动作与观察」，而不是
         「必须在线程内即时生成」**：两者在同一份数据上等价。而事后补记
         换来的是——writer 挂掉只少一段 rationale，不影响采集。
@@ -1410,7 +1472,11 @@ class Orchestrator:
             return
         vocabulary = _vocabulary_of_run(record)
         steps = steps_log.steps
+        prefix = list(history_prefix)
         for index, step in enumerate(steps):
+            if actions.is_native_think(step.rationale):
+                # R0-1：原生 think 已在决策时落盘，补记不得覆盖。
+                continue
             try:
                 payload = self._writer(
                     action=step.action.to_json(vocabulary),
@@ -1419,10 +1485,11 @@ class Orchestrator:
                     # INC46：**不喂本步观察**。历史是 ``(动作, 观察)`` 对——
                     # 动作前动机只该依据此前看到的东西（见
                     # ``rationale.writer.render_history``）。
+                    # R0-2：前缀是 run 级已走完的步（搜索 / 中间页 / 前几个站）。
                     history=[
                         (s.action.to_json(vocabulary),
                          _obs_json(s.observation))
-                        for s in steps[:index]
+                        for s in prefix + steps[:index]
                     ],
                 )
             except Exception as exc:  # noqa: BLE001 — 见上方口径

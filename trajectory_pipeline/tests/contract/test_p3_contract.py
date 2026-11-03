@@ -153,7 +153,7 @@ class Test视图名与渲染侧一致:
             f"payload 键 {payload_keys} 与 VIEW_NAMES {set(VIEW_NAMES)} 漂移"
         )
 
-    def test_to_meta键集是文档那20个(self):
+    def test_to_meta键集是文档那24个(self):
         """AST 读 ``to_meta`` 的返回字面量。**不多不少**——
         多了文档没写，少了文档写空话。"""
         actual = _keys_of(VIEWS_SRC, "to_meta")
@@ -190,6 +190,13 @@ class Test视图名与渲染侧一致:
             # ``unit`` 键整个没了（单元不再是样本的粒度），站点级结论
             # 降级成轨迹内明细，挂在 ``site_outcomes`` 上。
             "site_outcomes",
+            # 2026-11-02 方案 23 R3-1 / R3-2：训练视图剔掉的死循环步与
+            # 保留下来的重复动作。逐条列出（不合成计数）——复核时要能
+            # 指着某一步问「为什么剔了它」。
+            "deduped_step_count",
+            "deduped_steps",
+            "repeat_step_count",
+            "repeat_actions",
         }
         assert actual == expected, (
             f"to_meta 键集漂移：多 {actual - expected} / 少 {expected - actual}。"
@@ -435,7 +442,8 @@ class Test形状不变量:
 
         夹具有 2 个动作，其中 ``new_tab`` 是 infrastructure——整步不进
         消息流（2026-10-15 判断 2 反转），故可见的只有 1 对；末尾那条
-        没有 tool_calls 的 assistant 是「任务总结」收尾（判断 7）。"""
+        没有 tool_calls 的 assistant 是**面向用户的收尾答复**（判断 7，
+        方案 23 R2）。"""
         payload = _rendered()
         msgs = payload["openai"]["messages"]
         assistants = [m for m in msgs if m["role"] == "assistant" and m.get("tool_calls")]
@@ -448,7 +456,42 @@ class Test形状不变量:
             )
         closing = msgs[-1]
         assert closing["role"] == "assistant" and "tool_calls" not in closing
-        assert closing["content"].startswith("任务总结：")
+        assert closing["content"] == (
+            "没有找到《功夫》的可播放网址，"
+            "已排除的站点：x.test（页面上没有播放控件，排除）。"
+        )
+
+    def test_收尾不出现分支枚举名与计数(self):
+        """R2-1 的判据：训练集收尾里分支枚举名 / 计数出现次数 = 0。
+
+        逐分支造样本渲染——任何一条收尾里出现分支名或分发表述都算违约。
+        """
+        for branch in views._CLOSING_DISPOSITION:
+            msgs = views.to_openai_messages(
+                _sample(outcome={"url": "https://x.test", "branch": branch,
+                                 "source": "rule", "fallback_used": False,
+                                 "succeeded": False})
+            )
+            text = msgs[-1]["content"]
+            assert branch not in text, f"收尾里出现了分支枚举名 {branch!r}：{text}"
+            assert "分支" not in text, f"收尾里出现了「分支」字样：{text}"
+            assert "任务总结" not in text, f"收尾仍是台账播报：{text}"
+
+    def test_arguments落盘是JSON字符串(self):
+        """``function.arguments`` 是**字符串**不是 dict（OpenAI Chat
+        Completions 契约，方案 23 R3-4）。全量 4902/4902 曾经是 dict。"""
+        payload = _rendered()
+        calls = [
+            c
+            for m in payload["openai"]["messages"]
+            if m["role"] == "assistant" and m.get("tool_calls")
+            for c in m["tool_calls"]
+        ]
+        assert calls, "夹具渲染不出任何 tool_calls，断言是空转"
+        for call in calls:
+            raw = call["function"]["arguments"]
+            assert isinstance(raw, str), f"arguments 不是字符串：{type(raw)}"
+            assert isinstance(json.loads(raw), dict)
 
     def test_工具声明不含基础设施动作(self):
         """new_tab 是执行器自己的会话隔离，模型永远不该输出它——
@@ -511,6 +554,22 @@ class Test形状不变量:
         s = _sample(six={"user_prompt": ""})
         roles = [m["role"] for m in _rendered(s)["openai"]["messages"]]
         assert "user" not in roles
+
+    def test_动作无效与采集降级分列(self):
+        """本步动作失败（P1 ``steps[i].error``）与采集降级是两件事
+        （方案 23 R1-2）。混成一个标记，模型会把「点击失败」学成
+        「页面没内容」——那是两种完全不同的下一步。"""
+        s = _sample(six={"observations": [
+            _obs(action_error="click 失败: 元素不在页面上",
+                 degraded=["links_empty"]),
+            _obs("https://y.test"),
+        ]})
+        msgs = _rendered(s)["openai"]["messages"]
+        tools = [m for m in msgs if m["role"] == "tool"]
+        assert tools, "夹具渲染不出任何观察回执，断言是空转"
+        first = tools[0]["content"]
+        assert "[本步动作无效: click 失败" in first
+        assert "[采集降级: links_empty]" in first
 
 
 # ── 5. storage 读写门禁（训练侧入口的行为契约） ──────────────────

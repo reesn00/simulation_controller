@@ -165,7 +165,6 @@ class Observation:
     #   正文实际来源（"inner_text" | "snapshot"）。这是**可审计字段**：
     #   "snapshot" 意味着正文是被 CSS 抢过预算的残骸，落在它上的
     #   语义判定可信度更低。人工复核 P1 存档时要先看这一列。
-    degraded: tuple[str, ...] = ()
     #   本次采集**降级**的项（links / interactive / counts…）。非空表示
     #   至少一项没采到，字段值可能是缺失而非「确实为空」。
     #   **这个字段是 fail-closed 的前提**：没有它，「没采到交互元素」与
@@ -178,6 +177,16 @@ class Observation:
     #   不在采集层落字段：早一个版本把判定放进 driver 里，于是
     #   ``FakeDriver`` 构造的观察带不上该字段，"被拦"与"没拦"
     #   在测试与真实路径上行为不一致。**判定逻辑与使用点必须同处一处。**
+    degraded: tuple[str, ...] = ()
+
+    #: **这是一次「读」动作的部分观察**（方案 15 §5.2 / 方案 23 R4-1）。
+    #:
+    #: 空串 = 执行器推的整页观察（普通回执）；非空 = agent 主动发起的
+    #: 读原语，值是 ``snapshot`` / ``interactive`` / ``links`` 之一。
+    #: 部分观察**只带被读的那一块**：``snapshot`` 只有正文，``interactive``
+    #: 只有元素表，``links`` 只有链接表；其余字段为空/0 不是「页面上没有」，
+    #: 而是「这一次没读」。读标记是两者的唯一区分，必须落盘。
+    read: str = ""
 
     @property
     def pollute_ratio(self) -> float:

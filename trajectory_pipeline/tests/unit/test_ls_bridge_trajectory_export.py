@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from trajectory_pipeline.evaluation.ls_bridge.exporter import (
+    ProjectionMismatch,
     _derive_trajectory_bucket,
     _render_aggregation_log,
     _render_trajectory_audit_text,
@@ -85,19 +86,35 @@ def task_views_root(tmp_path: Path) -> Path:
     root = tmp_path
     tdir = task_views_dir(root)
     tdir.mkdir(parents=True, exist_ok=True)
-    # 写一份 T001__r-1 的 T 视图
+    # 写一份 T001__r-1 的 T 视图。两段**必须讲同一个故事**(O-5 / R5-2):
+    # 动作序列 / 观察 / 收尾逐条对得上, 差异只在形态(function-calling
+    # vs 纯文本)。导出侧现在会拿 projection_problems 校验, 旧 fixture
+    # 里那对「messages 一条动作都没有 / openai 有一条 tool_call」的写法
+    # 会直接判不一致。
     (tdir / "T001__r-1.json").write_text(
         json.dumps({
             "messages": [
                 {"role": "user", "content": "播放这首歌"},
-                {"role": "assistant", "content": "好的,正在播放。"},
+                {"role": "assistant",
+                 "content": '先打开播放页\n[动作] play({"ref": "btn-1"})'},
+                {"role": "user", "content": "播放器已开始播放"},
+                {"role": "assistant", "content": "已完成: x.test 可播放。"},
             ],
-            "openai": [
-                {"role": "user", "content": "播放这首歌"},
-                {"role": "assistant", "content": "", "tool_calls": [
-                    {"function": {"name": "play", "arguments": '{"ref": "btn-1"}'}}
-                ]},
-            ],
+            "openai": {
+                "trajectory_id": "T001__r-1",
+                "messages": [
+                    {"role": "user", "content": "播放这首歌"},
+                    {"role": "assistant", "content": "先打开播放页", "tool_calls": [
+                        {"id": "call_0", "type": "function", "function": {
+                            "name": "play", "arguments": '{"ref": "btn-1"}',
+                        }},
+                    ]},
+                    {"role": "tool", "tool_call_id": "call_0",
+                     "content": "播放器已开始播放"},
+                    {"role": "assistant", "content": "已完成: x.test 可播放。"},
+                ],
+                "tools": [],
+            },
             "meta": {"gate": "pass", "step_count": 2, "task_id": "T001", "run_id": "r-1"},
         }, ensure_ascii=False),
         encoding="utf-8",
@@ -354,6 +371,55 @@ class TestExportTrajectoryOne:
         assert task["data"]["status"] == "quarantine"
         assert "无法判定" in task["data"]["audit_text"]
         assert "缺判" in task["data"]["audit_text"]
+
+
+# ── TestExportProjectionConsistency ─────────────────────────────
+
+
+class TestExportProjectionConsistency:
+    """导出侧 R5-2 校验:两段讲两个故事就不推。
+
+    渲染侧 ``build_task_view`` 落盘前已拦一道;这里拦的是**旧档 / 手改档**
+    ——T 视图可能是上一版渲染器写的,导出时再核一次是最后一道。
+    """
+
+    def _tamper(self, root: Path, mutate) -> None:
+        from trajectory_pipeline.storage import task_views_dir
+
+        path = task_views_dir(root) / "T001__r-1.json"
+        view = json.loads(path.read_text(encoding="utf-8"))
+        mutate(view)
+        path.write_text(json.dumps(view, ensure_ascii=False), encoding="utf-8")
+
+    def test_观察被改_抛ProjectionMismatch(self, task_views_root: Path):
+        def mutate(view):
+            view["openai"]["messages"][2]["content"] = "另一份观察"
+
+        self._tamper(task_views_root, mutate)
+        with pytest.raises(ProjectionMismatch):
+            export_trajectory_one(
+                _trajectory(), "positive", task_views_root=task_views_root,
+            )
+
+    def test_export_batch跳过原因写明投影不一致(
+        self, task_views_root: Path, tmp_path: Path,
+    ):
+        def mutate(view):
+            view["messages"] = [
+                m for m in view["messages"]
+                if "[动作]" not in str(m.get("content") or "")
+            ]
+
+        self._tamper(task_views_root, mutate)
+        (tmp_path / "trajectory_candidates.jsonl").write_text(
+            json.dumps(_trajectory(), ensure_ascii=False) + "\n", encoding="utf-8",
+        )
+        plan = export_batch(tmp_path, task_views_root=task_views_root)
+        assert plan.count == 0
+        assert plan.skipped and plan.skipped[0][0] == "T001__r-1"
+        assert "投影不一致" in plan.skipped[0][1]
+        # 根因不同,不能并进「T 视图缺失」——缺件与内容分叉要分开读
+        assert "T 视图缺失" not in plan.skipped[0][1]
 
 
 # ── TestExportBatchPathSelection ────────────────────────────────

@@ -880,3 +880,117 @@ class TestRationale分代:
         s = self._sample(tmp_path, era_new=True,
                          rationale=_written("打开搜索结果页"))
         assert s.to_json()["rationale_era"] == "pre_action"
+
+
+class Test终局验收读回复:
+    """方案 23 R2-3（owner 裁定 O-2）：**终局验收读最终回复**。
+
+    判据只有一条：任务库 ``output_contract.min_urls ≥ 1``，而这条样本的
+    收尾答复里没有 URL ⇒ **不许判 ``passed``**。
+
+    这条闸门**不是** rationale 闸门：它判的是「答复兑现没兑现任务合同」。
+    所以它只降 ``passed``（``failed`` 已经是失败、``not_run`` 是「没判」），
+    且读的文本必须与 P3 渲染的末条 assistant **是同一个函数产出**——
+    分开写的那天，验收读的就不是模型看到的那句了。
+    """
+
+    def _run_sample(
+        self, tmp_path, *, branch="no_play_control", play_page_url="",
+        task_id="T001",
+    ):
+        """一条**轨迹**（per-Run 之后一份存档切一条，不再按单元切）。"""
+        url = "https://a.test/"
+        outcome = dict(
+            _outcome(url, branch), site_url=url, play_page_url=play_page_url
+        )
+        arc = _arc(
+            task_id=task_id,
+            visits=[
+                dict(_visit(url), steps=[_step("goto", _written("看看这个站"))])
+            ],
+            outcomes=[outcome],
+        )
+        samples = schema.split_archive(_write(tmp_path, arc))
+        assert len(samples) == 1, (
+            f"per-Run 之后一份存档切一条轨迹，实得 {len(samples)}"
+        )
+        return samples[0]
+
+    def test_失败且答复无网址时不许passed(self, tmp_path):
+        """排除站点只写 host（不带协议），所以失败答复里没有 URL。"""
+        s = self._run_sample(tmp_path)
+        assert s.gate.status == "failed"
+        assert any("输出契约" in r for r in s.gate.reasons)
+        # 原有的 rationale 核查理由不丢——两条命运分开记。
+        assert any("逐条核查" in r for r in s.gate.reasons)
+
+    def test_成功且答复带网址时仍passed(self, tmp_path):
+        s = self._run_sample(
+            tmp_path, branch=None, play_page_url="https://a.test/play"
+        )
+        assert s.gate.status == "passed", s.gate.reasons
+
+    def test_网址不带协议不算兑现(self, tmp_path):
+        """答复说「找到了网址：a.test」——那不是一个能交付的网址。
+
+        合同要的是 ``http(s)://``；只有 host 的地址用户点不开。
+        """
+        url = "a.test"
+        outcome = dict(_outcome(url, None), site_url=url, play_page_url="")
+        arc = _arc(
+            visits=[dict(_visit(url), steps=[_step("goto", _written("看看这个站"))])],
+            outcomes=[outcome],
+        )
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.gate.status == "failed"
+        assert any("只有 0 个" in r for r in s.gate.reasons)
+
+    def test_要求两个网址只给一个也不许passed(self, tmp_path):
+        """T019 的合同是 ``min_urls=2``——数不够同样没兑现。"""
+        s = self._run_sample(
+            tmp_path, task_id="T019", branch=None,
+            play_page_url="https://a.test/play",
+        )
+        assert s.gate.status == "failed"
+        assert any("至少 2 个网址" in r and "只有 1 个" in r
+                   for r in s.gate.reasons)
+
+    def test_不要求网址的任务不受影响(self, tmp_path):
+        """T025 的合同没有 ``min_urls`` ⇒ 这条判据不适用，判定原样。"""
+        s = self._run_sample(tmp_path, task_id="T025")
+        assert s.gate.status == "passed", s.gate.reasons
+
+    def test_任务库没有这个task时不猜(self, tmp_path):
+        """未知 ``task_id`` ⇒ 读不到合同 ⇒ **不改判定**（fail-closed）。"""
+        s = self._run_sample(tmp_path, task_id="ZZZ999")
+        assert s.gate.status == "passed", s.gate.reasons
+
+    def test_没有任务级结论时不判(self, tmp_path):
+        """一个候选都没访问 ⇒ 没有任务级结论 ⇒ **没有「答复」可读**。
+
+        ⚠️ **2026-11-03 · re-base 到 per-Run**：per-unit 时代这条判据是
+        「搜索单元不判」（搜索单元的收尾是「接下来核验候选」，不是任务
+        答复）。per-Run 之后**没有搜索单元**了——同一条判据落在
+        「这条 run 没有任务级结论」上（判据不适用 ≠ 判通过）。
+        """
+        arc = _arc(
+            search_observation=_obs("https://s.test", body="正文"),
+            steps=[
+                _step("goto", None),
+                _step("goto", _written("打开搜索结果页看看有哪些站点")),
+            ],
+        )
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.outcome is None
+        assert s.gate.status == "passed", s.gate.reasons
+
+    def test_not_run不被改写成failed(self, tmp_path):
+        """没有 rationale 的站点单元本来就没判——「没判」不是「通过」，
+        但也不能被这条判据改写成「失败」（那是两个不同的事实）。"""
+        url = "https://a.test/"
+        arc = _arc(
+            visits=[dict(_visit(url), steps=[_step("goto", None)])],
+            outcomes=[dict(_outcome(url, "no_play_control"), site_url=url)],
+        )
+        s = schema.split_archive(_write(tmp_path, arc))[0]
+        assert s.gate.status == "not_run"

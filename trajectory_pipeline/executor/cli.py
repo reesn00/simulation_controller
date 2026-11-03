@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any, Callable, Final, Mapping
 from urllib.parse import urlsplit
 
+from trajectory_pipeline.executor.actions import is_native_think
 from trajectory_pipeline.executor.agent_loop import AgentBackend
 from trajectory_pipeline.executor.archive import (
     DEFAULT_ROOT,
@@ -3122,6 +3123,28 @@ def cmd_compare_drivers(args: argparse.Namespace) -> int:
     return {"pass": 0, "fail": 1}.get(report["verdict"], 2)
 
 
+def _print_pool_note(root: Path, kind: str) -> None:
+    """印一行分池账（方案 23 R3-3）。**读 pool_meta.json，不重算**。
+
+    池变小不是质量变好——旧面退出交付集时，分母会掉一截。不印这一行，
+    读报表的人只看到「样本从 131 变成 65」，会以为质量提升了。
+    """
+    path = Path(root) / "pool_meta.json"
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    section = meta.get(kind) or {}
+    legacy = section.get("legacy") or {}
+    if not legacy:
+        return
+    total = sum(legacy.values())
+    parts = " / ".join(f"{surface} {n}" for surface, n in sorted(legacy.items()))
+    print(f"  分池：交付面 {meta.get('delivery_surface')} 保留 "
+          f"{section.get('delivery', 0)} 份；"
+          f"旧面 {total} 份 → legacy/（{parts}，只读存量）")
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     """P1 → P2 → P3 组装。**全离线，不开浏览器。**
 
@@ -3163,6 +3186,20 @@ def cmd_build(args: argparse.Namespace) -> int:
         if rep.total_era_skipped:
             print(f"  按口径筛掉 {rep.total_era_skipped} 条"
                   f"（--rationale-era {era_filter}）——它们在名单里，只是没落盘")
+        if rep.total_excluded_units:
+            # 访问级剔除（R4-2）：整条 unit 访问了任务声明排除的平台。
+            # 必须显式印——否则下一批样本数变少会被读成「采集变差了」。
+            detail = [
+                f"{a.archive}:{unit}({platform})"
+                for a in rep.archives
+                for unit, platform in a.excluded_detail
+            ]
+            print(f"  访问级剔除 {rep.total_excluded_units} 条 unit"
+                  f"（excluded_platforms，整条剔除）")
+            for row in detail[:10]:
+                print(f"    {row}")
+            if len(detail) > 10:
+                print(f"    …另有 {len(detail) - 10} 条")
         if rep.mixed_era:
             # **必须显式印**，不能只躺在数字里：两代混训的后果是
             # 「有时可以未卜先知、有时不行」，而报表上只表现为分数略降。
@@ -3180,6 +3217,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             if len(bad) > 10:
                 print(f"  …另有 {len(bad) - 10} 份")
         print(f"  → {rep.sample_dir}")
+        _print_pool_note(root, "samples")
 
     if stage in ("p3", "all"):
         vrep = views.build_views_from_dir(root=root, overwrite=args.overwrite)
@@ -3198,6 +3236,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             for name, n in by_view.most_common():
                 print(f"  {name} 跳过 {n} 份（已存在或写失败；要重建加 --overwrite）")
         print(f"  → {vrep.views_dir}")
+        _print_pool_note(root, "views")
 
     return 0
 
@@ -3264,6 +3303,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
         for reason, n in by_reason.most_common():
             print(f"  跳过 {n} 份（{reason}；要重建加 --overwrite）")
         print(f"  → {results.target_dir}")
+        _print_pool_note(root, "task_views")
         return 0
 
     if args.p1:
@@ -3278,13 +3318,19 @@ def cmd_task_view(args: argparse.Namespace) -> int:
                 print(f"  跳过 {p}（读档失败 {type(exc).__name__}: {exc}）",
                       flush=True)
                 continue
-            rep = tv.build_task_view(archive, root=root, overwrite=overwrite)
+            rep = tv.build_task_view(
+                archive, root=root, overwrite=overwrite, source_archive=p.name,
+            )
             if rep.written:
                 print(f"  ✓ {rep.trajectory_id} → {p.name}", flush=True)
             else:
                 reason = rep.skipped[0] if rep.skipped else "未写"
                 print(f"  跳过 {rep.trajectory_id}（{reason}；要重建加 --overwrite）",
                       flush=True)
+        # 分池账（方案 23 R3-3）：单文件路径也落一次，别让 pool_meta 只认 --all
+        from trajectory_pipeline.assembler import pool
+        from trajectory_pipeline.storage import task_views_dir
+        pool.record_pool(task_views_dir(root))
         return 0
 
     # 既没传 --p1 也没传 --all：必须二选一
@@ -3326,14 +3372,33 @@ def _derived_products(root: Path, run_id: str) -> tuple[Path, ...]:
     ):
         return ()
 
+    from trajectory_pipeline.assembler import pool
     from trajectory_pipeline.storage import task_views_dir, views_dir
 
+    sample_dir = builder.samples_dir(root)
+    p3_dir = views_dir(root)
+    t_dir = task_views_dir(root)
+    targets = [
+        (f"*__{run_id}__*.json", sample_dir),
+        (f"*__{run_id}__*.json", p3_dir),
+        (f"*__{run_id}.json", t_dir),
+    ]
+    # 分池（方案 23 R3-3）：旧面派生产物已被挪进 ``legacy/<surface>/<kind>/``。
+    # 不回滚它们，purge 会把「源档已删、派生还在」的孤儿留在归档里——
+    # 与 2026-10-20 那批 19 条孤儿同一类问题，只是换了个目录。
+    legacy_root = root / pool.LEGACY_DIRNAME
+    if legacy_root.is_dir():
+        for surface_dir in sorted(legacy_root.iterdir()):
+            if not surface_dir.is_dir():
+                continue
+            targets.extend([
+                (f"*__{run_id}__*.json", surface_dir / sample_dir.name),
+                (f"*__{run_id}__*.json", surface_dir / p3_dir.name),
+                (f"*__{run_id}.json", surface_dir / t_dir.name),
+            ])
+
     out: list[Path] = []
-    for pattern, directory in (
-        (f"*__{run_id}__*.json", builder.samples_dir(root)),
-        (f"*__{run_id}__*.json", views_dir(root)),
-        (f"*__{run_id}.json", task_views_dir(root)),
-    ):
+    for pattern, directory in targets:
         if directory.is_dir():
             out.extend(directory.glob(pattern))
     return tuple(sorted(set(out)))
@@ -3472,15 +3537,30 @@ def _step_written(step: Mapping[str, Any]) -> bool:
             and str(payload.get("status") or "") == "written")
 
 
+def _step_native_think(step: Mapping[str, Any]) -> bool:
+    """这一步的 rationale 是不是 **agent 的原生 think**（R0-3 的离线侧）。
+
+    判据只认 ``reason``（与 ``actions.is_native_think`` 同一个字面值）。
+    ``regenerate-rationales`` 直接改 JSON，绕过 ``StepLog.attach_rationale``
+    的守卫——没有这一条，跑一次重生成就能把 agent 决策当时的证据换成
+    另一个 LLM 事后配的理由，而命令本身零报错。
+    """
+    return is_native_think(step.get("rationale"))
+
+
 def _pending_steps(unit: Mapping[str, Any], only_old: bool) -> list[Mapping[str, Any]]:
     """这个单元里**这一轮要重写**的步骤。
 
-    ``only_old=False`` → 全部（当前默认，兼容既有批次行为）。
+    ``only_old=False`` → 除原生 think 外全部（默认，兼容既有批次行为）。
     ``only_old=True`` → 旧口径单元整段重写；已跨代单元只补没写成的那几步
     （已有 ``written`` 的一个不动——省调用，也不会把好文本换成
     ``unavailable``）。
+
+    ⚠️ **原生 think 永远不重写**（两种口径下都先剔除）：它是 agent 决策
+    当时的证据，不是可再生的补记。``--only-old`` 的「已有 written 不动」
+    只是顺手挡住了它；默认口径会整段重写，所以守卫必须显式写在这里。
     """
-    steps = list(unit["steps"])
+    steps = [s for s in unit["steps"] if not _step_native_think(s)]
     if not only_old:
         return steps
     if "reflection" not in unit["unit"]:

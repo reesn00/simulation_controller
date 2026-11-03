@@ -131,6 +131,16 @@ class Test模块图:
                 f"task_view.py import 了 {name}：T 是 P1 的另一份渲染，与 P3 互不消费"
             )
 
+    def test_projection地基不import功能模块(self):
+        """两段投影口径挂顶层（``trajectory_pipeline/projection.py``）——
+        同 toolcatalog：只放纯函数，**不 import 任何功能模块**，否则地基
+        变成依赖源。"""
+        src = Path(__file__).parents[2] / "projection.py"
+        for name in _imports(src):
+            assert not name.startswith("trajectory_pipeline"), (
+                f"projection.py import 了 {name}：跨层地基不能挂功能模块"
+            )
+
     def test_不读仓库根output(self):
         """产物隔离（D8）。"""
         for path in sorted(STORAGE_PKG.glob("*.py")) + [TASK_VIEW_SRC]:
@@ -432,10 +442,13 @@ class Test形状不变量:
         assert "[动作] click" in msgs[4]["content"]
         # 第 5 条 user (site-1 单元观察)
         assert msgs[5]["role"] == "user"
-        # 最后一条是 closing summary
+        # 最后一条是**面向用户的收尾答复**（方案 23 R2）
         closing = msgs[-1]
         assert closing["role"] == "assistant"
-        assert "任务总结" in closing["content"]
+        assert closing["content"] == (
+            "没有找到《功夫》的可播放网址，"
+            "已排除的站点：x.test（页面上没有播放控件，排除）。"
+        )
 
     def test_infrastructure步整步跳过(self):
         """``new_tab`` / ``close_tab`` 是执行器自己做的，模型永远不该输出。
@@ -449,10 +462,16 @@ class Test形状不变量:
         ]
         archive = _archive(search_steps=search_steps)
         msgs = task_view.to_task_messages(archive)
-        # 2 个动作 → 1 个 visible（new_tab 跳过）→ 1 对 assistant/user + 1 个 system + 1 个 user 首轮
-        # 末尾无 closing summary（site 没动作）
-        # 实际：system + user + (1 对 assistant/user) = 4 条
-        assert len(msgs) == 4
+        # 2 个动作 → 1 个 visible（new_tab 跳过）→ 1 对 assistant/user
+        #   + 1 个 system + 1 个 user 首轮 + **1 条收尾答复**
+        # 实际：system + user + (1 对 assistant/user) + 收尾 = 5 条
+        # ⚠️ **2026-11-03 · re-base 到 per-Run**：per-unit 时代「没访问到
+        # 站点 ⇒ 不发收尾」；per-Run 之后**每条有可见动作的轨迹都收尾**
+        #（方案 23 R2-1：收尾是面向用户的答复——「没有找到《X》的可访问
+        # 站点。」也是答复），P3 与 T 同款。
+        assert len(msgs) == 5
+        assert msgs[-1]["role"] == "assistant"
+        assert msgs[-1]["content"] == "没有找到《功夫》的可访问站点。"
         # new_tab 不出现在任何 assistant content 里
         joined = "\n".join(m.get("content", "") for m in msgs)
         assert "new_tab" not in joined
@@ -475,6 +494,32 @@ class Test形状不变量:
         # 收集所有 tool_call_id
         ids = [m["tool_call_id"] for m in msgs if m["role"] == "tool"]
         assert ids == ["call_0", "call_1"]
+
+    def test_arguments落盘是JSON字符串(self):
+        """``function.arguments`` 是**字符串**不是 dict（OpenAI Chat
+        Completions 契约，方案 23 R3-4）。T 与 P3 同款。"""
+        archive = _archive(
+            search_steps=[
+                _step(action=_action("goto"), observation=_obs_full(),
+                      rationale={"status": "written"})
+            ],
+            visits=[_visit([
+                _step(action=_action("click", target={"tag": "a", "label": "首页"}),
+                      observation=_obs_full(), rationale={"status": "written"})
+            ])],
+        )
+        msgs = task_view.to_task_openai_messages(archive)
+        calls = [
+            c
+            for m in msgs
+            if m["role"] == "assistant" and m.get("tool_calls")
+            for c in m["tool_calls"]
+        ]
+        assert calls, "夹具渲染不出任何 tool_calls，断言是空转"
+        for call in calls:
+            raw = call["function"]["arguments"]
+            assert isinstance(raw, str), f"arguments 不是字符串：{type(raw)}"
+            assert isinstance(json.loads(raw), dict)
 
     def test_meta_unit_outcomes_self合并(self):
         """unit_outcomes 长度 = 访问过的站点数（含 outcome 与没 outcome 的占位）。"""
@@ -569,8 +614,12 @@ class Test形状不变量:
         assert [s["step_index"] for s in meta["rationale_steps"]] == [0, 2]
         assert [s["status"] for s in meta["rationale_steps"]] == ["written", "unavailable"]
 
-    def test_meta_closing_summary_来自ledger(self):
-        """closing 文字包含 outcome 处置词 + ledger.by_branch 摘要。"""
+    def test_meta_closing_summary_不播报分支计数(self):
+        """closing 是给用户的答复：**不带** ``ledger.by_branch`` 摘要。
+
+        旧口径写成「任务总结：… 分支分布：broken=1。」——分支名与计数
+        是并池口径，不是助手语言（审计 G3 / 方案 23 R2-1）。
+        """
         archive = _archive(
             visits=[_visit([])],
             outcomes=[{"branch": "broken", "evidence": "x", "site_url": "a", "play_page_url": ""}],
@@ -592,8 +641,52 @@ class Test形状不变量:
         )
         msgs2 = task_view.to_task_messages(archive2)
         closing = msgs2[-1]
-        assert "任务总结" in closing["content"]
-        assert "broken=1" in closing["content"]
+        assert closing["content"] == (
+            "没有找到《功夫》的可播放网址，已排除的站点：a（内容损坏，排除）。"
+        )
+        assert "broken=1" not in closing["content"]
+        assert "分支" not in closing["content"]
+
+    def test_P3与T收尾同一句话(self):
+        """R2-2：两侧收尾必须是**同一句话**（owner O-5 的「两段必须一致」）。
+
+        差异只在附加信息——P3 多一句 unit 级 reflection 结论，T 多「别的
+        站点怎么样」的清单。核心句对同一组事实逐字相同。
+        """
+        outcome = {"url": "https://x.test", "branch": "no_play_control",
+                   "site_url": "https://x.test", "play_page_url": ""}
+        archive = _archive(
+            search_steps=[
+                _step(action=_action("goto"), observation=_obs_full(),
+                      rationale={"status": "written"}),
+            ],
+            visits=[_visit([
+                _step(action=_action("click", target={"tag": "button", "label": "播放"}),
+                      observation=_obs_full(), rationale={"status": "written"}),
+            ])],
+            outcomes=[outcome],
+            ledger={"total_sites": 1, "by_branch": {"no_play_control": 1}},
+        )
+        # P3 侧：同一组事实（unit=site-1、同 title、同 outcome、无 conclusion）
+        sample = {
+            "task_id": "T001", "unit": "site-1", "title": "功夫",
+            "outcome": outcome, "reflection": None,
+        }
+        steps = [(0, {"action": {"tool": "goto"}}, None, None)]
+        assert task_view._closing_text(archive) == views._closing_text(sample, steps)
+
+        # 成功侧同样一致（URL 句）
+        ok = {"url": "https://x.test", "branch": None,
+              "play_page_url": "https://x.test/play"}
+        archive_ok = _archive(
+            search_steps=[
+                _step(action=_action("goto"), observation=_obs_full(),
+                      rationale={"status": "written"}),
+            ],
+            outcomes=[ok], ledger={"total_sites": 1},
+        )
+        assert task_view._closing_text(archive_ok) == views._closing_text(
+            {**sample, "outcome": ok}, steps)
 
     def test_空user_prompt不发空消息(self):
         """空 user_prompt 不发首轮空 user——同 P3 第 4 条判断。
@@ -615,6 +708,22 @@ class Test形状不变量:
         # 中间没有空洞 user（system 后直接是 assistant）
         assert msgs[1]["role"] != "user"
 
+    def test_动作无效与采集降级分列(self):
+        """T 读 P1，``steps[i].error`` 要渲染成「本步动作无效」，
+        与 ``degraded`` 的「采集降级」分列（方案 23 R1-2）。"""
+        obs = _obs_full(degraded=["links_empty"])
+        search_steps = [
+            _step(action=_action("goto"), observation=obs,
+                  rationale={"status": "written"},
+                  error="click 失败: 元素不在页面上"),
+        ]
+        archive = _archive(search_steps=search_steps)
+        msgs = task_view.to_task_messages(archive)
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        last = user_msgs[-1]["content"]
+        assert "[本步动作无效: click 失败" in last
+        assert "[采集降级: links_empty]" in last
+
     def test_observation_missing显式占位(self):
         """observation 为 None 时显式发占位回执——不空串（与 P3 第 8 条判断同款）。
 
@@ -634,6 +743,310 @@ class Test形状不变量:
         assert "本步没有取到页面内容" in user_msgs[-1]["content"]
         # 首轮 user 是 user_prompt 原文
         assert user_msgs[0]["content"] == "给个能看正片的"
+
+
+# ── 5a. 训练筛选（方案 23 R3-1 / R3-2）───────────────────────────
+
+
+class Test训练筛选:
+    """死循环步剔出两段消息，重复动作在 meta 标记。
+
+    两段投影**共用同一份筛选结果**——各筛各的就会在「哪些步还在」上
+    分叉，而 O-5 要求两段逐条一致。
+    """
+
+    def _click(self):
+        return _action("click", target={"role": "button", "name": "播放"})
+
+    def test_相邻同动作同观察只留一条(self):
+        steps = [_step(self._click(), _obs_full()),
+                 _step(self._click(), _obs_full())]
+        archive = _archive(visits=[_visit(steps)])
+
+        plain = [m for m in task_view.to_task_messages(archive)
+                 if m["role"] == "assistant" and m["content"].startswith("[动作]")]
+        calls = [m for m in task_view.to_task_openai_messages(archive)
+                 if m.get("tool_calls")]
+        assert len(plain) == 1
+        assert len(calls) == 1
+        assert calls[0]["tool_calls"][0]["id"] == "call_0"
+
+    def test_观察变了要保留(self):
+        steps = [_step(self._click(), _obs_full()),
+                 _step(self._click(), _obs_full(body_text="第二屏"))]
+        archive = _archive(visits=[_visit(steps)])
+        calls = [m for m in task_view.to_task_openai_messages(archive)
+                 if m.get("tool_calls")]
+        assert len(calls) == 2
+
+    def test_跨unit不剔(self):
+        """换了一个站再做同一个动作，是换站访问不是原地打转。"""
+        steps = [_step(self._click(), _obs_full())]
+        archive = _archive(visits=[_visit(steps), _visit(steps)])
+        calls = [m for m in task_view.to_task_openai_messages(archive)
+                 if m.get("tool_calls")]
+        assert len(calls) == 2
+
+    def test_meta逐条记下剔了哪几步(self):
+        steps = [_step(self._click(), _obs_full()),
+                 _step(self._click(), _obs_full()),
+                 _step(self._click(), _obs_full())]
+        archive = _archive(visits=[_visit(steps)])
+        meta = task_view.to_task_meta(archive)
+        assert meta["deduped_steps"] == [1, 2]
+        assert meta["deduped_step_count"] == 2
+
+    def test_meta标记留在训练集里的重复动作(self):
+        steps = [
+            _step(self._click(), _obs_full()),
+            _step(_action("press", params={"key": "Enter"}), _obs_full(body_text="乙")),
+            _step(self._click(), _obs_full(body_text="丙")),
+        ]
+        archive = _archive(visits=[_visit(steps)])
+        meta = task_view.to_task_meta(archive)
+        assert meta["deduped_steps"] == []
+        assert meta["repeat_actions"] == [{
+            "step_index": 2, "unit": "site-1", "tool": "click", "occurrence": 2,
+        }]
+        assert meta["repeat_step_count"] == 1
+
+
+# ── 5a2. 两段投影一致（方案 23 R5-2 / O-5）───────────────────────
+
+
+class Test投影一致:
+    """``messages`` 与 ``openai.messages`` 必须讲同一个故事。
+
+    差异只允许**形态**（function-calling vs 纯文本），不允许内容分叉：
+    同一动作序列 / 同一观察 / 同一收尾。校验跑两处——``build_task_view``
+    落盘前拦渲染分叉，``ls_bridge.exporter`` 导出前拦旧档 / 手改档。
+    """
+
+    def _build_archive(self):
+        search_steps = [
+            _step(
+                action=_action("goto", params={"url": "https://s.test"}),
+                observation=_obs_full(),
+                rationale={"status": "written", "text": "打开搜索页",
+                           "conclusion": "看候选"},
+            ),
+        ]
+        site_steps = [
+            _step(
+                action=_action("click", target={"tag": "button", "label": "播放"}),
+                observation=_obs_full(),
+                rationale={"status": "written", "text": "点播放",
+                           "conclusion": "看正片"},
+            ),
+        ]
+        return _archive(
+            search_steps=search_steps,
+            visits=[_visit(site_steps)],
+            outcomes=[{"branch": "no_play_control", "branch_label": "找不到播放控件",
+                       "evidence": "无播放器", "site_url": "https://x.test",
+                       "play_page_url": ""}],
+        )
+
+    def _both(self):
+        rendered = _rendered(self._build_archive())
+        return rendered["messages"], rendered["openai"]["messages"]
+
+    @staticmethod
+    def _clone(messages):
+        return json.loads(json.dumps(messages, ensure_ascii=False))
+
+    def test_正常渲染逐条一致(self):
+        plain, fc = self._both()
+        assert task_view.projection_problems(plain, fc) == []
+
+    def test_改观察文本能报出来(self):
+        plain, fc = self._both()
+        fc = self._clone(fc)
+        tool_msgs = [m for m in fc if m.get("role") == "tool"]
+        assert tool_msgs, "夹具渲染不出任何观察，断言是空转"
+        tool_msgs[0]["content"] = "被改过的观察"
+        problems = task_view.projection_problems(plain, fc)
+        assert any("观察文本不一致" in p for p in problems), problems
+
+    def test_删一步能报出来(self):
+        plain, fc = self._both()
+        fc = self._clone(fc)
+        # 删掉第一个动作 assistant + 它的 tool 回执
+        index = next(i for i, m in enumerate(fc) if m.get("tool_calls"))
+        del fc[index:index + 2]
+        problems = task_view.projection_problems(plain, fc)
+        assert any("动作数不一致" in p for p in problems), problems
+
+    def test_改收尾能报出来(self):
+        plain, fc = self._both()
+        fc = self._clone(fc)
+        closing = fc[-1]
+        assert closing["role"] == "assistant" and not closing.get("tool_calls")
+        closing["content"] = "编出来的成功答复"
+        problems = task_view.projection_problems(plain, fc)
+        assert "收尾文本不一致" in problems, problems
+
+    def test_tool_call_id被改能报出来(self):
+        plain, fc = self._both()
+        fc = self._clone(fc)
+        call = next(c for m in fc for c in (m.get("tool_calls") or []))
+        call["id"] = "call_9"
+        problems = task_view.projection_problems(plain, fc)
+        assert any("tool_call_id" in p for p in problems), problems
+
+    def test_一步多个tool_call能报出来(self):
+        plain, fc = self._both()
+        fc = self._clone(fc)
+        action = next(m for m in fc if m.get("tool_calls"))
+        action["tool_calls"].append(dict(action["tool_calls"][0], id="call_x"))
+        problems = task_view.projection_problems(plain, fc)
+        assert any("tool_calls 不是恰好一条" in p for p in problems), problems
+
+    def test_坏档里的非对象元素不崩(self):
+        """导出侧要对旧档 / 手改档跑校验——一个标量元素不该把整批打断。"""
+        plain, fc = self._both()
+        fc = self._clone(fc) + ["这不是一条消息"]
+        problems = task_view.projection_problems(plain, fc)
+        assert any("非对象元素" in p for p in problems), problems
+
+    def test_读步在两段投影里一致(self):
+        """读原语（R4-1）是普通动作，不是旁路——它在两段投影里也得同款。
+
+        读回执的正文块是**另一套排版**（只有被读的那一块、不带 counts），
+        两段投影各写一份实现（P3 与 T 刻意不复用）。这条钉的是：换了一
+        种回执形状，``projection_problems`` 仍然认得出两边讲的是同一个故事。
+        """
+        search_steps = [
+            _step(
+                action=_action("links"),
+                observation=_obs_full(read="links", body_text="不该排版",
+                                      links=[{"text": "正片", "href": "https://x.test/play"}]),
+                rationale={"status": "written", "text": "看有哪些入口",
+                           "conclusion": "挑一个"},
+            ),
+            _step(
+                action=_action("goto", params={"url": "https://x.test/play"}),
+                observation=_obs_full(),
+                rationale={"status": "written", "text": "进站", "conclusion": "看播放器"},
+            ),
+        ]
+        archive = _archive(
+            search_steps=search_steps,
+            visits=[_visit([_step(action=_action("snapshot"),
+                                  observation=_obs_full(read="snapshot"))])],
+            outcomes=[{"branch": "no_play_control", "branch_label": "找不到播放控件",
+                       "evidence": "无播放器", "site_url": "https://x.test",
+                       "play_page_url": ""}],
+        )
+        rendered = _rendered(archive)
+        assert task_view.projection_problems(
+            rendered["messages"], rendered["openai"]["messages"]
+        ) == []
+        # 两边都真的渲染出了读回执（否则上面那条断言是空转）。
+        # 纯文本侧观察挂在 ``user`` 消息上，function-calling 侧才是 ``tool``。
+        plain_obs = [m["content"] for m in rendered["messages"]
+                     if m.get("role") == "user"]
+        fc_obs = [m["content"] for m in rendered["openai"]["messages"]
+                  if m.get("role") == "tool"]
+        assert any("[读取: 链接]" in t for t in plain_obs), plain_obs
+        assert any("[读取: 链接]" in t for t in fc_obs), fc_obs
+
+    def test_build_task_view不一致不落盘(self, monkeypatch, tmp_path):
+        """渲染分叉时**一份都不写**——fail-closed 不写半份。
+
+        用 monkeypatch 把 openai 侧的动作整段抽掉，模拟渲染逻辑分叉；
+        落盘函数必须在写盘前拦下，并把原因写进 skipped。
+        """
+        original = task_view.to_task_openai_messages
+        monkeypatch.setattr(
+            task_view,
+            "to_task_openai_messages",
+            lambda archive: [m for m in original(archive) if not m.get("tool_calls")],
+        )
+        archive = self._build_archive()
+        result = task_view.build_task_view(archive, root=tmp_path)
+        assert result.written == 0
+        assert result.skipped and result.skipped[0].startswith("投影不一致"), result
+        path = task_views_dir(tmp_path) / f"{archive['task_id']}__{archive['run_id']}.json"
+        assert not path.exists(), "不一致的视图不该落盘"
+
+
+# ── 5b. 来源与缺件（方案 23 R2-4）────────────────────────────────
+
+
+class Test缺件与来源:
+    """``meta.source_archive`` 与 ``meta.degraded_from`` 必须从事实来。
+
+    两者曾经硬编码成 ``""`` / ``[]``：任何一份 P1 渲染出来都像全须全尾，
+    而「这份视图来自哪份存档」「缺了什么」正是复核时要答的两句话。
+    """
+
+    def test_source_archive默认空串(self):
+        """archive dict 里没有自己的文件名——猜不出来就不填。"""
+        assert task_view.to_task_meta(_archive())["source_archive"] == ""
+
+    def test_source_archive可注入(self):
+        meta = task_view.to_task_meta(
+            _archive(), source_archive="T001__b98b3e56.json"
+        )
+        assert meta["source_archive"] == "T001__b98b3e56.json"
+
+    def test_degraded_from从P1事实算(self):
+        """缺件要显式：user_prompt 空、搜索步为空、site_obs 只有 preview、
+        没有 outcome——四种事实各自落到词表里的标记。"""
+        search_obs = dict(_obs_full())
+        search_obs.pop("body_text")
+        search_obs["body_preview"] = "只有前 400 字"
+        visits = [{
+            "url": "https://x.test",
+            "landed_url": "https://x.test",
+            "success": True,
+            "notes": [],
+            "steps": [],
+            "site_obs": search_obs,
+            "player_obs": None,
+        }]
+        archive = _archive(user_prompt="", search_steps=[], visits=visits)
+        degraded = task_view.to_task_meta(archive)["degraded_from"]
+        for mark in ("user_prompt", "steps", "body_preview_only",
+                     "outcome_missing"):
+            assert mark in degraded, f"缺件 {mark} 没被记下来：{degraded}"
+        # 去重（两个 unit 都缺 steps 也只出现一次）
+        assert degraded.count("steps") == 1
+
+    def test_success与branch对不上要标记(self):
+        """``success=True`` 但 outcome 有失败分支——两个来源对不上时标记，
+        不挑一个（挑一个就是在猜，而这条样本进不进训练集全看它）。"""
+        visits = [{
+            "url": "https://x.test",
+            "landed_url": "https://x.test",
+            "success": True,
+            "notes": [],
+            "steps": [_step(action=_action("click"),
+                            observation=_obs_full(),
+                            rationale={"status": "written"})],
+            "site_obs": _obs_full(),
+            "player_obs": None,
+        }]
+        archive = _archive(
+            search_steps=[_step(action=_action("goto"), observation=_obs_full(),
+                                rationale={"status": "written"})],
+            visits=visits,
+            outcomes=[{"url": "https://x.test", "branch": "unresolved",
+                       "site_url": "https://x.test", "play_page_url": ""}],
+        )
+        assert "success_branch_mismatch" in task_view.to_task_meta(archive)[
+            "degraded_from"
+        ]
+
+    def test_degraded_from按词表顺序(self):
+        """顺序固定（同 P2 的 ``dict.fromkeys`` 去重口径），读的人不必
+        每次重新对齐。"""
+        archive = _archive(user_prompt="", search_steps=[])
+        degraded = task_view.to_task_meta(archive)["degraded_from"]
+        assert degraded == [
+            k for k in task_view._TASK_DEGRADED_VOCAB if k in set(degraded)
+        ]
 
 
 # ── 6. storage 读写门禁 ────────────────────────────────────────────

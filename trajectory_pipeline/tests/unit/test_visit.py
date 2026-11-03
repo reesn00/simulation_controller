@@ -2612,9 +2612,12 @@ class TestRationale接线:
         assert by_tool["goto"]["user_prompt"] == "有能看的吗"
         # INC46：history 是 ``(动作, 观察)`` 对——动作前动机要依据历史观察，
         # 但**不含本步观察**（本步还没执行）。
-        assert [a["tool"] for a, _ in by_tool["click"]["history"]] == tools[
-            : tools.index("click")
-        ]
+        # R0-2（2026-11-02）：history 作用域改成 **run 级**——站点单元的
+        # 首步之前还有搜索步，所以前缀多一条顶层 ``goto``。这正是
+        # 「没有历史 / 首次操作」不再与组装后的对话打架的数据前提。
+        assert [a["tool"] for a, _ in by_tool["click"]["history"]] == (
+            ["goto"] + tools[: tools.index("click")]
+        )
         # 本步观察没有入口：喂了它，模型就会描述一个还没看到的页面
         assert "observation" not in by_tool["click"]
         assert "error" not in by_tool["click"]

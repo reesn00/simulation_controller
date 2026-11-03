@@ -626,9 +626,11 @@ class TestOnRealObservations:
             obs = (s.get("six") or {}).get("observations") or []
             if not obs:
                 continue
-            # 用观察里**真实存在**的元素 label 当 rationale——
+            # 用观察里**真实存在**的元素名当 rationale——
             # 照理应当全部通过（或因观察不充分而不可判定），不该判幻觉。
-            labels = [str((e or {}).get("label") or "")
+            # 键名跟着方言走：obscura 面 ``label``、aria 面（camofox/camoufox）
+            # ``name``；写死 ``label`` 会让生产面的样本整批量不出东西。
+            labels = [lexicon.element_name(e or {})
                       for e in (obs[-1].get("interactive_elements") or ())]
             labels = [x for x in labels if x][:3]
             for label in labels:
@@ -646,9 +648,9 @@ class TestOnRealObservations:
                 break
         assert ran, "一份样本都没跑成"
 
-    def test_真实观察的观察袋包含元素label(self):
-        """少并一项就多一条假幻觉——实测元素 label 里的播放按钮名
-        是最常被 rationale 引用的实体。"""
+    def test_真实观察的观察袋包含元素名(self):
+        """少并一项就多一条假幻觉——实测元素名（obscura 面 ``label``、
+        aria 面 ``name``）里的播放按钮名是最常被 rationale 引用的实体。"""
         root = Path(__file__).resolve().parents[2] / "output" / "pipeline" / "samples"
         for p in sorted(root.glob("*.json")):
             s = json.loads(p.read_text(encoding="utf-8"))
@@ -658,9 +660,9 @@ class TestOnRealObservations:
             bag = lexicon.resettable_text(obs[-1])
             assert str(obs[-1].get("url") or "") in bag
             for e in (obs[-1].get("interactive_elements") or ())[:3]:
-                label = str((e or {}).get("label") or "")
+                label = lexicon.element_name(e or {})
                 if label:
-                    assert label in bag, f"元素 label「{label}」没进检索袋"
+                    assert label in bag, f"元素名「{label}」没进检索袋"
             break
 
 

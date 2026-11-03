@@ -222,9 +222,43 @@ MUTATIONS = [
         # （含调用行）已经对不上 ⇒ 只锚**写入那一步**，变异＝摘掉它。
         "编排器不挂writer",
         "trajectory_pipeline/executor/orchestrator.py",
-        "            await self._write_rationales(\n                result.steps, record, result.candidate.url[:60]\n            )",
+        "            await self._write_rationales(\n                result.steps, record, result.candidate.url[:60],\n                history_prefix=_rationale_history(record),\n            )",
         "            # 变异：摘掉逐步 rationale 写入",
         "trajectory_pipeline/tests/unit/test_visit.py::TestRationale接线",
+    ),
+    (
+        # R0-1（方案 23 §3）：跳过原生 think 的守卫。摘掉它 writer 会重新
+        # 补记每一步；``attach_rationale`` 的守卫虽然还能保住文本，但
+        # 「原生 think 步不进 writer」这条成本/来源口径就失效了。
+        "补记覆盖原生think",
+        "trajectory_pipeline/executor/orchestrator.py",
+        "            if actions.is_native_think(step.rationale):\n"
+        "                # R0-1：原生 think 已在决策时落盘，补记不得覆盖。\n"
+        "                continue\n",
+        "",
+        "trajectory_pipeline/tests/unit/test_rationale_provenance.py"
+        "::Test原生think存活::test_补记跳过已有原生think的步",
+    ),
+    (
+        # R0-2：history 作用域退回站点单元。第二站首步的 history 会变成 0，
+        # 「首次操作 / 没有历史」重新有了数据前提。
+        "补记history退回单元级",
+        "trajectory_pipeline/executor/orchestrator.py",
+        "                history_prefix=_rationale_history(record),\n",
+        "                history_prefix=(),\n",
+        "trajectory_pipeline/tests/unit/test_rationale_provenance.py"
+        "::Testhistory作用域::test_第二站首步能看到搜索与前一站",
+    ),
+    (
+        # R0-3：槽位本身的守卫。补记路径已经跳过，但调用方不止一个；
+        # 摘掉守卫，直接 attach 的路径就能把原生 think 顶掉。
+        "attach_rationale覆盖原生think",
+        "trajectory_pipeline/executor/actions.py",
+        "        if is_native_think(self.steps[index].rationale):\n"
+        "            return\n",
+        "",
+        "trajectory_pipeline/tests/contract/test_think_payload_contract.py"
+        "::test_先挂native_think再补记仍是native_think",
     ),
     (
         "搜索步不补记",

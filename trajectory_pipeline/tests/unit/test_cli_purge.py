@@ -111,6 +111,28 @@ class Testapply删干净:
         assert cli.cmd_purge_run(_ns(out=str(tmp_path))) == 1
         assert "没有东西" in capsys.readouterr().out
 
+    def test_legacy池里的派生产物也收干净(self, tmp_path):
+        """分池（方案 23 R3-3）后旧面产物在 ``legacy/<surface>/<kind>/``。
+
+        不回滚它们，purge 会把「源档已删、派生还在」的孤儿留在归档里——
+        与 2026-10-20 那批 19 条孤儿同一类问题，只是换了个目录。
+        """
+        legacy = tmp_path / "legacy" / "obscura-1"
+        for kind in ("samples", "views", "task_views"):
+            (legacy / kind).mkdir(parents=True)
+        (legacy / "samples" / "T001__a1__search.json").write_text(
+            "{}", encoding="utf-8")
+        (legacy / "views" / "T001__a1__search_openai.json").write_text(
+            "{}", encoding="utf-8")
+        (legacy / "task_views" / "T001__a1.json").write_text(
+            "{}", encoding="utf-8")
+
+        assert cli.cmd_purge_run(_ns(out=str(tmp_path), apply=True)) == 0
+
+        assert not (legacy / "samples" / "T001__a1__search.json").exists()
+        assert not (legacy / "views" / "T001__a1__search_openai.json").exists()
+        assert not (legacy / "task_views" / "T001__a1.json").exists()
+
 
 class Test匹配面收紧:
     """``run_id`` 会被拼进 glob 模式——glob 里的 ``*`` 会匹配到别的 run。

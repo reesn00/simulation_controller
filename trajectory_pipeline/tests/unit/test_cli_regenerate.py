@@ -133,6 +133,26 @@ class Test重建:
         # 旧口径文本确实被换掉了——留着就是混批训练
         assert "旧口径" not in p.read_text(encoding="utf-8")
 
+    def test_原生think步永不重写(self, tmp_path, _patch_writer):
+        """R0-3 的离线侧：``regenerate-rationales`` 直接改 JSON，绕过
+        ``attach_rationale`` 的守卫；默认口径（``only_old=False``）若整段
+        重写，agent 决策当时的证据就会被事后文本顶掉。"""
+        w = _FakeWriter()
+        _patch_writer["writer"] = w
+        native = {"status": "written",
+                  "rationale": {"text": "原生 think", "conclusion": ""},
+                  "reason": "native-think", "degraded": []}
+        arc = _arc(steps=[_step("goto", native)])
+        p = tmp_path / "T001__abc123.json"
+        p.write_text(json.dumps(arc, ensure_ascii=False), encoding="utf-8")
+        args = argparse.Namespace(out=str(tmp_path), only=None, dry_run=False)
+        assert cli.cmd_regenerate_rationales(args) == 0
+        got = json.loads(p.read_text(encoding="utf-8"))
+        assert got["steps"][0]["rationale"] == native
+        # 站点单元那一旧步照常重写（只有原生 think 被跳过）
+        assert len(w.calls) == 1
+        assert got["visits"][0]["steps"][0]["rationale"]["rationale"]["text"] == "新动机1"
+
     def test_每个unit落一条reflection(self, tmp_path, _patch_writer):
         w = _FakeWriter()
         _patch_writer["writer"] = w

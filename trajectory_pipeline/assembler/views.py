@@ -40,12 +40,14 @@
 
 3. **``click`` 的语义目标并进 ``arguments``。**
    ``ActionView`` 是 ``{tool, params, target, origin}`` 四字段，而
-   function-calling 的 ``arguments`` 是**一个 dict**。所以
+   function-calling 的 ``arguments`` 是**一个平铺的键空间**。所以
    ``target`` 的两个槽平铺进 ``arguments``（obscura 面是 ``{tag, label}``、
    aria 面（camoufox / camofox）是 ``{role, name}``——P4 起键名跟着方言走，见
    :func:`~trajectory_pipeline.toolcatalog.dialect_of`），
    而不是塞进一个嵌套字段——后者会让训练出来的模型学会
    往 ``arguments.target.<槽>`` 里填，而真实 API 要的是平铺。
+   **落盘时再序列化成 JSON 字符串**（协议里 ``function.arguments`` 是
+   string，不是 dict），见 :func:`_arguments_json`（方案 23 R3-4）。
 
 4. **空 ``user_prompt`` **不发** user 消息，并在 meta 记缺件。**
    这与 :mod:`~trajectory_pipeline.assembler.observation_view` 的
@@ -68,15 +70,20 @@
    ``align_rationales`` 产出的是**稀疏**序列（中间步没写成就跳号），
    按位置取会在缺一条时整体串位，串位的思考会被时序核查当成幻觉。
 
-7. **每条轨迹以「任务总结」收尾。**
+7. **每条轨迹以面向用户的答复收尾。**
    动作流结束后确定性合成一条**没有 ``tool_calls`` 的 assistant 消息**
-   （:func:`_closing_text`）：内容只从 ``outcome``（分支 → 处置词表
-   :data:`_CLOSING_DISPOSITION`）与末可见步的 ``rationale.conclusion``
-   派生，不编新事实。没有收尾的轨迹会教模型「发完最后一个动作就结束」，
-   而真实的助手行为是对用户有个交代（2026-10-15 拍板补入——此前
-   302/304 条样本全部以动作终结）。处置词表是本模块**自己声明**的，
-   与 ``executor.branches.BRANCH_LABELS`` 的键集同步由契约测试盯
-   （不 import executor，交接面是格式不是 import）。
+   （:func:`_closing_text` → :func:`assembler.closing.closing_for_run`）：
+   内容只从**任务级结论**（裁定 ②：末条结论）与 ``site_outcomes`` 里的
+   站点结论（分支 → 原因词表
+   :data:`~assembler.closing.CLOSING_DISPOSITION`）派生，加上
+   ``reflection.rationale.conclusion``，不编新事实。没有收尾的轨迹
+   会教模型「发完最后一个动作就结束」，而真实的助手行为是对用户有个交代
+   （2026-10-15 拍板补入——此前 302/304 条样本全部以动作终结）。
+   **2026-11-02（方案 23 R2）**：文本改成「成功给网址 / 失败给已排除站点
+   与原因」，**分支枚举名与分支计数不进语料**；词表与模板在
+   :mod:`assembler.closing`，与 T 共用一份（两段投影必须一致）。
+   **2026-11-03（re-base 到 per-Run）**：收尾是**整条轨迹**的（不再是
+   「一个决策单元」的），与 T 说的是**同一句话**。
    **空轨迹不编总结**：一个可见动作都没有的样本没有可总结的事。
 
 8. **缺观察的步显式发占位回执，不留悬空 ``tool_calls``。**
@@ -86,6 +93,15 @@
    「页面真空」的区分靠这句占位文本与 meta 的
    ``missing_observation_count``，不是靠消息缺席（2026-10-15 改，
    原为「少一条就少发一条」）。
+
+9. **死循环步剔出训练视图，重复动作在 meta 里标记**（方案 23 R3-1 /
+   R3-2，2026-11-02）。相邻两步「同动作 + 观察逐字相同」时，后一步
+   整步不进消息视图——这类步教的是「没反应就再点一次」。**P1/P2
+   存档一个字不动**，剔的只是训练视图里的那一步，原始步号记在 meta
+   的 ``deduped_steps`` 里可对账。同一 unit 内同一动作出现 ≥2 次时
+   （不含被剔的步）逐条记进 ``repeat_actions``；重复不总是死循环
+   （滚动加载、换词重搜都可能合法），所以只标不剔。规则与实现见
+   :mod:`trajectory_pipeline.assembler.screen`。
 """
 
 from __future__ import annotations
@@ -96,7 +112,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from trajectory_pipeline import toolcatalog
-from trajectory_pipeline.assembler import observation_view
+from trajectory_pipeline.assembler import closing, observation_view, pool, screen
 from trajectory_pipeline.storage import (
     DEFAULT_VIEWS_DIRNAME,
     VIEW_NAMES,
@@ -150,25 +166,65 @@ def render_observation(obs: Mapping[str, Any]) -> str:
     if title or url:
         parts.append(f"标题：{title}\n网址：{url}")
 
-    body = str(obs.get("body_text") or "")
-    parts.append(f"正文：\n{body}" if body else "正文：（空）")
-
-    elems = obs.get("interactive_elements") or []
-    if elems:
-        lines = [observation_view.element_line(e) for e in elems]
-        parts.append("可交互元素：\n" + "\n".join(lines))
+    # 读步只排版被读的那一块（方案 23 R4-1）。``read`` 标记既告诉模型
+    # 「这不是整页回执」，也告诉读样本的人「其余块没采，不是页面上没有」。
+    read = str(obs.get("read") or "")
+    if read in ("snapshot", "interactive", "links"):
+        label = {
+            "snapshot": "正文",
+            "interactive": "可交互元素",
+            "links": "链接",
+        }[read]
+        parts.append(f"[读取: {label}]")
+        if read == "snapshot":
+            body = str(obs.get("body_text") or "")
+            parts.append(f"正文：\n{body}" if body else "正文：（空）")
+        elif read == "interactive":
+            elems = obs.get("interactive_elements") or []
+            if elems:
+                lines = [observation_view.element_line(e) for e in elems]
+                parts.append("可交互元素：\n" + "\n".join(lines))
+            else:
+                parts.append("可交互元素：（空）")
+        else:
+            links = obs.get("links") or []
+            if links:
+                lines = [
+                    f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip()
+                    for l in links
+                ]
+                parts.append("链接：\n" + "\n".join(lines))
+            else:
+                parts.append("链接：（空）")
     else:
-        parts.append("可交互元素：（空）")
+        body = str(obs.get("body_text") or "")
+        parts.append(f"正文：\n{body}" if body else "正文：（空）")
 
-    links = obs.get("links") or []
-    if links:
-        lines = [
-            f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip() for l in links
-        ]
-        parts.append("链接：\n" + "\n".join(lines))
+        elems = obs.get("interactive_elements") or []
+        if elems:
+            lines = [observation_view.element_line(e) for e in elems]
+            parts.append("可交互元素：\n" + "\n".join(lines))
+        else:
+            parts.append("可交互元素：（空）")
 
-    counts = f"video 标签 {obs.get('video_tag_count', 0)} 个，iframe {obs.get('iframe_count', 0)} 个"
-    parts.append(counts)
+        links = obs.get("links") or []
+        if links:
+            lines = [
+                f"  - {l.get('text', '')} → {l.get('href', '')}".rstrip() for l in links
+            ]
+            parts.append("链接：\n" + "\n".join(lines))
+
+        counts = f"video 标签 {obs.get('video_tag_count', 0)} 个，iframe {obs.get('iframe_count', 0)} 个"
+        parts.append(counts)
+
+    # 「动作白做」与「信息没采到」分列（方案 23 R1-2）：前者是本步动作
+    # 报错，后者是 ``degraded``。混成一个标记，模型会把点击失败学成
+    # 「页面没内容」。错误正文只放前 120 字，全文在 P1 存档里。
+    error = str(obs.get("action_error") or "").strip()
+    if error:
+        if len(error) > 120:
+            error = error[:119] + "…"
+        parts.append(f"[本步动作无效: {error}]")
 
     # 如实报账，不静默省略——见模块 docstring 第 5 条与第 2 条。
     degraded = list(obs.get("degraded") or ())
@@ -306,6 +362,62 @@ def _visible_steps(
     return steps, observations[len(actions) :]
 
 
+def _unit_of_step(sample: Mapping[str, Any], step_index: int) -> str:
+    """这一步属于哪个 unit——**重复判定的边界**。
+
+    ⚠️ **2026-11-03 · re-base 到 per-Run**：per-unit 时代 P2 样本自带
+    ``unit`` 键（一条样本 = 一个单元）。per-Run 之后**决策单元不再是样本
+    的粒度**，``unit`` 键没了——但**重复判定的边界还在**：跨站点重复
+    同一个动作不是死循环（那是「换了一个站再访问」），同站点内才是。
+
+    ⇒ 边界改从 :attr:`Sample.site_outcomes` 的**步区间**取：落在哪个站点
+    的区间里就是哪个 ``site-N``；搜索阶段的步算 ``search``。
+
+    老样本（per-unit 时代）自带 ``unit`` 键，直接用它——不拿新口径反推
+    老数据。
+    """
+    unit = str(sample.get("unit") or "")
+    if unit:
+        return unit
+    for s in (sample.get("site_outcomes") or ()):
+        if not isinstance(s, Mapping):
+            continue
+        start = int(s.get("step_start") or 0)
+        end = int(s.get("step_end") or 0)
+        if start <= step_index < end:
+            return f"site-{s.get('index')}"
+    return "search"
+
+
+def _screened_steps(
+    sample: Mapping[str, Any],
+) -> tuple[
+    list[tuple[int, Mapping[str, Any], Any, Any]],
+    screen.Screening,
+    list[Any],
+]:
+    """可见步再过一道训练筛选（模块 docstring 第 9 条）。
+
+    返回 ``(保留的可见步, 筛选结果, 多余观察)``。比较对象是**渲染后的
+    观察文本**——与模型实际看到的、与审计口径都是同一份（见
+    :mod:`assembler.screen`）。
+    """
+    six = sample.get("six") or {}
+    steps, extra = _visible_steps(six)
+    rows = [
+        screen.Step(
+            step_index=i,
+            unit=_unit_of_step(sample, i),
+            action=act,
+            observation=render_observation(obs or {}),
+        )
+        for i, act, obs, _ in steps
+    ]
+    screening = screen.screen(rows)
+    keep_ids = {s.step_index for s in screening.steps}
+    return [t for t in steps if t[0] in keep_ids], screening, extra
+
+
 def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     """通用 ``{role, content}`` 序列。
 
@@ -326,7 +438,7 @@ def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
         msgs.append({"role": "user", "content": user})
     # 空 user_prompt **不发**空消息——见模块 docstring 第 4 条。
 
-    steps, extra = _visible_steps(six)
+    steps, _screening, extra = _screened_steps(sample)
     for _, act, obs, rationale in steps:
         msgs.append(
             {
@@ -341,9 +453,9 @@ def to_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
         msgs.append({"role": "user", "content": render_observation(obs)})
 
     # 任务总结收尾（第 7 条）；空轨迹不编总结。
-    closing = _closing_text(sample, steps)
-    if closing is not None:
-        msgs.append({"role": "assistant", "content": closing})
+    closing_text = _closing_text(sample, steps)
+    if closing_text is not None:
+        msgs.append({"role": "assistant", "content": closing_text})
     return msgs
 
 
@@ -386,50 +498,31 @@ def _rationale_text(rationale: Any) -> str:
 
 # ── 收尾总结（模块 docstring 第 7 条）──────────────────────────────
 
-#: 分支 → 收尾处置话术。**本模块自己声明**，与
-#: ``executor.branches.BRANCH_LABELS`` 键集的同步由契约测试盯——
+#: 分支 → 面向用户的排除原因。字面量的**真源**在
+#: :data:`trajectory_pipeline.assembler.closing.CLOSING_DISPOSITION`
+#: （P3 与 T 共用）；这里保留同名别名只是为了既有调用方与测试的读法。
+#: 与 ``executor.branches.BRANCH_LABELS`` 键集的同步仍由契约测试盯——
 #: import executor 会把 P3 的重建焊死在执行端当前版本上
 #: （与 ``schema.py`` 不 import executor 同一条纪律）。
-_CLOSING_DISPOSITION: dict[str, str] = {
-    "not_play_site": "不是播放站点，排除",
-    "unreachable_hard": "导航失败，排除",
-    "no_play_control": "页面上没有播放控件，排除",
-    "trailer_only": "只有预告片，没有正片资源，排除",
-    "trailer_suspect": "疑似预告，判不准，不予记录",
-    "component_unverified": "点开后没有可验证的播放组件，排除",
-    "player_unverified": "有播放组件但确认不了能不能用，标记未验证，不入正式记录",
-    "subscription_wall": "有播放页但需订阅/付费，排除",
-    "unresolved": "无法确认能否播放，不予记录",
-    "login_required": "登录后可免费观看（无登录态），排除",
-    "blocked": "地区限制/验证码/反爬阻断，排除",
-    "broken": "内容损坏，排除",
-    "partial_free": "完整内容需付费，排除",
-    # ── 路径 B/C 发现链（2026-10-16）────────────────────────────
-    # site_search_routed 是路由记账不是结论（NON_SAMPLE），收尾话术
-    # 写「继续核验」——这个 unit 的任务就是派发子候选，排除语义不成立。
-    "not_aggregator": "候选不是影视聚合站，排除",
-    "aggregator_no_entries": "聚合站页面上没有正式影视站入口，排除",
-    "not_article": "候选不是文章/社区讨论页，排除",
-    "article_no_links": "文章里没有可引荐的影视站外链，排除",
-    "no_site_search": "首页上没有站内搜索框，无法按片名定位，排除",
-    "site_search_no_results": "站内搜索没有找到该片的资源，排除",
-    "site_search_routed": "经站内搜索找到候选，转入结果页继续核验",
-    # deprecated 分支：老存档里仍有，新执行端不再产出。
-    "login_wall_or_blocked": "登录墙/验证码/地区限制，排除",
-}
+_CLOSING_DISPOSITION: dict[str, str] = closing.CLOSING_DISPOSITION
 
 
 def _closing_text(
     sample: Mapping[str, Any],
     steps: list[tuple[int, Mapping[str, Any], Any, Any]],
 ) -> str | None:
-    """动作流结束后的「任务总结」。**只派生，不编新事实**。
+    """动作流结束后的收尾——**面向用户的答复**（方案 23 R2-1 / R2-2）。
+
+    与 T 共用 :func:`~trajectory_pipeline.assembler.closing.closing_text`：
+    同一套模板。⚠️ **2026-11-03 · re-base 到 per-Run**：per-unit 时代
+    P3 只带**本单元**的 outcome、T 带整条 run；per-Run 之后**两边的事实
+    一样**（整条 run 的站点清单 + 同一个决定性结论）⇒ 两边说的是
+    **同一句话**。
 
     - **空轨迹不编总结**：没有可见的模型动作，就没有可总结的事；
-    - 处置只看 ``outcome``：那是**任务级结论**（裁定 ②：最后一个结论）——
-      ``branch=None`` 记成功（带播放页地址），已知分支查
-      :data:`_CLOSING_DISPOSITION`，**未知分支照实写出分支名**——
-      词表没跟上的新分支在这里不能静默消失；
+    - **决定性结论**（``sample["outcome"]``，裁定 ②：任务级标签）说成功
+      就说找到了，说失败就说没找到——**中途成功过不算成功**；
+    - **分支枚举名与分支计数不进文本**——那是并池口径，不是助手语言；
     - 结论来自 :attr:`reflection <Sample.reflection>` 的
       ``rationale.conclusion``——那是模型自己写下的总结，不是本模块编的。
 
@@ -439,13 +532,7 @@ def _closing_text(
     写的是「为什么点这一下」——拿它当收尾，整条消息流就会以一句
     「我打算点开看看」结束，而真正的结论没人说。
 
-    没有 reflection 时退回**纯 disposition 话术**，不拿末步 rationale
-    顶替——顶替就是拿「预期」冒充「结论」，比没有更坏。
-
-    ⚠️ **2026-10-30 · 方案 23**：``outcome`` 现在是**轨迹级**的
-    （末条结论），不再是某个访问点的。处置话术跟着任务级标签走，
-    而「模型自己写的总结」取自**末个访问点**的反思——那正是这条轨迹
-    的落点。
+    没有 reflection 时不补话术——宁可少一句，不拿「预期」冒充「结论」。
     """
     if not steps:
         return None
@@ -456,30 +543,23 @@ def _closing_text(
         if isinstance(rat, Mapping):
             conclusion = str(rat.get("conclusion") or "").strip()
 
-    outcome = sample.get("outcome")
-    if not isinstance(outcome, Mapping):
-        # 这条轨迹**没有任务级结论**（一个站点结论都没有）——判不出来，
-        # 不是成功（fail-closed）。
-        #
-        # ⚠️ 这里**不能**沿用旧口径的「接下来逐一打开候选站点核验」：
-        # 那是**搜索单元**的收尾话术，而搜索单元不再是样本的粒度。
-        # 拿它顶替等于把「判不出来」说成「还在进行中」——训练出来的
-        # 模型会以为没结论是正常的中间态。
-        disposition = "本轨迹没有站点结论，判不出来"
-    else:
-        branch = outcome.get("branch")
-        if branch is None:
-            url = str(outcome.get("play_page_url") or outcome.get("url") or "")
-            disposition = (
-                f"记录该网址为可播放资源：{url}" if url else "记录为可播放资源"
-            )
-        else:
-            disposition = _CLOSING_DISPOSITION.get(str(branch)) or (
-                f"不予记录（分支：{branch}）"
-            )
-    if conclusion:
-        return f"任务总结：{conclusion} 处置：{disposition}。"
-    return f"任务总结：{disposition}。"
+    decisive = sample.get("outcome")
+    site_outcomes = [
+        (s.get("outcome") if isinstance(s, Mapping) else None)
+        for s in (sample.get("site_outcomes") or ())
+    ]
+    return closing.closing_for_run(
+        title=str(sample.get("title") or ""),
+        outcomes=closing.run_closing_outcomes(
+            decisive=decisive if isinstance(decisive, Mapping) else None,
+            site_outcomes=site_outcomes,
+        ),
+        conclusion=conclusion,
+        # 一个站点都没访问到（有动作，但全在搜索阶段）——不说「没找到
+        # 可播放网址」，说「没找到可访问站点」：前者是看过了没有，后者
+        # 是压根没看。
+        no_sites=not site_outcomes,
+    )
 
 
 def _action_line(act: Mapping[str, Any]) -> str:
@@ -517,7 +597,7 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     if user:
         msgs.append({"role": "user", "content": user})
 
-    steps, extra = _visible_steps(six)
+    steps, _screening, extra = _screened_steps(sample)
 
     for seq, (_, act, obs, rationale) in enumerate(steps):
         # 思考段逐步对齐，按 ``step_index`` 查找（模块 docstring 第 6 条）。
@@ -534,8 +614,9 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
                         "type": "function",
                         "function": {
                             "name": str(act.get("tool") or ""),
-                            # 平铺 target，见模块 docstring 第 3 条
-                            "arguments": _arguments(act),
+                            # 平铺 target（模块 docstring 第 3 条），
+                            # 再序列化成 JSON 字符串（方案 23 R3-4）
+                            "arguments": _arguments_json(act),
                         },
                     }
                 ],
@@ -559,18 +640,19 @@ def to_openai_messages(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
         )
 
     # 任务总结收尾：没有 tool_calls 的 assistant 消息（第 7 条）。
-    closing = _closing_text(sample, steps)
-    if closing is not None:
-        msgs.append({"role": "assistant", "content": closing})
+    closing_text = _closing_text(sample, steps)
+    if closing_text is not None:
+        msgs.append({"role": "assistant", "content": closing_text})
     return msgs
 
 
 def _arguments(act: Mapping[str, Any]) -> dict[str, Any]:
-    """动作 → function-calling 的 ``arguments``。
+    """动作 → function-calling 的 ``arguments``（平铺后的 dict）。
 
     ``params`` 与 ``target`` **平铺合并**。``click`` 没有 params，
     它的语义目标就在 target 里；反过来 ``goto`` 的 url 在 params 里。
-    两者键空间不冲突，合并即可。
+    两者键空间不冲突，合并即可。**落盘形态不是这个 dict**，
+    见 :func:`_arguments_json`。
     """
     args: dict[str, Any] = dict(act.get("params") or {})
     target = act.get("target")
@@ -579,6 +661,17 @@ def _arguments(act: Mapping[str, Any]) -> dict[str, Any]:
             if v not in (None, ""):
                 args[str(k)] = v
     return args
+
+
+def _arguments_json(act: Mapping[str, Any]) -> str:
+    """动作 → 落盘的 ``arguments`` **JSON 字符串**（OpenAI Chat Completions 契约）。
+
+    ``function.arguments`` 在协议里是**字符串**，模型侧发的也是字符串。
+    落成 dict 会让按协议解析 ``json.loads`` 的下游崩，或者更糟——静默按
+    Python 对象用掉，训出来的模型学会发 dict。改前全量 4902/4902 是 dict
+    （2026-11-02 审计，方案 23 R3-4）。``ensure_ascii=False`` 保留中文原样。
+    """
+    return json.dumps(_arguments(act), ensure_ascii=False)
 
 
 # ── meta 视图 ─────────────────────────────────────────────────────
@@ -616,7 +709,7 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         for o in observations
         if isinstance(o, Mapping) and "observation_missing" in (o.get("degraded") or ())
     )
-    steps, _ = _visible_steps(six)
+    steps, screening, _ = _screened_steps(sample)
 
     # 「模型被告知但这条轨迹没用过」的工具名。
     #
@@ -670,6 +763,15 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         # 是否带收尾总结（第 7 条）。空轨迹不编总结——False 即
         # 「这条一个可见模型动作都没有」。
         "closing_summary": _closing_text(sample, steps) is not None,
+        # 训练筛选（方案 23 R3-1 / R3-2，2026-11-02）。
+        # ``deduped_steps`` 是**原始步号**（与 ``rationale_steps`` 同一
+        # 坐标系），逐条列出而不是只给计数——复核时要能指着某一步问
+        # 「为什么把它剔了」。``repeat_actions`` 只标留在训练集里的步，
+        # 被剔的步由 ``deduped_steps`` 交代。
+        "deduped_step_count": len(screening.deduped),
+        "deduped_steps": list(screening.deduped),
+        "repeat_step_count": len(screening.repeats),
+        "repeat_actions": [dict(r) for r in screening.repeats],
         # 思考的覆盖：``rationale_missing`` 只说「一条都没有」，
         # 而「写了 2/3 步」在批次筛选时同样要看得见——**逐条列出来**，
         # 别合成一个计数：合成之后就分不出「缺中间那步」与「缺最后那步」，
@@ -725,6 +827,18 @@ def build_views(
     if not sid:
         return ViewResult(sample_id="", written=0, skipped=("<no-sample_id>",))
 
+    # 分池（方案 23 R3-3）：交付面落 ``views/``，旧面落
+    # ``legacy/<surface>/views/``。面认不出就**不落**——猜一个面等于让
+    # 三份视图去错池，而错池不会报错，只会在训练方那里变成两代格式混排。
+    surface = str(sample.get("tool_surface") or "")
+    if surface not in pool.KNOWN_SURFACES:
+        return ViewResult(
+            sample_id=sid,
+            written=0,
+            skipped=(f"{sid} (<no-tool_surface: {surface!r}>)",),
+        )
+    target_root = pool.pool_root(views_dir(root).parent, surface)
+
     payloads = {
         "messages": to_messages(sample),
         "openai": {
@@ -734,7 +848,7 @@ def build_views(
         },
         "meta": to_meta(sample),
     }
-    rep = storage_write_views(payloads, sid, root=root, overwrite=overwrite)
+    rep = storage_write_views(payloads, sid, root=target_root, overwrite=overwrite)
     return ViewResult(sample_id=rep.sample_id, written=rep.written, skipped=rep.skipped)
 
 
@@ -754,6 +868,10 @@ def build_views_from_dir(
         if samples_root is not None
         else views_dir(root).parent / "samples"
     )
+    # 分池（方案 23 R3-3）：先把**已存在**的旧面视图成组挪出交付目录。
+    # 只认 ``*_meta.json`` 为组主文件（三份里只有它带 ``tool_surface``）。
+    migration = pool.migrate_views(views_dir(root))
+
     results: list[ViewResult] = []
     total_written = 0
     total_skipped = 0
@@ -772,6 +890,12 @@ def build_views_from_dir(
         results.append(res)
         total_written += res.written
         total_skipped += len(res.skipped)
+    pool.record_pool(
+        views_dir(root),
+        moved=migration.moved,
+        unclassified=migration.unclassified,
+        primary_glob="*_meta.json",
+    )
     return ViewBuildReport(
         tuple(results), total_written, total_skipped, str(views_dir(root))
     )

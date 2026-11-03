@@ -38,6 +38,25 @@
 > 的分类口径）、**一处门禁假阳性**与**一处证据链缺环**（`last_action` 没进 P1）。
 > **六条已按 [§2026-10-22 新增开口项详解](#2026-10-22-新增开口项详解) 补上
 > 「代码事实 / 影响 / 修复建议 / 验收条件」**——下一位动手的人不必重新推导一遍）。
+> **2026-11-02 补记训练语料整改（方案 23）：H-21～H-25 / M-67～M-69 / Q-26～Q-31**——
+> **O-1～O-5 已于当日由 owner 裁定**（O-1 还给 agent / O-2 要读 / O-3 分池 /
+> O-4 只接 per-Run / O-5 两段都发且一致，见 Q-26～Q-30）；**A7 的验收口径同日
+> 裁定为方案 A**（窄口径 + 分母用保留步，见 Q-31）；
+> 这一组**全是产物侧**（执行层写错了什么 / 组装层交出去了什么），不是评估侧口径；
+> 读数与量法在 [设计方案 23](../设计方案/23-训练轨迹语料整改方案.md)，逐条详解见
+> [§2026-11-02 新增开口项详解](#2026-11-02-新增开口项详解训练语料整改--方案-23)。
+> **2026-11-03 补记 A13 新批次并入主树生产根**（owner 裁「并入」）：**8 份 P1 存档
+> 逐字**进主树生产根 ⇒ **+8 档 / +8 P2 样本 / +24 P3 视图 / +8 T 视图 /
+> 池 +38 行（438 → 476）**；存量 **669** 个产物文件**逐字节未动**（并入前后哈希
+> 清单比对：改动 **0**、丢失 **0**）；门禁归因：并入只带来 **1 条**新判定
+> （`E013` 把一条 `v.qq.com` URL 判成成功、池里 `E001` 那行记着
+> `subscription_wall` ⇒ **人判分歧，不替人投票**），
+> `negative_not_pooled ×3` **未变**（新档 42 条真负样本**全部在池**）。
+> ⚠️ **两套口径并存**：并入产物用 **main 的口径**（per-Run、**无** R4-2 剔除），
+> 而 **LS 上那 8 行是分支口径**（按 per-unit 拼的、R4-2 剔了
+> `excluded_platforms` 单元）⇒ **8 条里 7 条的任务级结论相反** ⇒ 见 **Q-33**；
+> ⚠️ 分支的 R0–R5 实现还是 **per-unit 基线**（分支 tip 落后 main **28** 个提交）
+> ⇒ 落地前须先 re-base 到 per-Run ⇒ 见 **M-66**。
 > 数据来源 =
 > [00-总览](00-总览.md) 的优先级表
 > + 各域文档的「⚠️ 本域已知未闭环项」+ [90-增量编年史](90-增量编年史.md)
@@ -421,6 +440,11 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **H-19** | ★**（2026-10-24 新增）复核队列的覆盖面只到 `REVIEW_BRANCHES` 三支 ⇒「记成功」的假正样本与 `trailer_only` 的错负样本**机制看不见** | 08 存档 / 03 标签 | [07 手册 §4.6 本轮裁定记录](../07-人工复核与判读手册.md) · `executor/review_queue.py` 的 `REVIEW_BRANCHES` · 池 `output/pipeline/negative.jsonl`（260 行）· 样本 `output/pipeline/samples/E006__2729220b__site-4.json` | **2026-10-24 把 224 行复核队列逐条裁完时撞出来的**：队列只收 `{unresolved, trailer_suspect, player_unverified}` ⇒ **分支不在这三支的行压根不进队列**。已实测两类漏网：① **假正样本**——`E006/2729220b` 的网易号《济州岛美食攻略》（`163.com`）记的是**成功**，已进训练样本集（`outcome.branch=null` · `gate.status=passed`），而**它自己的 rationale 反着说**（「当前页面不是目标资源页」「目前未找到该片合集的可播放网址」）⇒ 记录的成功与 agent 自报**互相矛盾**；同 run 的 `koreabycar.com`（同类美食博客）落 `unresolved` ⇒ **进了队列被判掉** ⇒ **同一个坑，一边修得了一边修不了**；② **错负样本**——`T001/d063ddf4` 的央视网《武林外传》第 1 集**正片页**落 `trailer_only`，是**池里唯一那 1 条**（教模型「正片页 = 只有预告」，误杀，见 **M-12**）。⇒ **不是「没判完」，是「机制判不到」**：处置要么扩 `REVIEW_BRANCHES`（把「记成功」与 `trailer_only` 纳入复核面）、要么另开「正样本抽检」通道 ⇒ **都改代码 ⇒ 等 owner 拍板**。⚠️ 池里另有 **8 条 `v.qq.com` 的 `subscription_wall`**（H-16 那批 8 条，**同样不在三支里**）⇒ 扩面时一并纳入。⚠️ **2026-10-27 订正一处**：「队列只收三支」在**代码侧已经不成立**——`blocked` 已于 2026-10-26（方案 20 §R1）扩进 `REVIEW_BRANCHES`（`executor/review_queue.py:192`）。而盘上那份 `output/pipeline/review_queue.jsonl` 是 **10-24 18:31 导出的旧稿**（224 行、**行行带人裁定** ⇒ **不能覆盖重导**）⇒ **「队列里没有 `blocked` 行」是稿子旧，不是机制缺**：2026-10-27 只读重导实测 `待复核 515 条 = unresolved 431 · blocked 70 · player_unverified 8 · trailer_suspect 6` ⇒ **`blocked` 已经进面**。⇒ **仍等 owner 拍板的还是那两条**：① 「记成功」的**假正样本**（机制判不到）② `trailer_only` 的**错负样本**（M-12） |
 
 | **H-20** | ★**（2026-10-26 新增）执行层换 camofox-browser ⇒ 采集链还没在新面上真跑过**（第一梯队卡在这） | 01 采集 / 09 纪律 | 本文 **§停点** · [设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md) · `pyproject.toml` 依赖段（`playwright` 已摘） · 编年史 §增量九十三 · 编年史 §增量九十四 | **代码与门禁已全部落地**（`camofox_session.py` / `camofox_driver.py` / 三张面 / `LEGACY_DRIVER_SURFACE`），**门禁绿**。**环境已通**（`camofox-browser-mcp` 适配器 + 上游 REST `:9377`，**本仓库不启动浏览器**）⇒ **第 4 轮那 10 条已在 camofox 面上真跑过**（批次 `plan-camoufox-prod1`）⇒ ✅ **camofox-1 面的 `click`/`fill`/`press` 三条已按真实调用转正**（`exercised=True`；`required` 口径**逐条按真实键在场率校**：`click` 的 `role`/`name` 100% ⇒ 都必填 · `fill` 三个键 100% ⇒ 都必填 · `press` **只有 `key` 在场** ⇒ `role`/`name` 保持可选）。⚠️ **但第 4 轮自己带出了五个「零报错」的缺陷**（§停点 · R5 实跑那一段的五个缺陷）⇒ **卡点从「没跑过」变成「跑 → 读 → 修 → 清 → 再跑」这个循环还没走完**（已走四轮；**第 5 轮在跑**）⇒ 剩下的：**逐条打开存档读 evidence**（缺陷⑤ 就是这么读出来的）+ **重建产物与门禁** + **采集侧账** + **人判存量那 4 条 agent 负样本**。⭐ **2026-10-27 更新：第 5 轮已跑完**（砍到 **6 条**跑完，理由见编年史 §十一 · 5-1-1）⇒ **缺陷⑤的修法在 6 档真数据上站住**（**建页路由失败 0 次**；T048 用时 5972 s → 1619 s）⇒ **逐条读 evidence 已做**（读出 **M-43** / **M-44** 两个新开口项）⇒ **重建产物 + 门禁已做**（`build --overwrite` → `task-view --all --overwrite` → `check-archives`；`4252 passed` 全绿）⇒ **采集侧账已跑**（6 档 **61** 条打点、**单面** `camofox-plain`、跨面**结构上**为 0）⇒ **并发批的 6 条 `unreachable_hard` 已逐条单独复核并出池**（池 331 → 325）。⇒ **剩下唯一的 owner 动作**：**人判存量那 4 条 agent 负样本**（材料已备，见 §停点 ⑥）。⚠️ **camoufox 不许接回来**（owner 裁定）——`camoufox-1` 面**只读不再产出**，但存量 430 份 P2 样本 + 14 份顶层 P1 存档**仍读得懂**（`LEGACY_DRIVER_SURFACE`） |
+| **H-21** | ★**（2026-11-02 新增）交付的「思考」不是 agent 的原生 think**——事后补记**无条件覆盖**，生产面 **0 条 `native-think`** | 05 rationale | [05 §未闭环](05-rationale与闸门域.md#本域已知未闭环项) · [方案 23 §1.2 / §3 R0](../设计方案/23-训练轨迹语料整改方案.md#12-思考的来源原生-think-一条都没留下) · [`agent_loop.py:1313`](../../executor/agent_loop.py#L1313) · [`orchestrator.py:1305`](../../executor/orchestrator.py#L1305) · [`actions.py:318`](../../executor/actions.py#L318) | 生产面 4852 步：`reason==""`（writer 产物）**4850** · writer 失败标记 **2** · **`native-think` 0**。三行链路：决策时挂原生 think → 访问结束后**对每个候选站无条件** `_write_rationales` → `attach_rationale` 是 `replace()`、**无守卫** ⇒ agent 模式的原生 think **必被顶掉**。⇒ 交付语料 = agent 选的动作 + **另一个 LLM 事后配的理由**。修法 R0-1/R0-3（补记跳过已有 native-think + 加守卫）；`reason` 保持可辨两个来源。验收 **A1**：新批次 agent 模式 native-think 占比 **≈100%**。✅ **R0-1/R0-3/R0-4 代码已实施（2026-11-02，见下 §H-21）；A1 待新批次** |
+| **H-22** | ★**（2026-11-02 新增）「没有历史 / 首次操作」与它自己的上下文打架**——补记的 history 是**站点单元级**，交付的是 **run 级**对话 | 05 rationale | [05 §未闭环](05-rationale与闸门域.md#本域已知未闭环项) · [方案 23 §1.3 / §3 R0](../设计方案/23-训练轨迹语料整改方案.md#13-没有历史--首次操作与上下文自相矛盾) · [`orchestrator.py:1421`](../../executor/orchestrator.py#L1421) · [`agent_visit.py:97`](../../executor/steps/agent_visit.py#L97) | 生产面 **235** 步含「没有历史/首次」措辞，其中 **225 步前面已有 ≥1 条观察、202 步前面已有 ≥3 条**（全三面 **346**）。成因：`_write_rationales` 传 `steps[:index]`（**当前单元**）+ 每个候选站新建 AgentLoop（`messages` 从零起）⇒ 补记者看不到前面的站点；组装时单元被拼成一条 run 级对话 ⇒ **两件事被缝在一起**。修法 R0-2：history 改 run 级（摘要式，别带全文）**或**单元首步禁写这类措辞。验收 **A2**：「无历史措辞 × 上下文确有历史」= **0**。✅ **R0-2 代码已实施（2026-11-02，见下 §H-22）；A2 待新批次** |
+| **H-23** | ★**（2026-11-02 新增）终局验收不读最终回复** ⇒ **44/49（89.8%）**的生产样本不满足自己的 `output_contract`，`gate` 仍判 `passed` | 09 纪律 | [09 §未闭环](09-门禁与纪律域.md#本域已知未闭环项) · [方案 23 §1.4 / §3 R2](../设计方案/23-训练轨迹语料整改方案.md#14-终局答复) · [`P3-views.md:63`](../contracts/P3-views.md) · `assembler/schema.py`（闸门段） | `output_contract.min_urls ≥ 1` 的 camofox-1 样本 **49** 份，最终答复含 URL 的只有 **5** ⇒ **44/49 违约**；`gate` 判 `passed` **102/131**、`observation_complete` **65/65**（它量的是观察齐不齐，不是答复兑不兑现）。根因是**契约明文**：判定 7 只判 `outcome`、不读回复文本 ⇒ **不是实现 bug，是这个设计不适合当训练目标**。改判定 7 属**明文设计变更** ⇒ ✅ **Q-27 已裁（2026-11-02）：要读** ⇒ 修法 R2-3 可实施。验收 **A4**：契约要求 ≥1 URL 的样本含 URL 率 **100%**（否则改答复 / 降级 / 剔出训练集——**不许「判通过但没兑现」**）|
+| **H-24** | ★**（2026-11-02 新增）收尾是内部记账语言**——分支枚举名 + 计数 + **deprecated 分支**进了训练语料，且 P3/T 两侧不是同一句话 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.4 / §3 R2](../设计方案/23-训练轨迹语料整改方案.md#14-终局答复) · [`views.py:422`](../../assembler/views.py#L422) · [`task_view.py:370`](../../assembler/task_view.py#L370) · [`branches.py:80`](../../executor/branches.py#L80) | P3 **131/131** · T **65/65** 末条 assistant 都是代码合成的「任务总结：…处置：…分支分布：…」；`login_wall_or_blocked` 这类 **deprecated 分支**也在里头；**两侧刻意不同**（P3 有 reflection 结论无分支分布，T 反之，INC46）⇒ 同一条轨迹在**两份交付物里有两个结尾**。修法 R2-1/R2-2：收尾改「**面向用户的答复**（找不到 + 已排除的站点 + 原因）」，两侧同一句话——✅ **O-5 要求两段投影一致 ⇒ 收尾必须同一句话**（交付要求，不是排版偏好）。验收 **A3**：训练集收尾里分支枚举名出现次数 = **0**。**✅ 代码已落地（2026-11-02，R2-1/R2-2/R2-3）**：`assembler/closing.py` 单一真源、两侧同一函数、R2-3 接进 P2 `gate`；A3 已取数 ✓（131/131 = 0），**A4 待新批次**；存量 44 条违约样本未回填 |
+| **H-25** | ★**（2026-11-02 新增）观察整页快照 + 死循环步**：噪声压倒信息、重复动作在教「再点一次」 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.5 / §3 R1·R3](../设计方案/23-训练轨迹语料整改方案.md#15-观察与动作) · `assembler/observation_view.py` · [`views.py:123`](../../assembler/views.py#L123) · [`task_view.py:180`](../../assembler/task_view.py#L180) | 单条回执 1000~3000 字、任务相关不足 10%；「相邻同动作 + 观察逐字相同」**469** 处，有重复动作的视图 **64/65**、重复步 **1558/4071 ≈ 38%**，`goto` 1703 次只有 **1183** 个唯一 URL，59/65 视图重复同一 `goto` ≥3 次（最多 **19** 次）。修法 R1：回执改「标题 / 网址 / 任务相关摘要 / 限量元素表 / 限量链接」，**P1 存档全文一个字不动**（存档是证据，文本是语料）；R3-1/R3-2：死循环步剔出或显式标记。⚠️ **降级标记保留**（`[采集降级: body_text]` / 「本步没有取到页面内容」是 fail-closed 的一部分）。验收 **A5/A6/A7**：回执中位数 ≤ **800** 字 · 相邻同动作同类步 = **0** · 重复步占比 ≤ **10%**（A7 口径见 Q-31）。✅ **R1 + R3-1/R3-2 代码已落地（2026-11-02）**：A5 ✓（3026→772 字）· A6 ✓（存量重算残留 0）· ✅ **A7 ✓**（owner 2026-11-02 裁定方案 A：窄口径「同动作 + 同观察 / 保留步」P3 **7.0%** / T **2.5%**，均 ≤10%；宽口径 35.7% / 21.3% 只作审计基线；见下 §H-25 与 **Q-31**） |
 
 ---
 
@@ -486,6 +510,11 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **M-63** | 批次级 **B-3 恒「测不成」** —— 分母不存在：黄金集里**没有**「播放站 / 导航站 / 无关站」的人工类别标注，D-3 的 judge 逐行读数也**还没落盘** | 07 评估 | 本文 **§2026-11-02** · `evaluation/batch/asserts.py::_assert_b3` · `evaluation/golden/alignment.py::SOFT_DIM_NAMES` · `tests/unit/test_batch_asserts.py::TestB3语义一致率` | 实测 **145 / 145 测不成**（**不是 0%**——分母不存在 ≠ 一条都没对）。⇒ 要它有读数得**先有**「(人工类别, 本批判定类别)」对子：**①** 黄金集补一列**人工站点类别**（取值域 = `d3_scorer.D3_CATEGORIES` 五类：playable / nav_aggregator / review / irrelevant / ambiguous）——**数据缺口，人做**；**②** D-3 的 judge 逐行读数落盘（`judge_pairs convert --dimensions d3` 那条路已有，缺的是跑批 + 落盘）。⇒ 依赖 [方案 24 §2.2](../../设计方案/24-rubric对齐优化方案.md) 的第 2 批 |
 | **M-64** | 批次级 **B-5 恒「测不成」** —— 本 run 的黄金集行**不在调参池档**里（D-10 逐行读数没落盘 + 行没按 run 归集）⇒ 分母为 0 | 07 评估 | 本文 **§2026-11-02** · `evaluation/batch/asserts.py::_assert_b5` / `rows_for_run` · `tests/unit/test_batch_asserts.py::TestB5结论错率` | 实测 **145 / 145 测不成**。⚠️ **不是 bug**：默认只读**调参池**（持有集 D-C5 / 回归集 D-C8 是**封存面**，读它们 = 拿封存面调参）⇒ 11/50 个 run 在调参池里**没有行**。⇒ 要它有读数：**①** D-10 的 judge 逐行读数落盘；**②** 黄金集行按 **run_id** 归集（`rows_for_run` 已按 `task_id` + `run_id` **双键**挑 —— 两个都认，免得两个任务撞上同一哈希时两批行混进一个分母）。⚠️ **rubric v1.3 变更记录承诺的「B-5 从『无此断言』到『每个 run 一条错率读数』」只兑现了一半**：每个 run **有一条记录**，但记录的内容是「测不成」，**不是错率数** ⇒ **这条预期效果未兑现**，记在这里 |
 | **M-65** | **D-3 锚点 1 的「该站本可判」归属没定死** —— rubric 写「未判（fail-closed）**且该站本可判**」，代码把它实现成「**观察充分**」（观察不足 ⇒ 落 `undetermined` 而不是 1 档）⇒ 「本可判」是「**观察够判**」还是「**站点性质本身可判**」，两种读法会给出不同的 1 档 | 07 评估 | `evaluation/scorers/d3_scorer.py`（`_observation_shortfall` → `undetermined`；LLM 失败 → 1 档）· `rubric_version.ANCHOR_TABLES["d3"][1]` · `tests/unit/test_d3_scorer.py::Test五档映射::test_1分_未判且可判` | **读法一**（观察够判）下代码是对的 ⇒ 缺的只是**把 rubric 措辞对齐到「观察充分」这个口径**；**读法二**（站点性质本身可判）下，代码会把「站点本就模糊」也算进 1 档 ⇒ **1 档量的是「judge 失效率」，不是 rubric 要的「可判却没判的失效率」**。⚠️ **不是代码 bug，是判据归属未写定** ⇒ **措辞改法是 rubric 级改动，要 owner 签**（见 **Q-32**） |
+| **M-66** | ★**（2026-11-03 新增）分支的 R0–R5 实现还在 per-unit 基线上**，与 main 的 per-Run 交付口径**不可直接混用** | 06 组装 / 09 纪律 | 本文 **§M-66 详解** · `assembler/schema.py::sample_id` · `assembler/builder.py` · `assembler/task_view.py` | **分支 tip = `c3df249`，落后 main **28** 个提交**（`348b5cf` 把 `sample_id` 从 `<task>__<run>__<unit>` 改成 `<task>__<run>`，per-Run）⇒ worktree 里那 47 个已改文件 + 13 个新文件（未提交）是**写在旧基线上**的（`schema.py` 仍是 per-unit 版）⇒ **不能直接 merge**：合过去会与 main 的 per-Run 撞口径。⇒ **本次并入主树因此用 main 的代码切产物**（产物可由主树代码复现，存量 669 文件逐字节未动）⇒ **落地前须先把分支 re-base 到 per-Run**：逐个把 per-unit 管线改成 per-Run（`sample_id` 签名 · `closing.py` 的 unit 收口 · `task_view` 的 `unit_sample_ids`） |
+| **M-67** | ★**（2026-11-02 新增）采集面的「观察选择权」与任务约束都没落地**——声明了 / 写了，但采集链上不生效 | 01 采集 | [01 §未闭环](01-采集执行域.md#本域已知未闭环项) · [方案 23 §1.5–1.6 / §3 R4](../设计方案/23-训练轨迹语料整改方案.md#16-契约遵守与上报链) · `toolcatalog/` · [`tasks.yaml`](../../taskgen/data/tasks.yaml) | 生产面 `meta.tools_declared=14`、实用 **4**；`snapshot` / `interactive` / `links` **恒在 `tools_unused`** ⇒ agent 对「看页面哪部分」**零选择权**（✅ **Q-26 已裁（2026-11-02）：还给 agent** ⇒ R4-1 改为让三工具真正可用，**不是**裁声明）。同批 `excluded_platforms_severity: advisory` **不拦**：65 条轨迹里 **34 个任务**踩了被排除平台（腾讯 43 · 爱奇艺 37 · 优酷 31 · 芒果 23 · B站 10 · 乐视 4 步）。修法 R4-1（先**裁掉没用的声明**）/ R4-2（`excluded_platforms` 改 enforce——⚠️ 直接缩小负样本面，要跟任务分布一起定）。验收 **A10**：训练集里访问被排除平台的步 = **0**；声明面与调用面一致 · ✅ **A13 已成立**（2026-11-02 新批次真跑：8 档 / 713 步 / **读调用 224** = 31.4%）· ✅ **已并入主树生产根**（2026-11-03：+8 档 / +8 样本 / +24 视图 / +8 T 视图 / 池 +38；存量 669 文件逐字节未动）⇒ **本条还差**：① 分支 R0–R5 还是 **per-unit 基线**，落地前须先 re-base（**M-66**）② **并入产物用 main 口径**（无 R4-2 剔除），与 LS 上那 8 行的分支口径**结论相反 7/8** ⇒ 口径待裁（**Q-33**） |
+| **M-68** | ★**（2026-11-02 新增）交付字段形状不合规**——`arguments` 是 dict 不是 JSON 字符串；T 的缺件字段恒空 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.5–1.6 / §3 R3·R2](../设计方案/23-训练轨迹语料整改方案.md#15-观察与动作) · [`task_view.py:752`](../../assembler/task_view.py#L752) · [`:767`](../../assembler/task_view.py#L767) · [`:851`](../../assembler/task_view.py#L851) | P3 `function.arguments` **4902/4902 全是 dict**（不合 OpenAI Chat Completions 规范，多数训练框架按 string 读）；T 视图 `meta.degraded_from` **硬编码 `[]`**、`meta.source_archive` **硬编码 `""`**（注释说「由调用方注入」，实际没人注入；P2 侧 `degraded_from` 是有值的，例 `["user_prompt","no_body"]`）⇒ T 答不出「来自哪份 P1 / 缺了什么」。修法 R3-4（落盘前编码成 **JSON 字符串**）+ R2-4（两个字段不许硬编码）。验收 **A8/A11**：`isinstance(arguments, str)` = **100%**；T 能答出来源与缺件 |
+| **M-69** | ★**（2026-11-02 新增）两代面混在同一批交付集**——同一交付集两种方言 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.1 / §3 R3](../设计方案/23-训练轨迹语料整改方案.md#11-规模与三张面) · `toolcatalog/`（三张面） | 131 份 P2 里 obscura-1 **52** · camofox-1 **65** · camoufox-1 **14**；obscura-1 的 assistant **没有 `tool_calls`**（纯 `[动作] goto(…)` 文本形态），camofox-1 是 function-calling ⇒ **同一交付集两种方言**。CLAUDE.md 明写「新旧批次不可混池」——**产物层面现在就是混的**。修法 R3-3：**分池**——旧面按「只读存量」单独归档（**退役 ≠ 失忆**），交付集只含 `camofox-1`；✅ **Q-28 已裁（2026-11-02）：分池**——旧面进「只读存量」归档；⚠️ 分池会让分母变小（66 份退出交付集）⇒ **记批次元数据**。验收 **A9**：交付集里非 `camofox-1` 面的样本 = **0** |
+| **M-70** | ★**（2026-11-02 新增）LS 上传的「禁用闸」声明了但没接线**——「要 owner 授权才写 LS」目前只靠人的自觉，代码拦不住 | 07 评估 / 09 纪律 | 本文 **§M-57 详解** · `evaluation/ls_bridge/settings.py`（`UploadSettings.enabled` / `is_push_enabled()`）· `evaluation/ls_bridge/cli.py`（`_cmd_upload`）| `UploadSettings.enabled` 默认 **False**、`is_push_enabled()` 存在，但**全仓没有任何调用点**；`_cmd_upload` 只查 `has_credentials()` ⇒ **只要 `TRAJECTORY_LS_API_KEY` 在环境里，`upload` 就写 LS**，`TRAJECTORY_LS_ENABLED=0` 拦不住。⚠️ **全仓文档零处提到这个环境变量**（[08 速查](08-常用命令速查.md) 的 `upload` 命令也不带它）⇒ 现状是「声明默认关、实际默认开」。修法二选一：**① 接线**（`upload` 前查 `is_push_enabled()`，缺 `=1` 即拒）并把速查表补上该变量；**② 删字段**（承认「有 key 就能推」是既定口径）并把 `is_push_enabled()` 一起删干净，别留一个骗人的名字。⚠️ **① 会改 owner 既有的调用姿势**（速查表里的命令得补变量）——**选哪条要 owner 拍板**，不擅自改 |
 
 ---
 
@@ -2197,6 +2226,13 @@ pred 是「全部存档的 branch 名」**：含旧代 obscura / LLM 感知层�
 
 | **Q-24** | ★**（2026-10-28 新增）机器码命中在**搜索引擎跳转链**上时，算不算「真·站点不可达」？** | 03 标签 / 08 存档 · 本文 **§M-47 详解** · `executor/steps/reachability.py::probe` · `executor/browser/nav_failure.py::site_unreachable()` · 存档 `E017__039d3c57.json` · 编年史 §增量九十八 §六 | 实测：M-46 批次里 E017 出了一条 `unreachable_hard`，**URL 是百度跳转链**、call log **只有一跳**、`landed_url` **为空** ⇒ **归因对象（那个影视站）从未被识别** ⇒ 「不可达」没有可指的对象，且池行 URL 是一次性跳转链（**本身无效**）。⚠️ 全库 `unreachable_hard` 共 18 条，跳转链的**只此 1 条** ⇒ 单点新形态。**甲（推荐）**：`probe()` 加「归因对象」护栏——跳转链且未解析出落点 ⇒ 不配记 `proven_unreachable` ⇒ 降 `unresolved`（不进池）；⚠️ 代价 = 机器码命中的「连接被拒」这个**站点事实**被丢掉 ⇒ 机器码原文要照录进 reason。**乙**：只出池这 1 条 ⇒ 治标，下批还会出。⚠️ **不替人投票**：本轮代码一行不改、池一行不动<br>⭐ **2026-10-28 批次跑完后的实测代价**（M-46 那批 9 个任务全跑完）：池 **393 → 407**（**+14 行**），**新增 14 行里 6 行（43%）是百度跳转链**（E017 ×2 `not_play_site` + T042 ×2 `not_play_site` 等）⇒ 全池 **41 / 407（10.1%）**的池行 URL 是跳转链（40 `not_play_site` + 1 `unreachable_hard`）⇒ **这不是「一条新形态」，是已经成规模的一面**。⚠️ **去重键拦不住它**：去重键是 `(task_id, url, branch)`（`archive.py::_append_negatives`）⇒ **同一个站换了一条跳转链，键就不同 ⇒ 又是一行新池行**（T042 那两行就是同一个百度知道帖子的**两个不同跳转 URL**）⇒ **M-47 有第二个面**：不只是「归因对象错了」，还有「**同一个站的记录会按跳转链的次数重复堆积**」⇒ 甲方案只治前者，后者要另治（跳转链本身：要么解析落点后按落点去重，要么不入池）<br>✅ **2026-10-28 已实施（owner 裁「甲」）**：`executor/steps/reachability.py::probe` 加「**归因对象**」护栏——被导航的 URL 是**搜索引擎的结果中转链**（新函数 `executor/steps/search.py::engine_redirect_engine`：**引擎 host 精确匹配** + 路由 path + `url=` 参数键，**不解密、不猜内容**）⇒ **不配记** `proven_unreachable` ⇒ 降 `unresolved`（**不进池**）；**机器码原文照录进 reason**（「确实拒连了」这个事实留在存档里，不随分支一起消失）。⭐ **回放实测**（`research/probes/q24_q25_guard_replay.py`，全库 **223** 份存档）：`unreachable_hard` outcome 共 **35 条**，URL 是中转链的**只此 1 条**（`E017__039d3c57` 的 baidu 链）⇒ **这条护栏当前只动 1 行**——但它是**先例**（同形态再出现就不进池了）。⚠️ **护栏只治「归因对象错」**，**不治**「同一个站换条跳转链就多一行池行」（去重键 `(task_id,url,branch)` 拦不住）⇒ 那一面见 §M-47，另治<br>⭐ **2026-10-29 · 第一次真跑读数**（批次 `guard-rerun-2026-10-28`，19 个 give-up 命中任务 · 串行 · 约 7.5 小时）：本批 outcome **287** 条 ⇒ 导航/会话类失败 **25** 条（**13** 会话失效档 + **12**「这次没打开」兜底档）⇒ **机器码证明不可达（`DriverUnreachableError`）= 0 条** ⇒ ⚠️ **Q-24 甲的触发条件一次没出现 ⇒ 护栏真跑触发 0 次**（**既没被触发、也没被证伪** ⇒ **它的真跑读数仍然是空的**）。落在**百度中转链**上的失败 **14** 条 ⇒ **全部落 `unresolved` ⇒ 中转链一行没进池** —— ⚠️ 但**那是被 M-44 更宽的两档兜住的**（会话失效 / 这次没打开），**不是**被 Q-24 甲的归因对象判据兜住的 ⇒ **「效果达到了」≠「护栏起了作用」**。⇒ 要等「机器码证明不可达 **且** URL 是中转链」这个形态真的出现，Q-24 甲才有真跑读数 |
 | **Q-25** | ★**（2026-10-28 新增）「agent 自报放弃 / 预算耗尽」收口时，**要不要先查终局形态**（404 / 付费墙 / 环境阻断）再落 `unresolved`？** | 02 感知 / 03 标签 · 本文 **H-01**（重测读数） · 编年史 §增量九十八 · `executor/agent_loop.py::give_up`（:927） · `executor/agent_loop.py::close`（:948） · `perception/rule_perceptor.py::infer_access_defect` · `perception/rule_perceptor.py::classify_paywall` | 实测（**当前代** agent/camofox）：**40 条** `unresolved` 属于「**机器本可以判出来**」——**子族① 36 条**：页面**正文**里就有终局形态（`infer_access_defect` 命中，**全是 404 页**；正文**抓到了**、`degraded=[]`；规则词表里明写 `404 Not Found` / `nginx`，**注释举的例子正是 `kmslxsh.com`**）；**子族② 4 条**：agent 叙述里引用了门禁短语（`classify_paywall` 对那段叙述判命中）。**根因一条**：[`give_up`](../../executor/agent_loop.py#L927) **一律落 `unresolved`、不查任何判据**（[`close()`](../../executor/agent_loop.py#L948) 查 verdict 映射表 ⇒ 那条路查得到）⇒ **机器可判的形态被丢弃 ⇒ 真负样本不进池**。⚠️ **代际回退**：旧代（LLM 感知层）把同一个 404 判成 `broken` ⇒ **进池 9 行**；当前代 **25 次全 `unresolved` ⇒ 一行没进池** ⇒ 不是「一直不行」，是「换代后退了」。⭐ **子族② 的数完全取决于口径——这是本轮量出来的**（**同一条 `unresolved`，三种口径差 27 条**）：**规范判据 `classify_paywall` ⇒ 4 条** · **裸词表**（叙述里出现「付费墙/VIP/会员/订阅」）⇒ **29 条** · **「裸词表命中但规范判据不命中」⇒ 27 条**（几乎全是 E002 的爱奇艺/腾讯叙述：「VIP付费墙挡住了视频」「页面被会员付费墙遮挡」）⇒ **差在「判据用错了地方」，不是「词表太窄」**：`classify_paywall` 是**为页面正文写的**（判据形态 = CTA「开通会员」+ **同句**观看语境），拿它去判 agent 叙述（模型自述）**压根不该命中** ⇒ **乙方案不是「有风险」，是「判据用错地方」**（拿叙述当页面证据 = 把词表注释自己警告的坑再踩一遍：注释明写「LLM evidence 是『结论+证据』混合，『视频不存在』经常是**模型自述结论而非页面文案**」）⇒ **子族①（36 条）是唯一「机器本可判」的族**；子族② 要修得**另设口径**（人核 / 二次观察 / agent 自报带引文），**不是放宽 `classify_paywall`**。**甲（推荐·只修子族①）**：收口前对**最后一页正文**跑一次 `infer_access_defect`，命中就落那条分支（404 ⇒ `broken`），不命中仍落 `unresolved` ⇒ **只动机器可判的形态，且只用页面自己的正文**；⚠️ 代价 = `infer_access_defect` 的**假阳**（正文出现「Not Found」等词但页面正常）会把正常页判成 `broken` ⇒ 要配前置事实核验。**乙**：子族②也修 ⇒ ⚠️ **不建议**（见上：判据用错地方；且叙述是模型自述）⇒ 要修得另设口径（人核 / 二次观察 / agent 自报带引文）。**丙**：不改，接受「没确认播放 ⇒ 没结论」。⚠️ **不替人投票**：本轮代码一行不改、池一行不动<br>✅ **2026-10-28 已实施（owner 裁「甲」）**：新函数 `executor/branches.py::terminal_shape_branch` —— 收口前对**最后一页的正文**跑一次 `infer_access_defect`，命中就落那条分支（404 ⇒ `broken`）、不命中仍落 `unresolved`；**只用页面自己的正文**，**agent 叙述不作为证据**（子族②不修，理由见上：判据用错地方）。**两道护栏**：① **前置事实**（`broken` 是**进池**的分支 ⇒ 判错就是**训练信号被污染** ⇒ 要「**零交互元素 + 零 video 标签 + 无降级项**」的**结构事实**，不靠词表也不靠长度阈值）② **归因对象**（agent 能 `goto` **任意 URL** ⇒ 收口时它看着的那一页**可能压根不是候选站** ⇒ 主机对不上就落 `unresolved`；⚠️ 比主机要拿**解析后的候选站**比、**不是**拿候选 URL 比——候选 URL 常是搜索中转链，拿它比会把**全部真阳性**判成「不明」）。接入点两处：`agent_loop.py::give_up`（agent 自述放弃）与 `agent_loop.py::_close_by_page`（**步数 / llm_calls 预算耗尽**——那两处 agent **真的把这一页看过**了）；⚠️ **「后端未作答」「动作指令连续解析失败」那两处不动**（那是**我们自己的故障**，算成页面负样本会让池里混进「我们坏了」的样本，还会盖掉「该重跑」这个信号）。⭐ **回放实测**（同上探针，全库 **223** 份存档）：「agent 放弃收口」的 visit 共 **210 条**（**207** 自述放弃 + **3** 预算耗尽）⇒ **护栏命中 30 条（去重 8 个落地页）**：**28 `broken`**（404 / nginx）＋ **2 `blocked`**（地区限制）；**12 条「归因对象不明」** ⇒ 仍落 `unresolved`；**168 条不命中**（其中 **5 条正文命中但前置事实不成立**——`degraded=['press_unsupported']` ⇒ 正文不是完整页面 ⇒ **降级而不是改判**）⇒ 仍落 `unresolved`。⚠️ **捞出来的那 30 条仍要人核**——护栏只保证「机器**可判**」，不保证「判**对**」<br>⭐ **2026-10-29 · 第一次真跑读数**（批次 `guard-rerun-2026-10-28`，19 个 give-up 命中任务 · 串行 · 约 7.5 小时）：本批「agent 放弃收口」的 visit **79** 条（**78** 自述放弃 + **1** 步数预算耗尽）⇒ **护栏判据命中 17**（**15** 落 `broken` + **2** 前置事实不成立降级 `unresolved`〔`degraded=['press_unsupported']`〕）+ **6** 条归因对象不明 + **56** 条不命中 ⇒ **护栏真跑触发了**（落在 **4 个落地页**：kmslxsh 12 · wanminggangguan 2 · xacjs 1 · dinggetv 1）。**15 条 `broken` 全部在池里**。池 **407 → 437（+30）**，那 **30 行全是本批 run 写的**（按 `run_id` 反查）——其中 **9 行**是护栏落的 `broken`，其余 21 行是本批的其它判定 ⇒ ⚠️ 那 15 条里有 **6 条**撞旧代老行被去重（`source=llm` · T018 · T025 · T030 · T044 · T048 · T054）⇒ **池里留的是旧代 LLM 的 evidence**，看池行看不出来源是护栏。⭐ **上线前后差**（同 task_id + 同 url，两批都有记录 183 条 ⇒ 分支不同 **57** 条）里**只有 15 条是护栏效应**（全是 `unresolved` → `broken`）⇒ 其余 **42 条混着站点漂移**，**不能算在护栏头上**。⚠️ **门禁当场红了**：Q-25 甲落 `broken` 时 **question 恒为空**（代码层确定性事实核）⇒ 是一类**新的「无题产地」**，而 `d5_scorer.QUESTIONLESS_PAIRS` **漏登记** ⇒ `test_d5_scorer.py::Test同源` 把 `("", "broken")` 判成「映射外的组合」（`1 failed, 4417 passed`）⇒ ✅ **已修**（**从执行层推导**，不手抄：`executor/branches.py::TERMINAL_SHAPE_BRANCHES` = `{ACCESS_DEFECT_BRANCH[k] for k in ACCESS_DEFECT_KINDS}` ⇒ {blocked, broken}；`d5_scorer._terminal_shape_questionless_pairs()`）⇒ 门禁 **4418 passed**。补登记后复算：**15 条全 5 分**，且 5 分是**证据核从页面正文独立复核**出来的（不是读护栏的理由文本）⇒ ⚠️ **但 5 分只说「标签与页面一致」，那 15 行仍要人核**——3 件待裁见 [编年史 §增量一百 §五](90-增量编年史.md#增量一百--两条护栏的第一次真跑guard-rerun-2026-10-28--19-个任务--q-25-甲真命中-15-条--q-24-甲一次没触发--顺带撞出同-url-出两支)：**E021** 的 host 级 403（`broken` 进池 vs `blocked` 不进池；⭐ 现场取证：该 host **5 个路径全是 403** ⇒ host 级，留痕 `research/probes/q24_q25_guard_host403_probe.txt`）、**E014** 同 URL 两代分歧（池说 broken / 最新存档说 unresolved）、**T011** 同 URL 出两支<br>⭐ **2026-10-29 · 第 3 件（T011）已裁并已实施**（owner 裁定「改判成 `broken` 再并池」）：⚠️ **`cli relabel` 改不了 `unresolved`**（它只取**负样本分支**，`unresolved` ∈ `NON_SAMPLE_BRANCHES`）⇒ **唯一合规路径是人工复核通道**（手册 §4.5 · `cli review --verdicts … --apply`，**落盘时自动并池**）。⭐ **现场取证**（留痕 `research/probes/q24_q25_guard_kmslxsh_probe.txt`）：该 URL · `/v/17807/…` · 站点根 **3/3** 返回「404 Not Found\nnginx」、`elements_total=0` · `video_tag_count=0` · `degraded=[]` ⇒ **前置事实成立** ⇒ 当初那条观察若没带 `press_unsupported`，护栏本就会落 `broken` ⇒ 人核的是「**站点确实死了**」这个**站点事实**，不是「护栏判得对」。⇒ `T011__78621699`：`unresolved` → **`broken`** · `source=human` · `branch_before_review=unresolved` 保留；池 **437 → 438**；P2 样本 `T011__78621699__site-10.json` 同步（`branch=broken` · `question=""`）。⚠️ **执行这一条撞出两个机制缺口（都修了，各有测试）**：① **`review_queue._fits` 对无题产地一律拒** ⇒ **Q-25 甲落的 `broken`（`question` 恒为空）人裁通道够不着**（执行层认的组合人核层不认 = 两本规则书）⇒ 改为**只**给 `TERMINAL_SHAPE_BRANCHES`（`broken`/`blocked`，**从 `branches.py` 导入不手抄**）开口子，**判断点类分支空 question 仍拒**；✅ **owner 已追认（2026-10-29）**：这两处机制改动是**执行这一条裁定的必要条件**（改的是**复核通道的准入与范围**，**护栏判据一行没动**）；② **`review --apply` 不加限定会把每份原档重算成复核档** ⇒ **2026-10-24 那轮 78 份人裁定会被原档静默覆盖** ⇒ 改为**读生效档**（有 `.reviewed.json` 就以它为底）+ 新增 **`--only`** 钉死范围（**裁第二轮必须用它**）。⇒ **残余**：同 URL 另有 **27** 条 `unresolved` 分布在 **20** 个任务上（**全裁只新增 6 行**池行：E028 · T012 · T028 · T033 · T036 · T040；另 21 条撞键去重）⇒ 全裁后 kmslxsh 的 **50** 条 outcome 行里 **47** 条落 `broken`（另 3 条 `login_wall_or_blocked` 不变、`unresolved` 清零）、**T011 同 URL 两支**消除 ⇒ **待 owner 再裁**（本轮授权只覆盖 T011 这一行）。⚠️ **门禁退出码更正**：`cli check-archives` 实测 **exit 1**（46 条 `negative_contradicted_by_success` 是 `Severity.FATAL` ⇒ `report.ok=False`）——此前 §增量一百 记的「exit 0」是**量错了**（`$?` 取的是管道末端 `tail` 的状态）；那 46 条**全是存量**（`subscription_wall` 32 · `partial_free` 13 · `component_unverified` 1）⇒ **0 条**落在 `broken` / kmslxsh 上；归档级另有 **3 条 `negative_not_pooled`（DEGRADED，非 FATAL）**＝ `pool-add` 干跑那 8 条里的 3 条（E021 被判成功**矛盾** / E023 · T054 池内同址**已有别的分支**）⇒ **存量的人工分歧，不是本轮引入**<br>⭐ **2026-10-29 · E021 已用浏览器实看，并立了「换面会不会变」这把尺子**（owner：「人工用浏览器看一眼，给出完整 url」）：**完整 url** = `https://m.xacjs.com/weihu/1416804.html`（全库 `m.xacjs.com` 只有这 **1** 个站点地址；两条 run 的跳转链 `http://www.baidu.com/link?url=fF_mLv2j_CGIezOu0HDKjCUXNi-A4CGCwu2Mjv0oxuNwjw-fNI_xPjOI2XhyakIr` / `http://www.baidu.com/link?url=DXsjd367aDwviTqDGDsY6rQWXVhhSn5fWgdj3mg0G1jcoxhSjzGl30Y5JEwzxLMR`）。**生产面实看**（camofox，**5** 个路径）**5/5 = 「403 Forbidden / nginx」**、元素 0 · video 0 · `降级=[]`（留痕 `research/probes/q24_q25_guard_host403_recheck_2026-10-29.txt`）⇒ 前置事实成立。⭐ **新工具：面依赖检查**（`research/probes/q24_q25_guard_facecheck.py` —— 同一台机器、同一出口 IP，**只换请求头**）：`chrome`/`bare`/`referer` 三种客户端 × **7** 个 xacjs URL ⇒ **21/21 HTTP 403**；⚠️ **同机同出口的对照站 `m.dinggetv.com` 同刻 200 OK** ⇒ 403 是**站点对本机出口**的拒绝、不是本地网络问题（留痕 `…_facecheck_xacjs_2026-10-29.txt`）⇒ **判读口径三选一**：**换面不变** ⇒ 站点的事实（真负样本成立）· **换面变了** ⇒ **我们这个面的事实**，不能外推成「站点看不了」· **换面仍是拒绝** ⇒ **始终没看到站点页面** ⇒ fail-closed、**不是**真负样本。⭐ **把池里全部 10 个 `broken` 唯一 URL 都查了一遍**（**30** 次请求 · `…_facecheck_pool_broken_2026-10-29.txt`）⇒ kmslxsh ✓ / wanminggangguan ✓ **不变（站点事实）**；`v.qq.com/error.html`·`bilibili.com/error.html`（URL 本身就是错误页）✓；`104.143.94.74/guocanju/wulinwaichuan/`·`bilibili.com/bangumi/play/ep693415`（普通客户端 200，但裁的是 `player.ok` 级「媒体解不了」）**不是反证** ⇒ **两行站不住**：`m.xacjs.com/weihu/1416804.html`（403 ⇒ fail-closed ⇒ `broken` 不成立）、**`m.dinggetv.com/dingge/84421.html`（E014 —— 普通客户端拿到 HTTP 200 + **80 KB** 真页面《…大话西游之大圣娶亲国语版…免费在线观看全集》⇒ 旧代那条 `broken` 是**面产物** ⇒ ⚠️ **先前「E014 不用动」的结论是错的**，那是没换面的前提下说的）**。⇒ **两条待 owner 批的处置**（E021 与 E014 出池）：`cli downgrade`（→ `unresolved`，理由进 evidence）＋ `cli pool-drop`（写审计日志）——⚠️ **复核通道够不着**：`apply_verdicts` 只对 `REVIEW_BRANCHES` 生效，`broken` ∉ ⇒ 那行会被原样忽略；`cli relabel --to blocked` 又拒（`blocked` 是采集侧分支、不是真负样本）⇒ **出池两步是唯一合规路径**。⇒ **判据层还开着一个口**：`ACCESS_DEFECT_KINDS` 里**没有 403**（`region`/`captcha`/`anti_bot`/`not_found`）⇒ 403 错误页含 `nginx` ⇒ 被 `not_found` 旁证命中 ⇒ 落 `broken`（**采集侧的东西进了真负样本池**）⇒ **今天再跑一遍 E021 还会再写一行错的** ⇒ 「加一类 `forbidden` ⇒ 403 落 `blocked`（不进池）」是**另一个 owner 决定**，**判据一行没动**。⇒ **三件的人核状态（截至 2026-10-29）**：**T011 已裁已实施**（见上）· **E021 已取证、待 owner 批出池** · **E014 已翻案、待 owner 批出池** ⇒ 详见 [编年史 增量一百 §八](90-增量编年史.md) |
+| **Q-26** | ✅ **已裁定（2026-11-02，owner）：还给 agent**（采集面 `snapshot` / `interactive` / `links` 恒未被调用 ⇒ agent 对观察内容**零选择权**，与「LLM 层做探索」有张力） | 01 采集 · 本文 **M-54** · [方案 23 §7 O-1](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) · `toolcatalog/` | 裁定「**还给 agent**」⇒ **R4-1 改为让三工具真正可用，不是裁掉声明**；system prompt 要写明三者差别。⚠️ **观察方差与成本会上升**（方案 23 R-8）⇒ 回执仍限量、预算照旧管住；验收 **A13**（三工具调用数 > 0） |
+| **Q-27** | ✅ **已裁定（2026-11-02，owner）：要读**（改 `docs/contracts/P3-views.md:63` 判定 7 ⇒ **明文设计变更**） | 09 纪律 · 本文 **H-23** · [方案 23 §7 O-2](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) | 裁定「**要读**」⇒ **R2-3 可实施**：契约要求 ≥1 URL 而答复没有 ⇒ **不许判 `passed`**（不满足的改答复 / 降级 / 剔出训练集）。⚠️ 存量不回填 ⇒ 只对新批次生效（闸门按 `rationale_era` / 批次口径分代）；验收 **A4**（含 URL 率 100%） |
+| **Q-28** | ✅ **已裁定（2026-11-02，owner）：分池**（obscura-1 **52** + camoufox-1 **14** + camofox-1 **65** 同在一批交付集） | 06 组装 · 本文 **M-56** · [方案 23 §7 O-3](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) | 裁定「**分池**」⇒ **R3-3 可实施**：旧面（obscura-1 + camoufox-1）进「只读存量」归档，**交付集只含 `camofox-1`**。⚠️ 分池会让分母变小（66 份退出交付集）⇒ 必须记批次元数据，别把「池小了」读成「质量好了」；验收 **A9**（交付集非 camofox-1 面 = 0） |
+| **Q-29** | ✅ **已裁定（2026-11-02，owner）：要接，只接 per-Run 轨迹**（LS 现推的 **294** 行是**站点级金标**，人判结论**不回流**到这批语料） | 07 评估 / 06 组装 · [方案 23 §7 O-4](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) · `evaluation/ls_bridge/exporter.py` · `output/ls_bridge/push_index__*.jsonl` | 裁定「**要接，但只接 per-Run 轨迹**」⇒ **R5-1 可实施**；**金标那条线（294 行站点级）不动**。⚠️ 涉及方案 22 的项目结构 ⇒ **先只读导出做对照**，LS 写入按 owner 授权走；验收 **A15**（LS 里 per-Run 行 > 0 且能回到 P1 存档）。✅ **隔离重建 + dry-run 已跑（2026-11-02，不写 LS）**：65 份 T 视图 / **65 条 per-Run 行**（`upload --dry-run` 桶分布 `{'quarantine': 65}`、跳过 0 / 拒推 0）。⚠️ `scout aggregate` 现状 **scored 0 / undetermined 65**（搜索单元无 outcome ⇒ 整条 run `quarantine_short_circuit`）——与主树既有 3 个 scout 目录一致，**不是 rebuild 引入**；**真正推送与 A15 待授权**<br>✅ **真实 LS 推送已执行（2026-11-02，owner 授权）**：目标项目 **77 `trajectory-review`**（本机 `127.0.0.1:8099`；⚠️ **不是**金标那两个项目——`golden-v14/v15` 一行未动）。先 `--limit 1` 试推 1 条（`tasks_pushed=1 / predictions_pushed=1`）验证链路，再推余下 ⇒ **`tasks_pushed=64` + 1 条按 `push_index__77.jsonl` 判重跳过** ⇒ 项目内 **67 条 per-Run 行**（含 2026-10-19 推的老行 2 条），**预标注 65 / 跳过 0 / 拒推 0**，桶分布全 `quarantine`。**A15 达成**：per-Run 行 **> 0**，且**逐条能回到 P1 存档**——65 条回得到隔离重建根 `output/pipeline/*.json` ＋ 同名 T 视图；另 2 条老行回得到主树 `output/pipeline/`（worktree 里没拷那两档）⇒ **推之前先把主树的 `push_index__77.jsonl` 拷进 worktree**，否则判重失效会重推。⚠️ **口径**：推上去的是**机器判定「缺判」的 run**（`scored 0 / undetermined 65` ⇒ 全进 quarantine）⇒ LS 上是**人核队列**，不是「机器已判合格」的样本；`ls_bridge upload` 会把本地 label_config 同步进项目（本次**逐字相同** ⇒ 同步是空操作）。✅ **LS 回读实核**（2026-11-02）：从 LS 把项目 77 的行**全部拉回来**逐条对 ⇒ **67 行 / 67 行都能落到一份 P1 存档**（不是「推的时候说是」，是**回读后对上的**）。⚠️ **顺带查出 M-57**：`TRAJECTORY_LS_ENABLED` 这道闸**声明了没接线**（`is_push_enabled()` 全仓无调用点）⇒ 真正在拦的只有 API key；两次推送是靠 `--dry-run` 先核对 + 人工授权兜住的，**不是靠这道闸**<br>✅ **A13 新批次也推了（同一授权内，2026-11-02）**：`--scout-dir output/scout/a13-batch` → **8 条**（`tasks_pushed=8 / skipped_duplicate=0`），再推烟测档 `--scout-dir output/scout/a13-smoke` → **1 条** ⇒ 项目内 **76 条 per-Run 行**（全 `quarantine`）。✅ **回读实核 76/76 都落得到一份 P1 存档**。⚠️ **回读要把根给全**（`output/a13/batch` + `output/a13/smoke` + worktree `output/pipeline/` + **主树** `output/pipeline/`）——只给 worktree 那侧（67 份）时 `E002` / `E005` 两行会「回不到」，它们在主树（248 份）⇒ **「回不到」先查根给全了没有**，别急着判存档坏 |
+| **Q-30** | ✅ **已裁定 + 已实施（2026-11-02，owner）：两段都发，且必须一致**（T 顶层 `messages` 纯文本、观察挂 `role=user` vs `openai.messages` function-calling） | 06 组装 · 本文 **H-24** · [方案 23 §7 O-5](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) · [`task_view.py:484`](../../assembler/task_view.py#L484) | 裁定「**都发**」，且 `openai.messages` 与 `messages`（留给 LS 给人看）**必须一致**——同一动作序列 / 同一观察内容 / 同一收尾，差异**只允许形态**。⇒ **R5-2 改了形状**（不是「只发一段」），外加 **R2-2 收尾同一句话**；验收 **A14**（两段逐条对齐）· 风险 **R-9**（投影会漂 ⇒ 测试钉住）。**✅ R5-2 代码已落地（2026-11-02）**：校验实现 [`projection.py`](../../projection.py)（顶层跨层地基，`ls_bridge` 禁 import assembler 故不挂 `assembler/`）；落盘前 `build_task_view` 不一致 ⇒ 不写半份，导出前 `export_trajectory_one` 不一致 ⇒ 抛 `ProjectionMismatch` 且 `export_batch` 记「两段投影不一致」（不并入「T 视图缺失」）。**A14 存量实测 145/145 一致**；门禁 **4692 passed / 45 skipped** |
+| **Q-31** | ✅ **已裁定（2026-11-02，owner）：方案 A——A7 改绑窄口径，分母用筛后保留步**（宽口径「同 unit 内同动作 ≥2 次」35.7% / 21.3% 与 R3-2「只标记不剔」不匹配） | 06 组装 · 本文 **H-25** · [方案 23 §3 R3](../设计方案/23-训练轨迹语料整改方案.md#r3--数据筛选闸门死循环--无效步--混池) | 裁定口径：**同一 unit 内同动作且观察逐字相同（不要求相邻）的重复步 / 保留步 ≤10%**；R3-2 仍**只标记不剔**。存量读数（camofox-1 65 份，临时脚本重算，未落盘）：P3 **274/3910 = 7.0%** · T **98/3928 = 2.5%**，均 ✓（原件数 435/4071 · 241/4071，相邻部分已由 R3-1 剔）。宽口径 **35.7% / 21.3%** 降为**审计基线**。备选 B（取消占比线、只认 A6=0）与 C（宽口径下剔非相邻步，破坏观察因果链）**未采用**。**代码不改**（R3-1/R3-2 已覆盖）；文档同步方案 23 / 06 域 / 编年史 |
+| **Q-33** | ★**（2026-11-03 新增）A13 批次并入主树后，**交付集有两套口径并存**——主树用 main 口径（per-Run、**不**剔 `excluded_platforms`），LS 上那 8 行是分支口径（按 per-unit 拼、R4-2 剔了被排除平台单元）⇒ **8 条里 7 条的任务级结论相反** | 06 组装 / 07 评估 · 本文 **§Q-33 详解** · [方案 23 §7 O-1 / O-3](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) · `assembler/excluded.py` · `assembler/task_view.py`（`_excluded_unit_map`） | **两个问题待 owner 拍板**：① **交付集以哪套口径为准**——main（per-Run 全量、含被排除平台的单元）还是分支（per-Run + R4-2 整 unit 剔除）？⚠️ **不是等价选项**：R4-2 剔掉的恰是 `excluded_platforms` 上的单元，而在「看最后一个结论」口径下**被剔的那个单元常常就是决定结论的那个**（`T016` / `E013` / `E027` 三条因此从 `success` 变 `unresolved`/`subscription_wall`）⇒ **两套口径读出来的是两个结论**，训练侧与复核侧会各拿一个。② **LS 上那 8 行要不要重推**：现推的是分支口径（**更窄**：E029 只有 11 条消息 vs main 的 105 条）；重推要 owner 授权，且 `push_index` 按 `sample_id` 去重 ⇒ 先查清是「更新」还是「跳过」。**不擅自投票、不擅自重推** |
 
 | **Q-26** | ★**（2026-11-01 新增）轨迹级的档位口径：跨档轨迹按哪一档算？** —— 现有实现取**严**（`holdout` > `regression` > `calibration`），v16 的 **50 条轨迹里只有 7 条**够格进金标（6 回归 / 37 封存） | 07 评估 · 本文 **§2026-11-01 新增开口项详解** · [方案 23 §4 / §8 O-1](../设计方案/23-每任务一轨迹.md) · `evaluation/golden/rows.py::headline_split`（档闸）· `strict_split`（对照） | **替代口径「按头部站点定档」也能算**（2026-11-01 订正：早先「44/50 配不到」是**探针键形状 bug**——`split_of_url` 用 `(task__run, url)` 两段键，探针按三段查 ⇒ 永远查不到；改回后 **41/44 可配**）：calibration **13** / regression 13 / holdout 15 / 配不到 3 / **存档不在盘上 6** ⇒ 够格进金标的 **13 条**。⚠️ 选它就得接受**另有 9 条档位定不下来**。⇒ **三条路**：① **接受 7/50**（金标扩得慢，但封存面绝不泄漏）；② **换成头部站点口径 13/50**（那 9 条得先补数据）；③ **彻底分家**（轨迹级金标只从 `calibration` 来，站点级金标继续按站点档走 ⇒ 同一个「金标」概念出现两套口径，**评估侧要显式声明用哪套**）<br>✅ **owner 已裁（2026-11-01）：② 头部站点口径 13/50**，**并接受它的前置条件**（「那 9 条得先补数据」）⇒ **档闸改用 `rows.headline_split`**（`golden_ls/reflow.py` 的 `build_worksheet` + `validate` 两处；认不出头部站点 ⇒ `SKIP_NO_SPLIT` · fail-closed 不放行）⇒ **取严 `strict_split` 保留作对照口径**。⚠️⚠️ **裁 ② 的代价照实记**（2026-11-01 逐条核对 v16 实测 · **走产品代码路径** `builder._scan_archives` + `_build_trajectory_dataset` + `rows.headline_split`）：**与取严的交集只有 2 条** ⇒ ② **不是「放宽」，是换了一批数据**；**② 放行的 13 条里 11 条含 holdout 站点** ⇒ **封存面泄漏面 11/13**（9 条含 regression）；**② 判死了 5 条「纯 calibration」的**（头部站点的访问点没进冻结集）⇒ **要收回（回取严）或加兜底（「沾 holdout 就不回流」）⇒ 只改档闸那两处**。⚠️ **「补数据」的前置条件要重述**：那 9 条**不是同一类**——**6 条是负样本池行**（`source_kind: "negative_pool"` ⇒ **从来就不是轨迹**：每个只有 1 个站点行、无 P1 存档；3 条的存档在 `output/pipeline/proberun/` 下 · 3 条 `P015__*` 盘上压根没有 ⇒ **补采一条真轨迹**，不是「把存档搬回来」）· **3 条是头部站点配不到**（`E021__129c3fae` / `T042__df2ee261` 的 url 压根没被标注过 · `T024__6240da8e` 的 url 在冻结集里但**属于别的轨迹**〔同 url 换 run〕⇒ **给人核补标注 + 重冻**，**要人**）<br>⭐⭐ **owner 同日追加裁定（2026-11-01「泄露做兜底」）**：**加第二道闸**——**整条**沾着封存面 / 回归面的站点 ⇒ **不进金标**（`rows.non_reflow_splits` ⇒ `SKIP_HOLDOUT` / `SKIP_REGRESSION`；工作表与 `validate` **各一道**）⇒ **理由**：「头部站点在调参池」**不够**——其余站点里的封存事实会跟着**轨迹级标签**一起进调参池 ⇒ **封存面作废** ⇒ **宁可少回流，不许错回流**。⚠️⚠️ **加了兜底后的实测读数**（走产品代码路径）：**放行 13 ⇒ 2/50**（被挡 **11** 条：2 条只沾 holdout · 9 条 holdout+regression 都沾）⇒ ⚠️ **比取严的 7 还少**——**差的 5 条全部是「头部站点认不出」的残缺轨迹**（被 ② 的 fail-closed 挡、**不是被兜底挡**）⇒ **补齐那 5 条 ⇒ 放行 2 → 7**（与取严齐平）。⚠️ **兜底的边界**：量的是「**冻结集里那些站点**」的档 ⇒ 挡得住「已冻结的封存站点」，**挡不住**「没冻结过的访问点里藏着封存事实」⇒ 那是**冻结集覆盖不到**的问题（另一件事） |
 | **Q-27** | ⚠️**（2026-11-01 新增）迁移改的是「人核数据的键」** —— 站点明细从顶层挪进 `site_outcomes[]` ⇒ **同 `cmd_rekey` 的规矩：需 owner 签字** | 07 评估 / 08 存档 · 本文 **§2026-11-01 新增开口项详解** · [方案 23 §8 O-2](../设计方案/23-每任务一轨迹.md) · `evaluation/golden/builder.py::cmd_migrate_trajectory` | ✅ **键集合逐字不变**（口径 C 的 url 键集合与 v1–v16 **A−C = 0 / C−A = 0**，1512 个键）⇒ **所有人核标注都还挂得上**；⚠️ **但挂载位置变了** ⇒ 「人核数据被动过」这条红线**照样触发** ⇒ **owner 此消息即为签**（比照 Q-22 的先例）<br>✅ **owner 已签（2026-11-01）**：owner「2 项接受推荐留」那条消息**即为签字**（本行的「owner 此消息即为签」本身就是推荐项 ⇒ 接受推荐 = 签）⇒ **`cmd_migrate_trajectory` 动「人核数据挂载位置」已获授权**。⚠️ **签字的范围**：**键集合逐字不变**（A−C = 0 / C−A = 0 · **1512 个键**）⇒ **所有人核标注一条都还挂得上**；**签字不覆盖「改键」本身**（那要另裁） |
@@ -3436,6 +3472,626 @@ P2/P3（owner 授权的 M-58 重出）+ T 视图（145 份）⇒ **负样本池�
 
 > 这张表**不是**让人现在去改那几份域文档——是让人**别拿它们当事实**。
 > 域文档的「未闭环项」表按设计就该跟着本台账走；本台账先立起来，下一批反向同步。
+
+---
+
+## 2026-11-02 新增开口项详解（训练语料整改 · 方案 23）
+
+> 这一组**同源**：一次对**已合成训练语料**的只读审计（**没跑管线、没推 LS**），
+> 逐环读 `system prompt → user prompt → llm thinking → assistant → tool call →
+> tool result → llm result`。**读数与量法全在**
+> [设计方案 23](../设计方案/23-训练轨迹语料整改方案.md)（**§1 事实基线**每行带量法，
+> 重跑即可复核）。⚠️ 这一组只记**产物侧**的缺陷；执行层的探索权归属、
+> 评估侧口径都不在整改范围内（方案 23 §0.3 / §8）。
+>
+> **数据根**：主树 `output/pipeline/`（**worktree 里的 `output/` 是空的** ⇒
+> 读数必须指回主树，否则分母会静默变成 0%）。审计用的临时脚本**用完即删**、不进产品。
+>
+> ✅ **Q-26～Q-31 已于 2026-11-02 由 owner 裁定**（O-1 还给 agent / O-2 要读 /
+> O-3 分池 / O-4 只接 per-Run / O-5 两段都发且一致 / **A7 改绑窄口径**）⇒ 下方 H/M 项里原先
+> 「等裁定」的三处（**H-23 / M-67 / M-69**）已解锁；**R0 + R1 + R2-1～R2-4 +
+> R3-1～R3-4 + R4-1 + R4-2 + R4-3 + R5-2 代码已于 2026-11-02 实施**（A1/A2/A4 ✅，
+> ✅ **A13 已在新批次真跑取数**，✅ A7 口径已裁定并按新口径取数（**Q-31**），A8/A9/A11
+> 待重建产物后取数——**既有产物不回填**；**A10 可在新批次上复核**），
+> **R5-1 已在隔离目录重建 + dry-run（不写 LS，2026-11-02）**：65 份 T 视图 /
+> **65 条 per-Run 行**（桶分布全 `quarantine`）/ A10 违约 0。
+>
+> ✅ **真实 LS 推送已完成（2026-11-02，owner 授权）**：项目 **77
+> `trajectory-review`** 现有 **76 条 per-Run 行**（推 65 条 + A13 新批次 8 条 +
+> 烟测 1 条 + 2 条 10-19 老行），**逐条能回到 P1 存档**（**从 LS 回读 76 行实核，
+> 76/76 都落得到**）⇒ **A15 达成**；
+> 金标项目 `golden-v14/v15` **一行未动**。⚠️ 推上去的全是 `quarantine`
+> （机器**缺判**，不是「机器判合格」）⇒ LS 上是**人核队列**。
+>
+> ✅ **A13 已在新批次真跑取数（2026-11-02，owner 授权）**：新批次跑在**隔离目录**
+> `output/a13/batch`（camofox 面、agent 模式）——**8 份存档 / 713 步 / 读调用 224**
+> （interactive 90 · snapshot 80 · links 54，**读步占 31.4%**，每档 15–51 次；
+> 老批次 68 份存档恒 0 ⇒ 回填不了），**同一页面不同工具的回执可区分**
+> （62 个落地页里 **41 个用过 ≥2 种读工具**，每个 (页面, 工具) 组合
+> 只有唯一回执形状、冲突 0）；新批次 T 视图 `tools_unused` 从 **10 降到 7**
+> ——三条读原语**已不在其中**。详见 **M-67「A13 实施状态」**。
+
+### H-21 · 原生 think 被事后补记无条件覆盖
+
+**代码事实**（三行，缺一不可）：
+
+| 位置 | 事实 |
+|---|---|
+| [`agent_loop.py:1313`](../../executor/agent_loop.py#L1313) | agent 决策时 `attach_rationale(index, _think_payload(instr.think))` ⇒ `reason="native-think"` |
+| [`orchestrator.py:1305`](../../executor/orchestrator.py#L1305) | 访问结束后 `await self._write_rationales(...)`——**对每个候选站无条件调用，不分 `executor_mode`** |
+| [`actions.py:318`](../../executor/actions.py#L318) | `attach_rationale` 是 `replace(...)`，**没有「已有则不写」的守卫** |
+
+**读数**：生产面（camofox-1，`executor_mode=agent` **66/66**）4852 步里
+`reason == "native-think"` **0 条**；writer 产物 **4850**、writer 失败标记 **2**。
+P2 的 `rationale_era=pre_action` **65/65**——**口径写着「动作前」，来源却是动作后补写**。
+
+**影响**：交付语料的「思考」= agent 选的动作 + **另一个 LLM 事后配的理由**。
+训练侧学到的是「编一套理由解释已发生的动作」，不是探索者的决策过程。
+
+**修复建议**（R0）：① `_write_rationales` **跳过已有 `native-think` 的步**
+（补记只兜 scripted 路径）；② `attach_rationale` 加守卫（双保险）；
+③ `reason` 字段保持可辨两个来源（`native-think` / `""` / 失败标记），
+取值集合由**契约测试**钉住。
+
+**验收条件**（A1）：新批次 agent 模式 P1 里 `reason == "native-think"` 的步占比 **≈100%**；
+契约测试：先挂 native-think 再补记 ⇒ **仍是 native-think**。
+
+**实施状态（2026-11-02）**：R0-1 / R0-3 / R0-4 **代码已落地，未闭环**——
+本条的 A1 要新批次读数，旧存档（0 条）不回填。
+
+| 落点 | 做法 |
+|---|---|
+| [`orchestrator.py`](../../executor/orchestrator.py) `_write_rationales` | 跳过 `actions.is_native_think(step.rationale)` 的步（R0-1） |
+| [`actions.py`](../../executor/actions.py) `StepLog.attach_rationale` | `is_native_think` ⇒ 直接 return（R0-3 双保险）；writer 自己的产物（`reason=""`）仍可重写 |
+| [`executor/cli.py`](../../executor/cli.py) `_pending_steps` | **离线旁路**：`regenerate-rationales` 两种口径都先剔除 `native-think` 步——该命令直接改 JSON，绕过 `attach_rationale` |
+| `actions.NATIVE_THINK_REASON` | 单一常量（R0-4），`agent_loop` / `orchestrator` / CLI 全引用它 |
+
+契约测试 `test_think_payload_contract.py` 钉住 `reason` 取值集合（成功只有
+`"native-think"` / `""`，失败必须带原因）；变异测试三条（补记覆盖原生 think /
+history 退回单元级 / `attach_rationale` 覆盖原生 think）实测 **RED**。
+
+### H-22 · 「没有历史」与它自己的上下文打架
+
+**代码事实**：[`orchestrator.py:1421-1425`](../../executor/orchestrator.py#L1421) 给补记传
+`history=[(动作, 观察), … for s in steps[:index]]`，而 `steps` 是**当前站点单元**的 StepLog；
+[`agent_visit.py:97-102`](../../executor/steps/agent_visit.py#L97) **每个候选站新建 AgentLoop**
+（`self.messages` 从零起）⇒ 补记者**看不到本 run 前面的站点**。
+组装时 `to_task_messages` / `to_messages` 又把各单元拼成一条 **run 级**对话。
+
+**读数**：生产面 **235** 步含「没有历史 / 首次操作」措辞，其中 **225（95.7%）前面
+已有 ≥1 条观察消息、202 步前面已有 ≥3 条**；全三面合计 **346**。
+高频片段：`首次操作` **135** · `没有历史` **61** · `没有页面观察` **22** · `没有页面内容` **19**。
+
+**影响**：模型被教「无视对话历史、每步重新开始」——**与它正在读的那段对话直接冲突**。
+这不是措辞问题，是**两个作用域被缝在一起**（补记按单元、交付按 run）。
+
+**修复建议**（R0-2）：history 改 **run 级**（摘要式：只带 `(动作, 观察要点)`，不带全文），
+**或**在单元首步**禁写「首次 / 没有历史」这类措辞**。⚠️ 别动「每站一个 AgentLoop」
+——那是设计（一个站一个会话）。
+
+**验收条件**（A2）：「无历史措辞 × 上下文确有历史」= **0**。
+
+**实施状态（2026-11-02）**：R0-2 **代码已落地，未闭环**——A2 要新批次读数，
+旧存档（235 步）不回填。两处改动：
+
+- [`orchestrator.py`](../../executor/orchestrator.py) 新增 `_rationale_history(record)`：
+  history 改 **run 级**（搜索步 → 中间页 → 已完成站点），站点单元调用点传
+  `history_prefix`；窗口 `RATIONALE_HISTORY_MAX_STEPS = 40` 步。
+  体积由 writer 既有的 `render_history` 兜住（**只有最近 5 步带**瘦身观察，
+  正文另有 `HISTORY_BODY_CHARS` 截断）⇒ 方案风险 R-2 不需要另写摘要层。
+- [`rationale/writer.py`](../../rationale/writer.py) `SYSTEM` 增第 5 条：历史里
+  有此前步骤时**不得**把本步说成「首次操作 / 没有历史」。
+
+⚠️ 「每站一个 `AgentLoop`」**未动**——那是设计（一个站一个会话），改的是
+**补记者看到的历史**，不是 agent 的会话边界。
+
+### H-23 · 终局验收不读最终回复
+
+**代码事实**：[`docs/contracts/P3-views.md:63`](../contracts/P3-views.md) 判定 7 只判
+`outcome`、**不读回复文本**——这是**契约里的明文设计**，不是实现 bug。
+
+**读数**：camofox-1 里 `output_contract.min_urls ≥ 1` 的样本 **49** 份，最终答复含 URL 的
+只有 **5** ⇒ **44/49 = 89.8% 违约**；而 `gate` 判 `passed` **102/131**、
+`observation_complete` **65/65**（它量的是观察齐不齐，不是答复兑不兑现）。
+
+**影响**：`output_contract` 在训练语料里**只是装饰**。模型学到「任务说必须给网址，
+不给也能通过」。**这是本文这一组里唯一需要动契约文档的一条**。
+
+**修复建议**（R2-3）：终局验收**读最终回复**——契约要求 ≥1 URL 而答复没有 ⇒
+**不许判 `passed`**；不满足的要么改答复、要么降级、要么剔出训练集。
+✅ **Q-27 已裁（2026-11-02）：要读** ⇒ 按本步改判定 7（不再等裁定）。
+
+**验收条件**（A4）：契约要求 ≥1 URL 的样本，最终答复含 URL 率 **100%**。
+
+### H-24 · 收尾是内部记账语言
+
+**代码事实**：[`assembler/views.py:422-470`](../../assembler/views.py#L422)（P3）与
+[`assembler/task_view.py:370-430`](../../assembler/task_view.py#L370)（T）各合成一段收尾——
+P3 `任务总结：{reflection.conclusion} 处置：{disposition}。`、
+T `任务总结：处置：{disposition}。分支分布：{by_branch}。`。**两侧刻意不同**（INC46）。
+
+**读数**：末条 assistant 是代码合成的「任务总结」——P3 **131/131**、T **65/65**；
+[`branches.py:80`](../../executor/branches.py#L80) 的 **deprecated** 分支
+`login_wall_or_blocked` 直接出现在 T 的收尾里（例 `login_wall_or_blocked=2 · no_play_control=1 · …`）。
+
+**影响**：分支枚举名 + 计数是**并池决策口径**，不是助手语言；deprecated 分支
+更不该教给模型。两侧不一致还让「同一条轨迹」在两份交付物里有**两个结尾**。
+
+**修复建议**（R2-1/R2-2）：收尾改**面向用户的答复**（找不到 + 已排除的站点 + 原因），
+**不出现分支枚举名 / 计数 / deprecated 分支**；两侧**同一句话**，差异只放附加信息
+（✅ **O-5 已裁：两段投影必须一致 ⇒ 收尾同一句话是交付要求**，不是排版偏好）。
+
+**验收条件**（A3）：训练集收尾里分支枚举名出现次数 = **0**；P3 与 T 末条 assistant 语义一致。
+
+**实施状态（2026-11-02）**：✅ **R2-1/R2-2/R2-3 代码已落地**。
+- **[`assembler/closing.py`](../../assembler/closing.py) 是收尾文本唯一真源**：
+  `closing_text(facts)` / `closing_for_unit(...)`；P3（`views._closing_text`）与
+  T（`task_view._closing_text`）调**同一个函数**，差异只在输入事实（P3 带
+  unit 级 reflection 结论、T 带整条 run 的站点清单）。两侧的
+  `_CLOSING_DISPOSITION` 变成 `closing.CLOSING_DISPOSITION` 的**别名**（同一对象）。
+- **文本形态**：成功「找到了《片名》的可播放网址：<url>。」；失败「没有找到
+  《片名》的可播放网址，已排除的站点：a.com（原因）、…。」——**只写 host**
+  （失败答复里带 `http` 会让「答复含可播放网址」的验收失去意义）；
+  未知分支 →「原因未能确认，排除」，**不写分支名**；**分支计数 / 分支分布不再输出**。
+- **R2-3 接进 P2 `gate`**（`schema._apply_output_contract` + 新模块
+  [`assembler/contracts.py`](../../assembler/contracts.py) 按 `task_id` 读
+  `taskgen/data/tasks.yaml` 的 `output_contract`）：站点单元 + 合同
+  `min_urls=N` + 收尾答复里可交付网址 **< N** ⇒ `passed` 降 `failed`
+  （理由「终局答复未兑现输出契约：合同要求至少 N 个网址，答复里只有 M 个」）；
+  只降 `passed`（`failed` / `not_run` 不改写）；任务库读不到 / 未知 task /
+  合同无 `min_urls` ⇒ **判据不适用，判定原样**；搜索单元不判。
+- **存量读数（只读，未落盘）**：camofox-1 合同样本 **49** 条中 **44** 条
+  的答复没有可交付网址（5 条有）——与审计 **44/49** 是同一批；这 44 条
+  在新口径下会由 `passed` 降 `failed`（方案 23 风险 R-3 的预期）。
+  P3 **131/131**、T **131/131** 收尾里分支枚举名 = **0**、`分支分布` = **0**。
+- **门禁**：全量 **4654 passed / 45 skipped**；新增
+  [`tests/unit/test_closing.py`](../../tests/unit/test_closing.py) 30 条 +
+  R2-3 用例 7 条（`test_assembler.py::Test终局验收读回复`）+ P3/T 契约各若干。
+- **未闭环**：**A4 未取数**（存量 P2/P3/T 未重建、不回填）；A3 已取数 ✓。
+
+### H-25 · 观察整页快照 + 死循环步
+
+**代码事实**：回执由 [`assembler/observation_view.py`](../../assembler/observation_view.py)、
+[`views.py:123-185`](../../assembler/views.py#L123)、
+[`task_view.py:180-234`](../../assembler/task_view.py#L180) 渲染整页
+（标题 + 网址 + 正文 + 元素表 + 链接全量）。
+
+**读数**：单条回执 **1000~3000** 字、任务相关不足 **10%**；「相邻同动作 + 观察逐字相同」
+**469** 处；有重复动作的视图 **64/65**、重复步 **1558/4071 ≈ 38%**；
+`goto` **1703** 次里只有 **1183** 个唯一 URL，59/65 视图重复同一 `goto` ≥3 次（最多 **19** 次）。
+
+**影响**：噪声压倒信息；重复动作在教「再点一次」。
+
+**修复建议**（R1 / R3-1 / R3-2）：回执改「标题 / 网址 / **任务相关正文摘要** /
+限量元素表 / 限量链接」，导航噪声（热搜榜 / 备案号 / 页脚 / 广告 / 推荐流）**不进训练文本**；
+「相邻同动作 + 观察逐字相同」的步**剔出或显式标记**；同一 unit 内重复动作 ≥2 次即标记。
+⚠️ **P1 存档全文一个字不动**（存档是证据，文本是语料）；
+⚠️ **降级标记保留**（`[采集降级: body_text]` / 「本步没有取到页面内容」是 fail-closed 的一部分）。
+
+**验收条件**（A5/A6/A7）：单条回执中位数 ≤ **800** 字 · 相邻同动作同类步 = **0** ·
+**同 unit 内同动作 + 观察逐字相同的重复步 / 保留步 ≤ 10%**（A7 口径于
+2026-11-02 由 owner 裁定为方案 A，见 **Q-31**；宽口径 38% 只作审计基线）。
+
+**实施状态（2026-11-02）**：✅ **R1-1/R1-2/R1-3 + R3-1/R3-2 代码已落地**。
+- **[`assembler/observation_view.py`](../../assembler/observation_view.py) 重写**：
+  正文摘要 **320** 字 / 元素 **10** / 链接 **4**；剔噪三规则（整行导航词
+  `NAV_LINE_WORDS` · 备案/页脚/广告 `NOISE_LINE_RE` · 短热搜编号 `HOT_LIST_RE`）；
+  正文按「`keep` > 片名 > 播放/元数据关键词」占预算、按原行序拼回。
+  `limits` 扩成六计数 + `cropped`（上限 vs 噪声/去重分列，`None` = 未裁）。
+- **动作目标保真**：`builder._observation_keeps` 把下一个可见动作的目标
+  （点击名 / 导航网址）算成 `keep`，`render` 无条件保留——否则训练样本里会
+  出现「点了一个观察里没有的东西」。T 不读 P2，`task_view` 自己再算一遍。
+- **R1-2 动作无效**：`Sample.step_errors` ← P1 `steps[i].error` →
+  观察 dict `action_error`（**不混进 `degraded`**）→ P3/T 渲染
+  `[本步动作无效: …]`（前 120 字）。
+- **读数（A5）**：camofox-1 **4071** 条可见步（改前/改后同一批、排除
+  infrastructure）回执中位 **3026 → 772** 字（p75 883 / p90 1319），
+  ≤ **800** ✓；成分中位 head 84 / body 320 / 元素 160 / 链接 161。
+- **目标保真**：带 `keep` 的 **2821** 条：`kept` **1978** · **LOST_FROM_RAW 0** ·
+  `never_observable` **843**（目标本来就不在观察里，不是被裁）。
+- **门禁**：4609 passed / 45 skipped；新增 `test_observation_limits.py` **15** 条 +
+  P3/T 契约各 **1** 条。
+- **R3-1 / R3-2 代码**（2026-11-02 同批）：新增
+  [`assembler/screen.py`](../../assembler/screen.py)（动作签名规范化 + 相邻死循环
+  剔出 + unit 内重复标记）；P3 `views._screened_steps` 与 T
+  `_screened_task_steps` 接入，**两段投影共用同一份筛选结果**（O-5）。
+  meta 新增 `deduped_step_count` / `deduped_steps` / `repeat_step_count` /
+  `repeat_actions` 四栏（逐条列原始步号，不合成计数）。
+- **读数（camofox-1，65 份，临时脚本重算存量 P2/P1，未落盘）**：
+  - **P3**：可见步 **4071** · 原重复步 **1558（38.3%）** · 剔死循环 **161** ·
+    保留 **3910** · 筛后重复步 **1397（35.7%）** · **残留相邻死循环 0**（A6 ✓）。
+  - **T**：可见步 **4071** · 剔死循环 **143** · 保留 **3928** · 筛后重复步
+    **838（21.3%）** · **残留相邻死循环 0**（A6 ✓）。
+  - 两段剔的步数不同是**观察渲染不同**（T 的 `keep` 依赖下一步动作），不是
+    各自算错；两段各自的「残留死循环」都是 0。
+- ✅ **A7 ✓（2026-11-02 owner 裁定方案 A，见 Q-31）**：口径改绑**窄口径**
+  「同一 unit 内同动作且观察逐字相同（不要求相邻）的重复步 / **保留步**」，
+  目标仍 ≤10%。**存量读数（同一批 65 份，临时脚本重算，未落盘）**：
+  - **P3**：保留步 **3910** · 窄重复 **274** ⇒ **7.0%** ✓
+    （原件数 435/4071 = 10.7%，其中相邻 161 已由 R3-1 剔）；
+  - **T**：保留步 **3928** · 窄重复 **98** ⇒ **2.5%** ✓
+    （原件数 241/4071 = 5.9%，其中相邻 143 已剔）。
+  - **宽口径**「同动作不看观察」**35.7%（P3）/ 21.3%（T）** 保留为**审计基线**，
+    不再是 A7 验收线——1558 条重复里大部分是**同动作不同观察**（页面变了），
+    删掉会**破坏观察因果链**（下一步看到的前置观察会变）。R3-2 仍**只标记不剔**
+    （`repeat_actions` 按宽口径逐条记，供人核与批次筛选用）。
+- **未闭环**：存量 P2/P3/T 产物**未回填**——新口径在下次
+  `cli build --overwrite` / `cli task-view --all --overwrite` 后生效。
+- **门禁（R1+R3 合计）**：**4681 passed / 45 skipped**；新增
+  `test_screen.py` **17** 条 + P3/T 侧筛选用例各 **5** 条。
+
+### M-67 · 采集面的观察选择权与任务约束都没落地
+
+**代码事实 / 读数**：生产面 `meta.tools_declared=14`、实用 **4**；
+`snapshot` / `interactive` / `links` **恒在 `tools_unused`** ⇒ agent 对「看页面哪部分」
+**零选择权**。同一批 `excluded_platforms_severity: advisory` **不拦**：65 条轨迹中
+**34 个任务**踩了被排除平台（腾讯 43 · 爱奇艺 37 · 优酷 31 · 芒果 23 · B站 10 · 乐视 4 步）。
+
+**影响**：声明了从不用 = **教模型调不存在的工具**；`excluded_platforms` 只是注释，
+训练集里照样有访问被排除平台的轨迹。
+
+**修复建议**（R4-1/R4-2）：✅ **Q-26 已裁（2026-11-02）：还给 agent** ⇒
+R4-1 改为让 `snapshot` / `interactive` / `links` **真正可用**（**不是**裁掉声明），
+system prompt 写明三者差别；`excluded_platforms` 从 advisory 改 **enforce**
+（⚠️ 会直接缩小负样本面，要跟任务分布一起定）。
+
+**验收条件**（A10）：训练集里访问被排除平台的步 = **0**；声明面与调用面一致（无「声明了从不调」）。
+
+**实施状态（2026-11-02）**：✅ **R4-1 / R4-2 代码已落地**（owner 裁定：
+R4-1 按「按建议的那套」· R4-2 选 **(b) 数据层剔除**）。
+
+- **R4-1 读原语真正可用**：
+  [`executor/actions.py`](../../executor/actions.py) 的 `TOOLS` 九值 +
+  `READ_TOOLS`；[`agent_loop.py`](../../executor/agent_loop.py) 的
+  `AGENT_TOOLS` 七条（`goto` / `click` / `fill` / `press` / `snapshot` /
+  `interactive` / `links`），三条读无参数、`origin="model"`；
+  `system prompt` 写明三者差别。
+- **读是动作、回执是观察**：`Observation.read` 记「这次读的哪一块」
+  （`""` = 整页回执）；读步**计入步数与 `llm_calls`**，但**不进
+  `dead_loop.record`、不触发 `_intercept`**；读**不更新** `self.obs`
+  （否则下一步按旧 ref 点击会在没有那个 ref 的页面上执行）。
+- **I6 白名单第二来源**：`interactive` 读回的元素进 `_read_elements`
+  （既是白名单、也是 `target_of` 的第二来源）；任何非读动作后清空。
+  ⚠️ 少了目标解析这一半，aria 面第 51–200 个 ref 会 `UnaddressableTarget`
+  ——「读到了却点不了」，而报告上看不出异常。
+- **窗口**：P1 读步落盘 **200 元素 / 200 链接**（普通 80/50，
+  `OBS_READ_*`）；P2/T 训练态 **2000 字 / 50 / 50**（普通 320/10/4，
+  `VIEW_READ_*`）；P3/T 读回执只排版被读块、**不排 counts**。
+- **工具面口径**：读原语**只在 aria 面声明**（`camofox-1` / `camoufox-1`），
+  `obscura-1` 面没有。漂移守卫因此锚**生产面**而不是 `DEFAULT_SURFACE`
+  （`DEFAULT_SURFACE` 仍是 obscura）——不改 catalog，否则会动历史样本的
+  训练契约、逼 52 份 obscura P2 重建。
+- **R4-2 访问级剔除**：新增
+  [`assembler/excluded.py`](../../assembler/excluded.py)——平台→域名表、
+  hostname 边界匹配（子串会把仿冒域也剔掉）、`origin="infrastructure"`
+  的 `new_tab`/`close_tab` 不算访问、观察 URL 仍参与；任务没声明就不判。
+  `schema.split_archive_report` **整条 unit 剔**（`SplitResult.excluded`），
+  判定读 P1 **原始逐步 `steps[]`**（搜索单元的 `Sample.observations` 只有
+  一张汇总快照，拿它判会漏「搜索阶段点进被排除平台」那一类）；
+  `builder` 落 `total_excluded_units` / `excluded_detail`；T 侧
+  `_excluded_unit_map` 用同一判据独立读 P1，`meta.excluded_units` /
+  `unit_count` / `unit_sample_ids` / `gate_breakdown` 同步剔除。
+  **P1 存档一个字不动**。
+- **影响面读数（临时脚本，已删）**：65 份 camofox-1 = **960 unit / 4852 步**；
+  按「所有带 url 的动作（含 infrastructure）+ 观察」的**宽判据**量，命中
+  **256 unit（26.7%）**；**整 unit 剔**丢 **1329 步（27.4%）**——截断方案
+  丢 1219 步，且中段命中的 **16 unit** 会留下因果断裂（outcome 指向被排除
+  平台、训练步里却没有它）⇒ 选整 unit 剔。
+- **实际 build 读数（隔离目录重建，2026-11-02）**：66 份存档里 65 份切得出
+  样本 → **780 条样本（960 − 180）**，**剔除 180 条 unit**，分布 **21 个任务**。
+  ⚠️ **180 与 256 的差是判据口径，不是漏剔**：宽判据把
+  `new_tab`（infrastructure）也算，且**不看任务有没有声明名单**；实际判据
+  只算模型动作 + 观察，且**任务没声明 `excluded_platforms` 就不判**。
+  实测差的 **76 unit 全部落在「未声明名单」的 11 个任务上**（34 个任务里
+  只有 **23 个**声明了名单）——按口径它们**没有「被排除平台」**。
+  ⇒ **A10 的读数要按「声明了名单的任务」算**：这些任务 0；未声明的任务
+  不在 A10 的论域里（要管得先给任务库补声明，那是任务生成层的事）。
+- **门禁**：**4729 passed / 45 skipped**；隔离产物落盘后复跑
+  **4759 passed / 15 skipped**（多出来的是原先因 worktree `output/` 为空
+  而跳过的数据相关用例）。其中 `test_rationale_gates.py::TestOnRealObservations`
+  两条**写死了元素 `label`**（obscura 方言），在全 camofox-1 数据集上
+  一条抽不出元素、一条空转——已改为 `common.elements.element_name`
+  按方言读（`name` / `label`），判据不变。新增
+  [`test_excluded.py`](../../tests/unit/test_excluded.py) **17** 条 +
+  `test_agent_loop.py::Test读原语` **9** 条 + `test_observation_limits.py::Test读步`
+  **5** 条 + `test_t_contract.py::Test投影一致` 带读步 **1** 条。
+- **A10 已有读数（隔离目录重建，2026-11-02）**：65 份存档 → **780 条样本、
+  剔除 180 条 unit（21 个任务）**；**声明了名单的任务在训练集里访问被排除
+  平台的步 = 0** ✓。⚠️ **口径边界**：34 个任务里只有 23 个声明了名单；
+  未声明的 11 个任务共 **76 unit** 访问了这些平台、**按口径保留**——要把
+  它们也管住，得先在任务生成层补声明（不是组装层的判断）。
+- **未闭环**：主树存量产物**未回填**（读数来自隔离目录重建，不是盘上旧产物）；
+  `camoufox-1` 面读原语**只读存量**，不产出新样本。
+
+**A13 实施状态（2026-11-02 · 新批次真实采集，owner 授权）**：
+
+- **为什么必须新批次**：老批次（主树 **68 份** agent 存档）三工具调用数**恒 0**
+  ⇒ **回填不了**——调用面变了，历史数据里没有「读」这个动作。读数只可能来自
+  **真跑**出来的新批次。
+- **采集口径**：新批次跑在**隔离目录** `trajectory_pipeline/output/a13/batch`
+  ——**不碰主树生产根**：主树的 `negative.jsonl` 池与新存档不同源，
+  `check-archives` 会报 `negative_not_pooled`（**记账差，不是存档缺件**）。
+  执行层 `camofox`、`--executor-mode agent`；计划由
+  `cli gen -n 10 --seed 20261102` 出，本批取前 **8** 条
+  （`E004 / E013 / E018 / E027 / E029 / T014 / T016 / T026`）。
+  ⚠️ **批次被后台时限掐过一次**：首跑 6 档落地后进程被杀 ⇒ 用**同一
+  `batch_id`（`plan-a13`）** 的续跑计划只补跑剩下 2 档（`E027` / `E004`），
+  批次元数据保持连贯（**续跑计划必须带原 `batch_id`**，否则批次裂成两个）。
+  ✅ **已并入主树生产根**（owner 裁「并入」，2026-11-03）——「并进去要一并处理
+  负样本池」这条照做了（池 **+38** 行）；**并入产物用 main 的代码**切 ⇒ 详见下面
+  **「并入实施状态（2026-11-03）」**。
+- **A13 两问都成立** ✓：
+  - **① 三工具调用数 > 0**——**8 份存档 / 713 步 / 读调用 224**
+    （`interactive` 90 · `snapshot` 80 · `links` 54），**读步占 31.4%**；
+    每档 **15–51** 次（`E029` 最多、`E004` 最少）⇒ 不是假阳性；
+  - **② 同一页面不同工具的回执可区分**——**62 个落地 URL** 里
+    **41 个用过 ≥2 种读工具**，每个 (页面, 工具) 组合
+    **只有唯一回执形状、冲突 0**；
+    `snapshot` 的回执只带正文块、`interactive` 只带元素块、`links` 只带链接块，
+    **块互不串味**。
+- **读步在训练侧落在哪**（P2 / P3 / T 三处都核过）：
+  - **P2**：`six.actions` 里读动作带 `origin="model"` ⇒ 进训练 `tool_calls`；
+  - **P3 / T**：`openai.messages` 里读动作是 assistant 的 `tool_calls`
+    （`{"name": "links", "arguments": "{}"}`），与 `six.actions` 一一对上；
+  - **回执**：读回执**只带被读的那一块**，训练态带 `[读取: 正文]` /
+    `[读取: 可交互元素]` / `[读取: 链接]` 标记；**执行器推的整页回执无标记、
+    不进 `tool_calls`**——「谁发起的观察决定它进不进动作流」这条在产物里分得开。
+- **声明面与调用面**：新批次 T 视图 `tools_declared=14`（不变）、
+  `tools_unused` 从老批次的 **10 降到 7**——三条读原语**已不在 `tools_unused` 里**
+  ⇒ O-1 的翻转在产物里可见。余下 7 条是 `web_search` / `read_file` /
+  `view_image` 等 **agent-runtime 辅助工具**，不在浏览器执行层，与读原语无关。
+- **「读到了却点不了」没发生**：紧跟 `interactive` 读之后的 `click` 步，
+  其目标（`action.target` 的 `{role, name}`）**全部命中该读回执的
+  `interactive_elements`**——全批次 **27/27**，**未命中 0**。
+  这正是 M-67 实施状态里点名的失效模式（aria 面第 51–200 个 ref 点了会
+  `UnaddressableTarget`）⇒ **I6 白名单的第二来源（目标解析）接上了**。
+- **产物侧读数**（8 档）：P2 **73 条**样本（1 条降级 / 10 条真负样本 /
+  `rationale` `pre_action` 72 · `post_hoc` 0 / 访问级剔除 **34 条 unit**）、
+  P3 **219 份**视图、T **8 份**视图；scout `positive 13 / negative 1 /
+  quarantine 59`（`skip 0 / missing_source 0`），`aggregate` **8 条** per-Run
+  （`scored 0 / undetermined 8`）。⚠️ `scored=0` 是**评测口径的现状**
+  （搜索单元无 outcome ⇒ `quarantine_short_circuit`），不是本批引入的。
+- **A13 新批次的 per-Run 行已进 LS**：项目 77 从 **67 条涨到 76 条**
+  （新批次 8 条 + 烟测 1 条），**回读 LS 实核 76/76 都落得到一份 P1 存档**。
+  ⚠️ **回读要给全三个根**（`output/a13/batch`、`output/a13/smoke`、
+  主树 `output/pipeline/`）——少给一个就会有行「回不到」（worktree 的
+  `output/pipeline/` 只有 67 份，主树有 248 份，`E002` / `E005` 在主树那侧）。
+- **采集踩的坑**（4 条，下次照抄）：
+  ① **`TRAJECTORY_LLM_MAX_TOKENS` 必须 16384**（默认 8192 会被 reasoning 吃掉）；
+  ② **camofox 上游 REST 服务（:9377）要手动起**
+  （`cd C:/Users/klpc/workspace/tool/camofox-browser && npm start`）——
+  MCP 适配器走 stdio，真浏览器在那边；⚠️ 后台跑时 `npm start` 会被后台时限掐掉，
+  **被掐的是 npm 包装层、node 服务还活着**（`curl /health` 核，别急着重起，
+  重起会撞「port in use」）；
+  ③ **存档每档跑完才落盘**（不是边跑边写）⇒ 跑完前目录是空的，
+  别读成「没产出」；
+  ④ **worktree 的 `output/` 是空的** ⇒ 新批次必须显式 `--out` 指到自己的隔离根；
+  推 LS 前要把主树的 `push_index__77.jsonl` 拷进 worktree，否则判重失效会重推。
+
+### 并入实施状态（2026-11-03 · A13 批次并入主树生产根）
+
+**owner 裁定**：「新批次并入主树生产根」⇒ 主树生产根从「145 份老档」变成
+「**153 份档**（含 A13 新批次 8 份）」。
+
+**为什么用 main 的代码切产物**（不是分支的）：分支 tip = `c3df249`，
+**落后 main 28 个提交**，其中 `348b5cf` 把交付粒度从 per-unit 改成 **per-Run**
+⇒ 分支的 R0–R5 实现还站在 **per-unit 基线**上 ⇒ 用它切出来的产物与主树既有
+**131 条 per-Run 样本**不是一套形状 ⇒ **交付集里混排两代粒度**
+（交付集最忌讳的那个）。⇒ **用 main 的代码**切：产物**可由主树代码复现**，
+与主树既有产物同源。
+⚠️ 代价见 **Q-33**：分支的 **R4-2 剔除**不在 main 里 ⇒ 并入产物**含**
+`excluded_platforms` 单元 ⇒ 与 LS 上那 8 行的分支口径**任务级结论相反 7/8**。
+
+**做法与读数**（主树根 = `output/pipeline/`）：
+
+| 动作 | 结果 |
+|---|---|
+| 8 份 P1 存档**逐字**复制进主树根 | 256 个 json（`select_archives` 选中 **153** 份）· 撞名 **0** · 逐档 sha256 与批次源一致 |
+| `cli build`（**默认不覆盖**） | P1→P2：**153 份存档切出 139 条样本，写出 8 条**（131 条存量**跳过**）· P2→P3：**写出 24 份视图**（393 份存量**跳过**） |
+| `cli task-view --p1 <8 档>` | 写出 **8 份 T 视图**（145 份存量不动） |
+| `cli pool-add --apply` | 干跑「**将并进 38 条**」⇒ 落盘 **+38 行**（438 → **476**） |
+
+**「存量一个字节都没动」的证据**（哈希清单比对，不是目测）：并入前对
+`samples/` + `views/` + `task_views/` 的 **669** 个文件取 sha256 ⇒ 并入后再取
+⇒ **改动 0、丢失 0、新增 40**（8 样本 + 24 视图 + 8 T 视图）⇒ 「默认不覆盖」
+这条纪律**实测生效**，不靠信任。
+⚠️ 顺带核出：**「混批：pre_action 与 post_hoc 并存」那条告警不是并入带来的**
+——存量 131 条里本来就有 **7 条 `post_hoc`**，新增 8 条**全是 `pre_action`**。
+
+**池的逐条对账**（批次自带 41 行 vs 主树池 438 行）：
+
+| 分类 | 条数 | 处置 |
+|---|---|---|
+| 新增（键不在主树池） | **38** | 并入（`not_play_site` 15 · `subscription_wall` 18 · `broken` 3 · `login_required` 2） |
+| **已在池同键**（幂等跳过） | **3** | 全是 **T014**（hao123 / v.youku / kmslxsh）⇒ 键 `(task_id, url, branch)` 相同 ⇒ **池按先到先得不覆盖**；其中 2 行**证据不同**（池内是 `horror-科幻` 那次跑的、批次是 `horror-悬疑`）⇒ **证据差异不是错，是两次跑的判断不同**（禁止投票 ⇒ 两条都在） |
+| 同址异分支 | **0** | — |
+
+**门禁归因**（`cli check-archives`，并入后）：存档 **153** 份 · 访问点 **1485** ·
+outcome **1707** · 真负样本 **587**（+42）。判定条目 **48** 条里，
+**并入只带来 1 条**：
+`negative_contradicted_by_success`——池把
+`https://v.qq.com/x/cover/rzpyce9pmxayzvb/a0015hve7w6.html?ptag=10521`
+记成 `subscription_wall`（**E001**：paywall 二次拦截），但新档 **E013**
+把同一条 URL 判成**成功** ⇒ **标签自相矛盾，这条不能进训练数据**。
+⚠️ **不替人投票** ⇒ 该池行的改判留给 owner（走 `cli relabel`）。
+`negative_not_pooled ×3` **未变**（新档 42 条真负样本**全部在池**）·
+DEGRADED 段**新档零条目**。
+
+**并入后主树生产根终态**：`samples/` **139**（131+8）· `views/` **417**（393+24）·
+`task_views/` **153**（145+8）· `negative.jsonl` **476**（438+38）·
+**唯一键 476、重复 0** ⇒ 无 `legacy/`、无 `pool_meta.json`
+（main 没有分池口径 ⇒ **不留孤儿文件**）⇒ 并入前的池快照留在
+`_backup_pre_merge/negative.jsonl`。
+
+**未闭环**：① **Q-33**（两套口径并存 + LS 那 8 行要不要重推）
+② **M-66**（分支要 re-base 到 per-Run）③ 并入产物是 **main 口径**，
+分支落地后 **R4-2 剔除**生效 ⇒ **主树产物还要再重出一次**（读数在分支侧）。
+
+### M-68 · 交付字段形状不合规
+
+**代码事实 / 读数**：P3 `function.arguments` **4902/4902 全是 dict**（不是 JSON 字符串），
+不合 OpenAI Chat Completions 规范；T 视图 `meta.degraded_from` **硬编码 `[]`**
+（[`task_view.py:767`](../../assembler/task_view.py#L767)）、`meta.source_archive`
+**硬编码 `""`**（[`task_view.py:752`](../../assembler/task_view.py#L752) /
+[`:851`](../../assembler/task_view.py#L851)，注释说「由调用方注入」，实际没人注入）。
+
+**影响**：多数训练框架按 string 读 `arguments`；T 答不出「来自哪份 P1 / 缺了什么」，
+`degraded_from` 又抹掉了 P2 侧真实存在的缺件（例 `["user_prompt","no_body"]`）。
+
+**修复建议**（R3-4 / R2-4）：落盘前把 `arguments` 编码成 **JSON 字符串**；
+两个字段**不许硬编码**。
+
+**验收条件**（A8/A11）：`isinstance(arguments, str)` = **100%**；
+T 视图能答出「来自哪份 P1」「缺了什么」。
+
+**实施状态（2026-11-02）**：✅ **R3-4 / R2-4 代码已落地**。
+- R3-4：`views._arguments_json` / `task_view._arguments_json`（`json.dumps(..., ensure_ascii=False)`）；
+  两个契约测试各加 `isinstance(arguments, str)` + `json.loads` 可解析；P3/T 契约文档样例同步改。
+- R2-4：`to_task_meta(*, source_archive=...)` 由调用方注入文件名（批量 `path.name` /
+  单文件 `p.name`，拿不到为 `""`）；`degraded_from` 从 P1 事实现算，词表与 P2 同款
+  （`user_prompt` / `run_config` / `steps` / `no_body` / `body_preview_only` /
+  `outcome_missing` / `success_branch_mismatch`），顺序固定。
+- **未闭环**：A8/A11 要在**重建后**的产物上取数——存量 `views/` 与 `task_views/`
+  未回填（按纪律不重写既有产物）。
+
+### M-69 · 两代面混在同一批交付集
+
+**代码事实 / 读数**：131 份 P2 里 obscura-1 **52** · camofox-1 **65** · camoufox-1 **14**。
+obscura-1 的 assistant **没有 `tool_calls`**（纯 `[动作] goto(…)` 文本形态），
+camofox-1 是 function-calling ⇒ **同一交付集两种方言**。CLAUDE.md 明写「新旧批次不可混池」。
+
+**影响**：训练方读到的是**两套动作表示**；混池的分布变化会被读成「质量变化」。
+
+**修复建议**（R3-3）：✅ **Q-28 已裁（2026-11-02）：分池**——旧面按「只读存量」
+单独归档（**退役 ≠ 失忆**），交付集只含 `camofox-1`。⚠️ 分池会让分母变小
+（66 份退出交付集）⇒ **记批次元数据**。
+
+**验收条件**（A9）：交付集里非 `camofox-1` 面的样本 = **0**。
+
+**实施状态（2026-11-02）**：✅ **R3-3 代码已落地**，A9 **未取数**。
+- 唯一实现 [`assembler/pool.py`](../../assembler/pool.py)：交付面留原目录，
+  旧面写/移到 `legacy/<surface>/<kind>/`（`os.replace`，**移动不是删除**）；
+  P2 `samples/`、P3 `views/`（三份成组）、T `task_views/` 三处同规则。
+- 迁移是**批量入口构建前**的动作（`build_all` / `build_views_from_dir` /
+  `build_all_task_views`），保证 `overwrite=False` 的存在性检查看的是正确目录。
+- 面**认不出不猜**：P2/P3 跳过该样本并记 `skipped`；T 直接抛（与 P1 `driver` 折算同口径）。
+- 批次账 `pool_meta.json`（每 kind 记交付面 / 各旧面计数 / 本次移动 / 认不出的份数 /
+  `updated_at`），同时也记「池变小不是质量变好」。`purge-run` 同步收 `legacy/` 里的派生孤儿。
+- **未闭环**：A9 读数要跑 `cli build --overwrite` + `cli task-view --all --overwrite`；
+  本批**未重建**主树产物（只读调查），所以 `samples/` 仍是 52/65/14 旧分布。
+
+### M-70 · LS 上传的「禁用闸」声明了但没接线
+
+**代码事实 / 读数**：`evaluation/ls_bridge/settings.py` 里
+`UploadSettings.enabled` 默认 **False**，且有现成的
+`Settings.is_push_enabled()`（返回 `self.upload.enabled`）——
+但**全仓没有任何调用点**（`grep -rn "is_push_enabled"` 只命中定义本身
+与 `__pycache__`）。`evaluation/ls_bridge/cli.py` 的 `_cmd_upload` 只查
+`settings.has_credentials()` ⇒ **只要 `TRAJECTORY_LS_API_KEY` 在环境里，
+`upload` 就写 LS**；`TRAJECTORY_LS_ENABLED=0` 拦不住。
+`project_manager.py` 只在 `status` 里把它**报出来**，不据此拦。
+
+**影响**：「推 LS 要先向 owner 要授权」这条纪律目前**只落在人的自觉上**，
+代码层没有对应的护栏——而这恰好是仓库「**代码层做护栏**」那条铁律要求
+代码兜住的位置。另一面：`UploadSettings.enabled` 这个名字 + 默认 False
+**骗人**（读代码的人会以为默认关）。
+
+**修复建议**（二选一，**都要 owner 拍板**，不擅自改）：
+- **① 接线**：`_cmd_upload` 在建计划前查 `is_push_enabled()`，为假即拒推
+  （退出码非 0 + 说清缺哪个环境变量）；同时把
+  [08 常用命令速查](08-常用命令速查.md) 的 `upload` 命令补上
+  `TRAJECTORY_LS_ENABLED=1`。⚠️ 这会**改 owner 既有的调用姿势**
+  （速查表里现成的命令得补变量）——收益是「授权」从自觉变成可执行，
+  代价是每次推多一个变量。
+- **② 删字段**：承认「有 API key 就能推」是既定口径，把 `enabled` 与
+  `is_push_enabled()` 一起删干净，`status` 里的 `upload_enabled` 一并去掉，
+  **别留一个骗人的名字**。
+
+**验收条件**：要么 `TRAJECTORY_LS_ENABLED` 缺席/为假时 `upload` **拒推**
+（且有单测钉住），要么 `UploadSettings.enabled` / `is_push_enabled`
+**在代码里彻底不存在**（`grep` 零命中）。
+
+**实施状态（2026-11-02 · 真实 LS 推送时顺带查出来的）**：**未实施**——
+本条是 2026-11-02 推项目 77 时读代码读出来的，与那次推送**无因果关系**
+（推送当时 `TRAJECTORY_LS_ENABLED` 根本没被读）。⚠️ 同一天**四次**推送
+（`--limit 1` 试推、推余下、A13 新批次 8 条、烟测 1 条）都是**靠 `--dry-run`
+先核对 + 人工授权**兜住的，不是靠这道闸——**这正是本条要修的**：
+护栏该在代码里，不该在记性里。
+
+### M-66 · 分支的 R0–R5 还站在 per-unit 基线上（落后 main 28 个提交）
+
+**代码事实**（三处，都可复核）：
+
+| 位置 | 事实 |
+|---|---|
+| `git log main..trajectory_rationale` | **空** ⇒ 分支**没有** main 之外的提交；`git log trajectory_rationale..main` = **30** 个 ⇒ 分支**落后** |
+| 分支 tip | `c3df249` = 与 main 的 merge-base；main 的 HEAD = `98fd2b7` |
+| `assembler/schema.py::sample_id` | **分支**：`(task_id, run_id, unit) → "<task>__<run>__<unit>"`（per-unit）· **main**：`(task_id, run_id) → "<task>__<run>"`（per-Run，`348b5cf` 改的） |
+
+**影响**：分支那 47 个已改文件 + 13 个新文件（R0–R5，未提交）**是写在 per-unit 基线上的**
+⇒ **不能直接 merge 到 main**：合过去要么把 main 的 per-Run 改回 per-unit，
+要么把分支的 `closing.py` / `task_view` / `builder` 逐处改成 per-Run。
+⇒ 本次 A13 批次并入主树**因此只能用 main 的代码切产物**（产物可由主树代码复现）。
+⚠️ **这不只是编号问题**：两套粒度对**训练集形状**不同（per-Run 一条轨迹含
+全部 unit；per-unit 一条样本只含一个 unit）⇒ 混排进同一个交付集＝
+「同一个目录里两种训练样本形状」，**报告上看不出异常**。
+
+**修复建议**：**先把分支 re-base 到 main 的 per-Run**，再谈 R0–R5 落地：
+① `sample_id` 改回两参（与 main 逐字一致）；② `closing.py` 的 unit 收口改成
+「run 级收口」；③ `task_view` 的 `unit_sample_ids` / `unit_count` 改按 run 口径；
+④ R4-2 的剔除**要保留**（它是 owner 裁过的口径），但剔除粒度从「unit」改成
+「run 内的 unit 段」——⚠️ **这一步会改结论**（见 Q-33：被剔的单元常常正是
+决定任务级结论的那个）⇒ 改法要连**口径裁定**一起做，不能当纯重构。
+
+**验收条件**：分支 re-base 后 `git diff main..trajectory_rationale` 里
+**不再出现 per-unit 形状的 `sample_id`**；且用分支代码重切主树产物，
+得到与 main 口径**同形状**的 `samples/`（条数与形状可比）。
+
+**实施状态（2026-11-03）**：**未实施**——本条是并入 A13 批次时**撞出来的**
+（并入要决定「用谁的代码切产物」，才发现两套粒度并存）。
+⚠️ 编号取 **M-66** 是因为 **main 上 M-65 已被占用**（本台账在分支上，
+main 领先 28 个提交 ⇒ 编号要避开 main 已用的）。
+
+### Q-33 · 交付集的两套口径：主树用 main，LS 上那 8 行是分支口径
+
+**详情**：2026-11-03 把 A13 批次并入主树后，同一批 8 份 P1 存档在两处有
+**两份不同的 T 视图**：
+
+| 产物 | 口径 | E029 的规模 | 8 条的任务级结论 |
+|---|---|---|---|
+| 主树 `task_views/`（并入后，main 的代码） | **per-Run 全量**（含 `excluded_platforms` 单元） | **105** 条 assistant 消息 / 20 unit | `unresolved`×3 · `subscription_wall`×3 · `success`×1 · `not_play_site`×1 |
+| LS 项目 77 上那 8 行（分支的代码） | **per-Run + R4-2 整 unit 剔除** | **11** 条 assistant 消息 / 3 unit | `success`×4 · `not_play_site`×3 · `subscription_wall`×1 |
+
+⇒ **8 条里 7 条的任务级结论相反**（E004 两条口径都是 `success`，唯一一致）。
+
+**问题**：① **交付集以哪套口径为准**？② **LS 上那 8 行要不要重推**？
+
+**原因**：R4-2（owner 2026-11-02 裁「数据层剔除」）把 `excluded_platforms`
+上的单元**整条剔掉**；而任务级结论的口径是「**看最后一个结论**」
+⇒ **被剔的那个单元常常正是决定结论的那个** ⇒ 剔了它，结论就翻。
+⚠️ 这不是 bug，是两套口径的**必然差**——`T016` 的 `success` 来自
+「剔掉优酷那个付费墙单元后，剩下最后一个单元判成功」。
+
+**可选做法**（**都要 owner 拍板，不擅自定**）：
+- **甲（口径归一 · 剔）**：以分支口径为准 ⇒ 主树产物按 R4-2 重出
+  ⇒ 交付集与 LS 一致 ⇒ ⚠️ **代价**：负样本面变小（并入的 38 条里有 19 条
+  `subscription_wall` 来自优酷/腾讯等被排除平台 ⇒ 这批要重判），
+  且「任务结论由被排除平台决定」这件事被藏进剔除里——**口径要在文档里写明**。
+- **乙（口径归一 · 不剔）**：以 main 口径为准 ⇒ LS 上那 8 行**重推**
+  ⇒ ⚠️ **代价**：交付集里留着被排除平台的单元与结论（与 owner 2026-11-02 的
+  裁定相反），且 LS 推送要 owner 授权。
+- **丙（分流）**：交付集按甲（剔）、复核面按乙（不剔）⇒ 两处各有各的用途，
+  但**同一批轨迹在两处结论不同** ⇒ 必须写进契约文档，否则复核的人会以为
+  自己看错了。⚠️ 现状的 LS 8 行事实上就是这个形状，只是**没写下来**。
+
+**锚点**：主树 `output/pipeline/task_views/`（153 份）· LS 项目 77 ·
+`assembler/excluded.py` · `assembler/task_view.py::_excluded_unit_map` ·
+本文 **M-67「并入实施状态」** · [方案 23 §7 O-3](../设计方案/23-训练轨迹语料整改方案.md#7-待决项owner-裁定) ·
+分支 `assembler/closing.py`（未提交）· 门禁 `executor/integrity.py`
+
+**实施状态（2026-11-03）**：**未实施**——并入**只做数据**（用 main 口径，
+让主树内部自洽），**不替 owner 选口径**、**不重推 LS**（推送要授权）。
+⚠️ **不得用投票解决**：两套口径各有依据，**要么 owner 裁，要么两套并存且写明**。
 
 ---
 

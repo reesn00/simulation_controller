@@ -48,6 +48,7 @@ from trajectory_pipeline.evaluation.scout.types import (
     ScoutRecord,
     TrajectoryRecord,
 )
+from trajectory_pipeline.projection import projection_problems
 from trajectory_pipeline.storage.read_p3 import read_views
 from trajectory_pipeline.storage.task_views import read_task_view, task_views_dir
 
@@ -442,6 +443,20 @@ def build_prediction(
 # ---------------------------------------------------------------------------
 
 
+class ProjectionMismatch(RuntimeError):
+    """T 视图的 ``messages`` 与 ``openai.messages`` 讲的不是同一个故事。
+
+    O-5 / 方案 23 R5-2：两段都发，且**必须一致**——同一动作序列 / 同一
+    观察内容 / 同一收尾，差异只允许形态。渲染侧已在落盘前拦一道
+    （``task_view.build_task_view``）；导出侧再拦一道，是因为 T 视图可能
+    来自旧批次或人手改动，而「LS 上看到的」与「训练侧喂的」分叉时报表
+    上看不出异常。
+
+    **不并入「T 视图缺失」**：两者处置都是跳过，但根因不同（缺件 vs
+    内容分叉），跳过原因必须能分开读。
+    """
+
+
 @dataclass
 class ExportPlan:
     """一次批量推送的计划 + 逐条结果。不含任何凭据。"""
@@ -529,6 +544,10 @@ def export_trajectory_one(
     P3 单 unit 视图。T 视图缺失返回 ``(None, None, [])`` —— 主路径
     fail-closed,「T 没落」时整条不推半份(决策 D14.3)。
 
+    两段投影不一致时抛 :class:`ProjectionMismatch`(方案 23 R5-2 / O-5)——
+    不返回 ``None``:缺件与内容分叉的根因不同,跳过原因必须能分开读。
+    调用方 :func:`export_batch` 捕获后记 skipped。
+
     评分卡构造走 :func:`build_scorecard`:把 ``trajectory_id`` 当
     ``sample_id`` 喂进去,其他字段一一对得上 —— 不重写一份。
 
@@ -543,6 +562,22 @@ def export_trajectory_one(
     views = read_task_view(tid, root=task_views_root)
     if views is None:
         return None, None, []
+
+    # R5-2 / O-5：两段投影必须一致。不一致即失败——不推半份，也不猜
+    # 哪一段是「对的」。形状与 render_openai_text 同款兼容：dict 取
+    # messages，list 视为消息数组；两边都不是数组就按空段比，由
+    # projection_problems 报「动作数不一致」。
+    plain = views.get("messages")
+    openai = views.get("openai")
+    openai_messages = (
+        openai.get("messages") if isinstance(openai, Mapping) else openai
+    )
+    problems = projection_problems(
+        plain if isinstance(plain, list) else [],
+        openai_messages if isinstance(openai_messages, list) else [],
+    )
+    if problems:
+        raise ProjectionMismatch("；".join(problems[:5]))
 
     # 构造 ScoutRecord-shape 喂 build_scorecard:trajectory_id 当 sample_id。
     pseudo_scout: ScoutRecord = {
@@ -618,8 +653,8 @@ def export_batch(
       读 scout 三件套 + P3 视图,行为与 Phase 3 之前一致。**默认不开启**,
       显式传旗标才走 —— 见 :func:`_export_batch_legacy_unit`。
 
-    过滤只有两道(两路径共用):视图缺失(skip, fail-closed 不推半份
-    数据)→ 凭据扫描(reject, fail-closed 留痕)。v1 的 tier / min_score /
+    过滤只有两道(两路径共用):视图缺失 / 两段投影不一致(skip, fail-closed
+    不推半份数据)→ 凭据扫描(reject, fail-closed 留痕)。v1 的 tier / min_score /
     skip_task_ids 过滤不迁移 —— scout 已分流, 上传侧不再二次审判。
     """
     settings = settings or LSSettings()
@@ -638,13 +673,20 @@ def export_batch(
 
     for bucket, record in records:
         tid = str(record.get("trajectory_id", ""))
-        task, prediction, hits = export_trajectory_one(
-            record,
-            bucket,
-            task_views_root=task_views_root,
-            scorecard_enabled=settings.scorecard.enabled,
-            scan_settings=settings.credential_scan,
-        )
+        try:
+            task, prediction, hits = export_trajectory_one(
+                record,
+                bucket,
+                task_views_root=task_views_root,
+                scorecard_enabled=settings.scorecard.enabled,
+                scan_settings=settings.credential_scan,
+            )
+        except ProjectionMismatch as exc:
+            plan.skipped.append((tid, f"两段投影不一致: {exc}"))
+            log.error(
+                "export_batch(trajectory): %s 两段投影不一致, 跳过 (%s)", tid, exc
+            )
+            continue
         if task is None and hits:
             plan.rejected.append((tid, hits))
             log.error(
@@ -830,6 +872,7 @@ __all__ = [
     "RISK_HINTS_CONTROL",
     "TASK_ANCHOR_CONTROL",
     "ExportPlan",
+    "ProjectionMismatch",
     "read_scout_records",
     "read_trajectory_records",
     "render_messages_text",

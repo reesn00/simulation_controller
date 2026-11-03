@@ -166,6 +166,8 @@ def observation_of(obs_json: Mapping[str, Any]) -> Observation:
         # **共享口径没测到的原因**（2026-10-21）。缺键 = 没开开关，
         # 空串 = 没开开关（老存档没有这一列）。
         element_basis_error=_element_basis_error_of(obs_json.get("element_basis_error")),
+        # 读标记（方案 23 R4-1）：缺键 = 老存档的整页观察，不是「读失败」。
+        read=str(obs_json.get("read") or ""),
     )
 
 

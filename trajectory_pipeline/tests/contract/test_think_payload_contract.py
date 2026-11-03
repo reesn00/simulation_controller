@@ -10,6 +10,7 @@ A3 验收」的落链点）。executor **不 import rationale**（依赖方向�
 
 from __future__ import annotations
 
+from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.agent_loop import _think_payload
 from trajectory_pipeline.rationale.writer import Draft, WriteResult
 
@@ -41,3 +42,58 @@ def test_文本原样进text结论恒空():
     """
     got = _think_payload("  看到了播放按钮  ")
     assert got["rationale"] == {"text": "  看到了播放按钮  ", "conclusion": ""}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# R0：来源标记固定 + 原生 think 不被覆盖
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_reason取值可辨两个来源():
+    """``reason`` 的**成功形态**只有两个值，失败形态必须带原因。
+
+    - 原生 think：``actions.NATIVE_THINK_REASON``（``"native-think"``）；
+    - writer 成功：``""``（历史口径，不改）；
+    - writer 失败：非空错误文本——「没写成」不能长成「模型没说话」。
+    """
+    native = _think_payload("页面上有播放按钮")
+    writer_ok = WriteResult(
+        status="written", draft=Draft(text="页面上有播放按钮"),
+    ).to_json()
+    writer_bad = WriteResult(status="unavailable", reason="LLM 不可用").to_json()
+
+    assert actions.NATIVE_THINK_REASON == "native-think"
+    assert native["status"] == "written"
+    assert native["reason"] == actions.NATIVE_THINK_REASON
+    assert writer_ok["status"] == "written"
+    assert writer_ok["reason"] == ""
+    assert writer_bad["status"] != "written"
+    assert writer_bad["reason"], "失败形态必须带原因，不能与 writer 成功同形"
+
+
+def test_先挂native_think再补记仍是native_think():
+    """R0-3：``attach_rationale`` 的守卫——原生 think 是决策当时写下的
+    证据，任何事后补记都不得覆盖它。"""
+    log = actions.StepLog()
+    index = log.act(actions.goto("https://x.test/"))
+    native = _think_payload("先在搜索结果里挑一个像正片的链接")
+    log.attach_rationale(index, native)
+
+    log.attach_rationale(index, WriteResult(
+        status="written", draft=Draft(text="事后补写的理由"),
+    ).to_json())
+
+    assert log.steps[index].rationale == native
+    assert log.steps[index].rationale["reason"] == actions.NATIVE_THINK_REASON
+
+
+def test_writer产物仍可被重新生成():
+    """守卫只挡原生 think：writer 自己的产物（``reason=""``）仍可重写——
+    那是再生路径，与「覆盖另一个来源的证据」不是一回事。"""
+    log = actions.StepLog()
+    index = log.act(actions.goto("https://x.test/"))
+    first = WriteResult(status="written", draft=Draft(text="第一版")).to_json()
+    second = WriteResult(status="written", draft=Draft(text="第二版")).to_json()
+    log.attach_rationale(index, first)
+    log.attach_rationale(index, second)
+    assert log.steps[index].rationale == second

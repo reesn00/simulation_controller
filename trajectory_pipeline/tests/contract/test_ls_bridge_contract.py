@@ -26,6 +26,10 @@ _ALLOWED_TP_IMPORTS = {
     "trajectory_pipeline.evaluation.ls_bridge",
     "trajectory_pipeline.evaluation.scout.aggregate",
     "trajectory_pipeline.evaluation.scout.types",
+    # 两段投影一致性口径(方案 23 R5-2 / O-5):纯函数,与 assembler.task_view
+    # 共用一份。挂顶层的原因见 trajectory_pipeline/projection.py ——
+    # ls_bridge 禁 import assembler,而校验两边都要跑。
+    "trajectory_pipeline.projection",
     "trajectory_pipeline.storage",
     "trajectory_pipeline.storage.read_p3",
     "trajectory_pipeline.storage.task_views",

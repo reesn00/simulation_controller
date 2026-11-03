@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from trajectory_pipeline.assembler import builder, schema
+from trajectory_pipeline.assembler import builder, observation_view, schema
 
 
 def _obs(url="u", **kw):
@@ -47,6 +47,8 @@ def _outcome(url, branch):
 def _arc(**over):
     base = {
         "task_id": "T001", "title": "功夫", "query": "功夫 在线观看",
+        # 交付面（方案 23 R3-3）：P2 按 tool_surface 分池落盘，夹具走交付面
+        "driver": "camofox",
         "user_prompt": "有没有能看正片的", "search_url": "https://s.test",
         "search_observation": _obs("https://s.test"), "search_blocked": "",
         # 搜索阶段**一步**——真实存档实测「有搜索快照必有这一步」
@@ -159,8 +161,8 @@ class Test观察裁剪:
             (out / "T001__abc123.json").read_text(encoding="utf-8")
         )
         obs = sample["six"]["observations"][0]
-        assert obs["body_chars"] == 2000
-        assert obs["limits"]["body_chars"] == 2000
+        assert obs["body_chars"] == observation_view.VIEW_BODY_CHARS
+        assert obs["limits"]["body_chars"] == observation_view.VIEW_BODY_CHARS
         assert obs["limits"]["cropped"] is True
 
 

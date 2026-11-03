@@ -509,10 +509,35 @@ class Test与执行端对齐:
         raise AssertionError("读不到 executor.actions.TOOLS 的字面量")
 
     def test_执行器会发的动作catalog里都有(self):
-        """执行端发得出、catalog 没有 ⇒ 模型见到一种不被允许的动作。"""
-        for surface, defs in toolcatalog.SURFACES.items():
-            missing = self._executor_tools() - {d.name for d in defs}
-            assert not missing, f"执行器会发但 {surface} 面没声明: {missing}"
+        """执行端发得出、catalog 没有 ⇒ 模型见到一种不被允许的动作。
+
+        ⚠️ **2026-11-02（R4-1）起不是「每个面都必须全有」**：三条读原语
+        （``snapshot`` / ``interactive`` / ``links``）只由 **agent 运行时**
+        发出，而 agent 运行时只跑在生产面 ``camofox-1`` 上（obscura 面是
+        push 模式的历史方言，动作面收 ``ref``/``selector``，agent 的
+        ``role``/``name`` 定位在它上面本来就点不动）。给 obscura 面补这
+        三条会**改掉历史样本的训练契约**——那正是 ``TOOL_SPECS`` 的注释
+        在防的事。
+
+        所以断言拆成两段，两个方向都还在：
+
+        ① 执行端的每个原语**至少有一个面**声明它（不存在「发了却哪个面
+           都没声明」的动作）；
+        ② **生产面**声明**全部**原语——新存档只落这个面，漏一个就是训练
+           样本里出现未声明的动作。
+        """
+        native = self._executor_tools()
+        anywhere = {
+            d.name for defs in toolcatalog.SURFACES.values() for d in defs
+        }
+        assert native <= anywhere, (
+            f"执行器会发但所有面都没声明: {native - anywhere}"
+        )
+        production = {d.name for d in toolcatalog.defs_of(toolcatalog.SURFACE_CAMOFOX)}
+        assert native <= production, (
+            f"执行器会发但生产面 camofox-1 没声明: {native - production}"
+            f"——新批次的 P2 会缺这几条动作"
+        )
 
     @pytest.mark.parametrize("surface", SURFACES)
     def test_标成已验证的工具在真实存档里出现过(self, surface):

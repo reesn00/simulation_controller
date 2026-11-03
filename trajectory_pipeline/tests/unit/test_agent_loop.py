@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 
-from trajectory_pipeline.assembler.schema import TOOL_SPECS
+from trajectory_pipeline import toolcatalog
+from trajectory_pipeline.assembler.schema import TOOL_SPECS_BY_SURFACE
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.agent_loop import (
@@ -50,6 +52,7 @@ from trajectory_pipeline.executor.agent_loop import (
 )
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
 from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.dom import CleanedLink, CleanedSnapshot
 from trajectory_pipeline.executor.gatekeeper import DeadLoopDetector, Verdict
 from trajectory_pipeline.llm.schema_parse import extract_json, strip_think
 from trajectory_pipeline.perception.base import (
@@ -117,6 +120,14 @@ class FakeDriver:
         self.typed: list[tuple[str, str]] = []
         self.pressed: list[str] = []
         self.observe_calls = 0
+        self.snapshot_calls = 0
+        self.links_calls = 0
+        self.interactive_calls = 0
+        #: 读原语的失败开关与正文替身（R4-1 的读步测试用）。
+        self.snapshot_fails = False
+        self.links_fails = False
+        self.interactive_fails = False
+        self.snapshot_body: str | None = None
         self._goto_fails = set(goto_fails)
         self._click_fails = set(click_fails)
         self._observe_fails = observe_fails
@@ -126,8 +137,20 @@ class FakeDriver:
         if url in self._goto_fails:
             raise DriverError(f"fake: 导航失败 {url}")
 
-    async def click(self, *, ref: str | None = None, selector: str | None = None) -> None:
-        self.clicked.append(ref or selector or "")
+    async def click(
+        self,
+        *,
+        ref: str | None = None,
+        selector: str | None = None,
+        role: str | None = None,
+        name: str | None = None,
+    ) -> None:
+        # 两个面的定位参数都收：html_tag 面发 ``ref``，aria 面发
+        # ``role+name``（见 ``actions.target_params``）。按面拒收是真实
+        # 驱动的纪律，但那由驱动自己的测试盯——这里要的是「派发点发了
+        # 什么」，拒收会让 R4-1 的读→点链路测不出来。
+        key = ref or selector or (f"{role}:{name}" if role else "")
+        self.clicked.append(key)
         if (ref or "") in self._click_fails:
             raise DriverError(f"fake: 点不动 {ref}")
 
@@ -153,6 +176,44 @@ class FakeDriver:
         if self._queue:
             self.current = self._queue.pop(0)
         return self.current
+
+    # ── 读原语（R4-1）：从当前页取单块 ─────────────────────────────
+    async def snapshot(
+        self, *, max_chars: int | None = None, degraded: list[str] | None = None
+    ) -> CleanedSnapshot:
+        self.snapshot_calls += 1
+        if self.snapshot_fails:
+            raise DriverError("fake: 取不到快照")
+        page = self.current or _obs()
+        body = page.body_text
+        if self.snapshot_body is not None:
+            body = self.snapshot_body
+        return CleanedSnapshot(
+            url=page.url,
+            title=page.page_title,
+            body=body,
+            raw_len=len(body),
+            stripped_ratio=1.0,
+            truncated=False,
+            max_chars=max_chars,
+            body_source="inner_text",
+        )
+
+    async def links(self, *, limit: int = 50) -> tuple[CleanedLink, ...]:
+        self.links_calls += 1
+        if self.links_fails:
+            raise DriverError("fake: 取不到链接")
+        page = self.current or _obs()
+        return tuple(
+            CleanedLink(text=l.text, href=l.href) for l in page.links[:limit]
+        )
+
+    async def interactive(self, *, limit: int = 50) -> tuple[InteractiveElement, ...]:
+        self.interactive_calls += 1
+        if self.interactive_fails:
+            raise DriverError("fake: 取不到元素")
+        page = self.current or _obs()
+        return tuple(page.interactive_elements[:limit])
 
     async def close(self) -> None:
         pass
@@ -255,8 +316,8 @@ async def _run(
 class Test协议解析:
     """wire format 的形状校验——**只管形状，不管语义**（语义在 I6 那组）。"""
 
-    @pytest.mark.parametrize("tool", ["goto", "click", "fill", "press"])
-    def test_四工具都认(self, tool):
+    @pytest.mark.parametrize("tool", AGENT_TOOLS)
+    def test_白名单里的工具都认(self, tool):
         got = parse_instruction({"tool": tool, "done": False, "params": {}})
         assert got is not None and got.tool == tool
 
@@ -1015,9 +1076,161 @@ class Test动作流:
             FakeDriver((_obs(url="https://x.test/play", refs=("e1",)),)),
             steps=steps,
         )
-        # 循环只**追加**了自己走的那一步，没有动调用方已经落好的进站 goto
+        # 循环只**追加**了自己走的那一步，没有动调用方落好的进站 goto
         assert [s.action.tool for s in steps.steps] == ["goto", "click"]
         assert ctx.actions == ["goto", "click"]  # ctx.steps 就是调用方那一条
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 读原语（方案 23 R4-1）：看什么还给模型
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _read_json(obs: Observation | None) -> dict[str, Any] | None:
+    """读步落 P1 的最小投影（真实那份见 ``orchestrator._obs_json``）。"""
+    if obs is None:
+        return None
+    return {"url": obs.url, "read": obs.read}
+
+
+class Test读原语:
+    """``snapshot`` / ``interactive`` / ``links`` 是**动作**。
+
+    三条纪律各自都曾是一个「看起来没问题」的错：
+
+    - 更新整页观察 → I6 白名单缩到被读的那一块，下一页点不动；
+    - 记死循环 → 「反复确认证据」被判成原地打转；
+    - 触发拦截 → 「这次只读了链接、正文是空的」被判成空正文。
+
+    所以三条分开断言。读**仍然计步、计 llm_call**——不给读设预算，
+    模型能靠反复读把整批预算读完。
+    """
+
+    async def test_读进动作流并带读标记(self):
+        ctx = await _run(FakeAgentLLM([{"tool": "interactive"}]))
+        step = ctx.steps.steps[0].to_json(_read_json)
+        assert step["action"]["tool"] == "interactive"
+        assert step["action"]["params"] == {}
+        assert step["action"]["origin"] == "model"
+        assert step["observation"] == {
+            "url": "https://x.test/", "read": "interactive",
+        }
+        assert ctx.driver.interactive_calls == 1
+        # 读**没有**触发一次整页复观察（那是非读动作的路径）
+        assert ctx.driver.observe_calls == 0
+        assert ctx.outcome.steps_taken == 1
+
+    async def test_读不更新整页观察_后续仍能点整页的ref(self):
+        """``links`` 读之后 ``self.obs`` 若被换掉，``e1`` 就不在白名单里了
+        ——模型会收到「ref 不在观察里」的误导，而它明明刚看过整页。"""
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "links"}, {"tool": "click", "ref": "e1"}]),
+        )
+        assert ctx.actions == ["links", "click"]
+        assert ctx.steps.steps[1].error == ""
+
+    async def test_连续读同一块不收口(self):
+        """读不记死循环：三次同一动作是 ``repeat_action`` 的阈值，
+        但读不改变页面，判打转没有意义。"""
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "links"}] * 4),
+        )
+        assert ctx.actions == ["links"] * 4
+        assert ctx.outcome.steps_taken == 4
+
+    async def test_读不回空正文死循环(self):
+        """``interactive`` / ``links`` 读的正文本来就是空的——它若进拦截，
+        连续三次就被判成 ``empty_body``。"""
+        ctx = await _run(FakeAgentLLM([{"tool": "interactive"}] * 3))
+        assert ctx.actions == ["interactive"] * 3
+        assert ctx.events == []
+
+    async def test_读失败不收口且落error(self):
+        """读失败是能力问题，不是页面事实：模型可以换一种读法继续。"""
+        drv = FakeDriver()
+        drv.links_fails = True
+        ctx = await _run(FakeAgentLLM([{"tool": "links"}]), drv)
+        assert ctx.outcome.reached is True
+        assert ctx.steps.steps[0].error.startswith("links 读取失败")
+        assert ctx.steps.steps[0].observation is None
+        assert "换一种读法" in ctx.text_of("上一步读取")
+
+    async def test_interactive读到的元素能点_aria面(self):
+        """整页回执只渲染前 50 个元素；读回第 51–200 个之后必须点得了。
+
+        ⚠️ 只并 ref 进白名单**不够**：aria 面按 ``role+name`` 定位，
+        目标解析也要看得见读到的元素，否则会因 ``target=None`` 判成
+        「ref 溯源不到」——模型照规矩读了却点不动。
+        """
+        elems = tuple(
+            InteractiveElement(ref=f"e{i}", role="link", name=f"入口{i}")
+            for i in range(1, 61)
+        )
+        page = Observation(
+            url="https://x.test/",
+            page_title="首页",
+            body_text="正文",
+            interactive_elements=elems,
+            element_vocabulary="aria_role",
+        )
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "interactive"}, {"tool": "click", "ref": "e60"}]),
+            FakeDriver(sticky=page),
+            initial=page,
+        )
+        assert ctx.actions == ["interactive", "click"]
+        assert ctx.steps.steps[1].error == ""
+        # 派发到驱动的是 role+name（aria 面），不是 ref
+        assert ctx.driver.clicked == ["link:入口60"]
+
+    async def test_非读动作之后读到的ref失效(self):
+        """``ref`` 是会话内句柄：点过之后页面可能换了，历史读到的 ref
+        不能继续用——否则会点在另一页的同名旧句柄上。"""
+        elems = tuple(
+            InteractiveElement(ref=f"e{i}", role="link", name=f"入口{i}")
+            for i in range(1, 61)
+        )
+        page = Observation(
+            url="https://x.test/",
+            page_title="首页",
+            body_text="正文",
+            interactive_elements=elems,
+            element_vocabulary="aria_role",
+        )
+        ctx = await _run(
+            FakeAgentLLM([
+                {"tool": "interactive"},
+                {"tool": "click", "ref": "e60"},
+                {"tool": "click", "ref": "e60"},
+            ]),
+            FakeDriver(sticky=page),
+            initial=page,
+        )
+        # 第二次点 e60 被 I6 拒了（没有进动作流），所以只有两步
+        assert ctx.actions == ["interactive", "click"]
+        assert ctx.driver.clicked == ["link:入口60"]
+
+    def test_读窗口与P1落盘上限同步(self):
+        """读窗口 200 条，P1 落盘也必须是 200——否则「模型看过、证据里
+        没有」，而那是可归因的红线（取证侧查不到训练侧引用的东西）。
+
+        两处常量分居 executor 与 orchestrator，靠这条钉住。
+        """
+        from trajectory_pipeline.executor import agent_loop as al
+        from trajectory_pipeline.executor import orchestrator
+
+        assert orchestrator.OBS_READ_ELEMENT_LIMIT == al._READ_ELEMENT_LIMIT
+        assert orchestrator.OBS_READ_LINK_LIMIT == al._READ_LINK_LIMIT
+
+    def test_训练视图的读窗口不宽于读回的量(self):
+        """训练视图可以再压（R1 的噪声剔除），但**不能比读回来的宽**——
+        宽了就是在承诺模型看过它没看过的东西。"""
+        from trajectory_pipeline.assembler import observation_view
+        from trajectory_pipeline.executor import agent_loop as al
+
+        assert observation_view.VIEW_READ_BODY_CHARS <= al._READ_BODY_CHARS
+        assert observation_view.VIEW_READ_ELEMENTS <= al._READ_ELEMENT_LIMIT
+        assert observation_view.VIEW_READ_LINKS <= al._READ_LINK_LIMIT
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1217,37 +1430,47 @@ class Test任务类型:
 
 
 class Test契约漂移:
-    """§3.9 最后一行：agent_loop 实际发出的 tool 集必须与训练动作
-    空间的模型可见集**一致**。
+    """§3.9 最后一行：agent_loop 实际发出的 tool 集必须被训练动作空间
+    的模型可见集**包含**。
 
     ⚠️ **2026-10-20 起这条口径从「相等」改成「包含」**（增量六十二）。
+    **2026-11-02（R4-1）起三条读原语进了 agent 白名单**——它们原本只是
+    aria 面的能力声明（pull 模式未落地时没人发），现在模型真的会发。
 
-    旧口径是「**同一个集合**」：模型可见集 == agent 实际能发的 4 个。
-    增量六十二给训练侧的 `tools[]` 补了 7 条**能力声明**（模型被告知
-    存在，但本项目没有任何真实运行产生过它们的调用）——于是模型可见集
-    变成 11 条，而采集期的 agent 仍然只能发 4 个。
-
-    这不是漂移，是**两个不同的集合**，各有各的职责：
+    两个集合的职责不同：
 
     - :data:`AGENT_TOOLS` —— **执行端**的白名单。采集期的模型发出
       白名单外的动作，是**协议违反**（不是「先记下来」），要打回。
     - 模型可见集 —— **训练侧**的声明。样本的 `tools[]` 告诉模型
       「这个工具空间长这样」。
 
-    所以关系是 **包含**而不是相等：agent 能发的**每一个**动作都必须在
+    关系是 **包含**而不是相等：agent 能发的**每一个**动作都必须在
     模型可见集里（否则模型被告知的工具它发不出），反过来不要求——
     多出来的那几条是能力声明，采集期会按 ``_GUIDANCE_BAD_TOOL`` 打回。
 
-    ⚠️ 代价是明说的：训练出的模型**可能**去调那 7 条能力声明。若部署
-    时给它的工具空间就是这 11 条，它调 `web_search` 不会被 v2 的
+    ⚠️ **比的是生产面 ``camofox-1``，不是默认面**（R4-1）：agent 运行时
+    只跑在它上面，三条读原语也只在这个 aria 面声明。``TOOL_SPECS`` 是
+    默认面（obscura，push 模式的历史方言）——拿它去比会把「读原语只在
+    pull 模式的面里」读成漂移，而给 obscura 补那三条是**改历史样本的
+    训练契约**。
+
+    ⚠️ 代价是明说的：训练出的模型**可能**去调那几条能力声明。若部署
+    时给它的工具空间就是生产面的可见集，它调 `web_search` 不会被 v2 的
     `agent_loop` 接受。这是「能力声明」这个设计的已知代价，靠
     ``meta.tools_unused`` 逐个列名让人工复核看得见。
     """
 
-    def test_agent能发的动作都在模型可见集里(self):
-        visible = frozenset(
-            spec.name for spec in TOOL_SPECS if spec.visible_to_model()
+    @staticmethod
+    def _production_visible() -> frozenset[str]:
+        """生产面（``camofox-1``）的模型可见工具名。"""
+        return frozenset(
+            spec.name
+            for spec in TOOL_SPECS_BY_SURFACE[toolcatalog.SURFACE_CAMOFOX]
+            if spec.visible_to_model()
         )
+
+    def test_agent能发的动作都在模型可见集里(self):
+        visible = self._production_visible()
         assert set(AGENT_TOOLS) <= set(visible), (
             "agent 能发的动作必须都声明给模型——否则模型被告知了一个"
             "它发不出的工具"
@@ -1255,26 +1478,26 @@ class Test契约漂移:
 
     def test_能力声明多出来的那些在动作流词汇表外(self):
         """能力声明**不是**动作空间的一部分：控制流真会发的原语清单
-        是 :data:`actions.TOOLS`，能力声明那 7 条不在里面。
+        是 :data:`actions.TOOLS`，能力声明那几条不在里面。
 
         这条守住「声明不冒充能力」——多列一个进 ``actions.TOOLS``，
         就会训出一批永远不会被真实运行验证过的动作。
+
+        ⚠️ 读原语**不算能力声明**：它们是 ``family="collection"``，
+        而且 R4-1 起真会被 agent 发出（见 catalog 的注释）。
         """
-        visible = {
-            spec.name for spec in TOOL_SPECS if spec.visible_to_model()
-        }
-        declared_only = visible - set(AGENT_TOOLS)
-        assert declared_only, "当前口径：模型可见集应当大于 agent 的四工具"
+        declared_only = self._production_visible() - set(AGENT_TOOLS)
+        assert declared_only, "当前口径：模型可见集应当大于 agent 白名单"
         assert not (declared_only & set(actions.TOOLS)), (
             f"能力声明混进了动作流词汇表: {declared_only & set(actions.TOOLS)}"
         )
 
-    def test_四工具都在动作流词汇表内(self):
+    def test_agent白名单都在动作流词汇表内(self):
         """A2 不引入任何 P1 未见过的新动作——控制流真会发的原语清单
         是 TOOLS，agent 只是它的子集。"""
         assert set(AGENT_TOOLS) <= set(actions.TOOLS)
 
-    async def test_实际发出的动作都落在四工具内(self):
+    async def test_实际发出的动作都落在白名单内(self):
         ctx = await _run(
             FakeAgentLLM([
                 {"tool": "fill", "ref": "e1", "params": {"text": "功夫"}},

@@ -81,7 +81,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Final, Literal, Mapping
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Final,
+    Iterable,
+    Literal,
+    Mapping,
+)
 
 from trajectory_pipeline.common.elements import ELEMENT_VOCAB_HTML_TAG
 from trajectory_pipeline.executor import actions
@@ -96,7 +104,11 @@ from trajectory_pipeline.executor.gatekeeper import (
     Verdict,
     intercept,
 )
-from trajectory_pipeline.perception.base import Observation
+from trajectory_pipeline.perception.base import (
+    InteractiveElement,
+    LinkItem,
+    Observation,
+)
 
 if TYPE_CHECKING:  # 依赖方向：executor 不 import llm（见模块 docstring）
     from trajectory_pipeline.executor.browser.page_driver import PageDriver
@@ -111,7 +123,7 @@ else:
 # 动作空间
 # ═══════════════════════════════════════════════════════════════════════
 
-#: agent 的四工具（D-B1 + §5）：**执行端的白名单**。
+#: agent 的工具面（D-B1 + §5 + R4-1）：**执行端的白名单**。
 #:
 #: ⚠️ **2026-10-20 起，它与训练侧「模型可见集」不再是同一个集合**
 #: （增量六十二）。两个集合各有职责：
@@ -119,24 +131,30 @@ else:
 #: - 本常量 = **采集期**模型能发的动作。白名单外的动作是**协议违反**
 #:   （不是「先记下来」），按 ``_GUIDANCE_BAD_TOOL`` 打回。
 #: - :func:`assembler.schema.ToolSpec.visible_to_model` 的可见集 =
-#:   **训练侧**的声明（11 条：4 已用 + 7 能力声明）。训练样本的 ``tools[]``
-#:   告诉模型「这个工具空间长这样」，而采集期它只被允许用这 4 个。
+#:   **训练侧**的声明。训练样本的 ``tools[]`` 告诉模型「这个工具空间长
+#:   这样」，而采集期它只被允许用这里的这些。
 #:
 #: 关系是**包含**：agent 能发的每一个动作都在可见集里（否则模型被告知了
-#: 一个它发不出的工具）；反过来不要求——多出来的那 7 条是**能力声明**，
+#: 一个它发不出的工具）；反过来不要求——多出来的是**能力声明**，
 #: 本项目没有任何真实运行产生过它们的调用。
 #:
+#: 2026-11-02（R4-1）起加入三条**读原语**：pull 模式下「看什么」还给
+#: 模型，读因此是动作（进 ``tool_calls``），与执行器推的整页回执分开。
+#:
 #: ``new_tab`` / ``close_tab`` 是执行器自己的会话管理动作，两边都排除：
-#: 模型不该选，选了就是协议违反。A2 不引入任何 P1 未见过的新动作。
+#: 模型不该选，选了就是协议违反。
 #: 两处漂移由
 #: ``tests/unit/test_agent_loop.py::Test契约漂移`` 双向盯住。
-AGENT_TOOLS: Final = ("goto", "click", "fill", "press")
+AGENT_TOOLS: Final = (
+    "goto", "click", "fill", "press",
+    "snapshot", "interactive", "links",
+)
 
 #: 输出契约原文（§3.1 wire format）。**随 system prompt 注入**——契约与
 #: 提示词同源，改一处改两处必然分叉，而分叉时模型看到的是旧契约。
 _WIRE_FORMAT: Final = (
     '{"think": "一句话：我现在看到什么、打算做什么",'
-    ' "tool": "goto|click|fill|press",'
+    ' "tool": "goto|click|fill|press|snapshot|interactive|links",'
     ' "ref": "e5",'
     ' "params": {"url": "..."},'
     ' "done": false,'
@@ -150,6 +168,10 @@ _PARAM_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
     "click": (),
     "fill": ("text",),
     "press": ("key",),
+    # 读原语**不收参数**：条数与字数上限是执行层护栏（catalog 同款口径）。
+    "snapshot": (),
+    "interactive": (),
+    "links": (),
 }
 
 
@@ -230,6 +252,15 @@ _INTERACTIVE_WINDOW: Final = 50
 #: 裁的只是喂模型的那一份投影。
 _BODY_WINDOW: Final = 4000
 
+#: **读原语的窗口**（R4-1）：越过普通回执，但仍以 P1 能存下的量为上限。
+#: 读是模型主动要的，所以要给得比推送多；但训练/取证都不能出现
+#: 「模型看过、存档没存」的引用，因此三条窗口与
+#: :data:`~trajectory_pipeline.executor.orchestrator.OBS_READ_*` 逐字对齐
+#: （由 ``tests/unit/test_agent_loop.py`` 的常量同步测试盯住）。
+_READ_BODY_CHARS: Final = 6000
+_READ_ELEMENT_LIMIT: Final = 200
+_READ_LINK_LIMIT: Final = 200
+
 
 def _visible_interactive(obs: Observation) -> tuple[Any, ...]:
     """**渲染进对话的那一份**可交互元素。
@@ -249,7 +280,33 @@ def _render_observation(obs: Observation) -> str:
     （§3.2 第 2 条：DEGRADED 不拦，观察降级照进对话）。它自己看着降级
     的观察去决定换路，比代码替它遮掉更接近真实——轨迹里那一步也确实
     「看到的是残骸」。
+
+    **读回执只回被读的那一块**（R4-1）：``snapshot`` 只有正文、
+    ``interactive`` 只有元素表、``links`` 只有链接表，并用 ``read`` 标出
+    这是哪一块。普通回执保持原形状不变——多一个键会让每一步都多一层
+    「这是不是读」的噪声，而普通步本来就没有被读块之外的信息可省。
     """
+    if obs.read:
+        payload: dict[str, Any] = {
+            "read": obs.read,
+            "url": obs.url,
+            "title": obs.page_title,
+            "truncated": obs.truncated,
+            "degraded": list(obs.degraded),
+        }
+        if obs.read == "snapshot":
+            payload["body"] = (obs.body_text or "")[:_READ_BODY_CHARS]
+        elif obs.read == "interactive":
+            payload["interactive"] = [
+                {"ref": el.ref, "role": el.role, "name": el.name}
+                for el in obs.interactive_elements[:_READ_ELEMENT_LIMIT]
+            ]
+        elif obs.read == "links":
+            payload["links"] = [
+                {"text": item.text, "href": item.href}
+                for item in obs.links[:_READ_LINK_LIMIT]
+            ]
+        return json.dumps(payload, ensure_ascii=False)
     return json.dumps(
         {
             "url": obs.url,
@@ -492,6 +549,10 @@ _GUIDANCE_ACTION_FAILED: Final = (
 _GUIDANCE_OBS_FAILED: Final = (
     "（上一步动作后取不到页面快照：{error}）请换一个动作，或如实报告放弃。"
 )
+_GUIDANCE_READ_FAILED: Final = (
+    "（上一步读取 {kind} 失败：{error}）读不到就先别依赖它："
+    "换一种读法、换一个动作，或如实报告放弃。"
+)
 #: 终局自报了一条没见过的 URL。与 :data:`_GUIDANCE_BAD_REF` 是**同一条
 #: 纪律的两端**：那个管「点哪个元素」（动作期、可逆性为零），这个管
 #: 「报哪条链接」（终局期、进了 P2 就不可逆）。
@@ -572,15 +633,17 @@ def _think_payload(think: str) -> dict[str, Any]:
     不靠 executor import rationale（依赖方向纪律），靠
     ``tests/contract`` 的比对测试钉住。
 
-    ``reason`` 恒为 ``"native-think"``：writer 成功时它写 ``""``，两个
-    取值不冲突，而「这条 rationale 是原生 think 还是 writer 产物」在
-    P1 里就有了机器可读的来源标记——A3 的同分不同质核对（scripted 事后
-    总结 vs agent 原生动机）读的就是它。
+    ``reason`` 恒为 :data:`~trajectory_pipeline.executor.actions.NATIVE_THINK_REASON`
+    （``"native-think"``）：writer 成功时它写 ``""``，两个取值不冲突，而
+    「这条 rationale 是原生 think 还是 writer 产物」在 P1 里就有了机器可读
+    的来源标记——A3 的同分不同质核对（scripted 事后总结 vs agent 原生动机）
+    读的就是它。字面值只在 :mod:`trajectory_pipeline.executor.actions` 定义
+    一次：写入口（本函数）与覆盖守卫（``attach_rationale``）必须认同同一份。
     """
     return {
         "status": "written",
         "rationale": {"text": think, "conclusion": ""},
-        "reason": "native-think",
+        "reason": actions.NATIVE_THINK_REASON,
         "degraded": [],
     }
 
@@ -816,7 +879,10 @@ def _validate_selected(
 
 
 def _build_action(
-    instr: ActionInstruction, obs: Observation
+    instr: ActionInstruction,
+    obs: Observation,
+    *,
+    read_elements: Iterable[InteractiveElement] = (),
 ) -> "actions.Action":
     """把指令落成 :class:`~trajectory_pipeline.executor.actions.Action`。
 
@@ -824,8 +890,19 @@ def _build_action(
     的 docstring）。:func:`actions.target_of` 解不出时返回 ``target=None``
     照实记——但 I6 已保证它能解出，那条 ``None`` 分支留着是为了不靠
     「上游一定对」这种假设。
+
+    ``read_elements`` 是**本轮 ``interactive`` 读到的元素**（R4-1）。
+    整页回执只带前 50 个，模型读回第 51–200 个之后要能点它们——只把
+    ``ref`` 并进 I6 白名单是不够的：目标解析也得看得见那些元素，否则
+    aria 面会因 ``target=None`` 抛 :class:`actions.UnaddressableTarget`，
+    而模型看到的引导是「I6 存疑」，明明是它**刚照规矩读过**的元素。
     """
-    target = actions.target_of(instr.ref, obs.interactive_elements)
+    if instr.tool in actions.READ_TOOLS:
+        return actions.read(instr.tool)
+    target = actions.target_of(
+        instr.ref,
+        tuple(obs.interactive_elements) + tuple(read_elements),
+    )
     if instr.tool == "goto":
         return actions.goto(_as_text(instr.params.get("url")))
     if instr.tool == "click":
@@ -1046,6 +1123,11 @@ def _system_prompt(task: AgentTask, budget: AgentBudget) -> str:
         f"- click：点击一个可交互元素（ref 来自观察的 interactive 列表）\n"
         f"- fill：往输入框填文本（ref 同上，params.text）\n"
         f"- press：按一个键（params.key，如 Enter）\n"
+        f"- snapshot：读当前页正文（最多 6000 字）；不改页面\n"
+        f"- interactive：读当前页可交互元素清单（最多 200 条，含 ref）；不改页面\n"
+        f"- links：读当前页链接清单（最多 200 条）；不改页面\n"
+        f"读原语用来补看回执里被截断的部分：一次只读一块，读完拿到的就是"
+        f"那一块；重复读同一块不会得到新信息，还会消耗一步预算。\n"
         f"每步输出且只输出一个 JSON 对象：\n{_WIRE_FORMAT}\n"
         f"终局格式（done=true 时 report 必填）：\n{_REPORT_FORMAT[task.kind]}\n"
         f"- done=false 时 report 必须是 null\n"
@@ -1084,6 +1166,7 @@ class _Loop:
         "obs", "messages", "_pending_obs", "_pending_notes",
         "_guidance_hits", "_consecutive_failures", "_steps_taken",
         "_calls_made", "_backend", "_escalated", "_seen_hrefs", "_site_url",
+        "_read_elements",
     )
 
     def __init__(
@@ -1136,6 +1219,14 @@ class _Loop:
         #: 个集合：那个是「最近一页的可交互元素」，这个是「整条轨迹的
         #: 链接」，因为终局可能在好几个页面之后才报。
         self._seen_hrefs: set[str] = set()
+        #: ``interactive`` 读到的元素（R4-1）。**I6 白名单的第二来源，
+        #: 也是目标解析的第二来源**：普通回执只渲染前 50 个元素，而读可以
+        #: 拿到 200 个——模型读到了第 51–200 个却点不了，读原语就白加了。
+        #: 存元素而不只存 ref：``_build_action`` 要拿它解出语义目标，
+        #: 否则 aria 面会因 ``target=None`` 判成「ref 溯源不到」。
+        #: 并集只在「没有发生导航」的读步上累积；任何一次非读动作后清空
+        #: （ref 是会话内句柄）。
+        self._read_elements: dict[str, InteractiveElement] = {}
         self._absorb_links(initial_obs)
         self._seen_hrefs.add(task.url)
 
@@ -1303,7 +1394,9 @@ class _Loop:
         会让「点了三次都点不动」直接吃掉整个步数预算，而那三次其实
         **哪儿都没去**。
         """
-        action = _build_action(instr, self.obs)
+        action = _build_action(
+            instr, self.obs, read_elements=self._read_elements.values()
+        )
         index = self.steps.act(action)
         if instr.think.strip():
             # think 是**动作前动机**（决定这一步时想的），与执行成败无关：
@@ -1311,6 +1404,41 @@ class _Loop:
             # 模型当时为什么点，正是该被核查的原文。空 think 不挂：
             # 「没说话」保持缺件形态，不与「说了但没落」相混。
             self.steps.attach_rationale(index, _think_payload(instr.think))
+
+        # ── 读原语：只读、不更新整页观察（R4-1）────────────────────
+        #
+        # 三条纪律与普通动作不同，且必须同时成立：
+        # ① **不更新 ``self.obs``**——读是「看同一页的另一块」，不是导航；
+        #    更新了会让下一次 click 的 ref 白名单指向部分观察，整页元素
+        #    反而变成不可点。
+        # ② **不记死循环**——读不改变页面，连续读同一块被 DeadLoop 判成
+        #    「原地打转」会把「模型反复确认证据」误判成故障。步数预算仍然
+        #    计一步：读是要花 llm_call 的动作，不设上限就会读完整个预算。
+        # ③ **不触发拦截**——拦截判的是页面事实（登录墙/付费墙/死循环），
+        #    读到的部分观察不是新的页面事实。
+        if instr.tool in actions.READ_TOOLS:
+            try:
+                read_obs = await self._read(instr)
+            except DriverError as exc:
+                # 读失败不收口：模型可以换一种读法，或按已有观察继续。
+                # 落 P1 的是「读了但没读到」，与「没读」是两回事。
+                self.steps.settle(index, error=f"{instr.tool} 读取失败: {exc}")
+                self._note(_GUIDANCE_READ_FAILED.format(
+                    kind=instr.tool, error=exc))
+                return None
+            self.steps.settle(index, read_obs)
+            self._pending_obs = read_obs
+            if instr.tool == "links":
+                self._absorb_links(read_obs)
+            elif instr.tool == "interactive":
+                # 读到的元素并进 I6 白名单与目标解析：模型看过第 51–200 个
+                # 元素后必须点得了它们（见 ``_ref_whitelist`` / ``_build_action``）。
+                self._read_elements.update(
+                    (el.ref, el) for el in read_obs.interactive_elements if el.ref
+                )
+            self._steps_taken += 1
+            return None
+
         try:
             await _apply(
                 self.driver,
@@ -1327,6 +1455,10 @@ class _Loop:
                 _GUIDANCE_ACTION_FAILED.format(tool=instr.tool, error=exc)
             )
             return None
+        # 非读动作发出后，上一轮读到的 ref 句柄不再可信（可能已换页）。
+        # **在 observe 之前清**：observe 失败时页面也可能已经动了，
+        # 「动作没成」不等于「ref 还在」。
+        self._read_elements.clear()
         try:
             obs = await self.driver.observe(max_chars=self.max_chars)
         except DriverError as exc:
@@ -1350,6 +1482,66 @@ class _Loop:
         if disp is not None:
             return self._close(reason=disp.reason, verdict=disp.verdict)
         return None
+
+    async def _read(self, instr: ActionInstruction) -> Observation:
+        """执行一条读原语，返回**只带被读块**的观察。
+
+        读的不是「新页面」，是**同一页的另一块**：所以 ``url`` / ``title``
+        都沿用最近一次整页观察，不重新导航；``read`` 标明是哪一块，
+        其余字段为空/0 是「这次没读」而不是「页面上没有」。
+        """
+        base = self.obs
+        kind = instr.tool
+        if kind == "snapshot":
+            degraded: list[str] = []
+            snap = await self.driver.snapshot(
+                max_chars=max(self.max_chars or 0, _READ_BODY_CHARS),
+                degraded=degraded,
+            )
+            return Observation(
+                url=snap.url,
+                page_title=snap.title,
+                body_text=snap.body,
+                elements_total=0,
+                links_total=0,
+                element_vocabulary=base.element_vocabulary,
+                video_tag_count=base.video_tag_count,
+                iframe_count=base.iframe_count,
+                max_chars=snap.max_chars,
+                truncated=snap.truncated,
+                raw_len=snap.raw_len,
+                stripped_ratio=snap.stripped_ratio,
+                body_source=snap.body_source,
+                degraded=tuple(dict.fromkeys(degraded)),
+                read="snapshot",
+            )
+        if kind == "links":
+            links = await self.driver.links(limit=_READ_LINK_LIMIT)
+            return Observation(
+                url=base.url,
+                page_title=base.page_title,
+                body_text="",
+                links=tuple(LinkItem(text=l.text, href=l.href) for l in links),
+                links_total=len(links),
+                element_vocabulary=base.element_vocabulary,
+                video_tag_count=base.video_tag_count,
+                iframe_count=base.iframe_count,
+                body_source="missing",
+                read="links",
+            )
+        elements = await self.driver.interactive(limit=_READ_ELEMENT_LIMIT)
+        return Observation(
+            url=base.url,
+            page_title=base.page_title,
+            body_text="",
+            interactive_elements=tuple(elements),
+            elements_total=len(elements),
+            element_vocabulary=base.element_vocabulary,
+            video_tag_count=base.video_tag_count,
+            iframe_count=base.iframe_count,
+            body_source="missing",
+            read="interactive",
+        )
 
     # ── 拦截与处置 ────────────────────────────────────────────
 
@@ -1514,10 +1706,15 @@ class _Loop:
 
     def _ref_whitelist(self) -> frozenset[str]:
         """I6 白名单——**取自渲染进对话的那一份**（见
-        :func:`_visible_interactive`）。"""
+        :func:`_visible_interactive`），外加本轮 ``interactive`` 读到的元素。
+
+        ⚠️ 读的并集**只在读之后、下一次非读动作之前**有效：``ref`` 是
+        会话内句柄，导航后失效；把历史读到的 ref 一直留着，等于允许模型
+        在另一页上点一个同名的旧句柄——点错页面且不可逆。
+        """
         return frozenset(
             el.ref for el in _visible_interactive(self.obs)
-        )
+        ) | set(self._read_elements)
 
     def _close(
         self, *, reason: str, verdict: Verdict | None, branch: str | None = None
