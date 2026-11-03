@@ -72,13 +72,29 @@ def _quote(title: str) -> str:
     return f"《{title}》" if title else ""
 
 
-def _site_label(url: str) -> str:
-    """站点 → 给用户看的标签。只取 host，**不带协议**（见模块 docstring）。"""
-    url = str(url or "").strip()
-    if not url:
-        return "该站点"
-    parts = urlsplit(url if "://" in url else f"//{url}")
-    return parts.hostname or url
+def _site_label(outcome: Mapping[str, Any]) -> str:
+    """一条站点结论 → 给用户看的标签。只取 host，**不带协议**。
+
+    ⚠️ **优先取落地页**（``url``），取不到才退回候选链接（``site_url``）。
+
+    别拿候选链接的 host 当站点名：候选常常是搜索结果的跳转链接
+    （``http://www.baidu.com/link?url=…``）⇒ 取它的 host 等于把
+    **搜索引擎**写成「被排除的站点」。实测 A13 那 8 份存档里，per-Run
+    的失败清单大半是 ``www.baidu.com``——用户在训练语料里读到的是
+    「怪百度」，而真正打不开的是落地那个站。
+
+    ``url`` 缺失（极少见的记账残缺）才退回 ``site_url``；两个都没有就
+    说「该站点」——**不编**。
+    """
+    for key in ("url", "site_url"):
+        raw = str(outcome.get(key) or "").strip()
+        if not raw:
+            continue
+        parts = urlsplit(raw if "://" in raw else f"//{raw}")
+        host = parts.hostname
+        if host:
+            return host
+    return "该站点"
 
 
 def _reason(branch: Any) -> str:
@@ -89,7 +105,7 @@ def _excluded_text(failed: Sequence[Mapping[str, Any]]) -> str:
     items: list[str] = []
     seen: set[tuple[str, str]] = set()
     for o in failed:
-        label = _site_label(str(o.get("site_url") or o.get("url") or ""))
+        label = _site_label(o)
         reason = _reason(o.get("branch"))
         key = (label, reason)
         if key in seen:

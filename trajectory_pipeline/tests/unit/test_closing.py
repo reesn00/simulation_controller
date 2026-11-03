@@ -104,6 +104,41 @@ class Test失败答复:
         assert "b.test（内容损坏，排除）" in text
 
 
+class Test站点标签取落地页:
+    """候选链接常常是搜索结果的跳转链接（``baidu.com/link?url=…``）。
+
+    取候选的 host ⇒ 把**搜索引擎**写成「被排除的站点」。实测 A13 那
+    8 份存档里，per-Run 的失败清单大半是 ``www.baidu.com``。
+    """
+
+    def test_优先取落地页(self):
+        text = closing.closing_text(closing.ClosingFacts(
+            title="功夫",
+            outcomes=({
+                "url": "https://www.teyihealth.com/xcvod/35193.html",
+                "site_url": "http://www.baidu.com/link?url=abc",
+                "branch": "broken",
+            },),
+        ))
+        assert "www.teyihealth.com（内容损坏，排除）" in text
+        assert "baidu" not in text
+
+    def test_落地页缺失才退回候选(self):
+        text = closing.closing_text(closing.ClosingFacts(
+            title="功夫",
+            outcomes=({"site_url": "https://a.test/1", "branch": "blocked"},),
+        ))
+        assert "a.test（地区限制/验证码/反爬阻断，排除）" in text
+
+    def test_两个都没有时不编(self):
+        text = closing.closing_text(closing.ClosingFacts(
+            title="功夫",
+            outcomes=({"branch": "blocked"},),
+        ))
+        assert "该站点（地区限制/验证码/反爬阻断，排除）" in text
+        assert "http" not in text
+
+
 class Test没有结论的答复:
     def test_搜索单元交代下一步(self):
         text = closing.closing_for_unit(title="功夫", unit="search")
