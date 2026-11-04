@@ -15,7 +15,7 @@
 两个判据、一个动作。动作沉成模块，判据由调用方传进来——
 因为判据是**那批数据的结论**，不是通用参数。
 
-八条踩过的坑，每一条都写进了对应函数
+九条踩过的坑，每一条都写进了对应函数
 --------------------------------------
 1. ⚠️ **两份都改**（原档 + ``.reviewed.json``）——2026-10-28 改。
    原先只动原档，理由是「复核档是 ``review --apply`` 从原档合并出来的，
@@ -93,6 +93,22 @@
    且 ``cmd build`` 会报「混批：pre_action 与 post_hoc 同时存在」。
 
    ⇒ 同步复核档的**唯一**正确姿势是**两份都改**（坑 1），不是重新合并。
+9. ⚠️ **标签要跟着分支走**（:func:`apply_downgrades`）。
+   ``branch_label`` 是分支的**中文名**，而 ``branch`` 是**结论**——两者
+   必须同源。降级只改 ``branch`` 不改 ``branch_label`` ⇒ 记录会变成
+   「分支是 ``unresolved``、标签却写着「Subscription-based playback」」
+   ⇒ **自相矛盾**。而下游取的是**行内**的 ``branch_label``
+   （:func:`evaluation.golden.builder._code_block`、
+   :func:`evaluation.golden_ls.exporter` 的标签文本）⇒ 矛盾一路传到
+   LS 的人核卡上，**人看到的是「付费墙」**，机器读到的分支却是「未判定」。
+   ⚠️ **原标签不丢**：``branch_before_downgrade`` 记着原分支，中文名从
+   :data:`executor.branches.BRANCH_LABELS` 按分支查即可还原。
+   ⚠️ **这不是本模块一家的事**：改分支的写者有**三个**
+   （本模块 · :func:`executor.relabel._relabel_outcome` ·
+   :func:`executor.review_queue.apply_verdicts`），三处现在**共用**
+   :func:`executor.branches.branch_label_of` ——标签的取法只有一处。
+   历史存量（降级 55 · 改判 14 · 人裁 29）由 :mod:`executor.label_sync`
+   （``cli sync-labels``）修，判据见那个模块的 docstring。
 """
 
 from __future__ import annotations
@@ -105,6 +121,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from trajectory_pipeline.executor.archive import REVIEWED_SUFFIX, select_archives
+from trajectory_pipeline.executor.branches import branch_label_of
 
 #: 降级的目标分支。它**不在** ``branches.NON_SAMPLE_BRANCHES`` 里——
 #: 「unresolved 不是负样本」是硬纪律，混进池里会污染它。
@@ -224,6 +241,13 @@ def apply_downgrades(archive: dict[str, Any], *,
             continue
         rec["branch_before_downgrade"] = old
         rec["branch"] = TARGET_BRANCH
+        # ⚠️ **标签要跟着分支走**（坑 9）：``branch_label`` 是分支的**中文名**，
+        # 不改它 ⇒ 记录会变成「分支是 unresolved、标签却写着
+        # 「Subscription-based playback」」——**自相矛盾**，而下游
+        # （``evaluation/golden/builder.py`` 的 ``_code_block``、
+        # ``evaluation/golden_ls/exporter.py`` 的标签文本）取的是**行内**的
+        # ``branch_label`` ⇒ 矛盾会一路传到 LS 的人核卡上。
+        rec["branch_label"] = branch_label_of(TARGET_BRANCH)
         rec["evidence"] = (f"[原判 {old}] {rec.get('evidence') or ''}"
                            f"\n\n{reason}")
         # 负样本标记必须摘掉（模块 docstring 坑 4 的同一原则）：

@@ -1,7 +1,7 @@
 # TODO 台账 · 全域未闭环项汇总
 
 > **2026-11-03 · 按 owner 指令裁剪（只留阻塞主线）**：本册原 **4500 行**，现**只保留「§高 · 阻塞主线指标」**
-> 的全表（**H-01～H-25**）与各 H 条的**详解**（§停点 · §2026-10-21 的 H-10～H-13 · §2026-10-22 的 H-18 ·
+> 的全表（**H-01～H-27**）与各 H 条的**详解**（§停点 · §2026-10-21 的 H-10～H-13 · §2026-10-22 的 H-18 ·
 > §2026-11-02「训练语料整改」的 H-21～H-25）。其余内容（**中 / 低 / 校准回路 / 各按日期的「新增开口项详解」里的
 > M·L·Q 条目 / 门禁读数 / 过程补记 / 环境依赖 / ⛔ 不能做 / 记录文档地图 / 台账保质期**）**正文已删**；
 > 仅**六个被外部文档锚点引用的章节**在文末留了**标题占位**（防 404）。被删正文可从
@@ -286,6 +286,8 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **H-24** | ★**（2026-11-02 新增）收尾是内部记账语言**——分支枚举名 + 计数 + **deprecated 分支**进了训练语料，且 P3/T 两侧不是同一句话 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.4 / §3 R2](../设计方案/23-训练轨迹语料整改方案.md#14-终局答复) · [`views.py:422`](../../assembler/views.py#L422) · [`task_view.py:370`](../../assembler/task_view.py#L370) · [`branches.py:80`](../../executor/branches.py#L80) | P3 **131/131** · T **65/65** 末条 assistant 都是代码合成的「任务总结：…处置：…分支分布：…」；`login_wall_or_blocked` 这类 **deprecated 分支**也在里头；**两侧刻意不同**（P3 有 reflection 结论无分支分布，T 反之，INC46）⇒ 同一条轨迹在**两份交付物里有两个结尾**。修法 R2-1/R2-2：收尾改「**面向用户的答复**（找不到 + 已排除的站点 + 原因）」，两侧同一句话——✅ **O-5 要求两段投影一致 ⇒ 收尾必须同一句话**（交付要求，不是排版偏好）。验收 **A3**：训练集收尾里分支枚举名出现次数 = **0**。**✅ 代码已落地（2026-11-02，R2-1/R2-2/R2-3）**：`assembler/closing.py` 单一真源、两侧同一函数、R2-3 接进 P2 `gate`；A3 已取数 ✓（131/131 = 0），**A4 待新批次**；存量 44 条违约样本未回填 |
 | **H-25** | ★**（2026-11-02 新增）观察整页快照 + 死循环步**：噪声压倒信息、重复动作在教「再点一次」 | 06 组装 | [06 §未闭环](06-组装域.md#本域已知未闭环项) · [方案 23 §1.5 / §3 R1·R3](../设计方案/23-训练轨迹语料整改方案.md#15-观察与动作) · `assembler/observation_view.py` · [`views.py:123`](../../assembler/views.py#L123) · [`task_view.py:180`](../../assembler/task_view.py#L180) | 单条回执 1000~3000 字、任务相关不足 10%；「相邻同动作 + 观察逐字相同」**469** 处，有重复动作的视图 **64/65**、重复步 **1558/4071 ≈ 38%**，`goto` 1703 次只有 **1183** 个唯一 URL，59/65 视图重复同一 `goto` ≥3 次（最多 **19** 次）。修法 R1：回执改「标题 / 网址 / 任务相关摘要 / 限量元素表 / 限量链接」，**P1 存档全文一个字不动**（存档是证据，文本是语料）；R3-1/R3-2：死循环步剔出或显式标记。⚠️ **降级标记保留**（`[采集降级: body_text]` / 「本步没有取到页面内容」是 fail-closed 的一部分）。验收 **A5/A6/A7**：回执中位数 ≤ **800** 字 · 相邻同动作同类步 = **0** · 重复步占比 ≤ **10%**（A7 口径见 Q-31）。✅ **R1 + R3-1/R3-2 代码已落地（2026-11-02）**：A5 ✓（3026→772 字）· A6 ✓（存量重算残留 0）· ✅ **A7 ✓**（owner 2026-11-02 裁定方案 A：窄口径「同动作 + 同观察 / 保留步」P3 **7.0%** / T **2.5%**，均 ≤10%；宽口径 35.7% / 21.3% 只作审计基线；见下 §H-25 与 **Q-31**） |
 
+| **H-26** | ★**（2026-11-04 新增）agent 路径的前置事实核已补上 ⇒ **两处判据缺口因此显形**：真付费墙会被降级 · 登录墙没有「可执行」的前置事实核** | 02 感知 / 03 标签 | 编年史 §增量一百二十三 · [`agent_loop.py::_guarded_branch`](../../executor/agent_loop.py) · [`branches.py::precondition_failed`](../../executor/branches.py) · [`test_agent_loop.py::Test分支前置事实核`](../../tests/unit/test_agent_loop.py) | ✅ **代码已实施**（2026-11-04）：agent 路径的分支归因现在**过一遍** `branches.precondition_failed`——**scripted 路径的同一份判据**（原来只有 `RunLedger.record_from` 核，agent 路径不走它 ⇒ CLAUDE.md「贴标签前核前置事实」在 agent 路径上**一直是空的**）⇒ 门禁的「**像**付费墙」（强弱关键词）不再直接折成 `subscription_wall`（结论口径要**门禁语境**）⇒ **导航栏挂着「开通VIP会员」的免费页不再被记成「这里看不了」**；不成立 ⇒ 落 `unresolved` + 追一句「`[记账降级] 本该记 X，但…`」⇒ 门禁事件分支 / `AgentOutcome.branch` / 台账行**三者一致**。**新增 5 条单测**（导航栏 CTA ⇒ `unresolved` · 真付费墙仍 `subscription_wall` · 分支一致 · 理由进 `reason` · 登录墙不受影响）<br>⚠️ **两个缺口**：① **真付费墙也会被降级**（**2026-11-04 已闭**——判据二「订阅价目门禁」落地，见本行末尾）——`paywall_evidence` 只认 L1 门禁短语 / L2 CTA+同句观看语境 / L1.5 错误+会员 commerce，**实测对部分真付费墙返回空**（youku《功夫》· fun.tv）⇒ 这些站现在落 `unresolved`（**不进池**）⇒ **「每条分支都必须有对应样本入库」这条纪律在付费墙这一支上暂时是反的**（真负样本被降成非负样本）；② **`login_required` 没有「可执行」的前置事实核**——今天只有两条分支真的在核：`subscription_wall`（门禁语境 `paywall_evidence`）与 `component_unverified`（同页守卫）；`BRANCH_PRECONDITION` 里 `login_required` / `blocked` / `partial_free` / `broken` **只有文案、没有可执行核**（2026-10-19 增量六十·方案 X **刻意**窄的：当时守卫覆盖 5 支，实测 **46** 次触发**全是误伤** ⇒ 窄到只剩 1 支）⇒ **代价**：`login_required` 在 agent 路径上**仍是裸折算**（门禁判「像登录墙」就直接贴分支）<br>✅ **缺口①已闭（2026-11-04）**：owner 拍「给这一支补第二条可执行判据」⇒ **判据二 · 订阅价目门禁**落地（[`rule_perceptor.py::paywall_price_evidence`](../../perception/rule_perceptor.py)：**页面级三要素同现**——订阅价目 + 开通动作 + 权益承诺，**外加登录门排除**）⇒ 前置事实核改认**判据一 ∪ 判据二**（[`subscription_wall_evidence`](../../perception/rule_perceptor.py)）⇒ youku《功夫》· fun.tv 这类「价目 + 开通 + 权益」但**不写「订阅后观看」措辞**的真付费墙**重新贴得上** `subscription_wall`（实测找回 **67** 行：youku **45** · iqiyi **15** · fun.tv **4** · mgtv **3**）。⚠️ **判据二不进 `paywall_evidence`**——H-16 修复① 的收紧口径（纯营销模块不得算付费墙）**原样不动** ⇒ 救济路径与评分器口径不变；判据二**只**服务于 `subscription_wall` 的前置事实核<br>⚠️ **缺口②仍开着**：`login_required` 在 agent 路径上仍是裸折算 |
+| **H-27** | ★**（2026-11-04 新增）改分支却**没改中文标签** ⇒ 存量 **137** 条记录自相矛盾（**三个写者**漏了三个）· 工具已修 · 存量已回填 · **LS 两条卡仍是旧的** | 08 存档治理 | 编年史 §增量一百二十三 · [`downgrade.py::apply_downgrades`](../../executor/downgrade.py) · [`relabel.py::_relabel_outcome`](../../executor/relabel.py) · [`review_queue.py::apply_verdicts`](../../executor/review_queue.py) · [`label_sync.py`](../../executor/label_sync.py) · [`test_label_sync.py`](../../tests/unit/test_label_sync.py) | ✅ **三个写者全修 + 存量已回填**（2026-11-04）：改 `branch` 的写者有**三个**——`downgrade.apply_downgrades` · `relabel._relabel_outcome` · `review_queue.apply_verdicts`——**三处都漏了** `branch_label` ⇒ 记录变成「分支说 A、标签写着 B」的**自相矛盾**，而下游取的是**行内**的 `branch_label`（`golden/builder._code_block` → `golden_ls/exporter`）⇒ 矛盾一路传到 LS 的**人核卡**上：**人看到的是「付费墙」，机器读到的分支却是「未判定」**。⇒ 三处现在**共用** `branches.branch_label_of(branch)`（`None` → 「成功」）——**标签的取法只有一处**。⚠️ **原标签不丢**：`branch_before_downgrade` / `branch_before_relabel` / `branch_before_review` 记着原分支，中文名按 `BRANCH_LABELS` 可还原<br>✅ **存量已回填**（新增 `executor/label_sync.py` + `cli sync-labels`，**默认 dry-run**）：生产根 **137** 条（按层：原档 **61** + 复核档 **76**；按来源：降级/改判 **108** + 人裁 **29**）· 72 份文件；双跑研究档另 **8** 条 ⇒ **生产根复扫 0 条残留**（**328** 条「分支被工具改过」的记录全部同源）、池内 **0 条同源矛盾**、T 视图 **155** 份 / **1178** 条 `unit_outcomes` **0 条**同源矛盾（另有 **34** 处**口径文本漂移**，**按惯例不回填**）。⚠️ **判据是「分支被工具改过」**（三个留痕键），**不是**「标签文本与当前 `BRANCH_LABELS` 对不上」——后者是**口径演进**（`unreachable_hard` 2026-10-27 收窄 · `login_wall_or_blocked` 2026-10-12 加 deprecated 后缀）⇒ 按 `executor/branch_eras.py` 的 e6 **不回填**（那 47 条没动 · 原档 47 / 两层镜像 94）⇒ **备份目录也没动**（`q23_trial` 151 · `q23_backup_2026-10-28` 37 · `pipeline/_backup_pre_motivation` 27——备份是当时状态的快照）<br>⚠️ **LS 项目 77 的两条卡推在改判前**：**601** = `T001__7d5a03bd`（推于 2026-11-02）· **665** = `T001__61eabe2e`（推于 2026-11-04T02:24Z）⇒ 卡上的 `meta_text` 仍写着那条 `subscription_wall` ⇒ **重推 / purge 都是对外动作**（且 `purge` 连标注一起删）⇒ **本轮没动**，等 owner 裁<br>✅ **owner 已裁并已执行（2026-11-04）**：**就地重推**（`PATCH /api/tasks/{id}` + `PATCH /api/predictions/{id}`）⇒ **不删卡、不新建卡**（task id 601 / 665 与标注归属不变 · 项目仍 **77** 条 · **0** 条重复）⇒ 两张卡 `site-8` 现在读 **`unresolved`**（卡面里剩下的 `subscription_wall` 字样只在**审计留痕**中）· 601 的 `status` 因当前 `scout/r51` 档是 undetermined 而翻成 **`quarantine`**（= 当前产物本身的样子）· 台账 `push_index__77.jsonl` 追加 2 行（append-only） |
 ---
 
 ## 2026-10-21 质量审查项详解
@@ -617,6 +619,94 @@ T `任务总结：处置：{disposition}。分支分布：{by_branch}。`。**�
 ---
 
 **已裁章节标题占位（正文已删，防锚点 404；正文见 `git log -p -- 10-TODO台账.md`）** —— 以下标题是**外部文档的锚点引用目标**：
+
+## 2026-11-04 数据质量复核（第 1、2 项）· 新增开口项详解
+
+> **触发**：合成数据质量复核报告里的**第 1、2 项**（第 3 项「输出契约 / 点击歧义 /
+> 裁剪冗余」owner 说暂缓）。**这一轮既改代码又动产物**——完整经过见
+> [编年史 §增量一百二十三](90-增量编年史.md)。
+
+### H-26 · agent 路径的前置事实核补上了，判据缺口同时显形
+
+**已闭的那半边（代码 + 测试 + 记录三件齐）**：
+
+| 项 | 内容 |
+|---|---|
+| 实现 | [`agent_loop.py::_guarded_branch`](../../executor/agent_loop.py)（折算分支 → 过 `branches.precondition_failed` → 不成立就落 `unresolved` + 追「[记账降级] …」）· 落点统一在 `_close_on_verdict` |
+| 判据单一真源 | [`branches.py::precondition_failed`](../../executor/branches.py)（原 `_precondition_failed`，本轮**改成公开**——它现在有**两个**调用方；scripted 路径的 `RunLedger.record_from` 与 agent 路径共用**同一份**） |
+| 测试 | [`tests/unit/test_agent_loop.py::Test分支前置事实核`](../../tests/unit/test_agent_loop.py) **5 条**：导航栏 CTA ⇒ `unresolved` · 真付费墙仍 `subscription_wall` · 门禁事件分支 == outcome 分支 · 降级理由进 `reason` · 登录墙不受影响 |
+| 记录 | 编年史 §增量一百二十三 §一 |
+
+**还开着的两半**（**不因代码落地而闭**）：
+
+- **① 真付费墙会被降级**：`paywall_evidence`（结论口径）比 `has_strong_paywall_signal`
+  （拦截口径）严得多 ⇒ **实测对部分真付费墙返回空**（youku《功夫》· fun.tv）
+  ⇒ 这些站现在落 `unresolved` ⇒ **不进池** ⇒ **真负样本被降成非负样本**。
+  ⚠️ 这与 CLAUDE.md「**每条分支都必须有对应样本入库**——负样本不是副产品」是**直接冲突**的
+  ⇒ 要么放宽 `paywall_evidence`（但那正是 H-16 修复①**特意收紧**过的），
+  要么给「付费墙」单开一条**更窄的结论口径**——**两个方向都改判据，需 owner 拍**。
+  ✅ **owner 已拍并已落地（2026-11-04）**：走第二条路——**给「付费墙」单开一条更窄的结论口径**
+  （判据二），**不动** `paywall_evidence`。详见 [§H-26 补记](#h-26--agent-路径的前置事实核补上了判据缺口同时显形)。
+- **② `login_required` 没有「可执行」的前置事实核**：今天真的在核的只有两条分支——
+  `subscription_wall`（门禁语境 `paywall_evidence`）与 `component_unverified`（同页守卫）；
+  `BRANCH_PRECONDITION` 里 `login_required` / `blocked` / `partial_free` / `broken`
+  **只有文案、没有可执行核**（2026-10-19 增量六十·方案 X **刻意**窄的：守卫当时覆盖 5 支，
+  实测 **46** 次触发**全是误伤** ⇒ 窄到只剩 1 支）⇒ **代价**：`login_required` 在 agent
+  路径上**仍是裸折算**。⚠️ **仍开着**（owner 本轮只裁了付费墙这一支）。
+
+### H-26 补记 · 判据二「订阅价目门禁」落地（2026-11-04 · owner 拍板）
+
+**owner 原话**：「第 2 项的副作用，给这一支补第二条可执行判据。」
+⇒ 走的是「**给付费墙单开一条更窄的结论口径**」，**不是**放宽 `paywall_evidence`。
+
+| 项 | 内容 |
+|---|---|
+| 判据二 | [`rule_perceptor.py::paywall_price_evidence`](../../perception/rule_perceptor.py)：**页面级三要素同现**——① 订阅价目（`PRICE_PATTERN`）② 开通动作（`PAYWALL_PRICE_ACTIVATION_PHRASES`）③ 权益承诺（`PAYWALL_BENEFIT_WORDS`）；**少一样都不成立**。**外加登录门排除**：页面明写「请 登录 后继续观看」⇒ 那是登录墙（`login_required`），判据二**不成立** |
+| 生效面 | **只**在 `subscription_wall` 的前置事实核（[`branches.py::precondition_failed`](../../executor/branches.py)）——判据一 ∪ 判据二（[`subscription_wall_evidence`](../../perception/rule_perceptor.py)） |
+| 不动的部分 | `paywall_evidence`（**H-16 修复① 的收紧口径原样**）⇒ LLM 救济路径与评分器口径**不变**；纯营销模块（实测「新用户首月9.9元，开通会员 立即抢购」）**不得**靠判据二变成付费墙——这条被单测钉住 |
+| 测试 | [`tests/unit/test_subscription_wall_criterion2.py`](../../tests/unit/test_subscription_wall_criterion2.py) **13 条**：五个验收样例（youku《功夫》· iqiyi《琅琊榜》· fun.tv · youku 现场版 · v.qq）· 登录门排除 · 营销不成立 · 前置事实核端到端 |
+| 实测 | [`research/probes/subscription_wall_criterion2_measure.py`](../../research/probes/subscription_wall_criterion2_measure.py)（**判据口径与生产同源**，脚本从 `rule_perceptor` import，不另抄词表）⇒ 存档 **2339** 行：原 `subscription_wall` **196** 行中判据一**空串 145** 行 ⇒ **判据二找回 67** 行（youku 45 · iqiyi 15 · fun.tv 4 · mgtv 3）· **登录门排除挡下 21** 行 · 验收样例 **6/6** 符合预期 · 金标 `subscription_wall` **119** 行：并集覆盖 **113**（判据一 101 · 判据二**新增 12** · **0 条丢失**） |
+| 误伤读数 | 判据二在**非** `subscription_wall` 的存档行上命中 **557** 行（iqiyi **112** · baidu **102** · hao123 **73** · sohu **64** …）——⚠️ **这些行压根不会走到 `subscription_wall` 的前置事实核**（它们已经是 `unresolved` / `not_play_site` / 搜索引擎落地页）⇒ **不是真实假阳面**；真实假阳面只有「本来就是订阅墙却判据二不成立」的 **14** 行（且它们**仍由判据一覆盖**） |
+
+
+### H-27 · 改分支却没改中文标签（三个写者全修 · 存量已回填 · LS 两条卡是旧的）
+
+- **工具已修**（**三个写者**，不是一个）：`downgrade.apply_downgrades` ·
+  `relabel._relabel_outcome` · `review_queue.apply_verdicts` **都改 `branch_label`**，
+  且**共用** `branches.branch_label_of(branch)`（`None` → 「成功」）——
+  标签的取法只有一处，三个写者各抄一份就会漂。⇒ 单测：
+  [`test_downgrade.py::Test处置::test_标签跟着分支走`](../../tests/unit/test_downgrade.py) ·
+  [`test_relabel.py::Test处置::test_存档侧标签也跟着改`](../../tests/unit/test_relabel.py) ·
+  [`test_review_queue.py::TestApplyVerdicts::test_人裁改了分支标签也跟着改`](../../tests/unit/test_review_queue.py)。
+- **存量已回填**：新增 [`executor/label_sync.py`](../../executor/label_sync.py)
+  + `cli sync-labels`（**默认 dry-run**）⇒ 生产根 **137** 条（按层：原档 **61** +
+  复核档 **76**；按来源：降级/改判 **108** + 人裁 **29**）·
+  72 份文件；双跑研究档 `dualrun*/camoufox` 另 **8** 条 ⇒ **生产根复扫 0 条残留**、
+  **池内 0 条同源矛盾**、**T 视图 155 份 / 1178 条 `unit_outcomes` 0 条同源矛盾**
+  （另有 **34** 处**口径文本漂移**，**按惯例不回填**）。
+  ⚠️ **判据是「分支被工具改过」**（`branch_before_downgrade` / `branch_before_relabel` /
+  `branch_before_review` 三个留痕键），**不是**「标签文本与当前 `BRANCH_LABELS` 对不上」——
+  后者是**口径演进**（`unreachable_hard` 2026-10-27 收窄 · `login_wall_or_blocked`
+  2026-10-12 加 deprecated 后缀）⇒ 按 `executor/branch_eras.py` 的 e6 **不回填**
+  ⇒ 那 **47** 条**没动**（原档 47 · 复核档同样 47 ⇒ 两层镜像 **94**）；**备份目录**（`q23_trial` 151 · `q23_backup_2026-10-28` 37 ·
+  `pipeline/_backup_pre_motivation` 27）也**没动**——备份是当时状态的快照。
+  ⚠️ 与「历史存档**不回填**」的既有惯例不同：这里不是**口径换代**，是**工具自己造的自相矛盾**
+  （分支与标签不同源）⇒ 修它是**修事实**，不是改口径。
+- **LS 项目 77 的两条卡是改判前推的**：**601**（`T001__7d5a03bd` · 2026-11-02）·
+  **665**（`T001__61eabe2e` · 2026-11-04T02:24Z）⇒ 卡上 `meta_text` 仍写着那条
+  `subscription_wall`。**重推 / purge 都是对外动作**（`purge` 连标注一起删）⇒
+  **本轮没动**，等 owner 裁。
+  ✅ **owner 已裁并已执行（2026-11-04）**：「LS 项目 77 的两条卡是改判前推的，重推。」
+  ⇒ **就地重推**（`PATCH /api/tasks/{id}` 覆盖 `data`，`PATCH /api/predictions/{id}`
+  覆盖风险提示）⇒ **不删卡、不新建卡** ⇒ task id（601 / 665）与标注归属不变、
+  项目仍是 **77** 条（**0 条重复** sample_id）⇒ 两张卡的 `site-8` 分支现在读 **`unresolved`**
+  （卡面 `meta_text` 里剩下的 `subscription_wall` 字样只在**审计留痕**里：
+  「`[原判 subscription_wall]` paywall 二次拦截…降为 unresolved…」）。
+  ⚠️ **601 的卡面口径也翻了**：当前 `scout/r51` 聚合档是 **undetermined**
+  （65 条 per-Run 行全是「任一 unit score=None ⇒ 任务级 None」）⇒ 卡面 `status`
+  由 `positive` 翻成 **`quarantine`**、评分卡改成「四维未判出，请人工复核」——
+  这是**当前产物本身的样子**，不是手工改写。台账
+  `push_index__77.jsonl` 追加了 2 行（append-only，同 `sample_id` / 同 id）。
 
 ## 校准回路（方案 16）· 未闭环
 

@@ -51,6 +51,7 @@ from trajectory_pipeline.executor.branches import (
     COLLECTION_SIDE_BRANCHES,
     NON_SAMPLE_BRANCHES,
     TERMINAL_SHAPE_BRANCHES,
+    branch_label_of,
 )
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.common.elements import (
@@ -597,6 +598,13 @@ def apply_verdicts(
                 new_outcomes.append(rec)
                 continue
             rec["branch"] = want
+            # ⚠️ **标签要跟着分支走**（同一个坑，:mod:`executor.downgrade`
+            # 坑 9 / :func:`executor.relabel._relabel_outcome`）：
+            # 人裁改了 ``branch`` 却留着旧 ``branch_label`` ⇒ 记录自相矛盾，
+            # 而下游取的是**行内**的 ``branch_label`` ⇒ 矛盾一路传到 LS 的
+            # 人核卡上。实测（2026-11-04）：``T011__78621699`` 被人裁成
+            # ``broken``，标签却还写着「感知层未给出结论（fail-closed）」。
+            rec["branch_label"] = branch_label_of(want)
             # 入池判据与 :attr:`branches.SiteOutcome.is_negative_sample`
             # **同源**，包括第二段排除（采集侧账）。写成 ``want is not None``
             # 的话，人一贴 ``confirm_blocked`` 就把一条拦截写进负样本池——

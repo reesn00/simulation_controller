@@ -85,7 +85,7 @@ v2 要采集的是**可归因的证据**，而 v1 的观察经远端 LLM 转述�
 | [03-数据契约.md](trajectory_pipeline/docs/03-数据契约.md) | P1/P2/P3 契约表、`steps[]` 三条口径、P1 四处「不给就不可判定」的字段 |
 | [04-运行手册.md](trajectory_pipeline/docs/04-运行手册.md) | 每条命令「联网与否 / 作用 / 参数」口径表 + 环境变量全表、门禁与输出目录、`replay` 口径、故障排查（**命令清单本身在 08 号**） |
 | [05-现状与验收.md](trajectory_pipeline/docs/05-现状与验收.md) | **索引页**——内容已拆到 [`计划进展/`](trajectory_pipeline/docs/计划进展/)（2026-10-15） |
-| [计划进展/](trajectory_pipeline/docs/计划进展/) | **跑到哪儿了、接下来做什么**，按 9 个功能域分册（会过时，用前先重跑命令核对；**不含历史**）。[00-总览](trajectory_pipeline/docs/计划进展/00-总览.md) 是入口，[10-TODO台账](trajectory_pipeline/docs/计划进展/10-TODO台账.md) 是**未闭环项唯一汇总**（每条带记录锚点），[90-增量编年史](trajectory_pipeline/docs/计划进展/90-增量编年史.md) 存增量五十～一百二十二 |
+| [计划进展/](trajectory_pipeline/docs/计划进展/) | **跑到哪儿了、接下来做什么**，按 9 个功能域分册（会过时，用前先重跑命令核对；**不含历史**）。[00-总览](trajectory_pipeline/docs/计划进展/00-总览.md) 是入口，[10-TODO台账](trajectory_pipeline/docs/计划进展/10-TODO台账.md) 是**未闭环项唯一汇总**（每条带记录锚点），[90-增量编年史](trajectory_pipeline/docs/计划进展/90-增量编年史.md) 存增量五十～一百二十四 |
 | [06-端到端流程.md](trajectory_pipeline/docs/06-端到端流程.md) | **一条数据从骨架走到训练样本的完整路径**：四条命令线、P1/P2/P3 流转、模块边界、执行时序 |
 | [07-人工复核与判读手册.md](trajectory_pipeline/docs/07-人工复核与判读手册.md) | **人工判读的操作手册**：现在有几件事要人判、每件的「看哪个文件 → 怎么判 → 填哪 → 确认后记哪 → 跑哪条命令」、以及「人工确认完记录哪里」 |
 | [02-避坑指南.md](trajectory_pipeline/docs/02-避坑指南.md) | **9 类**，症状写成终端里真正会看到的那句话，可全文搜索（**条数不写在这儿**——每加一条就漂一次） |

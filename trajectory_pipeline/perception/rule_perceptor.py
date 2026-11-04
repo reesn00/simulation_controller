@@ -345,8 +345,11 @@ def _find_paywall_hit(text: str) -> _PaywallHit | None:
 def paywall_evidence(text: str) -> str:
     """正文里的**付费墙门禁证据**描述，空串 = 没有证据。
 
-    这是**判定付费墙的唯一入口**（2026-10-21，H-16 修复①）。
+    这是**判定付费墙「门禁语境」的唯一入口**（2026-10-21，H-16 修复①）。
     判据见 :func:`_find_paywall_hit` 的说明。
+    ⚠️ **不吸收** :func:`paywall_price_evidence`（判据二）——判据二只服务
+    ``subscription_wall`` 的前置事实核，两条判据在那里汇合成一条
+    （:func:`subscription_wall_evidence`）。
 
     返回的是**给 evidence 用的描述**（命中哪个短语、哪一层、有没有
     语境词），不是布尔值——凡是靠它改写分支的地方，evidence 必须能
@@ -562,6 +565,146 @@ ACCESS_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+
+
+# ── 判据二 · 订阅价目门禁（2026-11-04） ────────────────────────────────
+#
+# 判据一（:func:`paywall_evidence`）要求「CTA 与观看语境**同句**」。
+# 真付费墙页却常常**不写**「订阅后观看」那种措辞，而是写成
+# **价目 + 开通动作 + 权益承诺**三件套（实测 youku《功夫》/ fun.tv /
+# mgtv《VIP 首月仅 6 元》/ iqiyi《琅琊榜》）。判据一在那些页面上读数是
+# 空串 ⇒ agent 路径开始核前置事实后（2026-11-04 第 2 项），它们被降级成
+# ``unresolved`` ⇒ **真付费墙掉出池子**（台账 §M-37 记的副作用）。
+#
+# 判据二 = **页面级三要素同现**（少一样都不成立）：
+#   ① 订阅价目（:data:`PRICE_PATTERN`）；
+#   ② 开通动作（:data:`PAYWALL_PRICE_ACTIVATION_PHRASES`）；
+#   ③ 权益承诺（:data:`PAYWALL_BENEFIT_WORDS`）。
+# 纯导航栏 CTA 没有价目，纯营销没有权益承诺——这两条正是 2026-10-21
+# H-16 修复① 剔掉的两种假阳。
+#
+# ⚠️ **登录门排除**：页面明写「请 登录 后继续观看」时那是**登录墙**
+# （``login_required``），不是订阅墙 ⇒ 判据二不成立。实测 youku《功夫》
+# 的**现场**正文就多了这一句（存档正文没有）——有这一条排除，判据二在
+# 两种采样下才一致。
+#
+# ⚠️ **判据二不进 :func:`paywall_evidence`**：救济路径（``llm_perceptor``
+# 的哨兵/无控件救济）认的是**门禁语境**，H-16 修复① 特意把
+# 「新用户首月9.9元，开通会员 立即抢购」这种**营销模块**从救济里剔掉了
+# ⇒ 判据二只服务于 ``subscription_wall`` 的**前置事实核验**，走
+# :func:`subscription_wall_evidence`。
+
+#: ② 开通动作——「开通会员」之外的开通/购买动词。
+#: 缺了它们，youku 的「立即开通」「立即续费」「立即升级」这类真实开通
+#: 按钮判据二就够不着（实测 youku 存档正文里只有「立即开通」）。
+#:
+#: ⚠️ **刻意不收裸「开通」与裸「续费」**：这两在站点导航栏里高频出现
+#: （youku 导航栏就挂着「续费会员」），收进来等于把 nav-bar CTA 放回来。
+PAYWALL_PRICE_ACTIVATION_PHRASES: tuple[str, ...] = (
+    "开通会员", "开通vip", "开通VIP", "开通黄金会员", "开通大会员",
+    "购买会员", "订阅即可", "开通连续包月", "立即购买",
+    "立即开通", "立即续费", "立即升级", "立即订阅",
+    "升级SVIP", "升SVIP",
+)
+
+#: ③ 权益承诺——「付了钱能得到什么」。只收**观看权益**，不收泛化「会员」。
+#:
+#: ⚠️ **不收「免费观看」**：那个词说的是**不要钱**，收进来会把免费页
+#: 判成付费墙。
+#: ⚠️ **不收「看完」**：它高频出现在标题与影评文案里（「一口气看完」），
+#: 不是权益承诺。
+PAYWALL_BENEFIT_WORDS: tuple[str, ...] = (
+    "正片", "全集", "完整版", "完整内容", "试看", "抢先看", "畅看",
+    "精彩内容", "畅享精彩", "免广告", "跳过广告", "观看完整", "本片",
+)
+
+#: 登录门短语——**复用** :data:`ACCESS_HINTS` 的 ``login`` 档，
+#: 不另抄一份词表（同一件事只有一个真源）。
+LOGIN_GATE_PHRASES: tuple[str, ...] = ACCESS_HINTS[0][1]
+
+
+def _flex_re(phrase: str) -> re.Pattern[str]:
+    """把短语编译成**行内空白容忍**的正则。
+
+    DOM ``inner_text`` 常把 CJK 拆成带空格的碎片（实测 youku《功夫》
+    的现场正文是「由于安全原因，请 登录 后继续观看」），裸子串匹配会把
+    它整个漏掉——漏掉就等于把登录墙当成付费墙。
+
+    ⚠️ **只容忍行内空白**（``[^\\S\\n]*``），**不跨行**：跨行匹配会把
+    「登录\\n会员中心」这种相邻两行拼成「登录会员」，把普通导航栏
+    当成登录门。
+    """
+    return re.compile(r"[^\S\n]*".join(re.escape(ch) for ch in phrase))
+
+
+_LOGIN_GATE_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (p, _flex_re(p)) for p in LOGIN_GATE_PHRASES
+)
+
+
+def login_gate_phrase(text: str) -> str:
+    """正文是不是**登录门**（明写「登录之后才能看」）。命中返回短语，空串 = 不是。
+
+    用途只有一处：判据二的**排除项**——页面自己说「请登录后继续观看」，
+    那它的墙是登录墙（``login_required``），不是订阅墙。
+    """
+    if not text:
+        return ""
+    for phrase, rx in _LOGIN_GATE_RES:
+        if rx.search(text):
+            return phrase
+    return ""
+
+
+def paywall_price_evidence(text: str, *, exclude_login_gate: bool = True) -> str:
+    """**判据二**（订阅价目门禁）的读数，空串 = 不成立。
+
+    三要素同现：价目 + 开通动作 + 权益承诺（见上面的口径说明）。
+    登录门排除在函数内完成（登录门 ⇒ 返回空串）。
+
+    ``exclude_login_gate=False`` 是**对照组**：只留三要素、不做登录门排除。
+    实测脚本（``research/probes/subscription_wall_criterion2_measure.py``）用
+    它量「登录门排除到底挡下了多少行」——口径必须与生产同源，所以不另抄
+    一份实现。
+    """
+    if not text:
+        return ""
+    price = PRICE_PATTERN.search(text)
+    if not price:
+        return ""
+    low = text.lower()
+    activation = next(
+        (p for p in PAYWALL_PRICE_ACTIVATION_PHRASES if p.lower() in low), ""
+    )
+    if not activation:
+        return ""
+    benefit = next((w for w in PAYWALL_BENEFIT_WORDS if w in text), "")
+    if not benefit:
+        return ""
+    if exclude_login_gate and login_gate_phrase(text):
+        return ""
+    return (f"付费墙订阅价目「{price.group(0)}」+ 开通动作「{activation}」"
+            f"+ 权益承诺「{benefit}」")
+
+
+def subscription_wall_evidence(text: str) -> str:
+    """``subscription_wall`` 分支的**完整**付费墙证据（判据一 ∪ 判据二）。
+
+    ⚠️ **与 :func:`paywall_evidence` 的分工**：
+    ``paywall_evidence`` 是**门禁语境**（救济路径、评分器用，H-16 修复①
+    的收紧口径不变）；本函数多认**判据二**，只给
+    ``subscription_wall`` 的**前置事实核验**用（``executor.branches``
+    的 :func:`~trajectory_pipeline.executor.branches.precondition_failed`）。
+
+    返回空串 = 没有付费墙证据（调用方据此降级）。
+    """
+    if not text:
+        return ""
+    hit = paywall_evidence(text)
+    if hit:
+        return hit
+    return paywall_price_evidence(text)
+
 
 
 #: **边缘挑战中间页**的指纹（方案 20 §R3）。命中 = 这一页是 **CDN / WAF 自己

@@ -58,9 +58,9 @@ from typing import Any
 
 from trajectory_pipeline.common.atomic import write_json_atomic, write_text_atomic
 from trajectory_pipeline.executor.branches import (
-    BRANCH_LABELS,
     COLLECTION_SIDE_BRANCHES,
     NON_SAMPLE_BRANCHES,
+    branch_label_of,
 )
 from trajectory_pipeline.perception import questions
 
@@ -561,6 +561,13 @@ def _relabel_outcome(outcome: dict[str, Any], to_branch: str,
     old = str(outcome.get("branch") or "")
     outcome.setdefault("branch_before_relabel", old)
     outcome["branch"] = to_branch
+    # ⚠️ **标签要跟着分支走**（同一个坑，:mod:`executor.downgrade` 坑 9）：
+    # 只改 ``branch`` 不改 ``branch_label`` ⇒ 记录变成「分支是登录墙、
+    # 标签却写着「付费墙」」——**自相矛盾**，而下游取的是**行内**的
+    # ``branch_label`` ⇒ 矛盾一路传到 LS 的人核卡上。
+    # ⚠️ **池行那侧本来就在改**（:func:`_relabel_pool_row`）——**存档侧
+    # 漏了**⇒ 改判过的存档里，存档与池行的标签**互相矛盾**。
+    outcome["branch_label"] = branch_label_of(to_branch)
     outcome["is_negative_sample"] = True
     outcome["source"] = "human"
     outcome["evidence"] = (f"{outcome.get('evidence') or ''}\n\n"
@@ -573,7 +580,7 @@ def _relabel_pool_row(row: dict[str, Any], to_branch: str,
     """改池里的一行。**训练侧吃的就是这一份**（见模块 docstring）。"""
     old = str(row.get("branch") or "")
     row["branch"] = to_branch
-    row["branch_label"] = BRANCH_LABELS.get(to_branch, "")
+    row["branch_label"] = branch_label_of(to_branch)
     row["source"] = "human"
     row["evidence"] = (f"{row.get('evidence') or ''}\n\n"
                        f"{_note(old, to_branch, reason)}")

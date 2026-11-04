@@ -12,6 +12,7 @@ import json
 import pytest
 
 from trajectory_pipeline.executor import downgrade as dg
+from trajectory_pipeline.executor.branches import BRANCH_LABELS
 
 
 def _arch(outcomes, visits=None):
@@ -193,6 +194,24 @@ class Test处置:
         assert "原正文" in rec["evidence"] and "取证依据" in rec["evidence"]
         # 幂等：再跑一次选不中它
         assert dg.select_by_url("a.com")(arch) == []
+
+    def test_标签跟着分支走(self, tmp_path):
+        """**分支改了，中文名也要跟着改。**
+
+        只改 ``branch`` 不改 ``branch_label`` ⇒ 记录变成「分支是
+        ``unresolved``、标签却写着「Subscription-based playback」」——
+        **自相矛盾**。而下游取的是**行内**的 ``branch_label``
+        （黄金集 ``_code_block``、LS 导出的标签文本）⇒ 矛盾一路传到
+        人核卡上：人看到的是「付费墙」，机器读到的分支却是「未判定」。
+        """
+        arch = _arch([_o("a.com", "subscription_wall",
+                          branch_label="Subscription-based playback")])
+        dg.apply_downgrades(arch, hits=arch["outcomes"], reason="取证依据",
+                            name="T001__r1.json", dry_run=False)
+        rec = arch["outcomes"][0]
+        assert rec["branch"] == dg.TARGET_BRANCH
+        assert rec["branch_label"] == BRANCH_LABELS[dg.TARGET_BRANCH]
+        assert "Subscription-based" not in rec["branch_label"]
 
     def test_摘掉负样本标记(self, tmp_path):
         """它是「这条是否进池」的判据，而 unresolved 不进池。"""

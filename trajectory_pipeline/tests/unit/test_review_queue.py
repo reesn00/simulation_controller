@@ -12,6 +12,7 @@ import json
 import pytest
 
 from trajectory_pipeline.executor.cli import _load_verdicts
+from trajectory_pipeline.executor.branches import BRANCH_LABELS
 from trajectory_pipeline.executor.review_queue import (
     AUTO_BY_INSUFFICIENT,
     AUTO_BY_PORTAL,
@@ -152,6 +153,23 @@ class TestApplyVerdicts:
         assert rec["source"] == "human"
         assert rec["is_negative_sample"] is False
         assert st["confirm_success"] == 1
+
+    def test_人裁改了分支标签也跟着改(self):
+        """**标签是分支的中文名，改分支就得改标签。**
+
+        不改 ⇒ 记录自相矛盾（「分支说内容损坏、标签却写着未判定」），
+        而下游取的是**行内**的 ``branch_label`` ⇒ 矛盾一路传到 LS 的
+        人核卡上。实测（2026-11-04）：``T011__78621699`` 被人裁成
+        ``broken``，标签还留着「感知层未给出结论（fail-closed）」。
+        """
+        arch = _archive([{"url": "a.com", "branch": "unresolved",
+                          "question": "player.ok", "evidence": "e",
+                          "reached_play_page": True,
+                          "branch_label": "感知层未给出结论（fail-closed）"}])
+        out, _ = apply_verdicts(arch, {"a.com": {"verdict": "confirm_broken"}})
+        rec = out["outcomes"][0]
+        assert rec["branch"] == "broken"
+        assert rec["branch_label"] == BRANCH_LABELS["broken"]
 
     def test_保留代码原始判定(self):
         """覆盖掉就永远测不出"人工与代码的分歧率"。"""

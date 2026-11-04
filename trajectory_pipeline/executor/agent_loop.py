@@ -94,7 +94,10 @@ from typing import (
 from trajectory_pipeline.common.elements import ELEMENT_VOCAB_HTML_TAG
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
-from trajectory_pipeline.executor.branches import terminal_shape_branch
+from trajectory_pipeline.executor.branches import (
+    precondition_failed,
+    terminal_shape_branch,
+)
 from trajectory_pipeline.executor.browser.page_driver import DriverError
 from trajectory_pipeline.executor.gatekeeper import (
     DeadLoopDetector,
@@ -511,6 +514,8 @@ class _Terminal:
 
     verdict: Verdict | None
     reason: str
+    #: **过完前置事实核**的分支（不是 :func:`_branch_of` 的裸折算）。
+    branch: str = UNRESOLVED
 
 
 def _branch_of(verdict: Verdict | None) -> str:
@@ -518,6 +523,49 @@ def _branch_of(verdict: Verdict | None) -> str:
     if verdict is None:
         return UNRESOLVED
     return _FALLCLOSED_BRANCH.get(verdict, UNRESOLVED)
+
+
+def _guarded_branch(
+    verdict: Verdict | None, obs: Observation | None
+) -> tuple[str, str]:
+    """分支折算 + **前置事实核**（agent 路径用）。
+
+    返回 ``(分支, 降级说明)``；说明为空 = 前置事实成立，分支照贴。
+
+    ⚠️ **为什么 agent 路径也要核**：:func:`_branch_of` 折的是**拦截口径**
+    （gatekeeper 判「这页**像**付费墙吗」），而分支标签是**结论口径**
+    （「这页**真的是**付费墙吗」）。两者的判据不同源——拦截用强弱关键词表
+    （:func:`~trajectory_pipeline.perception.rule_perceptor.has_strong_paywall_signal`），
+    贴标签要门禁语境（:func:`~trajectory_pipeline.perception.rule_perceptor.paywall_evidence`）。
+
+    直接把拦截口径的判定折成分支标签，就是「导航栏挂着『开通会员』的免费页」
+    被记成「这里看不了」——负样本池里那条断言是假的。
+
+    核验走 :func:`~trajectory_pipeline.executor.branches.precondition_failed`
+    ——与 scripted 路径（:meth:`~trajectory_pipeline.executor.branches.RunLedger.record_from`）
+    **同一份判据**，不另写一份（各写一份必然漂，而漂移的表现是
+    「一处认了、另一处没认」）。
+
+    ⚠️ **今天只有两条分支有「可执行」的前置事实核**：``subscription_wall``
+    （门禁语境 ``paywall_evidence``）与 ``component_unverified``（同页守卫）。
+    :data:`~trajectory_pipeline.executor.branches.BRANCH_PRECONDITION` 里
+    ``login_required`` / ``blocked`` / ``partial_free`` / ``broken``
+    **只有文案、没有可执行核**——这是 2026-10-19 增量六十·方案 X **刻意**的：
+    当时的同页守卫覆盖 5 支，实测 **46** 次触发**全是误伤**（真付费墙 ·
+    真登录墙 · 真阻断 · 真试看）⇒ 守卫窄到只剩 ``component_unverified`` 一支。
+    ⇒ **代价**：``login_required`` 在 agent 路径上**仍是裸折算**（门禁判
+    「像登录墙」就直接贴分支）——这是已知的残留缺口，不在这里假装补上。
+    """
+    branch = _branch_of(verdict)
+    if branch == UNRESOLVED:
+        return branch, ""
+    failed = precondition_failed(branch, obs)
+    if not failed:
+        return branch, ""
+    return UNRESOLVED, (
+        f"[记账降级] 本该记 {branch}，但{failed}——"
+        f"该分支的前置事实不成立，不贴这条负标签"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1245,7 +1293,9 @@ class _Loop:
         # 的事实，让模型先撞一次没有意义。
         disp = self._intercept(self.obs)
         if disp is not None:
-            return self._close(reason=disp.reason, verdict=disp.verdict)
+            return self._close(
+                reason=disp.reason, verdict=disp.verdict, branch=disp.branch
+            )
         self._pending_obs = self.obs
 
         while True:
@@ -1480,7 +1530,9 @@ class _Loop:
 
         disp = self._intercept(obs)
         if disp is not None:
-            return self._close(reason=disp.reason, verdict=disp.verdict)
+            return self._close(
+                reason=disp.reason, verdict=disp.verdict, branch=disp.branch
+            )
         return None
 
     async def _read(self, instr: ActionInstruction) -> Observation:
@@ -1561,23 +1613,17 @@ class _Loop:
             # 反爬/验证码：agent 没有登录态也没有指纹可换，**问它也没用**。
             # 一次性收口，不给引导机会——引导只会烧一次 llm_call 然后
             # 得到「我换不了」。
-            reason = f"环境级阻断：{verdict.value}"
-            self._emit(
-                FailClosed(reason=reason, branch=_branch_of(verdict)),
-                verdict=verdict,
+            return self._close_on_verdict(
+                obs, verdict, f"环境级阻断：{verdict.value}"
             )
-            return _Terminal(verdict=verdict, reason=reason)
         hits = self._guidance_hits.get(verdict.value, 0) + 1
         self._guidance_hits[verdict.value] = hits
         if hits >= _GUIDANCE_LIMIT:
             # 第二次同类拦截就收口（防引导循环）：换过一次路还是撞上同一
             # 堵墙，说明这个站没路可走，继续引导只是烧 llm_calls。
-            reason = f"{verdict.value} 二次拦截"
-            self._emit(
-                FailClosed(reason=reason, branch=_branch_of(verdict)),
-                verdict=verdict,
+            return self._close_on_verdict(
+                obs, verdict, f"{verdict.value} 二次拦截"
             )
-            return _Terminal(verdict=verdict, reason=reason)
         text = _INTERCEPT_GUIDANCE.get(verdict, "").format(
             reason=self.dead_loop.detect()
         )
@@ -1715,6 +1761,24 @@ class _Loop:
         return frozenset(
             el.ref for el in _visible_interactive(self.obs)
         ) | set(self._read_elements)
+
+    def _close_on_verdict(
+        self, obs: Observation, verdict: Verdict, reason: str
+    ) -> _Terminal:
+        """拦截收口：**分支过完前置事实核**再落。
+
+        事件（:class:`~.gatekeeper.FailClosed`）、outcome、账本三处
+        记的分支**必须一致**——事件说「收口到 subscription_wall」而
+        账本落 unresolved，读账的人会以为两处说的是同一件事。
+        """
+        branch, note = _guarded_branch(verdict, obs)
+        if note:
+            reason = f"{reason}\n{note}"
+        self._emit(
+            FailClosed(reason=reason, branch=branch),
+            verdict=verdict,
+        )
+        return _Terminal(verdict=verdict, reason=reason, branch=branch)
 
     def _close(
         self, *, reason: str, verdict: Verdict | None, branch: str | None = None

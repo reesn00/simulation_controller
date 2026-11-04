@@ -301,6 +301,22 @@ class Test处置:
         assert "subscription_wall" in led["missing_branches"]
         assert "broken" not in led["missing_branches"]
 
+    def test_存档侧标签也跟着改(self, tmp_path):
+        """**标签是分支的中文名，改分支就得改标签。**
+
+        池行那侧一直改（``_relabel_pool_row``），存档侧原先**漏了** ⇒
+        改判过的存档里「分支说 A、标签写着 B」⇒ 矛盾一路传到 LS 的
+        人核卡上：**人看到的是旧标签，机器读到的是新分支**。
+        """
+        p = _write(tmp_path, _arch(outcomes=[
+            _o("https://v.qq.com/x.html", "subscription_wall")]))
+        _write_pool(tmp_path, [_pool_row()])
+        rl.relabel_to_root(tmp_path, to_branch="broken",
+                           reason="正文是 404 不是付费墙", dry_run=False)
+        rec = _read(p)["outcomes"][0]
+        assert rec["branch"] == "broken"
+        assert rec["branch_label"] == BRANCH_LABELS["broken"]
+
     def test_dry_run不落盘(self, tmp_path):
         p = _write(tmp_path, _arch(outcomes=[
             _o("https://v.qq.com/x.html", "subscription_wall")]))

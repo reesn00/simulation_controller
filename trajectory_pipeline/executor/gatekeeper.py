@@ -237,7 +237,7 @@ def is_paywall(obs: Observation) -> bool:
     第一条就是「开通会员」——它在站点导航栏广告（nav-bar CTA）里
     高频出现，单凭它分不清真付费墙与入口页广告。强信号三判据是
     增量三十二以来被同页守卫旁路与 INC43 救济链两头验证过的口径，
-    与 ``branches._precondition_failed`` 的旁路判据**同一句话**。
+    与 ``branches.precondition_failed`` 的旁路判据**同一句话**。
     """
     return has_strong_paywall_signal(obs.body_text or "")
 

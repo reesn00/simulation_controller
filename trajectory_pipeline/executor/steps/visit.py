@@ -128,7 +128,7 @@ async def visit_site(
     #    本来就可由 evidence 区分。
     reachable = perceptor.decide(Q.IS_REACHABLE, result.site_obs)
     if reachable.answer is False:
-        # ⚠️ **必须传 ``obs``**：前置事实核验（``branches._precondition_failed``）
+        # ⚠️ **必须传 ``obs``**：前置事实核验（``branches.precondition_failed``）
         # 要拿观察里的**页面原文**核「门禁语境」——② 的付费墙救济路径
         # （``payload["paywall"]`` → ``subscription_wall``）也走这里。
         # 不传 obs ⇒ 核验被跳过（守卫的既有约定：调用方没传就放行），
@@ -358,7 +358,7 @@ def judge_player(
     ``pre_obs`` 是**进站观察**（点进播放页之前看到的那一页）。agent 链
     也传它，于是**落地即在播放页**的形态（深层链接候选，agent 一步没走
     就报「到了」）在守卫眼里是「没换页」——``PLAYER_OK`` 判 False 时
-    会被 :func:`~trajectory_pipeline.executor.branches._precondition_failed`
+    会被 :func:`~trajectory_pipeline.executor.branches.precondition_failed`
     降级成 ``unresolved`` 而不是 ``component_unverified``。
 
     ⚠️ 这是**刻意的保守**，不是漏判：agent 说「到了」是自报，未经

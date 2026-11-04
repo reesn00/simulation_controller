@@ -615,6 +615,106 @@ class TestGatekeeper接线:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 分支前置事实核（agent 路径）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class Test分支前置事实核:
+    """agent 路径贴分支也要过**前置事实核**（2026-11-04 · 数据质量复核
+    第 2 项）。
+
+    根因：gatekeeper 的 ``PAYWALL`` 判定是**拦截口径**（「这页像付费墙吗」，
+    强弱关键词表），而 ``subscription_wall`` 是**结论口径**（「这页真的是
+    付费墙吗」）。两套判据不同源，直接折算就是「导航栏挂着『开通会员』的
+    免费页」被记成「这里看不了」——负样本池里那条断言是假的。
+
+    修法：贴分支前过 :func:`precondition_failed`（与 scripted 路径
+    ``RunLedger.record_from`` **同一份**判据）。
+    """
+
+    async def test_导航栏CTA不贴subscription_wall(self):
+        """只有导航栏广告（「开通VIP会员」）⇒ 落 unresolved。
+
+        这正是 tv.cctv.com 那条：免费页 + 导航栏会员 CTA，被记成
+        「有播放页但需订阅/付费」。
+        """
+        nav_only = _obs(
+            url="https://x.test/play",
+            title="播放页",
+            body="开通VIP会员 尊享特权 立即观看",
+            refs=("e1",),
+        )
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"},
+                          {"tool": "click", "ref": "e1"}]),
+            FakeDriver((nav_only, nav_only)),
+        )
+        assert ctx.outcome.branch == "unresolved"
+        assert ctx.outcome.branch != "subscription_wall"
+
+    async def test_真付费墙仍贴subscription_wall(self):
+        """门禁语境在场 ⇒ 原样贴 ``subscription_wall``。
+
+        守卫不是把这条分支整个废掉——真付费墙还得进池。
+        """
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"},
+                          {"tool": "click", "ref": "e1"}]),
+            FakeDriver((_PAY_PAGE, _PAY_PAGE)),
+        )
+        assert ctx.outcome.branch == "subscription_wall"
+
+    async def test_事件分支与outcome分支一致(self):
+        """事件说收口到哪支，账本就得记哪支。
+
+        两处说法不一致时，读账的人会以为它们说的是同一件事——
+        而实际上一处说「这是付费墙」、另一处说「没判出来」。
+        """
+        nav_only = _obs(
+            url="https://x.test/play",
+            title="播放页",
+            body="开通VIP会员 尊享特权 立即观看",
+            refs=("e1",),
+        )
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"},
+                          {"tool": "click", "ref": "e1"}]),
+            FakeDriver((nav_only, nav_only)),
+        )
+        fail_closed = [e for e in ctx.events
+                       if e["disposition"]["kind"] == "fail_closed"]
+        assert fail_closed
+        assert fail_closed[-1]["disposition"]["branch"] == ctx.outcome.branch
+
+    async def test_降级理由进reason(self):
+        """降级**为什么**发生要看得见——否则读档的人以为这条只是
+        「没判出来」，而不知道是「判过了、前提不成立」。"""
+        nav_only = _obs(
+            url="https://x.test/play",
+            title="播放页",
+            body="开通VIP会员 尊享特权 立即观看",
+            refs=("e1",),
+        )
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"},
+                          {"tool": "click", "ref": "e1"}]),
+            FakeDriver((nav_only, nav_only)),
+        )
+        assert "[记账降级]" in ctx.outcome.reason
+        assert "subscription_wall" in ctx.outcome.reason
+
+    async def test_登录墙不受影响(self):
+        """``login_required`` 没有对应判据（感知层无 ``login_evidence``），
+        今天**原样透传**——守卫不该顺手把这条也降掉。"""
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"},
+                          {"tool": "click", "ref": "e1"}]),
+            FakeDriver((_LOGIN_PAGE, _LOGIN_PAGE)),
+        )
+        assert ctx.outcome.branch == "login_required"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 预算
 # ═══════════════════════════════════════════════════════════════════════
 

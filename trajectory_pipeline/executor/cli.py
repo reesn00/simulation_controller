@@ -78,6 +78,7 @@ from trajectory_pipeline.executor.branches import (
 from trajectory_pipeline.executor import downgrade as downgrade_mod
 from trajectory_pipeline.executor import relabel as relabel_mod
 from trajectory_pipeline.executor import pool_drop as pool_drop_mod
+from trajectory_pipeline.executor import label_sync as label_sync_mod
 from trajectory_pipeline.executor.browser.driver_factory import (
     DEFAULT_KIND,
     SUPPORTED_KINDS,
@@ -2629,6 +2630,38 @@ def cmd_downgrade(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync_labels(args: argparse.Namespace) -> int:
+    """把存档里**没跟上分支**的 ``branch_label`` 改对。
+
+    ⚠️ **默认 dry-run。** 它改的是**训练资产的一部分**（存档里的标签文本
+    会流到 LS 人核卡上），先看清单再 ``--apply``。
+
+    判据在 :mod:`executor.label_sync`：**分支被工具改过、而标签没跟上**。
+    ⚠️ **不修「口径文本漂移」的那批**（``unreachable_hard`` 旧文本 ·
+    ``login_wall_or_blocked`` 旧文本）——那是两代口径，不是同一份结论的
+    两个字段没同步（见 :mod:`executor.branch_eras` 的 e6）。
+    """
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    summaries = label_sync_mod.sync_to_root(root, dry_run=not args.apply)
+    if not summaries:
+        print("没有要改的标签 —— 存档里的标签与分支一致（或没有工具改过分支的记录）")
+        return 0
+    verb = "改" if args.apply else "**将**改"
+    total = sum(int(s["fixed"]) for s in summaries)
+    print(f"== {verb}标签：{total} 条（{len(summaries)} 份文件）==")
+    for s in summaries:
+        print(f"  {s['layer']} {s['archive']:34s} {s['fixed']:>3d} 条")
+        for fx in s["fixes"][:5]:
+            print(f"      {str(fx['url'])[:58]}")
+            print(f"        {fx['label_before']!r} → {fx['label_after']!r}")
+    if not args.apply:
+        print("\n⚠ 这是 dry-run。加 --apply 才落盘。")
+    else:
+        print("\n⚠ 改完标签要重建产物：`cli build --overwrite` → "
+              "`cli task-view --all --overwrite`")
+    return 0
+
+
 def cmd_relabel(args: argparse.Namespace) -> int:
     """把「标签错了但仍是负样本」的记录**改分支**（取证后的处置）。
 
@@ -4171,6 +4204,13 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--reason", default=None, help="降级理由，**必填**，原样进 evidence")
     dg.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
     dg.set_defaults(func=cmd_downgrade)
+
+    sl = sub.add_parser(
+        "sync-labels",
+        help="把存档里没跟上分支的标签改对（**默认 dry-run**）")
+    sl.add_argument("--out", default=None, help="P1 存档目录（默认 output/pipeline）")
+    sl.add_argument("--apply", action="store_true", help="落盘（默认只报清单）")
+    sl.set_defaults(func=cmd_sync_labels)
 
     rl = sub.add_parser(
         "relabel",

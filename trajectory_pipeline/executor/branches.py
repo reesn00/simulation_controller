@@ -43,12 +43,12 @@ from trajectory_pipeline.perception.rule_perceptor import (
     WEAK_PAYWALL_KEYWORDS,
     access_evidence,
     infer_access_defect,
-    paywall_evidence,
+    subscription_wall_evidence,
 )
 # 2026-10-16 方案 12 阶段 G：``_same_page``（同页守卫的三特征比对）所有权
 # 迁入 executor.gatekeeper——它与死循环检测同属「同页/同域机械事实」这一类
 # 判定，统一拦截点收在那里。这里反向导入再导出（与上方 INC43 同款迁移
-# 姿势）：本模块 ``_precondition_failed`` 与 site_search / test_branches 的
+# 姿势）：本模块 ``precondition_failed`` 与 site_search / test_branches 的
 # 旧引用继续解析，与 d4_scorer 的同源对照测试不受影响（对照的是行为，
 # 不是实现位置）。
 from trajectory_pipeline.executor.gatekeeper import _same_page  # noqa: F401
@@ -100,6 +100,25 @@ BRANCH_LABELS: Mapping[str, str] = {
     "site_search_no_results": "站内搜索未产出任何子候选",
     "site_search_routed": "首页经站内搜索派发子候选（路由记账，非结论）",
 }
+
+
+def branch_label_of(branch: str | None) -> str:
+    """分支 → **人读标签**。``None``（判成功）→ 「成功」。
+
+    ⚠️ **凡是改 ``branch`` 的地方都必须同时改 ``branch_label``**——
+    标签是分支的**中文名**，两者必须同源。改一个不改另一个 ⇒ 记录
+    自相矛盾（「分支是未判定、标签却写着「付费墙」」），而下游取的是
+    **行内**的 ``branch_label``
+    （:func:`evaluation.golden.builder._code_block` →
+    :func:`evaluation.golden_ls.exporter` 的标签文本）⇒ 矛盾一路传到
+    LS 的人核卡上：**人看到的是「付费墙」，机器读到的分支却是「未判定」**。
+
+    ⇒ 这个函数是**唯一**的取值入口：:mod:`executor.downgrade` 与
+    :mod:`executor.relabel` 两个「改分支」的工具都走它，
+    :mod:`executor.label_sync` 修历史存量时也走它。
+    """
+    return BRANCH_LABELS.get(branch or "", "成功")
+
 
 #: 这些分支**不是**真负样本，是「没判出来」。单独统计，不进负样本池。
 #:
@@ -388,7 +407,7 @@ class RunLedger:
             # 两处各推一次的话，payload 里那个标记就只在一半路径上生效。
             # D-5 的映射表与注册表不同源已经吃过一次亏（避坑指南 §1.1）。
             branch = decision_branch(decision)
-            reason = _precondition_failed(branch, obs, pre_obs, decision)
+            reason = precondition_failed(branch, obs, pre_obs, decision)
             if reason:
                 return self.record(
                     url,
@@ -568,7 +587,7 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
 #: 与「点击前后是否变」**无关**，守卫对它们是过度延伸。
 #:
 #: ⚠️ **这四条的前置事实核验没有因此消失**——它们各自的判据在
-#: :data:`BRANCH_PRECONDITION` 与 :func:`_precondition_failed` 里各有一段
+#: :data:`BRANCH_PRECONDITION` 与 :func:`precondition_failed` 里各有一段
 #: （``subscription_wall`` 走**门禁语境** ``paywall_evidence``，另外三条走
 #: 「确实到了目标页」的落地证据）。收窄的只是**同页**这一条机械判据。
 #:
@@ -584,7 +603,7 @@ SAME_PAGE_GUARD_BRANCHES: frozenset[str] = frozenset({"component_unverified"})
 # ⚠️ **2026-10-21（H-16 修复①）这段旁路已经退役**——本模块原来的
 # ``_has_strong_paywall_signal`` **已删除**，因为它**没有调用点**：
 # 同页守卫在 2026-10-19 增量六十·方案 X 里已窄化为只覆盖
-# ``component_unverified``（见 :func:`_precondition_failed` 末段），
+# ``component_unverified``（见 :func:`precondition_failed` 末段），
 # 而 ``subscription_wall`` 的降级改由**门禁语境**判据
 # （:func:`~trajectory_pipeline.perception.rule_perceptor.paywall_evidence`）
 # 核前置事实——比「强弱关键词组合」严得多（人工复核判强弱组合是**营销**）。
@@ -637,11 +656,15 @@ def _coerce_quotes(raw: Any) -> tuple[str, ...]:
 
 
 
-def _precondition_failed(
+def precondition_failed(
     branch: str | None, obs: Observation | None, pre_obs: Observation | None = None,
     decision: Decision | None = None,
 ) -> str:
     """这条分支的前置事实成立吗？不成立返回说明串，成立返回空串。
+
+    **两条路径共用这一份核**：scripted 路径走 :meth:`RunLedger.record_from`，
+    agent 路径走 :func:`~trajectory_pipeline.executor.agent_loop._guarded_branch`
+    ——各写一份判据必然漂，而漂移的表现是「一处认了、另一处没认」。
 
     ``obs`` / ``pre_obs`` 为 ``None``（调用方没传）一律放行——**这是有意的**：
     降级逻辑不能反过来把老调用方的记账打成 unresolved，
@@ -657,20 +680,29 @@ def _precondition_failed(
     2026-10-21（H-16 修复①）新增 ``subscription_wall`` 的**前置事实核验**：
     这条分支的前提是「页面**明说**不给钱/不订阅就看不了正片」，
     而不是一个「页面上有会员字样」。核验用**门禁语境**判据
-    （:func:`~trajectory_pipeline.perception.rule_perceptor.paywall_evidence`）——
-    那是判定付费墙的**唯一入口**，与感知层同源（不另写一份词表：
-    两份判据必然漂，而漂移的表现是「一处认了、另一处没认」）。
+    （:func:`~trajectory_pipeline.perception.rule_perceptor.subscription_wall_evidence`
+    = 判据一 ``paywall_evidence`` ∪ 判据二 ``paywall_price_evidence``）——
+    与感知层同源（不另写一份词表：两份判据必然漂，而漂移的表现是
+    「一处认了、另一处没认」）。⚠️ 判据一本身仍是**救济路径**与评分器
+    的入口，它**不吸收**判据二——两条判据只在这里汇合成一条。
     """
     if obs is None or branch is None:
         return ""
     if branch == "subscription_wall":
-        # 前置事实：门禁语境证据在场。输入源两个都是**页面原文**——
+        # 前置事实：付费墙证据在场。输入源两个都是**页面原文**——
         # 采集到的正文（``obs.body_text``）与模型回传的引文
         # （``payload["page_quotes"]``）；**不是** evidence（那是模型自述）。
+        #
+        # ⚠️ **认两条判据**（2026-11-04）：``subscription_wall_evidence``
+        # = 门禁语境（判据一）+ **订阅价目门禁**（判据二）。
+        # 只认判据一时，真付费墙页（youku《功夫》/ fun.tv / mgtv）会因
+        # 「没写『订阅后观看』那种措辞」被降级成 ``unresolved`` ⇒ 掉出池子
+        # （台账 §M-37 记的副作用）。判据二的口径与实测见
+        # :func:`~trajectory_pipeline.perception.rule_perceptor.paywall_price_evidence`。
         quotes = decision.payload.get("page_quotes") if decision else None
         quoted = " ".join(str(q) for q in (quotes or ()))
-        hit = (paywall_evidence(obs.body_text or "")
-               or paywall_evidence(quoted))
+        hit = (subscription_wall_evidence(obs.body_text or "")
+               or subscription_wall_evidence(quoted))
         if not hit:
             return (
                 f"页面里没有付费墙门禁证据——"
