@@ -72,7 +72,10 @@ from trajectory_pipeline.assembler import (
 #: 两段投影一致性口径挂在顶层（方案 23 R5-2 / O-5）：ls_bridge 是
 #: evaluation 层，契约禁止它 import assembler，而校验两边都要用。
 #: 本模块 re-export，``task_view.projection_problems`` 仍可用。
-from trajectory_pipeline.projection import projection_problems
+from trajectory_pipeline.projection import (
+    projection_problems,
+    tool_declaration_problems,
+)
 
 #: 路径权威的 re-export：T 渲染端不许自己拼 ``output/pipeline/task_views``
 #: 字面量。改存储布局只动 ``trajectory_pipeline.storage.task_views_dir``
@@ -138,7 +141,7 @@ _TASK_TOOL_SPECS: tuple[dict[str, Any], ...] = tuple(
 # ── 工具声明 ───────────────────────────────────────────────────────
 
 
-def task_tools(surface: str = toolcatalog.DEFAULT_SURFACE) -> list[dict[str, Any]]:
+def task_tools(surface: str) -> list[dict[str, Any]]:
     """T 视图的工具声明（模型可见集，不进 ``new_tab`` / ``close_tab``）。
 
     与 :func:`~trajectory_pipeline.assembler.views._visible_tools` **同源**
@@ -151,6 +154,10 @@ def task_tools(surface: str = toolcatalog.DEFAULT_SURFACE) -> list[dict[str, Any
 
     ⚠️ **按工具面取**（2026-10-20 方案 15 §7 R1）：T 读的是 P1 而不是
     P2，所以面从**源存档的 ``driver``** 折算（见 :func:`_surface_of`）。
+
+    ⚠️ ``surface`` **没有默认值**（2026-11-03 · Q-A1）：默认面曾让
+    ``build_task_view`` 漏传面却静默落盘（声明 obscura / 调用 camofox）。
+    漏传现在直接 ``TypeError``，不再产出「报告上看不出异常」的错面声明。
     """
     return toolcatalog.openai_functions(surface=surface)
 
@@ -664,7 +671,6 @@ def _surface_of(archive: Mapping[str, Any]) -> str:
 
 def to_task_openai_messages(
     archive: Mapping[str, Any],
-    tools: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """OpenAI function-calling 形态（per-Run）。
 
@@ -674,14 +680,9 @@ def to_task_openai_messages(
     消息流里不存在的动作不该占号。训练筛选同
     :func:`to_task_messages`（同一份 :func:`_screened_task_steps`）。
 
-    Args:
-        archive: P1 JSON dict。
-        tools: 工具声明列表；``None`` 时按**这份存档自己的工具面**取
-            :func:`task_tools`（进 ``new_tab`` / ``close_tab`` 滤掉）。
+    本函数**只生成 messages 段**，不返回 tools；顶层 ``tools`` 由
+    :func:`build_task_view` 按同一工具面单独取（2026-11-03 · Q-A1）。
     """
-    if tools is None:
-        tools = task_tools(_surface_of(archive))
-
     out: list[dict[str, Any]] = []
     system = _TASK_SYSTEM_PROMPT
     if system:
@@ -1183,13 +1184,18 @@ def build_task_view(
     # 分池（方案 23 R3-3）：交付面落 ``task_views/``，旧面落
     # ``legacy/<surface>/task_views/``。面从源存档的 ``driver`` 折算
     # （:func:`_surface_of`）——认不出的 driver 直接抛，不回落。
-    target_root = pool.pool_root(storage_task_views_dir(root).parent, _surface_of(archive))
+    surface = _surface_of(archive)
+    target_root = pool.pool_root(storage_task_views_dir(root).parent, surface)
     messages = to_task_messages(archive)
     openai_msgs = to_task_openai_messages(archive)
+    # 工具声明与两段 messages 必须来自**同一个面**（Q-A1）：声明按面取，
+    # 与 messages 里的真实调用参数逐条核对；面错配不许落盘。
+    tools = task_tools(surface)
     # 两段投影一致才落盘（方案 23 R5-2 / O-5）：不一致的视图不该进交付集
     # ——训练侧与 LS 侧会看到两个故事，而报表上看不出异常。fail-closed：
     # 不写半份，skipped 带原因（CLI 会打印）。
     problems = projection_problems(messages, openai_msgs)
+    problems += tool_declaration_problems(tools, openai_msgs)
     if problems:
         return TaskViewRenderResult(
             trajectory_id=trajectory_id,
@@ -1208,7 +1214,7 @@ def build_task_view(
         "openai": {
             "trajectory_id": trajectory_id,
             "messages": openai_msgs,
-            "tools": task_tools(),
+            "tools": tools,
         },
         "meta": meta,
     }

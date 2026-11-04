@@ -392,7 +392,7 @@ def _rendered(archive=None):
         "openai": {
             "trajectory_id": f"{archive['task_id']}__{archive['run_id']}",
             "messages": task_view.to_task_openai_messages(archive),
-            "tools": task_view.task_tools(),
+            "tools": task_view.task_tools(task_view._surface_of(archive)),
         },
         "meta": task_view.to_task_meta(archive),
     }
@@ -969,6 +969,117 @@ class Test投影一致:
         assert result.skipped and result.skipped[0].startswith("投影不一致"), result
         path = task_views_dir(tmp_path) / f"{archive['task_id']}__{archive['run_id']}.json"
         assert not path.exists(), "不一致的视图不该落盘"
+
+
+# ── 5a-2. 工具声明与真实调用同一面（Q-A1）──────────────────────────
+
+
+class Test工具声明与调用同一面:
+    """``openai.tools`` 必须与 messages 里的真实调用**同面**。
+
+    2026-11-03 · Q-A1 事故形状：``build_task_view`` 漏传面，声明走默认面
+    （obscura 的 ``click {tag,label}``）、调用按存档走 camofox
+    （``click {role,name}``）。两份各自都「合法」，投影闸门只看两段
+    messages，于是坏视图静默落盘——报表上看不出任何异常。
+    """
+
+    @staticmethod
+    def _camofox_archive():
+        archive = _archive(
+            search_steps=[
+                _step(
+                    action=_action(
+                        "click", target={"role": "button", "name": "播放"}
+                    ),
+                    observation=_obs_full(),
+                    rationale={"status": "written", "text": "点播放",
+                               "conclusion": "看正片"},
+                ),
+            ],
+        )
+        archive["driver"] = "camofox"
+        return archive
+
+    def test_task_tools漏传面直接报错(self):
+        """面是必答项：默认值曾让「漏传」与「传对」产出同一份声明。"""
+        with pytest.raises(TypeError):
+            task_view.task_tools()  # type: ignore[call-arg]
+
+    def test_camofox面声明aria参数与读原语(self):
+        tools = task_view.task_tools(
+            task_view._surface_of(self._camofox_archive())
+        )
+        by_name = {t["function"]["name"]: t["function"] for t in tools}
+        click = by_name["click"]["parameters"]
+        assert set(click["properties"]) == {"role", "name"}
+        assert set(click["required"]) == {"role", "name"}
+        # 读原语只在 camofox / camoufox 面声明，obscura 面没有
+        assert {"snapshot", "interactive", "links"} <= set(by_name)
+
+    def test_obscura面点击声明tag与label(self):
+        tools = task_view.task_tools(task_view._surface_of(_archive()))
+        by_name = {t["function"]["name"]: t["function"] for t in tools}
+        click = by_name["click"]["parameters"]
+        assert set(click["properties"]) == {"tag", "label"}
+        assert set(click["required"]) == {"tag", "label"}
+
+    def test_camofox声明与调用相容(self):
+        rendered = _rendered(self._camofox_archive())
+        assert task_view.projection_problems(
+            rendered["messages"], rendered["openai"]["messages"]
+        ) == []
+        assert task_view.tool_declaration_problems(
+            rendered["openai"]["tools"], rendered["openai"]["messages"]
+        ) == []
+
+    def test_错面声明能报出来(self):
+        """obscura 声明 + camofox 调用：参数键对不上，必须点名。"""
+        rendered = _rendered(self._camofox_archive())
+        obscura_tools = task_view.task_tools("obscura-1")
+        problems = task_view.tool_declaration_problems(
+            obscura_tools, rendered["openai"]["messages"]
+        )
+        assert any("不在声明里" in p for p in problems), problems
+
+    def test_未声明工具能报出来(self):
+        messages = [
+            {"role": "assistant", "tool_calls": [{
+                "id": "call_0", "type": "function",
+                "function": {"name": "snapshot", "arguments": "{}"},
+            }]},
+        ]
+        problems = task_view.tool_declaration_problems(
+            task_view.task_tools("obscura-1"), messages
+        )
+        assert any("未声明的工具" in p for p in problems), problems
+
+    def test_build_task_view面错配不落盘(self, monkeypatch, tmp_path):
+        """声明与调用不同面 → fail-closed，不写半份（Q-A1 回归）。"""
+        original = task_view.task_tools
+        monkeypatch.setattr(
+            task_view, "task_tools", lambda surface: original("obscura-1")
+        )
+        archive = self._camofox_archive()
+        result = task_view.build_task_view(archive, root=tmp_path)
+        assert result.written == 0
+        assert result.skipped and result.skipped[0].startswith("投影不一致"), result
+        path = task_views_dir(tmp_path) / f"{archive['task_id']}__{archive['run_id']}.json"
+        assert not path.exists(), "面错配的视图不该落盘"
+
+    def test_build_task_view按面声明并落盘(self, tmp_path):
+        archive = self._camofox_archive()
+        result = task_view.build_task_view(archive, root=tmp_path)
+        assert result.written == 1, result
+        path = task_views_dir(tmp_path) / f"{archive['task_id']}__{archive['run_id']}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["meta"]["tool_surface"] == "camofox-1"
+        by_name = {
+            t["function"]["name"]: t["function"]
+            for t in payload["openai"]["tools"]
+        }
+        assert set(by_name["click"]["parameters"]["properties"]) == {
+            "role", "name",
+        }
 
 
 # ── 5b. 来源与缺件（方案 23 R2-4）────────────────────────────────

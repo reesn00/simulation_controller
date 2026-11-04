@@ -27,6 +27,7 @@ import assembler**；T 也不该反向依赖 evaluation。两边都挂不了，�
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping, Sequence
 
 #: messages 侧动作行的前缀。渲染器（``views._render_action`` /
@@ -147,4 +148,106 @@ def projection_problems(
     return problems
 
 
-__all__ = ["ACTION_PREFIX", "projection_problems"]
+def tool_declaration_problems(
+    tools: Sequence[Mapping[str, Any]],
+    openai_messages: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """校验 ``tools`` 声明与 messages 里的真实调用是**同一个工具面**。
+
+    为什么单独一条（Q-A1）
+    ----------------------
+    :func:`projection_problems` 只比两段 messages 的动作名 / 观察 / 收尾。
+    工具名在两个面里**同名不同参**（``click`` 在 obscura 面是
+    ``{tag,label}``、在 camofox 面是 ``{role,name}``），所以「声明取错面」
+    时两段 messages 仍然逐字对齐，报表上看不出异常；只有把**声明**和
+    **调用参数**放在一起比才露馅。
+
+    只查两件事：
+
+    1. 调用的工具名必须在 ``tools`` 里声明；
+    2. ``arguments`` 的键必须 ⊆ 该工具声明的 ``parameters.properties``。
+
+    **不校验 required**：模型漏填参数是另一类问题（训练样本里可能真实
+    存在），拿它当落盘闸门会误伤正常样本；而「参数键根本不在声明里」
+    已经足以抓住面错配。
+    """
+    problems: list[str] = []
+    declarations: dict[str, set[str]] = {}
+    for tool in tools or ():
+        if not isinstance(tool, Mapping):
+            problems.append("tools 里有非对象声明")
+            continue
+        function = tool.get("function")
+        if not isinstance(function, Mapping):
+            problems.append("tools 里有缺少 function 的声明")
+            continue
+        name = str(function.get("name") or "")
+        if not name:
+            problems.append("tools 里有空名字的声明")
+            continue
+        parameters = function.get("parameters")
+        properties = (
+            parameters.get("properties")
+            if isinstance(parameters, Mapping)
+            else None
+        )
+        keys = set(properties) if isinstance(properties, Mapping) else set()
+        if name in declarations:
+            problems.append(f"工具 {name!r} 被声明了多次（工具面有歧义）")
+            continue
+        declarations[name] = keys
+
+    for i, message in enumerate(openai_messages or ()):
+        if not isinstance(message, Mapping):
+            continue
+        calls = message.get("tool_calls")
+        if calls is None:
+            continue
+        if not isinstance(calls, Sequence) or isinstance(calls, (str, bytes)):
+            problems.append(f"第 {i} 条消息的 tool_calls 不是数组")
+            continue
+        for j, call in enumerate(calls):
+            if not isinstance(call, Mapping):
+                problems.append(f"第 {i} 条消息第 {j} 个 tool_call 不是对象")
+                continue
+            function = call.get("function")
+            if not isinstance(function, Mapping):
+                problems.append(f"第 {i} 条消息第 {j} 个 tool_call 缺 function")
+                continue
+            name = str(function.get("name") or "")
+            if name not in declarations:
+                problems.append(
+                    f"第 {i} 条消息调用了未声明的工具 {name!r}"
+                    "（声明与真实调用不是同一个工具面）"
+                )
+                continue
+            raw = function.get("arguments")
+            if isinstance(raw, Mapping):
+                args: Any = dict(raw)
+            else:
+                try:
+                    args = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    problems.append(
+                        f"第 {i} 条消息工具 {name!r} 的 arguments 不是合法 JSON"
+                    )
+                    continue
+            if not isinstance(args, Mapping):
+                problems.append(
+                    f"第 {i} 条消息工具 {name!r} 的 arguments 不是 JSON 对象"
+                )
+                continue
+            extra = set(args) - declarations[name]
+            if extra:
+                problems.append(
+                    f"第 {i} 条消息工具 {name!r} 的参数 {sorted(extra)} "
+                    "不在声明里（疑似工具面错配）"
+                )
+    return problems
+
+
+__all__ = [
+    "ACTION_PREFIX",
+    "projection_problems",
+    "tool_declaration_problems",
+]

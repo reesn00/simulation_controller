@@ -61,7 +61,7 @@ def _pool_row(
     task: str = "T001",
     run: str = "0123abcd",
     url: str = "https://movie.test/v/1",
-    branch: str = "blocked",
+    branch: str = "not_play_site",
     driver: str | None = None,
 ) -> dict:
     row = {
@@ -98,11 +98,11 @@ def _ids(root: pathlib.Path) -> list[str]:
 
 class Test池行id只依赖身份:
     def test_id形态是分支后缀(self, tmp_path):
-        root = _pool_root(tmp_path, [_pool_row(branch="blocked")])
+        root = _pool_root(tmp_path, [_pool_row(branch="not_play_site")])
         assert _ids(root) == [
             "T001__0123abcd__"
             + builder._url_hash("https://movie.test/v/1")
-            + "__neg_blocked"
+            + "__neg_not_play_site"
         ]
 
     def test_池里插一行其它行的id一个都不变(self, tmp_path):
@@ -135,7 +135,7 @@ class Test池行id只依赖身份:
         root = _pool_root(
             tmp_path,
             [
-                _pool_row(branch="blocked"),
+                _pool_row(branch="not_play_site"),
                 _pool_row(branch="broken"),
             ],
         )
@@ -154,6 +154,63 @@ class Test池行id只依赖身份:
         root = _pool_root(tmp_path, [_pool_row(branch="../../etc")])
         with pytest.raises(builder.GoldenError):
             _ids(root)
+
+
+class Test非池成员不进候选:
+    """扫描侧也要套池成员资格（2026-11-03 · Q-A2 / 方案 20 O-a）。
+
+    ``blocked`` 属于采集侧分支（``COLLECTION_SIDE_BRANCHES``）：池里存着
+    只是历史存档，**不是负样本池成员** ⇒ 候选扫描不许把它算进来。写入侧
+    ``pool_add`` 早已按 ``is_pool_member_branch`` 拦截，缺的一直是扫描侧。
+    """
+
+    def test_blocked行被跳过且留账(self, tmp_path):
+        root = _pool_root(tmp_path, [_pool_row(branch="blocked")])
+        skipped: list[dict] = []
+        assert builder._scan_negative_pool(root, {}, skipped=skipped) == []
+        assert skipped == [{
+            "task_id": "T001",
+            "run_id": "0123abcd",
+            "url": "https://movie.test/v/1",
+            "branch": "blocked",
+        }]
+
+    def test_池成员照常进候选(self, tmp_path):
+        root = _pool_root(
+            tmp_path,
+            [_pool_row(branch="blocked"), _pool_row(branch="broken")],
+        )
+        skipped: list[dict] = []
+        out = builder._scan_negative_pool(root, {}, skipped=skipped)
+        assert len(out) == 1
+        assert out[0]["golden_id"].endswith("__neg_broken")
+        assert [s["branch"] for s in skipped] == ["blocked"]
+
+    def test_rekey不把非池成员混进dangling(self, tmp_path):
+        """非池成员不是「访问已不在原料里」——两种原因必须分开读。"""
+        pool = [_pool_row(branch="blocked")]
+        old_gid = (
+            "T001__0123abcd__"
+            + builder._url_hash("https://movie.test/v/1")
+            + "__neg00"
+        )
+        ann = [{"golden_id": old_gid, "round": 1, "label": "blocked"}]
+        golden_root, pipeline_root = _golden_with_old_ids(
+            tmp_path, pool=pool, annotations=ann
+        )
+        rc, out, _err = _run(
+            [
+                "--golden-root",
+                str(golden_root),
+                "--root",
+                str(pipeline_root),
+                "rekey",
+            ]
+        )
+        assert rc == 0
+        assert "不是池成员" in out
+        assert "不在原料里" not in out
+        assert not (golden_root / builder.ID_ALIAS_FILE).exists()
 
 
 # ── 判据二：换键的桥（迁移期双 id 并存） ─────────────────────────
@@ -231,7 +288,7 @@ def _golden_with_old_ids(
 
 class Test换键命令:
     def test_dry_run不写盘(self, tmp_path):
-        pool = [_pool_row(branch="blocked")]
+        pool = [_pool_row()]
         ann = [
             {
                 "golden_id": "T001__0123abcd__"
@@ -270,7 +327,7 @@ class Test换键命令:
         ].endswith("__neg00")
 
     def test_apply写映射表并换标注键(self, tmp_path):
-        pool = [_pool_row(branch="blocked")]
+        pool = [_pool_row()]
         old_gid = (
             "T001__0123abcd__"
             + builder._url_hash("https://movie.test/v/1")
@@ -308,9 +365,9 @@ class Test换键命令:
         alias_doc = json.loads(
             (golden_root / builder.ID_ALIAS_FILE).read_text(encoding="utf-8")
         )
-        assert alias_doc["map"][old_gid].endswith("__neg_blocked")
+        assert alias_doc["map"][old_gid].endswith("__neg_not_play_site")
         row = _read_jsonl(golden_root / builder.ANNOTATIONS_FILE)[0]
-        assert row["golden_id"].endswith("__neg_blocked")
+        assert row["golden_id"].endswith("__neg_not_play_site")
         # ★ **标签内容一个字没动**（改键 ≠ 改判）
         assert row["label"] == "blocked"
         assert row["reviewed_by"] == "reesn"
@@ -318,7 +375,7 @@ class Test换键命令:
 
     def test_重建候选集时标注挂不上就拒绝(self, tmp_path):
         """⚠️ **门禁**：重建会让标注掉线 ⇒ 拒绝重建（不静默丢）。"""
-        pool = [_pool_row(branch="blocked")]
+        pool = [_pool_row()]
         ann = [
             {
                 "golden_id": "T001__0123abcd__deadbeef__neg99",  # 候选集里没有
@@ -343,7 +400,7 @@ class Test换键命令:
         assert "挂不上" in err
 
     def test_换键后重建候选集不再掉线(self, tmp_path):
-        pool = [_pool_row(branch="blocked")]
+        pool = [_pool_row()]
         old_gid = (
             "T001__0123abcd__"
             + builder._url_hash("https://movie.test/v/1")
@@ -385,7 +442,7 @@ class Test换键命令:
             site_ids |= rows_mod.site_ids_of(r)
         assert old_gid.endswith("__neg00")
         assert not any(i.endswith("__neg00") for i in site_ids)
-        assert any(i.endswith("__neg_blocked") for i in site_ids)
+        assert any(i.endswith("__neg_not_play_site") for i in site_ids)
 
 
 # ── 判据四：冻结时行自动换键（历史档不动，新版本换键） ──────────

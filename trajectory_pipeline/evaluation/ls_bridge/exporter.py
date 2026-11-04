@@ -48,7 +48,10 @@ from trajectory_pipeline.evaluation.scout.types import (
     ScoutRecord,
     TrajectoryRecord,
 )
-from trajectory_pipeline.projection import projection_problems
+from trajectory_pipeline.projection import (
+    projection_problems,
+    tool_declaration_problems,
+)
 from trajectory_pipeline.storage.read_p3 import read_views
 from trajectory_pipeline.storage.task_views import read_task_view, task_views_dir
 
@@ -576,6 +579,13 @@ def export_trajectory_one(
         plain if isinstance(plain, list) else [],
         openai_messages if isinstance(openai_messages, list) else [],
     )
+    # 旧档可能没有 tools 段；有则按声明核对真实调用（Q-A1）。
+    tools = openai.get("tools") if isinstance(openai, Mapping) else None
+    if isinstance(tools, list):
+        problems += tool_declaration_problems(
+            tools,
+            openai_messages if isinstance(openai_messages, list) else [],
+        )
     if problems:
         raise ProjectionMismatch("；".join(problems[:5]))
 

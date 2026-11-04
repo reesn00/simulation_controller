@@ -113,7 +113,20 @@ def task_views_root(tmp_path: Path) -> Path:
                      "content": "播放器已开始播放"},
                     {"role": "assistant", "content": "已完成: x.test 可播放。"},
                 ],
-                "tools": [],
+                # 声明必须与上面的真实调用同面（Q-A1 导出侧闸门）：
+                # 这里用最小声明 `play{ref}` 对齐 fixture 的调用参数。
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "play",
+                        "description": "播放",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"ref": {"type": "string"}},
+                            "required": ["ref"],
+                        },
+                    },
+                }],
             },
             "meta": {"gate": "pass", "step_count": 2, "task_id": "T001", "run_id": "r-1"},
         }, ensure_ascii=False),

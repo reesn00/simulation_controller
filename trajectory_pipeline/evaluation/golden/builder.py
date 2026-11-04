@@ -927,11 +927,20 @@ def _scan_archives(root: pathlib.Path) -> list[dict[str, Any]]:
 
 
 def _scan_negative_pool(
-    root: pathlib.Path, existing: Mapping[tuple[str, str, str], dict[str, Any]]
+    root: pathlib.Path,
+    existing: Mapping[tuple[str, str, str], dict[str, Any]],
+    *,
+    skipped: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """读取负样本池，补充 P1 outcomes 未覆盖的真实失败样本。
 
     按 (task_id, run_id, url) 去重：P1 已有同键则跳过（P1 outcome 更完整）。
+
+    ⚠️ **池成员资格**（2026-11-03 · Q-A2 / 方案 20 O-a）：``blocked`` 属于
+    采集侧分支（``COLLECTION_SIDE_BRANCHES``），不是负样本池成员 ⇒ 扫描
+    侧同样要套 :func:`~trajectory_pipeline.executor.negative_rules.is_pool_member_branch`。
+    判据走单一真源，不在这里复制词表；被剔的行进 ``skipped``（调用方
+    打印），不静默消失。
 
     ⚠️ **返回的是站点级明细**（方案 23），不是候选行——它挂进所属轨迹的
     ``site_outcomes[]``，与 P1 outcome 出来的明细平级。裁定 ③：站点级的
@@ -957,6 +966,8 @@ def _scan_negative_pool(
     """
     neg_path = root / "negative.jsonl"
     rows = _load_jsonl(neg_path)
+    from trajectory_pipeline.executor.negative_rules import is_pool_member_branch
+
     out: list[dict[str, Any]] = []
     for r in rows:
         key = (
@@ -976,6 +987,16 @@ def _scan_negative_pool(
                 f"池行 {key} 的 branch={branch!r} 不是合法 id 后缀"
                 f"（只允许小写字母/数字/下划线）⇒ 换 id 口径，别让脏字符进键"
             )
+        # 非池成员（blocked 等采集侧/非样本分支）不进候选集（Q-A2）。
+        if not is_pool_member_branch(branch):
+            if skipped is not None:
+                skipped.append({
+                    "task_id": key[0],
+                    "run_id": key[1],
+                    "url": key[2],
+                    "branch": branch,
+                })
+            continue
         out.append(
             {
                 "golden_id": f"{key[0]}__{key[1]}__{_url_hash(key[2])}__neg_{branch}",
@@ -1074,7 +1095,15 @@ def cmd_candidates(args: argparse.Namespace) -> int:
     for a in archives:
         for s in a.get("site_outcomes") or ():
             existing_keys[(a["task_id"], a["run_id"], s.get("url") or "")] = s
-    negatives = _scan_negative_pool(root, existing_keys)
+    pool_skipped: list[dict[str, Any]] = []
+    negatives = _scan_negative_pool(root, existing_keys, skipped=pool_skipped)
+    if pool_skipped:
+        by_branch = collections.Counter(str(s["branch"]) for s in pool_skipped)
+        print(
+            f"负样本池跳过 {len(pool_skipped)} 行非池成员"
+            f"（{dict(sorted(by_branch.items()))}）——"
+            "采集侧/非样本分支不进候选集（方案 20 O-a）"
+        )
     for neg in negatives:
         tid = str(neg["trajectory_id"])
         row = traj_by_id.get(tid)
@@ -1594,7 +1623,12 @@ def cmd_rekey(args: argparse.Namespace) -> int:
     keys = {
         (a["task_id"], a["run_id"], a["url"]): a for a in site_views
     }
-    negatives = _scan_negative_pool(root, keys)
+    pool_skipped: list[dict[str, Any]] = []
+    negatives = _scan_negative_pool(root, keys, skipped=pool_skipped)
+    excluded_keys = {
+        (s["task_id"], s["run_id"], s["url"]): s["branch"]
+        for s in pool_skipped
+    }
     by_access: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for r in site_views + negatives:
         by_access.setdefault(
@@ -1608,6 +1642,7 @@ def cmd_rekey(args: argparse.Namespace) -> int:
 
     mapping: dict[str, str] = {}
     dangling: list[str] = []
+    excluded: list[str] = []
     ambiguous: list[str] = []
     for r in old_rows:
         old = str(r.get("golden_id") or "")
@@ -1623,7 +1658,13 @@ def cmd_rekey(args: argparse.Namespace) -> int:
             ambiguous.append(f"{old} → 同一次访问有 {len(hits)} 个候选")
             continue
         if not hits:
-            dangling.append(f"{old} → 这次访问已不在原料里")
+            branch = excluded_keys.get(key)
+            if branch is not None:
+                excluded.append(
+                    f"{old} → 池行分支 {branch!r} 不是池成员，不进候选集"
+                )
+            else:
+                dangling.append(f"{old} → 这次访问已不在原料里")
             continue
         new = str(hits[0].get("golden_id") or "")
         if new and new != old:
@@ -1661,6 +1702,13 @@ def cmd_rekey(args: argparse.Namespace) -> int:
     print(f"换键映射：{len(mapping)} 条（映射表原有 {len(alias)} 条）")
     for old, new in list(mapping.items())[:20]:
         print(f"  {old} → {new}")
+    if excluded:
+        print(
+            f"⚠️ 因非池成员而不换键的旧 id {len(excluded)} 条"
+            "（标注仍挂在旧 id 上；重建候选集会拒绝，需人工确认后处理）："
+        )
+        for e in excluded[:20]:
+            print(f"  {e}")
     if dangling:
         print(f"⚠️ 换不了的旧 id {len(dangling)} 条（**不自动删**，人工看）：")
         for d in dangling[:20]:
