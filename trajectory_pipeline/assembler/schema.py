@@ -1026,24 +1026,6 @@ def _outcome_for(
     return _outcome_ref(outcomerules.resolve(outcomes, *urls))
 
 
-def _reflection_of(unit: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """取一个决策单元的 ``reflection``。没有 → ``None``。
-
-    **只认 ``status == "written"``**：``unavailable`` / ``empty`` 的
-    reflection 没有 ``rationale`` 文本，交给 ``views._closing_text`` 时
-    与「压根没生成」走同一条路（退回纯 disposition 话术）——
-    **把三态合成一个「有/没有」会丢掉「为什么没有」**，
-    但收尾话术这一处**只需要**知道「有没有文本可读」，所以在这里
-    把三态折成两态是安全的，且这个折法只有一处。
-    """
-    r = unit.get("reflection")
-    if not isinstance(r, Mapping):
-        return None
-    if str(r.get("status") or "") != "written":
-        return None
-    return dict(r)
-
-
 # ── 决策单元（P1 的结构，不是 P2 的粒度）────────────────────────
 
 
@@ -1103,28 +1085,13 @@ def _obs_of(step: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _last_reflection_of(units: Sequence[_Unit]) -> Mapping[str, Any] | None:
-    """轨迹级反思：**末个单元**的反思（裁定 ②「看最后的结论」同款）。
+    """轨迹级反思：**末个单元**写成的那份（真源在 ``closing``）。
 
-    P1 里**没有**轨迹级反思——``reflection`` 是单元级的。所以这里取
-    末个单元的那一份，作为轨迹的收尾文本来源。
-
-    为什么不是「把每个单元的反思拼起来」：那是单元结论的堆砌，
-    不是轨迹结论——而收尾那一句要回答「这条任务最后怎么了」。
+    P1 里没有轨迹级反思——``reflection`` 是单元级的。取法（末个 +
+    ``status == "written"``）与 T 的收尾结论**共用同一份判断**，见
+    :func:`~trajectory_pipeline.assembler.closing.last_written_reflection`。
     """
-    for unit in reversed(units):
-        r = _reflection_of(unit.body)
-        if r is not None:
-            return r
-    return None
-
-
-def _conclusion_of(reflection: Mapping[str, Any] | None) -> str:
-    """reflection 的结论（模型自己写的），没有就是空串。"""
-    if isinstance(reflection, Mapping):
-        rat = reflection.get("rationale")
-        if isinstance(rat, Mapping):
-            return str(rat.get("conclusion") or "").strip()
-    return ""
+    return closing.last_written_reflection([u.body for u in units])
 
 
 def _apply_output_contract(
@@ -1208,7 +1175,7 @@ def _run_closing_text(
             decisive=decisive,
             site_outcomes=sites,
         ),
-        conclusion=_conclusion_of(reflection),
+        conclusion=closing.reflection_conclusion(reflection),
     )
 
 

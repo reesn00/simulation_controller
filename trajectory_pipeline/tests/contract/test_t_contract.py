@@ -19,7 +19,8 @@
    / ``_CLOSING_DISPOSITION`` 与 assembler/schema 与 assembler/views
    **字面字符串一致**——同款纪律盯住。
 5. **形状不变量**：tool_call_id 跨 unit 稠密、infrastructure 步整步跳过、
-   rationale 逐步对齐、成对性自查、closing summary 来自 outcome+ledger——
+   rationale 逐步对齐、成对性自查、closing summary 来自 outcome + 轨迹级
+   reflection 结论（**不读** ``ledger``）——
    这些是「任何 P1 存档」都成立的性质。
 """
 
@@ -650,8 +651,9 @@ class Test形状不变量:
     def test_P3与T收尾同一句话(self):
         """R2-2：两侧收尾必须是**同一句话**（owner O-5 的「两段必须一致」）。
 
-        差异只在附加信息——P3 多一句 unit 级 reflection 结论，T 多「别的
-        站点怎么样」的清单。核心句对同一组事实逐字相同。
+        per-Run 之后两侧的输入事实**一样**（整条 run 的站点清单 + 同一个
+        决定性结论 + 同一个轨迹级 reflection 结论）⇒ 文本**逐字相同**，
+        不再是「同款模板、不同事实」。
         """
         outcome = {"url": "https://x.test", "branch": "no_play_control",
                    "site_url": "https://x.test", "play_page_url": ""}
@@ -667,7 +669,7 @@ class Test形状不变量:
             outcomes=[outcome],
             ledger={"total_sites": 1, "by_branch": {"no_play_control": 1}},
         )
-        # P3 侧：同一组事实（unit=site-1、同 title、同 outcome、无 conclusion）
+        # P3 侧：同一组事实（同 title、同 outcome、无 reflection）
         sample = {
             "task_id": "T001", "unit": "site-1", "title": "功夫",
             "outcome": outcome, "reflection": None,
@@ -687,6 +689,86 @@ class Test形状不变量:
         )
         assert task_view._closing_text(archive_ok) == views._closing_text(
             {**sample, "outcome": ok}, steps)
+
+    def test_轨迹级结论两侧同一句(self):
+        """LS 卡面读 T：末条 assistant 必须带模型自己的结论（2026-11-04）。
+
+        此前 T 不读 reflection：同一条 run 的 P3 收尾带结论、卡面（T）
+        却到「已排除的站点」就完了——人核读到的与会训到的不是同一句话。
+        """
+        reflection = {
+            "status": "written",
+            "rationale": {"text": "看了播放页", "conclusion": "央视网可播全集"},
+        }
+        outcome = {"url": "https://x.test", "branch": "no_play_control",
+                   "site_url": "https://x.test", "play_page_url": ""}
+        archive = _archive(
+            search_steps=[
+                _step(action=_action("goto"), observation=_obs_full(),
+                      rationale={"status": "written"}),
+            ],
+            visits=[_visit([
+                _step(action=_action("click", target={"tag": "button", "label": "播放"}),
+                      observation=_obs_full(), rationale={"status": "written"}),
+            ])],
+            outcomes=[outcome],
+            ledger={"total_sites": 1, "by_branch": {"no_play_control": 1}},
+        )
+        archive["reflection"] = {
+            "status": "written",
+            "rationale": {"conclusion": "先确认了搜索入口"},
+        }
+        archive["visits"][0]["reflection"] = reflection
+
+        sample = {
+            "task_id": "T001", "unit": "site-1", "title": "功夫",
+            "outcome": outcome, "reflection": reflection,
+        }
+        steps = [(0, {"action": {"tool": "goto"}}, None, None)]
+        text = task_view._closing_text(archive)
+        assert text is not None
+        # 末个写成单元（site-1）的结论，与 P2 的 ``reflection`` 字段同一条
+        assert text == views._closing_text(sample, steps)
+        assert "央视网可播全集" in text
+
+        last = task_view.to_task_openai_messages(archive)[-1]
+        assert last["role"] == "assistant"
+        assert not last.get("tool_calls")
+        assert "央视网可播全集" in last["content"]
+
+    def test_轨迹级结论跳过未写成单元(self):
+        """末个单元的 reflection 是 ``unavailable`` ⇒ 退到前面写成的那份。
+
+        与 P2 的 ``reflection`` 字段**同一条判断**（真源在 ``closing``）。
+        """
+        archive = _archive(
+            search_steps=[
+                _step(action=_action("goto"), observation=_obs_full(),
+                      rationale={"status": "written"}),
+            ],
+            visits=[_visit([
+                _step(action=_action("click", target={"tag": "a", "label": "x"}),
+                      observation=_obs_full(), rationale={"status": "written"}),
+            ])],
+            outcomes=[{"url": "https://x.test", "branch": "no_play_control",
+                       "site_url": "https://x.test", "play_page_url": ""}],
+        )
+        archive["reflection"] = {
+            "status": "written",
+            "rationale": {"conclusion": "搜索页只确认了入口"},
+        }
+        archive["visits"][0]["reflection"] = {
+            "status": "unavailable", "rationale": None,
+        }
+        text = task_view._closing_text(archive)
+        assert text is not None
+        assert "搜索页只确认了入口" in text
+        assert text == views._closing_text(
+            {"task_id": "T001", "unit": "site-1", "title": "功夫",
+             "outcome": archive["outcomes"][0],
+             "reflection": archive["reflection"]},
+            [(0, {"action": {"tool": "goto"}}, None, None)],
+        )
 
     def test_空user_prompt不发空消息(self):
         """空 user_prompt 不发首轮空 user——同 P3 第 4 条判断。

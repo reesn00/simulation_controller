@@ -178,6 +178,47 @@ class Test结论:
         assert "先看了首页。再点了播放。" in text
 
 
+class Test轨迹级反思:
+    """P1 没有轨迹级 reflection——取「末个写成单元」的那份。
+
+    收尾文本只关心「有没有可读的结论」：``unavailable`` / ``empty`` 与
+    「压根没生成」走同一条路（退回纯 disposition 话术）。
+    """
+
+    def test_取末个写成单元(self):
+        bodies = [
+            {"reflection": {"status": "written",
+                            "rationale": {"conclusion": "搜索页结论"}}},
+            {"reflection": {"status": "written",
+                            "rationale": {"conclusion": "播放页结论"}}},
+        ]
+        r = closing.last_written_reflection(bodies)
+        assert closing.reflection_conclusion(r) == "播放页结论"
+
+    def test_跳过未写成单元(self):
+        bodies = [
+            {"reflection": {"status": "written",
+                            "rationale": {"conclusion": "前面的结论"}}},
+            {"reflection": {"status": "unavailable", "rationale": None}},
+        ]
+        r = closing.last_written_reflection(bodies)
+        assert closing.reflection_conclusion(r) == "前面的结论"
+
+    def test_全没有返回None(self):
+        assert closing.last_written_reflection([{}, {"reflection": None}]) is None
+
+    def test_written但没rationale给空串(self):
+        r = closing.last_written_reflection(
+            [{"reflection": {"status": "written"}}]
+        )
+        assert closing.reflection_conclusion(r) == ""
+
+    def test_结论去首尾空白(self):
+        assert closing.reflection_conclusion(
+            {"rationale": {"conclusion": "  央视网可播全集  "}}
+        ) == "央视网可播全集"
+
+
 class Test网址计数:
     @pytest.mark.parametrize("text, n", [
         ("", 0),

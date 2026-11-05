@@ -521,9 +521,13 @@ T `任务总结：处置：{disposition}。分支分布：{by_branch}。`。**�
 
 **实施状态（2026-11-02）**：✅ **R2-1/R2-2/R2-3 代码已落地**。
 - **[`assembler/closing.py`](../../assembler/closing.py) 是收尾文本唯一真源**：
-  `closing_text(facts)` / `closing_for_unit(...)`；P3（`views._closing_text`）与
-  T（`task_view._closing_text`）调**同一个函数**，差异只在输入事实（P3 带
-  unit 级 reflection 结论、T 带整条 run 的站点清单）。两侧的
+  `closing_text(facts)` / `closing_for_run(...)`；P3（`views._closing_text`）与
+  T（`task_view._closing_text`）调**同一个函数**，per-Run 之后**输入事实也
+  一样**（整条 run 的站点清单 + 同一个决定性结论 + 同一个轨迹级 reflection
+  结论）⇒ 两侧**逐字相同**。轨迹级结论的取法（**末个写成单元**的
+  `reflection`，剔后取）真源在 `closing.last_written_reflection`——P2 的
+  `reflection` 字段与 T 的收尾走同一份判断（2026-11-04 补：此前 T 不读
+  reflection，LS 卡面收尾缺模型结论）。两侧的
   `_CLOSING_DISPOSITION` 变成 `closing.CLOSING_DISPOSITION` 的**别名**（同一对象）。
 - **文本形态**：成功「找到了《片名》的可播放网址：<url>。」；失败「没有找到
   《片名》的可播放网址，已排除的站点：a.com（原因）、…。」——**只写 host**

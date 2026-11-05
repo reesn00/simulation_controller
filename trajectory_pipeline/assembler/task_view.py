@@ -42,9 +42,11 @@ import**——交接面是格式不是对象）：
 5. **观察 / 动作 / 思考逐步对齐**（同 P3 第 6 条判断）。``infrastructure``
    步整步跳过——消息流里不存在的动作不该占号（与 P3 第 2 条判断同款）。
 
-6. **任务级 summary 收尾**（同 P3 第 7 条判断）：来源 ``outcomes[]``，
-   **不读 unit 级 reflection**（T 层级高于 unit）。收尾文本与 P3
-   **共用同一个函数** :func:`~trajectory_pipeline.assembler.closing.closing_text`
+6. **任务级 summary 收尾**（同 P3 第 7 条判断）：事实来自 ``outcomes[]``
+   （裁定 ②）+ **末个写成单元**的 reflection 结论（取法真源在
+   :func:`closing.last_written_reflection`，P2 / P3 / T 共用）。收尾文本
+   与 P3 **共用同一个函数**
+   :func:`~trajectory_pipeline.assembler.closing.closing_text`
    （方案 23 R2-2：两侧必须说同一句话，差异只放附加信息）。处置词表
    ``_CLOSING_DISPOSITION`` 是 :data:`closing.CLOSING_DISPOSITION` 的
    别名，**键集与 ``executor.branches.BRANCH_LABELS`` 的同步由契约测试
@@ -547,6 +549,28 @@ _REQUIRED_DISPOSITION_KEYS: tuple[str, ...] = (
 )
 
 
+def _run_reflection(
+    archive: Mapping[str, Any], blocked: Mapping[str, str]
+) -> Mapping[str, Any] | None:
+    """轨迹级反思：**末个写成单元**的 ``reflection``（剔后）。
+
+    P1 里没有轨迹级 reflection——搜索阶段那一份在存档顶层，站点那几份在
+    ``visits[i]``。取法真源在
+    :func:`~trajectory_pipeline.assembler.closing.last_written_reflection`：
+    P2 的 ``reflection`` 字段与 T 的收尾结论走**同一份判断**——各写一份，
+    同一份存档在两侧会收尾成不同的话。
+    """
+    bodies: list[Mapping[str, Any]] = []
+    if "search" not in blocked:
+        bodies.append(archive)
+    for i, visit in enumerate(archive.get("visits") or (), 1):
+        if f"site-{i}" in blocked:
+            continue
+        if isinstance(visit, Mapping):
+            bodies.append(visit)
+    return closing.last_written_reflection(bodies)
+
+
 def _closing_text(archive: Mapping[str, Any]) -> str | None:
     """T 视图的任务级收尾——**面向用户的答复**（方案 23 R2-1 / R2-2）。
 
@@ -560,14 +584,20 @@ def _closing_text(archive: Mapping[str, Any]) -> str | None:
     - **空 trajectory**（零可见模型动作）不编总结；
     - **决定性结论**（裁定 ②：任务级标签，剔后取的末条结论）说成功就说
       找到了，说失败就说没找到——**中途成功过不算成功**；
+    - **轨迹级结论**来自**末个写成单元**的 reflection
+      （``rationale.conclusion``，剔后取）——与 P2 的 ``reflection`` 字段、
+      P3 的收尾**同一条判断**（真源
+      :func:`~trajectory_pipeline.assembler.closing.last_written_reflection`），
+      所以两侧对同一份存档说的是**逐字相同**的话；
     - **分支枚举名与分支计数不进文本**——那是并池口径，不是助手该对
       用户说的话（审计 G3）；
     - 一个站点都没访问到 ⇒ 如实说「没有找到可访问站点」，不输出
       ``total_sites=N`` 这类内部计数。
 
-    ⚠️ INC46（2026-10-15）后 T 也**不读 unit 级 reflection**——T 是任务级
-    视图，unit 级 reflection 是事后反思，写 unit 级 conclusion 当任务级
-    结论会把跨单元的整体判断抹成单点（与 P3 同款教训）。
+    ⚠️ **2026-11-04 · T 也带上轨迹级结论**：此前 T 不读 reflection，同一
+    条 run 的 P3 收尾带模型结论、LS 卡面（T）却只到「已排除的站点」——
+    人核读到的与会训到的不是同一句话。P1 没有轨迹级 reflection，取法
+    是「末个写成单元」的那份（与 P2 同一条），不是把各单元结论拼起来。
 
     ⚠️ **2026-10-30 · 方案 23**：处置词从「任一成功 ⇒ 成功」改成
     **最后一个结论**（裁定 ②）——与 T 的 ``overall_branch``、与 P2 的
@@ -605,6 +635,9 @@ def _closing_text(archive: Mapping[str, Any]) -> str | None:
         outcomes=closing.run_closing_outcomes(
             decisive=decisive,
             site_outcomes=site_outcomes,
+        ),
+        conclusion=closing.reflection_conclusion(
+            _run_reflection(archive, blocked)
         ),
         # 一个站点都没访问到（有动作，但全在搜索阶段）——不说「没找到
         # 可播放网址」，说「没找到可访问站点」：前者是看过了没有，后者

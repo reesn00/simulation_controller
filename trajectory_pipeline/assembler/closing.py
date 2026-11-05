@@ -247,6 +247,39 @@ def run_closing_outcomes(
     return tuple(out)
 
 
+def last_written_reflection(
+    unit_bodies: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """轨迹级反思：**末个单元**写成的那份 ``reflection``。
+
+    P1 里**没有**轨迹级 reflection——搜索阶段那一份在存档顶层，站点那几份
+    在 ``visits[i]``。每份带 ``status``：``written`` 之外（``unavailable`` /
+    ``empty``）没有可读的 ``rationale`` 文本，与「压根没生成」走同一条路。
+    收尾只要知道「有没有文本可读」，所以在这里把三态折成「有/没有」——
+    **折法只有这一处**。
+
+    取**末个**而不是拼接：收尾那一句要回答「这条任务最后怎么了」，堆砌
+    单元结论回答不了。这与裁定 ②「看最后一个结论」同款。
+
+    P2 的 ``reflection`` 字段与 T 的收尾结论**共用这一条判断**（两个调用点
+    各写一份的话，同一份存档在两侧会收到不同的话）。
+    """
+    for body in reversed(unit_bodies):
+        r = body.get("reflection")
+        if isinstance(r, Mapping) and str(r.get("status") or "") == "written":
+            return dict(r)
+    return None
+
+
+def reflection_conclusion(reflection: Mapping[str, Any] | None) -> str:
+    """reflection 里的 ``rationale.conclusion``（模型自己写的）；没有 → ``""``。"""
+    if isinstance(reflection, Mapping):
+        rat = reflection.get("rationale")
+        if isinstance(rat, Mapping):
+            return str(rat.get("conclusion") or "").strip()
+    return ""
+
+
 def closing_for_run(
     *,
     title: str,
@@ -307,6 +340,8 @@ __all__ = [
     "closing_text",
     "closing_for_unit",
     "closing_for_run",
+    "last_written_reflection",
+    "reflection_conclusion",
     "run_closing_outcomes",
     "count_urls",
     "has_url",

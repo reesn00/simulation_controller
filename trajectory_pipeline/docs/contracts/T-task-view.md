@@ -134,15 +134,18 @@ video 标签 <n> 个，iframe <n> 个
 ### 任务级 summary（末尾 assistant 消息）
 
 **与 P3 收尾是同一个函数**（`assembler/closing.py::closing_text`，方案 23
-R2-2）：同一套模板、同一份原因词表。差异只在**输入事实**——T 带整条 run
-的全部站点，P3 只带本单元 outcome 与 unit 级 reflection 结论，所以 T 多
-「别的站点怎么样」这层附加信息，核心句逐字相同。
+R2-2）：同一套模板、同一份原因词表、**同一组事实**——整条 run 的站点
+清单、同一个决定性结论、同一个轨迹级 reflection 结论 ⇒ P3 与 T 的末条
+assistant **逐字相同**（不再是「同款模板、不同事实」）。
 
 内容来源：
 
 1. **任务级结论**（裁定 ②：末条结论，**剔后**取）→ 面向用户的答复：成功给可播放网址；失败给已排除的站点与原因（只写 host，不带协议）；**不写分支枚举名、不写分支计数**（R2-1）；
 2. **不读 `ledger.by_branch`**——分支分布是并池口径，不是助手语言；
-3. **不读 unit 级 `reflection`**——T 层级高于 P1 顶层 / visits 一层的 reflection；
+3. **轨迹级结论**（2026-11-04）：取**末个写成单元**的 `reflection`
+   （`rationale.conclusion`，剔后取）——P1 没有轨迹级 reflection，取法
+   真源在 `assembler/closing.py::last_written_reflection`，P2 的
+   `reflection` 字段与 T 的收尾走**同一份判断**；
 4. **空 trajectory**（即零可见模型动作）不编总结。
 
 判定规则（裁定 ②，**看最后一个结论**——与 P3 判断 7、与 P2 的任务级标签
