@@ -37,6 +37,7 @@ from typing import Any, Iterable, Mapping
 from trajectory_pipeline.evaluation.ls_bridge.scan import ScanHit, scan_for_credentials
 from trajectory_pipeline.evaluation.ls_bridge.scorecard import (
     CONFIDENCE_TO_SCORE,
+    DIMENSION_LABELS,
     build_scorecard,
     derive_overall,
     render_risk_hints,
@@ -73,6 +74,17 @@ TASK_ANCHOR_CONTROL = "task_anchor"
 
 #: 凭据扫描覆盖的 task.data 字段（渲染前的**原始视图**）。
 _SCAN_VIEW_KEYS = ("messages_view_raw", "openai_view_raw", "meta_view_raw")
+
+
+def _dimension_text(dim: str) -> str:
+    """``d5`` → ``d5 记录/排除决策正确性``。
+
+    名称取 :data:`scorecard.DIMENSION_LABELS`（与评分卡、风险提示同一份）——
+    **标注页上只印 ``d5`` 认不出是哪一维**，那是要修的毛病，不是简写。
+    未登记的维度原样印编号（**不猜名称**）。
+    """
+    label = DIMENSION_LABELS.get(str(dim), "")
+    return f"{dim} {label}" if label else str(dim)
 
 
 # ---------------------------------------------------------------------------
@@ -190,13 +202,13 @@ def _render_trajectory_audit_text(
     for score in record.get("scores") or []:
         if score.get("is_veto"):
             reasons = "; ".join(score.get("reasons") or [])
-            lines.append(f"{score['dimension']}: VETO — {reasons}")
+            lines.append(f"{_dimension_text(score['dimension'])}: VETO — {reasons}")
         elif score.get("score") is not None and score["score"] <= 2:
             reasons = "; ".join(score.get("reasons") or [])
-            lines.append(f"{score['dimension']}: 低分 — {reasons}")
+            lines.append(f"{_dimension_text(score['dimension'])}: 低分 — {reasons}")
         elif score.get("score") is None:
             reasons = "; ".join(score.get("reasons") or [])
-            lines.append(f"{score['dimension']}: 缺判 — {reasons or '无理由记录'}")
+            lines.append(f"{_dimension_text(score['dimension'])}: 缺判 — {reasons or '无理由记录'}")
     return "\n".join(lines)
 
 
@@ -349,13 +361,13 @@ def render_audit_text(record: ScoutRecord, bucket: str = "positive") -> str:
     for score in record.get("scores") or []:
         if score.get("is_veto"):
             reasons = "; ".join(score.get("reasons") or [])
-            lines.append(f"{score['dimension']}: VETO — {reasons}")
+            lines.append(f"{_dimension_text(score['dimension'])}: VETO — {reasons}")
         elif score.get("score") is not None and score["score"] <= 2:
             reasons = "; ".join(score.get("reasons") or [])
-            lines.append(f"{score['dimension']}: 低分 — {reasons}")
+            lines.append(f"{_dimension_text(score['dimension'])}: 低分 — {reasons}")
         elif score.get("score") is None:
             reasons = "; ".join(score.get("reasons") or [])
-            lines.append(f"{score['dimension']}: 缺判 — {reasons or '无理由记录'}")
+            lines.append(f"{_dimension_text(score['dimension'])}: 缺判 — {reasons or '无理由记录'}")
     return "\n".join(lines)
 
 

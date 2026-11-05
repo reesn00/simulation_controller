@@ -49,6 +49,13 @@ _ALLOWED_TP_IMPORTS = {
     "trajectory_pipeline.evaluation.golden_ls",
     "trajectory_pipeline.evaluation.calibration",
     "trajectory_pipeline.evaluation.access_surface",
+    # ``scorers.rubric_version`` 是**维度号 ↔ 条款号 ↔ 条款名称**的唯一直源
+    # （``DIM_CLAUSES`` / ``clause_title``），纯常量与纯解析、无 IO 无副作用。
+    # ⑤ 维度分数块要把 ``d5`` 印成「记录/排除决策正确性（D-5）」，名称只能从
+    # 这里现读——在展示代码里另写一份标签表就是第二份真源，漂了不报错。
+    # ⚠️ 它**已经是** ``calibration.evidence`` 的直接依赖（后者 import
+    # ``RUBRIC_DOC``）⇒ 白名单列它不是新开口子，与 ``access_surface`` 同理。
+    "trajectory_pipeline.evaluation.scorers.rubric_version",
     "trajectory_pipeline.executor.branches",
     "trajectory_pipeline.executor.branch_eras",
     "trajectory_pipeline.storage",

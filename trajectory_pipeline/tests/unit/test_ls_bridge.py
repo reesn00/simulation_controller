@@ -396,7 +396,8 @@ class TestExporter:
         assert task["data"]["status"] == "quarantine"
         assert "无法判定" in task["data"]["audit_text"]
         assert "缺判" in task["data"]["audit_text"]
-        assert "d2: 缺判" in task["data"]["audit_text"]
+        # 维度要印**名称**，不能只有裸编号（标注员认的是名称）。
+        assert "d2 观察-动作一致性: 缺判" in task["data"]["audit_text"]
 
     def test_positive样本_开场行合格(self, views_root):
         views = {"messages": [], "openai": [], "meta": {}}

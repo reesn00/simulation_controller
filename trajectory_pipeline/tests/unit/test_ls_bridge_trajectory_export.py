@@ -280,7 +280,8 @@ class TestRenderTrajectoryAuditText:
         )
         text = _render_trajectory_audit_text(rec, "quarantine")
         assert "无法判定" in text
-        assert "d2: 缺判" in text
+        # 维度要印**名称**，不能只有裸编号（标注员认的是名称）。
+        assert "d2 观察-动作一致性: 缺判" in text
 
     def test_positive开场(self):
         text = _render_trajectory_audit_text(_trajectory(), "positive")

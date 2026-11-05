@@ -169,7 +169,26 @@ class TestMissingIsNotEmpty:
         assert "null（本行弃权）" in null
 
         filled = _data(_row(dims={"d3": 3}))["scores_block"]
-        assert '"d3": 3' in filled
+        # 名称读不到时**显式写出来**，不拿裸缩写顶替（本测试的 clauses 里没有 D-3）。
+        assert "d3（D-3 的名称没读到）" in filled
+        assert "= 3" in filled
+
+    def test_维度分数带名称(self) -> None:
+        """标注员要认的是名称，不是 ``d5`` 这种编号。"""
+        filled = _data(_row(dims={"d5": 4}))["scores_block"]
+        assert "d5 分支语义（D-5）" in filled  # 名称取自 clauses 里的 rubric 条款头
+        assert "= 4" in filled
+
+    def test_scores_detail带名称与理由(self) -> None:
+        row = _row(dims={"d5": 2})
+        row["scores_detail"] = [{
+            "dimension": "d5", "score": 2, "is_veto": True,
+            "reasons": ["不应记录却记录了"],
+        }]
+        block = _data(row)["scores_block"]
+        assert "d5 分支语义（D-5）" in block
+        assert "[veto 一票否决]" in block
+        assert "不应记录却记录了" in block
 
 
 # ── label_config ────────────────────────────────────────────────

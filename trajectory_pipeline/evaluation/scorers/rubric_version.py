@@ -198,6 +198,32 @@ DIM_CLAUSES: dict[str, str] = {
     "d10": "D-10",
 }
 
+#: 条款头行里的**名称**：``**D-5 记录/排除决策正确性 ★** | 类别：…``。
+#:
+#: 名称是 rubric 文档写的那一个（**唯一真源**）——展示侧（Label Studio 的
+#: 维度分数块）要印人话时就靠它现读，**不许在展示代码里另写一份标签表**：
+#: 抄一份必然漂，而漂了不报错（页面上会一直印旧名字，看不出来）。
+_CLAUSE_TITLE_RE = re.compile(
+    r"^\*\*(?P<clause>[DGB]-\d+(?:\.\d+)?)\s+(?P<title>[^*|]+?)\s*(?:★\s*)?\*\*"
+)
+
+
+def clause_title(text: str) -> str:
+    """条款块原文 → 条款名称（``"**D-5 记录/排除决策正确性 ★** | …"``
+    → ``记录/排除决策正确性``）。
+
+    解析不出 → **空串**（不抛）：展示侧一次要印好几个维度，其中一维的
+    名称读不到时把整块丢掉是更大的损失。但调用方**必须**把空串显式
+    印成「名称没读到」——**不许拿维度号顶替**（页面上一行只有 ``d5``
+    正是要修的那个毛病）。
+    """
+    for line in str(text or "").splitlines():
+        m = _CLAUSE_TITLE_RE.match(line.strip())
+        if m:
+            return m.group("title").strip()
+    return ""
+
+
 #: 有 1–5 分档的条款——档位号直接拼在条款号后（``d3`` + 5 → ``D-3.5``）。
 #: ``d7`` / ``d8`` 的 B 条款**不出分数**（B-1..B-4 是断言不是评分卡），
 #: 所以它们不在本集合里；拼上去会造出一个 rubric 里不存在的条款号。
@@ -621,6 +647,7 @@ __all__ = [
     "anchor_clauses",
     "anchors_drift",
     "clause_of",
+    "clause_title",
     "code_part",
     "code_scorer_version",
     "d10_mapping_drift",

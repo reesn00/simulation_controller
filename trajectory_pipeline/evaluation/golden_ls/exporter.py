@@ -80,6 +80,83 @@ def _line(label: str, value: Any, *, width: int = 14) -> str:
     return f"{label.ljust(width)}{text}" if text else f"{label.ljust(width)}（无）"
 
 
+#: 维度分数的两处展示（⑤ 块与 ③ 金标块）共用这一套渲染。
+#:
+#: ⚠️ **维度名称现读 rubric**（``clauses`` = 本次导出已解析好的条款原文，
+#: 与 ⑦ 尺子同源）——**不在这里写第二份 ``{"d5": "…"}`` 标签表**：
+#: 抄一份必然漂，而漂了不报错（页面上会一直印旧名字）。
+#: 名称读不到时说「名称没读到」，**不拿维度号顶替**——LS 上整行只有
+#: ``d5`` 正是要修的毛病。
+
+
+def _dimension_label(dim: str, clauses: Mapping[str, str] | None) -> str:
+    """``d5`` → ``d5 记录/排除决策正确性（D-5）``。
+
+    未登记维度 → ``d11（rubric 未登记这一维）``；条款号登记了但名称读不到
+    → ``d11（D-11 的名称没读到）``。两种都**显式写出来**，不静默降级成
+    一个裸缩写。
+    """
+    from trajectory_pipeline.evaluation.scorers.rubric_version import (
+        DIM_CLAUSES,
+        clause_title,
+    )
+
+    clause = DIM_CLAUSES.get(str(dim))
+    if clause is None:
+        return f"{dim}（rubric 未登记这一维）"
+    title = clause_title(clauses.get(clause, "")) if clauses else ""
+    if not title:
+        return f"{dim}（{clause} 的名称没读到）"
+    return f"{dim} {title}（{clause}）"
+
+
+def _score_text(value: Any) -> str:
+    """分数的显示值。``null`` 是**人判「这一维判不了」**，不是没填。"""
+    return "null（判不了）" if value is None else str(value)
+
+
+def _render_dim_scores(
+    scores: Mapping[str, Any], clauses: Mapping[str, str] | None
+) -> list[str]:
+    """``{dim: 分}`` → 逐维一行（**键按数据原序**，不重排——重排会让
+    「这一版与上一版差在哪」读不出来）。"""
+    return [
+        f"  {_dimension_label(str(dim), clauses)} = {_score_text(value)}"
+        for dim, value in scores.items()
+    ]
+
+
+def _render_scores_detail(
+    detail: Sequence[Any], clauses: Mapping[str, str] | None
+) -> list[str]:
+    """``scores_detail`` → 逐维分数 + 判读理由。
+
+    形态不认识（不是 ``[{dimension,…}]`` 列表）时**退回原样 JSON**，
+    不猜结构、不丢内容。
+    """
+    if not isinstance(detail, (list, tuple)) or not all(
+        isinstance(item, Mapping) for item in detail
+    ):
+        return [json.dumps(detail, ensure_ascii=False, indent=2)]
+    lines: list[str] = []
+    for item in detail:
+        dim = str(item.get("dimension") or "")
+        head = (
+            f"  {_dimension_label(dim, clauses)}"
+            f" score={_score_text(item.get('score'))}"
+        )
+        if item.get("is_veto"):
+            head += " [veto 一票否决]"
+        lines.append(head)
+        reasons = item.get("reasons")
+        if isinstance(reasons, (list, tuple)):
+            lines.extend(f"      - {reason}" for reason in reasons)
+        elif reasons:
+            # 字符串也照印（**不逐字符迭代**——那样会把一句理由拆成一行一个字）。
+            lines.append(f"      - {reasons}")
+    return lines
+
+
 def _is_machine_signature(signature: str) -> bool:
     """金标署名是不是**机器/自动化**写的（人核 ⇒ ``False``）。"""
     from trajectory_pipeline.evaluation.golden.signatures import (
@@ -149,7 +226,9 @@ def render_site_block(row: Mapping[str, Any]) -> str:
     ])
 
 
-def render_gold_block(row: Mapping[str, Any]) -> str:
+def render_gold_block(
+    row: Mapping[str, Any], *, clauses: Mapping[str, str] | None = None
+) -> str:
     """③ 金标（人工真值）。"""
     golden = row.get("golden") if isinstance(row.get("golden"), Mapping) else {}
     label = str(golden.get("label") or "")
@@ -160,7 +239,10 @@ def render_gold_block(row: Mapping[str, Any]) -> str:
     if note:
         lines.append(_line("金标备注", note))
     gold_scores = golden.get("dimension_scores")
-    if gold_scores:
+    if gold_scores and isinstance(gold_scores, Mapping):
+        lines.append("金标维度分:")
+        lines.extend(_render_dim_scores(gold_scores, clauses))
+    elif gold_scores:
         lines.append(_line("金标维度分", json.dumps(gold_scores, ensure_ascii=False)))
     return "\n".join(lines)
 
@@ -183,8 +265,17 @@ def render_code_block(row: Mapping[str, Any]) -> str:
     ])
 
 
-def render_scores_block(row: Mapping[str, Any], *, version: Any = None) -> str:
-    """⑤ 维度分数。**三种「没有」分开写**（M-29 的病）。"""
+def render_scores_block(
+    row: Mapping[str, Any],
+    *,
+    version: Any = None,
+    clauses: Mapping[str, str] | None = None,
+) -> str:
+    """⑤ 维度分数。**三种「没有」分开写**（M-29 的病）。
+
+    ⚠️ 每维都印**名称**（现读 ``clauses`` 里的 rubric 条款头），不印裸
+    ``d2``/``d5``：标注员认的是「记录/排除决策正确性」，不是编号。
+    """
     top = row.get("dimension_scores", None)
     detail = row.get("scores_detail", None)
     if "dimension_scores" not in row and "scores_detail" not in row:
@@ -197,6 +288,9 @@ def render_scores_block(row: Mapping[str, Any], *, version: Any = None) -> str:
         lines.append("顶层维度分数: **null（本行弃权）**")
     elif not top:
         lines.append("顶层维度分数: **空（本行没测）**")
+    elif isinstance(top, Mapping):
+        lines.append("顶层维度分数（分数 1–5；null = 人判这一维判不了）:")
+        lines.extend(_render_dim_scores(top, clauses))
     else:
         lines.append("顶层维度分数:")
         lines.append(json.dumps(top, ensure_ascii=False, indent=2))
@@ -205,8 +299,8 @@ def render_scores_block(row: Mapping[str, Any], *, version: Any = None) -> str:
     elif not detail:
         lines.append("scores_detail: **空（本行没测）**")
     else:
-        lines.append("scores_detail:")
-        lines.append(json.dumps(detail, ensure_ascii=False, indent=2))
+        lines.append("scores_detail（逐维分数与判读理由）:")
+        lines.extend(_render_scores_detail(detail, clauses))
     return "\n".join(lines)
 
 
@@ -371,9 +465,9 @@ def build_golden_task_data(
         # 九个展示块（键名与 label_config 的控件名逐字一致）
         "version_block": render_version_block(row, version_meta=version_meta, marker=marker),
         "site_block": render_site_block(row),
-        "gold_block": render_gold_block(row),
+        "gold_block": render_gold_block(row, clauses=clauses),
         "code_block": render_code_block(row),
-        "scores_block": render_scores_block(row, version=version),
+        "scores_block": render_scores_block(row, version=version, clauses=clauses),
         "scene_block": render_scene_block(scene or {}),
         "rubric_block": render_rubric_block(
             clauses=clauses,
@@ -707,8 +801,13 @@ def render_trajectory_code_block(row: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_trajectory_scores_block(row: Mapping[str, Any]) -> str:
-    """⑤ 维度分数（轨迹级 + 逐站）。**三种「没有」分开写**（M-29 的病）。"""
+def render_trajectory_scores_block(
+    row: Mapping[str, Any], *, clauses: Mapping[str, str] | None = None
+) -> str:
+    """⑤ 维度分数（轨迹级 + 逐站）。**三种「没有」分开写**（M-29 的病）。
+
+    每维都印**名称**（现读 rubric 条款头），不印裸 ``d2``/``d5``。
+    """
     top = row.get("dimension_scores", None)
     detail = row.get("scores_detail", None)
     lines: list[str] = []
@@ -721,6 +820,9 @@ def render_trajectory_scores_block(row: Mapping[str, Any]) -> str:
             lines.append("轨迹级维度分数: **null（弃权）**")
         elif not top:
             lines.append("轨迹级维度分数: **空（没测）**")
+        elif isinstance(top, Mapping):
+            lines.append("轨迹级维度分数（分数 1–5；null = 人判这一维判不了）:")
+            lines.extend(_render_dim_scores(top, clauses))
         else:
             lines.append("轨迹级维度分数:")
             lines.append(json.dumps(top, ensure_ascii=False, indent=2))
@@ -729,14 +831,17 @@ def render_trajectory_scores_block(row: Mapping[str, Any]) -> str:
         elif not detail:
             lines.append("scores_detail: **空（没测）**")
         else:
-            lines.append("scores_detail:")
-            lines.append(json.dumps(detail, ensure_ascii=False, indent=2))
+            lines.append("scores_detail（逐维分数与判读理由）:")
+            lines.extend(_render_scores_detail(detail, clauses))
     lines.append("")
     lines.append("── 逐站维度分数（站点级）──")
     for i, site in enumerate(_traj_sites(row), 1):
         ss = site.get("dimension_scores")
         if not ss:
             lines.append(f"  访问点 {i}：（空 / 没测）")
+        elif isinstance(ss, Mapping):
+            lines.append(f"  访问点 {i}：")
+            lines.extend(f"    {ln.strip()}" for ln in _render_dim_scores(ss, clauses))
         else:
             lines.append(f"  访问点 {i}：{json.dumps(ss, ensure_ascii=False)}")
     return "\n".join(lines)
@@ -835,7 +940,7 @@ def build_trajectory_task_data(
         "site_block": render_trajectory_site_block(row),
         "gold_block": render_trajectory_gold_block(row),
         "code_block": render_trajectory_code_block(row),
-        "scores_block": render_trajectory_scores_block(row),
+        "scores_block": render_trajectory_scores_block(row, clauses=clauses),
         "scene_block": render_trajectory_scene_block(scene or {}),
         "rubric_block": render_rubric_block(
             clauses=clauses,
