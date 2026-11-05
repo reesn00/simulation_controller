@@ -277,6 +277,21 @@ class LLMClient:
         #: 上一次失败的**简短原因**，供排障。不含响应体、不含 key——
         #: 后端回的错误正文偶尔带凭据片段，而异常与诊断都会进日志。
         self.last_error: str = ""
+        #: **最近一次调用**的账本读数（2026-11-05，P0-1）。``chat`` 与
+        #: ``chat_messages`` 每次调用后都会刷新这三个字段，供不走
+        #: ``ChatResult`` 的调用点（感知层、rationale writer）把成本汇入
+        #: ``RunRecord.llm_calls``。
+        #:
+        #: ⚠️ **它们只描述「本客户端最近一次调用」**：同一个客户端被两个
+        #: 线程并发使用时会互相覆盖。并发调用点必须各用各的客户端
+        #: （writer 与 reflection 已按此拆分，见 ``executor/cli.py``）。
+        self.last_latency_ms: int = 0
+        #: ``{"prompt_tokens": int, "completion_tokens": int}``；后端没给
+        #: 就是 ``None``——**不补 0**，与 :func:`_usage_of` 同口径。
+        self.last_usage: dict[str, int] | None = None
+        #: 最近一次调用的错误码（空串 = 成功）。与 :attr:`last_error` 的
+        #: 区别：后者只在失败时写、成功不清空（排障语义），这里每次都写。
+        self.last_call_error: str = ""
 
     def __repr__(self) -> str:
         return f"LLMClient({self.cfg!r})"
@@ -318,13 +333,17 @@ class LLMClient:
            薄壳（组装两条消息 + 取 ``content``）。**外部契约一字未动**
            ——十一道判断题与 ``FakeLLM`` 都还走这里。
         """
-        content, _usage, error = self._exchange(
+        started = time.perf_counter()
+        content, usage, error = self._exchange(
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             max_tokens=max_tokens,
         )
+        self.last_latency_ms = int((time.perf_counter() - started) * 1000)
+        self.last_usage = usage
+        self.last_call_error = error
         if error:
             # 只在失败时写：``last_error`` 的语义是「上一次失败的原因」，
             # 成功不清空（原实现即是如此，diag 路径依赖这个语义）。
@@ -361,12 +380,19 @@ class LLMClient:
         """
         started = time.perf_counter()
         content, usage, error = self._exchange(messages, max_tokens=max_tokens)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        # 与 ``chat`` 共用同一组「最近一次调用」读数：本方法虽自带
+        # ``ChatResult``，但把字段刷新一遍，客户端上就不会残留上一条
+        # 单轮调用的旧数。
+        self.last_latency_ms = latency_ms
+        self.last_usage = usage
+        self.last_call_error = error
         if error:
             self.last_error = error
         return ChatResult(
             content=content,
             usage=usage,
-            latency_ms=int((time.perf_counter() - started) * 1000),
+            latency_ms=latency_ms,
             error=error,
         )
 

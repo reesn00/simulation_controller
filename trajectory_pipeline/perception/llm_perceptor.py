@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -230,6 +231,17 @@ class LLMPerceptor:
         self._target_title = target_title
         #: 本进程内因「能力不足」而 None 的题——覆盖率报表用。
         self._unresolved: set[str] = set()
+        #: **LLM 调用账本**（2026-11-05，P0-1）。orchestrator 在每次
+        #: ``run()`` 开始时把它指向 ``RunRecord.llm_calls``（同一个 list
+        #: 对象，``_ask`` 往里 append）。此前账本刻意只圈 agent_loop，
+        #: 代价是「一次 run 到底问了几次模型、各花多久」在存档里查不到——
+        #: 感知层的调用只以 httpx 日志行的形式存在，而日志不入库。
+        #: 空 list = 没人接线（单测直接构造），不是「没有调用」。
+        self.llm_calls: list[dict[str, Any]] = []
+        #: 本次判定的候选归因（可选）。orchestrator 在访问单个候选前后
+        #: 置位/清空——感知层自己不知道「这一页属于哪个候选链接」，
+        #: 而账本里没有候选列的 judge 调用只能靠时序去猜。
+        self.candidate: str = ""
 
     # ── 主入口 ──────────────────────────────────────────────────────
 
@@ -1173,7 +1185,25 @@ class LLMPerceptor:
         user = json.dumps(
             {"question": spec.id, "observation": rendered}, ensure_ascii=False
         )
+        started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         got = self._client.chat(system, user)
+        # P0-1：感知层的每次调用都汇入 ``RunRecord.llm_calls``。
+        # **失败也记**——「问了但因后端挂掉没答案」与「压根没问」
+        # （充分性预检短路）在账本上必须是两行不同的事实。
+        usage = getattr(self._client, "last_usage", None) or {}
+        self.llm_calls.append(
+            {
+                "caller": "percept",
+                "question": spec.id,
+                "candidate": self.candidate,
+                "model": getattr(getattr(self._client, "cfg", None), "model", ""),
+                "latency_ms": int(getattr(self._client, "last_latency_ms", 0) or 0),
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "error": str(getattr(self._client, "last_call_error", "") or ""),
+                "started_at": started_at,
+            }
+        )
         if got is None:
             return None, f"LLM 不可用（{self._client.last_error or '未知原因'}）"
         return got, ""

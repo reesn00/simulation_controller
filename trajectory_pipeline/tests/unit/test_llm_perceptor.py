@@ -1324,6 +1324,15 @@ class TestP4aRound2Prompt:
             f"PLAYER_OK schema_hint 首字段是 {po_keys[0]!r}，应为 page_quotes"
         )
 
+    def test_分类题不要模型逐行复述标题(self):
+        """P1-5（2026-11-05）：解析端 ``_resolve_rows`` 只读 ``i``/``why``，
+        ``title`` 从来没被消费过——每行复述一遍标题只是白烧输出 token。
+        题面已经让模型「看标题文本」判断类别，它不需要把标题抄回来。"""
+        hint = lp.questions.get(Q.CLASSIFY_SEARCH_LINKS).schema_hint
+        for cls in ("video_site", "aggregator", "article_post", "noise"):
+            rows = hint[cls]
+            assert rows == [{"i": "int", "why": "str"}], cls
+
 
 class TestP4aRound2DecideFallback:
     """P4a 第二轮端到端验证：经 ``decide()`` 走完 IS_REACHABLE / PLAYER_OK
@@ -2151,3 +2160,40 @@ class TestINC45乱码页救济:
 # 目标簇的信号到底在 body_text 还是 LLM evidence**（探针时只验了
 # body 有没有信号，没验信号是否足以覆盖目标行）。
 # ═══════════════════════════════════════════════════════════════════════
+
+
+class Test调用账本:
+    """P0-1（2026-11-05）：感知层的每次实际 LLM 调用都要进 ``llm_calls``。
+
+    以前账本只圈 ``agent_loop``，感知层的十一题只以 httpx 日志行存在——
+    日志不入库，「这次 run 问了几次模型、各花多久、失败了几次」在存档里
+    查不到。这里钉三件事：实际调用记一行、预检短路不记、失败也记。
+    """
+
+    def test_实际调用记一行且带题号与候选(self):
+        fake = FakeLLM()
+        p = lp.LLMPerceptor(fake, target_title="功夫")
+        p.candidate = "https://x.test/a"
+        p.decide(Q.IS_REACHABLE, _obs(body_text="有内容"))
+        assert len(p.llm_calls) == 1
+        row = p.llm_calls[0]
+        assert row["caller"] == "percept"
+        assert row["question"] == Q.IS_REACHABLE
+        assert row["candidate"] == "https://x.test/a"
+        assert row["started_at"]
+        assert "error" in row and row["error"] == ""
+
+    def test_预检短路不发调用也不记账(self):
+        """充分性预检在代码层否决——没有 HTTP 调用，账本里就不该有行。
+        「没问」与「问了没答」是两件不同的成本事实。"""
+        p = lp.LLMPerceptor(FakeLLM(), target_title="功夫")
+        p.decide(Q.PLAYER_OK, _obs(body_text="", interactive_elements=()))
+        assert p.llm_calls == []
+
+    def test_失败调用也记一行(self):
+        fake = FakeLLM(down=True)
+        p = lp.LLMPerceptor(fake, target_title="功夫")
+        d = p.decide(Q.IS_REACHABLE, _obs(body_text="有内容"))
+        assert d.answer is None
+        assert len(p.llm_calls) == 1
+        assert p.llm_calls[0]["error"]

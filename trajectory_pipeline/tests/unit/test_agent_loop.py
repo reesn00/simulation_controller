@@ -42,6 +42,7 @@ from trajectory_pipeline.executor.agent_loop import (
     _canonical,
     _invented_url,
     _system_prompt,
+    _validate,
     _validate_selected,
     ActionInstruction,
     AgentBudget,
@@ -1427,11 +1428,17 @@ class Test任务类型:
                 AgentBudget(),
             ).split("纪律：\n")[1]
 
-        assert "selected" in rules(TASK_ENTRIES)
-        assert "selected" not in rules(TASK_PLAY)
-        # 多了一条，编号也要跟着走——不然模型看到两个「3.」
-        assert "4." in rules(TASK_ENTRIES)
-        assert "4." not in rules(TASK_PLAY)
+        play = rules(TASK_PLAY)
+        entries = rules(TASK_ENTRIES)
+        assert "selected" in entries
+        assert "selected" not in play
+        # 多了一条，编号也要跟着走——不然模型看到两个「3.」。
+        # 条数用动态值：2026-11-05 起 play 也多了一条 think 纪律，
+        # 写死「4.」会把「链接类多一条」这条真正的不变式测成数字。
+        n_play = len(play.splitlines())
+        assert len(entries.splitlines()) == n_play + 1
+        assert f"{n_play}." in play
+        assert f"{n_play + 1}." in entries
 
     def test_max_selected进提示词(self):
         prompt = _system_prompt(
@@ -1607,3 +1614,60 @@ class Test契约漂移:
             FakeDriver((_obs(url="https://x.test/s", refs=("e2",)),)),
         )
         assert set(ctx.actions) <= set(AGENT_TOOLS)
+
+
+class Test非终局动作必须带think:
+    """P0-3（2026-11-05）：``think`` 是归因链的第一格，不是可选注释。
+
+    P1 的 ``steps[i].rationale`` 优先取决策时的原生 think；空了就只能
+    由另一个 LLM 事后补写——那一步的「动作前动机」不再是决策者本人的。
+    所以非终局动作缺 think 时**不执行**，与工具/参数/ref 三类错误同款
+    打回，且合并进同一条引导（不额外烧一轮重试）。
+
+    ``done`` 形态不走 :func:`_validate`（终局自报没有工具动作），这条
+    纪律只管真的会点/填/按的步骤。
+    """
+
+    def test_带上think就通过(self):
+        instr = ActionInstruction(
+            tool="click", ref="e1", think="看到播放按钮，点它"
+        )
+        assert _validate(instr, frozenset({"e1"})) == ""
+
+    def test_缺think被打回且文案说清怎么补(self):
+        instr = ActionInstruction(tool="click", ref="e1", think="")
+        guidance = _validate(instr, frozenset({"e1"}))
+        assert "think" in guidance
+        assert "补上" in guidance
+
+    def test_只有空白think也算缺(self):
+        """模型有时用空格占位——``think`` 只认非空白内容。"""
+        instr = ActionInstruction(tool="click", ref="e1", think="  \n ")
+        assert _validate(instr, frozenset({"e1"})).startswith(
+            "（非终局动作必须带 think）"
+        )
+
+    def test_缺think与坏ref合并成一条引导(self):
+        """两条问题一次说清：分开返回会让模型先修一个、下一轮再撞一个，
+        3 次重试额度经不起同一类错误烧两遍。"""
+        instr = ActionInstruction(tool="click", ref="e99", think="")
+        guidance = _validate(instr, frozenset({"e1"}))
+        assert "e99" in guidance
+        assert "think" in guidance
+
+
+class Test记账范围只认非终局动作:
+    """``done`` 不走 :func:`_validate`——终局自报本来就没有工具动作，
+    拿工具字段卡它会把「报到了」误判成坏输出。"""
+
+    async def test_done可以不带think(self):
+        ctx = await _run(
+            FakeAgentLLM([{"done": True, "report": {
+                "reached": True, "why": "播放器已起", "selected": None,
+            }}]),
+            FakeDriver(),
+        )
+        # 只问了 1 次：没有被「缺 think」打回重试。终局验收是否判
+        # ``player_ok`` 是另一条路径（本页没有播放器证据），这里不钉。
+        assert len(ctx.llm.calls) == 1
+        assert not [k for k in ctx.kinds if k == "inject_guidance"]

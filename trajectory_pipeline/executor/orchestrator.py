@@ -374,25 +374,46 @@ class RunRecord:
     #: 空 list = 本次运行没有拦截事件（**与「没接线」同形是已知代价**，
     #: 阶段 G 只有搜索页一处写入点，A2 起写入点才多起来）。
     gatekeeper_events: list[dict[str, Any]] = field(default_factory=list)
-    #: **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4）。每条
-    #: ``{ts, caller, candidate, model, latency_ms, prompt_tokens,
-    #: completion_tokens, error}``——agent 循环每次问模型记一行。
+    #: **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4；2026-11-05 P0-1
+    #: 扩到全 caller）。每条
+    #: ``{caller, candidate, model, latency_ms, prompt_tokens,
+    #: completion_tokens, error, started_at?, question?, ts}``。
+    #:
+    #: ``caller`` 封闭取值：
+    #:   - ``agent_loop`` —— 站内 agent 的每步决策（``ChatResult`` 直记）；
+    #:   - ``percept``    —— 感知层每次 ``decide`` 实际发出的 LLM 调用
+    #:     （``question`` 字段区分题目：CLASSIFY_SEARCH_LINKS / PLAYER_OK /
+    #:     IS_REACHABLE …；充分性预检短路**不发调用、不记账**）；
+    #:   - ``rationale``  —— 逐步动作前动机的撰写；
+    #:   - ``reflection`` —— 单元终局反思的撰写。
+    #:
+    #: 2026-11-05 之前**只圈 agent_loop**：感知层与 rationale 的调用只以
+    #: httpx 日志行存在，而日志不入库——「一次 run 到底问了几次模型、
+    #: 各花多久」在存档里查不到，成本分析只能靠日志时间戳猜。现在四类
+    #: caller 同账：``caller`` 区分岗位，``candidate`` 区分站点（感知层
+    #: 的判定由 orchestrator 在访问单个候选时置位），``question`` 区分
+    #: 感知题。**失败调用也记**（``error`` 非空）——「问了但没答案」与
+    #: 「压根没问」是两行不同的事实。
     #:
     #: 与 ``gatekeeper_events`` 同款可选字段纪律（不升 ``schema_version``）：
     #: 老存档没有它。空 list 照落——「这次运行没问模型」（scripted 批）
     #: 与「没这个键」在下游是两回事。
     #:
-    #: **记账范围刻意只圈 agent_loop**（§3.6 的 A2a 决策）：感知层十一题
-    #: 的调用不汇入——Decision 已有 latency_ms，把账本传进 perceptor 是对
-    #: 感知层的侵入，而账本的用途是「agent 批次成本可比」，不是全管线审计。
     #: token 数为 ``None``（不是 0）= 后端没给 usage，与「这一调用一个
     #: token 没花」是两回事（理由见 ``llm.client._usage_of``）。
     #:
-    #: ⚠️ ``ts`` 的粒度是**候选级**：循环体不引入时间源（否则每条记账都
-    #: 是时间相关的不可测代码），由 orchestrator 在候选访问收口时统一加盖，
-    #: 同一候选的各条共享一个时间戳。候选内的次序由 list 顺序保证，单条
-    #: 耗时由 ``latency_ms`` 给出——ts 要回答的只是「这批成本是哪段时间
-    #: 烧的」。超时/异常收口的候选可能带着没盖戳的残条落盘，那是诚实残账。
+    #: ⚠️ ``ts`` 的粒度是**单元级**：agent 循环体不引入时间源（否则每条
+    #: 记账都是时间相关的不可测代码），由 orchestrator 在候选访问收口时
+    #: 统一加盖；搜索阶段的条目在分类/补记收口时加盖；``_seal`` 兜底给
+    #: 所有漏戳条目补一个。同一单元的各条共享一个时间戳。候选内的次序
+    #: 由 list 顺序保证，单条耗时由 ``latency_ms`` 给出——ts 要回答的只是
+    #: 「这批成本是哪段时间烧的」。超时/异常收口的候选可能带着没盖戳的
+    #: 残条落盘，那是诚实残账。
+    #:
+    #: ⚠️ ``started_at`` 只有 aux caller（percept / rationale / reflection）
+    #: 带：那是**调用发起时刻**，精确到秒，用来把并发出去的几次调用排到
+    #: 时间轴上。agent_loop 的条目不带它（循环体无时间源），要精确时序
+    #: 看 ``ts`` 与 list 顺序。
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
     #: 候选过滤记账：``{原因: 条数}``。静默剔除会让"引擎给了 50 个链接、
     #: 我们只跑了 11 个"这类损失不可见。
@@ -621,6 +642,43 @@ def _decision_json(decision: Decision | None) -> dict[str, Any] | None:
         "answer": decision.answer,
         "evidence": decision.evidence,
     }
+
+
+def _now_iso() -> str:
+    """账本 ``started_at`` 用的一行时间戳（UTC，秒级）。"""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _record_writer_call(
+    record: "RunRecord",
+    writer: Any,
+    caller: str,
+    started_at: str,
+    candidate: str = "",
+) -> None:
+    """把一次 rationale / reflection 调用的成本读数落进账本（P0-1）。
+
+    ``writer.last_call`` 由 CLI 注入的薄适配（``executor/cli.py``）在每次
+    调用返回后刷新；取不到（测试里的纯函数 writer）就跳过——账本不要求
+    writer 实现成本接口，但实现了就必须记。**异常路径不调用本函数**：
+    writer 抛异常时 ``last_call`` 可能还停在上一次调用上，记下来就是
+    把上一笔成本再记一遍。
+    """
+    stat = getattr(writer, "last_call", None)
+    if not isinstance(stat, Mapping) or not stat:
+        return
+    record.llm_calls.append(
+        {
+            "caller": caller,
+            "candidate": candidate,
+            "model": str(stat.get("model") or ""),
+            "latency_ms": int(stat.get("latency_ms") or 0),
+            "prompt_tokens": stat.get("prompt_tokens"),
+            "completion_tokens": stat.get("completion_tokens"),
+            "error": str(stat.get("error") or ""),
+            "started_at": started_at,
+        }
+    )
 
 
 def _stamp_llm_calls(calls: list[dict[str, Any]]) -> None:
@@ -1124,6 +1182,11 @@ class Orchestrator:
             # 两项断言的分母/判据都在这里，见 RunRecord.run_config。
             run_config=dataclasses.asdict(self._cfg),
         )
+        # P0-1：感知层的调用汇入同一个账本（同一个 list 对象，``_ask``
+        # 往里 append）。规则版与测试替身没有这个槽位——跳过，不要求
+        # 它们实现账本接口。
+        if hasattr(self._perceptor, "llm_calls"):
+            self._perceptor.llm_calls = record.llm_calls
         if self._cfg.discovery_path == "aggregator" and search_query:
             # taskgen 的检索词是按 persona 渲染的**片名**检索，B 路径
             # 用不上——静默忽略会让「这批 B 为什么 query 是聚合词」
@@ -1173,7 +1236,15 @@ class Orchestrator:
         # 搜索阶段是**这条轨迹的头一段**，它没有 rationale 会让整条轨迹
         # 恒 gate=not_run、D-9 永远不可判定。
         # 失败路径（search_obs=None）不产搜索段，无须补记。
-        await self._write_rationales(record.steps, record, "搜索页")
+        #
+        # P0-4（2026-11-05）：补记在 **worker 线程**里跑（见
+        # :meth:`_write_rationales` 的 ``to_thread``），与下面的分类
+        # HTTP 调用并发。它只依赖 ``search_obs``，不依赖候选结果。
+        # ⚠️ 提前返回的分支必须 ``await`` 它——否则收口时 writer 还在
+        # 改 ``record.steps``，落盘就是半截状态。
+        rationale_task = asyncio.create_task(
+            self._write_rationales(record.steps, record, "搜索页")
+        )
 
         # ── 环节 0.5：反爬拦截 ─────────────────────────────────────
         # 必须在取候选**之前**判：验证码页的表现是"正文短 + 零链接"，
@@ -1211,6 +1282,7 @@ class Orchestrator:
                 f"加请求间隔或换引擎（--engine bing）再试；"
                 f"直接重跑同一引擎大概率仍是验证码页"
             )
+            await rationale_task
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return self._seal(record)
 
@@ -1269,6 +1341,7 @@ class Orchestrator:
                 f"degraded={list(record.search_obs.degraded)}，"
                 f"过滤掉 {record.candidate_filter}）"
             )
+            await rationale_task
             record.elapsed_ms = int((time.monotonic() - started) * 1000)
             return self._seal(record)
 
@@ -1304,7 +1377,42 @@ class Orchestrator:
         # 用它打消息会得到「过滤后无候选（原有 0 个）」这种自相矛盾的
         # 句子（实测踩过：明明原有 6 个却报 0 个）。
         n_candidates = len(record.candidates)
-        record.candidates = self._classify_candidates(record, ledger)
+        # P0-4（2026-11-05）：搜索单元的终局反思**与分类并发**。
+        #
+        # 输入与原先「分类之后调用」**完全相同**：``_write_reflection``
+        # 只收本单元的步流与 ``outcome=None``，**不收候选列表**——原先
+        # 那句「放在候选定稿之后」描述的是阅读顺序，不是数据依赖。
+        # 变的只是发起时刻（分类前），收益是那 4~8 秒的 LLM 调用不再
+        # 串在分类的 38 秒后面。
+        #
+        # ⚠️ 早退路径（分类后无候选）原本在写完反思之后才判，这里保持：
+        # 两个任务都在判之前收口。
+        reflection_task = asyncio.create_task(
+            self._write_reflection(
+                record.steps, record, "搜索页", outcome=None
+            )
+        )
+        # 分类本身也必须在 worker 线程里跑：它是同步的 httpx 调用，直接
+        # 在这里调用会**堵住事件循环**，上面两个 ``create_task`` 直到分类
+        # 返回才轮得到执行——那样只是把调用挪了个位置，一秒都没省。
+        # 账本追加（list.append）、``record.warnings`` 追加在 GIL 下都是
+        # 原子的，两个任务改的是互不重叠的字段（rationale 改 steps、
+        # 分类改 candidate_source/warnings）。
+        classify_task = asyncio.create_task(
+            asyncio.to_thread(self._classify_candidates, record, ledger)
+        )
+        try:
+            record.candidates = await classify_task
+        finally:
+            # 无论分类成功还是抛异常，两个补记任务都必须收口——悬空
+            # 任务会在 ``_seal`` 之后继续改 ``record``。
+            await rationale_task
+            reflection = await reflection_task
+        record.reflection = reflection
+        # 搜索阶段的账本（分类 + 逐步补记 + 反思）在这里统一盖戳：
+        # 此后逐站点收口的 ``_stamp_llm_calls`` 就不会把搜索成本记到
+        # 第一个候选头上。
+        _stamp_llm_calls(record.llm_calls)
 
         # ── 环节 ①.6：站点首页核（仅 direct）／中间页遍历（B/C）────
         if self._cfg.discovery_path == "direct":
@@ -1318,14 +1426,14 @@ class Orchestrator:
             # 很多是站点首页，那是站内搜索（环节②）的入口而不是
             # 「找错站」。中间页访问链在这里产出最终候选。
             await self._visit_intermediates(record, ledger)
+        # P0-1：中间页单元的感知调用在这里盖戳（B/C 路径）。direct
+        # 路径没有新条目，``setdefault`` 是无操作。
+        _stamp_llm_calls(record.llm_calls)
 
         # ── 环节 ①.7：搜索单元的终局反思 ──────────────────────────
-        # 放在候选定稿**之后**：搜索单元的总结要说的是「搜到了什么、
-        # 接下来核验哪几个」，而候选此时才定。搜索单元没有站点级
-        # outcome（``outcome=None``），它的「处置」是进入下一单元。
-        record.reflection = await self._write_reflection(
-            record.steps, record, "搜索页", outcome=None
-        )
+        # 已在环节 ①.5 与分类并发发起并在分类收口时落进
+        # ``record.reflection``（P0-4）。这里不再重复调用——原位置在
+        # 候选定稿之后，但反思的 payload 不含候选，数据依赖没有变化。
 
         if not record.candidates:
             log.warning("[%s] 分类+过滤后无候选（原有 %d 个，来源 %s），"
@@ -1381,6 +1489,7 @@ class Orchestrator:
             await self._write_rationales(
                 result.steps, record, result.candidate.url[:60],
                 history_prefix=_rationale_history(record),
+                candidate=result.candidate.url,
             )
             # 站点单元的终局反思：放在逐步 rationale **之后**——它要看的
             # 是全单元历史与最终判定，而判定此时才记进 ledger。
@@ -1390,7 +1499,12 @@ class Orchestrator:
                 record,
                 result.candidate.url[:60],
                 outcome=outcome,
+                candidate=result.candidate.url,
             )
+            # P0-1：本单元的 rationale / reflection 行在这里盖戳——否则
+            # 它们要等到**下一个候选**收口才拿到 ts，成本会被记到下一站
+            # 头上（``candidate`` 字段仍能分辨，但 ts 会说谎）。
+            _stamp_llm_calls(record.llm_calls)
             record.visits.append(result)
             log.info("[%s] 环节② %s → %s%s", task_id, candidate.url,
                      (outcome or {}).get("branch") or "无记账分支",
@@ -1466,6 +1580,10 @@ class Orchestrator:
                 f"驱动换一张新页用同一个 URL 重来）：{detail}"
                 + ("…" if len(events) > 5 else "")
             )
+        # P0-1：落盘前给所有漏戳条目补 ``ts``——搜索阶段的 aux 调用、
+        # 以及任何异常收口路径留下的残条。已盖过的不重盖（见
+        # :func:`_stamp_llm_calls` 的 setdefault 口径）。
+        _stamp_llm_calls(record.llm_calls)
         return record
 
     async def _write_rationales(
@@ -1475,6 +1593,7 @@ class Orchestrator:
         label: str,
         *,
         history_prefix: Sequence[ActionStep] = (),
+        candidate: str = "",
     ) -> None:
         """为一段动作流的**每一步**生成 rationale（模块 4，D2「边写边生成」）。
 
@@ -1510,6 +1629,19 @@ class Orchestrator:
         **失败一律记账不抛异常**：rationale 缺失不该让一次真实访问整段作废。
         三种状态（``written`` / ``unavailable`` / ``empty``）原样落进 P1，
         由组装期决定闸门与 ``rationale_missing``——**别在这里判**。
+
+        **基础设施步不生成 rationale**（P0-2，2026-11-05）：``new_tab`` /
+        ``close_tab`` 的 ``origin="infrastructure"`` 是执行器的会话管理，
+        agent 根本没做过这个决策。给它补一段「动作前动机」等于替一个
+        不存在的决策编理由——而那条文本会进训练语料，模型学到的就是
+        「执行器自己的动作也有思考」。这里挂一条显式的 ``status="skipped"``
+        标记（不是静默跳过）：读档的人要能区分「这一步按设计不写」与
+        「本该写但没写出来」。
+
+        **调用在 worker 线程里跑**（P0-4，2026-11-05）：``asyncio.to_thread``
+        让搜索阶段的补记能与分类的同步 HTTP 调用真正并发。writer 对象
+        因此必须线程安全或独占——CLI 已把 write 与 reflect 拆成两个
+        客户端，逐步写调用本身仍是串行的。
         """
         if self._writer is None:
             return
@@ -1520,8 +1652,27 @@ class Orchestrator:
             if actions.is_native_think(step.rationale):
                 # R0-1：原生 think 已在决策时落盘，补记不得覆盖。
                 continue
+            if getattr(step.action, "origin", "model") == "infrastructure":
+                # P0-2：执行器自己的会话管理动作，不是模型决策。
+                # 挂显式 skipped 而不是静默 skip——组装期据此把这一步
+                # 排除出「缺 rationale」的清单，同时保留可审计的痕迹。
+                steps_log.attach_rationale(
+                    index,
+                    {
+                        "status": "skipped",
+                        "rationale": None,
+                        "reason": (
+                            "基础设施步（执行器会话管理，非模型决策）——"
+                            "按设计不生成 rationale"
+                        ),
+                        "degraded": [],
+                    },
+                )
+                continue
+            started_at = _now_iso()
             try:
-                payload = self._writer(
+                payload = await asyncio.to_thread(
+                    self._writer,
                     action=step.action.to_json(vocabulary),
                     user_prompt=record.user_prompt,
                     target_title=record.title,
@@ -1541,6 +1692,9 @@ class Orchestrator:
                     f"{type(exc).__name__}: {exc}——该步无 rationale，闸门记 not_run"
                 )
                 continue
+            _record_writer_call(
+                record, self._writer, "rationale", started_at, candidate
+            )
             steps_log.attach_rationale(index, payload)
 
     async def _write_reflection(
@@ -1550,6 +1704,7 @@ class Orchestrator:
         label: str,
         *,
         outcome: Mapping[str, Any] | None = None,
+        candidate: str = "",
     ) -> dict[str, Any] | None:
         """为一个决策单元写**终局反思**，落 unit 级 ``reflection`` 键。
 
@@ -1584,8 +1739,10 @@ class Orchestrator:
             return None
         vocabulary = _vocabulary_of_run(record)
         steps = steps_log.steps
+        started_at = _now_iso()
         try:
-            return reflect(
+            result = await asyncio.to_thread(
+                reflect,
                 user_prompt=record.user_prompt,
                 target_title=record.title,
                 history=[
@@ -1601,6 +1758,8 @@ class Orchestrator:
                 f"——该单元无 reflection，收尾退回纯 disposition 话术"
             )
             return None
+        _record_writer_call(record, reflect, "reflection", started_at, candidate)
+        return result
 
     async def _result_titles(self) -> tuple[Mapping[str, str], str]:
         """取当前搜索页的「结果标题 ↔ URL」。返回 ``(映射, 失败原因)``。
@@ -1787,6 +1946,9 @@ class Orchestrator:
         agent 的超时单列，改的是这里一处。
         """
         result = visit_step.VisitResult(candidate=candidate)
+        # P0-1：给感知层账本标注「这次判定属于哪个候选」。感知层自己
+        # 不知道候选链接（它只看 Observation），不置位就只能靠时序猜。
+        self._bind_perception_candidate(candidate.url)
         try:
             if self._mode == AGENT:
                 coro = agent_visit_step.agent_visit(
@@ -1807,7 +1969,6 @@ class Orchestrator:
                 visited = await asyncio.wait_for(
                     coro, timeout=self._cfg.per_site_timeout_s
                 )
-                _stamp_llm_calls(record.llm_calls)
                 return visited
             return await asyncio.wait_for(
                 visit_step.visit_site(
@@ -1849,6 +2010,18 @@ class Orchestrator:
             result.note(f"异常: {exc}")
             record.warnings.append(f"{candidate.url} 异常: {exc}")
             return result
+        finally:
+            # P0-1：候选访问收口统一盖 ``ts``（agent / scripted 两种模式
+            # 共用这一处）。盖在这里而不是只在 agent 成功分支：scripted
+            # 链的感知层调用也要有戳，超时/异常收口的残条同样是诚实账。
+            _stamp_llm_calls(record.llm_calls)
+            # 清掉候选归因——下一个候选不继承这一个的标签。
+            self._bind_perception_candidate("")
+
+    def _bind_perception_candidate(self, url: str) -> None:
+        """给感知层账本标注当前候选（P0-1）。规则版没有该属性——跳过。"""
+        if hasattr(self._perceptor, "candidate"):
+            self._perceptor.candidate = url
 
     # ── 路径 B/C：中间页遍历（2026-10-16）─────────────────────────
 
@@ -1904,16 +2077,20 @@ class Orchestrator:
             if self._cfg.discovery_path == "aggregator"
             else article_step.visit_article
         )
-        return await fn(
-            self._driver,
-            self._perceptor,
-            ledger,
-            candidate,
-            max_chars=self._cfg.max_chars,
-            max_links=self._cfg.max_referral_links,
-            engine=self._cfg.engine,
-            stats=record.candidate_filter,
-        )
+        self._bind_perception_candidate(candidate.url)
+        try:
+            return await fn(
+                self._driver,
+                self._perceptor,
+                ledger,
+                candidate,
+                max_chars=self._cfg.max_chars,
+                max_links=self._cfg.max_referral_links,
+                engine=self._cfg.engine,
+                stats=record.candidate_filter,
+            )
+        finally:
+            self._bind_perception_candidate("")
 
     async def _visit_intermediates(
         self, record: RunRecord, ledger: RunLedger

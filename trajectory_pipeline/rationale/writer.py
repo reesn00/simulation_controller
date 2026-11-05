@@ -230,6 +230,14 @@ class WriteResult:
     reason: str = ""
     #: 需要传下去给 assembler 的降级标记（如 ``rationale_truncated``）。
     degraded: tuple[str, ...] = ()
+    #: **本次调用的账本读数**（2026-11-05，P0-1）。**不进 ``to_json``**：
+    #: P1 的 ``steps[i].rationale`` 是训练制品的位点，成本读数属于
+    #: ``RunRecord.llm_calls``，混进 P1 会让同一事实有两处真值。
+    #: 取值为本次调用（不是历史累计）；后端没给 usage 时 token 是 ``None``。
+    latency_ms: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    error: str = ""
 
     @property
     def written(self) -> bool:
@@ -587,6 +595,23 @@ def render_outcome(outcome: Mapping[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _call_stats(client: LLMClient) -> dict[str, Any]:
+    """读取**刚刚这次** ``client.chat`` 的成本读数（P0-1）。
+
+    ``WriteResult`` 的三个 token/耗时段是给 ``RunRecord.llm_calls`` 用的；
+    这里只做形状归一（缺 usage 时 token 落 ``None``，**不补 0**）——与
+    :meth:`LLMClient.chat` 的 ``last_*`` 字段同口径。测试里的假客户端
+    没有这三个属性时一律取默认值，不要求它们实现账本接口。
+    """
+    usage = getattr(client, "last_usage", None) or {}
+    return {
+        "latency_ms": int(getattr(client, "last_latency_ms", 0) or 0),
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "error": str(getattr(client, "last_call_error", "") or ""),
+    }
+
+
 def _complete(client: LLMClient, system: str, payload: dict[str, Any]) -> WriteResult:
     """:func:`write_one` / :func:`write_reflection` 共用的收尾。
 
@@ -598,10 +623,11 @@ def _complete(client: LLMClient, system: str, payload: dict[str, Any]) -> WriteR
     import json
 
     raw = client.chat(system, json.dumps(payload, ensure_ascii=False))
+    stats = _call_stats(client)
     if raw is None:
         return WriteResult(
             "unavailable", None,
-            f"LLM 不可用（{client.last_error or '未配置或连不上'}）")
+            f"LLM 不可用（{client.last_error or '未配置或连不上'}）", **stats)
 
     # 口径 3：剥完是空 → 不可用，且**原因要写出来**。
     text = schema_parse.strip_think(raw)
@@ -609,7 +635,7 @@ def _complete(client: LLMClient, system: str, payload: dict[str, Any]) -> WriteR
         return WriteResult(
             "unavailable", None,
             "剥掉<think>后正文为空——推理预算被思考吃光或响应被截断，"
-            "**不是**「模型没说话」")
+            "**不是**「模型没说话」", **stats)
 
     # 口径 6：残留思维链标签即拒写（红线：raw CoT 不进持久化）。
     low = text.lower()
@@ -618,14 +644,14 @@ def _complete(client: LLMClient, system: str, payload: dict[str, Any]) -> WriteR
         return WriteResult(
             "unavailable", None,
             f"剥净<think>后仍残留思维链标签 {residual}——"
-            f"按红线 raw CoT 不落盘，拒写")
+            f"按红线 raw CoT 不落盘，拒写", **stats)
 
     data, repairs = schema_parse.extract_json_reporting(text)
     if data is None:
         return WriteResult(
             "unavailable", None,
             f"正文里抠不出 JSON（前 40 字：{text[:40]!r}）——"
-            f"解析失败判不可用，不静默只留散文")
+            f"解析失败判不可用，不静默只留散文", **stats)
 
     thinking = schema_parse.as_str(
         schema_parse.field(data, "thinking") or schema_parse.field(data, "text")
@@ -643,11 +669,11 @@ def _complete(client: LLMClient, system: str, payload: dict[str, Any]) -> WriteR
             return WriteResult(
                 "unavailable", None,
                 f"JSON 里没有 thinking/text 字段（拿到了 {sorted(data)}）——"
-                f"字段漂移，判不可用")
+                f"字段漂移，判不可用", **stats)
         return WriteResult(
             "empty", None,
             "模型返回了 thinking 字段但内容为空——这是数据事实"
-            "（这一轮它什么都没说），不是后端不可用")
+            "（这一轮它什么都没说），不是后端不可用", **stats)
 
     degraded: list[str] = list(repairs)
     if len(thinking) > MAX_TEXT_CHARS:
@@ -657,7 +683,8 @@ def _complete(client: LLMClient, system: str, payload: dict[str, Any]) -> WriteR
         conclusion = conclusion[:MAX_CONCLUSION_CHARS]
         degraded.append("conclusion_truncated")
 
-    return WriteResult("written", Draft(thinking, conclusion), "", tuple(degraded))
+    return WriteResult(
+        "written", Draft(thinking, conclusion), "", tuple(degraded), **stats)
 
 
 __all__ = [

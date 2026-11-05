@@ -214,7 +214,9 @@ class Rationale:
     - 闸门能逐条核（时序核查本来就需要 ``step_index``）；
     - 长度对不上本身就是**要看得见的信号**（见 :func:`align_rationales`）。
 
-    ``status`` 原样带 P1 的三态（``written`` / ``unavailable`` / ``empty``）。
+    ``status`` 原样带 P1 的取值（``written`` / ``unavailable`` / ``empty``；
+    2026-11-05 起另有 ``skipped``——基础设施动作**按设计**不写 rationale，
+    既不是「没写成」也不是「写不出」，见 :func:`gate_of`）。
     **不合成占位文本**：缺一条与写错一条在训练里不是同一件事。
     """
 
@@ -261,7 +263,8 @@ def align_rationales(
         # 这层不能拍平成 ``payload["text"]``：那样读出来恒为空，
         # 而症状是「模型什么都没写」，不是「读错了字段」。
         if payload.get("status") != "written":
-            # 三态原样带下来：unavailable/empty 的文本位留空
+            # 状态原样带下来：unavailable/empty/skipped 的文本位留空
+            # （skipped = 基础设施步按设计不写，2026-11-05 P0-2）
             out.append(
                 Rationale(
                     step_index=i,
@@ -385,10 +388,28 @@ def gate_of(
             passed_steps += 1
     if failed:
         return GateMark("failed", tuple(failed))
-    reasons = [f"逐条核查 {passed_steps}/{len(rationales)} 步通过"]
-    missing = [str(r.step_index) for r in rationales if r.status != "written"]
+    # 分母排除 ``skipped``：基础设施步本来就不该参与核查，把它算进
+    # 「共几步」会让「2/3 通过」看起来像有一步没通过——而那一步是
+    # 按设计不写的，读者会去找一条根本不存在的失败原因。
+    checked_total = sum(1 for r in rationales if r.status != "skipped")
+    reasons = [f"逐条核查 {passed_steps}/{checked_total} 步通过"]
+    # ``skipped``（基础设施动作，2026-11-05 P0-2）**不是缺件**：执行器
+    # 自己开的 tab 没有模型决策，给它写 rationale 才是造假。把它排除出
+    # 「没写成」清单，同时单独列一条——读者要能区分「按设计不写」与
+    # 「本该写但没写出来」，两者都静默才是账本最糟的形态。
+    skipped = [str(r.step_index) for r in rationales if r.status == "skipped"]
+    missing = [
+        str(r.step_index)
+        for r in rationales
+        if r.status not in ("written", "skipped")
+    ]
     if missing:
         reasons.append(f"第 {', '.join(missing)} 步没写成（未参与核查）")
+    if skipped:
+        reasons.append(
+            f"第 {', '.join(skipped)} 步是基础设施动作（执行器会话管理，"
+            f"非模型决策），按设计不生成 rationale"
+        )
     return GateMark("passed", tuple(reasons))
 
 

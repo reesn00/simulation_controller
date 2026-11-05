@@ -591,6 +591,15 @@ _GUIDANCE_BAD_REF: Final = (
 _GUIDANCE_NO_PARAM: Final = (
     "（tool={tool} 缺少 params.{key}）按契约补上再输出，不要留空。"
 )
+#: 非终局动作必须带 ``think``（2026-11-05，P0-3）。这不是格式洁癖：
+#: ``think`` 是这条轨迹里**唯一**由决策者本人写下的动作前动机，P1 的
+#: ``steps[i].rationale`` 直接取它；空 think 会让该步退回「事后由另一个
+#: LLM 补写」，而补写的理由与决策者当时的判断可能毫无关系——报告上
+#: 看不出任何异常（D-9 归因断链）。
+_GUIDANCE_NO_THINK: Final = (
+    "（非终局动作必须带 think）think 是一句话：你现在看到什么、"
+    "打算做什么。空 think 的动作不可执行，请补上再输出。"
+)
 _GUIDANCE_ACTION_FAILED: Final = (
     "（上一步 {tool} 执行失败：{error}）请换一个动作，或如实报告放弃。"
 )
@@ -838,33 +847,56 @@ def _as_text(value: Any) -> str:
 def _validate(instr: ActionInstruction, refs: frozenset[str]) -> str:
     """工具层校验（I6 在这里强制）。返回引导文案，空串 = 通过。
 
-    三条判据，顺序即严重性：
+    四条判据，顺序即严重性：
 
     1. **工具名越界** → 模型选了执行器自己的动作（``new_tab`` /
        ``close_tab``）或不存在的工具。这是协议违反，不是能力问题；
     2. **params 缺必需键** → goto 无 url、fill 无 text、press 无 key。
        缺了就没法执行，补默认值等于替模型编 URL/编按键；
     3. **ref 不在白名单** → I6 违反。**编 ref 是不可逆错误**：点了就
-       是点错页面，且改不回来。所以根本不执行，直接回炉。
+       是点错页面，且改不回来。所以根本不执行，直接回炉；
+    4. **非终局动作没有 think** → 这一步没有决策者本人的动作前动机。
+       ``think`` 不是可选注释：P1 的 ``steps[i].rationale`` 直接取它，
+       空了就只剩「事后由另一个 LLM 补写」，归因链在那一格断掉。
+       与前三条的差别是它**还能补**——所以合并进同一条引导，不单独
+       再烧一轮重试。
     """
+    guidance = ""
     if instr.tool not in AGENT_TOOLS:
-        return _GUIDANCE_BAD_TOOL.format(
+        guidance = _GUIDANCE_BAD_TOOL.format(
             tool=instr.tool, tools="/".join(AGENT_TOOLS)
         )
-    for key in _PARAM_KEYS.get(instr.tool, ()):
-        if not _as_text(instr.params.get(key)):
-            return _GUIDANCE_NO_PARAM.format(tool=instr.tool, key=key)
-    if instr.tool in ("click", "fill") and instr.ref not in refs:
-        return _GUIDANCE_BAD_REF.format(
-            ref=instr.ref or "(空)",
-            refs=", ".join(sorted(refs)) or "(本页没有可交互元素)",
+    else:
+        for key in _PARAM_KEYS.get(instr.tool, ()):
+            if not _as_text(instr.params.get(key)):
+                guidance = _GUIDANCE_NO_PARAM.format(tool=instr.tool, key=key)
+                break
+        if (
+            not guidance
+            and instr.tool in ("click", "fill")
+            and instr.ref not in refs
+        ):
+            guidance = _GUIDANCE_BAD_REF.format(
+                ref=instr.ref or "(空)",
+                refs=", ".join(sorted(refs)) or "(本页没有可交互元素)",
+            )
+        # press 的 ref 可空（回车提交是全局按键），但**给了就必须是真的**。
+        if (
+            not guidance
+            and instr.tool == "press"
+            and instr.ref
+            and instr.ref not in refs
+        ):
+            guidance = _GUIDANCE_BAD_REF.format(
+                ref=instr.ref, refs=", ".join(sorted(refs))
+            )
+    # 与上面的问题**合并**成一条引导：分开返回会让模型在「先修哪个」
+    # 上多烧一轮重试（_MAX_ATTEMPTS=3 不是给同一类错误的无限额度）。
+    if not instr.think.strip():
+        guidance = (
+            f"{guidance}{_GUIDANCE_NO_THINK}" if guidance else _GUIDANCE_NO_THINK
         )
-    # press 的 ref 可空（回车提交是全局按键），但**给了就必须是真的**。
-    if instr.tool == "press" and instr.ref and instr.ref not in refs:
-        return _GUIDANCE_BAD_REF.format(
-            ref=instr.ref, refs=", ".join(sorted(refs))
-        )
-    return ""
+    return guidance
 
 
 @dataclass(frozen=True, slots=True)
@@ -1136,6 +1168,8 @@ def _rules_of(task: AgentTask) -> str:
     插一条时不用手工重排后面三条的序号。
     """
     rules = [
+        "每一个非终局动作都必须写 think（一句话：现在看到什么、打算做什么）；"
+        "think 是你当时的判断依据，空着等于这一步没有决策记录。",
         "ref 只能用最近一次观察的 interactive 列表里出现过的，绝不自己编号。",
     ]
     if task.kind in _LINK_TASKS:
@@ -1668,9 +1702,11 @@ class _Loop:
     def _record(self, result: "ChatResult") -> None:
         """llm_calls[] 记账（§3.6）。
 
-        **只记 agent_loop 的调用**：感知层十一题的调用不汇入（Decision
-        已有 latency_ms，把账本实例传进 perceptor 是对感知层的侵入），
-        列为 O 阶段扩展项。
+        本方法只写 **agent_loop 这一格**（``caller="agent_loop"``）。
+        2026-11-05（P0-1）起账本是全 caller 的：感知层的调用由
+        ``LLMPerceptor._ask`` 直接 append，rationale / reflection 由
+        ``orchestrator._record_writer_call`` 在调用返回后 append——
+        同一个 list 对象，各自写各自的行。
 
         ``usage`` 缺失时两个 token 字段落 ``None`` 而不是 0——后端没给的
         数写成 0，批次成本就会被那几个 0 拉低，报表上「便宜」是假的。

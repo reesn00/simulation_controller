@@ -232,6 +232,21 @@ def _make_rationale_writer():
         return None, f"LLM 后端不可用 {type(exc).__name__}: {exc}"
 
     client = LLMClient(cfg)
+    # 写动机与写反思**各用一个客户端**（P0-1/P0-4）：搜索阶段两次补记
+    # 与分类并发（``asyncio.to_thread``），共用客户端会让 ``last_*``
+    # 账本读数互相覆盖——账上就会把一个调用的耗时/ token 记到另一个上。
+    reflect_client = LLMClient(cfg)
+
+    def _stat(client_: LLMClient) -> dict[str, Any]:
+        """把**刚刚那次**调用折成 ``llm_calls[]`` 的一行（不含 caller/时间）。"""
+        usage = getattr(client_, "last_usage", None) or {}
+        return {
+            "model": cfg.model,
+            "latency_ms": int(getattr(client_, "last_latency_ms", 0) or 0),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "error": str(getattr(client_, "last_call_error", "") or ""),
+        }
 
     def write(**kw):
         """薄适配：把 :class:`WriteResult` 折成 P1 里落盘的形状。
@@ -241,8 +256,15 @@ def _make_rationale_writer():
         ``None`` 并带 ``reason``——**文本位置留空**，因为「模型这轮没说话」
         与「有文本但被红线拒写」在下游必须分得开（前者不该进负样本池，
         后者更不该）。这里不做任何判定：**闸门在组装期跑**。
+
+        ``write.last_call`` 是本次调用的成本读数，由 orchestrator 在
+        调用返回后读走并落进 ``RunRecord.llm_calls``——写在这里而不是
+        让 :class:`WriteResult` 直接带 caller，是因为 caller 是调用点的
+        语义（搜索页 / 站点步 / 中间页），writer 自己不知道。
         """
-        return rationale_writer.write_one(client, **kw).to_json()
+        result = rationale_writer.write_one(client, **kw)
+        write.last_call = _stat(client)   # type: ignore[attr-defined]
+        return result.to_json()
 
     def reflect(**kw):
         """终局反思入口（INC46）。落 unit 级 ``reflection`` 键。
@@ -256,10 +278,18 @@ def _make_rationale_writer():
         不同的调用塞进一个签名，而「本步观察能不能喂」正是 INC46 要
         钉死的那条区别。
         """
-        return rationale_writer.write_reflection(client, **kw).to_json()
+        result = rationale_writer.write_reflection(reflect_client, **kw)
+        reflect.last_call = _stat(reflect_client)  # type: ignore[attr-defined]
+        return result.to_json()
 
+    def close() -> None:
+        client.close()
+        reflect_client.close()
+
+    write.last_call = {}                # type: ignore[attr-defined]
+    reflect.last_call = {}              # type: ignore[attr-defined]
     write.reflect = reflect             # type: ignore[attr-defined]
-    write.close = client.close          # type: ignore[attr-defined]
+    write.close = close                 # type: ignore[attr-defined]
     write.model = cfg.model             # type: ignore[attr-defined]
     return write, ""
 

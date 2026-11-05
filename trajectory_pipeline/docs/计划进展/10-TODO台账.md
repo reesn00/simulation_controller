@@ -712,6 +712,37 @@ T `任务总结：处置：{disposition}。分支分布：{by_branch}。`。**�
   这是**当前产物本身的样子**，不是手工改写。台账
   `push_index__77.jsonl` 追加了 2 行（append-only，同 `sample_id` / 同 id）。
 
+## 2026-11-05 执行耗时压缩（T002 单条 130.5s 复盘）
+
+> 触发：owner 要求「审查这条数据执行时间消耗，分析哪些时间可以压缩、去掉」，
+> 并按 P0 → P1 → P2 顺序落地。基线：`T002__4b181a6d` 一条 130.5s
+> （分类 ~38s、reasoning 8~9s/步、搜索补记与反思串行、基础设施步也补写
+> rationale）。本节记**已做 / 未做 / 为什么**。⚠️ **收益读数不在这里预先填**——
+> 要等下一批真实运行后逐条读 `llm_calls` 才算数。
+
+### 已落地
+
+| 项 | 内容 | 落点 | 测试 |
+|---|---|---|---|
+| **P0-1** | `llm_calls` 从「只圈 agent_loop」扩到**全 caller**（`agent_loop` / `percept` / `rationale` / `reflection`）：带 `latency_ms` / token / `error` / `started_at`；**失败调用也记**；`ts` 单元级盖戳 + `_seal` 兜底 | `executor/orchestrator.py`（`_record_writer_call` / `_bind_perception_candidate` / 盖戳）· `perception/llm_perceptor.py`（`_ask` 逐次记账）· `rationale/writer.py`（`WriteResult` 成本读数，**不进 `to_json`**）· `executor/cli.py`（write/reflect 拆客户端 + `last_call`）· `llm/client.py`（`last_latency_ms` / `last_usage` / `last_call_error`） | `test_visit.py::test_写手调用都进llm_calls账本` · `test_llm_perceptor.py::Test调用账本` · `test_writer.py::Test调用读数` |
+| **P0-2** | 基础设施步（`origin="infrastructure"`，如 `new_tab`）**不生成 rationale**，落显式 `status="skipped"`；`gate_of` 把它排除出「没写成」、单列理由、分母也排除 | `executor/orchestrator.py::_write_rationales` · `assembler/schema.py::gate_of` | `test_visit.py::test_每一步都生成` · `test_assembler.py::Test基础设施步的rationale豁免` |
+| **P0-3** | 非终局动作**强制原生 think**：提示词规则 + `_validate` 校验；缺失时与工具/参数/ref 问题**合并成一条引导**，不额外烧重试 | `executor/agent_loop.py`（`_GUIDANCE_NO_THINK` / `_validate` / `_rules_of`） | `test_agent_loop.py::Test非终局动作必须带think` · `Test记账范围只认非终局动作` |
+| **P0-4** | 搜索单元的逐步 rationale / 终局 reflection 与**分类**并发：三者都扔 worker 线程（`asyncio.to_thread`）；分类不在线程里跑会**堵住事件循环**，任务根本起不来。早退路径逐个 `await` 收口 | `executor/orchestrator.py`（`create_task` + `classify_task` + `finally`） | `test_visit.py::test_分类与补记真并发`（线程事件判据，不靠 sleep） |
+| **P1-5** | `CLASSIFY_SEARCH_LINKS` 的 `schema_hint` 去掉 `title`——解析端 `_resolve_rows` 从不读它，逐行复述标题只烧输出 token | `perception/questions.py` | `test_llm_perceptor.py::test_分类题不要模型逐行复述标题` |
+| 顺带 | `camofox-1` 读原语转 `exercised=True`（T002 真实调用已落盘）；退役面 `camoufox-1` 用 `dataclasses.replace` 保持 `False`——`exercised` 是**逐面**口径，声明体仍同源 | `toolcatalog/__init__.py` | `tests/contract/test_tool_catalog_contract.py`（185 条全绿） |
+
+### 未做 / 为什么
+
+- **P1-6 资源阻断（图片/字体/媒体不加载）：上游不可用。** camofox-browser 的
+  11 tool MCP 面没有 block/route 工具；`goto` 的 `wait_until` 在本仓库调用面
+  **根本没传**，改它也阻断不了子资源。要做得改上游或换 REST 直连自己管 route，
+  不是本树单方面能做对的事。
+- **P1-7 点击后观察的等待：不改。** 那 8.65s 含**必须**的点击后观察
+  （`_settle` 有界等 commit 2s + 读页）。砍掉等的是「读到一半」——
+  2026-10-22 实测过渡态 15% 的教训；观察是采集目标，不是开销。
+- **P2 观察压缩/分页：方案 23 R0 未裁定前不动。** owner 已裁「观察选择权
+  还给 agent」（O-1），但 R0–R5 本体未实施；单方面压缩会改训练契约。
+
 ## 校准回路（方案 16）· 未闭环
 
 ### Q-14 · D-3 的 `playable` ↔ `nav_aggregator` 两个定义在这一类页面上同时成立

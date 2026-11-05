@@ -557,3 +557,36 @@ class TestWriteReflection:
         r = _reflect(c)
         assert r.status == "unavailable"
         assert "红线" in r.reason
+
+
+class Test调用读数:
+    """P0-1（2026-11-05）：写手把「这次调用花了多少」带回给编排层。
+
+    读数挂在 ``WriteResult`` 上但**不进 ``to_json``**：P1 的
+    ``steps[i].rationale`` 形状是训练契约的一部分，成本读数属于运行账本
+    （``RunRecord.llm_calls``），掺进去会让老存档与新存档的 payload
+    不可比。
+    """
+
+    def test_成功调用带回耗时与token读数(self):
+        c = _client(_ok())
+        r = _write(c)
+        assert r.status == "written"
+        assert r.latency_ms >= 0
+        # 假传输没给 usage——必须是 None（后端没给），不是 0（没花 token）
+        assert r.prompt_tokens is None
+        assert r.completion_tokens is None
+        assert r.error == ""
+
+    def test_失败调用带回错误码(self):
+        c = _client(None, status=503)
+        r = _write(c)
+        assert r.status == "unavailable"
+        assert r.error == "http:503"
+
+    def test_读数不进payload(self):
+        """``to_json`` 是与 P1 schema 的边界，读数留在对象上。"""
+        c = _client(_ok())
+        r = _write(c)
+        assert set(r.to_json()) == {"status", "rationale", "reason", "degraded"}
+        assert "latency_ms" not in json.dumps(r.to_json())

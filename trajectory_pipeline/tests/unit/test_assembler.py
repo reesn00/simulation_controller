@@ -994,3 +994,50 @@ class Test终局验收读回复:
         )
         s = schema.split_archive(_write(tmp_path, arc))[0]
         assert s.gate.status == "not_run"
+
+
+class Test基础设施步的rationale豁免:
+    """P0-2（2026-11-05）：``new_tab`` 等执行器会话管理动作挂 ``skipped``。
+
+    它既不是「没写成」（``unavailable``/``empty``：本该写但没写出来），
+    也不是「写不出」——那一步**没有模型决策**，补一段动机等于替不存在的
+    决策编理由，而那段文本会进训练语料。闸门要把这三种事实分开列。
+    """
+
+    def _r(self, i, status, text=""):
+        return schema.Rationale(step_index=i, text=text, status=status)
+
+    def test_skipped不算缺件且分母排除它(self):
+        gate = schema.gate_of(
+            [self._r(0, "written", "打开搜索结果页"), self._r(1, "skipped")],
+            action_tools=("goto", "new_tab"),
+        )
+        assert gate.status == "passed"
+        joined = "\n".join(gate.reasons)
+        # 分母只说核查过的那一步——「1/2 通过」会让读者去找一条不存在的失败
+        assert "逐条核查 1/1 步通过" in joined
+        assert "基础设施动作" in joined
+        assert "没写成" not in joined
+
+    def test_missing与skipped分开列(self):
+        gate = schema.gate_of(
+            [
+                self._r(0, "written", "打开搜索结果页"),
+                self._r(1, "unavailable"),
+                self._r(2, "skipped"),
+            ],
+            action_tools=("goto", "new_tab", "goto"),
+        )
+        assert gate.status == "passed"
+        joined = "\n".join(gate.reasons)
+        assert "逐条核查 1/2 步通过" in joined
+        assert "第 1 步没写成" in joined
+        assert "第 2 步是基础设施动作" in joined
+
+    def test_全skipped仍是not_run(self):
+        """一条 ``written`` 都没有 ⇒ 没有东西被核查过。**「按设计不写」
+        不等于「通过」**——把豁免读成通过会让整条轨迹凭空拿一个 passed。"""
+        gate = schema.gate_of(
+            [self._r(0, "skipped")], action_tools=("new_tab",)
+        )
+        assert gate.status == "not_run"

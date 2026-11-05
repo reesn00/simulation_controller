@@ -2652,12 +2652,20 @@ class TestRationale接线:
 
         steps = rec.visits[0].steps.steps
         tools = [s.action.tool for s in steps]
-        # 步数不写死（执行器可能插入会话隔离动作）——只钉「每步都生成、
-        # 且拿到的是该步自己的东西」。搜索步（顶层 record.steps）也在补记
-        # 之列，所以 sink 数量 = 搜索步 + 访问步步数。
+        # 步数不写死（执行器可能插入会话隔离动作）——只钉「每个**模型
+        # 决策步**都生成、且拿到的是该步自己的东西」。搜索步（顶层
+        # record.steps）也在补记之列，所以 sink 数量 = 搜索步 +
+        # 非 infrastructure 的访问步步数（P0-2 起 new_tab 等执行器动作
+        # 挂 skipped 标记、不调用 writer）。
         assert tools[0] == "goto" and "click" in tools
-        assert len(sink) == 1 + len(steps)
-        assert all(s.rationale and s.rationale["status"] == "written" for s in steps)
+        billable = [s for s in steps if s.action.origin != "infrastructure"]
+        assert len(sink) == 1 + len(billable)
+        assert all(
+            s.rationale
+            and s.rationale["status"]
+            == ("skipped" if s.action.origin == "infrastructure" else "written")
+            for s in steps
+        )
         # 搜索步本身也有 rationale（2026-10-11 补生成闭环）
         assert (
             rec.steps.steps[0].rationale
@@ -2679,6 +2687,140 @@ class TestRationale接线:
         # 本步观察没有入口：喂了它，模型就会描述一个还没看到的页面
         assert "observation" not in by_tool["click"]
         assert "error" not in by_tool["click"]
+
+    async def test_写手调用都进llm_calls账本(self):
+        """P0-1（2026-11-05）：逐步 rationale 与终局 reflection 也是模型
+        调用。以前账本只圈 agent_loop，这两类只以 httpx 日志行存在——
+        「这次 run 到底问了几次模型、各花多久」在存档里查不到。"""
+        sink: list = []
+
+        def write(**kw):
+            sink.append(kw)
+            write.last_call = {
+                "model": "fake-model",
+                "latency_ms": 12,
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "error": "",
+            }
+            return {
+                "status": "written",
+                "rationale": {"text": f"第 {len(sink)} 步的思考", "conclusion": ""},
+                "reason": "",
+                "degraded": [],
+            }
+        write.last_call = {}
+
+        def reflect(**kw):
+            reflect.last_call = {
+                "model": "fake-model",
+                "latency_ms": 34,
+                "prompt_tokens": 200,
+                "completion_tokens": 40,
+                "error": "",
+            }
+            return {
+                "status": "written",
+                "rationale": {"text": "这一单元的总结", "conclusion": ""},
+                "reason": "",
+                "degraded": [],
+            }
+        reflect.last_call = {}
+        write.reflect = reflect
+
+        script = {
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "video_site": [
+                        {"url": "https://www.a.test/movie", "why": "含片名"}
+                    ]
+                },
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(
+            FakeDriver(self._pages()),
+            ScriptedPerceptor(script),
+            RunConfig(),
+            rationale_writer=write,
+        ).run("T001", "功夫", user_prompt="有能看的吗")
+
+        rows = rec.llm_calls
+        assert {r["caller"] for r in rows} == {"rationale", "reflection"}
+        rationales = [r for r in rows if r["caller"] == "rationale"]
+        reflections = [r for r in rows if r["caller"] == "reflection"]
+        steps = rec.visits[0].steps.steps
+        billable = [s for s in steps if s.action.origin != "infrastructure"]
+        assert len(rationales) == 1 + len(billable) == len(sink)
+        # 搜索单元 + 一个站点单元
+        assert len(reflections) == 2
+        # 候选归因：站点单元的写手调用带落地 URL，搜索单元留空
+        site_url = "https://www.a.test/movie"
+        assert any(r["candidate"] == site_url for r in rationales)
+        assert [r["candidate"] for r in reflections] == ["", site_url]
+        # 成本读数原样带进账本
+        assert all(r["model"] == "fake-model" for r in rows)
+        assert {r["latency_ms"] for r in rationales} == {12}
+        assert {r["latency_ms"] for r in reflections} == {34}
+        assert all(r["started_at"] for r in rows)
+        # ts 由编排层统一盖（agent_loop 口径不变）
+        assert all(r.get("ts") for r in rows)
+
+    async def test_分类与补记真并发(self):
+        """P0-4（2026-11-05）：分类是**同步** httpx 调用，必须扔进
+        worker 线程。直接调用会堵住事件循环——前面 ``create_task`` 的
+        rationale/reflection 直到分类返回才轮得到启动，那样只是把调用
+        挪了个位置，一秒都没省。
+
+        判据用**线程事件**而不是 sleep：分类在 worker 线程里等补记先
+        启动，等不到就断言失败。没有并发时这条会以「分类抛异常」的
+        形态失败，而不是靠一个不稳定的耗时读数。"""
+        import threading
+
+        writer_started = threading.Event()
+
+        def write(**kw):
+            writer_started.set()
+            return {
+                "status": "written",
+                "rationale": {"text": "看到了就点", "conclusion": ""},
+                "reason": "",
+                "degraded": [],
+            }
+
+        class BlockingPerceptor(ScriptedPerceptor):
+            def decide(self, question, obs):
+                if question == Q.CLASSIFY_SEARCH_LINKS:
+                    assert writer_started.wait(2.0), (
+                        "分类阻塞了事件循环：rationale 补记没能在分类期间启动"
+                    )
+                return super().decide(question, obs)
+
+        script = {
+            Q.CLASSIFY_SEARCH_LINKS: ok(
+                Q.CLASSIFY_SEARCH_LINKS,
+                {
+                    "video_site": [
+                        {"url": "https://www.a.test/movie", "why": "含片名"}
+                    ]
+                },
+            ),
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        rec = await Orchestrator(
+            FakeDriver(self._pages()),
+            BlockingPerceptor(script),
+            RunConfig(),
+            rationale_writer=write,
+        ).run("T001", "功夫", user_prompt="有能看的吗")
+
+        assert rec.candidates
+        assert writer_started.is_set()
 
     async def test_落盘进存档(self):
         sink: list = []

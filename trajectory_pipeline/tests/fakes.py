@@ -154,6 +154,10 @@ class FakeLLM:
         self.budgets: list[int | None] = []
         #: 与真客户端同名字段：失败原因
         self.last_error = ""
+        #: 与真客户端同名字段（P0-1）：最近一次调用的耗时/token/错误。
+        self.last_latency_ms = 0
+        self.last_usage: dict[str, int] | None = None
+        self.last_call_error = ""
 
     # ── 接口 ──────────────────────────────────────────────────────
 
@@ -165,6 +169,14 @@ class FakeLLM:
         self.calls.append((system, user))
         self.budgets.append(max_tokens)
         content, error = self._respond(user)
+        # 与真客户端同名的「最近一次调用」读数（P0-1）：感知层/写手的
+        # 账本适配读这三个字段，fake 不实现就会让「失败调用也记账」这类
+        # 断言永远看到空值。latency 恒 0 与 chat_messages 同口径。
+        self.last_latency_ms = 0
+        self.last_usage = (
+            None if (self.no_usage or content is None) else dict(_FAKE_USAGE)
+        )
+        self.last_call_error = error
         if error:
             self.last_error = error
         return content
@@ -195,11 +207,15 @@ class FakeLLM:
         self.calls.append((system, user))
         self.budgets.append(max_tokens)
         content, error = self._respond(user)
+        usage = None if (self.no_usage or content is None) else dict(_FAKE_USAGE)
+        self.last_latency_ms = 0
+        self.last_usage = usage
+        self.last_call_error = error
         if error:
             self.last_error = error
         return ChatResult(
             content=content,
-            usage=None if (self.no_usage or content is None) else dict(_FAKE_USAGE),
+            usage=usage,
             latency_ms=0,
             error=error,
         )

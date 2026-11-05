@@ -384,10 +384,13 @@ REGISTRY: MappingProxyType[str, Question] = MappingProxyType(
             answer_type="decision",
             schema_hint=MappingProxyType(
                 {
-                    "video_site": [{"i": "int", "title": "str", "why": "str"}],
-                    "aggregator": [{"i": "int", "title": "str", "why": "str"}],
-                    "article_post": [{"i": "int", "title": "str", "why": "str"}],
-                    "noise": [{"i": "int", "title": "str", "why": "str"}],
+                    # 每行只回 ``i``（回指编号）与 ``why``（理由）。``title`` 曾出现在
+                    # 契约里，但解析端（``_resolve_rows``）从不读它——让模型
+                    # 逐行复述一遍标题只烧输出 token（2026-11-05，P1-5）。
+                    "video_site": [{"i": "int", "why": "str"}],
+                    "aggregator": [{"i": "int", "why": "str"}],
+                    "article_post": [{"i": "int", "why": "str"}],
+                    "noise": [{"i": "int", "why": "str"}],
                 }
             ),
             # 分类是**类型判定**（这条链接是什么站），不是片名↔URL 的

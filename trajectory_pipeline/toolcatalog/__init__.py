@@ -130,7 +130,7 @@ pull 模式（方案 15）下模型自己决定看什么，读原语就进了动
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping
 
 #: 工具对模型是否可见。
@@ -520,7 +520,9 @@ _SNAPSHOT = ToolDef(
         "再读一次，或者换个页面确认。"
     ),
     family="collection",
-    exercised=False,
+    # 2026-11-05：T002 生产批的 agent 轨迹真实调用了三条读原语，
+    # 契约测试据此指名转正（见 test_tool_catalog_contract 的同名断言）。
+    exercised=True,
 )
 
 _INTERACTIVE = ToolDef(
@@ -534,7 +536,7 @@ _INTERACTIVE = ToolDef(
         "清单有条数上限，不是全量。"
     ),
     family="collection",
-    exercised=False,
+    exercised=True,
 )
 
 _LINKS = ToolDef(
@@ -546,7 +548,7 @@ _LINKS = ToolDef(
         "清单有条数上限，不是全量。"
     ),
     family="collection",
-    exercised=False,
+    exercised=True,
 )
 
 # ── 执行器自己的会话管理动作（模型永远不该选）──────────────────────
@@ -875,9 +877,13 @@ SURFACES: Mapping[str, tuple[ToolDef, ...]] = {
         _CLICK_CAMOUFOX,
         _FILL_CAMOUFOX,
         _PRESS_CAMOUFOX,
-        _SNAPSHOT,
-        _INTERACTIVE,
-        _LINKS,
+        # 退役面（不再产出，仍读得懂）：读原语在这条面上从没被真实
+        # 调用过。``exercised`` 是**逐面**口径（见 ToolDef 的注释），
+        # 而声明体与生产面同源——用 ``replace`` 只改证据位，不抄第二份
+        # 声明。2026-11-05 T002 生产批转正见 ``_SNAPSHOT`` 的注释。
+        replace(_SNAPSHOT, exercised=False),
+        replace(_INTERACTIVE, exercised=False),
+        replace(_LINKS, exercised=False),
         _WEB_SEARCH,
         _WEB_FETCH,
         _VIEW_IMAGE,
