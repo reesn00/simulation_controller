@@ -71,7 +71,7 @@
 | `driver` | `"obscura" \| "camoufox" \| "camofox"` | **执行层**（2026-10-20 方案 15 §7 R1）。与 `executor_mode` **正交**：「哪条链跑的」与「哪个浏览器跑的」是两个归因轴，缺一个读档人就分不清。它还是**工具面**的唯一来源——目标编码（`{tag,label}` vs `{role,name}`）由执行层决定，训练侧的声明按它折算（`toolcatalog.surface_of_driver`）。空串 = **没记**（老存档没有这个键，而那批真实跑的就是 obscura），不是「未知执行层」。**2026-10-22 起生产链默认 = `camoufox`**（owner 裁定）→ **2026-10-26 起默认 = `camofox`**（owner 裁定，见[设计方案 21](../设计方案/21-camofox-browser执行层接入方案.md)）：camoufox 执行层**已撤下**（实现文件已删、`playwright` 已从主依赖移除，**禁止接回来**），改走 **camofox-browser 自带的 MCP stdio 适配器**（`camofox-browser-mcp`）。⚠️ **`camoufox` 仍在取值域里**：存量存档里就有这个值（盘上 14 份顶层 P1 存档记着它），删掉取值域会让读存档的人以为它不可能出现——它**已退役、只读存量**，由 `toolcatalog.LEGACY_DRIVER_SURFACE` 折算回 `camoufox-1` 面。**新增可选字段，不动 `schema_version`** |
 | `fingerprint` | `{str: Any}` | **执行层指纹读数**（2026-10-22 P6）。⚠️ **形状随执行层变，盘上两个形状并存**——**九键**（camoufox 期，存量存档就是它）：`os` / `screen` / `window` / `dpr` / `humanize` / `geoip` / `main_world_eval` / `headless` / `locale`，其中 `screen`/`window`/`dpr` 是**实测值**，其余是**请求值**；**十一键**（camofox 期，2026-10-26 起）：`user_agent` / `platform` / `language` / `languages` / `timezone` / `screen` / `window` / `dpr` / `webdriver`（**实测值**）+ `engine`（恒为 `"camoufox"`——**浏览器内核还是 camoufox**，换的只是接入方式 ⇒ **跨批次可比**）+ `base_url`（REST origin，**已剥掉 path / query / userinfo**）。⚠️ 九键里的**请求值**（`os` / `geoip` / `locale` / `humanize` / `headless`）在十一键形状里**读不到了**：它们是上游服务的配置，本仓库**没有资格替它声明**，填一个就是编数据。⚠️ **launch 时测的，事后补不回来**——所以必须跟 `driver` 一起进存档；事后再去问浏览器已经没有这一批的读数了。**空 dict = 没记**（obscura 是远端 MCP，看不见窗口尺寸），与「记了但是空」在下游是两回事。**新增可选字段，不动 `schema_version`** |
 | `llm_calls` | `list[{ts,caller,candidate,model,latency_ms,prompt_tokens,completion_tokens,error}]` | **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4）。agent 循环每次问模型记一行。**记账范围只圈 agent_loop**：感知层十一题的调用不汇入（§3.6 的 A2a 决策，感知层侵入换不来收益）。`prompt/completion_tokens` 为 `null` = 后端没给 usage，**不是 0**——「没记到」与「没花」在成本分母上是两个事实。`ts` 粒度是**候选级**：循环体不引入时间源，由 orchestrator 在候选访问收口时统一加盖（同候选各条共享一戳；候选内次序看 list 顺序，单条耗时看 `latency_ms`）；超时/异常收口的候选可能带着没盖戳的残条落盘。scripted 批恒空 list。**新增可选字段，不动 `schema_version`** |
-| `candidate_filter` | `{str: int}` | 剔除**原因计数**：`excluded_host:<root>` / `duplicate_host` / `impossible_content:gov.cn` |
+| `candidate_filter` | `{str: int}` | 剔除**原因计数**：`excluded_host:<root>` / `duplicate_host` / `impossible_content:gov.cn`，以及遍历期跳过：`duplicate_landing_host`（进站后落地 host 已达 `max_per_host` 上限——密文中转链接的目标 host 进站前未知，见 `run_config.max_per_host`） |
 | `run_config` | `{str: Any}` | **`RunConfig` 全量快照**。缺它 `--max-candidates 5` 与默认 20 跑出的两批在存档里一模一样，而覆盖完整性差 4 倍 → `DEGRADED` |
 | `provenance` | `{str: Any}` | persona 六维等切片轴。**空 dict 的含义固定为「不是 taskgen 跑的」** |
 | `elapsed_ms` | `int` | |
@@ -85,9 +85,11 @@
 
 ### `run_config` 的字段
 
-`engine` / `max_candidates` / `max_chars` / `stop_after_success` / **`per_site_timeout_s`**。
+`engine` / `max_candidates` / `max_chars` / `stop_after_success` / **`per_site_timeout_s`** / **`max_per_host`**。
 
 ⚠️ `per_site_timeout_s` 是批次级断言 B-4（异常处置）唯一的时限判据。
+
+⚠️ `max_per_host`（2026-11-05）是**落地 host** 的访问上限（CLI 默认 1，0 = 不限）。按候选**进站后**的 `landed_url` 计——搜索引擎的密文中转链接（百度 `/link?url=<密文>`）在进站前拿不到目标 host，候选层 host 去重对这批只能放行。跳过的候选**不产生 outcome、不进 `visits[]`**，记进 `candidate_filter.duplicate_landing_host` 计数，并按 B-2 的逐条 URL 要求把被跳过的 URL 写进 `warnings`。同日起 CLI `--stop-after-success` 默认 0 → **1**（拿到一个成功即停）；库内默认仍是 0，需要全量站点分布的实验显式选择。
 
 **2026-10-22 变化**：默认值 90.0 → **180.0**，且**已暴露到 CLI**
 （`run --per-site-timeout`，不传就走源码默认）。

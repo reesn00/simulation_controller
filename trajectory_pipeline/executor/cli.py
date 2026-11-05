@@ -632,6 +632,7 @@ async def _run_manual(args: argparse.Namespace) -> int:
         max_candidates=args.max_candidates,
         max_chars=args.max_chars,
         stop_after_success=args.stop_after_success,
+        max_per_host=args.max_per_host,
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
@@ -791,6 +792,7 @@ async def _run_plan(args: argparse.Namespace) -> int:
         max_candidates=args.max_candidates,
         max_chars=args.max_chars,
         stop_after_success=args.stop_after_success,
+        max_per_host=args.max_per_host,
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
@@ -1028,12 +1030,23 @@ def _print_summary(rec, path: Path) -> None:
         print(f"  → {path}")
         return
     s = rec.ledger.summary() if rec.ledger else {}
+    # 遍历期跳过（同落地 host 上限）不是搜索期剔除——候选仍在 candidates[]
+    # 里，只是没有进访。把它算进「已过滤」会让两个数对不上（18 个候选、
+    # 已过滤 17），读起来像候选集被剔空了。分开打。
+    skipped_host = rec.candidate_filter.get("duplicate_landing_host", 0)
+    search_filters = {
+        k: v for k, v in rec.candidate_filter.items()
+        if k != "duplicate_landing_host"
+    }
     print(f"  query      = {rec.query}")
     print(f"  candidates = {len(rec.candidates)} (来源: {rec.candidate_source}"
-          f"{'，已过滤 ' + str(sum(rec.candidate_filter.values())) if rec.candidate_filter else ''})")
+          f"{'，已过滤 ' + str(sum(search_filters.values())) if search_filters else ''})")
     for c in rec.candidates[:5]:
         print(f"      #{c.rank} {c.host}  {c.text[:30]}")
     print(f"  sites      = {s.get('total_sites', 0)}  成功 = {s.get('succeeded', 0)}")
+    if skipped_host:
+        print(f"  跳过       = {skipped_host}（同落地 host 已达上限 "
+              f"{rec.run_config.get('max_per_host')}，未遍历）")
     print(f"  branches   = {json.dumps(s.get('by_branch', {}), ensure_ascii=False)}")
     missing = s.get("missing_branches") or []
     if missing:
@@ -4082,7 +4095,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--engine", default=search_step.DEFAULT_ENGINE)
     run.add_argument("--max-candidates", type=int, default=20)
     run.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
-    run.add_argument("--stop-after-success", type=int, default=0)
+    run.add_argument("--stop-after-success", type=int, default=1,
+                     help="成功 N 个候选即停。默认 1（拿到一个成功就不必跑满）；"
+                          "0 = 跑满候选（需要全量站点分布时用）")
+    run.add_argument("--max-per-host", type=int, default=1,
+                     help="同一**落地 host** 最多访问几个候选。默认 1；"
+                          "0 = 不限。按落地 URL 计——百度密文中转链接的目标 "
+                          "host 只有进站后才知道")
     run.add_argument("--per-site-timeout", type=_positive_float, default=None,
                      help="单站超时（秒）。**它落进 run_config**——"
                           "B-4（异常处置）唯一的时限判据，不落盘等于没有判据。"

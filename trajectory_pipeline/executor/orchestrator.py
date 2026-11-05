@@ -133,7 +133,18 @@ class RunConfig:
     engine: str = search_step.DEFAULT_ENGINE
     max_candidates: int = 20
     max_chars: int | None = DEFAULT_MAX_CHARS
-    stop_after_success: int = 0  # 0 = 跑满候选；>0 = 成功 N 个即停
+    #: 0 = 跑满候选；>0 = 成功 N 个即停。**CLI 默认 1**（2026-11-05：
+    #: 「已经拿到一个成功就不必跑满候选」）；库内默认仍是 0，方便需要
+    #: 全量站点分布的实验显式选择。
+    stop_after_success: int = 0
+    #: 同一**落地 host** 最多访问几个候选。0 = 不限。**CLI 默认 1**。
+    #:
+    #: 为什么按**落地** host 而不是候选 URL 的 host：搜索引擎的密文中转
+    #: 链接（百度 ``/link?url=<密文>``）在进站前拿不到目标 host——
+    #: ``extract_candidates`` 的 host 去重对这批只能放行。实测 T001
+    #: 一批 18 个候选里 17 个落到 ``tv.cctv.com``（同一模板的不同剧集页），
+    #: 每个都跑完整的 agent 循环 + PLAYER_OK + reflection，约 60–100s/站。
+    max_per_host: int = 0
     #: **单站超时**（B-4 异常处置唯一的时限判据）。
     #:
     #: ⚠️ **90 → 180（2026-10-22，切 camoufox 后）**：90 是 obscura 时代定的
@@ -1332,6 +1343,11 @@ class Orchestrator:
         # ``allow_site_search=False``，visit 行为与改动前逐字一致。
         successes = 0
         allow_site_search = self._cfg.discovery_path in ("aggregator", "article")
+        # 落地 host 计数（max_per_host）。按候选的**落地 URL** 计，而不是
+        # 候选 URL——密文中转链接的 host 在进站前未知。站内搜索派发的
+        # 子候选豁免（同一 host 的多入口是那条路径的设计口径）。
+        host_counts: dict[str, int] = {}
+        skipped_urls: list[str] = []
         for candidate in record.candidates:
             if (
                 self._cfg.stop_after_success
@@ -1347,7 +1363,21 @@ class Orchestrator:
                     allow_site_search and candidate.origin != "site_search"
                 ),
                 title=record.title,
+                host_counts=(
+                    None if candidate.origin == "site_search" else host_counts
+                ),
+                max_per_host=self._cfg.max_per_host,
             )
+            if result.skipped_reason:
+                # 「跳过」不是一条结论：不进 visits / outcomes / 负样本池，
+                # 只记账。它已经导航过一次（要拿落地 host），所以不是零成本。
+                record.candidate_filter["duplicate_landing_host"] = (
+                    record.candidate_filter.get("duplicate_landing_host", 0) + 1
+                )
+                skipped_urls.append(candidate.url)
+                log.info("[%s] 环节② %s → 跳过（%s）", task_id,
+                         candidate.url, result.skipped_reason)
+                continue
             await self._write_rationales(
                 result.steps, record, result.candidate.url[:60],
                 history_prefix=_rationale_history(record),
@@ -1390,6 +1420,19 @@ class Orchestrator:
                     )
             if result.success:
                 successes += 1
+
+        if skipped_urls:
+            # 与 max_candidates 溢出同款：**总量约束，非语义筛选**。但 B-2
+            # 要求结构性剔除留逐条 URL 痕迹——只靠 candidate_filter 的计数
+            # 复核不了剔了谁，所以这里点名（前 5 条，全量在 log）。
+            record.warnings.append(
+                f"同落地 host 跳过 {len(skipped_urls)} 个候选"
+                f"（max_per_host={self._cfg.max_per_host}；已导航确认落地 "
+                f"host，未进入站内判断）："
+                + "、".join(skipped_urls[:5])
+                + ("…" if len(skipped_urls) > 5 else "")
+                + "（总量约束，非语义筛选）"
+            )
 
         record.ledger = ledger
         record.elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -1725,6 +1768,8 @@ class Orchestrator:
         *,
         allow_site_search: bool = False,
         title: str = "",
+        host_counts: dict[str, int] | None = None,
+        max_per_host: int = 0,
     ) -> visit_step.VisitResult:
         """单站点遍历的超时与异常兜底。**两种模式的兜底是同一套**。
 
@@ -1756,6 +1801,8 @@ class Orchestrator:
                     # §3.6 账本（A2a-4）：与事件账本同款透传——同一个
                     # list 对象，循环往里 append，这里在收口时统一盖 ts。
                     llm_calls=record.llm_calls,
+                    host_counts=host_counts,
+                    max_per_host=max_per_host,
                 )
                 visited = await asyncio.wait_for(
                     coro, timeout=self._cfg.per_site_timeout_s
@@ -1771,6 +1818,8 @@ class Orchestrator:
                     max_chars=self._cfg.max_chars,
                     allow_site_search=allow_site_search,
                     title=title,
+                    host_counts=host_counts,
+                    max_per_host=max_per_host,
                 ),
                 timeout=self._cfg.per_site_timeout_s,
             )

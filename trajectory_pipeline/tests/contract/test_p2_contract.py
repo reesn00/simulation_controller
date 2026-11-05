@@ -176,21 +176,38 @@ class TestToolSpaceDrift:
     def test_存档里出现过的动作都在声明内(self):
         """控制流真发过的动作，训练空间里必须都有。
 
-        ⚠️ **当前这批真实存档里一条动作都没有**——它们跑在 ``steps[]``
-        落地之前。所以这条测试现在是空跑，而**空跑的断言和没写一样**：
-        它给的是「已覆盖」的假象。故 ``seen`` 为空时**跳过并点名缺什么**，
-        而不是安静地通过。
+        ⚠️ **按存档自己的面核**（2026-11-05）：读原语只在 aria 面声明，
+        拿默认面（obscura）去核 camofox 存档会把三条读原语读成漂移。
+        ``driver`` 缺省（历史存档）按默认面，与 P2 渲染同一条口径。
+
+        ⚠️ ``seen`` 为空时**跳过并点名缺什么**，而不是安静通过——
+        空跑的断言给的是「已覆盖」的假象。
         """
-        declared = {t.name for t in schema.TOOL_SPECS}
-        seen: set[str] = set()
+        seen_by_surface: dict[str, set[str]] = {}
         for p in _real_archives():
-            for st in _walk_steps(json.loads(p.read_text(encoding="utf-8"))):
-                if st.get("action", {}).get("tool"):
-                    seen.add(st["action"]["tool"])
-        if not seen:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            tools = {
+                st["action"]["tool"]
+                for st in _walk_steps(doc)
+                if isinstance(st.get("action"), dict) and st["action"].get("tool")
+            }
+            if not tools:
+                continue
+            surface = toolcatalog.surface_of_driver(doc.get("driver"))
+            seen_by_surface.setdefault(surface, set()).update(tools)
+        if not seen_by_surface:
             pytest.skip("现有真实存档都跑在 actions 落地之前，steps[] 为空——"
                         "重新跑一批 run --plan 之后这条才会真正生效")
-        assert seen <= declared, f"存档里出现过但训练空间没声明: {seen - declared}"
+        declared_by_surface = {
+            s: {t.name for t in specs}
+            for s, specs in schema.TOOL_SPECS_BY_SURFACE.items()
+        }
+        drift = {
+            s: tools - declared_by_surface.get(s, set())
+            for s, tools in seen_by_surface.items()
+        }
+        drift = {s: t for s, t in drift.items() if t}
+        assert not drift, f"存档里出现过但训练空间没声明（按面）: {drift}"
 
     def test_执行器自己做的动作对模型不可见(self):
         """``new_tab`` / ``close_tab`` 是会话管理的实现细节。模型永远

@@ -33,8 +33,10 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
@@ -74,6 +76,10 @@ class VisitResult:
     #: 但 fail-closed」。``ROUTED`` 时 ``.selected`` 是派发的子候选，
     #: 由 orchestrator 追加进遍历队列。
     search: site_search_mod.SiteSearchResult | None = None
+    #: 非空 = **没有真正遍历这个候选**：落地 host 已达到本次 run 的
+    #: 访问上限（``RunConfig.max_per_host``）。它不产生 outcome、不进
+    #: ``visits[]``，只记进 ``candidate_filter``——「跳过」不是一条结论。
+    skipped_reason: str = ""
 
     def note(self, text: str) -> None:
         if self.notes is None:
@@ -90,6 +96,8 @@ async def visit_site(
     max_chars: int | None = None,
     allow_site_search: bool = False,
     title: str = "",
+    host_counts: MutableMapping[str, int] | None = None,
+    max_per_host: int = 0,
 ) -> VisitResult:
     """遍历一个候选站点，把结果记进 ``ledger``。**本函数不抛异常**。
 
@@ -103,6 +111,11 @@ async def visit_site(
     # ── ① ② 进站：与 agent 链共用的那一段（见本文件头部分工说明）──
     site_obs = await enter_site(driver, ledger, result, max_chars=max_chars)
     if site_obs is None:
+        return result
+    result.skipped_reason = admit_landing_host(
+        result, url, host_counts, max_per_host
+    )
+    if result.skipped_reason:
         return result
 
     # ── ①.5 反爬/验证码页：**先于任何语义判断**（2026-10-26 R1）──
@@ -269,6 +282,36 @@ async def visit_site(
     judge_player(perceptor, ledger, result, player_obs,
                  pre_obs=result.site_obs)
     return result
+
+
+def _landing_host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def admit_landing_host(
+    result: VisitResult,
+    url: str,
+    host_counts: MutableMapping[str, int] | None,
+    max_per_host: int,
+) -> str:
+    """同一落地 host 的访问上限。返回非空 = 应跳过（原因串）。
+
+    必须在 :func:`enter_site` **之后**调用：搜索引擎的密文中转链接在
+    进站前拿不到目标 host，host 去重只能落在**落地之后**。
+    """
+    if host_counts is None or max_per_host <= 0:
+        return ""
+    host = _landing_host(result.landed_url or url)
+    if not host:
+        return ""
+    seen = host_counts.get(host, 0)
+    if seen >= max_per_host:
+        return f"同 host 已访问 {seen} 个入口（{host}），本候选跳过"
+    host_counts[host] = seen + 1
+    return ""
 
 
 async def enter_site(
@@ -479,6 +522,7 @@ __all__ = [
     "VisitResult",
     "visit_site",
     "enter_site",
+    "admit_landing_host",
     "judge_player",
     "open_tab",
     "summarize",

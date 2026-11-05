@@ -895,6 +895,64 @@ class TestOrchestrator:
         rec = await orch.run("T001", "功夫")
         assert len(rec.visits) == 2
 
+    async def test_同落地host只访问一次(self):
+        """两个不同 host 的候选都落到同一站点 ⇒ 第二个不再遍历。
+
+        百度密文中转链接进站前拿不到目标 host，候选层去重对它们只能
+        放行——同 host 闸只能落在**落地之后**（``max_per_host``）。
+        """
+        links = [
+            ("入口1", "https://s1.test/movie"),
+            ("入口2", "https://s2.test/movie"),
+        ]
+        pages = {
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": self._search_page(
+                *links
+            ),
+            # 两个候选都重定向到 same.test 的不同页
+            "https://s1.test/movie": obs_at("https://same.test/watch/1"),
+            "https://s2.test/movie": obs_at("https://same.test/watch/2"),
+            "https://same.test/play/e1": obs_at("https://same.test/play/e1", video=1),
+        }
+        d = FakeDriver(pages)
+        script = {
+            Q.IS_REACHABLE: ok(Q.IS_REACHABLE),
+            Q.FIND_PLAY_CONTROL: ok(Q.FIND_PLAY_CONTROL, {"ref": "e1"}),
+            Q.PLAYER_OK: ok(Q.PLAYER_OK),
+        }
+        orch = Orchestrator(
+            d, ScriptedPerceptor(script),
+            RunConfig(stop_after_success=0, max_per_host=1),
+        )
+        rec = await orch.run("T001", "功夫")
+        assert len(rec.visits) == 1
+        assert rec.candidate_filter.get("duplicate_landing_host") == 1
+        # 第二个候选只导航过一次（拿落地 host），没有进入站内链
+        assert d.visited.count("https://s2.test/movie") == 1
+        # B-2 的逐条 URL 痕迹：跳过不是只留一个计数
+        assert any("https://s2.test/movie" in w for w in rec.warnings)
+
+    async def test_max_per_host_0_不限(self):
+        """``max_per_host=0`` = 回到旧行为（全量遍历）。"""
+        links = [
+            ("入口1", "https://s1.test/movie"),
+            ("入口2", "https://s2.test/movie"),
+        ]
+        pages = {
+            "https://www.baidu.com/s?wd=%E5%8A%9F%E5%A4%AB+%E5%9C%A8%E7%BA%BF%E8%A7%82%E7%9C%8B": self._search_page(
+                *links
+            ),
+            "https://s1.test/movie": obs_at("https://same.test/watch/1"),
+            "https://s2.test/movie": obs_at("https://same.test/watch/2"),
+        }
+        d = FakeDriver(pages)
+        orch = Orchestrator(
+            d, ScriptedPerceptor({}), RunConfig(stop_after_success=0, max_per_host=0)
+        )
+        rec = await orch.run("T001", "功夫")
+        assert len(rec.visits) == 2
+        assert "duplicate_landing_host" not in rec.candidate_filter
+
     async def test_运行参数由_run_自己填(self):
         """**不能只在序列化时现填**——那样手写存档、
         `review --write` 产出的复核档、以及未来任何不走 ``run()`` 的入口

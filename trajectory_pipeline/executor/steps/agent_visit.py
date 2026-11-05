@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from typing import Any
 
 from trajectory_pipeline.executor.agent_loop import (
@@ -38,6 +39,7 @@ from trajectory_pipeline.executor.browser.page_driver import PageDriver
 from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.executor.steps.visit import (
     VisitResult,
+    admit_landing_host,
     enter_site,
     judge_player,
     open_tab,
@@ -56,6 +58,8 @@ async def agent_visit(
     title: str = "",
     gatekeeper_events: list[dict[str, Any]] | None = None,
     llm_calls: list[dict[str, Any]] | None = None,
+    host_counts: MutableMapping[str, int] | None = None,
+    max_per_host: int = 0,
 ) -> VisitResult:
     """在一个候选站点内让 agent 自主导航，**把结果与 :func:`~.visit.visit_site`
     记成同一个形状**。**本函数不抛异常**（与 ``visit_site`` 同纪律）。
@@ -76,6 +80,9 @@ async def agent_visit(
             ``None`` = 丢弃（单测用）。
         llm_calls: ``RunRecord.llm_calls`` 账本透传容器（§3.6，A2a-4 起由
             orchestrator 传入同一个 list 对象）。``None`` = 丢弃（单测用）。
+        host_counts: 本次 run 的**落地 host** 计数容器。与 ``max_per_host``
+            一起决定「同 host 只访问 N 个入口」。``None`` = 不限。
+        max_per_host: 每个落地 host 的访问上限，``0`` = 不限。
 
     Returns:
         :class:`~.visit.VisitResult`——与 scripted **同一个类型**：P1 落盘
@@ -87,6 +94,13 @@ async def agent_visit(
     # ── ① ② 进站：与 scripted 共用的那一段 ──────────────────────
     site_obs = await enter_site(driver, ledger, result, max_chars=max_chars)
     if site_obs is None:
+        return result
+    # 落地 host 去重：密文中转链接的 host 只有进站后才知道（见
+    # ``admit_landing_host``）。跳过时不产生 outcome、不开 tab、不跑循环。
+    result.skipped_reason = admit_landing_host(
+        result, url, host_counts, max_per_host
+    )
+    if result.skipped_reason:
         return result
 
     # 进站后**立刻**开独立 tab（scripted 在点击前才开）：agent 在站内

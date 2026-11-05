@@ -515,7 +515,9 @@ def extract_candidates(
         # 密文中转包裹：url= 是密文、目标 host 未知（05 方案 §2.3）。
         # 若仍按 raw 的 host（www.baidu.com）去重，同批真实结果会
         # 互相撞车只剩 1 条——降级为**不去重**（按原始链接各自保留），
-        # 由遍历期落地检测（判断点 ②）兜底。明文/裸链维持 host 去重。
+        # 由**遍历期的落地 host 上限**兜底（``RunConfig.max_per_host``，
+        # CLI 默认 1：进站拿到真实 host 后，同 host 的后续候选直接跳过）。
+        # 明文/裸链维持 host 去重。
         opaque = _is_undecodable_redirect(raw, engine)
         if not opaque and host in seen_hosts:
             bump("duplicate_host")

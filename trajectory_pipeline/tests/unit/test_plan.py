@@ -299,6 +299,7 @@ def _ns(**kw):
                 include_unrewritten=False, engine="bing", task_id="T001",
                 perceptor=None, max_candidates=5, max_chars=None,
                 stop_after_success=0,
+                max_per_host=0,
                 # 发现链路径（2026-10-16 路径 B/C）：默认值与
                 # RunConfig 一致——这条路径的存档归因必须是 direct
                 discovery_path="direct", max_intermediates=3,
