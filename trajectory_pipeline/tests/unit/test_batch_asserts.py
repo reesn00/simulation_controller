@@ -171,12 +171,19 @@ class TestB1动作Schema:
         assert r.status == asserts.STATUS_FAIL
         assert r.denominator == 1
 
-    def test_本批没有动作_有告警(self):
-        """没有动作时 B-1 没有对象——**不是通过**。"""
+    def test_本批没有动作_测不成不是通过(self):
+        """没有动作时 B-1 没有对象——**测不成，不是通过**（M-8）。
+
+        早先只加了一句 caveat，状态仍是 ``STATUS_PASS`` ⇒ 空白存档 / 没
+        跑起来的批次能拿「全部合规」出厂。
+        """
         archive = _archive()
         r = asserts.assert_run(archive).by_clause("B-1")
+        assert r.status == asserts.STATUS_UNTESTABLE
+        assert r.is_pass is False
         assert r.denominator == 0
-        assert any("没有任何动作" in c for c in r.caveats)
+        assert "没有任何动作" in r.reading
+        assert any("零动作不等于合规" in c for c in r.caveats)
 
 
 # ── 2. B-2 检索覆盖完整性 ──────────────────────────────────────────
@@ -219,6 +226,26 @@ class TestB2检索覆盖:
         )
         r = asserts.assert_run(archive).by_clause("B-2")
         assert r.denominator == 2
+
+    def test_候选超上限时比率不超100(self):
+        """分子只在分母覆盖的候选里数（M-11）。
+
+        早先分子统计**全部**候选、分母取 ``min(候选数, cap)`` ⇒ 候选
+        超过上限时可以算出 >100% 的覆盖率。
+        """
+        archive = _archive(
+            run_config={"max_candidates": 2},
+            candidates=[{"url": f"https://x{i}.test/"} for i in range(5)],
+            outcomes=[
+                _outcome(f"https://x{i}.test/", "no_play_control")
+                for i in range(5)  # 5 条都有处置，但分母只有 2
+            ],
+        )
+        r = asserts.assert_run(archive).by_clause("B-2")
+        assert r.denominator == 2
+        assert r.numerator == 2
+        assert r.rate == pytest.approx(1.0)
+        assert any("超过 run_config.max_candidates" in c for c in r.caveats)
 
 
 # ── 3. B-3 语义判断一致率 ──────────────────────────────────────────
@@ -294,6 +321,25 @@ class TestB4异常处置:
         assert r.denominator == 1
         assert r.numerator == 0
         assert any("① 异常未记账" in c for c in r.caveats)
+
+    def test_空观察_视为异常信号_进分母(self):
+        """空壳观察**不是**「有观察、无异常」（M-9）。
+
+        ``{"body_text": "", "interactive_elements": []}`` 是 truthy，旧判据
+        ``not observations`` 判 False ⇒ 采集降级悄悄不进分母。
+        """
+        archive = _archive(
+            visits=[
+                _visit("https://a.test/",
+                       obs=_obs(body="", elements=(), degraded=["network_error"]),
+                       steps=[_step(_action("goto", {"url": "https://a.test/"}))]),
+            ],
+            outcomes=[],  # 连分支都没记 ⇒ 静默丢弃
+        )
+        r = asserts.assert_run(archive).by_clause("B-4")
+        assert r.denominator == 1
+        assert r.numerator == 0
+        assert any("异常信号 = 观察为空/降级" in c for c in r.caveats)
 
     def test_同一URL重复_不合规(self):
         """② 异常后在同一 URL 上重复无效动作。"""
@@ -412,6 +458,35 @@ class TestB5结论错率:
         r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
         assert r.status == asserts.STATUS_READOUT
 
+    def test_空branch是成功_不是missing(self):
+        """代码侧**空 branch = 成功**（M-7）——成功行必须进分母。
+
+        仓库口径：成功跑完的存档不记分支名（``code.get("branch") or
+        SUCCESS_LABEL``，见 builder / snapshot）。早先 ``or ""`` 把成功行
+        读成 missing ⇒ 判对的行被踢出分母，读数只剩失败。
+        """
+        rows = [_row(gold="success", code=None)]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        assert r.status == asserts.STATUS_READOUT
+        assert r.denominator == 1
+        assert r.numerator == 0  # agree，不是 disagree
+        assert r.rate == pytest.approx(0.0)
+
+    def test_空branch与不同金标_判不一致(self):
+        """空 branch = success，与 ``no_play_control`` 金标**必须判不一致**。"""
+        rows = [_row(gold="no_play_control", code=None)]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        assert r.denominator == 1
+        assert r.numerator == 1
+        assert r.rate == pytest.approx(1.0)
+
+    def test_未判定理由截断要留痕(self):
+        """未判定明细列不全时说「还有 N 条」——不许只给前 10 条（M-12）。"""
+        rows = [_row(gold="", code=None) for _ in range(asserts.MAX_CAVEATS + 3)]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        assert r.denominator == 0
+        assert any("还有 3 条未列" in c for c in r.caveats)
+
 
 class Test按run挑行:
     def test_两个键都认(self):
@@ -514,6 +589,28 @@ class Test一批一个run:
         text = r.render_text()
         assert "B-1" in text and "B-5" in text
         assert "r1" in text
+
+    def test_测不成时人读版不许写通过(self):
+        """``UNTESTABLE`` 不是通过（M-10）——人读版必须照实说。"""
+        text = asserts.assert_run(_archive(), run_id="r1").render_text()
+        assert "通过（无断言不通过）" not in text
+        assert "测不成不是通过" in text
+
+    def test_只出读数时人读版不说通过(self):
+        """``READOUT`` 没有合格线（M-10）——「无不通过」不等于「通过」。"""
+        archive = _archive(
+            steps=[_step(_action("goto", {"url": "https://a.test/"}))],
+            outcomes=[_outcome("https://a.test/", "not_play_site", evidence="导航页")],
+        )
+        r = asserts.assert_run(
+            archive,
+            run_id="r1",
+            d3_pairs=[("playable", "playable")] * 10,
+            gold_rows=[_row(gold="success", code="success")],
+        )
+        text = r.render_text()
+        assert "通过（无断言不通过）" not in text
+        assert "只出读数不等于通过" in text
 
     def test_阈值线在阈值表里登记(self):
         """B-3 的线**不许**手抄字面量——只从阈值表取。"""

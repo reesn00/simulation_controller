@@ -52,6 +52,11 @@ D-3 的 judge 读数也还没落盘 ⇒ 分母不存在 ⇒ **测不成**，不�
 「双方都没结论」与「单侧弃权」不进分母——「没结论」既不是一致也不是
 不一致（CLAUDE.md：``None`` ≠ ``0``）。
 
+⚠️ **代码侧空分支 = 成功**（M-7）：成功跑完的存档**不记分支名**，仓库
+口径是 ``code.get("branch") or SUCCESS_LABEL``（``golden.builder`` 与
+``calibration.snapshot`` 同款）。B-5 里必须先把空值补成 ``success``，
+否则成功行会被当成 missing 踢出分母——**判对的行读不出来，读数只剩失败**。
+
 ⚠️ **B-5 默认只读调参池（calibration 档）**：持有集（D-C5）与回归集
 （D-C8）是**封存面**，读它们 = 拿封存面调参。要读别的档必须由调用方
 **显式**传 ``splits=``，读数里会记下读了哪几档。
@@ -101,6 +106,13 @@ CLAUSES: tuple[str, ...] = ("B-1", "B-2", "B-3", "B-4", "B-5")
 #: 口径就没有对象**。截断时补一行「还有 N 条未列」，让「20」不被读成
 #: 「全部」。
 MAX_CAVEATS = 20
+
+#: 代码侧**空分支 = 成功**（成功跑完的存档不记分支名）。
+#:
+#: 与 :data:`trajectory_pipeline.evaluation.golden.builder.SUCCESS_LABEL`、
+#: ``calibration.snapshot`` 的 ``code.get("branch") or success_label`` 是
+#: **同一口径**——那边把空值读成成功，这边不能把空值读成 missing。
+SUCCESS_LABEL = "success"
 
 #: 断言名的真源——与 rubric 卡的标题逐字对齐。
 CLAUSE_NAMES: Mapping[str, str] = {
@@ -261,6 +273,11 @@ class RunAsserts:
         """测不成的断言——**单列**，不混进「不通过」。"""
         return tuple(r for r in self.readings if r.status == STATUS_UNTESTABLE)
 
+    @property
+    def readout(self) -> tuple[AssertReading, ...]:
+        """只出读数的断言——**没有合格线**，既不是通过也不是不通过。"""
+        return tuple(r for r in self.readings if r.status == STATUS_READOUT)
+
     def by_clause(self, clause: str) -> AssertReading:
         """按条款号取读数。条款号不在表里 → ``KeyError``（fail-closed）。"""
         for reading in self.readings:
@@ -276,6 +293,7 @@ class RunAsserts:
             "readings": [r.to_json() for r in self.readings],
             "failed": [r.clause for r in self.failed],
             "untestable": [r.clause for r in self.untestable],
+            "readout": [r.clause for r in self.readout],
         }
 
     def render_text(self) -> str:
@@ -289,9 +307,28 @@ class RunAsserts:
             for caveat in reading.caveats:
                 lines.append(f"    · {caveat}")
         lines.append("-" * 60)
-        lines.append(
-            "批次级结论: " + ("暂停发放" if self.failed else "通过（无断言不通过）")
-        )
+        # ⚠️ **「没有不通过」≠「通过」**（M-10）：``UNTESTABLE`` 是判不出，
+        # ``READOUT`` 是根本没有合格线——两者都不许被打成「通过」。
+        if self.failed:
+            verdict = "暂停发放（不通过：" + " / ".join(
+                r.clause for r in self.failed
+            ) + "）"
+        elif self.untestable:
+            verdict = (
+                f"不暂停发放，但 {len(self.untestable)} 条测不成"
+                f"（{' / '.join(r.clause for r in self.untestable)}）"
+                "——**测不成不是通过**"
+            )
+        elif self.readout:
+            verdict = (
+                "无断言不通过；"
+                f"{len(self.readout)} 条只出读数"
+                f"（{' / '.join(r.clause for r in self.readout)}）"
+                "——**只出读数不等于通过**"
+            )
+        else:
+            verdict = "通过（无断言不通过）"
+        lines.append("批次级结论: " + verdict)
         return "\n".join(lines)
 
 
@@ -359,20 +396,27 @@ def _assert_b1(archive: Mapping[str, Any]) -> AssertReading:
                 violations.append(f"{where}: tool={tool!r} 的参数 {key!r} 不是字符串")
         if tool in _TARGET_REQUIRED and not _target_ok(action):
             violations.append(f"{where}: tool={tool!r} 缺目标（target 为空）")
-    caveats: list[str] = []
     if total == 0:
-        caveats.append("本批没有任何动作——B-1 无对象")
+        # ⚠️ **零动作不是通过**（M-8）：B-1 判的是「动作 schema 合不合规」，
+        # 一个动作都没有时**没有可判对象** ⇒ 测不成。空存档 / 没跑起来的
+        # 批次不许拿「全部合规」出厂。
+        return AssertReading(
+            "B-1", CLAUSE_NAMES["B-1"], STATUS_UNTESTABLE,
+            "本批没有任何动作——B-1 无对象，测不成（不是「全部合规」）",
+            numerator=0, denominator=0,
+            caveats=("零动作不等于合规：空存档 / 没跑起来的批次不进「通过」",),
+        )
     if violations:
         return AssertReading(
             "B-1", CLAUSE_NAMES["B-1"], STATUS_FAIL,
             f"{total} 个动作里 {len(violations)} 个不合规",
             numerator=len(violations), denominator=total,
-            caveats=_trim(caveats + violations),
+            caveats=_trim(violations),
         )
     return AssertReading(
         "B-1", CLAUSE_NAMES["B-1"], STATUS_PASS,
         f"{total} 个动作全部合规（tool ∈ {list(TOOLS)}，必填参数齐备）",
-        numerator=total, denominator=total, caveats=tuple(caveats),
+        numerator=total, denominator=total,
     )
 
 
@@ -412,11 +456,21 @@ def _assert_b2(archive: Mapping[str, Any]) -> AssertReading:
             value = str(outcome.get(key) or "").strip()
             if value:
                 disposed.add(value)
+    # ⚠️ **分子只在分母覆盖的候选里数**（M-11）：候选数超过上限时，分母按
+    # ``cap`` 缩小、分子却统计全部候选 ⇒ 比率可 >100%。取候选表前
+    # ``denominator`` 条（本批「上限内」的那批）；超出的部分单独记进
+    # caveat，不静默丢。
     handled = sum(
-        1 for c in candidates
+        1 for c in candidates[:denominator]
         if isinstance(c, Mapping) and str(c.get("url") or "").strip() in disposed
     )
     caveats: list[str] = []
+    if len(candidates) > denominator:
+        caveats.append(
+            f"候选数 {len(candidates)} 超过 run_config.max_candidates {cap}："
+            f"分母只取前 {denominator} 条（fail-closed，不撑大分母），"
+            f"其余 {len(candidates) - denominator} 条不进分子"
+        )
     filters = archive.get("candidate_filter") or {}
     if filters:
         detail = "、".join(f"{k}={v}" for k, v in sorted(filters.items()))
@@ -578,8 +632,15 @@ def _assert_b4(archive: Mapping[str, Any]) -> AssertReading:
         errors = _visit_errors(visit)
         observations = _visit_observations(visit)
         abnormal = branch in ABNORMAL_BRANCHES
-        # 「异常信号」：动作报错，或一份观察都没采到。
-        signal = bool(errors) or not observations
+        # 「异常信号」：动作报错，或**没有一份可用观察**。
+        # ⚠️ 「一份都没采到」**不等于** ``not observations``（M-9）：
+        # ``site_obs`` 是 ``{"body_text": "", "interactive_elements": []}``
+        # 时字典是 truthy ⇒ 旧判据把它当成「有观察、无异常」，采集降级
+        # 悄悄不进分母。空壳与缺观察是同一件事。
+        observations_usable = any(
+            not _observation_empty(o) for o in observations
+        )
+        signal = bool(errors) or not observations_usable
         # 静默丢弃 = 有异常信号、却**连分支都没记**（成功或漏记）。
         dropped = signal and not branch
         if not abnormal and not dropped:
@@ -588,7 +649,8 @@ def _assert_b4(archive: Mapping[str, Any]) -> AssertReading:
         why: list[str] = []
         # ① 记成分支
         if not branch:
-            why.append("① 异常未记账（既没有分支也没有结论）")
+            cause = "" if observations_usable else "；异常信号 = 观察为空/降级"
+            why.append(f"① 异常未记账（既没有分支也没有结论{cause}）")
         elif branch not in BRANCH_LABELS:
             why.append(f"① 分支 {branch!r} 不在分支注册表里")
         # ② 转向下一站
@@ -711,7 +773,11 @@ def _assert_b5(
         golden = (row.get("golden") or {}) if isinstance(row, Mapping) else {}
         code = (row.get("code") or {}) if isinstance(row, Mapping) else {}
         gold_label = str(golden.get("label") or "").strip()
-        code_branch = str(code.get("branch") or "").strip()
+        # ⚠️ **代码侧空分支 = 成功**（M-7）：成功跑完的存档不记分支名，
+        # 仓库口径是 ``code.get("branch") or SUCCESS_LABEL``（builder /
+        # snapshot 两处同款）。写成 ``or ""`` 会把成功行读成 missing ⇒
+        # 判对的行被踢出分母，读数只剩失败。
+        code_branch = str(code.get("branch") or SUCCESS_LABEL).strip()
         try:
             state = hard_agreement(gold_label, code_branch)
         except KeyError as exc:
@@ -740,7 +806,7 @@ def _assert_b5(
             "B-5", CLAUSE_NAMES["B-5"], STATUS_UNTESTABLE,
             f"本批 {len(gold_rows)} 行里没有「两侧都有结论」的行——分母为 0",
             numerator=0, denominator=0,
-            caveats=tuple(caveats + undetermined_reasons[:10]),
+            caveats=tuple(caveats) + _trim(undetermined_reasons),
         )
     rate = disagree / denominator
     return AssertReading(
@@ -820,6 +886,52 @@ def assert_archive(
     )
 
 
+def assert_missing_archive(
+    *,
+    run_id: str,
+    task_id: str,
+    archive_name: str = "",
+    gold_rows: Sequence[Mapping[str, Any]] = (),
+    d3_pairs: Sequence[tuple[str, str]] = (),
+    split: str = "calibration",
+    reason: str = "",
+) -> RunAsserts:
+    """读不到 P1 存档时的断言表——**B-1 / B-2 / B-4 记「测不成」**。
+
+    ⚠️ 存档缺失 **不是「不通过」**（判不出 ≠ 判错），更不是「通过」：
+    B-1 没有动作可判、B-2 的 ``run_config`` 不在金标行里、B-4 没有访问
+    记录。三条都 fail-closed 落 :data:`STATUS_UNTESTABLE`，理由写清
+    「存档缺失」，让读的人去找存档，而不是去改判据。
+
+    B-5 只吃金标行（不依赖存档），**照常出读数**——不因为缺存档就把
+    结论错率一起丢掉。
+    """
+    note = reason or "未记录原因"
+    cause = f"P1 存档读不到（{note}）"
+    caveat = "存档缺失 ≠ 不通过，但也不许读成通过（fail-closed）"
+    readings = (
+        AssertReading(
+            "B-1", CLAUSE_NAMES["B-1"], STATUS_UNTESTABLE,
+            f"{cause}——B-1 没有动作可判，测不成", caveats=(caveat,),
+        ),
+        AssertReading(
+            "B-2", CLAUSE_NAMES["B-2"], STATUS_UNTESTABLE,
+            f"{cause}——run_config 不在金标行里，分母不可知，测不成",
+            caveats=(caveat,),
+        ),
+        _assert_b3(d3_pairs),
+        AssertReading(
+            "B-4", CLAUSE_NAMES["B-4"], STATUS_UNTESTABLE,
+            f"{cause}——没有访问记录，测不成", caveats=(caveat,),
+        ),
+        _assert_b5(gold_rows, split=split),
+    )
+    return RunAsserts(
+        run_id=run_id, task_id=task_id, archive=str(archive_name or ""),
+        readings=readings,
+    )
+
+
 __all__ = [
     "ABNORMAL_BRANCHES",
     "CLAUSES",
@@ -828,9 +940,11 @@ __all__ = [
     "STATUS_PASS",
     "STATUS_READOUT",
     "STATUS_UNTESTABLE",
+    "SUCCESS_LABEL",
     "AssertReading",
     "RunAsserts",
     "assert_archive",
+    "assert_missing_archive",
     "assert_run",
     "rows_for_run",
 ]

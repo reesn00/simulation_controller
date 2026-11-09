@@ -34,7 +34,15 @@ class ScoutRecord(TypedDict):
     缺一维的状态通过 ``score is None`` 表达,而不是少一条。
     """
 
+    #: **Run 级** id（``<task>__<run>``）。P3 视图按它取名，别改成站点 id。
     sample_id: str
+    #: **评分单元** id（``<task>__<run>__site-N``；无站点明细时 = ``sample_id``）。
+    #: 旧 scout 产物没有这个键——读侧用 ``.get``，别假设它一定在。
+    unit_id: str
+    #: 站点访问序号（1 起）；无站点明细时为 ``None``。
+    site_index: int | None
+    #: 该评分单元的 URL（旧产物是被 ``_clean`` 剥掉的 ``_url``，所以没有）。
+    url: str
     task_id: str
     run_id: str
     status: ScoutStatus

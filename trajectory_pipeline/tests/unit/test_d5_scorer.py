@@ -371,9 +371,18 @@ class Test不抛异常:
         )
         assert v.score is None or 1 <= v.score <= 5
 
-    def test_未知判断点判skipped而不是wrong(self):
+    def test_未知判断点落undetermined_不判错也不给5分(self):
+        """M-1：注册表不认识该判断点 ⇒ 配套关系**核不了**。
+
+        ``skipped`` 的语义是「本条检查不管辖这个组合」，它既不算错也不算
+        未决 ⇒ 整条样本没有 ``wrong`` 也没有 ``undetermined`` 时一路走到
+        ``score=5``，未知判断点就此白拿满分。正确处置与「树上缺口」同级：
+        ``undetermined``（不出分），且**不是** ``wrong``（机器判不了谁对）。
+        """
         v = score_d5(_sample(_out("no_play_control", question="未来新增的题")))
-        assert any(c.kind == "skipped" for c in v.checks)
+        assert v.score is None
+        assert any(c.kind == "undetermined" for c in v.checks)
+        assert not any(c.kind == "wrong" for c in v.checks)
 
 
 # ── 6. 证据核（检查 4） ───────────────────────────────────────────

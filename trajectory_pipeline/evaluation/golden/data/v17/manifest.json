@@ -1,0 +1,149 @@
+{
+ "schema_version": "1",
+ "label_schema_version": "3",
+ "rubric_version": "1.3",
+ "evaluator_version": "be7999a8e776",
+ "scorer_fingerprint": "code:ead209eb8733|llm:be7999a8e776",
+ "holdout_runs": 0,
+ "version": 17,
+ "frozen_at": "2026-11-09T08:31:04+00:00",
+ "seed": 42,
+ "counts": {
+  "candidates": 357,
+  "annotated": 294,
+  "site": 289,
+  "trajectory": 0,
+  "calibration": 131,
+  "regression": 60,
+  "holdout": 103,
+  "trajectories": 44
+ },
+ "dataset": {
+  "unit": "trajectory",
+  "file": "trajectories.jsonl",
+  "measurement_unit": "site",
+  "enabled": true,
+  "source": {
+   "mode": "live_candidates",
+   "source_trajectories": "",
+   "source_trajectories_sha256": "",
+   "live_candidates": "C:\\Users\\klpc\\workspace\\code\\items\\simulation_controller\\trajectory_pipeline\\evaluation\\golden\\data\\candidates.jsonl",
+   "live_candidates_sha256": "8be3040ccab341a757bd00baf5c9bc09d9ca1f6a76b32a732d55ce68b26e5d91",
+   "live_annotations": "C:\\Users\\klpc\\workspace\\code\\items\\simulation_controller\\trajectory_pipeline\\evaluation\\golden\\data\\annotations.jsonl",
+   "live_annotations_sha256": "9837c39cf60361688e408a1af541160c0e02c5abad74a855b267336625709216"
+  },
+  "build": {
+   "trajectories": 44,
+   "site_rows": 283,
+   "skipped_placeholders": 5,
+   "skipped_groups_without_archive": [
+    "P001__2e0cec8b",
+    "P001__36602377",
+    "P001__e5b60ff7",
+    "P015__3fda4d75",
+    "P015__59a2ea71",
+    "P015__792b0ed7"
+   ],
+   "missing_candidates": [],
+   "headline_outside_frozen": [
+    "E021__129c3fae",
+    "T024__6240da8e",
+    "T042__df2ee261"
+   ],
+   "sources": {
+    "templates": 0,
+    "trajectory_candidates": 161
+   }
+  },
+  "consistency": {
+   "trajectories": 44,
+   "headline_unresolved": [
+    "E021__129c3fae",
+    "T024__6240da8e",
+    "T042__df2ee261"
+   ],
+   "ok": true
+  },
+  "note": "一条轨迹一行；站点级明细在 site_outcomes[] 里，每条带自己的 split。三档切分文件仍是**站点级**——D-10 的测量单元是站点，分母不变（实测 33/50 条轨迹的站点跨着三档，按轨迹重切会把分母整个换掉，而那是绑定口径）。enabled=false = 没有任何轨迹级来源，本次不写该文件。"
+ },
+ "split": {
+  "target_calibration": 0.65,
+  "calibration_ratio": 0.4456,
+  "pool_ratio": 0.6497,
+  "regression_ratio": 0.2041,
+  "holdout_ratio": 0.3503,
+  "pp_diff_from_target": 0.0003,
+  "headline_split": "calibration",
+  "regression_size": 60,
+  "regression_seed": 20261022,
+  "regression_fingerprint": "929fedc596da"
+ },
+ "derived_from": {
+  "version": 16,
+  "counts": {
+   "candidates": 357,
+   "annotated": 294,
+   "site": 289,
+   "trajectory": 5,
+   "calibration": 131,
+   "regression": 60,
+   "holdout": 103
+  },
+  "holdout_runs": 0
+ },
+ "score_refresh": {
+  "enabled": false
+ },
+ "gold_refresh": {
+  "enabled": false
+ },
+ "label_refresh": {
+  "enabled": false
+ },
+ "surface_refresh": {
+  "enabled": false
+ },
+ "code_refresh": {
+  "enabled": false
+ },
+ "id_migration": {
+  "enabled": true,
+  "source": "id_alias.json",
+  "rows_rekeyed": 0,
+  "note": "按 id 迁移映射表把旧 id 换成新 id（旧 id 留在 `golden_id_legacy` 字段）⇒ 迁移期双 id 并存。**键变了，行内容没变**（金标 / code / 分数一个字没动）"
+ },
+ "access_surface": {
+  "by_surface": {
+   "unrecorded": 293,
+   "human-browser": 1
+  },
+  "declared": 1,
+  "unrecorded": 293
+ },
+ "thresholds": {
+  "d10_min_agreement": 0.8,
+  "retest_interval_days": 14,
+  "retest_fraction": [
+   0.2,
+   0.3
+  ]
+ },
+ "source_files": {
+  "candidates": "candidates.jsonl",
+  "annotations": "annotations.jsonl"
+ },
+ "by_label": {
+  "unresolved": 76,
+  "unreachable_hard": 40,
+  "success": 38,
+  "subscription_wall": 32,
+  "not_play_site": 30,
+  "blocked": 17,
+  "component_unverified": 17,
+  "no_play_control": 17,
+  "broken": 13,
+  "trailer_only": 7,
+  "login_wall_or_blocked": 6,
+  "trailer_suspect": 1
+ }
+}

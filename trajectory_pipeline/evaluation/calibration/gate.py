@@ -19,7 +19,9 @@
 2. **出快照**：两版各跑一遍 ``agreement --emit-disagreements``（与人工跑的是
    同一份实现，不抄第二份）。快照不含时间戳，同输入逐字节相同，所以重算
    不引入噪声，也就没有「盘上的旧快照还算不算数」这个坑；
-3. **判**：交回 :func:`verify.analyze`，四条判据一条不省。
+3. **判**：交回 :func:`verify.analyze`，五条判据一条不省（第五条是批次级
+   断言 ``batch_asserts_clear``，读本次 ``agreement`` 顺手落的
+   ``batch_asserts.json``；线未定时它只出读数、不参与判定）。
 
 退出码（与 ``verify`` 同一套，**1 与 2 语义不同**）
 --------------------------------------------------
@@ -40,6 +42,11 @@ import re
 import sys
 from typing import Any, Callable, Mapping, Sequence
 
+from trajectory_pipeline.evaluation.batch.report import (
+    BATCH_ASSERTS_FILE,
+    BatchReportError,
+    load_batch_asserts,
+)
 from trajectory_pipeline.evaluation.calibration.snapshot import load_snapshot
 from trajectory_pipeline.evaluation.calibration.triage import (
     TriageError,
@@ -293,12 +300,19 @@ def run(
     try:
         baseline_snap = load_snapshot(paths["baseline"])
         current_snap = load_snapshot(paths["current"])
+        try:
+            batch_report = load_batch_asserts(
+                paths["current"].parent / BATCH_ASSERTS_FILE
+            )
+        except BatchReportError as exc:
+            raise GateError(f"读批次级断言失败：{exc}") from exc
         report = analyze(
             baseline_snap,
             current_snap,
             triage=triage,
             buckets=buckets,
             class_tolerance=class_tolerance,
+            batch_asserts_report=batch_report,
         )
     except (OSError, ValueError) as exc:
         raise GateError(f"读快照失败：{exc}") from exc

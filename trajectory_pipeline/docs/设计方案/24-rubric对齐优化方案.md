@@ -59,6 +59,8 @@
 **新命令**：`python -m trajectory_pipeline.evaluation.batch --version N`（或挂在现有 `agreement` 下作子命令 —— 倾向后者，少一个入口）
 **读数落盘**：`output/pipeline/calibration/v{N}/batch_asserts.json` —— 按 run 一行 + 批次汇总一段（与 `snapshot.json` 同目录、同版本号绑定）
 
+> ✅ **已实施（2026-11-09，L-23）**：落盘挂在 `agreement --emit-disagreements` 上（不另开命令，按上面的倾向），实现在 `evaluation/batch/report.py`，生产点唯一是 `golden/builder.py::_emit_calibration_artifacts`；新增 `--p2-root` 指定 P1 存档根。快照已存在时**整条 emit 退 2**，`batch_asserts.json` 逐字节不变（与 M-29 S3′ 同一纪律）。真实 v16 读数：**50 个 run，B-1 通过 44 / 不通过 0 / 测不成 6**（缺 P1 存档）。
+
 | 断言 | 口径（可机械核） | 数据源 | 现状 |
 |---|---|---|---|
 | **B-1 动作 schema 合规** | 全批 `steps[].action.tool` ∈ `executor.actions.TOOLS`（**六值**：goto/click/new_tab/fill/press/close_tab，与 rubric 2026-10-17 补记一致）且 `params` 齐 | P1 `steps[].action` + `actions.TOOLS` | **数据源齐，可直接做** |
@@ -67,6 +69,8 @@
 | **B-4 异常处置合规率** | 合规 = 三条同时成立：① 该异常被记成分支 ② 异常后**立即转向下一站**（未在同一 URL 上重复无效动作）③ 止损理由锚定观察（引用存档里的具体依据） | P1 `outcomes[].branch` + `steps[]` + 止损理由原文 | **数据源齐，可直接做** |
 
 **接闸门**：新增第五条判据 `batch_asserts_clear`，**默认 `status="只出读数"`**（对齐 `thresholds.py` 的 status 机制）—— 第一批只报不判，等 owner 看一批读数再定线。**这正是 rubric G-7「不过 → 暂停该批发放」的落点**：定线后该判据不过即闸门退 1（驳回）。
+
+> ✅ **已实施（2026-11-09，L-23）**：判据在 `calibration/verify.py`（`_criterion_batch`），`calibration/gate.py` 读 `v{N}/batch_asserts.json` 同一份；阈值登记为 `thresholds.py` 的 `batch_asserts_max_failed_runs`（值 0，`status="只出读数"`）。线未定 ⇒ `not_evaluable` + `enforced=False`（不拦人）；定线后有不通过即 FAIL、缺存档 / 零动作即 `not_evaluable`（判不了不是通过）。**线仍待 owner 定**——定线只改阈值表，不算 rubric 级变更（D-C6 / D-C9）。
 
 > ⚠️ **口径纪律**：B 断言**不出 1–5 分**（rubric 明写），所以它们**不进软维度一致率、不进样本级分母、不与样本级分数相加**（G-7）。
 
@@ -226,7 +230,16 @@
 （`test_D10五档映射表与文档逐格对齐` / `test_D10因子表与映射表同源`）⇒ **改档不改表
 ⇒ 红**（D-C7 的机械执行面扩到了 D-10）。
 
-### 7.2 裁 ② · D-10 的五档由 LLM 判 —— 已落地（**分判，不是投票**）
+### 7.2 裁 ② · D-10 的五档由 LLM 判 —— **已实现，未接线**（分判，不是投票）
+
+> ⚠️ **2026-11-09 更正（H-6）**：本节标题以前写「已落地」，**不成立**。
+> `score_d10`（`evaluation/scorers/d10_scorer.py`）是完整的 fail-closed 实现，
+> 但**零生产调用方**：`evaluation/cli.py` 的 `LLM_SCORERS` 只有 `d3/d9`，
+> `evaluate()` 不传 `llm_client`，而 D-10 的因子 A（与金标的一致性）需要
+> **冻结档金标**——CLI 这一层没有黄金集对照。⇒ **接线要两件事**：
+> ① 从冻结档构造 `D10Case`；② 接上 LLM 客户端（今天全树没有 `LLMConfig` /
+> `TRAJECTORY_LLM_*` 读取）。两件都没做。**没有 LLM 侧出分，就没有
+> D-10 五档读数**——现在跑 `--include-llm-judge` 得到的是空分。
 
 ```
 因子 A 一致性（代码断言 · 语义等价类三态） × 因子 B 依据陈述（LLM 裁判）
@@ -272,12 +285,12 @@
 
 | 项 | 归到哪 |
 |---|---|
-| 批次级断言的**读数落盘** + 闸门第五条判据 `batch_asserts_clear` | 台账 **L-23** |
-| 报表三栏（可评率 / 弃权率 / 金标来源分层） | 台账 **L-22** |
+| **D-10 五档评分器的接线**（构造 `D10Case` + 接 LLM 客户端）——**今天零生产调用方** | [07-评估与黄金集域 §D-10 未接线](../计划进展/07-评估与黄金集域.md) · 本节 §7.2 |
+| 报表三栏（可评率 / 弃权率 / 金标来源分层） | **L-22**，同上 |
 | D-3 / D-9 的读数（金标 182 格 + judge 逐行 pred 落盘） | 台账 **M-56** |
 | 机器侧 **G-3..G-6**（改 pred 侧 ⇒ 改一切读数 ⇒ 必须单独成批） | 本方案 §3 第 3 批 |
 | **B-3 的分母**（黄金集补人工站点类别） | 台账 **M-63** |
 | **B-5 的分母**（行按 run 归集 + D-10 逐行读数落盘） | 台账 **M-64** |
-| **v1.3 变更记录承诺的两个「预期效果」**（五档产出条数 ≥60% / B-5 每 run 一条错率读数） | 台账 **L-24** |
+| **v1.3 变更记录承诺的两个「预期效果」**（五档产出条数 ≥60% / B-5 每 run 一条错率读数） | **L-24**，定义见 [07-评估与黄金集域](../计划进展/07-评估与黄金集域.md) |
 | **B-4 ③ 的判据**（控制流事件类理由算不算合规） | 台账 **Q-31**（owner 裁） |
 | **D-3 锚点 1 的「该站本可判」归属** | 台账 **Q-32**（owner 裁） |

@@ -89,6 +89,15 @@ SCORERS: dict[str, Callable[[Any], Any]] = {
 #: ``LLM_SCORERS`` 与 ``SCORERS`` **分开维护**：默认 SCORERS = 4 个代码 judge
 #:    仍满足 ``tests/unit/test_evaluation_cli.py::test_没有把SCORERS改坏``
 #:    的契约。LLM_SCORERS 仅在 ``--include-llm-judge`` 时合并进 dispatch。
+#:
+#: ⚠️ **D-10 不在这里，而且不是漏了**（H-6，2026-11-09）：
+#:    ``score_d10`` 只吃 :class:`~evaluation.scorers.d10_scorer.D10Case`，
+#:    它的**因子 A 要与金标比**（本 CLI 没有黄金集对照），且需要一个
+#:    ``llm_client``（本 CLI 不读任何 LLM 配置、也不建客户端）。
+#:    ⇒ **D-10 五档评分器今天零生产调用方**；把它塞进这张表只会让
+#:    ``dispatch[dim](unit)`` 在第一条样本上 TypeError。接线要两件事：
+#:    ① 从冻结档构造 ``D10Case``；② 接 LLM 客户端。
+#:    见 ``docs/计划进展/07-评估与黄金集域.md`` §D-10 未接线。
 LLM_SCORERS: dict[str, Callable[[Any], Any]] = {
     "d3": score_d3,
     "d9": score_d9,
@@ -205,6 +214,45 @@ def _batch_basis(rows: list[dict[str, Any]]) -> str:
     return f"无版本号，按 degraded_from 含 {LEGACY_MARKER!r} 推测"
 
 
+def _units_of(sample: Any) -> list[tuple[str, Any, Any, str]]:
+    """把一条 per-Run 样本展开成**评估单元**。
+
+    为什么必须展开（H-1）
+    -------------------
+    ``split_archive`` 对一份存档返回 **0 或 1 条 Sample**（一条轨迹 = 一个
+    Run），而 D-2/D-4/D-5/D-6 判的是**站点级证据**。对整条轨迹打分时，
+    一个 run 里「A 站失败、B 站成功」只会留下**末条 outcome** 的结论：
+    失败站点在评分侧直接消失，scout 的 min 也从「最差站点」退化成
+    「最差 run」。
+
+    返回 ``[(unit_id, unit, outcome, kind), ...]``：
+
+    - 有 ``site_views()`` 且非空 ⇒ 逐站点视图（``kind="site"``）；
+    - 否则 ⇒ 回退整条样本（``kind="sample"``）。回退不是兜底猜——
+      老形状 / 测试替身**确实没有**站点明细，此时整条样本就是唯一的
+      评分单元，与 per-Run 之前逐字一致。
+    """
+    views_of = getattr(sample, "site_views", None)
+    if callable(views_of):
+        views = tuple(views_of())
+        if views:
+            return [
+                (
+                    str(getattr(v, "sample_id", "") or ""),
+                    v,
+                    getattr(v, "outcome", None),
+                    "site",
+                )
+                for v in views
+            ]
+    return [(
+        str(getattr(sample, "sample_id", "") or ""),
+        sample,
+        getattr(sample, "outcome", None),
+        "sample",
+    )]
+
+
 def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
              per_sample: bool = False, undetermined_only: bool = False
              , include_llm_judge: bool = False,
@@ -240,6 +288,8 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
 
     files = _picked(root, limit)
     n_samples = 0
+    n_units = 0
+    units_by_batch: collections.Counter = collections.Counter()
     for path in files:
         try:
             samples = list(split_archive(path))
@@ -252,70 +302,86 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
             batch = _batch_of(sample)
             batch_n[batch] += 1
             by_batch.setdefault(batch, {d: _agg() for d in dims})
-            outcome = getattr(sample, "outcome", None)
-            row: dict[str, Any] = {"archive": path.name,
-                                   "sample_id": sample.sample_id,
-                                   "batch": batch,
-                                   "schema_version": str(
-                                       getattr(sample, "schema_version", "") or ""),
-                                   "degraded_from": list(
-                                       getattr(sample, "degraded_from", ()) or ()),
-                                   # ⚠️ 这一项**必须单独带出来**：
-                                   # ``degraded_from`` 只记存档级缺件
-                                   # （run_config / user_prompt / 正文），
-                                   # 而 D-6 不可判定的主因在这里——
-                                   # 老存档的 outcome 压根没有
-                                   # ``site_url`` / ``play_page_url`` **键**。
-                                   # 实测 16 份存档的 74 个 outcome 全无此键，
-                                   # 就是它们把 D-6 顶成 100% 不可判定。
-                                   # 缺键与空值在 P2 里同形，只有这里分得开。
-                                   "p1_missing_fields": list(
-                                       getattr(outcome, "p1_missing_fields",
-                                               ()) or ()),
-                                   # ⚠️ **配对键必须自带**（M-56）：judge 的逐行
-                                   # 读数要跟黄金集的 ``golden_id`` 配对，而
-                                   # ``golden_id`` 的第三段是 **url 的 md5**
-                                   # （``golden/builder.py::_url_hash``）⇒
-                                   # **没有 url 就配不上**。
-                                   # 以前这行只有 ``sample_id``（per-Run 之前是
-                                   # ``<task>__<run>__<unit>``，现在是 ``<task>__<run>``）
-                                   # ⇒ 转换器只能靠猜，而猜出来的配对会让 kappa
-                                   # 建在一个配不上的分母上。
-                                   "url": str(getattr(outcome, "url", "") or ""),
-                                   "task_id": str(getattr(sample, "task_id", "") or ""),
-                                   "run_id": run_id_of(path.name)}
-            for dim in dims:
-                verdict = dispatch[dim](sample)
-                row[dim] = verdict.to_json()
-                key = str(verdict.score)
-                tally[dim][key] += 1
-                by_batch[batch][dim][key] += 1
-                if getattr(verdict, "is_veto", False):
-                    raw_branch = getattr(outcome, "branch", None)
-                    vetoes.append({
-                        "dimension": f"D-{dim[1:]}",   # 写死 d5 就等于假定
-                        # 「一票否决只可能出在这一维」。今天成立，但下一维
-                        # 拿到否决权时会被静默漏掉——清单里看不见的东西没人补。
-                        "archive": path.name,
-                        "sample_id": sample.sample_id,
-                        # ⚠️ question/branch 挂在 **outcome** 上，不在 sample 上——
-                        # 挂在 sample 上取到的一律是空串，而一票否决清单里
-                        # 「有理由但看不到判的是哪道题」等于没报。
-                        #
-                        # ⚠️ branch=None 是**「这条判成功」**（成功样本的
-                        # branch 恒为 None），与「字段没填」不是一回事——
-                        # 渲染成空串就把两者合并了，清单里会读到「分支是空的」。
-                        "question": str(getattr(outcome, "question", "") or ""),
-                        "branch": ("(成功)" if raw_branch is None
-                                   else str(raw_branch)),
-                        "url": str(getattr(outcome, "url", "") or ""),
-                        "reasons": list(verdict.reasons),
-                    })
-            rows.append(row)
+            units = _units_of(sample)
+            units_by_batch[batch] += len(units)
+            for unit_id, unit, outcome, unit_kind in units:
+                n_units += 1
+                row: dict[str, Any] = {"archive": path.name,
+                                       # **评分单元的 id**：站点视图是
+                                       # ``<task>__<run>__site-N``，无站点明细时
+                                       # 就是样本自己的 id。一条 run 有多个站点时
+                                       # 这里会出现多行——这正是 H-1 要显示的。
+                                       "sample_id": unit_id,
+                                       "unit_kind": unit_kind,
+                                       "site_index": (
+                                           int(getattr(unit, "index"))
+                                           if unit_kind == "site" else None),
+                                       "batch": batch,
+                                       "schema_version": str(
+                                           getattr(sample, "schema_version", "") or ""),
+                                       "degraded_from": list(
+                                           getattr(sample, "degraded_from", ()) or ()),
+                                       # ⚠️ 这一项**必须单独带出来**：
+                                       # ``degraded_from`` 只记存档级缺件
+                                       # （run_config / user_prompt / 正文），
+                                       # 而 D-6 不可判定的主因在这里——
+                                       # 老存档的 outcome 压根没有
+                                       # ``site_url`` / ``play_page_url`` **键**。
+                                       # 实测 16 份存档的 74 个 outcome 全无此键，
+                                       # 就是它们把 D-6 顶成 100% 不可判定。
+                                       # 缺键与空值在 P2 里同形，只有这里分得开。
+                                       "p1_missing_fields": list(
+                                           getattr(outcome, "p1_missing_fields",
+                                                   ()) or ()),
+                                       # ⚠️ **配对键必须自带**（M-56）：judge 的逐行
+                                       # 读数要跟黄金集的 ``golden_id`` 配对，而
+                                       # ``golden_id`` 的第三段是 **url 的 md5**
+                                       # （``golden/builder.py::_url_hash``）⇒
+                                       # **没有 url 就配不上**。
+                                       # 现在每行是**站点单元**，url 取该单元自己的
+                                       # outcome（不再取末条 outcome 的 URL）。
+                                       "url": str(getattr(outcome, "url", "") or ""),
+                                       "task_id": str(getattr(sample, "task_id", "") or ""),
+                                       "run_id": run_id_of(path.name)}
+                for dim in dims:
+                    # ⚠️ 打分对象是**展开后的单元**（SiteView 或整样本），
+                    # 不是整条 Sample——见 :func:`_units_of`。
+                    verdict = dispatch[dim](unit)
+                    row[dim] = verdict.to_json()
+                    key = str(verdict.score)
+                    tally[dim][key] += 1
+                    by_batch[batch][dim][key] += 1
+                    if getattr(verdict, "is_veto", False):
+                        raw_branch = getattr(outcome, "branch", None)
+                        vetoes.append({
+                            "dimension": f"D-{dim[1:]}",   # 写死 d5 就等于假定
+                            # 「一票否决只可能出在这一维」。今天成立，但下一维
+                            # 拿到否决权时会被静默漏掉——清单里看不见的东西没人补。
+                            "archive": path.name,
+                            "sample_id": unit_id,
+                            # ⚠️ question/branch 挂在 **outcome** 上，不在 sample 上——
+                            # 挂在 sample 上取到的一律是空串，而一票否决清单里
+                            # 「有理由但看不到判的是哪道题」等于没报。
+                            # 站点视图下取**该站点自己的** outcome。
+                            #
+                            # ⚠️ branch=None 是**「这条判成功」**（成功样本的
+                            # branch 恒为 None），与「字段没填」不是一回事——
+                            # 渲染成空串就把两者合并了，清单里会读到「分支是空的」。
+                            "question": str(getattr(outcome, "question", "") or ""),
+                            "branch": ("(成功)" if raw_branch is None
+                                       else str(raw_branch)),
+                            "url": str(getattr(outcome, "url", "") or ""),
+                            "reasons": list(verdict.reasons),
+                        })
+                rows.append(row)
 
     summary = {
         "archives": len(files),
+        # ``samples`` = **Run 数**（一条轨迹一个）；``units`` = **评分单元数**
+        # （有站点明细时 = 站点数）。两者分开记：把 units 当 samples 会
+        # 把「一个 run 访问了 3 个站点」读成「3 条轨迹」。
         "samples": n_samples,
+        "units": n_units,
         "dimensions": {},
         # ⚠️ ``basis`` 与 ``batches`` 一起构成「批次口径」的完整说明。
         # 只给数字不给依据，读的人无从判断这个分档是按什么切的，
@@ -342,6 +408,9 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
     for batch, tallies in by_batch.items():
         summary["batches"][batch] = {
             "samples": batch_n[batch],
+            # 该档的评分单元数。与 ``samples`` 不同时（有站点明细），
+            # 下面各维的出分分母是 **units**，不是 samples。
+            "units": units_by_batch[batch],
             "dimensions": {
                 dim: {
                     "dimension": f"D-{dim[1:]}",
@@ -383,7 +452,9 @@ def _print_batches(summary: dict[str, Any]) -> None:
         if not n:
             print(f"     {name}：0 条")
             continue
-        print(f"     {name}（{n} 条）")
+        units = b.get("units")
+        count = f"{n} 条" if units in (None, n) else f"{n} 条样本 / {units} 个站点单元"
+        print(f"     {name}（{count}）")
         for dim, st in (b.get("dimensions") or {}).items():
             total = st["scored"] + st["undetermined"]
             pct = st["undetermined"] / total if total else 0.0
@@ -482,8 +553,11 @@ def _print(summary: dict[str, Any], rows: list[dict[str, Any]],
            *, per_sample: bool, undetermined_only: bool) -> None:
     dims = summary["dimensions"]
     label = {d: st["dimension"] for d, st in dims.items()}
+    units = summary.get("units", summary["samples"])
+    suffix = ("" if units == summary["samples"]
+              else f" → {units} 个站点单元")
     print(f"== 评估 · {summary['archives']} 份存档 → "
-          f"{summary['samples']} 条样本 ==")
+          f"{summary['samples']} 条样本{suffix} ==")
     for dim, st in dims.items():
         total = st["scored"] + st["undetermined"]
         pct = st["undetermined"] / total if total else 0.0

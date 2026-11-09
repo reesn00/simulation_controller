@@ -241,6 +241,19 @@ def _render_user(case: D10Case) -> str:
 # ── 判读前的自查 ──────────────────────────────────────────────────
 
 
+def _truncated_flag(value: Any) -> bool:
+    """``truncated`` 字段统一判真——兼容 p1 bool 与 p2 dict 两种形态
+    （INC42；与 d3_scorer._truncated_flag 同款独立实现）。
+
+    dict（``{'source': False, 'view': False}``）按 ``any(values)`` 判；
+    非空 dict 不等于截断——第一版把它一律判真，E001__57bbf995__site-2
+    被误标截断。
+    """
+    if isinstance(value, Mapping):
+        return any(bool(v) for v in value.values())
+    return bool(value)
+
+
 def _observation_usable(obs: Mapping[str, Any] | None) -> str:
     """这份观察**能不能支撑**依据陈述的判读。空串 = 能。
 
@@ -248,9 +261,19 @@ def _observation_usable(obs: Mapping[str, Any] | None) -> str:
     就说它引用了观察外的东西，是冤枉它。同款纪律见 ``d3_scorer``
     的 ``_observation_shortfall``（**独立实现**——保持
     ``evaluation ↔ rationale`` 单向依赖方向）。
+
+    M-3：与 d3 的决策边界对齐——**``degraded`` 非空 / ``truncated`` 判真
+    也算不可用**。截断观察里「没写到的实体」与「页面上真没有」分不清，
+    拿它当充分证据判「依据引用了观察之外」，就是把采集的缺件算成轨迹的错。
+    边界一致性由 ``tests/contract/test_observation_shortfall_consistency.py``
+    盯着（d10 是第五处实现）。
     """
     if not obs:
         return "没有观察存档"
+    if list(obs.get("degraded") or ()):
+        return f"观察有采集降级项 {list(obs['degraded'])}"
+    if _truncated_flag(obs.get("truncated")):
+        return "观察被上游 max_chars 截断，「依据是否引用观察之外」无从判读"
     body = str(obs.get("body_text") or "").strip()
     elements = list(obs.get("interactive_elements") or ())
     total = int(obs.get("elements_total") or 0) or len(elements)

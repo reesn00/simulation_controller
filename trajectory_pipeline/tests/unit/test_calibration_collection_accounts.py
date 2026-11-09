@@ -57,13 +57,22 @@ def _row(
     gold_surface: str | None = A.SURFACE_HUMAN,
     pred_surface: str | None = A.SURFACE_CAMOUFOX,
     split: str = "calibration",
+    task_id: str = "T-synthetic",
+    run_id: str | None = None,
 ) -> dict:
     """一条冻结行。``gold_surface`` 走 ``golden.access_surface``（金标侧），
     ``pred_surface`` 走行顶层（预测侧）——两侧分居两处，见
-    :func:`snapshot._row_surfaces`。"""
+    :func:`snapshot._row_surfaces`。
+
+    ``task_id`` / ``run_id`` 是真实冻结行的必备键（``agreement
+    --emit-disagreements`` 要按 run 归集批次断言）；这里用不可能与真实
+    存档撞上的合成值，避免测试去读生产 P2 目录。
+    """
     row = {
         "golden_id": gid,
         "source_kind": "archive_outcome",
+        "task_id": task_id,
+        "run_id": run_id if run_id is not None else f"run-{gid}",
         "url": f"https://{gid}.test/watch",
         "site_url": f"https://{gid}.test/",
         "__split__": split,

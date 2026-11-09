@@ -24,7 +24,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import pytest
 
 from trajectory_pipeline.evaluation.golden import builder
-from trajectory_pipeline.evaluation.scorers import rubric_version
+from trajectory_pipeline.evaluation.scorers import d9_scorer, d10_scorer, rubric_version
 
 
 # ── 1. 常量 ↔ 文档 ──────────────────────────────────────────────
@@ -67,6 +67,58 @@ def test_评估器指纹_不把rubric版本算漏():
     finally:
         rubric_version.RUBRIC_VERSION = real
     assert before != after
+
+
+def test_评估器指纹_源码集合覆盖三条judge与observation_match():
+    """M-4：只哈希 prompt / 常量不够——打分逻辑本身也必须是尺子的一部分。
+
+    ``observation_match.py`` 决定 D-3「证据能否锚回观察」，它的常量改了
+    同样算换尺子。
+    """
+    names = {p.name for p in rubric_version._LLM_SOURCE_FILES}
+    assert {
+        "d3_scorer.py",
+        "d9_scorer.py",
+        "d10_scorer.py",
+        "observation_match.py",
+    } <= names
+
+
+def test_评估器指纹_改了judge源码就变(tmp_path, monkeypatch):
+    """M-4 的失败场景：改 ``score_d10`` 的分支，指纹一动不动。
+
+    用临时文件替换其中一条源码——内容不同即视为改过源码。
+    """
+    before = rubric_version.evaluator_version()
+    fake = tmp_path / "d10_scorer.py"
+    fake.write_text("# 换了打分逻辑\n", encoding="utf-8")
+    monkeypatch.setattr(
+        rubric_version,
+        "_LLM_SOURCE_FILES",
+        tuple(
+            fake if p.name == "d10_scorer.py" else p
+            for p in rubric_version._LLM_SOURCE_FILES
+        ),
+    )
+    assert rubric_version.evaluator_version() != before
+
+
+def test_评估器指纹_纳入d9档位映射表(monkeypatch):
+    """``_VERDICT_TO_SCORE`` 决定 D-9 出几分，改表必须让指纹变。"""
+    before = rubric_version.evaluator_version()
+    changed = dict(d9_scorer._VERDICT_TO_SCORE)
+    changed["__m4_probe__"] = 5
+    monkeypatch.setattr(d9_scorer, "_VERDICT_TO_SCORE", changed)
+    assert rubric_version.evaluator_version() != before
+
+
+def test_评估器指纹_纳入d10问题映射表(monkeypatch):
+    """``D10_QUESTION_BY_STATE`` 决定 D-10 问什么，改表必须让指纹变。"""
+    before = rubric_version.evaluator_version()
+    changed = dict(d10_scorer.D10_QUESTION_BY_STATE)
+    changed["__m4_probe__"] = "随便问"
+    monkeypatch.setattr(d10_scorer, "D10_QUESTION_BY_STATE", changed)
+    assert rubric_version.evaluator_version() != before
 
 
 # ── 3. freeze 落尺子字段 ───────────────────────────────────────

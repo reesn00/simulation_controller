@@ -83,6 +83,64 @@ def _archive(
     return p
 
 
+def _multi_site_archive(tmp_path: pathlib.Path) -> pathlib.Path:
+    """一份含**两个访问点**的 per-Run 存档（H-1 站点级评分的夹具）。
+
+    站点 1 判失败（``no_play_control``），站点 2 成功——对整条轨迹打分时
+    只会看到末条（成功）的结论，站点 1 的失败在评分侧消失。
+    """
+    p = tmp_path / "T001__r1.json"
+    p.write_text(
+        json.dumps(
+            {
+                "task_id": "T001",
+                "title": "功夫",
+                "user_prompt": "我要看功夫",
+                "search_url": "https://s.test",
+                "search_observation": _obs("https://s.test"),
+                "search_blocked": "",
+                "steps": [],
+                "provenance": {"genre": "喜剧"},
+                "run_config": {
+                    "engine": "baidu",
+                    "max_candidates": 20,
+                    "max_chars": None,
+                    "stop_after_success": 0,
+                    "per_site_timeout_s": 90.0,
+                },
+                "candidates": [],
+                "visits": [
+                    {
+                        "url": "https://a.test", "landed_url": "https://a.test",
+                        "steps": [], "site_obs": _obs("https://a.test"),
+                        "player_obs": None, "success": False,
+                    },
+                    {
+                        "url": "https://b.test", "landed_url": "https://b.test",
+                        "steps": [], "site_obs": _obs("https://b.test"),
+                        "player_obs": None, "success": True,
+                    },
+                ],
+                "outcomes": [
+                    {
+                        "url": "https://a.test", "branch": "no_play_control",
+                        "question": "site.find_play_control", "evidence": "e",
+                    },
+                    {
+                        "url": "https://b.test", "branch": None,
+                        "question": "site.find_play_control", "evidence": "e",
+                    },
+                ],
+                "ledger": None,
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return p
+
+
 def _p2_sample(
     tmp_path: pathlib.Path,
     sample_id: str,
@@ -225,6 +283,64 @@ class TestRunScoutThreeBuckets:
         for rec in pos + neg + qua:
             assert "_p2_path" not in rec
             assert "_url" not in rec
+
+
+class TestRunScout站点级:
+    """H-1：一条 per-Run 样本的两个站点必须**各出一条记录**。
+
+    以前 ``_score_one(sample)`` 对整条轨迹跑一次四维 ⇒ 一个 run 只产一条
+    record，聚合的 min 是「最差 run」而不是「最差站点」；A 站失败、B 站成功
+    时失败站点在评分侧整条消失。
+    """
+
+    def test_两个站点各一条记录_失败站点不被末条结论掩盖(
+        self, tmp_path, monkeypatch,
+    ):
+        _multi_site_archive(tmp_path)
+        _p2_sample(tmp_path, "T001__r1", source_archive="T001__r1.json")
+
+        table = {
+            # 站点 1（失败站）四维都差；站点 2（成功站）都好。
+            "T001__r1__site-1": {"d2": 1, "d4": 4, "d5": 4, "d6": 4},
+            "T001__r1__site-2": {"d2": 5, "d4": 5, "d5": 5, "d6": 5},
+        }
+
+        def mux(dim):
+            def _f(unit):
+                return _V(table[unit.sample_id][dim])
+            return _f
+
+        for dim in ("d2", "d4", "d5", "d6"):
+            monkeypatch.setitem(scout_io._SCORERS, dim, mux(dim))
+
+        out = scout_io.run_scout(tmp_path, tmp_path / "out")
+        assert out["positive"] == 1
+        assert out["negative"] == 1
+
+        neg = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "negative_candidates.jsonl")
+            .read_text(encoding="utf-8").splitlines() if line
+        ]
+        pos = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "positive_candidates.jsonl")
+            .read_text(encoding="utf-8").splitlines() if line
+        ]
+        assert len(neg) == 1 and len(pos) == 1
+        assert neg[0]["sample_id"] == pos[0]["sample_id"] == "T001__r1"
+        assert (neg[0]["site_index"], pos[0]["site_index"]) == (1, 2)
+        assert neg[0]["unit_id"] == "T001__r1__site-1"
+        assert neg[0]["url"] == "https://a.test"
+        assert pos[0]["url"] == "https://b.test"
+
+        # 聚合的 min 必须取到**失败站点**，不是末条（成功）结论。
+        from trajectory_pipeline.evaluation.scout.aggregate import (
+            aggregate_to_trajectory,
+        )
+        traj = aggregate_to_trajectory(neg + pos)
+        d2 = next(s for s in traj["scores"] if s["dimension"] == "d2")
+        assert d2["score"] == 1
 
 
 class TestRunScoutSkip:

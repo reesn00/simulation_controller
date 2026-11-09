@@ -187,6 +187,19 @@ THRESHOLDS: dict[str, dict[str, Any]] = {
         ),
         "where": ("evaluation/batch/asserts.py",),
     },
+    "batch_asserts_max_failed_runs": {
+        "value": 0,
+        "status": "只出读数",
+        "scope": "批次级断言（rubric v1.3 B-1..B-5，一批 = 一个 run）判"
+                 "「不通过」的 run 数（每版一份 batch_asserts.json）",
+        "basis": (
+            "rubric G-7「批次级断言不过 → 暂停该批发放」的机器线。"
+            "方案 24 §2.1：第五条闸门判据 batch_asserts_clear **第一批只报"
+            "不判**，等 owner 看一批读数再定线（D-C9）；定线只改本表，"
+            "不算 rubric 级变更（D-C6）"
+        ),
+        "where": ("evaluation/calibration/verify.py",),
+    },
 }
 
 

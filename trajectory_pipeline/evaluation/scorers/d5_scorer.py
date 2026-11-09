@@ -582,10 +582,18 @@ def _check_branch_matches_question(question: str, branch: str | None) -> TreeChe
         )
     allowed = QUESTION_TO_BRANCHES.get(question)
     if allowed is None:
+        # M-1：**不能落 ``skipped``**。``skipped`` 的语义是「本条检查不
+        # 管辖这个组合」（如证据核不管组件类分支），既不算错也不算未决，
+        # 于是「没有 wrong 也没有 undetermined」时一路走到 ``score=5``——
+        # 一个注册表里根本没有的判断点，就这样白拿了满分。
+        # 注册表不认识 ⇒ 分支与判断点的配套关系**核不了**（可能是新题
+        # 没登记，也可能是脏 question）⇒ 与「树上缺口」同一处置：
+        # ``undetermined``，不出分、不判错，等人补注册表。
         return TreeCheck(
             _NODE_BRANCH,
-            "skipped",
-            f"判断点 {question or '（缺失）'} 不在决策树注册表里，无法核对分支",
+            "undetermined",
+            f"判断点 {question or '（缺失）'} 不在决策树注册表里——"
+            f"分支与判断点的配套关系无法核对，不据此判错，也不据此给 5 分",
         )
     if branch in allowed:
         return TreeCheck(_NODE_BRANCH, "ok", f"{question} → {branch}（决策树允许）")

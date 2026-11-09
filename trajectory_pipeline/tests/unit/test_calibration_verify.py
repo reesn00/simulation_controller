@@ -26,6 +26,7 @@ import pytest
 
 from trajectory_pipeline.evaluation.calibration import snapshot, verify
 from trajectory_pipeline.evaluation.golden import builder
+from trajectory_pipeline.evaluation.scorers import thresholds
 
 
 # ── 夹具 ──────────────────────────────────────────────────────
@@ -348,13 +349,18 @@ def test_软维度只出读数不进判据():
     assert "d4" in soft
     assert soft["d4"]["paired"] > 0
     assert soft["d4"]["regressed"] == soft["d4"]["paired"]
-    # 判据只有四条，软维度不参与（D-C9：新线先出读数）
+    # 判据五条（四条 §5.1 + 批次级 L-23），软维度不参与（D-C9：新线先出读数）
     assert list(report["criteria"]) == [
         "net_improvement",
         "class_regression",
         "bucket_clear",
         "regression_regressed_zero",
+        verify.BATCH_CRITERION,
     ]
+    # 本夹具没有 batch_asserts.json，且线未定 ⇒ 只出读数、不参与判定
+    batch = report["criteria"][verify.BATCH_CRITERION]
+    assert batch["status"] == verify.CRITERION_NOT_EVALUABLE
+    assert batch["enforced"] is False
     assert report["gate"] == verify.GATE_PASS
 
 
@@ -480,18 +486,58 @@ def test_类回归容差放宽后该类不再判回归():
     assert loose["gate"] == verify.GATE_REJECT
 
 
-# ── 7. 归因（金标侧动了会被喊出来） ──────────────────────────
+# ── 7. 归因（金标侧动了 = 新基线，退 2） ──────────────────────
 
 
-def test_金标变了会记进归因而不冒充修好():
+def test_调参池金标变了就退2_不判净改善():
+    """**H-4**：以前只打一句警告、退出码不变 ⇒ 改金标可以伪造净改善。
+
+    这里把一条 disagreement 的金标改成与 pred 一致（pred 未动）——
+    它会计成 ``fixed +1``。现在必须在判据之前就退 2。
+    """
     base, curr = _h1a_pools(fixed=0, regressed=0)
     target = next(r for r in curr if r["golden_id"] == "P010__r1__h")
     target["golden"]["label"] = SUCCESS   # 人把这条的金标改了 → 与 pred 一致
-    report = verify.analyze(_snap(base), _snap(curr))
-    calib = report["calibration"]["d10"]
-    assert calib["attribution"]["gold_changed"] == 1
-    assert calib["fixed"] == 1
-    assert "不可归因" in verify.render(report)
+    with pytest.raises(verify.VerifyError, match="调参池金标在两轮之间变了"):
+        verify.analyze(_snap(base), _snap(curr))
+
+
+def test_合成复现_改金标制造净改善_退2不判():
+    """审查 H-4 的失败场景：baseline 1 条 disagree，current 同 id 金标改对。
+
+    另加 1 条不变的 calibration + 1 条不变的 regression；修之前 analyze
+    会返回 ``gate=pass``、``net_improvement=pass 净改善 1``、退出码 0。
+    """
+    base = [
+        _row("P000__r1__h", gold="blocked", branch=SUCCESS),  # disagree
+        _row("C001__r1__h"),                                   # 不变
+        _row("R000__r1__h", split="regression"),               # 不变
+    ]
+    curr = [
+        _row("P000__r1__h", gold=SUCCESS, branch=SUCCESS),     # 金标改了 → agree
+        _row("C001__r1__h"),
+        _row("R000__r1__h", split="regression"),
+    ]
+    with pytest.raises(verify.VerifyError, match="金标变动 = 新基线"):
+        verify.analyze(_snap(base), _snap(curr))
+
+
+def test_net判据自带归因守卫():
+    """``_criterion_net`` 是公开判据构造器：金标变过就**不判净改善**。
+
+    ``analyze`` 已经在更早处退 2；这一层是防御——将来谁直接调判据、
+    或把 ``VerifyError`` 改成软处理，也不会让「改金标」伪装成 pass。
+    """
+    stats = {
+        "paired": 2,
+        "fixed": 1,
+        "regressed": 0,
+        "unverifiable": 0,
+        "attribution": {"gold_changed": 1, "pred_changed": 0, "both_changed": 0},
+    }
+    crit = verify._criterion_net(1, stats)
+    assert crit["status"] == verify.CRITERION_NOT_EVALUABLE
+    assert "不可归因" in crit["detail"]
 
 
 # ── 8. 同源守卫 ─────────────────────────────────────────────
@@ -557,3 +603,164 @@ def test_CLI_分诊表缺字段_退2(tmp_path):
                        "--triage", str(triage), "--bucket", "logic"])
     assert rc == 2
     assert "分诊行缺字段" in err
+
+# ── 10. 第五条判据：批次级断言（L-23） ───────────────────────
+
+
+def _batch_report(
+    runs: list[tuple[str, bool, bool, bool]],
+) -> dict:
+    """造一份 ``batch_asserts.json`` 形状。
+
+    ``runs`` 每项 = ``(run_id, 有不通过, 缺存档, B-1 测不成)``。
+    """
+    entries: list[dict] = []
+    failed_runs: list[str] = []
+    missing_runs: list[str] = []
+    for run_id, failed, missing, b1_bad in runs:
+        entries.append({
+            "run_id": run_id,
+            "task_id": "T001",
+            "archive_found": not missing,
+            "failed": ["B-1"] if failed else [],
+            "untestable": ["B-1"] if (missing or b1_bad) else [],
+            "readout": ["B-2", "B-4", "B-5"],
+            "readings": [],
+        })
+        if failed:
+            failed_runs.append(f"T001__{run_id}")
+        if missing:
+            missing_runs.append(f"T001__{run_id}")
+    return {
+        "schema_version": 1,
+        "golden_version": 8,
+        "runs": entries,
+        "summary": {
+            "run_count": len(entries),
+            "by_clause": {
+                "B-1": {"通过": 0, "不通过": 0, "只出读数": 0, "测不成": 0}
+            },
+            "failed_runs": failed_runs,
+            "missing_archive_runs": missing_runs,
+        },
+    }
+
+
+def _set_batch_line(monkeypatch, status: str = "已定线") -> None:
+    monkeypatch.setitem(
+        thresholds.THRESHOLDS[verify.BATCH_THRESHOLD], "status", status
+    )
+
+
+def test_批次判据_线未定只出读数_不参与判定():
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    report = verify.analyze(
+        _snap(base), _snap(curr),
+        batch_asserts_report=_batch_report([("r1", True, False, False)]),
+    )
+    crit = report["criteria"][verify.BATCH_CRITERION]
+    assert crit["status"] == verify.CRITERION_NOT_EVALUABLE
+    assert crit["enforced"] is False
+    assert "只出读数" in crit["detail"]
+    assert "不通过 1 个 run" in crit["detail"]
+    # 线未定 ⇒ 不拦人
+    assert report["gate"] == verify.GATE_PASS
+
+
+def test_批次判据_线已定_有不通过即驳回(monkeypatch):
+    _set_batch_line(monkeypatch)
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    report = verify.analyze(
+        _snap(base), _snap(curr),
+        batch_asserts_report=_batch_report(
+            [("r1", True, False, False), ("r2", False, False, False)]
+        ),
+    )
+    crit = report["criteria"][verify.BATCH_CRITERION]
+    assert crit["status"] == verify.CRITERION_FAIL
+    assert "1 个 run 有「不通过」" in crit["detail"]
+    assert "T001__r1" in crit["detail"]
+    assert report["gate"] == verify.GATE_REJECT
+    assert any(verify.BATCH_CRITERION in r for r in report["reasons"])
+
+
+def test_批次判据_有不通过也有缺存档_先报不通过(monkeypatch):
+    """两者都驳回，但**归因不同**：确定的坏消息先说，别读成「只是没测全」。"""
+    _set_batch_line(monkeypatch)
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    report = verify.analyze(
+        _snap(base), _snap(curr),
+        batch_asserts_report=_batch_report(
+            [("r1", True, False, False), ("r2", False, True, False)]
+        ),
+    )
+    crit = report["criteria"][verify.BATCH_CRITERION]
+    assert crit["status"] == verify.CRITERION_FAIL
+    assert "不通过" in crit["detail"]
+    assert "缺 P1 存档" not in crit["detail"]
+
+
+def test_批次判据_线已定_缺存档判不了_不是通过(monkeypatch):
+    _set_batch_line(monkeypatch)
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    report = verify.analyze(
+        _snap(base), _snap(curr),
+        batch_asserts_report=_batch_report([("r1", False, True, False)]),
+    )
+    crit = report["criteria"][verify.BATCH_CRITERION]
+    assert crit["status"] == verify.CRITERION_NOT_EVALUABLE
+    assert "判不了不是通过" in crit["detail"]
+    assert report["gate"] == verify.GATE_REJECT
+
+
+def test_批次判据_线已定_零动作B1测不成_也判不了(monkeypatch):
+    _set_batch_line(monkeypatch)
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    report = verify.analyze(
+        _snap(base), _snap(curr),
+        batch_asserts_report=_batch_report([("r1", False, False, True)]),
+    )
+    crit = report["criteria"][verify.BATCH_CRITERION]
+    assert crit["status"] == verify.CRITERION_NOT_EVALUABLE
+    assert "B-1 测不成" in crit["detail"]
+    assert report["gate"] == verify.GATE_REJECT
+
+
+def test_批次判据_线已定_没有不通过即通过(monkeypatch):
+    _set_batch_line(monkeypatch)
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    report = verify.analyze(
+        _snap(base), _snap(curr),
+        batch_asserts_report=_batch_report([("r1", False, False, False)]),
+    )
+    crit = report["criteria"][verify.BATCH_CRITERION]
+    assert crit["status"] == verify.CRITERION_PASS
+    assert report["gate"] == verify.GATE_PASS
+    assert "批次级断言无「不通过」" in verify.render(report)
+
+
+def test_批次判据_线已定但本版没产出_驳回(monkeypatch):
+    _set_batch_line(monkeypatch)
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    report = verify.analyze(_snap(base), _snap(curr))
+    crit = report["criteria"][verify.BATCH_CRITERION]
+    assert crit["status"] == verify.CRITERION_NOT_EVALUABLE
+    assert "没有 batch_asserts.json" in crit["detail"]
+    assert report["gate"] == verify.GATE_REJECT
+
+
+def test_批次判据_CLI从快照同目录读batch_asserts(tmp_path, monkeypatch):
+    _set_batch_line(monkeypatch)
+    base, curr = _h1a_pools(fixed=10, regressed=0)
+    _write(tmp_path / "v7" / "snapshot.json", _snap(base, version=7))
+    _write(tmp_path / "v8" / "snapshot.json", _snap(curr, version=8))
+    (tmp_path / "v8" / "batch_asserts.json").write_text(
+        json.dumps(_batch_report([("r1", True, False, False)])),
+        encoding="utf-8",
+    )
+    rc, stdout, _ = _run([
+        "--calibration-root", str(tmp_path),
+        "--baseline-version", "7", "--current-version", "8",
+    ])
+    assert rc == 1
+    assert verify.BATCH_CRITERION in stdout

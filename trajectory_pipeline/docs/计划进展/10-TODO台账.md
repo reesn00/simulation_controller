@@ -754,3 +754,196 @@ T `任务总结：处置：{disposition}。分支分布：{by_branch}。`。**�
 ### M-67 · 采集面的观察选择权与任务约束都没落地
 
 ## 2026-10-30 软维度金标：回归集首判 + 「判不了」回真源（补记）
+
+## 2026-11-09 黄金集评估器与反馈回路审查 · P0 闭合 + 批次断言语义修正
+
+> 审查本体与逐条证据见 [`docs/10-黄金集评估器与反馈回路审查.md`](../10-黄金集评估器与反馈回路审查.md) §2（P0）与 §8（处置结果）。
+> 本节只记**现状**：P0 八条全部闭合；同日续修 P1 批次断言 M-7～M-13，并闭合 B 组七条（M-1 / M-3 / M-4 / M-19 / M-20 / M-22 / M-23）。**其余 P1（M-2、M-5、M-6、M-14～M-17、M-21、M-24～M-26）与 P2 未动**。
+
+| 项 | 现状 | 一句话处置 | 测试锚点 |
+|---|---|---|---|
+| **H-1** | ✅ 闭合 | 评估读取链按 `site_views()` **逐站点展开**打分，不再拿末条 outcome 代表整条轨迹 | `test_evaluation_cli.py::Test站点级展开::test_按站点展开出分_不是整条轨迹一个分` · `test_scout_e2e.py::test_两个站点各一条记录_失败站点不被末条结论掩盖` |
+| **H-2** | ✅ 闭合 | from-scout：`None` 不转 0 · `(task_id, run_id)` 去重 · 孤儿门禁 · 顶层分数进冻结入口退 2 · `_labeled_rows` 覆盖轨迹顶层分数 | `test_golden_from_scout.py`（4 条） |
+| **H-3** | ✅ 闭合 | reflow 六处：worksheet 写人给的分支 · validate 绑定 label/来源版本 · 改判清旧时刻 · 逐行 force · 工作表覆盖保护 · apply 绑版本 | `test_golden_ls_reflow.py`（改判 2 + validate 7 + 写回 2 + CLI 1） |
+| **H-4** | ✅ 闭合 | 「金标变动 = 新基线」补归因守卫：`gold_changed>0` 不判净改善；调参池/回归集金标变化**退 2** | `test_calibration_verify.py::test_调参池金标变了就退2_不判净改善` 等 3 条 |
+| **H-5** | ✅ 闭合 | 继承式冻结轨迹层**读源版本快照**（不读 live）；manifest 记 `dataset.source`（mode + sha256）；缺行退 2；一致性门禁 | `test_golden_trajectory_freeze.py::test_继承式冻结读源版本快照_不读live候选` |
+| **H-6** | ✅ 闭合（**改文档，不接线**） | `08:152` / 方案 24 §7.2 改为「**已实现，未接线**」；07 域文档补 §D-10 与 L-22/L-23/L-24 定义。**不接线理由**：`score_d10` 只吃 `D10Case`（因子 A 要金标）+ 需要 llm_client，CLI 两样都没有 | 无代码改动 |
+| **H-7** | ✅ 闭合 | `--refresh-label` **同时刷轨迹行**；「刷空」守卫合计后判；`rows_matched` 记行数不记 label 种数 | `test_golden_trajectory_refresh.py::test_轨迹级改判生效_站点行没变也不退2` · `test_轨迹行没有标注就原样跳过` |
+| **H-8** | ✅ 闭合 | `--refresh-gold` **逐行守卫**（无新分不动、不写 None）+ 轨迹级重挂；`changed_rows==0` 合计后退 2；`baseline_reset` 真变才 true | `test_golden_trajectory_refresh.py`（4 条：部分分数保留 / 轨迹分不清站点 / 逐字节不动 / 刷空退 2） |
+
+**验证读数**（2026-11-09）：`test_evaluation_cli` / `test_golden_*` / `test_calibration_verify` / `test_calibration_gate` / `test_golden_ls_*` / `test_scout_e2e` 合计 **195 passed**；P0 直接相关 7 个测试文件 **101 passed**。已知存量红：`test_calibration_evidence.py::test_真实v7上33张卡都能定位到现场`（Q-B3 / Q-35，与 P0 无关）。
+
+**同日续修（P1 批次断言 M-7～M-13，2026-11-09）**：`evaluation/batch/asserts.py` 五处语义修正 + 测试补强——
+B-5 空 `branch` 读成 `success`（M-7）· B-1 零动作改判 `STATUS_UNTESTABLE`（M-8）·
+B-4 空壳观察算异常信号进分母（M-9）· `render_text` 结论不再把 `UNTESTABLE`/`READOUT` 印成「通过」（M-10）·
+B-2 分子不超分母（M-11）· 未判定明细截断留痕（M-12）· 补 6 条回归测试（M-13）。
+`test_batch_asserts.py` **56 passed**；全量门禁 `pytest trajectory_pipeline/tests` = **5105 passed / 1 failed（15:28）**，唯一红仍是上面的已知存量
+`test_calibration_evidence.py::test_真实v7上33张卡都能定位到现场`（Q-B3 / Q-35），**本轮无新增红**。当时该模块**还没有生产调用方**（L-23）——同日随后接通，见下段。
+
+**同日续接（L-23 批次断言落盘 + 闸门第五条判据，2026-11-09）**：
+
+| 项 | 现状 | 落点 | 测试锚点（`tests/`） |
+|---|---|---|---|
+| **读数落盘** | `agreement --version N --emit-disagreements` 顺手落 `v{N}/batch_asserts.json`（**按 run 一行 + 批次汇总**，与 `snapshot.json` 同目录、同版本号绑定）；**快照已存在 ⇒ 整条 emit 退 2**，批次断言逐字节不变（M-29 S3′ 同一纪律）；新增 `--p2-root`（默认 `PIPELINE_ROOT`） | `evaluation/batch/report.py`（新：`build_batch_asserts` / `write_batch_asserts` / `load_batch_asserts` / `summary_line`）· `evaluation/golden/builder.py::_emit_calibration_artifacts` | `unit/test_batch_report.py`（12 条，含「真的落盘」「不静默覆盖」「批次断言出不来时不留半份产物」） |
+| **缺存档 fail-closed** | 缺 P1 存档的 run 走 `assert_missing_archive`：B-1 / B-2 / B-4 记**测不成**（判不了 ≠ 不通过 ≠ 通过）；B-5 不依赖存档照常出读数 | `evaluation/batch/asserts.py` | `test_缺存档_三条断言测不成_不是不通过也不是通过` · `test_坏存档_同样测不成` |
+| **闸门第五条判据** | `batch_asserts_clear`（阈值 `batch_asserts_max_failed_runs`，**默认 `只出读数`**）：线未定 ⇒ `not_evaluable` + `enforced=False`（不拦人）；线已定 ⇒ 有不通过即 FAIL、缺存档 / 零动作即 `not_evaluable`（「判不了不是通过」）⇒ 闸门退 1。文件在但结构读不懂 → `BatchReportError` / `GateError`，**不读成「没有」** | `evaluation/calibration/verify.py` · `evaluation/calibration/gate.py` · `evaluation/scorers/thresholds.py` | `unit/test_calibration_verify.py` 第 10 节（8 条） |
+| **B-5 分母** | 只吃**调参池**（`__split__ == calibration`）且排除 `p2_sample` 行——封存面不进分母 | `evaluation/batch/report.py::_b5_rows` | `test_B5只读调参池_封存面不进分母` · `test_p2_sample行不进B5分母` |
+
+**真实 v16 读数**（`agreement --version 16 --emit-disagreements --p2-root trajectory_pipeline/output/pipeline`，落临时目录核对后已删）：**50 个 run**——B-1 通过 44 / 不通过 0 / 测不成 6；B-2 只出读数 44 / 测不成 6；**B-3 50 全测不成**（金标人工类别未落，M-63）；B-4 只出读数 44 / 测不成 6；B-5 只出读数 32 / 测不成 18。**整批不通过 0 个 run**；缺存档 6 个（`P001__2e0cec8b` / `P001__36602377` / `P001__e5b60ff7` / `P015__3fda4d75` / `P015__59a2ea71` / `P015__792b0ed7`）。判据默认实测 `not_evaluable` + `enforced=False`（只出读数、不拦人）；临时把阈值状态改「已定线」后仍是 `not_evaluable`（6 个 run 缺存档 ⇒ 判不了不是通过），随后已恢复默认。
+
+**该线待 owner 定**：定线只改 `thresholds.py` 的 `batch_asserts_max_failed_runs`（值 0 → 线未定不动），不算 rubric 级变更（D-C6 / D-C9）；定线后有不通过即闸门退 1（rubric G-7 的执行面）。
+
+**L-23 验证读数**：`test_batch_report.py` / `test_batch_asserts.py` / `test_calibration_verify.py` / `test_cmd_agreement_soft_dim.py` / `tests/contract/test_calibration_provenance.py` 合计 **154 passed**；全量门禁 `pytest trajectory_pipeline/tests` = **5125 passed / 1 failed（14:50，502.76s）**，唯一红仍是已知存量 `test_calibration_evidence.py::test_真实v7上33张卡都能定位到现场`（Q-B3 / Q-35，实测 15/33 定位到），**L-23 无新增红**。另：4 条既有测试的夹具行缺 `task_id` / `run_id`（接上批次断言后 `agreement --emit-disagreements` 退 2），已把夹具补成真实行形状（`unit/test_calibration_collection_accounts.py` / `unit/test_golden_three_split.py`），**未放宽生产侧 `_run_keys` 的 fail-closed**（真实黄金集 v1–v16 全部行都有这两个键）。
+
+**同日续修（B 组 P1 七条，2026-11-09）**：按「静默给错分 / 静默丢证据」优先，闭合——M-1 D-5 未知判断点 `skipped` → `undetermined`（不再白送 5 分）· M-3 D-10 观察充分性补 `degraded` / `truncated`（五处同判）· M-4 `evaluator_version` 纳入 d3/d9/d10/observation_match 源码与两张映射表 · M-19 `headline_site` 拒绝负下标 · M-20 `headline_split` 只认三档 · M-22 freeze 暂存目录 + 原子改名（中途失败可重冻）· M-23 P2 补充件按轨迹 id 归并（per-Run 权威件不被 per-unit 覆盖）。
+
+| 项 | 现状 | 一句话处置 | 测试锚点（`tests/`） |
+|---|---|---|---|
+| **M-1** | ✅ 闭合 | 未知判断点不再落 `skipped`（「本条检查不管辖」⇒ 白送 5 分），改判 `undetermined` ⇒ 进 `unresolved`、`score=None`；不据未知判断题判错 | `unit/test_d5_scorer.py::test_未知判断点落undetermined_不判错也不给5分` |
+| **M-3** | ✅ 闭合 | `_observation_usable` 补 `degraded` / `truncated`（p1 bool / p2 dict，dict 按 `any(values)`）；契约测试从四处扩到**五处**同判 | `contract/test_observation_shortfall_consistency.py`（13 条） |
+| **M-4** | ✅ 闭合 | 指纹补入 d3/d9/d10/`observation_match` **源码内容** + `_VERDICT_TO_SCORE` + `D10_QUESTION_BY_STATE`——改打分逻辑也算换尺子 | `unit/test_rubric_version.py`（4 条：源码集合 / 改源码变指纹 / d9 表 / d10 表） |
+| **M-19** | ✅ 闭合 | `headline_site` 拒绝 `code_index < 0`（`-1` = 无结论 / 负样本池记账值），不再把负样本池站点配成头站 | `unit/test_golden_ls_scope.py::TestHeadlineSplit::test_负下标不配负样本池站点` |
+| **M-20** | ✅ 闭合 | `headline_split` 只认 `STRICT_ORDER` 三档；脏 `split` 与「认不出头站」同判 `""` | `unit/test_golden_ls_scope.py::TestHeadlineSplit::test_脏档值fail_closed` |
+| **M-22** | ✅ 闭合 | freeze 写盘改「暂存目录 + 原子改名」：全部写进 `.vN.staging-*` 后 `rename`；索引写失败撤掉已改名目录 ⇒ 不留半截 `vN`、同版本可重冻 | `unit/test_golden_freeze_atomic.py`（2 条） |
+| **M-23** | ✅ 闭合 | P2 补充件不再按 `sample_id in existing` 跳过；按轨迹 id 归并，per-Run 权威件不被后到的 per-unit 覆盖 | `unit/test_golden_p2_supplement.py`（2 条） |
+
+**B 组验证读数**：`test_d5_scorer.py` **80 passed**；`test_observation_shortfall_consistency.py` **13 passed**；`test_rubric_version.py` / `test_calibration_provenance.py` / `test_provenance_registry.py` 合计 **67 passed**；`test_golden_p2_supplement.py` **2 passed**；`test_golden_freeze_atomic.py` **2 passed**；`test_golden_ls_scope.py` / `test_golden_freeze_atomic.py` / `test_golden_three_split.py` / `test_golden_ls_reflow.py` 合计 **105 passed**。全量门禁（仓库根，**单独串行**）`pytest trajectory_pipeline/tests` = **5135 passed / 1 failed（695.03s）**，唯一红仍是已知存量 `test_calibration_evidence.py::test_真实v7上33张卡都能定位到现场`（Q-B3 / Q-35，实测 15/33 定位到），**B 组无新增红**（5125 → 5135，恰为 M-4 新增 4 条 + M-19/M-20 新增 2 条 + M-22 新增 2 条 + M-23 新增 2 条）。
+
+**P0 之后的开口（未做）**：L-7 `07-人工复核与判读手册.md` 缺失（CLAUDE.md 有引用）；M-2 / M-5 / M-6 评估器判分；M-14～M-17 / M-21 / M-24～M-26 校准/黄金集条目；L-22 报表三栏；L-24 v1.3 两个预期效果。L-8（方案 24 §7.2「已落地」）与 L-9（`04:215` 继承式冻结描述）已随 H-6 / H-5 同步更正。
+
+## 2026-11-09 轨迹级冻结 v17 + LS 轨迹级推送
+
+> v1–v16 全是站点级冻结档（无 `trajectories.jsonl`）；v17 是**第一版带轨迹交付层**
+> 的冻结档。命令：`freeze --version 17 --from-version 16`；站点级三档文件
+> （calibration 131 / regression 60 / holdout 103）与 v16 **逐字节相同**（继承、
+> 未刷新评分）。
+
+**产物读数**：`v17/trajectories.jsonl` **44 条轨迹 / 283 条站点明细**；6 个缺 P1
+存档的 run 组不进轨迹层（`P001__×3` / `P015__×3`，stats 记
+`skipped_groups_without_archive`）；5 条 `p2_sample` 占位行跳过；
+`missing_candidates=[]`。manifest 记 `dataset.source.mode=live_candidates`（v16
+没有轨迹层快照，只能读 live 候选）与 `live_candidates_sha256`。
+
+**LS**：项目 **81 `golden-v17-traj`**，`tasks_pushed=44`（1 批）；回读 44/44——
+id 集合与冻结层**完全一致**、九区块齐全、prediction 0、人工标注 0；轨迹级
+`label_config.traj.xml` 内容一致、sha `c4dcb125b052` 与台账一致。
+
+**① 一致性门禁补了「头部站点没进冻结集」的合法态**（`builder._check_trajectory_layer`）：
+
+- 3 条 `code_index` 指向的站点**在候选来源里存在、只是没被人核过 ⇒ 不在三档
+  冻结行**：`E021__129c3fae` / `T024__6240da8e` / `T042__df2ee261`。
+- 以前判坏数据、整层退 2；现在记 `headline_unresolved`（不阻断），下游
+  `headline_split` 返回空 ⇒ 回流档闸 fail-closed 跳过。
+- **判据仍落在来源上**：来源里也找不到该下标 ⇒ 照旧退 2（原测试
+  `test_交付层与冻结行对不上就退2` 仍钉着这条）。
+- 测试：新增 `test_头部站点没进冻结集不阻断_记未定`；`test_golden_trajectory_freeze.py`
+  **6 passed**；黄金集全量单测 + 契约 **402 passed**。
+- ⚠️ **2026-11-09 补修：上面的判据在继承式冻结上会误伤**。v17 起轨迹层有快照，
+  而快照的 `site_outcomes[]` **只装已冻结站点** ⇒ `code_index=6` 在快照里必然
+  查不到，`freeze --from-version 17` **退 2**（真实数据预演复现）⇒ 下一版根本
+  冻不出来。修法：继承式冻结以**源版本 manifest** 的
+  `dataset.consistency.headline_unresolved` 为「合法未定」集合（源版本冻结时
+  已在**来源**上核过），没记在源 manifest 里的仍退 2；新增
+  `source_headline_unresolved` 参数与两条测试（已记 ⇒ rc 0；没记 ⇒ rc 2）。
+  `test_golden_trajectory_freeze.py` **8 passed**；黄金集全部单测 + 标签契约
+  **353 passed**；`freeze --from-version 17 --dry-run` rc 0、counts 仍
+  **131 / 60 / 103**、`headline_unresolved` 仍 3 条、`source.mode=source_version`。
+
+**② 候选集已清成真正的 per-Run 形状（2026-11-09，owner 指令「要处理掉」）**：
+
+- `migrate-trajectory --apply`：6 条 per-unit 旧标注（`E001__57bbf995__{search,site-1,site-2,site-3}` ·
+  `T035__3ab75598__search`）按键迁移——4 条 round=1 `unresolved` 收成轨迹级
+  `E001__57bbf995` / `T035__3ab75598`；`E001__…__site-2` 的 round=2
+  `subscription_wall` 落站点级 `E001__57bbf995__6a28d60d`。原话全进
+  `merged_notes`，映射表落 `id_alias_trajectory.json`。
+- 5 条 `__neg_blocked` 标注（`P001`×3 / `P015`×2，`ai-assisted-inc33`）是 Q-A2
+  之后**不再是样本分支**的采集侧记账，且所属 run 没有 P1 存档、永远配不上候选 ⇒
+  **移到** `annotations_retired_blocked_inc33_2026-11-09.jsonl`（不删除，原文一字不动）。
+- `candidates --force` 重建：**175 条轨迹级候选**（161 条 P1 存档 + 14 条负样本池
+  补充组），站点明细 1713；旧 2495 条站点行退场。孤儿门禁 **0 条**。
+- 标注文件：306 → 298 行 / 286 唯一 id。
+- ⚠️ **v17 不重冻**（golden 不覆盖历史版本）：manifest 里的
+  `live_candidates_sha256` 是**冻结时那份过渡态候选**的历史指纹。用干净候选重放
+  v17 轨迹层，44 条里只有 `E001__57bbf995` / `T035__3ab75598` 的顶层 `golden`
+  会从 `null` 变成迁移后的 `unresolved`（2 条，均为占位级）；其余逐字节相同。
+  要吸收这 2 条须走 `--refresh-label`（`baseline_reset=true`）或非继承冻结，
+  留给下一个真实版本决定。
+- ⚠️ **待补的 3 条站点不在冻结集里，补完标注后不会自动进 v18**：继承式冻结只
+  继承站点行。进入方式（非继承式重切 ⇒ D-10 分母变化，或另造单行回填机制）需要
+  owner 拍板——**2026-11-09 owner 已选 A 单行回填并执行，见本节末「A 已落地」**。
+
+**③ 已知探针误报**：`research/probes/golden_ls_r1_readback.py` 硬编码站点级留底
+`label_config.xml` ⇒ 对轨迹级项目把「LS 端 label_config 内容一致」「留底 sha
+与台账一致」两条误报 FAIL（其余 8 条 OK）；轨迹级口径已单独核对通过。尚未改
+脚本（首次用于轨迹级项目）。
+
+**人核工作单已填完、标注已入库（2026-11-09）**：
+`output/pipeline/calibration/v17/headline_worklist.jsonl` / `.md` 的 3 条
+`fill_template` 由 owner（`reesn`）填好，已按 round=1 追加进
+`annotations.jsonl`（298 → **301 行 / 289 唯一 id**，sha256 `122c8f47…`；
+原有 298 行前缀逐字节未动）。三条的标签与机器结论：
+
+| 站点 id | 人核 label | 机器结论 |
+|---|---|---|
+| `E021__129c3fae__9aca40ce` | `partial_free` | `player_unverified` |
+| `T024__6240da8e__f68fdcc9` | `success` | `unresolved` |
+| `T042__df2ee261__9a140766` | `success` | 顶层 `code=None` |
+
+⚠️ 三条的 `access_surface` 落 `unrecorded`：工作单模板没带 `access_surface` /
+`observed_at` 两栏，且三条 P1 存档是 `schema_version=2`（没有 `driver`、没有
+采集时刻）⇒ **无法如实填面**，按历史行口径由冻结那一步写 `unrecorded`，
+**不按默认面补**。若 owner 实际开过浏览器，可按 `golden annotation` 再补
+`human-browser` + 时刻（同 label 不触发 `--force`）。孤儿门禁 `candidates
+--dry-run` **0 条**；黄金集相关单测 **62 passed**。
+
+**A 已落地（2026-11-09，owner 选「A 单行回填」）**：`freeze --version 18
+--from-version 17 --backfill-labeled-sites` 已真实执行，v18 冻结于
+`2026-11-09T09:40:05+00:00`（rubric 1.3），`versions.jsonl` 已追加 v18。
+
+- **三档 counts：calibration 134 / regression 60 / holdout 103**（annotated 297 /
+  site 292 / trajectories 44）；`split.calibration_ratio=0.4512`、
+  `pool_ratio=0.6532`；回归集指纹 **`929fedc596da`（与 v17 相同，未重切，C-17）**。
+- **补进的 3 行**（全部进 calibration，`label_backfill.added.calibration`）：
+  `E021__129c3fae__9aca40ce` / `T024__6240da8e__f68fdcc9` /
+  `T042__df2ee261__9a140766`，`outcome_index_by_site` 均为 `6`；
+  `baseline_reset=false`，`skipped_already_frozen=284`、`skipped_other_trajectory=[]`。
+- **既有 294 行逐字节不动**：v18 三个分档文件均以 v17 文件前缀开头
+  （calibration 前 131 行 / regression 60 / holdout 103，`startswith=True`）；
+  轨迹层 44 行中 **41 行逐字节相同**，仅这 3 条各多 1 个站点明细。
+  3 条在 v17 侧由此记 `only_current`（预期）。
+- **头部站点已可判档**：`headline_site` 对三条分别返回上表 3 个站点，
+  `headline_split` 全为 `calibration`；v18 `consistency.headline_unresolved=[]`
+  （v17 的 3 条未定清零），44 条轨迹全部可解析（16 calib / 15 holdout / 13 regression）。
+- **文件指纹**（sha256 前 16）：calibration `9aad279a2ef50d66`、
+  regression `bb0d57f87f7984d4`、holdout `afb2c39b50116b34`、
+  trajectories `335fd2ee05ae353c`、manifest `d8f304c4bda69691`。
+- **D-10 三态影响**：调参池 +3 行，三态分母只 **+1**（`T042` 人机都判
+  `success` ⇒ `agree`），另 2 条机器侧弃权 ⇒ `undetermined`。
+- 采集面：v18 共 297 行，`unrecorded` 296 + `human-browser` 1（3 条新行仍
+  `unrecorded`，口径见上）。
+- 代码与测试：`_backfill_labeled_sites` + CLI `--backfill-labeled-sites`
+  （仅配 `--from-version`；跨档拒冻结；manifest 落 `label_backfill`）；
+  `test_golden_trajectory_freeze.py` **12 passed**、黄金集全量 + 标签契约
+  **357 passed**、contract 全量 **945 passed**。
+
+**备选 B 未采用（留档）**：`freeze --version 18` 非继承式重切曾预演为
+不给 `--regression` 是 `calibration 188 / holdout 99 / regression 0`
+（回归集直接消失）；带 `--regression 60` 是 `128/60/99`。既有行全部重洗、
+与 v17 不可逐行比，且回归集「一经冻结不得重切」（C-17）要按新基线处理——
+只在这 3 条上收益，代价是 D-10 分母整体换掉。
+
+**LS 已推（2026-11-09，owner 授权）**：`init-project --version 18` →
+**项目 82 `golden-v18-traj`**（`label_config.traj.xml` sha `c4dcb125b052`，与 v17 同）
+→ `upload --version 18`：**`tasks_pushed=44`（1 批）**、`skipped_duplicate=0`。
+推送留底 `output/pipeline/calibration/v18/ls_upload_plan.jsonl`。
+
+- 回读探针（`--expect 44 --expect-annotations 0`）：**任务条数 / 九区块 /
+  prediction 0 / 人工标注 0 / 标注配对 / 署名 / 两端点对账全 OK**；
+  两条 FAIL（LS 端 `label_config` 内容、留底 sha）是**已知探针误报**——
+  探针硬编码站点级留底 `label_config.xml`，轨迹级项目只有 `.traj.xml`
+  （见本节 ③），不是推送问题。
+- 推送读数：D-10 口径 C 头条 calibration **105/129 = 81.4%**、三档合计
+  225/286 = 78.7%；现场可得率 **44/44 = 100%**；**T 视图可得率 0/44**
+  （与 v17 基线相同：`task_views/` 现存的 79 份视图不覆盖这 44 个 run，
+  非 v18 引入）；变更分布相对 v17：`new=0 / changed=3 / unchanged=41`
+  （changed 恰为回填的 3 条轨迹，新项目仍全量推 44）。

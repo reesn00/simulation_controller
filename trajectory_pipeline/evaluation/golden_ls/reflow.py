@@ -196,11 +196,31 @@ def _code_label_of(row: Mapping[str, Any]) -> str:
     return ""
 
 
+def _current_label_of(gold_row: Mapping[str, Any]) -> str:
+    """这一行**现在**的金标标签。
+
+    站点行取 ``golden.label``；轨迹级行还没人核过时取代码的末条结论
+    （与 :func:`build_worksheet` 的分类口径**同一处**）。
+    """
+    label = _gold_label_of(gold_row)
+    if not label and rows_mod.is_trajectory_row(gold_row):
+        label = _code_label_of(gold_row)
+    return label
+
+
+def _label_text_of(label: str) -> str:
+    """标签 → 人读文字（真源 ``branches.BRANCH_LABELS``，不抄第二份）。"""
+    from trajectory_pipeline.executor.branches import branch_label_of
+
+    return str(branch_label_of(label or None))
+
+
 def build_worksheet(
     records: Sequence[Mapping[str, Any]],
     *,
     gold_rows: Mapping[str, Mapping[str, Any]],
     ann_rows: Mapping[str, Mapping[str, Any]],
+    source_version: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """LS 裁定 → **回流工作表**（每行一条待回流裁定）。
 
@@ -299,6 +319,17 @@ def build_worksheet(
         counts[kind] = counts.get(kind, 0) + 1
         golden_map = gold_row.get("golden")
         golden_map = golden_map if isinstance(golden_map, Mapping) else {}
+        # ⚠️ **改判型的目标标签就是人给的分支**（H-3 #1）：回流写进
+        # ``annotations.jsonl`` 的是**这一次人判的结论**，不是旧金标。
+        # 以前所有 kind 都写旧金标 ⇒ apply 把旧 label 写回去 ⇒
+        # ``freeze --refresh-label`` 发现 ``changed_rows==0`` 退 2
+        # ⇒ **改判永远落不了地**。
+        if kind == KIND_RELABEL:
+            target_label = str(record.get("human_branch") or "")
+            target_text = _label_text_of(target_label)
+        else:
+            target_label = gold_label
+            target_text = str(golden_map.get("label_label") or "")
         row: dict[str, Any] = {
             "kind": kind,
             "golden_id": gid,
@@ -308,9 +339,8 @@ def build_worksheet(
             # 跳过的行**留在工作表里**，不删 ⇒ 下轮接着办。
             "submit": True,
             "round": int((ann or {}).get("round", 1)),
-            # ⚠️ 标签一律取**冻结档**的（我们要改的是 v{N} 的金标）
-            "label": gold_label,
-            "label_label": str(golden_map.get("label_label") or ""),
+            "label": target_label,
+            "label_label": target_text,
             # 署名 / 时刻 / 理由：确认型**原样带出**（标签没变，署名就不该变）；
             # 改判型留空，由人填——「谁重新定了这个标签」是人的事实。
             "reviewed_by": (
@@ -318,7 +348,14 @@ def build_worksheet(
                 if (kind == KIND_RELABEL or is_create)
                 else str((ann or {}).get("reviewed_by") or "")
             ),
-            "reviewed_at": str((ann or {}).get("reviewed_at") or ""),
+            # ⚠️ **时刻与署名是同一次人判的两半**（H-3 #3）：改判型换了
+            # 署名，就不能再带**旧**时刻——新署名配旧时间等于伪造时点。
+            # 空着由 ``builder annotate`` 在写回时打上「写入时刻」。
+            "reviewed_at": (
+                ""
+                if kind == KIND_RELABEL
+                else str((ann or {}).get("reviewed_at") or "")
+            ),
             "note": str((ann or {}).get("note") or ""),
             # ⚠️ 两栏必须由人填（推不出来）
             "access_surface": "",
@@ -333,6 +370,11 @@ def build_worksheet(
             "ls_reason": str(record.get("reason") or ""),
             "ls_annotated_at": str(record.get("annotated_at") or ""),
             "reflow_reviewed_at": str(record.get("annotated_at") or ""),
+            # ⚠️ **来源绑定**（H-3 #6）：工作表是哪一版、按**当时的哪条金标**
+            # 裁出来的。apply 时拿它核「冻结档在出表之后有没有变」——
+            # 变了 ⇒ 工作表已过期，重出，不拿旧判断改新金标。
+            "source_version": source_version,
+            "source_label": gold_label,
             "why": reason,
         }
         if is_create:
@@ -361,6 +403,7 @@ def validate(
     *,
     gold_rows: Mapping[str, Mapping[str, Any]],
     ann_rows: Mapping[str, Mapping[str, Any]] | None = None,
+    expected_version: int | None = None,
 ) -> list[str]:
     """工作表 → **错误清单**（空清单 = 可写）。
 
@@ -383,6 +426,17 @@ def validate(
     事实会跟着轨迹级标签一起进调参池 ⇒ 封存面作废）。判据见
     :func:`evaluation.golden.rows.non_reflow_splits`；与 :func:`build_worksheet`
     那侧**同一道闸**。
+
+    H-3 新增的三条（工作表**绑定来源与结论**）：
+
+    6. **工作表不许过期**：行里记的 ``source_label``（出表时的金标）必须
+       仍等于冻结档现在的标签——出表之后金标变了 ⇒ 重出，不拿旧判断改
+       新金标；
+    7. **来源版本**（``expected_version`` 给了才查）：``source_version``
+       必须等于本次 ``--version``；缺这一栏（旧格式/手写）也报错；
+    8. **改判行的 label 必须是人给的分支**（``ls_human_branch``）——回流
+       写进 ``annotations.jsonl`` 的是 ``label``；它若还是旧金标，改判
+       就永远落不了地（H-3 #1/#2）。确认型的 label 则必须仍等于金标。
     """
     errors: list[str] = []
     from trajectory_pipeline.executor.branches import BRANCH_LABELS
@@ -453,6 +507,50 @@ def validate(
         label = str(row.get("label") or "")
         if label not in universe:
             errors.append(f"{gid}：label={label!r} 不在标签宇宙里")
+        # ⚠️ **H-3：工作表必须绑定来源与结论**。出表之后冻结档变了 ⇒
+        # 这一行的判断建立在旧金标上 ⇒ 重出，不拿过期的判断改新金标。
+        current_label = _current_label_of(gold_row) if gold_row is not None else ""
+        source_label = row.get("source_label")
+        if source_label is not None and gold_row is not None:
+            if str(source_label) != current_label:
+                errors.append(
+                    f"{gid}：工作表按金标 {source_label!r} 裁出，但冻结档现在是 "
+                    f"{current_label!r}——工作表已过期，重新跑 `reflow worksheet`"
+                )
+        if expected_version is not None:
+            raw_version = row.get("source_version")
+            if raw_version is None:
+                errors.append(
+                    f"{gid}：工作表没有来源版本（旧格式/手写）——重新跑 "
+                    "`reflow worksheet` 生成"
+                )
+            elif int(raw_version) != int(expected_version):
+                errors.append(
+                    f"{gid}：工作表来自 v{raw_version}，与本次 --version "
+                    f"{expected_version} 不一致"
+                )
+        if kind == KIND_RELABEL:
+            human = str(row.get("ls_human_branch") or "")
+            if not human:
+                errors.append(
+                    f"{gid}：改判行缺人给的分支（ls_human_branch）——"
+                    "没法核对 label 是不是人判的那一个"
+                )
+            elif label != human:
+                errors.append(
+                    f"{gid}：改判行的 label={label!r} 与人给的分支 {human!r} "
+                    "不一致——回流写的是 label，**必须把它改成人的分支**"
+                )
+            elif source_label is not None and _equiv(label, str(source_label)):
+                errors.append(
+                    f"{gid}：改判行的 label={label!r} 与金标 {source_label!r} 等价"
+                    "——不需要改判（等价分支走确认型）"
+                )
+        elif kind == KIND_CONFIRM and current_label and label != current_label:
+            errors.append(
+                f"{gid}：确认型的 label={label!r} 与金标 {current_label!r} 不一致"
+                "——确认型不换标签；要改标签请把 kind 改成 relabel"
+            )
         if ann_rows is not None:
             original = ann_rows.get(gid) or {}
             old_dims = original.get("dimension_scores")
@@ -516,7 +614,16 @@ def write_annotations(
     rows = [r for r in rows if r.get("submit", True)]
     if not rows:
         raise ReflowError("工作表里没有一行是 submit=true（没有要写的）")
-    payload = dump_jsonl(rows)
+    # ⚠️ **逐行 force**（H-3 #4）：只有改判行需要绕过 ``annotate`` 的
+    # 「同键 label 不一致」保护——它就是来改 label 的。以前用**批级**
+    # ``--force`` ⇒ 一行改判替整批打开这个口子，确认行里的标签漂移
+    # 会被静默覆盖。``force`` 只进临时输入，不落 ``annotations.jsonl``
+    # （``cmd_annotate`` 只取白名单字段）。
+    payload_rows = [
+        ({**dict(r), "force": True} if str(r.get("kind")) == KIND_RELABEL else dict(r))
+        for r in rows
+    ]
+    payload = dump_jsonl(payload_rows)
     with tempfile.NamedTemporaryFile(
         "wb", suffix=".jsonl", delete=False, dir=str(pathlib.Path(golden_root))
     ) as handle:
@@ -526,10 +633,15 @@ def write_annotations(
         namespace = argparse.Namespace(
             golden_root=str(golden_root),
             input=str(temp_path),
-            force=any(str(r.get("kind")) == KIND_RELABEL for r in rows),
+            force=False,
             dimensions_only=False,
         )
-        builder.cmd_annotate(namespace)
+        try:
+            builder.cmd_annotate(namespace)
+        except builder.GoldenError as exc:
+            # ``annotate`` 的拒绝（同键 label 不一致、面认不出…）是**状态错误**
+            # ⇒ 统一成 ``ReflowError``（CLI 退 2），不回一个看不懂的 1。
+            raise ReflowError(f"写回 annotations.jsonl 被拒绝：{exc}") from exc
     finally:
         temp_path.unlink(missing_ok=True)
     ann_path = pathlib.Path(golden_root) / builder.ANNOTATIONS_FILE

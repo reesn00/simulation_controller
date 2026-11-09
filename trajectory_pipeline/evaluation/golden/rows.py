@@ -164,11 +164,23 @@ def headline_site(row: Mapping[str, Any]) -> dict[str, Any] | None:
 
     找不到就返回 ``None``：**不猜**。轨迹级结论的归属站点判不出来时，
     应当由调用方显式处理「这条轨迹的头部站点缺失」，而不是随便挑一个。
+
+    ⚠️ **负下标不是头部站点**（M-19）：``-1`` 是「没有结论」的记账值——
+    负样本池站点的 ``outcome_index`` 恒为 ``-1``，``task_conclusion``
+    无结论时轨迹的 ``code_index`` 也是 ``-1``。只拒绝 ``None`` 会让一个
+    「没有结论」的轨迹跟负样本池站点**配对成功**，把负样本池站点当成
+    给出轨迹结论的头站（随后档闸会读到它的空 ``split`` ⇒ 定不出档）。
     """
     if not is_trajectory_row(row):
         return None
     want = row.get("code_index")
     if want is None:
+        return None
+    try:
+        if int(want) < 0:
+            return None
+    except (TypeError, ValueError):
+        # 非数值的 code_index 一样定不出头站——fail-closed，不猜。
         return None
     for site in row.get("site_outcomes") or ():
         if site.get("outcome_index") == want:
@@ -228,11 +240,18 @@ def headline_split(row: Mapping[str, Any]) -> str:
     它当「**定不出档 ⇒ 不放行**」处理。
     ⚠️⚠️ **不是**「没有档 ⇒ 放行」——那是把「解不出来」当成「没有限制」
     ⇒ 恰恰是**最不该放**的那种情况（解不出来的那条往往**沾着封存面**）。
+
+    ⚠️ **脏档值一样 fail-closed**（M-20）：只认 :data:`STRICT_ORDER` 里的
+    三档。拼错的 / 历史遗留的 ``split``（如 ``"calibraton"``）**不得**被
+    当成合法档放行——它与「认不出头站」同属「定不出档」，返回 ``""``。
     """
     site = headline_site(row)
     if site is None:
         return ""
-    return str(site.get("split") or "")
+    split = str(site.get("split") or "")
+    if split and split not in STRICT_ORDER:
+        return ""
+    return split
 
 
 def site_entries_of(row: Mapping[str, Any]) -> list[dict[str, Any]]:

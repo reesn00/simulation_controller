@@ -47,6 +47,10 @@ def _row(
     return {
         "golden_id": gid,
         "source_kind": source_kind,
+        # 真实冻结行都有 run 标识（批次断言按 run 归集）；合成值不与真实
+        # 存档撞键，免得 ``agreement --emit-disagreements`` 去读生产 P2 目录。
+        "task_id": "T-synthetic",
+        "run_id": f"run-{gid}",
         "code": {"branch": label},
         "golden": golden,
     }

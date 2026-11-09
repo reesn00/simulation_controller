@@ -111,8 +111,44 @@ def _resolve_sample(
 # ── 跑四维评分 ────────────────────────────────────────────────────
 
 
+def _units_of(sample: Sample) -> list[tuple[str, Any, Any, int | None]]:
+    """把一条 per-Run 样本展开成**评分单元**（H-1）。
+
+    与 ``evaluation.cli._units_of`` 同款口径（两处独立实现——scout 不
+    import ``evaluation.cli``，那条依赖会把 CLI 的 UI 关注带进来）：
+
+    - 有站点视图 ⇒ 每个访问点一条（``site_index`` = 访问序号，1 起）；
+    - 没有站点视图 ⇒ 回退整条样本（``site_index=None``）。
+
+    返回 ``[(unit_id, unit, outcome, site_index), ...]``。
+    """
+    views_of = getattr(sample, "site_views", None)
+    if callable(views_of):
+        views = tuple(views_of())
+        if views:
+            return [
+                (
+                    str(getattr(v, "sample_id", "") or ""),
+                    v,
+                    getattr(v, "outcome", None),
+                    int(getattr(v, "index")),
+                )
+                for v in views
+            ]
+    return [(
+        str(getattr(sample, "sample_id", "") or ""),
+        sample,
+        getattr(sample, "outcome", None),
+        None,
+    )]
+
+
 def _score_one(sample: Sample) -> list[dict[str, Any]]:
-    """跑 D-2/D-4/D-5/D-6 四个评分器,转成统一字典列表。"""
+    """跑 D-2/D-4/D-5/D-6 四个评分器,转成统一字典列表。
+
+    ⚠️ 入参是**一个评分单元**（``SiteView`` 或整条样本），不是必然的
+    ``Sample``。``overlay-scout`` 也把它当单单元打分器复用。
+    """
     out: list[dict[str, Any]] = []
     for dim in ("d2", "d4", "d5", "d6"):
         verdict = _SCORERS[dim](sample)
@@ -204,7 +240,8 @@ def run_scout(
 
     Returns:
         ``{"positive": int, "negative": int, "quarantine": int, "skip": int,
-            "missing_source": int}``。
+            "missing_source": int}``。前四个按**评分单元**（有站点明细时
+        = 站点）计数——与 per-Run 之前「一个 unit 一条记录」的口径一致。
     """
     p2_samples = list_p2_samples(p2_root)
     mb_index = (
@@ -225,8 +262,6 @@ def run_scout(
         if sample is None:
             counters["skip"] += 1
             continue
-        scores = _score_one(sample)
-        status = _status_of(scores)
         # 取 task_id / run_id 优先用 P1 存档(更稳)
         task_id = p2.get("task_id") or getattr(sample, "task_id", "")
         run_id = ""
@@ -234,38 +269,51 @@ def run_scout(
             parts = pathlib.Path(p2["_p2_path"]).stem.split("__")
             if len(parts) >= 2:
                 run_id = parts[1]
-        record: dict[str, Any] = {
-            "sample_id": sample.sample_id,
-            "task_id": task_id,
-            "run_id": run_id,
-            "status": status,
-            "scores": scores,
-            "tags": [],
-            "evidence_supplement": {},
-            "_url": str(getattr(getattr(sample, "outcome", None), "url", "") or ""),
-        }
-        if mediabrowse_dir is not None:
-            _attach_mediabrowse(record, mb_index)
+        # ⚠️ **逐站点打分**（H-1）：一条 per-Run 样本可能覆盖多个访问点，
+        # 对整条轨迹跑四维只会留下末条 outcome 的结论 ⇒ 失败站点在
+        # scout 侧消失，aggregate 的 min 退化成「最差 run」。
+        for unit_id, unit, outcome, site_index in _units_of(sample):
+            scores = _score_one(unit)
+            status = _status_of(scores)
+            url = str(getattr(outcome, "url", "") or "")
+            record: dict[str, Any] = {
+                # ``sample_id`` 仍是 **Run 级 id**：P3 视图按它取名
+                # （``<task>__<run>_openai.json``），改掉会让 LS 导出
+                # 一条都读不到。站点身份放在 ``unit_id`` / ``site_index``。
+                "sample_id": str(getattr(sample, "sample_id", "") or ""),
+                "unit_id": unit_id,
+                "site_index": site_index,
+                "url": url,
+                "task_id": task_id,
+                "run_id": run_id,
+                "status": status,
+                "scores": scores,
+                "tags": [],
+                "evidence_supplement": {},
+                "_url": url,
+            }
+            if mediabrowse_dir is not None:
+                _attach_mediabrowse(record, mb_index)
 
-        from trajectory_pipeline.evaluation.scout.policy import classify, tags_for
-        kind = classify(record)  # type: ignore[arg-type]
-        if kind == "skip":
-            counters["skip"] += 1
-            continue
-        if kind == "quarantine":
+            from trajectory_pipeline.evaluation.scout.policy import classify, tags_for
+            kind = classify(record)  # type: ignore[arg-type]
+            if kind == "skip":
+                counters["skip"] += 1
+                continue
+            if kind == "quarantine":
+                record["tags"] = []
+                buckets["quarantine"].append(record)
+                counters["quarantine"] += 1
+                continue
+            if kind == "negative":
+                record["tags"] = list(tags_for(record))  # type: ignore[arg-type]
+                buckets["negative"].append(record)
+                counters["negative"] += 1
+                continue
+            # positive
             record["tags"] = []
-            buckets["quarantine"].append(record)
-            counters["quarantine"] += 1
-            continue
-        if kind == "negative":
-            record["tags"] = list(tags_for(record))  # type: ignore[arg-type]
-            buckets["negative"].append(record)
-            counters["negative"] += 1
-            continue
-        # positive
-        record["tags"] = []
-        buckets["positive"].append(record)
-        counters["positive"] += 1
+            buckets["positive"].append(record)
+            counters["positive"] += 1
 
     # 落盘:三件套
     _dump_jsonl(out_dir / "positive_candidates.jsonl", buckets["positive"])

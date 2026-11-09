@@ -1,4 +1,4 @@
-"""内环验证器（方案 16 §5.1 / C-08）：两轮快照差分 → 四条判据 → 退出码。
+"""内环验证器（方案 16 §5.1 / C-08）：两轮快照差分 → 五条判据 → 退出码。
 
 它回答的那句话
 --------------
@@ -6,18 +6,25 @@
 在它之前，这个问题的答案只存在于人写的复盘文章里（H1-α 的「修 4 / 伤 6 /
 净 −2 / 撤回」就是靠 [11 号附录 A](../docs/设计方案/11-外部方案对账.md) 复述的）。
 
-输入只有一样：**两轮全量快照**（``agreement --emit-disagreements`` 落的
+主输入是**两轮全量快照**（``agreement --emit-disagreements`` 落的
 ``snapshot.json``）。为什么不是分歧卡——卡只记「这一轮不一致」，而"上一轮对、
 这一轮错"的那一行**上一轮根本不在卡里**（见 :mod:`.snapshot` 模块 docstring）。
 
-四条判据（§5.1，逐条对应一个 ``criterion``）
-------------------------------------------
+第五条判据另读**当前快照同目录**的 ``batch_asserts.json``（同一命令顺手产出，
+L-23）；文件不存在时按其线状态处理：线未定（默认）⇒ 只出读数、不参与判定；
+线已定 ⇒ ``not_evaluable``（判不了 ⇒ 驳回，fail-closed）。
+
+判据（§5.1 四条 + 批次级第五条，逐条对应一个 ``criterion``）
+----------------------------------------------------------
 ============================ ==================================================
 ``net_improvement``          **净改善 > 0**：``修好 − 反转 > 0``（不是"改了多少条"）
 ``class_regression``         **无类回归**：等价类 F1 任一下降超容差即驳回
                              （总数上升但 ``PAYWALL`` recall 掉了不算改善）
 ``bucket_clear``             **同桶清零**：本轮改动针对的桶，残留分歧必须为 0
 ``regression_regressed_zero``**回归集**：``regressed == 0``（C-17 冻结的 60 条）
+``batch_asserts_clear``      **批次级断言**（L-23）：读 ``v{N}/batch_asserts.json``，
+                             rubric G-7「不过 → 暂停该批发放」。**默认只出读数**
+                             （线未定，不参与判定）；定线后有不通过即驳回
 ============================ ==================================================
 
 **第四条是 v1.3 加的，也是最容易被绕过的**：只有前三条时，H1-α 的净改善 −2
@@ -58,6 +65,12 @@ import pathlib
 import sys
 from typing import Any, Iterable, Mapping, Sequence
 
+from trajectory_pipeline.evaluation.batch import asserts as batch_asserts
+from trajectory_pipeline.evaluation.batch.report import (
+    BATCH_ASSERTS_FILE,
+    BatchReportError,
+    load_batch_asserts,
+)
 from trajectory_pipeline.evaluation.calibration.snapshot import (
     DIFF_VERDICTS,
     HARD_DIM,
@@ -395,8 +408,18 @@ def _per_class(
 
 
 # --------------------------------------------------------------------------
-# 四条判据
+# 五条判据（前四条 + 批次级 ``batch_asserts_clear``）
 # --------------------------------------------------------------------------
+
+
+def _gold_changes(stats: Mapping[str, Any]) -> int:
+    """这一档这一维两轮之间**金标侧变过**的条数。
+
+    ``both_changed`` 也算——两侧同时变时，净改善同样不能全归评估器
+    （P2「一次只改一侧」）。
+    """
+    attr = stats.get("attribution") or {}
+    return int(attr.get("gold_changed", 0)) + int(attr.get("both_changed", 0))
 
 
 def _criterion_net(net: int, stats: Mapping[str, Any]) -> dict[str, Any]:
@@ -406,6 +429,18 @@ def _criterion_net(net: int, stats: Mapping[str, Any]) -> dict[str, Any]:
             "detail": (
                 "两轮没有一条配对上的头条样本（golden_id 里带 run id，重采集的行"
                 "配不上）——没有证据不能主张改善"
+            ),
+        }
+    # ⚠️ **归因判据**（H-4）：金标动过 ⇒ 净改善不可归因到评估器。
+    # 以前这里只看 ``net`` 与 ``paired``：把某行的金标从「错」改成「对」
+    # 就能制造 ``fixed +1``，报告上读成「评估器净改善 1」。
+    gold_changed = _gold_changes(stats)
+    if gold_changed:
+        return {
+            "status": CRITERION_NOT_EVALUABLE,
+            "detail": (
+                f"调参池有 {gold_changed} 条金标在两轮之间变了——"
+                "金标变动 = 新基线，净改善**不可归因到评估器**（P2：一次只改一侧）"
             ),
         }
     detail = (
@@ -521,6 +556,135 @@ def _criterion_bucket(
     return {"status": CRITERION_PASS, "enforced": True, "detail": detail}
 
 
+#: 第五条判据：批次级断言（rubric G-7「不过 → 暂停该批发放」的落点）。
+BATCH_CRITERION = "batch_asserts_clear"
+
+#: 它的判定线（阈值唯一真源）。**默认「只出读数」**：第一批只报不判，
+#: 等 owner 看一批读数再定线（方案 24 §2.1）。定线只改阈值表（D-C6）。
+BATCH_THRESHOLD = "batch_asserts_max_failed_runs"
+
+
+def _criterion_batch(
+    batch_asserts_report: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """批次级断言判据——读 ``v{N}/batch_asserts.json``。
+
+    三档（线未定 / 线已定且清 / 线已定但有脏）：
+
+    - **线未定**（``thresholds.status`` = ``只出读数``）：只报读数，
+      ``enforced=False``，不参与判定——**不是通过**，也不拦人；
+    - **线已定 + 有 run「不通过」**：``fail``（驳回）；
+    - **线已定 + 有 run 判不了**（缺 P1 存档 / 零动作 ⇒ B-1 测不成）：
+      ``not_evaluable``——**判不了不是通过**（CLAUDE.md 的 fail-closed）。
+
+    ⚠️ **文件在但读不懂**由 :func:`load_batch_asserts` 直接抛
+    :class:`BatchReportError`（CLI 退 2），不会走到这里被读成「没有」。
+    """
+    # ⚠️ 阈值名必须**字面**出现在这里（契约测试按字面核「表里那条真的
+    # 被引用」，经常量传参会被判成没使用）。
+    line_status = thresholds.status("batch_asserts_max_failed_runs")
+    line = thresholds.value("batch_asserts_max_failed_runs")
+    if batch_asserts_report is None:
+        detail = (
+            "本版没有 batch_asserts.json"
+            "（agreement --emit-disagreements 未产出批次级断言）"
+        )
+        if line_status == "已定线":
+            return {
+                "status": CRITERION_NOT_EVALUABLE,
+                "detail": detail + "——线已定，判不了 ⇒ 驳回",
+            }
+        return {
+            "status": CRITERION_NOT_EVALUABLE,
+            "enforced": False,
+            "detail": detail + "；线未定（只出读数），本项不参与判定",
+        }
+
+    summary = batch_asserts_report.get("summary") or {}
+    runs = list(batch_asserts_report.get("runs") or ())
+    failed = [str(x) for x in (summary.get("failed_runs") or ())]
+    missing = [str(x) for x in (summary.get("missing_archive_runs") or ())]
+    by_clause = summary.get("by_clause") or {}
+
+    def _one(clause: str) -> str:
+        bucket = by_clause.get(clause) or {}
+        parts = " / ".join(
+            f"{status} {int(bucket.get(status) or 0)}"
+            for status in (
+                batch_asserts.STATUS_PASS,
+                batch_asserts.STATUS_FAIL,
+                batch_asserts.STATUS_READOUT,
+                batch_asserts.STATUS_UNTESTABLE,
+            )
+        )
+        return f"{clause} {parts}"
+
+    counts = (
+        f"{len(runs)} 个 run："
+        + "；".join(_one(c) for c in ("B-1", "B-3", "B-4", "B-5"))
+    )
+
+    if line_status != "已定线":
+        return {
+            "status": CRITERION_NOT_EVALUABLE,
+            "enforced": False,
+            "detail": (
+                f"只出读数（线 {BATCH_THRESHOLD} 未定，不参与判定）："
+                f"整批不通过 {len(failed)} 个 run；缺存档 "
+                f"{len(missing)} 个 run；{counts}"
+            ),
+        }
+
+    if not runs:
+        return {
+            "status": CRITERION_NOT_EVALUABLE,
+            "detail": "batch_asserts.json 里没有 run——没有可判的对象",
+        }
+    # **先报确定的坏消息**：有 run「不通过」就是 FAIL（结论确定），
+    # 不因为另有 run 缺存档而改报成「判不了」——两者闸门都驳回，但人
+    # 读到的归因不同（「这批有问题」vs「这批没测全」）。
+    if len(failed) > int(line):
+        return {
+            "status": CRITERION_FAIL,
+            "detail": (
+                f"{len(failed)} 个 run 有「不通过」（允许 ≤ {line}）："
+                f"{' / '.join(failed[:10])}"
+                f"{' …' if len(failed) > 10 else ''}；{counts}"
+            ),
+        }
+    if missing:
+        return {
+            "status": CRITERION_NOT_EVALUABLE,
+            "detail": (
+                f"{len(missing)} 个 run 缺 P1 存档（如 {missing[0]}），"
+                "B-1/B-2/B-4 测不成——**判不了不是通过**；"
+                f"{counts}"
+            ),
+        }
+    # B-1 测不成 = 零动作（M-8）：一批没有动作就判不了动作 schema，
+    # 线已定时同样不许白送「清」。
+    cannot_judge = [
+        str(run.get("run_id") or "")
+        for run in runs
+        if "B-1" in (run.get("untestable") or ())
+    ]
+    if cannot_judge:
+        return {
+            "status": CRITERION_NOT_EVALUABLE,
+            "detail": (
+                f"{len(cannot_judge)} 个 run 的 B-1 测不成（零动作），"
+                f"判不了（如 {cannot_judge[0]}）——**判不了不是通过**；"
+                f"{counts}"
+            ),
+        }
+    return {
+        "status": CRITERION_PASS,
+        "detail": (
+            f"{len(runs)} 个 run 无「不通过」（允许 ≤ {line}）；{counts}"
+        ),
+    }
+
+
 def _gate(criteria: Mapping[str, Mapping[str, Any]]) -> tuple[str, list[str]]:
     """门 = 所有**参与判定**的判据都过。``not_evaluable`` 对必判项即驳回。"""
     reasons: list[str] = []
@@ -548,8 +712,15 @@ def analyze(
     triage: Sequence[Mapping[str, Any]] | None = None,
     buckets: Sequence[str] = (),
     class_tolerance: float = 0.0,
+    batch_asserts_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """两份快照 → 报告（含四条判据与门结论）。纯函数，不读盘、不打印。"""
+    """两份快照 → 报告（含五条判据与门结论）。纯函数，不读盘、不打印。
+
+    ``batch_asserts_report`` 是 ``v{N}/batch_asserts.json`` 的内容
+    （``None`` = 本版没产出）。第五条判据 ``batch_asserts_clear`` 的线
+    默认「只出读数」，即**不参与判定**——把 ``None`` 读成「通过」会是
+    反过来的错。
+    """
     meta = _check_comparable(baseline, current)
     b_idx = index_entries(baseline)
     c_idx = index_entries(current)
@@ -608,14 +779,26 @@ def analyze(
             "回归集不得改动（C-17）。这份快照是不是在两轮之间重切过？"
         )
     if reg["paired"]:
-        reg_gold_changed = int(reg["attribution"]["gold_changed"]) + int(
-            reg["attribution"]["both_changed"]
-        )
+        reg_gold_changed = _gold_changes(reg)
         if reg_gold_changed:
             raise VerifyError(
                 f"回归集金标在两轮之间变了 {reg_gold_changed} 条：金标变动 = 新基线，"
                 "不能拿来算本次改动效果（§10：改金标要新版本 + 人裁）"
             )
+    # ⚠️ **调参池金标变动同样不可比**（H-4）：以前这里只由 ``render`` 打一句
+    # 警告、**退出码不变** ⇒ 「改金标」可以伪造「净改善」（合成复现：baseline
+    # ``disagree`` → current 同 id 因 gold 改对而 ``agree``，pred 未动，门全绿、
+    # 退出码 0）。与回归集同一条口径：**退 2，不判**。
+    # 注意：``assert_gold_comparable`` 只看 manifest 的 ``--refresh-*`` 标记，
+    # **fresh freeze 写的是 ``enabled: false``**——金标在两次全新冻结之间变了
+    # 它也拦不住；这里按**快照实际内容**兜底。
+    calib_gold_changed = _gold_changes(calib)
+    if calib_gold_changed:
+        raise VerifyError(
+            f"调参池金标在两轮之间变了 {calib_gold_changed} 条：金标变动 = 新基线，"
+            "不能拿来算本次改动效果（§10：改金标要新版本 + 人裁）。"
+            "先确认这两版是不是同一份金标，再决定要不要比"
+        )
 
     per_class = _per_class(
         b_idx, c_idx,
@@ -663,6 +846,8 @@ def analyze(
             n_assigned=n_assigned,
         ),
         "regression_regressed_zero": _criterion_regression(reg),
+        # 第五条（rubric G-7 的执行面，L-23）：批次级断言。
+        BATCH_CRITERION: _criterion_batch(batch_asserts_report),
     }
     gate, reasons = _gate(criteria)
 
@@ -845,7 +1030,15 @@ def render(report: Mapping[str, Any]) -> str:
 
     lines.append("")
     if report["gate"] == GATE_PASS:
-        lines.append("  ✅ 通过：净改善 > 0、无类回归、回归集 regressed = 0")
+        batch_crit = report["criteria"].get(BATCH_CRITERION) or {}
+        batch_tail = (
+            "、批次级断言无「不通过」"
+            if batch_crit.get("enforced", True)
+            else "（批次级断言只出读数，未参与判定）"
+        )
+        lines.append(
+            "  ✅ 通过：净改善 > 0、无类回归、回归集 regressed = 0" + batch_tail
+        )
     else:
         lines.append("  ❌ 驳回：")
         for reason in report["reasons"]:
@@ -941,12 +1134,21 @@ def main(argv: list[str] | None = None) -> int:
             current = load_snapshot(c_path)
         except (OSError, ValueError) as exc:
             raise VerifyError(f"读快照失败：{exc}") from exc
+        # 批次级断言与快照同目录、同版本号绑定；不存在 = 本版没产出
+        # （线未定时不算错，线已定时判据自己会驳回）。
+        try:
+            batch_report = load_batch_asserts(
+                c_path.parent / BATCH_ASSERTS_FILE
+            )
+        except BatchReportError as exc:
+            raise VerifyError(f"读批次级断言失败：{exc}") from exc
         report = analyze(
             baseline,
             current,
             triage=load_triage(args.triage),
             buckets=args.bucket or (),
             class_tolerance=args.class_tolerance,
+            batch_asserts_report=batch_report,
         )
     except (VerifyError, TriageError) as exc:
         print(f"错误：{exc}", file=sys.stderr)

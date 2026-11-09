@@ -15,19 +15,23 @@
   ``**版本**: v1.2`` 行；本常量抄一份并**由 contract test 比对**，
   改文档不改常量（或反之）当场红。
 - :func:`evaluator_version` —— **机器算的**指纹（sha256 前 12 位），覆盖
-  D-3 / D-9 的 system prompt、契约枚举与 few-shot 池。prompt 改一个字，
-  指纹就变，分歧卡由此能回答「这条是旧 prompt 还是新 prompt 判的」。
+  D-3 / D-9 / D-10 的 system prompt、契约枚举、few-shot 池、档位映射表，
+  **以及这三条 judge 的源码与 ``observation_match`` 的判据源码**（M-4）。
+  prompt 或打分逻辑改一个字，指纹就变，分歧卡由此能回答「这条是旧尺子
+  还是新尺子判的」。
 - :data:`ANCHOR_TABLES` —— **各 judge 各档的锚点释义**（方案 16 §7 / C-10）。
   prompt 由它渲染，不另写一份散文。
 
 范围声明（不夸大）
 ------------------
-:func:`evaluator_version` **只覆盖 LLM 判断题（D-3 / D-9）**。代码评分器
-（D-2 / D-4 / D-5 / D-6）另有一把尺：:func:`code_scorer_version` 取的是
-**源码内容**的指纹，不是 git commit——commit 不含工作树里未提交的改动，
-而 M-29 的教训恰恰是「代码改了、commit 没动」。:func:`scorer_fingerprint`
-把两把尺拼成一行（``code:…|llm:…``），写进冻结行的 ``scorer_version`` 栏，
-让「这批分数是哪版评分器打的」有答案（C-11）。
+:func:`evaluator_version` 覆盖 **LLM 判断题（D-3 / D-9 / D-10）**：prompt、
+枚举、映射表与**打分源码内容**（M-4 起，漏了源码就会出现「改了逻辑、指纹
+没动」）。代码评分器（D-2 / D-4 / D-5 / D-6）另有一把尺：
+:func:`code_scorer_version` 取的是**源码内容**的指纹，不是 git commit——
+commit 不含工作树里未提交的改动，而 M-29 的教训恰恰是「代码改了、commit
+没动」。:func:`scorer_fingerprint` 把两把尺拼成一行（``code:…|llm:…``），
+写进冻结行的 ``scorer_version`` 栏，让「这批分数是哪版评分器打的」有答案
+（C-11）。
 
 两份都不造假版本号：**造一个永远不变的 ``code-v1`` 比没有更坏**，它会让
 「没变过」看起来像被验证过。
@@ -78,17 +82,50 @@ def documented_rubric_version(text: str | None = None) -> str:
     return m.group(1)
 
 
+#: LLM 判分面的源码文件（M-4）。按**源码内容**进指纹，理由同
+#: :func:`code_scorer_version`：commit 不含工作树改动，而「改了打分逻辑、
+#: 指纹却不变」会让冻结档无法察觉尺子已经换了。
+#:
+#: ``observation_match.py`` 在上一级目录——D-3 的「证据能否锚回观察」
+#: 判据全出自它，改它的常量（如 ``MIN_BODY_SUBSTRING``）就是改尺子。
+_LLM_SOURCE_FILES: tuple[pathlib.Path, ...] = (
+    pathlib.Path(__file__).resolve().parent / "d3_scorer.py",
+    pathlib.Path(__file__).resolve().parent / "d9_scorer.py",
+    pathlib.Path(__file__).resolve().parent / "d10_scorer.py",
+    pathlib.Path(__file__).resolve().parent.parent / "observation_match.py",
+)
+
+
+def _source_parts() -> dict[str, str]:
+    """把源码内容记进指纹。读不到写 ``<missing>``，**不跳过**——
+    跳过等于把「少了一个模块」记成「模块没变」（同 ``code_scorer_version``）。
+    """
+    out: dict[str, str] = {}
+    for path in _LLM_SOURCE_FILES:
+        try:
+            out[path.name] = path.read_text(encoding="utf-8")
+        except OSError:
+            out[path.name] = "<missing>"
+    return out
+
+
 def evaluator_version() -> str:
     """D-3 / D-9 / D-10 判分面的指纹（sha256 前 12 位）。
 
     纳入：rubric 版本、锚点表、各段 system prompt、契约枚举（类别 / 子类 /
-    verdict）、few-shot 池（按内容排序后序列化，顺序变化也算变化）。
+    verdict）、few-shot 池（按内容排序后序列化，顺序变化也算变化）、
+    **档位映射表**（D-9 的 ``_VERDICT_TO_SCORE``、D-10 的
+    ``D10_QUESTION_BY_STATE``）与**打分源码内容**（M-4）。
 
     锚点表单列一份（哪怕它已经在 prompt 里）——**表的变动要能被指纹看见**，
     否则「改了表但 prompt 渲染没跟上」会静悄悄地过去。
 
     ⚠️ **D-10 的五档映射表也进指纹**（:data:`D10_EVIDENCE_FACTORS` /
     :data:`D10_CAUSE_FACTORS`）——它决定档位，改它就是改尺子，指纹必须变。
+
+    源码内容单列一份（理由同 ``code_scorer_version``）：常量与 prompt 只是
+    尺子的**声明**，打分逻辑才是尺子的**行为**。M-4 之前只哈希声明 ⇒
+    改 `score_d10` 的分支或 d3 的档位判断，指纹一动不动。
 
     惰性 import scorers：本函数被 CLI 调用时才加载 LLM 侧常量，
     避免 `builder` 的其它子命令被拖慢。
@@ -105,13 +142,16 @@ def evaluator_version() -> str:
         "d3_subtypes": sorted(d3_scorer.D3_SUBTYPES),
         "d9_prompt": d9_scorer.D9_SYSTEM_PROMPT,
         "d9_verdicts": sorted(d9_scorer.D9_VERDICTS),
+        "d9_verdict_to_score": dict(d9_scorer._VERDICT_TO_SCORE),
         "d9_few_shot": json.loads(
             json.dumps(d9_scorer.D9_FEW_SHOT_EXAMPLES, ensure_ascii=False, sort_keys=True,
                        default=str)
         ),
         "d10_prompt": d10_scorer.D10_SYSTEM_PROMPT,
+        "d10_question_by_state": dict(d10_scorer.D10_QUESTION_BY_STATE),
         "d10_evidence_factors": dict(D10_EVIDENCE_FACTORS),
         "d10_cause_factors": dict(D10_CAUSE_FACTORS),
+        "llm_scorer_sources": _source_parts(),
     }
     blob = json.dumps(parts, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:12]

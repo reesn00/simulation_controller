@@ -38,40 +38,45 @@ def _stats_line(stats: dict[str, int]) -> str:
 
 def _dry_run(p2_root: pathlib.Path) -> int:
     from trajectory_pipeline.evaluation.scout.io import (
-        list_p2_samples, _resolve_sample, _score_one, _status_of,
+        list_p2_samples, _resolve_sample, _score_one, _status_of, _units_of,
     )
     from trajectory_pipeline.evaluation.scout.policy import classify, tags_for
     p2s = list_p2_samples(p2_root)
     counters: dict[str, int] = {
         "positive": 0, "negative": 0, "quarantine": 0, "skip": 0,
+        "units": 0,
     }
     for p2 in p2s:
         sample = _resolve_sample(p2, p2_root)
         if sample is None:
             counters["skip"] += 1
             continue
-        scores = _score_one(sample)
-        status = _status_of(scores)
-        rec: dict[str, Any] = {
-            "sample_id": sample.sample_id,
-            "task_id": p2.get("task_id", ""),
-            "run_id": "",
-            "status": status,
-            "scores": scores,
-            "tags": [],
-            "evidence_supplement": {},
-        }
-        kind = classify(rec)  # type: ignore[arg-type]
-        if kind == "skip":
-            counters["skip"] += 1
-        elif kind == "quarantine":
-            counters["quarantine"] += 1
-        elif kind == "negative":
-            rec["tags"] = list(tags_for(rec))  # type: ignore[arg-type]
-            counters["negative"] += 1
-        else:
-            counters["positive"] += 1
-    print(f"[dry-run] 输入 {len(p2s)} 条 P2 样本")
+        # ⚠️ 与 :func:`run_scout` 同口径：逐站点评分（H-1）。
+        units = _units_of(sample)
+        counters["units"] += len(units)
+        for _unit_id, unit, _outcome, _site_index in units:
+            scores = _score_one(unit)
+            status = _status_of(scores)
+            rec: dict[str, Any] = {
+                "sample_id": str(getattr(sample, "sample_id", "") or ""),
+                "task_id": p2.get("task_id", ""),
+                "run_id": "",
+                "status": status,
+                "scores": scores,
+                "tags": [],
+                "evidence_supplement": {},
+            }
+            kind = classify(rec)  # type: ignore[arg-type]
+            if kind == "skip":
+                counters["skip"] += 1
+            elif kind == "quarantine":
+                counters["quarantine"] += 1
+            elif kind == "negative":
+                rec["tags"] = list(tags_for(rec))  # type: ignore[arg-type]
+                counters["negative"] += 1
+            else:
+                counters["positive"] += 1
+    print(f"[dry-run] 输入 {len(p2s)} 条 P2 样本（{counters['units']} 个站点单元）")
     print(f"[dry-run] {_stats_line(counters)}")
     return 0
 

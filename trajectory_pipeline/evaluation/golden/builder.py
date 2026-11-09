@@ -51,7 +51,9 @@ import math
 import pathlib
 import random
 import re
+import shutil
 import sys
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -826,6 +828,14 @@ def _site_entries(
                 "play_page_url": o.get("play_page_url") or "",
                 "access_surface": surface,
                 "code": _code_block(entry.outcome),
+                #: pred 侧软维度分数 / 明细 / 状态。**站点级**——由
+                #: ``from-scout`` / ``overlay-scout`` 按站点写入。
+                #: 默认留空而不是缺键：``_labeled_rows`` 会原样抄进冻结行，
+                #: 缺键与「没评分」在冻结档里会变成两种形状。
+                "dimension_scores": None,
+                "scores_detail": [],
+                "status": None,
+                "scorer_version": None,
                 "outcome_index": entry.outcome_index,
                 # 配到它的访问点序号（0 = 孤儿记账，没有访问点）。
                 # **它是「这个站点是轨迹里哪一段」的另一半答案**——
@@ -1028,7 +1038,7 @@ def _scan_negative_pool(
 
 
 
-def _scan_p2_samples(root: pathlib.Path, existing: set[str]) -> list[dict[str, Any]]:
+def _scan_p2_samples(root: pathlib.Path) -> list[dict[str, Any]]:
     """P2 样例作为「真实首轮轨迹」锚点（总体方案 §5.2 锚点来源①）。
 
     per-Run 之后 **P2 样例本身就是一条轨迹**（``sample_id`` =
@@ -1037,19 +1047,28 @@ def _scan_p2_samples(root: pathlib.Path, existing: set[str]) -> list[dict[str, A
 
     ⇒ 这里返回的是**轨迹级补充件**（按轨迹 id 归并进候选行），不再自成一行。
 
+    ⚠️ **M-23：不能按 ``sample_id`` 跳过已有轨迹**。per-Run 之后
+    ``sample_id == 轨迹 id``，而只要这个 Run 有 P1 存档，候选集里就已经
+    有同 id 的轨迹行 ⇒ 老写法 `if sample_id in existing: continue` 会把
+    **有存档的 Run 的 P2 补充件全部扔掉**（评分 / 源存档 / persona 悄悄
+    缺失，候选集上看不出来）。补充件的用途就是挂到已有轨迹行上，跳过
+    等于让它永远挂不上。
+
+    同一轨迹可能有多份样例（老 per-unit 形态 + 新 per-Run 形态）：
+    per-Run 样例（``sample_id == 轨迹 id``）是权威件，**不许被后到的
+    per-unit 样例覆盖**；其余按排序后到者为准（与老行为一致）。
+
     ⚠️ **老数据里的 per-unit sample_id**（``{task}__{run}__{unit}``）照样能
     读：``task_id`` / ``run_id`` 从 sample_id 前两段取，轨迹 id 也就取前两段
     ⇒ per-unit 的多个样例**归并到同一条轨迹**（这正是 per-Run 要的效果）。
     """
-    out: list[dict[str, Any]] = []
+    by_tid: dict[str, dict[str, Any]] = {}
     for p in sorted((root / "samples").glob("*.json")):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
         sample_id = str(data.get("sample_id") or p.stem)
-        if sample_id in existing:
-            continue
         prov = (data.get("six") or {}).get("provenance")
         source_archive = str(data.get("source_archive") or "")
         parts = sample_id.split("__")
@@ -1061,17 +1080,20 @@ def _scan_p2_samples(root: pathlib.Path, existing: set[str]) -> list[dict[str, A
                 run_id = stem_parts[1]
         if not task_id or not run_id:
             continue
-        out.append(
-            {
-                "trajectory_id": rows_mod.trajectory_id(task_id, run_id),
-                "task_id": task_id,
-                "run_id": run_id,
-                "sample_id": sample_id,
-                "source_archive": source_archive,
-                "persona": _persona_from_provenance(prov),
-            }
-        )
-    return out
+        tid = rows_mod.trajectory_id(task_id, run_id)
+        prev = by_tid.get(tid)
+        if prev is not None and prev["sample_id"] == tid and sample_id != tid:
+            # per-Run 权威件已在；后到的 per-unit 件不覆盖它
+            continue
+        by_tid[tid] = {
+            "trajectory_id": tid,
+            "task_id": task_id,
+            "run_id": run_id,
+            "sample_id": sample_id,
+            "source_archive": source_archive,
+            "persona": _persona_from_provenance(prov),
+        }
+    return list(by_tid.values())
 
 
 
@@ -1119,7 +1141,9 @@ def cmd_candidates(args: argparse.Namespace) -> int:
             traj_by_id[tid] = row
         row["site_outcomes"].append(neg)
     # P2 样例：**轨迹级补充件**（评分 / 源存档 / persona）。
-    p2 = _scan_p2_samples(root, set(traj_by_id))
+    # ⚠️ 不传已有轨迹 id（M-23）：per-Run 后 sample_id == 轨迹 id，
+    # 按它跳过就会把有 P1 存档的 Run 的补充件全部扔掉。
+    p2 = _scan_p2_samples(root)
     for extra in p2:
         tid = str(extra["trajectory_id"])
         row = traj_by_id.get(tid)
@@ -1334,7 +1358,9 @@ def cmd_annotate(args: argparse.Namespace) -> int:
          "dimension_scores": {"rationale_consistency": 4}, "interval_days": null}
 
     round=2 为 retest（D9），必须带 interval_days。同一 (golden_id, round)
-    重复写入时校验 label 一致，不一致需 --force。
+    重复写入时校验 label 一致，不一致需 --force。``--force`` 是**批级**开关；
+    输入行也可以带 ``{"force": true}`` **只给这一行**放行（reflow 的改判行走
+    这条：它本来就是来改 label 的，而同一批里的确认行不该跟着绕过保护）。
 
     ``access_surface`` / ``observed_at`` **必填**（方案 20 §R2，owner 裁定 O-d）：
     断言一个标签就得说出**在哪张面上、什么时候**看到的——否则「人进得去、
@@ -1432,7 +1458,13 @@ def cmd_annotate(args: argparse.Namespace) -> int:
                 raise GoldenError(f"{gid} dimension_scores 越界 {bad}，允许 1..5")
         surface, observed_at = _require_surface_fields(gid, r)
         prev = by_key.get((gid, rnd))
-        if prev and prev.get("label") != label and not args.force:
+        # ⚠️ **逐行 force**（H-3）：输入行可以带 ``{"force": true}`` 只给
+        # **这一行**放行。reflow 的改判行正是「来改 label 的」⇒ 必须绕过
+        # 同键不一致保护；而确认行若与已有标注不一致，那是标签漂移，**要拦**。
+        # 用批级 ``--force`` 会让一行改判替整批打开这个口子。
+        # ``force`` 只作为输入开关读，不写进 annotations.jsonl。
+        row_force = bool(r.get("force")) or bool(getattr(args, "force", False))
+        if prev and prev.get("label") != label and not row_force:
             raise GoldenError(
                 f"{gid} round={rnd} 已有 label={prev.get('label')!r}，"
                 f"新标 {label!r} 不一致；确认后 --force"
@@ -2207,6 +2239,20 @@ def _labeled_rows(
     out: list[dict[str, Any]] = []
     for c in candidates:
         if rows_mod.is_trajectory_row(c):
+            # ⚠️ **顶层分数不许静默丢**（H-2 事实 5）：站点行只抄
+            # ``site_outcomes[]`` 里的分数，轨迹行顶层的 ``dimension_scores``
+            # 没有任何站点能认领。以前这里直接忽略 ⇒ 候选看着有分，
+            # 冻结出来的站点行全空，直到 ``--refresh-scores`` 才退 2。
+            # 现在在**冻结入口**就报，并指出正确的挂法。
+            top_scores = c.get("dimension_scores")
+            if isinstance(top_scores, Mapping) and top_scores:
+                raise GoldenError(
+                    f"轨迹级候选 {c.get('golden_id')!r} 顶层带 "
+                    f"dimension_scores={dict(top_scores)!r}，但它不属于任何"
+                    "站点——冻结只读 site_outcomes[].dimension_scores。"
+                    "把分数写到对应站点的明细条目上（from-scout / "
+                    "overlay-scout 会做），**不替它猜一个站点**"
+                )
             persona = c.get("persona")
             for site in c.get("site_outcomes") or ():
                 a = ann1.get(str(site.get("golden_id") or ""))
@@ -2246,12 +2292,141 @@ def _labeled_rows(
     return out
 
 
+def _backfill_labeled_sites(
+    parts: Mapping[str, Sequence[Mapping[str, Any]]],
+    cand_path: pathlib.Path,
+    ann_path: pathlib.Path,
+    alias: Mapping[str, str] | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """继承式冻结的**单行回填**：把新补的人核站点补进源版本的对应档。
+
+    为什么需要它：继承式冻结只搬源版本的三档行，**不读** candidates /
+    annotations（回头重切会重洗，逐版可比就没了）。但人后来补标的站点
+    （v17 的 3 条头部站点就是）不在源版本里 ⇒ 不加这一步，它们永远进不了
+    任何版本（除非非继承式重切，那会把 D-10 分母整体换掉）。
+
+    补行规则（**不猜**）：
+
+    1. 只补**已冻结轨迹**的站点——该轨迹在源版本三档里至少有一条
+       ``source_kind != "p2_sample"`` 的行；其它轨迹的标注不碰（它们要等
+       下一版全量冻结自己进来）；
+    2. 目标档 = 该轨迹**其余站点所在的唯一档**。跨档（同一轨迹的站点分在
+       两档以上）⇒ **拒绝冻结**——按轨迹挑一档就是猜，而档位是 D-10 的
+       分母口径；
+    3. 行内容从 ``candidates + annotations`` **现算**（与全量冻结同一套
+       :func:`_labeled_rows`，不手抄第二份形状）；
+    4. 已在源版本三档里的 id 一律不碰（既有行逐字节不动）。
+
+    返回 ``(parts, stats)``；``stats`` 里带 ``outcome_index_by_site``——
+    补进来的站点在**源存档**里的 outcome 下标（模板快照只装已冻结站点，
+    查不到新补站点的下标 ⇒ 由这里按 live 候选补上，否则 ``headline_site``
+    永远认不出头部）。
+    """
+    if not cand_path.exists():
+        raise GoldenError(
+            f"--backfill-labeled-sites 需要 {cand_path}：新标注的站点行要从候选集现算"
+        )
+    if not ann_path.exists():
+        raise GoldenError(
+            f"--backfill-labeled-sites 需要 {ann_path}：没有标注就没有可补的行"
+        )
+    candidates = _load_jsonl(cand_path)
+    annotations = _load_jsonl(ann_path)
+    labeled = _labeled_rows(candidates, annotations, alias)
+
+    new_parts: dict[str, list[dict[str, Any]]] = {
+        split: list(rows) for split, rows in parts.items()
+    }
+    existing = {
+        str(r.get("golden_id") or "")
+        for rows in new_parts.values()
+        for r in rows
+    }
+    # 已冻结轨迹 → 它出现在哪些档（p2_sample 占位行不算轨迹）
+    traj_splits: dict[str, set[str]] = collections.defaultdict(set)
+    for split, rows in new_parts.items():
+        for r in rows:
+            if str(r.get("source_kind") or "") == "p2_sample":
+                continue
+            tid = rows_mod.trajectory_id(
+                str(r.get("task_id") or ""), str(r.get("run_id") or "")
+            )
+            traj_splits[tid].add(split)
+
+    # 补进来的站点在源存档里的 outcome 下标（对齐 ``code_index`` 用）
+    idx_map: dict[str, int] = {}
+    for c in candidates:
+        if not rows_mod.is_trajectory_row(c):
+            continue
+        for s in c.get("site_outcomes") or ():
+            gid = str(s.get("golden_id") or "")
+            idx = s.get("outcome_index")
+            if gid and isinstance(idx, int):
+                idx_map.setdefault(gid, idx)
+
+    added: dict[str, list[str]] = {split: [] for split in new_parts}
+    outcome_index_by_site: dict[str, int] = {}
+    skipped_already_frozen = 0
+    skipped_other: list[str] = []
+    for row in sorted(labeled, key=lambda r: str(r.get("golden_id") or "")):
+        gid = str(row.get("golden_id") or "")
+        if not gid:
+            continue
+        if gid in existing:
+            skipped_already_frozen += 1
+            continue
+        tid = rows_mod.trajectory_id(
+            str(row.get("task_id") or ""), str(row.get("run_id") or "")
+        )
+        splits = traj_splits.get(tid)
+        if not splits:
+            # 不是已冻结轨迹的站点：不补（它得等下一次全量冻结）
+            skipped_other.append(gid)
+            continue
+        if len(splits) > 1:
+            raise GoldenError(
+                f"--backfill-labeled-sites 不能补 {gid}：它所属轨迹 {tid} 在源版本"
+                f"里跨着 {sorted(splits)} 档，**没有唯一目标档**。按轨迹挑一档就是"
+                "猜，而档位是 D-10 的分母口径 ⇒ 不冻结；要么人工把这条轨迹的站点"
+                "统一到一档，要么改用非继承式冻结（会重洗分档）"
+            )
+        split = next(iter(splits))
+        new_parts[split].append(dict(row))
+        existing.add(gid)
+        added[split].append(gid)
+        if gid in idx_map:
+            outcome_index_by_site[gid] = idx_map[gid]
+
+    stats: dict[str, Any] = {
+        "enabled": True,
+        "rule": "same-split-as-trajectory",
+        "added": {split: ids for split, ids in added.items() if ids},
+        "added_counts": {split: len(ids) for split, ids in added.items() if ids},
+        "skipped_already_frozen": skipped_already_frozen,
+        "skipped_other_trajectory": sorted(skipped_other),
+        # 对齐键（不是冻结时的事实）：补进来的站点在源存档里的 outcome 下标
+        "outcome_index_by_site": dict(sorted(outcome_index_by_site.items())),
+        # 既有行的金标一个字没动 ⇒ 不是「换尺子」；但调参池行数变了，
+        # 新行在旧版侧记 only_current（gate 报告里看得见）。
+        "baseline_reset": False,
+        "note": (
+            "只补已冻结轨迹的新标注站点；目标档 = 该轨迹其余站点所在唯一档，"
+            "跨档则拒冻结（不猜）。既有行逐字节不动。"
+        ),
+    }
+    return new_parts, stats
+
+
 def _build_trajectory_dataset(
     candidates: Sequence[Mapping[str, Any]],
     split_rows: Mapping[str, Sequence[Mapping[str, Any]]],
     annotations: Sequence[Mapping[str, Any]],
     alias: Mapping[str, str] | None = None,
-) -> list[dict[str, Any]]:
+    *,
+    templates: Sequence[Mapping[str, Any]] | None = None,
+    source_headline_unresolved: Sequence[str] = (),
+    outcome_index_fallback: Mapping[str, int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """把「轨迹级候选」与「冻结的站点级行」合成**轨迹级数据集**。
 
     这是 ``v<N>/trajectories.jsonl`` 的内容：**一条轨迹一行**（方案 23）。
@@ -2260,71 +2435,307 @@ def _build_trajectory_dataset(
     D-10 的分母整个换掉，而那个分母是绑定口径）。
 
     三处内容的分工：
-    - **候选行**：轨迹级结论（裁定 ② 的末条结论）+ 站点明细的**结构**；
+    - **轨迹来源**：``templates``（继承式冻结读**源版本快照**）优先；
+      没有快照时才用 ``candidates`` 里的**轨迹级**行；
     - **冻结行**：站点级金标 / 评分 / 档位（**冻结时的事实**，不重算）；
-    - **标注**：轨迹级金标（人核整条轨迹的那一笔）。
+    - **标注**：**仅在没有模板时**用于挂轨迹级金标——有模板时行内容
+      「继承不动」，轨迹级金标的改动只走 ``--refresh-label/gold``。
 
-    ⚠️ **候选缺失时不猜**：轨迹级结论取不到就留 ``None``，并由调用方报出来。
+    ⚠️ **模板的 ``site_outcomes[]`` 只装已冻结的站点**（不是源存档的全部
+    outcome）⇒ 快照里查不到 ``code_index`` **不代表它不存在**。那种情况
+    以**源版本 manifest** 的 ``dataset.consistency.headline_unresolved``
+    为准（``source_headline_unresolved``）——源版本自己冻结时已经按
+    「来源里存在、只是没进冻结集」核过一遍，继承它的结论，而不是拿一份
+    被过滤过的明细去重判。没记在源 manifest 里的仍按坏数据退 2。
+
+    ⚠️ **``p2_sample`` 占位行不是站点**（H-5）：它没有 URL、没有 P1 存档，
+    混进 ``site_outcomes[]`` 只会给交付层加一条空站点。整行跳过并计数。
+
+    ⚠️ **候选缺失不猜**：返回的 ``missing_candidates`` 由调用方决定
+    「整层不生成」还是「退 2」——**绝不**再像以前那样 `or {}` 静默产出一条
+    ``code=None``、``code_index=None`` 的轨迹。
+
+    Returns:
+        ``(rows, stats)``。``stats`` 记来源、跳过量、缺失量与站点行数，
+        由调用方写进 manifest（指纹见 :func:`_trajectory_source_info`）。
     """
     ann1 = _round1_annotations(annotations, alias)
-    cand_by_id = {str(c.get("golden_id") or ""): c for c in candidates}
+    template_by_id = {
+        str(t.get("golden_id") or ""): t for t in (templates or ())
+    }
+    # 源版本 manifest 记过的「头部未定」id（见 docstring：模板明细被过滤过，
+    # 快照里查不到 ``code_index`` 不等于它不存在）。
+    legit_unresolved = {str(x) for x in source_headline_unresolved}
+    # ⚠️ 只认**轨迹级**候选。旧形状的站点级候选（``data_scout/candidates``）
+    # 顶层没有 ``site_outcomes``，拿它造轨迹只会得到 code=None 的空壳。
+    cand_by_id = {
+        str(c.get("golden_id") or ""): c
+        for c in candidates
+        if rows_mod.is_trajectory_row(c)
+    }
     sites_by_traj: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    skipped_placeholders = 0
     for split, rows in split_rows.items():
         for r in rows:
+            if str(r.get("source_kind") or "") == "p2_sample":
+                skipped_placeholders += 1
+                continue
             tid = rows_mod.trajectory_id(
                 str(r.get("task_id") or ""), str(r.get("run_id") or "")
             )
             site = dict(r)
             site["split"] = split
             sites_by_traj[tid].append(site)
+
+    # 一条轨迹必须至少有一个来自 P1 的站点（``archive_outcome``）。
+    # 纯 ``negative_pool`` / ``p2_sample`` 分组只是「同一 task+run 的记账」，
+    # 不是一条跑过的轨迹——把它们写成轨迹行就是虚构交付层。
+    kept: dict[str, list[dict[str, Any]]] = {}
+    dropped_groups: list[str] = []
+    for tid, sites in sites_by_traj.items():
+        if any(str(s.get("source_kind") or "") == "archive_outcome" for s in sites):
+            kept[tid] = sites
+        else:
+            dropped_groups.append(tid)
+
     out: list[dict[str, Any]] = []
-    for tid in sorted(sites_by_traj):
-        sites = sites_by_traj[tid]
-        cand = cand_by_id.get(tid) or {}
+    missing: list[str] = []
+    #: ``code_index`` 指向的站点在**来源**里存在、但**没进三档冻结行**
+    #: （没被人核过）。这在交付层里是合法的「头部定不出」——下游
+    #: ``rows.headline_split`` 返回空 ⇒ 档闸 fail-closed 跳过。它**不是**
+    #: 坏数据，不该把整层冻结挡死；但必须记进 manifest，不能静默。
+    headline_outside_frozen: list[str] = []
+    for tid in sorted(kept):
+        sites = kept[tid]
+        template = template_by_id.get(tid)
+        cand = cand_by_id.get(tid)
+        if template is None and cand is None:
+            missing.append(tid)
+            continue
+        if cand is not None:
+            top_scores = cand.get("dimension_scores")
+            if isinstance(top_scores, Mapping) and top_scores:
+                raise GoldenError(
+                    f"轨迹级候选 {tid!r} 顶层带 dimension_scores，但它不属于"
+                    "任何站点——交付层只读 site_outcomes[].dimension_scores。"
+                    "**不替它挑一个站点**"
+                )
+        source = template if template is not None else cand
+        assert source is not None
         head = sites[0]
         # ⚠️ **头部站点要认得出** ⇒ 明细条目得带 `outcome_index`
         # （`rows.headline_site` 按它对齐 `code_index`；`code_index` = 末条
         # outcome 的下标，两者**同一坐标系**）。
-        # ⚠️ **冻结的站点行不带它**（实测 0/131 行有）⇒ 从**候选行**的明细
+        # ⚠️ **冻结的站点行不带它**（实测 0/131 行有）⇒ 从**轨迹来源**的明细
         # 按 `golden_id` 回填。⚠️ **它不是「冻结时的事实」**，只是**对齐键**
         # ⇒ 回填**不动** `split` / `golden` / `code` 任何一个。
-        # 键两侧**逐字相同**（M-60 实测：A−C = 0 / C−A = 0）⇒ 对得齐。
         idx_by_gid = {
             str(s.get("golden_id") or ""): s["outcome_index"]
-            for s in (cand.get("site_outcomes") or ())
+            for s in (source.get("site_outcomes") or ())
             if s.get("golden_id") and "outcome_index" in s
         }
+        # ⚠️ 单行回填（``--backfill-labeled-sites``）：新补的站点不在模板
+        # 明细里 ⇒ 快照查不到它的 ``outcome_index``。模板优先，回填补缺。
+        if outcome_index_fallback:
+            for sid, idx in outcome_index_fallback.items():
+                idx_by_gid.setdefault(str(sid), idx)
         for s in sites:
             if s.get("outcome_index") is None:
                 got = idx_by_gid.get(str(s.get("golden_id") or ""))
                 if got is not None:
                     s["outcome_index"] = got
-        row: dict[str, Any] = {
-            "golden_id": tid,
-            "source_kind": rows_mod.SOURCE_TRAJECTORY,
-            "task_id": head.get("task_id"),
-            "run_id": head.get("run_id"),
-            "trajectory_id": tid,
-            "access_surface": cand.get("access_surface") or head.get("access_surface"),
-            "code": cand.get("code"),
-            "code_index": cand.get("code_index"),
-            "code_reason": cand.get("code_reason"),
-            "persona": cand.get("persona") or head.get("persona"),
-            "sample_id": cand.get("sample_id"),
-            "source_archive": cand.get("source_archive"),
-            "dimension_scores": cand.get("dimension_scores"),
-            "scores_detail": cand.get("scores_detail"),
-            "status": cand.get("status") or head.get("status"),
-            "golden": None,
-            "site_outcomes": sites,
-            "splits": dict(collections.Counter(s["split"] for s in sites)),
-            "retest": None,
-        }
-        a = ann1.get(tid)
-        if a:
-            row["golden"] = _golden_of(a)
+        # ⚠️ **头部站点没进冻结集** = 结论指向的那条 outcome 在**来源**里
+        # 真实存在，只是那个站点没被人核过 ⇒ 不在三档冻结行。交付层照写，
+        # 头部记「未定」（`headline_site` 认不出是**合法状态**），由档闸
+        # fail-closed 跳过——与 `code_index == -1` 同等处置。
+        # 判据必须落在**来源**上：来源也找不到这个下标 ⇒ 明细与结论真的
+        # 对不上，`_check_trajectory_layer` 照旧退 2。
+        src_index = source.get("code_index")
+        if isinstance(src_index, int) and src_index >= 0:
+            src_indices = {
+                s.get("outcome_index")
+                for s in (source.get("site_outcomes") or ())
+            }
+            frozen_indices = {s.get("outcome_index") for s in sites}
+            if src_index in src_indices and src_index not in frozen_indices:
+                headline_outside_frozen.append(tid)
+            elif (
+                template is not None
+                and src_index not in frozen_indices
+                and tid in legit_unresolved
+            ):
+                # ⚠️ **继承式冻结**：模板的 ``site_outcomes[]`` 只装**已冻结**
+                # 的站点 ⇒ 上面那条「来源里存在吗」在快照上必然查不到。
+                # 源版本 manifest 已记过「这条的头部在冻结集外」⇒ 继承结论；
+                # 没记过的（源版本认为头部正常/坏数据）仍由门禁退 2。
+                headline_outside_frozen.append(tid)
+        if template is not None:
+            # **继承式：行内容不动**。只替换站点明细（冻结行是本次的事实）
+            # 与派生的 splits；轨迹级字段、golden、tags 全部照抄源版本。
+            row = dict(template)
+            row["site_outcomes"] = sites
+            row["splits"] = dict(collections.Counter(s["split"] for s in sites))
+            row["golden_id"] = tid
+            row["trajectory_id"] = tid
+        else:
+            assert cand is not None
+            row = {
+                "golden_id": tid,
+                "source_kind": rows_mod.SOURCE_TRAJECTORY,
+                "task_id": head.get("task_id"),
+                "run_id": head.get("run_id"),
+                "trajectory_id": tid,
+                "access_surface": cand.get("access_surface") or head.get("access_surface"),
+                "code": cand.get("code"),
+                "code_index": cand.get("code_index"),
+                "code_reason": cand.get("code_reason"),
+                "persona": cand.get("persona") or head.get("persona"),
+                "sample_id": cand.get("sample_id"),
+                "source_archive": cand.get("source_archive"),
+                "dimension_scores": cand.get("dimension_scores"),
+                "scores_detail": cand.get("scores_detail"),
+                "status": cand.get("status") or head.get("status"),
+                "golden": None,
+                "site_outcomes": sites,
+                "splits": dict(collections.Counter(s["split"] for s in sites)),
+                "retest": None,
+            }
+            a = ann1.get(tid)
+            if a:
+                row["golden"] = _golden_of(a)
         out.append(row)
-    return out
+
+    stats: dict[str, Any] = {
+        "trajectories": len(out),
+        "site_rows": sum(len(s) for s in kept.values()),
+        "skipped_placeholders": skipped_placeholders,
+        "skipped_groups_without_archive": sorted(dropped_groups),
+        "missing_candidates": sorted(missing),
+        "headline_outside_frozen": sorted(headline_outside_frozen),
+        "sources": {
+            "templates": len(template_by_id),
+            "trajectory_candidates": len(cand_by_id),
+        },
+    }
+    return out, stats
+
+
+def _check_trajectory_layer(
+    rows: Sequence[Mapping[str, Any]],
+    split_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    headline_outside_frozen: Sequence[str] = (),
+) -> dict[str, Any]:
+    """轨迹交付层与三档冻结行的**一致性门禁**（H-5）。
+
+    判据（任一不成立 ⇒ 调用方退 2，**不写一条坏交付层**）：
+
+    1. 每条轨迹的站点 ``golden_id`` 与三档冻结行按 ``(task, run)`` 分组后
+       **完全一致**（不多不少、不重复）；
+    2. 每个站点明细的 ``split`` 与它在三档文件里的档位一致；
+    3. ``code_index`` 必须存在（``_trajectory_row`` 恒写，哪怕是 -1）；
+       非负却找不到对应站点的，说明明细与结论对不上。
+
+    ``headline_unresolved`` 单独计数、**不阻断**，两种合法情形：
+    ``code_index == -1``（这份存档一条结论都没有），以及
+    ``code_index`` 指向的站点**没进冻结集**（``headline_outside_frozen``：
+    它在候选来源里存在，只是没被人核过 ⇒ 不在三档冻结行）。后者的
+    存在性已由 :func:`_build_trajectory_dataset` 在**来源**上核过；
+    来源里也找不到该下标的仍由本函数判为坏数据。⚠️ 继承式冻结的「来源」
+    是源版本快照，它的 ``site_outcomes[]`` **只装已冻结站点** ⇒ 这一类
+    以源版本 manifest 的 ``headline_unresolved`` 为准（见该函数 docstring）。
+    """
+    expected: dict[str, set[str]] = collections.defaultdict(set)
+    split_of: dict[str, str] = {}
+    for split, rs in split_rows.items():
+        for r in rs:
+            if str(r.get("source_kind") or "") == "p2_sample":
+                continue
+            gid = str(r.get("golden_id") or "")
+            tid = rows_mod.trajectory_id(
+                str(r.get("task_id") or ""), str(r.get("run_id") or "")
+            )
+            expected[tid].add(gid)
+            split_of[gid] = split
+
+    problems: list[str] = []
+    headline_unresolved: list[str] = []
+    outside_frozen = set(headline_outside_frozen)
+    for row in rows:
+        tid = str(row.get("golden_id") or "")
+        sites = list(row.get("site_outcomes") or ())
+        ids = [str(s.get("golden_id") or "") for s in sites]
+        if len(ids) != len(set(ids)):
+            problems.append(f"{tid}: 明细里有重复 golden_id")
+        want = expected.get(tid, set())
+        if set(ids) != want:
+            problems.append(
+                f"{tid}: 明细站点与冻结行不一致"
+                f"（多 {sorted(set(ids) - want)} / 少 {sorted(want - set(ids))}）"
+            )
+        for s in sites:
+            gid = str(s.get("golden_id") or "")
+            if split_of.get(gid) != str(s.get("split") or ""):
+                problems.append(
+                    f"{gid}: 明细 split={s.get('split')!r} 与冻结档 "
+                    f"{split_of.get(gid)!r} 不一致"
+                )
+        if row.get("code_index") is None:
+            problems.append(f"{tid}: code_index 是 None——不是合法的轨迹结论")
+        elif rows_mod.headline_site(row) is None:
+            if int(row["code_index"]) < 0:
+                headline_unresolved.append(tid)
+            elif tid in outside_frozen:
+                # 来源里有这条站点、只是没进冻结集 ⇒ 合法的「头部定不出」
+                headline_unresolved.append(tid)
+            else:
+                problems.append(
+                    f"{tid}: code_index={row['code_index']} 找不到对应站点"
+                )
+    if problems:
+        raise GoldenError(
+            "轨迹交付层与冻结行不一致（**不写**）："
+            + "；".join(problems[:10])
+            + (" …" if len(problems) > 10 else "")
+        )
+    return {
+        "trajectories": len(rows),
+        "headline_unresolved": sorted(headline_unresolved),
+        "ok": True,
+    }
+
+
+def _trajectory_source_info(
+    *,
+    mode: str,
+    template_path: pathlib.Path | None,
+    cand_path: pathlib.Path | None,
+    ann_path: pathlib.Path | None,
+) -> dict[str, Any]:
+    """轨迹层的来源指纹（H-5：manifest 必须记「这层是从哪份文件来的」）。
+
+    继承式冻结以前在 manifest 里**一个字都不记**，而它读的是 live
+    ``candidates.jsonl`` / ``annotations.jsonl``——事后无法回答
+    「v17 的轨迹层是 v16 快照，还是今天的候选集？」
+    """
+    def _fp(path: pathlib.Path | None) -> str:
+        if path is None or not path.exists():
+            return ""
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    return {
+        "mode": mode,
+        "source_trajectories": str(template_path) if template_path else "",
+        "source_trajectories_sha256": _fp(template_path),
+        "live_candidates": str(cand_path) if cand_path else "",
+        "live_candidates_sha256": _fp(cand_path),
+        "live_annotations": str(ann_path) if ann_path else "",
+        "live_annotations_sha256": _fp(ann_path),
+    }
 
 
 def _labeled_trajectories(
@@ -2729,7 +3140,13 @@ def _refresh_gold(
                 missing.append(gid)
                 continue
             dims = ann.get("dimension_scores")
-            dims = dict(dims) if isinstance(dims, Mapping) and dims else None
+            # ⚠️ **逐行守卫**（H-8）：这一行的标注没给分数 ⇒ **行内容不动**。
+            # 以前无条件写 ``dims``（可能就是 ``None``）⇒ 只给 3 个站点填分、
+            # 其余 291 行的软维度金标被**静默清空**，还宣告「新基线」。
+            if not isinstance(dims, Mapping) or not dims:
+                refreshed.append(dict(row))
+                continue
+            dims = dict(dims)
             new = dict(row)
             golden = dict(row.get("golden") or {})
             old_dims = golden.get("dimension_scores")
@@ -2737,7 +3154,7 @@ def _refresh_gold(
             new["golden"] = golden
             before_rows.append(row)
             after_rows.append(new)
-            if (old_dims or {}) != (dims or {}):
+            if (old_dims or {}) != dims:
                 changed_rows += 1
             refreshed.append(new)
         new_parts[split] = refreshed
@@ -2756,14 +3173,16 @@ def _refresh_gold(
     info = {
         "enabled": True,
         "source": ann_path.name,
-        "rows_matched": len(after_rows),
+        "rows_matched": sum(len(v) for v in new_parts.values()),
         "rows_missing": 0,
         "changed_rows": changed_rows,
         "per_dim": per_dim,
         # ⚠ 金标变了 = 新基线：gate 读到它就拒绝跟上一版比（退 2）。
-        "baseline_reset": True,
+        # **只有真变了才是新基线**——一行都没变由调用方退 2（不耗版本号）。
+        "baseline_reset": changed_rows > 0,
         "note": (
-            "只重挂 golden.dimension_scores；label / code / pred 侧未动。"
+            "只重挂 golden.dimension_scores；**没给分数的行原样不动**；"
+            "label / code / pred 侧未动。"
             "金标变动 ⇒ 与前版不可比（新基线），下一对可比是本版与它的后继"
         ),
     }
@@ -2774,6 +3193,37 @@ def _as_gold(row: Mapping[str, Any]) -> Mapping[str, Any]:
     """取 ``golden`` 子字典（只读视图）；没有就空 dict。"""
     golden = row.get("golden")
     return golden if isinstance(golden, Mapping) else {}
+
+
+def _apply_label_fields(
+    row: Mapping[str, Any], ann: Mapping[str, Any]
+) -> dict[str, Any]:
+    """把一条 round=1 标注的 **label 侧字段**写进一行（站点行 / 轨迹行共用）。
+
+    ⚠️ 只动与「一次人判」绑定的那几个字段；``golden.dimension_scores`` 与
+    pred 侧一个字不碰（各走各的出口）。
+    """
+    new = dict(row)
+    golden = dict(row.get("golden") or {})
+    golden["label"] = ann.get("label")
+    golden["label_label"] = ann.get("label_label")
+    golden["reviewed_by"] = ann.get("reviewed_by")
+    golden["reviewed_at"] = ann.get("reviewed_at")
+    golden["note"] = ann.get("note")
+    # 面与时刻**跟 label 同一次人判**（方案 20 §R2）：新裁了面就一起换。
+    # **只在标注真声明了面时才写**：标注里没声明（含手写补丁文件）
+    # 就把继承来的值原样留着——写一个 `unrecorded` 进去会让这一行
+    # 与源版本**逐字节不同**，而 C-17 的回归集指纹正是拿「内容没变」
+    # 当「没被改过」的证据（新增 44 条靠它挡）。没声明 = 没新信息，
+    # 不改行内容，读数侧照样读成「面未声明」。
+    declared = access_surface.surface_of_annotation(ann)
+    if access_surface.is_declared(declared):
+        golden["access_surface"] = declared
+        observed = str(ann.get("observed_at") or "").strip()
+        if observed:
+            golden["observed_at"] = observed
+    new["golden"] = golden
+    return new
 
 
 def _refresh_label(
@@ -2822,6 +3272,7 @@ def _refresh_label(
     before_by_label: dict[str, int] = collections.Counter()
     after_by_label: dict[str, int] = collections.Counter()
     changed_rows = 0
+    rows_matched = 0
     for split, rows in parts.items():
         refreshed: list[dict[str, Any]] = []
         for row in rows:
@@ -2830,30 +3281,12 @@ def _refresh_label(
             if ann is None:
                 missing.append(gid)
                 continue
-            new = dict(row)
-            golden = dict(row.get("golden") or {})
-            old_label = golden.get("label")
-            before_by_label[old_label or ""] += 1
+            new = _apply_label_fields(row, ann)
+            old_label = _as_gold(row).get("label")
             new_label = ann.get("label")
-            golden["label"] = new_label
-            golden["label_label"] = ann.get("label_label")
-            golden["reviewed_by"] = ann.get("reviewed_by")
-            golden["reviewed_at"] = ann.get("reviewed_at")
-            golden["note"] = ann.get("note")
-            # 面与时刻**跟 label 同一次人判**（方案 20 §R2）：新裁了面就一起换。
-            # **只在标注真声明了面时才写**：标注里没声明（含手写补丁文件）
-            # 就把继承来的值原样留着——写一个 `unrecorded` 进去会让这一行
-            # 与源版本**逐字节不同**，而 C-17 的回归集指纹正是拿「内容没变」
-            # 当「没被改过」的证据（新增 44 条靠它挡）。没声明 = 没新信息，
-            # 不改行内容，读数侧照样读成「面未声明」。
-            declared = access_surface.surface_of_annotation(ann)
-            if access_surface.is_declared(declared):
-                golden["access_surface"] = declared
-                observed = str(ann.get("observed_at") or "").strip()
-                if observed:
-                    golden["observed_at"] = observed
-            new["golden"] = golden
+            before_by_label[old_label or ""] += 1
             after_by_label[new_label or ""] += 1
+            rows_matched += 1
             if old_label != new_label:
                 changed_rows += 1
             refreshed.append(new)
@@ -2863,30 +3296,108 @@ def _refresh_label(
             "annotations.jsonl 里找不到这些 golden_id 的 round=1 标注（"
             f"{len(missing)} 个）：{' / '.join(missing)}；不刷新"
         )
-    if changed_rows == 0:
-        raise GoldenError(
-            "annotations.jsonl 里所有行 label 都与冻结行一致：没有需要重挂的 label"
-            "（刷空等于什么都没做，却把版本号用掉了）；先 annotate 改 label 再 --refresh-label"
-        )
     info = {
         "enabled": True,
         "source": ann_path.name,
-        "rows_matched": len(after_by_label),
+        # ⚠ **行数**，不是 label 种数（H-7：以前记的是 ``len(after_by_label)``
+        # ≈ 12，读起来像「只重挂了 12 行」，而实际是 294 行）。
+        "rows_matched": rows_matched,
         "rows_missing": 0,
         "changed_rows": changed_rows,
+        # 轨迹级重挂由 :func:`_refresh_trajectory_labels` 在调用方补上并合并。
+        "trajectory_rows_matched": 0,
+        "trajectory_changed_rows": 0,
         "label_shift": {
             "before": dict(sorted(before_by_label.items(), key=lambda kv: (-kv[1], str(kv[0])))),
             "after": dict(sorted(after_by_label.items(), key=lambda kv: (-kv[1], str(kv[0])))),
         },
         # ⚠ label 变了 = 新基线：gate 读到它就拒绝跟上一版比（退 2）。
-        "baseline_reset": True,
+        # 一行都没变（站点 + 轨迹合计）由调用方退 2——不耗版本号。
+        "baseline_reset": changed_rows > 0,
         "note": (
             "只重挂 golden.label / label_label / reviewed_by / reviewed_at / note；"
             "dimension_scores / code / pred 侧未动。label 变动 ⇒ 与前版不可比（新基线），"
-            "下一对可比是本版与它的后继"
+            "下一对可比是本版与它的后继。**站点行与轨迹行都刷**"
         ),
     }
     return new_parts, info
+
+
+def _refresh_trajectory_labels(
+    trajectories: Sequence[Mapping[str, Any]],
+    ann_path: pathlib.Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """把轨迹级 D-10 label 按 ``golden_id`` 从标注重挂（H-7）。
+
+    为什么单独一条
+    --------------
+    ``_refresh_label`` 只收三档文件（**站点行**）；而 per-Run 之后人核主要
+    落在**轨迹级**标注上（reflow 的 relabel 目标就是轨迹行）⇒ 只刷站点行
+    等于「轨迹级改判永远不生效」，而 ``changed_rows==0`` 还会先退 2，
+    把「轨迹其实变了」这件事盖住。
+
+    口径与站点行一致（:func:`_apply_label_fields`），另加一条：
+    **轨迹行没有 round=1 标注 ⇒ 跳过**（不是每一整条轨迹都被人核过，
+    这与站点行「每一行都必须有标注」不同）。
+    """
+    annotations = {
+        str(r.get("golden_id") or ""): r
+        for r in _load_jsonl(ann_path)
+        if int(r.get("round", 1)) == 1
+    }
+    out: list[dict[str, Any]] = []
+    matched = changed = 0
+    for row in trajectories:
+        gid = str(row.get("golden_id") or "")
+        ann = annotations.get(gid)
+        if ann is None:
+            out.append(dict(row))
+            continue
+        matched += 1
+        new = _apply_label_fields(row, ann)
+        if _as_gold(row).get("label") != ann.get("label"):
+            changed += 1
+        out.append(new)
+    return out, {"rows_matched": matched, "changed_rows": changed}
+
+
+def _refresh_trajectory_gold(
+    trajectories: Sequence[Mapping[str, Any]],
+    ann_path: pathlib.Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """把轨迹级 ``golden.dimension_scores`` 按 ``golden_id`` 从标注重挂。
+
+    ``--refresh-gold`` 的轨迹侧出口（H-8 事实 4）：以前 ``filled`` 把轨迹级
+    标注也算进来，循环却只改站点行 ⇒ 「只有轨迹级分数」时会通过全局守卫、
+    再把站点行的分数全部清空。现在两边各刷各的，且**没给分数的条目原样不动**。
+    """
+    annotations = {
+        str(r.get("golden_id") or ""): r
+        for r in _load_jsonl(ann_path)
+        if int(r.get("round", 1)) == 1
+    }
+    out: list[dict[str, Any]] = []
+    matched = changed = 0
+    for row in trajectories:
+        gid = str(row.get("golden_id") or "")
+        ann = annotations.get(gid)
+        if ann is None:
+            out.append(dict(row))
+            continue
+        dims = ann.get("dimension_scores")
+        if not isinstance(dims, Mapping) or not dims:
+            out.append(dict(row))
+            continue
+        matched += 1
+        new = dict(row)
+        golden = dict(row.get("golden") or {})
+        old_dims = golden.get("dimension_scores")
+        golden["dimension_scores"] = dict(dims)
+        new["golden"] = golden
+        if (old_dims or {}) != dict(dims):
+            changed += 1
+        out.append(new)
+    return out, {"rows_matched": matched, "changed_rows": changed}
 
 
 def _refresh_surface(
@@ -3161,6 +3672,12 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     refresh_label = bool(getattr(args, "refresh_label", False))
     refresh_code = bool(getattr(args, "refresh_code", False))
     refresh_surface = bool(getattr(args, "refresh_surface", False))
+    backfill_labeled = bool(getattr(args, "backfill_labeled_sites", False))
+    if backfill_labeled and not carrying:
+        raise GoldenError(
+            "--backfill-labeled-sites 只能配 --from-version 用：不继承的冻结本来"
+            "就从 candidates/annotations 全量切分，没有「源版本缺哪几行」这回事"
+        )
     if refresh_scores and not carrying:
         raise GoldenError(
             "--refresh-scores 只能配 --from-version 用：不继承的冻结本来就"
@@ -3199,6 +3716,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     label_refresh: dict[str, Any] = {"enabled": False}
     code_refresh: dict[str, Any] = {"enabled": False}
     surface_refresh: dict[str, Any] = {"enabled": False}
+    backfill: dict[str, Any] = {"enabled": False}
     id_migration: dict[str, Any] = {"enabled": False}
     alias = _load_alias_map(golden_dir)
     if carrying:
@@ -3265,6 +3783,20 @@ def cmd_freeze(args: argparse.Namespace) -> int:
                 "冻结时的分数，不是当前评分器的输出（要刷新加 --refresh-scores）",
                 file=sys.stderr,
             )
+        if backfill_labeled:
+            parts, backfill = _backfill_labeled_sites(
+                parts, cand_path, ann_path, alias
+            )
+            if backfill.get("added"):
+                print(
+                    "单行回填："
+                    + " · ".join(
+                        f"{split} +{len(ids)}"
+                        for split, ids in sorted(backfill["added"].items())
+                    )
+                    + "（既有行未动）",
+                    file=sys.stderr,
+                )
         labeled = [r for split in SPLITS for r in parts.get(split, [])]
         derived_from = {
             "version": int(args.from_version),
@@ -3281,18 +3813,34 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         labeled = _labeled_rows(candidates, annotations, alias)
         parts = {}
 
-    # 轨迹级数据集（方案 23）：**新增**的一层，冻结档三档文件一个字不改。
-    # 候选与标注在继承路径下也要读——轨迹级结论与轨迹级金标在那儿。
+    # ── 轨迹级数据集（方案 23）：**新增**的一层，三档文件一个字不改 ──
+    # ⚠️ **继承式冻结优先读源版本快照**（H-5）：``v<from>/trajectories.jsonl``
+    # 已存在时，轨迹层与站点层一样「行内容继承不动」；**不再**拿 live
+    # candidates/annotations 去重建（那会让 v17 的交付层悄悄变成「今天的
+    # 候选集」，而 manifest 上一个字都不记）。源版本没有这一层时才退回
+    # live 候选，并把指纹记进 manifest。
+    src_traj_path: pathlib.Path | None = None
+    templates: list[dict[str, Any]] = []
     if carrying:
+        src_traj_path = src_vdir / TRAJECTORIES_FILE
+        if src_traj_path.exists():
+            templates = _load_jsonl(src_traj_path)
+    if templates:
+        _cand_for_traj: list[dict[str, Any]] = []
+        _ann_for_traj: list[dict[str, Any]] = []
+        trajectory_mode = "source_version"
+    elif carrying:
         _cand_for_traj = (
             _load_jsonl(cand_path) if cand_path.exists() else []
         )
         _ann_for_traj = (
             _load_jsonl(ann_path) if ann_path.exists() else []
         )
+        trajectory_mode = "live_candidates"
     else:
         _cand_for_traj = candidates
         _ann_for_traj = annotations
+        trajectory_mode = "live_candidates"
 
     site = [r for r in labeled if r["source_kind"] != "p2_sample"]
     if not labeled:
@@ -3380,16 +3928,120 @@ def cmd_freeze(args: argparse.Namespace) -> int:
 
     # **轨迹级数据集**（方案 23）：一条轨迹一行。
     # ⚠️ **这是新增的一层**：三档切分文件（D-10 的测量底座）一个字都不改。
-    trajectories = _build_trajectory_dataset(
+    frozen_parts = {
+        SPLIT_CALIBRATION: calib,
+        SPLIT_REGRESSION: reg,
+        SPLIT_HOLDOUT: hold,
+    }
+    trajectories, traj_stats = _build_trajectory_dataset(
         _cand_for_traj,
-        {
-            SPLIT_CALIBRATION: calib,
-            SPLIT_REGRESSION: reg,
-            SPLIT_HOLDOUT: hold,
-        },
+        frozen_parts,
         _ann_for_traj,
         alias,
+        templates=templates or None,
+        # 源版本快照的明细只装已冻结站点 ⇒ 「头部在冻结集外」的存在性由源
+        # 版本 manifest 继承（它冻结时在**来源**上核过）。只有继承式有源 manifest。
+        source_headline_unresolved=(
+            (src_manifest.get("dataset") or {}).get("consistency", {}).get(
+                "headline_unresolved"
+            )
+            or ()
+        ),
+        # 单行回填的新站点不在模板明细里 ⇒ 下标从 live 候选补（模板优先）。
+        outcome_index_fallback=backfill.get("outcome_index_by_site") or None,
     )
+    # ⚠️ **缺候选/缺模板不许静默过**（H-5）。只有一种情况允许「没有轨迹层」：
+    # 来源里**一条轨迹级数据都没有**（v1–v16 全部如此——它们没有
+    # trajectories.jsonl，live candidates 也只有站点行）。那时如实记
+    # ``enabled=false`` 并告警；**站点级冻结照常完成**（不能因为交付层
+    # 不存在就把测量底座也堵死）。
+    if trajectory_mode == "source_version":
+        if traj_stats["missing_candidates"]:
+            raise GoldenError(
+                f"源版本 v{args.from_version} 的 {TRAJECTORIES_FILE} 对不上"
+                f"本次冻结行：{len(traj_stats['missing_candidates'])} 条轨迹"
+                f"找不到源行：{' / '.join(traj_stats['missing_candidates'][:10])}"
+                "；**不写半份交付层**，先核对源版本"
+            )
+    elif trajectory_mode == "live_candidates":
+        has_traj_source = bool(traj_stats["sources"]["trajectory_candidates"])
+        if has_traj_source and traj_stats["missing_candidates"]:
+            raise GoldenError(
+                "候选集里的轨迹级行覆盖不全："
+                f"{len(traj_stats['missing_candidates'])} 条冻结轨迹找不到轨迹级"
+                f"候选：{' / '.join(traj_stats['missing_candidates'][:10])}"
+                "；**不写 code=None 的空壳交付层**，先补候选"
+            )
+
+    # ⚠️ **轨迹级重挂**（H-7 / H-8）：三档文件只装站点行；轨迹层是另一份
+    # 文件、另一层标注。只刷站点行 ⇒ 轨迹级改判/填分**永远不生效**，而
+    # ``changed_rows==0`` 还会先把「轨迹其实变了」盖成「什么都没做」。
+    # 「刷空」的守卫因此必须**合计**站点行与轨迹行后再判。
+    if refresh_label:
+        if trajectories:
+            trajectories, traj_label = _refresh_trajectory_labels(
+                trajectories, ann_path
+            )
+            label_refresh["trajectory_rows_matched"] = traj_label["rows_matched"]
+            label_refresh["trajectory_changed_rows"] = traj_label["changed_rows"]
+            label_refresh["rows_matched"] += traj_label["rows_matched"]
+            label_refresh["changed_rows"] += traj_label["changed_rows"]
+            label_refresh["baseline_reset"] = label_refresh["changed_rows"] > 0
+        if not label_refresh.get("changed_rows"):
+            raise GoldenError(
+                "annotations.jsonl 里站点行与轨迹行的 label 都与冻结行一致："
+                "没有需要重挂的 label（刷空等于什么都没做，却把版本号用掉了）；"
+                "先 annotate 改 label 再 --refresh-label"
+            )
+    if refresh_gold:
+        if trajectories:
+            trajectories, traj_gold = _refresh_trajectory_gold(
+                trajectories, ann_path
+            )
+            gold_refresh["trajectory_rows_matched"] = traj_gold["rows_matched"]
+            gold_refresh["trajectory_changed_rows"] = traj_gold["changed_rows"]
+            gold_refresh["rows_matched"] += traj_gold["rows_matched"]
+            gold_refresh["changed_rows"] += traj_gold["changed_rows"]
+            gold_refresh["baseline_reset"] = gold_refresh["changed_rows"] > 0
+        if not gold_refresh.get("changed_rows"):
+            raise GoldenError(
+                "annotations.jsonl 里的软维度分数与冻结行完全一致："
+                "没有需要重挂的金标（刷空等于什么都没做，却把版本号用掉了）"
+            )
+    trajectory_enabled = bool(trajectories)
+    if trajectory_enabled:
+        traj_consistency = _check_trajectory_layer(
+            trajectories,
+            frozen_parts,
+            headline_outside_frozen=traj_stats.get("headline_outside_frozen", ()),
+        )
+    else:
+        traj_consistency = {"ok": False, "reason": "没有轨迹级数据来源"}
+    traj_source_info = _trajectory_source_info(
+        mode=trajectory_mode,
+        template_path=src_traj_path if templates else None,
+        cand_path=cand_path if trajectory_mode == "live_candidates" else None,
+        ann_path=ann_path if trajectory_mode == "live_candidates" else None,
+    )
+    if not trajectory_enabled:
+        traj_source_info["reason"] = (
+            "源版本没有 trajectories.jsonl，且 live candidates 里没有"
+            "轨迹级行（只有站点行）⇒ 不生成轨迹交付层；站点级冻结不受影响"
+        )
+        if carrying:
+            print(
+                "⚠️ 本次继承式冻结**不生成** trajectories.jsonl："
+                f"v{args.from_version} 没有这一层，live candidates 里也没有"
+                "轨迹级行。站点级三档文件照常写出；交付层缺失已记入 manifest",
+                file=sys.stderr,
+            )
+    if traj_consistency.get("headline_unresolved"):
+        print(
+            f"⚠️ 轨迹交付层里有 {len(traj_consistency['headline_unresolved'])} 条"
+            "定不出头部站点（该 Run 没有任何站点结论，或头部站点未被标注、"
+            "不在冻结集内）——已记入 manifest，不阻断站点级冻结",
+            file=sys.stderr,
+        )
     # 「轨迹级已标注行」= 有人核过**整条轨迹**的那些行（顶层有 golden）。
     #
     # ⚠️ **口径换了**：v1–v16 的 ``counts.trajectory`` 数的是「站点行里标成
@@ -3443,11 +4095,18 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             "unit": "trajectory",
             "file": TRAJECTORIES_FILE,
             "measurement_unit": "site",
+            # ⚠️ H-5：**有没有交付层、它是从哪来的**必须能在 manifest 里答出来。
+            # 以前继承式冻结读 live 文件却一个字不记 ⇒ 事后无法审计。
+            "enabled": trajectory_enabled,
+            "source": traj_source_info,
+            "build": traj_stats,
+            "consistency": traj_consistency,
             "note": (
                 "一条轨迹一行；站点级明细在 site_outcomes[] 里，每条带自己的 "
                 "split。三档切分文件仍是**站点级**——D-10 的测量单元是站点，"
                 "分母不变（实测 33/50 条轨迹的站点跨着三档，按轨迹重切会把"
                 "分母整个换掉，而那是绑定口径）。"
+                "enabled=false = 没有任何轨迹级来源，本次不写该文件。"
             ),
         },
         "split": {
@@ -3491,6 +4150,10 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         # **不是金标变动**：金标 / code / 分数一个字没动，只是键换了
         # ⇒ 但「与上一版逐行配对」会少这几行（与重采集同性质）。
         "id_migration": id_migration,
+        # 单行回填（继承式冻结的补行入口）：把新补的人核站点补进源版本的
+        # 对应档。**既有行一个字没动**（不是换尺子），但调参池行数变了 ⇒
+        # 新行在旧版侧记 ``only_current``。补了哪些、按什么规则，全记在这里。
+        "label_backfill": backfill,
         # 采集面分布（方案 20 §R2）：**这一版的金标是在哪张面上看到的**。
         # ``unrecorded`` 是「面未声明」——旧行不回填，如实记成数，不是错误。
         # 跨面比较（R3 的 D-10）读它决定「能不能比」，所以它必须逐版落档：
@@ -3518,17 +4181,35 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         print(f"[dry-run] 将写 {vdir}/ 与 {versions_path}")
         return 0
 
-    vdir.mkdir(parents=True, exist_ok=True)
-    (vdir / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    # M-22：**先写暂存目录，全部写完再原子改名成 vN**。旧写法先 mkdir(vdir)
+    # 再逐文件落盘；中途失败（磁盘满 / 序列化异常 / 进程被硬杀）会留下只有
+    # manifest 的半截 vN/，而上面对 vdir.exists() 的检查会让同版本**永久**
+    # 冻不了——只能人工删目录。暂存目录以点开头，不匹配 ``v{N}`` 的占用检查，
+    # 失败路径自己清理；即便硬杀留下残骸，也只挡不住磁盘空间，不挡重冻。
+    golden_dir.mkdir(parents=True, exist_ok=True)
+    staging = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".v{version}.staging-", dir=str(golden_dir))
     )
-    _dump_jsonl(vdir / SPLIT_FILES[SPLIT_CALIBRATION], calib, force=True)
-    _dump_jsonl(vdir / SPLIT_FILES[SPLIT_HOLDOUT], hold, force=True)
-    # 回归集只在真切出来时才落文件：写一个空的 regression.jsonl 会让
-    # 「这一版有没有回归门」变成看文件存在与否之外的第二个判据。
-    if reg:
-        _dump_jsonl(vdir / SPLIT_FILES[SPLIT_REGRESSION], reg, force=True)
-    _dump_jsonl(vdir / TRAJECTORIES_FILE, trajectories, force=True)
+    try:
+        (staging / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=1) + "\n",
+            encoding="utf-8",
+        )
+        _dump_jsonl(staging / SPLIT_FILES[SPLIT_CALIBRATION], calib, force=True)
+        _dump_jsonl(staging / SPLIT_FILES[SPLIT_HOLDOUT], hold, force=True)
+        # 回归集只在真切出来时才落文件：写一个空的 regression.jsonl 会让
+        # 「这一版有没有回归门」变成看文件存在与否之外的第二个判据。
+        if reg:
+            _dump_jsonl(staging / SPLIT_FILES[SPLIT_REGRESSION], reg, force=True)
+        # ⚠️ 没有来源时**不写空文件**：文件存在与否本身就是「这一版有没有
+        # 轨迹交付层」的判据（写空文件会让它读成「有，只是 0 条」）。
+        if trajectory_enabled:
+            _dump_jsonl(staging / TRAJECTORIES_FILE, trajectories, force=True)
+        # 同一文件系统内 rename 是原子的：这一步成功之前，vN 不存在。
+        staging.rename(vdir)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     versions.append(
         {
             "version": version,
@@ -3544,7 +4225,13 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             "derived_from": int(derived_from.get("version") or 0),
         }
     )
-    _dump_jsonl(versions_path, versions, force=True)
+    try:
+        _dump_jsonl(versions_path, versions, force=True)
+    except BaseException:
+        # 索引写不进去 = 这一版没有冻成。把刚落成的 vN 一并撤掉，别留下
+        # 「索引里没有、目录里有」的孤版挡住同版本重冻（M-22）。
+        shutil.rmtree(vdir, ignore_errors=True)
+        raise
     print(f"→ 已冻结 v{version} 到 {vdir}/")
     print(
         f"  标签宇宙：{LABEL_SCHEMA_VERSION}"
@@ -4207,8 +4894,16 @@ def _emit_calibration_artifacts(
     accounts: Sequence[Mapping[str, Any]] | None = None,
     force_snapshot: bool = False,
     provenance: Mapping[int, Mapping[str, Any]] | None = None,
+    p2_root: pathlib.Path | str | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path]:
-    """落「全量快照 + 分歧卡 + 采集侧账」三份派生数据（方案 16 C-15 / C-02）。
+    """落「全量快照 + 分歧卡 + 采集侧账 + 批次级断言」四份派生数据。
+
+    第四份（``batch_asserts.json``，L-23）与 ``snapshot.json`` **同目录、
+    同版本号绑定**：一批 = 一个 run，B-1/B-2/B-4 回读 P1 存档
+    （``p2_root``），B-5 只读调参池的金标行。读数结构见
+    :mod:`trajectory_pipeline.evaluation.batch.report`。
+
+    前三份（方案 16 C-15 / C-02）一起出的理由：
 
     为什么一起出：回归判定问「上一轮对、这一轮错」，那一行在上一轮的
     分歧卡里不存在 ⇒ 只存卡判不了回归，必须先有全量快照（见
@@ -4273,6 +4968,35 @@ def _emit_calibration_artifacts(
             f"{snap_path} 已存在；**不静默覆盖**（重盖章等于把「上一轮判了什么」"
             "的凭据改掉）。要重算加 --force-snapshot，或换个 --emit-disagreements 目录"
         )
+    # ── 批次级断言（L-23）──
+    # **先算、后落盘**：它的输入（金标行里的 task_id / run_id）不成立时整条
+    # emit 直接退 2——不能先把 snapshot / 卡 / 账写出去、留下半份产物，再
+    # 因为批次断言出不来而失败（那份快照会挡住重跑，见 M-29 S3′）。
+    #
+    # 与快照**同一条不静默覆盖纪律**：这份读数回答「这一版的 run 结构
+    # 合不合规」，重盖章等于改历史。快照存在时上面已经拦过；这里兜的是
+    # 「快照被删了但批次读数还在」的残局。
+    from trajectory_pipeline.evaluation.batch.report import (
+        BATCH_ASSERTS_FILE,
+        BatchReportError,
+        build_batch_asserts,
+        summary_line as _batch_summary_line,
+        write_batch_asserts,
+    )
+
+    batch_path = outdir / BATCH_ASSERTS_FILE
+    batch: Mapping[str, Any] | None = None
+    if batch_path.exists() and not force_snapshot:
+        batch_note = f"批次级断言 {batch_path} 已存在，未覆盖（要重算加 --force-snapshot）"
+    else:
+        try:
+            batch = build_batch_asserts(
+                rows, version=version, p2_root=p2_root or PIPELINE_ROOT,
+            )
+        except BatchReportError as exc:
+            raise GoldenError(f"批次级断言出不了：{exc}") from exc
+        batch_note = f"批次级断言 {batch_path}（{_batch_summary_line(batch)}）"
+
     snap_path = write_snapshot(snap_path, snapshot)
     if cards is None or accounts is None:
         derived_cards, derived_accounts = cards_and_accounts_from_snapshot(snapshot)
@@ -4282,6 +5006,8 @@ def _emit_calibration_artifacts(
             accounts = derived_accounts
     cards_path = write_cards(outdir / "disagreements.jsonl", cards)
     accounts_path = write_accounts(outdir / COLLECTION_ACCOUNTS_FILE, accounts)
+    if batch is not None:
+        write_batch_asserts(batch_path, batch)
 
     stats = summarize_snapshot(snapshot)
     cstats = summarize_cards(cards)
@@ -4293,6 +5019,7 @@ def _emit_calibration_artifacts(
         f"→ 已写快照 {snap_path}（{stats['entries']} 条：{verdict_str}）"
         f" · 分歧卡 {cards_path}（{cstats['n']} 张：{delta_str or '无'}）"
         f" · 采集侧账 {accounts_path}（{len(accounts)} 笔）"
+        f" · {batch_note}"
     )
     return snap_path, cards_path
 
@@ -4770,6 +5497,10 @@ def cmd_agreement(args: argparse.Namespace) -> int:
             accounts=accounts,
             force_snapshot=bool(getattr(args, "force_snapshot", False)),
             provenance=_read_provenance_registry(golden_root),
+            # 批次级断言要回读 P1 存档（B-1/B-2/B-4）；缺省与
+            # ``_read_archive`` 的其他调用处同根。闸门进程内调用时
+            # namespace 里没有这个键 ⇒ getattr 取 None，回落默认根。
+            p2_root=getattr(args, "p2_root", None),
         )
 
     if getattr(args, "emit_url_conflicts", ""):
@@ -5322,6 +6053,43 @@ def cmd_overlay_scout(args: argparse.Namespace) -> int:
     )
     return 0
 
+def _site_index_of_scout_record(record: Mapping[str, Any]) -> int | None:
+    """scout 记录指向哪个访问点（1 起）。认不出返回 ``None``。
+
+    三条来源，按可靠性排序：
+
+    1. 新 scout 产物直接写 ``site_index``（:func:`run_scout` 逐站点打分时落）；
+    2. 旧 per-unit 产物把访问序号写在 ``sample_id`` 尾巴上
+       （``<task>__<run>__site-N``）——这是**命名约定**，不是猜；
+    3. 都没有 ⇒ ``None``，由调用方按 URL 兜底；再兜不上就 fail-closed。
+    """
+    raw = record.get("site_index")
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+        return raw
+    sample_id = str(record.get("sample_id") or "")
+    m = re.search(r"__site-(\d+)$", sample_id)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _scout_scores_of(record: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """scout 记录 ⇒ ``(维度→分数, 逐维明细)``。
+
+    ⚠️ **``None`` 原样保留**（H-2 事实 1）：``None`` 是「这一维没判出来」，
+    写成 0 就是判了零分——负样本池会因此凭空多出一条，且报告上看不出。
+    """
+    detail: list[dict[str, Any]] = []
+    dims: dict[str, Any] = {}
+    for s in record.get("scores") or ():
+        dim = str(s.get("dimension") or "")
+        if dim not in ("d2", "d4", "d5", "d6"):
+            continue
+        detail.append(dict(s))
+        dims[dim] = s.get("score")       # None 不转 0
+    return dims, detail
+
+
 def cmd_from_scout(args: argparse.Namespace) -> int:
     scout_dir = pathlib.Path(args.scout_dir)
     if not scout_dir.is_dir():
@@ -5336,66 +6104,169 @@ def cmd_from_scout(args: argparse.Namespace) -> int:
         raise GoldenError(f"{scout_dir} 下没有 positive/negative_candidates.jsonl;先 scout 跑出三件套")
     pos_rows = _load_jsonl(pos_path) if pos_path.exists() else []
     neg_rows = _load_jsonl(neg_path) if neg_path.exists() else []
-    candidates: list[dict[str, Any]] = []
+
+    # ⚠️ **按 ``(task_id, run_id)`` 分组**（H-2 事实 2）：per-unit 时代的
+    # scout 目录一条 run 有多条记录（r51：122 条 / 51 runs / 单 run 最多 16 条），
+    # 逐条 append 会写出多行**同一个** ``golden_id`` ⇒ 冻结时按 id 建索引
+    # 后出现的赢，前面的静默消失（或跨档重复计数）。
+    groups: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
     for src_kind, rows in (("positive_scored", pos_rows), ("negative_scored", neg_rows)):
         for r in rows:
-            scores = r.get("scores") or []
-            dim_scores = {
-                s["dimension"]: (s["score"] if s["score"] is not None else 0)
-                for s in scores if s.get("dimension") in ("d2", "d4", "d5", "d6")
-            }
             sample_id = str(r.get("sample_id") or "")
             parts = sample_id.split("__")
             task_id = str(r.get("task_id") or (parts[0] if parts else ""))
             run_id = str(r.get("run_id") or (parts[1] if len(parts) >= 2 else ""))
-            sample_obj = _resolve_sample_for_scout_record(
-                sample_id, p2_root
-            )
-            code = _code_from_sample(sample_obj) if sample_obj else None
-            if code is None:
-                # 没有 P1 存档就老老实实写空 —— D-10 会把这批的 code.branch
-                # 兜成 SUCCESS_LABEL，与 fallback 一致；不静默填错分支。
-                code = {"branch": None}
-            archive = _read_archive(p2_root, task_id, run_id)
-            surface = access_surface.surface_of_driver(
-                (archive or {}).get("driver")
-            )
-            row = _trajectory_row(
-                task_id=task_id,
-                run_id=run_id,
-                surface=surface,
-                persona=None,
-                site_outcomes=_site_entries(
-                    archive or {},
-                    task_id=task_id,
-                    run_id=run_id,
-                    surface=surface,
-                ),
-                archive=archive,
-            )
-            # ⚠️ **pred 侧以 P2 样例的结论为准**（scout 打分的就是它），
-            # 而不是存档末条结论——裁定 ② 的「最后一个结论」是**任务级标签**
-            # 的口径，scout 这一路量的是**样例级**结论。两者不同不是矛盾，
-            # 是两个量；把它们混成一个键，读数就说不清在量什么了。
-            row["code"] = code
-            row["source_kind"] = src_kind
-            row["sample_id"] = sample_id
-            row["source_archive"] = str(
-                (sample_obj.source_archive if sample_obj is not None else "")
-                or (archive and _archive_name(archive)) or ""
-            )
-            row["dimension_scores"] = dim_scores
-            row["tags"] = list(r.get("tags") or [])
-            row["evidence_supplement"] = dict(r.get("evidence_supplement") or {})
-            candidates.append(row)
+            if not task_id or not run_id:
+                raise GoldenError(
+                    f"scout 记录 {sample_id!r} 取不出 (task_id, run_id)；"
+                    "没有这两个键就没法归到一条轨迹，**不猜**"
+                )
+            groups.setdefault(
+                rows_mod.trajectory_id(task_id, run_id), []
+            ).append((src_kind, r))
+
+    candidates: list[dict[str, Any]] = []
+    for tid in sorted(groups):
+        members = groups[tid]
+        task_id = str(members[0][1].get("task_id") or tid.split("__")[0])
+        run_id = str(members[0][1].get("run_id") or tid.split("__")[1])
+        sample_id = str(members[0][1].get("sample_id") or tid)
+        sample_obj = _resolve_sample_for_scout_record(sample_id, p2_root)
+        code = _code_from_sample(sample_obj) if sample_obj else None
+        if code is None:
+            # 没有 P1 存档就老老实实写空 —— D-10 会把这批的 code.branch
+            # 兜成 SUCCESS_LABEL，与 fallback 一致；不静默填错分支。
+            code = {"branch": None}
+        archive = _read_archive(p2_root, task_id, run_id)
+        surface = access_surface.surface_of_driver(
+            (archive or {}).get("driver")
+        )
+        entries = _site_entries(
+            archive or {},
+            task_id=task_id,
+            run_id=run_id,
+            surface=surface,
+        )
+        by_visit = {
+            int(e["visit_index"]): e
+            for e in entries if int(e.get("visit_index") or 0) > 0
+        }
+        by_url = {str(e.get("url") or ""): e for e in entries if e.get("url")}
+        attached: dict[str, Mapping[str, Any]] = {}
+        for _src_kind, r in members:
+            site_index = _site_index_of_scout_record(r)
+            url = str(r.get("url") or "")
+            entry = by_visit.get(site_index) if site_index is not None else None
+            if entry is None and url:
+                entry = by_url.get(url)
+            if entry is None:
+                raise GoldenError(
+                    f"scout 记录（sample_id={r.get('sample_id')!r}，"
+                    f"site_index={site_index!r}，url={url!r}）对不上 "
+                    f"{tid} 的任何站点——分数挂不到站点上。"
+                    "**不平摊、不丢**：重新跑 scout（会写 site_index/url）"
+                )
+            gid = str(entry.get("golden_id") or "")
+            if gid in attached:
+                raise GoldenError(
+                    f"{tid} 里两条 scout 记录指向同一个站点 {gid}；"
+                    "同一站点只能有一个评分单元"
+                )
+            dims, detail = _scout_scores_of(r)
+            entry["dimension_scores"] = dims
+            entry["scores_detail"] = detail
+            entry["status"] = str(r.get("status") or "") or None
+            entry["scorer_version"] = r.get("scorer_version")
+            attached[gid] = entry
+
+        row = _trajectory_row(
+            task_id=task_id,
+            run_id=run_id,
+            surface=surface,
+            persona=None,
+            site_outcomes=entries,
+            archive=archive,
+        )
+        # ⚠️ **pred 侧以 P2 样例的结论为准**（scout 打分的就是它），
+        # 而不是存档末条结论——裁定 ② 的「最后一个结论」是**任务级标签**
+        # 的口径，scout 这一路量的是**样例级**结论。两者不同不是矛盾，
+        # 是两个量；把它们混成一个键，读数就说不清在量什么了。
+        row["code"] = code
+        kinds = {k for k, _ in members}
+        # 一条 run 的站点可以一半正例一半负例（A 站成功、B 站失败）——
+        # 混合时必须如实写「这不是单一来源」，不能挑一个桶名盖住另一半。
+        row["source_kind"] = (
+            next(iter(kinds)) if len(kinds) == 1 else "scout_scored"
+        )
+        row["sample_id"] = sample_id
+        row["source_archive"] = str(
+            (sample_obj.source_archive if sample_obj is not None else "")
+            or (archive and _archive_name(archive)) or ""
+        )
+        # 轨迹级不写分数：分数是**站点级**的，挂在 site_outcomes[] 上。
+        # 顶层写一份会被 `_labeled_rows` 判成归属不明的分数并退 2。
+        row["dimension_scores"] = None
+        row["scores_detail"] = []
+        row["status"] = (
+            "scored"
+            if any(e.get("status") == "scored" for e in entries)
+            else None
+        )
+        row["scorer_version"] = None
+        tags: list[str] = []
+        for _src_kind, r in members:
+            for tag in r.get("tags") or ():
+                if str(tag) not in tags:
+                    tags.append(str(tag))
+        row["tags"] = tags
+        merged: dict[str, Any] = {}
+        for _src_kind, r in members:
+            for key, val in (r.get("evidence_supplement") or {}).items():
+                if key not in merged or not merged[key]:
+                    merged[key] = val
+        row["evidence_supplement"] = merged
+        candidates.append(row)
+
+    # 主键门禁：一条轨迹一行，id 不许撞（分组已保证；这里把不变量钉住）。
+    ids = [str(c.get("golden_id") or "") for c in candidates]
+    if len(ids) != len(set(ids)):
+        dup = sorted({gid for gid in ids if ids.count(gid) > 1})
+        raise GoldenError(f"from-scout 产出了重复的轨迹级 golden_id：{dup}")
+
     if not candidates:
         print("WARNING: scout 三件套均为空,候选为 0 条", file=sys.stderr)
     dst = pathlib.Path(args.golden_root) / CANDIDATES_FILE
     if args.dry_run:
         _report_candidates(candidates)
         return 0
+
+    # ⚠️ **孤儿门禁**（H-2 事实 3）：重写 candidates.jsonl 前先确认现有
+    # 人核标注仍能挂上——挂不上就**不写**，绝不让人核数据悄悄掉线。
+    ann_path = pathlib.Path(args.golden_root) / ANNOTATIONS_FILE
+    if ann_path.exists():
+        alias = _load_alias_map(pathlib.Path(args.golden_root))
+        new_ids: set[str] = set()
+        for c in candidates:
+            new_ids.add(str(c.get("golden_id") or ""))
+            new_ids |= rows_mod.site_ids_of(c)
+        ann_ids = {str(r.get("golden_id") or "") for r in _load_jsonl(ann_path)}
+        orphan = sorted(
+            gid for gid in ann_ids
+            if gid not in new_ids and _resolve_gid(gid, alias) not in new_ids
+        )
+        if orphan:
+            raise GoldenError(
+                f"from-scout 重写候选集会让 {len(orphan)} 条人核标注挂不上"
+                f"（**不写**）：{' / '.join(orphan[:10])}"
+                + (" …" if len(orphan) > 10 else "")
+            )
+
     _dump_jsonl(dst, candidates, force=args.force)
-    print(f"-> 已写 {dst}({len(candidates)} 条轨迹级候选,其中 pos={len(pos_rows)} neg={len(neg_rows)})")
+    print(
+        f"-> 已写 {dst}（{len(candidates)} 条轨迹级候选 / "
+        f"{len(pos_rows) + len(neg_rows)} 条 scout 记录，"
+        f"pos={len(pos_rows)} neg={len(neg_rows)}）"
+    )
     _report_candidates(candidates)
     return 0
 
@@ -5590,6 +6461,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_frz.add_argument(
+        "--backfill-labeled-sites",
+        action="store_true",
+        help=(
+            "继承式冻结时把**源版本三档里没有、但现在有人核 round=1 标注**的"
+            "站点行补进对应档。只补**已冻结轨迹**的站点（该轨迹在源版本三档里"
+            "至少有一条真站点行）；目标档 = 该轨迹其余站点所在的**唯一**档，"
+            "轨迹跨档则拒绝冻结（不猜——档位是 D-10 的分母口径）。行内容按 "
+            "candidates + annotations 现算，既有行逐字节不动。manifest 落 "
+            "`label_backfill`（baseline_reset=false；新增行在旧版侧记 "
+            "only_current）。只能配 --from-version 用。"
+        ),
+    )
+    p_frz.add_argument(
         "--regression",
         type=int,
         default=0,
@@ -5681,6 +6565,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "允许覆盖已存在的 snapshot.json。**默认不许**：那份文件是"
             "「上一轮判了什么」的唯一凭据，重盖章等于改历史（M-29 S3′）。"
+            "批次级断言 batch_asserts.json 同一纪律（同一次重算一起刷新）。"
+        ),
+    )
+    p_agr.add_argument(
+        "--p2-root",
+        default=str(PIPELINE_ROOT),
+        help=(
+            "P1 存档根——批次级断言（B-1/B-2/B-4）按 (task_id, run_id) "
+            "回读存档；缺省 output/pipeline。⚠️ 读不到存档的 run 记"
+            "「测不成」，**不猜**（不是不通过，也不是通过）。"
         ),
     )
     p_agr.add_argument(

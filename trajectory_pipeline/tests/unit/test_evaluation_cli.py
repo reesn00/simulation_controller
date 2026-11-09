@@ -456,3 +456,82 @@ class TestLLMJudge接入:
         summary, _rows = ecli.evaluate(
             tmp_path, ["d5", "d3", "d9"], include_llm_judge=True)
         assert set(summary["dimensions"]) == {"d5", "d3", "d9"}
+
+
+# ── 站点级评估（H-1：per-Run 后必须展开 site_views） ──────────────
+
+
+class Test站点级评估:
+    """per-Run 的一条 Sample 可能覆盖多个访问点。
+
+    对整条轨迹打分时，一个 run 里「A 站失败、B 站成功」只留下末条
+    outcome 的结论——失败站点在评分侧直接消失，scout 的 min 也从
+    「最差站点」退化成「最差 run」。
+    """
+
+    @staticmethod
+    def _site(i, url, *, branch=None, question="site.find_play_control"):
+        return SimpleNamespace(
+            sample_id=f"T001__r1__site-{i}", index=i,
+            outcome=SimpleNamespace(
+                question=question, branch=branch, url=url, source="human",
+                p1_missing_fields=()))
+
+    def _run_sample(self, monkeypatch, *, score_by_url, veto_url=""):
+        """一条 per-Run Sample + 两个站点视图；scorer 按站点 URL 出分。"""
+        views = (
+            self._site(1, "a.com", branch="no_play_control"),
+            self._site(2, "b.com", branch=None),
+        )
+        sample = SimpleNamespace(
+            sample_id="T001__r1", degraded_from=(), schema_version="2",
+            # 末条 outcome 是成功的 b.com —— 回退路径会把它当成整条轨迹
+            outcome=SimpleNamespace(
+                question="site.find_play_control", branch=None, url="b.com",
+                source="human", p1_missing_fields=()),
+            site_views=lambda: views,
+        )
+        monkeypatch.setattr(ecli, "split_archive", lambda p: [sample])
+
+        def _score(unit):
+            url = str(getattr(getattr(unit, "outcome", None), "url", "") or "")
+            score = score_by_url[url]
+            return _V(score, veto=(url == veto_url))
+
+        monkeypatch.setitem(ecli.SCORERS, "d9", _score)
+        return sample
+
+    def test_按站点展开出分_不是整条轨迹一个分(self, tmp_path, monkeypatch):
+        sample = self._run_sample(
+            monkeypatch, score_by_url={"a.com": 1, "b.com": 5})
+        monkeypatch.setattr(ecli, "split_archive", lambda p: [sample])
+        _archive(tmp_path / "T001__r1.json")
+        summary, rows = ecli.evaluate(tmp_path, ["d9"])
+        assert summary["samples"] == 1          # Run 数
+        assert summary["units"] == 2           # 评分单元 = 站点数
+        assert summary["dimensions"]["d9"]["distribution"] == {"1": 1, "5": 1}
+        assert [r["sample_id"] for r in rows] == [
+            "T001__r1__site-1", "T001__r1__site-2"]
+        assert [r["url"] for r in rows] == ["a.com", "b.com"]
+        assert [r["site_index"] for r in rows] == [1, 2]
+
+    def test_否决清单取站点自己的结论(self, tmp_path, monkeypatch):
+        sample = self._run_sample(
+            monkeypatch, score_by_url={"a.com": 3, "b.com": 5},
+            veto_url="a.com")
+        monkeypatch.setattr(ecli, "split_archive", lambda p: [sample])
+        _archive(tmp_path / "T001__r1.json")
+        summary, _rows = ecli.evaluate(tmp_path, ["d9"])
+        v = summary["vetoes"][0]
+        assert v["url"] == "a.com"
+        assert v["branch"] == "no_play_control"
+        assert v["sample_id"] == "T001__r1__site-1"
+
+    def test_无站点视图时回退整条样本(self, tmp_path, monkeypatch):
+        """老形状/测试替身没有 ``site_views`` ⇒ 整条样本就是唯一的单元。"""
+        _fake_sample(monkeypatch, n=2, score=4)
+        _archive(tmp_path / "T001__r1.json")
+        summary, rows = ecli.evaluate(tmp_path, ["d9"])
+        assert summary["samples"] == 2
+        assert summary["units"] == 2
+        assert {r["unit_kind"] for r in rows} == {"sample"}

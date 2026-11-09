@@ -866,11 +866,24 @@ def _cmd_reflow_worksheet(args: argparse.Namespace) -> int:
     records = _read_ls_verdicts(export_path)
 
     worksheet, summary = reflow_mod.build_worksheet(
-        records, gold_rows=gold_rows, ann_rows=ann_rows
+        records,
+        gold_rows=gold_rows,
+        ann_rows=ann_rows,
+        # ⚠️ **来源版本落进每一行**（H-3 #6）：apply 时要核工作表是哪一版
+        # 出的——按旧版金标裁出来的结论不能拿去改新版金标。
+        source_version=version,
     )
     out_dir = _version_dir(version)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / _worksheet_name(scope)
+    # ⚠️ **不许静默覆盖**（H-3 #5）：工作表里有人手工填好的三栏
+    # （access_surface / observed_at / reviewed_by），重跑一次命令就
+    # 悄悄清空 —— 那是**人工输入**，不是可以重算的产物。
+    if path.exists() and not getattr(args, "force", False):
+        raise GoldenCliError(
+            f"{path} 已存在（里面可能已经有人填好的三栏）；重新生成会**覆盖"
+            "人工填写**——确认要重来就加 --force，或先把它挪走"
+        )
     _write_text_bytes(path, reflow_mod.dump_jsonl(worksheet))
 
     print(f"裁定记录 {summary['total_records']} 条（来源 {export_path}）")
@@ -922,7 +935,12 @@ def _cmd_reflow_apply(args: argparse.Namespace) -> int:
             raise GoldenCliError(f"{path} 里有坏行：{exc}") from exc
 
     errors = reflow_mod.validate(
-        worksheet, gold_rows=gold_rows, ann_rows=_load_annotations(args.golden_root)
+        worksheet,
+        gold_rows=gold_rows,
+        ann_rows=_load_annotations(args.golden_root),
+        # ⚠️ **绑定版本**（H-3 #6）：工作表按哪一版出、apply 就在哪一版上写。
+        # 拿 v14 的结论去改 v15 的金标 = 用过期判断改新金标。
+        expected_version=version,
     )
     if errors:
         print(f"工作表有 {len(errors)} 处不合格（**不写**）:", file=sys.stderr)
@@ -1030,6 +1048,11 @@ def _build_parser() -> argparse.ArgumentParser:
     reflow_sub = p_reflow.add_subparsers(dest="reflow_command", required=True)
     p_ws = reflow_sub.add_parser("worksheet", help="生成回流工作表(只读,不写金标)")
     p_ws.add_argument("--version", type=int, required=True)
+    p_ws.add_argument(
+        "--force",
+        action="store_true",
+        help="工作表已存在时覆盖重出（会冲掉人工填好的三栏; 缺省拒绝覆盖）",
+    )
     p_ws.add_argument(
         "--export",
         default=None,

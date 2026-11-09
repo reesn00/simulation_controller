@@ -6,9 +6,10 @@ rubric v1.3 首次把「批」写死为**一个 run**：一批 = **一次运行�
 这些属性只在 run 之间可比；把多个 run 合成一批再算比率，分母就把不同
 运行的处置密度混在一起，读数**没有对象**。
 
-模块入口在 :mod:`trajectory_pipeline.evaluation.batch.asserts`。
+模块入口在 :mod:`trajectory_pipeline.evaluation.batch.asserts`；
+生产落盘与闸门读数在 :mod:`trajectory_pipeline.evaluation.batch.report`。
 """
 
 from __future__ import annotations
 
-__all__ = ["asserts"]
+__all__ = ["asserts", "report"]

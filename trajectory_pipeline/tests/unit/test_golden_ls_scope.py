@@ -265,6 +265,33 @@ class TestHeadlineSplit:
         assert rows_mod.headline_site(_site_row()) is None
         assert rows_mod.headline_split(_site_row()) == ""
 
+    def test_负下标不配负样本池站点(self) -> None:
+        """M-19：``code_index=-1`` 是「无结论」，不是指向 ``outcome_index=-1``。
+
+        负样本池站点的 ``outcome_index`` 恒为 ``-1``。只拒绝 ``None`` 会
+        让「没有任何站点结论」的轨迹跟它配对成功 ⇒ 把一个负样本池站点
+        当成头站 ⇒ 档闸读到它的空 ``split``。
+        """
+        row = _traj_row(splits={"calibration": 1})
+        row["code_index"] = -1
+        row["site_outcomes"].append({
+            "golden_id": "T001__abcd1234__neg_no_play_control",
+            "url": "https://neg.example.com",
+            "split": "",
+            "outcome_index": -1,
+            "golden": None,
+        })
+        assert rows_mod.headline_site(row) is None
+        assert rows_mod.headline_split(row) == ""
+
+    def test_脏档值fail_closed(self) -> None:
+        """M-20：档值只认三档；拼错的值不得当合法档放行。"""
+        row = _traj_row(splits={"calibration": 1}, head_split="calibration")
+        row["site_outcomes"][0]["split"] = "calibraton"
+        head = rows_mod.headline_site(row)
+        assert head is not None, "头站本身认得出，坏的是档值"
+        assert rows_mod.headline_split(row) == ""
+
     def test_与取严口径是两个不同的数(self) -> None:
         """② ≠ 取严：同一条轨迹，两个口径给两个答案（这是 ② 的性质，不是 bug）。"""
         row = _traj_row(splits={"calibration": 1, "holdout": 1}, head_split="calibration")
