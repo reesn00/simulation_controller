@@ -1,6 +1,6 @@
 """训练态观察渲染——**代码做**的，不用 LLM。
 
-P1 存的是**取证态**观察：正文全文、80 个交互元素、50 条链接。
+P1 存的是**取证态**观察：正文全文、80 个交互元素、200 条链接。
 喂给模型的那一份必须裁剪（全文进训练窗口会把信噪比压垮），于是有了
 「同一份观察的两种形态」这条口径：
 
@@ -34,6 +34,13 @@ P1 存的是**取证态**观察：正文全文、80 个交互元素、50 条链�
    与任务无关的噪声：热搜榜、ICP 备案号、页脚、广告、推荐流、站内导航。
    它们占掉回执的绝大部分字数，却对「这一步该点什么」零信息。
    **只在训练侧剔除**——P1 存档一个字不动（证据与语料是两件事）。
+
+   元素/链接的限量也**按任务相关度取，不按页面顺序截前 N 条**（2026-11-10
+   owner 指出：搜索页的 10 元素窗口里一条搜索结果都没有）。搜索页的
+   前 50 条链接几乎全是站内导航、相关搜索与热搜，按页面顺序截前 4 条
+   等于把结果区整段扔掉。非 keep 项按「片名+播放词 > 片名 > 播放词 >
+   其他」排序取前 N，同分保持页面顺序；**入选后仍按页面顺序输出**——
+   页面从上到下这个结构信号不丢。
 
 6. **动作目标必须保真**（方案 23 R1-2）。限量会裁掉元素/链接，而下一步
    动作的点击目标/网址可能正好在被裁的那一段。训练样本里出现「点了一个
@@ -242,14 +249,68 @@ def _digest_body(
     return text, dropped, truncated
 
 
+def _lcs_len(a: str, b: str) -> int:
+    """最长公共子串长度（只算连续片段）。"""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for ca in a:
+        cur = [0] * (len(b) + 1)
+        for j, cb in enumerate(b, 1):
+            if ca == cb:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
+def _focus_hit(text: str, focus: Sequence[str]) -> bool:
+    """任务词命中：精确子串，或**最长公共子串 ≥ 3**。
+
+    任务标题不总是结果条目里的连续子串——``戛纳最佳短片2025`` 在结果里
+    被拆成 ``2025争议最大的戛纳爆款…``。只认整串会把它漏光；而 2 字命中
+    （``最佳``/``短片``）又太松。3 是两边都站得住的折中：年份或片名主干
+    至少 3 个字符。
+    """
+    return any(
+        f and (f in text or _lcs_len(f, text) >= 3) for f in focus
+    )
+
+
+def _item_score(text: str, *, focus: Sequence[str]) -> int:
+    """元素/链接文本的**任务相关度**。分数只决定谁先入选，不决定展示顺序。
+
+    ``keep`` 命中的项不走这里（它们另行钉死），所以这里只排「其余候选」：
+
+    - 3：片名 + 播放关键词同时命中——搜索页的真实结果条目就长这样
+      （``《让子弹飞》电影全集高清免费完整版观看_可乐电影网``）；
+    - 2：只命中片名——「相关搜索」条目、贴吧名这类，比结果条目弱一档，
+      但远强于热搜榜；
+    - 1：只命中播放关键词——播放页的控件；
+    - 0：都没有。
+    """
+    score = 0
+    if _focus_hit(text, focus):
+        score += 2
+    if TASK_KEYWORD_RE.search(text):
+        score += 1
+    return score
+
+
 def _select_elements(
     elements: Sequence[Mapping[str, Any]],
     *,
     vocabulary: str | None,
+    focus: Sequence[str] = (),
     keep: Sequence[str],
     limit: int = VIEW_ELEMENTS,
 ) -> tuple[list[Mapping[str, Any]], int, bool]:
     """元素表：去噪、去重、限量，**保住下一步动作的目标**。
+
+    非 keep 项按 :func:`_item_score` 取前 N，同分保持页面顺序；
+    入选后仍按页面顺序输出（keep 项在最前，见模块 docstring 第 6 条）。
 
     Returns:
         ``(入选元素, 噪声/去重丢弃数, 是否触到数量上限)``。
@@ -258,51 +319,69 @@ def _select_elements(
         vocabulary or vocabulary_of_archive_elements(list(elements))
     )
 
+    def name_of(e: Mapping[str, Any]) -> str:
+        return str(e.get(text_key) or "").strip()
+
     def matches(e: Mapping[str, Any]) -> bool:
-        name = str(e.get(text_key) or "").strip()
+        name = name_of(e)
         if not name:
             return False
         return any(k and (k == name or k in name) for k in keep)
 
-    picked: list[Mapping[str, Any]] = []
+    pinned: list[Mapping[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
     def add(e: Mapping[str, Any]) -> bool:
         role = str(e.get(kind_key) or "")
-        name = str(e.get(text_key) or "").strip()
+        name = name_of(e)
         if not name:
             return False
         key = (role, name)
         if key in seen:
             return False
         seen.add(key)
-        picked.append(e)
+        pinned.append(e)
         return True
 
     # keep 目标先占位：即使它在导航词里、即使后面已经满了。
     for e in elements:
         if matches(e):
             add(e)
-    for e in elements:
+
+    rest: list[tuple[int, int, Mapping[str, Any]]] = []
+    for idx, e in enumerate(elements):
         if matches(e):
             continue
         role = str(e.get(kind_key) or "")
-        name = str(e.get(text_key) or "").strip()
+        name = name_of(e)
         if not name or name in NAV_LINE_WORDS or len(name) <= 1:
             continue
-        add(e)
+        key = (role, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        rest.append((idx, _item_score(name, focus=focus), e))
+
+    chosen = sorted(rest, key=lambda t: (-t[1], t[0]))[:max(limit - len(pinned), 0)]
+    chosen.sort(key=lambda t: t[0])
+    selected = pinned[:limit] + [e for _, _, e in chosen]
     # ``dropped`` 只数**噪声/去重**掉的那些；上限裁掉的用 ``capped`` 单独表达。
-    dropped = max(len(elements) - len(picked), 0)
-    return picked[:limit], dropped, len(picked) > limit
+    dropped = max(len(elements) - (len(pinned) + len(rest)), 0)
+    return selected, dropped, len(pinned) + len(rest) > limit
 
 
 def _select_links(
     links: Sequence[Mapping[str, Any]],
     *,
+    focus: Sequence[str] = (),
     keep: Sequence[str],
     limit: int = VIEW_LINKS,
 ) -> tuple[list[Mapping[str, Any]], int, bool]:
     """链接表：去掉不可导航/噪声/重复项，限量，**保住下一步动作的网址**。
+
+    非 keep 项按 :func:`_item_score` 取前 N，同分保持页面顺序——
+    搜索页的前 50 条链接全是站内导航/相关搜索/热搜，按页面顺序截前 4
+    会把结果区整段扔掉（2026-11-10 owner 报的「搜索页信息没记录」）。
 
     Returns:
         ``(入选链接, 噪声/去重丢弃数, 是否触到数量上限)``。
@@ -317,7 +396,7 @@ def _select_links(
         href = href_of(l)
         return bool(href) and any(k and (k == href or k in href) for k in keep)
 
-    picked: list[Mapping[str, Any]] = []
+    pinned: list[Mapping[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
     def add(l: Mapping[str, Any]) -> bool:
@@ -328,21 +407,34 @@ def _select_links(
         if key in seen:
             return False
         seen.add(key)
-        picked.append(l)
+        pinned.append(l)
         return True
 
     for l in links:
         if matches(l):
             add(l)
-    for l in links:
+
+    rest: list[tuple[int, int, Mapping[str, Any]]] = []
+    for idx, l in enumerate(links):
         if matches(l):
+            continue
+        href = href_of(l)
+        if not href or href.startswith("javascript:") or href == "#":
             continue
         text = text_of(l)
         if text in NAV_LINE_WORDS or NOISE_LINE_RE.search(text):
             continue
-        add(l)
-    dropped = max(len(links) - len(picked), 0)
-    return picked[:limit], dropped, len(picked) > limit
+        key = (text, href)
+        if key in seen:
+            continue
+        seen.add(key)
+        rest.append((idx, _item_score(text, focus=focus), l))
+
+    chosen = sorted(rest, key=lambda t: (-t[1], t[0]))[:max(limit - len(pinned), 0)]
+    chosen.sort(key=lambda t: t[0])
+    selected = pinned[:limit] + [l for _, _, l in chosen]
+    dropped = max(len(links) - (len(pinned) + len(rest)), 0)
+    return selected, dropped, len(pinned) + len(rest) > limit
 
 
 def _empty_view() -> dict[str, Any]:
@@ -424,11 +516,12 @@ def render(
     )
     kind_key, text_key = element_keys(vocabulary)
     selected_elements, elements_dropped, elements_capped = _select_elements(
-        elements, vocabulary=vocabulary, keep=keep, limit=element_limit
+        elements, vocabulary=vocabulary, focus=focus, keep=keep,
+        limit=element_limit,
     )
     links = list(obs.get("links") or ()) if read in ("", "links") else []
     selected_links, links_dropped, links_capped = _select_links(
-        links, keep=keep, limit=link_limit
+        links, focus=focus, keep=keep, limit=link_limit
     )
     # 「动作无效」与「采集降级」分列：前者是这一步白做，后者是这块没采到。
     limits = ViewLimits(

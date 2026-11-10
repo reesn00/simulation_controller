@@ -126,6 +126,90 @@ class Test链接限量:
         assert out["links"][0]["href"] == "https://x.test/play"
 
 
+class Test相关度限量:
+    """2026-11-10：限量按**任务相关度**取，不按页面顺序截前 N 条。
+
+    搜索页的页面顺序是「站内导航 → 相关搜索 → 热搜榜 → 搜索结果」，
+    按前 N 截等于把结果区整段扔掉——owner 报的「轨迹里没有搜索的页面
+    信息记录」就是这个。P1 存档一个字不动，只在训练侧换入选规则。
+    """
+
+    def test_搜索页结果元素不被导航挤掉(self):
+        nav = [{"role": "link", "name": f"推荐入口{i}"} for i in range(30)]
+        result = {"role": "link",
+                  "name": "《让子弹飞》电影全集高清免费完整版观看_可乐电影网"}
+        out = observation_view.render(
+            _obs(interactive_elements=nav + [result]), focus=("让子弹飞",)
+        )
+        assert result in out["interactive_elements"]
+        assert len(out["interactive_elements"]) == observation_view.VIEW_ELEMENTS
+        # 入选后仍按页面顺序输出：结果在页面最后，就在输出最后
+        assert out["interactive_elements"][-1] == result
+
+    def test_真实结果比相关搜索优先(self):
+        """相关搜索也命中片名，但没有播放词——真结果分更高。"""
+        related = [
+            {"role": "link", "name": f"让子弹飞花絮第{i}段"} for i in range(12)
+        ]
+        result = {"role": "link", "name": "让子弹飞 在线观看高清完整版"}
+        out = observation_view.render(
+            _obs(interactive_elements=related + [result]), focus=("让子弹飞",)
+        )
+        names = [e["name"] for e in out["interactive_elements"]]
+        assert result["name"] in names
+        assert len(names) == observation_view.VIEW_ELEMENTS
+
+    def test_搜索页结果链接不被热搜挤掉(self):
+        hot = [
+            {"text": f"热搜条目{i}", "href": f"https://x.test/hot{i}"}
+            for i in range(60)
+        ]
+        result = {"text": "《让子弹飞》免费在线观看-高清完整版-影视大全",
+                  "href": "https://www.baidu.com/link?url=abc"}
+        out = observation_view.render(
+            _obs(links=hot + [result]), focus=("让子弹飞",)
+        )
+        assert result in out["links"]
+        assert len(out["links"]) == observation_view.VIEW_LINKS
+
+    def test_标题不是连续子串也能命中(self):
+        """任务标题被结果条目拆开时，按 ≥3 字公共子串认。
+
+        ``戛纳最佳短片2025`` 在结果里是 ``2025争议最大的戛纳爆款…``——
+        整串匹配漏光，2 字命中（``最佳``/``短片``）又太松。
+        """
+        hot = [
+            {"text": f"热搜条目{i}", "href": f"https://x.test/hot{i}"}
+            for i in range(20)
+        ]
+        result = {
+            "text": "2025争议最大的戛纳爆款,25天拍完的神作._高清1080P在线观看平台_腾讯视频",
+            "href": "https://x.test/video",
+        }
+        out = observation_view.render(
+            _obs(links=hot + [result]), focus=("戛纳最佳短片2025",)
+        )
+        assert result in out["links"]
+
+    def test_名额有富余时按分数递补(self):
+        related = [
+            {"text": f"让子弹飞花絮第{i}段", "href": f"https://x.test/r{i}"}
+            for i in range(2)
+        ]
+        hot = [
+            {"text": f"热搜条目{i}", "href": f"https://x.test/hot{i}"}
+            for i in range(6)
+        ]
+        out = observation_view.render(
+            _obs(links=related + hot), focus=("让子弹飞",)
+        )
+        assert len(out["links"]) == observation_view.VIEW_LINKS
+        # 4 个名额：2 条相关搜索(2 分) 先占，剩下 2 个按页面顺序给热搜(0 分)。
+        texts = [l["text"] for l in out["links"]]
+        assert texts[:2] == ["让子弹飞花絮第0段", "让子弹飞花絮第1段"]
+        assert texts[2:] == ["热搜条目0", "热搜条目1"]
+
+
 class Test动作无效标记:
     def test_与采集降级分列(self):
         out = observation_view.render(

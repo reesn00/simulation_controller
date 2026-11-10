@@ -1058,12 +1058,94 @@ id 集合与冻结层**完全一致**、九区块齐全、prediction 0、人工�
 - ⑩ 块不是空壳：渲染后 E001 57,898 字符（openai.messages 94 条 / tools 14 个）、E005 44,791、E006 21,544；对应 ⑧ 块见上节。
 - ⑧ 与 ⑩ **同源不同物**：⑧ 从 `task_views/` 读 T 视图，⑩ 从 `views/` 读 P3；当期两者 openai 内容等价，但 ⑩ 记的是**训练真正吃的那一份**，不是 T 的影子。
 
+**落地：v20 / 项目 84（2026-11-10，owner 授权）**
+
+- 原因：项目 83 的 label_config 是**建项目时的九块快照**，且 `push_batch` 按 `sample_id` 去重 ⇒ 往 83 重传既不会长出新控件、也不会补任务字段。
+- `freeze --version 20 --from-version 19 --force`（pilot root；偏差 10.9pp 与 v19 同，manifest 已记）⇒ v20 仍是 29 站点 / 3 轨迹。
+- 项目 **84 `golden-v20-traj`**（label_config sha `2a3d3c1fe49b`，**十块**）；`tasks_pushed=3`（task id 1053 / 1054 / 1055，E001 / E005 / E006）。
+- 回读（只读 LS）：配置含 `sft_block`；⑩ 字符数 **57,898 / 44,791 / 21,544**，⑧ **96,980 / 69,661 / 30,351**；SFT 训练样本可得率 **3/3**；prediction 0、人工标注 0。
+- 推送计划留底 `output/pipeline/calibration/v20/ls_upload_plan.jsonl`；旧项目 83 不动（v19 的九块快照仍是历史事实）。
+
 **未闭环**
 
-- **项目 83（以及 v17/v18 的轨迹项目）不会出现 ⑩**：LS 项目存的是建项目时的 label_config 快照，`push_batch` 又按 `sample_id` 去重 ⇒ 重新上传也改不了。上文 v19 的「九区块齐全」是当时快照、仍是事实。要看到 ⑩，必须**用新版本号建新轨迹项目**（LS 写入，须 owner 授权）；旧项目保留作历史证据，不删不改。
-- 已冻结的 v19 若要换新项目，需要重新 `init-project`（标题不同 ⇒ 新 pid）后上传。
+- **项目 83（以及 v17/v18 的轨迹项目）不会出现 ⑩**：LS 项目存的是建项目时的 label_config 快照，`push_batch` 又按 `sample_id` 去重 ⇒ 重新上传也改不了。上文 v19 的「九区块齐全」是当时快照、仍是事实。旧项目保留作历史证据，不删不改。
+- v19/v20 的 3 条轨迹与 29 行站点金标均为 `ai-assisted-unconfirmed` 初判，**待 owner 逐条复核**（见上一节）。
 
 **验证**
 
 - 定向：scope / export / cli / contract 四文件 **178 passed**。
 - 全量（worktree，串行）：**5140 passed / 46 skipped / 1 failed**；唯一红是 `test_rubric_changelog::test_真实文档引了卡所以印对号`——worktree 只有 `calibration/v19`、缺 `calibration/v16/disagreements.jsonl`，而该测试的跳过条件只查父目录 ⇒ 环境性红，与本次改动无关（主树产物齐备时应通过）。
+
+---
+
+## 2026-11-10 assistant 空状态前缀清洗（P3/T 共用）
+
+> owner 指出：训练数据的 assistant 以「目前没有此前操作。」开头——这句是模型对「上文没有更早动作」的状态陈述，不是思考，组装时去掉。
+
+- 新增 `common/rationale_text.py::strip_empty_history_lead_in`；`assembler/views.py` 与 `assembler/task_view.py` 的 `_rationale_text` 在拼 assistant 文本前调用。
+- **只删句首的精确句**：正文里的复述/引用不动（测试 `test_正文里的同一句不动` 盯住）；P1 存档一个字不动。
+- P3 与 T 共用同一个函数——两段投影对同一句显示不同文本，复核员会按一份并不存在的语料下判断。
+- 重建：`executor.cli build --stage p3 --overwrite`（84 条交付面 / 252 份视图）；`task-view --all --overwrite`（164 份存档，交付面 84 份）。
+- 读数：E001 首步 assistant 由 103 字符 → 90（该句 13 字符），E005/E006 不变；两个定向测试文件 **137 passed**。
+- ⚠️ **已推的 v20 / 项目 84 仍是清洗前文本**（LS 任务不能原地更新）⇒ 要 LS 看到清洗后文本，须重建新版本项目。**✅ 已由下一节 v21 / 项目 85 兑现**（清洗后的 P3 与搜索页修复一起推）。
+
+---
+
+## 2026-11-10 搜索页信息进训练视轨迹（采集 50→200 + 组装相关度限量）
+
+> owner 报「轨迹里面没有搜索的页面信息记录」。**两处同时断**：采集层没采全，组装层按页面顺序截前 N 条又把结果区截掉。
+> 只修一处都不成立——采集不放开，组装没有料；组装不改入选规则，采到也看不见。
+
+**① 采集层（`executor/orchestrator.py`）**
+
+- `OBS_LINK_LIMIT` **50 → 200**，与驱动层 `DEFAULT_LIMIT=200` 对齐。搜索页链接常 100+，前 50 条是站内导航 / 相关搜索 / 热搜，真结果条目排在其后。
+- 普通步元素仍是 **80**；链接 2026-11-10 起也是 200。P1 存档口径随之变为「正文全文 / 80 元素 / 200 链接」。
+
+**② 组装层（`assembler/observation_view.py`）**
+
+- 限量不再按页面顺序截前 N：keep（下一步动作目标）**钉死在前**；非 keep 项按**任务相关度**排序取前 N——
+  命中片名 **+2**（精确子串，或最长公共子串 ≥3：`_lcs_len` / `_focus_hit`）、命中 `TASK_KEYWORD_RE` **+1**；
+  同分按页面顺序入选，**入选后仍按页面顺序输出**（训练侧看到的是页面原序，不是按分数重排的假页面）。
+- 片名整串匹配在真实搜索页上会漏光（`戛纳最佳短片2025` 在结果里是 `2025争议最大的戛纳爆款…`），所以加 ≥3 字公共子串这一档。
+- P1 存档一个字不动——只在训练侧换入选规则。
+
+**测试**：`tests/unit/test_observation_limits.py::Test相关度限量` 5 条（结果不被导航挤掉 / 真结果比相关搜索优先 / 结果链接不被热搜挤掉 / 标题不是连续子串也能命中 / 名额有富余时按分数递补）+ `test_visit.py` 夹具链接数 260。四个相关文件 **297 passed**。
+
+**新 run 读数（2026-11-10，driver=camofox）**
+
+| run | 存档 | 搜索页 links_total / len | P2 搜索页 4 条链接构成 |
+|---|---|---|---|
+| E001__1aaa1916 | 16:06，1,015,380 B | **111 / 111**（旧 50） | 3 真结果 + 1 相关搜索 |
+| E005__d26df4b6 | 16:21，1,116,932 B | **107 / 107** | 1 真结果 + 3 相关搜索 |
+| E006__4455d64b | 16:43，1,210,197 B | **101 / 101** | 3 真结果 + 1 相关搜索 |
+
+- P2 首条观察统一是 **320 字正文 + 10 元素 + 4 链接**（`limits.cropped=true`），P3/T 的搜索页观察同款。
+- ⚠️ **旧 run 救不回来**：v19 三份存档搜索页 `links_total / len(links)` = 115/50、108/50、102/50 ⇒ 链接块在 P1 就没采全，组装层改不动历史存档。本轮必须用新 run 建 v21。
+- E006 的判断点①分类 LLM `transport:ReadTimeout` 全程 fail-closed，10 个候选按启发式全遍历；1 个同落地 host 候选被跳过（总量约束）。采集未中断。
+
+**v21 冻结（新 run + 独立 pilot root）**
+
+- 逐站点按新证据**重判**，不从 v19/v20 按 URL 迁移标签。
+- 标注：E001 12 行（1 轨迹 + 11 站点）、E005 10 行、E006 10 行 = **32 行**；分布 unresolved 17 / not_play_site 7 / blocked 4 / subscription_wall 1 / success 1 / unreachable_hard 1 / login_required 1。
+- 关键改判：E006 bilibili → `login_required`（播放器区原文「登录 免费享高清视频」「试看30秒」）；E006 kanjiezhan / zaijiezhan → `unresolved`（影片页只有「预告 00:00:05」，「请登录」在**评论区**，`BRANCH_PRECONDITION` 前置不成立 ⇒ 不贴 login_required）；E006 新片场 → `blocked`（Security Check 反爬页）。
+- `candidates`（staging = 3 份新 P1 + 3 份 P2 样本）⇒ `annotate` ⇒ `freeze --version 21 --force`：调参池 **21**（72.4%）/ 持有 **8**（27.6%），seed=42；偏差 72.4% vs 目标 65% 超 5pp，已记 manifest。
+- ⚠️ **v21 没有同根上一版 diff**：独立 root `output/pipeline/golden_v21_pilot/data`（复用旧 root 会破坏 v19 manifest 记录的 candidates sha、并触发孤儿门禁），`dataset.source.mode=live_candidates`，`previous_version` 缺失 ⇒ 跨版本 diff / `--from-version` 继承这条线在 v21 上不可用。这是刻意的隔离代价，不是漏配。
+
+**v21 / 项目 85（owner 授权「修复完一起推新版本」）**
+
+- 项目 **85 `golden-v21-traj`**（label_config sha `2a3d3c1fe49b`，十块）；`tasks_pushed=3`（task 1056 / 1057 / 1058）。
+- 回读（只读 LS）：⑩ 字符数 **53,666 / 63,677 / 59,602**，⑧ **87,920 / 107,190 / 96,728**；SFT 训练样本可得率 **3/3**，T 视图可得率 **3/3**。
+- 搜索页在 LS 三处都出现：⑩ / ⑧ 含 `_百度搜索` + `链接：`；scene_block 含搜索页标题。搜索结果文本（腾讯视频 / 新片场 / bilibili / 影视大全 / 美剧天堂）在 ⑩ 中可见。
+- 一致率：轨迹级 **3/3 = 100%**（语义等价类）；D-10 口径 C（站点级 29 行）头条 calibration **14/21 = 66.7%**，三档合计 **19/29 = 65.5%**。
+- 推送计划留底 `output/pipeline/calibration/v21/ls_upload_plan.jsonl`；项目 84 不动（v20 是清洗前文本与旧 run 的历史快照）。
+
+**空状态前缀在 v21 上看不见（如实记）**
+
+- 新 run 的 P1 rationale 本来就不含「目前没有此前操作。」（E001 46 条 / E005 42 条，命中 0）⇒ 清洗逻辑在这批数据上没有可删的句子。
+- 修复由测试（`Test去空状态前缀`）与全量 P3/T 重建覆盖；v20 项目 84 里的旧文本仍是清洗前的事实。
+
+**未闭环**
+
+- v21 的 3 条轨迹与 29 行站点金标仍为 `ai-assisted-unconfirmed` 初判，**待 owner 逐条复核**。
+- v21 是试点隔离档，**不进**主数据根的三档口径（D-10 分母不变，仍读 v18 的 297 行）。
+- 相关度限量目前只区分「片名命中 / 播放词命中」两档分数；同分时仍按页面顺序，无法区分「相关搜索」与「真搜索结果」（E005 的 4 条链接里 3 条是相关搜索）——是否需要按 href 特征再加一档，待下一轮观察。

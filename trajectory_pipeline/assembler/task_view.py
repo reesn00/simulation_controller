@@ -33,7 +33,7 @@ import**——交接面是格式不是对象）：
    :mod:`trajectory_pipeline.outcomerules` 取——同一个**纯模块**
    （不 import 任何功能模块），理由与 catalog 同款。
 
-4. **P1 observation 是取证态**（full 6000 字符 / 80 元素 / 50 链接），
+4. **P1 observation 是取证态**（full 6000 字符 / 80 元素 / 200 链接），
    经 :func:`~trajectory_pipeline.assembler.observation_view.render`
    裁到训练态再经 :func:`~trajectory_pipeline.assembler.views.render_observation`
    排版——与 P3 同款裁剪口径（320/10/4），只是 T 这边**自己跑一遍裁剪**，
@@ -71,6 +71,7 @@ from trajectory_pipeline.assembler import (
     pool,
     screen,
 )
+from trajectory_pipeline.common.rationale_text import strip_empty_history_lead_in
 #: 两段投影一致性口径挂在顶层（方案 23 R5-2 / O-5）：ls_bridge 是
 #: evaluation 层，契约禁止它 import assembler，而校验两边都要用。
 #: 本模块 re-export，``task_view.projection_problems`` 仍可用。
@@ -326,7 +327,7 @@ def _render_observation(
     """P1 取证态 observation → 训练态文本。
 
     两段：① 经 :func:`observation_view.render` 把 P1 的 full body_text /
-    80 元素 / 50 链接裁到 P3 同款训练态（320/10/4）；② 再经
+    80 元素 / 200 链接裁到 P3 同款训练态（320/10/4）；② 再经
     :func:`_render_observation_text` 排版成 ``标题：... 网址：...`` 形态。
 
     ``focus`` / ``keep`` / ``action_error`` 同 P2 的
@@ -467,6 +468,10 @@ def _rationale_text(rationale: Any) -> str:
         # 扁平形态（兜底）：{"text": "...", "conclusion": "..."} 顶层
         text = str(rationale.get("text") or "").strip()
         conclusion = str(rationale.get("conclusion") or "").strip()
+    # 训练侧清洗：去掉「目前没有此前操作。」这类空状态陈述（2026-11-10
+    # owner 指出）。P1 原文不动，只清洗 T/P3 组装出来的视图；两段必须
+    # 用同一个函数，否则复核视图与训练视图会对同一句显示不同文本。
+    text = strip_empty_history_lead_in(text)
     parts = [p for p in (text, conclusion) if p]
     return ("\n".join(parts) + "\n") if parts else ""
 

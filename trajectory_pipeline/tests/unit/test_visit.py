@@ -1487,7 +1487,7 @@ class TestRunRecordAudit:
             assert token not in blob
 
     async def test_元素落盘被裁时总量字段仍在(self):
-        """D-2 的机械前提：落盘条数上限 80、链接上限 50，
+        """D-2 的机械前提：落盘元素上限 80、链接上限 200，
         而 ``elements_total`` 记的是**裁之前**的量。
 
         没它就是「两种相反的错误同形」：页面真有 300 个控件而采了 80，
@@ -1499,7 +1499,7 @@ class TestRunRecordAudit:
         )
 
         elements = tuple(("e%d" % i, "a", "链接%d" % i) for i in range(120))
-        links = tuple(("t%d" % i, "https://x.test/%d" % i) for i in range(90))
+        links = tuple(("t%d" % i, "https://x.test/%d" % i) for i in range(260))
         obs = Observation(
             url="https://x.test/",
             page_title="T",
@@ -1509,7 +1509,7 @@ class TestRunRecordAudit:
             ),
             links=tuple(LinkItem(text=t_, href=h) for t_, h in links),
             elements_total=120,
-            links_total=90,
+            links_total=260,
         )
         j = RunRecord(
             task_id="T001", title="t", query="q", search_url="u", search_obs=obs
@@ -1517,7 +1517,7 @@ class TestRunRecordAudit:
         assert len(j["interactive_elements"]) == OBS_ELEMENT_LIMIT
         assert len(j["links"]) == OBS_LINK_LIMIT
         assert j["elements_total"] == 120 > OBS_ELEMENT_LIMIT
-        assert j["links_total"] == 90 > OBS_LINK_LIMIT
+        assert j["links_total"] == 260 > OBS_LINK_LIMIT
 
     async def test_没设总量时按落盘条数兜底(self):
         """老观察对象（手工构造、第三方传入）没有这两个字段。

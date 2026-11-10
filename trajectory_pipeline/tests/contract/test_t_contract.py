@@ -1320,3 +1320,32 @@ class TestStorage读写:
         (d / "T001__b98b3e56.json").write_text("not json", encoding="utf-8")
         back = task_views.read_task_view("T001__b98b3e56", root=tmp_path)
         assert back is None
+
+
+# ── 2026-11-10：空状态前缀在 T 与 P3 同款去掉 ────────────────────
+
+
+class Test去空状态前缀:
+    """与 ``assembler.views`` 共用 ``common.rationale_text`` 的清理规则。
+
+    T 是复核视图、P3 是训练视图：同一句在两边显示不同文本，复核员
+    就会按一份并不存在的语料下判断。
+    """
+
+    def test_T消息视图去掉句首空状态(self):
+        archive = _archive(search_steps=[_step(
+            action=_action("goto", params={"url": "https://s.test"}),
+            observation=_obs_full(),
+            rationale={
+                "status": "written",
+                "text": "目前没有此前操作。先打开搜索页。",
+                "conclusion": "下一步看候选。",
+            },
+        )])
+        msgs = task_view.to_task_messages(archive)
+        assistant = next(
+            m for m in msgs
+            if m["role"] == "assistant" and "[动作]" in str(m.get("content"))
+        )
+        assert not assistant["content"].startswith("目前没有此前操作。")
+        assert "先打开搜索页" in assistant["content"]

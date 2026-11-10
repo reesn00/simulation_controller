@@ -113,6 +113,7 @@ from typing import Any, Mapping
 
 from trajectory_pipeline import toolcatalog
 from trajectory_pipeline.assembler import closing, observation_view, pool, screen
+from trajectory_pipeline.common.rationale_text import strip_empty_history_lead_in
 from trajectory_pipeline.storage import (
     DEFAULT_VIEWS_DIRNAME,
     VIEW_NAMES,
@@ -492,6 +493,9 @@ def _rationale_text(rationale: Any) -> str:
         # 扁平形态（兜底）：{"text": "...", "conclusion": "..."} 顶层
         text = str(rationale.get("text") or "").strip()
         conclusion = str(rationale.get("conclusion") or "").strip()
+    # 训练侧清洗：去掉「目前没有此前操作。」这类空状态陈述（2026-11-10
+    # owner 指出）。P1 原文不动，只清洗组装出来的视图。
+    text = strip_empty_history_lead_in(text)
     parts = [p for p in (text, conclusion) if p]
     return ("\n".join(parts) + "\n") if parts else ""
 

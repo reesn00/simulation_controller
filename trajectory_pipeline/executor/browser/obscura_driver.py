@@ -438,7 +438,7 @@ class ObscuraDriver:
             interactive_elements=elements,
             links=tuple(LinkItem(text=l.text, href=l.href) for l in links),
             # 采到的条数（已被 DEFAULT_LIMIT 截断）——存档侧还会再截到
-            # 80/50，落盘的量必须能对上，否则 D-2 分不清「被裁掉」与
+            # 80/200，落盘的量必须能对上，否则 D-2 分不清「被裁掉」与
             # 「不存在」。理由见 Observation.elements_total 的说明。
             elements_total=len(elements),
             links_total=len(links),

@@ -899,3 +899,56 @@ class TestRationaleText形态:
         assistant = next(m for m in msgs if m["role"] == "assistant")
         assert "我要先打开百度" in assistant["content"], \
             f"思考文本没渲染进 assistant.content：{assistant['content']!r}"
+
+
+# ── 2026-11-10：空状态前缀不进训练视图 ────────────────────────────
+
+
+class Test去空状态前缀:
+    """「目前没有此前操作。」是模型对空上下文的陈述，不是思考。
+
+    ⚠️ 只删句首的**精确句**：正文里出现（复述、引用）不动，
+    「目前没有找到可播放页面」这类有效事实更不动。
+    """
+
+    def test_openai视图去掉句首空状态(self):
+        s = _sample(six={"rationales": [{
+            "step_index": 0, "status": "written",
+            "rationale": {
+                "text": "目前没有此前操作。要寻找正片，先打开搜索页。",
+                "conclusion": "下一步打开搜索页。",
+            },
+        }]})
+        assistant = next(
+            m for m in views.to_openai_messages(s) if m["role"] == "assistant"
+        )
+        assert not assistant["content"].startswith("目前没有此前操作。")
+        assert "要寻找正片" in assistant["content"]
+        assert "下一步打开搜索页。" in assistant["content"]
+
+    def test_messages视图同样去掉(self):
+        s = _sample(six={"rationales": [{
+            "step_index": 0, "status": "written",
+            "rationale": {
+                "text": "目前没有此前操作。先搜索。",
+                "conclusion": "打开搜索页。",
+            },
+        }]})
+        assistant = next(
+            m for m in views.to_messages(s) if m["role"] == "assistant"
+        )
+        assert "目前没有此前操作" not in assistant["content"]
+
+    def test_正文里的同一句不动(self):
+        """只删句首。复述/引用里的同一句是有效内容，删了就是伪造。"""
+        s = _sample(six={"rationales": [{
+            "step_index": 0, "status": "written",
+            "rationale": {
+                "text": "复核员说「目前没有此前操作。」这句要删，我先按新口径走。",
+                "conclusion": "继续。",
+            },
+        }]})
+        assistant = next(
+            m for m in views.to_openai_messages(s) if m["role"] == "assistant"
+        )
+        assert "目前没有此前操作。" in assistant["content"]

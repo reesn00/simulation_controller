@@ -345,7 +345,7 @@ class TestTotalsAccounting:
     async def test_总量等于本次实际采到的条数(self):
         """口径写在字段说明里：**不是页面真总数**，是 driver 这一轮
         拿到的条数（可能被 ``DEFAULT_LIMIT`` 截断）。这个口径够 D-2 用——
-        存档侧还有第二层 80/50 裁剪，两层都记下才不会丢信息。"""
+        存档侧还有第二层 80/200 裁剪，两层都记下才不会丢信息。"""
         obs = await driver_for().observe()
         assert obs.elements_total == len(obs.interactive_elements)
 
