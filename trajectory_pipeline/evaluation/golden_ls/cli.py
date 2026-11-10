@@ -125,6 +125,40 @@ def _label_config_name(scope: str) -> str:
     raise GoldenCliError(f"未知的粒度 {scope!r}；可选 {list(SCOPES)}")
 
 
+def _label_config_for_plan(
+    args: argparse.Namespace, version: int, scope: str
+) -> tuple[str, str | None]:
+    """本次上传该记哪个 ``label_config_sha`` —— **项目建的时候那份**。
+
+    项目里存的是**建项目那一刻的快照**（``init-project`` 之后不 PATCH）。
+    渲染代码升级后（轨迹级 2026-11-10 新增 ⑩ SFT 训练数据），老项目仍是
+    九块 ⇒ 把**新** sha 写进推送计划、或拿新 XML 覆盖留底，等于伪造证据：
+    事后核对会以为项目长了第十块，而页面上根本没有那个控件。
+
+    Returns:
+        ``(sha, xml)``。``xml`` 非空 ⇒ 本次渲染与台账一致，照常写留底；
+        ``None`` ⇒ 项目在旧配置上，**不覆盖留底**，计划记台账那份 sha。
+    """
+    xml = render_label_config(scope=scope)
+    sha = label_config_sha(xml)
+    record = GoldenProjectIndex.load(_ledger_path(args)).get(version, scope)
+    if (
+        record is not None
+        and record.label_config_sha
+        and record.label_config_sha != sha
+    ):
+        print(
+            f"⚠ v{version} 的 {scope} 级项目 pid={record.project_id} 建在旧 "
+            f"label_config 上（台账 sha={record.label_config_sha}，本次渲染 "
+            f"sha={sha}）——项目存的是快照、不 PATCH ⇒ **新增/改动的块不会"
+            "显示**；推送计划按台账 sha 记，**不覆盖旧留底**。要用新配置，"
+            "请用新版本号建新项目。",
+            file=sys.stderr,
+        )
+        return record.label_config_sha, None
+    return sha, xml
+
+
 def _select_splits(args: argparse.Namespace) -> list[str]:
     """本次要传的档（**默认三档全传**——裁定③）。
 
@@ -460,10 +494,11 @@ def _cmd_upload_site(
 
     out_dir = _version_dir(version)
     out_dir.mkdir(parents=True, exist_ok=True)
-    xml = render_label_config(scope=SCOPE_SITE)
-    _write_text_bytes(out_dir / _label_config_name(SCOPE_SITE), xml)
+    sha, xml = _label_config_for_plan(args, version, SCOPE_SITE)
+    if xml is not None:
+        _write_text_bytes(out_dir / _label_config_name(SCOPE_SITE), xml)
     _write_plan(
-        out_dir, version, result, markers, selected, prev_version, label_config_sha(xml)
+        out_dir, version, result, markers, selected, prev_version, sha
     )
 
     pushed = 0
@@ -560,10 +595,11 @@ def _cmd_upload_trajectory(
 
     out_dir = _version_dir(version)
     out_dir.mkdir(parents=True, exist_ok=True)
-    xml = render_label_config(scope=SCOPE_TRAJECTORY)
-    _write_text_bytes(out_dir / _label_config_name(SCOPE_TRAJECTORY), xml)
+    sha, xml = _label_config_for_plan(args, version, SCOPE_TRAJECTORY)
+    if xml is not None:
+        _write_text_bytes(out_dir / _label_config_name(SCOPE_TRAJECTORY), xml)
     _write_plan(
-        out_dir, version, result, markers, selected, prev_version, label_config_sha(xml)
+        out_dir, version, result, markers, selected, prev_version, sha
     )
 
     pushed = 0
@@ -637,6 +673,7 @@ def _write_plan(
                             "marker": stat.get("marker") or markers.get(gid, ""),
                             "scene_found": stat.get("scene_found"),
                             "trajectory_found": stat.get("trajectory_found"),
+                            "sft_found": stat.get("sft_found"),
                             "signature": stat.get("signature"),
                             "signature_kind": stat.get("signature_kind"),
                             "rejected": stat.get("rejected"),

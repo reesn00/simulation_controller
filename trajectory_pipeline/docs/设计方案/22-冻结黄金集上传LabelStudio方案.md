@@ -245,10 +245,14 @@ uv run python -m trajectory_pipeline.evaluation.golden_ls upload --version 15
 - `data.sample_id = golden_id` ⇒ 直接复用现成的 `PushIndex` 判重
   （LS 1.23 **既不认字符串 inner_id、也不按 inner_id 去重**，本地台账是唯一防线）。
 
-### 3.2 `task.data` 的九个区块
+### 3.2 `task.data` 的区块：站点级九个 / 轨迹级十个
 
 > **顺序 = 人读的顺序**（同 `evidence.scene_summary` 的口径：结论在前，现场在后，
 > 长正文最后）。
+>
+> ⚠️ **2026-11-10**：轨迹级在 ⑨ 之后**新增第 ⑩ 块 SFT 训练数据**（owner 要求
+> 「上传 LS 要把 SFT 训练数据也上传」）。**站点级仍是九个、一个字节不动**
+> （v14/v15 的历史 sha 不能漂）；⑩ 只在轨迹级出现。
 
 | # | 区块 | 内容 | 来源 |
 |---|---|---|---|
@@ -261,6 +265,7 @@ uv run python -m trajectory_pipeline.evaluation.golden_ls upload --version 15
 | ⑦ | **尺子** | rubric 条款原文（卡自己的条款 + D-4 + D-5）+ **分支标签表 + 分支前置事实表** | `calibration.evidence.load_clauses`（现读）+ `executor.branches`（现读） |
 | ⑧ | **轨迹（T 视图）** | per-Run 完整任务视图的 messages / openai / meta（渲染文本 + 原始视图） | `ls_bridge.exporter.read_task_view` |
 | ⑨ | **persona** | 六维 persona | 行内 |
+| ⑩ | **SFT 训练数据**（**仅轨迹级**） | **P3 训练视图原样**：`openai.messages` / `openai.tools` / `meta`（+ `messages.json` 条数）。这是训练真正吃的文件，不是 ⑧ 的副本——⑧ 读 T（P1 的另一份渲染），⑩ 读 P3（P2 的另一份渲染） | `storage.read_p3.read_views`（交付池 `views/`；旧面 `legacy/` **不读**） |
 
 **⑦ 为什么现读而不抄进 label_config**：分支表（22 类）、前置事实表、rubric 条款
 **都是代码/文档里的真源**。抄第二份必然漂（CLAUDE.md 纪律 6 的老账）⇒ 一律
@@ -274,8 +279,8 @@ uv run python -m trajectory_pipeline.evaluation.golden_ls upload --version 15
 - **结构性控件**（手写部分，永远稳定）：隐藏锚点 `task_anchor` / `task`
   （LS 1.23 实测：`<TextArea>` 的 `toName` 必须指向真实存在的 tag，缺了直接
   `Validation failed on : 'toName' is a required property`；隐藏只能靠
-  `<View style="display:none">`）· 九个区块的只读 `<TextArea>` · 裁决 `<Choices>` ·
-  理由 `<TextArea>`。
+  `<View style="display:none">`）· 只读 `<TextArea>`（站点级九个 / 轨迹级十个，
+  见 §3.2）· 裁决 `<Choices>` · 理由 `<TextArea>`。
 - **分支选项**（**从 `executor.branches.BRANCH_LABELS` 现读渲染成 `<Choice>`**）：
   22 类封闭集做成下拉，比自由文本可靠——自由文本会拼出非法分支名。
 
@@ -427,7 +432,7 @@ uv run python -m trajectory_pipeline.evaluation.golden_ls export-annotations --v
 | `__main__.py` | `python -m trajectory_pipeline.evaluation.golden_ls` 入口 |
 | `dataset.py` | 读冻结档（manifest / 三档行 / 版本列表）；**只读**，复用 `calibration.worklist.load_frozen_rows` |
 | `label_config.py` | **渲染** `golden_review_v1` 的 XML（分支选项**现读** `BRANCH_LABELS`）+ `label_config_sha` |
-| `exporter.py` | 冻结行 → `task.data` 的九个区块（**纯函数、不联网**）+ 凭据扫描 + 逐行读数 `GoldenExportResult` |
+| `exporter.py` | 冻结行 → `task.data` 的九个区块（站点级）/ 十个（轨迹级，多 ⑩ SFT 训练数据）（**纯函数、不联网**）+ 凭据扫描 + 逐行读数 `GoldenExportResult` |
 | `diff.py` | 相对上一版的变更标记（`changed`/`unchanged`/`new`/`id_migrated`）+ `--only-changed` 过滤 |
 | `report.py` | 推送计划的读数视图（分档 / **两个一致率口径** / 现场与 T 视图可得率 / 署名分布 / 变更分布）+ 人读文本 |
 | `projects.py` | 项目台账（append-only JSONL）+ 版本 → 项目 id 解析 + **`pending`（冻结了没推的版本）** |
@@ -475,7 +480,7 @@ uv run python -m trajectory_pipeline.evaluation.golden_ls export-annotations --v
 | 单测 | 变更标记：`changed`/`unchanged`/`new`/`id_migrated` 四态判对；**没有可比对象 ⇒ 全判 `new`**（不是 `unchanged`——两者后果相反）；`--only-changed` 过滤后条数对 | `tests/unit/test_golden_ls_diff.py` |
 | 单测 | CLI 不联网的部分：档名拼错退 2 / 上一版按版本号 / `--batch-size` 真的生效 / `projects`·`pending` 无凭据也能跑 | `tests/unit/test_golden_ls_cli.py` |
 | 契约 A1 | **导入方向单向**：`golden_ls → ls_bridge` 可以；`ls_bridge` **不许**反向 import `golden` / `executor`（§0.3 第 3 条的机器版） | `tests/contract/test_golden_ls_contract.py` |
-| 契约 A2 | `data` 里出现的控件名 ⊆ 渲染 XML 里的控件名；九个块都有 `$key` 占位；`toName` 指向真实存在的 tag；`<Choices>` 指向**带 value 的** `<Text>`；不用 `alias=`；只用已注册标签 | 同上 |
+| 契约 A2 | `data` 里出现的控件名 ⊆ 渲染 XML 里的控件名；站点级九个 / 轨迹级十个块都有 `$key` 占位；`toName` 指向真实存在的 tag；`<Choices>` 指向**带 value 的** `<Text>`；不用 `alias=`；只用已注册标签 | 同上 |
 | 契约 A3 | 同一版本内 `golden_id` 唯一；`sample_id` = `golden_id`；三档行数对得上 | 同上 |
 | 契约 A4 | **导出记录里 `annotator` 与 `gold.reviewed_by` 两栏都在**（裁定④）——合成一栏即失败；**没复核的 task 也出一行**（漏掉会让覆盖率读成 100%） | 同上 |
 | 契约 A5 | **缺字段显式标注而非空值**（现场读不到 / T 视图读不到 / 维度分数三种状态） | 同上 |
@@ -671,7 +676,7 @@ LS 1.23 的 `validate_label_config` 只查**结构**（控件名对不对、`toN
 
 | # | 看什么 | 怎么算**不通过** |
 |---|---|---|
-| 1 | **区块齐不齐** | 九个区块（版本 / 站点 / 金标 / 代码 / 维度分 / 现场 / rubric / 变更 / 档）少任何一个，或顺序乱 |
+| 1 | **区块齐不齐** | 站点级九个区块（版本 / 站点 / 金标 / 代码 / 维度分 / 现场 / rubric / 轨迹 / persona）少任何一个，或顺序乱；**轨迹级还要多 ⑩ SFT 训练数据** |
 | 2 | **尺子在不在** | 页面里能直接读到 D-10 / D-4 / D-5 / D-6 的**判据与评分锚**——不必跳去别的页面才能判 |
 | 3 | **「没读到」是不是显式的** | 出现**空的**观察读数、**空字符串**、或「没读到」被写成「页面里没有 video 标签」⇒ **不通过**（R4 的老坑） |
 | 4 | **空维度 ≠ 0** | `d2: null` 要显示成「空 / 没测」，不能显示成 `0` 或 `5` |

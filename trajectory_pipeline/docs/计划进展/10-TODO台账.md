@@ -1033,3 +1033,37 @@ id 集合与冻结层**完全一致**、九区块齐全、prediction 0、人工�
   改判走 `annotate` 后冻结新版本（冻结档不覆盖 v19）。
 - E006 的 `success` 只判播放可用性：实际播放的是《危岛坠爱》，不是任务目标片名（相关性归 d6）。
 - v19 是试点隔离档，**不进**主数据根的三档口径（D-10 分母不变，仍读 v18 的 297 行）。
+
+---
+
+## 2026-11-10 LS 轨迹级增第 ⑩ 块：SFT 训练数据进上传流程
+
+> owner 指令：「上传ls需要把sft训练数据也上传。这个功能要求需要进入流程中。」
+> 现状区别：⑧ 是 **T 视图**（per-run 三视图合一，人工复核面），**不是** SFT 训练真正吃的那份；
+> 训练吃的是 P3 视图（`views/<tid>_{messages,openai,meta}.json`）。v19 之前 LS 上只有 ⑧，训练数据没进上传流程。
+
+**实现（`evaluation/golden_ls/`）**
+
+| 落点 | 改动 | 要点 |
+|---|---|---|
+| `label_config.py` | `SFT_BLOCK_CONTROL="sft_block"`；`TRAJECTORY_BLOCK_CONTROLS = BLOCK_CONTROLS + (SFT_BLOCK_CONTROL,)` | **站点级仍是九块、字节冻结**（sha `376f822addb1` 不变）；轨迹级十块 |
+| `exporter.py` | `read_sft_sample` / `render_sft_block` / `render_tools_text` | 经 `storage.read_p3.read_views` 读 P3 三视图（**不读 `legacy/<surface>/views/`**，O-3）；缺一份 ⇒ 块里写「没读到」并说明**不是**「这条轨迹没有训练数据」；渲染 `openai.messages` + `openai.tools` + `meta.json` |
+| `cli.py` | `_label_config_for_plan` | LS 项目存 label_config **快照**、不支持 PATCH ⇒ 老项目**不覆盖留底**、推送计划按台账 sha 记；新项目才写本次渲染 |
+| `report.py` | `coverage()` 加 `sft_found` / `sft_ratio` | dry-run/报告出 **SFT 训练样本可得率**；计划行加 `sft_found` |
+
+**契约读数（2026-11-10）**
+
+- label_config sha：站点级 `376f822addb1`（**未动**）；轨迹级 `c4dcb125b052`（v17–v19 项目 83 的快照）→ **`2a3d3c1fe49b`**（含 ⑩）。
+- v19 轨迹级 dry-run（主树数据 + 主树台账）：**3 条轨迹 / 29 站点明细；现场 3/3、T 3/3、SFT 3/3**；计划头 `label_config_sha=c4dcb125b052`（项目 83 实际快照），三行 `sft_found=true`。
+- ⑩ 块不是空壳：渲染后 E001 57,898 字符（openai.messages 94 条 / tools 14 个）、E005 44,791、E006 21,544；对应 ⑧ 块见上节。
+- ⑧ 与 ⑩ **同源不同物**：⑧ 从 `task_views/` 读 T 视图，⑩ 从 `views/` 读 P3；当期两者 openai 内容等价，但 ⑩ 记的是**训练真正吃的那一份**，不是 T 的影子。
+
+**未闭环**
+
+- **项目 83（以及 v17/v18 的轨迹项目）不会出现 ⑩**：LS 项目存的是建项目时的 label_config 快照，`push_batch` 又按 `sample_id` 去重 ⇒ 重新上传也改不了。上文 v19 的「九区块齐全」是当时快照、仍是事实。要看到 ⑩，必须**用新版本号建新轨迹项目**（LS 写入，须 owner 授权）；旧项目保留作历史证据，不删不改。
+- 已冻结的 v19 若要换新项目，需要重新 `init-project`（标题不同 ⇒ 新 pid）后上传。
+
+**验证**
+
+- 定向：scope / export / cli / contract 四文件 **178 passed**。
+- 全量（worktree，串行）：**5140 passed / 46 skipped / 1 failed**；唯一红是 `test_rubric_changelog::test_真实文档引了卡所以印对号`——worktree 只有 `calibration/v19`、缺 `calibration/v16/disagreements.jsonl`，而该测试的跳过条件只查父目录 ⇒ 环境性红，与本次改动无关（主树产物齐备时应通过）。

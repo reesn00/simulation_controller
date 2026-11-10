@@ -39,10 +39,16 @@ from trajectory_pipeline.evaluation.golden_ls.scope import (
 )
 from trajectory_pipeline.evaluation.ls_bridge.exporter import TASK_ANCHOR_CONTROL
 
-#: 九个只读展示块。**与 task.data 的键逐字一致**（契约测试盯住两处）。
+#: 九个只读展示块（**站点级**那一份）。**与 task.data 的键逐字一致**
+#: （契约测试盯住两处）。
 #:
 #: 顺序 = 人读的顺序：结论在前，现场在后，长正文最后（与
 #: ``evidence.scene_summary`` 的口径同源）。
+#:
+#: ⚠️ **站点级是冻结的**：v14/v15 的 ``label_config_sha`` 记在台账里，
+#: 块数/顺序/文案一个都别动。轨迹级在第九块之后**多一块**——
+#: :data:`TRAJECTORY_BLOCK_CONTROLS` 的 ⑩ SFT 训练数据（2026-11-10 需求：
+#: 「上传 LS 要把 SFT 训练数据也上传」，见 ``render_sft_block``）。
 BLOCK_CONTROLS: tuple[str, ...] = (
     "version_block",   # ① 版本与署名
     "site_block",      # ② 站点与来源
@@ -54,6 +60,17 @@ BLOCK_CONTROLS: tuple[str, ...] = (
     "trajectory_block",  # ⑧ 轨迹（T 视图）
     "persona_block",   # ⑨ persona
 )
+
+#: ⑩ SFT 训练数据块（**只在轨迹级**）。内容读 P3 视图，不读 T 视图。
+SFT_BLOCK_CONTROL = "sft_block"
+
+#: 轨迹级的块表 = 站点级九块 + ⑩ SFT 训练数据。
+#:
+#: ⚠️ **不是「块数永远不变」**：这句话原来的意思是「加 ``scope`` 参数时
+#: 不借机改站点级的块」，站点级仍然守着。轨迹级这次**显式加第十块**是因为
+#: 人工复核要看的对象多了一个：**训练真正吃的那份 P3**（⑧ 是 T 视图，
+#: 给复核；⑩ 是 P3 训练视图，给训练）。两种视图来源不同，不能互相替代。
+TRAJECTORY_BLOCK_CONTROLS: tuple[str, ...] = BLOCK_CONTROLS + (SFT_BLOCK_CONTROL,)
 
 #: 裁决控件。
 VERDICT_CONTROL = "verdict"
@@ -96,11 +113,12 @@ _HEADERS_SITE: dict[str, str] = {
     "persona_block": "══ ⑨ persona ══",
 }
 
-#: 轨迹级那一份**只改文案**（键、控件、块数一个不改）。
+#: 轨迹级那一份：九块只改文案（键与顺序不动），另**加**第 ⑩ 块。
 _HEADERS_TRAJECTORY: dict[str, str] = {
     "site_block": "══ ② 轨迹与来源 ══ 这条轨迹经过的站点「逐站一行」",
     "gold_block": "══ ③ 金标（人工真值）══ 这一格是「人核整条轨迹」的结论",
     "code_block": "══ ④ 代码判定与证据 ══ 裁定②：看「最后一个」结论",
+    "sft_block": "══ ⑩ SFT 训练数据 ══ P3 视图（训练真正吃的那份：openai.messages + tools + meta）",
 }
 
 
@@ -126,14 +144,20 @@ def render_label_config(
         branches: 分支 → 中文标签。**默认现读**
             :data:`executor.branches.BRANCH_LABELS`（真源）；测试可注入
             固定映射以免依赖被执行层状态。
-        scope: 标注单元的粒度（``site`` / ``trajectory``）。**只影响文案**
-            ——九个块的**键一个不改**（:data:`BLOCK_CONTROLS` 是契约）。
+        scope: 标注单元的粒度（``site`` / ``trajectory``）。站点级是九块
+            （:data:`BLOCK_CONTROLS`，冻结）；轨迹级是十块
+            （:data:`TRAJECTORY_BLOCK_CONTROLS`，多一个 ⑩ SFT 训练数据）。
 
     ⚠️ **站点级的渲染结果与本函数加 scope 之前逐字相同**：历史档
     （v14/v15/v16）的 ``label_config_sha`` 记在台账里，**改一个字**
     ⇒ 事后核对会说「配置漂了」⇒ 白推一遍。⇒ 站点级那一份是**冻结的**，
     轨迹级另出一份（页眉写「轨迹」而不是「站点」——标注员得知道自己
     在判一条轨迹还是判一个站点）。
+
+    ⚠️ **轨迹级 2026-11-10 加了第 ⑩ 块**（SFT 训练数据）。项目里存的是
+    建项目那一刻的快照 ⇒ **已有项目不会自动长出这一块**，要用新版本号
+    建新项目。``cli`` 的 upload 会核对台账 sha 并在对不上时**不覆盖留底**
+    （见 ``_label_config_for_plan``），别把新 sha 记到旧项目头上。
     """
     if branches is None:
         from trajectory_pipeline.executor.branches import BRANCH_LABELS
@@ -165,9 +189,14 @@ def render_label_config(
     rows = {
         "version_block": 8, "site_block": 6, "gold_block": 6, "code_block": 8,
         "scores_block": 10, "scene_block": 16, "rubric_block": 20,
-        "trajectory_block": 16, "persona_block": 8,
+        "trajectory_block": 16, "persona_block": 8, "sft_block": 28,
     }
-    for control in BLOCK_CONTROLS:
+    blocks = (
+        TRAJECTORY_BLOCK_CONTROLS
+        if scope == SCOPE_TRAJECTORY
+        else BLOCK_CONTROLS
+    )
+    for control in blocks:
         add(f'  <Header value="{_esc(headers[control])}"/>')
         add(
             f'  <TextArea name="{control}" toName="{TASK_ANCHOR_CONTROL}" '
@@ -235,6 +264,8 @@ def label_config_matches(stored: str, rendered: str) -> bool:
 
 __all__ = [
     "BLOCK_CONTROLS",
+    "SFT_BLOCK_CONTROL",
+    "TRAJECTORY_BLOCK_CONTROLS",
     "CHOICE_TARGET",
     "HUMAN_BRANCH_CONTROL",
     "NOT_APPLICABLE",

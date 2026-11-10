@@ -251,6 +251,49 @@ class TestArtifactsAreByteStable:
         assert label_config_sha(xml) == __import__("hashlib").sha256(raw).hexdigest()[:12]
 
 
+# ── label_config 快照：老项目不许记新 sha ───────────────────────
+
+
+class TestLabelConfigSnapshot:
+    def test_新项目用本次渲染的sha(self, tmp_path) -> None:
+        from trajectory_pipeline.evaluation.golden_ls.label_config import (
+            label_config_sha,
+            render_label_config,
+        )
+        from trajectory_pipeline.evaluation.golden_ls.scope import SCOPE_TRAJECTORY
+
+        args = _ns(ledger=str(tmp_path / "projects.jsonl"))
+        sha, xml = cli._label_config_for_plan(args, 19, SCOPE_TRAJECTORY)
+        assert xml is not None
+        assert sha == label_config_sha(render_label_config(scope=SCOPE_TRAJECTORY))
+
+    def test_老项目不覆盖留底且计划记台账sha(self, tmp_path, capsys) -> None:
+        """项目存的是建项目时的快照 ⇒ 渲染升级后不能把新 sha 记到旧项目头上。"""
+        from trajectory_pipeline.evaluation.golden_ls.projects import (
+            GoldenProjectIndex,
+        )
+        from trajectory_pipeline.evaluation.golden_ls.scope import SCOPE_TRAJECTORY
+
+        ledger = tmp_path / "projects.jsonl"
+        index = GoldenProjectIndex.load(ledger)
+        index.record(
+            index.new_record(
+                19,
+                83,
+                title="golden-v19-traj",
+                label_config_sha="deadbeefcafe",
+                scope=SCOPE_TRAJECTORY,
+            )
+        )
+        args = _ns(ledger=str(ledger))
+        sha, xml = cli._label_config_for_plan(args, 19, SCOPE_TRAJECTORY)
+        assert xml is None, "老项目不许拿新渲染覆盖留底"
+        assert sha == "deadbeefcafe", "推送计划要记项目实际用的那份 sha"
+        err = capsys.readouterr().err
+        assert "旧 label_config" in err
+        assert "不会显示" in err
+
+
 # ── 用法错误退 2 ────────────────────────────────────────────────
 
 

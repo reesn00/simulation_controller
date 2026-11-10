@@ -27,6 +27,7 @@ import pytest
 from trajectory_pipeline.evaluation.golden_ls import dataset, exporter
 from trajectory_pipeline.evaluation.golden_ls import verdicts as ls_verdicts
 from trajectory_pipeline.evaluation.golden_ls import label_config as lc
+from trajectory_pipeline.evaluation.golden_ls.scope import SCOPE_SITE, SCOPE_TRAJECTORY
 
 GOLDEN_LS_DIR = Path("trajectory_pipeline/evaluation/golden_ls")
 LS_BRIDGE_DIR = Path("trajectory_pipeline/evaluation/ls_bridge")
@@ -275,6 +276,16 @@ class TestControlAndKeySync:
         xml = _label_config_xml()
         for control in lc.BLOCK_CONTROLS:
             assert f"${control}" in xml, f"label_config 缺占位符 ${control}"
+
+    def test_轨迹级十块含SFT(self) -> None:
+        """轨迹级 = 站点级九块 + ⑩ SFT 训练数据；站点级不许多出这一块。"""
+        xml = lc.render_label_config(scope=SCOPE_TRAJECTORY)
+        for control in lc.TRAJECTORY_BLOCK_CONTROLS:
+            assert f'name="{control}"' in xml, f"轨迹级缺控件 {control}"
+            assert f"${control}" in xml, f"轨迹级缺占位符 ${control}"
+        assert lc.SFT_BLOCK_CONTROL not in lc.BLOCK_CONTROLS
+        site = lc.render_label_config(scope=SCOPE_SITE)
+        assert f'name="{lc.SFT_BLOCK_CONTROL}"' not in site
 
     def test_裁决四控件都在(self) -> None:
         xml = _label_config_xml()

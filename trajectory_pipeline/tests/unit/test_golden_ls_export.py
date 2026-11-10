@@ -240,6 +240,108 @@ class TestLabelConfig:
         assert not label_config.label_config_matches(stored, xml.replace("<View>", "<View2>"))
 
 
+# ── ⑩ SFT 训练数据块（P3 视图） ────────────────────────────────
+
+
+def _sft_sample(tid: str = "T001__r1") -> dict:
+    return {
+        "messages": [{"role": "user", "content": "找片"}],
+        "openai": {
+            "sample_id": tid,
+            "messages": [
+                {"role": "system", "content": "系统"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_0",
+                            "function": {
+                                "name": "browser_navigate",
+                                "arguments": '{"url": "https://x"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_0", "content": "ok"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "browser_navigate",
+                        "description": "打开网址",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"url": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        },
+        "meta": {"outcome": "success", "tool_surface": "camofox-1"},
+    }
+
+
+class TestSftBlock:
+    def test_读不到要说清不是没有训练数据(self) -> None:
+        block = exporter.render_sft_block(None, tid="T001__r1")
+        assert "没读到 SFT 训练样本" in block
+        assert "不是" in block
+        # 旧面归档 ≠ 交付训练集（O-3）
+        assert "legacy" in block
+
+    def test_渲染的是P3训练视图(self) -> None:
+        block = exporter.render_sft_block(_sft_sample(), tid="T001__r1")
+        assert "P3 训练视图" in block
+        assert "sample_id: T001__r1" in block
+        assert "browser_navigate" in block
+        assert "工具声明" in block
+        assert "meta.json" in block
+        assert "outcome: success" in block
+
+    def test_sample_id对不上要报警(self) -> None:
+        block = exporter.render_sft_block(
+            _sft_sample(tid="T999__other"), tid="T001__r1"
+        )
+        assert "不是本轨迹的训练样本" in block
+
+    def test_读的是交付池views三份齐全(self, tmp_path) -> None:
+        from trajectory_pipeline.storage import views_dir
+
+        d = views_dir(tmp_path)
+        d.mkdir(parents=True)
+        sample = _sft_sample()
+        for name in ("messages", "openai", "meta"):
+            (d / f"T001__r1_{name}.json").write_text(
+                json.dumps(sample[name], ensure_ascii=False), encoding="utf-8"
+            )
+        row = {"task_id": "T001", "run_id": "r1"}
+        got = exporter.read_sft_sample(row, p2_root=tmp_path)
+        assert got is not None
+        assert got["openai"]["sample_id"] == "T001__r1"
+
+        # 三份是一组：缺一份就 fail-closed 返回 None（不返回半份）
+        (d / "T001__r1_meta.json").unlink()
+        assert exporter.read_sft_sample(row, p2_root=tmp_path) is None
+
+    def test_不读legacy池(self, tmp_path) -> None:
+        """旧面样本按 O-3 归档，不进交付训练集——读它会让分母随代码漂移。"""
+        d = tmp_path / "legacy" / "obscura-1" / "views"
+        d.mkdir(parents=True)
+        sample = _sft_sample()
+        for name in ("messages", "openai", "meta"):
+            (d / f"T001__r1_{name}.json").write_text(
+                json.dumps(sample[name], ensure_ascii=False), encoding="utf-8"
+            )
+        assert (
+            exporter.read_sft_sample(
+                {"task_id": "T001", "run_id": "r1"}, p2_root=tmp_path
+            )
+            is None
+        )
+
+
 # ── 署名分类（真源只有一处） ────────────────────────────────────
 
 

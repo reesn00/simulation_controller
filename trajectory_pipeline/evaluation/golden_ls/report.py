@@ -170,11 +170,14 @@ def d10_agreement(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def coverage(stats: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """现场 / T 视图 / 金标署名的可得率（分母 = 本次导出的行数）。
+    """现场 / T 视图 / SFT 训练样本 / 金标署名的可得率（分母 = 本次导出的行数）。
 
     ⚠️ **「读不到」不是「没有」**：现场读不到的行在区块⑥里明写「没读到
     现场」+ 定位说明（见 exporter 的渲染纪律）。这里的 ``scene_found``
     只是**覆盖率**的读数，不是「页面里没有播放控件」的结论。
+
+    ``sft_found`` 只在轨迹级出现（站点级行没有 ⑩ 块，键缺失 ⇒ 恒 0）——
+    **站点级的报表别拿它说事**。
 
     金标署名分三档（``golden.signatures`` 的分类）：``human``（人署的名）
     / ``automated``（自动验证器、AI 辅助——**没人逐条看过**）/ ``unknown``
@@ -183,6 +186,7 @@ def coverage(stats: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     total = len(stats)
     scene = sum(1 for s in stats if s.get("scene_found"))
     trajectory = sum(1 for s in stats if s.get("trajectory_found"))
+    sft = sum(1 for s in stats if s.get("sft_found"))
     human = sum(1 for s in stats if s.get("signature_kind") == "human")
     automated = sum(1 for s in stats if s.get("signature_kind") == "automated")
     unknown = sum(1 for s in stats if s.get("signature_kind") == "unknown")
@@ -197,6 +201,8 @@ def coverage(stats: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "scene_ratio": _ratio(scene),
         "trajectory_found": trajectory,
         "trajectory_ratio": _ratio(trajectory),
+        "sft_found": sft,
+        "sft_ratio": _ratio(sft),
         "signature_human": human,
         "signature_automated": automated,
         "signature_unknown": unknown,
@@ -503,6 +509,8 @@ def render_trajectory_report(report: Mapping[str, Any]) -> str:
             f"= {float(cover.get('scene_ratio') or 0):.1%}"
             f" ｜ T 视图可得率: {cover.get('trajectory_found')}/{cover.get('total')} "
             f"= {float(cover.get('trajectory_ratio') or 0):.1%}"
+            f" ｜ SFT 训练样本可得率: {cover.get('sft_found')}/{cover.get('total')} "
+            f"= {float(cover.get('sft_ratio') or 0):.1%}"
         ),
         "变更分布(全版): "
         + " / ".join(f"{k}={v}" for k, v in markers.items() if not k.startswith("__")),

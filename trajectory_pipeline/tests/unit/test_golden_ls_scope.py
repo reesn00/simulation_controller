@@ -185,10 +185,24 @@ class TestLabelConfig:
         traj = lc_mod.render_label_config(scope=scope_mod.SCOPE_TRAJECTORY)
         assert traj != site
         assert "轨迹" in traj
-        # 九个块的键一个不少、一个不改（契约是 BLOCK_CONTROLS）
+        # 站点级九块的键一个不少、一个不改（契约是 BLOCK_CONTROLS）
         for control in lc_mod.BLOCK_CONTROLS:
             assert f'name="{control}"' in traj
             assert f'name="{control}"' in site
+
+    def test_SFT块只在轨迹级(self) -> None:
+        """⑩ 是轨迹级**新增**的第十块；站点级一个字节都不动。"""
+        site = lc_mod.render_label_config(scope=scope_mod.SCOPE_SITE)
+        traj = lc_mod.render_label_config(scope=scope_mod.SCOPE_TRAJECTORY)
+        assert lc_mod.TRAJECTORY_BLOCK_CONTROLS == lc_mod.BLOCK_CONTROLS + (
+            lc_mod.SFT_BLOCK_CONTROL,
+        )
+        assert f'name="{lc_mod.SFT_BLOCK_CONTROL}"' in traj
+        assert f'${lc_mod.SFT_BLOCK_CONTROL}' in traj
+        assert lc_mod.SFT_BLOCK_CONTROL not in site
+        # 站点级仍是九块（历史档 sha 不能漂）
+        assert site.count('editable="false"') == len(lc_mod.BLOCK_CONTROLS)
+        assert traj.count('editable="false"') == len(lc_mod.TRAJECTORY_BLOCK_CONTROLS)
 
     def test_认不出的粒度报错(self) -> None:
         with pytest.raises(ValueError):
@@ -358,13 +372,26 @@ class TestTrajectoryExporter:
         assert "calibration" in data["split"]
         assert "holdout" in data["split"]
 
-    def test_九个块一个不少(self) -> None:
+    def test_十个块一个不少(self) -> None:
+        """轨迹级 = 站点级九块 + ⑩ SFT 训练数据。"""
         row = _traj_row()
         data = exporter_mod.build_trajectory_task_data(
-            row, version_meta={"version": 17}, clauses={}
+            row,
+            version_meta={"version": 17},
+            clauses={},
+            sft={
+                "messages": [],
+                "openai": {
+                    "sample_id": "T001__abcd1234",
+                    "messages": [],
+                    "tools": [],
+                },
+                "meta": {},
+            },
         )
-        for control in exporter_mod.BLOCK_CONTROLS:
+        for control in exporter_mod.TRAJECTORY_BLOCK_CONTROLS:
             assert control in data
+        assert "P3 训练视图" in data["sft_block"]
 
 
 class TestTrajectoryReport:

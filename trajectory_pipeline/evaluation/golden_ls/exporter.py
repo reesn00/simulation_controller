@@ -1,7 +1,7 @@
 """golden_ls.exporter: 冻结黄金行 → LS ``task.data``（方案 22 §3.2）。
 
-九个区块
---------
+九个区块（站点级）/ 十个区块（轨迹级）
+-------------------------------------
 顺序 = 人读的顺序（结论在前，现场在后，长正文最后）::
 
     ① version_block    版本 / 冻结时刻 / 口径版本 / **金标署名** / 变更标记
@@ -13,6 +13,11 @@
     ⑦ rubric_block     尺子（条款原文 / 分支表 / 前置事实 / 口径代）
     ⑧ trajectory_block T 视图（per-Run 完整任务视图）
     ⑨ persona_block    persona 六维
+    ⑩ sft_block        **P3 训练视图**（SFT 训练真正吃的 openai + meta）
+
+⚠️ **⑧ 与 ⑩ 不是一回事**：⑧ 读 ``task_views/``（T 视图，P1 的另一份渲染，
+给复核）；⑩ 读 ``views/``（P3 视图，P2 的另一份渲染，给训练）。per-Run 下
+两边今天逐条一致，但来源不同、消费方不同 ⇒ 改一边不会自动改另一边。
 
 三条硬纪律（都在下面落地，不是口号）
 ------------------------------------
@@ -42,7 +47,10 @@ from typing import Any, Mapping, Sequence
 from trajectory_pipeline.evaluation.calibration import evidence
 from trajectory_pipeline.evaluation.golden.signatures import classify_signature
 from trajectory_pipeline.evaluation.golden_ls import diff as diff_mod
-from trajectory_pipeline.evaluation.golden_ls.label_config import BLOCK_CONTROLS
+from trajectory_pipeline.evaluation.golden_ls.label_config import (
+    BLOCK_CONTROLS,
+    TRAJECTORY_BLOCK_CONTROLS,
+)
 from trajectory_pipeline.evaluation.ls_bridge.exporter import (
     ExportPlan,
     build_task,
@@ -52,6 +60,7 @@ from trajectory_pipeline.evaluation.ls_bridge.exporter import (
 )
 from trajectory_pipeline.evaluation.ls_bridge.scan import ScanHit, scan_for_credentials
 from trajectory_pipeline.evaluation.ls_bridge.settings import CredentialScanSettings
+from trajectory_pipeline.storage.read_p3 import read_views
 from trajectory_pipeline.storage.task_views import read_task_view, task_views_dir
 
 log = logging.getLogger(__name__)
@@ -410,6 +419,92 @@ def render_trajectory_block(trajectory: Mapping[str, Any] | None, *, tid: str) -
     return "\n".join(lines)
 
 
+def render_tools_text(tools: Any) -> str:
+    """P3 ``openai.tools`` 的工具声明 → 人读文本。
+
+    训练框架就是按这份声明校验 ``tool_calls`` 的 —— 标注员要核的是
+    **模型声明了什么工具**，所以名字 / 描述 / parameters 都原样铺开，
+    不做摘要（摘要是第二份口径，漂了不报错）。
+    """
+    if not isinstance(tools, list):
+        return "(tools 声明缺失或形态异常)"
+    lines: list[str] = []
+    for index, tool in enumerate(tools, 1):
+        if not isinstance(tool, Mapping):
+            continue
+        function = tool.get("function")
+        spec = function if isinstance(function, Mapping) else tool
+        name = str(spec.get("name") or "?")
+        description = str(spec.get("description") or "")
+        lines.append(f"{index}. {name}")
+        if description:
+            lines.append(f"   {description}")
+        parameters = spec.get("parameters")
+        if parameters is not None:
+            lines.append(
+                "   parameters: "
+                + json.dumps(parameters, ensure_ascii=False)
+            )
+    return "\n".join(lines) if lines else "(工具声明为空)"
+
+
+def render_sft_block(sample: Mapping[str, Any] | None, *, tid: str) -> str:
+    """⑩ SFT 训练数据（**P3 视图，训练真正吃的那份**）。读不到就说读不到。
+
+    ⚠️ **这是 ⑧ 之外的第二份视图，不是它的副本**：⑧ 读 T 视图（P1 的另一份
+    渲染，给复核）；这里读 P3（P2 的另一份渲染，给训练）。per-Run 下两边
+    今天内容一致，但**来源不同**——把这里改成调 ``read_trajectory`` 就等于
+    让训练侧的证据重新变成「复核视图的影子」，改 T 不会报错，但训练侧
+    看到的东西会悄悄跟着变。
+    """
+    if sample is None:
+        return (
+            f"⚠ **没读到 SFT 训练样本**（交付池 "
+            f"`views/{tid}_{{messages,openai,meta}}.json` 至少缺一份）——"
+            "**不是**「这条轨迹没有训练数据」。旧面样本按 O-3 归档在 "
+            "`legacy/<surface>/views/`，**不在交付训练集里**；要确认训练侧"
+            "拿到的是什么，先看交付池 `views/` 里有没有这份。"
+        )
+
+    openai = sample.get("openai")
+    openai_map = openai if isinstance(openai, Mapping) else {}
+    messages = openai_map.get("messages")
+    tools = openai_map.get("tools")
+    meta = sample.get("meta")
+    plain = sample.get("messages")
+    declared = str(openai_map.get("sample_id") or "")
+
+    lines = [
+        "── 来源・P3 训练视图（原样渲染，不重排；这就是 SFT 训练吃的那份）──",
+        f"sample_id: {tid}",
+        f"文件: views/{tid}_openai.json · views/{tid}_meta.json · "
+        f"views/{tid}_messages.json",
+        (
+            f"openai.messages: {len(messages) if isinstance(messages, list) else '?'} 条"
+            f" ｜ openai.tools: {len(tools) if isinstance(tools, list) else '?'} 个"
+            f" ｜ messages.json: {len(plain) if isinstance(plain, list) else '?'} 条"
+            "（纯文本保底形态）"
+        ),
+    ]
+    if declared and declared != tid:
+        lines.append(
+            f"⚠ openai.sample_id={declared} 与轨迹 id 不一致 —— "
+            "**这份不是本轨迹的训练样本**，别按它判"
+        )
+    lines.extend([
+        "",
+        "── openai.messages（function-calling 训练形态）──",
+        render_openai_text(openai),
+        "",
+        "── openai.tools（工具声明）──",
+        render_tools_text(tools),
+        "",
+        "── meta.json（训练代码不看它；血缘 / 批次筛选 / 复核看它）──",
+        render_meta_text(meta),
+    ])
+    return "\n".join(lines)
+
+
 def render_persona_block(row: Mapping[str, Any]) -> str:
     """⑨ persona 六维。"""
     persona = row.get("persona") if isinstance(row.get("persona"), Mapping) else {}
@@ -509,6 +604,23 @@ def read_trajectory(
     """冻结行 → T 视图。**读不到返回 ``None``**（fail-closed，不返回半份）。"""
     tid = f"{row.get('task_id')}__{row.get('run_id')}"
     return read_task_view(tid, root=task_views_root)
+
+
+def read_sft_sample(
+    row: Mapping[str, Any],
+    *,
+    p2_root: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """冻结行 → P3 三视图（SFT 训练样本）。
+
+    **读的是交付池** ``<p2_root>/views/<tid>_{messages,openai,meta}.json``，
+    复用 :func:`storage.read_p3.read_views` 的 fail-closed 口径：三份里任一
+    缺失/坏档 ⇒ ``None``（不返回半份）。旧面样本在
+    ``legacy/<surface>/views/``，**这里不读**——它们按 O-3 不进交付训练集，
+    读进来会让「训练集里有什么」随代码版本漂移。
+    """
+    tid = f"{row.get('task_id')}__{row.get('run_id')}"
+    return read_views(tid, root=p2_root)
 
 
 def generated_at_of(
@@ -901,16 +1013,20 @@ def build_trajectory_task_data(
     marker: str = "",
     scene: Mapping[str, Any] | None = None,
     trajectory: Mapping[str, Any] | None = None,
+    sft: Mapping[str, Any] | None = None,
     branches: Mapping[str, str] | None = None,
     preconditions: Mapping[str, str] | None = None,
     era_note: str = "",
     generated_at: str = "",
 ) -> dict[str, Any]:
-    """一条**轨迹行** → ``task.data``（九个块，**纯函数**，不联网）。
+    """一条**轨迹行** → ``task.data``（十个块，**纯函数**，不联网）。
 
-    与 :func:`build_golden_task_data` 的差别只在**块的内容**：②③④⑤⑥ 换成
-    轨迹口径。**块的键一个不少、一个不改**（:data:`BLOCK_CONTROLS` 是契约，
-    契约测试盯住两处）。
+    与 :func:`build_golden_task_data` 的差别：②③④⑤⑥ 换成轨迹口径，并多
+    一个 ⑩ SFT 训练数据（:data:`TRAJECTORY_BLOCK_CONTROLS` —— 站点级九块、
+    轨迹级十块；契约测试盯住两处）。
+
+    ``trajectory``（T 视图）与 ``sft``（P3 训练视图）**是两个入参**：
+    由调用方分别去 ``task_views/`` 与 ``views/`` 取，组装这一步不碰文件系统。
     """
     if branches is None:
         from trajectory_pipeline.executor.branches import BRANCH_LABELS
@@ -952,10 +1068,13 @@ def build_trajectory_task_data(
             trajectory, tid=f"{row.get('task_id')}__{row.get('run_id')}"
         ),
         "persona_block": render_persona_block(row),
+        "sft_block": render_sft_block(
+            sft, tid=f"{row.get('task_id')}__{row.get('run_id')}"
+        ),
         "generated_at": generated_at,
         "uploaded_at": _now_iso(),
     }
-    missing = [c for c in BLOCK_CONTROLS if c not in data]
+    missing = [c for c in TRAJECTORY_BLOCK_CONTROLS if c not in data]
     if missing:  # pragma: no cover - 结构性错误，跑一次就该炸
         raise ValueError(f"task.data 缺展示块: {missing}")
     return data
@@ -999,6 +1118,7 @@ def export_trajectory_rows(
         marker = marker_map.get(gid, "")
         scene = read_trajectory_scene(row, p2_root=p2_root)
         trajectory = read_trajectory(row, task_views_root=task_views_root)
+        sft = read_sft_sample(row, p2_root=p2_root)
         data = build_trajectory_task_data(
             row,
             version_meta=version_meta,
@@ -1006,6 +1126,7 @@ def export_trajectory_rows(
             marker=marker,
             scene=scene,
             trajectory=trajectory,
+            sft=sft,
             era_note=era_note_for(row),
             generated_at=generated_at_of(row, task_views_root=task_views_root),
         )
@@ -1021,6 +1142,7 @@ def export_trajectory_rows(
             "scene_found": bool(scene.get("found")),
             "scene_status": str(scene.get("status") or ""),
             "trajectory_found": trajectory is not None,
+            "sft_found": sft is not None,
             "signature": signature,
             "signature_kind": classify_signature(signature),
             "rejected": bool(hits),
@@ -1047,6 +1169,7 @@ __all__ = [
     "export_trajectory_rows",
     "generated_at_of",
     "read_scene",
+    "read_sft_sample",
     "read_trajectory",
     "read_trajectory_scene",
     "render_code_block",
@@ -1056,6 +1179,8 @@ __all__ = [
     "render_scene_block",
     "render_site_block",
     "render_scores_block",
+    "render_sft_block",
+    "render_tools_text",
     "render_trajectory_block",
     "render_trajectory_code_block",
     "render_trajectory_gold_block",

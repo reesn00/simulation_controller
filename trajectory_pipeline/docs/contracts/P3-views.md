@@ -1,7 +1,7 @@
 # P3 训练视图 · 字段级契约
 
 **产出方**：渲染 [`assembler/views.py`](../../assembler/views.py)（`to_messages` / `to_openai_messages` / `to_meta`），落盘收拢在 `storage/`（`write_p3` / `read_p3`）
-**消费方**：训练框架（`messages.json` 保底形态 / `openai.json` function-calling 形态）、人工复核与批次筛选（`meta.json`）
+**消费方**：训练框架（`messages.json` 保底形态 / `openai.json` function-calling 形态）、人工复核与批次筛选（`meta.json`）、**LS 轨迹级的 ⑩ 块**（2026-11-10 起，只读展示 `openai` + `meta`，不是训练侧的回流）
 **落点**：`trajectory_pipeline/output/pipeline/views/<sample_id>_{messages,openai,meta}.json`
 
 > 本文以 **`views.py` 的实际输出**为准，不是设计意图的转述。

@@ -19,7 +19,7 @@
 |---|---|---|
 | 主键 | `<task_id>__<run_id>` | `<task_id>__<run_id>` —— **与 P3 逐字相同** |
 | 落点 | `output/pipeline/views/<id>_{messages,openai,meta}.json` | `output/pipeline/task_views/<task_id>__<run_id>.json` |
-| 消费方 | SFT 训练 | LS 上传 / L4 任务级复核 / 人工复核 |
+| 消费方 | SFT 训练 + **LS ⑩ 块展示**（2026-11-10 起） | LS 上传（⑧）/ L4 任务级复核 / 人工复核 |
 | 渲染源 | P2（per-Run 样本） | P1（per-Run 存档） |
 | 切条逻辑 | `split_archive` **0 或 1 条**（一个 Run 一条轨迹） | **不切条**——per-run 完整一份 |
 | `step_index` | 轨迹内全局（0..N-1，整条流摊平） | 全 run 重编（0..N-1） |
