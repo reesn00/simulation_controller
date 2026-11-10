@@ -809,7 +809,7 @@ B-2 分子不超分母（M-11）· 未判定明细截断留痕（M-12）· 补 6
 
 **B 组验证读数**：`test_d5_scorer.py` **80 passed**；`test_observation_shortfall_consistency.py` **13 passed**；`test_rubric_version.py` / `test_calibration_provenance.py` / `test_provenance_registry.py` 合计 **67 passed**；`test_golden_p2_supplement.py` **2 passed**；`test_golden_freeze_atomic.py` **2 passed**；`test_golden_ls_scope.py` / `test_golden_freeze_atomic.py` / `test_golden_three_split.py` / `test_golden_ls_reflow.py` 合计 **105 passed**。全量门禁（仓库根，**单独串行**）`pytest trajectory_pipeline/tests` = **5135 passed / 1 failed（695.03s）**，唯一红仍是已知存量 `test_calibration_evidence.py::test_真实v7上33张卡都能定位到现场`（Q-B3 / Q-35，实测 15/33 定位到），**B 组无新增红**（5125 → 5135，恰为 M-4 新增 4 条 + M-19/M-20 新增 2 条 + M-22 新增 2 条 + M-23 新增 2 条）。
 
-**P0 之后的开口（未做）**：L-7 `07-人工复核与判读手册.md` 缺失（CLAUDE.md 有引用）；M-2 / M-5 / M-6 评估器判分；M-14～M-17 / M-21 / M-24～M-26 校准/黄金集条目；L-22 报表三栏；L-24 v1.3 两个预期效果。L-8（方案 24 §7.2「已落地」）与 L-9（`04:215` 继承式冻结描述）已随 H-6 / H-5 同步更正。
+**P0 之后的开口（未做）**：L-7 `07-人工复核与判读手册.md` 缺失（CLAUDE.md 有引用）；M-2 / M-5 / M-6 评估器判分；M-14～M-17 / M-21 / M-24 / M-25 校准/黄金集条目（**M-26 随 H-2 闭合**，2026-11-10 回核）；L-22 报表三栏；L-24 v1.3 两个预期效果。L-8（方案 24 §7.2「已落地」）与 L-9（`04:215` 继承式冻结描述）已随 H-6 / H-5 同步更正。
 
 ## 2026-11-09 轨迹级冻结 v17 + LS 轨迹级推送
 
@@ -977,3 +977,59 @@ id 集合与冻结层**完全一致**、九区块齐全、prediction 0、人工�
 - `provenance._recompute_code_face` **刻意不接客户端**：它重算的是代码面，`DIM_FACES["d2"]` 仍记 `code`，hybrid 面登记口径未定。LLM 判过的 d2 读数在代码面重算时会落 `undetermined`，**不得读成「读数漂了」**。
 - 全量：**5131 passed / 47 skipped / 0 failed**（worktree，串行）。
 - **真实后端烟测**（2026-11-10，`evaluation.cli --dimension d2 --limit 1`，主树 P1）：`E001__427875ca` 1 条轨迹 → **7 个站点单元，6 出分 / 1 不可判定**（不可判定那条是某步观察三项全空，属采集事实残缺）；出分 **4 分 ×2 / 5 分 ×4**。证明接线可用、fail-closed 边界正确。⚠️ **这只是单份烟测，不是可评率**——调参池口径的 ≥60% 仍待整批重测。
+
+---
+
+## 2026-11-10 轨迹交付换面：三任务重跑 → v19 试点冻结 → LS 项目 83
+
+> 背景：v18 的 44 条轨迹全部来自 obscura 面（`access_surface: unrecorded`），
+> 分池后交付池只读 `task_views/`（camofox-1）⇒ LS 上 **44/44 的 ⑧ 轨迹块为空**。
+> 根因不是渲染，是那批轨迹本来就没有 camofox 面的 T 视图。
+> owner 指令：全部丢弃 obscura 轨迹，先取 3 条重跑后冻结上传。
+
+**重跑与隔离**
+
+- E001 让子弹飞 / E005 中国好声音 / E006 戛纳最佳短片2025，driver=camofox；
+  三份 P1/P2/T 视图均在交付池（`output/pipeline/{task}__{run}.json`、`samples/`、`task_views/`）。
+- v19 冻结在**独立 golden root** `output/pipeline/golden_v19_pilot/data`
+  （staging 只放这 3 份 P1/P2）⇒ 不污染主数据根 v18 的 297 行 D-10 基线。
+- 候选：29 个站点明细 + 3 条轨迹（走 deprecated `candidates` 入口）。
+  scout 三件套对这 3 条全部 `undetermined`——rule 来源的 `("", "unresolved")`
+  不在 `QUESTIONLESS_PAIRS`，属既有评分口径，本次**未改评分器**。
+
+**标注（ai-assisted-unconfirmed，32 行 = 29 站点 + 3 轨迹）**
+
+- 逐站按 P1 存档 evidence 判：not_play_site 7 / blocked 7 / unresolved 7 /
+  player_unverified 4 / login_required 1 / subscription_wall 1 /
+  unreachable_hard 1 / success 1。
+- `observed_at` 取 P1 存档**文件写入时刻**（存档 schema 无时间字段，这是现有可用的采集时刻代理）。
+- 与 code 逐标签不同 15 处，按语义等价类 12 处不一致（`unresolved` 与
+  `player_unverified` 同属 UNKNOWN，3 处不算分歧）：
+  `unresolved→not_play_site` 3、`unresolved→player_unverified` 3（等价类相同）、
+  `unresolved→blocked` 3、`unresolved→unreachable_hard` 1、
+  `login_required→subscription_wall` 1、`not_play_site→unresolved` 4（4 条搜索阶段候选
+  未访问，按 fail-closed 不判）。
+- ⇒ D-10 口径 C：头条 calibration **14/22 = 63.6%**、三档合计 **17/29 = 58.6%**。
+  **低于 80% 上岗线**——但金标是 `ai-assisted-unconfirmed` 初判，不据此下「代码变差」的结论。
+
+**冻结 v19（2026-11-10T03:18:27Z）**
+
+- 29 站点：calibration 22（75.9%）/ holdout 7 / regression 0；seed=42；
+  `--force`（偏差 10.9pp，manifest 已记）；采集面 `camofox-plain` ×29。
+- 轨迹层 3 条 / 29 站点明细，`_check_trajectory_layer` 通过；三条头部站点都在 calibration。
+- `golden_v19_pilot/data/v19/{calibration,holdout,manifest,trajectories}.jsonl`。
+
+**LS（owner 授权，2026-11-10）**
+
+- 项目 **83 `golden-v19-traj`**（`label_config.traj.xml` sha `c4dcb125b052`，与 v17/v18 同）；
+  `tasks_pushed=3`（1 批），task id 1050 / 1051 / 1052。
+- 回读：**T 视图可得率 3/3 = 100%**，⑧ 块 96980 / 69661 / 30351 字符（v18 是 0/44）；
+  现场可得率 3/3；九区块齐全；prediction 0、人工标注 0。
+- 推送留底 `output/pipeline/calibration/v19/ls_upload_plan.jsonl`。
+
+**未闭环**
+
+- 3 条轨迹与 29 行站点金标均为 `ai-assisted-unconfirmed` 初判，**待 owner 逐条复核**；
+  改判走 `annotate` 后冻结新版本（冻结档不覆盖 v19）。
+- E006 的 `success` 只判播放可用性：实际播放的是《危岛坠爱》，不是任务目标片名（相关性归 d6）。
+- v19 是试点隔离档，**不进**主数据根的三档口径（D-10 分母不变，仍读 v18 的 297 行）。
