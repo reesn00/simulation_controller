@@ -146,12 +146,18 @@ INC41 实测 13 个 undetermined 里：**8 对是纯元素裁剪（80/N）+ body
 | 实现 | 位置 | `obs=None` 守卫 | 已知差异 |
 |---|---|---|---|
 | `gates.observation_shortfall` | [`rationale/gates.py`](../../rationale/gates.py) 闸门三查 | 返回「没有观察」 | — |
-| `code_scorer._observation_shortfall` | [`evaluation/scorers/code_scorer.py`](../../evaluation/scorers/code_scorer.py) | **不**做 None 守卫 | callers 永传非 None，本契约不背锅 |
 | `d3_scorer._observation_shortfall` | [`evaluation/scorers/d3_scorer.py`](../../evaluation/scorers/d3_scorer.py) | 返回「没有观察」 | — |
 | `d9_scorer._observation_shortfall` | [`evaluation/scorers/d9_scorer.py`](../../evaluation/scorers/d9_scorer.py) | 返回「没有观察」 | — |
+| `d10_scorer._observation_usable` | [`evaluation/scorers/d10_scorer.py`](../../evaluation/scorers/d10_scorer.py) | 只收 `Mapping`，None 进不来 | 返回空串 = 可用 |
+
+**原第五处 `code_scorer._observation_shortfall` 已于 rubric v1.4 退出本契约**——
+D-2 自 v1.4 起只判「动作先后顺序是否连贯」，`degraded` / `truncated` /
+`elements_total` 被裁剪都不妨碍判断连贯性（唯一不可判是「这一步完全没有观察
+事实」），与本契约问的「观察是否充分到能判」不是一个问题；D-2 的可判边界由
+`tests/unit/test_code_scorer.py::TestScreen` 单独钉住。
 
 **契约测试**：[`tests/contract/test_observation_shortfall_consistency.py`](../../tests/contract/test_observation_shortfall_consistency.py)
-——10 条盯**决策边界**（`can_judge` 向量两两一致），**不**盯字面措辞。
+——盯**决策边界**（`can_judge` 向量两两一致），**不**盯字面措辞。
 
 **措辞漂移巡检工具**（reviewer 视角，**不是** contract 视角）：
 [`tests/contract/tools/observation_shortfall_wording_diff.py`](../../tests/contract/tools/observation_shortfall_wording_diff.py)

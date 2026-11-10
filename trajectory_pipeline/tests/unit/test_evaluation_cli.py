@@ -458,6 +458,74 @@ class TestLLMJudge接入:
         assert set(summary["dimensions"]) == {"d5", "d3", "d9"}
 
 
+class Test裁判后端接线:
+    """``main`` 按 ``TRAJECTORY_LLM_*`` 建裁判客户端的三态。
+
+    「没配」与「配了一半」必须在**出口上**分开：后者退 2（配置错误），
+    前者警告后继续（fail-closed 出 undetermined，批次不中断）。混成一种
+    时，报表上都是全维 undetermined——没人能从输出反推该去补什么。
+    """
+
+    def test_一个键都没配_D2继续跑并明说没配(self, tmp_path, capsys):
+        _archive(tmp_path / "T001__r1.json")
+        rc = ecli.main(["--out", str(tmp_path), "--dimension", "d2"])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "未配置 TRAJECTORY_LLM_*" in err
+        assert "undetermined" in err
+
+    def test_include_llm_judge没有env就退2(self, tmp_path, capsys):
+        """显式要 LLM 却一个键都没配：退 2。
+
+        静默跑成全部 undetermined 正是审查 L-3 记的「配置了也不出分、
+        还看不出来」——现在把它变成一次看得见的失败。
+        """
+        rc = ecli.main(["--out", str(tmp_path), "--dimension", "d9",
+                        "--include-llm-judge"])
+        assert rc == 2
+        assert "--include-llm-judge" in capsys.readouterr().err
+
+    def test_半配退2(self, tmp_path, monkeypatch, capsys):
+        """缺 MODEL 是配置错误，不是「没配」——必须退 2。"""
+        monkeypatch.setenv("TRAJECTORY_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+        rc = ecli.main(["--out", str(tmp_path), "--dimension", "d2"])
+        assert rc == 2
+        assert "LLM 配置错误" in capsys.readouterr().err
+
+    def test_no_llm与include互斥(self, tmp_path, capsys):
+        rc = ecli.main(["--out", str(tmp_path), "--dimension", "d2",
+                        "--no-llm", "--include-llm-judge"])
+        assert rc == 2
+        assert "互斥" in capsys.readouterr().err
+
+    def test_配齐后客户端传进LLM维度(self, tmp_path, monkeypatch, capsys):
+        """客户端只传给 ``LLM_DIMS``：d4 的签名没有 ``llm_client``，
+        无脑传会 TypeError——这条测试把「谁需要 LLM」的表钉在行为上。"""
+        _fake_sample(monkeypatch, n=1, score=5)
+        seen = {}
+
+        def fake_d2(unit, *, llm_client=None):
+            seen["d2"] = llm_client
+            return _V(5)
+
+        def fake_d4(unit):                 # 刻意不收 kwargs
+            seen["d4"] = True
+            return _V(4)
+
+        monkeypatch.setitem(ecli.SCORERS, "d2", fake_d2)
+        monkeypatch.setitem(ecli.SCORERS, "d4", fake_d4)
+        monkeypatch.setenv("TRAJECTORY_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+        monkeypatch.setenv("TRAJECTORY_LLM_MODEL", "test-model")
+        _archive(tmp_path / "T001__r1.json")
+
+        summary, _rows = ecli.evaluate(tmp_path, ["d2", "d4"],
+                                       llm_client=ecli.judge_client_from_env())
+        assert seen["d2"] is not None
+        assert seen["d4"] is True
+        assert summary["dimensions"]["d2"]["distribution"] == {"5": 1}
+        assert summary["dimensions"]["d4"]["distribution"] == {"4": 1}
+
+
 # ── 站点级评估（H-1：per-Run 后必须展开 site_views） ──────────────
 
 

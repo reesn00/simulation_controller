@@ -242,9 +242,17 @@ class TestCLI注入:
         got = backend.json_of(raw)
         assert got is not None and got["tool"] == "click" and got["ref"] == "e1"
 
-    def test_拼错则挡下且不静默跑成scripted(self, monkeypatch):
+    def test_拼错则挡下且不静默跑成scripted(
+            self, monkeypatch, clean_llm_env):
         from trajectory_pipeline.executor import cli
 
+        # ⚠️ **后端要显式配**：这条测的是「大小写/空白容错」，不是
+        # 「没后端怎么办」。``tests/conftest.py`` 会清空 ``TRAJECTORY_LLM_*``
+        # （测试永不真连后端），不在这里补上就会走「要 agent 但没后端」
+        # 的 FAIL 出口，mode 是空串——这条用例曾在开发机靠**环境里残留的
+        # 真实键**通过，属于随机器状态漂移的假绿。
+        monkeypatch.setenv("TRAJECTORY_LLM_BASE_URL", "http://127.0.0.1:8000/v1")
+        monkeypatch.setenv("TRAJECTORY_LLM_MODEL", "fake-model")
         monkeypatch.setenv(ENV_EXECUTOR_MODE, "Agent ")
         assert cli._resolve_executor(None)[0] == AGENT      # 大小写/空白容错
         monkeypatch.setenv(ENV_EXECUTOR_MODE, "agnt")

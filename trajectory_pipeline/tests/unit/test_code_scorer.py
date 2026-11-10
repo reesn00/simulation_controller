@@ -1,19 +1,22 @@
 """D-2 打分器（``evaluation/scorers/code_scorer.py``）单测。
 
-**这个模块存在的全部理由是「不判反」**。它要区分的三种情形在存档里
-长得一模一样或极其相似：
+rubric **v1.4** 起，D-2 判的是「**前后动作顺序正常、连贯**」，判法分两段：
 
-    页面真没有这个元素  |  元素落在裁剪区外  |  这一项根本没采到
+1. **代码筛**（:func:`screen_d2`）——机械提取时序疑点，不产出分数；
+2. **LLM 判语义**（:func:`score_d2`）——逐疑点判真伪、补漏、标严重度。
 
-前一种是轨迹的缺陷（扣分），后两种是采集的缺陷（**不扣分，先修采集器**）。
-把这三者混为一谈，得到的是一个「看起来很严谨」的分数，而它把采集器
-的问题记在了数据头上——而那批数据正是用来改进采集器的。
+「点击目标在不在观察的元素清单里」**不再是本维判据**。本文件的重点因此
+从「引用找没找到」换成三件事：
 
-所以本文件的重点不是「打分算得对」，是**不可判定的分支够不够多**。
+- **筛得对**：缺观察 / goto 落点不符 / 同页连续重复各自只在自己该触发时触发；
+- **不判反**：事实残缺（无模型动作 / 某步缺观察）与能力缺失（无 LLM /
+  输出不可解析 / 不合契约）一律 ``undetermined``，**不扣轨迹的分**；
+- **落档对**：只有**真断裂**计数，且「实质」优先于「轻微」。
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -21,51 +24,48 @@ import pytest
 from trajectory_pipeline.assembler import schema
 from trajectory_pipeline.assembler.schema import ActionView, GateMark, Sample
 from trajectory_pipeline.evaluation.scorers.code_scorer import (
-    LABEL_TRUNCATED_AT,
-    judge_ref,
+    BODY_PREVIEW_CHARS,
+    SEVERITIES,
+    BreakFinding,
+    _score_of,
+    screen_d2,
     score_d2,
 )
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 语料
+# 语料与替身
 # ═══════════════════════════════════════════════════════════════════════
 
 
 def _obs(**kw) -> dict[str, Any]:
-    """默认是一份**完整、无降级、未裁剪**的观察。
-
-    这三点默认值是刻意的：它们是「可以判『不存在』」的前提。
-    默认就带降级的话，所有「missing」用例都会被不可判定吞掉，
-    而那条分支正是最该被单独测出来的。
-    """
+    """默认是一份**可用**的观察（正文 + URL 非空）。"""
     base = {
         "url": "https://x.test/movie", "page_title": "功夫",
         "body_text": "电影详情", "degraded": [], "truncated": False,
-        "raw_len": 4, "max_chars": None,
         "video_tag_count": 0, "iframe_count": 0,
-        "elements_total": 0, "links_total": 0,
         "interactive_elements": [], "links": [],
     }
     base.update(kw)
-    if not base["elements_total"]:
-        base["elements_total"] = len(base["interactive_elements"])
-    if not base["links_total"]:
-        base["links_total"] = len(base["links"])
     return base
 
 
-def _el(ref: str, tag: str, label: str) -> dict[str, str]:
-    return {"ref": ref, "tag": tag, "label": label}
+def _act(tool: str, params: dict | None = None,
+         target: dict | None = None, origin: str = "model") -> ActionView:
+    return ActionView(tool=tool, params=params or {}, target=target,
+                      origin=origin)
 
 
-def _click(label: str, tag: str = "button", origin: str = "model") -> ActionView:
-    return ActionView(tool="click", params={}, origin=origin,
-                      target={"tag": tag, "label": label})
+def _goto(url: str) -> ActionView:
+    return _act("goto", {"url": url})
 
 
-def _sample(*actions: ActionView, observations=(), **kw) -> Sample:
-    base = dict(
+def _click(label: str = "播放") -> ActionView:
+    return _act("click", target={"tag": "button", "label": label})
+
+
+def _sample(*actions: ActionView, observations=()) -> Sample:
+    return Sample(
         sample_id="T001__a", task_id="T001",
         title="功夫", system_prompt=schema.SYSTEM_PROMPT, tools=schema.TOOL_SPECS,
         user_prompt="有没有能看正片的", provenance={"genre": "喜剧"},
@@ -73,330 +73,510 @@ def _sample(*actions: ActionView, observations=(), **kw) -> Sample:
         gate=GateMark(status="not_run", reasons=("未跑",)),
         outcome=None,
     )
-    base.update(kw)
-    return Sample(**base)
+
+
+class _LLM:
+    """假 LLM：原样回一段文本，并记下收到的 prompt。"""
+
+    def __init__(self, response: Any) -> None:
+        self.response = response
+        self.calls: list[tuple[str, str]] = []
+
+    def chat(self, system: str, user: str) -> str:
+        self.calls.append((system, user))
+        if isinstance(self.response, str):
+            return self.response
+        return json.dumps(self.response, ensure_ascii=False)
+
+
+def _ok_points(n: int) -> list[dict[str, Any]]:
+    return [{"index": i, "is_break": False, "reason": ""} for i in range(n)]
+
+
+def _ok(n: int) -> dict[str, Any]:
+    return {"points": _ok_points(n), "new_breaks": []}
+
+
+def _one_point_sample() -> Sample:
+    """1 个时序疑点：goto 没落到目标页。"""
+    return _sample(
+        _goto("https://x.test/movie"),
+        observations=[_obs(url="https://other.test/login", page_title="登录")],
+    )
+
+
+def _two_point_sample() -> Sample:
+    """2 个疑点：同页连续重复（第 2 步）+ goto 落点不符（第 3 步）。"""
+    return _sample(
+        _click("播放"), _click("播放"),
+        _goto("https://x.test/a"),
+        observations=[
+            _obs(url="https://x.test/movie"),
+            _obs(url="https://x.test/movie"),
+            _obs(url="https://other.test/b", page_title="被拦"),
+        ],
+    )
+
+
+def _three_point_sample() -> Sample:
+    """3 个疑点：三次 goto 全部落到别的主机。"""
+    return _sample(
+        _goto("https://a.test/x"), _goto("https://c.test/x"),
+        _goto("https://e.test/x"),
+        observations=[
+            _obs(url="https://b.test/y"), _obs(url="https://d.test/y"),
+            _obs(url="https://f.test/y"),
+        ],
+    )
+
+
+def _no_point_sample() -> Sample:
+    return _sample(_goto("https://x.test/movie"),
+                   observations=[_obs(url="https://x.test/movie")])
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 单条引用
+# 第一段：代码筛
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestJudgeRef:
-    def test_命中唯一元素(self):
-        obs = _obs(interactive_elements=[_el("e5", "button", "立即播放")])
-        f = judge_ref("立即播放", "button", [obs])
-        assert f.kind == "found"
+class TestScreen:
+    def test_没有模型动作判不可判定(self):
+        """执行器的 ``new_tab`` 不算模型动作——没有动作链可判，
+        且**「没有可判对象」不等于「全程连贯」**。"""
+        screen = screen_d2(_sample(
+            _act("new_tab", {"url": "u"}, origin="infrastructure"),
+            observations=[_obs()],
+        ))
+        assert screen.kind == "undetermined" and screen.steps == ()
+        assert any("不等于" in r for r in screen.reasons)
 
-    def test_同名两处判含糊(self):
-        """``ActionView`` **刻意不带 ref**（会话内句柄进训练数据等于让模型
-        学随机数），所以同名即无法指明——rubric 的 4/3 分正是这个。"""
-        obs = _obs(interactive_elements=[_el("e5", "button", "播放"),
-                                        _el("e9", "a", "播放")])
-        assert judge_ref("播放", "button", [obs]).kind == "ambiguous"
+    def test_缺观察判不可判定且不扣分(self):
+        """缺观察是**采集事实残缺**，不是轨迹不连贯——整条不出分。"""
+        screen = screen_d2(_sample(_goto("https://x.test/movie")))
+        assert screen.kind == "undetermined"
+        assert any("第 1 步" in r and "采集事实残缺" in r for r in screen.reasons)
 
-    def test_完整采集且查不到判不存在(self):
-        """**只有**观察完整时才能这么判。这是本模块最容易写错的一处：
-        把它默认掉，全批都会变成 1 分，且分数「看起来很严谨」。"""
-        assert judge_ref("立即播放", "button", [_obs()]).kind == "missing"
+    def test_观察三项全空判不可判定(self):
+        screen = screen_d2(_sample(
+            _goto("https://x.test/movie"),
+            observations=[_obs(url="", page_title="", body_text="")],
+        ))
+        assert screen.kind == "undetermined"
+        assert any("三项全空" in r for r in screen.reasons)
 
-    def test_kind不符不改变判定(self):
-        """kind 槽（obscura 面的标签名 / camoufox 面的 ARIA role）来自 DOM
-        预处理，换一次渲染、甚至换一次执行层就可能变；text 槽一致且唯一时
-        引用并没有歧义。只记一笔，不扣分。"""
-        obs = _obs(interactive_elements=[_el("e5", "a", "立即播放")])
-        f = judge_ref("立即播放", "button", [obs])
-        assert f.kind == "found" and "kind" in f.reason
+    def test_观察降级但非空仍可筛(self):
+        """新判据不要求元素清单完整：只要这一步「看到了什么」还在，
+        就能判顺序。降级 / 截断不再是不可判定的理由（旧口径才需要）。"""
+        screen = screen_d2(_sample(
+            _goto("https://x.test/movie"),
+            observations=[_obs(url="https://x.test/movie",
+                               degraded=["browser_interactive_elements"],
+                               truncated=True)],
+        ))
+        assert screen.kind == "screenable" and screen.points == ()
 
-    def test_空label判不可判定而非不存在(self):
-        """``target=None`` 是执行器没解出目标（I6 存疑），
-        那是存档完整性问题——方向与「引用了不存在的东西」相反。"""
-        assert judge_ref("", "", [_obs()]).kind == "undetermined"
+    def test_执行器动作不占模型动作链但观察仍按原下标对齐(self):
+        """``sample.actions`` 与 ``observations`` 按位对齐（含执行器动作）。
+        先过滤再按下标取观察会错位一格——这条钉住修正。"""
+        sample = _sample(
+            _act("new_tab", {"url": "u"}, origin="infrastructure"),
+            _goto("https://x.test/landed"),
+            observations=[
+                _obs(url="https://x.test/start"),
+                _obs(url="https://x.test/landed"),
+            ],
+        )
+        screen = screen_d2(sample)
+        assert screen.kind == "screenable"
+        assert [d.step for d in screen.steps] == [1]
+        assert screen.steps[0].url == "https://x.test/landed"
+        assert screen.points == ()
 
-    def test_超长label按截断后比对(self):
-        """动作里是**完整** label，存档里只留前 120 字。
-        方向搞反（全等比全长）会把一条真实存在的引用判成不存在。"""
-        long_label = "立即" + "观看" * 100          # > 120 字
-        obs = _obs(interactive_elements=[
-            _el("e5", "button", long_label[:LABEL_TRUNCATED_AT])])
-        assert judge_ref(long_label, "button", [obs]).kind == "found"
+    def test_非对象观察不提前过滤(self):
+        """``observations`` 里的非对象项必须留在原下标上——先过滤会让后一步
+        读到前一步的观察，而那份观察看起来完全正常。"""
+        sample = _sample(
+            _goto("https://x.test/a"),
+            _goto("https://x.test/b"),
+            observations=[
+                None,
+                _obs(url="https://x.test/b"),
+            ],
+        )
+        screen = screen_d2(sample)
+        # 第 1 步（下标 0）缺观察 ⇒ 整条不可判定，不能滑到下标 1 去
+        assert screen.kind == "undetermined"
+        assert any("第 1 步" in r for r in screen.reasons)
 
+    def test_goto落点一致无疑点(self):
+        screen = screen_d2(_no_point_sample())
+        assert screen.kind == "screenable" and screen.steps
+        assert screen.points == ()
 
-class TestUndetermined:
-    """不可判定的**五个入口**。少一个就有一条路径会判反。"""
+    def test_goto忽略scheme与query(self):
+        """http→https、query 参数变化都是站点常态，不记疑点。"""
+        screen = screen_d2(_sample(
+            _goto("http://x.test/movie?from=search"),
+            observations=[_obs(url="https://x.test/movie/?utm=1")],
+        ))
+        assert screen.points == ()
 
-    def test_元素被裁剪(self):
-        """变更 B 存在的全部理由：没有 ``elements_total`` 就分不出
-        「被裁掉」与「不存在」。"""
-        obs = _obs(interactive_elements=[_el("e5", "button", "立即播放")],
-                   elements_total=300)
-        f = judge_ref("某个被裁掉的按钮", "button", [obs])
-        assert f.kind == "undetermined"
-        assert "裁剪" in f.reason
+    def test_goto落点不符记实质疑点(self):
+        screen = screen_d2(_one_point_sample())
+        assert len(screen.points) == 1
+        p = screen.points[0]
+        assert p.code == "goto_not_landed" and p.severity == "material"
+        assert p.step == 0 and "other.test/login" in p.reason
 
-    def test_链接被裁剪也算(self):
-        """判定依据是**这一份观察能不能支撑**「不存在」，
-        元素够不够不是唯一条件。"""
-        obs = _obs(links=[{"text": "a", "href": "https://x.test/a"}],
-                   links_total=900)
-        assert judge_ref("某个被裁掉的链接", "a", [obs]).kind == "undetermined"
+    def test_连续重复动作只记一处疑点(self):
+        """G-4：连续相同调用按一次计——整段只在段首记一处。"""
+        sample = _sample(
+            _click("播放"), _click("播放"), _click("播放"),
+            observations=[_obs(url="https://x.test/movie")] * 3,
+        )
+        screen = screen_d2(sample)
+        repeats = [p for p in screen.points if p.code == "repeat_action"]
+        assert len(repeats) == 1 and repeats[0].severity == "mild"
+        assert repeats[0].step == 1
 
-    def test_采集降级(self):
-        """iqiyi/ixigua/sohu 三站的实测形态：正文 0 字 + 元素 0 个。
-        驱动层记了 ``degraded`` 才没被当成「页面真没有控件」。"""
-        obs = _obs(degraded=["browser_interactive_elements"])
-        assert judge_ref("立即播放", "button", [obs]).kind == "undetermined"
+    def test_相同动作换页面不算原地空转(self):
+        sample = _sample(
+            _click("播放"), _click("播放"),
+            observations=[_obs(url="https://x.test/movie"),
+                          _obs(url="https://x.test/play/1")],
+        )
+        assert screen_d2(sample).points == ()
 
-    def test_正文被截断(self):
-        assert judge_ref("立即播放", "button",
-                         [_obs(truncated=True)]).kind == "undetermined"
+    def test_点击目标不在观察里不再产生疑点(self):
+        """v1.4 去掉「点击目标存在性」：元素清单为空、target 查不到，
+        只要正文与 URL 在，就不记任何疑点。"""
+        sample = _sample(
+            _act("click", target={"tag": "a", "label": "不存在的按钮"}),
+            observations=[_obs(url="https://x.test/", body_text="欢迎光临",
+                               interactive_elements=[])],
+        )
+        screen = screen_d2(sample)
+        assert screen.kind == "screenable" and screen.points == ()
 
-    def test_观察三项全空(self):
-        obs = _obs(body_text="")
-        assert judge_ref("立即播放", "button", [obs]).kind == "undetermined"
+    def test_正文摘录有长度上限(self):
+        screen = screen_d2(_sample(
+            _goto("https://x.test/movie"),
+            observations=[_obs(url="https://x.test/movie",
+                               body_text="长" * (BODY_PREVIEW_CHARS + 100))],
+        ))
+        body = screen.steps[0].body
+        assert len(body) <= BODY_PREVIEW_CHARS + 10
+        assert body.endswith("…[已截断]")
 
-    def test_理由必须点名是哪个观察(self):
-        obs = _obs(url="https://x.test/play/e5", degraded=["browser_evaluate"])
-        f = judge_ref("立即播放", "button", [obs])
-        assert "https://x.test/play/e5" in f.reason, \
-            "读报告的人只有看到是哪一页，才能去改那一页的采集"
-
-    def test_任一观察完整且命中即为found(self):
-        """站点页被裁、播放页完整且命中 → 不是不可判定。
-        否则「站点页元素多」会把每条都拖成不可判定。"""
-        site = _obs(url="https://x.test/movie", elements_total=300)
-        player = _obs(url="https://x.test/play/e5",
-                      interactive_elements=[_el("e5", "button", "立即播放")])
-        assert judge_ref("立即播放", "button", [site, player]).kind == "found"
-
-    def test_同一控件出现在两份观察里不算含糊(self):
-        """点击前后快照里 ``ref=e5`` 都在（控件没换页时很常见）。
-        不按 ref 去重就会把「命中一条」数成两条同名 → 误判 4 分 / 3 分。"""
-        site = _obs(url="https://x.test/movie",
-                    interactive_elements=[_el("e5", "button", "立即播放")])
-        player = _obs(url="https://x.test/play/e5",
-                      interactive_elements=[_el("e5", "button", "立即播放")])
-        assert judge_ref("立即播放", "button", [site, player]).kind == "found"
-
-    def test_两份观察里的不同ref同名仍是含糊(self):
-        """去重按 ref，不按 label——两条**真的不同**的元素同名，
-        模型无从指明（``ActionView`` 刻意不带 ref）。"""
-        site = _obs(url="https://x.test/movie",
-                    interactive_elements=[_el("e5", "button", "播放")])
-        player = _obs(url="https://x.test/play/e5",
-                      interactive_elements=[_el("e7", "a", "播放")])
-        assert judge_ref("播放", "button", [site, player]).kind == "ambiguous"
+    def test_代码筛不产出分数(self):
+        """筛只回答「有哪些疑点」，分数归第二段——两段不是一个判据。"""
+        screen = screen_d2(_one_point_sample())
+        assert not hasattr(screen, "score")
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 打分
+# 第二段：LLM 输出契约（fail-closed）
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestScoring:
-    OBS = [_obs(interactive_elements=[_el("e5", "button", "立即播放"),
-                                     _el("e9", "a", "播放"),
-                                     _el("e10", "a", "播放")])]
-
-    def _v(self, *labels):
-        return score_d2(_sample(*[_click(x) for x in labels],
-                                observations=self.OBS))
-
-    def test_全部命中得5(self):
-        assert self._v("立即播放").score == 5
-
-    def test_一处含糊得4(self):
-        assert self._v("立即播放", "播放").score == 4
-
-    def test_两处含糊得3(self):
-        assert self._v("立即播放", "播放", "播放").score == 3
-
-    def test_一处不存在得2(self):
-        assert self._v("立即播放", "分享").score == 2
-
-    def test_两处不存在得1(self):
-        assert self._v("立即播放", "分享", "举报").score == 1
-
-    def test_不存在优先于含糊(self):
-        """混在一起时先报含糊，那条**真缺失**就消失了——
-        而它是唯一一条需要人去查的。"""
-        assert self._v("播放", "分享").score == 2
-
-    def test_kind标为scored(self):
-        assert self._v("立即播放").kind == "scored"
-
-    def test_可序列化(self):
-        import json
-
-        json.dumps(self._v("立即播放", "分享").to_json(), ensure_ascii=False)
+def _verdict(sample: Sample, response: Any):
+    llm = _LLM(response)
+    return score_d2(sample, llm_client=llm), llm
 
 
-class TestNoScoreWhenUndetermined:
-    def test_无可校验引用不出分(self):
-        """**「没查」不等于「全对」**。只导航就被拦下的样本没有任何
-        ``click``，给它 5 分等于凭空白发了通行证——
-        与 ``gate.status`` 三值同源（见 code_scorer 模块 docstring）。"""
-        v = score_d2(_sample(observations=[_obs()]))
-        assert v.score is None and v.kind == "undetermined"
+class TestFailClosed:
+    def test_未提供client不出分(self):
+        screen = screen_d2(_one_point_sample())
+        v = score_d2(_one_point_sample())
+        assert v.kind == "undetermined" and v.score is None
+        assert len(v.points) == len(screen.points)
+        assert any("未提供 LLM client" in r for r in v.reasons)
 
-    def test_全是new_tab的样本不出分(self):
-        from trajectory_pipeline.assembler.schema import ActionView
+    def test_空返回不出分(self):
+        v, _ = _verdict(_one_point_sample(), "")
+        assert v.kind == "undetermined" and any("LLM 返回空" in r for r in v.reasons)
 
-        v = score_d2(_sample(ActionView(tool="new_tab", params={"url": "u"},
-                                        origin="infrastructure"),
-                             observations=[_obs()]))
-        assert v.score is None
+    def test_不是JSON不出分(self):
+        v, _ = _verdict(_one_point_sample(), "这不是 JSON")
+        assert v.kind == "undetermined" and any("parse_fail" in r for r in v.reasons)
 
-    def test_只有不可判定项时不出分(self):
-        obs = _obs(elements_total=300)
-        v = score_d2(_sample(_click("被裁掉的按钮"), observations=[obs]))
-        assert v.score is None and v.kind == "undetermined"
+    def test_JSON不是对象不出分(self):
+        v, _ = _verdict(_one_point_sample(), "[1, 2]")
+        assert v.kind == "undetermined" and any("不是对象" in r for r in v.reasons)
 
-    def test_完整观察能定案时不被裁剪拖成不可判定(self):
-        """``site_obs`` 完整、``player_obs`` 被裁：站点页没这一条**已经是结论**，
-        裁剪不能把它拖成不可判定——否则一个完整观察就能让整条样本失去分数，
-        而 D-2 的备注要的恰恰相反（不可判定多了要改采集，不是扣轨迹）。"""
-        site = _obs(url="https://x.test/movie",
-                    interactive_elements=[_el("e5", "button", "立即播放")])
-        player = _obs(url="https://x.test/play/e5", elements_total=300)
-        v = score_d2(_sample(_click("立即播放"), _click("分享"),
-                             observations=[site, player]))
+    def test_points不是列表不出分(self):
+        v, _ = _verdict(_one_point_sample(), {"points": {}})
+        assert v.kind == "undetermined" and any("缺少 points" in r for r in v.reasons)
+
+    def test_points数量不符不出分(self):
+        v, _ = _verdict(_one_point_sample(), {"points": []})
+        assert v.kind == "undetermined" and any("数量" in r for r in v.reasons)
+
+    def test_index越界不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": [{"index": 1, "is_break": False}],
+        })
+        assert v.kind == "undetermined" and any("越界" in r for r in v.reasons)
+
+    def test_index重复不出分(self):
+        v, _ = _verdict(_two_point_sample(), {
+            "points": [{"index": 0, "is_break": False},
+                       {"index": 0, "is_break": False}],
+        })
+        assert v.kind == "undetermined" and any("重复" in r for r in v.reasons)
+
+    def test_is_break不是布尔不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": [{"index": 0, "is_break": "yes"}],
+        })
+        assert v.kind == "undetermined" and any("不是布尔" in r for r in v.reasons)
+
+    def test_断裂严重度不在契约内不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": [{"index": 0, "is_break": True,
+                        "severity": "severe", "reason": "r"}],
+        })
+        assert v.kind == "undetermined" and any("severity" in r for r in v.reasons)
+
+    def test_断裂没写reason不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": [{"index": 0, "is_break": True,
+                        "severity": "mild", "reason": ""}],
+        })
+        assert v.kind == "undetermined" and any("没写 reason" in r for r in v.reasons)
+
+    def test_new_breaks不是列表不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": _ok_points(1), "new_breaks": {},
+        })
+        assert v.kind == "undetermined" and any("new_breaks 不是列表" in r
+                                               for r in v.reasons)
+
+    def test_new_breaks步号越界不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": _ok_points(1),
+            "new_breaks": [{"step": 99, "severity": "mild", "reason": "r"}],
+        })
+        assert v.kind == "undetermined" and any("步号" in r for r in v.reasons)
+
+    def test_new_breaks步号从1起(self):
+        """契约里 ``step`` 是「第 N 步」的 N；写 0 不是合法步号。"""
+        v, _ = _verdict(_one_point_sample(), {
+            "points": _ok_points(1),
+            "new_breaks": [{"step": 0, "severity": "mild", "reason": "r"}],
+        })
+        assert v.kind == "undetermined" and any("从 1 起" in r for r in v.reasons)
+
+    def test_new_breaks严重度不在契约内不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": _ok_points(1),
+            "new_breaks": [{"step": 1, "severity": "severe", "reason": "r"}],
+        })
+        assert v.kind == "undetermined" and any("severity" in r for r in v.reasons)
+
+    def test_new_breaks没写reason不出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": _ok_points(1),
+            "new_breaks": [{"step": 1, "severity": "mild", "reason": ""}],
+        })
+        assert v.kind == "undetermined" and any("没写 reason" in r for r in v.reasons)
+
+    def test_合法输出才出分(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": [{"index": 0, "is_break": True,
+                        "severity": "mild", "reason": "重试了一次"}],
+            "new_breaks": [],
+        })
+        assert v.kind == "scored" and v.score == 4
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 落档：按真断裂处数，实质优先
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _b(severity: str, step: int = 0) -> BreakFinding:
+    return BreakFinding(step, severity, "r", "code")  # type: ignore[arg-type]
+
+
+class TestScoreOf:
+    def test_五档映射(self):
+        assert _score_of([]) == 5
+        assert _score_of([_b("mild")]) == 4
+        assert _score_of([_b("mild"), _b("mild")]) == 3
+        assert _score_of([_b("material")]) == 2
+        assert _score_of([_b("material"), _b("material")]) == 1
+
+    def test_实质优先于轻微(self):
+        """一条实质 + 两条轻微 ⇒ 2，不是 3——报 3 会让那条实质断裂消失。"""
+        assert _score_of([
+            _b("material"), _b("mild"), _b("mild"),
+        ]) == 2
+
+
+@pytest.mark.parametrize(
+    ("sample_fn", "response", "expected"),
+    [
+        (_no_point_sample, _ok(0), 5),
+        (_one_point_sample, {"points": [{"index": 0, "is_break": True,
+                                        "severity": "mild", "reason": "重试"}],
+                             "new_breaks": []}, 4),
+        (_two_point_sample, {"points": [
+            {"index": 0, "is_break": True, "severity": "mild", "reason": "重复"},
+            {"index": 1, "is_break": True, "severity": "mild", "reason": "绕路"},
+        ], "new_breaks": []}, 3),
+        (_one_point_sample, {"points": [{"index": 0, "is_break": True,
+                                        "severity": "material",
+                                        "reason": "落到登录页"}],
+                             "new_breaks": []}, 2),
+        (_three_point_sample, {"points": [
+            {"index": 0, "is_break": True, "severity": "material", "reason": "a"},
+            {"index": 1, "is_break": False},
+            {"index": 2, "is_break": True, "severity": "material", "reason": "c"},
+        ], "new_breaks": []}, 1),
+    ],
+)
+def test_端到端落档(sample_fn, response, expected):
+    v, _ = _verdict(sample_fn(), response)
+    assert v.kind == "scored" and v.score == expected
+
+
+class TestNewBreaks:
+    def test_LLM补出的断裂也计数(self):
+        v, _ = _verdict(_no_point_sample(), {
+            "points": [],
+            "new_breaks": [{"step": 1, "severity": "material",
+                            "reason": "动作链跳段"}],
+        })
         assert v.kind == "scored" and v.score == 2
+        assert v.breaks[0].source == "llm" and v.breaks[0].step == 0
 
-    def test_缺失项要写明哪些观察没能作证(self):
-        """结论是 `missing` 不代表「全都查过了」。被裁的那一份没参与作证，
-        不写出来的话读的人会以为这是无懈可击的否定。"""
-        site = _obs(url="https://x.test/movie",
-                    interactive_elements=[_el("e5", "button", "立即播放")])
-        player = _obs(url="https://x.test/play/e5", elements_total=300)
-        v = score_d2(_sample(_click("立即播放"), _click("分享"),
-                             observations=[site, player]))
-        assert any("裁剪" in r.reason for r in v.refs if r.kind == "missing")
+    def test_补出的两条轻微落3(self):
+        v, _ = _verdict(_no_point_sample(), {
+            "points": [],
+            "new_breaks": [
+                {"step": 1, "severity": "mild", "reason": "a"},
+                {"step": 1, "severity": "mild", "reason": "b"},
+            ],
+        })
+        assert v.score == 3
 
-    def test_命中与不可判定混合时不出5分(self):
-        """「全部实体可找到」是 5 分的定义。有 1 条**没能判定**，
-        「全部」就不成立——出 5 分等于给一条没查完的数据发通行证。"""
-        obs = _obs(interactive_elements=[_el("e5", "button", "立即播放")],
-                   elements_total=300)
-        v = score_d2(_sample(_click("立即播放"), _click("某个按钮"),
-                             observations=[obs]))
-        assert v.score is None and v.kind == "undetermined"
-        assert v.checked == 1, "命中那条仍然算查过了"
-
-    def test_理由指向该修采集而非该扣轨迹(self):
-        obs = _obs(elements_total=300)
-        v = score_d2(_sample(_click("某按钮"), observations=[obs]))
-        assert any("修采集" in r for r in v.reasons)
-
-
-class TestGotoIsOutOfScope:
-    """``goto`` 的 URL **不在本模块校验**。
-
-    它要核的「这个 URL 在搜索页链接里吗」需要**另一条样本**的观察
-    （决策单元切分的结果，见 ``assembler/schema.py``）。在本样本内查它
-    必然查不到，于是每条 ``goto`` 都记一条不存在，全批恒 1 分。
-    恒定分数没有区分力——这也是 D-1 被划到批次级 B-1 的同一个理由。
-    """
-
-    def test_只有goto的样本不出分(self):
-        from trajectory_pipeline.assembler.schema import ActionView
-
-        v = score_d2(_sample(
-            ActionView(tool="goto", params={"url": "https://www.baidu.com/s?wd=x"}),
-            ActionView(tool="goto", params={"url": "https://x.test/movie"}),
-            observations=[_obs()]))
-        assert v.score is None
-
-    def test_goto不参与missing计数(self):
-        from trajectory_pipeline.assembler.schema import ActionView
-
-        v = score_d2(_sample(
-            ActionView(tool="goto", params={"url": "https://elsewhere.test/"}),
-            _click("立即播放"), observations=[self_obs()]))
-        assert v.score == 5
-
-    def test_new_tab不计入模型动作(self):
-        """``new_tab`` 是执行器的会话隔离动作（``origin="infrastructure"``），
-        拿它的行为去扣模型的分是张冠李戴。"""
-        from trajectory_pipeline.assembler.schema import ActionView
-
-        v = score_d2(_sample(
-            ActionView(tool="new_tab", params={"url": "u"},
-                       origin="infrastructure"),
-            _click("立即播放"), observations=[self_obs()]))
-        assert v.score == 5
-        assert v.checked == 1
-
-
-def self_obs():
-    return _obs(interactive_elements=[_el("e5", "button", "立即播放")])
+    def test_补出的步号按全局下标落档(self):
+        """带执行器动作时，``sample.actions`` 的全局下标才是报告里的步号。"""
+        sample = _sample(
+            _act("new_tab", {"url": "u"}, origin="infrastructure"),
+            _goto("https://x.test/movie"),
+            observations=[_obs(url="https://x.test/start"),
+                          _obs(url="https://x.test/movie")],
+        )
+        v, _ = _verdict(sample, {
+            "points": [],
+            "new_breaks": [{"step": 2, "severity": "mild", "reason": "r"}],
+        })
+        assert v.score == 4
+        assert v.breaks[0].step == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# ``reasons`` 的**结构**（不是内容）
-#
-# 真实批次撞出来的（2026-10-11）：一条没有 click 动作的样本上，
-# ``score_d2`` 传进 ``D2Verdict`` 的第 4 个位置是
-# ``("文字一" "文字二")`` —— 隐式拼接出来的**字符串**，不是 tuple。
-# 下游 ``evaluation/cli`` 的 json 出口对它做 ``list(verdict.reasons)``，
-# 于是整句话被拆成**单字符列表**，终端上不可判定原因打印成
-# 「D-2 本」「D-2 条」——报表唯一的那句解释变成噪声。
-#
-# 离线测试为什么没抓到：夹具样本都带 click 动作，
-# 这条路径只在真实批次上被走到（那一批 ``FIND_PLAY_CONTROL``
-# 一条 ref 都没回传，5 条样本全落这里）。
+# 理由与 prompt
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestReasons结构:
-    def test_无click路径的理由是完整字符串(self):
-        v = score_d2(_sample(
-            ActionView(tool="goto", params={"url": "https://x.test/m"}),
-            observations=[_obs()]))
-        assert v.reasons == (
-            "本条样本没有模型可见的 click 动作，无引用可校验；"
-            "「没有可校验项」不等于「全部可找到」",)
+class TestReasons:
+    def test_0处断裂的理由(self):
+        v, _ = _verdict(_no_point_sample(), _ok(0))
+        assert v.reasons == ("0 处断裂：动作链全程连贯——rubric §D-2 锚点 5",)
+
+    def test_断裂理由带步号严重度与来源(self):
+        v, _ = _verdict(_one_point_sample(), {
+            "points": [{"index": 0, "is_break": True,
+                        "severity": "material", "reason": "落到了登录页"}],
+            "new_breaks": [],
+        })
+        assert v.reasons == ("第 1 步（code）：material——落到了登录页",)
 
     def test_所有评分器的理由都不是被拆过的字符(self):
-        """性质断言：``list(verdict.reasons)`` 的每个元素都得是**整句**。
+        """``list(verdict.reasons)`` 的每个元素都得是**整句**。
 
-        写成「跨四个评分器」而不是「给 D-2 补一条」，是因为这个形态
-        （括号里写字符串忘了尾逗号）在四处构造点里**只有一处漏了**——
-        其余三处靠肉眼很难逐个确认。性质断言一次盖住所有评分器，
-        且它在任何 scorer 上复发都会变红。
+        这条性质断言跨四个评分器——「括号里写字符串忘尾逗号」在任何一处
+        复发都会变红。
         """
         from trajectory_pipeline.evaluation.scorers import (
             d4_scorer, d5_scorer, d6_scorer,
         )
 
-        samples = [
-            # 无 click → 走「没有可校验项」那条路径（本次修复的那条）
-            _sample(ActionView(tool="goto", params={"url": "https://x/"}),
-                    observations=[_obs()]),
-            # 有 click → 正常出分路径
-            _sample(_click("立即播放"), observations=[self_obs()]),
+        def _check(fn, v):
+            assert isinstance(v.reasons, tuple), (
+                f"{fn.__name__}: reasons 不是 tuple（隐式拼接字符串？）")
+            for r in v.reasons:
+                assert isinstance(r, str), f"{fn.__name__}: 元素不是 str"
+                assert len(r) > 1, (
+                    f"{fn.__name__}: 理由被拆成单字符了——{r!r}")
+                assert not r.startswith(" ") and not r.endswith(" "), (
+                    f"{fn.__name__}: 理由首尾带空白——同样是被拆过的形态")
+
+        plain = _sample(_click("立即播放"), observations=[_obs()])
+        for fn in (d4_scorer.score_d4, d5_scorer.score_d5, d6_scorer.score_d6):
+            for s in (plain, _sample()):
+                _check(fn, fn(s))
+
+        cases = [
+            (_sample(), None),                    # 无模型动作 → undetermined
+            (_no_point_sample(), _LLM(_ok(0))),   # 0 处断裂 → scored
+            (_one_point_sample(), _LLM(_ok(1))),  # 有疑点但判误报 → scored
         ]
-        for fn in (score_d2, d4_scorer.score_d4,
-                   d5_scorer.score_d5, d6_scorer.score_d6):
-            for s in samples:
-                v = fn(s)
-                assert isinstance(v.reasons, tuple), (
-                    f"{fn.__name__}: reasons 不是 tuple（隐式拼接字符串？）")
-                for r in v.reasons:
-                    assert isinstance(r, str), f"{fn.__name__}: 元素不是 str"
-                    assert len(r) > 1, (
-                        f"{fn.__name__}: 理由被拆成单字符了——"
-                        f"{r!r}；入口处少了一个尾逗号")
-                    assert not r.startswith(" ") and not r.endswith(" "), (
-                        f"{fn.__name__}: 理由首尾带空白——同样是被拆过的形态")
+        for sample, llm in cases:
+            _check(score_d2, score_d2(sample, llm_client=llm))
+
+
+class TestPrompt:
+    def test_prompt的锚点段从表渲染(self):
+        from trajectory_pipeline.evaluation.scorers import rubric_version
+        from trajectory_pipeline.evaluation.scorers.code_scorer import (
+            D2_SYSTEM_PROMPT,
+        )
+
+        assert rubric_version.render_anchor_block("d2") in D2_SYSTEM_PROMPT
+
+    def test_prompt明确不核对点击目标(self):
+        from trajectory_pipeline.evaluation.scorers.code_scorer import (
+            D2_SYSTEM_PROMPT,
+        )
+
+        assert "不要" in D2_SYSTEM_PROMPT
+        assert "点击目标的名称" in D2_SYSTEM_PROMPT
+        assert "不是本维判据" in D2_SYSTEM_PROMPT
+
+    def test_user_prompt只给事实(self):
+        sample = _two_point_sample()
+        screen = screen_d2(sample)
+        v, llm = _verdict(sample, _ok(len(screen.points)))
+        assert v.kind == "scored"
+        system, user = llm.calls[0]
+        assert system.startswith("你是一名轨迹连贯性判读员")
+        assert "## 动作链" in user and "### 第 1 步" in user
+        assert "任务：有没有能看正片的" in user
+        assert "code=repeat_action" in user and "code=goto_not_landed" in user
+        assert "index=0" in user and f"index={len(screen.points) - 1}" in user
+
+    def test_可换一版system_prompt(self):
+        sample = _no_point_sample()
+        llm = _LLM(_ok(0))
+        v = score_d2(sample, llm_client=llm, system_prompt="自定义提示")
+        assert v.kind == "scored" and llm.calls[0][0] == "自定义提示"
+
+    def test_结果可序列化(self):
+        v, _ = _verdict(_one_point_sample(), _ok(1))
+        json.dumps(v.to_json(), ensure_ascii=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # 真实存档
 #
 # 离线 fixture 是我们自己造的，规则和 fixture 一起错，测试照样绿
-# （CLAUDE.md 明写这条）。这里唯一要证明的是「打分器读得懂真 P1 的形状」——
-# 键名猜错时它会静默地判「查不到」，而那正是 D-2 最不该出现的输出。
+# （CLAUDE.md 明写这条）。这里要证明的是「打分器读得懂真 P1 的形状」——
+# 键名猜错时它会静默地判「查不到 / 不可判定」，而报告上看不出异常。
 # 产物目录不入库，没有就 skip。
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -405,86 +585,67 @@ class TestOnRealArchives:
     def _archives(self):
         from trajectory_pipeline.executor.archive import DEFAULT_ROOT
 
+        if not DEFAULT_ROOT.exists():
+            pytest.skip("没有真实 P1 存档（output/pipeline/ 是产物目录，未入库）")
         picked = [p for p in DEFAULT_ROOT.glob("*__*.json")
                   if "reviewed" not in p.name]
         if not picked:
             pytest.skip("没有真实 P1 存档（output/pipeline/ 是产物目录，未入库）")
         return picked
 
-    def test_真存档切得开且打分器跑得完(self):
-        from trajectory_pipeline.assembler import schema
+    def test_真存档切得开且筛得完(self):
+        from trajectory_pipeline.assembler import schema as _schema
 
         for path in self._archives():
-            for sample in schema.split_archive(path):
-                verdict = score_d2(sample)
-                assert verdict.kind in ("scored", "undetermined"), path.name
-                assert verdict.score is None or 1 <= verdict.score <= 5, path.name
+            for sample in _schema.split_archive(path):
+                screen = screen_d2(sample)
+                assert screen.kind in ("screenable", "undetermined"), path.name
+                for p in screen.points:
+                    assert p.severity in SEVERITIES, path.name
+                # 复原的步号必须严格递增，且在样本动作范围内
+                assert len(screen.steps) <= len(sample.actions), path.name
+                assert [d.step for d in screen.steps] == sorted(
+                    d.step for d in screen.steps), path.name
 
-    def test_没有模型动作的样本不可判定而非满分(self):
-        """一条轨迹**没有模型可见的 click 动作**时，D-2 必须判不可判定
-        ——判 5 分等于凭空白发了通行证。
-
-        ⚠️ 判据是**事实**（模型动作为空），**不是** ``degraded_from`` 里
-        有没有 ``steps``：**方案 23（per-Run）之后这两件事不再是一回事**。
-
-        ``steps`` 标记答的是「轨迹里**某一段**缺动作流」（降级传染到整条，
-        与 ``executor.integrity`` 的 ``steps_missing`` 逐条同码）；而动作
-        流是各段**摊平**后的并集。老存档里「访问点有动作、顶层 ``steps``
-        缺」的那批：per-Run 之前切出的**搜索单元**没有动作（不可判定），
-        per-Run 之后整条轨迹有动作（可判定）——**是粒度变了，不是数据变
-        好了**：那条轨迹的 ``degraded_from`` 仍然带 ``steps``，它进训练集
-        照样要过降级那道闸。
-
-        ⇒ 实测（145 份真存档 → 131 条轨迹）：per-Run 之前「标记含 steps
-        ⇒ 不可判定」成立，per-Run 之后不成立（38 条带 ``steps`` 的轨迹里
-        有 31 条有模型动作）。这条测试因此从**标记**改判**事实**：标记与
-        动作流之间不再有等价关系，拿标记当代理就是在测一件已经不成立的
-        事。
-        """
-        from trajectory_pipeline.assembler import schema
-        from trajectory_pipeline.evaluation.scorers.code_scorer import _click_actions
-
-        verdicts = []
-        for path in self._archives():
-            for sample in schema.split_archive(path):
-                if _click_actions(sample):
-                    continue
-                verdicts.append((path.name, score_d2(sample)))
-        if not verdicts:
-            pytest.skip("现有真实存档每条都有模型动作，没有无动作的样本可验")
-        assert all(v.kind == "undetermined" for _, v in verdicts), (
-            f"{len(verdicts)} 条无模型动作的样本被判出了分")
-        assert all(v.score is None for _, v in verdicts)
-
-    def test_判了分的样本必有模型可见的动作(self):
-        """上一条的反向：**判了分 ⇒ 确实有模型可见的 click 动作可核**。
-
-        两条合起来把「凭空白发通行证」两头堵死：没有动作不给分（上一条），
-        给了分就一定核过东西（这一条）。这一条在真存档上**恒有样本**可验
-        （实测 113/131 条有模型动作），所以它不像上一条会退化成空断言。
-        """
-        from trajectory_pipeline.assembler import schema
-        from trajectory_pipeline.evaluation.scorers.code_scorer import _click_actions
+    def test_无LLM时一律不出分(self):
+        """没有语义判读就没有结论：代码筛再干净也不许直接发 5 分。"""
+        from trajectory_pipeline.assembler import schema as _schema
 
         checked = 0
         for path in self._archives():
-            for sample in schema.split_archive(path):
-                verdict = score_d2(sample)
-                if verdict.kind != "scored":
-                    continue
-                assert _click_actions(sample), (
-                    f"{path.name}: 判了分却没有模型可见的 click 动作")
+            for sample in _schema.split_archive(path):
+                v = score_d2(sample)
+                assert v.kind == "undetermined" and v.score is None, path.name
                 checked += 1
         if not checked:
-            pytest.skip("现有真实存档一条都没判出分，没有可核的样本")
+            pytest.skip("真实存档没切出样本")
+
+    def test_判无断裂时筛得开的都出分(self):
+        """真样本走完整两段：筛得开 → 假 LLM 判无误报 → 5 分；
+        筛不开（事实残缺）→ 不出分。两头都不许静默。"""
+        from trajectory_pipeline.assembler import schema as _schema
+
+        checked = 0
+        for path in self._archives():
+            for sample in _schema.split_archive(path):
+                screen = screen_d2(sample)
+                llm = _LLM(_ok(len(screen.points)))
+                v = score_d2(sample, llm_client=llm)
+                if screen.kind == "undetermined":
+                    assert v.kind == "undetermined" and v.score is None, path.name
+                    continue
+                assert v.kind == "scored" and v.score == 5, path.name
+                checked += 1
+        if not checked:
+            pytest.skip("真实存档里没有可筛样本")
 
     def test_真存档里不出现凭据(self):
-        """打分器只读不写，但它的 ``reason`` 会把观察里的 label 原样带出来。
+        """打分器只读不写，但它的 ``reason`` 会把 URL 原样带出来。
         若红线扫描器漏了某处，这条比单测更早暴露。"""
-        from trajectory_pipeline.assembler import schema
+        from trajectory_pipeline.assembler import schema as _schema
         from trajectory_pipeline.executor.archive import scan_credentials
 
         for path in self._archives():
-            for sample in schema.split_archive(path):
-                blob = repr(score_d2(sample).to_json())
+            for sample in _schema.split_archive(path):
+                blob = repr(screen_d2(sample).to_json())
                 assert not scan_credentials(blob), path.name

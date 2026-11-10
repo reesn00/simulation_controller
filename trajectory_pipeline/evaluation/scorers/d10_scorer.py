@@ -266,7 +266,7 @@ def _observation_usable(obs: Mapping[str, Any] | None) -> str:
     也算不可用**。截断观察里「没写到的实体」与「页面上真没有」分不清，
     拿它当充分证据判「依据引用了观察之外」，就是把采集的缺件算成轨迹的错。
     边界一致性由 ``tests/contract/test_observation_shortfall_consistency.py``
-    盯着（d10 是第五处实现）。
+    盯着（d10 是本契约的四处之一；原 code_scorer 那处已于 rubric v1.4 退出）。
     """
     if not obs:
         return "没有观察存档"

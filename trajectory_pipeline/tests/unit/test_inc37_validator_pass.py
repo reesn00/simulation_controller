@@ -10,9 +10,16 @@
 
 仍守住的不变量（纯 annotations 侧，不需要 xlsx）：
 
-1. **77 条人类行一条都不许丢人类署名**，ai-assisted-inc33 仍 18 条。
+1. **77 条人类行一条都不许丢人类署名**，ai-assisted-inc33 仍 13 条。
    署名取值见 ``HUMAN_SIGNATURES``：``manual-review``（历史批）之外还有
    主人用的 ``reesn``（方案 16/19 金标重标定起）。
+
+   ⚠️ **口径变更（2026-11-09 per-Run 迁移）**：封条里的 5 个旧 per-unit id
+   （``E001__57bbf995__{search,site-1,site-2,site-3}`` · ``T035__3ab75598__search``）
+   已按 ``id_alias_trajectory.json`` 合并成轨迹级 ``E001__57bbf995`` /
+   ``T035__3ab75598``（方案 23，见 10-TODO台账 2026-11-09 节）。封条**仍是
+   2026-10-15 的 77 个旧身份**（不改历史），核验时先过别名桥映射到新 id
+   再比——否则「合法的迁移」会被读成「人类行被吃掉」。
 
    ⚠️ **口径变更（2026-10-26）**：本条原先钉 ``manual-review == 77``。
    2026-10-25 两次金标重核（``36ef71a`` / ``60cb30e``）里，**按
@@ -26,8 +33,11 @@
    里消失**并点名是哪几条。（钉「人工合计 == 82」今天也能挡住这个红，但
    下一轮人工判新行会再红一次，且红时分不清「人换了署名」与「人被吃掉」。）
    详见 [编年史 §增量九一](../../docs/计划进展/90-增量编年史.md)。
-2. round=1 总数 294、round=2（INC41 提前 retest）12；INC37 只动
-   reviewed_by，不动总数。
+2. round=1 总数 **289**、round=2（INC41 提前 retest）12；INC37 只动
+   reviewed_by，不动总数。294 → 289 是 2026-11-09 把 5 条
+   ``__neg_blocked`` 标注移进
+   ``annotations_retired_blocked_inc33_2026-11-09.jsonl``（Q-A2 之后不再是
+   样本分支，原文未删）——不是丢行，是**移出**。
 3. AI validator verdict 分布稳定（2026-10-14 实测值，容差 10；
    heuristic 代码一改就红）。
 
@@ -164,6 +174,25 @@ def _load_annotations():
     ]
 
 
+def _trajectory_alias() -> dict[tuple[str, int], str]:
+    """旧 per-unit id → 新 per-Run id 的桥（方案 23，``id_alias_trajectory.json``）。
+
+    ``map`` 记最小轮次（round=1）的去处，``rounds`` 记逐轮。缺表 → 空映射
+    （**不猜**：没有桥就按原 id 比）。
+    """
+    path = ANNOTATIONS.parent / "id_alias_trajectory.json"
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out: dict[tuple[str, int], str] = {}
+    for old, new in (data.get("map") or {}).items():
+        out[(old, 1)] = new
+    for old, rounds in (data.get("rounds") or {}).items():
+        for rnd, new in rounds.items():
+            out[(old, int(rnd))] = new
+    return out
+
+
 @pytest.fixture(scope="module")
 def annotations():
     if not ANNOTATIONS.exists():
@@ -191,7 +220,14 @@ class TestInc37Invariants:
             + " 条（2026-10-15 冻结时 77）；删封条行要先在 "
             "09-门禁与纪律域 记一笔"
         )
-        lost = sorted(SEALED_HUMAN_ROWS_2026_10_15 - human)
+        # per-Run 迁移后的核验：旧封条身份先过别名桥再比（方案 23）。
+        # 只映射「去处」，不要求旧 id 还在——合并是合法的，丢署名才不是。
+        alias = _trajectory_alias()
+        lost = sorted(
+            (gid, rnd)
+            for gid, rnd in SEALED_HUMAN_ROWS_2026_10_15
+            if (alias.get((gid, rnd), gid), rnd) not in human
+        )
         assert not lost, (
             str(len(lost)) + " sealed human rows no longer carry a human "
             "signature (human-signed rows now: " + str(len(human)) + "): "
@@ -199,13 +235,15 @@ class TestInc37Invariants:
         )
 
     def test_total_count_unchanged(self, annotations):
-        """round=1 维持 294（v3 freeze 总数；INC37 只改 reviewed_by）；
-        round=2 是 INC41（2026-10-15 提前 retest）新增的 12 条，独立计数。"""
+        """round=1 维持 289（v3 freeze 294 − 2026-11-09 移出的 5 条
+        ``__neg_blocked``；INC37 只改 reviewed_by）；round=2 是 INC41
+        （2026-10-15 提前 retest）新增的 12 条，独立计数。"""
         r1 = [a for a in annotations if a.get("round", 1) == 1]
         r2 = [a for a in annotations if a.get("round", 1) == 2]
-        assert len(r1) == 294, (
+        assert len(r1) == 289, (
             "round=1 total changed to " + str(len(r1))
-            + ", INC37 only moves reviewed_by not the total."
+            + ", expected 289 (294 minus 5 __neg_blocked rows moved to "
+            "annotations_retired_blocked_inc33_2026-11-09.jsonl)."
         )
         assert len(r2) == 12, (
             "round=2 retest rows changed to " + str(len(r2))
@@ -230,7 +268,8 @@ class TestInc37DistributionTolerance:
 
     def test_ai_assisted_inc33_reduced_by_pending_overlap(self, annotations):
         kept = sum(1 for a in annotations if a["reviewed_by"] == "ai-assisted-inc33")
-        assert kept == 18, (
-            "ai-assisted-inc33 kept " + str(kept) + " rows, expected 18 "
-            "(orig 28 minus 10 overlapped with 199 pending)"
+        assert kept == 13, (
+            "ai-assisted-inc33 kept " + str(kept) + " rows, expected 13 "
+            "(orig 28 minus 10 overlapped with 199 pending, minus 5 "
+            "__neg_blocked rows retired on 2026-11-09)"
         )

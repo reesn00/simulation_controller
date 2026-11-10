@@ -55,9 +55,11 @@ LLM 失败判 1 分（且该样本可判）、采集不充分判 ``None``、``ll
 ## 独立实现 ``_observation_shortfall``
 
 与 :func:`trajectory_pipeline.rationale.gates.observation_shortfall`、
-:func:`trajectory_pipeline.evaluation.scorers.code_scorer._observation_shortfall`
+:func:`trajectory_pipeline.evaluation.scorers.d9_scorer._observation_shortfall`
 同款判据但**分开实现**——保持 ``evaluation ↔ rationale`` 单向依赖方向
-（``docs/01-架构总览.md``）。两处口径靠 ``tests/contract/`` 双向盯住。
+（``docs/01-架构总览.md``）。几处口径靠
+``tests/contract/test_observation_shortfall_consistency.py`` 双向盯住
+（原 code_scorer 那处已于 rubric v1.4 退出该契约）。
 
 ## raw CoT 红线
 
@@ -207,9 +209,9 @@ def _observation_shortfall(obs: Mapping[str, Any] | None) -> str:
     """这份观察**能不能支撑**站点类型判断。空串 = 能。
 
     同款判据于 :func:`trajectory_pipeline.rationale.gates.observation_shortfall`
-    与 :func:`trajectory_pipeline.evaluation.scorers.code_scorer._observation_shortfall`，
+    与 :func:`trajectory_pipeline.evaluation.scorers.d9_scorer._observation_shortfall`，
     但**独立实现**——保持 ``evaluation ↔ rationale`` 单向依赖方向。
-    两处口径靠 ``tests/contract/test_observation_shortfall_consistency.py``
+    几处口径靠 ``tests/contract/test_observation_shortfall_consistency.py``
     双向盯住。
     """
     if not obs:

@@ -223,16 +223,17 @@ def test_锚点表与rubric文档逐档对齐():
     这是 D-C7 的核心：**「改档不改 anchor」必须是个错误，而不只是疏忽。**
 
     ⚠️ **d10 也在表里**（rubric v1.3 新增）——D-10 的五档释义同样是
-    「表 = 文档」的逐字对照。
+    「表 = 文档」的逐字对照。**d2 自 v1.4 起也在表里**——判据改成
+    「前后动作顺序是否连贯」，五档释义同样逐字对照。
     """
-    for dim in ("d3", "d9", "d10"):
+    for dim in ("d2", "d3", "d9", "d10"):
         drift = rubric_version.anchors_drift(dim)
         assert drift == [], f"{dim} 锚点表与 rubric 文档不一致：{drift}"
 
 
 def test_锚点表对每档都能问出条款号():
     """条款号**投影**自 DIM_CLAUSES（不手抄），且都在合法条款词表里。"""
-    for dim in ("d3", "d9", "d10"):
+    for dim in ("d2", "d3", "d9", "d10"):
         for tier in sorted(rubric_version.ANCHOR_TABLES[dim]):
             clause = rubric_version.clause_of(dim, tier)
             assert clause in rubric_changelog.known_clauses(), clause
@@ -244,10 +245,12 @@ def test_prompt里的锚点段是从表渲染的():
 
     渲染结果里含表里每一档的释义原文；少一档、抄一档、措辞不同，都会红。
     """
+    from trajectory_pipeline.evaluation.scorers import code_scorer
     from trajectory_pipeline.evaluation.scorers import d3_scorer, d9_scorer
     from trajectory_pipeline.evaluation.scorers import d10_scorer
 
     for dim, prompt in (
+        ("d2", code_scorer.D2_SYSTEM_PROMPT),
         ("d3", d3_scorer.D3_SYSTEM_PROMPT),
         ("d9", d9_scorer.D9_SYSTEM_PROMPT),
         ("d10", d10_scorer.D10_SYSTEM_PROMPT),

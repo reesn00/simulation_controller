@@ -1,13 +1,11 @@
-"""五个观察充分性实现之间的**决策边界一致性**契约。
+"""四个观察充分性实现之间的**决策边界一致性**契约。
 
 ## 为什么需要这条契约
 
-``observation_shortfall`` / ``_observation_usable`` 散落在五处：
+``observation_shortfall`` / ``_observation_usable`` 散落在四处：
 
   - :func:`trajectory_pipeline.rationale.gates.observation_shortfall`
     ——事前判据（rationale/gates.py 闸门三查）
-  - :func:`trajectory_pipeline.evaluation.scorers.code_scorer._observation_shortfall`
-    ——code judge 侧（D-2 / D-4 / D-5 / D-6）
   - :func:`trajectory_pipeline.evaluation.scorers.d3_scorer._observation_shortfall`
     ——LLM judge 侧（D-3）
   - :func:`trajectory_pipeline.evaluation.scorers.d9_scorer._observation_shortfall`
@@ -15,18 +13,25 @@
   - :func:`trajectory_pipeline.evaluation.scorers.d10_scorer._observation_usable`
     ——LLM judge 侧（D-10，M-3 起纳入本契约）
 
-五份代码**刻意分开实现**——rationale 不能 import evaluation
+四份代码**刻意分开实现**——rationale 不能 import evaluation
 （``evaluation → rationale`` 单向依赖方向，方案 10-§四）。
 但「能不能判」必须**口径一致**，否则 D-9 闸门过 + d9_scorer
 undetermined（或反之），同一条样本在两处会有相反的处理路径。
 
 ## 一致性原则（不是口径核对）
 
-契约盯的是**决策边界**——「同一份观察，五处是否同判
+契约盯的是**决策边界**——「同一份观察，四处是否同判
 能 / 不能」——**不**盯**字面措辞**。每处可以有自己的措辞
 （gates.py 在 trunc 消息里夹了「CSS 会抢光预算」的额外说明，
-code_scorer 在 degraded 消息里强调「缺项无法与『真没有』区分」，
 d3/d9 走中性版本），但**同输入必须同判定**。
+
+## D-2 为什么不在本契约里（rubric v1.4）
+
+D-2 自 rubric v1.4 起只判「动作先后顺序是否连贯」，**不要求元素清单完整**：
+``degraded`` / ``truncated`` / ``elements_total`` 被裁剪都不妨碍判断连贯性，
+它唯一的「不可判」是「这一步完全没有观察事实」。这与本契约问的「观察是否
+充分到能判」不是一个问题 ⇒ D-2 退出本契约；它的可判边界由
+``tests/unit/test_code_scorer.py::TestScreen`` 单独钉住。
 """
 
 from __future__ import annotations
@@ -36,7 +41,6 @@ from typing import Any, Mapping
 import pytest
 
 from trajectory_pipeline.evaluation.scorers import (
-    code_scorer,
     d3_scorer,
     d9_scorer,
     d10_scorer,
@@ -89,23 +93,22 @@ def _can_judge(s: str) -> bool:
 
 
 def _judge(obs: Any | None) -> dict[str, str]:
-    """跑五个实现，记下 ``can_judge`` + reason。"""
+    """跑四个实现，记下 ``can_judge`` + reason。"""
     return {
         "gates": gates.observation_shortfall(obs),
-        "code_scorer": code_scorer._observation_shortfall(obs),  # type: ignore[arg-type]
         "d3_scorer": d3_scorer._observation_shortfall(obs),      # type: ignore[arg-type]
         "d9_scorer": d9_scorer._observation_shortfall(obs),      # type: ignore[arg-type]
         "d10_scorer": d10_scorer._observation_usable(obs),
     }
 
 
-# ── 契约 1：可判样本五处一致 ──────────────────────────────────────
+# ── 契约 1：可判样本四处一致 ──────────────────────────────────────
 
 
 class Test可判_边界一致:
-    """完整可判的观察——五处必须**都返回空串**。"""
+    """完整可判的观察——四处必须**都返回空串**。"""
 
-    def test_完整可判_五处都空串(self):
+    def test_完整可判_四处都空串(self):
         results = _judge(_CAN_JUDGE)
         for name, r in results.items():
             assert r == "", (
@@ -113,10 +116,10 @@ class Test可判_边界一致:
                 f"：{r!r}——决策边界漂了，与本契约冲突"
             )
 
-    def test_truncated字典全False_五处都空串(self):
+    def test_truncated字典全False_四处都空串(self):
         """INC42：p2 样本的 truncated 是 dict（{'source': False, 'view':
         False}）。全 False = 未截断——原 truthy 判断把非空 dict 一律
-        判真（E001__57bbf995__site-2 被误标截断），五处须同修。"""
+        判真（E001__57bbf995__site-2 被误标截断），四处须同修。"""
         obs = _obs(truncated={"source": False, "view": False})
         results = _judge(obs)
         for name, r in results.items():
@@ -126,14 +129,14 @@ class Test可判_边界一致:
             )
 
 
-# ── 契约 2：不可判样本五处一致 ────────────────────────────────────
+# ── 契约 2：不可判样本四处一致 ────────────────────────────────────
 
 
 class Test不可判_边界一致:
-    """同一份观察在某条判据上不充分时——五处必须**都返回非空**。"""
+    """同一份观察在某条判据上不充分时——四处必须**都返回非空**。"""
 
     @pytest.mark.parametrize("obs", _CANT_JUDGE_CASES)
-    def test_不可判_五处都非空(self, obs: Any):
+    def test_不可判_四处都非空(self, obs: Any):
         results = _judge(obs)
         for name, r in results.items():
             assert r != "", (
@@ -169,8 +172,7 @@ class Test决策向量_两两一致:
 
 # 注：``obs=None`` 不在本契约覆盖范围——
 # gates.py / d3_scorer / d9_scorer 都返回 ``"没有观察"``（rationale 闸门
-# 与 LLM judge 都会传 None 进去），但 ``code_scorer._observation_shortfall``
-# **不**做 None 守卫（直接 ``obs.get('degraded')``）——它只在观测字典非空
-# 时被调用（code judge 的 callers 永远不会传 None）——这是已知的能力差异，
-# 不是决策漂移。如需对齐，单独开一个「code_scorer None 守卫」增量，本契
-# 约不背这个锅。
+# 与 LLM judge 都会传 None 进去），而 d10_scorer 的 ``_observation_usable``
+# 只收 ``Mapping``，None 进不来。这是已知的能力差异，不是决策漂移。
+# （原第五处 ``code_scorer._observation_shortfall`` 已于 rubric v1.4 退出
+# 本契约——理由见模块 docstring「D-2 为什么不在本契约里」。）

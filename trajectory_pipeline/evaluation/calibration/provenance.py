@@ -89,6 +89,13 @@ FACES: tuple[str, ...] = (FACE_CODE, FACE_LLM, FACE_COLLECTION)
 #: - ``d7`` / ``d8`` 是**批次级**维度（B-2 / B-4），不出逐行分数 ⇒ 不登记
 #:   ⇒ 落到 :data:`FACE_UNKNOWN`（不可判定），**不猜它们属于哪一面**。
 DIM_FACES: dict[str, str] = {
+    # ⚠️ D-2 自 rubric v1.4 起是「代码筛 + LLM 判语义」，严格说跨 code / llm
+    # 两面。评估链**已接线**（2026-11-10，`evaluation/judge_backend.py`），但
+    # hybrid 面怎么登记（两面并列？新面？）**未定** ⇒ 本表暂仍记 code 面。
+    # **已知后果**：`_recompute_code_face` 不传 `llm_client`，LLM 判过的 d2
+    # 读数在代码面重算时必然落 `undetermined` —— 那份差异**不得**读成
+    # 「读数漂了」，它只是「这一面复现不了另一面的判据」。
+    # 见 docs/计划进展/10-TODO台账.md 2026-11-10 节。
     "d2": FACE_CODE,
     "d3": FACE_LLM,
     "d4": FACE_CODE,

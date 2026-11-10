@@ -5982,8 +5982,47 @@ def cmd_overlay_scout(args: argparse.Namespace) -> int:
 
     写回使用 force=True（合规回填操作，不是覆盖新数据）；保留所有
     现有 code.branch、golden、retest 字段值不变。
+
+    ⚠️ **D-2 自 rubric v1.4 起需要 LLM**（代码筛 + LLM 判语义）。本命令按
+    ``TRAJECTORY_LLM_*`` 自动建客户端（与 ``evaluation.cli`` / scout 同一条
+    接线，见 :func:`evaluation.judge_backend.judge_client_from_env`）：
+    配了半份 ⇒ 抛 :class:`GoldenError`（main 退 2）；一个键都没配 ⇒ stderr
+    说明后继续，D-2 全部 ``undetermined``；``--no-llm`` 显式关闭。
     """
+    from trajectory_pipeline.evaluation.judge_backend import judge_client_from_env
     from trajectory_pipeline.evaluation.scout.io import _score_one  # type: ignore
+    from trajectory_pipeline.llm.client import LLMUnavailable, dump_for_debug
+
+    # ── 裁判后端（本轮一个客户端，贯穿所有站点）─────────────────
+    llm_client = None
+    if not getattr(args, "no_llm", False):
+        try:
+            llm_client = judge_client_from_env()
+        except LLMUnavailable as exc:
+            # 配了键但缺件/非法 = 配置错误。**抛**（main 退 2），不静默
+            # 降级成「没配」——那会让半份配置看起来像一次正常的空跑。
+            raise GoldenError(f"LLM 配置错误：{exc}") from None
+        if llm_client is None:
+            print("⚠ 未配置 TRAJECTORY_LLM_*：D-2（rubric v1.4「代码筛 + "
+                  "LLM 判语义」）缺少裁判后端，本轮 D-2 全部落 "
+                  "undetermined（不中断，其余维度照跑）。"
+                  "离线回填可加 --no-llm 明确关闭。", file=sys.stderr)
+    else:
+        print("⚠ --no-llm：D-2 全部落 undetermined（显式关闭，不中断）。",
+              file=sys.stderr)
+    if llm_client is not None:
+        # 只报 model / base_url / timeout——**永不含 key**（红线）。
+        print(f"LLM 裁判后端：{dump_for_debug(llm_client.cfg)}", file=sys.stderr)
+
+    def _score_unit(unit: Any) -> list[dict[str, Any]]:
+        """把客户端绑进评分入口，``_overlay_trajectory_row`` 只收单参 callable。
+
+        没有客户端时按原样单参调用——测试桩（``lambda sample: ...``）与
+        ``_score_one`` 的默认值都吃这一形态。
+        """
+        if llm_client is not None:
+            return _score_one(unit, llm_client=llm_client)
+        return _score_one(unit)
 
     golden_root = pathlib.Path(args.golden_root)
     p2_root = (
@@ -6008,7 +6047,7 @@ def cmd_overlay_scout(args: argparse.Namespace) -> int:
         if rows_mod.is_trajectory_row(row):
             out_rows.append(
                 _overlay_trajectory_row(
-                    row, p2_root, counters, score_one=_score_one
+                    row, p2_root, counters, score_one=_score_unit
                 )
             )
             continue
@@ -6032,7 +6071,7 @@ def cmd_overlay_scout(args: argparse.Namespace) -> int:
             row["scorer_version"] = None
             out_rows.append(row)
             continue
-        scores = _score_one(sample)
+        scores = _score_unit(sample)
         row["dimension_scores"] = _overlay_scores(scores)
         row["scores_detail"] = list(scores)
         row["status"] = "scored"
@@ -6362,6 +6401,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"P1 存档根（默认 {PIPELINE_ROOT}）",
     )
     p_overlay.add_argument("--dry-run", action="store_true", help="只统计不落盘")
+    p_overlay.add_argument(
+        "--no-llm", action="store_true",
+        help="不建 LLM 客户端：D-2（rubric v1.4 需要 LLM 判语义）全部按 "
+             "fail-closed 落 undetermined。用于离线回填；不传则按 "
+             "TRAJECTORY_LLM_* 自动建。",
+    )
     p_overlay.set_defaults(func=cmd_overlay_scout)
 
     p_ann = sub.add_parser(

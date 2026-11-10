@@ -24,9 +24,9 @@
 
 范围声明（不夸大）
 ------------------
-:func:`evaluator_version` 覆盖 **LLM 判断题（D-3 / D-9 / D-10）**：prompt、
+:func:`evaluator_version` 覆盖 **LLM 判断题（D-2 / D-3 / D-9 / D-10）**：prompt、
 枚举、映射表与**打分源码内容**（M-4 起，漏了源码就会出现「改了逻辑、指纹
-没动」）。代码评分器（D-2 / D-4 / D-5 / D-6）另有一把尺：
+没动」）。代码评分器（**D-4 / D-5 / D-6**；D-2 自 v1.4 起两面都算）另有一把尺：
 :func:`code_scorer_version` 取的是**源码内容**的指纹，不是 git commit——
 commit 不含工作树里未提交的改动，而 M-29 的教训恰恰是「代码改了、commit
 没动」。:func:`scorer_fingerprint` 把两把尺拼成一行（``code:…|llm:…``），
@@ -59,7 +59,7 @@ RUBRIC_DOC = (
 )
 
 #: 当前 rubric 版本。**改 rubric 必须同时改这里**（contract test 盯着）。
-RUBRIC_VERSION = "1.3"
+RUBRIC_VERSION = "1.4"
 
 #: 文档版本行格式：``**版本**: v1.2 | **生效日期**: ...``
 _VERSION_RE = re.compile(r"^\*\*版本\*\*[:：]\s*v([0-9]+(?:\.[0-9]+)*)", re.MULTILINE)
@@ -89,6 +89,9 @@ def documented_rubric_version(text: str | None = None) -> str:
 #: ``observation_match.py`` 在上一级目录——D-3 的「证据能否锚回观察」
 #: 判据全出自它，改它的常量（如 ``MIN_BODY_SUBSTRING``）就是改尺子。
 _LLM_SOURCE_FILES: tuple[pathlib.Path, ...] = (
+    # D-2 自 rubric v1.4 起是「代码筛 + LLM 判语义」——prompt 与判分逻辑
+    # 都在 code_scorer.py，所以它同时进 code 面与 llm 面两把尺。
+    pathlib.Path(__file__).resolve().parent / "code_scorer.py",
     pathlib.Path(__file__).resolve().parent / "d3_scorer.py",
     pathlib.Path(__file__).resolve().parent / "d9_scorer.py",
     pathlib.Path(__file__).resolve().parent / "d10_scorer.py",
@@ -110,7 +113,7 @@ def _source_parts() -> dict[str, str]:
 
 
 def evaluator_version() -> str:
-    """D-3 / D-9 / D-10 判分面的指纹（sha256 前 12 位）。
+    """D-2 / D-3 / D-9 / D-10 判分面的指纹（sha256 前 12 位）。
 
     纳入：rubric 版本、锚点表、各段 system prompt、契约枚举（类别 / 子类 /
     verdict）、few-shot 池（按内容排序后序列化，顺序变化也算变化）、
@@ -130,6 +133,7 @@ def evaluator_version() -> str:
     惰性 import scorers：本函数被 CLI 调用时才加载 LLM 侧常量，
     避免 `builder` 的其它子命令被拖慢。
     """
+    from trajectory_pipeline.evaluation.scorers import code_scorer
     from trajectory_pipeline.evaluation.scorers import d3_scorer
     from trajectory_pipeline.evaluation.scorers import d9_scorer
     from trajectory_pipeline.evaluation.scorers import d10_scorer
@@ -137,6 +141,7 @@ def evaluator_version() -> str:
     parts = {
         "rubric_version": RUBRIC_VERSION,
         "anchors": {dim: dict(sorted(table.items())) for dim, table in ANCHOR_TABLES.items()},
+        "d2_prompt": code_scorer.D2_SYSTEM_PROMPT,
         "d3_prompt": d3_scorer.D3_SYSTEM_PROMPT,
         "d3_categories": sorted(d3_scorer.D3_CATEGORIES),
         "d3_subtypes": sorted(d3_scorer.D3_SUBTYPES),
@@ -320,6 +325,15 @@ def clause_of(dimension: str, tier: int | float | None = None) -> str:
 #: ⚠️ §7 的示意把条款号写进表里（``dict[int, tuple[str, str]]``）；这里不抄——
 #: 理由同上，条款号归 :data:`DIM_CLAUSES` 管。
 ANCHOR_TABLES: dict[str, dict[int, str]] = {
+    # D-2（rubric v1.4 改判据）——「前后动作顺序正常、连贯」。
+    # 旧口径（点击目标在观察存档里存不存在）已废弃，不在这张表里。
+    "d2": {
+        5: "0 处断裂：动作链全程连贯",
+        4: "1 处轻微断裂（动作顺序可解释，但有冗余 / 重复 / 回溯）",
+        3: "≥2 处轻微断裂",
+        2: "1 处实质断裂（动作缺少前序观察支撑，或页面 / 步骤衔接断裂）",
+        1: "≥2 处实质断裂",
+    },
     "d3": {
         5: "判对，且选中/排除理由引用了观察中的具体依据",
         4: '判对，理由为泛泛描述（"不是播放站"而无具体依据）',

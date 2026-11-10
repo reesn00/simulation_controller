@@ -54,6 +54,7 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from trajectory_pipeline.assembler.schema import run_id_of, split_archive
+from trajectory_pipeline.evaluation.judge_backend import judge_client_from_env
 from trajectory_pipeline.evaluation.scorers.code_scorer import score_d2
 from trajectory_pipeline.evaluation.scorers.d3_scorer import score_d3
 from trajectory_pipeline.evaluation.scorers.d4_scorer import score_d4
@@ -61,16 +62,29 @@ from trajectory_pipeline.evaluation.scorers.d5_scorer import score_d5
 from trajectory_pipeline.evaluation.scorers.d6_scorer import score_d6
 from trajectory_pipeline.evaluation.scorers.d9_scorer import score_d9
 from trajectory_pipeline.executor.archive import DEFAULT_ROOT, select_archives
+from trajectory_pipeline.llm.client import LLMClient, LLMUnavailable, dump_for_debug
 
 #: ``短名 → 打分函数``。**只有这四个**——D-3 未建（判据依赖黄金集），
 #: D-1 已划到批次级 B-1。短名进 argparse，长名（``D-5``）只在报告里出现，
 #: 因为 rubric 里那些是评分标准的维度号，不是代码里的名字。
+#:
+#: ⚠️ **D-2 自 rubric v1.4 起是「代码筛 + LLM 判语义」**：代码部分照旧跑，
+#: 但落档要一个 ``llm_client``。本 CLI 在**选中 D-2** 时按
+#: ``TRAJECTORY_LLM_*`` 自动建客户端（见 :mod:`evaluation.judge_backend`）；
+#: env 没配时 D-2 落 ``undetermined`` 并在 stderr 明说「没配」，
+#: **不静默当成「判不了」**。
 SCORERS: dict[str, Callable[[Any], Any]] = {
     "d2": score_d2,
     "d4": score_d4,
     "d5": score_d5,
     "d6": score_d6,
 }
+
+#: 接受 ``llm_client`` 关键字的维度。**只在真的有客户端时才传 kwarg**——
+#: 代码 judge（d4/d5/d6）的函数签名没有它，一律按位置调用。
+#: 这张表是「谁需要 LLM」的唯一真源，:func:`_call_scorer` 与 CLI 的
+#: 建客户端条件都从它投影。
+LLM_DIMS: frozenset[str] = frozenset({"d2", "d3", "d9"})
 
 #: LLM 裁判层评分器（方案 10-§四 接入点）——**默认关**，
 #: 由 ``--include-llm-judge`` 显式打开。理由：
@@ -90,18 +104,38 @@ SCORERS: dict[str, Callable[[Any], Any]] = {
 #:    仍满足 ``tests/unit/test_evaluation_cli.py::test_没有把SCORERS改坏``
 #:    的契约。LLM_SCORERS 仅在 ``--include-llm-judge`` 时合并进 dispatch。
 #:
+#: ⚠️ **客户端从 ``TRAJECTORY_LLM_*`` 建**（:func:`judge_client_from_env`）：
+#:    带 ``--include-llm-judge`` 而 env 没配齐 ⇒ **退 2**，不静默跑成
+#:    全 undetermined（那正是审查 L-3 记的「配置了也不出分、还看不出来」）。
+#:    不加该开关时 D-3 / D-9 不进入 dispatch，客户端也不会为它们而建。
+#:
 #: ⚠️ **D-10 不在这里，而且不是漏了**（H-6，2026-11-09）：
 #:    ``score_d10`` 只吃 :class:`~evaluation.scorers.d10_scorer.D10Case`，
-#:    它的**因子 A 要与金标比**（本 CLI 没有黄金集对照），且需要一个
-#:    ``llm_client``（本 CLI 不读任何 LLM 配置、也不建客户端）。
+#:    它的**因子 A 要与金标比**（本 CLI 没有黄金集对照）。
 #:    ⇒ **D-10 五档评分器今天零生产调用方**；把它塞进这张表只会让
 #:    ``dispatch[dim](unit)`` 在第一条样本上 TypeError。接线要两件事：
-#:    ① 从冻结档构造 ``D10Case``；② 接 LLM 客户端。
+#:    ① 从冻结档构造 ``D10Case``；② 把金标接进来。
 #:    见 ``docs/计划进展/07-评估与黄金集域.md`` §D-10 未接线。
 LLM_SCORERS: dict[str, Callable[[Any], Any]] = {
     "d3": score_d3,
     "d9": score_d9,
 }
+
+
+def _call_scorer(fn: Callable[..., Any], dim: str, unit: Any,
+                 llm_client: LLMClient | None) -> Any:
+    """按维度决定要不要把 ``llm_client`` 传给评分器。
+
+    **只在真有客户端时才传 kwarg**：d4/d5/d6 的签名没有它，无脑传会
+    TypeError；而 ``llm_client=None`` 传进去与不传等价（评分器签名里本来
+    就是 ``= None``），但会在「谁需要 LLM」上多一份要同步的表——
+    :data:`LLM_DIMS` 已是唯一真源，这里只做投影。
+    """
+    if llm_client is not None and dim in LLM_DIMS:
+        return fn(unit, llm_client=llm_client)
+    return fn(unit)
+
+
 DEFAULT_ROOT_PATH = pathlib.Path(__file__).resolve().parents[1] / DEFAULT_ROOT
 
 #: **批次判据，两级**：
@@ -256,6 +290,7 @@ def _units_of(sample: Any) -> list[tuple[str, Any, Any, str]]:
 def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
              per_sample: bool = False, undetermined_only: bool = False
              , include_llm_judge: bool = False,
+             llm_client: LLMClient | None = None,
              ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """跑一遍，返回 ``(汇总, 逐条记录)``。
 
@@ -267,10 +302,14 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
 
     Args:
         include_llm_judge: 把 :data:`LLM_SCORERS`（D-3 / D-9）合并进 dispatch
-            ——只有显式 ``--include-llm-judge`` 时为 True。LLM judge 走
-            ``llm_client`` 为 ``None`` 的快路径，所有 verdict 均回 ``undetermined``
-            或 ``not_evaluated``——这是设计行为，不是 bug；拿到黄金集接入 LLM 后
-            才会出 ``scored`` 档。
+            ——只有显式 ``--include-llm-judge`` 时为 True。D-3 仍受
+            「没有黄金集对照」限制：出分条件不只是有客户端，见
+            ``LLM_SCORERS`` 注释第 3 条。
+        llm_client: 裁判后端（:func:`judge_client_from_env` 的产物）。
+            ``None`` = 没配 / 被 ``--no-llm`` 关掉：D-2 / D-3 / D-9 全部走
+            fail-closed 的 ``undetermined`` 分支——那是「没有后端」这个事实，
+            不是「判不了」；说清是哪一种由调用方（``main``）负责。
+            **库函数不读环境变量**：客户端由调用方注入，测试才能确定复现。
     """
     #: LLM judge 仅在 ``--include-llm-judge`` 时并入 dispatch。默认 false 与
     #: :data:`SCORERS` 独立——见 ``test_没有把SCORERS改坏`` 契约。
@@ -346,7 +385,7 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
                 for dim in dims:
                     # ⚠️ 打分对象是**展开后的单元**（SiteView 或整样本），
                     # 不是整条 Sample——见 :func:`_units_of`。
-                    verdict = dispatch[dim](unit)
+                    verdict = _call_scorer(dispatch[dim], dim, unit, llm_client)
                     row[dim] = verdict.to_json()
                     key = str(verdict.score)
                     tally[dim][key] += 1
@@ -639,7 +678,8 @@ def main(argv: list[str] | None = None) -> int:
         pass
     ap = argparse.ArgumentParser(
         prog="python -m trajectory_pipeline.evaluation.cli",
-        description="跑 D-2/D-4/D-5/D-6 四个代码评分器")
+        description="跑 D-2/D-4/D-5/D-6 四个评分器"
+                    "（D-2 需要 LLM，按 TRAJECTORY_LLM_* 自动接线）")
     ap.add_argument("--out", default=str(DEFAULT_ROOT_PATH),
                     help="P1 存档目录（默认 output/pipeline，优先取 .reviewed.json）")
     ap.add_argument("--dimension", default="d2,d4,d5,d6",
@@ -651,7 +691,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--include-llm-judge", action="store_true",
                     help="启用 LLM judge（D-3 / D-9）——**默认关**。"
                          "生产链上禁止 judge 与代码 judge 混合解读，"
-                         "见 :data:`LLM_SCORERS` 模块级注释。")
+                         "见 :data:`LLM_SCORERS` 模块级注释。"
+                         "**需要 TRAJECTORY_LLM_* 已配置**，否则退 2。")
+    ap.add_argument("--no-llm", action="store_true",
+                    help="不建 LLM 客户端：D-2（及 --include-llm-judge 下的 "
+                         "D-3/D-9）全部按 fail-closed 落 undetermined。"
+                         "用于离线 / 便宜的批跑；与 --include-llm-judge 互斥。")
     ap.add_argument("--json", dest="json_out", default=None,
                     help="把结果落成 JSON")
     args = ap.parse_args(argv)
@@ -673,10 +718,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{root} 不是目录", file=sys.stderr)
         return 2
 
+    if args.no_llm and args.include_llm_judge:
+        print("--no-llm 与 --include-llm-judge 互斥：前者要求不出 LLM 分，"
+              "后者要求出 LLM 分", file=sys.stderr)
+        return 2
+
+    # ── 裁判后端：只有真需要时才建 ───────────────────────────────
+    # 要 = 选中 D-2，或显式开了 --include-llm-judge（D-3/D-9）。纯代码
+    # 维度（d4/d5/d6）不建——env 里配了 key 不等于这次跑要花这笔钱。
+    need_llm = ("d2" in dims) or args.include_llm_judge
+    llm_client: LLMClient | None = None
+    if need_llm and not args.no_llm:
+        try:
+            llm_client = judge_client_from_env()
+        except LLMUnavailable as exc:
+            # 配了键但缺件/非法 = 配置错误。**不静默当没配**：那会让半份
+            # 配置变成没人读的尸体，而「为什么 LLM 没生效」查不到它头上。
+            print(f"LLM 配置错误：{exc}", file=sys.stderr)
+            return 2
+        if llm_client is None:
+            if args.include_llm_judge:
+                # 显式要 LLM 却一个键都没配：退 2。跑成全部 undetermined
+                # 正是审查 L-3 记的「配置了也不出分、还看不出来」。
+                print("--include-llm-judge 需要 LLM 后端，但 TRAJECTORY_LLM_* "
+                      "一个都没配（至少需要 TRAJECTORY_LLM_BASE_URL 与 "
+                      "TRAJECTORY_LLM_MODEL）。要么配齐，要么去掉该开关；"
+                      "要故意不出 LLM 分请用 --no-llm。", file=sys.stderr)
+                return 2
+            if "d2" in dims:
+                print("⚠ 未配置 TRAJECTORY_LLM_*：D-2（rubric v1.4「代码筛 + "
+                      "LLM 判语义」）缺少裁判后端，本批 D-2 将全部落 "
+                      "undetermined（不中断，其余维度照跑）。",
+                      file=sys.stderr)
+    elif need_llm and args.no_llm and "d2" in dims:
+        print("⚠ --no-llm：D-2 将全部落 undetermined（显式关闭，不中断）。",
+              file=sys.stderr)
+
+    if llm_client is not None:
+        # 只报 model / base_url / timeout——**永不含 key**（红线）。
+        print(f"LLM 裁判后端：{dump_for_debug(llm_client.cfg)}", file=sys.stderr)
+
     summary, rows = evaluate(root, dims, limit=args.limit,
                              per_sample=args.per_sample,
                              undetermined_only=args.only_undetermined,
-                             include_llm_judge=args.include_llm_judge)
+                             include_llm_judge=args.include_llm_judge,
+                             llm_client=llm_client)
     _print(summary, rows, per_sample=args.per_sample,
            undetermined_only=args.only_undetermined)
 

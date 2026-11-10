@@ -12,7 +12,9 @@ import pathlib
 import sys
 from typing import Any
 
+from trajectory_pipeline.evaluation.judge_backend import judge_client_from_env
 from trajectory_pipeline.evaluation.scout.io import run_scout
+from trajectory_pipeline.llm.client import LLMClient, LLMUnavailable, dump_for_debug
 
 
 #: 默认 P2 根。
@@ -36,7 +38,8 @@ def _stats_line(stats: dict[str, int]) -> str:
             f"skip={skp}  missing_source={mis}")
 
 
-def _dry_run(p2_root: pathlib.Path) -> int:
+def _dry_run(p2_root: pathlib.Path, *,
+             llm_client: LLMClient | None = None) -> int:
     from trajectory_pipeline.evaluation.scout.io import (
         list_p2_samples, _resolve_sample, _score_one, _status_of, _units_of,
     )
@@ -55,7 +58,7 @@ def _dry_run(p2_root: pathlib.Path) -> int:
         units = _units_of(sample)
         counters["units"] += len(units)
         for _unit_id, unit, _outcome, _site_index in units:
-            scores = _score_one(unit)
+            scores = _score_one(unit, llm_client=llm_client)
             status = _status_of(scores)
             rec: dict[str, Any] = {
                 "sample_id": str(getattr(sample, "sample_id", "") or ""),
@@ -190,6 +193,12 @@ def main(argv: list[str] | None = None) -> int:
         "--stats", action="store_true",
         help="落盘后打印三态统计",
     )
+    run_p.add_argument(
+        "--no-llm", action="store_true",
+        help="不建 LLM 客户端：D-2（rubric v1.4 需要 LLM 判语义）全部按 "
+             "fail-closed 落 undetermined。用于离线跑；不传则按 "
+             "TRAJECTORY_LLM_* 自动建。",
+    )
 
     agg_p = sub.add_parser(
         "aggregate",
@@ -247,10 +256,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误:{p2_root} 不是目录", file=sys.stderr)
         return 2
 
-    if args.dry_run:
-        return _dry_run(p2_root)
+    # ── 裁判后端：dry-run 与真实 run **用同一个客户端** ──────────
+    # 分开建会让「预演的 D-2 是 undetermined、真跑却出分」——三态统计
+    # 对不上，而这种事只有逐条比对两次输出才发现。
+    llm_client: LLMClient | None = None
+    if not args.no_llm:
+        try:
+            llm_client = judge_client_from_env()
+        except LLMUnavailable as exc:
+            # 配了键但缺件/非法 = 配置错误，不退化成「没配」。
+            print(f"LLM 配置错误：{exc}", file=sys.stderr)
+            return 2
+        if llm_client is None:
+            print("⚠ 未配置 TRAJECTORY_LLM_*：D-2（rubric v1.4「代码筛 + "
+                  "LLM 判语义」）缺少裁判后端，本批 D-2 全部落 "
+                  "undetermined ⇒ 记录会集中进 quarantine（不中断）。"
+                  "离线跑可加 --no-llm 明确关闭。", file=sys.stderr)
+    else:
+        print("⚠ --no-llm：D-2 全部落 undetermined ⇒ 记录会集中进 "
+              "quarantine（显式关闭，不中断）。", file=sys.stderr)
 
-    stats = run_scout(p2_root, out_dir, mediabrowse_dir=mb_dir)
+    if llm_client is not None:
+        # 只报 model / base_url / timeout——**永不含 key**（红线）。
+        print(f"LLM 裁判后端：{dump_for_debug(llm_client.cfg)}", file=sys.stderr)
+
+    if args.dry_run:
+        return _dry_run(p2_root, llm_client=llm_client)
+
+    stats = run_scout(p2_root, out_dir, mediabrowse_dir=mb_dir,
+                      llm_client=llm_client)
     print(f"-> 已写 {out_dir}/{{positive,negative,quarantine,scout}}.jsonl")
     print(f"   {_stats_line(stats)}")
     print(f"   sum={sum(stats.values())}  (== 输入 P2 样本数)")

@@ -58,10 +58,10 @@ LLM 调不通 / JSON 抠不出 / verdict 不在契约集合 → ``undetermined``
 ## 独立实现 ``_observation_shortfall``
 
 与 :func:`trajectory_pipeline.rationale.gates.observation_shortfall`、
-:func:`trajectory_pipeline.evaluation.scorers.code_scorer._observation_shortfall`
+:func:`trajectory_pipeline.evaluation.scorers.d3_scorer._observation_shortfall`
 同款判据但**分开实现**——保持 ``evaluation ↔ rationale`` 单向依赖方向。
-两处口径靠 ``tests/contract/test_observation_shortfall_consistency.py``
-双向盯住（与 d3_scorer 同款——该 contract 测试本批可与 d3 一起补）。
+几处口径靠 ``tests/contract/test_observation_shortfall_consistency.py``
+双向盯住（原 code_scorer 那处已于 rubric v1.4 退出该契约）。
 
 ## raw CoT 红线
 
@@ -240,7 +240,7 @@ def _observation_shortfall(obs: Mapping[str, Any] | None) -> str:
     """这份观察**能不能支撑**rationale 复检。空串 = 能。
 
     同款判据于 :func:`trajectory_pipeline.rationale.gates.observation_shortfall`
-    与 :func:`trajectory_pipeline.evaluation.scorers.code_scorer._observation_shortfall`，
+    与 :func:`trajectory_pipeline.evaluation.scorers.d3_scorer._observation_shortfall`，
     但**独立实现**——保持 ``evaluation ↔ rationale`` 单向依赖方向。
     """
     if not obs:

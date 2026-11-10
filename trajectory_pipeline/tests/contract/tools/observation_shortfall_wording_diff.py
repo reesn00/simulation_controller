@@ -8,10 +8,11 @@
 
   - ``gates.observation_shortfall`` 在 truncated 消息里夹了「CSS 会抢光预算」
     之类的额外说明
-  - ``code_scorer._observation_shortfall`` 在 degraded 消息里强调「缺项无法
-    与『真没有』区分」
   - ``d3_scorer._observation_shortfall`` / ``d9_scorer._observation_shortfall``
-    走中性版本
+    / ``d10_scorer._observation_usable`` 走中性版本
+
+⚠️ ``code_scorer._observation_shortfall`` 已于 rubric v1.4 退出本契约
+（D-2 不再要求元素清单完整）——本工具随之把它从矩阵里去掉。
 
 这些措辞漂移**不**破功能正确（决策边界已守住），但当 reviewer 想确认
 「这条样本在四处看到的具体原因是什么」时，需要把措辞打 side-by-side
@@ -105,15 +106,15 @@ IMPLS: list[tuple[str, Any]] = [
     ("gates", __import__("trajectory_pipeline.rationale.gates",
                           fromlist=["observation_shortfall"])
      .observation_shortfall),
-    ("code_scorer", __import__("trajectory_pipeline.evaluation.scorers.code_scorer",
-                                fromlist=["_observation_shortfall"])
-     ._observation_shortfall),
     ("d3_scorer", __import__("trajectory_pipeline.evaluation.scorers.d3_scorer",
                               fromlist=["_observation_shortfall"])
      ._observation_shortfall),
     ("d9_scorer", __import__("trajectory_pipeline.evaluation.scorers.d9_scorer",
                               fromlist=["_observation_shortfall"])
      ._observation_shortfall),
+    ("d10_scorer", __import__("trajectory_pipeline.evaluation.scorers.d10_scorer",
+                               fromlist=["_observation_usable"])
+     ._observation_usable),
 ]
 
 
@@ -132,7 +133,6 @@ def collect_matrix() -> list[tuple[str, dict[str, str]]]:
             try:
                 row[impl_name] = impl_fn(obs)  # type: ignore[arg-type]
             except Exception as e:
-                # code_scorer 不接受 obs=None 是已知能力差异——本工具不背锅
                 row[impl_name] = f"<{type(e).__name__}: {e}>"
         matrix.append((case_id, row))
     return matrix
@@ -210,8 +210,8 @@ def _render_markdown(matrix: list[tuple[str, dict[str, str]]]) -> str:
     lines.append("")
     lines.append("> 注：")
     lines.append("> 1. ``can_judge（基线）`` 行——四处均应返回**空串**（可判）。")
-    lines.append("> 2. ``<missing>`` —— 该实现跳过该 case（code_scorer 不接受 "
-                 "``obs=None`` 是已知能力差异，见 contract 测试 fixture 表）。")
+    lines.append("> 2. ``<missing>`` —— 该实现跳过该 case（矩阵已按 rubric v1.4 "
+                 "去掉退出的 code_scorer；d10 收 ``Mapping``，None 进不来）。")
     lines.append("> 3. 表中字符串是**字面措辞**，与 contract 测试的「决策边界"
                  " 一致」**正交**——决策边界对齐不代表措辞一致。")
     return "\n".join(lines)

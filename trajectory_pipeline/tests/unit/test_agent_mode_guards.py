@@ -17,11 +17,12 @@ A2a 的同形纪律保证了两批同形。要钉的是**断链与误判**两类
    judge 手里有 think 原文（不是空 rationale）且来源可区分
    （P1 ``reason="native-think"`` vs writer 的 ``""``）。
 
-D-2 现有口径只核 ``click`` 的 target（code_scorer 的 ``_click_actions``
-按 ``tool == "click"`` 过滤，``fill`` 无校验产地）——「保持现有口径」
-的决策 A 指的即是此实现，本文件不改它，只钉它的分类在 agent 形状上正确。
-D-5 的全量守卫是 ``Test同源``（FailClosed 映射），这里只补一条 agent 链
-的端到端冒烟：判断点 id 确实落进了 P2 的 outcome。
+D-2 自 rubric v1.4 起改判「**前后动作顺序正常、连贯**」（代码筛 + LLM
+判语义），不再核对 click 目标的 label 是否出现在观察元素清单里。本文件
+钉的是新口径在 agent 形状上仍然成立：真链可筛可判、纯导航样本同样出分、
+点击目标「查不到」不再扣 D-2 的分。D-5 的全量守卫是 ``Test同源``
+（FailClosed 映射），这里只补一条 agent 链的端到端冒烟：判断点 id 确实
+落进了 P2 的 outcome。
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import json
 
 import pytest
 
-from trajectory_pipeline.evaluation.scorers.code_scorer import score_d2
+from trajectory_pipeline.evaluation.scorers.code_scorer import screen_d2, score_d2
 from trajectory_pipeline.evaluation.scorers.d9_scorer import score_d9
 from trajectory_pipeline.rationale import gates
 
@@ -219,20 +220,44 @@ class _Ns:
         self.observations = observations
 
 
+class _D2Judge:
+    """D-2 的假 judge：对代码筛疑点一律判「误报」，不补新断裂。"""
+
+    def __init__(self, n_points: int) -> None:
+        self.n_points = n_points
+        self.prompts: list[tuple[str, str]] = []
+
+    def chat(self, system: str, user: str) -> str:
+        self.prompts.append((system, user))
+        return json.dumps(
+            {
+                "points": [
+                    {"index": i, "is_break": False, "reason": ""}
+                    for i in range(self.n_points)
+                ],
+                "new_breaks": [],
+            },
+            ensure_ascii=False,
+        )
+
+
 class TestD2守卫:
-    async def test_真链样本的click引用判found(self, tmp_path):
-        """FakeAgent 轨迹切出的 P2 样本：click 的 target label 在
-        进站观察的元素里 → found → 5 分。§6.3 表「found/missing 正确
-        分类」的 found 半边，用的就是真链而不是手搭的样本。"""
+    async def test_真链样本可筛可判(self, tmp_path):
+        """FakeAgent 轨迹切出的 P2 样本：动作链能被代码筛读过、交给
+        LLM 判「无断裂」后落 5 分。v1.4 起 D-2 判的是顺序连贯，
+        真链不再因为「没有 click 引用可校验」而永远 null。"""
         ar, al, _ = await tav._run_agent()
         sample = _site_sample(tav._full_archive(ar, al, "agent"), tmp_path)
-        verdict = score_d2(sample)
+        screen = screen_d2(sample)
+        assert screen.kind == "screenable" and screen.steps
+        verdict = score_d2(sample, llm_client=_D2Judge(len(screen.points)))
         assert verdict.kind == "scored" and verdict.score == 5
-        assert verdict.refs and all(r.kind == "found" for r in verdict.refs)
+        assert verdict.breaks == ()
 
-    def test_引用不存在的实体判missing并扣分(self):
-        """missing 半边：click target 不在任何完整观察里 → 2 分。
-        agent 形状（origin=model、target 带 label）下分类不得漂移。"""
+    def test_点击目标不在观察里不再是D2判据(self):
+        """v1.4 明确去掉「点击目标是否在观察元素清单里」：即使 target
+        label 查不到，只要动作链没有时序断裂，D-2 仍是 5 分。
+        该事实归 D-5 处置链与 B-2 覆盖完整性，不再由本维扣分。"""
         sample = _Ns(
             actions=[{"tool": "click", "origin": "model",
                       "target": {"tag": "a", "label": "不存在的按钮"}}],
@@ -241,23 +266,26 @@ class TestD2守卫:
                 "interactive_elements": [
                     {"ref": "e1", "tag": "a", "label": "首页"},
                 ],
-                "elements_total": 1, "links": [], "links_total": 0,
+                "links": [],
             }],
         )
-        verdict = score_d2(sample)
-        assert verdict.kind == "scored" and verdict.score == 2
-        assert verdict.refs[0].kind == "missing"
+        screen = screen_d2(sample)
+        assert screen.kind == "screenable" and screen.points == ()
+        verdict = score_d2(sample, llm_client=_D2Judge(0))
+        assert verdict.kind == "scored" and verdict.score == 5
 
-    def test_无click样本不出满分(self):
-        """只导航就被拦下的 agent 样本没有可校验引用 → undetermined，
-        拿不到「全部可找到」的 5 分——「没查」不得渲染成「查过全对」。"""
+    def test_纯导航样本也能出分(self):
+        """只有一步 goto 的 agent 样本同样有动作链：落点与目标一致
+        ⇒ 代码筛无疑点，LLM 判无断裂 ⇒ 5 分。旧口径在这里只能判 null。"""
         sample = _Ns(
             actions=[{"tool": "goto", "origin": "model",
                       "params": {"url": "https://x.test/"}}],
             observations=[{"url": "https://x.test/", "body_text": "x"}],
         )
-        verdict = score_d2(sample)
-        assert verdict.kind == "undetermined" and verdict.score is None
+        screen = screen_d2(sample)
+        assert screen.kind == "screenable" and screen.points == ()
+        verdict = score_d2(sample, llm_client=_D2Judge(0))
+        assert verdict.kind == "scored" and verdict.score == 5
 
 
 # ═══════════════════════════════════════════════════════════════════════

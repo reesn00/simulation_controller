@@ -65,7 +65,7 @@ def _entries(*rows: str) -> list[cl.Entry]:
 # ---------------------------------------------------------------------------
 
 
-def test_解析真实文档_四个版本六行():
+def test_解析真实文档_五个版本七行():
     """真实文档的版本序列与行数。
 
     ⚠️ **版本号写死是有意的**：改版必须在这里留一行（``§5.5`` 只增不删），
@@ -75,11 +75,12 @@ def test_解析真实文档_四个版本六行():
     落进表」。
     """
     entries = cl.parse_entries()  # 读真文档
-    assert cl.versions(entries) == ["1.0", "1.1", "1.2", "1.3"]
-    # 6 行 = v1.0 / v1.1 / v1.2 正文 / v1.2 补记×2 / v1.3
-    assert len(entries) == 6, "v1.2 有两行补记，同一版本三行"
-    assert entries[-1].version == "1.3"
-    assert entries[-1].clauses == ("D-10", "G-1", "B-5")
+    assert cl.versions(entries) == ["1.0", "1.1", "1.2", "1.3", "1.4"]
+    # 7 行 = v1.0 / v1.1 / v1.2 正文 / v1.2 补记×2 / v1.3 / v1.4
+    assert len(entries) == 7, "v1.2 有两行补记，同一版本三行"
+    assert entries[-1].version == "1.4"
+    assert entries[-1].clauses == ("D-2",)
+    assert entries[-2].version == "1.3"
     assert entries[0].clauses == ("*",)
     # v1.3 起进入追溯线：预期效果 + 分歧卡 + 责任区分声明三栏都非空
     latest = entries[-1]
@@ -270,7 +271,7 @@ def test_非首版不写责任声明驳回():
 
 
 def test_当前版本必须在变更记录里():
-    entries = _entries(_row(version="v1.4"))
+    entries = _entries(_row(version="v1.9"))
     with pytest.raises(cl.ChangelogError, match=re.escape(f"没有 v{cl.RUBRIC_VERSION}")):
         cl.check_current(entries)
 
@@ -449,6 +450,8 @@ def test_引了卡才印对号():
 
 def test_真实文档引了卡所以印对号(capsys):
     """真实文档走 CLI 这条路：v1.3 引了卡 ⇒ 印 ✓ 且核了几条。"""
+    if not cl.DEFAULT_CALIBRATION_ROOT.exists():
+        pytest.skip("没有 calibration 产物（output/pipeline 是产物目录，未入库）")
     assert cl.main(["check", "--verify-cards"]) == 0
     out = capsys.readouterr().out
     assert "✓ 引用的分歧卡全部存在" in out

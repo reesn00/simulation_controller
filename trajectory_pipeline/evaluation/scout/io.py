@@ -23,18 +23,30 @@ from trajectory_pipeline.evaluation.scorers.code_scorer import score_d2
 from trajectory_pipeline.evaluation.scorers.d4_scorer import score_d4
 from trajectory_pipeline.evaluation.scorers.d5_scorer import score_d5
 from trajectory_pipeline.evaluation.scorers.d6_scorer import score_d6
+from trajectory_pipeline.llm.client import LLMClient
 
 #: 与 :data:`evaluation.cli.SCORERS` 同名短码 → 打分函数。
 #: **本模块自己维护一份**,因为 evaluation.cli 走的是
 #: ``score_d2(sample: Sample)`` 形态,而 scout 调用时仍要按对象喂;
 #: 引入 evaluation.cli 只会把 ``reconfigure(encoding=...)`` 这种 UI 关注
 #: 拖进来,违反「scout 是纯计算模块」的设计。
+#:
+#: ⚠️ **D-2 自 rubric v1.4 起需要 ``llm_client``**（代码筛 + LLM 判语义）。
+#: scout 是纯计算模块、**不建客户端**（不读环境变量——那是 CLI 的事），
+#: 客户端由调用方经 ``llm_client=`` 注入。不给 ⇒ D-2 回 ``undetermined``
+#: （理由写明后端未配置），整条记录因此落 ``quarantine``——fail-closed 的
+#: 设计行为，不是判不了。
 _SCORERS = {
     "d2": score_d2,
     "d4": score_d4,
     "d5": score_d5,
     "d6": score_d6,
 }
+
+#: :data:`_SCORERS` 里接受 ``llm_client`` 的维度。scout 不 import
+#: ``evaluation.cli``（见上），所以这行是 :data:`evaluation.cli.LLM_DIMS`
+#: 在本模块覆盖范围内的**手工投影**；加 LLM 维度时两处一起改。
+_LLM_DIMS: frozenset[str] = frozenset({"d2"})
 
 
 # ── 读 P2 ──────────────────────────────────────────────────────────
@@ -143,15 +155,22 @@ def _units_of(sample: Sample) -> list[tuple[str, Any, Any, int | None]]:
     )]
 
 
-def _score_one(sample: Sample) -> list[dict[str, Any]]:
+def _score_one(sample: Sample, *,
+               llm_client: LLMClient | None = None) -> list[dict[str, Any]]:
     """跑 D-2/D-4/D-5/D-6 四个评分器,转成统一字典列表。
 
     ⚠️ 入参是**一个评分单元**（``SiteView`` 或整条样本），不是必然的
     ``Sample``。``overlay-scout`` 也把它当单单元打分器复用。
+
+    ``llm_client`` 只传给 :data:`_LLM_DIMS` 里的维度（今天只有 D-2）；
+    ``None`` ⇒ D-2 落 ``undetermined``（fail-closed），D-4/D-5/D-6 不受影响。
     """
     out: list[dict[str, Any]] = []
     for dim in ("d2", "d4", "d5", "d6"):
-        verdict = _SCORERS[dim](sample)
+        if llm_client is not None and dim in _LLM_DIMS:
+            verdict = _SCORERS[dim](sample, llm_client=llm_client)
+        else:
+            verdict = _SCORERS[dim](sample)
         # ``is_veto`` 来自不同位置:D5 有属性,D-2/D-4/D-6 走 reasons 推断。
         # 但只有 D5 当前会触发 veto,所以这里只查 D5,其它维度默认为 False。
         # 后续若新增 veto 维度,扩这里即可。
@@ -230,6 +249,7 @@ def run_scout(
     out_dir: pathlib.Path,
     *,
     mediabrowse_dir: pathlib.Path | None = None,
+    llm_client: LLMClient | None = None,
 ) -> dict[str, int]:
     """跑 scout 全流程,落三件套 JSONL,返回 :class:`Counter`-able 统计。
 
@@ -237,6 +257,9 @@ def run_scout(
         p2_root: P1 存档与 P2 samples 的共同根(默认 ``output/pipeline``)。
         out_dir: 三件套落盘目录(会被创建)。
         mediabrowse_dir: 可选,指向 ``output/pipeline/mediabrowse``。
+        llm_client: 裁判后端,D-2 用;**由调用方注入**（CLI 按
+            ``TRAJECTORY_LLM_*`` 建），本函数不读环境变量。``None`` ⇒
+            D-2 全部 ``undetermined``，记录落 ``quarantine``。
 
     Returns:
         ``{"positive": int, "negative": int, "quarantine": int, "skip": int,
@@ -273,7 +296,7 @@ def run_scout(
         # 对整条轨迹跑四维只会留下末条 outcome 的结论 ⇒ 失败站点在
         # scout 侧消失，aggregate 的 min 退化成「最差 run」。
         for unit_id, unit, outcome, site_index in _units_of(sample):
-            scores = _score_one(unit)
+            scores = _score_one(unit, llm_client=llm_client)
             status = _status_of(scores)
             url = str(getattr(outcome, "url", "") or "")
             record: dict[str, Any] = {

@@ -947,3 +947,33 @@ id 集合与冻结层**完全一致**、九区块齐全、prediction 0、人工�
   （与 v17 基线相同：`task_views/` 现存的 79 份视图不覆盖这 44 个 run，
   非 v18 引入）；变更分布相对 v17：`new=0 / changed=3 / unchanged=41`
   （changed 恰为回填的 3 条轨迹，新项目仍全量推 44）。
+
+---
+
+## 2026-11-10 rubric v1.4 · D-2 改判据（代码筛 + LLM 判语义）
+
+> 变更记录、五档锚点与边界规则在 [`在线视频场景rubric.md`](../设计方案/在线视频场景rubric.md) v1.4 行；
+> 代码在 [`evaluation/scorers/code_scorer.py`](../../evaluation/scorers/code_scorer.py)。
+> 本条**不动任何冻结档**：v18 仍是 rubric 1.3 的读数，D-2 按 v1.4 重算之前两版不可比。
+
+| 项 | 现状 | 一句话处置 | 测试锚点（`tests/`） |
+|---|---|---|---|
+| **D-2 判据** | ✅ 落地 | 由「动作引用的实体在观察存档里存不存在」改为「**前后动作顺序正常、连贯**」；点击目标存在性归 D-5 处置链与批次级 B-2。代码筛只出时序疑点（`goto` 落点不符 / 同页连续重复），LLM 逐疑点判真伪并通读补漏；**一段一个判据来源，不是投票** | `unit/test_code_scorer.py`（重写，60 passed / 4 skip 无真实存档）· `unit/test_agent_mode_guards.py::TestD2守卫` |
+| **锚点与版本** | ✅ 落地 | `RUBRIC_VERSION` 1.4；`ANCHOR_TABLES["d2"]` 五档与文档逐字对齐；`evaluator_version()` 纳入 `D2_SYSTEM_PROMPT`（D-2 同时受 code / llm 两面指纹约束）；变更记录 v1.4 行（可证伪预期 + 分歧卡 + 责任区分声明） | `contract/test_rubric_traceability.py`（锚点三问 + prompt 渲染）· `unit/test_rubric_changelog.py`（5 版本 7 行） |
+| **可评率** | ⏳ **未重测** | 变更记录写的预期是「31/262=11.8% → ≥60%（调参池口径）」；评估链已接线（见下行），并做了**单份真实后端烟测**（6/7 站点出分，仅证明接线可用，**不是口径读数**）；整批读数仍待补 | 待下一次真实评估 |
+| **LLM 接线** | ✅ **已接线（2026-11-10，owner 授权）** | `evaluation.cli` / `scout.cli run` / `golden.builder overlay-scout` 按 `TRAJECTORY_LLM_*` **自动建客户端**；唯一装配点 `evaluation/judge_backend.py`：一个键都没配 → `None`（stderr 说明后 fail-closed 继续，批次不中断）；配了任一键但缺 BASE_URL/MODEL 或值非法 → **退 2**（不静默当没配）；配齐 → 建客户端并打印 `model @ base_url`（**不含 key**）。`--no-llm` 显式关闭（与 `--include-llm-judge` 互斥）；`--include-llm-judge` 而 env 没配 → 退 2。库层（`evaluate` / `_score_one` / `run_scout`）**只收注入的 client，不读 env**。`tests/conftest.py` autouse 清空 `TRAJECTORY_LLM_*`，测试永不真连后端。⚠️ **provenance 重算仍不传 client**（`_recompute_code_face` 是代码面），`DIM_FACES["d2"]` 仍记 `code` 面、hybrid 登记口径未定——LLM 判过的 d2 读数在代码面重算时必然落 `undetermined`，不得读成「读数漂了」 | `unit/test_judge_backend.py` · `unit/test_evaluation_cli.py::Test裁判后端接线` · `unit/test_scout_io_llm.py` · `unit/test_golden_overlay.py`（新增 3 条） |
+
+**验证读数**（2026-11-10，worktree `judge-d2`，**串行**）：`test_code_scorer` / `test_agent_mode_guards` / `test_rubric_changelog` / `test_rubric_traceability` / `test_observation_shortfall_consistency` / `test_inc37_validator_pass` 六文件合计 **168 passed / 5 skipped**（skip 全是 `output/pipeline` 产物不在 worktree）；evaluation cli / scout / provenance 十二文件合计 **245 passed**；**全量 `trajectory_pipeline/tests` 5110 passed / 47 skipped / 0 failed**（LLM 接线前；接线后同为 **5131 passed / 47 skipped / 0 failed**，见下）。`test_rubric_changelog::test_真实文档引了卡所以印对号` 在无 calibration 产物时改为 skip（主树有产物时照常核卡），避免干净检出必红。
+
+**同日续修（非 D-2 改动，但全量门禁需要）**：
+
+- `tests/contract/test_observation_shortfall_consistency.py` 由**五处缩回四处**——`code_scorer._observation_shortfall` 已随 D-2 新判据删除（d4/d5/d6 只做局部 `degraded` 检查，不参与本契约）。d3/d9/d10 的 docstring 与 reviewer 工具 `tests/contract/tools/observation_shortfall_wording_diff.py`（矩阵改为 gates / d3 / d9 / d10）同步去掉对已删函数的引用；[05-rationale与闸门域](05-rationale与闸门域.md) 的表同步。
+- `tests/unit/test_inc37_validator_pass.py` 3 条红是 **main（57453cd）既有基线红**，与 D-2 无关：2026-11-09 per-Run 迁移把 5 个旧 per-unit 金标 id 合并进 `E001__57bbf995` / `T035__3ab75598`（`id_alias_trajectory.json`），并把 5 条 `__neg_blocked` 移进 `annotations_retired_blocked_inc33_2026-11-09.jsonl`，而测试仍按旧 id/旧计数核。修法：封条核验先过**别名桥**再比（仍是 77 身份超集，不钉计数）；round=1 总数 294→**289**、`ai-assisted-inc33` 18→**13**，两处都注明是「移出」不是「丢失」。
+
+**LLM 接线后的验证与一条被揪出的假绿**：
+
+- 新增 [`tests/conftest.py`](../../tests/conftest.py)：autouse 逐个清空 `TRAJECTORY_LLM_*`。它当场揪出一条**假绿**——`test_executor_mode::test_拼错则挡下且不静默跑成scripted` 过去只靠开发机环境里残留的真实 BASE_URL/MODEL 才通过，清掉就走「要 agent 但没后端」的 FAIL 出口。已改为显式设假 `BASE_URL`/`MODEL`。这条正是 conftest 存在的理由：不清的话，评估链新接的 CLI 测试会拿真实 key **发真请求**（既不红也烧钱，还把样本片段送出本机）。
+- 新增测试：`unit/test_judge_backend.py`（三态 + key 不进 repr）· `unit/test_scout_io_llm.py`（client 只传给 D-2、dry-run 与真实 run 共用）· `unit/test_evaluation_cli.py::Test裁判后端接线` · `unit/test_golden_overlay.py` 新增 3 条（env 建客户端 / 半配退 2 / `--no-llm`）。
+- `provenance._recompute_code_face` **刻意不接客户端**：它重算的是代码面，`DIM_FACES["d2"]` 仍记 `code`，hybrid 面登记口径未定。LLM 判过的 d2 读数在代码面重算时会落 `undetermined`，**不得读成「读数漂了」**。
+- 全量：**5131 passed / 47 skipped / 0 failed**（worktree，串行）。
+- **真实后端烟测**（2026-11-10，`evaluation.cli --dimension d2 --limit 1`，主树 P1）：`E001__427875ca` 1 条轨迹 → **7 个站点单元，6 出分 / 1 不可判定**（不可判定那条是某步观察三项全空，属采集事实残缺）；出分 **4 分 ×2 / 5 分 ×4**。证明接线可用、fail-closed 边界正确。⚠️ **这只是单份烟测，不是可评率**——调参池口径的 ≥60% 仍待整批重测。

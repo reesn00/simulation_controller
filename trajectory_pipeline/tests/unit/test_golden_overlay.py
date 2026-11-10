@@ -235,3 +235,63 @@ def test_dry_run不落盘(tmp_path, stub_scorer):
         "--golden-root", str(root), "overlay-scout", "--dry-run",
     ])[0] == 0
     assert (root / builder.CANDIDATES_FILE).read_text(encoding="utf-8") == before
+
+
+# ── 5. LLM 接线（D-2 自 rubric v1.4 起需要裁判后端）─────────────
+
+
+def _stub_sample(monkeypatch) -> None:
+    monkeypatch.setattr(
+        builder, "_resolve_sample_for_candidate",
+        lambda row, p2_root: object(),
+    )
+
+
+def test_配了env就建客户端并传进评分器(tmp_path, monkeypatch):
+    """D-2 的语义判读要后端。overlay 是从环境变量建客户端的入口之一，
+    建了不传 = 「配了也不出分」，与审查 L-3 记的是同一类病。"""
+    _stub_sample(monkeypatch)
+    import trajectory_pipeline.evaluation.scout.io as scout_io
+
+    seen = {}
+
+    def fake_score_one(sample, *, llm_client=None):
+        seen["client"] = llm_client
+        return _scores(d2=5, d4=5, d5=5, d6=5)
+
+    monkeypatch.setattr(scout_io, "_score_one", fake_score_one)
+    monkeypatch.setenv("TRAJECTORY_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("TRAJECTORY_LLM_MODEL", "test-model")
+
+    root = tmp_path / "golden"
+    _write_jsonl(root / builder.CANDIDATES_FILE, [_cand("g1")])
+    rc, out, err = _run(["--golden-root", str(root), "overlay-scout"])
+    assert rc == 0, (out, err)
+    assert seen["client"] is not None
+    row = _read_jsonl(root / builder.CANDIDATES_FILE)[0]
+    assert row["dimension_scores"]["d2"] == 5
+
+
+def test_半配env退2而不是静默空跑(tmp_path, monkeypatch, capsys):
+    _stub_sample(monkeypatch)
+    monkeypatch.setenv("TRAJECTORY_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    root = tmp_path / "golden"
+    _write_jsonl(root / builder.CANDIDATES_FILE, [_cand("g1")])
+    rc, out, err = _run(["--golden-root", str(root), "overlay-scout"])
+    assert rc == 2, (out, err)
+    assert "LLM 配置错误" in err
+
+
+def test_no_llm显式关闭并继续(tmp_path, monkeypatch, stub_scorer):
+    """``--no-llm`` 是离线回填的出口：不建客户端、D-2 落 null，其余照跑。"""
+    stub_scorer(_scores(d2=None, d4=5, d5=5, d6=5))
+    root = tmp_path / "golden"
+    _write_jsonl(root / builder.CANDIDATES_FILE, [_cand("g1")])
+    rc, out, err = _run([
+        "--golden-root", str(root), "overlay-scout", "--no-llm",
+    ])
+    assert rc == 0, (out, err)
+    assert "--no-llm" in err
+    row = _read_jsonl(root / builder.CANDIDATES_FILE)[0]
+    assert row["dimension_scores"]["d2"] is None
+    assert row["dimension_scores"]["d5"] == 5

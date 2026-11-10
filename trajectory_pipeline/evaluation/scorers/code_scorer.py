@@ -1,354 +1,621 @@
-"""代码断言层评分器——rubric 的 D-2「观察-动作一致性」。
+"""D-2「观察-动作一致性」——**代码筛 + LLM 判语义**（样本级）。
 
-## 为什么第一个落地的是 D-2
+## rubric v1.4 改了什么
 
-D-2 是 rubric v1.1 里**唯一一条**「不补数据就必然产生反向错判」的维度。
-存档侧把交互元素裁到 80 条（``orchestrator.OBS_ELEMENT_LIMIT``），
-于是「目标确实不在这一页」与「目标恰好落在裁剪区外」在数据上**完全同形**——
-两种相反的结论共用同一个证据。变更 B 补的 ``elements_total`` /
-``links_total`` 就是为了让这两种情况可分，而**分不开就写不出这个评分器**。
+v1.3 及以前，D-2 判的是「动作引用的实体在观察存档里存不存在」：抽
+``click`` 目标的 label，逐条在前置观察的元素清单里检索。v1.4 起判据改为
+**前后动作顺序正常、连贯**——**不再核对点击目标是否在元素清单里**。
 
-顺带说明为什么 D-2 属于**代码层**而不是 LLM 层：「这个 label 在不在这页」
-是检索题，不是理解题。交给 LLM 只会让它把两种情况都答成「没找到」，
-也就是把确定性缺陷重新变成不确定性。
+为什么换：旧判据只认 ``click``。一条只有 ``goto`` 的轨迹（搜索 → 进站 →
+观察）没有任何引用可校验，只能判「不可判定（null）」——而它的动作顺序明明
+是可判的（实测 ``E001__57bbf995``：4 步全是 goto，d2 恒 null）。新判据看的是
+整条动作链的时序与衔接，纯导航轨迹同样能判。
 
-## 本轮只做 D-2，不做的
+## 两段判法（不是投票）
 
-- ``goto`` 的 URL 引用**不在本模块校验**。它要核的是「这个 URL 在搜索页
-  的链接里吗」，而搜索页观察属于**另一条样本**（决策单元）——跨样本比对
-  是批次级断言的事（D-7 / B-2 的口径）。在本样本内查它必然查不到，
-  于是每条 ``goto`` 都记一条「引用不存在的实体」——**全批恒 1 分**。
-  恒定分数没有区分力（这条与 B-1 被划到批次级是同一个理由）。
-- D-5 / D-9 等需要 ground truth 或人工裁定的维度、批次级断言 B-1..B-4：
-  都不在本模块。它们的管辖层与数据源各不相同，混进一个类里只会让
-  「哪个维度用了哪些输入」这件事不可查。
+1. **代码筛**（:func:`screen_d2`）——机械提取时序疑点：
+   - ``no_observation``：某步动作没有对应观察。**事实残缺 ⇒ 整条不可判定**，
+     不记作轨迹缺陷（缺观察是采集问题，不是模型不连贯）。
+   - ``goto_not_landed``：``goto`` 的落点与目标 URL 不一致（重定向、被拦、
+     或动作没生效）——**交 LLM 判真伪**，因为正常站点也会 http→https 或
+     跨主机重定向。
+   - ``repeat_action``：同一页面连续重复同一动作——**交 LLM 判严重度**，
+     因为重试有时是正常的。
+2. **LLM 判语义**（:func:`score_d2`）——对每个疑点判「真断裂 / 误报」，
+   并通读动作链补出代码筛漏掉的断裂；每处标 ``mild`` / ``material``。
 
-## 三态而非两态
+**代码筛不产出分数，LLM 也不重新筛疑点**——两个阶段各自只有一个判据来源，
+不是两份判断取交集（CLAUDE.md：禁止投票/集成）。
 
-:attr:`D2Verdict.score` 取 ``None`` 表示**不可判定**，与「5 分」严格分开。
-两个方向都不能含糊：
+## 三态
 
-- 没做成「不可判定」→ 把采集器的取舍记成轨迹的缺陷（v1.1 明确禁止）；
-- 没做成「5 分」→ 一条没有任何 ``click`` 的样本（只导航就被拦下）会拿到满分，
-  而它其实**什么都没可查**。这与 ``gate.status`` 用三值不用两值同源：
-  「没跑」渲染成「通过」会让整批数据看起来比实际干净。
+- ``score=None``（``undetermined``）：没有模型动作 / 缺观察 / LLM 不可用 /
+  LLM 输出不可解析。这四种都**不扣轨迹的分**：前两类是对象或采集事实缺失，
+  后两类是评估能力缺失（fail-closed，绝不猜）。
+- ``score=5..1``：按**真断裂**处数与严重度落档（见下）。
+
+## 分数映射（rubric v1.4 D-2，取最重档）
+
+=========================================  ======
+情形                                        分数
+=========================================  ======
+0 处断裂                                     5
+1 处轻微断裂                                 4
+≥2 处轻微断裂                                3
+1 处实质断裂                                 2
+≥2 处实质断裂                                1
+=========================================  ======
+
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from trajectory_pipeline.assembler.schema import Sample
-from trajectory_pipeline.common.elements import (
-    element_name,
-    element_role,
-)
+from trajectory_pipeline.evaluation.scorers import rubric_version
+from trajectory_pipeline.llm.client import LLMClient
+from trajectory_pipeline.llm.schema_parse import extract_json_reporting, strip_think
 
-#: 一次引用（一个 click 目标）的判定结果。
-RefKind = Literal["found", "ambiguous", "missing", "undetermined"]
+#: 疑点严重度。与 rubric 的「轻微 / 实质」一一对应，不另设刻度。
+Severity = Literal["mild", "material"]
 
-#: 整条样本的判定结果。``undetermined`` 与 ``scored`` 分开，不共用 ``score=None``。
+#: 代码筛的两种结局。
+ScreenKind = Literal["screenable", "undetermined"]
+
+#: 整条样本的判定结局。
 VerdictKind = Literal["scored", "undetermined"]
 
-#: 存档侧对 label 的截断长度（``orchestrator._obs_json``）。
-#: 超过它的 label 在存档里是**前缀**，比对必须走前缀匹配——
-#: 走全等匹配会把一条真实存在的引用判成「不存在」。
-LABEL_TRUNCATED_AT = 120
+#: 合法严重度取值——解析层据此拒收契约外字符串（不猜）。
+SEVERITIES: frozenset[str] = frozenset({"mild", "material"})
+
+#: 导航类动作——承载页面跳转。``new_tab`` / ``close_tab`` 由执行器发出
+#: （``origin="infrastructure"``），不会进模型动作流，列在这里是为了让
+#: 「哪些动作算导航」只有一处定义。
+NAV_TOOLS: frozenset[str] = frozenset({"goto", "new_tab", "close_tab"})
+
+#: 喂 LLM 时每步正文的截断长度。观察正文动辄数千字，整条轨迹塞进去会超时；
+#: 判「顺序连贯」只需要知道这一步看到了什么，不需要全文。
+BODY_PREVIEW_CHARS = 240
+
+#: 解析失败时的短原因（与 d3 同款措辞，便于报表搜索）。
+_PARSE_FAIL = "parse_fail"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 结果结构
+# ═══════════════════════════════════════════════════════════════════════
 
 
 @dataclass(frozen=True, slots=True)
-class RefFinding:
-    """一次 ``click`` 引用的判定。
+class ScreenPoint:
+    """代码筛出的一处**时序疑点**（尚未判真伪）。
 
-    ``reason`` 必须写清**依据**：rubric 的 D-2 备注说「不可判定项越多，
-    说明采集越该改，而不是轨迹越该扣分」——而读报告的人只有看到理由
-    才知道该去改采集器的哪一处。
+    ``reason`` 必须写清依据（哪一步、看到了什么），因为读报告的人要靠它
+    判断该去改采集器还是改模型提示词。
     """
 
-    kind: RefKind
-    label: str
-    tag: str
+    step: int
+    severity: Severity
+    code: str
     reason: str
 
     def to_json(self) -> dict[str, Any]:
-        return {"kind": self.kind, "label": self.label, "tag": self.tag,
-                "reason": self.reason}
+        return {"step": self.step, "severity": self.severity,
+                "code": self.code, "reason": self.reason}
+
+
+@dataclass(frozen=True, slots=True)
+class StepDigest:
+    """一步动作 + 它执行后的观察，供 LLM 判读（**只读**，不落训练数据）。
+
+    ``step`` 是**样本 ``actions`` 里的全局下标**（0 起，含执行器动作留下的
+    空档）——报告里的「第 N 步」与 P1/P2 的步号因此对得上。
+    """
+
+    step: int
+    tool: str
+    params: Mapping[str, Any]
+    target: Mapping[str, str] | None
+    origin: str
+    url: str
+    title: str
+    body: str
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class BreakFinding:
+    """LLM 判定的**真断裂**。``source`` 区分来源：``code`` = 代码筛疑点
+    被判真，``llm`` = 代码筛没看到、LLM 补出的。"""
+
+    step: int
+    severity: Severity
+    reason: str
+    source: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {"step": self.step, "severity": self.severity,
+                "reason": self.reason, "source": self.source}
+
+
+@dataclass(frozen=True, slots=True)
+class D2Screen:
+    """代码筛结果。``undetermined`` 时 ``reasons`` 说明缺什么事实。"""
+
+    kind: ScreenKind
+    task: str
+    steps: tuple[StepDigest, ...] = ()
+    points: tuple[ScreenPoint, ...] = ()
+    reasons: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {"kind": self.kind, "task": self.task,
+                "steps": [s.step for s in self.steps],
+                "points": [p.to_json() for p in self.points],
+                "reasons": list(self.reasons)}
 
 
 @dataclass(frozen=True, slots=True)
 class D2Verdict:
-    """D-2 的判定结果。``score`` 为 ``None`` 时 ``kind`` 必为 ``undetermined``。"""
+    """D-2 判定结果。``score`` 为 ``None`` 时 ``kind`` 必为 ``undetermined``。"""
 
     score: int | None
     kind: VerdictKind
-    refs: tuple[RefFinding, ...] = ()
+    breaks: tuple[BreakFinding, ...] = ()
+    points: tuple[ScreenPoint, ...] = ()
     reasons: tuple[str, ...] = ()
-
-    @property
-    def checked(self) -> int:
-        """实际做了检索的引用数。``undetermined`` 不计入。"""
-        return sum(1 for r in self.refs if r.kind in ("found", "ambiguous", "missing"))
 
     def to_json(self) -> dict[str, Any]:
         return {"dimension": "D-2", "score": self.score, "kind": self.kind,
-                "checked": self.checked, "refs": [r.to_json() for r in self.refs],
+                "breaks": [b.to_json() for b in self.breaks],
+                "points": [p.to_json() for p in self.points],
                 "reasons": list(self.reasons)}
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 单条引用
+# 读样本
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _target_of(action: Any) -> Any:
-    """动作的点击目标。兼容 ``ActionView``（dataclass）与存档字典。"""
-    target = getattr(action, "target", None)
-    if target is None and isinstance(action, Mapping):
-        target = action.get("target")
-    return target
+def _attr(action: Any, key: str, default: Any = None) -> Any:
+    """兼容 ``ActionView``（dataclass）与存档字典。"""
+    value = getattr(action, key, None)
+    if value is None and isinstance(action, Mapping):
+        value = action.get(key)
+    return default if value is None else value
 
 
-def _name_of(action: Any) -> str:
-    """动作点击目标的 **text 槽**（可访问名 / 可见文字）。
+def _model_actions(sample: Any) -> list[tuple[int, Any]]:
+    """样本里**模型可见**的动作，连同它在 ``sample.actions`` 里的原下标。
 
-    走 :func:`~trajectory_pipeline.perception.base.element_name` 而不是
-    ``target.get("label")``：目标字典的键名跟着**方言**走（P4）——历史
-    批次写 ``label``，aria 面（camoufox / camofox）批次写 ``name``。写死 ``label`` 的后果是
-    新批次**每条 click 都取到空串**，而空串在 :func:`judge_ref` 里读作
-    「执行器没解出目标」，于是整批样本被判成不可判定——看起来像执行器
-    坏了，实际是读取端还停在旧方言。
+    只取 ``origin == "model"``：``new_tab`` / ``close_tab`` 是执行器的会话
+    隔离动作，模型永不输出它们（见 ``executor/actions.py``）。判「模型的
+    动作顺序」时把执行器的动作算进来，等于拿采集器的行为去扣模型的分。
+
+    **返回原下标是必须的**：``observations`` 与 ``sample.actions`` 里的
+    **全部**动作（含执行器动作）按位对齐。先过滤再按下标取观察，会让
+    infra 步之后的每一次观察都错位一格——而错位后「这一步看到了什么」
+    仍然是一份正常观察，报告上看不出异常。
     """
-    return element_name(_target_of(action))
-
-
-def _role_of(action: Any) -> str:
-    """动作点击目标的 **kind 槽**。方言读取同 :func:`_name_of`。"""
-    return element_role(_target_of(action))
-
-
-def _click_actions(sample: Any) -> list[Any]:
-    """样本里模型可见的 ``click`` 动作。
-
-    只取 ``origin == "model"``：``new_tab`` 是执行器的会话隔离动作，
-    模型永不输出它（见 ``executor/actions.py``），把它算进模型动作
-    等于拿执行器的行为去扣模型的分。
-    """
-    out = []
-    for act in getattr(sample, "actions", ()) or ():
-        tool = getattr(act, "tool", None)
-        if tool is None and isinstance(act, Mapping):
-            tool = act.get("tool")
-        if tool != "click":
+    out: list[tuple[int, Any]] = []
+    for index, act in enumerate(getattr(sample, "actions", ()) or ()):
+        if _attr(act, "tool", "") == "":
             continue
-        origin = getattr(act, "origin", "model")
-        if origin is None and isinstance(act, Mapping):
-            origin = act.get("origin", "model")
-        if origin != "model":
+        if _attr(act, "origin", "model") != "model":
             continue
-        out.append(act)
+        out.append((index, act))
     return out
 
 
-def _truncated_flag(value: Any) -> bool:
-    """``truncated`` 字段统一判真——兼容 p1 bool 与 p2 dict 两种形态
-    （INC42；与 d3/d9/gates 侧同款独立实现，靠 contract 盯守）。
-    dict（``{'source': False, 'view': False}``）按 ``any(values)`` 判。"""
-    if isinstance(value, Mapping):
-        return any(bool(v) for v in value.values())
-    return bool(value)
+def _observations(sample: Any) -> list[Any]:
+    """**按下标对齐**的全部观察，不在这里过滤。
 
-
-def _observation_shortfall(obs: Mapping[str, Any]) -> str:
-    """这份观察**能不能支撑**「某个元素不存在」的结论。
-
-    返回空串表示能支撑；非空则是不可判定的**具体原因**。
-
-    四种情形，缺一样就会判反：
-
-    1. ``degraded`` 非空——驱动层自己说了「这一项没采到」。iqiyi/ixigua/sohu
-       三站的实测形态是 ``body_len=0`` + 元素 0 个，采集失败与「页面真没有」
-       在存档里同形（见 ``tests/unit/test_obscura_driver.py`` 的模块 docstring）。
-    2. ``truncated``——正文被 snapshot 预算截断，元素可能落在截断外。
-    3. 元素/链接**裁剪**（``elements_total >`` 保留条数）——这是变更 B
-       专门补的：没有分母时「裁掉了」与「不存在」不可分。
-    4. 观察整个为空（``body_text`` 与元素、链接全空）——可能是采集失败。
+    ``observations`` 与 ``actions`` 按位对齐；先过滤掉非对象项会让之后的
+    每一步观察都错位一格，而错位后的观察仍是一份正常观察、报告上看不出
+    异常。非对象项交由 :func:`_obs_unusable` 在原地判「这一步没有观察」。
     """
-    if obs.get("degraded"):
-        return f"观察有降级项 {list(obs['degraded'])}，缺项无法与「真没有」区分"
-    if _truncated_flag(obs.get("truncated")):
-        raw_len, max_chars = obs.get("raw_len"), obs.get("max_chars")
-        detail = f"（{raw_len}/{max_chars}）" if raw_len is not None else ""
-        return f"观察被截断{detail}，元素可能落在截断外"
+    return list(getattr(sample, "observations", ()) or ())
 
+
+def _task_text(sample: Any) -> str:
+    return str(getattr(sample, "user_prompt", "") or "")
+
+
+def _obs_unusable(obs: Any) -> str:
+    """这份观察**能不能支撑**「这一步看到了什么」。
+
+    返回空串表示能用；非空是**不可用**的具体原因。
+
+    只判「事实在不在」，不判「全不全」：正文/元素/链接任一非空就能用。
+    降级 / 截断**不拦**——新判据不要求元素清单完整（那只影响旧口径的
+    「目标存不存在」），但会在 LLM 输入里原样带上 ``degraded`` 标记。
+    """
+    if obs is None:
+        return "这一步没有对应观察"
+    if not isinstance(obs, Mapping):
+        return "这一步的观察不是对象，读不出任何事实"
+    body = str(obs.get("body_text") or "").strip()
     elements = list(obs.get("interactive_elements") or ())
     links = list(obs.get("links") or ())
-    elements_total = int(obs.get("elements_total") or 0) or len(elements)
-    links_total = int(obs.get("links_total") or 0) or len(links)
-    if elements_total > len(elements):
-        return (f"交互元素被裁剪（存档保留 {len(elements)}，"
-                f"采到 {elements_total}），目标可能落在裁剪区外")
-    if links_total > len(links):
-        return (f"链接被裁剪（存档保留 {len(links)}，采到 {links_total}），"
-                "目标可能落在裁剪区外")
-    if not elements and not links and not str(obs.get("body_text") or "").strip():
-        return "观察三项全空，采集可能整体失败"
+    url = str(obs.get("url") or "").strip()
+    if not body and not elements and not links and not url:
+        return "观察三项全空（正文 / 元素 / 链接 / URL 都没有），采集可能整体失败"
     return ""
 
 
-def _matches(label: str, elements: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """按 label 检索交互元素。超长 label 走**截断后全等**。
+def _url_key(url: str) -> tuple[str, str]:
+    """URL 的**落点身份**：``(host, path)``，忽略 scheme / query / fragment。
 
-    方向容易搞反：动作里的 name 来自内存里的 DOM 元素（``actions.target_of``
-    取的是 ``el.name``，**完整**），而存档里只留前 120 字
-    （``orchestrator._obs_json`` 的 ``name_limit``）。所以是**存档那侧短**，
-    要拿动作 name 的前 120 字去比，不是拿存档那侧去前缀匹配动作 name。
-
-    两侧都比 **text 槽**（:func:`element_name`），不比键名：存的是哪个
-    方言由批次决定，比键名会把整批 aria 面（camoufox / camofox）样本判成「引用不存在」。
+    忽略 scheme 是刻意的：http→https 是站点常态跳转，不是动作断裂。
+    忽略 query 是刻意的：很多播放站靠 query 定位视频，但同一 host+path
+    的 query 变化不构成「顺序」问题。
     """
-    needle = label if len(label) <= LABEL_TRUNCATED_AT \
-        else label[:LABEL_TRUNCATED_AT]
-    return [e for e in elements if element_name(e) == needle]
+    try:
+        parts = urlsplit(url.strip())
+        host = (parts.hostname or "").lower()
+        path = parts.path.rstrip("/") or "/"
+        return host, path
+    except ValueError:
+        return "", url.strip()
 
 
-def judge_ref(label: str, tag: str,
-              observations: Sequence[Mapping[str, Any]]) -> RefFinding:
-    """判一次引用在观察存档里能不能找到。
+def _goto_landed(params: Mapping[str, Any], landed_url: str) -> bool:
+    """``goto`` 的目标 URL 与动作后观察的 URL 是否落在同一位置。
 
-    顺序刻意是**先看有没有完整观察能定案，再看不可判定的理由**——
-    一次 site_obs 完整而 player_obs 被裁时，裁剪**不能**把结论拖成
-    不可判定：完整的那一份已经能定案了。
-
-    偏松的方向也是刻意的：任一份观察里命中就算命中（不去比「哪一份
-    是这次点击的前一观察」）。这会放过一些本该判 `missing` 的引用，
-    但绝不会把真实存在的引用判成不存在——而这个模块存在的目的正是
-    **不判反**。代价是一部分假阴性，记在这里而不是留给后来人踩。
+    **只作为疑点，不直接判断裂**：跨主机重定向、登录跳转都会让落点不同，
+    而它们是否「顺序不连贯」需要看上下文（LLM 判）。
     """
-    if not label:
-        # 执行器自己没解出目标（I6 存疑，`target=None`）。那是**存档完整性**
-        # 的问题，不是轨迹引用了不存在的东西——两者方向相反。
-        return RefFinding("undetermined", label, tag,
-                          "动作没有语义目标（target=None）：ref 未溯源到 "
-                          "interactive_elements，按存档完整性问题处理")
-    if not observations:
-        return RefFinding("undetermined", label, tag, "本样本没有观察存档")
+    target = str((params or {}).get("url") or "").strip()
+    landed = str(landed_url or "").strip()
+    if not target or not landed:
+        return True  # 没目标/没落点 → 交给别的信号，不在这里凭空判
+    if _url_key(target) == _url_key(landed):
+        return True
+    th, tp = _url_key(target)
+    lh, lp = _url_key(landed)
+    # 同 host 且落点路径是目标路径的前缀（或反之）→ 视为落到位（重定向到
+    # 子路径/规范化 URL），不记疑点。
+    if th and th == lh and (tp.startswith(lp) or lp.startswith(tp)):
+        return True
+    return False
 
-    hits: list[Mapping[str, Any]] = []
-    seen_refs: set[tuple[str, str]] = set()
-    blocking: list[str] = []
-    settled_by: str = ""
-    for obs in observations:
-        found = _matches(label, list(obs.get("interactive_elements") or ()))
-        if found:
-            # **按 ref 去重**再计数量：站点页与播放页常有同一个控件
-            # （点击前后快照里 `ref=e5` 都在），不去重会把「命中一条」
-            # 数成两条同名 → 误判含糊（4 分 / 3 分）。
-            for el in found:
-                key = (str(el.get("ref") or ""), element_name(el))
-                if key in seen_refs:
-                    continue
-                seen_refs.add(key)
-                hits.append(el)
-            continue
-        shortfall = _observation_shortfall(obs)
-        if shortfall:
-            blocking.append(f"{obs.get('url') or '?'}：{shortfall}")
-        elif not settled_by:
-            # 这份观察**完整**且确实没有它——定案成立
-            settled_by = str(obs.get("url") or "?")
 
-    if len(hits) >= 2:
-        # 两条以上同名元素，而动作里**只有 label 没有 ref**（ref 是会话内句柄，
-        # 按 `ActionView` 的设计刻意不进训练数据）→ 模型无从指明是哪一条。
-        return RefFinding(
-            "ambiguous", label, tag,
-            f"{len(hits)} 个元素同名，样本里不带 ref，模型无从指明是哪一条",
+def _action_signature(action: Any) -> str:
+    """动作的**逐字签名**——判断「连续重复」用。"""
+    payload = {
+        "tool": _attr(action, "tool", ""),
+        "params": _attr(action, "params", {}) or {},
+        "target": _attr(action, "target", None),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _preview(text: Any, limit: int = BODY_PREVIEW_CHARS) -> str:
+    s = str(text or "").strip()
+    return s if len(s) <= limit else s[:limit] + "…[已截断]"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 第一段：代码筛
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def screen_d2(sample: Sample | Any) -> D2Screen:
+    """**代码筛**：把动作链切成步摘要，并机械提取时序疑点。
+
+    不产出分数、不判真伪、不调 LLM。``undetermined`` 只由**事实残缺**
+    触发（没有模型动作 / 某步缺观察），且**不记作轨迹缺陷**。
+    """
+    pairs = _model_actions(sample)
+    task = _task_text(sample)
+    if not pairs:
+        return D2Screen(
+            "undetermined", task, (),
+            (),
+            ("本条样本没有模型可见的动作，没有动作链可判连贯性；"
+             "「没有可判对象」不等于「全程连贯」",),
         )
-    if len(hits) == 1:
-        hit_role = element_role(hits[0])
-        note = "" if hit_role == tag else f"（动作记 kind={tag or '空'}，" \
-                                          f"观察里是 {hit_role or '空'}）"
-        return RefFinding("found", label, tag, f"命中 {len(hits)} 个元素{note}")
-    if settled_by:
-        reason = f"{settled_by} 是完整采集且无同名元素"
-        if blocking:
-            # 有别的观察被裁/降级过——**结论不变**，但那几份观察没能参与
-            # 作证。不写出来的话，读报告的人会以为这条是「全查过了」。
-            reason += "；另有观察未能作证：" + "；".join(blocking)
-        return RefFinding("missing", label, tag, reason)
-    # 每一份没命中的观察都带着自己的短板——没有能定案的那一份。
-    # v1.1 边界规则：这种情况判「不可判定（存档裁剪 / 采集降级）」，
-    # **不判**「引用了不存在的实体」——判后者等于把采集器的取舍
-    # 记成轨迹的缺陷。
-    return RefFinding("undetermined", label, tag, "；".join(blocking))
+
+    observations = _observations(sample)
+    steps: list[StepDigest] = []
+    for source_i, action in pairs:
+        obs = observations[source_i] if source_i < len(observations) else None
+        why = _obs_unusable(obs)
+        if why:
+            return D2Screen(
+                "undetermined", task, tuple(steps), (),
+                (f"第 {source_i + 1} 步（{_attr(action, 'tool', '')}）：{why}——"
+                 "缺观察是采集事实残缺，不是轨迹不连贯；本条不出分",),
+            )
+        assert obs is not None  # _obs_unusable 已排除 None
+        steps.append(StepDigest(
+            step=source_i,
+            tool=str(_attr(action, "tool", "") or ""),
+            params=dict(_attr(action, "params", {}) or {}),
+            target=dict(_attr(action, "target", {}) or {}) or None,
+            origin=str(_attr(action, "origin", "model") or ""),
+            url=str(obs.get("url") or ""),
+            title=str(obs.get("page_title") or ""),
+            body=_preview(obs.get("body_text")),
+            error=str(_attr(action, "error", "") or ""),
+        ))
+
+    points: list[ScreenPoint] = []
+    prev_sig = ""
+    for chain_i, ((_, action), step) in enumerate(zip(pairs, steps)):
+        tool = step.tool
+        # ① goto 没落到目标页（重定向 / 被拦 / 动作未生效）
+        if tool == "goto" and not _goto_landed(step.params, step.url):
+            points.append(ScreenPoint(
+                step.step, "material", "goto_not_landed",
+                f"第 {step.step + 1} 步 goto 的目标是 {step.params.get('url')!r}，"
+                f"但动作后的观察落在 {step.url!r}——落点与目标不一致，"
+                "需判是否属于正常重定向",
+            ))
+        # ② 连续重复动作（同一动作、同一页面）
+        sig = _action_signature(action)
+        if chain_i > 0 and sig == prev_sig and steps[chain_i - 1].url == step.url:
+            # G-4：连续相同调用按一次计——整段只在段首记一处，不逐个累加
+            if not points or points[-1].code != "repeat_action" \
+                    or points[-1].step != steps[chain_i - 1].step:
+                points.append(ScreenPoint(
+                    step.step, "mild", "repeat_action",
+                    f"第 {step.step + 1} 步与第 {steps[chain_i - 1].step + 1} 步"
+                    f"是同一动作、同一页面（{step.url!r}），"
+                    "属于原地空转，需判是否正常重试",
+                ))
+        prev_sig = sig
+
+    return D2Screen("screenable", task, tuple(steps), tuple(points), ())
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 打分
+# 第二段：LLM 判语义
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def score_d2(sample: Sample | Any) -> D2Verdict:
-    """D-2 打分。输入是一条 P2 样本（``assembler.schema.Sample``）。
+#: 给 LLM 的系统提示。「评分锚」一栏**从锚点表渲染**（方案 16 §7 / C-10；
+#: owner 2026-10-23 裁定 D-C7 = rubric 变更强制连带改 prompt）。
+D2_SYSTEM_PROMPT: str = (
+    "你是一名轨迹连贯性判读员。你的任务：判断一条 Agent 浏览器轨迹里"
+    "**动作的先后顺序是否正常、连贯**。\n\n"
+    "## 判什么\n"
+    "- 每一步动作是否建立在上一步的观察之上（看到什么，才做什么）。\n"
+    "- 相邻动作之间的推进是否正常：没有跳步、没有原地空转、"
+    "没有与任务无关的来回。\n"
+    "- **不要**核对点击目标的名称是否出现在观察的元素清单里——"
+    "rubric v1.4 起那不是本维判据。\n\n"
+    "## 两档严重度\n"
+    "- ``mild``（轻微）：动作顺序可解释，但有冗余 / 重复 / 回溯，"
+    "推进效率受损。\n"
+    "- ``material``（实质）：动作缺少前序观察支撑，或页面 / 步骤衔接断裂"
+    "（例如 goto 没落到目标页就继续推进、动作链跳段）。\n\n"
+    "## 输出契约（严格 JSON，无前后文字、无 markdown 代码块）\n"
+    "```\n"
+    '{"points": [{"index": 0, "is_break": true,'
+    ' "severity": "mild|material", "reason": "..."}],'
+    ' "new_breaks": [{"step": 2, "severity": "mild", "reason": "..."}]}\n'
+    "```\n"
+    "1. ``points`` 必须与输入疑点**一一对应**：数量、``index`` 都不能少。\n"
+    "2. ``new_breaks`` 只写代码筛漏掉的断裂；没有就写 ``[]``。"
+    "``step`` 用动作链里「第 N 步」的 **N**（从 1 起）。\n"
+    "3. ``reason`` 必须引用轨迹里的具体动作或页面，不写泛泛评价。\n"
+    "4. ``severity`` 只能是 ``mild`` / ``material``。\n"
+    + rubric_version.render_anchor_block("d2")
+)
 
-    锚点（rubric v1.1 D-2）::
 
-        5 = 全部实体可找到
-        4 = 1 处含糊引用
-        3 = 2 处含糊引用
-        2 = 1 处引用不存在的实体
-        1 = ≥2 处引用不存在的实体
+def _render_user(screen: D2Screen) -> str:
+    """代码筛结果 → LLM 用户提示。**只给事实，不给结论**。"""
+    lines = [f"任务：{screen.task or '(未知)'}", "", "## 动作链"]
+    for d in screen.steps:
+        params = json.dumps(dict(d.params), ensure_ascii=False, default=str)
+        target = (json.dumps(dict(d.target), ensure_ascii=False, default=str)
+                  if d.target else "无")
+        lines.append(f"### 第 {d.step + 1} 步")
+        lines.append(f"- 动作：{d.tool}  参数={params}  目标={target}")
+        lines.append(f"- 动作后观察：url={d.url or '(空)'}  title={d.title or '(空)'}")
+        if d.body:
+            lines.append(f"- 正文摘录：{d.body}")
+        if d.error:
+            lines.append(f"- 执行错误：{d.error}")
+    lines.append("")
+    lines.append("## 代码筛疑点（逐条判真伪）")
+    if not screen.points:
+        lines.append("（代码筛未发现时序疑点）")
+    for i, p in enumerate(screen.points):
+        lines.append(
+            f"- index={i}  step={p.step + 1}  候选严重度={p.severity}  "
+            f"code={p.code}  依据={p.reason}"
+        )
+    return "\n".join(lines)
 
-    **「不存在」优先于「含糊」**：同一批里既有一条真缺失又有两条同名时，
-    报 3 分会让那条真缺失消失，而它是唯一一条需要人去查的。
+
+def _parse_response(raw: str | None) -> tuple[dict[str, Any] | None, str]:
+    """从 LLM 原文抠 JSON。**入口已剥 think**（``schema_parse`` 内部）。"""
+    if not raw:
+        return None, "LLM 返回空"
+    data, _repairs = extract_json_reporting(raw)
+    if data is None:
+        # 顶层是合法 JSON 但不是对象（数组 / 标量）时给明确原因：报表上
+        # 「模型答错了形状」与「模型没答出 JSON」是两种要分别修的事。
+        if _is_non_object_json(raw):
+            return None, "LLM 返回的 JSON 不是对象"
+        return None, _PARSE_FAIL
+    return dict(data), ""
+
+
+def _is_non_object_json(raw: str) -> bool:
+    """原文能否解析成**合法 JSON 但顶层不是对象**（数组 / 标量）。
+
+    提取器只认 ``{...}``，因此顶层数组会掉到 ``None``;这里只负责把
+    「形状不对」与「根本不是 JSON」分开，不参与正路解析。
     """
-    actions = _click_actions(sample)
-    if not actions:
-        # ⚠️ **末尾的逗号不能省**：`("a" "b")` 是隐式拼接出来的**字符串**，
-        # 不是单元素 tuple。下游 `evaluation/cli` 的 json 出口对它做
-        # `list(verdict.reasons)`，于是把整句话拆成**单字符列表**——
-        # 终端上不可判定原因打印成「D-2 本」「D-2 条」，读不出任何信息。
-        #
-        # 为什么离线测试没抓到：夹具样本都带 click 动作，这条「无 click」
-        # 路径只在**真实批次**上被走到（2026-10-11 实测：那一批
-        # `FIND_PLAY_CONTROL` 一条 ref 都没回传，于是 5 条样本全落这里）。
-        return D2Verdict(None, "undetermined", (),
-                         ("本条样本没有模型可见的 click 动作，无引用可校验；"
-                          "「没有可校验项」不等于「全部可找到」",))
+    try:
+        parsed = json.loads(strip_think(raw).strip())
+    except (ValueError, TypeError):
+        return False
+    return not isinstance(parsed, Mapping)
 
-    observations = list(getattr(sample, "observations", ()) or ())
-    refs = tuple(judge_ref(_name_of(a), _role_of(a), observations) for a in actions)
 
-    missing = [r for r in refs if r.kind == "missing"]
-    ambiguous = [r for r in refs if r.kind == "ambiguous"]
-    undetermined = [r for r in refs if r.kind == "undetermined"]
+def _as_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
 
-    if missing:
-        score = 1 if len(missing) >= 2 else 2
-    elif ambiguous:
-        score = 3 if len(ambiguous) >= 2 else 4
+
+def _parse_judgement(
+    data: Mapping[str, Any], screen: D2Screen
+) -> tuple[list[BreakFinding] | None, str]:
+    """LLM 输出 → 真断裂列表。**不合契约就整条作废**（返回 None + 原因），
+    不做部分采信——少判一条疑点会让分数偏高，那正是要防的方向。"""
+    raw_points = data.get("points")
+    if not isinstance(raw_points, list):
+        return None, "缺少 points 列表"
+    if len(raw_points) != len(screen.points):
+        return None, (f"points 数量 {len(raw_points)} 与代码筛疑点数 "
+                      f"{len(screen.points)} 不一致")
+
+    seen: set[int] = set()
+    breaks_by_index: dict[int, BreakFinding] = {}
+    for item in raw_points:
+        if not isinstance(item, Mapping):
+            return None, "points 里有非对象项"
+        index = _as_int(item.get("index"))
+        if index is None or index < 0 or index >= len(screen.points):
+            return None, f"points 的 index 越界：{item.get('index')!r}"
+        if index in seen:
+            return None, f"points 的 index 重复：{index}"
+        seen.add(index)
+        is_break = item.get("is_break")
+        if not isinstance(is_break, bool):
+            return None, f"index={index} 的 is_break 不是布尔值"
+        severity = str(item.get("severity") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if is_break:
+            if severity not in SEVERITIES:
+                return None, f"index={index} 的 severity 不在契约内：{severity!r}"
+            if not reason:
+                return None, f"index={index} 判为断裂却没写 reason"
+            breaks_by_index[index] = BreakFinding(
+                screen.points[index].step, severity, reason, "code")
+    if len(seen) != len(screen.points):
+        missing = [i for i in range(len(screen.points)) if i not in seen]
+        return None, f"points 漏判了 index：{missing}"
+
+    raw_new = data.get("new_breaks", [])
+    if raw_new is None:
+        raw_new = []
+    if not isinstance(raw_new, list):
+        return None, "new_breaks 不是列表"
+    breaks = [breaks_by_index[i] for i in sorted(breaks_by_index)]
+    for item in raw_new:
+        if not isinstance(item, Mapping):
+            return None, "new_breaks 里有非对象项"
+        raw_step = _as_int(item.get("step"))
+        # 契约里 ``step`` 是「第 N 步」的 N（1 起）；内部一律用 0 起下标。
+        step = None if raw_step is None else raw_step - 1
+        severity = str(item.get("severity") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        valid_steps = {d.step for d in screen.steps}
+        if step is None or step not in valid_steps:
+            legal = sorted(s + 1 for s in valid_steps)
+            return None, (f"new_breaks 的 step 不是动作链里的步号："
+                          f"{item.get('step')!r}（合法：{legal}，从 1 起）")
+        if severity not in SEVERITIES:
+            return None, f"new_breaks 的 severity 不在契约内：{severity!r}"
+        if not reason:
+            return None, "new_breaks 有断裂没写 reason"
+        breaks.append(BreakFinding(step, severity, reason, "llm"))
+    return breaks, ""
+
+
+def _score_of(breaks: Sequence[BreakFinding]) -> int:
+    """真断裂 → 1–5 档（rubric v1.4 D-2，**取最重档**）。
+
+    「实质」优先于「轻微」：同一批里既有实质断裂又有两条轻微时，报 3 分
+    会让那条实质断裂消失，而它才是需要人去查的。
+    """
+    material = sum(1 for b in breaks if b.severity == "material")
+    mild = sum(1 for b in breaks if b.severity == "mild")
+    if material >= 2:
+        return 1
+    if material == 1:
+        return 2
+    if mild >= 2:
+        return 3
+    if mild == 1:
+        return 4
+    return 5
+
+
+def score_d2(
+    sample: Sample | Any,
+    *,
+    llm_client: LLMClient | None = None,
+    system_prompt: str | None = None,
+) -> D2Verdict:
+    """D-2 打分：代码筛 → LLM 判语义 → 按断裂处数落档。
+
+    Args:
+        sample: P2 样本（``Sample`` 对象或 Mapping 形态的动作）。
+        llm_client: LLM 后端；``None`` → 本条不出分（fail-closed）。
+        system_prompt: 换一版提示词（A/B 用；默认 :data:`D2_SYSTEM_PROMPT`）。
+
+    **永不抛**：LLM 调不通 / JSON 抠不出 / 契约字段不对，全部走
+    ``undetermined``——本维没有「判不出就扣分」的锚点，能力缺失就不出分。
+    """
+    screen = screen_d2(sample)
+    if screen.kind == "undetermined":
+        return D2Verdict(None, "undetermined", (), (), screen.reasons)
+
+    if llm_client is None:
+        return D2Verdict(
+            None, "undetermined", (), screen.points,
+            ("未提供 LLM client（TRAJECTORY_LLM_* 未配置，或被 --no-llm "
+             "关掉）——D-2 的语义判读缺能力，本条不出分；这是 fail-closed，"
+             "不是「判不了」（与 D-3 / D-9 的空跑纪律同款）",),
+        )
+
+    raw = llm_client.chat(system_prompt or D2_SYSTEM_PROMPT, _render_user(screen))
+    data, why = _parse_response(raw)
+    if data is None:
+        return D2Verdict(
+            None, "undetermined", (), screen.points,
+            (f"LLM 未判（{why}）——不猜，本条不出分",),
+        )
+
+    breaks, why = _parse_judgement(data, screen)
+    if breaks is None:
+        return D2Verdict(
+            None, "undetermined", (), screen.points,
+            (f"LLM 输出不合契约（{why}）——不猜，本条不出分",),
+        )
+
+    score = _score_of(breaks)
+    if breaks:
+        reasons = tuple(
+            f"第 {b.step + 1} 步（{b.source}）：{b.severity}——{b.reason}"
+            for b in breaks
+        )
     else:
-        score = 5
-
-    reasons = undetermined_ref_reasons(undetermined)
-    if undetermined and not missing and not ambiguous:
-        # 只要**存在**一条不可判定，本条的 5 分就不是「全部实体可找到」——
-        # 它是「查过的都找到了，另有一条查不了」。两者的后续动作不同：
-        # 前者可以进训练集，后者要先修采集器。
-        return D2Verdict(None, "undetermined", refs, tuple(reasons + [
-            f"{len(undetermined)}/{len(refs)} 处引用不可判定，"
-            "本维不出分——先修采集，不要先扣轨迹的分",
-        ]))
-    return D2Verdict(score, "scored", refs, tuple(reasons))
-
-
-def undetermined_ref_reasons(refs: Sequence[RefFinding]) -> list[str]:
-    """不可判定项的理由列表。按出现次序去重。"""
-    return list(dict.fromkeys(r.reason for r in refs if r.kind == "undetermined"))
+        reasons = ("0 处断裂：动作链全程连贯——rubric §D-2 锚点 5",)
+    return D2Verdict(score, "scored", tuple(breaks), screen.points, reasons)
 
 
 __all__ = [
-    "RefKind", "VerdictKind", "RefFinding", "D2Verdict",
-    "LABEL_TRUNCATED_AT", "judge_ref", "score_d2", "undetermined_ref_reasons",
+    "Severity", "ScreenKind", "VerdictKind", "SEVERITIES", "NAV_TOOLS",
+    "BODY_PREVIEW_CHARS", "ScreenPoint", "StepDigest", "BreakFinding",
+    "D2Screen", "D2Verdict", "D2_SYSTEM_PROMPT",
+    "screen_d2", "score_d2",
 ]
