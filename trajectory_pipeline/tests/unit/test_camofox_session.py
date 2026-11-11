@@ -79,6 +79,10 @@ class _FakeMcp:
         )
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.responses: dict[str, Any] = {}
+        #: **逐次返回**：``{tool: [resp1, resp2, …]}``——同一个 tool 前后给
+        #: 不同返回（退避重试那条路要的就是这个）。用完即止 ⇒ 之后回到
+        #: ``responses`` 的常规返回。
+        self.sequences: dict[str, list[Any]] = {}
         self.default: Any = None
         self.entered = 0
         self.exited = 0
@@ -92,7 +96,11 @@ class _FakeMcp:
 
     async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
         self.calls.append((name, dict(args or {})))
-        resp = self.responses.get(name, self.default)
+        seq = self.sequences.get(name)
+        if seq:
+            resp = seq.pop(0)
+        else:
+            resp = self.responses.get(name, self.default)
         if resp is None:
             raise McpError(f"fake: 未配置 tool {name}")
         if isinstance(resp, Exception):
@@ -112,6 +120,8 @@ class _FakeMcpFactory:
         self.clients: list[_FakeMcp] = []
         #: 套在**下一个** client 上的 tool 返回。
         self.next_responses: dict[str, Any] = {}
+        #: 套在**下一个** client 上的逐次返回。
+        self.next_sequences: dict[str, list[Any]] = {}
         #: 下一个 client 的兜底返回（默认：list_tabs 返回空列表 ⇒ 预检过）。
         self.next_default: Any = _ok({"tabs": []})
 
@@ -119,6 +129,7 @@ class _FakeMcpFactory:
                  env: Any = None) -> _FakeMcp:
         client = _FakeMcp(exe, args, timeout, env)
         client.responses.update(self.next_responses)
+        client.sequences.update(self.next_sequences)
         client.default = self.next_default
         self.clients.append(client)
         return client
@@ -584,3 +595,130 @@ class Test生命周期:
         await CamofoxSession.launch(exe=sys.executable)
         assert fake_mcp.client.env is None
         assert fake_mcp.client.args == ()
+
+
+# ─────────────── 会话收尾：页必须真被关掉（all80 事故 P0-2）───────────────
+
+
+class Test会话收尾真的关页:
+    """**关页从未发起**是 all80 事故 P0-2 的根因（2026-11-11）。
+
+    原来 ``close()`` 里那一行调的是 ``await self.close_tab(tab_id)``——
+    而 ``CamofoxSession`` **没有这个方法**（它的方法叫 ``close_page``）
+    ⇒ **每次都抛 ``AttributeError``**，又被同一处的 ``except Exception:
+    pass`` 吞掉 ⇒ **一张页都没关**。
+
+    ⇒ 上游 tab 配额（实测 = 100，且**跨 session 全局**）被一路吃光
+    ⇒ 第 28 条起整批建页 429。
+
+    ⚠️ **根因的根因是「静默」**：关页失败与关页没发起，在报告上长得
+    一样（都是「跑完了」）。⇒ 关不掉的页**必须上报**（``close_failures``）。
+    """
+
+    async def test_close_真的把每一张页都关掉(
+        self, fake_mcp: _FakeMcpFactory
+    ) -> None:
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_CREATE_TAB] = _ok({"tabId": "t1"})
+        fake_mcp.client.responses[TOOL_CLOSE_TAB] = _ok({"ok": True})
+        await session.new_page("https://example.com/a")
+        await session.close()
+
+        closed = [args["tabId"] for name, args in fake_mcp.client.calls
+                  if name == TOOL_CLOSE_TAB]
+        assert closed == ["t1"], (
+            f"上游实际关掉的页是 {closed}——本地栈清了不等于上游清了"
+        )
+
+    async def test_关页失败进账不抛(self, fake_mcp: _FakeMcpFactory) -> None:
+        """**关不掉只记账，不抛**——抛出去会把整条轨迹打断，
+        而真相是「这张页没关掉」（上游可能已经把它销毁了）。"""
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_CREATE_TAB] = _ok({"tabId": "t1"})
+        fake_mcp.client.responses[TOOL_CLOSE_TAB] = _err("关页失败")
+        await session.new_page("https://example.com/a")
+        await session.close()
+
+        assert session.close_failures, "关页失败被吞了——它仍然占着上游配额"
+        assert "t1" in session.close_failures[0]
+
+    async def test_第二次close不抹掉第一次的失败(
+        self, fake_mcp: _FakeMcpFactory
+    ) -> None:
+        """``close()`` 幂等，会被调用两次 ⇒ 失败**累加**而不是覆盖。
+
+        覆盖 ⇒ 第一次的失败被第二次（栈已空、无事可做）抹掉 ⇒
+        批次层读到「全关掉了」⇒ 真相被吃掉。
+        """
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_CREATE_TAB] = _ok({"tabId": "t1"})
+        fake_mcp.client.responses[TOOL_CLOSE_TAB] = _err("关页失败")
+        await session.new_page("https://example.com/a")
+        await session.close()
+        first = list(session.close_failures)
+        await session.close()
+        assert session.close_failures == first, (
+            "第二次 close 把第一次的失败抹掉了"
+        )
+
+
+class Test建页退避重试:
+    """**429 / 503 重发一次有意义**（上游正在回收/排队），
+    而 4xx 那一族其余的（400 参数错 / 404 页不存在）没有。
+
+    ⚠️ **退避治不了配额泄漏**：429 的根因是 tab 没关光 ⇒ 重试只是止血。
+    """
+
+    async def test_429退避后成功(
+        self, fake_mcp: _FakeMcpFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mod, "CREATE_TAB_BACKOFF_S", (0.0, 0.0, 0.0))
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.sequences[TOOL_CREATE_TAB] = [
+            _err('camofox error: 429: {"error":"Maximum tabs per session reached"}'),
+            _ok({"tabId": "t1"}),
+        ]
+        try:
+            tab = await session.new_page("https://example.com/a")
+            assert tab == "t1"
+            assert session.readings.get("create_tab_retries") == 1, (
+                "退避次数必须进读数——「这批退避过几次」是排障要看的数"
+            )
+        finally:
+            await session.close()
+
+    async def test_非瞬时错误不重试(
+        self, fake_mcp: _FakeMcpFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """**400 不重试**——重发一次同样的 400 只是把同一个错误拖成两遍。"""
+        monkeypatch.setattr(mod, "CREATE_TAB_BACKOFF_S", (0.0, 0.0, 0.0))
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_CREATE_TAB] = _err(
+            'camofox error: 400: {"error":"bad request"}')
+        try:
+            with pytest.raises(CamofoxToolError):
+                await session.new_page("https://example.com/a")
+        finally:
+            await session.close()
+        calls = [n for n, _ in fake_mcp.client.calls if n == TOOL_CREATE_TAB]
+        assert len(calls) == 1, f"400 重试了 {len(calls)} 次"
+
+    async def test_退避耗尽后抛且不留在页栈上(
+        self, fake_mcp: _FakeMcpFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """**退避耗尽 ⇒ 照实抛**（不假装成功），且**页不进栈**。
+
+        页进了栈却没在上游 ⇒ 本地栈与上游对不上 ⇒ 关页时去关一张
+        不存在的页，又是一轮静默失败。
+        """
+        monkeypatch.setattr(mod, "CREATE_TAB_BACKOFF_S", (0.0, 0.0, 0.0))
+        session = await CamofoxSession.launch(exe=sys.executable)
+        fake_mcp.client.responses[TOOL_CREATE_TAB] = _err(
+            'camofox error: 429: {"error":"Maximum tabs per session reached"}')
+        try:
+            with pytest.raises(CamofoxToolError):
+                await session.new_page("https://example.com/a")
+            assert session.pages == ()
+        finally:
+            await session.close()
+

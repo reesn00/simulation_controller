@@ -1298,6 +1298,15 @@ class SplitResult:
 
     samples: tuple[Sample, ...] = ()
     excluded: tuple[tuple[str, str], ...] = ()
+    #: **这份存档的判分不可信**（2026-11-11，H-31）⇒ 不出样本。
+    #:
+    #: ⚠️ **它不是「被丢弃」**：P1 存档原样留在盘上（那是**证据**，
+    #: 人工复核要看的就是它），隔离掉的是**训练语料**。
+    #:
+    #: ⚠️ **必须显式报出来**：静默返回零条会与「这份存档切不出轨迹」
+    #: 同形——而这两件事的处置完全不同（一个是数据坏了，一个是判分
+    #: 没跑成）。调用方据此在报表上单列一行。
+    judgement_untrusted: bool = False
 
 
 def split_archive(path: str | Path) -> list[Sample]:
@@ -1352,6 +1361,18 @@ def split_archive_report(path: str | Path) -> SplitResult:
     archive = read_archive(p)
     source_name = p.name
     task_id = str(archive.get("task_id"))
+
+    # ── 判分不可信：LLM 熔断 ⇒ 判断点全程 fail-closed ────────────
+    # ⚠️ **这一档的分支不是站点的性质**，是「判不出来」⇒ 切成训练
+    # 样本就是教模型「这些站看不了」——而真相是「我们这边判不出来」。
+    # all80 事故里那 6 条**字节量占全批 35 %**、结构完整、看着最像
+    # 正常轨迹，就是这么进的池。
+    #
+    # ⚠️ **判据用「显式 False」而不是「falsy」**：历史存档没有这个键
+    # （H-31 之前产的，不回填——「并池是写入时的动作」）⇒ 缺键 = 不知道
+    # = 按「没证据说它不可信」放行，而**不是**按「不可信」丢掉。
+    if archive.get("judgement_trustworthy") is False:
+        return SplitResult(judgement_untrusted=True)
 
     # ── 采集侧退场：没进入决策的 run 产出零条 ──────────────────────
     if archive.get("search_blocked") or _search_collection_failed(archive):

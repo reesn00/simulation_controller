@@ -40,7 +40,11 @@ from urllib.parse import urlparse
 
 from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import StepLog
-from trajectory_pipeline.executor.browser.page_driver import DriverError, PageDriver
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverSessionError,
+    PageDriver,
+)
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.steps import reachability, site_search as site_search_mod
 from trajectory_pipeline.executor.steps.search import Candidate
@@ -231,57 +235,74 @@ async def visit_site(
     if target is None:
         result.note(f"ref={ref} 未在 interactive_elements 中找到（I6 存疑），"
                     f"动作流按 target=None 记录")
-    await open_tab(driver, url, result)
-    step_click = result.steps.act(actions.click(target))
-    try:
-        await driver.click(**actions.target_params(
-            result.site_obs.element_vocabulary, target, ref=ref))
-    except (DriverError, actions.UnaddressableTarget) as exc:
-        result.steps.settle(step_click, error=f"点击失败: {exc}")
-        # 2026-10-23（M-27）：点击**失败** ⇒ 从未到达播放页 ⇒
-        # 「播放页上没有可验证的播放组件」这个结论**没有新证据支撑**
-        # ——``component_unverified`` 的前置事实是「**到了播放页**」
-        # （见 ``branches.BRANCH_PRECONDITION``）。⇒ 记 ``unresolved``：
-        # **采集缺件 ≠ 业务负样本**（它在 ``NON_SAMPLE_BRANCHES`` 里
-        # ⇒ **不进负样本池**，在人工复核队列里等人看）。
-        # ⚠️ 同页守卫**在这条路上结构性无从触发**——它要点击前后
-        # **两份**观察，而点击失败时只有一份（``pre_obs`` 有、``obs`` 没有）。
-        # 证据**原样留证**（那是要复看的现场），只改**分类**。
+    tab_id = await open_tab(driver, url, result)
+    if not tab_id:
+        # ⚠️ **开页失败 = 执行层故障**（2026-11-11，all80 事故 P0-2）：
+        # 退化到当前页会让这一站的观察与动作落在**上一个候选留下的页**上
+        # ⇒ 判分是错的。⇒ 中止这一站，记 ``unresolved``
+        # （采集缺件 ≠ 业务负样本 ⇒ 不进负样本池，等人看）。
         ledger.record(
             result.landed_url, "unresolved",
-            f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,
+            f"开独立 tab 失败（执行层故障，不是站点打不开）: {url}",
+            decision=control, site_url=url,
         )
-        result.note(f"点击失败: {exc}")
         return result
-
-    # ── ⑥ 重新观察：判的是播放页，不是站点页 ────────────────────
     try:
-        player_obs = await driver.observe(max_chars=max_chars)
-    except DriverError as exc:
-        result.steps.settle(step_click, error=f"点击后快照失败: {exc}")
-        # 2026-10-23（M-27）：同上一段——**点击成功但快照取不到**，
-        # 我们**不知道**那是不是播放页 ⇒ 同样缺「到了播放页」这个前置事实
-        # ⇒ 记 ``unresolved``，不记 ``component_unverified``。
-        # ⚠️ ``reached=True`` **不动**：点击确实成功了（只是快照没拿到），
-        # 「到没到播放页」是另一条语义，不在本条范围内。
-        ledger.record(
-            result.landed_url, "unresolved",
-            f"点击后取不到页面快照: {exc}", decision=control, reached=True,
-            site_url=url,
-            # play_page_url 留空：点击了但快照取不到，我们**不知道**那是
-            # 不是播放页。按 D-6 的口径，「播放页 URL」在没到达播放页时
-            # 不适用、不扣分——编一个出来才是把猜测写成事实。
-        )
-        result.note(f"点击后快照失败: {exc}")
-        return result
-    result.steps.settle(step_click, player_obs)
+        step_click = result.steps.act(actions.click(target))
+        try:
+            await driver.click(**actions.target_params(
+                result.site_obs.element_vocabulary, target, ref=ref))
+        except (DriverError, actions.UnaddressableTarget) as exc:
+            result.steps.settle(step_click, error=f"点击失败: {exc}")
+            # 2026-10-23（M-27）：点击**失败** ⇒ 从未到达播放页 ⇒
+            # 「播放页上没有可验证的播放组件」这个结论**没有新证据支撑**
+            # ——``component_unverified`` 的前置事实是「**到了播放页**」
+            # （见 ``branches.BRANCH_PRECONDITION``）。⇒ 记 ``unresolved``：
+            # **采集缺件 ≠ 业务负样本**（它在 ``NON_SAMPLE_BRANCHES`` 里
+            # ⇒ **不进负样本池**，在人工复核队列里等人看）。
+            # ⚠️ 同页守卫**在这条路上结构性无从触发**——它要点击前后
+            # **两份**观察，而点击失败时只有一份（``pre_obs`` 有、``obs`` 没有）。
+            # 证据**原样留证**（那是要复看的现场），只改**分类**。
+            ledger.record(
+                result.landed_url, "unresolved",
+                f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,
+            )
+            result.note(f"点击失败: {exc}")
+            return result
 
-    # ── ⑦ 判断点 ④：播放页是否可用 ─────────────────────────────
-    # 与 agent 链共用（pre_obs = 点击前的站点页观察，守卫靠「点击前后
-    # 是否换页」核它）。
-    judge_player(perceptor, ledger, result, player_obs,
-                 pre_obs=result.site_obs)
-    return result
+        # ── ⑥ 重新观察：判的是播放页，不是站点页 ────────────────────
+        try:
+            player_obs = await driver.observe(max_chars=max_chars)
+        except DriverError as exc:
+            result.steps.settle(step_click, error=f"点击后快照失败: {exc}")
+            # 2026-10-23（M-27）：同上一段——**点击成功但快照取不到**，
+            # 我们**不知道**那是不是播放页 ⇒ 同样缺「到了播放页」这个前置事实
+            # ⇒ 记 ``unresolved``，不记 ``component_unverified``。
+            # ⚠️ ``reached=True`` **不动**：点击确实成功了（只是快照没拿到），
+            # 「到没到播放页」是另一条语义，不在本条范围内。
+            ledger.record(
+                result.landed_url, "unresolved",
+                f"点击后取不到页面快照: {exc}", decision=control, reached=True,
+                site_url=url,
+                # play_page_url 留空：点击了但快照取不到，我们**不知道**那是
+                # 不是播放页。按 D-6 的口径，「播放页 URL」在没到达播放页时
+                # 不适用、不扣分——编一个出来才是把猜测写成事实。
+            )
+            result.note(f"点击后快照失败: {exc}")
+            return result
+        result.steps.settle(step_click, player_obs)
+
+        # ── ⑦ 判断点 ④：播放页是否可用 ─────────────────────────────
+        # 与 agent 链共用（pre_obs = 点击前的站点页观察，守卫靠「点击前后
+        # 是否换页」核它）。
+        judge_player(perceptor, ledger, result, player_obs,
+                     pre_obs=result.site_obs)
+        return result
+    finally:
+        # ⚠️ **本候选的页必须关**（2026-11-11，all80 事故 P0-2）：
+        # 上游 tab 配额 = 100 且**跨 session 全局** ⇒ 每候选开一张不关
+        # ⇒ 一条轨迹就吃光整批的配额 ⇒ 第 28 条起整批 429。
+        await close_tab(driver, tab_id, result)
 
 
 def _landing_host(url: str) -> str:
@@ -485,26 +506,72 @@ def _record_challenge(
     return True
 
 
-async def open_tab(driver: PageDriver, url: str, result: VisitResult) -> None:
-    """为该站点开独立 tab。失败不阻断——就在当前页继续。
+async def open_tab(driver: PageDriver, url: str, result: VisitResult) -> str:
+    """为该站点开独立 tab。**返回句柄**；空串 = 开页失败（执行层故障）。
 
     独立 tab 的作用是**会话隔离**：站点 A 弹出的登录框 / 提示不影响
-    站点 B 的观察。开不了就退化到当前 tab，不因此放弃该站点。
+    站点 B 的观察。
 
     agent 链在**进站之后立刻**调用它（scripted 在点击之前调），为的是
     让 agent 在站内走的那几步（搜索 → 详情 → 播放）全程落在自己的
     会话里——站点页留在原 tab，前一个候选的弹窗也跟不进来。
 
+    ⚠️ **失败不再「就在当前页继续」**（2026-11-11，all80 事故 P0-2）：
+    退化到当前页意味着这一站的观察与动作落在**上一个候选留下的页**上
+    ⇒ 判分是错的，而报告上只看得见「这个站 unresolved」，看不出是
+    **执行层坏了**。⇒ 开页失败由调用方**记账并中止这一站**
+    （记 ``unresolved``——采集缺件不是业务负样本，不进负样本池）。
+
+    ⚠️ **执行层故障原样抛，不在这里兜**（2026-11-11，缺口 A）：
+    :class:`DriverSessionError`（会话失效 / **上游配额打满**）意味着
+    **我们这一侧坏了** ⇒ 那个站点**一次都没被试过** ⇒ 这一条 run
+    **没有跑成** ⇒ 必须让它冒到批次层（记失败清单 + 退出码非 0 +
+    **不落盘**）。
+    ⚠️ **原来这里兜住了一切** ⇒ 配额打满被降级成「每站 unresolved」
+    ⇒ 整条 run 正常收口、落盘、**退出码 0** ⇒ 产出的是一份
+    **结构完整、全是 unresolved、字节还很大**的档（看着最像正常轨迹，
+    实则判分不可信）——这是 all80 事故里最危险的一类。
+    ⇒ **其余**异常照旧兜住（记 ``unresolved`` + 中止这一站）：
+    那是「这个站这次没打开」，与「我们这边坏了」不是一回事。
+
     捕获 ``Exception`` 而非 ``DriverError``：obscura 的 tab 相关 tool
     失败时返回的文本形态尚未实测（见 §7 待验证），窄捕获会让它直接穿透
     到批处理层。这里是「不阻断」的地方，宁可宽。
     """
+    step = result.steps.act(actions.new_tab(url))
     try:
-        await driver.new_tab(url)
-        result.steps.act(actions.new_tab(url))
-        result.note("已开独立 tab")
+        tab_id = str(await driver.new_tab(url) or "")
+    except DriverSessionError as exc:
+        # 执行层故障：**留证 + 原样抛**（不降级成站点级结论）。
+        result.steps.settle(step, error=f"开 tab 失败（执行层故障）: {exc}")
+        result.note(f"开 tab 失败（执行层故障）: {exc}")
+        raise
     except Exception as exc:
-        result.note(f"开 tab 失败（继续用当前页）: {type(exc).__name__}: {exc}")
+        result.steps.settle(step, error=f"开 tab 失败: {type(exc).__name__}: {exc}")
+        result.note(f"开 tab 失败: {type(exc).__name__}: {exc}")
+        return ""
+    result.note("已开独立 tab")
+    return tab_id
+
+
+async def close_tab(driver: PageDriver, tab_id: str, result: VisitResult) -> None:
+    """关掉本候选开的独立 tab。**关不掉只记账，不抛**。
+
+    ⚠️ **为什么必须关**（2026-11-11，all80 事故 P0-2）：上游 tab 配额
+    是 **100 且跨 session 全局**（实测：累计到 T033 = 100 张，T034 要
+    第 101 张就 429）⇒ 每候选开一张不关 ⇒ 一条轨迹就吃光整批的配额。
+    ⇒ 关页是**批量能跑完的前提**，不是清洁工作。
+
+    ⚠️ **关不掉不许抛**：上游可能已经把这张页销毁了（404），那正是
+    「它已经不在了」——再抛一次只会把整条轨迹打断，而真相是「页没了」
+    （已经发生过的事）。
+    """
+    if not tab_id:
+        return
+    try:
+        await driver.close_tab(tab_id)
+    except Exception as exc:
+        result.note(f"关 tab 失败（该页可能已被上游销毁）: {type(exc).__name__}: {exc}")
 
 
 def summarize(results: list[VisitResult]) -> dict[str, Any]:

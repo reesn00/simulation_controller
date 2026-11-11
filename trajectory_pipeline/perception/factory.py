@@ -63,12 +63,17 @@ def build_perceptor(
     target_title: str = "",
     env: dict[str, str] | None = None,
     client: Any = None,
+    breaker: Any = None,
 ) -> Perceptor:
     """构造感知器。
 
     ``client`` 供测试注入假后端。**生产路径不传**——传了就等于让
     上层决定用哪个后端，而那是 :mod:`~trajectory_pipeline.llm.client`
     的职责。
+
+    ``breaker`` 是**批次级**熔断器（H-31 · all80 事故 P1-3）。**不给就
+    各自熔断各自的**——而客户端是**每 task 一个** ⇒ 跨 task 的连续
+    失败拦不住（all80 那 170 次 401 是跨 6 条 task 打空的）。
     """
     chosen = (mode or configured_mode(env)).strip().lower()
     if chosen not in MODES:
@@ -88,7 +93,7 @@ def build_perceptor(
     if client is None:
         from trajectory_pipeline.llm.client import LLMClient
 
-        client = LLMClient(cfg)
+        client = LLMClient(cfg, breaker=breaker)
     return LLMPerceptor(client, target_title=target_title)
 
 

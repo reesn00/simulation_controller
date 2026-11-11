@@ -38,6 +38,9 @@ ENV_MODEL = "TRAJECTORY_LLM_MODEL"
 ENV_API_KEY = "TRAJECTORY_LLM_API_KEY"
 ENV_TIMEOUT_S = "TRAJECTORY_LLM_TIMEOUT_S"
 ENV_MAX_TOKENS = "TRAJECTORY_LLM_MAX_TOKENS"
+#: **熔断阈值**（H-31）。连续这么多次不可重试的 4xx ⇒ 判定「本批 LLM
+#: 不可用」⇒ 该批判分不可信、不许并池。
+ENV_CIRCUIT_THRESHOLD = "TRAJECTORY_LLM_CIRCUIT_THRESHOLD"
 
 #: 升配后端（方案 13 §3.5 G2）。EscalateModel 处置触发时 agent 循环从主
 #: 后端切到这一个——**全部可选**：一个都没配 = 无升配能力（处置降级为
@@ -135,6 +138,88 @@ class ChatResult:
     error: str = ""
 
 
+#: **熔断阈值**：连续 N 次「不可重试的 4xx」⇒ 判定「本批 LLM 不可用」。
+#:
+#: ⚠️ **为什么是 3**：401 这类失败**重发一次结果一样**（key 错了）⇒
+#: 连着 3 次还错就不是偶发，是**配置/后端真的坏了** ⇒ 继续发只是把
+#: 每一道题都拖到超时（all80 批次里 401 期间 **170 次**空请求、
+#: 判分全程 fail-closed，而那批的字节量占全批 **35 %**——结构完整、
+#: 看着最像正常轨迹、实则判分不可信）。
+#:
+#: 阈值取 3 而不是 1：偶发一次 4xx（后端重启、网关抖动）不该让整批判废。
+CIRCUIT_BREAKER_THRESHOLD = 3
+
+#: **不计入熔断的 4xx**：它们说的是「慢一点 / 再等会儿」，不是「你错了」。
+#:
+#: - ``408`` Request Timeout：请求超时⇒换个时间能成；
+#: - ``429`` Too Many Requests：**限流**⇒退避后能成。
+#:
+#: ⚠️ 把 429 算进熔断会让「后端限流」被误判成「后端坏了」⇒
+#: 整批判分不可信——**判错的代价比多发几次请求大得多**。
+NON_TRIPPING_4XX: frozenset[int] = frozenset({408, 429})
+
+
+class CircuitBreaker:
+    """**连续 4xx ⇒ 熔断**（2026-11-11，H-31 · all80 事故 P1-3）。
+
+    熔断的语义是「**别再发了**」，不是「重试」——
+    :meth:`LLMClient._exchange` 对 4xx **不重试**那个决策是对的
+    （key 错了重发无用），缺的是「**别再发**」。
+
+    ⚠️ **为什么熔断器是独立对象、而不是客户端的一个字段**：
+    客户端是**每 task 一个**（见 :func:`trajectory_pipeline.perception.factory.build_perceptor`
+    与 CLI 的 rationale writer），而熔断要拦的是**整批**——
+    all80 那 170 次 401 是**跨 6 条 task** 打空的，逐 task 计数拦不住。
+    ⇒ 熔断器由**批次层**建一个，传给这一批的每个客户端。
+
+    ⚠️ **fail-closed**：熔断打开后 :meth:`LLMClient.chat` 返回 ``None``
+    （**不是抛异常**）——本模块的契约是「失败不是异常，是返回值」
+    （见模块 docstring 第 1 条），而调用方（感知层）的契约是 I4
+    fail-closed，它需要「判不出来」这个信号。
+    """
+
+    def __init__(self, threshold: int = CIRCUIT_BREAKER_THRESHOLD) -> None:
+        #: 连续失败几次就熔断。**至少 1**（0 会让第一次失败就熔断，
+        #: 而 :meth:`record_4xx` 自己会挡掉非正阈值）。
+        self.threshold = max(1, int(threshold))
+        #: 当前连续失败数。
+        self.consecutive_4xx = 0
+        #: 熔断发生时**最后那个** 4xx 的状态码（诊断用；0 = 没熔断过）。
+        self.last_status = 0
+        #: 熔断发生过几次（**只增不减**——它是「这批出过事」的读数）。
+        self.tripped = 0
+
+    @property
+    def open(self) -> bool:
+        """熔断是否已打开。**打开 ⇒ 后续调用一律不发请求**。"""
+        return self.consecutive_4xx >= self.threshold
+
+    def record_4xx(self, status: int) -> None:
+        """记一次「不可重试的 4xx」。"""
+        if status in NON_TRIPPING_4XX:
+            return
+        self.consecutive_4xx += 1
+        self.last_status = int(status)
+        if self.open and self.tripped == 0:
+            self.tripped = 1
+
+    def record_ok(self) -> None:
+        """记一次成功。**连续计数清零**（后端恢复了 ⇒ 前面的失败不算数）。"""
+        self.consecutive_4xx = 0
+
+    def reset(self) -> None:
+        """手动复位（操作员修好配置后重跑时用）。"""
+        self.consecutive_4xx = 0
+        self.last_status = 0
+
+    def reason(self) -> str:
+        """一句话说明熔断原因（进日志与存档）。"""
+        if not self.open:
+            return ""
+        return (f"LLM 熔断：连续 {self.consecutive_4xx} 次 4xx"
+                f"（最后 http:{self.last_status}）")
+
+
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
     """后端连接参数。``api_key`` 刻意不进 ``__repr__``。"""
@@ -146,6 +231,10 @@ class LLMConfig:
     max_retries: int = 2
     temperature: float = 0.0
     max_tokens: int = DEFAULT_MAX_TOKENS
+    #: **熔断阈值**（H-31）。连续这么多次不可重试的 4xx ⇒ 熔断。
+    #: 客户端**不自带**这个判据——它由批次层建的 :class:`CircuitBreaker`
+    #: 持有（一个批次一个），配置里的这个数只是它的**默认值**。
+    circuit_breaker_threshold: int = CIRCUIT_BREAKER_THRESHOLD
 
     def __repr__(self) -> str:
         # 覆盖 dataclass 生成的 repr：它会把 api_key 打进 repr，
@@ -198,12 +287,22 @@ class LLMConfig:
             raise LLMUnavailable(f"{ENV_MAX_TOKENS}={raw_tokens!r} 不是整数") from exc
         if tokens <= 0:
             raise LLMUnavailable(f"{ENV_MAX_TOKENS}={tokens} 必须为正")
+        raw_cb = (e.get(ENV_CIRCUIT_THRESHOLD) or "").strip()
+        try:
+            threshold = int(raw_cb) if raw_cb else CIRCUIT_BREAKER_THRESHOLD
+        except ValueError as exc:
+            raise LLMUnavailable(
+                f"{ENV_CIRCUIT_THRESHOLD}={raw_cb!r} 不是整数"
+            ) from exc
+        if threshold <= 0:
+            raise LLMUnavailable(f"{ENV_CIRCUIT_THRESHOLD}={threshold} 必须为正")
         return cls(
             base_url=base_url,
             model=model,
             api_key=(e.get(ENV_API_KEY) or "").strip() or NO_KEY,
             timeout_s=timeout,
             max_tokens=tokens,
+            circuit_breaker_threshold=threshold,
         )
 
     @classmethod
@@ -271,9 +370,21 @@ class LLMClient:
     三个 fail-closed 分支各自多一套异常路径。
     """
 
-    def __init__(self, cfg: LLMConfig) -> None:
+    def __init__(
+        self,
+        cfg: LLMConfig,
+        *,
+        breaker: CircuitBreaker | None = None,
+    ) -> None:
         self.cfg = cfg
         self._client: Any = None  # 懒建，见 _ensure_client
+        #: **熔断器**（H-31）。不给就自带一个——但**自带的那个只管
+        #: 这一个客户端**，而客户端是**每 task 一个** ⇒ 跨 task 的
+        #: 连续失败拦不住（all80 那 170 次 401 就是跨 task 打空的）。
+        #: ⇒ **批次层必须显式传一个共享的进来**。
+        self.breaker = breaker if breaker is not None else CircuitBreaker(
+            cfg.circuit_breaker_threshold
+        )
         #: 上一次失败的**简短原因**，供排障。不含响应体、不含 key——
         #: 后端回的错误正文偶尔带凭据片段，而异常与诊断都会进日志。
         self.last_error: str = ""
@@ -415,6 +526,21 @@ class LLMClient:
             # 调用方的装配错误，不是后端的问题。发一次 90s 超时只为
             # 换一个 400，不值。
             return None, None, "shape:empty_messages"
+        if self.breaker.open:
+            # ⚠️ **熔断已打开 ⇒ 一个请求都不发**（H-31 · all80 事故 P1-3）。
+            #
+            # all80 批次里 401 从 08:48:39 持续到收尾，共 **170 次**空请求
+            # ——每次都等一个超时。⇒ 判分全程 fail-closed，那批的
+            # ``unresolved`` 占 83 %、**字节量占全批 35 %**：结构完整、
+            # 看着最像正常轨迹、实则判分不可信。
+            #
+            # ⚠️ **fail-closed，不抛异常**：本模块的契约是「失败不是异常，
+            # 是返回值」（模块 docstring 第 1 条），调用方（感知层）的
+            # 契约是 I4 fail-closed，它需要「判不出来」这个信号。
+            # ⇒ 返回 ``None`` + ``circuit:open``，而 ``circuit:open``
+            # 会原样进 ``llm_calls[].error`` ⇒ 读档的人看得见
+            # 「**不是判不了，是熔断了**」。
+            return None, None, "circuit:open"
         payload = {
             "model": self.cfg.model,
             "messages": list(messages),
@@ -444,11 +570,16 @@ class LLMClient:
                     #         再发一次结果一样，纯烧时间。
                     #   5xx = 后端过载/崩溃，重试有机会成。
                     if resp.status_code < 500:
+                        # ⚠️ **记一次熔断计数**（H-31）。4xx 不重试是对的，
+                        # 但**「不再发」也要有**——否则 401 期间每一道题
+                        # 都各发一次（all80：170 次）。
+                        self.breaker.record_4xx(resp.status_code)
                         return None, None, error
                 else:
                     try:
                         data = resp.json()
-                        return _content_of(data), _usage_of(data), ""
+                        usage = _usage_of(data)
+                        content = _content_of(data)
                     except _BudgetExhausted as exc:
                         # 预算用尽：**换参数就能好**，所以不重试同一请求
                         # （重发一次还是同一个预算、还是空）。给的是能照着
@@ -461,6 +592,10 @@ class LLMClient:
                         # 再问一次它还是那样，重试只是把 30s 超时翻倍。
                         error = f"shape:{type(exc).__name__}"
                         return None, None, error
+                    # ⚠️ **成功 ⇒ 连续失败计数清零**（后端恢复了）。
+                    # 放在解析之后：拿到内容才算「这次成功」。
+                    self.breaker.record_ok()
+                    return content, usage, ""
             if attempt < self.cfg.max_retries:
                 time.sleep(min(2.0 * (attempt + 1), 5.0))
 

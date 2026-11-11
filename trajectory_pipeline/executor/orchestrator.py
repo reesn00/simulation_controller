@@ -38,6 +38,7 @@ from trajectory_pipeline.executor.branches import (
 from trajectory_pipeline.executor.browser import access_surface
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.gatekeeper import BLOCK_VERDICTS, FailClosed, intercept
+from trajectory_pipeline.executor.browser.page_driver import DriverSessionError
 from trajectory_pipeline.executor.mode import AGENT, EXECUTOR_MODES
 from trajectory_pipeline.executor.steps import (
     agent_intermediate,
@@ -380,6 +381,22 @@ class RunRecord:
     #: 空 list = 本次运行没有拦截事件（**与「没接线」同形是已知代价**，
     #: 阶段 G 只有搜索页一处写入点，A2 起写入点才多起来）。
     gatekeeper_events: list[dict[str, Any]] = field(default_factory=list)
+    #: **本条轨迹的判分是否可信**（2026-11-11，H-31 · all80 事故 P1-3）。
+    #:
+    #: ``False`` = **LLM 侧不可用**（连续 4xx 触发熔断）⇒ 这条 run 的
+    #: 判断点全部 fail-closed ⇒ 它记下的分支**不是这个站点的性质**，
+    #: 是「判不出来」⇒ **不许进训练池**。
+    #:
+    #: ⚠️ **为什么它必须是一个字段、而不是只靠 warnings**：
+    #: all80 那批被判分污染的 6 条**字节量占全批 35 %**、结构完整、
+    #: 看着最像正常轨迹——不人工复核根本看不出来。而它们之所以能进池，
+    #: 是因为「并池是写入时的动作」（写入时读不到「这批判分不可信」）。
+    #: ⇒ 标记必须**随档落盘**，写入路径与组装路径各读一次。
+    #:
+    #: ⚠️ **默认 ``True`` = 「没有证据说它不可信」**，不是「断言它可信」：
+    #: H-31 之前产的存档没有这个键（历史批次不回填——「并池是写入时的
+    #: 动作，不是读取时的推导」）。
+    judgement_trustworthy: bool = True
     #: **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4；2026-11-05 P0-1
     #: 扩到全 caller）。每条
     #: ``{caller, candidate, model, latency_ms, prompt_tokens,
@@ -514,6 +531,10 @@ class RunRecord:
             # ``blocked_surface`` / ``attempt`` 在这里盖（方案 20 §R3）——
             # 面从 ``driver`` 折算，见 :func:`_stamped_gatekeeper_events`。
             "gatekeeper_events": _stamped_gatekeeper_events(self),
+            # 判分可信度（H-31）。**bool 照落**——「没这个键」与
+            # 「键是 False」在下游必须分得开：前者是历史批次（不知道），
+            # 后者是「这批判分不可信、不许进池」。
+            "judgement_trustworthy": bool(self.judgement_trustworthy),
             # LLM 调用账本（方案 13 §3.6，A2a-4）。空 list 照落——
             # scripted 批「没问模型」与「没这个键」在下游是两回事。
             "llm_calls": [dict(c) for c in self.llm_calls],
@@ -1108,7 +1129,15 @@ class Orchestrator:
         user_prompt: str = "",
         provenance: Mapping[str, Any] | None = None,
     ) -> RunRecord:
-        """跑完一个 task 的全部环节。**不抛异常**——异常折算进 warnings。
+        """跑完一个 task 的全部环节。**采集故障折算进 warnings**。
+
+        ⚠️ **但执行层故障原样抛出**（2026-11-11，all80 事故 P0-1）：
+        :class:`DriverSessionError`（坏的是**我们这一侧**：浏览器会话 /
+        建页路由 / 上游配额）**不许**在这里降级成 warning——那条 run
+        **没有发生**，把它封成一份「0 候选 0 访问的退化壳」会让批次
+        层以为一切正常 ⇒ **整批 exit 0**（实测 53/80 条退化壳、
+        日志 0 处 `[FAIL]`）。⇒ 原样抛给批次层，由它逐条兜住并记失败
+        清单。**这不违反「一条没跑成不许毁整批」**——批次层是逐条兜的。
 
         ``search_query`` 由模块 1（:mod:`trajectory_pipeline.taskgen`）产出时
         优先使用；不给才退回本层的启发式拼接。两条路径都留着是因为
@@ -1141,6 +1170,10 @@ class Orchestrator:
                 就搜成了「轮胎 T001」，产出 6 条理由通顺的假负样本，
                 **零异常、零空转、一条都看不出坏**。让它在调用方那层
                 静默发生，比让它在这里炸掉贵得多。
+
+            DriverSessionError: **执行层故障**（会话失效 / 建页失败 /
+                上游配额打满）。见方法开头：它**不**折算进 warnings，
+                而是原样抛给批次层记失败清单。
         """
         if not (title or "").strip():
             raise ValueError(
@@ -1227,6 +1260,26 @@ class Orchestrator:
             record.search_obs = await self._driver.observe(
                 max_chars=self._cfg.max_chars
             )
+        except DriverSessionError:
+            # ⚠️ **执行层故障不许降级成 warning**（2026-11-11，all80 事故 P0-1）。
+            #
+            # 坏的是**我们这一侧**（浏览器会话 / 建页路由 / 上游配额），
+            # 那个站点**一次都没被试过** ⇒ 这条 run **没有发生**，
+            # 而不是一个「跑完但没结果」的 run。
+            #
+            # 原来这里连它带其它异常一起兜住、记一条 warning、**提前 return
+            # 一份已封口的记录** ⇒ 批次层拿到的是一份 0 候选 0 访问的
+            # **退化壳**，而 `orch.run` **正常返回** ⇒ 批次层的
+            # `failed` 清单恒空 ⇒ **exit 0** ⇒ 调用方以为这批成功。
+            # 实测：all80 批次 53/80 条是这种退化壳，日志 0 处 `[FAIL]`。
+            #
+            # ⇒ 这里**原样抛出**：批次层逐条兜（`cli.py` 的 `except`）
+            # ⇒ 记进失败清单 ⇒ **退出码非 0** ⇒ 且这条**不落盘**
+            # （退化壳不进 `output/pipeline/` 顶层）。
+            #
+            # ⚠️ **这不违反「一条没跑成不许毁整批」**：批次层是**逐条**兜的，
+            # 这一条进失败清单，**下一条照跑**。
+            raise
         except Exception as exc:
             # 搜索页拿不到时整条 run 提前返回，动作流里必须留下这一步：
             # 「搜都没搜成」与「搜了但没素材」在报表上是两回事，
@@ -2003,6 +2056,29 @@ class Orchestrator:
             result.note("超时")
             record.warnings.append(f"{candidate.url} 超时")
             return result
+        except DriverSessionError:
+            # ⚠️ **执行层故障原样抛，不降级成 per-site ``unresolved``**
+            # （2026-11-11，缺口 A · all80 事故 P0-2 的复核）。
+            #
+            # 坏的是**我们这一侧**（上游配额打满 / 会话失效）⇒ 那个站点
+            # **一次都没被试过** ⇒ 这一条 run **没有跑成**。
+            #
+            # ⚠️ **原来这里被下面的兜底接住** ⇒ 记一条 ``unresolved``
+            # ⇒ 整条 run 正常收口、落盘、**退出码 0** ⇒ 产出的是一份
+            # **结构完整、全是 unresolved、字节还很大**的档（看着最像
+            # 正常轨迹，实则判分不可信）——all80 事故里最危险的一类。
+            #
+            # ⇒ 这里原样抛 ⇒ 冒到 :meth:`Orchestrator.run` 的调用方
+            # ⇒ 批次层逐条兜（记失败清单 + **退出码非 0** + **不落盘**），
+            # 与搜索页阶段（:meth:`run` 里的 ``except DriverSessionError:
+            # raise``）**同一口径**。
+            #
+            # ⚠️ **注意「导航阶段」的会话失效不走这里**：那一路由
+            # :mod:`trajectory_pipeline.executor.steps.reachability` 接住
+            # 并记 ``unresolved``（既有契约：**采集缺件 ≠ 业务负样本**，
+            # 有契约测试钉着）⇒ 「整批判分不可信」由 H-31 的判分可信度
+            # 标记兜底，不在这里越权改分支口径。
+            raise
         except Exception as exc:
             log.warning("[%s] 站点遍历异常 %s：%s: %s",
                         record.task_id, candidate.url,

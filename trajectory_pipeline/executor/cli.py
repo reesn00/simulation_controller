@@ -86,7 +86,7 @@ from trajectory_pipeline.executor.browser.driver_factory import (
 )
 from trajectory_pipeline.executor.browser.obscura_driver import FORBIDDEN_TOOLS
 # 增量二十五：``DriverError`` 给 _collect_l4_text 鸭子协议降级用。
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import DriverError, DriverSessionError
 from trajectory_pipeline.executor.dom import DEFAULT_MAX_CHARS, detect_block
 from trajectory_pipeline.executor.integrity import (
     Severity, check_root, format_report,
@@ -198,18 +198,45 @@ def _reconfigure_stdio() -> None:
         )
 
 
-def _make_perceptor(args: argparse.Namespace, title: str):
+def _make_circuit_breaker():
+    """构造**批次级**熔断器（H-31 · all80 事故 P1-3）。
+
+    ⚠️ **一个批次一个**：客户端是**每 task 一个**（见
+    :func:`_make_perceptor`），而熔断要拦的是**整批**——
+    all80 那 170 次 401 是**跨 6 条 task** 打空的，逐 task 计数拦不住。
+
+    阈值读环境变量 ``TRAJECTORY_LLM_CIRCUIT_THRESHOLD``；
+    **读不到就用源码默认值**（后端压根没配时，报错的是别处，
+    这里不该先炸——「LLM 没配」与「LLM 配了但坏了」是两件事）。
+    """
+    from trajectory_pipeline.llm.client import (
+        CIRCUIT_BREAKER_THRESHOLD,
+        CircuitBreaker,
+        LLMConfig,
+    )
+    threshold = CIRCUIT_BREAKER_THRESHOLD
+    try:
+        threshold = LLMConfig.from_env().circuit_breaker_threshold
+    except Exception:
+        pass
+    return CircuitBreaker(threshold)
+
+
+def _make_perceptor(args: argparse.Namespace, title: str, breaker=None):
     """构造该 task 的感知器。**每个 task 一个**。
 
     ``title`` 进构造参数是因为判断点 ① 需要目标片名——它是**任务的属性**，
     不在 ``Observation`` 里（那是页面的属性）。塞进 Observation 会污染事实层
     （P1 存档的观察字段会多出不属于页面的东西）。
+
+    ``breaker`` 是**批次级**熔断器（H-31）——不给就各自熔断各自的，
+    跨 task 的连续失败拦不住。
     """
     return build_perceptor(mode=getattr(args, "perceptor", None),
-                           target_title=title)
+                           target_title=title, breaker=breaker)
 
 
-def _make_rationale_writer():
+def _make_rationale_writer(breaker=None):
     """构造 rationale 生成器。**没有可用后端时返回 ``(None, 原因)``。**
 
     ``None`` 的含义是「这一步没长出来」，不是「跑过了且没问题」——
@@ -221,6 +248,9 @@ def _make_rationale_writer():
     **但原因必须带回来**——只返回 ``None`` 而不说是为什么，
     就会重现「能力不可用」那个症状：报表上只看到闸门全批
     ``not_run``，没人知道是没配后端还是代码坏了。
+
+    ``breaker`` 是**批次级**熔断器（H-31）——writer 的调用同样会吃 401，
+    而 all80 那批的 rationale 就是 401 期间写的。
     """
     try:
         from trajectory_pipeline.llm.client import LLMClient, LLMConfig
@@ -232,11 +262,15 @@ def _make_rationale_writer():
     except Exception as exc:                     # 未配齐或配置不合法
         return None, f"LLM 后端不可用 {type(exc).__name__}: {exc}"
 
-    client = LLMClient(cfg)
+    client = LLMClient(cfg, breaker=breaker)
     # 写动机与写反思**各用一个客户端**（P0-1/P0-4）：搜索阶段两次补记
     # 与分类并发（``asyncio.to_thread``），共用客户端会让 ``last_*``
     # 账本读数互相覆盖——账上就会把一个调用的耗时/ token 记到另一个上。
-    reflect_client = LLMClient(cfg)
+    #
+    # ⚠️ **两个客户端共享同一个熔断器**（H-31）：它们打的是**同一个
+    # 后端**⇒ 同一个 key 坏了就是两个都坏 ⇒ 分开熔断等于让 401 从
+    # writer 那条路继续漏出去。
+    reflect_client = LLMClient(cfg, breaker=breaker)
 
     def _stat(client_: LLMClient) -> dict[str, Any]:
         """把**刚刚那次**调用折成 ``llm_calls[]`` 的一行（不含 caller/时间）。"""
@@ -306,7 +340,7 @@ def _describe_rationale(writer, why: str) -> str:
     return f"已接上（{writer.model}）"
 
 
-def _make_agent_backend():
+def _make_agent_backend(breaker=None):
     """组装 agent 模式的后端四件套。**没有可用后端时返回 ``(None, 原因)``**。
 
     与 :func:`_make_rationale_writer` 同款形状：不说原因的话，报表上只看
@@ -317,6 +351,10 @@ def _make_agent_backend():
     LLM 客户端与 llm 侧的解析器，而 ``executor`` 不 import ``llm``
     （01-架构总览 L26-50）。本文件是唯一能同时看见两边的边界层——
     ``_make_rationale_writer`` 也是为了同一条边而活在这里。
+
+    ``breaker`` 是**批次级**熔断器（H-31）。⚠️ **升配后端用自己那个**：
+    它是**另一台机器另一份凭据**——主后端 401 不代表升配也坏了
+    （把两个后端塞进同一个熔断器 ⇒ 主后端一坏就连升配一起掐死）。
     """
     try:
         from trajectory_pipeline.llm import schema_parse
@@ -337,7 +375,7 @@ def _make_agent_backend():
 
     return (
         AgentBackend(
-            client=LLMClient(cfg),
+            client=LLMClient(cfg, breaker=breaker),
             # 与 :func:`agent_loop` docstring 里点名的生产侧解析器同款：
             # 剥 ``<think>`` → 抠 JSON。解析器**注入**而不是在 executor
             # 里 import，是为了让格式契约（schema）留在 loop 侧、
@@ -363,7 +401,8 @@ def _describe_agent(backend) -> str:
     return f"已接上（{model}；升配后端={esc_model}）"
 
 
-def _resolve_executor(requested: str | None = None) -> tuple[str, Any, str]:
+def _resolve_executor(requested: str | None = None,
+                      breaker=None) -> tuple[str, Any, str]:
     """构造期解析执行器模式：``(mode, backend, 打印文案)``。
 
     优先级（A3-1 转正）：``--executor-mode``（run 子命令参数）>
@@ -385,7 +424,7 @@ def _resolve_executor(requested: str | None = None) -> tuple[str, Any, str]:
             f"executor = scripted（经 {via}；agent 模式用 "
             f"--executor-mode agent 切——需配齐 TRAJECTORY_LLM_*）"
         )
-    backend, why = _make_agent_backend()
+    backend, why = _make_agent_backend(breaker)
     if backend is None:
         return "", None, (
             f"[FAIL] 要 agent 模式（经 {via}），但 agent 后端不可用：{why}。"
@@ -621,6 +660,46 @@ async def _probe_driver(kind: str, *, collect_element_basis: bool = False):
         await session.close()
 
 
+def _note_close_failures(
+    driver: Any,
+    failed: list[tuple[str, str]],
+    *,
+    key: str,
+    label: str,
+    rec: RunRecord | None = None,
+) -> None:
+    """**会话收尾的失败必须上报**（2026-11-11，all80 事故 P0-2 · 缺口 B）。
+
+    关不掉的页**仍然占着上游 tab 配额**（实测配额 = 100，跨 session 全局）
+    ⇒ 下一批从更低的余量起步 ⇒ 进失败清单（⇒ **退出码非 0**）
+    + 进该条的 ``warnings``（⇒ 存档里看得见）。
+
+    ⚠️ **成功与失败两条路都要调**（缺口 B）：原来这个检查只在
+    「run 正常收口」之后做 ⇒ 而**恰恰是 run 失败的时候**（执行层炸了）
+    最可能有关页失败 ⇒ 那一路直接 ``continue`` 跳过 ⇒ 关页失败
+    **不进失败清单** ⇒ 下一批从更低的余量起步且**无痕**。
+
+    ⚠️ **调用时机**：必须在**会话已经收尾之后**调——``close_failures``
+    是 ``session.close()`` 跑完才有的读数（关页失败在那一刻才被记下）。
+    ⇒ 调用点必须在驱动上下文**退出之后**。
+
+    ⚠️ **``rec`` 给了才写 warnings**：失败的那条**不落盘**（没有存档可写），
+    只进失败清单 + 日志。
+    """
+    close_failures = tuple(getattr(driver, "close_failures", ()) or ())
+    if not close_failures:
+        return
+    detail = "；".join(close_failures[:3])
+    if rec is not None:
+        rec.warnings.append(
+            f"会话收尾失败：{len(close_failures)} 张页没关掉"
+            f"（仍占上游 tab 配额）: {detail}"
+        )
+    failed.append((key, f"会话收尾失败 {len(close_failures)} 张页"))
+    print(f"[FAIL] {label}：会话收尾失败"
+          f"（{len(close_failures)} 张页没关掉，仍占上游配额）")
+
+
 async def _run_manual(args: argparse.Namespace) -> int:
     """手工路径：``--task-id`` + ``--title``。**不带 provenance**。
 
@@ -666,10 +745,13 @@ async def _run_manual(args: argparse.Namespace) -> int:
             return 2
 
     titles = [t.strip() for t in args.title]
+    # ⚠️ **熔断器必须先于 agent backend 造**（H-31）：backend 里装着
+    # LLM 客户端，而客户端要挂同一个批次级熔断器。
+    breaker = _make_circuit_breaker()
     # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：模式是
     # 批次级属性，不该等跑到某个候选才决定。解析先于 RunConfig 构造——
     # 模式的产地是 RunConfig（A3-1 转正），backend 随模式一起在这里备好。
-    mode, agent_backend, banner = _resolve_executor(args.executor_mode)
+    mode, agent_backend, banner = _resolve_executor(args.executor_mode, breaker)
     if not mode:
         print(banner)
         return 2
@@ -689,7 +771,9 @@ async def _run_manual(args: argparse.Namespace) -> int:
     )
     archive = P1Archive(_archive_root(args))
     records = []
-    writer, why = _make_rationale_writer()
+    # 熔断器（**批次级**，上面已造好）传给每一个 LLM 出口：
+    # rationale writer / 反思 / 感知层 / agent 主后端。
+    writer, why = _make_rationale_writer(breaker)
     print(f"rationale = {_describe_rationale(writer, why)}")
     print(banner)
 
@@ -714,10 +798,15 @@ async def _run_manual(args: argparse.Namespace) -> int:
         for title in titles:
             # **每个 task 一个 perceptor**：LLM 版的判断点 ① 需要目标片名，
             # 而片名是任务的属性不是页面的属性，靠构造注入。
-            perceptor = _make_perceptor(args, title)
+            perceptor = _make_perceptor(args, title, breaker)
             print(f"perceptor = {describe(perceptor)}")
             # camofox 面**一个 Run 一次 launch**（见 _driver_for_run）；
             # obscura 面复用批次驱动，yield 的就是同一个对象。
+            #
+            # ⚠️ **失败路径也要看得见关页失败**（2026-11-11，缺口 B）：
+            # ``rec`` 初始为 ``None`` ⇒ 失败那条不落盘；成功那条才 append。
+            rec: RunRecord | None = None
+            driver = None
             async with AsyncExitStack() as task_stack:
                 try:
                     driver = await task_stack.enter_async_context(
@@ -744,13 +833,40 @@ async def _run_manual(args: argparse.Namespace) -> int:
                     # 不传 user_prompt：手工路径没有 persona 渲染的提问，
                     # 存档里留空串（含义与 provenance 空 dict 相同）。
                     rec = await orch.run(args.task_id, title)
+                except DriverSessionError as exc:
+                    # ⚠️ **执行层故障**（2026-11-11，all80 事故 P0-1）：
+                    # 坏的是我们这一侧 ⇒ 这一条**没跑成** ⇒ 不落盘 + 退出码非 0。
+                    failed.append((f"{args.task_id} {title}",
+                                   _describe_failure(exc)))
+                    print(f"[FAIL] [{args.task_id}] {title}：执行层故障"
+                          f"（{_describe_failure(exc)}）"
+                          "——**这一条没跑成、不落盘**")
+                    traceback.print_exc()
+                    rec = None
                 except Exception as exc:
                     failed.append((f"{args.task_id} {title}",
                                    _describe_failure(exc)))
                     print(f"[FAIL] [{args.task_id}] {title}：这一条没跑成"
                           f"（{_describe_failure(exc)}）——继续下一条")
                     traceback.print_exc()
-                    continue
+                    rec = None
+            # ⚠️ **这里已经出了驱动上下文** ⇒ ``session.close()`` 已跑完
+            # ⇒ ``close_failures`` 才是最终读数。**成功与失败两条路都要看**
+            # （缺口 B）：失败那条最容易有关页失败，而它原来直接
+            # ``continue`` 跳过 ⇒ 下一批从更低的配额余量起步且**无痕**。
+            # ⚠️ **两条路径都要写**：手工路径与计划路径是两个独立调用点。
+            _note_close_failures(
+                driver, failed,
+                key=f"{args.task_id} {title}",
+                label=f"[{args.task_id}] {title}",
+                rec=rec,
+            )
+            if rec is None:
+                continue
+            # ⚠️ **熔断打开 ⇒ 这条判分不可信**（H-31）：标记要在
+            # ``archive.write`` **之前**——写入路径读它决定要不要
+            # 并池（并池是写入时的动作），标晚了就来不及了。
+            _mark_judgement_untrusted(rec, breaker)
             records.append(rec)
             path = archive.write(rec, task_id=args.task_id, batch_id=args.task_id)
             _print_summary(rec, path)
@@ -760,6 +876,15 @@ async def _run_manual(args: argparse.Namespace) -> int:
             _dispatch_l6_summary(rec, args.task_id, root=_archive_root(args))
 
     _print_batch_footer(records, failed=failed)
+    # ⚠️ **判分不可信 ⇒ 退出码非 0**（H-31）：那几条**跑完了**，
+    # 但判断点全程 fail-closed ⇒ 分支不是站点的性质 ⇒ 退出码 0
+    # 会让「这批判分可用」与「这批判分被污染」长得一样。
+    #
+    # ⚠️ **不把它们塞进 ``failed``**：那份清单是「**没跑成**」，
+    # 而它们跑完了——混进去会把「判分没跑成」读成「这条崩了」。
+    if any(not getattr(r, "judgement_trustworthy", True)
+           for r in records):
+        return 1
     return 1 if failed else 0
 
 
@@ -826,10 +951,13 @@ async def _run_plan(args: argparse.Namespace) -> int:
             print(f"[FAIL] {exc}")
             return 2
 
+    # ⚠️ **熔断器必须先于 agent backend 造**（H-31）：backend 里装着
+    # LLM 客户端，而客户端要挂同一个批次级熔断器。
+    breaker = _make_circuit_breaker()
     # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：手工路径
     # 与计划路径在这里是同一套，换数据来源不该换执行链。解析先于
     # RunConfig 构造——模式的产地是 RunConfig（A3-1 转正）。
-    mode, agent_backend, banner = _resolve_executor(args.executor_mode)
+    mode, agent_backend, banner = _resolve_executor(args.executor_mode, breaker)
     if not mode:
         print(banner)
         return 2
@@ -849,7 +977,9 @@ async def _run_plan(args: argparse.Namespace) -> int:
     )
     archive = P1Archive(_archive_root(args))
     records = []
-    writer, why = _make_rationale_writer()
+    # 熔断器（**批次级**，上面已造好）传给每一个 LLM 出口：
+    # rationale writer / 反思 / 感知层 / agent 主后端。
+    writer, why = _make_rationale_writer(breaker)
     print(f"rationale = {_describe_rationale(writer, why)}")
     print(banner)
 
@@ -883,6 +1013,11 @@ async def _run_plan(args: argparse.Namespace) -> int:
             title = task.title
             # 每 task 一个：判断点 ① 要目标片名（构造注入，见 _make_perceptor）
             # camofox 面一个 Run 一次 launch（_driver_for_run）。
+            #
+            # ⚠️ **失败路径也要看得见关页失败**（2026-11-11，缺口 B）：
+            # ``rec`` 初始为 ``None`` ⇒ 失败那条不落盘；成功那条才 append。
+            rec: RunRecord | None = None
+            driver = None
             async with AsyncExitStack() as task_stack:
                 try:
                     driver = await task_stack.enter_async_context(
@@ -904,7 +1039,8 @@ async def _run_plan(args: argparse.Namespace) -> int:
                           "——本条跳过，继续下一条")
                     traceback.print_exc()
                     continue
-                orch = Orchestrator(driver, _make_perceptor(args, title), cfg,
+                orch = Orchestrator(driver, _make_perceptor(args, title, breaker),
+                                    cfg,
                                     rationale_writer=writer,
                                     agent_backend=agent_backend)
                 print(f"\n[{n}/{len(tasks)}] {task.task_id} | {task.persona_id} "
@@ -916,6 +1052,21 @@ async def _run_plan(args: argparse.Namespace) -> int:
                         user_prompt=task.prompt_text,
                         provenance=dict(task.provenance),
                     )
+                except DriverSessionError as exc:
+                    # ⚠️ **执行层故障**（2026-11-11，all80 事故 P0-1）：
+                    # 坏的是**我们这一侧**（会话失效 / 建页失败 / 上游配额
+                    # 打满），那个站点**一次都没被试过** ⇒ 这一条**没跑成**。
+                    #
+                    # ⇒ 记失败清单 + **这一条不落盘**（退化壳不进
+                    # ``output/pipeline/`` 顶层）+ **退出码非 0**。
+                    # ⚠️ **一条失败只毁那一条**：下一条照跑
+                    # （「一条没跑成不许毁整批」，2026-10-26 的刻意设计）。
+                    failed.append((task.task_id, _describe_failure(exc)))
+                    print(f"[FAIL] [{n}/{len(tasks)}] {task.task_id}："
+                          f"执行层故障（{_describe_failure(exc)}）"
+                          "——**这一条没跑成、不落盘**，继续下一条")
+                    traceback.print_exc()
+                    rec = None
                 except Exception as exc:
                     # 同上：**能力不可用不中断采集**（浏览器中途崩了也算）。
                     # 代码 bug 也会落到这里——但它会**每条都犯**，于是失败
@@ -925,7 +1076,23 @@ async def _run_plan(args: argparse.Namespace) -> int:
                           f"这一条没跑成（{_describe_failure(exc)}）"
                           "——继续下一条")
                     traceback.print_exc()
-                    continue
+                    rec = None
+            # ⚠️ **这里已经出了驱动上下文** ⇒ ``session.close()`` 已跑完
+            # ⇒ ``close_failures`` 才是最终读数。**成功与失败两条路都要看**
+            # （缺口 B）：失败那条最容易有关页失败，而它原来直接
+            # ``continue`` 跳过 ⇒ 下一批从更低的配额余量起步且**无痕**。
+            _note_close_failures(
+                driver, failed,
+                key=task.task_id,
+                label=f"[{n}/{len(tasks)}] {task.task_id}",
+                rec=rec,
+            )
+            if rec is None:
+                continue
+            # ⚠️ **熔断打开 ⇒ 这条判分不可信**（H-31）：标记要在
+            # ``archive.write`` **之前**——写入路径读它决定要不要
+            # 并池（并池是写入时的动作），标晚了就来不及了。
+            _mark_judgement_untrusted(rec, breaker)
             records.append(rec)
             try:
                 path = archive.write(rec, task_id=task.task_id,
@@ -955,6 +1122,15 @@ async def _run_plan(args: argparse.Namespace) -> int:
             _dispatch_l6_summary(rec, task.task_id, root=_archive_root(args))
 
     _print_batch_footer(records, failed=failed)
+    # ⚠️ **判分不可信 ⇒ 退出码非 0**（H-31）：那几条**跑完了**，
+    # 但判断点全程 fail-closed ⇒ 分支不是站点的性质 ⇒ 退出码 0
+    # 会让「这批判分可用」与「这批判分被污染」长得一样。
+    #
+    # ⚠️ **不把它们塞进 ``failed``**：那份清单是「**没跑成**」，
+    # 而它们跑完了——混进去会把「判分没跑成」读成「这条崩了」。
+    if any(not getattr(r, "judgement_trustworthy", True)
+           for r in records):
+        return 1
     return 1 if failed else 0
 
 
@@ -1012,6 +1188,26 @@ def _print_plan_header(plan, tasks, *, limited: bool) -> None:
     print("  提示：真实浏览器每条约几十秒。跑长批之前建议先 --dry-run 看一眼。")
 
 
+def _mark_judgement_untrusted(rec: RunRecord, breaker) -> bool:
+    """熔断打开 ⇒ 这条 run 的**判分不可信**（2026-11-11，H-31）。
+
+    ⚠️ **判分不可信 ≠ 没跑成**：这条 run 跑完了、动作流与观察都在，
+    但**判断点全程 fail-closed** ⇒ 它记下的分支**不是站点的性质**，
+    是「判不出来」。⇒ 它**不许进负样本池、不许进训练集**，
+    但**证据本身要留着**（人工复核要看的就是它）。
+
+    返回是否标记了（没熔断 ⇒ 不标记）。
+    """
+    if not getattr(breaker, "open", False):
+        return False
+    rec.judgement_trustworthy = False
+    rec.warnings.append(
+        f"{breaker.reason()}——**本条判分不可信**（判断点全程 fail-closed，"
+        f"分支不是站点的性质）⇒ **不进负样本池、不进训练集**"
+    )
+    return True
+
+
 def _print_batch_footer(records, failed=None) -> None:
     """批次小结。**失败清单必须打出来**。
 
@@ -1037,6 +1233,17 @@ def _print_batch_footer(records, failed=None) -> None:
               f"（{Counter(r.search_blocked for r in blocked)}）——"
               f"这些一次搜索都没搜成，**不算素材质量差**。"
               f"加间隔或 `--engine bing` 重跑它们")
+    # ⚠️ **判分不可信要与「素材质量差」分开说**（H-31）：LLM 熔断后
+    # 判断点全程 fail-closed ⇒ 这几条的分支**不是站点的性质**。
+    # 它们**跑完了**（所以不在「没跑成」清单里），但**不许并池**。
+    untrusted = [r for r in records
+                 if not getattr(r, "judgement_trustworthy", True)]
+    if untrusted:
+        print(f"⚠️ 其中 **{len(untrusted)}/{total} 个判分不可信**"
+              "（LLM 熔断：判断点全程 fail-closed）——"
+              "**这些不是素材质量差，是判分没跑成**："
+              "它们的分支不代表站点性质，**已隔离、不进负样本池、不进训练集**。"
+              "修好后端（多半是 key 或模型名）重跑它们。")
     if ok == 0 and not blocked:
         # 全 0 不一定是数据差，多半是 W1 的能力边界——直接说出来，
         # 免得读档的人把它当成「这批素材没价值」。不猜是哪一条原因：
@@ -3301,6 +3508,14 @@ def cmd_build(args: argparse.Namespace) -> int:
             # 补救命令也不同（前者 --include-legacy，后者 --rationale-era）。
             print(f"  旧面未重渲染 {rep.total_legacy_skipped} 条"
                   f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
+        if rep.total_judgement_untrusted:
+            # ⚠️ **判分不可信（H-31）**：LLM 熔断 ⇒ 判断点全程 fail-closed
+            # ⇒ 那几条的分支不是站点的性质 ⇒ **不出样本**。
+            # 必须显式印：静默少几条会被读成「这批数据少了」，
+            # 而真相是「那几条的判分没跑成」。
+            print(f"  ⚠️ 判分不可信 {rep.total_judgement_untrusted} 份存档"
+                  f"（LLM 熔断，H-31）——**不出样本、不进训练集**；"
+                  f"P1 证据原样在盘上，修好后端重跑它们")
         if rep.total_excluded_units:
             # 访问级剔除（R4-2）：整条 unit 访问了任务声明排除的平台。
             # 必须显式印——否则下一批样本数变少会被读成「采集变差了」。

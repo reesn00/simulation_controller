@@ -98,7 +98,10 @@ from trajectory_pipeline.executor.branches import (
     precondition_failed,
     terminal_shape_branch,
 )
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    DriverSessionError,
+)
 from trajectory_pipeline.executor.gatekeeper import (
     DeadLoopDetector,
     EscalateModel,
@@ -1503,6 +1506,12 @@ class _Loop:
         if instr.tool in actions.READ_TOOLS:
             try:
                 read_obs = await self._read(instr)
+            except DriverSessionError:
+                # ⚠️ **执行层故障原样抛**（2026-11-11，缺口 A）：
+                # 会话坏了 / 上游配额打满 ⇒ agent 换任何动作都还是失败
+                # ⇒ 让它耗完预算只会产出一份「全是 unresolved、看着像
+                # 正常轨迹」的档 ⇒ 冒到批次层（不落盘 + 退出码非 0）。
+                raise
             except DriverError as exc:
                 # 读失败不收口：模型可以换一种读法，或按已有观察继续。
                 # 落 P1 的是「读了但没读到」，与「没读」是两回事。
@@ -1530,6 +1539,12 @@ class _Loop:
                 target=action.target,
                 vocabulary=self.obs.element_vocabulary,
             )
+        except DriverSessionError:
+            # ⚠️ **执行层故障原样抛**（2026-11-11，缺口 A）：会话坏了 /
+            # 上游配额打满时，agent 换什么动作都还是失败 ⇒ 让它耗完预算
+            # 只会产出一份「全是 unresolved、看着像正常轨迹」的档
+            # ⇒ 冒到批次层（不落盘 + 退出码非 0）。
+            raise
         except (DriverError, actions.UnaddressableTarget) as exc:
             # 动作执行失败**不收口**：让 agent 看着失败原因自己换路。
             # 写进 P1 的是 ``error`` 非空的那一步——「点了但点不动」正是
@@ -1545,6 +1560,9 @@ class _Loop:
         self._read_elements.clear()
         try:
             obs = await self.driver.observe(max_chars=self.max_chars)
+        except DriverSessionError:
+            # ⚠️ **执行层故障原样抛**（2026-11-11，缺口 A）：同上一处。
+            raise
         except DriverError as exc:
             # 快照取不到是**能力问题**（I4 fail-closed），但这里不整站收口：
             # 页面还在，agent 可以换个动作继续。落 P1 的是

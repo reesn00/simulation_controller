@@ -142,8 +142,10 @@ class Observation:
     #: **共享口径没测到的原因**（``None`` = 没开开关，或测到了）。
     #:
     #: ⚠️ **它不进 :attr:`degraded`**——那是**内容块**的降级通道，
-    #: 下游只判它非空（``steps/search.extract_candidates`` 见到降级就
-    #: **不取候选**、``gatekeeper`` 见到降级就拦）。共享口径是**测量仪器**，
+    #: 下游**按块问**（「我这一块坏了吗」，见
+    #: :mod:`trajectory_pipeline.executor.degraded`；
+    #: ``steps/search.extract_candidates`` 只在**链接那块**坏了时才
+    #: 不取候选，``gatekeeper`` 见到降级就拦）。共享口径是**测量仪器**，
     #: 它坏了只说明**这把尺子没量到**，不说明**这个页面不可信**——
     #: 把测量失败混进 ``degraded``，等于让一把坏尺子**作废整批数据**
     #: （2026-10-21 由 P0 等价性门禁的变异测试挖出）。

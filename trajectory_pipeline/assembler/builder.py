@@ -122,6 +122,10 @@ class ArchiveBuildResult:
     #: 单独计数而不是混进 ``skipped``：处置不同（``--include-legacy``
     #: 才重建），混在一起印就等于没印。
     legacy_skipped: int = 0
+    #: **判分不可信 ⇒ 不出样本**（2026-11-11，H-31）。单列而不是混进
+    #: ``skipped``：处置不同（修好后端重跑，而不是重渲染这条），
+    #: 而且它**不是「这条切不出来」**——P1 证据原样在盘上。
+    judgement_untrusted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +146,10 @@ class BuildReport:
     #: 必须是报表上的**独立一行**——「池里 legacy 为空」有两种成因
     #: （没数据 / 有数据但按口径不渲染），混进别的计数里就分不出来了。
     total_legacy_skipped: int = 0
+    #: **判分不可信（LLM 熔断）而没出样本的存档数**（H-31）。
+    #: 单列一行：它与「切不出轨迹」「被反爬拦」是三件事，
+    #: 处置各不相同（修后端重跑 / 补数据 / 换引擎加间隔）。
+    total_judgement_untrusted: int = 0
 
     @property
     def ok(self) -> bool:
@@ -426,6 +434,7 @@ def build_from_archive(
         era_skipped=era_skipped,
         excluded_units=len(split.excluded),
         excluded_detail=split.excluded,
+        judgement_untrusted=bool(getattr(split, "judgement_untrusted", False)),
         legacy_skipped=legacy_skipped,
     )
 
@@ -513,6 +522,9 @@ def build_all(
     total_era_skipped = 0
     total_excluded_units = 0
     total_legacy_skipped = 0
+    #: **判分不可信的存档数**（2026-11-11，H-31）。它们**不出样本**，
+    #: 但必须**报出来**——静默少产出会被读成「这批素材差」。
+    total_judgement_untrusted = 0
 
     for path in sorted(src.glob("*.json")):
         if "__" not in path.stem:
@@ -555,6 +567,7 @@ def build_all(
         total_era_skipped += res.era_skipped
         total_excluded_units += res.excluded_units
         total_legacy_skipped += res.legacy_skipped
+        total_judgement_untrusted += int(res.judgement_untrusted)
 
     # 池账（面 + 计数 + 时间）：分母从 131 掉到 65 不是质量变好（R-5）
     pool.record_pool(
@@ -575,6 +588,7 @@ def build_all(
         total_era_skipped=total_era_skipped,
         total_excluded_units=total_excluded_units,
         total_legacy_skipped=total_legacy_skipped,
+        total_judgement_untrusted=total_judgement_untrusted,
     )
 
 

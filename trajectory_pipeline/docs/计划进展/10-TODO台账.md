@@ -289,6 +289,10 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **H-26** | ★**（2026-11-04 新增）agent 路径的前置事实核已补上 ⇒ **两处判据缺口因此显形**：真付费墙会被降级 · 登录墙没有「可执行」的前置事实核** | 02 感知 / 03 标签 | 编年史 §增量一百二十三 · [`agent_loop.py::_guarded_branch`](../../executor/agent_loop.py) · [`branches.py::precondition_failed`](../../executor/branches.py) · [`test_agent_loop.py::Test分支前置事实核`](../../tests/unit/test_agent_loop.py) | ✅ **代码已实施**（2026-11-04）：agent 路径的分支归因现在**过一遍** `branches.precondition_failed`——**scripted 路径的同一份判据**（原来只有 `RunLedger.record_from` 核，agent 路径不走它 ⇒ CLAUDE.md「贴标签前核前置事实」在 agent 路径上**一直是空的**）⇒ 门禁的「**像**付费墙」（强弱关键词）不再直接折成 `subscription_wall`（结论口径要**门禁语境**）⇒ **导航栏挂着「开通VIP会员」的免费页不再被记成「这里看不了」**；不成立 ⇒ 落 `unresolved` + 追一句「`[记账降级] 本该记 X，但…`」⇒ 门禁事件分支 / `AgentOutcome.branch` / 台账行**三者一致**。**新增 5 条单测**（导航栏 CTA ⇒ `unresolved` · 真付费墙仍 `subscription_wall` · 分支一致 · 理由进 `reason` · 登录墙不受影响）<br>⚠️ **两个缺口**：① **真付费墙也会被降级**（**2026-11-04 已闭**——判据二「订阅价目门禁」落地，见本行末尾）——`paywall_evidence` 只认 L1 门禁短语 / L2 CTA+同句观看语境 / L1.5 错误+会员 commerce，**实测对部分真付费墙返回空**（youku《功夫》· fun.tv）⇒ 这些站现在落 `unresolved`（**不进池**）⇒ **「每条分支都必须有对应样本入库」这条纪律在付费墙这一支上暂时是反的**（真负样本被降成非负样本）；② **`login_required` 没有「可执行」的前置事实核**——今天只有两条分支真的在核：`subscription_wall`（门禁语境 `paywall_evidence`）与 `component_unverified`（同页守卫）；`BRANCH_PRECONDITION` 里 `login_required` / `blocked` / `partial_free` / `broken` **只有文案、没有可执行核**（2026-10-19 增量六十·方案 X **刻意**窄的：当时守卫覆盖 5 支，实测 **46** 次触发**全是误伤** ⇒ 窄到只剩 1 支）⇒ **代价**：`login_required` 在 agent 路径上**仍是裸折算**（门禁判「像登录墙」就直接贴分支）<br>✅ **缺口①已闭（2026-11-04）**：owner 拍「给这一支补第二条可执行判据」⇒ **判据二 · 订阅价目门禁**落地（[`rule_perceptor.py::paywall_price_evidence`](../../perception/rule_perceptor.py)：**页面级三要素同现**——订阅价目 + 开通动作 + 权益承诺，**外加登录门排除**）⇒ 前置事实核改认**判据一 ∪ 判据二**（[`subscription_wall_evidence`](../../perception/rule_perceptor.py)）⇒ youku《功夫》· fun.tv 这类「价目 + 开通 + 权益」但**不写「订阅后观看」措辞**的真付费墙**重新贴得上** `subscription_wall`（实测找回 **67** 行：youku **45** · iqiyi **15** · fun.tv **4** · mgtv **3**）。⚠️ **判据二不进 `paywall_evidence`**——H-16 修复① 的收紧口径（纯营销模块不得算付费墙）**原样不动** ⇒ 救济路径与评分器口径不变；判据二**只**服务于 `subscription_wall` 的前置事实核<br>⚠️ **缺口②仍开着**：`login_required` 在 agent 路径上仍是裸折算 |
 | **H-27** | ★**（2026-11-04 新增）改分支却**没改中文标签** ⇒ 存量 **137** 条记录自相矛盾（**三个写者**漏了三个）· 工具已修 · 存量已回填 · **LS 两条卡仍是旧的** | 08 存档治理 | 编年史 §增量一百二十三 · [`downgrade.py::apply_downgrades`](../../executor/downgrade.py) · [`relabel.py::_relabel_outcome`](../../executor/relabel.py) · [`review_queue.py::apply_verdicts`](../../executor/review_queue.py) · [`label_sync.py`](../../executor/label_sync.py) · [`test_label_sync.py`](../../tests/unit/test_label_sync.py) | ✅ **三个写者全修 + 存量已回填**（2026-11-04）：改 `branch` 的写者有**三个**——`downgrade.apply_downgrades` · `relabel._relabel_outcome` · `review_queue.apply_verdicts`——**三处都漏了** `branch_label` ⇒ 记录变成「分支说 A、标签写着 B」的**自相矛盾**，而下游取的是**行内**的 `branch_label`（`golden/builder._code_block` → `golden_ls/exporter`）⇒ 矛盾一路传到 LS 的**人核卡**上：**人看到的是「付费墙」，机器读到的分支却是「未判定」**。⇒ 三处现在**共用** `branches.branch_label_of(branch)`（`None` → 「成功」）——**标签的取法只有一处**。⚠️ **原标签不丢**：`branch_before_downgrade` / `branch_before_relabel` / `branch_before_review` 记着原分支，中文名按 `BRANCH_LABELS` 可还原<br>✅ **存量已回填**（新增 `executor/label_sync.py` + `cli sync-labels`，**默认 dry-run**）：生产根 **137** 条（按层：原档 **61** + 复核档 **76**；按来源：降级/改判 **108** + 人裁 **29**）· 72 份文件；双跑研究档另 **8** 条 ⇒ **生产根复扫 0 条残留**（**328** 条「分支被工具改过」的记录全部同源）、池内 **0 条同源矛盾**、T 视图 **155** 份 / **1178** 条 `unit_outcomes` **0 条**同源矛盾（另有 **34** 处**口径文本漂移**，**按惯例不回填**）。⚠️ **判据是「分支被工具改过」**（三个留痕键），**不是**「标签文本与当前 `BRANCH_LABELS` 对不上」——后者是**口径演进**（`unreachable_hard` 2026-10-27 收窄 · `login_wall_or_blocked` 2026-10-12 加 deprecated 后缀）⇒ 按 `executor/branch_eras.py` 的 e6 **不回填**（那 47 条没动 · 原档 47 / 两层镜像 94）⇒ **备份目录也没动**（`q23_trial` 151 · `q23_backup_2026-10-28` 37 · `pipeline/_backup_pre_motivation` 27——备份是当时状态的快照）<br>⚠️ **LS 项目 77 的两条卡推在改判前**：**601** = `T001__7d5a03bd`（推于 2026-11-02）· **665** = `T001__61eabe2e`（推于 2026-11-04T02:24Z）⇒ 卡上的 `meta_text` 仍写着那条 `subscription_wall` ⇒ **重推 / purge 都是对外动作**（且 `purge` 连标注一起删）⇒ **本轮没动**，等 owner 裁<br>✅ **owner 已裁并已执行（2026-11-04）**：**就地重推**（`PATCH /api/tasks/{id}` + `PATCH /api/predictions/{id}`）⇒ **不删卡、不新建卡**（task id 601 / 665 与标注归属不变 · 项目仍 **77** 条 · **0** 条重复）⇒ 两张卡 `site-8` 现在读 **`unresolved`**（卡面里剩下的 `subscription_wall` 字样只在**审计留痕**中）· 601 的 `status` 因当前 `scout/r51` 档是 undetermined 而翻成 **`quarantine`**（= 当前产物本身的样子）· 台账 `push_index__77.jsonl` 追加 2 行（append-only） |
 | **H-28** | ★**（2026-11-10 新增 · ✅ 已闭）pytest 把测试产物写进生产产物目录**——`mediabrowse/` 里 **2218 / 2271** 个文件是 pytest 残留（假域名 `a.example.com`） | 09 纪律 | [`11-存量轨迹数据盘点.md`](11-存量轨迹数据盘点.md) §七① · [`tests/unit/test_output_isolation.py`](../../tests/unit/test_output_isolation.py) · [`tests/unit/test_cmd_mediabrowse.py`](../../tests/unit/test_cmd_mediabrowse.py) · [`cli.py::_archive_root`](../../executor/cli.py) · [`cli.py::cmd_mediabrowse`](../../executor/cli.py) · [`review_queue.py::dispatch_l6`](../../executor/review_queue.py) · [`archive.py::P1Archive`](../../executor/archive.py) | **已复现**：该测试文件有 **7 处**把 `out=None` 传给 `cmd_mediabrowse` ⇒ `P1Archive(root=None)` 落 `DEFAULT_ROOT`（= **生产产物目录** `output/pipeline/`，不是 `tmp_path`）⇒ **每跑一次 pytest 就往生产目录写 4 个文件**（实测 `mediabrowse/` 2271 → 2275）。⚠️ **不污染训练数据**——组装 glob 只扫顶层与 `samples/`/`views/`/`task_views/`，`mediabrowse/` 是子目录；`--mediabrowse-dir` 按 `(task_id,url)` 索引，假域名的 `task_id`（`P024-reuse` 等）是测试命名空间，挂不到交付面样本 ⇒ **是产物目录脏 + 磁盘占用（4 MB），不是数据正确性问题**。<br>✅ **已闭（2026-11-10）——根因有两条，不是一条**：① 上条那 7 处 `out=None`；② **L6 派发队列的落点**（调查时漏掉的第二处）：`dispatch_l6` 的 `queue_path` **默认落 `DEFAULT_ROOT`**，即使 `--out` 指到别处**队列仍写生产目录**（`review_auto/l6_dispatch.jsonl` 盘上 15 行**全是测试命名空间**）——这既是生产语义 bug，也是测试写生产目录的第二条路。<br>**修法**：① 7 处 `out=None` → `out=str(tmp_path)`；② 新增 [`cli.py::_archive_root`](../../executor/cli.py)（**`--out` 给了就用它，没给才用默认根**），三处 `P1Archive(...)` 构造与三处 `_dispatch_l6_summary(...)` 派发改用它 ⇒ **测试不再写生产目录**（⚠️ 队列要跟**根**平级、不是存档自己的子目录，否则派发项找不到 = 静默失效）。<br>**存量已清**：`mediabrowse/` **2271 → 53**（删 2218 个 pytest 残留 + 1 个 `127.0.0.1:18097` 残留；**保留 53 个 `v.qq.com` 真实探针数据**——按**内容**（`requested_url` 的 host）判定、不按文件名）；`review_auto/l6_dispatch.jsonl` 整份删（15 行全测试命名空间）；`mediabrowse/` **9.9 MB → 957 KB**。<br>**守卫已立**（[`test_output_isolation.py`](../../tests/unit/test_output_isolation.py)，**两条**）：① **静态**——AST 扫测试树，**不许出现 `out=None`**（它在 CLI 层的含义就是「落生产目录」；要验默认根就显式 `monkeypatch.setattr(archive.DEFAULT_ROOT, tmp_path)`）；② **运行时**——`mediabrowse/` 与 `review_auto/` 里不许出现**保留测试域名**（RFC 2606 / RFC 6761）。守卫**自检**：喂它一段坏例子得报出来。<br>**硬证据**：全量 ~5200 测试跑完，生产产物目录 **8118 → 8118 文件，0 新增 0 减少**（跑前跑后逐文件快照比对）。<br>⚠️ **配套口径改动（owner 裁定 2026-11-10）**：清掉的旧面派生产物在旧口径下**会被 `cli build` 重渲染回 `legacy/`** ⇒ **清理不持久** ⇒ 改 build 口径：**旧面默认不再重渲染**（`--include-legacy` 按需重建）。落点与测试见[`23-训练轨迹语料整改方案.md`](../设计方案/23-训练轨迹语料整改方案.md) R3-3 口径修订。|
+| **H-29** | ★**（2026-11-11 新增）执行层故障被降级成 warning ⇒ 整批「成功」退出**：all80 批次 **53/80 条**建页失败仍照常落盘，批次 **exit 0**、日志 **0 处 `[FAIL]`** | 01 采集 / 09 纪律 | [11-all80 批次执行事故复盘 §三·P0-1](../11-all80批次执行事故复盘.md) · [`orchestrator.py:1230-1237`](../../executor/orchestrator.py#L1230) · [`cli.py:958`](../../executor/cli.py#L958) · [`cli.py:929-931`](../../executor/cli.py#L929) · 日志 `output/logs/all80_agent_20261110.log` | **「没跑成」必须可见**：执行层异常要冒到批次层的 `failed` 清单 ⇒ 退出码非 0；退化存档**不落盘**或落隔离区。⚠️ 现状是**下游按「文件存在」筛选会把 53 份 3.5 KB 空壳当正常样本入库**。⚠️ **不是「通道被绕过」而是「异常没冒到批次层」**（`orch.run` 正常返回 ⇒ 两条 `[FAIL]` 通道一条都没触发）⇒ 缺的是「这条没跑成」的**信号**，不是改通道判据 ｜ ✅ **已闭（2026-11-11）**：`orchestrator.run` 对 `DriverSessionError` **原样抛出**（不再折算进 warnings、不再提前 return 退化壳）⇒ 批次层 `_run_plan` / `_run_manual` **各加一条 `except DriverSessionError`** ⇒ 记失败清单 + 打 `[FAIL]` 行 + **退出码非 0** + **这一条不落盘**；「一条失败只毁那一条」的纪律不变（下一条照跑）。⚠️ **处置刻意窄**：只有执行层故障原样抛，**站点层异常照旧折算进 warnings**（否则一条站点的普通失败会毁掉整批）。回归门禁：[`test_all80_p0.py`](../../tests/unit/test_all80_p0.py)（**13 条**，**8 条在修复前是红的**——⚠️ 那 4 条批次层契约测试修复前就绿，**病根靠「真 orchestrator」那两条才拦得住**） |
+| **H-30** | ★**（2026-11-11 新增）camofox tab 泄漏 ⇒ 第 28 条起整批集体猝死**：每候选 `open_tab` 从不 close、**`session.close()` 里的 `close_tab` 方法名写错 ⇒ `AttributeError` 被吞 ⇒ 关页从未发起**；**53 条**建页失败（429 tabs 47 · 503 sessions 6），每条 <1 s | 01 采集 | [11-all80 批次执行事故复盘 §三·P0-2](../11-all80批次执行事故复盘.md) · [`visit.py:234`](../../executor/steps/visit.py#L234) · [`visit.py:503-507`](../../executor/steps/visit.py#L503) · [`agent_visit.py:108`](../../executor/steps/agent_visit.py#L108) · [`camofox_session.py:405-412`](../../executor/browser/camofox_session.py#L405) | ① **【一个词】`close_tab` → `close_page`**（先做这个，会话级回收立刻生效）；② 每候选访问后**关页**；③ `session.close()` 的失败**上报**不吞；④ 429/503 加退避重试。✅ **「上游 tab 上限跨 session 全局」已由读数佐证**（累计到 T033 = **100** 张、T034 要第 **101** 张即首个 429 ⇒ 配额 = 100、跨 session 全局）⇒ **不必再打探针** ｜ ✅ **已闭（2026-11-11）**：① **【一个词】`close_tab` → `close_page`**（[`camofox_session.py::close`](../../executor/browser/camofox_session.py)）——关页**真的发起了**；关不掉的页进 **`close_failures`**（**不吞**）⇒ 驱动侧 `close_failures` 属性透出 ⇒ 批次层读它 ⇒ 进失败清单 + 进该条 `warnings`。② **每候选访问后关页**：`visit.py` 与 `agent_visit.py` 各自在 `finally` 里`close_tab`（**关不掉只记账不抛**）。③ **`open_tab` 失败不许静默「继续用当前页」**——退化到当前页会让这一站的观察与动作落在**上一个候选留下的页**上 ⇒ 判分是错的⇒ 改为**中止这一站 + 记 `unresolved`**（采集缺件 ≠ 业务负样本 ⇒ 不进负样本池）。④ **429/503 退避重试**（`CREATE_TAB_MAX_RETRIES=3` · 退避 1/2/4 s，**只对 `TRANSIENT_STATUS={429,503}`**；4xx 其余不重试），退避次数进 `readings`。⚠️ **退避是止血不是治本**——429 的根因是 tab 没关光。回归门禁：[`test_camofox_session.py`](../../tests/unit/test_camofox_session.py)（新增 **6 条**，**修复前全红**——实测）+ [`test_all80_p0.py`](../../tests/unit/test_all80_p0.py) |
+| **H-31** | ★**（2026-11-11 新增）LLM 4xx 无熔断 ⇒ 判分静默退化**：401 期间 **170 次**空请求，判断点 ① 全程 fail-closed，6 条轨迹 **`unresolved` 59/71（83 %）**、字节占全批 **35 %**——结构完整、看着正常、实则判分不可信 | 02 感知 / 03 标签 | [11-all80 批次执行事故复盘 §三·P1-3](../11-all80批次执行事故复盘.md) · [`llm/client.py:443-446`](../../llm/client.py#L443) · 6 份 SITES0 存档的 `llm_calls[]` / `outcomes[]` | 加**熔断**：连续 N 次 4xx ⇒ 判定本批 LLM 不可用 ⇒ 该批**不可用于判分**（不混入并池）。⚠️ **4xx 不重试本身是对的**（key 错重发无用）——要改的是调用方，不是那一行 ｜ ✅ **已闭（2026-11-11）**：**批次级**熔断器（`llm/client.py::CircuitBreaker`，阈值 3 · env `TRAJECTORY_LLM_CIRCUIT_THRESHOLD`）+ P1 落 `judgement_trustworthy=false` ⇒ **写入时**不并池 + P2/T **两边都挡**（不出样本 / 不出训练视图）+ 批次层打「判分不可信」段 + **退出码非 0**。⚠️ **不熔断的 4xx**：`408/429`（限流不是坏了）。回归门禁：[`test_llm_circuit_breaker.py`](../../tests/unit/test_llm_circuit_breaker.py)（**28 条**，**4 处变异**验证） |
+| **H-32** | ★**（2026-11-11 新增）搜索页任一 `degraded` 一票否决候选** ⇒ **13 条** 0 候选空跑；且 mojibake 成因被误判（`body_mojibake` 只在 `body_source == "inner_text"` 时才判 ⇒ 实为 **snapshot 抓取失败回落**，不是内容真乱码） | 02 感知 | [11-all80 批次执行事故复盘 §三·P1-4 · §三·P1-5](../11-all80批次执行事故复盘.md) · [`search.py:496-499`](../../executor/steps/search.py#L496) · [`camofox_driver.py:632-634`](../../executor/browser/camofox_driver.py#L632) | 把**候选提取**与 **body 质量门禁**解耦：links 取到了就不该因 body 乱码丢候选；mojibake 改为**重取 snapshot / 修 charset** 后再判 ｜ ✅ **已闭（2026-11-11）**：新增 [`executor/degraded.py`](../../executor/degraded.py)——降级**按内容块**分类（body / links / elements / nav / other）；**候选提取只被 `links` ∪ `nav` 两块否决**（body 乱码 / 元素枚举失败动不了从 links 提的候选）⇒ 那 13 条不再 0 候选空跑；**乱码先重取 HTML 再判**（重取到可读正文就不记降级）。⚠️ **降级事实一律留在 `Observation.degraded`**——隔离候选 ≠ 抹掉降级。回归门禁：[`test_h32_degraded_blocks.py`](../../tests/unit/test_h32_degraded_blocks.py)（**20 条**，**2 处变异**验证） |
 ---
 
 ## 2026-10-21 质量审查项详解
@@ -1210,3 +1214,375 @@ id 集合与冻结层**完全一致**、九区块齐全、prediction 0、人工�
   但**切片时若按旧字段分组，会得到一个纯噪声的轴** ⇒ 读数按新口径（去掉这两维）看。
 - ⛔ **不打算再做**：时间限定 / 语气词以后若要重新引入，得先有"它对 agent prompt 有意义"的判据；
   当前**没有**这样的判据。
+
+---
+
+## 2026-11-11 all80 批次执行事故复盘 · 新增开口项详解
+
+> **事件**：批次 `all80_agent_20261110`（80 条 / 11 persona 切片，seed=20261110，library=4409ea8c59d7）
+> 于 **2026-11-10 18:12:29 → 2026-11-11 08:53:23** 跑完，**8 条成功（10%）**，**整批 exit 0**。
+> 事实存档见 **[11-all80 批次执行事故复盘](../11-all80批次执行事故复盘.md)**（含逐条分类、时间线、负结果）。
+>
+> **读数**（80 份 P1 存档 + 同名日志双口径交叉核过）：
+
+  | 类别 | 条数 | 单份字节 | 字节占比 | 性质 |
+  |---|---|---|---|---|
+  | **OK** 成功 | 8 | 254 K – 913 K | **43.6 %** | 干净，可入池 |
+  | **SITES0** 遍历到站点但 0 成功 | 6 | 373 K – 979 K | 35.0 % | **判分不可信**（H-31） |
+  | **NOCAND** 搜索页无候选 | 13 | 120 K – 122 K | 19.0 % | 有观测无候选（H-32） |
+  | **429/503** 建页失败 | **53** | **3.5 K – 3.9 K** | 2.4 % | 完全退化壳（H-29 · H-30） |
+
+> ⚠️ **两条读数结论不同，别混用**：按**条数**看「53 条是废数据」= 66 %；
+> 按**字节**看那 53 条只占 2.4 %，**真正的大头是 6 条 SITES0（35 % 字节）+ 13 条 NOCAND（19 %）**。
+> ⇒ **只按条数判断会低估污染**——那 6 条字节量最大、看着最像正常轨迹，实际判分已被 401 污染。
+
+### H-29 · 执行层故障被降级成 warning ⇒ 整批「成功」退出
+
+**代码事实**：[`orchestrator.py:1230-1237`](../../executor/orchestrator.py#L1230) 用
+`except Exception as exc:` 把 `DriverSessionError`（**执行层**故障）兜住，记一条 warning 后**提前 return**。
+异常因此**冒不到批次层**：[`cli.py:958`](../../executor/cli.py#L958) 的 `return 1 if failed else 0`
+里，`failed` 始终为空 ⇒ **exit 0**。
+[`cli.py:931`](../../executor/cli.py#L931) 的 `archive.write(rec, …)` 对 0 候选 0 访问的记录**照写不误**。
+
+**影响**：CI / 调度器看到 exit 0 即认为批次成功；下游按「文件存在」筛选，
+会把 **53 份 3.5 KB 退化壳**当正常样本入库。
+**这比直接崩更危险——崩了你会知道，没崩你不会。**
+⚠️ 批次层确实有两条 `[FAIL]` + 失败清单通道——浏览器起不来
+（[`cli.py:900-906`](../../executor/cli.py#L900)）与 `orch.run` 抛异常
+（[`cli.py:919-928`](../../executor/cli.py#L919)）；而本次故障是
+**在 orchestrator 内部就被吃掉的**（记 warning → 提前 return 一份已封口的记录）
+⇒ `orch.run` **正常返回** ⇒ 第二条通道一次都没触发。
+⇒ 准确的因果链是「**异常没冒到批次层**」，**不是**「通道被绕过」——
+后者会让人去改通道的判据，而真相是**执行层与批次层之间缺一个「这条没跑成」的信号**。
+
+**修复建议**：执行层异常（`DriverSessionError` 及其子类）**不许**在 orchestrator 里降级成 warning；
+要么原样抛出到批次层，要么在批次层用「`outcomes` 为空 + `sites == 0`」判定该条没跑成并计入 `failed`。
+退化记录**不落盘**（或落隔离目录，不进 `output/pipeline/` 顶层）。
+
+**✅ 已落地（2026-11-11）**：
+1. `orchestrator.run` 的搜索页 try 块里，**`except DriverSessionError: raise`**
+   **排在** 兜底的 `except Exception` **之前** ⇒ 执行层故障**原样抛出**，
+   不再折算进 warnings、不再提前 return 一份已封口的退化壳。
+2. 批次层 `_run_plan` / `_run_manual` **各加一条 `except DriverSessionError`**
+   ⇒ 记**失败清单** + 打 `[FAIL]` 行 + **退出码非 0** + **这一条不落盘**
+   （`archive.write` 根本不会被调用 ⇒ `output/pipeline/` 顶层不会有退化壳）。
+3. ⚠️ **处置刻意窄**：**只有执行层故障原样抛**，**站点层异常照旧折算进 warnings**
+   ——否则一个站点的普通失败会毁掉整批（「一条没跑成不许毁整批」是刻意设计，
+   见 §四·3）。
+4. ⚠️ **「这条没跑成」与「这条跑完但没结果」现在可区分了**：前者**不出存档**，
+   后者出的是**有 `outcomes` 的**存档 ⇒ 下游按「文件存在」筛选不再吃进退化壳。
+
+**验收条件**：造一条「建页必失败」的 driver 跑 3 条计划 ⇒ 断言 **exit ≠ 0**、
+**失败清单列出 3 条**、**`output/pipeline/` 里 0 份新存档**；
+且有一条单测钉住「orchestrator 不许把 `DriverSessionError` 转成 warning」。
+
+**验收读数**：[`test_all80_p0.py`](../../tests/unit/test_all80_p0.py)（**13 条**）
+——`TestP0_1_执行层故障不许降级`（**2 条**：搜索页执行层故障原样抛出 /
+站点层异常仍折算成 warning = 处置要窄的对照）+ `TestP0_1_批次层逐条兜`
+（**6 条**：一条执行层故障只毁那一条 ⇒ rc == 1 且 `[FAIL]` 且指名 T002 /
+失败的那条不落盘 / 全部成功时退出码是 0 / 手工路径同款 /
+**端到端（真 orchestrator）执行层故障不落盘** /
+**执行层故障与普通失败在日志里分得开**）
++ `TestP0_2_每个候选的页必须关`（**4 条**）+ `TestP0_2_会话收尾失败要上报`（**1 条**：
+关不掉的页进失败清单**也**进存档的 warnings）。
+⚠️ **回归门禁的强度靠「反向验证」**：把 `orchestrator.py` 里那行
+`except DriverSessionError: raise` 去掉 ⇒ **2 条当场红**
+（`test_搜索页执行层故障原样抛出` + `test_端到端_…不落盘`）；
+把 `cli.py` 的两条 `except DriverSessionError` 去掉 ⇒ **1 条当场红**
+（`test_执行层故障在日志里与普通失败分得开`）——
+⚠️ 注意**不是**「批次层两条」：兜底的 `except Exception` **行为等价**
+（记清单 + 跳过 + 不落盘），那两条专用分支的价值是**在日志里把
+「我们这边坏了」与「站点打不开」分开**（排障方向不一样）。
+⇒ **实测读数**：拿**修复前**的代码跑这份测试 ⇒ **13 条里 8 条红**
+（批次层那 4 条**契约**测试在修复前就绿——它们钉的是「拿到异常之后怎么办」，
+碰不到病根；**病根那条必须靠真 orchestrator 才拦得住**）。
+
+### H-30 · camofox tab 泄漏 ⇒ 第 28 条起整批集体猝死
+
+**代码事实**：
+1. [`visit.py:234`](../../executor/steps/visit.py#L234) / [`agent_visit.py:108`](../../executor/steps/agent_visit.py#L108)：
+   **每访问一个候选就 `open_tab`，遍历结束后从不 close**。
+2. ⚠️ **2026-11-11 复核更正（原判「关页失败被吞掉」，机制说错了）**：
+   [`camofox_session.py:405-412`](../../executor/browser/camofox_session.py#L405) 的 `close()` 里
+   那一行是 `await self.close_tab(tab_id)`，而 **`CamofoxSession` 根本没有 `close_tab`**——
+   它的方法叫 **`close_page`**（`:516`）；`close_tab` 只存在于 `CamofoxDriver`（`:1374`）
+   与 `PageDriver` 协议层。
+   ⇒ 这一行**每次都抛 `AttributeError`**，被同一处的 `except Exception: pass` 吞掉
+   ⇒ **关页从未发起**，不是「关页失败被吞」。
+   实测（构造真实类实例、桩掉 `close_page` 记录调用）：`upstream tabs actually closed: []`，
+   而本地 `_pages` 栈照清 ⇒ **一个 Run 一会话的隔离是假的**。
+3. 放大项：[`visit.py:503-507`](../../executor/steps/visit.py#L503) `open_tab` 自己也用
+   `except Exception` 吞掉开页失败并「继续用当前页」⇒ **泄漏完全无声**。
+
+**读数**：T034 起每条 <1 s 建页失败——`429 Maximum tabs per session reached`（**47 条**）、
+`503 Maximum concurrent sessions reached`（**6 条**）。
+
+**⚠️ 「上游 tab 上限跨 session 全局」已由读数佐证（原标「未验证的推断」）**：
+按日志累计**上游新建页数**（口径与代码一致：agent 模式下 `open_tab` 在
+`admit_landing_host` **之后** ⇒「同 host 跳过」的候选**不开 tab**；搜索页走 `goto`
+复用当前页 ⇒ **也不开 tab**）：
+
+| 任务 | 本任务新建页 | 累计 |
+|---|---|---|
+| T021 / T022 | 7 / 12 | 24 / 36 |
+| T023 / T024 | 2 / 3 | 38 / 41 |
+| T025–T028 | 0 | 41（0 候选） |
+| T029 / T030 / T031 / T032 | 12 / 11 / 12 / 12 | 53 / 64 / 76 / 88 |
+| **T033** | 12 | **100** |
+| **T034** | 要第 **101** 张 | **首个 429** |
+
+⇒ **配额 = 100**，且**跨 session 累计**（每个 Run 一条 MCP 通道，但浏览器是同一台 ⇒
+报错文案里的 "per session" 指上游的浏览器会话，不是我们的 MCP 通道）。
+
+**修复建议**：① **【一个词】`camofox_session.close()` 里 `close_tab` → `close_page`**
+⇒ 会话级回收立刻生效（先做这个，其余才有意义）；② 每个候选访问完**关页**（治本，
+避免单任务内堆到上限），并在 `finally` 里兜底；
+③ `session.close()` 的失败**上报**（进 `warnings` / 失败清单），不吞；
+④ 429 / 503 加**退避重试**（与 4xx 不重试是两码事——429/503 是**瞬时**的）；
+⑤ `open_tab` 失败**不许**静默「继续用当前页」，至少要记账。
+
+**✅ 已落地（2026-11-11）**：
+1. **【一个词】`close_tab` → `close_page`**（[`camofox_session.py::close`](../../executor/browser/camofox_session.py)）
+   ⇒ 关页**真的发起了**；关不掉的页进 **`close_failures`**（**不吞**、**累加**
+   ——`close()` 幂等会被调两次，覆盖会把第一次的失败抹掉）
+   ⇒ 驱动侧透出 `close_failures` 属性 ⇒ 批次层读它 ⇒ 进**失败清单** +
+   进该条 `warnings`（「N 张页没关掉，仍占上游 tab 配额」）。
+2. **每候选访问后关页**：[`visit.py`](../../executor/steps/visit.py) 与
+   [`agent_visit.py`](../../executor/steps/agent_visit.py) 各自在 `finally` 里
+   `close_tab`（**关不掉只记账不抛**——上游可能已销毁该页，那是「它已经不在了」，
+   再抛只会打断整条轨迹）。
+3. **`open_tab` 失败不许静默「继续用当前页」**：退化到当前页会让这一站的观察与动作
+   落在**上一个候选留下的页**上 ⇒ 判分是错的 ⇒ 改为**中止这一站 + 记 `unresolved`**
+   （采集缺件 ≠ 业务负样本 ⇒ **不进负样本池**，在人工复核队列里等人看）。
+4. **429 / 503 退避重试**：`CREATE_TAB_MAX_RETRIES=3` · 退避 1/2/4 s，
+   **只对 `TRANSIENT_STATUS={429,503}`**（4xx 其余不重试——重发一次同样的 400
+   只是把同一个错误拖成两遍）；退避次数进 `readings["create_tab_retries"]`。
+   ⚠️ **退避是止血不是治本**——429 的根因是 tab 没关光。
+
+**验收条件**：一条跑 12+ 候选的计划的实跑读数 ⇒ 断言该会话的**存活 tab 数不随候选数增长**；
+并断言**跨 Run 累计不增长**（探针口径已定：上游配额 = 100、跨 session 全局，
+不必再打探针确认）。
+
+**验收读数**：[`test_camofox_session.py`](../../tests/unit/test_camofox_session.py)
+新增 **6 条**（`Test会话收尾真的关页` **3 条**：close 真的把每一张页都关掉 /
+关页失败进账不抛 / 第二次 close 不抹掉第一次的失败；
+`Test建页退避重试` **3 条**：429 退避后成功 / 非瞬时错误不重试 / 退避耗尽后抛且不留在页栈上）
++ [`test_all80_p0.py`](../../tests/unit/test_all80_p0.py) 的
+`TestP0_2_每个候选的页必须关`（**4 条**）。
+⚠️ **回归门禁的强度靠「反向验证」**：把 `close()` 里的 `close_page` 改回
+`close_tab` ⇒ 会话收尾那 3 条**当场红**；把两个 `finally` 里的 `close_tab`
+删掉 ⇒ 候选关页那 2 条**当场红**（visit 链 1 条 + agent 链 1 条）。
+⇒ **实测读数**：拿**修复前**的代码跑这 6 条 ⇒ **6 条全红**。
+
+### H-31 · LLM 4xx 无熔断 ⇒ 判分静默退化
+
+**代码事实**：[`llm/client.py:443-446`](../../llm/client.py#L443) 对 4xx 不重试。
+**这个决策本身是对的**（key 错了 / 模型名错了，重发一次结果一样）——
+问题在**调用方没有熔断**：401 从 11-11 08:48:39 起持续到收尾，共 **170 次**空请求。
+
+**量化对照**（读 6 份 SITES0 存档的 `llm_calls[]` 与 `outcomes[]`）：
+
+| 组 | `llm_calls` 合计 | 其中带 `error` | 分支分布 |
+|---|---|---|---|
+| **OK（8 条）** | 198 | **0** | `not_play_site` 21 · `unresolved` 11 · 成功 8 · `player_unverified` 2 |
+| **SITES0（6 条）** | 242 | **168（69 %）** | **`unresolved` 59 / 71（83 %）** · 其余 12 |
+
+**影响**：这 6 条**字节量最大（35 %）、结构最完整、看着最像正常轨迹**，
+但分支判分已被 401 污染 ⇒ **不做人工复核根本看不出来**。
+⚠️ 它**没有报错**——fail-closed 是本仓库的合规行为（能力不可用时返回 `None` 不猜），
+**问题不在 fail-closed 本身**，而在没有「连续 N 次 4xx ⇒ 判定本批 LLM 不可用」的熔断。
+
+**修复建议**：LLM 客户端加**熔断器**——连续 N 次 4xx（建议 N=3）⇒ 置「本批不可用」标记并停止后续调用；
+批次结束时若该标记为真 ⇒ **该批标注「判分不可信」并拒绝并池**（不是丢弃，是**隔离 + 不许进训练集**）。
+
+**验收条件**：用假客户端连返 401 跑 2 条计划 ⇒ 断言 **4xx 调用数 ≤ N+1**（不是 170 次）、
+批次被标「不可用于判分」、**产物不并池**。
+
+**✅ 已落地（2026-11-11）** —— 处置分**四层**，缺一层就漏：
+
+1. **熔断器本体**（[`llm/client.py::CircuitBreaker`](../../llm/client.py)）：
+   连续 N 次**不可重试的** 4xx ⇒ 熔断；阈值 `CIRCUIT_BREAKER_THRESHOLD = 3`
+   （env `TRAJECTORY_LLM_CIRCUIT_THRESHOLD` 可调）。
+   ⚠️ **不熔断的 4xx**：`NON_TRIPPING_4XX = {408, 429}`——
+   **限流不是坏了**（把 429 算进熔断 ⇒ 后端限流被误判成后端坏了
+   ⇒ 整批判分不可信，**判错的代价比多发几次请求大得多**）。
+   ⚠️ **熔断打开后不抛异常**：返回 `None` + `"circuit:open"`
+   ⇒ 原样进 `llm_calls[].error` ⇒ 读档的人看得见「**不是判不了，是熔断了**」
+   （本模块契约：失败不是异常，是返回值）。
+2. **批次级共享**（[`cli.py::_make_circuit_breaker`](../../executor/cli.py)）：
+   ⚠️ **熔断器是独立对象、不是客户端的字段**——客户端是**每 task 一个**
+   ⇒ all80 那 170 次 401 是**跨 6 条 task** 打空的 ⇒ 逐 task 计数拦不住。
+   ⇒ 批次层建一个，传给感知层 / rationale writer / 反思 / agent 主后端。
+   ⚠️ **升配后端用自己那个熔断器**：它是**另一台机器另一份凭据**，
+   主后端 401 不代表升配也坏了（塞进同一个 ⇒ 主后端一坏连升配一起掐死）。
+3. **写入时隔离**（[`executor/archive.py`](../../executor/archive.py)）：
+   P1 存档**照落**（那是**证据**，人工复核要看的就是它），
+   但 `judgement_trustworthy is False` ⇒ **不并负样本池**
+   ⇒ 「并池是写入时的动作」——判据必须在**写入这一刻**读，
+   等下游推导会随代码版本漂。
+4. **组装侧两边都挡**（[`assembler/schema.py`](../../assembler/schema.py) +
+   [`assembler/task_view.py`](../../assembler/task_view.py)）：
+   P2 不出样本、T 不出训练视图 ⇒ **漏一边就有一边进池**。
+   ⚠️ 判据用**「显式 False」**而不是「falsy」：历史存档没这个键
+   ⇒ 缺键 = 不知道 ≠ 不可信（**不回填历史存档**——并池是写入时的动作）。
+
+**批次层可见性**：`_mark_judgement_untrusted` ⇒ 该条 `warnings` 里一句
+「**本条判分不可信**（判断点全程 fail-closed，分支不是站点的性质）
+⇒ **不进负样本池、不进训练集**」；批次页脚打「判分不可信」段；
+**退出码非 0**（`rc == 1`）——⚠️ **不能悄悄 exit 0**：那 6 条结构完整、
+看着最像正常轨迹，正是「exit 0 ⇒ 调用方以为成功」的受害面。
+
+**验收读数**：[`test_llm_circuit_breaker.py`](../../tests/unit/test_llm_circuit_breaker.py)
+（**28 条**）：熔断器本身（阈值 / `408/429` 不计 / 成功清零 / 原因文案）
++ 客户端熔断（熔断后**一个请求都不发** · `error` 里是 `circuit:open`）
++ **跨客户端共享**（一个客户端熔断 ⇒ 另一个也发不出去）
++ 批次层接线（感知层 / writer / 反思 / agent 主后端共用一个）
++ **升配后端不共用**
++ 判分不可信**不进池**（`negative.jsonl` 不产生）
++ 判分不可信**不出训练样本**（P2 与 T 两边）
++ CLI 批次层（假 HTTP 层连返 401 ⇒ **请求数 == 3**（= N）·
+页脚出现「判分不可信」· 两份存档都带 `judgement_trustworthy=false` · `rc == 1`）。
+⚠️ **第一次写这条测试时它是假绿的**：桩在**熔断检查之前**就自增了请求计数
+⇒ 断言的是「调用次数」而不是「真发出去的请求数」⇒ 读数 **10 ≠ 3** 却仍绿。
+⇒ 改成**真客户端 + 假 HTTP 层**（`_StubbedLLMClient` 换掉 `http_cls`），
+计数点挪到熔断检查**之后** ⇒ 读数才变成真读数。
+⇒ **「绿」不等于「拦得住」——这条比任何一条断言都值钱**（与增量一百二十八的
+P0 门禁教训同款）。
+⚠️ **变异验证**（4 处）：去掉熔断检查 ⇒ 客户端那条红 ｜ 让熔断器只管自己
+（不共享）⇒ 跨客户端那条红 ｜ 去掉 `judgement_trustworthy` ⇒ 不进池/不出样本
+两条红 ｜ 去掉批次层标记 ⇒ CLI 那条红。
+
+
+### H-32 · 搜索页任一 `degraded` 一票否决候选 + mojibake 成因误判
+
+**代码事实**：[`search.py:496-499`](../../executor/steps/search.py#L496)
+```python
+if obs.degraded:
+    bump("degraded")
+    return []          # ← 任何降级标记 ⇒ 候选全清空
+```
+**但 body 乱码与链接提取无关**：这 13 条任务的 links 明明取到了（**102–111 个**），
+只因 body 被判乱码就整批丢弃；同一批里 T029 立刻取到 14 个候选 ⇒ **间歇性触发**，
+不是百度页面的稳定属性。
+
+**成因误判**：[`camofox_driver.py:632-634`](../../executor/browser/camofox_driver.py#L632)
+**只有 `body_source == "inner_text"` 时才判 mojibake** ⇒ 这批「乱码」实际是
+**snapshot HTML 抓取失败后回落 innerText** 的表现，**不是内容真乱码**。
+⇒ 代码把**采集失败的症状**当成了**内容质量的结论**。
+
+**修复建议**：① 把**候选提取**与 **body 质量门禁**解耦——links 取到了就不该因 body 乱码丢候选
+（body 降级只降级 body，不降级链接）；② mojibake 改为**重取 snapshot / 修 charset 后再判**，
+判不出才记降级；③ 降级项按**内容块**粒度记账（现有 `degraded` 是列表，已经是这个形态，
+问题在**消费侧**一刀切）。
+
+**验收条件**：一条 body 乱码但 links 完整的搜索页 ⇒ 断言**候选数 > 0**；
+且 `degraded` 里含 `body_mojibake` 时**不**再导致 `sites == 0`。
+
+**✅ 已落地（2026-11-11）** —— 处置三件事，对应修复建议的三条：
+
+1. **降级按内容块分类**（新增 [`executor/degraded.py`](../../executor/degraded.py)）：
+   `Observation.degraded` **本来就是按块记的**——问题出在**消费侧一刀切**。
+   ⇒ 新模块只做**分类**，不造标记、不改标记、不吞标记
+   （真源仍是各驱动写进 `Observation.degraded` 的那个列表）。
+   五块：`body`（正文/标题，含解码损坏）· `links`（链接表本身）·
+   `elements`（交互元素枚举）· `nav`（读数**跨了文档**）· `other`（兜底）。
+   ⚠️ **未知标记归 `other`——不猜它属于哪一块**：猜「无害」会让它悄悄作废
+   整批数据，猜「致命」又会误杀 ⇒ 归 `other` = **不否决候选**，
+   但**原样留在 `degraded` 里**，读档的人看得见。
+2. **候选提取只被「链接那块」的降级否决**
+   （[`executor/steps/search.py`](../../executor/steps/search.py)）：
+   `blocks_candidate_extraction()` 只认 `links` ∪ `nav` 两块
+   ⇒ body 乱码 / 正文缺失 / 元素枚举失败**动不了从 links 提取的候选**
+   （all80 实测 13 条任务因此 0 候选空跑）。
+   ⚠️ **记账留痕**：链接类致命否决仍记 `degraded` 键（旧键不动），
+   非致命降级**新增** `degraded_other` 键 ⇒ **少产出的那一段看得见**，
+   不会读成「这批素材差」。
+3. **乱码先重取 snapshot 再判**
+   （[`executor/browser/camofox_driver.py`](../../executor/browser/camofox_driver.py)）：
+   ⚠️ **`innerText` 是浏览器已经解码过的文本**——页面编码不对时它回来就是乱的；
+   而**同一页的 HTML 源码**可能仍带着正确的 `<meta charset>` 声明。
+   ⇒ 判乱码前**先重取 HTML**（`_body_from_html`），**取到可读正文就用它**
+   （`body_source="snapshot"`）且**不记降级**；**重取后仍乱（或取不到）才记
+   `body_mojibake`** ⇒ **「判不出」与「没查过」是两件事**。
+   ⚠️ **重取失败时不记 `body_text`**：正文不是没采到，是采到了但不可读。
+   ⚠️ **不乱时不重取**：多一次 evaluate 往返是纯浪费。
+
+**验收读数**：[`test_h32_degraded_blocks.py`](../../tests/unit/test_h32_degraded_blocks.py)
+（**20 条**）：分类（正文类 / 链接类 / **未知归 other 不猜** /
+body 降级不否决 / links+nav 否决 / 空不否决）·
+候选提取（**body 乱码但 links 完整 ⇒ 候选数 == 3**（H-32 的验收条件）·
+标题乱码不否决 · 元素枚举失败不否决 · **对照组：links 坏了仍否决** ·
+`nav_unsettled` 仍否决 · **降级事实仍落在 `obs.degraded` 里**）·
+乱码重取（**重取到可读正文 ⇒ 不记降级** · 重取后仍乱才记 · 重取失败才记 ·
+**不乱时不重取**）·
+**标记表不许漂**（**AST** 扫各驱动源码里 `degraded.append("字面量")`，
+逐个断言在 `MARKER_BLOCKS` 里或以 `count:` 开头——
+⚠️ **新增标记而表里没登记 ⇒ 它掉进 `other` ⇒ 悄悄不否决候选**）。
+⚠️ **变异验证**（2 处）：把否决条件改回「任何降级即否决」⇒ 候选提取那几条红 ｜
+去掉「重取 HTML」⇒ 乱码那几条红。
+
+
+### 其余开口项（M / L 级）
+
+- **M-70 · `max_per_host=1` 会系统性跳过合法候选**：T022 跳过的 4 个候选里有
+  `https://www.1905.com/vod/play/1391172.shtml`（CCTV6 正片页）——**最可能成功的那条**。
+  跳过判据是「落地 host 已达上限」，但百度中转链接落地到 1905.com 时**把 1905 自己那条也一并跳过**。
+  CLI 默认 `max_per_host=1`，对多入口站点系统性偏严。
+  **建议**：区分「同一 host 的多个中转链接」与「host 上的不同入口」，或默认放宽到 2；并把被跳过的候选**单独留档**（现状只有计数）。
+- **M-71 · 搜索页 100+ 链接只留 15–20 个，过滤口径不可复核**：`engine_self` 过滤掉 **51–78 条**（占大头）、
+  `excluded_host:baidu.com` 13–17 条。记账只有**原因计数**，
+  **真实结果被误杀多少无法区分**——`engine_self` 里有多少是百度自家功能链接、多少是被误判的真实结果，现有口径答不了。
+  **建议**：对 `engine_self` 的剔除留**样本**（前 N 条标题 + 链接），人工可核。
+- **L-25 · 失败原因没有机器可读的错误码**：整批归因只能靠 `grep "Maximum tabs"` 反推；
+  `RunRecord.warnings` 是自由文本，下游无法按错误类型分流（该重试 / 该 fail-fast / 该人工看）。
+  **建议**：`RunRecord` 加 `failure_stage` / `failure_code`（`infra` / `session` / `llm` / `auth` / `observation`）。
+- **L-26 · 13.72 小时静默空档，无心跳、无看门狗、无恢复自检**：T027（11-10 19:05:33）→
+  T028（11-11 08:48:39）之间**日志完全空白**。
+  ⚠️ **2026-11-11 复核补上证据（原写「本轮无证据可判」）**：空档**两侧紧邻的两行**
+  就是全部——`19:05:37,126`「[T027] 搜索页未提取到候选，run 提前结束」→
+  `08:48:39,314` 一条 httpx `401`；对照 T025/T026 的同一形态（orchestrator 收尾后
+  3–4 s 必跟一条 httpx 行），那行 401 **就是 T027 的 rationale writer 请求**
+  ⇒ **空档 = 一个请求在途 13.72 h**，进程跨越空档**活着**（恢复后先落 T027 存档、
+  再起 T028）⇒ 排除「进程被 kill」「机器断电」。
+  且**客户端自己的 90 s 超时没触发**（`DEFAULT_TIMEOUT_S=90`）⇒ 不是普通网络等待
+  （那会变成 `transport:ReadTimeout`）。
+  ⇒ **最自洽的解释**：机器**挂起/休眠**期间 Windows 的 socket 超时计时不推进，
+  客户端的超时**看不见这次挂起**。**这条是推断不是实测**（无电源/休眠事件日志），
+  但**处置方向不受影响**。
+  ⇒ 真正的代价不在「慢」而在「静默」：恢复后第一个请求就是 401 ⇒
+  **LLM 端在空档期就已失效**，而空档期间**没有任何告警**。
+  **建议**：加心跳行 + 恢复后环境自检（LLM ping + camofox ping），自检不过就不接着跑。
+- **L-27 · perceptor 路径无预算护栏**：`AgentBudget.max_llm_calls = 12`
+  （[`agent_loop.py:412`](../../executor/agent_loop.py#L412)）只覆盖 **agent 单站点**路径；
+  **判断点 ① 的分类批次调用**既无熔断也无预算上限，401 期间 170 次全部打空。⇒ 与 H-31 一并处置。
+
+### 这一轮**没有**做的（别把它读成已做）
+
+- **没有**重跑这批 80 条——H-29 / H-30 / H-31 / H-32 的处置只过**单测与门禁**，
+  **真跑读数还没有**（下一次真跑才是它们的验收）。
+- **没有**删除 53 份退化壳（196 KB）——**它们在盘上是「这批发生了什么」的证据**；
+  清理要等处置定了再动（并池是写入时的动作，不是读取时的推导）。
+- **没有**动 `samples/` 里的存量产物（11-10 16:46 那轮，**约 100 份完整样本**，可作本批的补充参照）。
+- **没有**再打探针——H-30 的「上游 tab 上限跨 session 全局」已由日志读数佐证
+  （累计到 T033 = 100 张、T034 要第 101 张即首个 429 ⇒ 配额 = 100、跨 session 全局）。
+- **没有**处置 M / L 级各条（`max_per_host`、错误码、心跳…）——
+  本轮闭的是 **H-29 + H-30 + H-31 + H-32**（两个 P0 + 两个 P1）。
+- ⚠️ **H-31 / H-32 都只过门禁，没有真跑读数**——
+  特别是「熔断后 4xx 调用数 ≤ N+1」这条：**all80 那 170 次是实况**，
+  但**修完到底降到几次，只能真跑一次带 401 的批次才知道**。
+
+### 建议处置顺序（**H-29 / H-30 / H-31 / H-32 已闭，余下按此序**）
+
+1. ✅ **H-29**（失败可见）——**已闭（2026-11-11）**：执行层故障原样抛 ⇒ 退出码非 0
+   + 退化壳不落盘。
+2. ✅ **H-30**（tab 回收 + 429/503 退避）——**已闭（2026-11-11）**：关页真的发起 +
+   每候选关页 + 关不掉上报 + 瞬时退避。
+3. ✅ **H-31**（熔断 + 批次标记不可用）——**已闭（2026-11-11）**：批次级熔断器
+   （阈值 3 · 408/429 不熔断）+ `judgement_trustworthy` 随档落盘 ⇒
+   写入时不并池 + P2/T 两边都不出样本 + 批次页脚报出 + **退出码非 0**。
+4. ✅ **H-32**（解耦候选提取与 body 门禁）——**已闭（2026-11-11）**：
+   降级**按内容块**分类 + 候选提取只被 `links` ∪ `nav` 否决 + 乱码先重取再判。
+5. **真跑验收**：拿一批带真实故障条件的 run 复验上面四条
+   （**这是目前唯一没做的验收动作**——门禁只证明「代码按设计走」，
+   不证明「那 80 条的读数会变好」）。
+6. M-70 / M-71 / L-25 / L-26 / L-27——随后。

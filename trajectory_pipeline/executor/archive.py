@@ -338,10 +338,19 @@ class P1Archive:
                 + (f"｜命中形态: {shapes}" if shapes else "")
             )
         path = self._write_text(self.path_for(task_id, run), payload)
-        self._append_negatives(
-            record, task_id=task_id, run_id=run,
-            members=negative_rules.pool_member_keys(record_dict),
-        )
+        # ⚠️ **判分不可信 ⇒ 不并池**（2026-11-11，H-31）。
+        #
+        # 「并池是写入时的动作」——所以「这批判分不可信」这个判据必须
+        # 在**写入这一刻**读，而不是等下游去推导（推导会随代码版本漂）。
+        #
+        # ⚠️ **P1 存档照写**：那是**证据**（人工复核要看的就是它），
+        # 隔离的是**训练语料**，不是证据本身（与「被反爬拦的 run 照落
+        # P1、但不进池」同款处置）。
+        if record_dict.get("judgement_trustworthy", True):
+            self._append_negatives(
+                record, task_id=task_id, run_id=run,
+                members=negative_rules.pool_member_keys(record_dict),
+            )
         return path
 
     # ── 负样本池 ──────────────────────────────────────────────────

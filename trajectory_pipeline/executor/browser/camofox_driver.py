@@ -117,6 +117,7 @@ from typing import Any, Mapping
 from trajectory_pipeline.common.elements import ELEMENT_VOCAB_ARIA_ROLE
 from trajectory_pipeline.executor.browser.aria_snapshot import parse_nodes
 from trajectory_pipeline.executor.browser.camofox_session import (
+    TRANSIENT_STATUS,
     CamofoxSession,
     CamofoxToolError,
 )
@@ -126,6 +127,7 @@ from trajectory_pipeline.executor.browser.element_basis import (
     ladder_stages,
     parse_shared_basis,
 )
+from trajectory_pipeline.executor import degraded as degraded_mod
 from trajectory_pipeline.executor.browser.nav_failure import site_unreachable
 from trajectory_pipeline.executor.browser.page_driver import (
     DriverError,
@@ -165,13 +167,17 @@ DEFAULT_LIMIT = 200
 OBSERVE_RETRY = 2
 
 #: 「读到一半」记进 ``degraded`` 的名字（能力名，与 ``links`` / ``interactive`` 同族）。
-DEGRADED_NAV_UNSETTLED = "nav_unsettled"
+#:
+#: ⚠️ **真源在** :mod:`trajectory_pipeline.executor.degraded`（H-32）——
+#: 降级标记**按内容块分类**，那张表得知道每个标记的名字；两处各写一份
+#: 字面量必然会漂（漂了 = 某个标记掉进 ``other`` = 悄悄不否决候选）。
+DEGRADED_NAV_UNSETTLED = degraded_mod.DEGRADED_NAV_UNSETTLED
 
 #: 「按键做不到」记进 ``degraded`` 的名字。
 #:
 #: ⚠️ 它**不是**「元素不存在」：前者是**能力不可用**（本层没有按键这个动作），
 #: 后者是**页面事实**。混起来会让「这层没有这个能力」被读成「页面上没这个元素」。
-DEGRADED_PRESS_UNSUPPORTED = "press_unsupported"
+DEGRADED_PRESS_UNSUPPORTED = degraded_mod.DEGRADED_PRESS_UNSUPPORTED
 
 #: camofox 面**特有**的两档过滤（不属于共享的两把尺子）。
 #:
@@ -278,6 +284,33 @@ def _execution_fault(exc: BaseException) -> bool:
     别的驱动（obscura）与别的失败形态都不该走这条路。
     """
     return isinstance(exc, CamofoxToolError) and exc.execution_fault
+
+
+def _build_page_fault(exc: BaseException) -> bool:
+    """这次**建页**失败是不是**执行层故障**（不是「站点打不开」）？
+
+    判据是**上游自己给的结构**，与 :func:`_execution_fault` 同一纪律，
+    外加一条**配额判据**：
+
+    - 上游明说 ``recovery="retry"`` / ``code="session_expired"`` 等
+      ⇒ 会话坏了 ⇒ 重来即可（:func:`_execution_fault`）；
+    - **状态码 429 / 503** ⇒ **上游的 tab 配额或并发额度打满**
+      （``Maximum tabs per session reached`` /
+      ``Maximum concurrent sessions reached``）⇒ 坏的是**我们这一侧**
+      ⇒ 那个站点**一次都没被试过**。
+
+    ⚠️ **为什么 429/503 要单列**（2026-11-11，all80 事故 P0-2 的复核）：
+    上游对「配额打满」给的错误体**只有一句英文**，**不带**
+    ``recovery`` / ``code`` ⇒ :func:`_execution_fault` 判 False ⇒
+    建页失败会被降级成普通 ``DriverError`` ⇒ **执行层故障混进了
+    「站点打不开」那一档** ⇒ 后面每一条候选都记 ``unresolved``
+    ⇒ 整条 run 正常收口、落盘、**退出码 0**（这正是 all80 那 53 条
+    的静默路径）。
+    ⇒ 状态码是上游给的**结构**，用它不算「猜英文短语」。
+    """
+    if _execution_fault(exc):
+        return True
+    return isinstance(exc, CamofoxToolError) and exc.status in TRANSIENT_STATUS
 
 
 class CamofoxDriver:
@@ -615,23 +648,32 @@ class CamofoxDriver:
             raw_len = len(raw)
             body = parse_body_text(raw, max_chars=max_chars)
         if not body:
-            try:
-                html = await self._eval_text(_HTML_JS)
-            except DriverError:
-                html = ""
-            if html:
-                cleaned = clean_body(html)
-                raw_len = len(html)
-                stripped_ratio = (len(cleaned) / raw_len) if raw_len else 1.0
+            html_body = await self._body_from_html(max_chars=max_chars)
+            if html_body:
+                body, raw_len, stripped_ratio = html_body
                 body_source = "snapshot"
-                body = (cleaned[:max_chars]
-                        if max_chars is not None and len(cleaned) > max_chars
-                        else cleaned)
             if not body and degraded is not None:
                 degraded.append("body_text")
-        if (body and degraded is not None and body_source == "inner_text"
-                and is_mojibake(body)):
-            degraded.append("body_mojibake")
+        elif body and is_mojibake(body):
+            # ⚠️ **乱码先重取，再判**（H-32 · 2026-11-11）。
+            #
+            # 旧口径**直接**记 ``body_mojibake`` ⇒ all80 那批搜索页
+            # （links 明明有 102–111 条）**整批 0 候选**——把**采集侧的
+            # 一次失败**写成了**内容质量的结论**。
+            #
+            # ⚠️ **重取的根据**：``innerText`` 是**浏览器已经解码过的
+            # 文本**——页面编码不对时它回来就是乱的；而**同一页的 HTML
+            # 源码**可能仍带着正确的 ``<meta charset>`` 声明 ⇒ 重取一次
+            # HTML 有机会拿到可读正文。
+            #
+            # ⚠️ **HTML 也乱才记降级**——「判不出」与「没查过」是两件事
+            # （与 fail-closed 同款：没查过不许下结论）。
+            html_body = await self._body_from_html(max_chars=max_chars)
+            if html_body and not is_mojibake(html_body[0]):
+                body, raw_len, stripped_ratio = html_body
+                body_source = "snapshot"
+            elif degraded is not None:
+                degraded.append("body_mojibake")
         if degraded is not None and title and is_mojibake(title):
             degraded.append("title_mojibake")
 
@@ -651,6 +693,34 @@ class CamofoxDriver:
             max_chars=max_chars,
             body_source=body_source,
         )
+
+    async def _body_from_html(
+        self, *, max_chars: int | None = None
+    ) -> tuple[str, int, float] | None:
+        """取一次 HTML 源码并剥成正文。**取不到返回 None**。
+
+        返回 ``(body, raw_len, stripped_ratio)``。
+
+        ⚠️ **失败不抛**——它是**救济路径**：失败只意味着「没有更好的
+        正文可用」，而调用方要决定的是「记哪个降级」，不是「炸掉整次
+        观察」（观测面的一次失败不该毁掉整条轨迹）。
+
+        ⚠️ **``body_source`` 由调用方改**——本函数只给正文，不决定
+        「这份正文算哪一路来的」（那是调用点的判断）。
+        """
+        try:
+            html = await self._eval_text(_HTML_JS)
+        except DriverError:
+            return None
+        if not html:
+            return None
+        cleaned = clean_body(html)
+        raw_len = len(html)
+        stripped_ratio = (len(cleaned) / raw_len) if raw_len else 1.0
+        body = (cleaned[:max_chars]
+                if max_chars is not None and len(cleaned) > max_chars
+                else cleaned)
+        return body, raw_len, stripped_ratio
 
     async def interactive(
         self, *, limit: int = DEFAULT_LIMIT
@@ -826,6 +896,17 @@ class CamofoxDriver:
     async def close(self) -> None:
         """关闭整次会话（一个 Run 一份）。幂等。"""
         await self._session.close()
+
+    @property
+    def close_failures(self) -> tuple[str, ...]:
+        """会话收尾时**没关掉**的页（空 = 全关掉了）。
+
+        ⚠️ **这是批次的体检指标，不是日志**：关不掉的页**仍然占着上游
+        tab 配额**（实测配额 = 100，跨 session 全局），而本地栈已经
+        把它们摘了 ⇒ 下一批从更低的余量起步 ⇒ 批次层必须能读到它
+        （见 ``executor/cli.py`` 的失败清单）。
+        """
+        return tuple(getattr(self._session, "close_failures", ()) or ())
 
     # ── 动作面（D12：role+name 定位）──────────────────────────────
 
@@ -1353,12 +1434,26 @@ class CamofoxDriver:
 
         开页后导航失败**先收掉这一页再抛**：留着它，当前页就停在一张
         ``about:blank`` 上——一次外链取不到，会连带把中间页的证据一起弄丢。
+
+        ⚠️ **建页失败 ⇒ 执行层故障**（2026-11-11，all80 事故 P0-2 的复核）：
+        建页**根本没发出导航请求** ⇒ 那个站点**一次都没被试过**
+        ⇒ 「站点打不开」这句话**没有对象** ⇒ 抛
+        :class:`DriverSessionError`（与 :meth:`_open_blank_and_navigate`
+        同一纪律；判据见 :func:`_build_page_fault`）。
+        ⚠️ **原来这里抛的是普通 ``DriverError``** ⇒ 上层把它当成
+        「站点打不开」降级成 ``unresolved`` ⇒ 整条 run 正常收口、
+        落盘、**退出码 0** ⇒ all80 那 53 条「建页失败」走的就是这条
+        静默路径。
         """
         camo_tab = ""
         try:
             camo_tab = await self._session.new_page(url or "")
         except DriverError as exc:
             self.last_tab = {"op": "new_tab", "tab": "", "pages": "", "outcome": "failed"}
+            if _build_page_fault(exc):
+                raise DriverSessionError(
+                    f"camofox 建页失败（执行层，不是站点打不开）: {exc}"
+                ) from None
             raise DriverError(f"camofox 开新页失败: {exc}") from None
 
         self._tab_seq += 1

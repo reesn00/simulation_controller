@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
+from trajectory_pipeline.executor.degraded import blocks_candidate_extraction
 from trajectory_pipeline.perception.base import Observation
 
 #: 搜索引擎。**默认值是实测可达的那个**（``probe_observe`` 跑过 baidu）。
@@ -493,11 +494,27 @@ def extract_candidates(
         if stats is not None:
             stats[reason] = stats.get(reason, 0) + 1
 
-    if obs.degraded:
-        # 采集降级 → 返回空并让调用方记账。不在这里 raise：
+    if blocks_candidate_extraction(obs.degraded):
+        # **链接这块坏了** ⇒ 候选无从谈起。不在这里 raise：
         # 单次采集失败不该炸掉整批运行
         bump("degraded")
         return []
+    if obs.degraded:
+        # ⚠️ **降级 ≠ 候选作废**（H-32 · 2026-11-11）。
+        #
+        # 旧口径是「任何降级 ⇒ 候选全清空」，而降级是**内容块级**的
+        # 事实——**正文**乱码 / 正文没采到 / 元素枚举失败，**动不了
+        # 从 links 提取的候选**。
+        #
+        # all80 实测：**13 条任务 0 候选空跑**，而它们的 links 明明有
+        # **102–111 条**（同一批里 T029 立刻取到 14 个候选 ⇒ 间歇性
+        # 触发，不是百度页面的稳定属性）。⇒ 把「采集侧的这一次失败」
+        # 写成了「内容质量的结论」。
+        #
+        # ⇒ 这里**照常取候选**，并单独记一笔 ``degraded_other``：
+        # 降级**必须留痕**（它还进 ``Observation.degraded``），但**不许
+        # 一刀切作废候选**。
+        bump("degraded_other")
 
     out: list[Candidate] = []
     seen_hosts: set[str] = set()

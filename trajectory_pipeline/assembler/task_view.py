@@ -1225,6 +1225,20 @@ def build_task_view(
             written=0,
             skipped=("<no-trajectory_id>: task_id / run_id 空",),
         )
+    # ⚠️ **判分不可信 ⇒ 不出训练视图**（2026-11-11，H-31）。
+    #
+    # 与 P2 的 :func:`assembler.schema.split_archive_report` **同一判据**
+    # （两边都要挡：P2 出 P2 样本、T 出训练视图，漏一边就有一边进池）。
+    #
+    # 判据用「显式 False」：历史存档没有这个键 ⇒ 缺键 = 不知道 ≠ 不可信
+    # （「并池是写入时的动作」，不回填历史存档）。
+    if archive.get("judgement_trustworthy") is False:
+        return TaskViewRenderResult(
+            trajectory_id=f"{task_id}__{run_id}",
+            written=0,
+            skipped=(f"{task_id}__{run_id} (判分不可信：LLM 熔断，H-31——"
+                     f"不进训练集)",),
+        )
 
     trajectory_id = f"{task_id}__{run_id}"
     # 分池（方案 23 R3-3）：交付面落 ``task_views/``，旧面落

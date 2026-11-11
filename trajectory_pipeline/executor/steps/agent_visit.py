@@ -40,6 +40,7 @@ from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline.executor.steps.visit import (
     VisitResult,
     admit_landing_host,
+    close_tab,
     enter_site,
     judge_player,
     open_tab,
@@ -105,54 +106,72 @@ async def agent_visit(
 
     # 进站后**立刻**开独立 tab（scripted 在点击前才开）：agent 在站内
     # 要走好几步，每一步都该落在它自己的会话里。
-    await open_tab(driver, url, result)
-
-    # ── 站内：整个交给循环 ─────────────────────────────────────
-    outcome = await agent_loop(
-        driver,
-        backend.client,
-        backend.escalate,
-        AgentTask(title=title, url=url, site_title=candidate.text),
-        result.steps,
-        backend.budget,
-        initial_obs=site_obs,
-        json_of=backend.json_of,
-        gatekeeper_events=gatekeeper_events,
-        llm_calls=llm_calls,
-        max_chars=max_chars,
-    )
-    result.note(
-        f"agent 循环：{outcome.steps_taken} 步 / {outcome.llm_calls} 次调用"
-    )
-
-    if outcome.reached:
-        if outcome.final_obs is None:
-            # 契约守卫：reached 形态必带最终观察（``agent_loop`` 的起始
-            # 观察是必给参数）。走到这里只可能是那边改了契约而这里没跟上；
-            # 那时的正确处置是记 unresolved，而不是拿 None 去判 PLAYER_OK
-            # ——后者会让「没判」和「判了不能用」在账本上同形。
-            ledger.record(
-                result.landed_url or url, UNRESOLVED,
-                f"agent 报到达但没有可判的观察（{outcome.reason}）",
-                site_url=url,
-            )
-            result.note("agent 报到达但没有可判的观察")
-            return result
-        # ── ⑦ 与 scripted 同一段代码 ────────────────────────────
-        judge_player(perceptor, ledger, result, outcome.final_obs,
-                     pre_obs=site_obs)
+    tab_id = await open_tab(driver, url, result)
+    if not tab_id:
+        # ⚠️ **开页失败 = 执行层故障**（2026-11-11，all80 事故 P0-2）：
+        # 退化到当前页会让这一站的站内动作落在**上一个候选留下的页**上
+        # ⇒ 判分是错的。⇒ 中止这一站，记 ``unresolved``
+        # （采集缺件 ≠ 业务负样本 ⇒ 不进负样本池，等人看）。
+        ledger.record(
+            result.landed_url or url, UNRESOLVED,
+            f"开独立 tab 失败（执行层故障，不是站点打不开）: {url}",
+            site_url=url,
+        )
+        result.note("开 tab 失败（执行层故障）")
         return result
+    try:
 
-    # 放弃 / 被收口。**记哪一支是映射表的事**（§3.3）：agent 只报「没到」，
-    # 本文件不把它翻成分支名——翻的人已经在 ``agent_loop`` 里翻过了。
-    ledger.record(
-        result.landed_url or url,
-        outcome.branch or UNRESOLVED,
-        outcome.reason,
-        site_url=url,
-    )
-    result.note(f"agent 未到达：{outcome.kind}（{outcome.reason}）")
-    return result
+        # ── 站内：整个交给循环 ─────────────────────────────────────
+        outcome = await agent_loop(
+            driver,
+            backend.client,
+            backend.escalate,
+            AgentTask(title=title, url=url, site_title=candidate.text),
+            result.steps,
+            backend.budget,
+            initial_obs=site_obs,
+            json_of=backend.json_of,
+            gatekeeper_events=gatekeeper_events,
+            llm_calls=llm_calls,
+            max_chars=max_chars,
+        )
+        result.note(
+            f"agent 循环：{outcome.steps_taken} 步 / {outcome.llm_calls} 次调用"
+        )
+
+        if outcome.reached:
+            if outcome.final_obs is None:
+                # 契约守卫：reached 形态必带最终观察（``agent_loop`` 的起始
+                # 观察是必给参数）。走到这里只可能是那边改了契约而这里没跟上；
+                # 那时的正确处置是记 unresolved，而不是拿 None 去判 PLAYER_OK
+                # ——后者会让「没判」和「判了不能用」在账本上同形。
+                ledger.record(
+                    result.landed_url or url, UNRESOLVED,
+                    f"agent 报到达但没有可判的观察（{outcome.reason}）",
+                    site_url=url,
+                )
+                result.note("agent 报到达但没有可判的观察")
+                return result
+            # ── ⑦ 与 scripted 同一段代码 ────────────────────────────
+            judge_player(perceptor, ledger, result, outcome.final_obs,
+                         pre_obs=site_obs)
+            return result
+
+        # 放弃 / 被收口。**记哪一支是映射表的事**（§3.3）：agent 只报「没到」，
+        # 本文件不把它翻成分支名——翻的人已经在 ``agent_loop`` 里翻过了。
+        ledger.record(
+            result.landed_url or url,
+            outcome.branch or UNRESOLVED,
+            outcome.reason,
+            site_url=url,
+        )
+        result.note(f"agent 未到达：{outcome.kind}（{outcome.reason}）")
+        return result
+    finally:
+        # ⚠️ **本候选的页必须关**（2026-11-11，all80 事故 P0-2）：
+        # 上游 tab 配额 = 100 且**跨 session 全局** ⇒ 每候选开一张不关
+        # ⇒ 一条轨迹就吃光整批的配额 ⇒ 第 28 条起整批 429。
+        await close_tab(driver, tab_id, result)
 
 
 __all__ = ["agent_visit"]

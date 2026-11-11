@@ -77,6 +77,10 @@ class Test字段集一致:
             # 账本）。与 search_blocked 并存不替代——后者是冻结口径的
             # 运行级字段，这里是统一事件账本（A2 起 agent 每步拦截都记）。
             "gatekeeper_events",
+            # 2026-11-11 H-31：判分可信度。false = LLM 熔断导致
+            # 判断点全程 fail-closed ⇒ 分支不是站点性质 ⇒ 不进池、
+            # 不进训练集。**缺键 ≠ false**（老存档没有，不回填）。
+            "judgement_trustworthy",
             "candidate_filter", "run_config", "provenance", "elapsed_ms",
             "warnings", "search_observation", "steps", "candidates",
             "visits", "ledger", "outcomes",

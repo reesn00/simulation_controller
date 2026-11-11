@@ -1350,3 +1350,75 @@ class Test归因:
             await driver.goto("https://example.com/a")
         assert not isinstance(caught.value, DriverSessionError)
         assert len(driver.recoveries) == 1, "换过一次页要记账"
+
+
+class Test建页失败分两种:
+    """**缺口 A 的驱动层口径**（2026-11-11，all80 事故 P0-2 的复核）。
+
+    all80 那 53 条「建页失败」原来是抛普通 ``DriverError`` ⇒ 上层把它
+    当成「站点打不开」⇒ 降级成 ``unresolved`` ⇒ **整条 run 正常收口、
+    落盘、退出码 0** ⇒ 报告上看不出异常。
+
+    判据（:func:`trajectory_pipeline.executor.browser.camofox_driver._build_page_fault`）：
+    **建页根本没发出导航请求 ⇒ 那个站点一次都没被试过 ⇒「站点打不开」
+    这句话没有对象** ⇒ 执行层故障（``DriverSessionError``）。
+
+    ⚠️ **配额打满（429 / 503）也是执行层故障**——那是**我们这边**的 tab
+    配额，不是站点的脾气。
+    """
+
+    async def test_配额打满的建页失败算执行层故障(self):
+        session = _FakeSession()
+        session.new_page_error = CamofoxToolError(
+            "camofox tool camofox_create_tab 返回错误: camofox error: 429: "
+            '{"error":"Maximum tabs per session reached"}',
+            tool="camofox_create_tab",
+            status=429,
+            body={"error": "Maximum tabs per session reached"},
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError):
+            await driver.new_tab("https://example.com/a")
+
+    async def test_上游503的建页失败算执行层故障(self):
+        session = _FakeSession()
+        session.new_page_error = CamofoxToolError(
+            "camofox tool camofox_create_tab 返回错误: camofox error: 503: "
+            '{"error":"upstream busy"}',
+            tool="camofox_create_tab",
+            status=503,
+            body={"error": "upstream busy"},
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError):
+            await driver.new_tab("https://example.com/a")
+
+    async def test_普通建页失败仍是普通DriverError(self):
+        """**对照**：400 这种「上游明确拒绝」⇒ 不是执行层故障 ⇒ 照旧是
+        普通 ``DriverError``（上层可降级成 ``unresolved``）。"""
+        session = _FakeSession()
+        session.new_page_error = CamofoxToolError(
+            "camofox tool camofox_create_tab 返回错误: camofox error: 400: "
+            '{"error":"bad request"}',
+            tool="camofox_create_tab",
+            status=400,
+            body={"error": "bad request"},
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverError) as caught:
+            await driver.new_tab("https://example.com/a")
+        assert not isinstance(caught.value, DriverSessionError)
+
+    async def test_建页失败要记动作流水(self):
+        session = _FakeSession()
+        session.new_page_error = CamofoxToolError(
+            "camofox tool camofox_create_tab 返回错误: camofox error: 429: "
+            '{"error":"Maximum tabs per session reached"}',
+            tool="camofox_create_tab",
+            status=429,
+            body={"error": "Maximum tabs per session reached"},
+        )
+        driver = _driver(session)
+        with pytest.raises(DriverSessionError):
+            await driver.new_tab("https://example.com/a")
+        assert driver.last_tab["outcome"] == "failed"

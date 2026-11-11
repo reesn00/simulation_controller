@@ -45,6 +45,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -64,6 +65,8 @@ __all__ = [
     "CAMOFOX_BASE_URL_DEFAULT",
     "CAMOFOX_EXE_ENV_VAR",
     "CAMOFOX_EXE_DEFAULT",
+    "CREATE_TAB_BACKOFF_S",
+    "CREATE_TAB_MAX_RETRIES",
     "FORBIDDEN_TOOLS",
     "TOOL_CLOSE_TAB",
     "TOOL_CLICK",
@@ -74,6 +77,7 @@ __all__ = [
     "TOOL_NAVIGATE",
     "TOOL_SNAPSHOT",
     "TOOL_TYPE",
+    "TRANSIENT_STATUS",
 ]
 
 #: camofox-browser 的 REST 服务默认地址（上游 ``camofox.config.json`` / 端口 9377）。
@@ -111,6 +115,26 @@ FORBIDDEN_TOOLS: frozenset[str] = frozenset({TOOL_IMPORT_COOKIES})
 #: MCP 适配器的默认启动超时（秒）。比 obscura 的 60s 长：
 #: 上游的 snapshot 要做一次完整的可访问性树 + 一次截图，**慢**。
 DEFAULT_TIMEOUT_S = 180.0
+
+#: **瞬时**的上游状态码——重发一次有意义（all80 事故 P0-2 的处置 ④）。
+#:
+#: - ``429`` = 配额打满（``Maximum tabs per session reached`` /
+#:   ``Maximum concurrent sessions reached``）⇒ 上游**正在**回收/排队，
+#:   等一下可能就腾出位置；
+#: - ``503`` = 会话过期 / 并发超时（上游 ``recovery="retry"``）⇒
+#:   上游**明说**「重来即可」。
+#:
+#: ⚠️ **这两个与「4xx 不重试」不是一回事**：那条讲的是 **LLM 客户端**
+#: （key 错了 / 模型名错了，重发一样错）；这里是**上游浏览器**的瞬时过载。
+#: ⚠️ 但**退避重试治不了配额泄漏**：429 的根因是 tab 没关光
+#: （见 :meth:`CamofoxSession.close`）⇒ **重试只是止血，根因在关页**。
+TRANSIENT_STATUS: frozenset[int] = frozenset({429, 503})
+
+#: 建页的退避重试次数与间隔（秒）。**总预算 ≈ 1 + 2 + 4 = 7 s**——
+#: 够覆盖一次上游排队，**不**够把整批拖垮（批次里每条 <1 s 的失败是
+#: 429 的**症状**，不是要在这里慢慢磨的对象）。
+CREATE_TAB_MAX_RETRIES = 3
+CREATE_TAB_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0)
 
 #: 上游适配器把 REST 的错误包成 ``camofox error: {status}: {body}``
 #: （``mcp/lib/tool-contracts.mjs`` 里 ``throw new Error(`${res.status}: ${text}`)``，
@@ -338,6 +362,11 @@ class CamofoxSession:
         self._fingerprint: dict[str, Any] = {}
         #: 诊断读数（**不进批次元数据**）：MCP 握手信息、REST 可达性等。
         self._readings: dict[str, Any] = {}
+        #: 会话收尾时**没关掉**的页（2026-11-11，all80 事故 P0-2）。
+        #: 空 = 全部关掉了。**不许静默**：关不掉的页**仍然占着上游配额**
+        #: （配额 = 100，跨 session 全局），而本地栈已经把它摘了 ⇒
+        #: 账实不符 ⇒ 下一批从更低的余量起步。
+        self.close_failures: list[str] = []
 
     # ── 建立 / 拆除 ────────────────────────────────────────────────
 
@@ -403,16 +432,38 @@ class CamofoxSession:
         self._readings["mcp_tool_count"] = self._client.info.tool_count
 
     async def close(self) -> None:
-        """关掉所有 tab 并断开 MCP 通道。**幂等**。"""
+        """关掉所有 tab 并断开 MCP 通道。**幂等**。
+
+        ⚠️ **2026-11-11 修正（all80 事故 P0-2 的根因）**：原来这一行调的是
+        ``await self.close_tab(tab_id)``——而 **`CamofoxSession` 没有这个方法**
+        （它的方法叫 :meth:`close_page`；``close_tab`` 只存在于
+        ``CamofoxDriver`` 与 ``PageDriver`` 协议层）⇒ **每次调用都抛
+        ``AttributeError``**，又被同一处的 ``except Exception: pass`` 吞掉
+        ⇒ **关页从未发起**，不是「关页失败被吞」。
+        实测（构造真实实例、桩掉 ``close_page`` 记录调用）：
+        ``upstream tabs actually closed: []``，而本地 ``_pages`` 栈照清
+        ⇒ **「一个 Run 一会话」的隔离是假的** ⇒ 上游 tab 配额
+        （实测 = 100，且**跨 session 全局**）被一路吃光 ⇒
+        第 28 条起整批建页 429。
+
+        ⇒ 现在调**真的**那个方法；关不掉的页**进
+        :attr:`close_failures`**（**不吞**）——它们仍然占着上游配额，
+        而本地栈已经把它们摘了 ⇒ 账实不符，必须让人看得见。
+        """
+        failures: list[str] = []
         for tab_id in list(reversed(self._pages)):
             try:
-                await self.close_tab(tab_id)
-            except Exception:      # noqa: BLE001 —— 清理失败不得掩盖主流程
-                pass
+                await self.close_page(tab_id)
+            except Exception as exc:  # noqa: BLE001 —— 清理失败不得掩盖主流程
+                failures.append(f"{tab_id}: {type(exc).__name__}: {exc}")
+        # ⚠️ **累加而不是覆盖**：``close()`` 幂等，会被调用两次
+        # （``_driver_for_run`` 的 finally 一次、显式收尾一次），
+        # 第二次 ``_pages`` 已空 ⇒ 覆盖会把第一次的失败**抹掉**。
+        self.close_failures.extend(failures)
         self._pages.clear()
         try:
             await self._client.__aexit__(None, None, None)
-        except Exception:          # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
 
     async def __aenter__(self) -> "CamofoxSession":
@@ -502,16 +553,52 @@ class CamofoxSession:
     # ── 标签页 ────────────────────────────────────────────────────
 
     async def new_page(self, url: str = "") -> str:
-        """开一张新页并压栈。返回上游的 ``tabId``。"""
+        """开一张新页并压栈。返回上游的 ``tabId``。
+
+        ⚠️ **瞬时失败退避重试**（2026-11-11，all80 事故 P0-2 处置 ④）：
+        ``429``（配额打满）/ ``503``（会话过期）**重发一次有意义**，
+        而 4xx 那一族里其余的（404 tab 不存在 / 400 参数错）没有——
+        判据是**上游给的状态码**，不是猜。
+        重试次数进 :attr:`readings`（``create_tab_retries``）——
+        「这批退避过几次」是排障要看的数。
+        """
         args: dict[str, Any] = {}
         if url:
             args["url"] = url
-        payload = await self.call(TOOL_CREATE_TAB, args)
+        payload = await self._call_with_backoff(TOOL_CREATE_TAB, args)
         tab_id = str(payload.get("tabId") or "") if isinstance(payload, Mapping) else ""
         if not tab_id:
             raise DriverError(f"camofox 建页没给 tabId: {payload!r}")
         self._pages.append(tab_id)
         return tab_id
+
+    async def _call_with_backoff(
+        self, tool: str, args: Mapping[str, Any]
+    ) -> Any:
+        """调一个 tool，**瞬时**失败时退避重试。
+
+        只对 :data:`TRANSIENT_STATUS`（429 / 503）重试；其余错误**原样抛**——
+        重发一次同样的 400 / 404 只是把同一个错误拖成两遍。
+        """
+        last: CamofoxToolError | None = None
+        for attempt in range(CREATE_TAB_MAX_RETRIES + 1):
+            try:
+                return await self.call(tool, args)
+            except CamofoxToolError as exc:
+                if exc.status not in TRANSIENT_STATUS:
+                    raise
+                last = exc
+                if attempt >= CREATE_TAB_MAX_RETRIES:
+                    break
+                delay = CREATE_TAB_BACKOFF_S[
+                    min(attempt, len(CREATE_TAB_BACKOFF_S) - 1)
+                ]
+                self._readings["create_tab_retries"] = (
+                    int(self._readings.get("create_tab_retries") or 0) + 1
+                )
+                await asyncio.sleep(delay)
+        assert last is not None
+        raise last
 
     async def close_page(self, tab_id: str) -> bool:
         """关掉一页。**关的是栈顶就弹栈**；关的不是栈顶也照样从栈里摘掉。
@@ -519,7 +606,7 @@ class CamofoxSession:
         Returns:
             ``True`` = 关掉了，``False`` = 上游说这个 tab 不存在。
         """
-        payload = await self.call(TOOL_CLOSE_TAB, {"tabId": tab_id})
+        payload = await self._call_with_backoff(TOOL_CLOSE_TAB, {"tabId": tab_id})
         ok = True
         if isinstance(payload, Mapping):
             ok = bool(payload.get("ok", True))

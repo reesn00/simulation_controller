@@ -417,8 +417,9 @@ class ObscuraDriver:
         # 填 0 会被读成「一条都没被过滤」。
         #
         # ⚠️ **测量失败不进 ``degraded``**（2026-10-21 修）：``degraded``
-        # 是**内容块**的降级通道，下游只判它非空——``extract_candidates``
-        # 见到降级就**不取候选**，于是「尺子坏了」会**作废整批数据**。
+        # 是**内容块**的降级通道，下游**按块问**——``extract_candidates``
+        # 只在**链接那块**坏了时才不取候选（2026-11-11 H-32），
+        # 而「尺子坏了」根本不属于任何一块 ⇒ 进去会**作废整批数据**。
         # 失败只记进 ``element_basis_error``，face 账目照旧给。
         basis = None
         basis_error = None
