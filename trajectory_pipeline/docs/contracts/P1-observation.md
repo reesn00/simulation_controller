@@ -73,7 +73,7 @@
 | `llm_calls` | `list[{ts,caller,candidate,model,latency_ms,prompt_tokens,completion_tokens,error,started_at?,question?}]` | **LLM 调用账本**（2026-10-17 方案 13 §3.6，A2a-4；**2026-11-05 P0-1 扩到全 caller**）。`caller` 封闭四值：`agent_loop`（站内每步决策）/ `percept`（感知层每次实际发出的判定，`question` 字段区分题号；充分性预检短路不发调用、不记账）/ `rationale`（逐步动作前动机）/ `reflection`（单元终局反思）。**失败调用也记**（`error` 非空）——「问了但没答案」与「压根没问」是两行不同的事实。`prompt/completion_tokens` 为 `null` = 后端没给 usage，**不是 0**——「没记到」与「没花」在成本分母上是两个事实。`candidate` 由 orchestrator 在访问单个候选时置位（感知层自己看不到候选链接），搜索阶段为空串。⚠️ `ts` 粒度是**单元级**：agent 循环体不引入时间源，由 orchestrator 在候选访问收口 / 搜索阶段收口时统一加盖，`_seal` 给所有漏戳条目兜底；同单元各条共享一戳，候选内次序看 list 顺序，单条耗时看 `latency_ms`。`started_at`（UTC 秒级）只有 aux caller（`percept` / `rationale` / `reflection`）带——把并发出去的调用排到时间轴上；`agent_loop` 不带。⚠️ **scripted 批不再恒空**：agent_loop 段为空，但 LLM 感知层与 writer 的调用照样入账。**新增可选字段，不动 `schema_version`** |
 | `candidate_filter` | `{str: int}` | 剔除**原因计数**：`excluded_host:<root>` / `duplicate_host` / `impossible_content:gov.cn`，以及遍历期跳过：`duplicate_landing_host`（进站后落地 host 已达 `max_per_host` 上限——密文中转链接的目标 host 进站前未知，见 `run_config.max_per_host`） |
 | `run_config` | `{str: Any}` | **`RunConfig` 全量快照**。缺它 `--max-candidates 5` 与默认 20 跑出的两批在存档里一模一样，而覆盖完整性差 4 倍 → `DEGRADED` |
-| `provenance` | `{str: Any}` | persona 六维等切片轴。**空 dict 的含义固定为「不是 taskgen 跑的」** |
+| `provenance` | `{str: Any}` | persona 维度等切片轴。**空 dict 的含义固定为「不是 taskgen 跑的」** |
 | `elapsed_ms` | `int` | |
 | `warnings` | `list[str]` | 人读的运行期告警（如「判断点 ① 选出 7/7 个候选，0 个记 not_play_site」） |
 | `search_observation` | `Observation \| null` | 搜索页观察。被反爬拦时是验证码页 |

@@ -1046,6 +1046,10 @@ class Test投影一致:
             lambda archive: [m for m in original(archive) if not m.get("tool_calls")],
         )
         archive = self._build_archive()
+        # **交付面**：``driver`` 缺省 ⇒ 折算成 obscura-1 ⇒ 旧面默认**不重渲染**
+        # （owner 裁定 2026-11-10）⇒ 根本走不到投影校验。这条用例要验的是
+        # 渲染路径上的 fail-closed，所以给的是交付面存档。
+        archive["driver"] = "camofox"
         result = task_view.build_task_view(archive, root=tmp_path)
         assert result.written == 0
         assert result.skipped and result.skipped[0].startswith("投影不一致"), result

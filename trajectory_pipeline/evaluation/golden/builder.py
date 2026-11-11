@@ -743,8 +743,6 @@ def _persona_from_provenance(prov: Mapping[str, Any] | None) -> dict[str, Any] |
         "genre",
         "popularity",
         "content_tier",
-        "urgency",
-        "verbal_style",
         "task_type",
         "dimension",
     )

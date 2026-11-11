@@ -244,10 +244,10 @@ class TestCLIDispatch:
 class TestArgsValidation:
     """错误码契约——参数错 → exit 2。"""
 
-    async def test_missing_from_urls_returns_2(self, capsys):
+    async def test_missing_from_urls_returns_2(self, tmp_path, capsys):
         ns = argparse.Namespace(
             from_urls=None, task_id="P023", title="t",
-            timeout=15.0, wait_s=2.0, driver="fake", out=None,
+            timeout=15.0, wait_s=2.0, driver="fake", out=str(tmp_path),
         )
         rc = await cmd_mediabrowse(ns)
         assert rc == 2
@@ -257,7 +257,7 @@ class TestArgsValidation:
         urls = _write_urls(tmp_path / "u.txt", ["https://example.com"])
         ns = argparse.Namespace(
             from_urls=str(urls), task_id="P023", title=None,
-            timeout=15.0, wait_s=2.0, driver="fake", out=None,
+            timeout=15.0, wait_s=2.0, driver="fake", out=str(tmp_path),
         )
         rc = await cmd_mediabrowse(ns)
         assert rc == 2
@@ -267,7 +267,7 @@ class TestArgsValidation:
         urls = _write_urls(tmp_path / "u.txt", ["https://example.com"])
         ns = argparse.Namespace(
             from_urls=str(urls), task_id="P023", title="t",
-            timeout=15.0, wait_s=2.0, driver="playwright", out=None,
+            timeout=15.0, wait_s=2.0, driver="playwright", out=str(tmp_path),
         )
         rc = await cmd_mediabrowse(ns)
         assert rc == 2
@@ -279,7 +279,7 @@ class TestArgsValidation:
         urls = _write_urls(tmp_path / "u.txt", ["https://example.com"])
         ns = argparse.Namespace(
             from_urls=str(urls), task_id="P023", title="t",
-            timeout=15.0, wait_s=2.0, driver="obscura", out=None,
+            timeout=15.0, wait_s=2.0, driver="obscura", out=str(tmp_path),
         )
         rc = await cmd_mediabrowse(ns)
         assert rc == 3
@@ -372,7 +372,7 @@ class TestObscuraDriverPath:
         )
         ns = argparse.Namespace(
             from_urls=str(urls), task_id="P024-reuse", title="t",
-            timeout=15.0, wait_s=0.01, driver="obscura", out=None,
+            timeout=15.0, wait_s=0.01, driver="obscura", out=str(tmp_path),
         )
         rc = await cmd_mediabrowse(ns)
         assert rc == 0
@@ -398,7 +398,7 @@ class TestObscuraDriverPath:
         )
         ns = argparse.Namespace(
             from_urls=str(urls), task_id="P024-enter", title="t",
-            timeout=15.0, wait_s=0.01, driver="obscura", out=None,
+            timeout=15.0, wait_s=0.01, driver="obscura", out=str(tmp_path),
         )
         rc = await cmd_mediabrowse(ns)
         assert rc == 0
@@ -471,7 +471,7 @@ class TestObscuraDriverPath:
         )
         ns = argparse.Namespace(
             from_urls=str(urls), task_id="P024-conn", title="t",
-            timeout=15.0, wait_s=0.01, driver="obscura", out=None,
+            timeout=15.0, wait_s=0.01, driver="obscura", out=str(tmp_path),
         )
         rc = await cmd_mediabrowse(ns)
         assert rc == 3

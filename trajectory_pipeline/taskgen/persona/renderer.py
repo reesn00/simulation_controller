@@ -13,12 +13,18 @@ persona 管的是**输入分布**，而分布是可以用查表精确构造的�
 --------
 ::
 
-    [背景句] + [核心要求] + [催促句] + [语气词]
+    [背景句] + [核心要求]
 
-四段各自对应一个 persona 维度，且**都只加在核心要求之外或两端**。
+两段各自对应一个 persona 维度，且**都只加在核心要求之外或两端**。
 核心要求本身（``skeleton.initial_request``）只允许一处改动：片名的**指代方式**。
 之所以只动片名，是因为它正是 ``task_specificity`` 维度存在的意义——
 不动它，这一维就是纯装饰。
+
+⚠️ **这里曾有四段**（``[背景句] + [核心要求] + [催促句] + [语气词]``），
+催促句与语气词两段已随 ``urgency`` / ``verbal_style`` 两维删除
+（2026-11-11）——**时间限定与句尾语气词对 agent prompt 没有意义**，
+且它们会变成假切片轴。理由见
+:data:`~trajectory_pipeline.taskgen.persona.lexicon.OPENERS` 之后的删除说明。
 
 ⚠️ **核心要求必须取 ``initial_request`` 而不是 ``intent.goal``**，
 两者措辞不等价。实测 T001：
@@ -71,11 +77,9 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Mapping
 
 from trajectory_pipeline.taskgen.persona.lexicon import (
-    CLOSERS,
     GENRE_TERMS,
     OPENERS,
     SPECIFICITY_RENDER,
-    VERBAL_TAILS,
 )
 from trajectory_pipeline.taskgen.persona.schema import PersonaProfile
 from trajectory_pipeline.taskgen.skeleton import TaskSkeleton
@@ -153,56 +157,6 @@ def _genre_term(genre: str, salt: str) -> str:
     return _pick(GENRE_TERMS.get(genre, (genre,)), salt)
 
 
-#: 句末标点。剥掉其中一个才能把语气词接成**同一句**。
-_TERMINAL_PUNCT: Final = ("。", "！", "？", "…", "；")
-
-#: 已经能起新句/新分句的收尾字符。出现这些时**不再补逗号**。
-_JOINABLE_PUNCT: Final = ("。", "！", "？", "…", "；", "，", "、", "：", "—")
-
-
-def _join_closer(head: str, closer: str) -> str:
-    """把催促句接在骨架原文之后，**保证有分隔**。
-
-    存量 ``initial_request`` 大多**不以标点结尾**（「…做版本对比」、
-    「…整理为对比表格」），而 :data:`~lexicon.CLOSERS` 的每条都自带句读。
-    直接拼接得到「做版本对比慢慢找也没关系。」——「对比」与「慢慢找」
-    粘成一个词组，读起来像少了字。
-
-    这同样**不是任何现有检查能抓的**：探针只看判分要求丢没丢，
-    而分隔符不属于任何一条判分要求。实测端到端跑一批采样时，
-    16 条里有 14 条是这种粘连——**只读单条样例很难发现**。
-    """
-    if not closer:
-        return head
-    trimmed = head.rstrip()
-    if trimmed and not trimmed.endswith(_JOINABLE_PUNCT):
-        trimmed += "，"
-    return f"{trimmed}{closer}"
-
-
-def _join_tail(stem: str, tail: str) -> str:
-    """把句尾语气词接成同一句，而不是另起一句。
-
-    ``CLOSERS`` 的每条都以句号收尾，``VERBAL_TAILS`` 的每条也自带句号
-    （「啊。」）。直接 ``stem + tail`` 得到的是「…两天给我就行。啊。」——
-    **两个句子边界**，读起来像两段话拼的。
-
-    中文里「…就行啊。」是对的（句内语气词），「…就行。啊。」是错的。
-    所以这里剥掉 stem 的尾部标点，让 tail 落在**句内**；tail 自带标点，
-    整句仍然完整收尾。
-
-    早期版本没有这一步，而它**不会被任何现有检查抓到**：探针只看判分要求
-    有没有丢，双句边界不属于任何一条判分要求。这类问题只能靠真读一遍
-    渲染结果才会发现——接线之后读到的第一条就是它。
-    """
-    if not tail:
-        return stem
-    trimmed = stem.rstrip()
-    if trimmed.endswith(_TERMINAL_PUNCT):
-        trimmed = trimmed[:-1]
-    return f"{trimmed}{tail}"
-
-
 def _apply_specificity(
     goal: str, title: str | None, persona: PersonaProfile, *, salt: str
 ) -> tuple[str, str, tuple[str, ...]]:
@@ -263,20 +217,13 @@ def render(
     compat = "ok" if actual_spec == persona.task_specificity else "downgraded"
 
     opener = _pick(OPENERS.get(persona.persona_presence, ()), salt + "|open")
-    closer = _pick(CLOSERS.get(persona.urgency, ()), salt + "|close")
-    tail = _pick(VERBAL_TAILS.get(persona.verbal_style, ()), salt + "|tail")
 
     genre_word = ""                      # 不参与渲染，见 lexicon.OPENERS
-    head = opener.format(genre=genre_word, goal=core) if opener else core
-    text = _join_tail(_join_closer(head, closer), tail)
+    text = opener.format(genre=genre_word, goal=core) if opener else core
 
     applied: dict[str, str] = {}
     if opener:
         applied["opener"] = "persona_presence"
-    if closer:
-        applied["closer"] = "urgency"
-    if tail:
-        applied["verbal_tail"] = "verbal_style"
     if actual_spec != "指名":
         applied["specificity_form"] = actual_spec
     # genre 明确记「未落到表述」——写进 provenance 是为了让人能区分

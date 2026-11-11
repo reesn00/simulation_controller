@@ -66,12 +66,42 @@ def _write_batch(root: Path, *arcs):
 
 def _ns(**kw):
     import argparse
+    assert "out" in kw, (
+        "测试必须显式给 out——out=None = 落 DEFAULT_ROOT（生产产物目录），"
+        "测试写生产目录不报错、只留脏文件（2026-11-10 · H-28）"
+    )
     defaults = {
-        "p1": None, "all": False, "out": None, "overwrite": False,
+        "p1": None, "all": False, "overwrite": False,
         "backfill_from_filename": True,
     }
     defaults.update(kw)
     return argparse.Namespace(**defaults)
+
+
+# ── 0. 旧面默认不重建 ─────────────────────────────────────────────
+
+
+class Test旧面默认不重建:
+    """旧面是只读存量（owner 裁定 **2026-11-10**）：**默认不重渲染**。
+
+    清理过的 legacy 池不该自己长回来——而「没重建」必须**看得见**。
+    """
+
+    def test_默认不重建旧面(self, tmp_path, capsys):
+        _write_batch(tmp_path, _archive("T001", "a1"),
+                     _archive("T002", "b2", driver="camoufox"))
+        assert cli.cmd_task_view(_ns(all=True, out=str(tmp_path))) == 0
+        out = capsys.readouterr().out
+        assert "旧面未重渲染" in out, "跳过的旧面必须被点名——否则批次看起来只是少了几条"
+        assert not (tmp_path / "legacy").exists(), "旧面默认不重渲染"
+
+    def test_显式include_legacy才重建(self, tmp_path):
+        _write_batch(tmp_path, _archive("T001", "a1"),
+                     _archive("T002", "b2", driver="camoufox"))
+        assert cli.cmd_task_view(_ns(all=True, out=str(tmp_path),
+                                     include_legacy=True)) == 0
+        legacy = tmp_path / "legacy" / "camoufox-1" / "task_views"
+        assert {p.name for p in legacy.glob("*.json")} == {"T002__b2.json"}
 
 
 # ── 1. --all 整批 ──────────────────────────────────────────────────
@@ -220,8 +250,8 @@ class Test坏档不打断整批:
 
 
 class Test参数校验:
-    def test_无参数报错(self, capsys):
-        rc = cli.cmd_task_view(_ns(p1=None, all=False, out=None))
+    def test_无参数报错(self, tmp_path, capsys):
+        rc = cli.cmd_task_view(_ns(p1=None, all=False, out=str(tmp_path)))
         out = capsys.readouterr().out
         assert rc == 2
         assert "--p1" in out and "--all" in out

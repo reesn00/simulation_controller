@@ -63,6 +63,31 @@ def _write_p1(root: Path, *arcs):
     return root
 
 
+def _write_legacy_p1(root: Path) -> Path:
+    """一份交付面 P1 + 一份**旧面** P1（``driver`` 缺省 ⇒ obscura-1）。"""
+    _write_p1(root, _archive("T001", "a1", driver="camofox"),
+              _archive("T002", "b2", driver=None))
+    # driver=None：模拟老档（键在但为空 → 默认面 obscura-1）
+    path = root / "T002__b2.json"
+    arc = json.loads(path.read_text(encoding="utf-8"))
+    arc.pop("driver")
+    path.write_text(json.dumps(arc, ensure_ascii=False), encoding="utf-8")
+    return root
+
+
+def _write_two_surfaces(root: Path) -> Path:
+    """``samples/`` 里放一份交付面样本 + 一份旧面样本。"""
+    samples = root / "out" / "samples"
+    samples.mkdir(parents=True)
+    (samples / "a__1__site-1.json").write_text(
+        json.dumps(_sample("a__1__site-1", "camofox-1")), encoding="utf-8"
+    )
+    (samples / "b__2__site-1.json").write_text(
+        json.dumps(_sample("b__2__site-1", "obscura-1")), encoding="utf-8"
+    )
+    return root
+
+
 def _sample(sample_id, surface, **over):
     """够 builder 用的最小 P2 JSON（直接摆进 samples/ 模拟存量）。"""
     base = {
@@ -113,31 +138,75 @@ class Test路径规则:
         assert pool.DELIVERY_SURFACE == toolcatalog.SURFACE_CAMOFOX
 
 
+# ── 1.b 渲染口径（owner 裁定 2026-11-10）─────────────────────────
+
+
+class Test渲染口径:
+    """旧面默认不重渲染——**口径本身的单元测试**。
+
+    「退役 ≠ 失忆」指的是「存量证据仍读得出来」（P1 源档在盘上、池里的旧
+    文件仍在、``pool_meta.json`` 记着它曾有多少），**不是**「每次重建都把
+    旧面再渲染一遍」。后者会让清过的 legacy 池自己长回来，而读的人只看到
+    「又多了 N 份」。
+    """
+
+    def test_交付面总是渲染(self):
+        assert pool.should_render(pool.DELIVERY_SURFACE) is True
+
+    @pytest.mark.parametrize("surface", ["obscura-1", "camoufox-1"])
+    def test_旧面默认不渲染(self, surface):
+        assert pool.should_render(surface) is False
+
+    @pytest.mark.parametrize("surface", ["obscura-1", "camoufox-1"])
+    def test_旧面按需重建(self, surface):
+        assert pool.should_render(surface, include_legacy=True) is True
+
+    def test_认不出的面直接抛(self):
+        """静默当成「旧面」跳掉 = 把「配错了」伪装成「按口径没渲染」——
+        两者的处置完全不同，而报表上只表现为「少了几条」。"""
+        with pytest.raises(ValueError):
+            pool.should_render("some-new-surface")
+        with pytest.raises(ValueError):
+            pool.should_render("")
+
+
 # ── 2. P2 落盘分池 ────────────────────────────────────────────────
 
 
 class TestP2分池:
-    def test_旧面P1落legacy(self, tmp_path):
-        """``driver`` 缺省（obscura 时代）的 P1 不该再产出到交付池。"""
-        _write_p1(tmp_path / "src", _archive("T001", "a1", driver="camofox"),
-                  _archive("T002", "b2", driver=None))
-        # driver=None：模拟老档（键在但为空 → 默认面 obscura-1）
-        arc = json.loads(
-            (tmp_path / "src" / "T002__b2.json").read_text(encoding="utf-8")
-        )
-        arc.pop("driver")
-        (tmp_path / "src" / "T002__b2.json").write_text(
-            json.dumps(arc, ensure_ascii=False), encoding="utf-8"
-        )
+    def test_旧面P1默认不重渲染(self, tmp_path):
+        """旧面是只读存量（owner 裁定 **2026-11-10**）：**默认不渲染**。
 
-        builder.build_all(tmp_path / "src", target_root=tmp_path / "out")
+        清过的 legacy 池不该自己长回来——否则「又多了 66 份」没人说得清是
+        哪儿来的。而「没渲染」必须**看得见**：池里 legacy 为空若不配一条
+        计数，就会被读成「旧面不存在」。
+        """
+        _write_legacy_p1(tmp_path / "src")
+
+        rep = builder.build_all(tmp_path / "src", target_root=tmp_path / "out")
 
         delivery = tmp_path / "out" / "samples"
         legacy = tmp_path / "out" / "legacy" / "obscura-1" / "samples"
         # per-Run：一个任务一条轨迹 ⇒ 文件名不带单元后缀
         assert {p.name for p in delivery.glob("*.json")} == {"T001__a1.json"}
-        assert legacy.exists()
+        assert not legacy.exists(), "旧面默认不重渲染——legacy 池不该自己长回来"
+        assert rep.total_legacy_skipped == 1
+        # 池账里也要留下这一条：legacy 空 ≠ 旧面不存在
+        meta = json.loads(
+            (tmp_path / "out" / pool.POOL_META_FILENAME).read_text(encoding="utf-8")
+        )
+        assert meta["samples"]["legacy_skipped_now"] == 1
+
+    def test_按需重建旧面(self, tmp_path):
+        """``include_legacy=True`` 才渲染旧面——**按需**、显式。"""
+        _write_legacy_p1(tmp_path / "src")
+
+        rep = builder.build_all(tmp_path / "src", target_root=tmp_path / "out",
+                                include_legacy=True)
+
+        legacy = tmp_path / "out" / "legacy" / "obscura-1" / "samples"
         assert {p.name for p in legacy.glob("*.json")} == {"T002__b2.json"}
+        assert rep.total_legacy_skipped == 0
 
     def test_已存在的旧面样本被挪走(self, tmp_path):
         """存量目录里混着的旧面样本，重建时**移动**进 legacy，不是删除。"""
@@ -198,23 +267,27 @@ class TestP2分池:
 
 
 class TestP3分池:
-    def test_旧面样本的视图进legacy(self, tmp_path):
-        samples = tmp_path / "out" / "samples"
-        samples.mkdir(parents=True)
-        (samples / "a__1__site-1.json").write_text(
-            json.dumps(_sample("a__1__site-1", "camofox-1")), encoding="utf-8"
-        )
-        (samples / "b__2__site-1.json").write_text(
-            json.dumps(_sample("b__2__site-1", "obscura-1")), encoding="utf-8"
-        )
+    def test_旧面样本的视图默认不渲染(self, tmp_path):
+        """旧面默认不重渲染（owner 裁定 2026-11-10）。"""
+        _write_two_surfaces(tmp_path)
 
-        views.build_views_from_dir(root=tmp_path / "out")
+        rep = views.build_views_from_dir(root=tmp_path / "out")
 
         delivery = tmp_path / "out" / "views"
         legacy = tmp_path / "out" / "legacy" / "obscura-1" / "views"
         assert {p.name for p in delivery.glob("*_meta.json")} == {
             "a__1__site-1_meta.json"
         }
+        assert not legacy.exists(), "旧面默认不重渲染"
+        assert rep.total_legacy_skipped == 1
+
+    def test_按需重建旧面视图(self, tmp_path):
+        """``include_legacy=True`` 才渲染旧面视图——按需、显式。"""
+        _write_two_surfaces(tmp_path)
+
+        views.build_views_from_dir(root=tmp_path / "out", include_legacy=True)
+
+        legacy = tmp_path / "out" / "legacy" / "obscura-1" / "views"
         assert {p.name for p in legacy.glob("*_meta.json")} == {
             "b__2__site-1_meta.json"
         }
@@ -256,16 +329,30 @@ class TestP3分池:
 
 
 class TestT分池:
-    def test_旧面P1的任务视图进legacy(self, tmp_path):
+    def test_旧面P1的任务视图默认不渲染(self, tmp_path):
+        """旧面默认不重渲染（owner 裁定 2026-11-10）。"""
         _write_p1(tmp_path / "src", _archive("T001", "a1", driver="camofox"),
                   _archive("T002", "b2", driver="camoufox"))
 
-        task_view.build_all_task_views(tmp_path / "src",
-                                       target_root=tmp_path / "out")
+        rep = task_view.build_all_task_views(tmp_path / "src",
+                                              target_root=tmp_path / "out")
 
         delivery = tmp_path / "out" / "task_views"
         legacy = tmp_path / "out" / "legacy" / "camoufox-1" / "task_views"
         assert {p.name for p in delivery.glob("*.json")} == {"T001__a1.json"}
+        assert not legacy.exists(), "旧面默认不重渲染"
+        assert rep.total_legacy_skipped == 1
+
+    def test_按需重建旧面任务视图(self, tmp_path):
+        """``include_legacy=True`` 才渲染旧面任务视图。"""
+        _write_p1(tmp_path / "src", _archive("T001", "a1", driver="camofox"),
+                  _archive("T002", "b2", driver="camoufox"))
+
+        task_view.build_all_task_views(tmp_path / "src",
+                                       target_root=tmp_path / "out",
+                                       include_legacy=True)
+
+        legacy = tmp_path / "out" / "legacy" / "camoufox-1" / "task_views"
         assert {p.name for p in legacy.glob("*.json")} == {"T002__b2.json"}
 
     def test_存量旧面任务视图被挪走(self, tmp_path):
@@ -293,4 +380,7 @@ class TestT分池:
             (tmp_path / "out" / pool.POOL_META_FILENAME).read_text(encoding="utf-8")
         )
         assert meta["task_views"]["delivery"] == 1
-        assert meta["task_views"]["legacy"] == {"camoufox-1": 1}
+        # 旧面默认不渲染 ⇒ legacy 空；但**空的原因**要记下来——
+        # 否则「legacy 空」会被读成「旧面不存在」。
+        assert meta["task_views"]["legacy"] == {}
+        assert meta["task_views"]["legacy_skipped_now"] == 1

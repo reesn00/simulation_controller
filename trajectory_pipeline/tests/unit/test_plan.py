@@ -35,7 +35,7 @@ def _row(**over) -> dict:
         "retrieval_mode": "single_title",
         "title": "功夫",
         "rewritten": True,
-        "provenance": {"persona_id": "parent-喜剧", "genre": "喜剧", "urgency": "本周"},
+        "provenance": {"persona_id": "parent-喜剧", "genre": "喜剧"},
     }
     base.update(over)
     return base
@@ -295,7 +295,7 @@ class TestPlanCliWiring:
 def _ns(**kw):
     import argparse
 
-    base = dict(plan=None, out=None, limit=0, title=None, dry_run=False,
+    base = dict(plan=None, limit=0, title=None, dry_run=False,
                 include_unrewritten=False, engine="bing", task_id="T001",
                 perceptor=None, max_candidates=5, max_chars=None,
                 stop_after_success=0,
@@ -341,15 +341,15 @@ class TestRunRequiresTitle:
     浏览器起来一次要几秒，真跑完才发现片名错了，那批已经落进 pools。
     """
 
-    async def test_手工路径缺title即报错(self, capsys):
+    async def test_手工路径缺title即报错(self, tmp_path, capsys):
         from trajectory_pipeline.executor.cli import cmd_run
 
-        assert await cmd_run(_ns(title=None)) == 2
+        assert await cmd_run(_ns(title=None, out=str(tmp_path))) == 2
         out = capsys.readouterr().out
         assert "缺 --title" in out
         assert "T001" in out, "错误串要指名道姓说明 task-id 不是片名"
 
-    async def test_手工路径不连浏览器就退(self, capsys, monkeypatch):
+    async def test_手工路径不连浏览器就退(self, tmp_path, capsys, monkeypatch):
         """反例护栏：守卫不是「一律拒绝」。给了片名就该往前走——
         **显式清掉 ``OBSCURA_EXE``**，让它停在连接那一步，而不是停在片名那一步。
 
@@ -363,7 +363,7 @@ class TestRunRequiresTitle:
         from trajectory_pipeline.executor.cli import cmd_run
 
         monkeypatch.delenv(EXE_ENV_VAR, raising=False)
-        assert await cmd_run(_ns(title=["功夫"])) == 2
+        assert await cmd_run(_ns(title=["功夫"], out=str(tmp_path))) == 2
         out = capsys.readouterr().out
         assert "缺 --title" not in out
         assert "OBSCURA_EXE" in out, f"应该停在连浏览器那一步，实际输出：{out}"
@@ -374,7 +374,7 @@ class TestRunRequiresTitle:
         path = tmp_path / "plan.json"
         path.write_text(json.dumps(_plan(_row(title=""), _row(task_id="T002", title=""))),
                         encoding="utf-8")
-        assert await cmd_run(_ns(plan=str(path))) == 2
+        assert await cmd_run(_ns(plan=str(path), out=str(tmp_path))) == 2
         out = capsys.readouterr().out
         assert "没有片名" in out
         assert "T001" in out and "T002" in out, "要**逐条**列出来，一份坏计划通常不止一条坏"
@@ -385,5 +385,5 @@ class TestRunRequiresTitle:
         path = tmp_path / "plan.json"
         path.write_text(json.dumps(_plan(_row(), _row(task_id="T002"))), encoding="utf-8")
         # dry-run 让它读完计划就停，不必连浏览器
-        assert await cmd_run(_ns(plan=str(path), dry_run=True)) == 0
+        assert await cmd_run(_ns(plan=str(path), dry_run=True, out=str(tmp_path))) == 0
         assert "没有片名" not in capsys.readouterr().out

@@ -264,7 +264,7 @@ uv run python -m trajectory_pipeline.evaluation.golden_ls upload --version 15
 | ⑥ | **现场读数** | 页面标题 + 每步（动作 → 观察读数）+ 正文预览 + **定位说明**（怎么定位到的 / 为什么读不到 + 候选） | `calibration.evidence.card_digest` / `scene_summary` |
 | ⑦ | **尺子** | rubric 条款原文（卡自己的条款 + D-4 + D-5）+ **分支标签表 + 分支前置事实表** | `calibration.evidence.load_clauses`（现读）+ `executor.branches`（现读） |
 | ⑧ | **轨迹（T 视图）** | per-Run 完整任务视图的 messages / openai / meta（渲染文本 + 原始视图） | `ls_bridge.exporter.read_task_view` |
-| ⑨ | **persona** | 六维 persona | 行内 |
+| ⑨ | **persona** | persona 维度（切片轴） | 行内 |
 | ⑩ | **SFT 训练数据**（**仅轨迹级**） | **P3 训练视图原样**：`openai.messages` / `openai.tools` / `meta`（+ `messages.json` 条数）。这是训练真正吃的文件，不是 ⑧ 的副本——⑧ 读 T（P1 的另一份渲染），⑩ 读 P3（P2 的另一份渲染） | `storage.read_p3.read_views`（交付池 `views/`；旧面 `legacy/` **不读**） |
 
 **⑦ 为什么现读而不抄进 label_config**：分支表（22 类）、前置事实表、rubric 条款

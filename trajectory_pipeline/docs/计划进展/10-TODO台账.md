@@ -1,7 +1,7 @@
 # TODO 台账 · 全域未闭环项汇总
 
 > **2026-11-03 · 按 owner 指令裁剪（只留阻塞主线）**：本册原 **4500 行**，现**只保留「§高 · 阻塞主线指标」**
-> 的全表（**H-01～H-27**）与各 H 条的**详解**（§停点 · §2026-10-21 的 H-10～H-13 · §2026-10-22 的 H-18 ·
+> 的全表（**H-01～H-28**）与各 H 条的**详解**（§停点 · §2026-10-21 的 H-10～H-13 · §2026-10-22 的 H-18 ·
 > §2026-11-02「训练语料整改」的 H-21～H-25）。其余内容（**中 / 低 / 校准回路 / 各按日期的「新增开口项详解」里的
 > M·L·Q 条目 / 门禁读数 / 过程补记 / 环境依赖 / ⛔ 不能做 / 记录文档地图 / 台账保质期**）**正文已删**；
 > 仅**六个被外部文档锚点引用的章节**在文末留了**标题占位**（防 404）。被删正文可从
@@ -288,6 +288,7 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 
 | **H-26** | ★**（2026-11-04 新增）agent 路径的前置事实核已补上 ⇒ **两处判据缺口因此显形**：真付费墙会被降级 · 登录墙没有「可执行」的前置事实核** | 02 感知 / 03 标签 | 编年史 §增量一百二十三 · [`agent_loop.py::_guarded_branch`](../../executor/agent_loop.py) · [`branches.py::precondition_failed`](../../executor/branches.py) · [`test_agent_loop.py::Test分支前置事实核`](../../tests/unit/test_agent_loop.py) | ✅ **代码已实施**（2026-11-04）：agent 路径的分支归因现在**过一遍** `branches.precondition_failed`——**scripted 路径的同一份判据**（原来只有 `RunLedger.record_from` 核，agent 路径不走它 ⇒ CLAUDE.md「贴标签前核前置事实」在 agent 路径上**一直是空的**）⇒ 门禁的「**像**付费墙」（强弱关键词）不再直接折成 `subscription_wall`（结论口径要**门禁语境**）⇒ **导航栏挂着「开通VIP会员」的免费页不再被记成「这里看不了」**；不成立 ⇒ 落 `unresolved` + 追一句「`[记账降级] 本该记 X，但…`」⇒ 门禁事件分支 / `AgentOutcome.branch` / 台账行**三者一致**。**新增 5 条单测**（导航栏 CTA ⇒ `unresolved` · 真付费墙仍 `subscription_wall` · 分支一致 · 理由进 `reason` · 登录墙不受影响）<br>⚠️ **两个缺口**：① **真付费墙也会被降级**（**2026-11-04 已闭**——判据二「订阅价目门禁」落地，见本行末尾）——`paywall_evidence` 只认 L1 门禁短语 / L2 CTA+同句观看语境 / L1.5 错误+会员 commerce，**实测对部分真付费墙返回空**（youku《功夫》· fun.tv）⇒ 这些站现在落 `unresolved`（**不进池**）⇒ **「每条分支都必须有对应样本入库」这条纪律在付费墙这一支上暂时是反的**（真负样本被降成非负样本）；② **`login_required` 没有「可执行」的前置事实核**——今天只有两条分支真的在核：`subscription_wall`（门禁语境 `paywall_evidence`）与 `component_unverified`（同页守卫）；`BRANCH_PRECONDITION` 里 `login_required` / `blocked` / `partial_free` / `broken` **只有文案、没有可执行核**（2026-10-19 增量六十·方案 X **刻意**窄的：当时守卫覆盖 5 支，实测 **46** 次触发**全是误伤** ⇒ 窄到只剩 1 支）⇒ **代价**：`login_required` 在 agent 路径上**仍是裸折算**（门禁判「像登录墙」就直接贴分支）<br>✅ **缺口①已闭（2026-11-04）**：owner 拍「给这一支补第二条可执行判据」⇒ **判据二 · 订阅价目门禁**落地（[`rule_perceptor.py::paywall_price_evidence`](../../perception/rule_perceptor.py)：**页面级三要素同现**——订阅价目 + 开通动作 + 权益承诺，**外加登录门排除**）⇒ 前置事实核改认**判据一 ∪ 判据二**（[`subscription_wall_evidence`](../../perception/rule_perceptor.py)）⇒ youku《功夫》· fun.tv 这类「价目 + 开通 + 权益」但**不写「订阅后观看」措辞**的真付费墙**重新贴得上** `subscription_wall`（实测找回 **67** 行：youku **45** · iqiyi **15** · fun.tv **4** · mgtv **3**）。⚠️ **判据二不进 `paywall_evidence`**——H-16 修复① 的收紧口径（纯营销模块不得算付费墙）**原样不动** ⇒ 救济路径与评分器口径不变；判据二**只**服务于 `subscription_wall` 的前置事实核<br>⚠️ **缺口②仍开着**：`login_required` 在 agent 路径上仍是裸折算 |
 | **H-27** | ★**（2026-11-04 新增）改分支却**没改中文标签** ⇒ 存量 **137** 条记录自相矛盾（**三个写者**漏了三个）· 工具已修 · 存量已回填 · **LS 两条卡仍是旧的** | 08 存档治理 | 编年史 §增量一百二十三 · [`downgrade.py::apply_downgrades`](../../executor/downgrade.py) · [`relabel.py::_relabel_outcome`](../../executor/relabel.py) · [`review_queue.py::apply_verdicts`](../../executor/review_queue.py) · [`label_sync.py`](../../executor/label_sync.py) · [`test_label_sync.py`](../../tests/unit/test_label_sync.py) | ✅ **三个写者全修 + 存量已回填**（2026-11-04）：改 `branch` 的写者有**三个**——`downgrade.apply_downgrades` · `relabel._relabel_outcome` · `review_queue.apply_verdicts`——**三处都漏了** `branch_label` ⇒ 记录变成「分支说 A、标签写着 B」的**自相矛盾**，而下游取的是**行内**的 `branch_label`（`golden/builder._code_block` → `golden_ls/exporter`）⇒ 矛盾一路传到 LS 的**人核卡**上：**人看到的是「付费墙」，机器读到的分支却是「未判定」**。⇒ 三处现在**共用** `branches.branch_label_of(branch)`（`None` → 「成功」）——**标签的取法只有一处**。⚠️ **原标签不丢**：`branch_before_downgrade` / `branch_before_relabel` / `branch_before_review` 记着原分支，中文名按 `BRANCH_LABELS` 可还原<br>✅ **存量已回填**（新增 `executor/label_sync.py` + `cli sync-labels`，**默认 dry-run**）：生产根 **137** 条（按层：原档 **61** + 复核档 **76**；按来源：降级/改判 **108** + 人裁 **29**）· 72 份文件；双跑研究档另 **8** 条 ⇒ **生产根复扫 0 条残留**（**328** 条「分支被工具改过」的记录全部同源）、池内 **0 条同源矛盾**、T 视图 **155** 份 / **1178** 条 `unit_outcomes` **0 条**同源矛盾（另有 **34** 处**口径文本漂移**，**按惯例不回填**）。⚠️ **判据是「分支被工具改过」**（三个留痕键），**不是**「标签文本与当前 `BRANCH_LABELS` 对不上」——后者是**口径演进**（`unreachable_hard` 2026-10-27 收窄 · `login_wall_or_blocked` 2026-10-12 加 deprecated 后缀）⇒ 按 `executor/branch_eras.py` 的 e6 **不回填**（那 47 条没动 · 原档 47 / 两层镜像 94）⇒ **备份目录也没动**（`q23_trial` 151 · `q23_backup_2026-10-28` 37 · `pipeline/_backup_pre_motivation` 27——备份是当时状态的快照）<br>⚠️ **LS 项目 77 的两条卡推在改判前**：**601** = `T001__7d5a03bd`（推于 2026-11-02）· **665** = `T001__61eabe2e`（推于 2026-11-04T02:24Z）⇒ 卡上的 `meta_text` 仍写着那条 `subscription_wall` ⇒ **重推 / purge 都是对外动作**（且 `purge` 连标注一起删）⇒ **本轮没动**，等 owner 裁<br>✅ **owner 已裁并已执行（2026-11-04）**：**就地重推**（`PATCH /api/tasks/{id}` + `PATCH /api/predictions/{id}`）⇒ **不删卡、不新建卡**（task id 601 / 665 与标注归属不变 · 项目仍 **77** 条 · **0** 条重复）⇒ 两张卡 `site-8` 现在读 **`unresolved`**（卡面里剩下的 `subscription_wall` 字样只在**审计留痕**中）· 601 的 `status` 因当前 `scout/r51` 档是 undetermined 而翻成 **`quarantine`**（= 当前产物本身的样子）· 台账 `push_index__77.jsonl` 追加 2 行（append-only） |
+| **H-28** | ★**（2026-11-10 新增 · ✅ 已闭）pytest 把测试产物写进生产产物目录**——`mediabrowse/` 里 **2218 / 2271** 个文件是 pytest 残留（假域名 `a.example.com`） | 09 纪律 | [`11-存量轨迹数据盘点.md`](11-存量轨迹数据盘点.md) §七① · [`tests/unit/test_output_isolation.py`](../../tests/unit/test_output_isolation.py) · [`tests/unit/test_cmd_mediabrowse.py`](../../tests/unit/test_cmd_mediabrowse.py) · [`cli.py::_archive_root`](../../executor/cli.py) · [`cli.py::cmd_mediabrowse`](../../executor/cli.py) · [`review_queue.py::dispatch_l6`](../../executor/review_queue.py) · [`archive.py::P1Archive`](../../executor/archive.py) | **已复现**：该测试文件有 **7 处**把 `out=None` 传给 `cmd_mediabrowse` ⇒ `P1Archive(root=None)` 落 `DEFAULT_ROOT`（= **生产产物目录** `output/pipeline/`，不是 `tmp_path`）⇒ **每跑一次 pytest 就往生产目录写 4 个文件**（实测 `mediabrowse/` 2271 → 2275）。⚠️ **不污染训练数据**——组装 glob 只扫顶层与 `samples/`/`views/`/`task_views/`，`mediabrowse/` 是子目录；`--mediabrowse-dir` 按 `(task_id,url)` 索引，假域名的 `task_id`（`P024-reuse` 等）是测试命名空间，挂不到交付面样本 ⇒ **是产物目录脏 + 磁盘占用（4 MB），不是数据正确性问题**。<br>✅ **已闭（2026-11-10）——根因有两条，不是一条**：① 上条那 7 处 `out=None`；② **L6 派发队列的落点**（调查时漏掉的第二处）：`dispatch_l6` 的 `queue_path` **默认落 `DEFAULT_ROOT`**，即使 `--out` 指到别处**队列仍写生产目录**（`review_auto/l6_dispatch.jsonl` 盘上 15 行**全是测试命名空间**）——这既是生产语义 bug，也是测试写生产目录的第二条路。<br>**修法**：① 7 处 `out=None` → `out=str(tmp_path)`；② 新增 [`cli.py::_archive_root`](../../executor/cli.py)（**`--out` 给了就用它，没给才用默认根**），三处 `P1Archive(...)` 构造与三处 `_dispatch_l6_summary(...)` 派发改用它 ⇒ **测试不再写生产目录**（⚠️ 队列要跟**根**平级、不是存档自己的子目录，否则派发项找不到 = 静默失效）。<br>**存量已清**：`mediabrowse/` **2271 → 53**（删 2218 个 pytest 残留 + 1 个 `127.0.0.1:18097` 残留；**保留 53 个 `v.qq.com` 真实探针数据**——按**内容**（`requested_url` 的 host）判定、不按文件名）；`review_auto/l6_dispatch.jsonl` 整份删（15 行全测试命名空间）；`mediabrowse/` **9.9 MB → 957 KB**。<br>**守卫已立**（[`test_output_isolation.py`](../../tests/unit/test_output_isolation.py)，**两条**）：① **静态**——AST 扫测试树，**不许出现 `out=None`**（它在 CLI 层的含义就是「落生产目录」；要验默认根就显式 `monkeypatch.setattr(archive.DEFAULT_ROOT, tmp_path)`）；② **运行时**——`mediabrowse/` 与 `review_auto/` 里不许出现**保留测试域名**（RFC 2606 / RFC 6761）。守卫**自检**：喂它一段坏例子得报出来。<br>**硬证据**：全量 ~5200 测试跑完，生产产物目录 **8118 → 8118 文件，0 新增 0 减少**（跑前跑后逐文件快照比对）。<br>⚠️ **配套口径改动（owner 裁定 2026-11-10）**：清掉的旧面派生产物在旧口径下**会被 `cli build` 重渲染回 `legacy/`** ⇒ **清理不持久** ⇒ 改 build 口径：**旧面默认不再重渲染**（`--include-legacy` 按需重建）。落点与测试见[`23-训练轨迹语料整改方案.md`](../设计方案/23-训练轨迹语料整改方案.md) R3-3 口径修订。|
 ---
 
 ## 2026-10-21 质量审查项详解
@@ -387,8 +388,12 @@ outcome 带 `site_url` / `play_page_url` ⇒ 站点阶段那条 `play_page_url` 
 > O-3 分池 / O-4 只接 per-Run / O-5 两段都发且一致 / **A7 改绑窄口径**）⇒ 下方 H/M 项里原先
 > 「等裁定」的三处（**H-23 / M-67 / M-69**）已解锁；**R0 + R1 + R2-1～R2-4 +
 > R3-1～R3-4 + R4-1 + R4-2 + R4-3 + R5-2 代码已于 2026-11-02 实施**（A1/A2/A4 ✅，
-> ✅ **A13 已在新批次真跑取数**，✅ A7 口径已裁定并按新口径取数（**Q-31**），A8/A9/A11
+> ✅ **A13 已在新批次真跑取数**，✅ A7 口径已裁定并按新口径取数（**Q-31**），A8/A11
 > 待重建产物后取数——**既有产物不回填**；**A10 可在新批次上复核**），
+> ✅ **A9 已取数（2026-11-10）= 0/90 达成**——owner 指令清理旧面派生产物后，
+> 交付集 `samples/` **90 份全是 `camofox-1`**；配套口径：**旧面默认不再重渲染**
+> （`--include-legacy` 按需重建）⇒ 这个 0 **不会自己涨回去**
+> （见[方案 23 R3-3 口径修订](../设计方案/23-训练轨迹语料整改方案.md)），
 > **R5-1 已在隔离目录重建 + dry-run（不写 LS，2026-11-02）**：65 份 T 视图 /
 > **65 条 per-Run 行**（桶分布全 `quarantine`）/ A10 违约 0。
 >
@@ -1149,3 +1154,59 @@ id 集合与冻结层**完全一致**、九区块齐全、prediction 0、人工�
 - v21 的 3 条轨迹与 29 行站点金标仍为 `ai-assisted-unconfirmed` 初判，**待 owner 逐条复核**。
 - v21 是试点隔离档，**不进**主数据根的三档口径（D-10 分母不变，仍读 v18 的 297 行）。
 - 相关度限量目前只区分「片名命中 / 播放词命中」两档分数；同分时仍按页面顺序，无法区分「相关搜索」与「真搜索结果」（E005 的 4 条链接里 3 条是相关搜索）——是否需要按 href 特征再加一档，待下一轮观察。
+
+---
+
+## 2026-11-11 persona 两维删除（时间限定与语气词不再进 agent prompt）
+
+> owner：首轮表述里的「本周」「闲时」「立即」这类**时间限定**与**语气词**对 agent prompt 没有意义，删掉。
+> 处置**不是**「不渲染了」，而是**把 `urgency` / `verbal_style` 两维从画像上删掉**——理由见下。
+
+**为什么连维度一起删（本次的关键判断）**
+
+- 两维的唯一可观察效果就是那两类修饰成分 ⇒ 只停渲染而留着字段 = 画像上挂一个**落不了地的维度**，
+  正是 `lexicon.py` 开头警告的「退化成标签堆」。
+- 更要紧的是**假切片轴**：`立即` 组与 `闲时` 组的首轮表述**除那几个修饰词外完全相同**，
+  切片表却会报两者的表现差异——**差异是纯噪声，却长得像「发现了一个显著问题」**。
+  落不了地的维度必须从画像上删掉，否则它就是 `SLICE_AXIS_FIELDS` 里的一行噪声。
+- 措辞上还有一层：那两段改的是**用户的心情**，不是**用户要什么**；
+  而 persona 的铁律是「只改表述不改判分」——它们既不携带约束，也不改变检索目标。
+
+**落点（代码）**
+
+| 文件 | 改了什么 |
+|---|---|
+| `taskgen/persona/lexicon.py` | 删 `CLOSERS` / `VERBAL_TAILS` 两张表；`DIMENSION_FEATURES` 去掉两维 |
+| `taskgen/persona/schema.py` | 删 `urgency` / `verbal_style` 字段与取值域（六维 → **四维**） |
+| `taskgen/persona/library.yaml` | 44 条画像各删两行（共 **88 行**） |
+| `taskgen/persona/renderer.py` | 删 `_join_closer()` / `_join_tail()` 两段拼接；渲染结构回到 `[背景句] + [核心要求]` |
+| `taskgen/persona/library.py` · `taskgen/sampler.py` · `executor/cli.py` | 默认分层维度 `("genre","verbal_style","urgency")` → `("genre","popularity","persona_presence")` |
+| `taskgen/sampler.py` | `SLICE_AXIS_FIELDS` 六项 → **四项** |
+| `evaluation/golden/builder.py` · `evaluation/golden_ls/exporter.py` | provenance / LS ⑨ 块不再带这两维 |
+
+**读数**
+
+- `cli check-persona`：44 条画像；覆盖度**无缺档、无退化维度**（四维都齐）；
+  探针接受率 **1.0（189/189）**；**实际落地的维度分布 6 行 → 4 行**。
+- `cli gen -n 4` 端到端：4/4 产出、归一过 4 / 退回 0；首轮表述里**不再有时间限定与语气词**
+  （「越快越好，今晚要看。」「…就行啊。」这类片段已彻底不出现）。
+- `tests/unit/test_taskgen.py` **125 passed**（新增 `Test已删维度不残留` 四条守卫：
+  画像字段 / 维度域 / 切片轴三处都不得再有这两维，且渲染产物不得含被删的修饰成分）。
+- 全量 `tests/unit`：**4245 passed / 2 failed**——两条失败与本次改动**无关**
+  （`test_calibration_evidence` 与 `test_rationale_gates`；**把本次改动暂存后同样红**，是存量问题）。
+
+**连带清掉的文档**
+
+- `避坑指南/04` 的 §4.1–§4.4 四条（双句边界 / 片段粘连 / tail 接不上 closer / 措辞内部自相矛盾）
+  全部出在那两段上 ⇒ 随两维一起删；**但共性仍成立**（探针只覆盖判分要求，
+  句法通顺、措辞自洽、语义不打架**全都不在判分要求里**，探针一条都抓不到）。
+- 总体方案 §3.1.2、11-对账、15-不动清单、22-LS 十块、01-架构总览、P1 契约、00-总览：**六维 → 四维**。
+
+**未闭环 / 注意**
+
+- ⚠ **旧批次与新批次不可比**：`library_digest` 由 `4409ea8c59d7ecd4` 变成 `f24348befbc78855`
+  ⇒ 要做对照须重跑一批。
+- ⚠ **存量 P1/P2/P3 存档的 provenance 仍带这两维**（**3916 份产物文件**）——那是**当时的事实，不改写**；
+  但**切片时若按旧字段分组，会得到一个纯噪声的轴** ⇒ 读数按新口径（去掉这两维）看。
+- ⛔ **不打算再做**：时间限定 / 语气词以后若要重新引入，得先有"它对 agent prompt 有意义"的判据；
+  当前**没有**这样的判据。

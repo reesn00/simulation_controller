@@ -23,14 +23,16 @@ from trajectory_pipeline.taskgen.persona.library import (
     load_library,
 )
 from trajectory_pipeline.taskgen.persona.lexicon import (
-    CLOSERS,
     CONSTRAINT_PROBES,
     GENRE_TERMS,
     OPENERS,
     SPECIFICITY_RENDER,
-    VERBAL_TAILS,
 )
-from trajectory_pipeline.taskgen.persona.schema import PersonaProfile, load_profile
+from trajectory_pipeline.taskgen.persona.schema import (
+    DIMENSION_DOMAIN,
+    PersonaProfile,
+    load_profile,
+)
 from trajectory_pipeline.taskgen.normalizer import (
     FAIL_EMPTY,
     FAIL_PROBE_MISS,
@@ -74,8 +76,8 @@ def library() -> PersonaLibrary:
 
 def _persona(**over) -> PersonaProfile:
     base = dict(
-        persona_id="t-1", genre="科幻", popularity="腰部", urgency="本周",
-        verbal_style="口语", persona_presence="无", task_specificity="指名",
+        persona_id="t-1", genre="科幻", popularity="腰部",
+        persona_presence="无", task_specificity="指名",
         has_standard=True,
     )
     base.update(over)
@@ -235,17 +237,16 @@ class TestPersona:
     def test_空persona_id显式抛(self):
         with pytest.raises(ValueError):
             load_profile({"persona_id": "  ", "genre": "科幻",
-                          "popularity": "腰部", "urgency": "本周",
-                          "verbal_style": "口语", "persona_presence": "无"})
+                          "popularity": "腰部", "persona_presence": "无"})
 
     def test_报错信息含persona_id(self):
         with pytest.raises(ValueError, match="找不到片名的人"):
             load_profile({"persona_id": "找不到片名的人", "genre": "武侠"})
 
-    def test_六维全在(self):
+    def test_四维全在(self):
         fields = PersonaProfile.model_fields
-        for dim in ("genre", "popularity", "urgency", "verbal_style",
-                    "persona_presence", "task_specificity", "has_standard"):
+        for dim in ("genre", "popularity", "persona_presence",
+                    "task_specificity", "has_standard"):
             assert dim in fields
 
 
@@ -304,7 +305,7 @@ class TestLibrary:
         changed = dataclasses.replace(
             library,
             profiles=(library.profiles[0].model_copy(
-                update={"urgency": "闲时"}), *library.profiles[1:]),
+                update={"popularity": "头部"}), *library.profiles[1:]),
         )
         assert changed.digest() != library.digest()
 
@@ -321,68 +322,41 @@ class TestLibrary:
 # ══════════════════════════════════════════════════════════════════════
 
 
-class TestTailJoining:
-    """句尾语气词必须接成**同一句**。
+class Test已删维度不残留:
+    """``urgency`` / ``verbal_style`` 已删（2026-11-11）。
 
-    这条不是洁癖：「…就行。啊。」读起来是两段话拼接，
-    而**现有检查一条都抓不到**——探针只看判分要求丢没丢，
-    措辞内部的语义与句法问题不在任何一条判分要求里。
+    两维的唯一可观察效果是首轮里的**时间限定**与**句尾语气词**，
+    而那两样对 agent prompt 没有意义；留着它们还会变成**假切片轴**
+    （两组人设的首轮表述除那几个修饰词外完全相同，差异是纯噪声）。
+
+    这条测的是**删干净了没有**。删一半最容易留下的痕迹是
+    「画像上还挂着字段、渲染已经不产出了」——那种状态下切片表
+    仍会报一个纯噪声的维度，而且看上去一切正常。
     """
 
-    def test_剥掉closer的句号(self, library, skeletons):
-        from trajectory_pipeline.taskgen.persona import renderer
-        assert renderer._join_tail("这两天给我就行。", "啊。") == "这两天给我就行啊。"
-        assert renderer._join_tail("越快越好，今晚要看！", "啊。") == \
-            "越快越好，今晚要看啊。"
+    #: 被删的 ``CLOSERS`` / ``VERBAL_TAILS`` 词表在首轮里留下的痕迹。
+    #: 全部取自已删词表，骨架原文（``tasks.yaml``）里一个都不出现。
+    禁用片段 = (
+        "今天就要看到", "麻烦快一点", "越快越好", "今晚要看",
+        "这周内", "不着急", "有空的时候看看", "慢慢找也没关系",
+        "就行啊", "就行呢", "就行吧", "啊。", "呢。", "吧。",
+    )
 
-    def test_无tail时原样保留(self, library, skeletons):
-        from trajectory_pipeline.taskgen.persona import renderer
-        assert renderer._join_tail("慢慢找也没关系。", "") == "慢慢找也没关系。"
+    def test_画像字段已删(self):
+        fields = PersonaProfile.model_fields
+        assert "urgency" not in fields
+        assert "verbal_style" not in fields
 
-    def test_渲染结果无双句边界(self, library, skeletons):
-        """真跑一遍渲染：口语与强口语档都不能出现「。啊。」这类断句。"""
-        from trajectory_pipeline.taskgen.persona import renderer
-        checked = 0
-        for persona in library.profiles:
-            if persona.verbal_style not in ("口语", "强口语"):
-                continue
-            for skel in skeletons:
-                if not skel.runnable_in_w1 or not renderer.is_compatible(persona, skel):
-                    continue
-                text = renderer.render(skel, persona, seed=0).prompt_text
-                for punct in ("。啊", "。呢", "。吧"):
-                    assert punct not in text, f"{persona.persona_id}: {text}"
-                assert not text.endswith("。啊。"), text
-                checked += 1
-                break
-        assert checked >= 20, f"只覆盖了 {checked} 条，口语档本该占全库多数"
+    def test_维度域已删(self):
+        assert "urgency" not in DIMENSION_DOMAIN
+        assert "verbal_style" not in DIMENSION_DOMAIN
 
+    def test_切片轴已删(self):
+        assert "urgency" not in SLICE_AXIS_FIELDS
+        assert "verbal_style" not in SLICE_AXIS_FIELDS
 
-class TestClauseJoining:
-    """片段拼接必须留分隔——存量 initial_request 大多不以标点结尾。"""
-
-    def test_closer前补逗号(self, library, skeletons):
-        from trajectory_pipeline.taskgen.persona import renderer
-        assert renderer._join_closer("做版本对比", "慢慢找也没关系。") == \
-            "做版本对比，慢慢找也没关系。"
-
-    def test_已有标点不重复加(self, library, skeletons):
-        from trajectory_pipeline.taskgen.persona import renderer
-        assert renderer._join_closer("想看。", "慢慢找。") == "想看。慢慢找。"
-        assert renderer._join_closer("想看，", "慢慢找。") == "想看，慢慢找。"
-
-    def test_无closer时原样(self, library, skeletons):
-        from trajectory_pipeline.taskgen.persona import renderer
-        assert renderer._join_closer("做版本对比", "") == "做版本对比"
-
-    def test_渲染结果无粘连(self, library, skeletons):
-        """端到端：骨架原文的末字不得与 closer 的首字直接相连。
-
-        必须先过 :func:`renderer.is_compatible`——不兼容组合（纯描述 ×
-        单片任务）会**早退返回骨架原文且 applied 为空**，那是设计行为，
-        不该按拼接规则去检查。
-        """
-        from trajectory_pipeline.taskgen.persona import renderer
+    def test_渲染结果不含时间限定与语气词(self, library, skeletons):
+        """真跑一遍渲染：首轮里不得再出现被删的修饰成分。"""
         checked = 0
         for persona in library.profiles:
             for skel in skeletons:
@@ -391,53 +365,12 @@ class TestClauseJoining:
                 if not renderer.is_compatible(persona, skel):
                     continue
                 text = renderer.render(skel, persona, seed=0).prompt_text
-                assert "，" in text or text.rstrip().endswith(("。", "！")), \
-                    f"{persona.persona_id}/{skel.task_id}: {text}"
+                for frag in self.禁用片段:
+                    assert frag not in text, \
+                        f"{persona.persona_id}/{skel.task_id}: {text!r}"
                 checked += 1
-                break                      # 每个 persona 取一个骨架就够
+                break                     # 每个 persona 取一个骨架就够
         assert checked > 20, "兼容性过滤后样本太少，这条检查没实际覆盖"
-
-    def test_closer措辞内部自洽(self, library, skeletons):
-        """同一条 closer 里不得同时出现「不急」与紧期限词。"""
-        from trajectory_pipeline.taskgen.persona.lexicon import CLOSERS
-        tight = ("今天", "今晚", "这两天", "越快越好", "马上")
-        for urgency, options in CLOSERS.items():
-            for option in options:
-                if "不急" in option or "不着急" in option:
-                    assert not any(t in option for t in tight), \
-                        f"{urgency} 档自相矛盾: {option}"
-
-    def test_tail以语气词起头(self, library, skeletons):
-        """tail 必须能当**句尾语气词**接在任意 closer 后面，不是独立成句。
-
-        早期版本的「求求了真的。」「拜托哈，越快越好。」接在 closer 后
-        得到「今晚要看求求了真的。」——「看」与「求求」粘成词组。
-
-        判别式不靠分词（中文分词在这里太脆），而是**查设计契约**：
-        它们是语气词，所以**必须以语气词起头**。这个规则可执行、
-        无歧义，且旧词表一条都过不了。
-        """
-        from trajectory_pipeline.taskgen.persona.lexicon import VERBAL_TAILS
-        particles = ("啊", "呀", "呢", "吧", "嘛", "哦", "噢")
-        for style, tails in VERBAL_TAILS.items():
-            for tail in tails:
-                assert tail.startswith(particles), \
-                    f"{style} 档的 {tail!r} 不以语气词起头，接不上 closer"
-
-    def test_接上任意closer都不粘连(self, library, skeletons):
-        """穷举 closer × tail，接缝处必须落在标点或语气词边界上。"""
-        from trajectory_pipeline.taskgen.persona.lexicon import CLOSERS, VERBAL_TAILS
-        particles = ("啊", "呀", "呢", "吧", "嘛", "哦", "噢")
-        closers = [c for opts in CLOSERS.values() for c in opts]
-        for style, tails in VERBAL_TAILS.items():
-            for tail in tails:
-                for closer in closers:
-                    joined = renderer._join_tail(closer, tail)
-                    stem = joined[: -len(tail)]          # 接缝右侧 = tail 的首字符
-                    left, right = stem.rstrip(), tail[0]
-                    assert (left[-1] in "，、：…—。！？"
-                            or right in particles), \
-                        f"{style} {tail!r} 接 {closer!r} 粘连: {joined}"
 
 
 class TestRenderer:
@@ -540,16 +473,6 @@ class TestRenderer:
                 text = renderer.render(sk, p, seed=0).prompt_text
                 assert not stutter.search(text), f"病句：{text!r}"
 
-    def test_语气词只在句尾(self, library, skeletons):
-        """VERBAL_TAILS 加在末尾，不得插进要求中间。"""
-        runnable = [s for s in skeletons if s.runnable_in_w1][:10]
-        for sk in runnable:
-            r = renderer.render(sk, _persona(verbal_style="强口语"))
-            for tail in VERBAL_TAILS["强口语"]:
-                if tail in r.prompt_text:
-                    assert r.prompt_text.endswith(tail)
-
-
 class TestLexicon:
     def test_探针词非空(self):
         for key, (label, probes) in CONSTRAINT_PROBES.items():
@@ -559,11 +482,6 @@ class TestLexicon:
         """模板不得再引用 {genre}——那是已知的越权来源。"""
         for name, tpl in SPECIFICITY_RENDER.items():
             assert "{genre}" not in tpl, f"{name} 模板仍注入 genre"
-
-    def test_closer非空每档(self):
-        for level in ("立即", "本周", "闲时"):
-            assert CLOSERS[level]
-
 
 # ══════════════════════════════════════════════════════════════════════
 # normalizer —— 判分保真守卫
@@ -692,8 +610,8 @@ class TestSampler:
     def test_每条带全切片字段(self, library, skeletons):
         b = sample_tasks(10, library=library, skeletons=skeletons, seed=1)
         for inst in b.instances:
-            for key in ("persona_id", "genre", "popularity", "urgency",
-                        "verbal_style", "persona_presence",
+            for key in ("persona_id", "genre", "popularity",
+                        "persona_presence",
                         "requested_specificity", "actual_specificity",
                         "content_tier", "compatibility", "rewritten"):
                 assert key in inst.provenance, key

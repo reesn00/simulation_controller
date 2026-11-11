@@ -144,9 +144,8 @@ def build_query(
     但**接口先留出来**：persona 管输入分布，若 search step 不知道 persona，
     整个输入分布就无法从 persona 传导到采集侧，模块 1 就成了摆设。
 
-    persona 接入后应按 ``genre`` / ``urgency`` 改写措辞（如急迫型 persona
-    用「在线看」而不是「怎么在线看」），因为不同措辞召回的站点池不同——
-    这正是 persona 维度要覆盖的东西。
+    persona 接入后应按 ``genre`` / ``popularity`` 改写措辞——不同措辞召回的
+    站点池不同，这正是 persona 维度要覆盖的东西。
     """
     base = title.strip()
     if intent == "watch":

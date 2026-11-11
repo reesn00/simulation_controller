@@ -332,7 +332,7 @@ class RunRecord:
     #: 32 条链接无一条含片名）。所以「① 为什么恒为 unresolved」这个问题，
     #: 答案是 0，而**光看分支统计看不出来**——它长得像「模型判不了」。
     result_titles: int = 0
-    #: 模块 1（taskgen）的切片轴：persona 六维、检索模式、归一结论。
+    #: 模块 1（taskgen）的切片轴：persona 维度、检索模式、归一结论。
     #:
     #: ⚠️ **空 dict 的含义是「不是 taskgen 跑的」，不是「taskgen 没生效」**
     #: ——这两者在切片表里长得完全一样，必须能区分。

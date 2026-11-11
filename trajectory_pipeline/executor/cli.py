@@ -141,6 +141,7 @@ from trajectory_pipeline.executor.review_queue import (
     VERDICTS,
     ReviewQueueError,
     apply_verdicts,
+    auto_queue_path,
     collect as collect_reviews,
     dispatch_l6,
     prefill as rq_prefill,
@@ -149,7 +150,7 @@ from trajectory_pipeline.executor.review_queue import (
 )
 from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.executor.steps.visit import visit_site
-from trajectory_pipeline.assembler import builder, views
+from trajectory_pipeline.assembler import builder, pool, views
 from trajectory_pipeline.taskgen.sampler import W1_DEGENERATE_DIMS
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.replay import (
@@ -433,6 +434,21 @@ def _per_site_timeout(args: argparse.Namespace) -> float:
     return float(value)
 
 
+def _archive_root(args: argparse.Namespace) -> Path | None:
+    """P1 存档的**根**（``--out`` 没给就是默认根）。
+
+    ⚠️ **不带 subdir**——``mediabrowse`` 的存档落在 ``<root>/mediabrowse/``，
+    而 L6 派发队列要跟**根**平级（``<root>/review_auto/``）：队列落进存档
+    自己的子目录，就与 P1 存档分家了（派发项找不到 = 静默失效）。
+
+    2026-11-10（H-28）：原先队列一律落 ``DEFAULT_ROOT``，于是 ``--out``
+    指到别处时**队列仍写生产产物目录**——测试里就等于往生产目录写文件，
+    而测试照绿（盘上积了 2218 个 pytest 残留）。
+    """
+    return Path(args.out) if args.out else None
+
+
+
 #: ⚠️ **旧 camoufox 那支的「起浏览器重试一次」已随实现一起退场**
 #: （2026-10-26 换 camofox）。那个重试是为**偶发的浏览器启动超时**
 #: 设计的（短到不打断批次节奏，长到让上一个浏览器进程的崩溃渲染
@@ -671,7 +687,7 @@ async def _run_manual(args: argparse.Namespace) -> int:
         # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。
         per_site_timeout_s=_per_site_timeout(args),
     )
-    archive = P1Archive(Path(args.out) if args.out else None)
+    archive = P1Archive(_archive_root(args))
     records = []
     writer, why = _make_rationale_writer()
     print(f"rationale = {_describe_rationale(writer, why)}")
@@ -741,7 +757,7 @@ async def _run_manual(args: argparse.Namespace) -> int:
             # 增量三十六：L6 人工触发器——run 路径末尾自动派发。
             # 与人工 cli review --write 共用同源判据（REVIEW_BRANCHES），
             # 但落到独立 jsonl（review_auto/l6_dispatch.jsonl）。
-            _dispatch_l6_summary(rec, args.task_id)
+            _dispatch_l6_summary(rec, args.task_id, root=_archive_root(args))
 
     _print_batch_footer(records, failed=failed)
     return 1 if failed else 0
@@ -831,7 +847,7 @@ async def _run_plan(args: argparse.Namespace) -> int:
         # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。
         per_site_timeout_s=_per_site_timeout(args),
     )
-    archive = P1Archive(Path(args.out) if args.out else None)
+    archive = P1Archive(_archive_root(args))
     records = []
     writer, why = _make_rationale_writer()
     print(f"rationale = {_describe_rationale(writer, why)}")
@@ -936,7 +952,7 @@ async def _run_plan(args: argparse.Namespace) -> int:
                 continue
             _print_summary(rec, path)
             # 增量三十六：L6 自动派发——与 _run_manual 同口径。
-            _dispatch_l6_summary(rec, task.task_id)
+            _dispatch_l6_summary(rec, task.task_id, root=_archive_root(args))
 
     _print_batch_footer(records, failed=failed)
     return 1 if failed else 0
@@ -2042,8 +2058,7 @@ async def _mediabrowse_with_driver(args: argparse.Namespace,
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 2
 
-    archive = P1Archive(Path(args.out) if args.out else None,
-                        subdir="mediabrowse")
+    archive = P1Archive(_archive_root(args), subdir="mediabrowse")
 
     print(f"== mediabrowse：{len(urls)} 个 URL，L2 JS-aware 浏览器探针 ==")
     print(f"  task_id = {args.task_id}")
@@ -2244,7 +2259,7 @@ async def _mediabrowse_with_driver(args: argparse.Namespace,
         # trailer_suspect / player_unverified）+ AUTO_REVIEW_NOTES
         # （vlm_error / credential_leak / timeout / driver_missing /
         # driver_error）双轨触发；详见 review_queue.extract_from_browser_result。
-        _dispatch_l6_summary(result, args.task_id)
+        _dispatch_l6_summary(result, args.task_id, root=_archive_root(args))
 
     print(f"\n== 汇总 ==")
     print(f"  branches = {dict(branch_count)}")
@@ -2349,7 +2364,11 @@ def _load_url_lines(path: str) -> list[str]:
 _L6_SUMMARY: Final = "  L6 dispatch: +{written} 条（去重跳过 {skipped}）"
 
 
-def _dispatch_l6_summary(item: Any, task_id: str) -> None:
+def _dispatch_l6_summary(
+    item: Any,
+    task_id: str,
+    root: Path | str | None = None,
+) -> None:
     """把 :func:`review_queue.dispatch_l6` 包装成「一行打印 + 异常吞掉」。
 
     L6 派发是**派发管线**而不是**生产管线**：派发失败不该让整条 CLI
@@ -2358,7 +2377,9 @@ def _dispatch_l6_summary(item: Any, task_id: str) -> None:
     跳过 N 条总比「静默吞掉」强。
     """
     try:
-        written, skipped = dispatch_l6(item, task_id=task_id)
+        written, skipped = dispatch_l6(
+            item, task_id=task_id, queue_path=auto_queue_path(root),
+        )
     except Exception as exc:                              # noqa: BLE001
         print(f"  L6 dispatch fail: {type(exc).__name__}: {exc}",
               file=sys.stderr)
@@ -2391,7 +2412,7 @@ def _urls_of(archive: str, *, limit: int | None) -> list[str]:
 def cmd_gen(args: argparse.Namespace) -> int:
     """采样任务实例并落一份「执行计划」。
 
-    产出单独落盘的必要性：计划里带全量 provenance（persona 六维、
+    产出单独落盘的必要性：计划里带全量 provenance（persona 维度、
     检索模式、兼容性、归一结论），这些字段要在**跑完之后**用于切片出分。
     不落盘就等于让人在跑完后重新回忆"当时喂的是哪个人设"。
     """
@@ -3213,6 +3234,13 @@ def _print_pool_note(root: Path, kind: str) -> None:
     section = meta.get(kind) or {}
     legacy = section.get("legacy") or {}
     if not legacy:
+        # legacy 空有两种成因：**没数据** vs **有数据但按口径不渲染**。
+        # 后者必须印出来——否则「池里没有旧面」会被读成「旧面不存在」，
+        # 而真相是「它在，只是默认不重建」。
+        skipped = int(section.get("legacy_skipped_now") or 0)
+        if skipped:
+            print(f"  分池：旧面 {skipped} 份**未重渲染**"
+                  f"（只读存量，默认不重建；按需重建加 --include-legacy）")
         return
     total = sum(legacy.values())
     parts = " / ".join(f"{surface} {n}" for surface, n in sorted(legacy.items()))
@@ -3246,13 +3274,17 @@ def cmd_build(args: argparse.Namespace) -> int:
     root = Path(args.out) if args.out else DEFAULT_ROOT
     stage = args.stage
     era_filter = getattr(args, "rationale_era", builder.ERA_ALL) or builder.ERA_ALL
+    # 旧面默认**不重渲染**（owner 裁定 2026-11-10）：旧面是只读存量，
+    # 清过的 legacy 池不该自己长回来。要重建旧批次显式加 --include-legacy。
+    include_legacy = bool(getattr(args, "include_legacy", False))
 
     if stage in ("p2", "all"):
         picked = [path.name for path, _reviewed in select_archives(root)]
         rep = builder.build_all(source_root=root, target_root=root,
                                 overwrite=args.overwrite,
                                 archive_filter=picked,
-                                era_filter=era_filter)
+                                era_filter=era_filter,
+                                include_legacy=include_legacy)
         print(f"P1 → P2：{len(rep.archives)} 份存档，"
               f"切出 {rep.total_samples} 条样本，写出 {rep.total_written} 条")
         degraded = sum(a.degraded for a in rep.archives)
@@ -3264,6 +3296,11 @@ def cmd_build(args: argparse.Namespace) -> int:
         if rep.total_era_skipped:
             print(f"  按口径筛掉 {rep.total_era_skipped} 条"
                   f"（--rationale-era {era_filter}）——它们在名单里，只是没落盘")
+        if rep.total_legacy_skipped:
+            # **独立一行**：旧面「按口径没渲染」与「按口径筛掉」是两件事，
+            # 补救命令也不同（前者 --include-legacy，后者 --rationale-era）。
+            print(f"  旧面未重渲染 {rep.total_legacy_skipped} 条"
+                  f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         if rep.total_excluded_units:
             # 访问级剔除（R4-2）：整条 unit 访问了任务声明排除的平台。
             # 必须显式印——否则下一批样本数变少会被读成「采集变差了」。
@@ -3298,7 +3335,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         _print_pool_note(root, "samples")
 
     if stage in ("p3", "all"):
-        vrep = views.build_views_from_dir(root=root, overwrite=args.overwrite)
+        vrep = views.build_views_from_dir(root=root, overwrite=args.overwrite,
+                                          include_legacy=include_legacy)
         print(f"\nP2 → P3：{len(vrep.samples)} 条样本，"
               f"写出 {vrep.total_written} 份视图（每条 {len(views.VIEW_NAMES)} 份）")
         if vrep.total_skipped:
@@ -3309,10 +3347,17 @@ def cmd_build(args: argparse.Namespace) -> int:
             by_view: Counter = Counter()
             for r in vrep.samples:
                 for s in r.skipped:
+                    if pool.LEGACY_SKIP_MARK in s:
+                        # 旧面未渲染：单独一行印，不混进「已存在」那组——
+                        # 两者的补救命令不同，混着印就等于没印。
+                        continue
                     name = s.split("_")[-1].split(" ")[0] or "?"
                     by_view[name] += 1
             for name, n in by_view.most_common():
                 print(f"  {name} 跳过 {n} 份（已存在或写失败；要重建加 --overwrite）")
+        if vrep.total_legacy_skipped:
+            print(f"  旧面未重渲染 {vrep.total_legacy_skipped} 条"
+                  f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {vrep.views_dir}")
         _print_pool_note(root, "views")
 
@@ -3354,6 +3399,8 @@ def cmd_task_view(args: argparse.Namespace) -> int:
 
     root = Path(args.out) if args.out else DEFAULT_ROOT
     overwrite = bool(args.overwrite)
+    # 旧面默认**不重渲染**（owner 裁定 2026-11-10）——同 cmd_build。
+    include_legacy = bool(getattr(args, "include_legacy", False))
     if args.all:
         # 整批：**名单由 select_archives 定**（复核档优先）。直接 glob 会让
         # 同一条 run 出两份 T 视图，其中复核档那份的 run_id 被派生成
@@ -3365,12 +3412,16 @@ def cmd_task_view(args: argparse.Namespace) -> int:
             backfill_from_filename=bool(
                 getattr(args, "backfill_from_filename", True),
             ),
+            include_legacy=include_legacy,
         )
         # 跳过原因归组打印（与 cmd_build 的 P3 段同款纪律——
         # 二次跑会跳过 N 条，逐条印是噪声）。
         by_reason: Counter = Counter()
         for r in results.results:
             for s in r.skipped:
+                if pool.LEGACY_SKIP_MARK in s:
+                    # 旧面未渲染：单独一行印，不混进「已存在」那组。
+                    continue
                 # s 形如 "T001__a1.json: 已存在" 或 "T001__a1: 缺 payload 键 [...]"
                 # 抓 ``:`` 后的原因段做归组
                 reason = s.split(":", 1)[1].strip() if ":" in s else s
@@ -3380,6 +3431,9 @@ def cmd_task_view(args: argparse.Namespace) -> int:
               f"（每份单文件三视图合一）")
         for reason, n in by_reason.most_common():
             print(f"  跳过 {n} 份（{reason}；要重建加 --overwrite）")
+        if results.total_legacy_skipped:
+            print(f"  旧面未重渲染 {results.total_legacy_skipped} 份"
+                  f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {results.target_dir}")
         _print_pool_note(root, "task_views")
         return 0
@@ -3398,6 +3452,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
                 continue
             rep = tv.build_task_view(
                 archive, root=root, overwrite=overwrite, source_archive=p.name,
+                include_legacy=include_legacy,
             )
             if rep.written:
                 print(f"  ✓ {rep.trajectory_id} → {p.name}", flush=True)
@@ -3406,7 +3461,6 @@ def cmd_task_view(args: argparse.Namespace) -> int:
                 print(f"  跳过 {rep.trajectory_id}（{reason}；要重建加 --overwrite）",
                       flush=True)
         # 分池账（方案 23 R3-3）：单文件路径也落一次，别让 pool_meta 只认 --all
-        from trajectory_pipeline.assembler import pool
         from trajectory_pipeline.storage import task_views_dir
         pool.record_pool(task_views_dir(root))
         return 0
@@ -4202,7 +4256,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--tasks", default=str(
         Path(__file__).resolve().parents[1] / "taskgen" / "data" / "tasks.yaml"))
     gen.add_argument("--strata", action="append",
-                     default=["genre", "verbal_style", "urgency"],
+                     default=["genre", "popularity", "persona_presence"],
                      help="分层维度，可重复")
     gen.add_argument("--all-modes", action="store_true",
                      help="连 W1 跑不了的骨架一起采（需自行确认判分标准匹配）")
@@ -4499,6 +4553,10 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--overwrite", action="store_true",
                     help="覆盖已落盘的产物。**默认不覆盖**——重建批次不该"
                          "悄悄抹掉别人标好的样本")
+    bd.add_argument("--include-legacy", action="store_true",
+                    help="**也重建旧面**（obscura-1 / camoufox-1）的 P2/P3。"
+                         "默认不重建——旧面是只读存量（owner 裁定 2026-11-10），"
+                         "清过的 legacy 池不该自己长回来")
     bd.add_argument("--rationale-era",
                     choices=(builder.ERA_ALL,
                              "pre_action", "post_hoc"),
@@ -4521,6 +4579,10 @@ def build_parser() -> argparse.ArgumentParser:
     tv.add_argument("--overwrite", action="store_true",
                     help="覆盖已存在的 T 视图。**默认不覆盖**——重建批次不该"
                          "悄悄抹掉别人刚标好的视图")
+    tv.add_argument("--include-legacy", action="store_true",
+                    help="**也重建旧面**（obscura-1 / camoufox-1）的任务视图。"
+                         "默认不重建——旧面是只读存量（owner 裁定 2026-11-10），"
+                         "清过的 legacy 池不该自己长回来")
     tv.add_argument("--backfill-from-filename", dest="backfill_from_filename",
                     action="store_true", default=True,
                     help="**过渡期策略**：存量 P1 JSON 顶层缺 ``run_id`` 时，"

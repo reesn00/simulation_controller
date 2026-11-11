@@ -16,352 +16,264 @@ personas:
 - persona_id: binge-悬疑
   genre: 悬疑
   popularity: 长尾
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: false
 - persona_id: binge-科幻
   genre: 科幻
   popularity: 长尾
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: true
 - persona_id: binge-动作
   genre: 动作
   popularity: 长尾
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: true
 - persona_id: binge-恐怖
   genre: 恐怖
   popularity: 长尾
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: false
 - persona_id: office-喜剧
   genre: 喜剧
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: office-爱情
   genre: 爱情
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: office-动作
   genre: 动作
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: false
 - persona_id: office-战争
   genre: 战争
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: cinephile-战争
   genre: 战争
   popularity: 头部
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: cinephile-悬疑
   genre: 悬疑
   popularity: 头部
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: cinephile-喜剧
   genre: 喜剧
   popularity: 头部
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: false
 - persona_id: cinephile-纪录片
   genre: 纪录片
   popularity: 头部
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: student-动画
   genre: 动画
   popularity: 冷门
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 纯描述
   has_standard: true
 - persona_id: student-科幻
   genre: 科幻
   popularity: 冷门
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 纯描述
   has_standard: false
 - persona_id: student-喜剧
   genre: 喜剧
   popularity: 冷门
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 纯描述
   has_standard: true
 - persona_id: student-爱情
   genre: 爱情
   popularity: 冷门
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 纯描述
   has_standard: true
 - persona_id: parent-动画
   genre: 动画
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: false
 - persona_id: parent-综艺
   genre: 综艺
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: parent-纪录片
   genre: 纪录片
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: parent-喜剧
   genre: 喜剧
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: commuter-喜剧
   genre: 喜剧
   popularity: 头部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 纯描述
   has_standard: false
 - persona_id: commuter-综艺
   genre: 综艺
   popularity: 头部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 纯描述
   has_standard: true
 - persona_id: commuter-爱情
   genre: 爱情
   popularity: 头部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 纯描述
   has_standard: true
 - persona_id: commuter-战争
   genre: 战争
   popularity: 头部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 纯描述
   has_standard: false
 - persona_id: doc-纪录片
   genre: 纪录片
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 指名
   has_standard: true
 - persona_id: doc-战争
   genre: 战争
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 指名
   has_standard: true
 - persona_id: doc-悬疑
   genre: 悬疑
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 指名
   has_standard: true
 - persona_id: doc-科幻
   genre: 科幻
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 指名
   has_standard: false
 - persona_id: variety-综艺
   genre: 综艺
   popularity: 头部
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: true
 - persona_id: variety-喜剧
   genre: 喜剧
   popularity: 头部
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: true
 - persona_id: variety-科幻
   genre: 科幻
   popularity: 头部
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: false
 - persona_id: variety-爱情
   genre: 爱情
   popularity: 头部
-  urgency: 立即
-  verbal_style: 强口语
   persona_presence: 轻
   task_specificity: 指名
   has_standard: true
 - persona_id: half-科幻
   genre: 科幻
   popularity: 长尾
-  urgency: 本周
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: half-恐怖
   genre: 恐怖
   popularity: 长尾
-  urgency: 本周
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: false
 - persona_id: half-悬疑
   genre: 悬疑
   popularity: 长尾
-  urgency: 本周
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: half-爱情
   genre: 爱情
   popularity: 长尾
-  urgency: 本周
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: horror-恐怖
   genre: 恐怖
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: horror-动作
   genre: 动作
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: false
 - persona_id: horror-悬疑
   genre: 悬疑
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: horror-科幻
   genre: 科幻
   popularity: 冷门
-  urgency: 闲时
-  verbal_style: 书面
   persona_presence: 无
   task_specificity: 半指代
   has_standard: true
 - persona_id: kids-动画
   genre: 动画
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: false
 - persona_id: kids-综艺
   genre: 综艺
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: kids-纪录片
   genre: 纪录片
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true
 - persona_id: kids-喜剧
   genre: 喜剧
   popularity: 腰部
-  urgency: 本周
-  verbal_style: 口语
   persona_presence: 重
   task_specificity: 指名
   has_standard: true

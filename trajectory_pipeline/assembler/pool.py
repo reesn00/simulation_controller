@@ -13,8 +13,16 @@
 
 - **归档** = 移动，不是删除。磁盘上仍读得出来（``legacy/<surface>/<kind>/``），
   需要回溯旧批次时它还在那里——「退役 ≠ 失忆」。
-- **只读存量** = 新批次不再往里写。重建旧面 P1 时（``--all --overwrite``）
-  仍会重渲染到对应 legacy 池，但那是重建既有证据，不是新增交付样本。
+- **只读存量** = 新批次不再往里写。**默认连重建都不渲染**
+  （owner 裁定 **2026-11-10**）：``cli build`` / ``cli task-view`` 只构
+  交付面，旧面 P2 / P3 / T **不重渲染**。
+
+  ⚠️ **「退役 ≠ 失忆」指的是「存量证据仍读得出来」**（P1 源档在盘上、
+  池里的旧文件仍在、``pool_meta.json`` 记着它曾经有多少），**不是**
+  「每次重建都把旧面再渲染一遍」。后者会让清过的池自己长回来——
+  清理不持久，而读的人只看到「又多了 66 份」，看不到为什么。
+
+  真要重建旧面（回溯某个旧批次）：``--include-legacy``，**按需**、显式。
 
 **分池是写入时的动作，不是读取时的推导**
 ------------------------------------------
@@ -83,6 +91,40 @@ KNOWN_SURFACES = frozenset({
 def is_delivery(surface: str) -> bool:
     """这个面进交付池吗？"""
     return surface == DELIVERY_SURFACE
+
+
+#: 旧面跳过时用的**稳定标记**。CLI 按它把「旧面未渲染」从「已存在／写失败」
+#: 那组里摘出来——两者的处置完全不同（后者加 ``--overwrite`` 重来，
+#: 前者加 ``--include-legacy`` 重建旧面），混在一组里印就等于没印。
+LEGACY_SKIP_MARK = "旧面只读存量"
+
+#: 旧面跳过的原因全文（印在 stdout / 记进 ``skipped``）。
+LEGACY_SKIP_REASON = (
+    f"{LEGACY_SKIP_MARK}：默认不重渲染（按需重建加 --include-legacy）"
+)
+
+
+def should_render(surface: str, *, include_legacy: bool = False) -> bool:
+    """这个面**要不要被重渲染**落盘？
+
+    交付面永远要。旧面**默认不要**（owner 裁定 2026-11-10，见模块
+    docstring）：旧面是只读存量，重建它是**按需**动作（``--include-legacy``），
+    不是默认路径。
+
+    ⚠️ **这与「迁移」是两件事**：已经躺在交付目录里的旧面文件仍要**挪**进
+    legacy（:func:`migrate_samples` 等）——那是「并池是写入时的动作」；
+    本函数管的是**要不要新渲染**。前者不挪就混池，后者渲染就长回旧面。
+
+    ⚠️ **认不出的面直接抛**（同 :func:`pool_root`）：静默把它当成「旧面」
+    跳掉，就是把「配错了」伪装成「按口径没渲染」——两者处置完全不同，
+    而报表上只表现为「少了几条」。
+    """
+    if surface not in KNOWN_SURFACES:
+        raise ValueError(
+            f"认不出的工具面 {surface!r}（已知：{sorted(KNOWN_SURFACES)}）"
+            "——不猜、不静默当旧面"
+        )
+    return bool(include_legacy) or is_delivery(surface)
 
 
 def pool_root(root: str | Path, surface: str) -> Path:
@@ -243,12 +285,19 @@ def record_pool(
     moved: Sequence[tuple[str, str]] = (),
     unclassified: Sequence[str] = (),
     primary_glob: str = "*.json",
+    legacy_skipped: int = 0,
 ) -> Path:
     """把一个 kind 的池现状写进 ``pool_meta.json``（原子写）。
 
     每个 kind 一段：交付面还剩多少、各旧面归档了多少、本次移动了多少、
     哪些文件认不出。顶层带 ``delivery_surface`` / ``updated_at`` /
     ``note``——**池变小不是质量变好**那句话要跟数据在一起，不能只写在文档里。
+
+    Args:
+        legacy_skipped: 本次**因为旧面默认不重渲染而没渲染**的条数。
+            记进去是因为「池里 legacy 为空」有两种成因（**没数据** vs
+            **有数据但按口径不渲染**），而两者在报表上长得一模一样。
+            不记这条，下一个读 ``pool_meta.json`` 的人会把口径当事故。
     """
     d = Path(delivery_dir)
     root = d.parent
@@ -268,13 +317,15 @@ def record_pool(
     payload["delivery_surface"] = DELIVERY_SURFACE
     payload["legacy_dir"] = LEGACY_DIRNAME
     payload["note"] = (
-        "旧面按只读存量归档；交付面池变小不是质量变好——"
+        "旧面按只读存量归档，**默认不重渲染**（按需重建加 --include-legacy）；"
+        "交付面池变小不是质量变好——"
         "读分母前先看这一段（方案 23 R-5）"
     )
     payload[d.name] = {
         "delivery": _count(d, primary_glob),
         "legacy": _legacy_counts(root, d.name, primary_glob),
         "moved_now": len(moved),
+        "legacy_skipped_now": legacy_skipped,
         "unclassified": list(unclassified),
         "updated_at": _now_iso(),
     }

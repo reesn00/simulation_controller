@@ -800,6 +800,10 @@ class ViewResult:
     sample_id: str
     written: int = 0
     skipped: tuple[str, ...] = ()
+    #: **旧面默认不重渲染**（owner 裁定 2026-11-10）而没落盘的条数。
+    #: 单条样本 ⇒ 只可能是 0 或 1；单独计数是为了让调用方能把
+    #: 「旧面没渲染」与「已存在／写失败」分开处置。
+    legacy_skipped: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -808,6 +812,8 @@ class ViewBuildReport:
     total_written: int = 0
     total_skipped: int = 0
     views_dir: str = ""
+    #: 旧面默认不重渲染而没落盘的**总条数**（报表上的独立一行）。
+    total_legacy_skipped: int = 0
 
     @property
     def ok(self) -> bool:
@@ -819,6 +825,7 @@ def build_views(
     *,
     root: str | Path | None = None,
     overwrite: bool = False,
+    include_legacy: bool = False,
 ) -> ViewResult:
     """把一条 **P2 JSON** 渲染成三份 P3 并落盘。
 
@@ -826,6 +833,10 @@ def build_views(
     （:func:`trajectory_pipeline.storage.write_p3.write_views`）**——原子写、
     默认不覆盖、失败进 ``skipped`` 不抛出的语义都在 storage 一侧，这里只
     把渲染好的 payload 交给它。改存储布局不动渲染，反之亦然。
+
+    ⚠️ **旧面默认不重渲染**（owner 裁定 2026-11-10）：旧面样本的视图落
+    legacy 池是**按需**的（``include_legacy=True``），默认跳掉并记进
+    ``legacy_skipped``——否则清过的池会自己长回来。
     """
     sid = str(sample.get("sample_id") or "")
     if not sid:
@@ -840,6 +851,15 @@ def build_views(
             sample_id=sid,
             written=0,
             skipped=(f"{sid} (<no-tool_surface: {surface!r}>)",),
+        )
+    # 旧面默认**不重渲染**（owner 裁定 2026-11-10）：旧面是只读存量，
+    # 不自己长回来。要重建旧批次显式传 ``include_legacy=True``。
+    if not pool.should_render(surface, include_legacy=include_legacy):
+        return ViewResult(
+            sample_id=sid,
+            written=0,
+            skipped=(f"{sid} (旧面 {surface}：{pool.LEGACY_SKIP_REASON})",),
+            legacy_skipped=1,
         )
     target_root = pool.pool_root(views_dir(root).parent, surface)
 
@@ -861,6 +881,7 @@ def build_views_from_dir(
     *,
     root: str | Path | None = None,
     overwrite: bool = False,
+    include_legacy: bool = False,
 ) -> ViewBuildReport:
     """读一整个 P2 目录，逐条渲染 P3。
 
@@ -879,6 +900,7 @@ def build_views_from_dir(
     results: list[ViewResult] = []
     total_written = 0
     total_skipped = 0
+    total_legacy_skipped = 0
     for path in sorted(base.glob("*.json")):
         try:
             sample = json.loads(path.read_text(encoding="utf-8"))
@@ -890,18 +912,24 @@ def build_views_from_dir(
             )
             total_skipped += 1
             continue
-        res = build_views(sample, root=root, overwrite=overwrite)
+        res = build_views(
+            sample, root=root, overwrite=overwrite,
+            include_legacy=include_legacy,
+        )
         results.append(res)
         total_written += res.written
         total_skipped += len(res.skipped)
+        total_legacy_skipped += res.legacy_skipped
     pool.record_pool(
         views_dir(root),
         moved=migration.moved,
         unclassified=migration.unclassified,
         primary_glob="*_meta.json",
+        legacy_skipped=total_legacy_skipped,
     )
     return ViewBuildReport(
-        tuple(results), total_written, total_skipped, str(views_dir(root))
+        tuple(results), total_written, total_skipped, str(views_dir(root)),
+        total_legacy_skipped,
     )
 
 

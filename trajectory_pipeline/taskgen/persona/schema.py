@@ -1,6 +1,6 @@
 """PersonaProfile——用户画像的值对象与**取值域定义**。
 
-六个维度每个都对应一个**可观察的语言特征**，不是凭空设的标签
+四个维度每个都对应一个**可观察的语言特征**，不是凭空设的标签
 （对照见 :mod:`trajectory_pipeline.taskgen.persona.lexicon`）：
 
 ============  ==========================  ==================================
@@ -8,13 +8,11 @@
 ============  ==========================  ==================================
 genre         领域词汇（"科幻"/"纪录片"）  搜索词构造、站点类型预期
 popularity    用不用站点名/别名/译名      头部站直达 vs 长尾多站遍历
-urgency       催促语、"今晚就看"          首轮长度、单站点停留预算
-verbal_style  句长、语气词、网络用语      表述生成长度与噪声容差
 persona_presence  身份线索句             首轮附带信息量
 task_specificity   指名 vs 指代          搜索查询构造难度
 ============  ==========================  ==================================
 
-⚠️ **两个字段与方案 §3.1.2 的偏离，都是为了让「来源纪律」真正成立**：
+⚠️ **三处与方案 §3.1.2 的偏离，都是为了让「来源纪律」真正成立**：
 
 **① ``content_tier`` 不在画像上，在组合层推导。**
 方案把 ``content_tier``（A/B/C，评估切片轴）列为 PersonaProfile 的字段，
@@ -31,6 +29,17 @@ task_specificity   指名 vs 指代          搜索查询构造难度
 实际渲染成什么由 :mod:`renderer` 依据骨架的 ``title_available`` 决定，
 两个值分别落进 provenance（``requested`` / ``actual``）。
 **人为设定不得覆盖事实**，这条比"画像该有几个字段"重要。
+
+**③ ``urgency`` / ``verbal_style`` 两维已删**（2026-11-11）。
+方案把它们列为 persona 维度，但它们在 W1 的唯一可观察效果是首轮里的
+**时间限定**与**句尾语气词**——那两样对 agent prompt 没有意义
+（详见 :mod:`trajectory_pipeline.taskgen.persona.lexicon` 的删除说明）。
+更要紧的是**它们是假切片轴**：留在画像上，切片表就会报
+「立即 × 长尾」与「闲时 × 长尾」的表现差异，而两组的首轮表述
+除了那几个修饰词之外完全相同——差异是纯噪声，却长得像
+"发现了一个显著问题"。**落不了地的维度必须从画像上删掉**，
+否则它就是 :data:`~trajectory_pipeline.taskgen.sampler.SLICE_AXIS_FIELDS`
+里的一行噪声。
 """
 
 from __future__ import annotations
@@ -48,8 +57,6 @@ Genre: Final = Literal[
     "动作", "悬疑", "科幻", "喜剧", "纪录片", "动画", "综艺", "恐怖", "爱情", "战争",
 ]
 Popularity: Final = Literal["头部", "腰部", "长尾", "冷门"]
-Urgency: Final = Literal["立即", "本周", "闲时"]
-VerbalStyle: Final = Literal["书面", "口语", "强口语"]
 PersonaPresence: Final = Literal["无", "轻", "重"]
 Specificity: Final = Literal["指名", "半指代", "纯描述"]
 Tier: Final = Literal["A", "B", "C"]
@@ -61,8 +68,6 @@ DIMENSION_DOMAIN: Final[dict[str, tuple[str, ...]]] = {
     "genre": ("动作", "悬疑", "科幻", "喜剧", "纪录片",
               "动画", "综艺", "恐怖", "爱情", "战争"),
     "popularity": ("头部", "腰部", "长尾", "冷门"),
-    "urgency": ("立即", "本周", "闲时"),
-    "verbal_style": ("书面", "口语", "强口语"),
     "persona_presence": ("无", "轻", "重"),
     "task_specificity": ("指名", "半指代", "纯描述"),
 }
@@ -80,8 +85,6 @@ class PersonaProfile(BaseModel):
     persona_id: str = Field(min_length=1)
     genre: Genre
     popularity: Popularity
-    urgency: Urgency
-    verbal_style: VerbalStyle
     persona_presence: PersonaPresence
     task_specificity: Specificity = "指名"
 
@@ -141,8 +144,6 @@ class PersonaProfile(BaseModel):
             "persona_id": self.persona_id,
             "genre": self.genre,
             "popularity": self.popularity,
-            "urgency": self.urgency,
-            "verbal_style": self.verbal_style,
             "persona_presence": self.persona_presence,
             "task_specificity": self.task_specificity,
             "has_standard": self.has_standard,
@@ -154,7 +155,7 @@ def load_profile(data: object, *, source: str = "") -> PersonaProfile:
 
     单独提供而不是只靠 pydantic 的 ``model_validate``，是为了让**报错信息
     指明是哪个 persona 哪一维出错**。persona 库是人手写的 yaml，
-    一次笔误（写成"强口语 "带尾空格、或 ``"口语化"``）会让整批采样静默少一档，
+    一次笔误（写成 ``"长尾 "`` 带尾空格、或 ``"中尾部"``）会让整批采样静默少一档，
     而错误信息里没有 persona_id 的话根本查不出是哪一条。
     """
     if not isinstance(data, dict):

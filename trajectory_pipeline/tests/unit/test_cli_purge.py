@@ -36,7 +36,11 @@ from trajectory_pipeline.executor import cli
 
 
 def _ns(**kw):
-    defaults = {"out": None, "run_id": "a1", "apply": False}
+    assert "out" in kw, (
+        "测试必须显式给 out——out=None = 落 DEFAULT_ROOT（生产产物目录）；"
+        "purge 还能按 apply 真删，删到生产目录就是删真存档"
+    )
+    defaults = {"run_id": "a1", "apply": False}
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 

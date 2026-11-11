@@ -321,7 +321,7 @@ P1 RunRecord.driver  ──surface_of_driver()──▶  工具面  ──▶  P
 | fail-closed 纪律、`None` 不中断 / `False` 才中断 | **一字不动** |
 | 正负样本纯度（四支「没判出来」不入池） | **一字不动** |
 | `toolcatalog` 唯一真源的地位 | **不动**（只是多一条工具面轴） |
-| persona 六维 | **不动** |
+| persona 维度 | **不动** |
 | 门禁 `testpaths` | **不动** |
 | P1 / P2 / P3 **既有字段**的语义与形状 | **一字不动**（只**加**键，不改键） |
 

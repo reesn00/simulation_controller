@@ -54,7 +54,11 @@ def _write_batch(root: Path, *arcs):
 
 def _ns(**kw):
     import argparse
-    defaults = {"out": None, "stage": "all", "overwrite": False,
+    assert "out" in kw, (
+        "测试必须显式给 out——out=None = 落 DEFAULT_ROOT（生产产物目录），"
+        "测试写生产目录不报错、只留脏文件（2026-11-10 · H-28）"
+    )
+    defaults = {"stage": "all", "overwrite": False,
                 "limit": 0, "show": 0, "rationale_era": "all"}
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -150,6 +154,30 @@ class Test产物隔离:
         cli.cmd_build(_ns(out=str(tmp_path), stage="p2"))
         rep = check_root(tmp_path)
         assert len(rep.archives) == 1
+
+
+class Test旧面默认不重建:
+    """旧面是只读存量（owner 裁定 **2026-11-10**）：**默认不重渲染**。
+
+    清理过的 legacy 池不该自己长回来——而「没重建」必须**看得见**，
+    否则「池里 legacy 为空」会被读成「旧面不存在」。
+    """
+
+    def test_默认不重建旧面(self, tmp_path, capsys):
+        _write_batch(tmp_path, _archive(),
+                     _archive(task_id="T002", driver="camoufox"))
+        assert cli.cmd_build(_ns(out=str(tmp_path), stage="p2")) == 0
+        out = capsys.readouterr().out
+        assert "旧面未重渲染" in out, "跳过的旧面必须被点名——否则批次看起来只是少了几条"
+        assert not (tmp_path / "legacy").exists(), "旧面默认不重渲染"
+
+    def test_显式include_legacy才重建(self, tmp_path):
+        _write_batch(tmp_path, _archive(),
+                     _archive(task_id="T002", driver="camoufox"))
+        assert cli.cmd_build(_ns(out=str(tmp_path), stage="p2",
+                                 include_legacy=True)) == 0
+        legacy = tmp_path / "legacy" / "camoufox-1" / "samples"
+        assert {p.name for p in legacy.glob("*.json")} == {"T002__a1.json"}
 
 
 class Test复核档优先:

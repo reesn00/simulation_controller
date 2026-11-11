@@ -1157,12 +1157,17 @@ def to_task_meta(
 class TaskViewRenderResult:
     """一次 :func:`build_task_view` 的结果。"""
 
-    __slots__ = ("trajectory_id", "written", "skipped")
+    __slots__ = ("trajectory_id", "written", "skipped", "legacy_skipped")
 
-    def __init__(self, trajectory_id: str, written: int, skipped: tuple[str, ...]):
+    def __init__(self, trajectory_id: str, written: int, skipped: tuple[str, ...],
+                 legacy_skipped: int = 0):
         self.trajectory_id = trajectory_id
         self.written = written
         self.skipped = skipped
+        #: **旧面默认不重渲染**（owner 裁定 2026-11-10）而没落盘的条数。
+        #: 单份存档 ⇒ 0 或 1。单独计数是为了让调用方能把「旧面没渲染」
+        #: 与「已存在／写失败」分开处置——两者的补救命令不同。
+        self.legacy_skipped = legacy_skipped
 
     @property
     def ok(self) -> bool:
@@ -1181,6 +1186,7 @@ def build_task_view(
     root: str | Path | None = None,
     overwrite: bool = False,
     source_archive: str = "",
+    include_legacy: bool = False,
 ) -> TaskViewRenderResult:
     """把一份 P1 JSON dict 渲染成 T 视图 dict + 落盘到 storage。
 
@@ -1200,6 +1206,9 @@ def build_task_view(
         source_archive: 据以生成的 P1 文件名（不含目录），写进
             ``meta.source_archive``。批量/单文件路径传 ``path.name``；
             默认空串（「不知道」不冒充文件名）。
+        include_legacy: **旧面也渲染**（默认 False）。旧面是只读存量
+            （owner 裁定 2026-11-10）：默认**不重渲染**——否则清过的
+            legacy 池会自己长回来。按需重建旧批次时显式传 True。
 
     Returns:
         :class:`TaskViewRenderResult`——``written`` 1 表示落盘成功，
@@ -1222,6 +1231,15 @@ def build_task_view(
     # ``legacy/<surface>/task_views/``。面从源存档的 ``driver`` 折算
     # （:func:`_surface_of`）——认不出的 driver 直接抛，不回落。
     surface = _surface_of(archive)
+    # 旧面默认**不重渲染**（owner 裁定 2026-11-10）：旧面是只读存量，
+    # 不自己长回来。要重建旧批次显式传 ``include_legacy=True``。
+    if not pool.should_render(surface, include_legacy=include_legacy):
+        return TaskViewRenderResult(
+            trajectory_id=trajectory_id,
+            written=0,
+            skipped=(f"{trajectory_id} (旧面 {surface}：{pool.LEGACY_SKIP_REASON})",),
+            legacy_skipped=1,
+        )
     target_root = pool.pool_root(storage_task_views_dir(root).parent, surface)
     messages = to_task_messages(archive)
     openai_msgs = to_task_openai_messages(archive)
@@ -1276,7 +1294,8 @@ class TaskViewBatchReport:
     ``total_skipped`` 计数与 ``target_dir`` 字符串（给 CLI 打印落点用）。
     """
 
-    __slots__ = ("results", "total_written", "total_skipped", "target_dir")
+    __slots__ = ("results", "total_written", "total_skipped", "target_dir",
+                 "total_legacy_skipped")
 
     def __init__(
         self,
@@ -1284,17 +1303,22 @@ class TaskViewBatchReport:
         total_written: int,
         total_skipped: int,
         target_dir: str,
+        total_legacy_skipped: int = 0,
     ):
         self.results = results
         self.total_written = total_written
         self.total_skipped = total_skipped
         self.target_dir = target_dir
+        #: 旧面默认不重渲染（owner 裁定 2026-11-10）而没落盘的**总条数**
+        #: ——报表上的独立一行，不与「已存在／写失败」混算。
+        self.total_legacy_skipped = total_legacy_skipped
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return (
             f"TaskViewBatchReport(results={len(self.results)}, "
             f"total_written={self.total_written}, "
             f"total_skipped={self.total_skipped}, "
+            f"total_legacy_skipped={self.total_legacy_skipped}, "
             f"target_dir={self.target_dir!r})"
         )
 
@@ -1306,6 +1330,7 @@ def build_all_task_views(
     archive_filter: tuple[str, ...] | None = None,
     overwrite: bool = False,
     backfill_from_filename: bool = True,
+    include_legacy: bool = False,
 ) -> TaskViewBatchReport:
     """读一整个 P1 目录，逐份渲染 T 视图并落盘。
 
@@ -1338,6 +1363,10 @@ def build_all_task_views(
             只在 T 渲染期生效），记 WARNING 级「过渡期缓兵之计」。明确要
             走纪律路径（缺字段就 skipped）时显式传 False。
             新 P1 自带后这条回填无操作（不覆盖现成值）。
+        include_legacy: **旧面也渲染**（默认 False）。同
+            :func:`build_task_view`——旧面是只读存量，默认不重渲染
+            （owner 裁定 2026-11-10）。**迁移**（把交付目录里已存在的
+            旧面文件挪进 legacy）照旧做。
 
     Returns:
         :class:`TaskViewBatchReport`——一次返回整批 ``TaskViewRenderResult``。
@@ -1357,6 +1386,7 @@ def build_all_task_views(
     results: list[TaskViewRenderResult] = []
     total_written = 0
     total_skipped = 0
+    total_legacy_skipped = 0
 
     for path in sorted(src.glob("*.json")):
         if "__" not in path.stem:
@@ -1405,13 +1435,19 @@ def build_all_task_views(
             root=target_root,
             overwrite=overwrite,
             source_archive=path.name,
+            include_legacy=include_legacy,
         )
         results.append(res)
         total_written += res.written
         total_skipped += len(res.skipped)
+        total_legacy_skipped += res.legacy_skipped
     pool.record_pool(
-        out_dir, moved=migration.moved, unclassified=migration.unclassified
+        out_dir,
+        moved=migration.moved,
+        unclassified=migration.unclassified,
+        legacy_skipped=total_legacy_skipped,
     )
     return TaskViewBatchReport(
         tuple(results), total_written, total_skipped, str(out_dir),
+        total_legacy_skipped,
     )

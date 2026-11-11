@@ -12,7 +12,7 @@
     ⑥ scene_block      现场读数（页面标题 / 每步观察 / 正文预览）
     ⑦ rubric_block     尺子（条款原文 / 分支表 / 前置事实 / 口径代）
     ⑧ trajectory_block T 视图（per-Run 完整任务视图）
-    ⑨ persona_block    persona 六维
+    ⑨ persona_block    persona 维度
     ⑩ sft_block        **P3 训练视图**（SFT 训练真正吃的 openai + meta）
 
 ⚠️ **⑧ 与 ⑩ 不是一回事**：⑧ 读 ``task_views/``（T 视图，P1 的另一份渲染，
@@ -506,7 +506,7 @@ def render_sft_block(sample: Mapping[str, Any] | None, *, tid: str) -> str:
 
 
 def render_persona_block(row: Mapping[str, Any]) -> str:
-    """⑨ persona 六维。"""
+    """⑨ persona 维度（切片轴）。"""
     persona = row.get("persona") if isinstance(row.get("persona"), Mapping) else {}
     if not persona:
         return "（本行没有 persona）"

@@ -161,7 +161,7 @@ def sample_tasks(
     library: PersonaLibrary,
     skeletons: Sequence[TaskSkeleton] | None = None,
     seed: int = 0,
-    strata: Sequence[str] = ("genre", "verbal_style", "urgency"),
+    strata: Sequence[str] = ("genre", "popularity", "persona_presence"),
     w1_only: bool = True,
 ) -> SampleBatch:
     """交叉采样 ``n`` 个任务实例。
@@ -278,7 +278,7 @@ def sample_tasks(
 
 #: **切片分母必须用这一套字段**，不能用 persona 的维度字段。
 #:
-#: persona 六维里 ``task_specificity`` 在 W1 下**会降级**（见
+#: persona 各维里 ``task_specificity`` 在 W1 下**会降级**（见
 #: :mod:`~trajectory_pipeline.taskgen.persona.renderer`）：半指代降级为指名、
 #: 无片名骨架上指名降级为半指代，而 ``provenance`` 里
 #: ``requested_specificity`` 记的是**请求**、``actual_specificity`` 记的是
@@ -286,8 +286,8 @@ def sample_tasks(
 #:
 #: 用 requested 算分母，得到的是「半指代维度表现正常」——一个**根本没发生**
 #: 的实验有了结论，且比没有这个维度更糟（它让退化的那一维看起来被验证过）。
-SLICE_AXIS_FIELDS: Final = ("genre", "popularity", "urgency", "verbal_style",
-                            "persona_presence", "actual_specificity")
+SLICE_AXIS_FIELDS: Final = ("genre", "popularity", "persona_presence",
+                            "actual_specificity")
 
 #: 这些维度在 W1 下**必然退化**，报健康度时必须显式点名。
 #:

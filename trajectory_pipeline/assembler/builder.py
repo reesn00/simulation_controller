@@ -118,6 +118,10 @@ class ArchiveBuildResult:
     #: ``(unit, platform)`` 明细——只报数会让「剔了哪些」不可审计。
     excluded_units: int = 0
     excluded_detail: tuple[tuple[str, str], ...] = ()
+    #: **旧面默认不重渲染**（owner 裁定 2026-11-10）而没落盘的条数。
+    #: 单独计数而不是混进 ``skipped``：处置不同（``--include-legacy``
+    #: 才重建），混在一起印就等于没印。
+    legacy_skipped: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +138,10 @@ class BuildReport:
     total_era_skipped: int = 0
     #: 访问级剔除的总账（R4-2）：整条 unit 没了，不是单步。
     total_excluded_units: int = 0
+    #: **旧面默认不重渲染**（owner 裁定 2026-11-10）而没落盘的总条数。
+    #: 必须是报表上的**独立一行**——「池里 legacy 为空」有两种成因
+    #: （没数据 / 有数据但按口径不渲染），混进别的计数里就分不出来了。
+    total_legacy_skipped: int = 0
 
     @property
     def ok(self) -> bool:
@@ -329,6 +337,7 @@ def build_from_archive(
     root: str | Path | None = None,
     overwrite: bool = False,
     era_filter: str = ERA_ALL,
+    include_legacy: bool = False,
 ) -> ArchiveBuildResult:
     """把一份 P1 存档切成 N 条样本并落盘。
 
@@ -343,6 +352,10 @@ def build_from_archive(
             用它是为了**构建同口径批次**：混批的伤害见
             :attr:`BuildReport.mixed_era`。筛掉的记进 ``skipped``
             并单独计数，**不静默消失**。
+        include_legacy: **旧面也渲染**（默认 False）。旧面是只读存量
+            （owner 裁定 2026-11-10）：默认**不重渲染**——否则清过的
+            legacy 池会自己长回来，而读的人只看到「又多了 N 份」。
+            按需重建旧批次时显式传 True。
 
     Returns:
         单份存档的落盘结果。**异常只发生在档本身坏到切不出**（已
@@ -363,6 +376,7 @@ def build_from_archive(
     degraded = 0
     neg = 0
     era_skipped = 0
+    legacy_skipped = 0
     # 分代账按**切出来的样本**记，不受过滤与 overwrite 影响：
     # 它描述的是「这份存档里有什么」。
     pre_action = sum(1 for s in samples
@@ -373,6 +387,15 @@ def build_from_archive(
         if era_filter != ERA_ALL and s.rationale_era != era_filter:
             era_skipped += 1
             skipped.append(f"{s.sample_id} (rationale_era={s.rationale_era or '无'})")
+            continue
+        # 旧面默认**不重渲染**（owner 裁定 2026-11-10）：旧面是只读存量，
+        # 不自己长回来。认不出的面在这里抛（``pool.should_render``）——
+        # 不猜，也不静默当成「旧面」跳掉。
+        if not pool.should_render(s.tool_surface, include_legacy=include_legacy):
+            legacy_skipped += 1
+            skipped.append(
+                f"{s.sample_id} (旧面 {s.tool_surface}：{pool.LEGACY_SKIP_REASON})"
+            )
             continue
         out_dir = samples_dir(pool.pool_root(base_root, s.tool_surface))
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -403,6 +426,7 @@ def build_from_archive(
         era_skipped=era_skipped,
         excluded_units=len(split.excluded),
         excluded_detail=split.excluded,
+        legacy_skipped=legacy_skipped,
     )
 
 
@@ -434,6 +458,7 @@ def build_all(
     overwrite: bool = False,
     archive_filter: Sequence[str] | None = None,
     era_filter: str = ERA_ALL,
+    include_legacy: bool = False,
 ) -> BuildReport:
     """把一批 P1 存档全切全落。
 
@@ -451,6 +476,9 @@ def build_all(
             复核档优先）。两条口径分叉过一次：重生成写复核档、build 读原档，
             于是「跑完重生成」在 P2 上一个字节都没变。
         era_filter: 同 :func:`build_from_archive`。
+        include_legacy: 同 :func:`build_from_archive`——**旧面默认不重渲染**
+            （owner 裁定 2026-11-10）。本参数只管「渲不渲染」；
+            **迁移**（把交付目录里已存在的旧面文件挪进 legacy）照旧做。
 
     Returns:
         整批 :class:`BuildReport`。**单份 P1 切不出样本不打断整批**——
@@ -484,6 +512,7 @@ def build_all(
     total_post_hoc = 0
     total_era_skipped = 0
     total_excluded_units = 0
+    total_legacy_skipped = 0
 
     for path in sorted(src.glob("*.json")):
         if "__" not in path.stem:
@@ -500,6 +529,7 @@ def build_all(
                 root=target_root or source_root,
                 overwrite=overwrite,
                 era_filter=era_filter,
+                include_legacy=include_legacy,
             )
         except P1ShapeError as exc:
             # 坏档：算 0 切出 0 写出、全部 skipped，让 :class:`BuildReport`
@@ -524,10 +554,14 @@ def build_all(
         total_post_hoc += res.post_hoc
         total_era_skipped += res.era_skipped
         total_excluded_units += res.excluded_units
+        total_legacy_skipped += res.legacy_skipped
 
     # 池账（面 + 计数 + 时间）：分母从 131 掉到 65 不是质量变好（R-5）
     pool.record_pool(
-        out_dir, moved=migration.moved, unclassified=migration.unclassified
+        out_dir,
+        moved=migration.moved,
+        unclassified=migration.unclassified,
+        legacy_skipped=total_legacy_skipped,
     )
 
     return BuildReport(
@@ -540,6 +574,7 @@ def build_all(
         total_post_hoc=total_post_hoc,
         total_era_skipped=total_era_skipped,
         total_excluded_units=total_excluded_units,
+        total_legacy_skipped=total_legacy_skipped,
     )
 
 
