@@ -160,11 +160,12 @@ class BuildReport:
     #: ⚠️ **这是报表上的独立一行**：交付目录里躺着多少「本轮没产出」的旧产物，
     #: **在 build 的输出里必须看得见**——否则读的人只能靠数目录才发现，
     #: 而它在报告上完全隐形。
-    quarantined: tuple[str, ...] = ()
-    #: **清点被跳过的原因**（非空 = 本轮**没有**清点交付目录）。
-    #: ⚠️ 必须**看得见**：清点被跳过时交付目录里可能还躺着陈旧产物，
-    #: 而「没清」与「清过了、没有残留」在报表上长得一模一样。
-    prune_skipped: str = ""
+    #:
+    #: ⚠️ 用一个**清点结果对象**（:class:`trajectory_pipeline.assembler.pool.
+    #: StaleSweep`）承载，而不是散成几个字段：它同时带
+    #: **留了多少 / 移走了哪些 / 为什么没清点**——「没清点」与
+    #: 「清点了、没有残留」在报表上**长得一模一样**，不捆在一起就分不出来。
+    sweep: pool.StaleSweep | None = None
 
     @property
     def ok(self) -> bool:
@@ -622,13 +623,12 @@ def build_all(
     #
     # ⚠️ **在池账之前清**——``record_pool`` 的 ``delivery`` 计数要反映
     # **清点后**的交付目录（隔离区的东西不在交付集里）。
-    quarantined: tuple[str, ...] = ()
-    prune_skipped = ""
+    sweep: pool.StaleSweep | None = None
     if prune_stale:
         # ⚠️ **安全阀**：名单必须是**全部**存档槽位。
         # ``archive_filter`` 只覆盖一部分时，「本轮名单」是子集 ⇒
         # 拿它清点会把**别的批次**的样本当残留移走。
-        # 「没清」必须**看得见** ⇒ 记进 ``prune_skipped``，由调用方印出来。
+        # 「没清」必须**看得见** ⇒ 记进清点结果的 ``reason``，由调用方印出来。
         if archive_filter is not None:
             covered = {
                 Path(n).stem[:-len(".reviewed")] if n.endswith(".reviewed.json")
@@ -637,17 +637,20 @@ def build_all(
             }
             all_slots = _archive_slots(src)
             if covered != all_slots:
-                prune_skipped = (
-                    f"本轮只处理了 {len(covered)}/{len(all_slots)} 个存档槽位"
-                    f"⇒ 名单是子集，不清点交付目录（否则会误伤别的批次）"
+                sweep = pool.StaleSweep(
+                    kind="samples",
+                    reason=(
+                        f"本轮只处理了 {len(covered)}/{len(all_slots)} 个存档槽位"
+                        f"⇒ 名单是子集，不清点交付目录（否则会误伤别的批次）"
+                    ),
                 )
-        if not prune_skipped:
+        if sweep is None:
             roster = {sid for res in per_archive for sid in res.produced_ids}
-            quarantined = pool.quarantine_offroster_samples(
+            sweep = pool.quarantine_offroster_samples(
                 out_dir,
                 roster=roster,
                 skip_names=migration.unclassified,
-            ).quarantined
+            )
 
     # 池账（面 + 计数 + 时间）：分母从 131 掉到 65 不是质量变好（R-5）
     pool.record_pool(
@@ -655,7 +658,7 @@ def build_all(
         moved=migration.moved,
         unclassified=migration.unclassified,
         legacy_skipped=total_legacy_skipped,
-        quarantined=quarantined,
+        quarantined=sweep.moved if sweep is not None else (),
     )
 
     return BuildReport(
@@ -670,8 +673,7 @@ def build_all(
         total_excluded_units=total_excluded_units,
         total_legacy_skipped=total_legacy_skipped,
         total_judgement_untrusted=total_judgement_untrusted,
-        quarantined=quarantined,
-        prune_skipped=prune_skipped,
+        sweep=sweep,
     )
 
 

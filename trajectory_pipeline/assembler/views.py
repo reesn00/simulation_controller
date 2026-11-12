@@ -814,11 +814,13 @@ class ViewBuildReport:
     views_dir: str = ""
     #: 旧面默认不重渲染而没落盘的**总条数**（报表上的独立一行）。
     total_legacy_skipped: int = 0
-    #: **因「不在本轮名单」被移进隔离区**的样本 id（H-33）。
-    #: P3 是 P2 的渲染 ⇒ 名单 = **P2 目录里的样本 id**；名单之外的视图
+    #: **交付目录清点结果**（H-33）。``None`` = 没跑清点；
+    #: 非 ``None`` 时 ``reason`` 说的是「没清点」的原因。
+    #:
+    #: ⚠️ P3 是 P2 的渲染 ⇒ 名单 = **P2 目录里的样本 id**；名单之外的视图
     #: 是上一轮（或上一批次）留下的**陈旧产物**——它照样会被训练侧读到
     #: （``storage.read_p3.read_views`` 按 id 直读目录），所以必须清。
-    quarantined: tuple[str, ...] = ()
+    sweep: pool.StaleSweep | None = None
 
     @property
     def ok(self) -> bool:
@@ -934,17 +936,9 @@ def build_views_from_dir(
         total_skipped += len(res.skipped)
         total_legacy_skipped += res.legacy_skipped
     # ── 按本轮名单清点交付目录（H-33）────────────────────────────────
-    # ⚠️ **名单 = P2 目录里的样本 id**（P3 是 P2 的渲染 ⇒ 一一对应）。
-    # 名单之外的视图是**陈旧产物**：训练侧 ``read_views`` 按 id 直读目录、
-    # **不问 P2 在不在** ⇒ 它留在目录里就照样进 SFT 语料。
-    quarantined: tuple[str, ...] = ()
+    sweep: pool.StaleSweep | None = None
     if prune_stale:
-        roster = {p.stem for p in base.glob("*.json") if p.is_file()}
-        quarantined = pool.quarantine_offroster_views(
-            views_dir(root),
-            roster=roster,
-            skip_names=migration.unclassified,
-        ).quarantined
+        sweep = _sweep_views_against_samples(base, root, migration.unclassified)
 
     pool.record_pool(
         views_dir(root),
@@ -952,11 +946,46 @@ def build_views_from_dir(
         unclassified=migration.unclassified,
         primary_glob="*_meta.json",
         legacy_skipped=total_legacy_skipped,
-        quarantined=quarantined,
+        quarantined=sweep.moved if sweep is not None else (),
     )
     return ViewBuildReport(
         tuple(results), total_written, total_skipped, str(views_dir(root)),
-        total_legacy_skipped, quarantined,
+        total_legacy_skipped, sweep,
+    )
+
+
+def _sweep_views_against_samples(
+    samples_base: Path,
+    root: str | Path | None,
+    unclassified: Sequence[str] = (),
+) -> pool.StaleSweep:
+    """按 **P2 目录现有的 id** 清点 P3 交付目录（H-33）。
+
+    ⚠️ **只在读侧就是交付目录时清点**：读别的目录算出的名单与交付目录
+    无关 ⇒ 清点会把**别的批次**的视图搬走（源目录指错时就是这样）。
+    不清点 + 说清原因，比清错好。
+
+    ⚠️ **P2 目录不存在 ⇒ 不清点**：那是**路径指错了**，不是「P2 是空的」。
+    两者必须分得开——把整目录搬开来「回应」一个不存在的目录 = 毁数据。
+
+    ⚠️ **P2 目录存在但为空 ⇒ 清点（清空）**：P3 是 P2 的镜像，
+    P2 空了 P3 就该跟着空。否则「P2 全被剔掉」这一轮会留下**整整一批**
+    P3 陈旧视图——而它们**照样进 SFT 语料**（``read_views`` 按 id 直读目录）。
+    """
+    delivery_samples = views_dir(root).parent / "samples"
+    if not samples_base.is_dir():
+        return pool.StaleSweep(
+            kind="views",
+            reason=f"读侧 P2 目录不存在（{samples_base}）⇒ 路径指错，不清点",
+        )
+    if Path(samples_base).resolve() != delivery_samples.resolve():
+        return pool.StaleSweep(
+            kind="views",
+            reason="读侧 P2 目录不是交付目录 ⇒ 名单与交付目录不同源，不清点",
+        )
+    roster = {p.stem for p in samples_base.glob("*.json") if p.is_file()}
+    return pool.quarantine_offroster_views(
+        views_dir(root), roster=roster, skip_names=unclassified,
     )
 
 

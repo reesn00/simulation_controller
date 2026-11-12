@@ -3436,26 +3436,34 @@ def cmd_compare_drivers(args: argparse.Namespace) -> int:
     return {"pass": 0, "fail": 1}.get(report["verdict"], 2)
 
 
-def _print_quarantine_note(root: Path, kind: str, quarantined: Sequence[str]) -> None:
-    """印一行「本轮名单之外」的旧产物账（H-33）。
+def _print_sweep(sweep: "pool.StaleSweep | None") -> None:
+    """印一行清点账（H-33）。**「没清点」与「清点了没残留」必须分得开**。
 
-    ⚠️ **必须印**：组装层只写不删时，交付目录里多出来的旧产物**在报告上
-    完全隐形**——``build`` 打印「切出 N 条 / 写出 M 条」，**不提目录里还躺着
-    多少别的**；读的人只能靠「数一遍目录」才发现，而那几份在报告上完全看不出
-    是多余的。**跳过必须看得见**（同「访问级剔除」「旧面未重渲染」两行的纪律）。
+    组装层只写不删 ⇒「本轮未产出」的派生产物会留在交付目录里
+    （P3 残留 ⇒ 进训练语料）。清点把多出来的移进 ``quarantine/``，
+    并把条数与 id 印出来——**「跳过必须看得见」同款纪律**：
+    移走的东西看不见，就等于「悄悄删了」。
 
-    ⚠️ **不是删除**：隔离区里的东西**可逆**（可从 P1 重渲染，也可直接搬回
-    原位）——所以印的是「移走了什么」，不是「扔了什么」。
+    ⚠️ **不是删除**：隔离区里的文件原样还在 ⇒ 可逆（搬回原位即可）。
     """
-    if not quarantined:
+    if sweep is None:
         return
-    print(f"  ⚠️ 交付目录里 {len(quarantined)} 份**本轮未产出**的旧产物"
-          f"（{kind}/），已移入 {pool.QUARANTINE_DIRNAME}/{kind}/：")
-    for item in list(quarantined)[:10]:
-        print(f"    {item}")
-    if len(quarantined) > 10:
-        print(f"    …另有 {len(quarantined) - 10} 份")
-    print(f"    （**不是删除**：可从 P1 重渲染，或直接搬回原位）")
+    if sweep.reason:
+        print(f"  清点：{sweep.kind} **未清点**（{sweep.reason}）")
+        return
+    print(f"  清点：{sweep.kind} 留 {sweep.kept} 份 · "
+          f"移入隔离区 {sweep.count} 份（本轮未产出的旧产物）")
+    if sweep.moved:
+        for name in list(sweep.moved)[:10]:
+            print(f"    → {pool.QUARANTINE_DIRNAME}/{sweep.kind}/{name}")
+        if len(sweep.moved) > 10:
+            print(f"    …另有 {len(sweep.moved) - 10} 份")
+        print("    （可逆：文件原样还在 quarantine/，搬回原位即可）")
+    if sweep.unclassified:
+        print(f"  ⚠️ 认不出 {len(sweep.unclassified)} 份（面读不出）"
+              f"——**留在原地等人看**，清点不替人做决定")
+        for name in list(sweep.unclassified)[:10]:
+            print(f"    · {name}")
 
 
 def _print_pool_note(root: Path, kind: str) -> None:
@@ -3607,9 +3615,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             if len(bad) > 10:
                 print(f"  …另有 {len(bad) - 10} 份")
         print(f"  → {rep.sample_dir}")
-        if rep.prune_skipped:
-            print(f"  ⚠️ **未清点交付目录**：{rep.prune_skipped}")
-        _print_quarantine_note(root, "samples", rep.quarantined)
+        _print_sweep(rep.sweep)
         _print_pool_note(root, "samples")
         _print_sweep(rep.sweep)
 
@@ -3639,7 +3645,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             print(f"  旧面未重渲染 {vrep.total_legacy_skipped} 条"
                   f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {vrep.views_dir}")
-        _print_quarantine_note(root, "views", vrep.quarantined)
+        _print_sweep(vrep.sweep)
         _print_pool_note(root, "views")
         _print_sweep(vrep.sweep)
 
@@ -3734,7 +3740,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
             print(f"  旧面未重渲染 {results.total_legacy_skipped} 份"
                   f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {results.target_dir}")
-        _print_quarantine_note(root, "task_views", results.quarantined)
+        _print_sweep(results.sweep)
         _print_pool_note(root, "task_views")
         return 0
 

@@ -277,21 +277,45 @@ QUARANTINE_DIRNAME = "quarantine"
 
 
 @dataclass(frozen=True, slots=True)
-class QuarantineResult:
-    """一次「按本轮名单清点交付目录」的结果。"""
+class StaleSweep:
+    """一次「按本轮名单清点交付目录」的结果。
 
+    与 :class:`PoolMigration` 的区别：那是**按面**分（旧面 → ``legacy/``），
+    这里是**按名单**清（陈旧产物 → ``quarantine/``）—— 两套机制、两个目录。
+    """
+
+    #: 被清点的 kind 目录名（``samples`` / ``views`` / ``task_views``）。
     kind: str
-    #: 被移走的 id（按 id 排序）。**这就是「本轮名单之外」的清单**——
-    #: 空 = 交付目录与本轮名单一致。
-    quarantined: tuple[str, ...] = ()
+    #: **名单内、留在原地的**份数。
+    kept: int = 0
+    #: **不在名单、被移进隔离区**的 id（按 id 排序）。
+    #: ⚠️ 记 **id** 不记文件名——三个 kind 的 id 口径一致
+    #: （``sample_id`` / ``<sample_id>`` / ``<task_id>__<run_id>``），
+    #: 印出来的人才知道「是哪几条」。
+    moved: tuple[str, ...] = ()
     #: **读不出面**的文件 id：**原样留在原地**等人看，**不隔离**
     #: （与 :func:`_migrate` 的 ``unclassified`` 同一处置——
     #: 猜它在哪个池就是让文件去错地方，而错池不会报错）。
     unclassified: tuple[str, ...] = ()
+    #: **没清点的原因**（空串 = 真的清点了）。
+    #:
+    #: ⚠️ 「没清点」与「清点了、没发现残留」在报表上**长得一模一样**
+    #: ⇒ 必须显式带上原因，否则读者会以为「清过了，干净」。
+    reason: str = ""
 
     @property
     def count(self) -> int:
-        return len(self.quarantined)
+        return len(self.moved)
+
+    def summary(self) -> str:
+        if self.reason:
+            return f"{self.kind}: **未清点**（{self.reason}）"
+        return f"{self.kind}: 留 {self.kept} 份 · 移入隔离区 {self.count} 份"
+
+
+#: 旧名——本条机制的第一版叫「隔离结果」，改名后留个别名，
+#: 免得仓里别处引用旧名直接断掉。
+QuarantineResult = StaleSweep
 
 
 def _id_of_sample(path: Path) -> str:
@@ -325,7 +349,7 @@ def _quarantine_offroster(
     id_of: Callable[[Path], str],
     roster: Iterable[str],
     skip_names: Iterable[str] = (),
-) -> QuarantineResult:
+) -> StaleSweep:
     """把**本轮名单之外**的文件移进隔离区。
 
     ⚠️ **判据是「名单」，不是「面」**——:func:`_migrate` 那套只认「工具面 ≠
@@ -344,11 +368,11 @@ def _quarantine_offroster(
         skip_names: **不隔离**的文件名（读不出面的那些——原样留给人看）。
 
     Returns:
-        :class:`QuarantineResult`——被移走的 id 清单 + 留下的读不出面的 id。
+        :class:`StaleSweep`——留下的份数 + 被移走的 id 清单 + 读不出面的 id。
     """
     d = Path(delivery_dir)
     if not d.is_dir():
-        return QuarantineResult(kind=d.name)
+        return StaleSweep(kind=d.name, reason="交付目录不存在 ⇒ 无从清点")
     keep = set(roster)
     skip_ids = {id_of(Path(n)) for n in skip_names}
 
@@ -360,8 +384,10 @@ def _quarantine_offroster(
 
     dest = d.parent / QUARANTINE_DIRNAME / d.name
     moved: list[str] = []
+    kept = 0
     for gid in sorted(groups):
         if gid in keep:
+            kept += 1
             continue
         if gid in skip_ids:
             continue
@@ -369,9 +395,10 @@ def _quarantine_offroster(
         for f in groups[gid]:
             os.replace(f, dest / f.name)
         moved.append(gid)
-    return QuarantineResult(
+    return StaleSweep(
         kind=d.name,
-        quarantined=tuple(moved),
+        kept=kept,
+        moved=tuple(moved),
         unclassified=tuple(sorted(skip_ids)),
     )
 

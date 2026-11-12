@@ -213,7 +213,7 @@ class Test写侧清点:
         rep = builder.build_all(tmp_path / "src", target_root=tmp_path / "out",
                                 overwrite=True, prune_stale=True)
 
-        assert "T009__zz9" in rep.quarantined
+        assert "T009__zz9" in rep.sweep.moved
         assert not stale.exists(), "旧产物不该留在交付目录里"
         moved = pool.quarantine_dir(tmp_path / "out", "samples") / "T009__zz9.json"
         assert moved.exists(), "移进隔离区（不是删除）"
@@ -225,7 +225,7 @@ class Test写侧清点:
         rep = builder.build_all(tmp_path / "src", target_root=tmp_path / "out",
                                 overwrite=True, prune_stale=True)
         assert (tmp_path / "out" / "samples" / "T001__a1.json").exists()
-        assert rep.quarantined == (), "名单之内的不动"
+        assert rep.sweep.moved == (), "名单之内的不动"
 
     def test_默认不清点(self, tmp_path):
         """``prune_stale`` 默认关——库调用方的目录不该被默认动。"""
@@ -305,8 +305,8 @@ class Test写侧清点:
                                 prune_stale=True)
 
         assert stale.exists(), "子集名单不许清点"
-        assert rep.quarantined == ()
-        assert rep.prune_skipped, "没清点必须看得见"
+        assert rep.sweep.moved == ()
+        assert rep.sweep.reason, "没清点必须看得见"
 
     def test_读不出面的文件原样留着(self, tmp_path):
         """坏档不隔离——**不猜**它在哪个池，留在原地等人看。"""
@@ -338,16 +338,49 @@ class TestP3镜像P2:
         （同分池机制的 companion 规则）。
         """
         _write_p1(tmp_path / "src", _archive("T001", "a1"))
+        _write_p2(tmp_path / "out", "T001__a1")          # P2 有 ⇒ 有名单
         written = _write_view(tmp_path / "out", "T009__zz9")
 
         rep = views.build_views_from_dir(root=tmp_path / "out", overwrite=True,
                                          prune_stale=True)
 
-        assert "T009__zz9" in rep.quarantined
+        assert "T009__zz9" in rep.sweep.moved
         q = pool.quarantine_dir(tmp_path / "out", "views")
         assert sorted(p.name for p in q.glob("T009__zz9_*.json")) == \
             sorted(p.name for p in written)
         assert not (tmp_path / "out" / "views" / "T009__zz9_meta.json").exists()
+
+    def test_读侧P2目录不存在_不清点(self, tmp_path):
+        """P2 目录**压根不存在** ⇒ 那是**路径指错了**，不是「P2 是空的」。
+
+        把整目录搬开来「回应」一个不存在的目录 = 毁数据，不是清理。
+        ⚠️ 而且**理由必须报出来**——「没清点」与「清过了、干净」在报表上
+        长得一模一样。
+        """
+        _write_p1(tmp_path / "src", _archive("T001", "a1"))
+        _write_view(tmp_path / "out", "T009__zz9")
+
+        rep = views.build_views_from_dir(root=tmp_path / "out", overwrite=True,
+                                         prune_stale=True)
+
+        assert rep.sweep is not None
+        assert rep.sweep.reason, "没清点必须带原因"
+        assert rep.sweep.moved == ()
+        assert (tmp_path / "out" / "views" / "T009__zz9_meta.json").exists()
+
+    def test_读侧P2不是交付目录_不清点(self, tmp_path):
+        """读的是**别的目录** ⇒ 算出的名单与交付目录不同源 ⇒ 不清点。"""
+        _write_p1(tmp_path / "src", _archive("T001", "a1"))
+        _write_p2(tmp_path / "other", "T001__a1")
+        _write_view(tmp_path / "out", "T009__zz9")
+
+        rep = views.build_views_from_dir(samples_root=tmp_path / "other",
+                                         root=tmp_path / "out",
+                                         overwrite=True, prune_stale=True)
+
+        assert rep.sweep is not None
+        assert rep.sweep.reason
+        assert rep.sweep.moved == ()
 
     def test_P2目录里的样本都有视图(self, tmp_path):
         """P2 有 ⇒ P3 有（镜像）。"""
@@ -359,7 +392,71 @@ class TestP3镜像P2:
         assert (tmp_path / "out" / "views" / "T001__a1_meta.json").exists()
 
 
-# ── 4. 门禁查得出「多出来的」 ────────────────────────────────────
+# ── 4. T 侧的名单：下限 + 护栏 ───────────────────────────────────
+
+
+class TestT名单:
+    def test_P2没重建_本轮渲出的T视图不被搬走(self, tmp_path):
+        """**P2 还没重建**时（P2 是上一批的）⇒ 本轮刚渲出来的合法 T 视图
+        **不许被搬走**。
+
+        ⚠️ 拿「P2 目录」当 T 的名单会误伤：主树实测 P2 **107** 条（旧批次）
+        而 T 渲到 **128** 条 ⇒ 差的那 **21** 条会被当残留搬走 ⇒
+        LS 上传时**候选来自 P2、视图却不齐** ⇒ 那些轨迹推不上去。
+        ⇒ 名单取**并集**：本轮该产出 ∪ P2 目录里的 id（P2 是下限）。
+        """
+        src = tmp_path / "src"
+        _write_p1(src, _archive("T001", "a1"), _archive("T002", "b2"))
+        out = tmp_path / "out"
+        task_view.build_all_task_views(src, target_root=out, overwrite=True,
+                                       prune_stale=True)
+        # 模拟「P2 还没重建」：交付目录的 P2 只有一条
+        _write_p2(out, "T001__a1")
+
+        rep = task_view.build_all_task_views(src, target_root=out, overwrite=True,
+                                             prune_stale=True)
+
+        assert (out / "task_views" / "T002__b2.json").exists(), (
+            "P2 还没重建时，本轮渲出来的合法 T 视图不许被搬走")
+        assert rep.sweep is not None
+
+    def test_源目录不存在_不清点(self, tmp_path):
+        """P1 源目录**压根不存在** ⇒ 路径指错了 ⇒ 不清点，且**理由要报出来**。"""
+        out = tmp_path / "out"
+        _write_t_view(out, "T001__a1")
+
+        rep = task_view.build_all_task_views(tmp_path / "nope", target_root=out,
+                                             prune_stale=True)
+
+        assert rep.sweep is not None
+        assert rep.sweep.reason, "没清点必须带原因"
+        assert rep.sweep.moved == ()
+        assert (out / "task_views" / "T001__a1.json").exists()
+
+    def test_本轮判不出的轨迹_它的旧视图被清走(self, tmp_path):
+        """判分不可信 / 搜索阶段没进决策 ⇒ T 侧**判它不产出** ⇒ 旧视图该走。
+
+        ⚠️ 这条是 H-33 §3.1 的要害：旧视图留在目录里就**照样进 SFT 语料**
+        （``read_views`` 按 id 直读目录、不问 P2 在不在）。
+        """
+        src = tmp_path / "src"
+        _write_p1(src, _archive("T001", "a1"))
+        out = tmp_path / "out"
+        task_view.build_all_task_views(src, target_root=out, overwrite=True,
+                                       prune_stale=True)
+        assert (out / "task_views" / "T001__a1.json").exists()
+
+        # 同一份档变成「搜索阶段没进决策」⇒ 本轮 T 不产出它
+        _write_p1(src, _archive("T001", "a1",
+                                 warnings=["搜索页采集失败: TimeoutError: x"]))
+        rep = task_view.build_all_task_views(src, target_root=out, overwrite=True,
+                                             prune_stale=True)
+
+        assert "T001__a1" in rep.sweep.moved
+        assert not (out / "task_views" / "T001__a1.json").exists()
+
+
+# ── 5. 门禁查得出「多出来的」 ────────────────────────────────────
 
 
 class Test门禁反向体检:

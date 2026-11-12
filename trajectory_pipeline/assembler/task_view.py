@@ -1324,7 +1324,7 @@ class TaskViewBatchReport:
     """
 
     __slots__ = ("results", "total_written", "total_skipped", "target_dir",
-                 "total_legacy_skipped", "quarantined")
+                 "total_legacy_skipped", "sweep")
 
     def __init__(
         self,
@@ -1333,7 +1333,7 @@ class TaskViewBatchReport:
         total_skipped: int,
         target_dir: str,
         total_legacy_skipped: int = 0,
-        quarantined: tuple[str, ...] = (),
+        sweep: pool.StaleSweep | None = None,
     ):
         self.results = results
         self.total_written = total_written
@@ -1342,10 +1342,9 @@ class TaskViewBatchReport:
         #: 旧面默认不重渲染（owner 裁定 2026-11-10）而没落盘的**总条数**
         #: ——报表上的独立一行，不与「已存在／写失败」混算。
         self.total_legacy_skipped = total_legacy_skipped
-        #: **因「不在本轮名单」被移进隔离区**的 trajectory_id（H-33）。
-        #: 报表上的独立一行：交付目录里躺着多少「本轮没产出」的旧产物，
-        #: **必须看得见**——否则读的人只能靠数目录才发现。
-        self.quarantined = quarantined
+        #: **交付目录清点结果**（H-33）。``None`` = 没跑清点；
+        #: 非 ``None`` 时 ``reason`` 说的是「没清点」的原因。
+        self.sweep = sweep
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return (
@@ -1353,7 +1352,7 @@ class TaskViewBatchReport:
             f"total_written={self.total_written}, "
             f"total_skipped={self.total_skipped}, "
             f"total_legacy_skipped={self.total_legacy_skipped}, "
-            f"quarantined={len(self.quarantined)}, "
+            f"sweep={'None' if self.sweep is None else len(self.sweep.moved)}, "
             f"target_dir={self.target_dir!r})"
         )
 
@@ -1483,29 +1482,57 @@ def build_all_task_views(
         total_skipped += len(res.skipped)
         total_legacy_skipped += res.legacy_skipped
     # ── 按本轮名单清点交付目录（H-33）────────────────────────────────
-    # ⚠️ **名单 = 本轮「该产出」的 trajectory_id**（不是「写出数」）：
-    # 默认不覆盖时已存在的视图是**跳过**不是**没产出**。
-    # 名单之外的文件 = **上一轮（或上一批次）留下的陈旧产物**。
-    quarantined: tuple[str, ...] = ()
+    sweep: pool.StaleSweep | None = None
     if prune_stale:
-        roster = {
-            r.trajectory_id for r in results
-            if r.trajectory_id and not r.not_produced
-        }
-        quarantined = pool.quarantine_offroster_task_views(
-            out_dir,
-            roster=roster,
-            skip_names=migration.unclassified,
-        ).quarantined
+        sweep = _sweep_task_views(out_dir, src, results, migration.unclassified)
 
     pool.record_pool(
         out_dir,
         moved=migration.moved,
         unclassified=migration.unclassified,
         legacy_skipped=total_legacy_skipped,
-        quarantined=quarantined,
+        quarantined=sweep.moved if sweep is not None else (),
     )
     return TaskViewBatchReport(
         tuple(results), total_written, total_skipped, str(out_dir),
-        total_legacy_skipped, quarantined,
+        total_legacy_skipped, sweep,
+    )
+
+
+def _sweep_task_views(
+    out_dir: Path,
+    src: Path,
+    results: Sequence[TaskViewRenderResult],
+    unclassified: Sequence[str] = (),
+) -> pool.StaleSweep:
+    """清点 T 交付目录（H-33）。
+
+    ⚠️ **名单 = 本轮该产出的 trajectory_id ∪ P2 目录里的 id**：
+
+    - **前半 = T 自己的口径**（本轮渲染出来、且没被口径挡住的）；
+    - **后半 = 下限**——P2 说在交付集里的，不许被 T 清掉
+      （P2 是交付集的源头，T 是它的读侧：LS 上传 / 人工复核都按 T 找）。
+
+    ⚠️ **取「并集」而不是「P2 目录」当名单**：P2 还没重建时（P2 是上一批的
+    107 条、T 是本批的 128 条），拿 P2 切名单会把**本轮刚渲出来的合法 T 视图**
+    当残留搬走 ⇒ LS 上传会缺轨迹（候选来自 P2，视图却不齐）。
+
+    ⚠️ **源目录不存在 ⇒ 不清点**：那是**路径指错了**，不是「本轮一条都没有」。
+    两者必须分得开——把整目录搬开来「回应」一个不存在的目录 = 毁数据。
+    """
+    if not src.is_dir():
+        return pool.StaleSweep(
+            kind="task_views",
+            reason=f"P1 源目录不存在（{src}）⇒ 路径指错，不清点",
+        )
+    roster = {
+        r.trajectory_id for r in results
+        if r.trajectory_id and not r.not_produced
+    }
+    # 下限：P2 目录里的 id（P2 是交付集的源头，它说在的就不许被清掉）
+    delivery_samples = out_dir.parent / "samples"
+    if delivery_samples.is_dir():
+        roster |= {p.stem for p in delivery_samples.glob("*.json")}
+    return pool.quarantine_offroster_task_views(
+        out_dir, roster=roster, skip_names=unclassified,
     )
