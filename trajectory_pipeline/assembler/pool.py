@@ -50,11 +50,13 @@ CLAUDE.md 的并池铁律——读取时推导会让「池里有什么」随代�
     output/pipeline/views/<sample_id>_{messages,openai,meta}.json # 交付
     output/pipeline/task_views/<task_id>__<run_id>.json           # 交付
     output/pipeline/legacy/<surface>/{samples,views,task_views}/… # 只读存量
+    output/pipeline/quarantine/{samples,views,task_views}/…       # 名单之外的陈旧产物
     output/pipeline/pool_meta.json                                # 批次元数据
 
 本模块**不 import** :mod:`builder` / :mod:`views` / :mod:`task_view`——那三个
 是使用方，反向 import 会成环。它只认「某个 kind 目录」（``delivery_dir``）
-与 surface 字段，布局字面量只有 ``legacy`` 与 ``pool_meta.json`` 两处。
+与 surface 字段，布局字面量只有 ``legacy``、``quarantine`` 与
+``pool_meta.json`` 三处。
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Container, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from trajectory_pipeline import toolcatalog
 from trajectory_pipeline.storage import VIEW_NAMES
@@ -74,23 +76,6 @@ DELIVERY_SURFACE = toolcatalog.SURFACE_CAMOFOX
 
 #: 旧面归档目录名（落在 ``output/pipeline/`` 下）。
 LEGACY_DIRNAME = "legacy"
-
-#: 隔离区目录名（落在 ``output/pipeline/`` 下）。
-#:
-#: ⚠️ **与 :data:`LEGACY_DIRNAME` 的区别**（两者都是**移动不是删除**）：
-#:
-#: - ``legacy/<surface>/<kind>/`` 装的是**旧面存量**（只读、按需重建）——
-#:   那是「**另一种口径**的合法产物」。
-#: - ``quarantine/<kind>/`` 装的是**本轮名单之外**的产物——
-#:   那是「**这一轮不该存在**的孤儿」（被判分不可信剔除的档、
-#:   被 ``--rationale-era`` 筛掉的旧口径样本、切不出样本的退化空壳留下的 T 视图）。
-#:
-#: 为什么要单独一个目录：两者的**处置不同**——旧面是「口径退役，要能回溯」，
-#: 孤儿是「**这一轮剔掉的**」，混在一起就分不清「回溯旧批次」和「清理孤儿」。
-#:
-#: ⚠️ **可逆**：移过去的文件**原样还在** ⇒ 要恢复就搬回来（可逆是这里的硬要求，
-#: 因为清点的判据一旦写错，误伤的是**已交付的产物**）。
-QUARANTINE_DIRNAME = "quarantine"
 
 #: 池元数据文件名（落在 ``output/pipeline/`` 下）。
 POOL_META_FILENAME = "pool_meta.json"
@@ -275,132 +260,173 @@ def migrate_task_views(delivery_dir: str | Path) -> PoolMigration:
     )
 
 
-# ── 按本轮名单清点（2026-11-12 · H-33）────────────────────────────
+# ── 按名单清点（陈旧产物隔离）──────────────────────────────────────────
+
+#: 隔离目录名（落在 ``output/pipeline/`` 下）。
+#:
+#: ⚠️ **与 :data:`LEGACY_DIRNAME` 是两个正交的口径，不是同一个池**：
+#:
+#: - ``legacy/`` 按**面**分——旧面是**只读存量**（owner 裁定 2026-10-10），
+#:   永不重渲染，归档的是「另一种格式的交付物」；
+#: - ``quarantine/`` 按**名单**分——这里装的是「**本轮名单之外**」的产物，
+#:   归档的是「**不该在交付集里**的东西」（H-33）。
+#:
+#: ⚠️ **隔离 ≠ 删除**：派生产物可从 P1 重渲染 ⇒ 隔离**必须可逆**
+#: （搬回原位即可）。P1 存档原样在盘上——**那是证据，不动**。
+QUARANTINE_DIRNAME = "quarantine"
 
 
-@dataclass(frozen=True)
-class StaleSweep:
-    """一次「按名单清点」的结果。
+@dataclass(frozen=True, slots=True)
+class QuarantineResult:
+    """一次「按本轮名单清点交付目录」的结果。"""
 
-    与 :class:`PoolMigration` 的区别：那是**按面**分（旧面 → ``legacy/``），
-    这里是**按名单**清（孤儿 → ``quarantine/``）—— 两套机制、两个目录。
-    """
-
-    #: 被清点的 kind 目录名（``samples`` / ``views`` / ``task_views``）。
     kind: str
-    #: **本轮名单内、留在原地的**份数。
-    kept: int = 0
-    #: **不在名单、被移进隔离区**的文件名（按文件名排序）。
-    moved: tuple[str, ...] = ()
-    #: **认不出的文件**（读不出面 / 面不在已知集合里）——**留在原地**，
-    #: 不搬走（同迁移纪律：猜不出来的东西留在原地等人看，搬走 = 藏起来）。
+    #: 被移走的 id（按 id 排序）。**这就是「本轮名单之外」的清单**——
+    #: 空 = 交付目录与本轮名单一致。
+    quarantined: tuple[str, ...] = ()
+    #: **读不出面**的文件 id：**原样留在原地**等人看，**不隔离**
+    #: （与 :func:`_migrate` 的 ``unclassified`` 同一处置——
+    #: 猜它在哪个池就是让文件去错地方，而错池不会报错）。
     unclassified: tuple[str, ...] = ()
-    #: **没清点的原因**（空串 = 真的清点了）。
-    #:
-    #: ⚠️ 「没清点」与「清点了、没发现残留」在报表上**长得一模一样**
-    #: ⇒ 必须显式带上原因，否则读者会以为「清过了，干净」。
-    reason: str = ""
 
-    def summary(self) -> str:
-        if self.reason:
-            return f"{self.kind}: **未清点**（{self.reason}）"
-        tail = f" · 认不出 {len(self.unclassified)} 份（留在原地）" \
-            if self.unclassified else ""
-        return (
-            f"{self.kind}: 留 {self.kept} 份 · 移入隔离区 {len(self.moved)} 份"
-            f"{tail}"
-        )
+    @property
+    def count(self) -> int:
+        return len(self.quarantined)
 
 
-def migrate_by_manifest(
+def _id_of_sample(path: Path) -> str:
+    """P2 样本的 id = 文件名主键（``<sample_id>.json``）。"""
+    return path.stem
+
+
+def _id_of_view(path: Path) -> str:
+    """P3 视图的 id = ``<sample_id>``（三份视图**共一个** id）。
+
+    ``<sample_id>_{messages,openai,meta}.json`` ⇒ ``<sample_id>``。
+    不带视图后缀的杂项文件按自己的文件名主键算 id。
+    """
+    name = path.name
+    for view in VIEW_NAMES:
+        suffix = f"_{view}.json"
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
+
+def _id_of_task_view(path: Path) -> str:
+    """T 视图的 id = ``<task_id>__<run_id>``（文件名主键）。"""
+    return path.stem
+
+
+def _quarantine_offroster(
     delivery_dir: str | Path,
     *,
-    primary_glob: str,
-    companions: Callable[[Path], Iterable[Path]],
-    keep_ids: Container[str],
-    read_surface: Callable[[Path], str],
-) -> StaleSweep:
-    """把 ``delivery_dir`` 里**不在本轮名单**的文件组移进 ``quarantine/<kind>/``。
+    pattern: str,
+    id_of: Callable[[Path], str],
+    roster: Iterable[str],
+    skip_names: Iterable[str] = (),
+) -> QuarantineResult:
+    """把**本轮名单之外**的文件移进隔离区。
 
-    ⚠️ **判据是「本轮名单」，不是「本轮实际写出了什么」**——
-    默认**不覆盖**模式下实际写出 0 条（全都「已存在」跳过了），
-    拿它当判据会把**整个交付集搬进隔离区**。
-    ⇒ ``keep_ids`` 必须是「**这一轮应该产出什么**」。
+    ⚠️ **判据是「名单」，不是「面」**——:func:`_migrate` 那套只认「工具面 ≠
+    交付面」（旧面存量），**认不出「本轮没产出」**（H-33 的根因）。
+    两者正交：旧面按面分池，陈旧产物按名单清点。
 
-    ⚠️ **移走不是删除**：文件原样还在 ``quarantine/<kind>/`` ⇒ 可逆。
-    （清点的判据一旦写错，误伤的是**已交付的产物** ⇒ 可逆是硬要求。）
+    ⚠️ **名单 = 「本轮该产出」的 id 集合**，**不是**「本轮实际写出的」——
+    默认不覆盖（``overwrite=False``）时，已存在的文件是**跳过**而不是
+    **没产出**；拿「写出的」当名单会把整池都判成残留。
 
-    ⚠️ **认不出的文件留在原地**（同迁移纪律）：面读不出、或者面不在
-    :data:`KNOWN_SURFACES` 里 ⇒ **不搬**、记进 ``unclassified`` 等人看。
-    搬走 = 藏起来——「猜不出来的东西」不该由清点替人做决定。
+    Args:
+        delivery_dir: 交付目录（``samples/`` / ``views/`` / ``task_views/``）。
+        pattern: 收哪些文件。
+        id_of: 从文件路径取 id。
+        roster: 本轮该产出的 id 集合。
+        skip_names: **不隔离**的文件名（读不出面的那些——原样留给人看）。
 
-    ⚠️ **只在名单已知时做**：``keep_ids`` 为空**且**目录非空 ⇒ **不清点**
-    （见调用方的保护：``samples/`` 不存在时不得清点 T 视图——那会把整批 T 搬空）。
+    Returns:
+        :class:`QuarantineResult`——被移走的 id 清单 + 留下的读不出面的 id。
     """
     d = Path(delivery_dir)
     if not d.is_dir():
-        return StaleSweep(kind=d.name)
-    keep = set(keep_ids)
-    moved: list[str] = []
-    unclassified: list[str] = []
-    kept = 0
-    dest = d.parent / QUARANTINE_DIRNAME / d.name
-    for primary in sorted(d.glob(primary_glob)):
-        try:
-            surface = read_surface(primary)
-        except (OSError, ValueError):
-            surface = ""
-        if surface not in KNOWN_SURFACES:
-            # 认不出 ⇒ 留在原地等人看（同迁移纪律，不猜）。
-            unclassified.append(primary.name)
+        return QuarantineResult(kind=d.name)
+    keep = set(roster)
+    skip_ids = {id_of(Path(n)) for n in skip_names}
+
+    groups: dict[str, list[Path]] = {}
+    for f in sorted(d.glob(pattern)):
+        if not f.is_file():
             continue
-        stem = primary.stem
-        # 视图的主文件是 ``<id>_meta.json`` ⇒ 名单键是 ``<id>``。
-        base = stem[:-len("_meta")] if primary_glob.endswith("_meta.json") else stem
-        if base in keep:
-            kept += 1
+        groups.setdefault(id_of(f), []).append(f)
+
+    dest = d.parent / QUARANTINE_DIRNAME / d.name
+    moved: list[str] = []
+    for gid in sorted(groups):
+        if gid in keep:
+            continue
+        if gid in skip_ids:
             continue
         dest.mkdir(parents=True, exist_ok=True)
-        for f in companions(primary):
-            if f.exists():
-                os.replace(f, dest / f.name)
-        moved.append(primary.name)
-    return StaleSweep(
-        kind=d.name, kept=kept, moved=tuple(moved), unclassified=tuple(unclassified)
+        for f in groups[gid]:
+            os.replace(f, dest / f.name)
+        moved.append(gid)
+    return QuarantineResult(
+        kind=d.name,
+        quarantined=tuple(moved),
+        unclassified=tuple(sorted(skip_ids)),
     )
 
 
-def sweep_samples(delivery_dir: str | Path, keep_ids: Container[str]) -> StaleSweep:
-    """``samples/`` → 不在本轮名单的样本移进 ``quarantine/samples/``。"""
-    return migrate_by_manifest(
+def quarantine_offroster_samples(
+    delivery_dir: str | Path,
+    *,
+    roster: Iterable[str],
+    skip_names: Iterable[str] = (),
+) -> QuarantineResult:
+    """``samples/`` → **本轮名单之外**的样本移进 ``quarantine/samples/``。"""
+    return _quarantine_offroster(
         delivery_dir,
-        primary_glob="*.json",
-        companions=_self,
-        keep_ids=keep_ids,
-        read_surface=_surface_of_sample,
+        pattern="*.json",
+        id_of=_id_of_sample,
+        roster=roster,
+        skip_names=skip_names,
     )
 
 
-def sweep_views(delivery_dir: str | Path, keep_ids: Container[str]) -> StaleSweep:
-    """``views/`` → 不在本轮名单的**三份视图成组**移进 ``quarantine/views/``。"""
-    return migrate_by_manifest(
+def quarantine_offroster_views(
+    delivery_dir: str | Path,
+    *,
+    roster: Iterable[str],
+    skip_names: Iterable[str] = (),
+) -> QuarantineResult:
+    """``views/`` → 名单之外的**三份视图成组**移进 ``quarantine/views/``。"""
+    return _quarantine_offroster(
         delivery_dir,
-        primary_glob="*_meta.json",
-        companions=_view_group,
-        keep_ids=keep_ids,
-        read_surface=_surface_of_view,
+        pattern="*.json",
+        id_of=_id_of_view,
+        roster=roster,
+        skip_names=skip_names,
     )
 
 
-def sweep_task_views(delivery_dir: str | Path, keep_ids: Container[str]) -> StaleSweep:
-    """``task_views/`` → 不在本轮名单的任务视图移进 ``quarantine/task_views/``。"""
-    return migrate_by_manifest(
+def quarantine_offroster_task_views(
+    delivery_dir: str | Path,
+    *,
+    roster: Iterable[str],
+    skip_names: Iterable[str] = (),
+) -> QuarantineResult:
+    """``task_views/`` → 名单之外的任务视图移进 ``quarantine/task_views/``。"""
+    return _quarantine_offroster(
         delivery_dir,
-        primary_glob="*.json",
-        companions=_self,
-        keep_ids=keep_ids,
-        read_surface=_surface_of_task_view,
+        pattern="*.json",
+        id_of=_id_of_task_view,
+        roster=roster,
+        skip_names=skip_names,
     )
+
+
+def quarantine_dir(root: str | Path, kind: str) -> Path:
+    """某个 kind 的隔离目录（**只是路径，不建目录**）。"""
+    return Path(root) / QUARANTINE_DIRNAME / kind
 
 
 # ── 池元数据（批次账）──────────────────────────────────────────────
@@ -431,6 +457,7 @@ def record_pool(
     unclassified: Sequence[str] = (),
     primary_glob: str = "*.json",
     legacy_skipped: int = 0,
+    quarantined: Sequence[str] = (),
 ) -> Path:
     """把一个 kind 的池现状写进 ``pool_meta.json``（原子写）。
 
@@ -443,6 +470,9 @@ def record_pool(
             记进去是因为「池里 legacy 为空」有两种成因（**没数据** vs
             **有数据但按口径不渲染**），而两者在报表上长得一模一样。
             不记这条，下一个读 ``pool_meta.json`` 的人会把口径当事故。
+        quarantined: 本次**因「不在本轮名单」而移进隔离区**的 id。
+            ⚠️ **新开一个顶层字段**（``quarantine``），**不改旧字段的含义**
+            ——旧字段记的是「面」的计数，加一维就新开字段，改旧字段会漂读数。
     """
     d = Path(delivery_dir)
     root = d.parent
@@ -474,6 +504,28 @@ def record_pool(
         "unclassified": list(unclassified),
         "updated_at": _now_iso(),
     }
+    # ⚠️ **「按名单」这一维新开顶层字段**（不塞进上面的 kind 段）：
+    # 上面那段记的是**面**的计数，语义是「交付面还剩多少」；
+    # 这里记的是**本轮名单之外**被移走的 id——两件事的**分母不一样**
+    #（一个是目录里的文件数，一个是本轮该产出的 id 数）。
+    # 混进旧字段会漂读数（§六·6）。
+    quarantine = payload.setdefault("quarantine", {})
+    if not isinstance(quarantine, dict):  # 旧文件写坏了 ⇒ 顶掉，不让它带着跑
+        quarantine = {}
+        payload["quarantine"] = quarantine
+    quarantine.update({
+        "dir": QUARANTINE_DIRNAME,
+        "note": (
+            "「本轮名单之外」的陈旧派生产物移到这里——**不是删除**："
+            "可从 P1 重渲染，也可直接搬回原位（隔离可逆）"
+        ),
+        "updated_at": _now_iso(),
+    })
+    quarantine[d.name] = {
+        "count": len(quarantined),
+        "ids": list(quarantined),
+        "updated_at": _now_iso(),
+    }
     payload["updated_at"] = _now_iso()
 
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -496,13 +548,13 @@ __all__ = [
     "is_delivery",
     "pool_root",
     "PoolMigration",
-    "StaleSweep",
     "migrate_samples",
     "migrate_views",
     "migrate_task_views",
-    "migrate_by_manifest",
-    "sweep_samples",
-    "sweep_views",
-    "sweep_task_views",
+    "QuarantineResult",
+    "quarantine_offroster_samples",
+    "quarantine_offroster_views",
+    "quarantine_offroster_task_views",
+    "quarantine_dir",
     "record_pool",
 ]

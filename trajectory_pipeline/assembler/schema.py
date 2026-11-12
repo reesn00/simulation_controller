@@ -64,6 +64,7 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 from trajectory_pipeline import toolcatalog
 from trajectory_pipeline import outcomerules
 from trajectory_pipeline.assembler import closing, contracts, excluded
+from trajectory_pipeline.sample_gate import search_not_decided_reason
 
 #: ① 系统提示词。**随样本一起冻结**（进 P2 文件），不是渲染时读全局常量——
 #: 常量改一次，历史样本的系统提示词就全变了，而样本之间原本是可比的。
@@ -943,20 +944,6 @@ def read_archive(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def _search_collection_failed(archive: Mapping[str, Any]) -> bool:
-    """搜索页采集是否因异常失败（网络错误等），而非正常搜到再被拦。
-
-    与 :data:`search_blocked` 一样是「采集/决策**尚未发生**」的形态：
-    executor 在搜索页 ``goto``/``observe`` 抛异常时提前 return，只留一条
-    ``搜索页采集失败: <ExcType>: <exc>`` warning，没有任何搜索观察或访问
-    记录。此时切不出样本**不是错误**——被 :func:`iter_samples` 遍历时
-    抛出会让整批陪葬（同 :data:`search_blocked` 的豁免逻辑）。
-    """
-    return any(
-        str(w).startswith("搜索页采集失败") for w in archive.get("warnings") or ()
-    )
-
-
 def _obs_missing(obs: Mapping[str, Any]) -> str | None:
     """这条观察缺了什么，返回可写进 ``degraded_from`` 的标记；不缺返回 ``None``。
 
@@ -1375,7 +1362,9 @@ def split_archive_report(path: str | Path) -> SplitResult:
         return SplitResult(judgement_untrusted=True)
 
     # ── 采集侧退场：没进入决策的 run 产出零条 ──────────────────────
-    if archive.get("search_blocked") or _search_collection_failed(archive):
+    # ⚠️ 判据走 :func:`search_not_decided_reason`——**T 侧调同一份**
+    # （H-31 第 4 层 / H-33 §3.4）。这里写死一份、T 侧写死另一份就是漂。
+    if search_not_decided_reason(archive):
         # 搜索阶段没进决策的 run 产出零条**是正常形态**，不是错误：
         # 要么被反爬拦（观察是验证码页），要么搜索页采集失败（网络错误，
         # T048 这类坏档连搜索观察都没有）。抛出去会让 :func:`iter_samples`

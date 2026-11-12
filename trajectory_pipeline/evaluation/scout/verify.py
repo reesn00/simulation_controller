@@ -17,6 +17,9 @@
   (不视为 error:可能任务刚聚合还没渲 T,但``cli task-view`` 跑过就不该缺)
 * **T 视图是合法 JSON + 含三键** ``messages``/``openai``/``meta`` —— 同
   ``storage.task_views.write_task_view`` 的 ``PAYLOAD_KEYS``,坏档 warn
+* **反向:T 视图目录里多出来的 id** —— 不在候选名单里的 warn
+  (H-33:原来的检查是**单向**的,只查「该有的有没有」,**查不出「多出来的」**
+  ⇒ 组装层只写不删留下的陈旧产物在报告上完全隐形)
 
 纪律
 ----
@@ -63,6 +66,7 @@ IssueCode = Literal[
     "bad_t_view_json",
     "t_view_missing_keys",
     "bad_jsonl_line",
+    "extra_t_view",
 ]
 
 
@@ -209,7 +213,17 @@ def _check_task_views(
     records: Iterable[TrajectoryRecord],
     task_views_root: str | Path | None,
 ) -> list[VerifyIssue]:
-    """每个 trajectory_id 都要有 T 视图;缺 / 坏档 / 缺三键 进 issues。"""
+    """每个 trajectory_id 都要有 T 视图;缺 / 坏档 / 缺三键 进 issues。
+
+    ⚠️ **还查反向**(H-33):T 视图目录里**不在候选名单内**的 id ⇒ warning。
+    原来的检查是**单向**的——只查「该有的读不读得到」,**查不出「多出来的」**
+    ⇒ 组装层只写不删留下的陈旧产物**在报告上完全隐形**(实测 53 份多渲染的
+    退化空壳,``scout verify`` exit 0 放过)。
+
+    ⚠️ **为什么是 warning 不是 error**:多出来的 T 视图**不一定**是脏数据——
+    候选名单可能只覆盖了一部分轨迹(例如人工只复核了其中几条)。报出来让人判,
+    不替人判。
+    """
     issues: list[VerifyIssue] = []
     # 延迟 import 破循环(scout.aggregate 也顶层 import ls_bridge.exporter,
     # 这次反过来也会触发——但 storage.task_views 不依赖 scout,所以这里
@@ -217,10 +231,12 @@ def _check_task_views(
     from trajectory_pipeline.storage import task_views_dir
 
     root = task_views_dir(task_views_root)
+    seen: set[str] = set()
     for rec in records:
         tid = str(rec.get("trajectory_id", ""))
         if not tid:
             continue
+        seen.add(tid)
         tview_path = root / f"{tid}.json"
         if not tview_path.is_file():
             issues.append(VerifyIssue(
@@ -251,6 +267,21 @@ def _check_task_views(
                 code="t_view_missing_keys", severity="warning",
                 trajectory_id=tid,
                 detail=f"缺键 {missing}",
+            ))
+
+    # ── 反向：目录里多出来的 T 视图 ────────────────────────────────
+    if root.is_dir():
+        for path in sorted(root.glob("*.json")):
+            tid = path.stem
+            if tid in seen:
+                continue
+            issues.append(VerifyIssue(
+                code="extra_t_view", severity="warning",
+                trajectory_id=tid,
+                detail=(
+                    f"{path} 不在 trajectory_candidates 里——"
+                    "陈旧产物或本轮之外的轨迹（组装层只写不删，H-33）"
+                ),
             ))
     return issues
 

@@ -71,6 +71,7 @@ from trajectory_pipeline.assembler import (
     pool,
     screen,
 )
+from trajectory_pipeline.sample_gate import sample_blocked_reason
 from trajectory_pipeline.common.rationale_text import strip_empty_history_lead_in
 #: 两段投影一致性口径挂在顶层（方案 23 R5-2 / O-5）：ls_bridge 是
 #: evaluation 层，契约禁止它 import assembler，而校验两边都要用。
@@ -1157,10 +1158,11 @@ def to_task_meta(
 class TaskViewRenderResult:
     """一次 :func:`build_task_view` 的结果。"""
 
-    __slots__ = ("trajectory_id", "written", "skipped", "legacy_skipped")
+    __slots__ = ("trajectory_id", "written", "skipped", "legacy_skipped",
+                 "not_produced")
 
     def __init__(self, trajectory_id: str, written: int, skipped: tuple[str, ...],
-                 legacy_skipped: int = 0):
+                 legacy_skipped: int = 0, not_produced: bool = False):
         self.trajectory_id = trajectory_id
         self.written = written
         self.skipped = skipped
@@ -1168,6 +1170,13 @@ class TaskViewRenderResult:
         #: 单份存档 ⇒ 0 或 1。单独计数是为了让调用方能把「旧面没渲染」
         #: 与「已存在／写失败」分开处置——两者的补救命令不同。
         self.legacy_skipped = legacy_skipped
+        #: **本轮不产出**（被口径挡住：判不出 / 旧面）⇒ **不在本轮名单里**
+        #: （H-33 清点交付目录的依据）。
+        #:
+        #: ⚠️ **只有「已知判它不产出」才置 True**——读档失败、投影不一致、
+        #: 写盘失败都**不算**：那是「不知道」，而「不知道」不许当成「坏」
+        #: （与判分不可信用「显式 False」同一口径）。
+        self.not_produced = not_produced
 
     @property
     def ok(self) -> bool:
@@ -1225,19 +1234,24 @@ def build_task_view(
             written=0,
             skipped=("<no-trajectory_id>: task_id / run_id 空",),
         )
-    # ⚠️ **判分不可信 ⇒ 不出训练视图**（2026-11-11，H-31）。
+    # ⚠️ **判不出 ⇒ 不出训练视图**（2026-11-11，H-31 第 4 层 / H-33 §3.4）。
     #
-    # 与 P2 的 :func:`assembler.schema.split_archive_report` **同一判据**
+    # 判据走 :func:`assembler.schema.sample_blocked_reason`——**与 P2 同一份**
     # （两边都要挡：P2 出 P2 样本、T 出训练视图，漏一边就有一边进池）。
-    #
     # 判据用「显式 False」：历史存档没有这个键 ⇒ 缺键 = 不知道 ≠ 不可信
     # （「并池是写入时的动作」，不回填历史存档）。
-    if archive.get("judgement_trustworthy") is False:
+    #
+    # ⚠️ **T 侧原先只挡了「判分不可信」那一档**，漏了「搜索阶段没进决策」
+    # ⇒ 实测 T 多渲染 **53 份**退化空壳（P2 侧不出它们、T 侧出了）——
+    # 判据分叉的代价是**交付目录里多出训练集里没有的东西**，
+    # 而报告上零处异常（2026-11-11 全量合成实测）。
+    blocked = sample_blocked_reason(archive)
+    if blocked:
         return TaskViewRenderResult(
             trajectory_id=f"{task_id}__{run_id}",
             written=0,
-            skipped=(f"{task_id}__{run_id} (判分不可信：LLM 熔断，H-31——"
-                     f"不进训练集)",),
+            skipped=(f"{task_id}__{run_id} ({blocked})",),
+            not_produced=True,
         )
 
     trajectory_id = f"{task_id}__{run_id}"
@@ -1253,6 +1267,7 @@ def build_task_view(
             written=0,
             skipped=(f"{trajectory_id} (旧面 {surface}：{pool.LEGACY_SKIP_REASON})",),
             legacy_skipped=1,
+            not_produced=True,
         )
     target_root = pool.pool_root(storage_task_views_dir(root).parent, surface)
     messages = to_task_messages(archive)
@@ -1309,7 +1324,7 @@ class TaskViewBatchReport:
     """
 
     __slots__ = ("results", "total_written", "total_skipped", "target_dir",
-                 "total_legacy_skipped", "sweep")
+                 "total_legacy_skipped", "quarantined")
 
     def __init__(
         self,
@@ -1318,7 +1333,7 @@ class TaskViewBatchReport:
         total_skipped: int,
         target_dir: str,
         total_legacy_skipped: int = 0,
-        sweep: pool.StaleSweep | None = None,
+        quarantined: tuple[str, ...] = (),
     ):
         self.results = results
         self.total_written = total_written
@@ -1327,9 +1342,10 @@ class TaskViewBatchReport:
         #: 旧面默认不重渲染（owner 裁定 2026-11-10）而没落盘的**总条数**
         #: ——报表上的独立一行，不与「已存在／写失败」混算。
         self.total_legacy_skipped = total_legacy_skipped
-        #: **交付目录清点结果**（H-33）。``None`` = 没跑清点；
-        #: 非 ``None`` 时 ``reason`` 说的是「没清点」的原因。
-        self.sweep = sweep
+        #: **因「不在本轮名单」被移进隔离区**的 trajectory_id（H-33）。
+        #: 报表上的独立一行：交付目录里躺着多少「本轮没产出」的旧产物，
+        #: **必须看得见**——否则读的人只能靠数目录才发现。
+        self.quarantined = quarantined
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return (
@@ -1337,6 +1353,7 @@ class TaskViewBatchReport:
             f"total_written={self.total_written}, "
             f"total_skipped={self.total_skipped}, "
             f"total_legacy_skipped={self.total_legacy_skipped}, "
+            f"quarantined={len(self.quarantined)}, "
             f"target_dir={self.target_dir!r})"
         )
 
@@ -1349,6 +1366,7 @@ def build_all_task_views(
     overwrite: bool = False,
     backfill_from_filename: bool = True,
     include_legacy: bool = False,
+    prune_stale: bool = False,
 ) -> TaskViewBatchReport:
     """读一整个 P1 目录，逐份渲染 T 视图并落盘。
 
@@ -1385,6 +1403,11 @@ def build_all_task_views(
             :func:`build_task_view`——旧面是只读存量，默认不重渲染
             （owner 裁定 2026-11-10）。**迁移**（把交付目录里已存在的
             旧面文件挪进 legacy）照旧做。
+        prune_stale: **按本轮名单清点交付目录**（H-33）：``task_views/``
+            里**本轮没产出**的旧视图移进 ``quarantine/task_views/``。
+            ⚠️ **默认关**：``archive_filter`` 收窄时「本轮名单」只是子集，
+            拿它清点会把**别的批次**的视图当残留移走⇒ 只有**整批重建**
+            （名单 = 全部存档）才该开。
 
     Returns:
         :class:`TaskViewBatchReport`——一次返回整批 ``TaskViewRenderResult``。
@@ -1459,43 +1482,30 @@ def build_all_task_views(
         total_written += res.written
         total_skipped += len(res.skipped)
         total_legacy_skipped += res.legacy_skipped
+    # ── 按本轮名单清点交付目录（H-33）────────────────────────────────
+    # ⚠️ **名单 = 本轮「该产出」的 trajectory_id**（不是「写出数」）：
+    # 默认不覆盖时已存在的视图是**跳过**不是**没产出**。
+    # 名单之外的文件 = **上一轮（或上一批次）留下的陈旧产物**。
+    quarantined: tuple[str, ...] = ()
+    if prune_stale:
+        roster = {
+            r.trajectory_id for r in results
+            if r.trajectory_id and not r.not_produced
+        }
+        quarantined = pool.quarantine_offroster_task_views(
+            out_dir,
+            roster=roster,
+            skip_names=migration.unclassified,
+        ).quarantined
+
     pool.record_pool(
         out_dir,
         moved=migration.moved,
         unclassified=migration.unclassified,
         legacy_skipped=total_legacy_skipped,
+        quarantined=quarantined,
     )
-
-    # ── 清点交付目录（H-33）────────────────────────────────────
-    # T 与 P3 同理：T 是**每任务一条轨迹**的视图，它的名单就是
-    # **P2 目录里现有的 id**（``<task_id>__<run_id>`` 两边同构）。
-    # 用 P2 当前内容当判据 ⇒ T 与 P2 天然对齐：P2 没有的 id，
-    # T 也不该留着（H-31「P2 不出样本、T 不出训练视图」——
-    # 之前只写在纸上，产物目录层面没真正成立）。
-    sweep = _sweep_task_views_against_samples(out_dir)
     return TaskViewBatchReport(
         tuple(results), total_written, total_skipped, str(out_dir),
-        total_legacy_skipped, sweep,
+        total_legacy_skipped, quarantined,
     )
-
-
-def _sweep_task_views_against_samples(out_dir: Path) -> pool.StaleSweep:
-    """按 **P2 目录现有的 id** 清点 T 交付目录（H-33）。
-
-    ⚠️ **P2 目录不在或为空 ⇒ 不清点**：没有名单就没有判据
-    （把整目录搬空不叫「清理」，叫「毁掉」）。理由随结果一起报出来，
-    免得读者把「没清点」读成「清过了、干净」。
-    """
-    samples_dir = out_dir.parent / "samples"
-    if not samples_dir.is_dir():
-        return pool.StaleSweep(
-            kind="task_views",
-            reason=f"P2 目录不存在（{samples_dir}）⇒ 无名单，不清点",
-        )
-    keep_ids = {p.stem for p in samples_dir.glob("*.json")}
-    if not keep_ids:
-        return pool.StaleSweep(
-            kind="task_views",
-            reason="P2 目录为空 ⇒ 无名单，不清点",
-        )
-    return pool.sweep_task_views(out_dir, keep_ids=keep_ids)

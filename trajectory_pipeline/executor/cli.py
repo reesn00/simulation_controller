@@ -52,7 +52,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from types import MappingProxyType
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Final, Mapping
+from typing import Any, Callable, Final, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor.actions import is_native_think
@@ -3436,6 +3436,28 @@ def cmd_compare_drivers(args: argparse.Namespace) -> int:
     return {"pass": 0, "fail": 1}.get(report["verdict"], 2)
 
 
+def _print_quarantine_note(root: Path, kind: str, quarantined: Sequence[str]) -> None:
+    """印一行「本轮名单之外」的旧产物账（H-33）。
+
+    ⚠️ **必须印**：组装层只写不删时，交付目录里多出来的旧产物**在报告上
+    完全隐形**——``build`` 打印「切出 N 条 / 写出 M 条」，**不提目录里还躺着
+    多少别的**；读的人只能靠「数一遍目录」才发现，而那几份在报告上完全看不出
+    是多余的。**跳过必须看得见**（同「访问级剔除」「旧面未重渲染」两行的纪律）。
+
+    ⚠️ **不是删除**：隔离区里的东西**可逆**（可从 P1 重渲染，也可直接搬回
+    原位）——所以印的是「移走了什么」，不是「扔了什么」。
+    """
+    if not quarantined:
+        return
+    print(f"  ⚠️ 交付目录里 {len(quarantined)} 份**本轮未产出**的旧产物"
+          f"（{kind}/），已移入 {pool.QUARANTINE_DIRNAME}/{kind}/：")
+    for item in list(quarantined)[:10]:
+        print(f"    {item}")
+    if len(quarantined) > 10:
+        print(f"    …另有 {len(quarantined) - 10} 份")
+    print(f"    （**不是删除**：可从 P1 重渲染，或直接搬回原位）")
+
+
 def _print_pool_note(root: Path, kind: str) -> None:
     """印一行分池账（方案 23 R3-3）。**读 pool_meta.json，不重算**。
 
@@ -3528,7 +3550,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                                 overwrite=args.overwrite,
                                 archive_filter=picked,
                                 era_filter=era_filter,
-                                include_legacy=include_legacy)
+                                include_legacy=include_legacy,
+                                prune_stale=True)
         print(f"P1 → P2：{len(rep.archives)} 份存档，"
               f"切出 {rep.total_samples} 条样本，写出 {rep.total_written} 条")
         degraded = sum(a.degraded for a in rep.archives)
@@ -3584,12 +3607,16 @@ def cmd_build(args: argparse.Namespace) -> int:
             if len(bad) > 10:
                 print(f"  …另有 {len(bad) - 10} 份")
         print(f"  → {rep.sample_dir}")
+        if rep.prune_skipped:
+            print(f"  ⚠️ **未清点交付目录**：{rep.prune_skipped}")
+        _print_quarantine_note(root, "samples", rep.quarantined)
         _print_pool_note(root, "samples")
         _print_sweep(rep.sweep)
 
     if stage in ("p3", "all"):
         vrep = views.build_views_from_dir(root=root, overwrite=args.overwrite,
-                                          include_legacy=include_legacy)
+                                          include_legacy=include_legacy,
+                                          prune_stale=True)
         print(f"\nP2 → P3：{len(vrep.samples)} 条样本，"
               f"写出 {vrep.total_written} 份视图（每条 {len(views.VIEW_NAMES)} 份）")
         if vrep.total_skipped:
@@ -3612,10 +3639,27 @@ def cmd_build(args: argparse.Namespace) -> int:
             print(f"  旧面未重渲染 {vrep.total_legacy_skipped} 条"
                   f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {vrep.views_dir}")
+        _print_quarantine_note(root, "views", vrep.quarantined)
         _print_pool_note(root, "views")
         _print_sweep(vrep.sweep)
 
     return 0
+
+
+def _skip_reason(text: str) -> str:
+    """把一条跳过原因**归一**成可归组的形式。
+
+    ⚠️ 原因串有两种形状：``"T001__a1.json: 已存在"``（**ASCII 冒号**）与
+    ``"T001__a1 (搜索页采集失败：…)"``（**中文全角冒号**，切不开）。
+    原来只按 ASCII 冒号切 ⇒ 全角的那批**每条印一行**——H-33 修好 T 侧
+    判据后，「搜索阶段没进决策」一次就是 **81 条**，逐条印就是 81 行噪声；
+    门禁一旦天天报同一批已知项，人就开始整体跳过它，那它存在的意义也没了。
+    """
+    if ":" in text:
+        return text.split(":", 1)[1].strip()
+    if "(" in text and ")" in text:
+        return text[text.index("(") + 1: text.rindex(")")].strip()
+    return text
 
 
 def cmd_task_view(args: argparse.Namespace) -> int:
@@ -3667,6 +3711,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
                 getattr(args, "backfill_from_filename", True),
             ),
             include_legacy=include_legacy,
+            prune_stale=True,
         )
         # 跳过原因归组打印（与 cmd_build 的 P3 段同款纪律——
         # 二次跑会跳过 N 条，逐条印是噪声）。
@@ -3677,8 +3722,8 @@ def cmd_task_view(args: argparse.Namespace) -> int:
                     # 旧面未渲染：单独一行印，不混进「已存在」那组。
                     continue
                 # s 形如 "T001__a1.json: 已存在" 或 "T001__a1: 缺 payload 键 [...]"
-                # 抓 ``:`` 后的原因段做归组
-                reason = s.split(":", 1)[1].strip() if ":" in s else s
+                # 或 "T001__a1 (搜索页采集失败：…)" —— **归一**后做归组
+                reason = _skip_reason(s)
                 by_reason[reason] += 1
         print(f"P1 → T：{len(results.results)} 份存档，"
               f"写出 {results.total_written} 份 T 视图"
@@ -3689,7 +3734,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
             print(f"  旧面未重渲染 {results.total_legacy_skipped} 份"
                   f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {results.target_dir}")
-        _print_sweep(results.sweep)
+        _print_quarantine_note(root, "task_views", results.quarantined)
         _print_pool_note(root, "task_views")
         return 0
 

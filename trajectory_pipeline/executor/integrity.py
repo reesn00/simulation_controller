@@ -39,7 +39,7 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from trajectory_pipeline import outcomerules
 from trajectory_pipeline.executor import negative_rules
@@ -599,6 +599,69 @@ def _flag_contradicted_negatives(root: Path) -> tuple[Finding, ...]:
     return tuple(out)
 
 
+def _examples(ids: Iterable[str], limit: int = 3) -> str:
+    """一串 id 的紧凑展示（**只给头几个**——全列出来是噪声，门禁一旦天天
+    报同一批已知项，人就会开始整体跳过它，那它存在的意义也没了）。"""
+    ordered = sorted(ids)
+    head = "、".join(ordered[:limit])
+    return head + ("…" if len(ordered) > limit else "")
+
+
+def _delivery_composition_notes(base: Path) -> list[str]:
+    """派生产物目录的**构成**体检：P2 / P3 / T 三件套的口径是否归一。
+
+    ⚠️ **为什么单开一条**（H-33）：``check_archive`` 只体检**存档**——
+    交付目录里多出来的陈旧产物**与存档无关**，检查器压根不看那个目录
+    ⇒ 组装层「只写不删」留下的残留**在报告上完全隐形**
+    （2026-11-11 实测：P2 **114** 份 / T **160** 份，多出的 **53** 份
+    退化空壳在报告上零处异常）。
+
+    ⚠️ **只报差集，不判对错**：多出来的也可能是「本轮之外批次」的合法产物
+    （P2 还没重建、T 先建了）⇒ 这里只报**差集**，处置权留给人。
+
+    Returns:
+        提示行（空 = 三件套口径归一）。
+    """
+    samples_dir = base / "samples"
+    views_dir = base / "views"
+    t_dir = base / "task_views"
+    if not (samples_dir.is_dir() or views_dir.is_dir() or t_dir.is_dir()):
+        return []
+
+    p2 = ({p.stem for p in samples_dir.glob("*.json")}
+          if samples_dir.is_dir() else set())
+    # P3 三份视图共一个 id ⇒ 只认 ``*_meta.json``（三份里只有它带 tool_surface）
+    p3 = ({p.name[: -len("_meta.json")] for p in views_dir.glob("*_meta.json")}
+          if views_dir.is_dir() else set())
+    t = ({p.stem for p in t_dir.glob("*.json")} if t_dir.is_dir() else set())
+
+    notes: list[str] = []
+    if p3 - p2:
+        notes.append(
+            f"派生产物口径分叉：**P3 视图比 P2 样本多 {len(p3 - p2)} 条**"
+            f"（{_examples(p3 - p2)}）——陈旧视图仍会被训练侧读到"
+            f"（``storage.read_p3`` 按 id 直读目录、不问 P2 在不在）；"
+            f"组装层只写不删，清理走 ``cli build``（H-33）"
+        )
+    if p2 - p3:
+        notes.append(
+            f"派生产物口径分叉：**P2 样本比 P3 视图多 {len(p2 - p3)} 条**"
+            f"（{_examples(p2 - p3)}）——P3 没跟上（没跑 ``cli build --stage p3``？）"
+        )
+    if t - p2:
+        notes.append(
+            f"派生产物口径分叉：**T 视图比 P2 样本多 {len(t - p2)} 条**"
+            f"（{_examples(t - p2)}）——T 侧判据与 P2 侧不一致，"
+            f"或有上一轮／上一批次留下的陈旧视图（H-33）"
+        )
+    if p2 - t:
+        notes.append(
+            f"派生产物口径分叉：**P2 样本比 T 视图多 {len(p2 - t)} 条**"
+            f"（{_examples(p2 - t)}）——T 没渲染（跑过 ``cli task-view --all``？）"
+        )
+    return notes
+
+
 def check_root(root: Path | str | None = None) -> IntegrityReport:
     """体检一个目录下的全部存档（口径与报表一致，见模块 docstring）。"""
     from trajectory_pipeline.executor.archive import DEFAULT_ROOT
@@ -629,6 +692,9 @@ def check_root(root: Path | str | None = None) -> IntegrityReport:
             f"（差值 {total_neg - len(pool_keys):+d}；池是跨 run 累积的，"
             "数量不等不一定是错，缺的那几条已逐条列在上面）"
         )
+    # 派生产物目录的构成体检（H-33）：存档体检**看不见**交付目录里的残留
+    # ⇒ 这里补一条，只报差集，不判对错。
+    notes.extend(_delivery_composition_notes(base))
     return IntegrityReport(tuple(reports), tuple(notes), conflicts)
 
 

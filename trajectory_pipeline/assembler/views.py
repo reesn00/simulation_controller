@@ -814,9 +814,11 @@ class ViewBuildReport:
     views_dir: str = ""
     #: 旧面默认不重渲染而没落盘的**总条数**（报表上的独立一行）。
     total_legacy_skipped: int = 0
-    #: **交付目录清点结果**（H-33）。``None`` = 没跑清点；
-    #: 非 ``None`` 时 ``reason`` 说的是「没清点」的原因。
-    sweep: pool.StaleSweep | None = None
+    #: **因「不在本轮名单」被移进隔离区**的样本 id（H-33）。
+    #: P3 是 P2 的渲染 ⇒ 名单 = **P2 目录里的样本 id**；名单之外的视图
+    #: 是上一轮（或上一批次）留下的**陈旧产物**——它照样会被训练侧读到
+    #: （``storage.read_p3.read_views`` 按 id 直读目录），所以必须清。
+    quarantined: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -885,11 +887,19 @@ def build_views_from_dir(
     root: str | Path | None = None,
     overwrite: bool = False,
     include_legacy: bool = False,
+    prune_stale: bool = False,
 ) -> ViewBuildReport:
     """读一整个 P2 目录，逐条渲染 P3。
 
     **坏样本不打断整批**——同 :func:`trajectory_pipeline.assembler.builder.build_all`：
     一条样本序列化失败只进 ``skipped``，其余继续。
+
+    Args:
+        prune_stale: **按本轮名单清点交付目录**（H-33）：``views/`` 里
+            **不在 P2 目录名单内**的视图移进 ``quarantine/views/``。
+            ⚠️ 名单取的是 **P2 目录**而不是「本轮渲染出来的」——
+            P3 是 P2 的渲染，两边必须一一对应；默认不覆盖时已存在的
+            视图是「跳过」不是「没产出」，拿「渲染出来的」当名单会误伤。
     """
     base = (
         Path(samples_root)
@@ -923,51 +933,31 @@ def build_views_from_dir(
         total_written += res.written
         total_skipped += len(res.skipped)
         total_legacy_skipped += res.legacy_skipped
+    # ── 按本轮名单清点交付目录（H-33）────────────────────────────────
+    # ⚠️ **名单 = P2 目录里的样本 id**（P3 是 P2 的渲染 ⇒ 一一对应）。
+    # 名单之外的视图是**陈旧产物**：训练侧 ``read_views`` 按 id 直读目录、
+    # **不问 P2 在不在** ⇒ 它留在目录里就照样进 SFT 语料。
+    quarantined: tuple[str, ...] = ()
+    if prune_stale:
+        roster = {p.stem for p in base.glob("*.json") if p.is_file()}
+        quarantined = pool.quarantine_offroster_views(
+            views_dir(root),
+            roster=roster,
+            skip_names=migration.unclassified,
+        ).quarantined
+
     pool.record_pool(
         views_dir(root),
         moved=migration.moved,
         unclassified=migration.unclassified,
         primary_glob="*_meta.json",
         legacy_skipped=total_legacy_skipped,
+        quarantined=quarantined,
     )
-
-    # ── 清点交付目录（H-33）────────────────────────────────────
-    # P3 是 P2 的**投影** ⇒ P3 的名单就是 **P2 目录里现有的 id**。
-    # 用 P2 当前内容当判据（而不是「这轮渲了几条」）⇒ P3 与 P2
-    # 天然对齐：P2 没有的 id，P3 也不该留着（那正是 H-33 记的
-    # 「P3 残留 ⇒ 进训练语料」）。
-    sweep = _sweep_views_against_samples(base, root)
     return ViewBuildReport(
         tuple(results), total_written, total_skipped, str(views_dir(root)),
-        total_legacy_skipped, sweep,
+        total_legacy_skipped, quarantined,
     )
-
-
-def _sweep_views_against_samples(
-    samples_base: Path, root: str | Path | None
-) -> pool.StaleSweep:
-    """按 **P2 目录现有的 id** 清点 P3 交付目录（H-33）。
-
-    ⚠️ **只在读侧就是交付目录时清点**：读别的目录算出的名单与交付目录
-    无关 ⇒ 清点会把**别的批次**的视图搬走（源目录指错时就是这样）。
-    不清点 + 说清原因，比清错好。
-
-    ⚠️ **P2 目录不在 ⇒ 不清点**：没有名单就没有判据（把整目录搬空
-    不叫「清理」，叫「毁掉」）。
-    """
-    delivery_samples = views_dir(root).parent / "samples"
-    if not samples_base.is_dir():
-        return pool.StaleSweep(
-            kind="views",
-            reason=f"读侧 P2 目录不存在（{samples_base}）⇒ 无名单，不清点",
-        )
-    if Path(samples_base).resolve() != delivery_samples.resolve():
-        return pool.StaleSweep(
-            kind="views",
-            reason="读侧 P2 目录不是交付目录 ⇒ 名单与交付目录不同源，不清点",
-        )
-    keep_ids = {p.stem for p in samples_base.glob("*.json")}
-    return pool.sweep_views(views_dir(root), keep_ids=keep_ids)
 
 
 __all__ = [
