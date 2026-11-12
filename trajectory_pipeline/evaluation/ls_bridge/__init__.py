@@ -14,8 +14,16 @@
     scout 三件套(positive+negative) → P3 视图回溯 → task.data
     + scorecard.v2 预标注 → R11 扫描 → 台账判重 → LS
 
+就地刷新链路（本包已实现，**只改内容，不删卡不新建卡**）::
+
+    scout 聚合产物 → 与 LS 上的 task.data 逐字段比对 → 有差异才刷
+    → PATCH /api/tasks/{id}（只改 data）+ PATCH /api/predictions/{id}
+
+    ⚠️ **绝不 PATCH label_config**（那会覆盖标注员在 LS 端的改动）
+    ⚠️ **默认跳过有人工标注的卡**（PATCH data 会不会影响 annotation 未验过）
+
 入口: ``python -m trajectory_pipeline.evaluation.ls_bridge``
-（status / init-project / upload / purge）。配置走 ``TRAJECTORY_LS_*``
+（status / init-project / upload / refresh / purge）。配置走 ``TRAJECTORY_LS_*``
 环境变量。迁移自 ``archive/v1/label_studio``（照读重写, 未 import）。
 """
 

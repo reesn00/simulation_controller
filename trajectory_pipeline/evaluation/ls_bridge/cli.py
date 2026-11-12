@@ -74,6 +74,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="待推送条数超过安全闸时仍强制推送",
     )
 
+    p_ref = sub.add_parser(
+        "refresh",
+        help="把 LS 上**已存在**的轨迹卡就地刷新到当前产物(默认 dry-run)",
+    )
+    p_ref.add_argument("--scout-dir", required=True, help="scout 三件套目录")
+    p_ref.add_argument(
+        "--task-views-root", default=None,
+        help="T 视图根(per-Run 完整任务视图, 默认 storage 默认根)",
+    )
+    p_ref.add_argument(
+        "--buckets", default="positive,negative,quarantine",
+        help="要刷的 bucket, 逗号分隔(默认三态全刷)",
+    )
+    p_ref.add_argument("--limit", type=int, default=None, help="最多刷 N 条(取样调试)")
+    p_ref.add_argument(
+        "--include-annotated", action="store_true",
+        help="连**有人工标注**的卡也刷。⚠️ 默认不刷——PATCH data 会不会影响 "
+             "annotation 未验过, 不猜; 这些卡默认被跳过并报出来",
+    )
+    p_ref.add_argument(
+        "--apply", action="store_true",
+        help="真写(默认只出计划, 不推送)",
+    )
+
     p_purge = sub.add_parser("purge", help="删除 LS 项目(不可逆, 连同标注)")
     p_purge.add_argument("--project-id", type=int, required=True)
     p_purge.add_argument("--confirm", action="store_true", help="确认执行(不加仅 dry-run)")
@@ -215,6 +239,84 @@ def _cmd_upload(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    """把 LS 上**已存在**的轨迹卡就地刷新到当前产物。
+
+    **默认 dry-run**（只出计划）——加 ``--apply`` 才写。
+    """
+    from trajectory_pipeline.evaluation.ls_bridge.client import build_client
+    from trajectory_pipeline.evaluation.ls_bridge.project_manager import (
+        resolve_project_id,
+    )
+    from trajectory_pipeline.evaluation.ls_bridge.refresh import (
+        apply_refresh,
+        plan_refresh,
+    )
+
+    scout_dir = pathlib.Path(args.scout_dir)
+    if not scout_dir.is_dir():
+        print(f"错误:{scout_dir} 不是目录", file=sys.stderr)
+        return 2
+
+    buckets = [b.strip() for b in args.buckets.split(",") if b.strip()]
+    if not buckets:
+        print("错误:--buckets 不能为空", file=sys.stderr)
+        return 2
+
+    settings = load_settings(base_url=args.url, api_key=args.api_key)
+    if not settings.has_credentials():
+        print(f"错误:未设置 {ENV_API_KEY}", file=sys.stderr)
+        return 1
+
+    client = build_client(settings)
+    # ⚠️ **sync=False 是硬要求**：``resolve_project_id`` 默认会
+    # **PATCH label_config**（全量覆盖）⇒ 那会**覆盖标注员在 LS 端的改动**
+    # ⇒ refresh 只刷「内容」，**绝不碰表单配置**。
+    project_id = resolve_project_id(client, settings, sync=False)
+
+    plan = plan_refresh(
+        scout_dir,
+        client=client,
+        task_views_root=args.task_views_root,
+        buckets=buckets,
+        limit=args.limit,
+        include_annotated=bool(args.include_annotated),
+        project_id=project_id,
+    )
+    print(f"[refresh] project={project_id}  {plan.summary()}")
+    if plan.diff_histogram:
+        top = ", ".join(
+            f"{k} {v}" for k, v in list(plan.diff_histogram.items())[:8]
+        )
+        print(f"[refresh] 差异字段分布: {top}")
+    for sid in plan.skipped_annotated[:10]:
+        print(f"  skipped(有人工标注，未验过 PATCH 是否影响标注): {sid}")
+    for sid, why in plan.failed[:10]:
+        print(f"  failed: {sid} — {why}")
+    for item in plan.items[:10]:
+        print(f"  待刷: {item.sample_id} (LS task {item.ls_task_id}) "
+              f"差异字段 {','.join(item.diff_fields)}")
+    if len(plan.items) > 10:
+        print(f"  …另有 {len(plan.items) - 10} 条")
+
+    if not args.apply:
+        print("[dry-run] 未写入。确认无误后加 --apply 执行实际刷新。")
+        return 0
+    if not plan.items:
+        print("[refresh] 无可刷条目，结束。")
+        return 0
+
+    result = apply_refresh(plan, client=client)
+    print(
+        f"[refresh] tasks_patched={result['tasks_patched']} "
+        f"predictions_patched={result['predictions_patched']} "
+        f"failed={len(result['failed'])}"
+    )
+    for sid, why in result["failed"][:10]:
+        print(f"  failed: {sid} — {why}")
+    return 1 if result["failed"] else 0
+
+
 def _cmd_purge(args: argparse.Namespace) -> int:
     from trajectory_pipeline.evaluation.ls_bridge.client import build_client
     from trajectory_pipeline.evaluation.ls_bridge.project_manager import purge_tasks
@@ -234,6 +336,7 @@ _COMMANDS: dict[str, Any] = {
     "status": _cmd_status,
     "init-project": _cmd_init_project,
     "upload": _cmd_upload,
+    "refresh": _cmd_refresh,
     "purge": _cmd_purge,
 }
 

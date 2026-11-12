@@ -377,6 +377,17 @@ class Test测量失败不污染降级通道:
         这条不是装饰：它是「不进 degraded」这条纪律的**理由**。
         没有它，下一个改驱动的人会问「为什么不统一记进 degraded」，
         而那时没人记得这个后果。
+
+        ⚠️ **2026-11-11（H-32）后果的口径变窄了**：降级**按内容块**分类，
+        **只有 ``links`` / ``nav`` 两块的降级才让候选消失**（body / elements /
+        other 都不否决候选——见 ``executor/degraded.py``）。
+        ⇒ **纪律不变，但理由要改写**（两条都要钉住）：
+
+        - 「测量失败」**不是观察缺件**（元素表是好的，坏的是**对元素的测量
+          口径**）⇒ 记进 ``degraded`` 就是**说了一句假话**：观察投影上会挂
+          一个假的降级标，agent 会因此怀疑一份**完整**的观察；
+        - 而**致命块**（``links`` / ``nav``）的降级**仍然**让候选整个消失
+          ⇒ 把测量失败混进那种降级，**一把坏尺子真的会作废整批数据**。
         """
         from trajectory_pipeline.executor.steps.search import extract_candidates
         from trajectory_pipeline.perception.base import LinkItem
@@ -391,8 +402,14 @@ class Test测量失败不污染降级通道:
             )
 
         assert extract_candidates(_obs(()))
-        assert extract_candidates(_obs(("element_basis",))) == [], (
-            "降级会让候选整个消失——所以测量失败绝不能走 degraded 这条路")
+        # ⚠️ **other 块**（没登记过的标记）**不再**让候选消失（H-32）——
+        # 测量失败正是这一类：坏的是**测量口径**，不是观察。
+        assert extract_candidates(_obs(("element_basis",))), (
+            "测量失败记进 other 块不该作废候选——它不是观察缺件")
+        # 对照组：**致命块**的降级仍让候选整个消失——
+        # 这才是「把测量失败混进致命降级 ⇒ 一把坏尺子作废整批数据」的落点。
+        assert extract_candidates(_obs(("links",))) == [], (
+            "链接那块坏了 ⇒ 候选必须消失")
 
 
 # ── Observation 层的语义 ───────────────────────────────────────

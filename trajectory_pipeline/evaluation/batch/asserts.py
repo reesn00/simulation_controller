@@ -84,6 +84,7 @@ from trajectory_pipeline.evaluation.golden.alignment import hard_agreement
 from trajectory_pipeline.evaluation.scorers import thresholds
 from trajectory_pipeline.executor.actions import TOOLS
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
+from trajectory_pipeline.executor.degraded import FILTER_KEY_DEGRADED_OTHER
 
 # ── 状态词汇 ──────────────────────────────────────────────────────
 
@@ -472,6 +473,13 @@ def _assert_b2(archive: Mapping[str, Any]) -> AssertReading:
             f"其余 {len(candidates) - denominator} 条不进分子"
         )
     filters = archive.get("candidate_filter") or {}
+    # ⚠️ **非致命降级不是「结构性剔除」**（H-32 · 2026-11-11）——
+    # ``degraded_other`` 记的是「有降级但**候选照取**」，把它算进
+    # 「剔除动作不可复核」这条 caveat ⇒ 会凭空多出一条告警，
+    # 读起来像「这批的候选被剔过」。（真剔除的键照旧触发。）
+    filters = {
+        k: v for k, v in filters.items() if k != FILTER_KEY_DEGRADED_OTHER
+    }
     if filters:
         detail = "、".join(f"{k}={v}" for k, v in sorted(filters.items()))
         caveats.append(

@@ -27,7 +27,10 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
-from trajectory_pipeline.executor.degraded import blocks_candidate_extraction
+from trajectory_pipeline.executor.degraded import (
+    FILTER_KEY_DEGRADED_OTHER,
+    blocks_candidate_extraction,
+)
 from trajectory_pipeline.perception.base import Observation
 
 #: 搜索引擎。**默认值是实测可达的那个**（``probe_observe`` 跑过 baidu）。
@@ -514,7 +517,7 @@ def extract_candidates(
         # ⇒ 这里**照常取候选**，并单独记一笔 ``degraded_other``：
         # 降级**必须留痕**（它还进 ``Observation.degraded``），但**不许
         # 一刀切作废候选**。
-        bump("degraded_other")
+        bump(FILTER_KEY_DEGRADED_OTHER)
 
     out: list[Candidate] = []
     seen_hosts: set[str] = set()

@@ -76,6 +76,7 @@ from trajectory_pipeline.executor.branches import (
     RunLedger,
 )
 from trajectory_pipeline.executor import downgrade as downgrade_mod
+from trajectory_pipeline.executor.degraded import FILTER_KEY_DEGRADED_OTHER
 from trajectory_pipeline.executor import relabel as relabel_mod
 from trajectory_pipeline.executor import pool_drop as pool_drop_mod
 from trajectory_pipeline.executor import label_sync as label_sync_mod
@@ -1287,9 +1288,14 @@ def _print_summary(rec, path: Path) -> None:
     # 里，只是没有进访。把它算进「已过滤」会让两个数对不上（18 个候选、
     # 已过滤 17），读起来像候选集被剔空了。分开打。
     skipped_host = rec.candidate_filter.get("duplicate_landing_host", 0)
+    # ⚠️ **非致命降级不是「剔除了候选」**（H-32 · 2026-11-11）——
+    # ``degraded_other`` 记的是「有降级但候选照取」，把它算进「已过滤」
+    # 会读成「候选被剔掉了」。⚠️ **跟 ``duplicate_landing_host`` 同款**：
+    # 两者的共同点是**候选仍在 ``candidates[]`` 里**。
+    degraded_other = rec.candidate_filter.get(FILTER_KEY_DEGRADED_OTHER, 0)
     search_filters = {
         k: v for k, v in rec.candidate_filter.items()
-        if k != "duplicate_landing_host"
+        if k not in ("duplicate_landing_host", FILTER_KEY_DEGRADED_OTHER)
     }
     print(f"  query      = {rec.query}")
     print(f"  candidates = {len(rec.candidates)} (来源: {rec.candidate_source}"
@@ -1300,6 +1306,9 @@ def _print_summary(rec, path: Path) -> None:
     if skipped_host:
         print(f"  跳过       = {skipped_host}（同落地 host 已达上限 "
               f"{rec.run_config.get('max_per_host')}，未遍历）")
+    if degraded_other:
+        print(f"  降级       = {degraded_other}（非致命降级：**候选照取**，"
+              f"降级事实仍留在观察里）")
     print(f"  branches   = {json.dumps(s.get('by_branch', {}), ensure_ascii=False)}")
     missing = s.get("missing_branches") or []
     if missing:
@@ -3456,6 +3465,34 @@ def _print_pool_note(root: Path, kind: str) -> None:
           f"旧面 {total} 份 → legacy/（{parts}，只读存量）")
 
 
+def _print_sweep(sweep: pool.StaleSweep | None) -> None:
+    """印一行清点账（H-33）。**「没清点」与「清点了没残留」必须分得开**。
+
+    组装层只写不删 ⇒「本轮未产出」的派生产物会留在交付目录里
+    （P3 残留 ⇒ 进训练语料）。清点把多出来的移进 ``quarantine/``，
+    并把条数与 id 印出来——**「跳过必须看得见」同款纪律**：
+    移走的东西看不见，就等于「悄悄删了」。
+    """
+    if sweep is None:
+        return
+    if sweep.reason:
+        print(f"  清点：{sweep.kind} **未清点**（{sweep.reason}）")
+        return
+    print(f"  清点：{sweep.kind} 留 {sweep.kept} 份 · "
+          f"移入隔离区 {len(sweep.moved)} 份（本轮未产出的旧产物）")
+    if sweep.moved:
+        for name in sweep.moved[:10]:
+            print(f"    → quarantine/{sweep.kind}/{name}")
+        if len(sweep.moved) > 10:
+            print(f"    …另有 {len(sweep.moved) - 10} 份")
+        print("    （可逆：文件原样还在 quarantine/，搬回原位即可）")
+    if sweep.unclassified:
+        print(f"  ⚠️ 认不出 {len(sweep.unclassified)} 份（面读不出）"
+              f"——**留在原地等人看**，清点不替人做决定")
+        for name in sweep.unclassified[:10]:
+            print(f"    · {name}")
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     """P1 → P2 → P3 组装。**全离线，不开浏览器。**
 
@@ -3548,6 +3585,7 @@ def cmd_build(args: argparse.Namespace) -> int:
                 print(f"  …另有 {len(bad) - 10} 份")
         print(f"  → {rep.sample_dir}")
         _print_pool_note(root, "samples")
+        _print_sweep(rep.sweep)
 
     if stage in ("p3", "all"):
         vrep = views.build_views_from_dir(root=root, overwrite=args.overwrite,
@@ -3575,6 +3613,7 @@ def cmd_build(args: argparse.Namespace) -> int:
                   f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {vrep.views_dir}")
         _print_pool_note(root, "views")
+        _print_sweep(vrep.sweep)
 
     return 0
 
@@ -3650,6 +3689,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
             print(f"  旧面未重渲染 {results.total_legacy_skipped} 份"
                   f"（旧面只读存量，默认不重建；按需重建加 --include-legacy）")
         print(f"  → {results.target_dir}")
+        _print_sweep(results.sweep)
         _print_pool_note(root, "task_views")
         return 0
 

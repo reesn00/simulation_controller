@@ -88,6 +88,26 @@ def samples_dir(root: str | Path | None = None) -> Path:
     return Path(root) / DEFAULT_SAMPLES_DIRNAME
 
 
+def _sample_id_of_archive(archive_name: str) -> str:
+    """存档文件名 → 它该有的 ``sample_id``（``<task_id>__<run_id>``）。
+
+    与 :func:`trajectory_pipeline.assembler.schema.sample_id` +
+    :func:`~trajectory_pipeline.assembler.schema.run_id_of` **同口径**
+    （``.reviewed`` 不算 run_id 的一部分 ⇒ 复核档与原档映射到**同一个**
+    sample_id）。
+
+    用在 H-33 清点上：保守保留「本轮没点名的存档」的产物时，得知道
+    它对应哪个 id——**按存档名推**（id 与存档名同构，方案 23），
+    不开文件读（读不出就猜了）。
+    """
+    stem = Path(archive_name).stem
+    if stem.endswith(".reviewed"):
+        stem = stem[: -len(".reviewed")]
+    task_id = stem.split("__", 1)[0]
+    run_id = stem.split("__", 1)[1] if "__" in stem else stem
+    return f"{task_id}__{run_id}"
+
+
 # ── 报告 ──────────────────────────────────────────────────────────
 
 #: ``--rationale-era`` 的「不过滤」取值。**不写成空串**：空串在
@@ -126,6 +146,12 @@ class ArchiveBuildResult:
     #: ``skipped``：处置不同（修好后端重跑，而不是重渲染这条），
     #: 而且它**不是「这条切不出来」**——P1 证据原样在盘上。
     judgement_untrusted: bool = False
+    #: **这一轮「应该产出」的** ``sample_id``（交付面 ∧ 未被 era 筛掉）。
+    #:
+    #: ⚠️ **不是「实际写出了什么」**——默认**不覆盖**模式下实际写出 0 条
+    #: （全都「已存在」跳过了）⇒ 拿实际产出当名单会把整个交付集搬进隔离区。
+    #: ⇒ 这个集合是「**这一轮该在交付集里**」的名单（H-33 清点的判据）。
+    delivered: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +176,11 @@ class BuildReport:
     #: 单列一行：它与「切不出轨迹」「被反爬拦」是三件事，
     #: 处置各不相同（修后端重跑 / 补数据 / 换引擎加间隔）。
     total_judgement_untrusted: int = 0
+    #: **交付目录清点结果**（H-33）。``None`` = 没跑清点；
+    #: 非 ``None`` 时 :attr:`~trajectory_pipeline.assembler.pool.StaleSweep.reason`
+    #: 说的是「没清点」的原因。**「没清点」与「清点了、没发现残留」是两件事**，
+    #: 报表上必须分得开 ⇒ 调用方要把 reason 一并印出来。
+    sweep: pool.StaleSweep | None = None
 
     @property
     def ok(self) -> bool:
@@ -385,6 +416,8 @@ def build_from_archive(
     neg = 0
     era_skipped = 0
     legacy_skipped = 0
+    #: **这一轮「应该产出」的** sample_id（见 :attr:`ArchiveBuildResult.delivered`）。
+    delivered: list[str] = []
     # 分代账按**切出来的样本**记，不受过滤与 overwrite 影响：
     # 它描述的是「这份存档里有什么」。
     pre_action = sum(1 for s in samples
@@ -405,6 +438,10 @@ def build_from_archive(
                 f"{s.sample_id} (旧面 {s.tool_surface}：{pool.LEGACY_SKIP_REASON})"
             )
             continue
+        # ⚠️ **「这一轮应该产出」的名单**（H-33 清点的判据）：
+        # 收在**写盘之前** ⇒ 默认不覆盖模式下（这里会「已存在」跳过）
+        # 它照样在名单里 ⇒ 旧文件**不会被误搬进隔离区**。
+        delivered.append(s.sample_id)
         out_dir = samples_dir(pool.pool_root(base_root, s.tool_surface))
         out_dir.mkdir(parents=True, exist_ok=True)
         if not overwrite and (out_dir / f"{s.sample_id}.json").exists():
@@ -436,6 +473,7 @@ def build_from_archive(
         excluded_detail=split.excluded,
         judgement_untrusted=bool(getattr(split, "judgement_untrusted", False)),
         legacy_skipped=legacy_skipped,
+        delivered=tuple(delivered),
     )
 
 
@@ -577,6 +615,44 @@ def build_all(
         legacy_skipped=total_legacy_skipped,
     )
 
+    # ── 清点交付目录（H-33）────────────────────────────────────
+    # 「本轮应该产出什么」= 本轮**处理过的**存档切出来的 sample_id
+    # （不是「实际写出了什么」——默认不覆盖模式下实际写出 0 条）。
+    keep_ids: set[str] = set()
+    for res in per_archive:
+        keep_ids.update(res.delivered)
+    processed_names = {res.archive for res in per_archive}
+    processed_ids = {_sample_id_of_archive(n) for n in processed_names}
+    # ⚠️ **本轮没点名的存档保守留下**：它还在盘上、只是这轮没被处理
+    # （复核档优先时原档被跳过；也可能有人只点名了几份）⇒ 它的旧产物
+    # **不是**陈旧残留。把这些 id 也算进「留下」名单 ⇒ 只清真正的孤儿
+    # （**已从盘上剔除**的存档留下的东西）。
+    for path in sorted(src.glob("*.json")):
+        if "__" not in path.stem or path.name in processed_names:
+            continue
+        sid = _sample_id_of_archive(path.name)
+        if sid in processed_ids:
+            # 同一 run 的另一份档（``.reviewed``）本轮处理过了 ⇒
+            # 它的产物由那份说了算，不重复保留。
+            continue
+        keep_ids.add(sid)
+
+    if not src.is_dir():
+        # **源目录压根不存在** ⇒ 这不是「空批次」，是**路径指错了**
+        # ⇒ 不清点（把整批产物搬走来「回应」一个不存在的目录，
+        # 那是毁数据不是清理）。
+        sweep = pool.StaleSweep(
+            kind=out_dir.name,
+            reason=f"源目录不存在（{src}）⇒ 路径指错了，不清点",
+        )
+    else:
+        # ⚠️ **源目录存在但一份存档都没有** ⇒ 本轮「该产出 0 份」
+        # ⇒ 照常清点（把整批旧产物搬进隔离区）。
+        # 刻意**不**在这里加保护：加了就等于「剔除最后一批存档」这条
+        # 路径失效（交付目录留着上一批的产物，正是 H-33 记的那个洞）。
+        # 误伤不成立——清点用的是同一份名单，与非空情形同源。
+        sweep = pool.sweep_samples(out_dir, keep_ids=keep_ids)
+
     return BuildReport(
         archives=tuple(per_archive),
         total_samples=total_samples,
@@ -589,6 +665,7 @@ def build_all(
         total_excluded_units=total_excluded_units,
         total_legacy_skipped=total_legacy_skipped,
         total_judgement_untrusted=total_judgement_untrusted,
+        sweep=sweep,
     )
 
 

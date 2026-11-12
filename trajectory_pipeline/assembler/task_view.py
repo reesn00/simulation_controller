@@ -1309,7 +1309,7 @@ class TaskViewBatchReport:
     """
 
     __slots__ = ("results", "total_written", "total_skipped", "target_dir",
-                 "total_legacy_skipped")
+                 "total_legacy_skipped", "sweep")
 
     def __init__(
         self,
@@ -1318,6 +1318,7 @@ class TaskViewBatchReport:
         total_skipped: int,
         target_dir: str,
         total_legacy_skipped: int = 0,
+        sweep: pool.StaleSweep | None = None,
     ):
         self.results = results
         self.total_written = total_written
@@ -1326,6 +1327,9 @@ class TaskViewBatchReport:
         #: 旧面默认不重渲染（owner 裁定 2026-11-10）而没落盘的**总条数**
         #: ——报表上的独立一行，不与「已存在／写失败」混算。
         self.total_legacy_skipped = total_legacy_skipped
+        #: **交付目录清点结果**（H-33）。``None`` = 没跑清点；
+        #: 非 ``None`` 时 ``reason`` 说的是「没清点」的原因。
+        self.sweep = sweep
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return (
@@ -1461,7 +1465,37 @@ def build_all_task_views(
         unclassified=migration.unclassified,
         legacy_skipped=total_legacy_skipped,
     )
+
+    # ── 清点交付目录（H-33）────────────────────────────────────
+    # T 与 P3 同理：T 是**每任务一条轨迹**的视图，它的名单就是
+    # **P2 目录里现有的 id**（``<task_id>__<run_id>`` 两边同构）。
+    # 用 P2 当前内容当判据 ⇒ T 与 P2 天然对齐：P2 没有的 id，
+    # T 也不该留着（H-31「P2 不出样本、T 不出训练视图」——
+    # 之前只写在纸上，产物目录层面没真正成立）。
+    sweep = _sweep_task_views_against_samples(out_dir)
     return TaskViewBatchReport(
         tuple(results), total_written, total_skipped, str(out_dir),
-        total_legacy_skipped,
+        total_legacy_skipped, sweep,
     )
+
+
+def _sweep_task_views_against_samples(out_dir: Path) -> pool.StaleSweep:
+    """按 **P2 目录现有的 id** 清点 T 交付目录（H-33）。
+
+    ⚠️ **P2 目录不在或为空 ⇒ 不清点**：没有名单就没有判据
+    （把整目录搬空不叫「清理」，叫「毁掉」）。理由随结果一起报出来，
+    免得读者把「没清点」读成「清过了、干净」。
+    """
+    samples_dir = out_dir.parent / "samples"
+    if not samples_dir.is_dir():
+        return pool.StaleSweep(
+            kind="task_views",
+            reason=f"P2 目录不存在（{samples_dir}）⇒ 无名单，不清点",
+        )
+    keep_ids = {p.stem for p in samples_dir.glob("*.json")}
+    if not keep_ids:
+        return pool.StaleSweep(
+            kind="task_views",
+            reason="P2 目录为空 ⇒ 无名单，不清点",
+        )
+    return pool.sweep_task_views(out_dir, keep_ids=keep_ids)

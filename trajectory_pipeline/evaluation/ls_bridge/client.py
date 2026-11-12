@@ -35,7 +35,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from trajectory_pipeline.evaluation.ls_bridge.errors import (
     LabelStudioAuthFailed,
@@ -508,6 +508,66 @@ class LabelStudioClient:
                 return [payload]
             return []
         return []
+
+    def list_task_predictions(self, task_id: int) -> list[dict[str, Any]]:
+        """``GET /api/predictions?task={id}`` —— 这条 task 的**全部**预标注。
+
+        ⚠️ 端点名与标注那个**不同**（实测）：预标注走
+        ``/api/predictions?task=``（带查询参数），而标注走
+        ``/api/tasks/{id}/annotations``（子路径）—— 两者不能互换。
+        """
+        payload = self._request(
+            "GET", f"/api/predictions?task={int(task_id)}", retry=False
+        )
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
+    def update_task_data(
+        self, task_id: int, data: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """``PATCH /api/tasks/{id}`` —— **只改 ``data``**，不碰 ``label_config``。
+
+        ⚠️ **刻意不提供 ``label_config`` 的 PATCH 路径**：那个会**覆盖标注员
+        在 LS 端的改动**（见模块 docstring 的纪律）⇒ 刷内容与刷表单配置是
+        **两件事**，这里只做前者。
+
+        ⚠️ **不新建 task**：就地改 ⇒ **task id 与标注归属不变**
+        （owner 2026-11-04 裁过的「就地重推」，台账 H-27）。
+        """
+        body = {"data": dict(data)}
+        payload = self._request(
+            "PATCH", f"/api/tasks/{int(task_id)}", json_body=body, retry=False
+        )
+        return payload if isinstance(payload, dict) else {}
+
+    def update_prediction(
+        self,
+        prediction_id: int,
+        *,
+        result: Sequence[Mapping[str, Any]],
+        score: float,
+        model_version: str = "",
+    ) -> dict[str, Any]:
+        """``PATCH /api/predictions/{id}`` —— 刷预标注（scorecard 的风险提示）。
+
+        ⚠️ ``result`` 必须是 label_config 里**真实存在**的控件名 —— LS 对
+        非法控件名**一声不吭**（见
+        :func:`~trajectory_pipeline.evaluation.ls_bridge.exporter.build_prediction`）。
+        """
+        body: dict[str, Any] = {
+            "result": [dict(item) for item in result],
+            "score": float(score),
+        }
+        if model_version:
+            body["model_version"] = model_version
+        payload = self._request(
+            "PATCH",
+            f"/api/predictions/{int(prediction_id)}",
+            json_body=body,
+            retry=False,
+        )
+        return payload if isinstance(payload, dict) else {}
 
     def export_project_json(self, project_id: int) -> dict[str, Any]:
         """整个项目的 task + annotation 快照（**口径见** :meth:`list_project_tasks`）。

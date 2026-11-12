@@ -814,6 +814,9 @@ class ViewBuildReport:
     views_dir: str = ""
     #: 旧面默认不重渲染而没落盘的**总条数**（报表上的独立一行）。
     total_legacy_skipped: int = 0
+    #: **交付目录清点结果**（H-33）。``None`` = 没跑清点；
+    #: 非 ``None`` 时 ``reason`` 说的是「没清点」的原因。
+    sweep: pool.StaleSweep | None = None
 
     @property
     def ok(self) -> bool:
@@ -927,10 +930,44 @@ def build_views_from_dir(
         primary_glob="*_meta.json",
         legacy_skipped=total_legacy_skipped,
     )
+
+    # ── 清点交付目录（H-33）────────────────────────────────────
+    # P3 是 P2 的**投影** ⇒ P3 的名单就是 **P2 目录里现有的 id**。
+    # 用 P2 当前内容当判据（而不是「这轮渲了几条」）⇒ P3 与 P2
+    # 天然对齐：P2 没有的 id，P3 也不该留着（那正是 H-33 记的
+    # 「P3 残留 ⇒ 进训练语料」）。
+    sweep = _sweep_views_against_samples(base, root)
     return ViewBuildReport(
         tuple(results), total_written, total_skipped, str(views_dir(root)),
-        total_legacy_skipped,
+        total_legacy_skipped, sweep,
     )
+
+
+def _sweep_views_against_samples(
+    samples_base: Path, root: str | Path | None
+) -> pool.StaleSweep:
+    """按 **P2 目录现有的 id** 清点 P3 交付目录（H-33）。
+
+    ⚠️ **只在读侧就是交付目录时清点**：读别的目录算出的名单与交付目录
+    无关 ⇒ 清点会把**别的批次**的视图搬走（源目录指错时就是这样）。
+    不清点 + 说清原因，比清错好。
+
+    ⚠️ **P2 目录不在 ⇒ 不清点**：没有名单就没有判据（把整目录搬空
+    不叫「清理」，叫「毁掉」）。
+    """
+    delivery_samples = views_dir(root).parent / "samples"
+    if not samples_base.is_dir():
+        return pool.StaleSweep(
+            kind="views",
+            reason=f"读侧 P2 目录不存在（{samples_base}）⇒ 无名单，不清点",
+        )
+    if Path(samples_base).resolve() != delivery_samples.resolve():
+        return pool.StaleSweep(
+            kind="views",
+            reason="读侧 P2 目录不是交付目录 ⇒ 名单与交付目录不同源，不清点",
+        )
+    keep_ids = {p.stem for p in samples_base.glob("*.json")}
+    return pool.sweep_views(views_dir(root), keep_ids=keep_ids)
 
 
 __all__ = [

@@ -64,7 +64,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Container, Iterable, Mapping, Sequence
 
 from trajectory_pipeline import toolcatalog
 from trajectory_pipeline.storage import VIEW_NAMES
@@ -74,6 +74,23 @@ DELIVERY_SURFACE = toolcatalog.SURFACE_CAMOFOX
 
 #: 旧面归档目录名（落在 ``output/pipeline/`` 下）。
 LEGACY_DIRNAME = "legacy"
+
+#: 隔离区目录名（落在 ``output/pipeline/`` 下）。
+#:
+#: ⚠️ **与 :data:`LEGACY_DIRNAME` 的区别**（两者都是**移动不是删除**）：
+#:
+#: - ``legacy/<surface>/<kind>/`` 装的是**旧面存量**（只读、按需重建）——
+#:   那是「**另一种口径**的合法产物」。
+#: - ``quarantine/<kind>/`` 装的是**本轮名单之外**的产物——
+#:   那是「**这一轮不该存在**的孤儿」（被判分不可信剔除的档、
+#:   被 ``--rationale-era`` 筛掉的旧口径样本、切不出样本的退化空壳留下的 T 视图）。
+#:
+#: 为什么要单独一个目录：两者的**处置不同**——旧面是「口径退役，要能回溯」，
+#: 孤儿是「**这一轮剔掉的**」，混在一起就分不清「回溯旧批次」和「清理孤儿」。
+#:
+#: ⚠️ **可逆**：移过去的文件**原样还在** ⇒ 要恢复就搬回来（可逆是这里的硬要求，
+#: 因为清点的判据一旦写错，误伤的是**已交付的产物**）。
+QUARANTINE_DIRNAME = "quarantine"
 
 #: 池元数据文件名（落在 ``output/pipeline/`` 下）。
 POOL_META_FILENAME = "pool_meta.json"
@@ -258,6 +275,134 @@ def migrate_task_views(delivery_dir: str | Path) -> PoolMigration:
     )
 
 
+# ── 按本轮名单清点（2026-11-12 · H-33）────────────────────────────
+
+
+@dataclass(frozen=True)
+class StaleSweep:
+    """一次「按名单清点」的结果。
+
+    与 :class:`PoolMigration` 的区别：那是**按面**分（旧面 → ``legacy/``），
+    这里是**按名单**清（孤儿 → ``quarantine/``）—— 两套机制、两个目录。
+    """
+
+    #: 被清点的 kind 目录名（``samples`` / ``views`` / ``task_views``）。
+    kind: str
+    #: **本轮名单内、留在原地的**份数。
+    kept: int = 0
+    #: **不在名单、被移进隔离区**的文件名（按文件名排序）。
+    moved: tuple[str, ...] = ()
+    #: **认不出的文件**（读不出面 / 面不在已知集合里）——**留在原地**，
+    #: 不搬走（同迁移纪律：猜不出来的东西留在原地等人看，搬走 = 藏起来）。
+    unclassified: tuple[str, ...] = ()
+    #: **没清点的原因**（空串 = 真的清点了）。
+    #:
+    #: ⚠️ 「没清点」与「清点了、没发现残留」在报表上**长得一模一样**
+    #: ⇒ 必须显式带上原因，否则读者会以为「清过了，干净」。
+    reason: str = ""
+
+    def summary(self) -> str:
+        if self.reason:
+            return f"{self.kind}: **未清点**（{self.reason}）"
+        tail = f" · 认不出 {len(self.unclassified)} 份（留在原地）" \
+            if self.unclassified else ""
+        return (
+            f"{self.kind}: 留 {self.kept} 份 · 移入隔离区 {len(self.moved)} 份"
+            f"{tail}"
+        )
+
+
+def migrate_by_manifest(
+    delivery_dir: str | Path,
+    *,
+    primary_glob: str,
+    companions: Callable[[Path], Iterable[Path]],
+    keep_ids: Container[str],
+    read_surface: Callable[[Path], str],
+) -> StaleSweep:
+    """把 ``delivery_dir`` 里**不在本轮名单**的文件组移进 ``quarantine/<kind>/``。
+
+    ⚠️ **判据是「本轮名单」，不是「本轮实际写出了什么」**——
+    默认**不覆盖**模式下实际写出 0 条（全都「已存在」跳过了），
+    拿它当判据会把**整个交付集搬进隔离区**。
+    ⇒ ``keep_ids`` 必须是「**这一轮应该产出什么**」。
+
+    ⚠️ **移走不是删除**：文件原样还在 ``quarantine/<kind>/`` ⇒ 可逆。
+    （清点的判据一旦写错，误伤的是**已交付的产物** ⇒ 可逆是硬要求。）
+
+    ⚠️ **认不出的文件留在原地**（同迁移纪律）：面读不出、或者面不在
+    :data:`KNOWN_SURFACES` 里 ⇒ **不搬**、记进 ``unclassified`` 等人看。
+    搬走 = 藏起来——「猜不出来的东西」不该由清点替人做决定。
+
+    ⚠️ **只在名单已知时做**：``keep_ids`` 为空**且**目录非空 ⇒ **不清点**
+    （见调用方的保护：``samples/`` 不存在时不得清点 T 视图——那会把整批 T 搬空）。
+    """
+    d = Path(delivery_dir)
+    if not d.is_dir():
+        return StaleSweep(kind=d.name)
+    keep = set(keep_ids)
+    moved: list[str] = []
+    unclassified: list[str] = []
+    kept = 0
+    dest = d.parent / QUARANTINE_DIRNAME / d.name
+    for primary in sorted(d.glob(primary_glob)):
+        try:
+            surface = read_surface(primary)
+        except (OSError, ValueError):
+            surface = ""
+        if surface not in KNOWN_SURFACES:
+            # 认不出 ⇒ 留在原地等人看（同迁移纪律，不猜）。
+            unclassified.append(primary.name)
+            continue
+        stem = primary.stem
+        # 视图的主文件是 ``<id>_meta.json`` ⇒ 名单键是 ``<id>``。
+        base = stem[:-len("_meta")] if primary_glob.endswith("_meta.json") else stem
+        if base in keep:
+            kept += 1
+            continue
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in companions(primary):
+            if f.exists():
+                os.replace(f, dest / f.name)
+        moved.append(primary.name)
+    return StaleSweep(
+        kind=d.name, kept=kept, moved=tuple(moved), unclassified=tuple(unclassified)
+    )
+
+
+def sweep_samples(delivery_dir: str | Path, keep_ids: Container[str]) -> StaleSweep:
+    """``samples/`` → 不在本轮名单的样本移进 ``quarantine/samples/``。"""
+    return migrate_by_manifest(
+        delivery_dir,
+        primary_glob="*.json",
+        companions=_self,
+        keep_ids=keep_ids,
+        read_surface=_surface_of_sample,
+    )
+
+
+def sweep_views(delivery_dir: str | Path, keep_ids: Container[str]) -> StaleSweep:
+    """``views/`` → 不在本轮名单的**三份视图成组**移进 ``quarantine/views/``。"""
+    return migrate_by_manifest(
+        delivery_dir,
+        primary_glob="*_meta.json",
+        companions=_view_group,
+        keep_ids=keep_ids,
+        read_surface=_surface_of_view,
+    )
+
+
+def sweep_task_views(delivery_dir: str | Path, keep_ids: Container[str]) -> StaleSweep:
+    """``task_views/`` → 不在本轮名单的任务视图移进 ``quarantine/task_views/``。"""
+    return migrate_by_manifest(
+        delivery_dir,
+        primary_glob="*.json",
+        companions=_self,
+        keep_ids=keep_ids,
+        read_surface=_surface_of_task_view,
+    )
+
+
 # ── 池元数据（批次账）──────────────────────────────────────────────
 
 
@@ -345,13 +490,19 @@ def _now_iso() -> str:
 __all__ = [
     "DELIVERY_SURFACE",
     "LEGACY_DIRNAME",
+    "QUARANTINE_DIRNAME",
     "POOL_META_FILENAME",
     "KNOWN_SURFACES",
     "is_delivery",
     "pool_root",
     "PoolMigration",
+    "StaleSweep",
     "migrate_samples",
     "migrate_views",
     "migrate_task_views",
+    "migrate_by_manifest",
+    "sweep_samples",
+    "sweep_views",
+    "sweep_task_views",
     "record_pool",
 ]
