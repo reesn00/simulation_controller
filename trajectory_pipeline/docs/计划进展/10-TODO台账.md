@@ -1705,7 +1705,7 @@ body 乱码 ⇒ 候选仍在 ⇒ **逐个访问到站点** ⇒ `sites != 0` ·
 | [`assembler/pool.py`](../../assembler/pool.py) | **隔离区机制**：`quarantine/` + `StaleSweep`（留 / 移 / 为什么没清点） |
 | [`assembler/builder.py`](../../assembler/builder.py) · [`assembler/views.py`](../../assembler/views.py) · [`assembler/task_view.py`](../../assembler/task_view.py) | 三条写路径各按**本轮名单**清点交付目录 |
 | [`executor/cli.py`](../../executor/cli.py) | `build` / `task-view` **显式报出**清走了几份、哪几份（验收条件 ②） |
-| [`evaluation/scout/verify.py`](../../evaluation/scout/verify.py) | **反向检查** `extra_t_view`（原来**单向**，查不出「多出来的」） |
+| [`evaluation/scout/verify.py`](../../evaluation/scout/verify.py) | **反向检查** `extra_t_view`（原来**单向**，查不出「多出来的」）。⚠️ **报的时候分两种成因**（2026-11-12 补）：**P2 交付集里也没有它** ⇒ 陈旧残留；**P2 交付集里有它** ⇒ 这一版 scout 批次没覆盖到（**不是**脏数据）。混着报 ⇒ 每天几十条「已知项」⇒ 人开始整体跳过 ⇒ 告警就废了 |
 | [`executor/integrity.py`](../../executor/integrity.py) | `check-archives` 增**派生产物目录构成体检**（P2 / P3 / T 三件套的 id 差集） |
 | `tests/unit/test_h33_leftover.py`（**26 条**）· `tests/unit/test_h33_stale_sweep.py`（**17 条**） | 回归门禁 |
 
@@ -1740,6 +1740,13 @@ body 乱码 ⇒ 候选仍在 ⇒ **逐个访问到站点** ⇒ `sites != 0` ·
 「views 留 136 · 移 1」；⚠️ **复现坑**：备份档别留在存档目录里——
 `.json` 且文件名含 `__` 就会被 `select_archives` 当成**另一份存档**，
 产出**同一个 sample_id** ⇒ 看着像「没清走」，其实是名单里有它。）
+
+⚠️ **门禁反向检查的真数据读数（2026-11-12）**：拿 `scout_v19` 批次（**84 条**候选）
+对照当前的 **137** 份 T 视图 ⇒ `extra_t_view` 报 **53 条**——**53 条全是
+「P2 交付集里有它」**（这版 scout 批次旧了 / 没覆盖到）⇒ **不是**残留；
+再造一份「**P2 交付集里也没有**」的 T 视图 ⇒ 报成「**陈旧残留**」
+⇒ **两种成因分得开**（这正是补这一刀的原因：混着报 ⇒ 每天几十条「已知项」
+⇒ 人开始整体跳过这条告警 ⇒ 告警就废了）。
 
 ⚠️ **两条并行实现的合并**（2026-11-12）：本条与另一条并行实现**各自独立**做了同一件事
 （`pool.sweep_*` vs `pool.quarantine_offroster_*`）⇒ 合并时**并成一份**：

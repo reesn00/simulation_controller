@@ -506,8 +506,64 @@ class Test门禁反向体检:
         assert len(extras) == 1
         assert extras[0].trajectory_id == "T009__zz9"
         assert extras[0].severity == "warning", (
-            "多出来的 T 视图不一定��脏数据（候选名单可能只覆盖一部分）"
+            "多出来的 T 视图不一定是脏数据（候选名单可能只覆盖一部分）"
             "⇒ 报出来让人判，不替人判")
+
+    def test_多出来的T视图分两种成因(self, tmp_path):
+        """「多出来的」有**两种成因** ⇒ 报的时候要分开（2026-11-12 补）。
+
+        ① **陈旧残留**——P2 交付集里**也没有**它（组装层只写不删留下的）；
+        ② **这一版 scout 批次没覆盖它**——P2 交付集里**有**它 ⇒ **不是**脏数据。
+
+        ⚠️ 混着报 ⇒ 每天几十条「已知项」⇒ 人开始整体跳过这条告警
+        ⇒ 告警就废了（与「跳过必须看得见」同款纪律：看得见的必须是**要人管的**）。
+        """
+        scout_dir = tmp_path / "scout"
+        scout_dir.mkdir()
+        (scout_dir / "trajectory_candidates.jsonl").write_text(
+            json.dumps({"trajectory_id": "T001__a1"}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        (scout_dir / "trajectory_stats.json").write_text(
+            json.dumps({"scored": 1, "undetermined": 0, "not_run": 0}),
+            encoding="utf-8")
+        out = tmp_path / "out"
+        _write_p2(out, "T001__a1")
+        _write_p2(out, "T002__b2")        # 交付集里有，但这版 scout 没覆盖它
+        _write_t_view(out, "T001__a1")
+        _write_t_view(out, "T002__b2")    # ② 不是脏数据
+        _write_t_view(out, "T009__zz9")   # ① 陈旧残留（交付集里也没有）
+
+        report = scout_verify.verify_from_dir(scout_dir, task_views_root=out)
+
+        extras = {i.trajectory_id: i.detail for i in report.issues
+                  if i.code == "extra_t_view"}
+        assert set(extras) == {"T002__b2", "T009__zz9"}, (
+            f"两条多出来的都要报出来；实得 {extras}")
+        assert "P2 交付集里有它" in extras["T002__b2"], (
+            f"交付集里有的 ⇒ 是「这版 scout 没覆盖」；实得 {extras['T002__b2']}")
+        assert "P2 交付集里也没有它" in extras["T009__zz9"], (
+            f"交付集里没有的 ⇒ 是陈旧残留；实得 {extras['T009__zz9']}")
+
+    def test_交付集读不到就不判成因(self, tmp_path):
+        """**读不到 P2 交付集 ⇒ 不猜**（不判「陈旧」还是「没 scout」）。"""
+        scout_dir = tmp_path / "scout"
+        scout_dir.mkdir()
+        (scout_dir / "trajectory_candidates.jsonl").write_text(
+            json.dumps({"trajectory_id": "T001__a1"}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        (scout_dir / "trajectory_stats.json").write_text(
+            json.dumps({"scored": 1, "undetermined": 0, "not_run": 0}),
+            encoding="utf-8")
+        out = tmp_path / "out"
+        _write_t_view(out, "T001__a1")
+        _write_t_view(out, "T009__zz9")   # 多出来的
+
+        report = scout_verify.verify_from_dir(scout_dir, task_views_root=out)
+
+        extras = [i for i in report.issues if i.code == "extra_t_view"]
+        assert len(extras) == 1
+        assert "P2 交付集读不到" in extras[0].detail, (
+            f"读不到交付集就不判成因；实得 {extras[0].detail}")
 
     def test_check_archives报口径分叉(self, tmp_path):
         """存档体检**看不见**交付目录里的残留 ⇒ 补一条派生产物构成体检。"""

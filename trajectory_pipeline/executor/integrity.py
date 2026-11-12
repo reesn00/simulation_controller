@@ -62,7 +62,7 @@ from trajectory_pipeline.executor.archive import select_archives
 #:     同一批里 11 个站没事、同一个站 4 次全坏——重跑同一批不会变好。
 #:
 #: ⚠️ **别把它当成「终端乱码」放过去**。Windows 控制台把 UTF-8 渲染成
-#: ``ý���`` 是常事（第一次查这批存档时被这个骗过一次），那种情况下
+#: ``\xfd\xff\xbf`` 是常事（第一次查这批存档时被这个骗过一次），那种情况下
 #: raw 字节是好的、``reconfigure_stdio`` 能救。这里救不了：只有落盘后
 #: 重新解码才能区分，所以门禁一律用 ``strict``。
 #: 用转义写而不是字面量：U+FFFD 打进源码会经历各类工具链的规范化，

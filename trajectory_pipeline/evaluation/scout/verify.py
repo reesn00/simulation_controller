@@ -220,6 +220,13 @@ def _check_task_views(
     ⇒ 组装层只写不删留下的陈旧产物**在报告上完全隐形**(实测 53 份多渲染的
     退化空壳,``scout verify`` exit 0 放过)。
 
+    ⚠️ **「多出来的」有两种成因,报的时候分开**(2026-11-12 补):
+    ① **陈旧残留**——P2 交付集里也没有它 ⇒ 组装层只写不删留下的;
+    ② **这一版 scout 批次没覆盖它**——P2 交付集里**有**它（批次旧了 /
+    还没跑 scout）⇒ **不是脏数据**。
+    混着报 ⇒ 每天几十条「已知项」⇒ 人开始整体跳过这条告警
+    ⇒ 告警就废了(与「跳过必须看得见」同款纪律:看得见的必须是**要人管的**)。
+
     ⚠️ **为什么是 warning 不是 error**:多出来的 T 视图**不一定**是脏数据——
     候选名单可能只覆盖了一部分轨迹(例如人工只复核了其中几条)。报出来让人判,
     不替人判。
@@ -271,6 +278,7 @@ def _check_task_views(
 
     # ── 反向：目录里多出来的 T 视图 ────────────────────────────────
     if root.is_dir():
+        delivery = _p2_delivery_ids(root)
         for path in sorted(root.glob("*.json")):
             tid = path.stem
             if tid in seen:
@@ -278,12 +286,38 @@ def _check_task_views(
             issues.append(VerifyIssue(
                 code="extra_t_view", severity="warning",
                 trajectory_id=tid,
-                detail=(
-                    f"{path} 不在 trajectory_candidates 里——"
-                    "陈旧产物或本轮之外的轨迹（组装层只写不删，H-33）"
-                ),
+                detail=f"{path} 不在 trajectory_candidates 里——{_extra_reason(tid, delivery)}",
             ))
     return issues
+
+
+def _p2_delivery_ids(task_views_root: Path) -> set[str] | None:
+    """P2 交付集（``samples/``）里的样本 id；**读不到 ⇒ ``None``（不猜）**。
+
+    用途只有一个：**把「多出来的 T 视图」分成两种成因**——
+    「陈旧残留」与「这一版 scout 批次没覆盖它」。两种都该报，但**只有前者**
+    是脏数据；混着报 ⇒ 每天几十条已知项 ⇒ 人开始整体跳过这条告警。
+
+    ⚠️ **交付集是判据，不是候选名单**：候选名单（``trajectory_candidates``）
+    可能只覆盖了一部分轨迹（人工只复核了其中几条）⇒ 拿它当「该不该有」
+    的判据，会把**合法**轨迹报成脏数据。
+    """
+    samples_dir = task_views_root.parent / "samples"
+    if not samples_dir.is_dir():
+        return None
+    return {p.stem for p in samples_dir.glob("*.json") if p.is_file()}
+
+
+def _extra_reason(tid: str, delivery: set[str] | None) -> str:
+    """一句话说清「为什么这条 T 视图不在候选名单里」。"""
+    if delivery is None:
+        return ("P2 交付集读不到 ⇒ **不判**「陈旧残留」还是「这一版 scout 没覆盖它」"
+                "（不猜）")
+    if tid in delivery:
+        return ("**P2 交付集里有它** ⇒ 这一版 scout 批次没覆盖到"
+                "（批次旧了 / 还没跑 scout），**不是**陈旧残留")
+    return ("**P2 交付集里也没有它** ⇒ 陈旧残留"
+            "（组装层只写不删，H-33）")
 
 
 # ── I/O 门面 ──────────────────────────────────────────────
