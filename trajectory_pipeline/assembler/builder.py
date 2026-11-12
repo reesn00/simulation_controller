@@ -347,27 +347,30 @@ NEGATIVE_SAMPLE_BRANCHES: frozenset[str] = frozenset(
 )
 
 
+def _sample_id_of_archive(archive_name: str) -> str:
+    """存档文件名 → 它该有的 ``sample_id``（``<task_id>__<run_id>``）。
+
+    与 :func:`trajectory_pipeline.assembler.schema.sample_id` +
+    :func:`~trajectory_pipeline.assembler.schema.run_id_of` **同口径**
+    （``.reviewed`` 不算 run_id 的一部分 ⇒ 复核档与原档映射到**同一个**
+    sample_id）。
+
+    用在 H-33 清点上：**本轮没点名的存档**，它的产物**不是**陈旧残留
+    （它只是这轮没被构建）⇒ 得知道它对应哪个 id 才能**保守保留**它——
+    **按存档名推**（id 与存档名同构，方案 23），不开文件读
+    （读不出就猜了）。
+    """
+    stem = Path(archive_name).stem
+    if stem.endswith(".reviewed"):
+        stem = stem[: -len(".reviewed")]
+    task_id = stem.split("__", 1)[0]
+    run_id = stem.split("__", 1)[1] if "__" in stem else stem
+    return f"{task_id}__{run_id}"
+
+
 def _is_negative(branch: str | None) -> bool:
     """``branch`` 是不是真负样本。``None`` = 成功，不是负样本。"""
     return branch is not None and branch in NEGATIVE_SAMPLE_BRANCHES
-
-
-def _archive_slots(root: Path) -> set[str]:
-    """源目录里所有存档的**槽位**（``<task_id>__<run_id>``）。
-
-    ⚠️ **``.reviewed`` 归一到同一个槽位**：复核档**取代**原档，不并列
-    （同 :func:`trajectory_pipeline.executor.archive.select_archives` 的
-    纪律）⇒ 一条 run 一个槽位。
-    """
-    out: set[str] = set()
-    for p in root.glob("*.json"):
-        stem = p.stem
-        if stem.endswith(".reviewed"):
-            stem = stem[: -len(".reviewed")]
-        if "__" not in stem:
-            continue  # 探针取证，不是存档
-        out.add(stem)
-    return out
 
 
 # ── 单份 P1 → N 个 P2 ─────────────────────────────────────────────
@@ -625,27 +628,30 @@ def build_all(
     # **清点后**的交付目录（隔离区的东西不在交付集里）。
     sweep: pool.StaleSweep | None = None
     if prune_stale:
-        # ⚠️ **安全阀**：名单必须是**全部**存档槽位。
-        # ``archive_filter`` 只覆盖一部分时，「本轮名单」是子集 ⇒
-        # 拿它清点会把**别的批次**的样本当残留移走。
-        # 「没清」必须**看得见** ⇒ 记进清点结果的 ``reason``，由调用方印出来。
-        if archive_filter is not None:
-            covered = {
-                Path(n).stem[:-len(".reviewed")] if n.endswith(".reviewed.json")
-                else Path(n).stem
-                for n in archive_filter
-            }
-            all_slots = _archive_slots(src)
-            if covered != all_slots:
-                sweep = pool.StaleSweep(
-                    kind="samples",
-                    reason=(
-                        f"本轮只处理了 {len(covered)}/{len(all_slots)} 个存档槽位"
-                        f"⇒ 名单是子集，不清点交付目录（否则会误伤别的批次）"
-                    ),
-                )
-        if sweep is None:
+        # ⚠️ **源目录不存在 ⇒ 不清点**：那是**路径指错了**，不是「本轮一条都没有」。
+        # 两者必须分得开——源目录不在时名单必然是空 ⇒ 清点会把**整个交付集**
+        # 搬进隔离区（把整目录搬开来「回应」一个不存在的目录 = 毁数据，不是清理）。
+        if not src.is_dir():
+            sweep = pool.StaleSweep(
+                kind="samples",
+                reason=f"P1 源目录不存在（{src}）⇒ 路径指错，不清点",
+            )
+        else:
+            # 本轮该产出的 id（从切条结果拿——**真 id**，不是猜的）
             roster = {sid for res in per_archive for sid in res.produced_ids}
+            # ⚠️ **「本轮没点名的存档」的产物保守保留**：
+            # ``archive_filter`` 收窄时，未点名的存档**这轮没被构建**，
+            # 它的产物**不是**陈旧残留（可能是**别的批次**的交付物）。
+            # ⇒ 它们的 id 按存档名推出来，一并留在名单里
+            # （:func:`_sample_id_of_archive`——``.reviewed`` 与原档同 id）。
+            # ⚠️ 这样比「名单是子集就整批不清点」**细一层**：仍能清掉
+            # 「存档已经从盘上删了、产物还留着」的那些真残留。
+            if archive_filter is not None:
+                named = set(archive_filter)
+                for path in src.glob("*.json"):
+                    if "__" not in path.stem or path.name in named:
+                        continue
+                    roster.add(_sample_id_of_archive(path.name))
             sweep = pool.quarantine_offroster_samples(
                 out_dir,
                 roster=roster,

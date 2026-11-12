@@ -294,9 +294,33 @@ class Test写侧清点:
         assert meta["quarantine"]["samples"]["ids"] == ["T009__zz9"]
         assert meta["quarantine"]["dir"] == "quarantine"
 
-    def test_安全阀_名单是子集就不清点(self, tmp_path):
-        """``archive_filter`` 只覆盖一部分时，「本轮名单」是子集 ⇒
-        拿它清点会把**别的批次**的样本当残留移走 ⇒ 不清，且**看得见**。"""
+    def test_名单是子集_未点名的存档产物保留(self, tmp_path):
+        """``archive_filter`` 只覆盖一部分时，**未点名的存档**这轮没被构建
+        ⇒ 它的产物**不是**陈旧残留 ⇒ **保留**。
+
+        ⚠️ 清点最贵的代价是**误伤已交付的产物**。
+        ⇒ 未点名的存档的 id 按存档名推出来，一并留在名单里
+        （``.reviewed`` 与原档同 id）。
+        """
+        _write_p1(tmp_path / "src", _archive("T001", "a1"), _archive("T002", "b2"))
+        builder.build_all(tmp_path / "src", target_root=tmp_path / "out",
+                          overwrite=True, prune_stale=True)
+        other = tmp_path / "out" / "samples" / "T002__b2.json"
+        assert other.exists()
+
+        rep = builder.build_all(tmp_path / "src", target_root=tmp_path / "out",
+                                archive_filter=["T001__a1.json"],
+                                prune_stale=True)
+
+        assert other.exists(), "未点名的存档的产物不许被搬走"
+        assert "T002__b2" not in rep.sweep.moved
+
+    def test_名单是子集_盘上没有对应存档的残留仍被清(self, tmp_path):
+        """未点名的**保留**，但「**盘上根本没有对应存档**」的真残留**照清**。
+
+        ⚠️ 这是「保守保留」与「清得干净」的分界：保留的是**这轮没被构建**的，
+        清掉的是**已经不存在了**的。
+        """
         _write_p1(tmp_path / "src", _archive("T001", "a1"), _archive("T002", "b2"))
         stale = _write_p2(tmp_path / "out", "T009__zz9")
 
@@ -304,9 +328,8 @@ class Test写侧清点:
                                 overwrite=True, archive_filter=["T001__a1.json"],
                                 prune_stale=True)
 
-        assert stale.exists(), "子集名单不许清点"
-        assert rep.sweep.moved == ()
-        assert rep.sweep.reason, "没清点必须看得见"
+        assert not stale.exists(), "盘上没有对应存档的残留该被清走"
+        assert "T009__zz9" in rep.sweep.moved
 
     def test_读不出面的文件原样留着(self, tmp_path):
         """坏档不隔离——**不猜**它在哪个池，留在原地等人看。"""

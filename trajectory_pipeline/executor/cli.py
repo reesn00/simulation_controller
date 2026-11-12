@@ -3495,34 +3495,6 @@ def _print_pool_note(root: Path, kind: str) -> None:
           f"旧面 {total} 份 → legacy/（{parts}，只读存量）")
 
 
-def _print_sweep(sweep: pool.StaleSweep | None) -> None:
-    """印一行清点账（H-33）。**「没清点」与「清点了没残留」必须分得开**。
-
-    组装层只写不删 ⇒「本轮未产出」的派生产物会留在交付目录里
-    （P3 残留 ⇒ 进训练语料）。清点把多出来的移进 ``quarantine/``，
-    并把条数与 id 印出来——**「跳过必须看得见」同款纪律**：
-    移走的东西看不见，就等于「悄悄删了」。
-    """
-    if sweep is None:
-        return
-    if sweep.reason:
-        print(f"  清点：{sweep.kind} **未清点**（{sweep.reason}）")
-        return
-    print(f"  清点：{sweep.kind} 留 {sweep.kept} 份 · "
-          f"移入隔离区 {len(sweep.moved)} 份（本轮未产出的旧产物）")
-    if sweep.moved:
-        for name in sweep.moved[:10]:
-            print(f"    → quarantine/{sweep.kind}/{name}")
-        if len(sweep.moved) > 10:
-            print(f"    …另有 {len(sweep.moved) - 10} 份")
-        print("    （可逆：文件原样还在 quarantine/，搬回原位即可）")
-    if sweep.unclassified:
-        print(f"  ⚠️ 认不出 {len(sweep.unclassified)} 份（面读不出）"
-              f"——**留在原地等人看**，清点不替人做决定")
-        for name in sweep.unclassified[:10]:
-            print(f"    · {name}")
-
-
 def cmd_build(args: argparse.Namespace) -> int:
     """P1 → P2 → P3 组装。**全离线，不开浏览器。**
 
@@ -3617,7 +3589,6 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"  → {rep.sample_dir}")
         _print_sweep(rep.sweep)
         _print_pool_note(root, "samples")
-        _print_sweep(rep.sweep)
 
     if stage in ("p3", "all"):
         vrep = views.build_views_from_dir(root=root, overwrite=args.overwrite,
@@ -3647,7 +3618,6 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"  → {vrep.views_dir}")
         _print_sweep(vrep.sweep)
         _print_pool_note(root, "views")
-        _print_sweep(vrep.sweep)
 
     return 0
 

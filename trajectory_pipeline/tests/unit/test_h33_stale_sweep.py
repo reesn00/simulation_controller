@@ -93,16 +93,16 @@ class TestP2清点:
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
         _write(src, _arc("T002"), "T002__b2.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         assert _samples(root) == ["T001__a1.json", "T002__b2.json"]
 
         # 剔除 T001（模拟「判分不可信 ⇒ 剔档」）
         (src / "T001__a1.json").unlink()
-        rep = builder.build_all(source_root=src, target_root=root)
+        rep = builder.build_all(source_root=src, target_root=root, prune_stale=True)
 
         assert _samples(root) == ["T002__b2.json"]
         assert rep.sweep is not None
-        assert "T001__a1.json" in rep.sweep.moved
+        assert "T001__a1" in rep.sweep.moved
 
     def test_默认不覆盖_不搬走交付集(self, root):
         """⚠️ **默认不覆盖**下实际写出 0 条（全都「已存在」跳过）
@@ -113,9 +113,9 @@ class TestP2清点:
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
         _write(src, _arc("T002"), "T002__b2.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
 
-        rep = builder.build_all(source_root=src, target_root=root)  # 默认不覆盖
+        rep = builder.build_all(source_root=src, target_root=root, prune_stale=True)  # 默认不覆盖
 
         assert _samples(root) == ["T001__a1.json", "T002__b2.json"]
         assert rep.sweep is not None
@@ -126,15 +126,15 @@ class TestP2清点:
         """存档变坏（切不出样本）⇒ 它**本轮没产出** ⇒ 旧产物该走。"""
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         assert _samples(root) == ["T001__a1.json"]
 
         # 同一份档变坏（缺 observations ⇒ 切不出轨迹）
         _write(src, {"task_id": "T001"}, "T001__a1.json")
-        rep = builder.build_all(source_root=src, target_root=root)
+        rep = builder.build_all(source_root=src, target_root=root, prune_stale=True)
 
         assert _samples(root) == []
-        assert "T001__a1.json" in rep.sweep.moved
+        assert "T001__a1" in rep.sweep.moved
 
     def test_本轮没点名的存档_产物保留(self, root):
         """只点名构建一份 ⇒ **另一份**的产物**不是**陈旧残留。
@@ -144,10 +144,10 @@ class TestP2清点:
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
         _write(src, _arc("T002"), "T002__b2.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
 
         rep = builder.build_all(source_root=src, target_root=root,
-                                archive_filter=["T002__b2.json"])
+                                archive_filter=["T002__b2.json"], prune_stale=True)
 
         assert _samples(root) == ["T001__a1.json", "T002__b2.json"]
         assert rep.sweep.moved == ()
@@ -160,21 +160,21 @@ class TestP2清点:
         """
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         (src / "T001__a1.json").unlink()
 
-        rep = builder.build_all(source_root=src, target_root=root)
+        rep = builder.build_all(source_root=src, target_root=root, prune_stale=True)
 
         assert _samples(root) == []
         assert rep.sweep is not None
-        assert "T001__a1.json" in rep.sweep.moved
+        assert "T001__a1" in rep.sweep.moved
 
     def test_源目录不存在_不清点(self, root):
         """源目录**压根不存在** ⇒ 这是**路径指错了**，不是空批次 ⇒ 不清点。
 
         把整批产物搬开来「回应」一个不存在的目录 = 毁数据，不是清理。
         """
-        rep = builder.build_all(source_root=root / "nope", target_root=root)
+        rep = builder.build_all(source_root=root / "nope", target_root=root, prune_stale=True)
 
         assert rep.sweep is not None
         assert rep.sweep.reason
@@ -184,15 +184,15 @@ class TestP2清点:
         """「本轮未产出的旧产物」**在输出里看得见**（验收条件 2）。"""
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         (src / "T001__a1.json").unlink()
 
-        rep = builder.build_all(source_root=src, target_root=root)
+        rep = builder.build_all(source_root=src, target_root=root, prune_stale=True)
 
         assert rep.sweep.moved
         assert "T001__a1.json" in rep.sweep.summary() or True
         # 名字在 moved 里 ⇒ 印出来时能看到是哪几份
-        assert "T001__a1.json" in rep.sweep.moved
+        assert "T001__a1" in rep.sweep.moved
 
 
 class TestP3清点:
@@ -204,35 +204,35 @@ class TestP3清点:
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
         _write(src, _arc("T002"), "T002__b2.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         views.build_views_from_dir(samples_root=builder.samples_dir(root),
-                                   root=root, overwrite=True)
+                                   root=root, overwrite=True, prune_stale=True)
         vdir = root / "views"
         assert len(list(vdir.glob("*.json"))) == 6
 
         # P2 里去掉 T001 ⇒ P3 不该再有它的三份
         (builder.samples_dir(root) / "T001__a1.json").unlink()
         vrep = views.build_views_from_dir(samples_root=builder.samples_dir(root),
-                                          root=root, overwrite=True)
+                                          root=root, overwrite=True, prune_stale=True)
 
         assert sorted(p.name for p in vdir.glob("*.json")) == [
             "T002__b2_messages.json", "T002__b2_meta.json", "T002__b2_openai.json",
         ]
         assert vrep.sweep is not None
-        assert "T001__a1_meta.json" in vrep.sweep.moved
+        assert "T001__a1" in vrep.sweep.moved
 
     def test_读侧不是交付目录_不清点(self, root):
         """读别的目录算出的名单与交付目录无关 ⇒ 清点会误伤别的批次。"""
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         views.build_views_from_dir(samples_root=builder.samples_dir(root),
-                                   root=root, overwrite=True)
+                                   root=root, overwrite=True, prune_stale=True)
         before = sorted(p.name for p in (root / "views").glob("*.json"))
 
         other = root / "other"
         other.mkdir()
-        vrep = views.build_views_from_dir(samples_root=other, root=root)
+        vrep = views.build_views_from_dir(samples_root=other, root=root, prune_stale=True)
 
         assert vrep.sweep is not None
         assert vrep.sweep.reason
@@ -240,36 +240,72 @@ class TestP3清点:
 
 
 class TestT清点:
-    def test_T与P2对齐(self, root):
-        """T 的名单 = P2 目录现有的 id ⇒ 两者天然对齐。"""
+    def test_T的名单是本轮该产出_不是只有P2目录(self, root):
+        """T 的名单 = **本轮该产出 ∪ P2 目录里的 id**（并集）。
+
+        ⚠️ **与「T 的名单 = P2 目录」那版不同的理由**（合并时的取舍）：
+        拿 P2 目录当 T 的唯一名单 ⇒ **P2 还没重建时**，本轮刚渲出来的
+        合法 T 视图会被当残留搬走 ⇒ LS 上传时**候选来自 P2、视图却不齐**
+        ⇒ 那些轨迹推不上去（主树实测 P2 107 / T 128 的那 21 条）。
+
+        ⇒ 取并集：P2 是**下限**（它说在交付集里的不许被清掉），
+        本轮该产出的也是（它自己的口径）。两边都不在的，才是陈旧残留。
+        """
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
         _write(src, _arc("T002"), "T002__b2.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         task_view.build_all_task_views(source_root=src, target_root=root,
-                                       overwrite=True)
+                                       overwrite=True, prune_stale=True)
         assert _task_views(root) == ["T001__a1.json", "T002__b2.json"]
 
-        # P2 少了 T001 ⇒ T 也不该留着它（H-31：P2 不出样本 ⇒ T 不出视图）
+        # 手工删掉 T001 的 P2 样本，但**存档还在** ⇒ T 的视图该留
+        # （下次 build 会把它渲回来；此时删 T 的视图是**提前**）
         (builder.samples_dir(root) / "T001__a1.json").unlink()
         rep = task_view.build_all_task_views(source_root=src, target_root=root,
-                                             overwrite=True)
+                                             overwrite=True, prune_stale=True)
 
-        assert _task_views(root) == ["T002__b2.json"]
+        assert _task_views(root) == ["T001__a1.json", "T002__b2.json"]
         assert rep.sweep is not None
-        assert "T001__a1.json" in rep.sweep.moved
+        assert rep.sweep.moved == ()
 
-    def test_P2目录不在_不清点T(self, root):
-        """⚠️ **没有名单就没有判据** ⇒ 把整目录搬空不叫「清理」，叫「毁掉」。"""
+    def test_T的旧视图_存档没了就被清走(self, root):
+        """**存档从盘上删了** ⇒ 本轮产不出它 ⇒ 它的旧 T 视图该走。
+
+        ⚠️ 这才是「陈旧残留」的正解：不是「P2 有没有它」，
+        而是「**这一轮还该不该有它**」。
+        """
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
+        task_view.build_all_task_views(source_root=src, target_root=root,
+                                       overwrite=True, prune_stale=True)
+        (src / "T001__a1.json").unlink()
+
+        # 先重建 P2：存档没了 ⇒ 它的 P2 样本被清走（这是「残留」的第一环）
+        builder.build_all(source_root=src, target_root=root, prune_stale=True)
+        assert _samples(root) == []
+        # 再重建 T：P2 没了它 ⇒ T 的旧视图也该走（第二环）
         rep = task_view.build_all_task_views(source_root=src, target_root=root,
-                                             overwrite=True)
+                                             overwrite=True, prune_stale=True)
+
+        assert _task_views(root) == []
+        assert "T001__a1" in rep.sweep.moved
+
+    def test_P1源目录不在_不清点T(self, root):
+        """⚠️ **没有名单就没有判据** ⇒ 把整目录搬空不叫「清理」，叫「毁掉」。
+
+        ⚠️ 护栏挂在 **P1 源目录**上（不是 P2 目录）：T 的名单是
+        **本轮该产出 ∪ P2 目录**，本轮该产出来自 P1 ⇒ 源目录不在时
+        两边都没有名单 ⇒ 不清点，且**理由要报出来**。
+        """
+        rep = task_view.build_all_task_views(source_root=root / "nope",
+                                             target_root=root,
+                                             overwrite=True, prune_stale=True)
 
         assert rep.sweep is not None
         assert rep.sweep.reason
         assert rep.sweep.moved == ()
-        assert _task_views(root) == ["T001__a1.json"]
 
 
 class Test隔离可逆:
@@ -277,11 +313,11 @@ class Test隔离可逆:
         """隔离**必须可逆**：文件原样在 ``quarantine/`` ⇒ 搬回原位即可。"""
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         original = (builder.samples_dir(root) / "T001__a1.json").read_bytes()
         (src / "T001__a1.json").unlink()
 
-        builder.build_all(source_root=src, target_root=root)
+        builder.build_all(source_root=src, target_root=root, prune_stale=True)
 
         q = root / pool.QUARANTINE_DIRNAME / "samples" / "T001__a1.json"
         assert q.exists()
@@ -300,9 +336,9 @@ class Test隔离可逆:
 
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         (src / "T001__a1.json").unlink()
-        builder.build_all(source_root=src, target_root=root)
+        builder.build_all(source_root=src, target_root=root, prune_stale=True)
 
         assert stale.exists()
         assert stale.read_bytes() == before
@@ -316,13 +352,13 @@ class Test清点判据本身:
         """
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        rep = builder.build_all(source_root=src, target_root=root)
-        assert rep.archives[0].delivered == ("T001__a1",)
+        rep = builder.build_all(source_root=src, target_root=root, prune_stale=True)
+        assert rep.archives[0].produced_ids == ("T001__a1",)
         assert rep.archives[0].written == 1
 
-        rep2 = builder.build_all(source_root=src, target_root=root)
+        rep2 = builder.build_all(source_root=src, target_root=root, prune_stale=True)
         assert rep2.archives[0].written == 0          # 默认不覆盖 ⇒ 没写
-        assert rep2.archives[0].delivered == ("T001__a1",)  # 但「该产出」
+        assert rep2.archives[0].produced_ids == ("T001__a1",)  # 但「该产出」
 
     def test_quarantine与legacy是两个目录(self, root):
         """隔离区装「本轮剔掉的孤儿」；``legacy/`` 装「旧面存量」。
@@ -339,12 +375,12 @@ class Test清点判据本身:
         """
         src = root / "src"
         _write(src, _arc("T001"), "T001__a1.json")
-        builder.build_all(source_root=src, target_root=root, overwrite=True)
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
         unknown = builder.samples_dir(root) / "T009__z9.json"
         unknown.write_text(json.dumps({"sample_id": "T009__z9"}), encoding="utf-8")
 
-        rep = builder.build_all(source_root=src, target_root=root)
+        rep = builder.build_all(source_root=src, target_root=root, prune_stale=True)
 
         assert unknown.exists()
-        assert "T009__z9.json" in rep.sweep.unclassified
+        assert "T009__z9" in rep.sweep.unclassified
         assert "T009__z9.json" not in rep.sweep.moved
