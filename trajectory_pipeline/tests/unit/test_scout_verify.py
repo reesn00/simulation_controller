@@ -232,6 +232,11 @@ class TestCheckTaskViews:
 
 
 class TestVerifyFromDir:
+    # ⚠️ **本类一律把 T 视图根钉在 `tmp_path` 上**（`task_views_root=tmp_path`）。
+    # 缺省根是**生产目录** ⇒ 反向检查（H-33：T 视图目录里「多出来的」id）
+    # 会把生产目录里的每一条都算进来 ⇒ 用例读数**随生产数据变**
+    # （主树 137 条 ⇒ `warning_count` 变 138；worktree 里没有生产数据 ⇒ 恒 1）。
+    # ⇒ 用例钉在自己的目录上，读数才**与生产数据无关**（口径与 §10.4 同一纪律）。
     def test_全过(self, tmp_path: Path):
         # jsonl 2 条 + stats 吻合 + T 视图齐
         (tmp_path / "trajectory_candidates.jsonl").write_text(
@@ -256,7 +261,7 @@ class TestVerifyFromDir:
             json.dumps({"scored": 0, "undetermined": 0, "not_run": 0}),
             encoding="utf-8",
         )
-        report = verify_from_dir(tmp_path)
+        report = verify_from_dir(tmp_path, task_views_root=tmp_path)
         assert not report.ok
         assert any(i.code == "missing_jsonl" for i in report.issues)
         # stats 缺 jsonl 时应**不**调 stats / T 视图(避免噪声)
@@ -268,7 +273,7 @@ class TestVerifyFromDir:
             json.dumps(_trajectory(), ensure_ascii=False) + "\n", encoding="utf-8",
         )
         # 不写 stats
-        report = verify_from_dir(tmp_path)
+        report = verify_from_dir(tmp_path, task_views_root=tmp_path)
         assert not report.ok
         assert any(i.code == "missing_stats" for i in report.issues)
 
@@ -280,7 +285,7 @@ class TestVerifyFromDir:
             json.dumps({"scored": 5, "undetermined": 0, "not_run": 0}),
             encoding="utf-8",
         )
-        report = verify_from_dir(tmp_path)
+        report = verify_from_dir(tmp_path, task_views_root=tmp_path)
         assert not report.ok
         assert any(i.code == "stats_count_mismatch" for i in report.issues)
 
@@ -294,7 +299,7 @@ class TestVerifyFromDir:
             encoding="utf-8",
         )
         # 不写 T 视图
-        report = verify_from_dir(tmp_path)
+        report = verify_from_dir(tmp_path, task_views_root=tmp_path)
         assert report.ok  # warning 不影响
         assert any(i.code == "missing_t_view" for i in report.issues)
         assert report.warning_count == 1
@@ -308,7 +313,7 @@ class TestVerifyFromDir:
             json.dumps({"scored": 5, "undetermined": 0, "not_run": 0}),
             encoding="utf-8",
         )
-        report = verify_from_dir(tmp_path)
+        report = verify_from_dir(tmp_path, task_views_root=tmp_path)
         assert not report.ok
         assert report.error_count >= 1  # stats_count_mismatch
         assert report.warning_count >= 1  # missing_t_view
