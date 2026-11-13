@@ -2165,3 +2165,50 @@ H-32 候选提取解耦）⇒ **空壳 0、401 绝迹**。
    （**这是目前唯一没做的验收动作**——门禁只证明「代码按设计走」，
    不证明「那 80 条的读数会变好」）。
 6. M-70 / M-71 / L-25 / L-26 / L-27——随后。
+---
+
+## 2026-11-13 未接线代码排查 · 未闭环项（审计派生）
+
+> **来源**：[`12-未接线代码排查报告`](12-未接线代码排查报告.md) —— 一次性排查的**结果存档**
+> （只记「查到了什么、凭什么是问题」，**不含处置**）。
+> **本节口径**：台账**只收未闭环项** ⇒ 这里**只列还没处置的**。
+> **判定金标准**：全仓（`trajectory_pipeline/` + `archive/` + `docs/`）文本检索该标识符，
+> **除自身定义行外命中数 = 0**（A 类 = 完全孤儿）；或「**只有测试调用、生产链零调用**」（B 类）。
+> ⚠️ **行号会漂**（工作区持续变动）—— 处置前先按**标识符**重新定位，别按行号。
+
+### 立刻可做（删死代码 / 改注释，**零行为变化**）
+
+| ID | 标识符（事项） | 域 | 记录锚点（证据） | 现在差什么 |
+|---|---|---|---|---|
+| **A1** | `_bar` —— 校准校验报告的图标映射（`{"ok":"✅","bad":"❌","unverifiable":"➖"}`） | 07 评估 | [`evaluation/calibration/verify.py:908`](../../evaluation/calibration/verify.py#L908) | 零风险删除（同文件 `_crit_mark` 在用，这一个是遗留） |
+| **A5** | `_NUMBER_RE` —— `re.compile(r"\d+")`，注释「依据里的数字」 | 07 评估 | [`evaluation/observation_match.py:47`](../../evaluation/observation_match.py#L47) | 零风险删除（同模块 `MIN_BODY_SUBSTRING` / `MIN_LABEL_CHARS` / `_MAX_ANCHOR_CHARS` 都在用） |
+| **A9** | `_is_excluded` —— `return bool(exclusion_reason(url, engine))` | 01 采集 | [`executor/steps/search.py:373`](../../executor/steps/search.py#L373) | 零风险删除（真实实现是 `exclusion_reason`，调用方直接用它） |
+| **B5** | `is_trailer_suspect` —— `classify_trailer(label) == "suspect"` | 02 感知 | [`perception/rule_perceptor.py:900`](../../perception/rule_perceptor.py#L900) | ⚠️ **不是「suspect 档被丢弃」**（初版判断已被查证推翻）：`rule_perceptor.py:1150`/`:1164` → `payload["trailer_suspect"]`、`llm_perceptor.py:649`/`:671`/`:699`/`:712` → `trailer_suspect(s)`，**生产链完整落地**。它只是**一行没人用的薄包装**（同 `A9`）⇒ 删（或把三处 `== "suspect"` 改成调它） |
+| **A8** | `_EXPECTED_LLM_FIELDS` —— `("label","paywall_type","evidence")`，注释宣称「缺字段 fallback 到 `HeuristicVLMReviewer`」 | 05 rationale | [`executor/review/multim_vlm.py:95`](../../executor/review/multim_vlm.py#L95) · [`04-运行手册.md:1154`](../04-运行手册.md) | ⚠️ **实现并非没有 fallback**：`label` 缺失/非法已 fallback（L329-330）、`paywall_type` 非法归一为 `unknown`/`none`（L331-332）、`evidence` 空则合成（L333-334）——与运行手册的**三条件契约**一致。**真正缺陷 = 常量陈旧 + 注释误导** ⇒ 删常量或改注释。⚠️ **别**按字面实现「缺任一字段就 fallback」（与三条件契约冲突，且会改变 `paywall_type`/`evidence` 的产出语义 ⇒ 属**口径变更，需 owner 拍板**） |
+| **A10** | `PerceptionHealth` —— 类（`name`/`ready`/`reason`），docstring 称「供 `--check-tools` 类命令汇总」 | 02 感知 | [`perception/base.py:325`](../../perception/base.py#L325) · [`executor/cli.py:1330`](../../executor/cli.py#L1330) | ⚠️ **全仓没有 `--check-tools` / `check_tools` 命令**（唯一命中就是这个 docstring 自己）——CLI 实际用**元组协议** `ready, reason = p.health()`。⇒ 删（顺带清掉悬空的 `--check-tools` 引用） |
+
+### 要动生产接线
+
+| ID | 标识符（事项） | 域 | 记录锚点（证据） | 现在差什么 |
+|---|---|---|---|---|
+| **A3** | `HOLDOUT_RANGE` —— `(0.30, 0.40)`，与 `CALIBRATION_RANGE` / `SPLIT_TARGET` / `SPLIT_PP_TOLERANCE` 并列 | 07 评估 | [`evaluation/golden/builder.py:185`](../../evaluation/golden/builder.py#L185) | 实际切分以 `SPLIT_TARGET` 为准 ⇒ 「持有集 30~40%」这条规格**无人校验**。⚠️ **五次查证的补充发现**：`HOLDOUT_RANGE` **恰好是 `CALIBRATION_RANGE` 的补集**（`1 - [0.60,0.70] = [0.30,0.40]`）⇒ 这条规格**已被另一侧间接守住**（`builder.py:3912` 判「校准+回归」合计落在 60~70%）⇒ **不是漏了一道闸，是同一条规格写了两遍只用了一遍**；⚠️ 但 `--regression` 开启时两者**不等价**（回归集切自调参池，持有集可 <30% 而 `pool_frac` 仍合格）。⇒ 切分处断言（`builder.py:3907-3912` 附近），或删（规格挪进文档）。⚠️ **风险高**：现有冻结档的持有集比例未必落在 30~40%，直接加硬断言会让老档**冻不出来** ⇒ **先读数再定** |
+| **A4** | `NEGATIVE_BRANCH_FIELDS` —— 14 个字段的元组，注释「负样本池可直接透传的字段」 | 07 评估 | [`evaluation/golden/builder.py:323`](../../evaluation/golden/builder.py#L323) | 白名单**没被任何写入路径使用** ⇒ 负样本池的字段口径**实际不设防**。⇒ 写入时按此过滤，或删。⚠️ **属待定口径**（负样本池该有哪些字段本身还没定）⇒ 先定口径再接线 |
+| **A12** | `compatible_count` —— 可配对数，docstring「**采样前报一次**，避免跑完才发现大半组合被拦」 | 09 纪律 | [`taskgen/persona/renderer.py:134`](../../taskgen/persona/renderer.py#L134) | 底层 `is_compatible` 已接线，**预检没接** ⇒ 采样器照跑，可能大半组合被 `INCOMPATIBLE` 拦掉后才发现。⇒ 采样入口打印一行，或删 |
+
+### 保留不动（**不是缺陷**），但需登记 / 标注
+
+- **A6 / A7 · `TOOL_SCROLL` / `TOOL_SCREENSHOT`**（[`executor/browser/camofox_session.py:104`](../../executor/browser/camofox_session.py#L104)/`:105`）
+  —— **已文档化的契约预留，不能删**（[`04-运行手册.md:1164`](../04-运行手册.md) · `executor/review/vlm_reviewer.py:12-13` · `multim_vlm.py:20-21` 同款措辞）。
+  ⚠️ 但预留时讲的是 **obscura**，驱动已换成 camofox ⇒ 真正未接线的是**整条链**（session 方法 → driver 原语 → 截图落盘 → 填进 `VLMReviewResult.screenshots`）——属**实现新原语**，不是「接一个函数」。
+  ⇒ **常量保留**；实际接入**另开条目**（新功能），不进本节。
+- **A14 / A15 · `Rewriter` / `NullRewriter`**（[`taskgen/rewriter.py:34`](../../taskgen/rewriter.py#L34)/`:54`）
+  —— **刻意两期设计**：接口一次定死 → W1 用 `Null`（fail-closed）→ W3 接 `LLMPerceptor` 时换实现。docstring 已把 W3 的两条前置条件写全（输出必须过 `normalizer.normalize`；实现自带别名容错 + 重试 + fail-soft）。
+  ⇒ **保留 + 登记 W3 接入项**，**不要删**（删掉等于把两期设计退回「没写过」）。
+- **B3 · `clause_vocabulary_covers_dims`**（[`evaluation/scorers/rubric_changelog.py:179`](../../evaluation/scorers/rubric_changelog.py#L179)）
+  —— 该模块整体是**可独立运行的 rubric 变更日志校验工具**（`python -m` 入口）⇒ 属「校验工具自检」，**本就不该进生产链**。⇒ 保留。
+- **B6 · `validate_few_shot_anchors`**（[`evaluation/scorers/d9_scorer.py:492`](../../evaluation/scorers/d9_scorer.py#L492)）
+  —— docstring 明写「**池现在是空的**（INC46 整体清空），所以这条现在只校验结构。**不合成假例**——铁律」。⇒ 保留（等池有货时自动生效）。
+
+### ⚠️ 下面这些**已闭环**，按台账口径**不登记**，此处只留一行指针（免得重复排查）
+
+`B4` `as_confidence`（接线）· `B2` `validate_merge_notes`（接线，**两道护栏并列**挂在 B-5 与上岗线两处读数面）· `B1` `invisible_details`（接线 —— 挂进 B-5 caveats，**只报本批碰到的等价类**）· `A2` `SPLIT_CONTENT_VS_REACH`（接线 —— 新增 `validate_split_guards()`，**不覆盖** B2）· `A11` `_SLIM_OBS_KEYS`（删常量 + 形状钉进契约测试）· `A13` `_genre_term`（**改判：刻意不接线** —— 删函数 + 修一条不实注释）。处置记录见[报告](12-未接线代码排查报告.md)的对应条目。

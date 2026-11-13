@@ -11,7 +11,9 @@
    evidence / confidence / currency / price 全部命中。
 4. **可选字段裁剪**——``paywall_type`` 仅 ``label="paywall"`` 时有意义；
    ``currency`` 不在 ``L4_CURRENCIES`` 白名单 → ``None``；
-   ``confidence`` 出 [0, 1] → clamp；``evidence`` 截 120 字符。
+   ``confidence`` **不夹逼**——越界 / 认不出落默认档 0.65（给了但不可信
+   时另打 ``note="multim_conf_invalid"``），合法的 ``0.0`` 原样保留；
+   ``evidence`` 截 120 字符。
 5. **不重叠 L3 rule**——``_SYSTEM_PROMPT`` 不含 L3 词典字符串，
    ``MultimVLMReviewer`` 内部不引用 L3 模块。
 6. **工厂函数**——``build_reviewer("heuristic" | "multim")`` 返回正确实现类；
@@ -72,20 +74,30 @@ def _make_mock_client(handler):
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
+#: 传给 ``_ok_openai_response(confidence=...)`` 表示「响应里**没有** confidence
+#: 这个键」（与「键存在但值为 null」区分开）。
+_ABSENT = object()
+
+
 def _ok_openai_response(label: str = "blocked", paywall_type: str = "none",
                         evidence: str = "命中 region 文案", price=None,
                         currency=None, confidence=0.85) -> dict[str, object]:
-    """造一份 OpenAI Chat Completions 成功响应。"""
+    """造一份 OpenAI Chat Completions 成功响应。
+
+    ``confidence=_ABSENT`` → 响应里**不带** confidence 键。
+    """
+    payload: dict[str, object] = {
+        "label": label,
+        "paywall_type": paywall_type,
+        "evidence": evidence,
+        "price": price,
+        "currency": currency,
+    }
+    if confidence is not _ABSENT:
+        payload["confidence"] = confidence
     return {
         "choices": [{
-            "message": {"content": json.dumps({
-                "label": label,
-                "paywall_type": paywall_type,
-                "evidence": evidence,
-                "price": price,
-                "currency": currency,
-                "confidence": confidence,
-            }, ensure_ascii=False)},
+            "message": {"content": json.dumps(payload, ensure_ascii=False)},
         }],
     }
 
@@ -388,7 +400,13 @@ class TestFieldConstraints:
         # price 仍是合法数字（不强制 currency 必须有）。
         assert rv.price == 10.0
 
-    def test_confidence_clamped_to_0_1(self, monkeypatch):
+    def test_confidence_out_of_range_not_clamped(self, monkeypatch):
+        """越界 confidence **不夹逼**——落默认档 0.65 + 显式降级标记。
+
+        纪律来源 ``llm/schema_parse.py`` 第 3 条「confidence 越界就丢，
+        不夹逼」。夹逼会让明显失真的模型输出看起来像合法置信度，而
+        这个数直接进 L5 仲裁权重（``source 权重 × confidence``）。
+        """
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
 
@@ -400,9 +418,11 @@ class TestFieldConstraints:
         client = _make_mock_client(handler)
         rv = MultimVLMReviewer(http_client=client).review(_input_with())
         client.close()
-        assert rv.confidence == 1.0  # 上界 clip
+        # 上界越界 → 不是 1.0（那会把「明显失真」伪装成「满把握」）
+        assert rv.confidence == pytest.approx(0.65, abs=1e-9)
+        assert rv.note == "multim_conf_invalid"
 
-        # 下界 clip
+        # 下界越界
         def handler2(req: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=_ok_openai_response(
                 label="blocked", evidence="x", confidence=-0.5,
@@ -411,7 +431,77 @@ class TestFieldConstraints:
         client2 = _make_mock_client(handler2)
         rv2 = MultimVLMReviewer(http_client=client2).review(_input_with())
         client2.close()
-        assert rv2.confidence == 0.0  # 下界 clip
+        assert rv2.confidence == pytest.approx(0.65, abs=1e-9)
+        assert rv2.note == "multim_conf_invalid"
+
+    def test_confidence_unrecognizable_string_dropped(self, monkeypatch):
+        """给了但认不出（"很高"）→ 同样落默认档 + 显式降级标记。"""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_ok_openai_response(
+                label="blocked", evidence="x", confidence="很高",
+            ))
+
+        client = _make_mock_client(handler)
+        rv = MultimVLMReviewer(http_client=client).review(_input_with())
+        client.close()
+        assert rv.confidence == pytest.approx(0.65, abs=1e-9)
+        assert rv.note == "multim_conf_invalid"
+
+    def test_confidence_zero_is_kept_not_promoted(self, monkeypatch):
+        """合法的 0.0 原样保留——**不能**被提升成默认档 0.65。
+
+        旧写法 ``float(data.get("confidence") or 0.65)`` 里 ``0`` 是 falsy，
+        于是模型自述的「完全没把握」被改写成 0.65（中等把握），
+        直接推高 L5 仲裁权重。
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_ok_openai_response(
+                label="blocked", evidence="x", confidence=0,
+            ))
+
+        client = _make_mock_client(handler)
+        rv = MultimVLMReviewer(http_client=client).review(_input_with())
+        client.close()
+        assert rv.confidence == pytest.approx(0.0, abs=1e-9)
+        assert rv.note == "multim_ok"
+
+    def test_confidence_absent_uses_default_without_flag(self, monkeypatch):
+        """模型**没给** confidence（键缺失 / 显式 null）→ 默认档 0.65。
+
+        「没表态」不是「表了态但不可信」，所以**不**打降级标记 ——
+        与 ``schema_parse.field()`` 的「null == 缺失」同义。
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_ok_openai_response(
+                label="blocked", evidence="x", confidence=_ABSENT,
+            ))
+
+        client = _make_mock_client(handler)
+        rv = MultimVLMReviewer(http_client=client).review(_input_with())
+        client.close()
+        assert rv.confidence == pytest.approx(0.65, abs=1e-9)
+        assert rv.note == "multim_ok"
+
+        # 显式 null 同理（模型没表态）
+        def handler2(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_ok_openai_response(
+                label="blocked", evidence="x", confidence=None,
+            ))
+
+        client2 = _make_mock_client(handler2)
+        rv2 = MultimVLMReviewer(http_client=client2).review(_input_with())
+        client2.close()
+        assert rv2.confidence == pytest.approx(0.65, abs=1e-9)
+        assert rv2.note == "multim_ok"
 
     def test_evidence_truncated_to_120(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

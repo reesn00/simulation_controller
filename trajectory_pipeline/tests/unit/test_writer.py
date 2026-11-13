@@ -361,6 +361,26 @@ class TestPromptContent:
         assert "interactive_elements" not in obs
         assert "links" not in obs
 
+    def test_历史观察形状被字面量钉死(self):
+        """瘦身形状**只有**这 5 个键——用**独立写的字面量**钉住。
+
+        为什么不在生产代码里另立一份常量清单：两份会漂，而漂的方向是
+        「多带明细 ⇒ prompt 膨胀 ⇒ 超时 ⇒ 整批记 ``unresolved``」。
+        测试用**自己写的**期望值钉住，比让常量与实现互相印证更硬——
+        常量与实现同源，实现改了常量跟着改，等于没钉。
+        """
+        c = _client(_ok())
+        _write(c, history=[(ACTION_GOTO, OBS_OK)])
+        obs = _last_user_payload(c)["previous_actions"][-1]["observation"]
+        assert set(obs) == {
+            "url", "page_title", "body_text", "body_truncated", "elements_total",
+        }
+        # 瘦身 ⊂ 完整形状，且是**真**子集（不是碰巧相同）。
+        full = writer.render(OBS_OK)
+        assert set(obs) < set(full)
+        assert "interactive_elements" in full
+        assert "video_tag_count" in full
+
     def test_历史步含瘦观察(self):
         """动作前动机依赖历史观察——「点第一期确认」得先知道上一页列了什么。"""
         c = _client(_ok())

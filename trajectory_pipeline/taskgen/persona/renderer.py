@@ -77,7 +77,6 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Mapping
 
 from trajectory_pipeline.taskgen.persona.lexicon import (
-    GENRE_TERMS,
     OPENERS,
     SPECIFICITY_RENDER,
 )
@@ -153,10 +152,6 @@ def _pick(options: tuple[str, ...], salt: str) -> str:
     return options[digest[0] % len(options)]
 
 
-def _genre_term(genre: str, salt: str) -> str:
-    return _pick(GENRE_TERMS.get(genre, (genre,)), salt)
-
-
 def _apply_specificity(
     goal: str, title: str | None, persona: PersonaProfile, *, salt: str
 ) -> tuple[str, str, tuple[str, ...]]:
@@ -218,7 +213,16 @@ def render(
 
     opener = _pick(OPENERS.get(persona.persona_presence, ()), salt + "|open")
 
-    genre_word = ""                      # 不参与渲染，见 lexicon.OPENERS
+    # ⚠️ ``genre`` **刻意不进表述**——它是检索侧维度，不是「用户要什么」。
+    # 早期版本写成 ``"我想找{genre}，{goal}"``，实测产出过「我想先确认电影
+    # **类似《功夫》那样的动作片**的版权方…」（T027）——persona 的品类偏好
+    # 被冒充成了用户需求，而这类污染**不报错**：表述读着通顺，normalizer 的
+    # 探针也只查判分要求有没有丢。
+    # 根因是**层级错配**（见 :data:`lexicon.OPENERS` 的说明）：查表渲染器
+    # 读不懂骨架，**没有**「这个任务确实在做该品类检索」的判据。
+    # ⇒ 这里给空串是**有意为之**，不是漏写；反回归测试
+    # ``tests/unit/test_taskgen.py::test_genre不注入表述`` 逐词条守着它。
+    genre_word = ""
     text = opener.format(genre=genre_word, goal=core) if opener else core
 
     applied: dict[str, str] = {}

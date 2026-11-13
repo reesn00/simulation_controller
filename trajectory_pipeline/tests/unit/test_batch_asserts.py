@@ -23,6 +23,7 @@ import pytest
 
 from trajectory_pipeline.evaluation import observation_match
 from trajectory_pipeline.evaluation.batch import asserts
+from trajectory_pipeline.evaluation.golden import alignment
 from trajectory_pipeline.evaluation.scorers import thresholds
 
 
@@ -452,11 +453,123 @@ class TestB5结论错率:
         assert r.status == asserts.STATUS_UNTESTABLE
         assert "未登记" in r.reading
 
+    def test_合并记账与表不一致_测不成(self):
+        """偷偷合并等价类（加了标签不补记账）⇒ **读数不成立**。
+
+        合并等价类 = 放水（方案 16 D-C4 原话）：D-10 口径 C 再也分不出
+        被并进来的那些标签 —— **分母语义被悄悄改宽**，而「丢了什么细分」
+        没有记在任何地方（C-13 的记账面）。
+
+        守卫与上面的「标签未登记 ⇒ 测不成」是**同一类 fail-closed**：
+        表缺标签 vs 记账没跟上，都是「口径不可信 ⇒ 不出读数」。
+        """
+        original = dict(alignment.EQUIV_CLASS)
+        try:
+            alignment.EQUIV_CLASS["_偷偷并进来的_"] = "SUCCESS"
+            rows = [_row(gold="success", code="success")]
+            r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+            assert r.status == asserts.STATUS_UNTESTABLE
+            assert r.is_pass is False
+            assert "合并记账" in r.reading
+            assert any("_偷偷并进来的_" in c for c in r.caveats)
+            # 问题清单要指出**该补记账**，而不只是「有问题」
+            assert any("先补记账" in c for c in r.caveats)
+        finally:
+            alignment.EQUIV_CLASS.clear()
+            alignment.EQUIV_CLASS.update(original)
+        # 复原后恢复「只出读数」
+        rows = [_row(gold="success", code="success")]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        assert r.status == asserts.STATUS_READOUT
+
+    def test_语义分离护栏破了_测不成(self):
+        """把**刻意不许合并**的两组并进一类 ⇒ 读数不成立（**哪怕记账补齐**）。
+
+        ``broken``（内容损坏：页面在但坏）vs ``unreachable_hard``
+        （连页面都没到）——两种失败形态的处置完全不同（换站 vs 查环境）。
+        并进一类 ⇒ 口径 C 再也分不出二者。
+
+        ⚠️ 与上一条的区别：**注记补齐了照样红** —— 「记账一致」只说明
+        「改动被记了账」，不说明「这组合并本身是对的」。⇒ 两道护栏都要过。
+        """
+        original = dict(alignment.EQUIV_CLASS)
+        original_notes = dict(alignment.EQUIV_CLASS_NOTES)
+        try:
+            # 把 unreachable_hard 并进 BROKEN_CONTENT，**并把注记补齐**
+            # —— 只骗过「合并记账」那道护栏。
+            # （BROKEN_CONTENT 原本是**单标签类**，按模块规则「单标签类不需要
+            #   注记」，所以合并后必须**新写**一张，不是改旧的。）
+            alignment.EQUIV_CLASS["unreachable_hard"] = "BROKEN_CONTENT"
+            alignment.EQUIV_CLASS_NOTES["BROKEN_CONTENT"] = {
+                "canonical": "broken",
+                "merged": ("unreachable_hard",),
+                "detail_lost": "内容损坏 vs 连页面都没到",
+                "reason": "（测试构造的偷合并）",
+            }
+            # 记账护栏此时是**干净的** —— 正是这条用例要验的分离点
+            assert alignment.validate_merge_notes() == []
+            # 语义分离护栏抓到了
+            assert alignment.validate_split_guards()
+
+            rows = [_row(gold="success", code="success")]
+            r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+            assert r.status == asserts.STATUS_UNTESTABLE
+            assert r.is_pass is False
+            assert "语义分离" in r.reading
+            assert any("unreachable_hard" in c for c in r.caveats)
+            assert any("语义分离护栏" in c for c in r.caveats)
+        finally:
+            alignment.EQUIV_CLASS.clear()
+            alignment.EQUIV_CLASS.update(original)
+            alignment.EQUIV_CLASS_NOTES.clear()
+            alignment.EQUIV_CLASS_NOTES.update(original_notes)
+        # 复原后恢复「只出读数」
+        rows = [_row(gold="success", code="success")]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        assert r.status == asserts.STATUS_READOUT
+
     def test_只出读数_不出合格与否(self):
         """rubric v1.3 未给 B-5 定线 ⇒ 只报数，不报合格 / 不合格。"""
         rows = [_row(gold="success", code="success")]
         r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
         assert r.status == asserts.STATUS_READOUT
+
+    def test_合并代价清单只报本批碰到的等价类(self):
+        """**C-13 的产出面** —— 合并的代价要在读数里看得见。
+
+        口径 C 把几个标签并进一类之后，这一类里哪些区分**已经分不出来**
+        了 —— 不报的话，读者只看到「一致率 92%」，看不到「这 92% 里有一
+        部分是**并出来的**」。
+
+        ⚠️ 只报**本批碰到过**的等价类：全表 7 类大半与本批无关，全列是噪声。
+        """
+        rows = [_row(gold="paywall", code="partial_free")]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        assert r.status == asserts.STATUS_READOUT
+        assert r.denominator == 1
+        # 本批碰到 PAYWALL（gold 与 code 同类）⇒ 它在清单里
+        assert any(c.startswith("PAYWALL：") for c in r.caveats)
+        # 本批**没碰到**的类不在清单里（SUCCESS 等）
+        assert not any(c.startswith("SUCCESS：") for c in r.caveats)
+        assert not any(c.startswith("NO_PLAY_RESOURCE：") for c in r.caveats)
+        # 清单要有个抬头，别让读者以为那是分母口径
+        assert any("合并等价类的代价" in c for c in r.caveats)
+
+    def test_合并代价清单跟着两侧标签走(self):
+        """**两侧**标签的等价类都算「本批碰到」——金标侧与代码侧都要算。"""
+        rows = [_row(gold="paywall", code="success")]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        assert r.status == asserts.STATUS_READOUT
+        assert r.numerator == 1          # disagree
+        assert any(c.startswith("PAYWALL：") for c in r.caveats)
+        assert any(c.startswith("SUCCESS：") for c in r.caveats)
+
+    def test_清单里的细分就是注记里的detail_lost(self):
+        """清单**派生**自注记，不是手抄的第二份（一个出处）。"""
+        rows = [_row(gold="paywall", code="paywall")]
+        r = asserts.assert_run(_archive(), gold_rows=rows).by_clause("B-5")
+        detail = alignment.EQUIV_CLASS_NOTES["PAYWALL"]["detail_lost"]
+        assert any(c == f"PAYWALL：{detail}" for c in r.caveats)
 
     def test_空branch是成功_不是missing(self):
         """代码侧**空 branch = 成功**（M-7）——成功行必须进分母。

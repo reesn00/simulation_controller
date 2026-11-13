@@ -390,17 +390,24 @@ def render_action(action: Mapping[str, Any] | None) -> dict[str, Any]:
 #: 一条历史步。``(动作, 观察)`` 二元组；观察可为 ``None``（那一步没取到）。
 HistoryItem = tuple[Mapping[str, Any], Mapping[str, Any] | None]
 
-#: 观察的**瘦身形状**——只留页面身份、正文摘要与元素计数。
-#: 刻意在 :func:`render` 之外单独一份：:func:`render` 是「本步主证据」
-#: 的形状（带 elements/links 明细、带 video/iframe 计数），历史只是上下文，
-#: 带明细会让第 5 步之后的 prompt 膨胀到超时——而超时会把整批站点
-#: 记成 ``unresolved``（采集故障写成业务结论）。
-_SLIM_OBS_KEYS = ("url", "page_title", "body_text",
-                  "body_truncated", "elements_total")
-
 
 def render_history_observation(observation: Mapping[str, Any] | None) -> dict[str, Any]:
-    """历史观察 → 瘦身视图。**不带 elements / links 明细**（见常量注）。"""
+    """历史观察 → 瘦身视图。
+
+    **形状只有这 5 个键**：``url`` / ``page_title`` / ``body_text`` /
+    ``body_truncated`` / ``elements_total``。
+
+    ⚠️ **刻意比 :func:`render` 瘦**：:func:`render` 是「本步主证据」的形状
+    （带 ``interactive_elements`` / ``links`` 明细，带 ``video_tag_count`` /
+    ``iframe_count`` 计数），历史只是上下文。带明细会让第 5 步之后的 prompt
+    膨胀到超时——而超时会把整批站点记成 ``unresolved``（采集故障写成业务
+    结论）。
+
+    ⚠️ **形状由本函数单源定义**，刻意**不**另立一份常量清单：两份会漂，
+    而漂的方向恰恰是「多带明细 ⇒ prompt 膨胀」。防漂靠**契约测试**
+    （``tests/unit/test_writer.py::TestPromptContent``）——它用**独立写的
+    字面量**钉住键集，比让常量与实现互相印证更硬。
+    """
     obs = observation or {}
     body = str(obs.get("body_text") or "")
     elements = list(obs.get("interactive_elements") or ())

@@ -19,6 +19,11 @@ Obscura MCP 37 个 tool **没有**截图原语，没有图像数据可以喂视�
    LLM API 提示词也明令「不要查 rule 表」，避免 L4 抢 L3 饭碗。
 5. **截图字段预留** —— ``VLMReviewResult.screenshots`` 默认空 tuple；
    obscura 暴露 browser_take_screenshot 后填路径，契约不变。
+6. **confidence 不夹逼** —— 走共享解析层 ``schema_parse.as_confidence``：
+   越界 / 认不出**直接丢**，落默认档 0.65 并显式打
+   ``note="multim_conf_invalid"``；合法的 ``0.0`` 保留为 ``0.0``
+   （**不**被当成「没给」提升成默认档）。这个数直接进 L5 仲裁权重，
+   夹逼等于让失真读数决定「谁说了算」。
 
 API 选择（按 ROI 排）：
 - **首选 OpenAI** —— ``OPENAI_API_KEY`` 环境变量 + ``gpt-4o-mini`` 模型；
@@ -66,6 +71,7 @@ from trajectory_pipeline.executor.review.vlm_reviewer import (
     VLMReviewInput,
     VLMReviewResult,
 )
+from trajectory_pipeline.llm import schema_parse
 
 _log = logging.getLogger(__name__)
 
@@ -87,6 +93,19 @@ _ANTHROPIC_TIMEOUT_S = float(os.environ.get("INC34_ANTHROPIC_TIMEOUT_S", "12.0")
 #: LLM 响应必填字段（口径 C 与 HeuristicVLMReviewer 输出对齐）
 #: —— 解析响应时若缺字段，fallback 到 HeuristicVLMReviewer 的同输入结果。
 _EXPECTED_LLM_FIELDS = ("label", "paywall_type", "evidence")
+
+#: LLM 没给 confidence / 给了但认不出时的**默认档**。
+#: ⚠️ 这**不是**夹逼目标值 —— 越界值（1.7 / -0.5）直接丢（见
+#: :func:`trajectory_pipeline.llm.schema_parse.as_confidence`），
+#: 落回这一档并显式打 ``note="multim_conf_invalid"``，让 L5 仲裁 /
+#: 人工一眼看出「这本的 confidence 是补的，不是模型说的」。
+_DEFAULT_CONFIDENCE = 0.65
+
+#: note：LLM 给了 confidence 但数值不可信（越界 / 认不出）时的显式降级标记。
+#: 与 ``multim_ok`` / ``multim_fallback`` 同源（**降级显式**）。
+#: ⚠️ **不在** ``L5_FAIL_CLOSED_NOTES`` / ``AUTO_REVIEW_NOTES`` 白名单里 ——
+#: label 仍然有效，只是 confidence 不可信，不该整本甩给人工。
+_NOTE_CONF_INVALID = "multim_conf_invalid"
 
 
 # ── Prompt 模板 ─────────────────────────────────────────────────────
@@ -159,7 +178,11 @@ class MultimVLMReviewer:
     - **OpenAI** 用 ``response_format={"type": "json_object"}`` 强制 JSON；
       Anthropic 用 system + user 消息 + 提示「输出 JSON」自然约束。
     - **prompt 包含 L4_LABELS / L4_PAYWALL_TYPES 全集**，避免 LLM 臆造标签。
-    - **price / currency / confidence 字段可选**——LLM 不给就 None。
+    - **price / currency 字段可选**——LLM 不给就 None。
+    - **confidence 走 ``schema_parse.as_confidence``**——不给 / 给了但越界
+      （1.7、-0.5）/ 给了但认不出（"很高"）都落默认档 0.65；其中
+      「给了但不可信」额外打 ``note="multim_conf_invalid"`` 显式降级标记。
+      合法的 0.0 原样保留。**不夹逼**（见模块纪律第 6 条）。
     """
 
     name: str = "multim-v1"
@@ -317,11 +340,27 @@ class MultimVLMReviewer:
             price_f = None
         currency_raw = data.get("currency")
         currency = currency_raw if currency_raw in L4_CURRENCIES else None
-        try:
-            confidence = float(data.get("confidence") or 0.65)
-        except (TypeError, ValueError):
-            confidence = 0.65
-        confidence = max(0.0, min(1.0, confidence))
+        # confidence —— 走共享解析层 ``schema_parse.as_confidence``，**不夹逼**。
+        #
+        # 旧写法是 ``float(data.get("confidence") or 0.65)`` + ``min/max``：
+        #   - ``or 0.65`` 把**合法的 0.0**（模型自述「完全没把握」）提升成 0.65；
+        #   - ``min/max`` 把 1.7（明显失真）夹成 1.0（满把握）。
+        # 而这个数直接进 L5 仲裁权重（``arbitration.py`` 的 ``source 权重 ×
+        # confidence``）⇒ 失真读数会变成「谁说了算」的权重。
+        # 纪律来源：``llm/schema_parse.py`` 第 3 条「confidence 越界就丢，
+        # 不夹逼」。
+        #
+        # ⚠️ 刻意用 ``is None`` 判断，**不能**用 ``or``（否则 0.0 又被提升）。
+        raw_conf = data.get("confidence")
+        confidence = schema_parse.as_confidence(raw_conf)
+        note = "multim_ok"
+        if confidence is None:
+            confidence = _DEFAULT_CONFIDENCE
+            # 「模型没表态」（字段缺失 / 显式 null —— 与 ``schema_parse.field()``
+            # 的 null==缺失 同义）与「模型表了态但数值不可信」要分开记：
+            # 后者显式降级，前者不。
+            if raw_conf is not None:
+                note = _NOTE_CONF_INVALID
         return VLMReviewResult(
             label=label,
             paywall_type=paywall_type if label == "paywall" else "none",
@@ -329,7 +368,7 @@ class MultimVLMReviewer:
             price=price_f,
             currency=currency,
             confidence=confidence,
-            note="multim_ok",
+            note=note,
             source=source,
         )
 

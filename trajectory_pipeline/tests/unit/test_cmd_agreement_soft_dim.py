@@ -203,6 +203,73 @@ class TestDimToleranceDefault:
         assert "d3: 1/1" in out2
 
 
+class Test等价类表护栏:
+    """**D-10 一致率是上岗线判定对象** ⇒ 等价类表被偷合并 ⇒ 这个数不算。
+
+    合并等价类会让一致率**凭空变高**（两个本该分开的标签被算成一致）⇒
+    直接把上岗线读成「过了」，而真相比更差。⇒ 表不合法 ⇒ 当场炸，
+    不出一致率。
+    """
+
+    def test_偷合并_不出一致率(self, tmp_path):
+        golden_root = _setup_vdir(
+            tmp_path, calib_rows=[_row("g1"), _row("g2")],
+        )
+        original = dict(alignment.EQUIV_CLASS)
+        try:
+            # 往一个类里塞标签而不补注记 ⇒ 记账护栏破
+            alignment.EQUIV_CLASS["_偷合并_"] = "SUCCESS"
+            rc, out, err = _run_cmd(golden_root, "--version", "7")
+            # ``builder.main`` 捕 ``GoldenError`` ⇒ 退 2 并把原因打 stderr
+            assert rc == 2
+            assert "护栏" in err
+            assert "先修表再读数" in err
+            # **最关键**：一致率 / 上岗线判定**一个字都不许出**
+            assert "上岗线判定" not in out
+            assert "口径 C（头条" not in out
+        finally:
+            alignment.EQUIV_CLASS.clear()
+            alignment.EQUIV_CLASS.update(original)
+
+    def test_补齐记账的偷合并_同样不出一致率(self, tmp_path):
+        """**记账齐了不等于合并合法** —— 语义分离护栏照样拦。
+
+        ``broken``（内容损坏）vs ``unreachable_hard``（连页面都没到）并进
+        一类、且注记补齐 ⇒ 记账护栏放行，**语义分离护栏**必须拦下。
+        """
+        golden_root = _setup_vdir(
+            tmp_path, calib_rows=[_row("g1"), _row("g2")],
+        )
+        original = dict(alignment.EQUIV_CLASS)
+        original_notes = dict(alignment.EQUIV_CLASS_NOTES)
+        try:
+            alignment.EQUIV_CLASS["unreachable_hard"] = "BROKEN_CONTENT"
+            alignment.EQUIV_CLASS_NOTES["BROKEN_CONTENT"] = {
+                "canonical": "broken",
+                "merged": ("unreachable_hard",),
+                "detail_lost": "内容损坏 vs 连页面都没到",
+                "reason": "（测试构造的偷合并）",
+            }
+            assert alignment.validate_merge_notes() == []   # 记账护栏被骗过
+            rc, out, err = _run_cmd(golden_root, "--version", "7")
+            assert rc == 2
+            assert "unreachable_hard" in err
+            assert "上岗线判定" not in out
+        finally:
+            alignment.EQUIV_CLASS.clear()
+            alignment.EQUIV_CLASS.update(original)
+            alignment.EQUIV_CLASS_NOTES.clear()
+            alignment.EQUIV_CLASS_NOTES.update(original_notes)
+
+    def test_表没被动过_照常出一致率(self, tmp_path):
+        golden_root = _setup_vdir(
+            tmp_path, calib_rows=[_row("g1"), _row("g2")],
+        )
+        rc, out, _ = _run_cmd(golden_root, "--version", "7")
+        assert rc == 0
+        assert "上岗线判定" in out
+
+
 class Test空样本不参与:
     def test_黄金集dimension_scores全空(self, tmp_path):
         golden_root = _setup_vdir(

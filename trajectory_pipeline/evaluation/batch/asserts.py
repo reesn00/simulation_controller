@@ -80,7 +80,13 @@ from typing import Any, Iterable, Mapping, Sequence
 from trajectory_pipeline import outcomerules
 from trajectory_pipeline.common.elements import element_name, element_role
 from trajectory_pipeline.evaluation import observation_match
-from trajectory_pipeline.evaluation.golden.alignment import hard_agreement
+from trajectory_pipeline.evaluation.golden.alignment import (
+    equiv_class,
+    hard_agreement,
+    invisible_details,
+    validate_merge_notes,
+    validate_split_guards,
+)
 from trajectory_pipeline.evaluation.scorers import thresholds
 from trajectory_pipeline.executor.actions import TOOLS
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
@@ -775,8 +781,51 @@ def _assert_b5(
                 "（持有集 / 回归集是封存面，按 D-C5 / D-C8 纪律不读）",
             ),
         )
+    # ⚠️ **口径 C 的等价类表有两道护栏**，缺一不可：
+    #
+    # ① **合并记账一致**（:func:`validate_merge_notes`）：合并等价类 =
+    #    放水（方案 16 D-C4 的原话），把两个标签并进一类，D-10 口径 C 就
+    #    再也分不出它们——**分母语义被悄悄改宽**。「谁被并进来了、丢了什么
+    #    细分」记在 ``EQUIV_CLASS_NOTES`` 里（C-13 的记账面），而这个
+    #    函数是那张表与 ``EQUIV_CLASS`` 的一致性检查。**没人调用它 ⇒
+    #    偷偷合并不会有人拦。**
+    # ② **语义分离不破**（:func:`validate_split_guards`）：有些组**压根
+    #    不许合并**（``broken`` vs ``unreachable_hard`` —— 内容损坏 vs 连
+    #    页面都没到，处置完全不同）。注记补得再齐也**不合法**。
+    #
+    # ⚠️ **①不等于②**：注记齐了只说明「改动被记了账」，不说明「这组合并
+    # 本身是对的」。⇒ 两道护栏都要过，读数才成立。
+    #
+    # 与下面 ``except KeyError`` 是**同一类 fail-closed**（表缺标签 vs
+    # 记账没跟上 vs 合并本身不合法）：读数不成立，而不是「差不多通过」。
+    merge_problems = validate_merge_notes()
+    split_problems = validate_split_guards()
+    if merge_problems or split_problems:
+        hints: list[str] = []
+        if merge_problems:
+            hints.append(
+                "口径 C 的等价类表与合并记账对不上——先补记账再读数"
+                "（方案 16 C-13 / D-C4）"
+            )
+        if split_problems:
+            hints.append(
+                "口径 C 的语义分离护栏没过——刻意分开的两组标签被并进了同一"
+                "等价类（方案 16 §4.3）"
+            )
+        return AssertReading(
+            "B-5", CLAUSE_NAMES["B-5"], STATUS_UNTESTABLE,
+            "等价类护栏未过（合并记账 / 语义分离），"
+            "口径 C 的分母语义不可信——读数不成立",
+            caveats=(
+                *hints,
+                *_trim([*merge_problems, *split_problems]),
+            ),
+        )
     agree = disagree = undetermined = 0
     undetermined_reasons: list[str] = []
+    #: 本批**碰到过**的等价类（两侧标签的类都算）——「合并的代价」只报
+    #: 这批真付了代价的那些类（见本函数末尾的 C-13 产出面）。
+    touched_classes: set[str] = set()
     for row in gold_rows:
         golden = (row.get("golden") or {}) if isinstance(row, Mapping) else {}
         code = (row.get("code") or {}) if isinstance(row, Mapping) else {}
@@ -786,6 +835,15 @@ def _assert_b5(
         # snapshot 两处同款）。写成 ``or ""`` 会把成功行读成 missing ⇒
         # 判对的行被踢出分母，读数只剩失败。
         code_branch = str(code.get("branch") or SUCCESS_LABEL).strip()
+        for lbl in (gold_label, code_branch):
+            if not lbl:
+                continue
+            try:
+                touched_classes.add(equiv_class(lbl))
+            except KeyError:
+                # 标签没登记在等价类表 —— 下面那次 ``hard_agreement`` 会
+                # 把它变成「测不成」；这里不重复报（**一个出处**）。
+                continue
         try:
             state = hard_agreement(gold_label, code_branch)
         except KeyError as exc:
@@ -809,6 +867,20 @@ def _assert_b5(
         f"分母口径 = 三态里「两侧都有结论」的行（{split} 档）",
         f"未判定 {undetermined} 条不进分母（没结论既不是一致也不是不一致）",
     ]
+    # ⚠️ **C-13 的产出面**（:func:`invisible_details`）：合并等价类的
+    # **代价**必须看得见 —— 口径 C 把几个标签并进一类之后，这一类里
+    # 哪些区分**已经分不出来了**。不报的话，读者只看到「一致率 92%」，
+    # 看不到「这 92% 里有一部分是**并出来的**」。
+    #
+    # 只报**本批碰到过**的等价类：全表 7 类里有大半与本批无关，
+    # 全列是噪声（「清单很长」不等于「清单有用」）。
+    cost_lines = invisible_details(only=touched_classes)
+    if cost_lines:
+        caveats.append(
+            "⬇ 合并等价类的代价（口径 C 下**已经分不出来**的细分，"
+            "本批碰到过的等价类；C-13）"
+        )
+        caveats.extend(cost_lines)
     if denominator == 0:
         return AssertReading(
             "B-5", CLAUSE_NAMES["B-5"], STATUS_UNTESTABLE,

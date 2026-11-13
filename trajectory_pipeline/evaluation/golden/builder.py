@@ -5145,8 +5145,22 @@ def cmd_agreement(args: argparse.Namespace) -> int:
     from trajectory_pipeline.evaluation.golden.alignment import (
         equiv_class,
         is_equivalent,
+        validate_merge_notes,
         validate_soft_dim_name,
+        validate_split_guards,
     )
+
+    # ⚠️ **等价类表的两道护栏必须先过**（fail-closed，与本模块既有的
+    # ``GoldenError`` 用法同型）：本函数算的是 **D-10 头条一致率**——
+    # **上岗线判定对象**（H-02）。等价类表若被悄悄合并过，这个数会
+    # **凭空变高** ⇒ 直接把上岗线读成"过了"，而真相比更差。
+    # ⇒ 表不合法 ⇒ **这个数不算**，当场炸，不出一致率。
+    _guard_problems = [*validate_merge_notes(), *validate_split_guards()]
+    if _guard_problems:
+        raise GoldenError(
+            "等价类表护栏未过（合并记账 / 语义分离），D-10 一致率不可信——"
+            "先修表再读数：" + "；".join(_guard_problems)
+        )
 
     def _score(subset: Sequence[Mapping[str, Any]]) -> tuple[int, float]:
         t = [gold_label_of(r) for r in subset]

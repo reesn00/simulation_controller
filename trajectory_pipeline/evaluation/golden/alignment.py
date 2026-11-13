@@ -30,7 +30,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping, NamedTuple
+from typing import Iterable, Mapping, NamedTuple
 
 from trajectory_pipeline.evaluation.scorers.rubric_version import TIERED_DIMS
 
@@ -95,6 +95,14 @@ EQUIV_CLASS: Mapping[str, str] = {
 ALL_EQUIV_CLASSES: frozenset[str] = frozenset(EQUIV_CLASS.values())
 
 #: 刻意分离的两组：断言它们不在同一等价类（防止以后有人误合并）。
+#:
+#: ⚠️ **这条护栏已生效（2026-11-13）** —— 检查在
+#: :func:`validate_split_guards` 里，生产侧由
+#: ``evaluation/batch/asserts.py::_assert_b5`` 调用（口径 C 读数点）。
+#: ⚠️ **为什么这两组不许并**：``broken`` 是「页面/媒体**在**但坏」，
+#: ``unreachable_hard`` 是「**连页面都没到**」——两种失败形态的处置
+#: 完全不同（一个换站、一个查环境）。并进一类 ⇒ 口径 C 再也分不出
+#: 「坏内容」与「够不着」，D-10 一致率被静默改写。
 SPLIT_CONTENT_VS_REACH = ("broken", "unreachable_hard")
 
 
@@ -225,7 +233,7 @@ def class_labels(cls: str) -> tuple[str, ...]:
     return labels
 
 
-def invisible_details() -> tuple[str, ...]:
+def invisible_details(only: Iterable[str] | None = None) -> tuple[str, ...]:
     """**「合并后不可见细分」清单**（C-13 的产出面）。
 
     一行一个等价类，形如::
@@ -237,9 +245,18 @@ def invisible_details() -> tuple[str, ...]:
     + :data:`EQUIV_CLASS`），不是手抄的第二份。
 
     只列**发生过合并**的类（标签数 > 1）；单标签类不在清单里。
+
+    Args:
+        only: 只列这些等价类（``None`` = 全部）。**读数面用这个参数收窄**
+            ——「这批碰到了哪些等价类，哪些细分已经分不出来」比「全表 7 类」
+            有用得多（后者的绝大部分与本批无关，是噪声）。
+            传空集合 ⇒ 返回空元组（**不**当错误：那只是「这批没碰到合并类」）。
     """
+    wanted = None if only is None else set(only)
     out: list[str] = []
     for cls in sorted(EQUIV_CLASS_NOTES):
+        if wanted is not None and cls not in wanted:
+            continue
         note = EQUIV_CLASS_NOTES[cls]
         out.append(f"{cls}：{note['detail_lost']}")
     return tuple(out)
@@ -259,9 +276,16 @@ def validate_merge_notes() -> list[str]:
 
     返回**人读的问题清单**（不是抛异常）：这是检查工具，调用方决定怎么用；
     但它**不会**给「差不多通过」留口子——问题清单非空就是有问题。
+
+    ⚠️ **遍历的是「当前表里的类」，不是 :data:`ALL_EQUIV_CLASSES`**（后者是
+    导入时算好的快照）：合并会把一个类的最后一个标签搬走，那个类就从
+    **当前**表里消失了 —— 按快照遍历会走到它、然后 :func:`class_labels`
+    抛 ``KeyError``（检查工具自己炸掉，而不是报出「这个类被搬空了」）。
+    快照仍作为**公开清单**保留（报表与测试枚举用）。
     """
     problems: list[str] = []
-    for cls in sorted(ALL_EQUIV_CLASSES):
+    live_classes = sorted({cls for cls in EQUIV_CLASS.values()})
+    for cls in live_classes:
         labels = class_labels(cls)
         note = EQUIV_CLASS_NOTES.get(cls)
         if note is None:
@@ -289,8 +313,46 @@ def validate_merge_notes() -> list[str]:
         if not note.get("reason", "").strip():
             problems.append(f"{cls}：reason 是空的（没说为什么并）")
     for cls in sorted(EQUIV_CLASS_NOTES):
-        if cls not in ALL_EQUIV_CLASSES:
+        if cls not in live_classes:
             problems.append(f"{cls}：注记里的类在 EQUIV_CLASS 里根本不存在")
+    return problems
+
+
+def validate_split_guards() -> list[str]:
+    """**语义分离护栏**——检查 :data:`SPLIT_CONTENT_VS_REACH` 那组标签
+    有没有被并进同一等价类。
+
+    与 :func:`validate_merge_notes` 是**两件事**，缺一不可：
+
+    - :func:`validate_merge_notes` 查的是「**合并之后记账有没有跟上**」
+      （标签数变了而注记没跟上 ⇒ 报）。
+    - 本函数查的是「**这组合并压根不该发生**」
+      ——把 ``broken`` 与 ``unreachable_hard`` 并进一类，注记补得再齐也
+      **不合法**：两种失败形态（内容损坏 vs 连页面都没到）被抹平了。
+
+    ⚠️ 所以「合并记账一致」**不等于**「分组合法」：注记齐了，只能说明
+    改动被记了账，不能说明这组合并本身是对的。
+
+    返回**人读的问题清单**（空 = 通过），与
+    :func:`validate_merge_notes` 同型：不抛异常，由调用方决定怎么用。
+    """
+    problems: list[str] = []
+    labels = SPLIT_CONTENT_VS_REACH
+    for i, left in enumerate(labels):
+        for right in labels[i + 1:]:
+            cls_left = EQUIV_CLASS.get(left)
+            cls_right = EQUIV_CLASS.get(right)
+            if cls_left is None or cls_right is None:
+                missing = left if cls_left is None else right
+                problems.append(
+                    f"{missing}：语义分离护栏要的标签没登记在 EQUIV_CLASS 里"
+                )
+                continue
+            if cls_left == cls_right:
+                problems.append(
+                    f"{cls_left}：{left} 与 {right} 被并进了同一等价类"
+                    "——刻意分离的两组不许合并"
+                )
     return problems
 
 
