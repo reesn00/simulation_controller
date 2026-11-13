@@ -30,6 +30,11 @@ _ALLOWED_TP_IMPORTS = {
     # 共用一份。挂顶层的原因见 trajectory_pipeline/projection.py ——
     # ls_bridge 禁 import assembler,而校验两边都要跑。
     "trajectory_pipeline.projection",
+    # 缺判归因词表(H-36):纯字面量 + 一个纯函数。评分器产出归因、scout
+    # 汇总分栏、ls_bridge 闸门三处共用同一份定义——但 ``evaluation.scorers``
+    # 不在白名单(那是评分器本体)。同 projection.py 的处理:挂顶层,
+    # 见 trajectory_pipeline/judgement_causes.py。
+    "trajectory_pipeline.judgement_causes",
     "trajectory_pipeline.storage",
     "trajectory_pipeline.storage.read_p3",
     "trajectory_pipeline.storage.task_views",

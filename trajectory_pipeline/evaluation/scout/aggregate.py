@@ -49,6 +49,12 @@ from trajectory_pipeline.evaluation.scout.types import (
     ScoutStatus,
     TrajectoryRecord,
 )
+from trajectory_pipeline.judgement_causes import (
+    CAUSE_DATA,
+    CAUSE_LLM,
+    CAUSE_NO_CLIENT,
+    CAUSE_SCORED,
+)
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +75,7 @@ def _min_score(
     units: list[ScoutRecord],
     dimension: str,
     log_entries: list[AggregationLogEntry],
-) -> tuple[int | None, bool, list[str], str | None]:
+) -> tuple[int | None, bool, list[str], str | None, str]:
     """取 ``dimension`` 的最差 score(min 策略)。
 
     Args:
@@ -78,14 +84,16 @@ def _min_score(
         log_entries: 聚合期决策留痕(本函数追加 min_score 行)。
 
     Returns:
-        ``(score, is_veto, reasons, picked_unit)``:
+        ``(score, is_veto, reasons, picked_unit, cause)``:
         - ``score``:任务级 score;任一 unit 该维 ``score=None`` 时短路
           返回 ``None``(任务级 ``undetermined``);
         - ``is_veto``:任一 unit 该维 ``is_veto=True`` 时为 ``True``(短路);
         - ``reasons``:挑中的最差 unit 的 reasons 列表(只挑一条,
           不合并——与 rubric 「任一 unit 站错整条轨迹站错」一致);
         - ``picked_unit``:被挑中的最差 unit sample_id;score=None 短路时为
-          ``None``(全 None 没法挑)。
+          ``None``(全 None 没法挑);
+        - ``cause``:该维的缺判归因(H-36)。**旧产物没有这个键**
+          ⇒ 读侧一律 ``d.get("cause", "")``。
     """
     per_dim: list[DimensionScore] = []
     for u in units:
@@ -102,7 +110,8 @@ def _min_score(
             "action": "min_score",
             "reason": f"所有 unit 缺 {dimension} 维, 任务级 score=None",
         })
-        return None, False, [], None
+        # 维度压根没有 ⇒ 事实缺失(数据侧),不是后端没答。
+        return None, False, [], None, CAUSE_DATA
 
     # 短路 1:任一 unit 该维 score=None → 任务级 score=None
     nones = [d for d in per_dim if d.get("score") is None]
@@ -114,7 +123,10 @@ def _min_score(
             "reason": (f"{dimension}: 任一 unit score=None, "
                        f"任务级 score=None (undetermined)"),
         })
-        return None, False, [], bad_unit
+        return (
+            None, False, [], bad_unit,
+            str(nones[0].get("cause") or CAUSE_DATA),
+        )
 
     # 短路 2:任一 unit 该维 is_veto=True → 任务级 is_veto=True
     vetoes = [d for d in per_dim if d.get("is_veto")]
@@ -127,7 +139,10 @@ def _min_score(
         })
         # veto 时 score 也取最差(选 veto 那条);理由透传
         bad = vetoes[0]
-        return int(bad["score"]), True, list(bad.get("reasons") or ()), bad_unit
+        return (
+            int(bad["score"]), True, list(bad.get("reasons") or ()), bad_unit,
+            str(bad.get("cause") or ""),
+        )
 
     # 正常:min
     worst = min(per_dim, key=lambda d: int(d["score"]))
@@ -144,6 +159,7 @@ def _min_score(
         False,
         list(worst.get("reasons") or ()),
         bad_unit,
+        str(worst.get("cause") or ""),
     )
 
 
@@ -221,12 +237,15 @@ def aggregate_to_trajectory(
     # ── 1. 聚合 scores(四维 min) ──
     task_scores: list[DimensionScore] = []
     for dim in DIMENSION_ORDER:
-        score, is_veto, reasons, _picked = _min_score(units, dim, log_entries)
+        score, is_veto, reasons, _picked, cause = _min_score(
+            units, dim, log_entries,
+        )
         task_scores.append({
             "dimension": dim,  # type: ignore[typeddict-item]
             "score": score,
             "is_veto": is_veto,
             "reasons": reasons,
+            "cause": cause,
         })
 
     # ── 2. tags 并集(去重,保序) ──
@@ -289,6 +308,17 @@ def aggregate_to_trajectory(
     # ── 6. status ──
     status = _aggregate_status(task_scores, units)
 
+    # ── 7. 缺判归因（H-36）——**LLM 侧优先** ──
+    # 任一 unit 因「后端没答」而缺判 ⇒ 整条轨迹记 ``llm``（min 策略下
+    # 它也短路成 undetermined）。全判出 ⇒ ``""``。
+    unit_causes = {str(u.get("undetermined_cause") or "") for u in units}
+    if unit_causes & {CAUSE_LLM, CAUSE_NO_CLIENT}:
+        undetermined_cause = CAUSE_LLM
+    elif any(d.get("score") is None for d in task_scores):
+        undetermined_cause = CAUSE_DATA
+    else:
+        undetermined_cause = CAUSE_SCORED
+
     return TrajectoryRecord(
         trajectory_id=f"{task_id}__{run_id}",
         task_id=task_id,
@@ -299,6 +329,7 @@ def aggregate_to_trajectory(
         unit_outcomes=unit_outcomes,
         evidence_supplement=merged_ev,
         aggregation_log=log_entries,
+        undetermined_cause=undetermined_cause,
     )
 
 
@@ -387,6 +418,20 @@ def aggregate_from_buckets(
     # 补 0 项(report 读起来一致)
     for k in ("scored", "undetermined", "not_run"):
         stats.setdefault(k, 0)
+    # ⚠️ **H-36：undetermined 的两栏**——「数据判不出」与「LLM 没答」。
+    # ⚠️ 这两个键**不在** EXPECTED_STATS_KEYS（三态）里——它们是
+    # undetermined 的再分栏，不参与「三态合计 == 记录数」那个不变式
+    # （verify 只加那三个键）。
+    stats["quarantine_data"] = sum(
+        1 for tr in trajectories
+        if tr.get("status") == "undetermined"
+        and tr.get("undetermined_cause") == CAUSE_DATA
+    )
+    stats["quarantine_llm"] = sum(
+        1 for tr in trajectories
+        if tr.get("status") == "undetermined"
+        and tr.get("undetermined_cause") == CAUSE_LLM
+    )
 
     # 4) 落盘(原子写,.tmp + os.replace)
     output_path.parent.mkdir(parents=True, exist_ok=True)

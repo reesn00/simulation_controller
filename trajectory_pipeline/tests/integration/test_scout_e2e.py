@@ -258,6 +258,13 @@ class TestRunScoutThreeBuckets:
             "quarantine": 1,
             "skip": 0,
             "missing_source": 0,
+            # H-36:quarantine 的两栏再分 + 熔断读数。
+            # ⚠️ 这四个键**不在**「五个单元计数键相加 == 输入数」那个和里
+            # (见 scout.io.UNIT_COUNTER_KEYS)——它们是另一个维度的读数。
+            "quarantine_data": 1,
+            "quarantine_llm": 0,
+            "llm_failure_total": 0,
+            "llm_circuit_open": 0,
         }
         assert (out := tmp_path / "out").is_dir()
         pos = [json.loads(l) for l in (tmp_path / "out" / "positive_candidates.jsonl").read_text(encoding="utf-8").splitlines() if l]

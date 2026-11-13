@@ -387,7 +387,13 @@ class TestAggregateFromBuckets:
             scout_dir=tmp_path, overwrite=True,
         )
         assert trajectories == []
-        assert stats == {"scored": 0, "undetermined": 0, "not_run": 0}
+        assert stats == {
+            "scored": 0, "undetermined": 0, "not_run": 0,
+            # H-36:undetermined 的两栏再分(数据判不出 / LLM 没答)。
+            # 这两个键**不在**三态合计不变式里(verify 只加 scored/undetermined/not_run),
+            # 但 stats 里出现就要有值——否则读侧会以为分栏不存在。
+            "quarantine_data": 0, "quarantine_llm": 0,
+        }
 
     def test_坏行不中断整批(self, tmp_path):
         # 一行好档 + 一行坏 JSON

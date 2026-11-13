@@ -297,7 +297,7 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 
 | **H-34** | ★**（2026-11-11 新增）`ls_bridge` 只有「推新」没有「刷旧」** ⇒ `push_index` 按 `sample_id` 去重 ⇒ T 视图 `--overwrite` 重建后那 **76 条**旧卡**永远落后**（实测 **76/76** 内容有差异：`messages` / `openai` / `audit` / `scorecard` 全变——近几个 commit 改了渲染） | 08 存档治理 | §H-34（本文档） · [`ls_bridge/cli.py`](../../evaluation/ls_bridge/cli.py) · [`ls_bridge/push_index.py`](../../evaluation/ls_bridge/push_index.py) · [`ls_bridge/client.py`](../../evaluation/ls_bridge/client.py) | 加 `ls_bridge refresh`（`PATCH /api/tasks/{id}` + `PATCH /api/predictions/{id}`，**不删卡不新建卡**——owner 2026-11-04 已裁过这个手段，见 [H-27](#h-27)）｜ ⚠️ **本轮先用一次性脚本刷了 76 条**（**0 失败** · 标注 **0 条**受影响 · 刷后 **76/76** 与当前渲染逐字段一致）｜ ✅ **已闭（2026-11-11 · owner 裁「落成 CLI」）**：`ls_bridge refresh` **已落成 CLI**（**默认 dry-run** + `--apply` 才写；**默认跳过有人工标注的卡**；**绝不碰 `label_config`** ⇒ `resolve_project_id` 必须传 `sync=False`）· 实现 [`ls_bridge/refresh.py`](../../evaluation/ls_bridge/refresh.py) · 门禁 [`tests/unit/test_ls_bridge_refresh.py`](../../tests/unit/test_ls_bridge_refresh.py)（**17 条**）· 真跑 dry-run：**107 条全部「无差异」**（上轮已刷过）｜ ⚠️ **「前提是 LS 上 0 条人工标注」仍未验过**：一旦有人标了，`PATCH data` 会不会覆盖标注**须先验**⇒ CLI 默认**跳过**有人工标注的卡并报出来 |
 | **H-35** | ★**（2026-11-11 新增）全量 107 条轨迹里**只有 2 条**能自动判出来**（聚合后 `scored=2` / `undetermined=105`；unit 级 `pos=73` / `neg=1` / `quarantine=838` / `skip=7`）——D-2 判不出 **721/838（86 %）** · D-5 判不出 **573/838（68 %）** | 03 标签 / 05 rationale | §H-35（本文档） · [`scout/cli.py`](../../evaluation/scout/cli.py) · [`scout/io.py`](../../evaluation/scout/io.py) · [`scout/policy.py`](../../evaluation/scout/policy.py) · [`scout/aggregate.py`](../../evaluation/scout/aggregate.py) | ⚠️ **2026-11-12 口径修正**：原先归成「数据判不了」是**错的**——D-2 不可判的 721 条里，**578 条（80 %）是「LLM 返回空」**（代码筛过了、**后端没答出**）⇒ **那轮 scout 撞上 LLM 后端故障**（2026-11-12 复测 **0 次**）｜ 真正的「无可判动作」只有 **48** 条 · 「缺观察」**95** 条 ｜ **D-5 的 573** 多为「outcome 缺 `question`」（旧采集档缺字段 ⇒ 只能重采）｜ ⚠️ **实测对照**：**新 agent 档 5/5 unit 全判出** · 旧 scripted 档 2/8 ⇒ **重采 + 重跑 scout 能救** ｜ **owner 2026-11-12 裁**：重跑 **30 个 task**（坏档涉及 65 个 task，但 **35 个另有别批次好档** ⇒ 真正「没有替代数据」的是 30 个）+ 重跑 scout ｜ ⚠️ **那条 `scored=2` 的读数作废**（后端故障期间产出） |
-| **H-36** | ★**（2026-11-12 新增）评估侧的 LLM 失败**既无熔断、也无归因** ⇒ 整批静默退化成 `quarantine`：2026-11-11 18:24–19:38 那轮 scout 里 **838** 个 unit 有 **578** 次「**LLM 返回空**」⇒ 汇总只报「`quarantine=838`（91 %）」⇒ **把「后端当时坏了」读成「数据判不了」** | 03 标签 / 09 纪律 | §H-36（本文档） · [`scorers/code_scorer.py::_parse_response`](../../evaluation/scorers/code_scorer.py#L438) · [`llm/client.py`](../../llm/client.py) · [`scout/io.py`](../../evaluation/scout/io.py) | ① **归因**：把 `_exchange` 的 error 透传进 reason（超时 / 4xx / 5xx / content 空 各一句）⇒ 现在只写「LLM 返回空」⇒ **不可归因** ② **熔断**：连续 N 次 LLM 失败 ⇒ 停本批 D-2 调用 + **显式报「本批判分不可信」**（同采集侧 [H-31](#h-31) 的形状）③ **汇总分栏**：「quarantine（数据判不出）」与「quarantine（**LLM 没答**）」分开报 —— ⚠️ **第三条最要紧**：不分栏 ⇒ 读数会把**后端故障**读成**数据质量** ｜ ⚠️ **现状**：⏳ 未闭环（2026-11-12 已手工把 `scored=2` 那轮读数**作废**，但机制没修） |
+| **H-36** | ★**（2026-11-12 新增）评估侧的 LLM 失败**既无熔断、也无归因** ⇒ 整批静默退化成 `quarantine`：2026-11-11 18:24–19:38 那轮 scout 里 **838** 个 unit 有 **578** 次「**LLM 返回空**」⇒ 汇总只报「`quarantine=838`（91 %）」⇒ **把「后端当时坏了」读成「数据判不了」** | 03 标签 / 09 纪律 | §H-36（本文档） · [`scorers/code_scorer.py::_parse_response`](../../evaluation/scorers/code_scorer.py#L438) · [`llm/client.py`](../../llm/client.py) · [`scout/io.py`](../../evaluation/scout/io.py) | ① **归因**：把 `_exchange` 的 error 透传进 reason（超时 / 4xx / 5xx / content 空 各一句）⇒ 现在只写「LLM 返回空」⇒ **不可归因** ② **熔断**：连续 N 次 LLM 失败 ⇒ 停本批 D-2 调用 + **显式报「本批判分不可信」**（同采集侧 [H-31](#h-31) 的形状）③ **汇总分栏**：「quarantine（数据判不出）」与「quarantine（**LLM 没答**）」分开报 —— ⚠️ **第三条最要紧**：不分栏 ⇒ 读数会把**后端故障**读成**数据质量** ｜ ✅ **现状**：**已闭（2026-11-13 · 归因 + 批次级熔断 + 汇总分栏 + 上传/刷新闸门；处置与读数见 §H-36「闭合」小节）**｜ ⚠️ **2026-11-12 那条 `scored=2` 的读数仍作废**（后端故障期间产出，当时机制没修） |
 
 ---
 
@@ -1938,6 +1938,77 @@ H-32 候选提取解耦）⇒ **空壳 0、401 绝迹**。
 （两条都读盘上真档案 `output/pipeline/samples`，与本轮代码口径无关）
 ⇒ 台账 §2026-11-10 早已把这两条登记为**存量红**。
 ⇒ **H-31 / H-32 无新增红**。
+
+#### H-36 闭合（2026-11-13）· 归因 + **批次级熔断** + 汇总分栏 + 上传/刷新闸门
+
+**病根**（不是「忘了写」）：客户端的 `CircuitBreaker` **只数 4xx**
+（`NON_TRIPPING_4XX = {408, 429}`）⇒ 2026-11-11 那 **578** 次「后端答了但正文为空」
+**一次都没触发** ⇒ 整批安静跑完 74 分钟、**退出码 0**、汇总只报 `quarantine=838（91 %）`
+⇒ **后端故障被读成数据质量**（处置方向正好相反：前者修后端，后者补数据）。
+⚠️ **归因与熔断必须一起做**：只加熔断，下次故障变成「静默少判几条」；
+只加归因，下次故障变成「停得早但没人知道停在哪」。
+
+**① 归因**（[`llm/client.py`](../../llm/client.py) · [`scorers/code_scorer.py`](../../evaluation/scorers/code_scorer.py)）：
+
+- `classify_llm_failure(code)` / `describe_llm_failure(code)`：**9 类**
+  （熔断 / 预算耗尽 / 形状异常 / 请求被拒 4xx / 后端错误 5xx / 限流 429 /
+  超时 408+传输 / 连接失败 / 认不出 ⇒ unknown **不猜**）。
+- 错误码的形状由 `_exchange` 决定（`circuit:open` / `budget:*` / `shape:*` /
+  `http:<status>` / `transport:<ExcType>`）⇒ **码表只有这一份**，
+  下游只消费分类，不许各造一份码表。
+- `D2Verdict` 加 `cause` 字段（`""` 已判出 / `data` 数据判不出 / `llm` 后端没答 /
+  `no_client` 没配后端）⇒ `score=None` 这一个信号**不再回答不了「为什么」**。
+- ⚠️ **空错误码仍写「LLM 返回空」**（旧口径不漂）——「为什么返回空」由码本身说明。
+
+**② 批次级熔断**（[`scout/io.py`](../../evaluation/scout/io.py) · [`scout/cli.py`](../../evaluation/scout/cli.py)）：
+
+- 连续 **N** 次「LLM 调用失败」⇒ **停本批 D-2 调用** + 落
+  [`scout_meta.json`](../../evaluation/scout/io.py)（`judgement_trustworthy=false`
+  · 熔断原因 · 阈值 · 最长连续失败数 · 总失败数 · 最后错误码）
+  + stderr 横幅「⚠️⚠️ 本批判分不可信（LLM 熔断）」+ **退出码 1**。
+- ⚠️ **D-4/D-5/D-6 是纯代码判据，照跑不误**——熔断的是裁判后端，不是全部评分。
+- ⚠️ **客户端的 4xx 熔断打开 ⇒ 直接开批次熔断**（不再发那 170 次 401）。
+- ⚠️ **熔断后被跳过的单元不算「调用失败」**（压根没发请求）⇒
+  `llm_failure_total` 回答的是「后端失败了几次」，不是「有多少条没判出」。
+- 阈值：**`--llm-failure-threshold`**，缺省取 `TRAJECTORY_LLM_CIRCUIT_THRESHOLD`（默认 3），
+  **长批次调大**（误停一次的代价是整批重跑）。
+- ⚠️ **`--dry-run` 也熔断**——dry-run 发的是**真请求**。
+
+**③ 汇总分栏**（⚠️ **最要紧的一条**）：
+
+- `quarantine` 拆成「**数据判不出**」/「**LLM 没答**」两栏
+  （`quarantine_data` / `quarantine_llm`）⇒ 报表上**一眼看出**是后端坏了还是素材缺件。
+- ⚠️ **分栏计数不在「各桶相加 = 输入样本数」那个和里**（它是 `quarantine` 的**再分**，
+  不是第三档）——塞进去就把分母算错 ⇒ `UNIT_COUNTER_KEYS` 单列一常量守住。
+- `evaluation/cli.py` 同口径加一行「└ 不可判定成因：数据判不出 N  LLM 没答 M」。
+
+**④ 上传 / 刷新闸门**（[`ls_bridge/exporter.py`](../../evaluation/ls_bridge/exporter.py) · [`ls_bridge/refresh.py`](../../evaluation/ls_bridge/refresh.py)）：
+
+- 归因「LLM 没答」的记录**不进人工队列**（`plan.skipped`）——
+  那不是素材缺判，是裁判后端没答；推上去只会往人工队列塞一批「看上去素材差」的假缺判。
+- `refresh` 也**不拿不可信的判分去盖 LS 上已有的好卡**（`skipped_untrusted`）
+  ⇒ 「**刷新只改内容，不许把好内容刷坏**」。
+
+**落地文件**：新增 [`judgement_causes.py`](../../judgement_causes.py)（归因词表 + 判定函数，
+**挂顶层**——`ls_bridge` 契约禁 import `evaluation.scorers`，同
+[`projection.py`](../../projection.py) 的先例；词表**只有这一份**，
+评分器 / scout / ls_bridge 三处共用）。
+
+**门禁**：[`tests/unit/test_h36_llm_attribution.py`](../../tests/unit/test_h36_llm_attribution.py)
+（**38 条**：错误码归因 / 解析归因 / D-2 归因 / 批次级熔断（含「熔断后剩余的不算失败数」·
+「熔断打开后 D4D5D6 照跑」·「dry_run 也熔断」）/ 人工队列闸门 / 聚合归因传递 / 评估 CLI 分栏）。
+
+**本轮全量门禁读数**：`pytest -q` = **2 failed / 5361 passed / 1 skipped（532.19s）**
+（仓库根、**单独串行**——`.pytest-tmp` 固定，两个进程并发会互踩）。
+⚠️ **两条红与基线身份完全一致**（已量基线：改动暂存后 HEAD 状态下同样红）：
+`test_calibration_evidence.py::test_真实v7的33张卡都能定位或明说定位不到` ·
+`test_rationale_gates.py::TestOnRealObservations::test_真实观察的观察袋包含元素名`
+⇒ **基线既有**（两条都读盘上真档案，与本轮代码口径无关）⇒ **H-36 无新增红**。
+
+⚠️ **本轮没有真跑 scout**（owner 裁「不再跑所有 batch」）⇒ **机制已落地但读数未更新**：
+下一次真跑时，「quarantine 分栏」与「熔断横幅」才会出现在报表上。
+⚠️ **旧的 `quarantine=838（91 %）` 那条读数仍是读法反例**（后端故障期间产出）⇒
+**不要再拿它当「这批数据判不出来」的证据**。
 
 
 ### 其余开口项（M / L 级）

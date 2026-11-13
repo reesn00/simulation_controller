@@ -25,6 +25,12 @@ class DimensionScore(TypedDict):
     score: int | None
     is_veto: bool
     reasons: list[str]
+    #: **该维缺判的归因**（H-36）：``""`` = 已判出；``"data"`` = 数据本身
+    #: 判不出；``"llm"`` = 裁判后端没答；``"no_client"`` = 没配后端。
+    #:
+    #: ⚠️ **旧产物没有这个键**——读侧一律用 ``.get("cause", "")``，
+    #: 别假设它一定在（2026-11-11 那批 scout 产物就是没有的）。
+    cause: str
 
 
 class ScoutRecord(TypedDict):
@@ -52,6 +58,13 @@ class ScoutRecord(TypedDict):
     #: 可选 L5 证据补充(L5 = ``BrowserProbeResult.l5_outcome``)。
     #: 缺件留空 dict —— **不算缺件**(rubric 不变量:缺件 ≠ 扣分)。
     evidence_supplement: dict[str, Any]
+    #: **本单元的缺判归因**（H-36）：``""`` = 已判出；``"data"`` =
+    #: 数据判不出；``"llm"`` = 裁判后端没答（含 ``"no_client"``——它也是
+    #: LLM 侧的缺口）。**汇总分栏就靠它**：「quarantine（数据判不出）」与
+    #: 「quarantine（LLM 没答）」分开报。
+    #:
+    #: ⚠️ **旧产物没有这个键**——读侧用 ``.get("undetermined_cause", "")``。
+    undetermined_cause: str
 
 
 #: 聚合期决策留痕。一行 = 一个决策(打 tag / 选 score / 合并 evidence /
@@ -91,6 +104,12 @@ class TrajectoryRecord(TypedDict):
     evidence_supplement: dict[str, Any]
     #: 聚合期所有决策的留痕(打 tag / 选 score / 合并 evidence / 缺 unit)。
     aggregation_log: list[AggregationLogEntry]
+    #: **任务级缺判归因**（H-36）：``""`` = 已判出；``"data"`` = 数据判不出；
+    #: ``"llm"`` = 裁判后端没答。**任一 unit 因 LLM 没答而缺判 ⇒ 整条
+    #: 轨迹记 ``"llm"``**（min 策略下它也短路成 ``undetermined``）。
+    #:
+    #: ⚠️ **旧产物没有这个键**——读侧用 ``.get("undetermined_cause", "")``。
+    undetermined_cause: str
 
 
 __all__ = [

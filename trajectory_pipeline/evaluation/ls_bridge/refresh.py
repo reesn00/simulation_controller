@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
@@ -37,6 +38,9 @@ from trajectory_pipeline.evaluation.ls_bridge.exporter import (
     export_trajectory_one,
     read_trajectory_records,
 )
+from trajectory_pipeline.judgement_causes import llm_unanswered
+
+log = logging.getLogger(__name__)
 
 #: 比对时**跳过**的键 —— 每次 push 都会变，拿它比会把「内容没变」误报成差异。
 VOLATILE_KEYS = frozenset({"uploaded_at"})
@@ -88,6 +92,10 @@ class RefreshPlan:
     missing: tuple[str, ...] = ()
     skipped_annotated: tuple[str, ...] = ()
     failed: tuple[tuple[str, str], ...] = ()
+    #: **因「裁判后端没答」被跳过**的卡（H-36）。⚠️ 这不是失败——是
+    #: **不许拿不可信的判分去盖掉 LS 上已有的好卡**（刷新会把卡内容换成
+    #: 当前产物；当前产物若因后端故障而缺判，刷新等于把好卡刷成「无法判定」）。
+    skipped_untrusted: tuple[str, ...] = ()
     #: 只读诊断：抽样的差异字段分布（字段名 → 条数）。
     diff_histogram: dict[str, int] = field(default_factory=dict)
 
@@ -99,6 +107,7 @@ class RefreshPlan:
         return (
             f"待刷 {self.count} 条 · 无差异 {len(self.unchanged)} · "
             f"LS 上没有 {len(self.missing)} · 有标注跳过 {len(self.skipped_annotated)} · "
+            f"判分不可信跳过 {len(self.skipped_untrusted)} · "
             f"失败 {len(self.failed)}"
         )
 
@@ -149,6 +158,7 @@ def plan_refresh(
     unchanged: list[str] = []
     missing: list[str] = []
     skipped_annotated: list[str] = []
+    skipped_untrusted: list[str] = []
     failed: list[tuple[str, str]] = []
     histogram: dict[str, int] = {}
 
@@ -156,6 +166,16 @@ def plan_refresh(
         if wanted and bucket not in wanted:
             continue
         sid = str(record["trajectory_id"])
+        # ⚠️ **H-36：判分不可信的不刷**——当前产物若因裁判后端故障而缺判，
+        # 刷进去等于把 LS 上已有的好卡刷成「无法判定」。**刷新只改内容，
+        # 不许把好内容刷坏**。
+        if llm_unanswered(record):
+            skipped_untrusted.append(sid)
+            log.warning(
+                "plan_refresh: %s 因裁判后端没答被跳过（不拿不可信判分盖旧卡）",
+                sid,
+            )
+            continue
         ls_task = ls_tasks.get(sid)
         if ls_task is None:
             missing.append(sid)
@@ -228,6 +248,7 @@ def plan_refresh(
         unchanged=tuple(unchanged),
         missing=tuple(missing),
         skipped_annotated=tuple(skipped_annotated),
+        skipped_untrusted=tuple(skipped_untrusted),
         failed=tuple(failed),
         diff_histogram=dict(sorted(histogram.items(), key=lambda kv: -kv[1])),
     )

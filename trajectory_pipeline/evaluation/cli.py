@@ -62,6 +62,11 @@ from trajectory_pipeline.evaluation.scorers.d5_scorer import score_d5
 from trajectory_pipeline.evaluation.scorers.d6_scorer import score_d6
 from trajectory_pipeline.evaluation.scorers.d9_scorer import score_d9
 from trajectory_pipeline.executor.archive import DEFAULT_ROOT, select_archives
+from trajectory_pipeline.judgement_causes import (
+    CAUSE_DATA,
+    CAUSE_LLM,
+    CAUSE_NO_CLIENT,
+)
 from trajectory_pipeline.llm.client import LLMClient, LLMUnavailable, dump_for_debug
 
 #: ``短名 → 打分函数``。**只有这四个**——D-3 未建（判据依赖黄金集），
@@ -196,6 +201,21 @@ def _agg() -> collections.Counter:
     return collections.Counter()
 
 
+#: 缺判归因 → 人话（H-36）。**报表上要能一眼看出「是后端坏了」还是
+#: 「是素材缺件」**——这两件事的处置方向相反，混成一个数就等于把
+#: 后端故障读成数据质量。
+_CAUSE_LABELS: dict[str, str] = {
+    CAUSE_DATA: "数据判不出",
+    CAUSE_LLM: "LLM 没答",
+    CAUSE_NO_CLIENT: "没配 LLM",
+}
+
+
+def _cause_label(cause: str) -> str:
+    """归因码 → 人话；认不出的**原样印出**（不猜它属于哪一类）。"""
+    return _CAUSE_LABELS.get(str(cause or ""), str(cause or ""))
+
+
 def _batch_of(sample: Any) -> str:
     """这条样本落在哪一档。
 
@@ -317,6 +337,13 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
         {**SCORERS, **LLM_SCORERS} if include_llm_judge else SCORERS
     )
     tally: dict[str, collections.Counter] = {d: _agg() for d in dims}
+    #: **缺判归因分栏**（H-36）：``不可判定`` 这一个数回答不了「为什么」。
+    #: 「素材缺件」要补数据，「裁判后端没答」要修后端——处置方向相反，
+    #: 混成一个数就等于把后端故障读成数据质量（2026-11-11：578 次后端
+    #: 失败与 478 次缺字段同桶）。
+    cause_tally: dict[str, collections.Counter] = {
+        d: collections.Counter() for d in dims
+    }
     #: ``批次 → 维度 → 计分``。只用于报表分栏，不参与总分。
     #: 键是动态的（有版本号的批次叫 ``v2``，没版本号的才退回两档），
     #: 所以这里不预置。
@@ -390,6 +417,12 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
                     key = str(verdict.score)
                     tally[dim][key] += 1
                     by_batch[batch][dim][key] += 1
+                    # ⚠️ **缺判才归因**——判出来了就没有「为什么没判」。
+                    # D-4/D-5/D-6 是纯代码判据、它们的 verdict 没有
+                    # ``cause`` 字段 ⇒ 空串 ⇒ 归「数据侧」（事实缺失）。
+                    if verdict.score is None:
+                        cause = str(getattr(verdict, "cause", "") or "")
+                        cause_tally[dim][cause or CAUSE_DATA] += 1
                     if getattr(verdict, "is_veto", False):
                         raw_branch = getattr(outcome, "branch", None)
                         vetoes.append({
@@ -443,6 +476,10 @@ def evaluate(root: pathlib.Path, dims: list[str], *, limit: int | None = None,
             "scored": sum(scored.values()),
             "undetermined": c.get("None", 0),
             "distribution": {k: scored[k] for k in sorted(scored)},
+            # ⚠️ **H-36：不可判定的成因分栏**——「数据判不出」与「LLM
+            # 没答」分开。⚠️ **不在** ``scored + undetermined`` 的和里
+            # （它是 undetermined 的**再分**，不是第三档）。
+            "undetermined_by_cause": dict(cause_tally[dim]),
         }
     for batch, tallies in by_batch.items():
         summary["batches"][batch] = {
@@ -609,6 +646,14 @@ def _print(summary: dict[str, Any], rows: list[dict[str, Any]],
         print(f"  {st['dimension']}   出分 {st['scored']:>4}/{total}"
               f"   不可判定 {st['undetermined']:>4} ({pct:>4.0%})"
               f"   {dist}{mark}")
+        # ⚠️ **H-36：不可判定的成因分栏**——混成一个数就等于把
+        # 「裁判后端没答」读成「素材差」（两者处置方向相反）。
+        causes = st.get("undetermined_by_cause") or {}
+        if causes:
+            parts = "  ".join(
+                f"{_cause_label(k)} {v}" for k, v in sorted(causes.items())
+            )
+            print(f"        └ 不可判定成因：{parts}")
 
     # ── 分档 + 缺件分布 ───────────────────────────────────────────
     # 放在全量之后、否决之前：读报表的人先看到「总的怎样」，再看到

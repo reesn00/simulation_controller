@@ -220,6 +220,110 @@ class CircuitBreaker:
                 f"（最后 http:{self.last_status}）")
 
 
+# ════════════════════════════════════════════════════════════════════
+# 失败归因：错误码 → 分类 / 一句话说明
+# ════════════════════════════════════════════════════════════════════
+#
+# ⚠️ **这里是错误码语义的唯一真源**。错误码的形状由
+# :meth:`LLMClient._exchange` 决定（``circuit:`` / ``budget:`` /
+# ``shape:`` / ``http:<status>`` / ``transport:<ExcType>``），而
+# 「这个码意味着什么」只有这里知道。下游（scorer / scout / 报告侧）
+# **只消费分类**，不许各造一份码表——抄两份必然漂，而漂了的代价是
+# 「后端 500」与「后端超时」在报告上长得一模一样（2026-11-11 那批
+# 578 次失败全被压成一句「LLM 返回空」，就是这个漂）。
+
+#: 没失败（错误码为空串）。
+LLM_FAILURE_NONE = ""
+#: 熔断打开——别再发了。
+LLM_FAILURE_CIRCUIT = "circuit"
+#: ``max_tokens`` 用尽（推理模型的思考与正文共用这一个预算）。
+LLM_FAILURE_BUDGET = "budget"
+#: 200 但结构不对 / 正文为空。
+LLM_FAILURE_SHAPE = "shape"
+#: 4xx（除 429/408）——请求本身的问题（key 错、模型名错、参数错）。
+LLM_FAILURE_CLIENT = "client"
+#: 5xx——后端过载 / 崩溃。
+LLM_FAILURE_SERVER = "server"
+#: 429 限流——**可能自愈**，退避后还有机会。
+LLM_FAILURE_RATE_LIMIT = "rate_limit"
+#: 408 或传输层超时。
+LLM_FAILURE_TIMEOUT = "timeout"
+#: 连不上 / DNS 等传输层失败（非超时）。
+LLM_FAILURE_TRANSPORT = "transport"
+#: 认不出的码——**不猜**，按 unknown 报。
+LLM_FAILURE_UNKNOWN = "unknown"
+
+
+def classify_llm_failure(code: str) -> str:
+    """错误码 → 归因分类。
+
+    Args:
+        code: :attr:`LLMClient.last_call_error` 的值（空串 = 没失败）。
+
+    Returns:
+        :data:`LLM_FAILURE_*` 之一。**认不出的码返回**
+        :data:`LLM_FAILURE_UNKNOWN`——不猜它属于哪一类（猜了就会把
+        「后端挂了」说成「参数错了」，处置方向正好相反）。
+    """
+    c = (code or "").strip()
+    if not c:
+        return LLM_FAILURE_NONE
+    if c == "circuit:open":
+        return LLM_FAILURE_CIRCUIT
+    if c.startswith("budget:"):
+        return LLM_FAILURE_BUDGET
+    if c.startswith("shape:"):
+        return LLM_FAILURE_SHAPE
+    if c.startswith("http:"):
+        try:
+            status = int(c.split(":", 1)[1])
+        except ValueError:
+            return LLM_FAILURE_UNKNOWN
+        if status == 429:
+            return LLM_FAILURE_RATE_LIMIT
+        if status == 408:
+            return LLM_FAILURE_TIMEOUT
+        if 400 <= status < 500:
+            return LLM_FAILURE_CLIENT
+        if status >= 500:
+            return LLM_FAILURE_SERVER
+        return LLM_FAILURE_UNKNOWN
+    if c.startswith("transport:"):
+        if "timeout" in c.lower():
+            return LLM_FAILURE_TIMEOUT
+        return LLM_FAILURE_TRANSPORT
+    return LLM_FAILURE_UNKNOWN
+
+
+def describe_llm_failure(code: str) -> str:
+    """错误码 → 一句中文说明（进 reason / 报告 / 存档）。
+
+    空码 → 「LLM 返回空」——**保留旧口径**：调用点（与既有测试）认这句，
+    而「为什么返回空」由码本身说明（带码时才有）。
+    """
+    kind = classify_llm_failure(code)
+    c = (code or "").strip()
+    if kind == LLM_FAILURE_NONE:
+        return "LLM 返回空"
+    if kind == LLM_FAILURE_CIRCUIT:
+        return f"LLM 熔断（{c}）"
+    if kind == LLM_FAILURE_BUDGET:
+        return f"LLM 预算耗尽（{c}）"
+    if kind == LLM_FAILURE_SHAPE:
+        return f"LLM 返回形状异常（{c}）"
+    if kind == LLM_FAILURE_CLIENT:
+        return f"LLM 请求被拒（{c}）"
+    if kind == LLM_FAILURE_SERVER:
+        return f"LLM 后端错误（{c}）"
+    if kind == LLM_FAILURE_RATE_LIMIT:
+        return f"LLM 后端限流（{c}）"
+    if kind == LLM_FAILURE_TIMEOUT:
+        return f"LLM 调用超时（{c}）"
+    if kind == LLM_FAILURE_TRANSPORT:
+        return f"LLM 连接失败（{c}）"
+    return f"LLM 调用失败（{c}）"
+
+
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
     """后端连接参数。``api_key`` 刻意不进 ``__repr__``。"""

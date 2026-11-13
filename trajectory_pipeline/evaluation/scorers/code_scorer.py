@@ -57,7 +57,12 @@ from urllib.parse import urlsplit
 
 from trajectory_pipeline.assembler.schema import Sample
 from trajectory_pipeline.evaluation.scorers import rubric_version
-from trajectory_pipeline.llm.client import LLMClient
+from trajectory_pipeline.judgement_causes import (
+    CAUSE_DATA,
+    CAUSE_LLM,
+    CAUSE_NO_CLIENT,
+)
+from trajectory_pipeline.llm.client import LLMClient, describe_llm_failure
 from trajectory_pipeline.llm.schema_parse import extract_json_reporting, strip_think
 
 #: 疑点严重度。与 rubric 的「轻微 / 实质」一一对应，不另设刻度。
@@ -168,12 +173,21 @@ class D2Verdict:
     breaks: tuple[BreakFinding, ...] = ()
     points: tuple[ScreenPoint, ...] = ()
     reasons: tuple[str, ...] = ()
+    #: **缺判归因**（H-36）：``""`` = 已判出；``"data"`` = 数据本身判不出
+    #: （缺观察 / 无模型动作）；``"llm"`` = 裁判后端没答（超时 / 4xx /
+    #: 5xx / 正文空 / 预算耗尽 / 熔断）；``"no_client"`` = 压根没配后端。
+    #:
+    #: ⚠️ **为什么要有它**：``score=None`` 这一个信号回答不了「为什么」。
+    #: 2026-11-11 那批 578 次后端失败与 478 次老存档缺字段都落进同一个
+    #: ``quarantine`` 桶，报告上分不出来——而处置方向正好相反。
+    cause: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {"dimension": "D-2", "score": self.score, "kind": self.kind,
                 "breaks": [b.to_json() for b in self.breaks],
                 "points": [p.to_json() for p in self.points],
-                "reasons": list(self.reasons)}
+                "reasons": list(self.reasons),
+                "cause": self.cause}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -435,9 +449,21 @@ def _render_user(screen: D2Screen) -> str:
     return "\n".join(lines)
 
 
-def _parse_response(raw: str | None) -> tuple[dict[str, Any] | None, str]:
-    """从 LLM 原文抠 JSON。**入口已剥 think**（``schema_parse`` 内部）。"""
+def _parse_response(
+    raw: str | None, *, error_code: str = ""
+) -> tuple[dict[str, Any] | None, str]:
+    """从 LLM 原文抠 JSON。**入口已剥 think**（``schema_parse`` 内部）。
+
+    Args:
+        raw: 后端原文；``None`` / 空串 = 没答出。
+        error_code: :attr:`LLMClient.last_call_error`——**没它就分不清
+            「后端挂了」与「后端答了但格式不对」**。2026-11-11 那批 578 次
+            失败全被压成一句「LLM 返回空」，事后没人说得清是哪一类。
+    """
     if not raw:
+        if error_code:
+            # 有错误码 ⇒ 说清是哪一类失败（超时 / 4xx / 5xx / 预算 / 熔断）。
+            return None, describe_llm_failure(error_code)
         return None, "LLM 返回空"
     data, _repairs = extract_json_reporting(raw)
     if data is None:
@@ -577,7 +603,10 @@ def score_d2(
     """
     screen = screen_d2(sample)
     if screen.kind == "undetermined":
-        return D2Verdict(None, "undetermined", (), (), screen.reasons)
+        # 数据侧缺事实（缺观察 / 无模型动作）⇒ 与后端无关。
+        return D2Verdict(
+            None, "undetermined", (), (), screen.reasons, CAUSE_DATA,
+        )
 
     if llm_client is None:
         return D2Verdict(
@@ -585,14 +614,19 @@ def score_d2(
             ("未提供 LLM client（TRAJECTORY_LLM_* 未配置，或被 --no-llm "
              "关掉）——D-2 的语义判读缺能力，本条不出分；这是 fail-closed，"
              "不是「判不了」（与 D-3 / D-9 的空跑纪律同款）",),
+            CAUSE_NO_CLIENT,
         )
 
     raw = llm_client.chat(system_prompt or D2_SYSTEM_PROMPT, _render_user(screen))
-    data, why = _parse_response(raw)
+    # ⚠️ **错误码必须透传进 reason**（H-36）：`chat()` 只回原文，
+    # 失败原因在 `last_call_error` 里——不取就只剩一句「LLM 返回空」。
+    error_code = str(getattr(llm_client, "last_call_error", "") or "")
+    data, why = _parse_response(raw, error_code=error_code)
     if data is None:
         return D2Verdict(
             None, "undetermined", (), screen.points,
             (f"LLM 未判（{why}）——不猜，本条不出分",),
+            CAUSE_LLM,
         )
 
     breaks, why = _parse_judgement(data, screen)
@@ -600,6 +634,7 @@ def score_d2(
         return D2Verdict(
             None, "undetermined", (), screen.points,
             (f"LLM 输出不合契约（{why}）——不猜，本条不出分",),
+            CAUSE_LLM,
         )
 
     score = _score_of(breaks)
@@ -610,7 +645,9 @@ def score_d2(
         )
     else:
         reasons = ("0 处断裂：动作链全程连贯——rubric §D-2 锚点 5",)
-    return D2Verdict(score, "scored", tuple(breaks), screen.points, reasons)
+    return D2Verdict(
+        score, "scored", tuple(breaks), screen.points, reasons, "",
+    )
 
 
 __all__ = [

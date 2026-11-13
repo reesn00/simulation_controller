@@ -77,7 +77,7 @@ class Test整批透传:
                             lambda p2, root: _fake_sample())
         seen = {}
 
-        def fake_score_one(unit, *, llm_client=None):
+        def fake_score_one(unit, *, llm_client=None, **kwargs):
             seen["client"] = llm_client
             return [{"dimension": d, "score": 5, "is_veto": False,
                      "reasons": []} for d in ("d2", "d4", "d5", "d6")]
@@ -96,7 +96,7 @@ class TestCLI建客户端:
                             lambda p2, root: _fake_sample())
         seen = {}
 
-        def fake_score_one(unit, *, llm_client=None):
+        def fake_score_one(unit, *, llm_client=None, **kwargs):
             seen["client"] = llm_client
             return [{"dimension": d, "score": 5, "is_veto": False,
                      "reasons": []} for d in ("d2", "d4", "d5", "d6")]

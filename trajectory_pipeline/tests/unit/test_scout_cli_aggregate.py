@@ -93,7 +93,11 @@ class TestAggregateCliBehavior:
         assert out_path.read_text(encoding="utf-8") == ""
         stats_path = tmp_path / "trajectory_stats.json"
         stats = json.loads(stats_path.read_text(encoding="utf-8"))
-        assert stats == {"scored": 0, "undetermined": 0, "not_run": 0}
+        assert stats == {
+            "scored": 0, "undetermined": 0, "not_run": 0,
+            # H-36:undetermined 的两栏再分(数据判不出 / LLM 没答)
+            "quarantine_data": 0, "quarantine_llm": 0,
+        }
 
     def test_一条正样本端到端跑通(self, tmp_path: Path, capsys):
         # 一条 positive bucket unit → 一条 trajectory (scored)

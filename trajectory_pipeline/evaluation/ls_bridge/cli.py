@@ -291,6 +291,8 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
         print(f"[refresh] 差异字段分布: {top}")
     for sid in plan.skipped_annotated[:10]:
         print(f"  skipped(有人工标注，未验过 PATCH 是否影响标注): {sid}")
+    for sid in plan.skipped_untrusted[:10]:
+        print(f"  skipped(裁判后端没答 ⇒ 本批判分不可信，不拿不可信判分盖旧卡): {sid}")
     for sid, why in plan.failed[:10]:
         print(f"  failed: {sid} — {why}")
     for item in plan.items[:10]:

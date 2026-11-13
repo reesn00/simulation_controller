@@ -8,12 +8,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
 from typing import Any
 
 from trajectory_pipeline.evaluation.judge_backend import judge_client_from_env
-from trajectory_pipeline.evaluation.scout.io import run_scout
+from trajectory_pipeline.evaluation.scout.io import (
+    BATCH_META_FILE,
+    UNIT_COUNTER_KEYS,
+    run_scout,
+)
 from trajectory_pipeline.llm.client import LLMClient, LLMUnavailable, dump_for_debug
 
 
@@ -34,21 +39,61 @@ def _stats_line(stats: dict[str, int]) -> str:
     qua = stats.get("quarantine", 0)
     skp = stats.get("skip", 0)
     mis = stats.get("missing_source", 0)
-    return (f"pos={pos}  neg={neg}  quarantine={qua}  "
+    line = (f"pos={pos}  neg={neg}  quarantine={qua}  "
             f"skip={skp}  missing_source={mis}")
+    # ⚠️ H-36：quarantine **分栏**——「数据判不出」与「LLM 没答」分开报。
+    # 两者处置方向相反（补数据 vs 修后端），混成一个数就等于把「后端挂了」
+    # 读成「素材差」（2026-11-11：578 次后端失败与 478 次缺字段同桶）。
+    if "quarantine_data" in stats or "quarantine_llm" in stats:
+        line += (f"  [quarantine 分栏: 数据判不出={stats.get('quarantine_data', 0)}"
+                 f"  LLM 没答={stats.get('quarantine_llm', 0)}]")
+    return line
+
+
+def _unit_sum(stats: dict[str, int]) -> int:
+    """单元计数之和（= 输入 P2 样本数）。
+
+    ⚠️ **只加 :data:`UNIT_COUNTER_KEYS`**：``sum(stats.values())`` 在加了
+    分栏计数之后会把 quarantine 数两遍——分母错了，「每条都有归属」这条
+    不变式就假了。
+    """
+    return sum(int(stats.get(k, 0)) for k in UNIT_COUNTER_KEYS)
+
+
+def _read_batch_meta(out_dir: pathlib.Path) -> dict[str, Any]:
+    """读批次元信息（:data:`BATCH_META_FILE`）；读不到就空 dict。"""
+    path = out_dir / BATCH_META_FILE
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _dry_run(p2_root: pathlib.Path, *,
-             llm_client: LLMClient | None = None) -> int:
+             llm_client: LLMClient | None = None,
+             llm_failure_threshold: int | None = None) -> int:
     from trajectory_pipeline.evaluation.scout.io import (
-        list_p2_samples, _resolve_sample, _score_one, _status_of, _units_of,
+        list_p2_samples, _resolve_sample, _score_one, _status_of, _unit_cause,
+        _units_of, _failure_threshold_of,
     )
     from trajectory_pipeline.evaluation.scout.policy import classify, tags_for
     p2s = list_p2_samples(p2_root)
     counters: dict[str, int] = {
         "positive": 0, "negative": 0, "quarantine": 0, "skip": 0,
         "units": 0,
+        # H-36：quarantine 两栏
+        "quarantine_data": 0, "quarantine_llm": 0,
     }
+    # ⚠️ **dry-run 也带熔断**（H-36）：dry-run 会**真发请求**——
+    # 后端挂了就等于对着死端点发几百次。预演存在的意义是「跑之前先看
+    # 一眼」，不是「替真跑把失败重演一遍」。
+    threshold = _failure_threshold_of(llm_client, llm_failure_threshold)
+    streak = 0
+    circuit_open = False
+    circuit_reason = ""
     for p2 in p2s:
         sample = _resolve_sample(p2, p2_root)
         if sample is None:
@@ -58,7 +103,25 @@ def _dry_run(p2_root: pathlib.Path, *,
         units = _units_of(sample)
         counters["units"] += len(units)
         for _unit_id, unit, _outcome, _site_index in units:
-            scores = _score_one(unit, llm_client=llm_client)
+            if circuit_open:
+                # 熔断已开 ⇒ 不再发请求，D-2 直接合成「后端没答」。
+                scores = _score_one(unit, llm_client=None,
+                                    d2_circuit_reason=circuit_reason)
+            else:
+                scores = _score_one(unit, llm_client=llm_client)
+                d2 = next((s for s in scores
+                           if s.get("dimension") == "d2"), None)
+                d2_cause = str((d2 or {}).get("cause") or "")
+                if d2_cause == "llm":
+                    streak += 1
+                    if streak >= threshold:
+                        circuit_open = True
+                        circuit_reason = (
+                            f"LLM 连续 {streak} 次调用失败"
+                            f"——本批判分不可信，已停止 D-2 调用"
+                        )
+                elif d2_cause == "":
+                    streak = 0
             status = _status_of(scores)
             rec: dict[str, Any] = {
                 "sample_id": str(getattr(sample, "sample_id", "") or ""),
@@ -74,6 +137,9 @@ def _dry_run(p2_root: pathlib.Path, *,
                 counters["skip"] += 1
             elif kind == "quarantine":
                 counters["quarantine"] += 1
+                cause = _unit_cause(scores)
+                counters["quarantine_llm" if cause == "llm"
+                          else "quarantine_data"] += 1
             elif kind == "negative":
                 rec["tags"] = list(tags_for(rec))  # type: ignore[arg-type]
                 counters["negative"] += 1
@@ -81,6 +147,12 @@ def _dry_run(p2_root: pathlib.Path, *,
                 counters["positive"] += 1
     print(f"[dry-run] 输入 {len(p2s)} 条 P2 样本（{counters['units']} 个站点单元）")
     print(f"[dry-run] {_stats_line(counters)}")
+    if circuit_open:
+        print(f"⚠️⚠️ [dry-run] 本批判分不可信（LLM 熔断）：{circuit_reason}",
+              file=sys.stderr)
+        print("   ⇒ dry-run 已经真发了请求：后端此刻不可用，别直接开真跑。",
+              file=sys.stderr)
+        return 1
     return 0
 
 
@@ -199,6 +271,13 @@ def main(argv: list[str] | None = None) -> int:
              "fail-closed 落 undetermined。用于离线跑；不传则按 "
              "TRAJECTORY_LLM_* 自动建。",
     )
+    run_p.add_argument(
+        "--llm-failure-threshold", type=int, default=None,
+        help="批次级熔断阈值：连续这么多次 LLM 调用失败就停本批 D-2 调用"
+             "并报「本批判分不可信」（H-36）。不传 = 取 "
+             "TRAJECTORY_LLM_CIRCUIT_THRESHOLD（缺省 3）。"
+             "**长批次建议调大**——误停一次的代价是整批重跑。",
+    )
 
     agg_p = sub.add_parser(
         "aggregate",
@@ -281,13 +360,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"LLM 裁判后端：{dump_for_debug(llm_client.cfg)}", file=sys.stderr)
 
     if args.dry_run:
-        return _dry_run(p2_root, llm_client=llm_client)
+        return _dry_run(p2_root, llm_client=llm_client,
+                        llm_failure_threshold=args.llm_failure_threshold)
 
     stats = run_scout(p2_root, out_dir, mediabrowse_dir=mb_dir,
-                      llm_client=llm_client)
+                      llm_client=llm_client,
+                      llm_failure_threshold=args.llm_failure_threshold)
     print(f"-> 已写 {out_dir}/{{positive,negative,quarantine,scout}}.jsonl")
     print(f"   {_stats_line(stats)}")
-    print(f"   sum={sum(stats.values())}  (== 输入 P2 样本数)")
+    print(f"   sum={_unit_sum(stats)}  (== 输入 P2 样本数)")
+
+    # ⚠️ **熔断 ⇒ 显式报「本批判分不可信」并退 1**（H-36）。
+    # 静默退化成 quarantine 是 2026-11-11 那批的真教训：838/919 落
+    # quarantine、退出码 0、报表上看起来只是一次正常的运行。
+    meta = _read_batch_meta(out_dir)
+    if stats.get("llm_circuit_open") or meta.get("llm_circuit_open"):
+        reason = str(meta.get("circuit_reason") or "（原因未记录）")
+        print("", file=sys.stderr)
+        print(f"⚠️⚠️ 本批判分不可信（LLM 熔断）：{reason}", file=sys.stderr)
+        print("   ⇒ 这批 quarantine 里「LLM 没答」那部分**不是素材问题**，"
+              "不能当缺判数据用，也不该推 LS（上传侧按归因过滤）。",
+              file=sys.stderr)
+        print(f"   ⇒ 熔断前判出来的单元仍有效；查后端（TRAJECTORY_LLM_*）"
+              f"后重跑。阈值：连续 {stats.get('llm_failure_total', 0)} 次失败"
+              f"（最长连续 {meta.get('llm_failure_streak_max', '?')} 次）。",
+              file=sys.stderr)
+        return 1
     return 0
 
 

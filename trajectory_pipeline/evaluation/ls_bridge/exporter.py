@@ -49,6 +49,7 @@ from trajectory_pipeline.evaluation.scout.types import (
     ScoutRecord,
     TrajectoryRecord,
 )
+from trajectory_pipeline.judgement_causes import llm_unanswered as _llm_unanswered
 from trajectory_pipeline.projection import (
     projection_problems,
     tool_declaration_problems,
@@ -85,6 +86,17 @@ def _dimension_text(dim: str) -> str:
     """
     label = DIMENSION_LABELS.get(str(dim), "")
     return f"{dim} {label}" if label else str(dim)
+
+
+def llm_unanswered(record: Mapping[str, Any]) -> bool:
+    """这条记录是不是「**裁判后端没答**」造成的缺判（H-36）。
+
+    ⚠️ **实现在 :mod:`trajectory_pipeline.judgement_causes`**（顶层，
+    跨层地基）：归因词表与判定函数由**评分器产出、scout 汇总、
+    ls_bridge 闸门三处共用**——这里只是**转出一层**给包内调用点用
+    （免得每处都写全路径），逻辑不在这里改。
+    """
+    return _llm_unanswered(record)
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +707,17 @@ def export_batch(
 
     for bucket, record in records:
         tid = str(record.get("trajectory_id", ""))
+        # ⚠️ **H-36：归因「LLM 没答」的缺判不进上传计划**——
+        # 那不是素材缺判，是裁判后端没答。推上去只会往人工队列里塞一批
+        # 看上去「素材差」的假缺判（2026-11-11：578 条）。
+        if llm_unanswered(record):
+            plan.skipped.append(
+                (tid, "裁判后端没答 ⇒ 本批判分不可信，不进人工队列"),
+            )
+            log.warning(
+                "export_batch(trajectory): %s 因裁判后端没答被跳过", tid,
+            )
+            continue
         try:
             task, prediction, hits = export_trajectory_one(
                 record,
@@ -751,6 +774,12 @@ def _export_batch_legacy_unit(
 
     for bucket, record in records:
         sample_id = str(record.get("sample_id", ""))
+        # ⚠️ H-36：同 trajectory 主路径——「后端没答」的缺判不进人工队列。
+        if llm_unanswered(record):
+            plan.skipped.append(
+                (sample_id, "裁判后端没答 ⇒ 本批判分不可信，不进人工队列"),
+            )
+            continue
         task, prediction, hits = export_one(
             record,
             bucket,
