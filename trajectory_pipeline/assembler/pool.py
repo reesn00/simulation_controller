@@ -374,6 +374,9 @@ def _quarantine_offroster(
 
     Returns:
         :class:`StaleSweep`——留下的份数 + 被移走的 id 清单 + 读不出面的 id。
+        ⚠️ **「份」是 id 口径**（``views/`` 一个 id = 3 个文件）⇒
+        **文件数另记**在 :attr:`StaleSweep.kept_files` / :attr:`StaleSweep.moved_files`
+        （同一个词两个分母 ⇒ 读者一对就以为对不上）。
     """
     d = Path(delivery_dir)
     if not d.is_dir():
