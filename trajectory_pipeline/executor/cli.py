@@ -3529,6 +3529,8 @@ def cmd_build(args: argparse.Namespace) -> int:
     # 旧面默认**不重渲染**（owner 裁定 2026-11-10）：旧面是只读存量，
     # 清过的 legacy 池不该自己长回来。要重建旧批次显式加 --include-legacy。
     include_legacy = bool(getattr(args, "include_legacy", False))
+    # 精炼旁挂（方案 25）：``None`` = 不做精炼（默认，行为与今天逐字一致）。
+    refined_dir = getattr(args, "refined_dir", None)
 
     if stage in ("p2", "all"):
         picked = [path.name for path, _reviewed in select_archives(root)]
@@ -3537,7 +3539,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                                 archive_filter=picked,
                                 era_filter=era_filter,
                                 include_legacy=include_legacy,
-                                prune_stale=True)
+                                prune_stale=True,
+                                refined_dir=refined_dir)
         print(f"P1 → P2：{len(rep.archives)} 份存档，"
               f"切出 {rep.total_samples} 条样本，写出 {rep.total_written} 条")
         degraded = sum(a.degraded for a in rep.archives)
@@ -3675,12 +3678,15 @@ def cmd_task_view(args: argparse.Namespace) -> int:
         看得见**，否则批次看起来只是少了几条。
     """
     from trajectory_pipeline.assembler import task_view as tv
+    from trajectory_pipeline.common import refine_sidecar
     from trajectory_pipeline.executor.archive import DEFAULT_ROOT
 
     root = Path(args.out) if args.out else DEFAULT_ROOT
     overwrite = bool(args.overwrite)
     # 旧面默认**不重渲染**（owner 裁定 2026-11-10）——同 cmd_build。
     include_legacy = bool(getattr(args, "include_legacy", False))
+    # 精炼旁挂（方案 25）：``None`` = 不做精炼（默认，行为与今天逐字一致）。
+    refined_dir = getattr(args, "refined_dir", None)
     if args.all:
         # 整批：**名单由 select_archives 定**（复核档优先）。直接 glob 会让
         # 同一条 run 出两份 T 视图，其中复核档那份的 run_id 被派生成
@@ -3694,6 +3700,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
             ),
             include_legacy=include_legacy,
             prune_stale=True,
+            refined_dir=refined_dir,
         )
         # 跳过原因归组打印（与 cmd_build 的 P3 段同款纪律——
         # 二次跑会跳过 N 条，逐条印是噪声）。
@@ -3735,6 +3742,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
             rep = tv.build_task_view(
                 archive, root=root, overwrite=overwrite, source_archive=p.name,
                 include_legacy=include_legacy,
+                refined=refine_sidecar.load_index(refined_dir, p.name),
             )
             if rep.written:
                 print(f"  ✓ {rep.trajectory_id} → {p.name}", flush=True)
@@ -3750,6 +3758,234 @@ def cmd_task_view(args: argparse.Namespace) -> int:
     # 既没传 --p1 也没传 --all：必须二选一
     print("error: 必须传 --p1 <file>... 或 --all", flush=True)
     return 2
+
+
+def cmd_refine(args: argparse.Namespace) -> int:
+    """P1 → **精炼旁挂**。**要 LLM 后端**（``TRAJECTORY_LLM_*``），但不开浏览器。
+
+    这一步是**离线加工**：读盘上的 P1 存档，让模型挑正文里该保留的行，
+    结果落在旁挂（``output/pipeline/refined/<archive>.refined.json``）。
+    **P1 一个字不动**——它是取证态，闸门与评分器读的就是它。
+
+    为什么需要它
+    ------------
+    训练视图只有 320 字（方案 23 R1-1），而采集时 agent 看到的是 4000 字
+    全文 ⇒ **训练样本里的动作在训练视图里推不出来**（「点了一个观察里
+    没有的东西」）。规则裁剪按相关度取前 320 字，于是「取前 320 字」
+    这件事本身变成了训练目标的一部分。精炼把它换成「模型选该留的行」，
+    且**只可能漏不可能造**：模型只报行号，文本由渲染层从 P1 原文重建。
+
+    三条口径
+    --------
+    - **不选就没有**：候选行本来就在预算内 ⇒ 不发请求（记 ``not_needed``）。
+    - **失败即回退**：解析不出 / 行号越界 / 动作目标没保住 ⇒ 整条作废，
+      渲染层走规则裁剪（**与今天逐字一致**，零回归）。
+    - **旁挂是派生物**：重跑、换模型、整批丢弃都不影响证据链。
+
+    批次预算
+    --------
+    ``--max-calls`` 是**整批**的发请求上限（默认 200）。超了就停，
+    **剩下的档案不精炼**（走规则裁剪）——并且**必须印出来**：
+    静默少一半是本仓库最贵的那类 bug（报表看不出异常）。
+
+    Returns:
+        0 = 跑完；2 = **没配后端**（不静默跳过——那样会让人以为
+        「精炼过了但效果不好」，而真相是压根没跑）。
+    """
+    from trajectory_pipeline.common import refine_sidecar
+    from trajectory_pipeline.refine import reader as refine_reader
+    from trajectory_pipeline.refine import refiner as refine_refiner
+    from trajectory_pipeline.refine.prompt import REFINE_PROMPT_VERSION
+    from trajectory_pipeline.storage import refined_dir as storage_refined_dir
+
+    root = Path(args.out) if args.out else DEFAULT_ROOT
+    out_dir = (
+        Path(args.refined_dir) if args.refined_dir
+        else storage_refined_dir(root)
+    )
+
+    if args.p1:
+        files = [Path(p) for p in args.p1]
+    else:
+        # 整批：**名单由 select_archives 定**（复核档优先）——同
+        # cmd_build / cmd_task-view 的口径，别自己 glob。
+        files = [p for p, _reviewed in select_archives(root)]
+    if args.limit:
+        files = files[: args.limit]
+    if not files:
+        print(f"{root} 下没有 P1 存档")
+        return 0
+
+    # ── 计划（不花钱的部分先算出来）──────────────────────────────
+    plans: list[tuple[Path, dict[str, Any], list[Any]]] = []
+    would_call = 0
+    for path in files:
+        try:
+            archive = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"[skip] {path.name}: 读档失败 {type(exc).__name__}: {exc}")
+            continue
+        if not isinstance(archive, dict):
+            print(f"[skip] {path.name}: 不是 JSON 对象")
+            continue
+        specs = refine_reader.iter_observations(archive)
+        plans.append((path, archive, specs))
+        # ⚠️ **按正文键去重**——真跑的时候同一份正文只发一次请求
+        # （正文一样 ⇒ 精炼结果一样）。计划阶段**必须按同一口径**算：
+        # 之前这里逐条算，而打印的字写着「正文键去重后逐份算的」——
+        # 实测 35 vs 实际 24，**多报 45%**。而这个数是运营方用来估
+        # `--max-calls` 的（估大了 ⇒ 预算不够 ⇒ 一半档案被丢弃）。
+        #
+        # ⚠️ 去重范围是**每份档案内部**：真跑时旁挂也是**每份一份**
+        # （同一份正文出现在两份档案里 ⇒ 两边各发一次，各存一条）。
+        seen_bodies: set[str] = set()
+        for spec in specs:
+            body = spec.body
+            key = refine_sidecar.body_key(body)
+            if key in seen_bodies:
+                continue
+            if refine_refiner.needs_refine(body, _refine_limit(spec)):
+                seen_bodies.add(key)
+                would_call += 1
+    print(f"精炼计划：{len(plans)} 份存档，"
+          f"约 {would_call} 次 LLM 请求"
+          f"（正文键去重后逐份算的）")
+    print(f"  旁挂落点：{out_dir}")
+    if args.dry_run:
+        print("  --dry-run：不发请求、不写盘")
+        return 0
+
+    # ── 后端（没有就是没有，不猜）────────────────────────────────
+    try:
+        from trajectory_pipeline.llm.client import LLMClient, LLMConfig
+        cfg = LLMConfig.from_env()
+    except Exception as exc:                     # 未配齐或配置不合法
+        print(f"[FAIL] LLM 后端不可用：{type(exc).__name__}: {exc}")
+        print("       精炼需要 TRAJECTORY_LLM_BASE_URL / _MODEL / _API_KEY。")
+        return 2
+    breaker = _make_circuit_breaker()
+    client = LLMClient(cfg, breaker=breaker)
+
+    # ⚠️ **预算不够的失败是「静默」的**：请求成功、正文为空
+    # （``finish_reason=length`` + ``content=null``），症状像「后端坏了」。
+    # 精炼层会**换大预算重试一次**，但仍要在这里**说一次**——
+    # 一次都没说，运营方会以为「精炼效果不好」，而真相是压根没拿到正文。
+    if int(getattr(cfg, "max_tokens", 0) or 0) < refine_refiner.RECOMMENDED_MAX_TOKENS:
+        print(f"[提示] TRAJECTORY_LLM_MAX_TOKENS={cfg.max_tokens}："
+              f"实测 {refine_refiner.RECOMMENDED_MAX_TOKENS} 才够"
+              f"（推理模型的思考与正文共用这一个预算，8192 会被吃光 ⇒ "
+              f"finish_reason=length + 正文为空）。"
+              f"预算用尽的条目会自动换大预算重试一次，"
+              f"但仍建议显式设 {refine_refiner.RECOMMENDED_MAX_TOKENS}。")
+
+    max_calls = int(getattr(args, "max_calls", 0) or 0)
+    calls_used = 0
+    written = 0
+    skipped = 0
+    discarded = 0
+    retried = 0
+    budget_hit = False
+    tally: Counter = Counter()
+
+    for path, archive, specs in plans:
+        title = str(archive.get("title") or "")
+        focus = (title,) if title else ()
+        entries: dict[str, dict[str, Any]] = {}
+        local: Counter = Counter()
+        for spec in specs:
+            body = spec.body
+            key = refine_sidecar.body_key(body)
+            if key in entries:
+                # 同一份正文在本档里出现多次 ⇒ 精炼结果一样 ⇒ 只做一次。
+                continue
+            limit = _refine_limit(spec)
+            if refine_refiner.needs_refine(body, limit):
+                if max_calls and calls_used >= max_calls:
+                    budget_hit = True
+                    break
+                outcome = refine_refiner.refine_body(
+                    client, body,
+                    focus=focus, keep=spec.keep,
+                    url=str(spec.observation.get("url") or ""),
+                    title=str(spec.observation.get("page_title") or ""),
+                    limit=limit,
+                )
+                calls_used += 1
+            else:
+                # 规则层够用 ⇒ 不发请求（也不占预算）。
+                outcome = refine_refiner.refine_body(
+                    client, body, focus=focus, keep=spec.keep, limit=limit,
+                )
+            local[outcome.source] += 1
+            entries[key] = {
+                "body_key": key,
+                "source": outcome.source,
+                "kept": list(outcome.lines),
+                "dropped": outcome.dropped,
+                "candidates": outcome.candidates,
+                "error": outcome.error,
+                "call": dict(outcome.call),
+            }
+        if budget_hit:
+            # ⚠️ **这一份的条目一条都不落盘**（`continue` 掉了）——
+            # 所以**不能**把它们算进最终计数：报表说「成功 55」而盘上
+            # 只有 47 条，就是这条纪律被破了（「静默少一半是本仓库最贵
+            # 的那类 bug」）。单算一份，报出来。
+            print(f"[预算用尽] {path.name} 之后不再精炼"
+                  f"（--max-calls {max_calls}）："
+                  f"已算的 {sum(local.values())} 条**不落盘**，走规则裁剪")
+            skipped += 1
+            discarded += sum(local.values())
+            continue
+        tally.update(local)
+        retried += sum(
+            1 for e in entries.values()
+            if (e.get("call") or {}).get("retried")
+        )
+        payload = refine_sidecar.make_payload(
+            path.name, entries, prompt_version=REFINE_PROMPT_VERSION,
+        )
+        refine_sidecar.write_sidecar(
+            refine_sidecar.sidecar_path(out_dir, path.name), payload,
+        )
+        written += 1
+
+    print(f"精炼完成：{written} 份旁挂，{calls_used} 次 LLM 请求")
+    print(f"  落盘统计：成功 {tally['llm']} 条 / 规则层够用 "
+          f"{tally['not_needed']} 条 / 失败 {tally['failed']} 条")
+    if discarded:
+        print(f"  ⚠️ 另有 {discarded} 条**已算但没落盘**"
+              f"（批次预算用尽时那份档案整份丢弃）——不在上面的落盘统计里")
+    if retried:
+        print(f"  ↻ {retried} 条**预算用尽后换大预算重试**过"
+              f"（建议把 TRAJECTORY_LLM_MAX_TOKENS 设成 "
+              f"{refine_refiner.RECOMMENDED_MAX_TOKENS}）")
+    if tally["failed"]:
+        print("  ⚠️ 失败的那些**整条作废** ⇒ 渲染层走规则裁剪"
+              "（与没精炼时逐字一致），不是「用了一半」")
+    if budget_hit:
+        print(f"  ⚠️ 批次预算用尽（--max-calls {max_calls}）："
+              f"剩下的档案**没精炼**，走规则裁剪")
+    print(f"  → {out_dir}")
+    print("  下一步：build --stage p2 --refined-dir "
+          f"{out_dir} / task-view --refined-dir {out_dir}")
+    return 0
+
+
+def _refine_limit(spec: Any) -> int:
+    """这条观察的**训练态正文上限**（普通步 320 / 读步 2000）。
+
+    权威在 :mod:`trajectory_pipeline.assembler.observation_view`——
+    这里**转发**而不另写字面量（两份真源必然漂，而漂了不报错：
+    只是精炼按 320 裁、渲染按 2000 放）。
+    """
+    from trajectory_pipeline.assembler.observation_view import (
+        VIEW_BODY_CHARS,
+        VIEW_READ_BODY_CHARS,
+    )
+
+    read = str((spec.observation or {}).get("read") or "")
+    return VIEW_READ_BODY_CHARS if read == "snapshot" else VIEW_BODY_CHARS
 
 
 def _derived_products(root: Path, run_id: str) -> tuple[Path, ...]:
@@ -4846,6 +5082,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="只落这一代 rationale 口径的样本。**默认 all**——"
                          "P2 也是评估语料，默认不悄悄少数据；但 all 而两代"
                          "并存时会显式报「混批」。同口径批次用 pre_action")
+    bd.add_argument("--refined-dir", default=None,
+                    help="**精炼旁挂目录**（方案 25）。给了就按存档名读"
+                         "旁挂，用模型选出的行重建正文；不给 = 不做精炼"
+                         "（默认，行为与不做精炼时逐字一致）")
     bd.set_defaults(func=cmd_build)
 
     tv = sub.add_parser(
@@ -4875,7 +5115,28 @@ def build_parser() -> argparse.ArgumentParser:
     tv.add_argument("--no-backfill-from-filename",
                     dest="backfill_from_filename", action="store_false",
                     help="显式关闭过渡期回填（缺字段就 skipped，不静默派生）")
+    tv.add_argument("--refined-dir", default=None,
+                    help="**精炼旁挂目录**（方案 25）。给了就按存档名读"
+                         "旁挂，用模型选出的行重建正文；不给 = 不做精炼")
     tv.set_defaults(func=cmd_task_view)
+
+    rf = sub.add_parser(
+        "refine",
+        help="P1 → 精炼旁挂：让模型挑正文该留的行（**要 LLM 后端**，不开浏览器）",
+    )
+    rf.add_argument("--out", default=None, help="P1 存档目录")
+    rf.add_argument("--p1", nargs="+", default=None,
+                    help="指定一份或多份 P1 存档路径（可重跑某几条）")
+    rf.add_argument("--limit", type=int, default=0,
+                    help="只处理前 N 份存档；0 = 全部")
+    rf.add_argument("--refined-dir", default=None,
+                    help="旁挂落盘目录（默认 output/pipeline/refined/）")
+    rf.add_argument("--max-calls", type=int, default=200,
+                    help="**整批**最多发多少次 LLM 请求；0 = 不限。"
+                         "超了就停，剩下的档案走规则裁剪（并显式报出来）")
+    rf.add_argument("--dry-run", action="store_true",
+                    help="只算计划（几份存档、几次请求），不发请求、不写盘")
+    rf.set_defaults(func=cmd_refine)
 
     pg = sub.add_parser(
         "purge-run",

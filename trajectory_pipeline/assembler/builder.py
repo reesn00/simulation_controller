@@ -56,6 +56,7 @@ from trajectory_pipeline.assembler.schema import (
     ActionView,
     Sample,
 )
+from trajectory_pipeline.common import refine_sidecar
 
 #: 样本落盘根。**与 :data:`trajectory_pipeline.executor.archive.DEFAULT_ROOT`
 #: 同根**：所有产物收在 ``trajectory_pipeline/output/pipeline/``，与
@@ -221,7 +222,11 @@ def _observation_keeps(actions: Sequence[ActionView], count: int) -> list[tuple[
     return keeps
 
 
-def _sample_to_json(sample: Sample) -> dict[str, Any]:
+def _sample_to_json(
+    sample: Sample,
+    *,
+    refined: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
     """把 :class:`Sample` 序列化成可落盘 dict。
 
     训练态观察是 :func:`observation_view.render` 的产物——P1 全文元素
@@ -235,6 +240,10 @@ def _sample_to_json(sample: Sample) -> dict[str, Any]:
     - ``focus``：任务片名——正文摘要优先保留相关行；
     - ``keep``：**下一个可见动作的目标**——限量不许把它裁掉；
     - ``action_error``：本步动作的失败原因——与采集降级分列。
+
+    ``refined`` 是**精炼旁挂索引**（方案 25）：``{正文内容哈希: 保留的行}``。
+    有它时正文按模型选出的行重建（保真口径与规则裁剪同款，见
+    :func:`trajectory_pipeline.assembler.observation_view.render`）。
     """
     base = sample.to_json()
     observations = list(sample.observations)
@@ -249,6 +258,7 @@ def _sample_to_json(sample: Sample) -> dict[str, Any]:
         focuses=[focus] * len(observations),
         keeps=keeps,
         action_errors=errors,
+        refined=refined,
     )
     return base
 
@@ -259,6 +269,8 @@ def _sample_to_json(sample: Sample) -> dict[str, Any]:
 def _write_one(
     sample: Sample,
     target_dir: Path,
+    *,
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[bool, str | None]:
     """写一条样本到 ``target_dir / <sample_id>.json``。
 
@@ -270,7 +282,10 @@ def _write_one(
     target = target_dir / f"{sample_id}.json"
     tmp = target_dir / f"{sample_id}.json.tmp"
     try:
-        blob = json.dumps(_sample_to_json(sample), ensure_ascii=False, allow_nan=False)
+        blob = json.dumps(
+            _sample_to_json(sample, refined=refined),
+            ensure_ascii=False, allow_nan=False,
+        )
     except (TypeError, ValueError) as exc:
         return False, f"序列化失败：{type(exc).__name__}: {exc}"
     try:
@@ -383,6 +398,7 @@ def build_from_archive(
     overwrite: bool = False,
     era_filter: str = ERA_ALL,
     include_legacy: bool = False,
+    refined_dir: str | Path | None = None,
 ) -> ArchiveBuildResult:
     """把一份 P1 存档切成 N 条样本并落盘。
 
@@ -401,6 +417,10 @@ def build_from_archive(
             （owner 裁定 2026-11-10）：默认**不重渲染**——否则清过的
             legacy 池会自己长回来，而读的人只看到「又多了 N 份」。
             按需重建旧批次时显式传 True。
+        refined_dir: **精炼旁挂目录**（方案 25）。``None`` = 不做精炼
+            （默认，行为与今天逐字一致）；给了就按**存档名**读旁挂
+            （``<refined_dir>/<archive>.json``），读不到 = 这份没精炼过
+            ⇒ 这份走规则裁剪。
 
     Returns:
         单份存档的落盘结果。**异常只发生在档本身坏到切不出**（已
@@ -413,6 +433,9 @@ def build_from_archive(
     base_root = samples_dir(root).parent
 
     name = p.name
+    #: **精炼旁挂**（方案 25）：读不到就是没精炼过（旁挂是派生物，
+    #: 坏了就当没有）⇒ 这份走规则裁剪，行为与今天逐字一致。
+    refined = refine_sidecar.load_index(refined_dir, name)
     split = _split_one(p)
     samples = list(split.samples)
 
@@ -455,7 +478,7 @@ def build_from_archive(
             # 「没有真重建」。理由见 overwrite 默认值注释。
             skipped.append(s.sample_id)
             continue
-        ok, reason = _write_one(s, out_dir)
+        ok, reason = _write_one(s, out_dir, refined=refined)
         if not ok:
             assert reason is not None
             skipped.append(f"{s.sample_id} ({reason})")
@@ -513,6 +536,7 @@ def build_all(
     era_filter: str = ERA_ALL,
     include_legacy: bool = False,
     prune_stale: bool = False,
+    refined_dir: str | Path | None = None,
 ) -> BuildReport:
     """把一批 P1 存档全切全落。
 
@@ -539,6 +563,9 @@ def build_all(
             ⚠️ **默认关**：``archive_filter`` 收窄时「本轮名单」只是子集，
             拿它清点会把**别的批次**的样本当残留移走⇒ 只有**整批重建**
             （名单 = 全部存档）才该开。
+        refined_dir: **精炼旁挂目录**（方案 25）。``None`` = 不做精炼
+            （默认，行为与今天逐字一致）；给了就按**存档名**逐份读旁挂，
+            读不到 = 那份没精炼过 ⇒ 那份走规则裁剪。
 
     Returns:
         整批 :class:`BuildReport`。**单份 P1 切不出样本不打断整批**——
@@ -593,6 +620,7 @@ def build_all(
                 overwrite=overwrite,
                 era_filter=era_filter,
                 include_legacy=include_legacy,
+                refined_dir=refined_dir,
             )
         except P1ShapeError as exc:
             # 坏档：算 0 切出 0 写出、全部 skipped，让 :class:`BuildReport`

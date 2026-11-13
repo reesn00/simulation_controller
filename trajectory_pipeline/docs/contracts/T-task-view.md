@@ -124,12 +124,21 @@ video 标签 <n> 个，iframe <n> 个
 
 三条规则与 P3 一致：① 空观察渲染成 `（本步没有取到页面内容）`，不空串；② 带 `degraded` 时末尾追加 `[采集降级: …]`；带 `truncated` 时追加 `[内容不完整: …]`；带 `action_error`（P1 `steps[i].error`）时追加 `[本步动作无效: …]`——**与采集降级分列**（方案 23 R1-2）；③ T 从 P1 的**取证态全文**出发，自己跑一遍与 P2 同款的裁剪（`observation_view.render`，普通步 **320/10/4**、读步 **2000/50/50** + 下一步动作目标 `keep`），因为 T 不读 P2。
 
+观察带 `body_refined` 时追加 `[内容已精简: 保留 N 行]`（N 取 `body_refined_lines`）——与 P3 **逐字同款**，排在 `[采集降级: …]` 之后、`[内容不完整: …]` 之前（方案 25）。⚠️ 这一条**不能省**：正文被精简过这件事模型从文本里看不出来，不说破就是在训练侧教出来的幻觉。T 与 P3 是**两份实现、逐字同款**，由 `tests/contract/test_t_contract.py::TestRenderObservationSync` 盯着。
+
 **读步回执**（方案 23 R4-1）：`observation.read` 非空时排版切换成
 `[读取: 正文|可交互元素|链接]` + 只排版被读的那一块，**不排 counts**
 （读步的 `video_tag_count` / `iframe_count` 恒为 0，排出来是假计数）；
 空块排成「（空）」，与「没读」区分开。与 P3 的
 `views.render_observation` 是两份实现、逐字同款——`Test投影一致` 里有一条
 带读步的用例盯着。
+
+**精炼过的正文**（方案 25）：T 的正文也可以是**模型选行**裁出来的
+（模型只报行号，文本由 `observation_view.render` **从 P1 原文重建**，
+见 [P2-sample.md](P2-sample.md) 的「精炼分支」一节）。T **自己读旁挂**
+（`--refined-dir`），**不经过 P2**——与「T 不读 P2」那条纪律同款：
+T 是 P1 的另一份渲染，交接面是格式不是对象。T 与 P3 的
+`[内容已精简: 保留 N 行]` 标记**逐字同款**。
 
 ### 任务级 summary（末尾 assistant 消息）
 

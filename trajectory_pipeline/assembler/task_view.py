@@ -72,6 +72,7 @@ from trajectory_pipeline.assembler import (
     screen,
 )
 from trajectory_pipeline.sample_gate import sample_blocked_reason
+from trajectory_pipeline.common import refine_sidecar
 from trajectory_pipeline.common.rationale_text import strip_empty_history_lead_in
 #: 两段投影一致性口径挂在顶层（方案 23 R5-2 / O-5）：ls_bridge 是
 #: evaluation 层，契约禁止它 import assembler，而校验两边都要用。
@@ -307,6 +308,14 @@ def _render_observation_text(obs: Mapping[str, Any]) -> str:
     degraded = list(obs.get("degraded") or ())
     if degraded:
         parts.append(f"[采集降级: {'、'.join(str(d) for d in degraded)}]")
+    # **精炼留痕**（方案 25）：正文是模型选行裁出来的，不是「页面前 N 字」。
+    # 不说破的话，模型会把精简过的正文当成「页面就这么多内容」——
+    # 那是在训练侧教出来的幻觉。
+    # ⚠️ 与 ``views.render_observation`` **逐字同款**（O-5：
+    # 两段投影刻意不互相 import，字面一致靠契约测试盯着）。
+    if obs.get("body_refined"):
+        kept_lines = int(obs.get("body_refined_lines") or 0)
+        parts.append(f"[内容已精简: 保留 {kept_lines} 行]")
     trunc = obs.get("truncated") or {}
     if trunc.get("source") or trunc.get("view"):
         which: list[str] = []
@@ -324,6 +333,7 @@ def _render_observation(
     focus: Sequence[str] = (),
     keep: Sequence[str] = (),
     action_error: str = "",
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """P1 取证态 observation → 训练态文本。
 
@@ -336,13 +346,17 @@ def _render_observation(
     任务相关词、下一步动作目标、本步动作错误——T 读 P1，不经过 P2，
     所以这三样必须在这里再算一遍。
 
+    ``refined`` 是**精炼旁挂索引**（方案 25）：有它就用模型选出的行
+    重建正文（同一套保真口径，见
+    :func:`trajectory_pipeline.assembler.observation_view.render`）。
+
     空 obs 走 :func:`observation_view.render` 的 None 路径，输出
     ``degraded=["observation_missing"]`` 的占位 dict，再由
     ``_render_observation_text`` 渲染成 ``（本步没有取到页面内容）``——
     与 P3 第 8 条判断同款。
     """
     train_view = observation_view.render(
-        obs, focus=focus, keep=keep, action_error=action_error
+        obs, focus=focus, keep=keep, action_error=action_error, refined=refined,
     )
     return _render_observation_text(train_view)
 
@@ -386,6 +400,8 @@ class _TaskStep:
 
 def _screened_task_steps(
     archive: Mapping[str, Any],
+    *,
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[list[_TaskStep], screen.Screening]:
     """整条 run 的可见步 + 训练筛选（死循环剔出 / 重复标记）。
 
@@ -397,6 +413,11 @@ def _screened_task_steps(
     观察的 ``keep``（下一步动作目标）仍按**原始动作序列**算，不按筛选后
     的序列——否则筛一步会改写它前面那一步的观察文本，前后两次渲染
     （比较用 / 落盘用）就对不上了。
+
+    ``refined`` 是**精炼旁挂索引**（方案 25）。它会改观察文本 ⇒ 也会改
+    「相邻同动作 + 观察逐字相同」的判定 ⇒ **必须三处同款传进来**
+    （``messages`` / ``openai.messages`` / ``meta``），否则 meta 报的
+    「剔了哪几步」与消息里实际少掉的步对不上。
     """
     units = _flatten_units(archive)
     focus = (str(archive.get("title") or ""),) if archive.get("title") else ()
@@ -423,6 +444,7 @@ def _screened_task_steps(
                 focus=focus,
                 keep=_next_keep(actions, i),
                 action_error=errors[i] if i < len(errors) else "",
+                refined=refined,
             )
             staged.append(screen.Step(
                 step_index=gi,
@@ -654,7 +676,11 @@ def _closing_text(archive: Mapping[str, Any]) -> str | None:
 # ── messages 视图（通用形态） ──────────────────────────────────────
 
 
-def to_task_messages(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
+def to_task_messages(
+    archive: Mapping[str, Any],
+    *,
+    refined: Mapping[str, Sequence[str]] | None = None,
+) -> list[dict[str, Any]]:
     """通用 ``{role, content}`` 序列（per-Run 完整对话流）。
 
     按时间顺序拼：search 单元的 steps[] → 全部 site-N 单元的 steps[] →
@@ -668,6 +694,9 @@ def to_task_messages(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
     **训练筛选**：死循环步（相邻同动作 + 观察逐字相同）整步剔出，
     重复动作在 meta 里标记（方案 23 R3-1 / R3-2）；规则见
     :func:`_screened_task_steps`，两段投影共用同一份结果。
+
+    ``refined`` 是**精炼旁挂索引**（方案 25）——有它时观察正文按模型
+    选出的行重建。
     """
     msgs: list[dict[str, Any]] = []
 
@@ -680,7 +709,7 @@ def to_task_messages(archive: Mapping[str, Any]) -> list[dict[str, Any]]:
         msgs.append({"role": "user", "content": user})
     # 空 user_prompt 不发空消息（同 P3 第 4 条判断）。
 
-    steps, _screening = _screened_task_steps(archive)
+    steps, _screening = _screened_task_steps(archive, refined=refined)
     for step in steps:
         msgs.append({
             "role": "assistant",
@@ -709,6 +738,8 @@ def _surface_of(archive: Mapping[str, Any]) -> str:
 
 def to_task_openai_messages(
     archive: Mapping[str, Any],
+    *,
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """OpenAI function-calling 形态（per-Run）。
 
@@ -720,6 +751,9 @@ def to_task_openai_messages(
 
     本函数**只生成 messages 段**，不返回 tools；顶层 ``tools`` 由
     :func:`build_task_view` 按同一工具面单独取（2026-11-03 · Q-A1）。
+
+    ``refined`` 是**精炼旁挂索引**（方案 25）——与
+    :func:`to_task_messages` **同款传入**，两段投影才逐条一致（O-5）。
     """
     out: list[dict[str, Any]] = []
     system = _TASK_SYSTEM_PROMPT
@@ -730,7 +764,7 @@ def to_task_openai_messages(
     if user:
         out.append({"role": "user", "content": user})
 
-    steps, _screening = _screened_task_steps(archive)
+    steps, _screening = _screened_task_steps(archive, refined=refined)
     for seq, step in enumerate(steps):
         text = _rationale_text(step.rationale).strip() or None
         out.append({
@@ -967,7 +1001,10 @@ def _task_degraded_from(archive: Mapping[str, Any]) -> list[str]:
 
 
 def to_task_meta(
-    archive: Mapping[str, Any], *, source_archive: str = ""
+    archive: Mapping[str, Any],
+    *,
+    source_archive: str = "",
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """元数据（per-Run）。训练代码不看它，人工复核与批次筛选看它。
 
@@ -980,6 +1017,10 @@ def to_task_meta(
             ——archive dict 里没有自己的文件名，猜不出来；批量路径传
             ``path.name``，单文件路径传 ``p.name``，直接调本函数时为 ``""``
             （契约允许空串，「不知道」不冒充一个文件名）。
+        refined: **精炼旁挂索引**（方案 25）。必须与消息两段**同款传入**
+            ——它会改观察文本，因而改「相邻同动作 + 观察逐字相同」的判定；
+            不传同一份的话，meta 报的「剔了哪几步」与消息里实际少掉的步
+            对不上（报表与语料各说各话）。
     """
     task_id = str(archive.get("task_id") or "")
     run_id = str(archive.get("run_id") or "")
@@ -1098,7 +1139,7 @@ def to_task_meta(
     # 训练筛选的账（方案 23 R3-1 / R3-2）：与两段投影共用同一份筛选
     # 结果（:func:`_screened_task_steps`），所以 meta 报的「剔了哪几步」
     # 就是两段消息里实际少掉的步。
-    _, screening = _screened_task_steps(archive)
+    _, screening = _screened_task_steps(archive, refined=refined)
 
     return {
         "trajectory_id": trajectory_id,
@@ -1196,6 +1237,7 @@ def build_task_view(
     overwrite: bool = False,
     source_archive: str = "",
     include_legacy: bool = False,
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> TaskViewRenderResult:
     """把一份 P1 JSON dict 渲染成 T 视图 dict + 落盘到 storage。
 
@@ -1218,6 +1260,10 @@ def build_task_view(
         include_legacy: **旧面也渲染**（默认 False）。旧面是只读存量
             （owner 裁定 2026-11-10）：默认**不重渲染**——否则清过的
             legacy 池会自己长回来。按需重建旧批次时显式传 True。
+        refined: **精炼旁挂索引**（方案 25）——``{正文内容哈希: 保留的行}``。
+            有它时观察正文按模型选出的行重建（保真口径与规则裁剪同款）。
+            **三处同款传**（messages / openai.messages / meta），否则两段
+            投影与 meta 的训练筛选账会分叉。
 
     Returns:
         :class:`TaskViewRenderResult`——``written`` 1 表示落盘成功，
@@ -1270,8 +1316,8 @@ def build_task_view(
             not_produced=True,
         )
     target_root = pool.pool_root(storage_task_views_dir(root).parent, surface)
-    messages = to_task_messages(archive)
-    openai_msgs = to_task_openai_messages(archive)
+    messages = to_task_messages(archive, refined=refined)
+    openai_msgs = to_task_openai_messages(archive, refined=refined)
     # 工具声明与两段 messages 必须来自**同一个面**（Q-A1）：声明按面取，
     # 与 messages 里的真实调用参数逐条核对；面错配不许落盘。
     tools = task_tools(surface)
@@ -1286,7 +1332,7 @@ def build_task_view(
             written=0,
             skipped=("投影不一致: " + "；".join(problems[:3]),),
         )
-    meta = to_task_meta(archive, source_archive=source_archive)
+    meta = to_task_meta(archive, source_archive=source_archive, refined=refined)
 
     payload = {
         "trajectory_id": trajectory_id,
@@ -1366,6 +1412,7 @@ def build_all_task_views(
     backfill_from_filename: bool = True,
     include_legacy: bool = False,
     prune_stale: bool = False,
+    refined_dir: str | Path | None = None,
 ) -> TaskViewBatchReport:
     """读一整个 P1 目录，逐份渲染 T 视图并落盘。
 
@@ -1407,6 +1454,9 @@ def build_all_task_views(
             ⚠️ **默认关**：``archive_filter`` 收窄时「本轮名单」只是子集，
             拿它清点会把**别的批次**的视图当残留移走⇒ 只有**整批重建**
             （名单 = 全部存档）才该开。
+        refined_dir: **精炼旁挂目录**（方案 25）。``None`` = 不做精炼
+            （默认，行为与今天逐字一致）；给了就按存档名逐份读旁挂，
+            读不到 = 那份没精炼过 ⇒ 那份走规则裁剪。
 
     Returns:
         :class:`TaskViewBatchReport`——一次返回整批 ``TaskViewRenderResult``。
@@ -1476,6 +1526,7 @@ def build_all_task_views(
             overwrite=overwrite,
             source_archive=path.name,
             include_legacy=include_legacy,
+            refined=refine_sidecar.load_index(refined_dir, path.name),
         )
         results.append(res)
         total_written += res.written

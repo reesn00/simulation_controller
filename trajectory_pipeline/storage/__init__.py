@@ -34,6 +34,7 @@
 
     output/pipeline/views/<sample_id>_{messages,openai,meta}.json     # P3
     output/pipeline/task_views/<task_id>__<run_id>.json              # T（单文件三视图合一）
+    output/pipeline/refined/<task_id>__<run_id>.json                 # 精炼旁挂（派生物）
 
 T 是单文件——消息 / openai / meta 打包在同一 JSON 里，**主键形式
 ``<task_id>__<run_id>``**（与 P3 的 ``<task_id>__<run_id>__<unit>``
@@ -83,6 +84,13 @@ DEFAULT_VIEWS_DIRNAME = "views"
 #: 由 :func:`task_views_dir` 拼出绝对路径。
 DEFAULT_TASK_VIEWS_DIRNAME = "task_views"
 
+#: **LLM 精炼旁挂**的目录名。落在 ``output/pipeline/`` 下，与 P2/P3/T 同根。
+#:
+#: 旁挂是**派生物**：P1（证据）一个字不动，精炼结果另存一份，
+#: 换模型 / 重跑 / 整批丢弃都不影响证据链。路径权威在这里——
+#: 消费方（assembler / CLI）只调 :func:`refined_dir`，不自己拼字面量。
+DEFAULT_REFINED_DIRNAME = "refined"
+
 #: P1/P2/P3/T 的公共产物根（相对包根）。与
 #: :data:`trajectory_pipeline.executor.archive.DEFAULT_ROOT`、
 #: :data:`trajectory_pipeline.assembler.builder.DEFAULT_SAMPLES_PARENT`
@@ -124,11 +132,27 @@ def task_views_dir(root: str | Path | None = None) -> Path:
     return Path(root) / DEFAULT_TASK_VIEWS_DIRNAME
 
 
+def refined_dir(root: str | Path | None = None) -> Path:
+    """``refined/`` 目录的绝对路径——**LLM 精炼旁挂**的落点。
+
+    与 :func:`views_dir` / :func:`task_views_dir` 同根同纪律
+    （``parents[1]`` 的坑同前两处；不 import executor）。
+
+    旁挂是**派生物**而不是证据：P1 一个字不动，精炼结果落在自己的目录里，
+    可以重跑、可以换模型、可以整批丢弃而不影响证据链。
+    """
+    if root is None:
+        root = Path(__file__).resolve().parents[1] / "output" / DEFAULT_SAMPLES_PARENT
+    return Path(root) / DEFAULT_REFINED_DIRNAME
+
+
 __all__ = [
     "VIEW_NAMES",
     "DEFAULT_VIEWS_DIRNAME",
     "DEFAULT_TASK_VIEWS_DIRNAME",
+    "DEFAULT_REFINED_DIRNAME",
     "DEFAULT_SAMPLES_PARENT",
     "views_dir",
     "task_views_dir",
+    "refined_dir",
 ]

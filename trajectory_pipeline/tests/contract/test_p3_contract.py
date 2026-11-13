@@ -283,6 +283,13 @@ class Test契约文档不是摆设:
             "role",
             "content",
             "tool_call_id",
+            # 2026-11-13 方案 25：正文被**模型选行**精简过时要**说破**
+            # （回执标记 `[内容已精简: 保留 N 行]`）——不说破，模型会把
+            # 精简过的正文当成「页面就这么多内容」。
+            # ⚠️ `body_refined_dropped` **不在这里**：它只在 P2 契约里，
+            # P3 这一层不排它（排出来是模型用不上的账）。
+            "body_refined",
+            "body_refined_lines",
         ],
     )
     def test_代码有字段文档没写(self, doc_text, field):

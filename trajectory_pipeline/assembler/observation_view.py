@@ -6,8 +6,9 @@ P1 存的是**取证态**观察：正文全文、80 个交互元素、200 条链
 
     P1（取证）→ :func:`render` → P2 训练态
 
-六条硬规矩
+七条硬规矩
 ----------
+
 1. **裁剪必须留痕。** :func:`render` 返回的 ``limits`` 逐项写明裁了什么。
    没留痕的裁剪和没裁剪一样坏——读样本的人以为模型看到的是全量，
    于是把「模型漏掉了页面上有的信息」判成模型缺陷，而真相是 assembler
@@ -50,15 +51,39 @@ P1 存的是**取证态**观察：正文全文、80 个交互元素、200 条链
    同理，``action_error``（P1 ``steps[i].error``）要在回执里显式标成
    「本步动作无效」——它与「采集降级」是两件事：一个是动作白做，
    一个是这块信息没采到。训练侧分不清就会学错归因。
+
+7. **精炼是「换一种裁法」，不是「少裁一点」**（方案 25）。本模块**仍然
+   不调 LLM**——装配层是纯代码（``docs/01-架构总览.md`` 模块 5）。它只
+   接受一份**旁挂**（:mod:`trajectory_pipeline.common.refine_sidecar`：
+   ``{正文内容哈希: 保留的行}``），按那几行**从 P1 原文重建**正文。
+
+   三条硬保证：
+
+   - **只可能漏，不可能造**：重建的每一行都逐字来自原文。模型加不了
+     一个原文没有的词——这是「不让 LLM 写摘要」的全部理由。
+   - **对不上就回退**：保留的行不在原文里 ⇒ 整条精炼作废，走规则裁剪
+     （与今天逐字一致，零回归）。
+   - **预算仍归规则层**：模型只决定「哪些行相关」，多少字放得下仍由
+     本模块的硬顶决定（动作目标照旧无条件保留）。
+
+   精炼的结果**必须留痕**（``body_refined`` / ``body_refined_lines`` /
+   ``body_refined_dropped``）——不说破的话，读样本的人会把「精简过的
+   正文」当成「页面就这么多内容」。
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from trajectory_pipeline.assembler.schema import BODY_KEY, LEGACY_BODY_KEY
+from trajectory_pipeline.common import body_lines, refine_sidecar
+from trajectory_pipeline.common.body_lines import (
+    HOT_LIST_RE,
+    NAV_LINE_WORDS,
+    NOISE_LINE_RE,
+    TASK_KEYWORD_RE,
+)
 from trajectory_pipeline.common.elements import (
     ELEMENT_VOCAB_HTML_TAG,
     element_keys,
@@ -85,36 +110,13 @@ VIEW_READ_BODY_CHARS = 2000
 VIEW_READ_ELEMENTS = 50
 VIEW_READ_LINKS = 50
 
-#: 整行精确匹配就算噪声的站内导航词。**只认整行**——正文里出现「首页」
-#: 两个字不等于这一行是导航。
-NAV_LINE_WORDS = frozenset({
-    "首页", "首页", "图片", "新闻", "视频", "贴吧", "知道", "文库", "地图",
-    "更多", "登录", "注册", "登录/注册", "设置", "意见反馈", "帮助", "客服",
-    "关于我们", "联系我们", "隐私政策", "用户协议", "版权声明", "友情链接",
-    "广告服务", "招聘", "举报", "网站地图", "热搜", "排行榜", "上一页",
-    "下一页", "末页", "展开", "收起", "返回顶部", "下载客户端", "关注",
-    "收藏", "分享", "评论", "点赞", "发帖", "百度首页", "个人中心",
-})
-
-#: 页脚/备案/广告等噪声行。命中即整行丢弃——这些行在绝大多数页面上
-#: 是模板，与任务无关；**误伤正文的风险由「任务相关行优先」兜住**
-#: （含任务片名/播放关键词的行评分更高，先占预算）。
-NOISE_LINE_RE = re.compile(
-    r"ICP备|ICP证|网文|许可证|备案号|Copyright|©|版权所有|免责声明|友情链接|"
-    r"合作伙伴|关注我们|扫码|下载APP|客户端|用户协议|隐私政策|意见反馈|"
-    r"返回顶部|广告|推广|赞助|举报电话|举报邮箱"
-)
-
-#: 在线视频场景的「任务相关」信号词。命中即视为有用行，优先占正文预算。
-TASK_KEYWORD_RE = re.compile(
-    r"播放|在线观看|高清|正片|全集|主演|导演|类型|地区|年份|简介|剧情|片长|"
-    r"语言|评分|免费|会员|登录|订阅|预告|蓝光|完整版|在线|观看|第\s*\d+\s*集|"
-    r"HD|超清|片名|上映|演员|制片|国家|时长|集数|更新"
-)
-
-#: 热搜榜/排行编号行（``1 某条新闻``）。只在整行较短时丢弃——
-#: 长行更可能是正文里的编号列表。
-HOT_LIST_RE = re.compile(r"^\d{1,2}[.、\s]\s*\S")
+#: 噪声规则与相关度打分**搬到地基**（:mod:`trajectory_pipeline.common.
+#: body_lines`）——LLM 精炼（:mod:`trajectory_pipeline.refine`）要用**同一份**
+#: 规则构造候选行。两份实现漂了不报错，只是「给模型看的候选集」与
+#: 「渲染时剔掉的集」对不上，精炼结果里会多出本该剔掉的行。
+#:
+#: 上面四个名字**继续从本模块导出**（历史 import 路径不变），
+#: 值全部来自地基那份。
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,22 +176,16 @@ def _line_score(line: str, focus: Sequence[str], keep: Sequence[str]) -> int:
     - 2：播放/影片元数据关键词；
     - 1：正常长度的内容行；
     - 0：短行（多半是按钮/占位）。
+
+    ⚠️ 实现搬到地基（:func:`trajectory_pipeline.common.body_lines.
+    line_score`）——LLM 精炼用**同一份**打分口径。
     """
-    if any(k and k in line for k in keep):
-        return 4
-    if any(f and f in line for f in focus):
-        return 3
-    if TASK_KEYWORD_RE.search(line):
-        return 2
-    return 1 if len(line) >= 6 else 0
+    return body_lines.line_score(line, focus, keep)
 
 
 def _is_noise_line(line: str) -> bool:
-    if line in NAV_LINE_WORDS:
-        return True
-    if NOISE_LINE_RE.search(line):
-        return True
-    return bool(HOT_LIST_RE.match(line) and len(line) < 40)
+    """这一行是不是导航/页脚/广告噪声（实现见地基）。"""
+    return body_lines.is_noise_line(line)
 
 
 def _digest_body(
@@ -207,23 +203,24 @@ def _digest_body(
     规则：先剔噪声行与重复行；保住 ``keep`` 行（无条件、全文）；
     其余按相关度排序填入剩余预算，最后**按原顺序**拼回去——
     打乱顺序会让「页面从上到下」这个结构信号消失。
+
+    ⚠️ 候选行的构造（剔噪 + 去重）搬到地基
+    （:func:`trajectory_pipeline.common.body_lines.candidate_lines`），
+    **行为与搬迁前逐字一致**——搬迁只是换个地方住。
     """
     if not body.strip():
         return "", 0, False
     raw_lines = [ln.strip() for ln in body.splitlines()]
     non_empty = [ln for ln in raw_lines if ln]
-    kept: list[tuple[int, int, str]] = []
-    seen: set[str] = set()
-    for i, line in enumerate(raw_lines):
-        if not line or line in seen or _is_noise_line(line):
-            continue
-        seen.add(line)
-        kept.append((i, _line_score(line, focus, keep), line))
-
-    dropped = len(non_empty) - len(kept)
-    if not kept:
+    candidates = body_lines.candidate_lines(body)
+    dropped = len(non_empty) - len(candidates)
+    if not candidates:
         return "", dropped, False
 
+    kept: list[tuple[int, int, str]] = [
+        (i, _line_score(line, focus, keep), line)
+        for i, line in enumerate(candidates)
+    ]
     must = [t for t in kept if t[1] >= 4]
     rest = sorted((t for t in kept if t[1] < 4), key=lambda t: (-t[1], t[0]))
     chosen: list[tuple[int, str]] = [(i, line) for i, _, line in must]
@@ -247,6 +244,98 @@ def _digest_body(
     if len(text) > limit:
         truncated = True
     return text, dropped, truncated
+
+
+def _refined_pick(
+    raw_body: str,
+    refined: Mapping[str, Sequence[str]] | None,
+) -> tuple[str, ...]:
+    """按**正文内容哈希**在精炼索引里找这一条观察的保留行。
+
+    找不到 = 这一条没精炼过（或精炼的是**另一份**正文）⇒ 空元组 ⇒
+    走规则裁剪。
+
+    ⚠️ **不猜、不近似匹配**：正文不一样就是不一样。内容哈希是唯一的
+    定位方式（见 :mod:`trajectory_pipeline.common.refine_sidecar` 的
+    「键怎么选」——按步号索引要在 P2/T 两套坐标系之间维护映射）。
+    """
+    if not refined or not raw_body:
+        return ()
+    picked = refined.get(refine_sidecar.body_key(raw_body))
+    if not picked:
+        return ()
+    return tuple(str(x) for x in picked)
+
+
+def _rebuild_from_refined(
+    raw_body: str,
+    picked: Sequence[str],
+    *,
+    focus: Sequence[str],
+    keep: Sequence[str],
+    limit: int,
+) -> tuple[str, int, int, bool] | None:
+    """用模型选中的行**重建**正文。
+
+    Returns:
+        ``(正文, 保留行数, 丢掉行数, 是否触到字数上限)``；
+        ``None`` = 精炼不可用 ⇒ 调用方**回退到规则裁剪**。
+
+    三道关（任一不过就整条作废，**不「差不多地」用一半**）
+    ------------------------------------------------------
+    1. **逐行核对**：保留的每一行都必须**逐字**出现在原文里。
+       对不上 ⇒ 旁挂与正文不同源（改了 P1？换了正文？行号串了？）⇒
+       宁可回退规则裁剪，也不要把一份对不上的正文写进训练集。
+    2. **按原顺序重建**：模型可能乱序报行号；最终文本按**页面顺序**排
+       ——「从上到下」这个结构信号不能因为模型排版乱了就丢。
+    3. **硬预算**：重建后仍走一遍 :func:`_digest_body` 的填预算逻辑
+       （动作目标无条件保留，其余按相关度）。模型只决定「哪些行相关」，
+       **字数预算仍归规则层管**——两层分工不重叠。
+
+    ⚠️ **保真口径不放宽**：模型选的行里没有「下一步动作目标」那一行时，
+    渲染层**自己把目标行从原文补回来**——换了裁法不等于放松第 6 条
+    （「训练样本里不能出现『点了一个观察里没有的东西』」）。
+    正常流程下精炼层会先整条拦掉这种选择，但**渲染层是最后一道防线**，
+    不能靠上游守。
+
+    ⚠️ 这一层**只可能漏，不可能造**：最终文本的每一行都来自
+    ``raw_body``，模型加不了一个原文没有的词。
+    """
+    positions: dict[str, int] = {}
+    for i, raw in enumerate((raw_body or "").splitlines()):
+        line = raw.strip()
+        if line and line not in positions:
+            positions[line] = i
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for line in picked:
+        line = str(line).strip()
+        if not line or line in seen:
+            continue
+        if line not in positions:
+            return None                      # 第 1 关：逐字核对不过
+        seen.add(line)
+        ordered.append(line)
+    if not ordered:
+        return None
+    # 第 3 关的前置：**动作目标无条件保留**——模型选的行里没有目标那一行
+    # 时（正常流程下精炼层会整条拦掉，但渲染层**不能因此放松**第 6 条
+    # 保真口径），渲染层**自己把目标行补回来**。
+    # 取的是**候选行**里的 keep 命中项（与规则路径同一份口径：
+    # 规则路径里 keep 行也是从候选行里挑出来、无条件入选的）。
+    for line in body_lines.candidate_lines(raw_body):
+        if line in seen:
+            continue
+        if body_lines.line_score(line, focus, keep) >= 4:
+            seen.add(line)
+            ordered.append(line)
+    ordered.sort(key=lambda line: positions[line])
+    text, _noise, truncated = _digest_body(
+        "\n".join(ordered), focus=focus, keep=keep, limit=limit,
+    )
+    kept_lines = len(text.splitlines()) if text else 0
+    total = len(body_lines.candidate_lines(raw_body))
+    return text, kept_lines, max(total - kept_lines, 0), truncated
 
 
 def _lcs_len(a: str, b: str) -> int:
@@ -441,6 +530,8 @@ def _empty_view() -> dict[str, Any]:
     return {
         "url": "", "page_title": "", "body_text": "",
         "body_source": "missing", "body_chars": 0,
+        "body_refined": False, "body_refined_lines": 0,
+        "body_refined_dropped": 0,
         "truncated": {"source": False, "view": False},
         "degraded": ["observation_missing"],
         "interactive_elements": [], "links": [],
@@ -457,6 +548,7 @@ def render(
     focus: Sequence[str] = (),
     keep: Sequence[str] = (),
     action_error: str = "",
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """渲染一条训练态观察。
 
@@ -470,6 +562,13 @@ def render(
             见模块 docstring 第 6 条。
         action_error: 本步动作的失败原因（P1 ``steps[i].error``）。
             **不混进 ``degraded``**：那是「信息没采到」，这是「动作白做」。
+        refined: **精炼索引**（``{正文内容哈希: 保留的行}``，见
+            :mod:`trajectory_pipeline.common.refine_sidecar`）。有它就用
+            模型选出的行重建正文，没有就按规则裁剪。
+
+            ⚠️ **精炼是「换一种裁法」，不是「少裁一点」**：它与规则裁剪
+            走**同一个出口**（本函数），所以两者的保真口径（动作目标
+            必须留下、只可能漏不可能造）完全一致。
     """
     if not obs:
         out = _empty_view()
@@ -491,13 +590,35 @@ def render(
     link_limit = VIEW_READ_LINKS if read == "links" else VIEW_LINKS
 
     raw_body, body_source = _pick_body(obs)
+    #: **精炼留痕**（方案 25）。三个字段**不进 ``limits`` / ``truncated``**——
+    #: 那两个是「裁了多少」的账，精炼是「换了一种裁法」，混进去会破掉
+    #: ``limits`` 的 7 键契约，也会让 ``gates._truncated_flag`` 的语义
+    #: （上游截断 vs 本层触顶）变模糊。
+    body_refined = False
+    body_refined_lines = 0
+    body_refined_dropped = 0
     if read and read != "snapshot":
         body, body_lines_dropped, body_truncated = "", 0, False
         body_source = "missing"
     else:
-        body, body_lines_dropped, body_truncated = _digest_body(
-            raw_body, focus=focus, keep=keep, limit=body_limit
+        picked = _refined_pick(raw_body, refined)
+        rebuilt = (
+            _rebuild_from_refined(
+                raw_body, picked, focus=focus, keep=keep, limit=body_limit,
+            )
+            if picked else None
         )
+        if rebuilt is None:
+            # 没有精炼 / 精炼对不上 ⇒ **回退规则裁剪**（与今天逐字一致）。
+            body, body_lines_dropped, body_truncated = _digest_body(
+                raw_body, focus=focus, keep=keep, limit=body_limit
+            )
+        else:
+            body, body_refined_lines, body_refined_dropped, body_truncated = rebuilt
+            # 噪声/去重丢的行数照旧记（**另一笔账**，见
+            # :func:`trajectory_pipeline.common.body_lines.noise_dropped`）。
+            body_lines_dropped = body_lines.noise_dropped(raw_body)
+            body_refined = True
     elements = (
         list(obs.get("interactive_elements") or ())
         if read in ("", "interactive") else []
@@ -542,6 +663,14 @@ def render(
         #: 否则会把落在预览外的实体判成幻觉（那是没存，不是幻觉）。
         "body_source": body_source,
         "body_chars": len(body),
+        #: **精炼留痕**（2026-11-13 · 方案 25）：正文是模型选行裁出来的，
+        #: 不是「页面前 N 字」。``body_refined_lines`` = 最终正文里
+        #: 留下的行数，``body_refined_dropped`` = 原正文候选行里
+        #: **没进最终正文**的行数（模型丢的 + 硬预算裁的）。
+        #: 不说破的话，读样本的人会以为「模型看到的就是这些」。
+        "body_refined": body_refined,
+        "body_refined_lines": body_refined_lines,
+        "body_refined_dropped": body_refined_dropped,
         #: 上游截断（dom 层预算用尽）与本层裁剪分列，合在一起才是
         #: 「模型看到的东西不完整」的完整描述。
         "truncated": {
@@ -599,12 +728,16 @@ def render_all(
     focuses: Sequence[Sequence[str]] | None = None,
     keeps: Sequence[Sequence[str]] | None = None,
     action_errors: Sequence[str] | None = None,
+    refined: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """批量渲染。输入是 :class:`~trajectory_pipeline.assembler.schema.Sample`
     的 ``observations`` 原样。
 
     ``focuses`` / ``keeps`` / ``action_errors`` 与 ``observations`` **按下标
     对齐**；缺省 = 这一条没有任务词 / 没有下一步动作 / 动作没报错。
+
+    ``refined`` 是**一份精炼索引给全部观察共用**（按正文内容哈希定位，
+    不按步号）——所以这里不用对齐下标。
     """
     out: list[dict[str, Any]] = []
     for i, obs in enumerate(observations):
@@ -614,6 +747,7 @@ def render_all(
             keep=keeps[i] if keeps and i < len(keeps) else (),
             action_error=(action_errors[i]
                           if action_errors and i < len(action_errors) else ""),
+            refined=refined,
         ))
     return out
 

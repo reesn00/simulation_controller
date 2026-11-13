@@ -231,6 +231,14 @@ def render_observation(obs: Mapping[str, Any]) -> str:
     degraded = list(obs.get("degraded") or ())
     if degraded:
         parts.append(f"[采集降级: {'、'.join(str(d) for d in degraded)}]")
+    # **精炼留痕**（方案 25）：正文是模型选行裁出来的，不是「页面前 N 字」。
+    # 不说破的话，模型会把精简过的正文当成「页面就这么多内容」——
+    # 那是在训练侧教出来的幻觉。
+    # ⚠️ 与 ``task_view._render_observation_text`` **逐字同款**（O-5：
+    # 两段投影刻意不互相 import，字面一致靠契约测试盯着）。
+    if obs.get("body_refined"):
+        kept_lines = int(obs.get("body_refined_lines") or 0)
+        parts.append(f"[内容已精简: 保留 {kept_lines} 行]")
     trunc = obs.get("truncated") or {}
     if trunc.get("source") or trunc.get("view"):
         which = []

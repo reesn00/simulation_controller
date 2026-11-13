@@ -28,6 +28,21 @@ def _sources() -> list[Path]:
     return sorted(p for p in PKG.glob("*.py"))
 
 
+def _imports_of(path: Path) -> list[str]:
+    """这个文件 import 了哪些模块（相对 import 也算跨层）。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if node.level:                    # 相对导入也算跨层
+                mod = f"{'.' * node.level}{mod}"
+            out.append(mod)
+    return out
+
+
 # ── A1：依赖方向 ────────────────────────────────────────────────────
 
 class TestNoExecutorImport:
@@ -294,6 +309,163 @@ class TestTruncationIsVisible:
         assert "observation_missing" in observation_view.render(None)["degraded"]
 
 
+# ── A6：精炼分支（方案 25）────────────────────────────────────────────
+
+class Test精炼分支:
+    """正文可以是**模型选行**裁出来的（方案 25：让模型挑行，文本仍从
+    P1 原文重建 ⇒ 只可能漏、不可能造）。
+
+    本类盯的是**契约面**的四条：
+
+    1. **留痕不混账**——``limits`` 是 7 键、``truncated`` 是 2 键，两笔账
+       都不许往里塞精炼的账。往 ``truncated`` 加第三个键就破了
+       ``rationale/gates.py::_truncated_flag`` 的判读（上游截断 vs
+       本层触顶）；往 ``limits`` 加第八个键就破了
+       ``TestTruncationIsVisible`` 与下游按固定形状读它的消费方。
+    2. **回退逐字一致**——精炼不可用 ⇒ 输出与**没精炼时逐字一致**。
+       零回归是本方案能不能上线的前提。
+    3. **保真不放宽**——「下一步动作目标无条件保留」在精炼分支里同样成立。
+    4. **装配层仍是纯代码**——``assembler/`` 里没有一处 import LLM 客户端
+       或精炼实现：重建一批 P2 必须能脱离后端当前版本独立完成。
+    """
+
+    BODY = "\n".join([
+        "《让子弹飞》高清在线观看",
+        "主演：姜文 周润发",
+        "无关第一行内容",
+        "无关第二行内容",
+    ])
+
+    def _obs(self, **kw) -> dict:
+        base = {"url": "u", "body_text": self.BODY,
+                "interactive_elements": [], "links": []}
+        base.update(kw)
+        return base
+
+    def _refined(self, kept: list[str]) -> dict:
+        """按**正文内容哈希**索引的精炼旁挂（P2 与 T 两份渲染共用一套键）。"""
+        from trajectory_pipeline.common import refine_sidecar
+        return {refine_sidecar.body_key(self.BODY): list(kept)}
+
+    def test_三个留痕字段都在(self):
+        """**没说破的精简就是在训练侧教出来的幻觉**——
+        模型会把精简过的正文当成「页面就这么多内容」。"""
+        out = observation_view.render(self._obs())
+        assert out["body_refined"] is False
+        assert out["body_refined_lines"] == 0
+        assert out["body_refined_dropped"] == 0
+
+    def test_精炼后如实报(self):
+        out = observation_view.render(
+            self._obs(), refined=self._refined(["主演：姜文 周润发"]),
+        )
+        assert out["body_refined"] is True
+        assert out["body_refined_lines"] == 1
+        assert out["body_refined_dropped"] == 3
+
+    def test_limits还是七个键(self):
+        out = observation_view.render(
+            self._obs(), refined=self._refined(["主演：姜文 周润发"]),
+        )
+        assert set(out["limits"]) == {
+            "body_chars", "elements", "links",
+            "body_lines_dropped", "elements_dropped", "links_dropped",
+            "cropped",
+        }
+
+    def test_truncated还是两个键(self):
+        out = observation_view.render(
+            self._obs(), refined=self._refined(["主演：姜文 周润发"]),
+        )
+        assert set(out["truncated"]) == {"source", "view"}
+
+    def test_对不上就回退且逐字一致(self):
+        """旁挂与正文不同源（改了 P1？换了正文？）⇒ **整条**作废，
+        走规则裁剪——不「差不多地」用一半。"""
+        plain = observation_view.render(self._obs())
+        out = observation_view.render(
+            self._obs(), refined=self._refined(["原文里没有的这一行"]),
+        )
+        assert out["body_text"] == plain["body_text"]
+        assert out["body_refined"] is False
+
+    def test_动作目标照旧无条件保留(self):
+        """换了裁法不等于放松保真口径：目标行必须留下。"""
+        out = observation_view.render(
+            self._obs(), keep=("主演：姜文 周润发",),
+            refined=self._refined(["无关第一行内容"]),
+        )
+        assert "主演：姜文 周润发" in out["body_text"]
+
+    def test_每一行都逐字来自原文(self):
+        """**只可能漏，不可能造**——模型加不了一个原文没有的词。"""
+        out = observation_view.render(
+            self._obs(), refined=self._refined(["无关第二行内容"]),
+        )
+        for line in out["body_text"].splitlines():
+            assert line in self.BODY.splitlines()
+
+    def test_装配层不import_llm客户端(self):
+        """装配层是**纯代码**：重建一批 P2 必须能脱离 LLM 后端的当前版本
+        独立完成（历史 P1 永久可重建是硬要求）。"""
+        for path in _sources():
+            for name in _imports_of(path):
+                assert "trajectory_pipeline.llm" not in name, (
+                    f"{path.name} import 了 {name}：装配层绑死在 LLM 后端上")
+                assert "trajectory_pipeline.refine" not in name, (
+                    f"{path.name} import 了 {name}：装配层只把旁挂当**数据**读，"
+                    f"不该知道精炼实现")
+
+    def test_旁挂目录落在产物根下(self):
+        """``parents[2]`` 会落到**仓库根**的 ``output/pipeline/``——存量产物
+        目录（D8），而且**不报错**：只是读不到旁挂，精炼静默失效
+        （训练视图看起来跟没精炼一样）。"""
+        from trajectory_pipeline.storage import (
+            DEFAULT_REFINED_DIRNAME,
+            DEFAULT_SAMPLES_PARENT,
+            refined_dir,
+        )
+        resolved = refined_dir().resolve()
+        assert resolved.name == DEFAULT_REFINED_DIRNAME
+        assert resolved.parent.name == DEFAULT_SAMPLES_PARENT
+        assert resolved.parent.parent.name == "output"
+        assert resolved.parent.parent.parent.name == "trajectory_pipeline", (
+            f"旁挂落到了 {resolved}——storage 的 parents[1] 写成 parents[2] 了？"
+        )
+
+    def test_旁挂不会被当成P1存档收走(self):
+        """**实测踩过的坑**（2026-11-13，真实批次一跑就红）。
+
+        旁挂落在产物根的子目录里，而扫存档的扫描器是**递归**的
+        （``rglob``）。它按**形状**认存档——所以旁挂必须**认不出来**：
+
+        - 顶层不能有 ``run_config``；
+        - 顶层不能有 ``steps``/``visits``（**列表**才算 P1，旁挂的
+          ``entries`` 是**映射**）；
+        - 文件名不能顶着 ``<task>__<run>.json``（P1 的形状约定）。
+
+        不卡住的话，扫描器把旁挂当存档收走 → ``_walk_steps`` 把映射的
+        **键**当 step 迭代 → ``st.get("action")`` 炸掉
+        （``'str' object has no attribute 'get'``）。
+        """
+        from trajectory_pipeline.common import refine_sidecar
+
+        payload = refine_sidecar.make_payload("T001__abc12345.json", {})
+        looks_like_archive = (
+            "run_config" in payload
+            or isinstance(payload.get("steps"), list)
+            or isinstance(payload.get("visits"), list)
+        )
+        assert not looks_like_archive, (
+            "旁挂长得像 P1 存档：按形状筛存档的扫描器会把它收走"
+        )
+        name = refine_sidecar.sidecar_path("X", "T001__abc12345.json").name
+        assert name.endswith(refine_sidecar.SIDECAR_SUFFIX)
+        assert name != "T001__abc12345.json", (
+            "旁挂顶着 P1 的文件名：按名扫存档的消费者会把它当存档"
+        )
+
+
 # ── 夹具 ────────────────────────────────────────────────────────────
 
 def _obs(url: str, **kw) -> dict:
@@ -392,6 +564,17 @@ def _real_archives() -> list[Path]:
     ``split_archive`` 的输入，所以判据是「顶层有 ``run_config``
     **或** 有 ``steps``/``visits``」——老存档两种布局都见过。
     仍然按 ``run_id`` 去重。
+
+    ⚠️ **2026-11-13 补记：``steps``/``visits`` 必须是「列表」**。
+    派生产品（P1 精炼旁挂）也躺在 ``output/pipeline/`` 的子目录里，
+    顶层同样有 ``steps`` 键——但它是**映射**（正文键 → 记录），
+    不是 P1 的「一步一个 dict」的列表。不按形状卡住的话，
+    ``_walk_steps`` 会把映射的**键**当 step 迭代，
+    然后在 ``st.get("action")`` 上炸掉（``'str' object has no
+    attribute 'get'``）。
+
+    这不是假想：真实批次一跑，旁挂落盘，这条测试立刻红了。
+    按**形状**筛（不按文件名）——本仓库的老规矩。
     """
     root = Path(__file__).resolve().parents[2] / "output" / "pipeline"
     found: list[Path] = []
@@ -403,7 +586,10 @@ def _real_archives() -> list[Path]:
             continue
         if not isinstance(doc, dict) or "__" not in p.stem:
             continue
-        if "run_config" not in doc and "steps" not in doc and "visits" not in doc:
+        has_run_config = "run_config" in doc
+        has_steps = isinstance(doc.get("steps"), list)
+        has_visits = isinstance(doc.get("visits"), list)
+        if not has_run_config and not has_steps and not has_visits:
             continue
         run_id = str(doc.get("run_id") or "").strip()
         if run_id:
@@ -461,6 +647,12 @@ class Test契约文档不是摆设:
         # 2026-10-25 INC46 分代：同批里混着「动作前动机」与「事后反思」
         # 两种口径的文本，不标出来读样本的人分不出，闸门也没法按代判。
         "rationale_era",
+        # 2026-11-13 方案 25：正文可以是**模型选行**裁出来的。三个留痕
+        # 字段漏写的话，读样本的人以为「页面前 N 字」就是全部——而模型
+        # 会把精简过的正文当成「页面就这么多内容」。
+        "body_refined",
+        "body_refined_lines",
+        "body_refined_dropped",
     ])
     def test_代码有字段文档没写(self, doc_text, field):
         """方向一：代码产出的字段必须在文档里点名。"""

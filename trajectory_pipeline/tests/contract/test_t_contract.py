@@ -1043,7 +1043,12 @@ class Test投影一致:
         monkeypatch.setattr(
             task_view,
             "to_task_openai_messages",
-            lambda archive: [m for m in original(archive) if not m.get("tool_calls")],
+            # ``**kw`` 是必要的：``build_task_view`` 会把 ``refined``
+            # （精炼旁挂索引，方案 25）透传下去——桩函数不接住它就会
+            # 抛 TypeError，测的就不是「投影分叉」而是「桩函数坏了」。
+            lambda archive, **kw: [
+                m for m in original(archive, **kw) if not m.get("tool_calls")
+            ],
         )
         archive = self._build_archive()
         # **交付面**：``driver`` 缺省 ⇒ 折算成 obscura-1 ⇒ 旧面默认**不重渲染**
@@ -1055,6 +1060,81 @@ class Test投影一致:
         assert result.skipped and result.skipped[0].startswith("投影不一致"), result
         path = task_views_dir(tmp_path) / f"{archive['task_id']}__{archive['run_id']}.json"
         assert not path.exists(), "不一致的视图不该落盘"
+
+
+# ── 5a-3. 两段投影的观察渲染逐字同款（O-5）──────────────────────────
+
+
+class TestRenderObservationSync:
+    """P3 的 ``views.render_observation`` 与 T 的
+    ``task_view._render_observation_text`` 必须**逐字同款**。
+
+    两段投影**刻意不互相 import**（P3 是 P2 的渲染、T 是 P1 的渲染——
+    交接面是格式不是对象，D14.3）⇒ 字面一致性**只能靠契约测试盯着**。
+    分叉了不报错：两边各自都「合法」，只是同一批样本在两条投影里讲了
+    两个故事，而报表上看不出任何异常。
+
+    本类盯的是**观察回执这一层**（含 2026-11-13 方案 25 的精简标记
+    ``[内容已精简: 保留 N 行]``）。
+    """
+
+    #: 观察回执的各条分支。**逐条**比，不是比一两个典型值——
+    #: 只比典型值的话，新增的分支（读回执 / 精简标记）就没人盯了。
+    CASES = [
+        ("普通观察", {}),
+        ("空观察", {"__empty__": True}),
+        ("缺失占位", {"degraded": ["observation_missing"]}),
+        ("采集降级", {"degraded": ["links_empty"]}),
+        ("上游截断", {"truncated": {"source": True, "view": False}}),
+        ("本层裁剪", {"truncated": {"source": False, "view": True}}),
+        ("动作无效", {"action_error": "click 失败: 元素不在页面上"}),
+        ("精炼过", {"body_refined": True, "body_refined_lines": 3}),
+        ("精炼加降级加截断", {
+            "body_refined": True, "body_refined_lines": 2,
+            "degraded": ["links_empty"],
+            "truncated": {"source": True, "view": True},
+            "action_error": "boom",
+        }),
+        ("读正文", {"read": "snapshot"}),
+        ("读元素", {"read": "interactive"}),
+        ("读链接", {"read": "links"}),
+    ]
+
+    @staticmethod
+    def _obs(kw: dict) -> dict:
+        if kw.get("__empty__"):
+            return {}
+        return _obs_full(**{k: v for k, v in kw.items() if k != "__empty__"})
+
+    @pytest.mark.parametrize(
+        "name, kw", CASES, ids=[c[0] for c in CASES],
+    )
+    def test_逐字同款(self, name, kw):
+        obs = self._obs(kw)
+        assert task_view._render_observation_text(obs) == views.render_observation(obs), name
+
+    def test_精简标记两边都有(self):
+        """**没说破的精简就是在训练侧教出来的幻觉**——
+        模型会把精简过的正文当成「页面就这么多内容」。"""
+        obs = _obs_full(body_refined=True, body_refined_lines=3)
+        assert "[内容已精简: 保留 3 行]" in views.render_observation(obs)
+        assert "[内容已精简: 保留 3 行]" in task_view._render_observation_text(obs)
+
+    def test_没精炼时不带标记(self):
+        obs = _obs_full()
+        assert "内容已精简" not in views.render_observation(obs)
+        assert "内容已精简" not in task_view._render_observation_text(obs)
+
+    def test_标记排在降级之后截断之前(self):
+        """三块回执各说各的：「动作白做」/「信息没采到」/「这份正文被
+        精简过」/「证据不全」——顺序固定，两段投影同款。"""
+        obs = _obs_full(body_refined=True, body_refined_lines=3,
+                        degraded=["links_empty"],
+                        truncated={"source": True, "view": True})
+        text = views.render_observation(obs)
+        assert text.index("[采集降级:") < text.index("[内容已精简:")
+        assert text.index("[内容已精简:") < text.index("[内容不完整:")
+        assert text == task_view._render_observation_text(obs)
 
 
 # ── 5a-2. 工具声明与真实调用同一面（Q-A1）──────────────────────────
