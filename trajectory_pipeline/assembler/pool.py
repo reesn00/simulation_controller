@@ -288,6 +288,11 @@ class StaleSweep:
     kind: str
     #: **名单内、留在原地的**份数。
     kept: int = 0
+    #: **留在原地的文件数**（≠ :attr:`kept` 时说明「份」是 id 口径）。
+    kept_files: int = 0
+    #: **被移走的文件数**（≠ :attr:`count` 时同上）。
+    #: ⚠️ ``views/`` 一个 id 是 **3 个文件** ⇒ id 口径与文件口径**不是一回事**。
+    moved_files: int = 0
     #: **不在名单、被移进隔离区**的 id（按 id 排序）。
     #: ⚠️ 记 **id** 不记文件名——三个 kind 的 id 口径一致
     #: （``sample_id`` / ``<sample_id>`` / ``<task_id>__<run_id>``），
@@ -385,20 +390,26 @@ def _quarantine_offroster(
     dest = d.parent / QUARANTINE_DIRNAME / d.name
     moved: list[str] = []
     kept = 0
+    kept_files = 0
+    moved_files = 0
     for gid in sorted(groups):
         if gid in keep:
             kept += 1
+            kept_files += len(groups[gid])
             continue
         if gid in skip_ids:
             continue
         dest.mkdir(parents=True, exist_ok=True)
         for f in groups[gid]:
             os.replace(f, dest / f.name)
+        moved_files += len(groups[gid])
         moved.append(gid)
     return StaleSweep(
         kind=d.name,
         kept=kept,
+        kept_files=kept_files,
         moved=tuple(moved),
+        moved_files=moved_files,
         unclassified=tuple(sorted(skip_ids)),
     )
 

@@ -3453,6 +3453,12 @@ def _print_sweep(sweep: "pool.StaleSweep | None") -> None:
         return
     print(f"  清点：{sweep.kind} 留 {sweep.kept} 份 · "
           f"移入隔离区 {sweep.count} 份（本轮未产出的旧产物）")
+    if sweep.kept_files != sweep.kept or sweep.moved_files != sweep.count:
+        # ⚠️ **「份」是 id 口径**（``views/`` 一个 id = 3 个文件）⇒
+        # 盘上的文件数与印出来的份数**不是一回事**。不写这一行 ⇒
+        # 读的人拿 ``ls quarantine/views | wc -l`` 一对就以为对不上。
+        print(f"    ——「份」是 **id** 口径（视图按样本成组）："
+              f"实际文件 留 {sweep.kept_files} 个 · 移 {sweep.moved_files} 个")
     if sweep.moved:
         for name in list(sweep.moved)[:10]:
             print(f"    → {pool.QUARANTINE_DIRNAME}/{sweep.kind}/{name}")

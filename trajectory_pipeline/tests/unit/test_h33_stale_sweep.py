@@ -221,6 +221,32 @@ class TestP3清点:
         assert vrep.sweep is not None
         assert "T001__a1" in vrep.sweep.moved
 
+    def test_清点的份数是id_文件数另记(self, root):
+        """「份」是 **id** 口径（视图一个 id = 3 个文件）⇒ 文件数**另记一栏**。
+
+        ⚠️ 文档里的「88 份」是**文件**口径、CLI 印的是**id** 口径 ⇒
+        两个分母 ⇒ 读的人拿 ``ls quarantine/views | wc -l`` 一对就
+        以为对不上 ⇒ 文件数必须**取得到**（本条就是那个「取得到」）。
+        """
+        src = root / "src"
+        _write(src, _arc("T001"), "T001__a1.json")
+        _write(src, _arc("T002"), "T002__b2.json")
+        builder.build_all(source_root=src, target_root=root, overwrite=True, prune_stale=True)
+        views.build_views_from_dir(samples_root=builder.samples_dir(root),
+                                   root=root, overwrite=True, prune_stale=True)
+        (builder.samples_dir(root) / "T001__a1.json").unlink()
+        vrep = views.build_views_from_dir(samples_root=builder.samples_dir(root),
+                                          root=root, overwrite=True, prune_stale=True)
+
+        assert vrep.sweep is not None
+        assert vrep.sweep.count == 1, "id 口径：1 个样本 id"
+        assert vrep.sweep.moved_files == 3, "文件口径：3 个视图文件"
+        assert vrep.sweep.kept == 1
+        assert vrep.sweep.kept_files == 3
+        # 隔离区里躺着 3 个文件（不是 1 个）
+        q = pool.quarantine_dir(root, "views")
+        assert len(list(q.glob("*.json"))) == 3
+
     def test_读侧不是交付目录_不清点(self, root):
         """读别的目录算出的名单与交付目录无关 ⇒ 清点会误伤别的批次。"""
         src = root / "src"
