@@ -34,6 +34,7 @@ import binascii
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -101,6 +102,31 @@ def _jwt_exp(token: str) -> float | None:
     return float(exp) if isinstance(exp, (int, float)) else None
 
 
+def describe_api_key(token: str) -> str:
+    """凭据的**形态**描述（**不含凭据本身**）——给 ``status`` 与报错用。
+
+    ⚠️ **为什么必须看形态**：LS 有两代凭据（见 :func:`_is_jwt`），而
+    **LS 1.23 起实例可以在 ``jwt_auth_jwtsettings.legacy_api_tokens_enabled=0``
+    时禁用 legacy 鉴权**（2026-11-17 实测：新实例上 40 位 legacy token 走
+    ``Token`` 头一律 401）⇒ 一个**看起来完全正常**、也没过期的凭据被拒时，
+    报「API key 无效」会把人引去**反复换 key**（换一百把还是 401）。
+
+    ⇒ 描述里带 **exp**（PAT 的 exp 藏在 JWT payload 里，读出来不验签），
+    这样「用的是哪一把、是不是旧实例那把」一眼可见 —— 环境变量会**被
+    继承**（旧 shell / 旧父进程带着旧值），这是最难查的一种 401。
+    """
+    token = (token or "").strip()
+    if not token:
+        return "empty"
+    if not _is_jwt(token):
+        return f"legacy({len(token)} chars, 无有效期)"
+    exp = _jwt_exp(token)
+    if exp is None:
+        return f"pat(jwt, {len(token)} chars, 读不出 exp)"
+    when = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"pat(jwt, {len(token)} chars, exp={when})"
+
+
 class LabelStudioClient:
     """LS REST 客户端。**用完即弃**: 一次推送建一个实例。"""
 
@@ -160,7 +186,8 @@ class LabelStudioClient:
         if response.status_code in (400, 401, 403):
             raise LabelStudioAuthFailed(
                 f"Label Studio Personal Access Token 无效或已撤销 "
-                f"(HTTP {response.status_code}); 去 /user/account 重新生成"
+                f"(HTTP {response.status_code}); 去 /user/account 重新生成, "
+                f"或按速查表「LS 服务本身」在实例内重新签发"
             )
         if response.status_code >= 400:
             raise LabelStudioUnavailable(
@@ -227,12 +254,38 @@ class LabelStudioClient:
                 time.sleep(self._health.retry_backoff_seconds * attempt)
         raise last or LabelStudioError(f"{method} {path} 失败")
 
-    @staticmethod
-    def _handle(response: Any, method: str, path: str) -> Any:
+    def _auth_hint(self) -> str:
+        """401/403 的**可执行**排查方向（别只说「key 无效」）。
+
+        ⚠️ **实测（LS 1.23.0, 2026-11-17 新实例）**：该实例的
+        ``jwt_auth_jwtsettings.legacy_api_tokens_enabled=0`` ⇒ 40 位
+        legacy token 走 ``Token`` 头一律 401，**而它长得没错、也没过期**。
+        报「API key 无效或权限不足」会把人引去**反复换 key**（换一百把
+        还是 401），真因却是**鉴权机制被禁用**。
+
+        ⇒ 这里按凭据**形态**分流：
+
+        * legacy ⇒ 大概率是**机制被禁用** ⇒ 指向 PAT（``Bearer`` 头）。
+        * PAT ⇒ 大概率是**PAT 本身失效**（被撤销 / 实例重建后 SECRET_KEY
+          变了）⇒ 指向重新签发。
+        """
+        if _is_jwt(self._api_key):
+            return (
+                "PAT 无效或已撤销（或实例重建后 SECRET_KEY 变了）⇒ "
+                "重新签发 PAT 并更新 TRAJECTORY_LS_API_KEY"
+            )
+        return (
+            "凭据是 legacy token（40 位），而 LS 1.23 起实例可禁用 legacy "
+            "鉴权（jwt_auth_jwtsettings.legacy_api_tokens_enabled=0）⇒ "
+            "401 多半是**机制被禁用**而不是 key 坏了 ⇒ 改用 PAT（Bearer 头）；"
+            "签发办法见速查表「LS 服务本身」"
+        )
+
+    def _handle(self, response: Any, method: str, path: str) -> Any:
         status = response.status_code
         if status in (401, 403):
             raise LabelStudioAuthFailed(
-                f"{method} {path} 认证失败 (HTTP {status}): API key 无效或权限不足"
+                f"{method} {path} 认证失败 (HTTP {status}): {self._auth_hint()}"
             )
         if status == 404:
             raise LabelStudioError(f"{method} {path} 不存在 (HTTP 404)")
@@ -274,7 +327,7 @@ class LabelStudioClient:
             # 实际是 key 无效。
             raise LabelStudioAuthFailed(
                 f"Label Studio /health 认证失败 (HTTP {response.status_code}); "
-                f"检查 API key"
+                f"{self._auth_hint()}"
             )
         if response.status_code >= 400:
             raise LabelStudioUnavailable(
@@ -799,5 +852,6 @@ __all__ = [
     "LabelStudioClient",
     "MAX_TASKS_PER_IMPORT",
     "build_client",
+    "describe_api_key",
     "read_label_config",
 ]

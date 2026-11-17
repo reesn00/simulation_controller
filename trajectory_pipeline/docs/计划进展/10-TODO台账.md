@@ -298,6 +298,10 @@ REST 服务持有**，本仓库不碰起浏览器这件事 ⇒ **这个失败模
 | **H-34** | ★**（2026-11-11 新增）`ls_bridge` 只有「推新」没有「刷旧」** ⇒ `push_index` 按 `sample_id` 去重 ⇒ T 视图 `--overwrite` 重建后那 **76 条**旧卡**永远落后**（实测 **76/76** 内容有差异：`messages` / `openai` / `audit` / `scorecard` 全变——近几个 commit 改了渲染） | 08 存档治理 | §H-34（本文档） · [`ls_bridge/cli.py`](../../evaluation/ls_bridge/cli.py) · [`ls_bridge/push_index.py`](../../evaluation/ls_bridge/push_index.py) · [`ls_bridge/client.py`](../../evaluation/ls_bridge/client.py) | 加 `ls_bridge refresh`（`PATCH /api/tasks/{id}` + `PATCH /api/predictions/{id}`，**不删卡不新建卡**——owner 2026-11-04 已裁过这个手段，见 [H-27](#h-27)）｜ ⚠️ **本轮先用一次性脚本刷了 76 条**（**0 失败** · 标注 **0 条**受影响 · 刷后 **76/76** 与当前渲染逐字段一致）｜ ✅ **已闭（2026-11-11 · owner 裁「落成 CLI」）**：`ls_bridge refresh` **已落成 CLI**（**默认 dry-run** + `--apply` 才写；**默认跳过有人工标注的卡**；**绝不碰 `label_config`** ⇒ `resolve_project_id` 必须传 `sync=False`）· 实现 [`ls_bridge/refresh.py`](../../evaluation/ls_bridge/refresh.py) · 门禁 [`tests/unit/test_ls_bridge_refresh.py`](../../tests/unit/test_ls_bridge_refresh.py)（**17 条**）· 真跑 dry-run：**107 条全部「无差异」**（上轮已刷过）｜ ⚠️ **「前提是 LS 上 0 条人工标注」仍未验过**：一旦有人标了，`PATCH data` 会不会覆盖标注**须先验**⇒ CLI 默认**跳过**有人工标注的卡并报出来 |
 | **H-35** | ★**（2026-11-11 新增）全量 107 条轨迹里**只有 2 条**能自动判出来**（聚合后 `scored=2` / `undetermined=105`；unit 级 `pos=73` / `neg=1` / `quarantine=838` / `skip=7`）——D-2 判不出 **721/838（86 %）** · D-5 判不出 **573/838（68 %）** | 03 标签 / 05 rationale | §H-35（本文档） · [`scout/cli.py`](../../evaluation/scout/cli.py) · [`scout/io.py`](../../evaluation/scout/io.py) · [`scout/policy.py`](../../evaluation/scout/policy.py) · [`scout/aggregate.py`](../../evaluation/scout/aggregate.py) | ⚠️ **2026-11-12 口径修正**：原先归成「数据判不了」是**错的**——D-2 不可判的 721 条里，**578 条（80 %）是「LLM 返回空」**（代码筛过了、**后端没答出**）⇒ **那轮 scout 撞上 LLM 后端故障**（2026-11-12 复测 **0 次**）｜ 真正的「无可判动作」只有 **48** 条 · 「缺观察」**95** 条 ｜ **D-5 的 573** 多为「outcome 缺 `question`」（旧采集档缺字段 ⇒ 只能重采）｜ ⚠️ **实测对照**：**新 agent 档 5/5 unit 全判出** · 旧 scripted 档 2/8 ⇒ **重采 + 重跑 scout 能救** ｜ **owner 2026-11-12 裁**：重跑 **30 个 task**（坏档涉及 65 个 task，但 **35 个另有别批次好档** ⇒ 真正「没有替代数据」的是 30 个）+ 重跑 scout ｜ ⚠️ **那条 `scored=2` 的读数作废**（后端故障期间产出） |
 | **H-36** | ★**（2026-11-12 新增）评估侧的 LLM 失败**既无熔断、也无归因** ⇒ 整批静默退化成 `quarantine`：2026-11-11 18:24–19:38 那轮 scout 里 **838** 个 unit 有 **578** 次「**LLM 返回空**」⇒ 汇总只报「`quarantine=838`（91 %）」⇒ **把「后端当时坏了」读成「数据判不了」** | 03 标签 / 09 纪律 | §H-36（本文档） · [`scorers/code_scorer.py::_parse_response`](../../evaluation/scorers/code_scorer.py#L438) · [`llm/client.py`](../../llm/client.py) · [`scout/io.py`](../../evaluation/scout/io.py) | ① **归因**：把 `_exchange` 的 error 透传进 reason（超时 / 4xx / 5xx / content 空 各一句）⇒ 现在只写「LLM 返回空」⇒ **不可归因** ② **熔断**：连续 N 次 LLM 失败 ⇒ 停本批 D-2 调用 + **显式报「本批判分不可信」**（同采集侧 [H-31](#h-31) 的形状）③ **汇总分栏**：「quarantine（数据判不出）」与「quarantine（**LLM 没答**）」分开报 —— ⚠️ **第三条最要紧**：不分栏 ⇒ 读数会把**后端故障**读成**数据质量** ｜ ✅ **现状**：**已闭（2026-11-13 · 归因 + 批次级熔断 + 汇总分栏 + 上传/刷新闸门；处置与读数见 §H-36「闭合」小节）**｜ ⚠️ **2026-11-12 那条 `scored=2` 的读数仍作废**（后端故障期间产出，当时机制没修） |
+| **H-37** | ★**（2026-11-16 新增）D-5 把「代码判的 `unresolved`」误诊成「老批次缺 question 字段」** ⇒ 补救动作被指向**重跑 build / 重采**，而重跑**必然无效** | 03 标签 / 09 纪律 | §H-37（本文档） · [`scorers/d5_scorer.py:916`](../../evaluation/scorers/d5_scorer.py#L916) · [`executor/agent_loop.py:503`](../../executor/agent_loop.py#L503) | 2026-11-16 T032 真实批次：6 个单元里 **5 个**的 D-5 落 `undetermined`，理由一律「outcome 缺 question 字段（2026-10-10 之前切的样本）——**先重跑 build 再判**」⇒ 实测这 5 个 `branch` 全是 `unresolved` / `source='rule'`，P2 侧 `question=''`（**键在、值为空**）· `p1_missing_fields=[]`（**P1 一个字段都没缺**）⇒ 「缺字段」「2026-10-10 之前切的样本」**两条都与事实相反**｜ ⚠️ **为什么要紧**：① 补救动作指错——agent 路径的 `unresolved` 是**代码判的 fail-closed 通用出口**（无判断点 ⇒ `question` 恒空），重跑 build / 重采**都不会**让 `question` 长出来；② H-35 行里「D-5 的 573 多为「outcome 缺 question」（旧档缺字段 ⇒ 只能重采）」这条**归因可能同源** ⇒ 若同源，那 573 条里的一部分**重采也救不回来**（owner 2026-11-12 裁的重跑 30 个 task 的收益要打折）｜ **建议**（**须 owner 裁**，动的是评分语义）：区分「键不存在」与「按设计为空」两种成因，文案不再一律写「先重跑 build 再判」；或把 `unresolved` 放进 `QUESTIONLESS_PAIRS` / 单独记「不适用」——它**不声称任何结论**，D-5 本就「不管辖」｜ ⚠️ **本轮只登记，不改代码**｜ ✅ **同批 D-2 / D-4 / D-6 已逐条复核**（D-6 的「片名检索不到」经比对 P2 `six.observations[step_start:step_end]` 切片**属实**） |
+| **H-38** | ★**（2026-11-17 新增）LS 1.23 新实例可禁用 legacy 鉴权（`jwt_auth_jwtsettings.legacy_api_tokens_enabled=0`）⇒ 40 位 legacy token 一律 401**，而 `ls_bridge` 的报错是「API key 无效或权限不足」⇒ **把人引去反复换 key**（换一百把还是 401），真因却是**鉴权机制被禁用** | 08 存档治理 / 09 纪律 | §H-38（本文档） · [`ls_bridge/client.py::_handle`](../../evaluation/ls_bridge/client.py) · [`ls_bridge/client.py::_is_jwt`](../../evaluation/ls_bridge/client.py) · [`ls_bridge/project_manager.py::describe_status`](../../evaluation/ls_bridge/project_manager.py) | ① **401 按凭据形态分流**：legacy ⇒ 指向「机制被禁用 ⇒ 改用 PAT」；PAT ⇒ 指向「重新签发」｜ ② **`status` 报形态**（`api_key_kind`：PAT 带 exp / legacy / empty）⇒ 「HKCU 已换成新的、这个进程还在用旧的」一眼可见｜ ✅ **已闭（2026-11-17）**：`_handle` 改实例方法 + `_auth_hint()`（[client.py](../../evaluation/ls_bridge/client.py)）· `describe_api_key()` · `status` 新增 `api_key_kind` · 门禁 [`tests/unit/test_ls_bridge_auth_diagnosis.py`](../../tests/unit/test_ls_bridge_auth_diagnosis.py)（**9 条**）｜ ⚠️ **环境变量会「被继承」这条没治**：父进程里那份旧值仍在（已用新终端/新进程验证正常）⇒ 换 token 后**必须新开终端**，否则子进程拿到的还是旧值 |
+| **H-39** | ★**（2026-11-17 新增）`cli refine` 全批失败仍退 0** ⇒ 「**压根没精炼**」与「精炼过了」在**退出码**上长得一样；而全败时产物与没精炼时**逐字一致** ⇒ **报表上完全看不出异常** | 09 纪律 | §H-39（本文档） · [`executor/cli.py::cmd_refine`](../../executor/cli.py) · [`refine/refiner.py`](../../refine/refiner.py) | 2026-11-17 实测：LLM 网关的 key 失效（`http:401`）⇒ **22 条全部失败**（3 次真请求 + 熔断打开后 19 次压根没发）⇒ 终端打印了「失败 22 条」但**退出码 0** ⇒ 脚本/流水线会以为「精炼过了」｜ ⚠️ **H-31 的熔断这次是对的**（3 次 401 后开闸 ⇒ 没烧 170 次请求），**错的是退出码**｜ ✅ **已闭（2026-11-17）**：① **全部失败 ⇒ 退 1**（与「没配后端退 2」分开：那是**没配**，这是**配了但用不了**）② **失败原因分类报出**（`http:401 × 3、circuit × 19`）——「失败 N 条」不说是谁在失败，看的人只会当成「模型效果不好」③ 门禁 [`tests/unit/test_refine_cli.py`](../../tests/unit/test_refine_cli.py)（新增 4 条 + 旧用例按新语义改）｜ ⚠️ **部分失败仍退 0**（一条成功就算这批可用）——若 owner 认为「部分失败也该退非 0」，是一行改动 |
+| **H-40** | ★**（2026-11-17 新增）`test_media_probe.py::TestProbeAsync::test_elapsed_ms_recorded` 是一条**墙钟边界断言** ⇒ 全量套件满载时偶发红**（实测：3 failed 那轮里有它，单独连跑 8 次全绿）** ⇒ 门禁**随机红** ⇒ 「这次红了几条」这条读数**不可信** | 09 纪律 | §H-40（本文档） · [`tests/unit/test_media_probe.py::TestProbeAsync::test_elapsed_ms_recorded`](../../tests/unit/test_media_probe.py) · [`executor/probe/media_probe.py`](../../executor/probe/media_probe.py) | 断言是 `elapsed_ms >= 50`，而它等的是 `wait_s=0.05`（**50ms 睡眠**）⇒ **卡在整数毫秒的边界上**：`asyncio.sleep(0.05)` 实际返回时刻落在 49.x ms 就算红｜ ⚠️ **与本轮改动无关**：`media_probe` **不 import** `ls_bridge` / `executor.cli`（已核）｜ ⚠️ **为什么登记而不是直接改**：改它要动**别人模块的测试断言**（放宽阈值 vs 改断言口径），**且**「门禁该断言什么」是 owner 的口径 ⇒ 按纪律**只登记**，等 owner 裁定处置（放宽到 `>= 45`？改成断言 `wait_s` 被**请求**过而不是**实际耗时**？）｜ ⚠️ **不改的后果**：每次全量读数都得先分「这条红是它的锅还是真回归」⇒ 读数成本 |
 
 ---
 
@@ -2099,6 +2103,196 @@ H-32 候选提取解耦）⇒ **空壳 0、401 绝迹**。
 下一次真跑时，「quarantine 分栏」与「熔断横幅」才会出现在报表上。
 ⚠️ **旧的 `quarantine=838（91 %）` 那条读数仍是读法反例**（后端故障期间产出）⇒
 **不要再拿它当「这批数据判不出来」的证据**。
+
+
+### H-37 · D-5 把「代码判的 `unresolved`」误诊成「老批次缺 question 字段」
+
+> **登记时间**：2026-11-16 · **来源**：T032 /《功夫》全链路真跑（随机抽题 · agent 模式 · camofox 面）
+> **状态**：**只登记，未改代码**——评分语义变更属 owner 裁定范围。
+
+**现象**（逐条打开 P1 存档 + P2 样本核过）：
+
+- 6 个站点单元里 **5 个**的 D-5 落 `undetermined`，理由一字不差：
+  「outcome 缺 question 字段（2026-10-10 之前切的样本）——决策树无法核对分支与判断点的配套关系，**先重跑 build 再判**」。
+- 这 5 个单元：`branch` 全是 **`unresolved`**、`source='rule'`（代码判的，不是 LLM 判的）；
+  P2 侧 `question=''`（**键在、值为空**）、`p1_missing_fields=[]`（**P1 一个字段都没缺**）、
+  存档时间 **2026-11-16**（**不是 2026-10-10 之前**）⇒ 文案里的两条归因**都与事实相反**。
+- 唯一出分的单元是 `player_unverified`（`question='player.ok'`）⇒ **D-5 出分 1/6**，全部缺口都落在 `unresolved` 上。
+
+**根因**（三行代码的事）：
+
+1. [`d5_scorer.py:916`](../../evaluation/scorers/d5_scorer.py#L916) 的放行闸是 `not question`——**空串也命中**，
+   与「键不存在」不区分；
+2. 放行名单 `QUESTIONLESS_PAIRS` = `{("","not_play_site"), ("","blocked")}` + gatekeeper 收口分支 + terminal-shape 分支；
+3. **`unresolved` 被 `GATEKEEPER_DECIDED_BRANCHES` 刻意排除**
+   （[`agent_loop.py:503`](../../executor/agent_loop.py#L503)：`b for b in _FALLCLOSED_BRANCH.values() if b != UNRESOLVED`）
+   ⇒ agent 路径上「代码判的 `unresolved`」**必然**落这条不可判定。
+
+**为什么这条要登记**：
+
+- ① **补救动作指错**：`unresolved` 在 agent 路径上是 **fail-closed 的通用出口**（`record_from` 在 `answer is None` 时一律记它）
+  ⇒ 它**本就没有判断点**，`question` 恒为空是**按设计**⇒ 重跑 build / 重采**都不会**让 `question` 长出来。
+  现在的文案把「本就没有题」写成「旧档缺字段」，读者会去跑一遍**必然无果**的重采。
+- ② **可能污染已有归因**：H-35 行里写「D-5 的 573 多为「outcome 缺 `question`」（旧采集档缺字段 ⇒ 只能重采）」——
+  若这 573 条里有相当一部分其实是 agent 路径的 `unresolved`（新档），则
+  **owner 2026-11-12 裁的「重跑 30 个 task」的收益要打折**（重采救不回没有题的新档）。
+
+**建议修法**（两条都**须 owner 裁**，动的是评分语义）：
+
+- **区分两种成因**：P1/P2 侧 `question` **键不存在** ⇒ 真·老批次缺字段（保留现在的文案）；
+  **键在但值为空** 且 `branch` 落在**按设计无判断点**的分支集合 ⇒ 文案改成
+  「该分支由代码判定（无判断点），本维无法用决策树核对——**不必重采**」。
+- 或者给 `unresolved` **单独一档「不适用」**：`TREE_BRANCHES` 里 `unresolved` 的注释就是「代码能力不足（没走到判断）」，
+  它**不声称任何结论** ⇒ D-5 本就「不管辖」它；按 `undetermined` 记会让 D-5 的出分率被**无题分支**系统性拉低。
+
+⚠️ **本轮只登记**：不动评分语义。
+
+✅ **同批其余三维已逐条复核，无第二处**（同一批 6 个单元，读 P1 的 `visits[].steps[].observation` 与 `outcomes[].evidence` 核过）：
+
+| 维度 | 读数 | 复核结论 |
+|---|---|---|
+| D-2 | 4/6 | 两条不可判定为「重复 goto / 无效果点击」，与 P1 的 `steps` 逐条一致 ⇒ **属实** |
+| D-4 | 6/6 | 全出分；理由「`player_signals` 未落地 ⇒ 只用 `<video>` 一条」是**已知口径缺口**，非本批新问题 |
+| D-5 | 1/6 | **本条 H-37** |
+| D-6 | 3/6 | 不可判定 3 个单元的「片名检索不到」经比对 P2 `six.observations[step_start:step_end]` 切片**属实**（那 3 个单元正文确实没有「功夫」）；另 3 个单元正文/标题**都有**「功夫」⇒ D-6 判定**正确**，不是 bug |
+
+
+### H-38 · LS 1.23 新实例禁 legacy 鉴权 ⇒ 401 报错把排查方向指错
+
+> **登记时间**：2026-11-17 · **来源**：用户重建 LS 实例（WSL Docker 容器）后重跑上传
+> **状态**：✅ **已闭（2026-11-17）**——代码 + 测试 + 文档三件都落；⚠️ 剩一条**运行期**注意（见文末「还没治的那条」）
+
+**现象**（实测，不是推断）：
+
+- 新实例的 `jwt_auth_jwtsettings`：`api_tokens_enabled=1` / `api_token_ttl_days=73000` /
+  **`legacy_api_tokens_enabled=0`** ⇒ **40 位 legacy token 走 `Token` 头一律 401**
+  （该实例的 `authtoken_token` 里**确实躺着**一枚当天生成的 legacy token ⇒ **不是「没 token」**）。
+- 旧报错是 `GET /api/projects 认证失败 (HTTP 401): API key 无效或权限不足`
+  ⇒ **字面在指控 key** ⇒ 人的第一反应是「再生成一把」⇒ 换一百把还是 401。
+
+**根因**：`client._handle()` 只按 HTTP 状态码组织消息，**不看凭据形态**；
+`_is_jwt()` 虽然存在，但**只**用来决定 `Authorization` 头长什么样
+（`Bearer` 还是 `Token`），**从不参与报错措辞** ⇒ 「两代凭据里只有一代被这个实例接受」这条
+**只有服务端知道**，客户端却不告诉人。
+
+**处置**（本轮已落）：
+
+1. [`client.py::_handle`](../../evaluation/ls_bridge/client.py) 改实例方法，401/403 走 `_auth_hint()`：
+   - **legacy** ⇒ 「该实例可能禁用了 legacy 鉴权（`legacy_api_tokens_enabled=0`）⇒ 401 多半是**机制被禁用**而不是 key 坏了 ⇒ 改用 PAT」；
+   - **PAT** ⇒ 「PAT 无效或已撤销，或实例重建后 SECRET_KEY 变了 ⇒ 重新签发」。
+2. 新增 `describe_api_key()`：**只报形态不报凭据**——`pat(jwt, 232 chars, exp=2226-09-30T06:42:15Z)`
+   / `legacy(40 chars, 无有效期)` / `empty`。PAT 的 `exp` 藏在 JWT payload 里（读出来**不验签**）。
+3. `ls_bridge status` 多报一行 `api_key_kind` ⇒ 「HKCU 里已换成新的、这个进程还在用旧的」
+   （环境变量**被继承**：旧 shell / 旧父进程带着旧值）**一眼可见**。
+4. 门禁：[`tests/unit/test_ls_bridge_auth_diagnosis.py`](../../tests/unit/test_ls_bridge_auth_diagnosis.py)（**9 条**）
+   —— 形态描述 4 条 + 报错分流 3 条 + `status` 2 条（含「**不打印凭据本身**」）。
+
+⚠️ **凭据红线**：测试里只用**形状对、内容假**的凭据；`status` 只输出形态与 `exp`，**不回显 token**。
+
+**还没治的那条（运行期，注意）**：
+
+- 环境变量**被继承**这件事代码治不了：父进程里那份旧的 40 位值仍在 ⇒ **换 token 后必须新开终端**，
+  否则子进程拿到的还是旧值。`api_key_kind` 那一行就是给它看的（`legacy(...)` ⇒ 手里是旧的那把）。
+- ⚠️ **另一处凭据卫生**（**未处置**）：`archive/v1/config/label_studio_api_key.txt` 里有一枚 **232 字符 JWT**
+  （2026-09-29 签的，**未进 git**——`.gitignore` 挡着，冻结树**不改**）。它是**旧实例**的 PAT，
+  对当前实例无效；但它**躺在工作区里** ⇒ 建议 owner 决定是否删掉该文件（**它不是 git 追踪文件**，删了不动历史）。
+
+**同批附带的一次数据损失（owner 已裁定 · 不回填）**：
+
+- 用户重建 LS 实例 ⇒ **旧实例已死** ⇒ 旧 **project 77 的 111 条历史任务**随之丢失。
+  `C:\tmp\p77_tasks.json`（30MB，2026-11-04 导出）**文件还在**，理论上可导回新实例 project 1。
+- ⚠️ **owner 2026-11-17 裁定：不导回** ⇒ 该导出文件**不再作为待办**，本条**已闭**。
+- 记这一笔是为了**别让下一个人**看到「111 条任务不见了」又去问一遍「能不能导回来」——
+  那是**已裁定的关闭项**，不是遗留问题。
+
+### H-39 · `cli refine` 全批失败仍退 0 ⇒ 「压根没精炼」与「精炼过了」长得一样
+
+> **登记时间**：2026-11-17 · **来源**：T032 批次跑方案 25 精炼（真实调用）
+> **状态**：✅ **已闭（2026-11-17）**——代码 + 测试 + 文档三件都落
+
+**触发事件**（实测，不是推演）：
+
+- 环境变量里的 `TRAJECTORY_LLM_API_KEY`（**旧的那把**，已失效）⇒ 网关一律 **401**
+  （`/v1/models`、`/v1/chat/completions` 都是 401；网关本身活着——`/health` 返回 `ok: true`）。
+  ⚠️ **按凭据红线，旧 key 的值/前缀一个字都不落进文档**——它已被网关作废，
+  续期后直接从**原出处**（`~/.config/kcoder/credentials.json` 等）取新的。
+- `cli refine --max-calls 60` ⇒ **22 条全部失败**，其中：
+  - **3 条**真发了请求 ⇒ `http:401`；
+  - **19 条**被 **H-31 的熔断**短路 ⇒ `circuit:open`（**没发请求**）。
+- 终端打印了「失败 22 条」并警告「整条作废 ⇒ 渲染层走规则裁剪」，
+  **但 `cmd_refine` 返回 0**。
+
+**为什么这条要登记**：
+
+- **全败时产物与没精炼时逐字一致**（旁挂里 `kept` 全空 ⇒ 渲染层全走规则裁剪 ⇒ **零回归**）
+  ⇒ **报表上完全看不出异常**。这正是设计 §5「没配后端 ⇒ 退 2，不静默跳过」
+  要防的误读——只是这次后端**配着、只是 key 失效了** ⇒ 那条防线**没覆盖到**。
+- **失败原因混在一个数里**：「失败 22 条」不说是谁在失败 ⇒ 看的人只会归因成
+  「模型效果不好」，而真相是**凭据过期**（处置动作完全不同：换 key，不是调提示词）。
+
+**处置**（本轮已落）：
+
+1. **全部失败 ⇒ 退 1**（[`cmd_refine`](../../executor/cli.py)）：判据是
+   **「发过请求的条目全失败」**（`attempted > 0 且 failed_attempted == attempted`）。
+   ⚠️ **不拿 `tally['failed']` 当判据**——`not_needed` 那条也走同一个 `refine_body`，
+   它**没发请求** ⇒ 拿它算就会在**压根没用后端**的批次上误退 1（退出码撒谎比不报更坏）。
+   ⚠️ 与「没配后端退 2」**刻意分开**：那是**没配**，这是**配了但用不了**。
+2. **失败原因分类报出**：`http:401 × 3、circuit × 19`（`_refine_reason_head`）。
+   ⚠️ 模型质量类的错误文本**可能带页面正文片段** ⇒ 分类里**只回显类别，不回显全文**。
+3. 门禁：[`tests/unit/test_refine_cli.py`](../../tests/unit/test_refine_cli.py)
+   —— 新增 4 条（全败退 1 / 没发过请求**不**算全败 / 原因只取前缀 / 不带正文片段）；
+   **旧用例按新语义改**（`test_用尽的那份不落盘且要报出来` 那条的后端本来就是死的 ⇒ 现在退 1）。
+
+**实测复现**（用失效 key 打到临时目录，不动好的旁挂）：
+
+```
+落盘统计：成功 0 条 / 规则层够用 16 条 / 失败 22 条
+⚠️ 失败原因分布：circuit × 19、http:401 × 3
+⛔ 发过请求的 22 条全部失败 ⇒ 本批一条都没精炼（渲染层会全走规则裁剪，产物与没精炼时逐字一致）
+exit=1
+```
+
+**顺带处置（凭据）**：`TRAJECTORY_LLM_API_KEY` 已从失效的那把换成
+`~/.config/opencode/opencode.json` 里**同一网关**、**同一模型**（`MiniMax-M3.1-Flash`）
+可用的那把（HKCU 已更新 + 用仓库自己的 `LLMClient` 验过通）。
+⚠️ **旧的那把已 401**（按凭据红线，它的值/前缀**不落文档**）——若日后它被续期，
+改回去即可。
+
+### H-40 · `test_media_probe` 的 `elapsed_ms` 是**墙钟边界断言** ⇒ 门禁随机红
+
+> **登记时间**：2026-11-17 · **来源**：本轮全量门禁（`3 failed / 5513 passed / 1 skipped`）
+> **状态**：⏸ **只登记，未改码**——处置口径属 owner
+
+**现象**（实测）：
+
+- 全量 `pytest trajectory_pipeline/tests -q` ⇒ `3 failed / 5513 passed / 1 skipped`（500.84s），
+  其中一条是 `test_media_probe.py::TestProbeAsync::test_elapsed_ms_recorded`。
+- **单独连跑 8 次全绿**（每次 ~0.2s）⇒ **不是功能回归，是偶发**。
+- 另两条红（`test_calibration_evidence` / `test_rationale_gates`）是**基线既有**
+  ——它们读**生产根**里另一个并发会话的产物 ⇒ 数据在变 ⇒ 读数在变。
+
+**根因**：断言是 `assert r.elapsed_ms >= 50`，而它等的是 `wait_s=0.05`
+⇒ **正好卡在整数毫秒的边界上**：`asyncio.sleep(0.05)` 的实际返回时刻落在
+49.x ms 就算红 ⇒ **机器一忙就红**。
+
+**为什么与本轮改动无关**（已核，不是推断）：`media_probe` **不 import**
+`ls_bridge` / `executor.cli`（`rg` 查过，零命中）⇒ 本轮改的那几个文件
+碰不到这条路径。
+
+**为什么只登记不改**（纪律）：改它要动**别人模块的测试断言**，而「门禁该断言什么」
+是 owner 的口径 ⇒ 按 H-37 同样的处理：**只登记**，等裁定。
+
+**建议处置（供 owner 选）**：
+
+- **A（改阈值）**：`>= 50` ⇒ `>= 45`——承认墙钟有抖动 ⇒ 最省事，但**丢掉了一部分
+  「真的没等够」的检出能力**。
+- **B（改口径）**：不断言**实际耗时**，改为断言**`wait_s` 被传到了等待逻辑**
+  ⇒ 测的是**契约**不是**时序** ⇒ 稳定，但不再证明「确实等了」。
+- **C（不管）**：把它记成**已知偶发**，每次全量读数时单独剔掉 ⇒ 零改动，
+  但每次读数都要多一步人工判读。
+
+⚠️ **不改的代价**：每次全量读数都得先分「这条红是它的锅还是真回归」
+⇒ **读数成本**，而且**这次就多花了一轮排查**。
 
 
 ### 其余开口项（M / L 级）

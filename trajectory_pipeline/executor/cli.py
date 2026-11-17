@@ -3790,7 +3790,10 @@ def cmd_refine(args: argparse.Namespace) -> int:
 
     Returns:
         0 = 跑完；2 = **没配后端**（不静默跳过——那样会让人以为
-        「精炼过了但效果不好」，而真相是压根没跑）。
+        「精炼过了但效果不好」，而真相是压根没跑）；
+        1 = **发过请求的条目全部失败**（后端配着但**用不了**，如 key 失效
+        ⇒ http:401 ⇒ 熔断）⇒ 本批**一条都没精炼**，产物与没精炼时逐字
+        一致 ⇒ 报表上**看不出任何异常** ⇒ 必须用退出码说破（H-39）。
     """
     from trajectory_pipeline.common import refine_sidecar
     from trajectory_pipeline.refine import reader as refine_reader
@@ -3886,6 +3889,12 @@ def cmd_refine(args: argparse.Namespace) -> int:
     retried = 0
     budget_hit = False
     tally: Counter = Counter()
+    #: **发过请求**的条目数（区分「压根没跑」与「跑了但没成」——H-39）。
+    attempted = 0
+    #: 发过请求**且失败**的条目数。
+    failed_attempted = 0
+    #: 失败原因的**类别**分布（`http:401` / `circuit` / `budget` / 模型质量）。
+    fail_reasons: Counter = Counter()
 
     for path, archive, specs in plans:
         title = str(archive.get("title") or "")
@@ -3911,6 +3920,13 @@ def cmd_refine(args: argparse.Namespace) -> int:
                     limit=limit,
                 )
                 calls_used += 1
+                # ⚠️ **只算「真的发了请求」的**（H-39）：``not_needed`` 那条
+                # 走的是同一个 ``refine_body``，它**没发请求** ⇒ 它的失败
+                # 不该算进「请求失败」。
+                attempted += 1
+                if outcome.source == "failed":
+                    failed_attempted += 1
+                    fail_reasons[_refine_reason_head(outcome.error)] += 1
             else:
                 # 规则层够用 ⇒ 不发请求（也不占预算）。
                 outcome = refine_refiner.refine_body(
@@ -3963,13 +3979,53 @@ def cmd_refine(args: argparse.Namespace) -> int:
     if tally["failed"]:
         print("  ⚠️ 失败的那些**整条作废** ⇒ 渲染层走规则裁剪"
               "（与没精炼时逐字一致），不是「用了一半」")
+    if fail_reasons:
+        # ⚠️ **失败原因必须分类报出来**（H-39）：「失败 22 条」这句话
+        # 不告诉人**是谁**在失败 —— 2026-11-17 实测：后端 key 失效
+        # （http:401）→ 熔断打开（circuit）→ 19 条压根没发请求，
+        # 三种混在一个数里，看的人只会当成「模型效果不好」。
+        breakdown = "、".join(
+            f"{reason} × {count}" for reason, count in fail_reasons.most_common()
+        )
+        print(f"  ⚠️ 失败原因分布：{breakdown}")
     if budget_hit:
         print(f"  ⚠️ 批次预算用尽（--max-calls {max_calls}）："
               f"剩下的档案**没精炼**，走规则裁剪")
     print(f"  → {out_dir}")
     print("  下一步：build --stage p2 --refined-dir "
           f"{out_dir} / task-view --refined-dir {out_dir}")
+    # ⚠️ **一条都没成 ⇒ 退 1**（H-39）：「压根没跑」与「跑了但没成」
+    # 必须长得不一样。全部失败时旁挂里的 ``kept`` 全空 ⇒ 渲染层
+    # **全走规则裁剪** ⇒ 产物与没精炼时**逐字一致** ⇒ **报表上完全
+    # 看不出异常**（这正是设计 §5「没配后端 ⇒ 退 2，不静默跳过」
+    # 要防的那类误读，只是这次后端**配了、但 key 失效了**）。
+    if attempted and failed_attempted == attempted:
+        print(f"  ⛔ 发过请求的 {attempted} 条**全部失败** ⇒ 本批**一条都没精炼**"
+              f"（渲染层会全走规则裁剪，产物与没精炼时逐字一致）")
+        return 1
     return 0
+
+
+def _refine_reason_head(error: str) -> str:
+    """精炼失败的**原因类别**（不是全文）。
+
+    ⚠️ **只取前缀**：模型质量类的错误文本里可能带页面正文片段，
+    全文打出来既吵又漏页面内容。
+
+    ⚠️ ``http`` 保留状态码（``http:401`` 与 ``http:404`` 的处置方向
+    完全不同：一个是凭据过期，一个是模型名写错）。
+    """
+    text = str(error or "").strip()
+    if not text:
+        return "未记录原因"
+    prefix, _, rest = text.partition(":")
+    prefix = prefix.strip().lower()
+    if prefix == "http":
+        code = "".join(ch for ch in rest if ch.isdigit())[:3]
+        return f"http:{code}" if code else "http"
+    if prefix in ("transport", "circuit", "budget", "shape"):
+        return prefix
+    return "模型质量"
 
 
 def _refine_limit(spec: Any) -> int:

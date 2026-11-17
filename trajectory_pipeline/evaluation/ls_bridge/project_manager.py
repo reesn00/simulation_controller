@@ -21,6 +21,7 @@ from typing import Any
 
 from trajectory_pipeline.evaluation.ls_bridge.client import (
     LabelStudioClient,
+    describe_api_key,
     read_label_config,
 )
 from trajectory_pipeline.evaluation.ls_bridge.errors import (
@@ -219,6 +220,10 @@ def describe_status(
         "health": health,
         "credentials_present": settings.has_credentials(),
         "api_key_source": "env:TRAJECTORY_LS_API_KEY",
+        # ⚠️ **形态**（不是凭据本身）：legacy vs PAT + exp。环境变量会**被
+        # 继承**（旧 shell / 旧父进程带着旧值）⇒ 「HKCU 已换成新的、这
+        # 个进程还在用旧的」是最难查的一种 401，这一行让它一眼可见。
+        "api_key_kind": describe_api_key(settings.resolve_api_key() or ""),
         "label_config_path": str(config_path),
         "label_config_exists": Path(config_path).is_file(),
         "upload_enabled": settings.upload.enabled,
