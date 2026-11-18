@@ -1220,8 +1220,14 @@ class TestClassifyCandidatesBatches:
     def test_窗口常量与感知层LLM_LINKS一致(self):
         """executor 侧复制了窗口宽度常量——不得与感知层漂移。
         漂移 = 分批按错的宽度切，批比窗口大时感知层静默截断，
-        「模型看得到全部候选」的构造保证就破了，且校验还报绿。"""
-        assert orchestrator.PERCEPTION_LINK_WINDOW == lp.LLM_LINKS
+        「模型看得到全部候选」的构造保证就破了，且校验还报绿。
+
+        ⚠️ **不变量是「批 ≤ 窗口」，不是「批 == 窗口」**（H-41）：
+        窗口抬到 200（与采集层同值）而分批仍是 20——**批比窗口小**是
+        安全的（这一批一定完整送得出去），**批比窗口大**才危险。
+        ⇒ 断言改成 ``<=``，并另立一条盯住「批不许超过窗口」。
+        """
+        assert orchestrator.PERCEPTION_LINK_WINDOW <= lp.LLM_LINKS
 
     def test_窗口常量为正整数(self):
         assert isinstance(orchestrator.PERCEPTION_LINK_WINDOW, int)
@@ -1487,18 +1493,23 @@ class TestRunRecordAudit:
             assert token not in blob
 
     async def test_元素落盘被裁时总量字段仍在(self):
-        """D-2 的机械前提：落盘元素上限 80、链接上限 200，
+        """D-2 的机械前提：落盘元素上限 200、链接上限 200，
         而 ``elements_total`` 记的是**裁之前**的量。
 
         没它就是「两种相反的错误同形」：页面真有 300 个控件而采了 80，
-        与页面只有 80 个控件，都落成 80 条——前者该判不可判定，后者不该。"""
+        与页面只有 80 个控件，都落成 80 条——前者该判不可判定，后者不该。
+
+        ⚠️ **H-41（2026-11-17）**：元素上限由 80 提到 200（与采集层同值）
+        ⇒ **本例的元素条数必须超过 200** 才裁得到（原来 120 就够，
+        现在 120 < 200 ⇒ 压根不裁 ⇒ 这条断言会变成空断言）。
+        """
         from trajectory_pipeline.executor.orchestrator import (
             OBS_ELEMENT_LIMIT,
             OBS_LINK_LIMIT,
             RunRecord,
         )
 
-        elements = tuple(("e%d" % i, "a", "链接%d" % i) for i in range(120))
+        elements = tuple(("e%d" % i, "a", "链接%d" % i) for i in range(260))
         links = tuple(("t%d" % i, "https://x.test/%d" % i) for i in range(260))
         obs = Observation(
             url="https://x.test/",
@@ -1508,7 +1519,7 @@ class TestRunRecordAudit:
                 InteractiveElement(ref=r, role=t, name=l) for r, t, l in elements
             ),
             links=tuple(LinkItem(text=t_, href=h) for t_, h in links),
-            elements_total=120,
+            elements_total=260,
             links_total=260,
         )
         j = RunRecord(
@@ -1516,8 +1527,42 @@ class TestRunRecordAudit:
         ).to_json()["search_observation"]
         assert len(j["interactive_elements"]) == OBS_ELEMENT_LIMIT
         assert len(j["links"]) == OBS_LINK_LIMIT
-        assert j["elements_total"] == 120 > OBS_ELEMENT_LIMIT
+        assert j["elements_total"] == 260 > OBS_ELEMENT_LIMIT
         assert j["links_total"] == 260 > OBS_LINK_LIMIT
+
+    async def test_采到的条数不超过上限时一条都不裁(self):
+        """⚠️ **H-41 的直接后果**（落盘上限 80 → 200，与采集层同值）：
+
+        采集层最多给 200 条，落盘也留 200 条 ⇒ **生产路径上落盘永远不会
+        窄于采集** ⇒ D-2 那条「目标是不是被裁掉了」从「可能」变成
+        「**不可能**」⇒ 评分器不必再为裁剪放宽判据。
+
+        ⚠️ 这条断言是**防止有人把上限改小**的：一旦落盘又窄于采集，
+        D-2 就必须重新开始放宽判据，而那件事**没有任何地方会提醒**。
+        """
+        from trajectory_pipeline.executor.orchestrator import (
+            OBS_ELEMENT_LIMIT,
+            RunRecord,
+        )
+
+        n = OBS_ELEMENT_LIMIT - 10
+        elements = tuple(("e%d" % i, "a", "链接%d" % i) for i in range(n))
+        obs = Observation(
+            url="https://x.test/",
+            page_title="T",
+            body_text="正文",
+            interactive_elements=tuple(
+                InteractiveElement(ref=r, role=t, name=l) for r, t, l in elements
+            ),
+            links=(),
+            elements_total=n,
+            links_total=0,
+        )
+        j = RunRecord(
+            task_id="T001", title="t", query="q", search_url="u", search_obs=obs
+        ).to_json()["search_observation"]
+        assert len(j["interactive_elements"]) == n
+        assert j["elements_total"] == len(j["interactive_elements"])
 
     async def test_没设总量时按落盘条数兜底(self):
         """老观察对象（手工构造、第三方传入）没有这两个字段。

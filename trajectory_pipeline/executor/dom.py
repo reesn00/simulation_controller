@@ -44,15 +44,43 @@ from typing import Any, Final
 # 导入再导出——orchestrator 环节 0.5 / cli report 存量重算 / static_probe
 # 三处生产调用点与存量测试的 ``dom.detect_block`` 旧引用继续解析，零行为变化。
 from trajectory_pipeline.executor.gatekeeper import detect_block  # noqa: F401
+from trajectory_pipeline.common.field_limits import BODY_BUDGET_CHARS
 
 # ═══════════════════════════════════════════════════════════════════════
 # 常量
 # ═══════════════════════════════════════════════════════════════════════
 
-#: 传给 browser_snapshot 的字符预算。设 6000：实测 CSS 可占页面文本的
-#: 30~70%，预算太小会让正文被样式表挤光（内容判断失效），
-#: 太大则白白吃掉 LLM 上下文。这是个待调参数，不是定论。
-DEFAULT_MAX_CHARS = 6000
+#: 传给 browser_snapshot 的字符预算。**6000 → 200000**（2026-11-17 H-41）。
+#:
+#: ⚠️ **为什么原来是 6000**：实测 CSS 可占页面文本的 30~70%，预算太小会让
+#: 正文被样式表挤光（内容判断失效），太大则白白吃掉 LLM 上下文。**这是个
+#: 待调参数，不是定论。**——原注释自己就这么说。
+#:
+#: ⚠️ **为什么现在是 200000**：owner 授权「LLM 输入 200k / 输出 128k」
+#: ⇒ 采集层**不再有理由**自己设一个小预算。
+#:
+#:   - **实测真实正文只有 ~3000 字**（本仓库真实 P1：3301 / 3253 / 2987 字，
+#:     见台账 H-41）⇒ **抬预算在实际数据上几乎不涨体积**；
+#:   - 6000 之所以**曾经**是「唯一真正绑死的上限」，是因为 **snapshot 路径
+#:     的 CSS 抢预算**——而正文主来源 ``innerText``（:data:`INNER_TEXT_EXPR`）
+#:     **压根不带 CSS** ⇒ 抬预算对正文**零副作用**；
+#:   - 200000 与输入窗口同量级 ⇒ **整页进得来**，这正是「让模型选核心内容」
+#:     的**前提**（模型没看到的内容，它选不出来）。
+#:
+#: ⚠️ **这是「语料链」的上游闸门**：P1 存档 → P2 → P3/T 的正文都源于此。
+#: 这里的截断**不可逆**（下游任何 LLM 都救不回来）⇒ 它是全链最该抬的一处。
+#:
+#: ⚠️ **但它管不到 ``browser_snapshot`` 工具自身**（那是浏览器侧的事实，
+#: 不归本参数管 ⇒ 可能**静默截**）。要确认工具自身有没有上限，
+#: **必须拿真实页面探**（不能凭推理宣布修好了——见
+#: ``docs/避坑指南/05-fail-closed边界.md:133-135``）。
+#:
+#: ⚠️ **数字不在这里定**（H-41）：它同时是「送模型那一份」的正文预算
+#: （:mod:`trajectory_pipeline.perception.llm_perceptor`），两边各写一份
+#: 必然漂 ⇒ 唯一真源在
+#: :data:`trajectory_pipeline.common.field_limits.BODY_BUDGET_CHARS`，
+#: 这里只做转发（历史 import 路径不变）。
+DEFAULT_MAX_CHARS = BODY_BUDGET_CHARS
 
 #: 媒体与 iframe 的存在性探测选择器（``browser_count`` / ``locator().count()``
 #: 都接受任意 CSS selector）。
@@ -67,6 +95,10 @@ IFRAME_SELECTOR = "iframe"
 #: 长度达到预算的这个比例即判定「已截断」。obscura 不给截断标记，
 #: 只能按长度推断——故取保守值，宁可误判为截断（闸门放宽）也不误判为完整
 #: （闸门把被截掉的实体判成幻觉）。
+#:
+#: ⚠️ H-41：它**只用于「工具切过」那个信号**（快照路径的原始长度）。
+#: 「我们自己切过」那个信号用**精确比较**（``body_len >= max_chars``）——
+#: 我们自己切就是切在 ``max_chars`` 上，没有「接近」这回事。
 TRUNCATION_RATIO = 0.95
 
 #: 正文主来源。实测 baidu 首页：``innerText`` 474 字符纯文本 / 47ms，
@@ -209,6 +241,44 @@ class CleanedLink:
     href: str
 
 
+def budget_truncated(
+    *,
+    body_len: int,
+    max_chars: int | None,
+    source_len: int | None = None,
+) -> bool:
+    """正文被预算截断了吗？——**两个来源都算**，各按各的证据（H-41）。
+
+    「正文不完整」有**两个来源**，混在一起判就会同时误报与漏报：
+
+    1. **我们自己切的**（:func:`parse_body_text` / :func:`clean_body`）
+       ⇒ 证据是**正文实际长度**：我们切在 ``max_chars`` 上 ⇒
+       ``body_len >= max_chars`` 就是切过。**精确比较，没有「接近」这回事。**
+    2. **浏览器工具切的**（``browser_snapshot(max_chars=…)`` 自己的上限）
+       ⇒ 证据是**原始文本长度**：工具切在 ``max_chars`` 上 ⇒
+       ``source_len >= max_chars * TRUNCATION_RATIO``。
+
+    ⚠️ **为什么 ``source_len`` 不是一律参与判定**：``raw_len`` 在两个驱动里
+    **不是同一个东西**——
+
+    - obscura 的 ``raw_len`` 是**整页快照长**（含 CSS / JS / URL / Title 行），
+      而正文来自 ``innerText``（**压根不带 CSS**）⇒ 拿 ``raw_len`` 去判
+      「正文被截了」就是**误报**：CSS 重的页快照顶到预算，正文却完整。
+      ⇒ **正文不来自快照时，``source_len`` 不给**（传 ``None``）。
+    - 正文**来自快照**时，``raw_len`` 顶到预算**恰恰说明工具切了** ⇒
+      必须参与判定，否则就是**漏报**（闸门会把落在截断外的实体判成幻觉）。
+
+    ⇒ **判据 = 「正文实际长度」为底，「工具切过」只在正文来自快照时补一刀。**
+    """
+    if max_chars is None:
+        return False
+    if body_len >= max_chars:
+        return True
+    if source_len is not None and source_len >= max_chars * TRUNCATION_RATIO:
+        return True
+    return False
+
+
 def parse_body_text(text: str, *, max_chars: int | None = None) -> str:
     """解析 ``browser_evaluate('document.body.innerText')`` 的返回。
 
@@ -264,10 +334,18 @@ def parse_snapshot(
     title_m = _TITLE_RE.search(text)
 
     if body is not None:
-        # innerText 路径：raw_len 记内文长度，截断按 innerText 自己的预算判断
+        # innerText 路径：正文是**我们自己**切的 ⇒ 判据是**正文实际长度**。
+        #
+        # ⚠️ **不给 ``source_len``**（H-41）：这里的 ``raw_len`` 是**整页快照
+        # 长**（含 CSS / JS / URL / Title 行），而正文来自 ``innerText``
+        # （**压根不带 CSS**）⇒ 拿它判「正文被截了」在 CSS 重的页上
+        # **误报**（闸门被无谓放宽）；而正文**确实**被我们切过这件事，
+        # ``body_len`` 已经如实说了。
         cleaned = body
         stripped_ratio = 1.0
-        truncated = max_chars is not None and len(cleaned) >= max_chars
+        truncated = budget_truncated(
+            body_len=len(cleaned), max_chars=max_chars,
+        )
         source = "inner_text"
     else:
         raw_body = text
@@ -277,7 +355,12 @@ def parse_snapshot(
                 raw_body = raw_body[: m.start()] + raw_body[m.end() :]
         cleaned = clean_body(raw_body)
         stripped_ratio = (len(cleaned) / raw_len) if raw_len else 1.0
-        truncated = max_chars is not None and raw_len >= max_chars * TRUNCATION_RATIO
+        # ⚠️ **这里给 ``source_len``**（H-41）：正文来自快照 ⇒ 工具那一次切
+        # **确实切到了这份正文** ⇒ 不给就是**漏报**（落在截断外的实体会被
+        # 闸门判成幻觉）。
+        truncated = budget_truncated(
+            body_len=len(cleaned), max_chars=max_chars, source_len=raw_len,
+        )
         source = "snapshot"
 
     return CleanedSnapshot(

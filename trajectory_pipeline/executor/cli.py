@@ -151,7 +151,13 @@ from trajectory_pipeline.executor.review_queue import (
 )
 from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.executor.steps.visit import visit_site
-from trajectory_pipeline.assembler import builder, pool, views
+from trajectory_pipeline.assembler import (
+    builder,
+    failclosed,
+    observation_view,
+    pool,
+    views,
+)
 from trajectory_pipeline.taskgen.sampler import W1_DEGENERATE_DIMS
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.replay import (
@@ -3531,6 +3537,14 @@ def cmd_build(args: argparse.Namespace) -> int:
     include_legacy = bool(getattr(args, "include_legacy", False))
     # 精炼旁挂（方案 25）：``None`` = 不做精炼（默认，行为与今天逐字一致）。
     refined_dir = getattr(args, "refined_dir", None)
+    # 渲染模式（H-41 阶段 2）：``capped``（默认，规则裁剪）/ ``semantic``
+    # （模型选，**不截**）。⚠️ 语义模式**必须配 ``--refined-dir``——
+    # 没有旁挂就没有模型的选择，整批会**逐字回退**规则裁剪。
+    mode = (
+        observation_view.VIEW_MODE_SEMANTIC
+        if getattr(args, "semantic", False)
+        else observation_view.VIEW_MODE_CAPPED
+    )
 
     if stage in ("p2", "all"):
         picked = [path.name for path, _reviewed in select_archives(root)]
@@ -3540,7 +3554,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                                 era_filter=era_filter,
                                 include_legacy=include_legacy,
                                 prune_stale=True,
-                                refined_dir=refined_dir)
+                                refined_dir=refined_dir,
+                                mode=mode)
         print(f"P1 → P2：{len(rep.archives)} 份存档，"
               f"切出 {rep.total_samples} 条样本，写出 {rep.total_written} 条")
         degraded = sum(a.degraded for a in rep.archives)
@@ -3586,6 +3601,18 @@ def cmd_build(args: argparse.Namespace) -> int:
                   "要么跑 regenerate-rationales 把旧档重生成，"
                   "要么 --rationale-era pre_action 构同口径批次。"
                   "（旧口径样本的闸门记 not_run——跨口径不判）")
+        if rep.total_semantic_observations or rep.total_semantic_fallbacks:
+            # ⚠️ **语义渲染的账必须印出来**（H-41 阶段 2）：
+            # 回退后的观察与 ``capped`` **逐字一致** ⇒ 不印的话，
+            # 「语义渲染跑过了」与「压根没跑通」在报表上**长得一模一样**
+            # ⇒ 读的人以为这批语料是模型选的，其实一半是规则裁的。
+            print(f"  语义渲染 {rep.total_semantic_observations} 条观察"
+                  f"（模型选的内容进了语料）")
+            if rep.total_semantic_fallbacks:
+                print(f"  ⚠️ 语义渲染回退 {rep.total_semantic_fallbacks} 条观察"
+                      f"（无旁挂 / 旧协议 / 对不上原文 ⇒ **整条回退规则裁剪**）"
+                      f"——回退的那条**不是**模型选的，"
+                      f"查旁挂（`refine --semantic`）与协议版本")
         bad = [a for a in rep.archives if a.sample_count == 0]
         if bad:
             print(f"\n切不出样本的存档 {len(bad)} 份"
@@ -3627,6 +3654,41 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"  → {vrep.views_dir}")
         _print_sweep(vrep.sweep)
         _print_pool_note(root, "views")
+
+    if stage == "failclosed":
+        # ⚠️ **缺件负样本线**（H-41 阶段 3 · 方案 26 §6.4）：fail-closed
+        # 的**第三类**训练信号——「故意给不完整观察」的负样本线。
+        #
+        # ⚠️ **它不进主池**：落点是 ``failclosed_samples/``（与 ``samples/``
+        # 平级、不同名）——里面的样本是**故意阉割过的观察**，混进主池
+        # 就是往训练集里塞假事实。
+        #
+        # ⚠️ **必须显式印**：这条线造出来的样本**在报表上与主池长得一样**
+        # （都是 P2 形状的 JSON）⇒ 不印就分不出「这批语料里有造出来的
+        # 缺件样本」。
+        picked_fc = [path.name for path, _reviewed in select_archives(root)]
+        fc_results = builder.build_failclosed_all(
+            source_root=root, target_root=root,
+            overwrite=args.overwrite,
+            archive_filter=picked_fc,
+            refined_dir=refined_dir,
+            mode=mode,
+        )
+        fc_written = sum(r.written for r in fc_results)
+        fc_skipped = sum(len(r.skipped) for r in fc_results)
+        fc_counts: Counter = Counter()
+        for r in fc_results:
+            fc_counts.update(r.cut_counts)
+        print(f"缺件负样本线：{len(fc_results)} 份存档，写出 {fc_written} 条"
+              f"（跳过 {fc_skipped} 条）")
+        for cut_mode, n in sorted(fc_counts.items()):
+            label = failclosed.CUT_MODE_LABELS.get(cut_mode, cut_mode)
+            print(f"  {cut_mode}（{label}）：{n} 条")
+        if fc_written:
+            print(f"  ⚠️ 这些是**故意缺件**造出来的样本"
+                  f"（`degraded_from` 含 `failclosed_line`）"
+                  f"——**不进主池**，训练时要显式挑")
+        print(f"  → {builder.failclosed_dir(root)}")
 
     return 0
 
@@ -3687,6 +3749,12 @@ def cmd_task_view(args: argparse.Namespace) -> int:
     include_legacy = bool(getattr(args, "include_legacy", False))
     # 精炼旁挂（方案 25）：``None`` = 不做精炼（默认，行为与今天逐字一致）。
     refined_dir = getattr(args, "refined_dir", None)
+    # 渲染模式（H-41 阶段 2）：同 cmd_build。
+    mode = (
+        observation_view.VIEW_MODE_SEMANTIC
+        if getattr(args, "semantic", False)
+        else observation_view.VIEW_MODE_CAPPED
+    )
     if args.all:
         # 整批：**名单由 select_archives 定**（复核档优先）。直接 glob 会让
         # 同一条 run 出两份 T 视图，其中复核档那份的 run_id 被派生成
@@ -3701,6 +3769,7 @@ def cmd_task_view(args: argparse.Namespace) -> int:
             include_legacy=include_legacy,
             prune_stale=True,
             refined_dir=refined_dir,
+            mode=mode,
         )
         # 跳过原因归组打印（与 cmd_build 的 P3 段同款纪律——
         # 二次跑会跳过 N 条，逐条印是噪声）。
@@ -3806,6 +3875,9 @@ def cmd_refine(args: argparse.Namespace) -> int:
         Path(args.refined_dir) if args.refined_dir
         else storage_refined_dir(root)
     )
+    #: **语义模式**（H-41 阶段 2）：正文 / 元素 / 链接**三段都由模型选**，
+    #: 渲染层按模型的选择逐字重建，**没有字数硬顶**。
+    semantic = bool(getattr(args, "semantic", False))
 
     if args.p1:
         files = [Path(p) for p in args.p1]
@@ -3833,26 +3905,41 @@ def cmd_refine(args: argparse.Namespace) -> int:
             continue
         specs = refine_reader.iter_observations(archive)
         plans.append((path, archive, specs))
-        # ⚠️ **按正文键去重**——真跑的时候同一份正文只发一次请求
-        # （正文一样 ⇒ 精炼结果一样）。计划阶段**必须按同一口径**算：
+        # ⚠️ **按候选集键去重**——真跑的时候同一份**候选集**只发一次请求
+        # （候选集一样 ⇒ 精炼结果一样）。计划阶段**必须按同一口径**算：
         # 之前这里逐条算，而打印的字写着「正文键去重后逐份算的」——
         # 实测 35 vs 实际 24，**多报 45%**。而这个数是运营方用来估
         # `--max-calls` 的（估大了 ⇒ 预算不够 ⇒ 一半档案被丢弃）。
         #
         # ⚠️ 去重范围是**每份档案内部**：真跑时旁挂也是**每份一份**
-        # （同一份正文出现在两份档案里 ⇒ 两边各发一次，各存一条）。
-        seen_bodies: set[str] = set()
+        # （同一份候选集出现在两份档案里 ⇒ 两边各发一次，各存一条）。
+        #
+        # ⚠️ **键是候选集哈希，不只是正文哈希**（H-41 阶段 3）：三段协议
+        # 选的是正文 + 元素 + 链接 ⇒ 同一份正文在不同步上的元素 / 链接
+        # 集合可以不同 ⇒ 那是**两份候选集** ⇒ 各发一次（实测 +8.9%）。
+        seen_keys: set[str] = set()
         for spec in specs:
-            body = spec.body
-            key = refine_sidecar.body_key(body)
-            if key in seen_bodies:
+            key_body, cand_body, limit, elem_cands, link_cands = _refine_inputs(
+                spec, semantic=semantic,
+            )
+            key = refine_sidecar.selection_key(
+                key_body, elements=elem_cands, links=link_cands,
+            )
+            if key in seen_keys:
                 continue
-            if refine_refiner.needs_refine(body, _refine_limit(spec)):
-                seen_bodies.add(key)
+            if refine_refiner.needs_refine(
+                cand_body, limit,
+                semantic=semantic,
+                elements=elem_cands, links=link_cands,
+            ):
+                seen_keys.add(key)
                 would_call += 1
     print(f"精炼计划：{len(plans)} 份存档，"
           f"约 {would_call} 次 LLM 请求"
-          f"（正文键去重后逐份算的）")
+          f"（候选集键去重后逐份算的）")
+    if semantic:
+        print(f"  模式：**语义**（正文 / 元素 / 链接三段都由模型选，"
+              f"没有字数硬顶）")
     print(f"  旁挂落点：{out_dir}")
     if args.dry_run:
         print("  --dry-run：不发请求、不写盘")
@@ -3902,22 +3989,34 @@ def cmd_refine(args: argparse.Namespace) -> int:
         entries: dict[str, dict[str, Any]] = {}
         local: Counter = Counter()
         for spec in specs:
-            body = spec.body
-            key = refine_sidecar.body_key(body)
+            key_body, cand_body, limit, elem_cands, link_cands = _refine_inputs(
+                spec, semantic=semantic,
+            )
+            # ⚠️ **键 = 候选集哈希**（H-41 阶段 3）：三段协议下模型选的是
+            # 正文 + 元素 + 链接 ⇒ 键必须覆盖这三样。只按正文哈希 ⇒
+            # **A 步的选择被贴到 B 步上**（实测：13 条回退里 12 条）。
+            key = refine_sidecar.selection_key(
+                key_body, elements=elem_cands, links=link_cands,
+            )
             if key in entries:
-                # 同一份正文在本档里出现多次 ⇒ 精炼结果一样 ⇒ 只做一次。
+                # 同一份候选集在本档里出现多次 ⇒ 精炼结果一样 ⇒ 只做一次。
                 continue
-            limit = _refine_limit(spec)
-            if refine_refiner.needs_refine(body, limit):
+            if refine_refiner.needs_refine(
+                cand_body, limit,
+                semantic=semantic,
+                elements=elem_cands, links=link_cands,
+            ):
                 if max_calls and calls_used >= max_calls:
                     budget_hit = True
                     break
                 outcome = refine_refiner.refine_body(
-                    client, body,
+                    client, cand_body,
                     focus=focus, keep=spec.keep,
                     url=str(spec.observation.get("url") or ""),
                     title=str(spec.observation.get("page_title") or ""),
                     limit=limit,
+                    elements=elem_cands, links=link_cands,
+                    semantic=semantic,
                 )
                 calls_used += 1
                 # ⚠️ **只算「真的发了请求」的**（H-39）：``not_needed`` 那条
@@ -3930,17 +4029,43 @@ def cmd_refine(args: argparse.Namespace) -> int:
             else:
                 # 规则层够用 ⇒ 不发请求（也不占预算）。
                 outcome = refine_refiner.refine_body(
-                    client, body, focus=focus, keep=spec.keep, limit=limit,
+                    client, cand_body, focus=focus, keep=spec.keep,
+                    limit=limit, elements=elem_cands, links=link_cands,
+                    semantic=semantic,
                 )
             local[outcome.source] += 1
             entries[key] = {
-                "body_key": key,
+                "selection_key": key,
+                # ⚠️ **正文哈希只是留痕**（不是索引键）：同一份正文可以
+                # 有多条记录（元素 / 链接集合不同 ⇒ 候选集不同 ⇒ 键不同）。
+                "body_key": refine_sidecar.body_key(key_body),
                 "source": outcome.source,
                 "kept": list(outcome.lines),
+                # ⚠️ **元素 / 链接也是模型选的**（H-41 阶段 2）：语义模式
+                # 下它们**没有条数上限**，那条 10 / 4 的硬顶就是截断。
+                "elements": [
+                    {"role": r, "name": n} for r, n in outcome.elements
+                ],
+                "links": [
+                    {"text": t, "href": h} for t, h in outcome.links
+                ],
                 "dropped": outcome.dropped,
                 "candidates": outcome.candidates,
+                # ⚠️ **两笔账**（H-41）：「一共有多少候选」与「实际给了
+                # 模型多少」是两个事实——混算成 ``dropped`` 就分不出
+                # 「模型不想要」与「我们自己没给它看」。
+                "candidates_shown": outcome.candidates_shown,
                 "error": outcome.error,
                 "call": dict(outcome.call),
+                # ⚠️ **逐条记协议版本**：渲染层靠它分「这条是三段协议
+                # 产出的」与「这条只选了正文」。老协议只有正文 ⇒ 语义
+                # 渲染不能用它选元素 ⇒ **整条回退规则裁剪**（而不是
+                # 「正文用模型的、元素用规则的」那种混口径观察）。
+                "protocol": (
+                    refine_sidecar.ENTRY_PROTOCOL
+                    if semantic
+                    else refine_sidecar.ENTRY_PROTOCOL_LEGACY
+                ),
             }
         if budget_hit:
             # ⚠️ **这一份的条目一条都不落盘**（`continue` 掉了）——
@@ -4028,13 +4153,19 @@ def _refine_reason_head(error: str) -> str:
     return "模型质量"
 
 
-def _refine_limit(spec: Any) -> int:
+def _refine_limit(spec: Any, *, semantic: bool = False) -> int | None:
     """这条观察的**训练态正文上限**（普通步 320 / 读步 2000）。
 
     权威在 :mod:`trajectory_pipeline.assembler.observation_view`——
     这里**转发**而不另写字面量（两份真源必然漂，而漂了不报错：
     只是精炼按 320 裁、渲染按 2000 放）。
+
+    ⚠️ **语义模式返回 ``None``**（H-41 阶段 2）：语义模式**没有字数
+    上限**——那道顶就是本方案要禁掉的截断。给个数字下去，下游会以为
+    「还有个 320 的顶」，而渲染层**压根没有那道顶** ⇒ 两处口径分叉。
     """
+    if semantic:
+        return None
     from trajectory_pipeline.assembler.observation_view import (
         VIEW_BODY_CHARS,
         VIEW_READ_BODY_CHARS,
@@ -4042,6 +4173,76 @@ def _refine_limit(spec: Any) -> int:
 
     read = str((spec.observation or {}).get("read") or "")
     return VIEW_READ_BODY_CHARS if read == "snapshot" else VIEW_BODY_CHARS
+
+
+def _refine_inputs(
+    spec: Any,
+    *,
+    semantic: bool,
+) -> tuple[str, str, int | None, list[tuple[str, str]], list[tuple[str, str]]]:
+    """这条观察的精炼输入。
+
+    Returns:
+        ``(键正文, 候选正文, 上限, 元素候选, 链接候选)``。
+
+    ⚠️ **两份正文不是同一个东西**（H-41 阶段 2）：
+
+    - **键正文** = 完整正文（``spec.body``）——旁挂按它**加候选集**算键
+      （:func:`trajectory_pipeline.common.refine_sidecar.selection_key`），
+      渲染层也按**同一份**算（两边必须一致，否则「按 A 的候选集去查
+      B 的精炼」⇒ 白跑一趟）。
+    - **候选正文** = 只在「这次真的渲染正文」时才是完整正文——读步
+      （``interactive`` / ``links``）**不渲染正文** ⇒ 不摆正文候选给
+      模型。模型选了**不渲染**的东西 ⇒ 渲染层逐字核对不过 ⇒ 整条回退
+      ⇒ 白花一次调用，还多一条「模型不听话」的假账。
+
+    ⚠️ **元素 / 链接候选与渲染层同一份**
+    （:mod:`trajectory_pipeline.common.view_candidates`）——两份实现漂了
+    不报错，只是「模型报的第 7 号」与「渲染层找的第 7 号」不是同一个
+    东西 ⇒ 训练样本里出现「模型选了 A、渲染层放进 B」。
+    ⇒ 这份候选集**同时是索引键的一部分** ⇒ 两边必须**逐字一致**。
+
+    ⚠️ **语义模式才摆元素 / 链接**（``capped`` 模式的精炼只管正文，
+    行为与今天逐字一致）——而**键也跟着变**（老协议只覆盖正文这一维
+    ⇒ 键只看正文）。
+    """
+    from trajectory_pipeline.common import view_candidates
+    from trajectory_pipeline.common.elements import vocabulary_of_archive_elements
+
+    obs = spec.observation or {}
+    has_body, has_elements, has_links = view_candidates.read_blocks(
+        obs.get("read")
+    )
+    full_body = str(spec.body or "")
+    cand_body = full_body if has_body else ""
+    elements: list[tuple[str, str]] = []
+    links: list[tuple[str, str]] = []
+    if semantic:
+        raw_elements = list(obs.get("interactive_elements") or ())
+        raw_links = list(obs.get("links") or ())
+        if has_elements:
+            elements = [
+                (c.role, c.name)
+                for c in view_candidates.element_candidates(
+                    raw_elements,
+                    vocabulary=vocabulary_of_archive_elements(raw_elements),
+                    filter_noise=False,
+                )
+            ]
+        if has_links:
+            links = [
+                (c.text, c.href)
+                for c in view_candidates.link_candidates(
+                    raw_links, filter_noise=False,
+                )
+            ]
+    return (
+        full_body,
+        cand_body,
+        _refine_limit(spec, semantic=semantic),
+        elements,
+        links,
+    )
 
 
 def _derived_products(root: Path, run_id: str) -> tuple[Path, ...]:
@@ -5122,8 +5323,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     bd = sub.add_parser("build", help="P1 → P2 → P3 组装（不联网，不开浏览器）")
     bd.add_argument("--out", default=None, help="P1 存档目录")
-    bd.add_argument("--stage", choices=("p2", "p3", "all"), default="all",
-                    help="只跑 P2（读 P1）/ 只跑 P3（读 P2）/ 两段都跑")
+    bd.add_argument("--stage", choices=("p2", "p3", "all", "failclosed"),
+                    default="all",
+                    help="只跑 P2（读 P1）/ 只跑 P3（读 P2）/ 两段都跑 / "
+                         "只造**缺件负样本线**（fail-closed 第三类信号，"
+                         "落 `failclosed_samples/`，**不进主池**）")
     bd.add_argument("--overwrite", action="store_true",
                     help="覆盖已落盘的产物。**默认不覆盖**——重建批次不该"
                          "悄悄抹掉别人标好的样本")
@@ -5142,6 +5346,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="**精炼旁挂目录**（方案 25）。给了就按存档名读"
                          "旁挂，用模型选出的行重建正文；不给 = 不做精炼"
                          "（默认，行为与不做精炼时逐字一致）")
+    bd.add_argument("--semantic", action="store_true",
+                    help="**语义渲染**（H-41 阶段 2）：正文 / 元素 / 链接"
+                         "**三段都由模型选**，渲染层按模型的选择逐字重建，"
+                         "**没有字数硬顶**。需要配 --refined-dir；"
+                         "精炼不可用时**整条回退**规则裁剪（逐字一致）")
     bd.set_defaults(func=cmd_build)
 
     tv = sub.add_parser(
@@ -5174,6 +5383,10 @@ def build_parser() -> argparse.ArgumentParser:
     tv.add_argument("--refined-dir", default=None,
                     help="**精炼旁挂目录**（方案 25）。给了就按存档名读"
                          "旁挂，用模型选出的行重建正文；不给 = 不做精炼")
+    tv.add_argument("--semantic", action="store_true",
+                    help="**语义渲染**（H-41 阶段 2）：正文 / 元素 / 链接"
+                         "**三段都由模型选**，**没有字数硬顶**。需要配 "
+                         "--refined-dir；精炼不可用时**整条回退**规则裁剪")
     tv.set_defaults(func=cmd_task_view)
 
     rf = sub.add_parser(
@@ -5192,6 +5405,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "超了就停，剩下的档案走规则裁剪（并显式报出来）")
     rf.add_argument("--dry-run", action="store_true",
                     help="只算计划（几份存档、几次请求），不发请求、不写盘")
+    rf.add_argument("--semantic", action="store_true",
+                    help="**语义模式**（H-41 阶段 2）：正文 / 元素 / 链接"
+                         "**三段都由模型选**（一个连续编号空间），"
+                         "**没有行数上限、没有字数硬顶**。写出的旁挂带 "
+                         "protocol=select.v2，渲染层据此启用语义渲染；"
+                         "不带 --semantic 写出的旁挂**只选正文**"
+                         "（protocol=select.v1），语义渲染**不认**")
     rf.set_defaults(func=cmd_refine)
 
     pg = sub.add_parser(

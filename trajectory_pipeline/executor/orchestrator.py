@@ -54,6 +54,12 @@ from trajectory_pipeline.executor.steps.search import Candidate
 from trajectory_pipeline import toolcatalog
 from trajectory_pipeline.perception import questions
 from trajectory_pipeline.common.elements import element_json
+from trajectory_pipeline.common.field_limits import (
+    ELEMENT_COUNT_LIMIT,
+    ELEMENT_NAME_LIMIT,
+    LINK_COUNT_LIMIT,
+    LINK_TEXT_LIMIT,
+)
 from trajectory_pipeline.perception.base import (
     Decision,
     LinkItem,
@@ -74,25 +80,70 @@ log = logging.getLogger(__name__)
 #: D-2 的评分器靠 ``len(观察里存的)`` 与 ``elements_total`` 的差判断
 #: 「目标是不是可能被裁掉了」，而这个差**只有在两处截断对齐时才有意义**。
 #: 哪天这里改成 100 而别处还按 80 判断，D-2 会静默地把裁剪当成不存在。
-OBS_ELEMENT_LIMIT = 80
+#:
+#: ⚠️ **80 → 200**（2026-11-17 H-41）：与驱动层
+#: :data:`~trajectory_pipeline.executor.browser.obscura_driver.DEFAULT_LIMIT`
+#: **对齐**（两边都是 200）⇒ D-2 的那个差**归零** ⇒ 「目标是不是被裁掉了」
+#: 从「可能」变成「**不可能**」⇒ 评分器不必再为裁剪放宽判据。
+#:
+#: ⚠️ **为什么元素侧以前是 80 而链接侧已是 200**：链接侧 2026-11-10 由
+#: 50 提到 200（搜索页的链接总量常到 100+，前 50 条几乎全是站内导航/
+#: 相关搜索/热搜，**搜索结果条目排在其后**——按 50 条落盘等于把结果区
+#: 整段截掉）。元素侧当时没跟着抬，**于是 80 与 200 之间那 120 条就是
+#: 「模型看过、证据里没有」**（读原语读到第 81–200 条的元素时，训练侧
+#: 引用的东西在取证侧查不到 ⇒ 可归因的红线）。
+#:
+#: ⇒ 元素与链接现在**都**是 200，与采集层同值 ⇒ **「落盘 = 采集」**。
+#: 跨面测量口径 :data:`~trajectory_pipeline.executor.browser.element_basis.
+#: SHARED_LIMIT`（500）**故意更大**：它数的是「**这个页面有多少**」，
+#: 不是「我们留了多少」，超了会在账目里记 ``truncated``，不装作没有。
+#:
+#: ⚠️ **数字不在这里定**（H-41）：采集层（浏览器驱动）、落盘层（本处）、
+#: 送模型那一层（感知层）**三层必须同值** ⇒ 唯一真源在
+#: :data:`trajectory_pipeline.common.field_limits.ELEMENT_COUNT_LIMIT`，
+#: 这里只做转发（历史 import 路径不变）。
+OBS_ELEMENT_LIMIT = ELEMENT_COUNT_LIMIT
 #: 普通步的链接落盘上限。2026-11-10 由 50 提到 200：搜索页的链接总量
 #: 常到 100+，前 50 条几乎全是站内导航/相关搜索/热搜，**搜索结果条目
 #: 排在其后**——按 50 条落盘等于把结果区整段截掉，训练侧再怎么取也取
 #: 不到（owner 报的「轨迹里没有搜索的页面信息记录」）。驱动层
 #: ``DEFAULT_LIMIT`` 本来就是 200，两边对齐后不再有第二道截断。
-OBS_LINK_LIMIT = 200
+#:
+#: ⚠️ **数字不在这里定**（H-41）：与元素侧同款纪律——采集 / 落盘 /
+#: 送模型三层同值，唯一真源在
+#: :data:`trajectory_pipeline.common.field_limits.LINK_COUNT_LIMIT`。
+OBS_LINK_LIMIT = LINK_COUNT_LIMIT
 #: **读原语**（``interactive`` / ``links``）的落盘上限（方案 23 R4-1）。
-#: 读窗口本来就比推送窗口宽（agent 侧 200 条），P1 的元素若仍按 80 条
-#: 落盘，读到的第 81–200 条就会「模型看过、证据里没有」——训练侧引用的
-#: 东西在取证侧查不到，是可归因的红线。所以元素上限读步单独放宽；链接
-#: 上限两边都是 200（2026-11-10 普通步由 50 提到 200），不再有差。
+#: 读窗口本来就比推送窗口宽（agent 侧 200 条），P1 的元素若仍按更小的数
+#: 落盘，读到的那些就会「模型看过、证据里没有」——训练侧引用的东西在取证侧
+#: 查不到，是可归因的红线。
+#: ⚠️ **2026-11-17（H-41）**：普通步的元素上限也提到 200 了 ⇒
+#: **读步与普通步现在同值** ⇒ 「读到的比普通步多」这件事**不再是**一条
+#: 需要解释的差异（以前是「读 200 / 普通 80」）。数字仍单列，是为了让
+#: 「这一步是读的」这件事在存档里看得见。
 #: 与 ``agent_loop._READ_ELEMENT_LIMIT`` / ``_READ_LINK_LIMIT`` 逐字对齐，
 #: 由 ``tests/unit/test_agent_loop.py`` 的常量同步测试盯住。
-OBS_READ_ELEMENT_LIMIT = 200
-OBS_READ_LINK_LIMIT = 200
+OBS_READ_ELEMENT_LIMIT = ELEMENT_COUNT_LIMIT
+OBS_READ_LINK_LIMIT = LINK_COUNT_LIMIT
 #: 落盘的**元素名**裁到多少字符（``tag``/``label`` 时代的 ``label[:120]``）。
 #: 名字本身不截断在内存里——P1 是证据，裁的只是落盘那份。
-OBS_ELEMENT_NAME_LIMIT = 120
+#:
+#: ⚠️ **数字不在这里定**（H-41）：它原先在 P1 落盘（120）、感知层（60）、
+#: 复核页（60）三处各写各的 ⇒ 「模型看到的名字」与「存档里的名字」不是
+#: 同一个字符串，而元素名是 rationale 引用的主要锚点 ⇒ 训练出来的
+#: rationale 指向一个**查不到**的目标，且**不报任何错**。
+#: ⇒ 统一到 :data:`trajectory_pipeline.common.field_limits.
+#: ELEMENT_NAME_LIMIT`，这里只做转发（历史 import 路径不变）。
+OBS_ELEMENT_NAME_LIMIT = ELEMENT_NAME_LIMIT
+
+#: 落盘的**链接显示文字**裁到多少字符。
+#:
+#: ⚠️ 此前这里是**裸字面量** ``l.text[:80]``——同文件其它每个数字都有
+#: 「为什么」的注释，唯独它没有（读的人只能猜 80 是量出来的还是随手写的）。
+#: ⚠️ 而它与感知层送给模型的 ``l.text[:60]`` **不一致** ⇒ 模型看到的
+#: 链接文字与存档里的**不是同一个字符串** ⇒ 同上，归因极难。
+#: ⇒ 统一到 :data:`trajectory_pipeline.common.field_limits.LINK_TEXT_LIMIT`。
+OBS_LINK_TEXT_LIMIT = LINK_TEXT_LIMIT
 
 #: 感知层送模型的**链接窗口宽度**（= ``perception.llm_perceptor.LLM_LINKS``）。
 #: executor 不能 import 感知层实现（01-架构总览 L49-50：executor 只依赖
@@ -940,7 +991,8 @@ def _obs_json(obs: Observation | None) -> dict[str, Any] | None:
             for e in obs.interactive_elements[:element_limit]
         ],
         "links": [
-            {"text": l.text[:80], "href": l.href} for l in obs.links[:link_limit]
+            {"text": l.text[:OBS_LINK_TEXT_LIMIT], "href": l.href}
+            for l in obs.links[:link_limit]
         ],
         # **跨面可比的元素账目**（设计方案 04 §4.9.6）——**新增的一列，
         # 不改 ``elements_total``**。

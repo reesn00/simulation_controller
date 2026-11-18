@@ -270,6 +270,23 @@ class TestTruncationIsVisible:
         assert out["truncated"]["view"] is True
         assert len(out["body_text"]) == observation_view.VIEW_BODY_CHARS
 
+    def test_保真溢出时body_chars记实际长度(self):
+        """⚠️ H-41：keep 行（下一步动作目标）**无条件全量入选**，它本身超上限时
+        正文会比上限长 ⇒ 记上限就是**账实不符**（实测：正文 900 字、账上 320）。
+
+        ⇒ ``limits.body_chars`` 记**实际长度**。「动没动过」由 ``cropped`` 与
+        ``truncated.view`` 表达——**长度**归 ``limits``，**信号**归 ``truncated``。
+        """
+        target = "动作目标" * 100          # 400 字 > VIEW_BODY_CHARS
+        out = observation_view.render({
+            "url": "u", "body_text": target + "\n无关的一行",
+            "interactive_elements": [], "links": [],
+        }, keep=(target,))
+        assert len(out["body_text"]) > observation_view.VIEW_BODY_CHARS
+        assert out["limits"]["body_chars"] == len(out["body_text"])
+        assert out["limits"]["cropped"] is True
+        assert out["truncated"]["view"] is True
+
     def test_没裁剪时不谎报(self):
         out = observation_view.render({"url": "u", "body_text": "短"})
         assert out["limits"] == {
@@ -466,6 +483,237 @@ class Test精炼分支:
         )
 
 
+# ── A6'：语义渲染分支（H-41 阶段 2 · 方案 26 §6）─────────────────────
+
+class Test语义渲染分支:
+    """``mode="semantic"`` = **模型选、渲染层逐字重建**，**没有字符硬顶**。
+
+    这是方案 26 §0 的六条判据在 P2 这一层的落点，盯的是**契约面**：
+
+    1. **A1 不造**——正文 / 元素 / 链接都逐字来自 P1 原文；
+    2. **A2 不截**——语义模式下正文**一个字都没截**（渲染层不砍模型
+       选中的行）；
+    3. **A3 可回退**——精炼不可用 ⇒ 输出与**没精炼时逐字一致**；
+    4. **记账**——``truncated.view`` 恒 False（回退时强制 True）、
+       ``limits`` 仍 7 键、``truncated`` 仍 2 键。
+    """
+
+    BODY = "\n".join([
+        "《让子弹飞》高清在线观看",
+        "主演：姜文 周润发",
+        "无关第一行内容",
+        "首页",
+    ])
+
+    def _obs(self, **kw) -> dict:
+        base = {
+            "url": "u", "page_title": "T", "body_text": self.BODY,
+            "degraded": [], "video_tag_count": 0, "iframe_count": 0,
+            "interactive_elements": [
+                {"role": "button", "name": "立即播放"},
+                {"role": "link", "name": "相关推荐"},
+            ],
+            "links": [{"text": "正片", "href": "https://x.test/play"}],
+        }
+        base.update(kw)
+        return base
+
+    def _sel_key(self, obs: dict, body: str | None = None) -> str:
+        """这份观察的**候选集键**（H-41 阶段 3）。
+
+        ⚠️ **不是正文哈希**：三段协议选的是正文 + 元素 + 链接 ⇒ 键必须
+        覆盖那三样。同一份正文在不同步上的元素 / 链接集合可以不同 ⇒
+        只按正文定位 = 把 A 步的选择贴到 B 步上（实测 13 条回退里 12 条
+        是这一条）。
+        """
+        from trajectory_pipeline.common import refine_sidecar, view_candidates
+
+        body = body if body is not None else str(obs.get("body_text") or "")
+        raw_el = list(obs.get("interactive_elements") or ())
+        raw_lk = list(obs.get("links") or ())
+        _hb, has_el, has_lk = view_candidates.read_blocks(obs.get("read"))
+        el = [
+            (c.role, c.name) for c in view_candidates.element_candidates(
+                raw_el, filter_noise=False,
+            )
+        ] if has_el else []
+        lk = [
+            (c.text, c.href) for c in view_candidates.link_candidates(
+                raw_lk, filter_noise=False,
+            )
+        ] if has_lk else []
+        return refine_sidecar.selection_key(body, elements=el, links=lk)
+
+    def _index(self, *, kept=None, elements=None, links=None,
+               source="llm", protocol=None, obs=None) -> dict:
+        """三段齐全的精炼索引（``refine.v4`` 旁挂的形状）。"""
+        from trajectory_pipeline.common import refine_sidecar
+        observation = obs if obs is not None else self._obs()
+        key = self._sel_key(observation)
+        return {
+            key: {
+                "selection_key": key,
+                "body_key": refine_sidecar.body_key(self.BODY),
+                "kept": list(kept or []),
+                "elements": list(elements or []),
+                "links": list(links or []),
+                "source": source,
+                "protocol": (
+                    refine_sidecar.ENTRY_PROTOCOL if protocol is None
+                    else protocol
+                ),
+            }
+        }
+
+    def _render(self, index=None, **kw):
+        return observation_view.render(
+            self._obs(), refined=index,
+            mode=observation_view.VIEW_MODE_SEMANTIC, **kw,
+        )
+
+    # ── A1 不造 ──────────────────────────────────────────────────
+
+    def test_正文每一行都逐字来自原文(self):
+        out = self._render(self._index(kept=["主演：姜文 周润发"]))
+        for line in out["body_text"].splitlines():
+            assert line in self.BODY.splitlines()
+
+    def test_元素与链接都逐字来自原文(self):
+        out = self._render(self._index(
+            kept=["主演：姜文 周润发"],
+            elements=[{"role": "button", "name": "立即播放"}],
+            links=[{"text": "正片", "href": "https://x.test/play"}],
+        ))
+        assert out["interactive_elements"] == [
+            {"role": "button", "name": "立即播放"},
+        ]
+        assert out["links"] == [{"text": "正片", "href": "https://x.test/play"}]
+
+    def test_模型编的东西进不来(self):
+        """模型报了一个原文没有的元素名 ⇒ **整条作废**（不是「挑能用
+        的」——那会造出一份半真半假的观察）。"""
+        plain = observation_view.render(self._obs())
+        out = self._render(self._index(
+            kept=["主演：姜文 周润发"],
+            elements=[{"role": "button", "name": "模型编出来的按钮"}],
+        ))
+        assert out["interactive_elements"] == plain["interactive_elements"]
+        assert out["semantic_fallback"] is True
+
+    # ── A2 不截 ──────────────────────────────────────────────────
+
+    def test_正文长度等于选中行拼接长度(self):
+        kept = ["《让子弹飞》高清在线观看", "主演：姜文 周润发"]
+        out = self._render(self._index(kept=kept))
+        assert out["body_text"] == "\n".join(kept)
+        assert len(out["body_text"]) == sum(len(x) for x in kept) + len(kept) - 1
+
+    def test_没有字符硬顶(self):
+        long_body = "\n".join(f"第 {i} 行内容" * 10 for i in range(200))
+        from trajectory_pipeline.common import refine_sidecar
+        obs = self._obs(body_text=long_body)
+        key = self._sel_key(obs, long_body)
+        index = {
+            key: {
+                "selection_key": key,
+                "body_key": refine_sidecar.body_key(long_body),
+                "kept": long_body.splitlines(),
+                "elements": [], "links": [],
+                "source": "llm",
+                "protocol": refine_sidecar.ENTRY_PROTOCOL,
+            }
+        }
+        out = observation_view.render(
+            obs, refined=index,
+            mode=observation_view.VIEW_MODE_SEMANTIC,
+        )
+        assert len(out["body_text"]) > observation_view.VIEW_BODY_CHARS
+        assert out["body_text"] == long_body
+
+    # ── A3 可回退 ────────────────────────────────────────────────
+
+    def test_没有旁挂时逐字等于没精炼(self):
+        plain = observation_view.render(self._obs())
+        out = self._render(None)
+        assert out["body_text"] == plain["body_text"]
+        assert out["interactive_elements"] == plain["interactive_elements"]
+        assert out["links"] == plain["links"]
+
+    def test_旧协议整条回退(self):
+        """老协议只选了正文 ⇒ 元素 / 链接**没被选过** ⇒ 语义渲染不能用它
+        ⇒ **整条**回退（不搞「正文用模型的、元素用规则的」混口径）。"""
+        from trajectory_pipeline.common import refine_sidecar
+        plain = observation_view.render(self._obs())
+        out = self._render(self._index(
+            kept=["主演：姜文 周润发"],
+            protocol=refine_sidecar.ENTRY_PROTOCOL_LEGACY,
+        ))
+        assert out["body_text"] == plain["body_text"]
+        assert out["semantic_fallback"] is True
+
+    # ── 记账 ────────────────────────────────────────────────────
+
+    def test_limits还是七个键(self):
+        out = self._render(self._index(kept=["主演：姜文 周润发"]))
+        assert set(out["limits"]) == {
+            "body_chars", "elements", "links",
+            "body_lines_dropped", "elements_dropped", "links_dropped",
+            "cropped",
+        }
+
+    def test_truncated还是两个键(self):
+        out = self._render(self._index(kept=["主演：姜文 周润发"]))
+        assert set(out["truncated"]) == {"source", "view"}
+
+    def test_语义模式truncated_view恒假(self):
+        """本层**一个字都没截**——下游（D-3 / D-9 / D-10）看到
+        ``truncated`` 判真就把整批判成「不可判定」，而语义模式的正文
+        **本来就是模型挑过的**，不是「被截的」。"""
+        out = self._render(self._index(kept=["主演：姜文 周润发"]))
+        assert out["truncated"]["view"] is False
+
+    def test_回退时truncated_view强制为真(self):
+        """诚实记账：这条其实是**规则裁剪**出来的。"""
+        out = self._render(None)
+        assert out["truncated"]["view"] is True
+        assert out["semantic_fallback"] is True
+
+    def test_模式留痕(self):
+        out = self._render(self._index(kept=["主演：姜文 周润发"]))
+        assert out["view_mode"] == observation_view.VIEW_MODE_SEMANTIC
+        assert out["semantic_fallback"] is False
+
+    # ── 保真口径 ────────────────────────────────────────────────
+
+    def test_动作目标无条件补回(self):
+        """换了裁法不等于放松保真口径。"""
+        out = self._render(
+            self._index(kept=["无关第一行内容"]),
+            keep=("主演：姜文 周润发",),
+        )
+        assert "主演：姜文 周润发" in out["body_text"]
+
+    # ── 零回归：capped 路径一字不改 ────────────────────────────
+
+    def test_capped路径不受影响(self):
+        """``capped`` 是语义模式的**回退路径**——改一行就等于改了两条
+        路径的共同地基。"""
+        plain = observation_view.render(self._obs())
+        assert plain["view_mode"] == observation_view.VIEW_MODE_CAPPED
+        assert plain["semantic_fallback"] is False
+        # ⚠️ ``truncated.view`` 的口径是「**本层真的裁掉了东西**」，
+        # 不是「本层有上限」——短正文压根没触发 320 字的顶 ⇒ False。
+        # （改造前就是这个口径，见 ``observation_view.render``。）
+        assert plain["truncated"]["view"] is False
+
+    def test_capped路径正文超顶时view为真(self):
+        """零回归的另一面：**真的裁了**时 ``truncated.view`` 仍为真。"""
+        long_body = "\n".join(f"第 {i} 行内容内容内容" for i in range(100))
+        out = observation_view.render(self._obs(body_text=long_body))
+        assert out["truncated"]["view"] is True
+        assert out["limits"]["cropped"] is True
+
+
 # ── 夹具 ────────────────────────────────────────────────────────────
 
 def _obs(url: str, **kw) -> dict:
@@ -653,6 +901,11 @@ class Test契约文档不是摆设:
         "body_refined",
         "body_refined_lines",
         "body_refined_dropped",
+        # 2026-11-18 方案 26 §6.4 / H-41 阶段 3：缺件负样本线的两个键。
+        # 它们是「这条是**故意缺件**造出来的、缺在哪、缺的是什么」的
+        # 留痕——漏写 ⇒ 读样本的人以为它是真实跑出来的 fail-closed 样本。
+        "failclosed_cut_mode",
+        "failclosed_cut_step",
     ])
     def test_代码有字段文档没写(self, doc_text, field):
         """方向一：代码产出的字段必须在文档里点名。"""

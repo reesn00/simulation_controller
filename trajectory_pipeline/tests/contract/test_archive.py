@@ -307,8 +307,12 @@ class TestCandidateSourceAudit:
         assert blob["run_config"] == {}
 
     def test_元素总量随观察落盘(self, tmp_path):
-        """D-2 的分母。落盘条数上限 80，页面若有 300 个控件，
-        只留「80 条」的话「被裁掉」与「不存在」在数据上完全同形。"""
+        """D-2 的分母。落盘条数上限 200，页面若有 300 个控件，
+        只留「200 条」的话「被裁掉」与「不存在」在数据上完全同形。
+
+        ⚠️ **H-41（2026-11-17）**：元素上限由 80 提到 200（与采集层同值）
+        ⇒ 元素条数必须**超过 200** 才裁得到（原来 100 就够）。
+        """
         from trajectory_pipeline.executor.orchestrator import RunRecord
         from trajectory_pipeline.perception.base import (
             InteractiveElement, LinkItem, Observation,
@@ -318,17 +322,17 @@ class TestCandidateSourceAudit:
             url="https://x.test/", page_title="T", body_text="正文",
             interactive_elements=tuple(
                 InteractiveElement(ref=f"e{i}", role="a", name=f"链接{i}")
-                for i in range(100)),
+                for i in range(260)),
             links=tuple(LinkItem(text=f"t{i}", href=f"https://x.test/{i}")
                         for i in range(70)),
-            elements_total=100, links_total=70,
+            elements_total=260, links_total=70,
         )
         rec = RunRecord(task_id="T001", title="功夫", query="q",
                         search_url="u", search_obs=obs)
         j = json.loads(
             P1Archive(tmp_path).write(rec, task_id="T001").read_text(
                 encoding="utf-8"))["search_observation"]
-        assert j["elements_total"] == 100
+        assert j["elements_total"] == 260
         assert j["links_total"] == 70
         assert j["elements_total"] > len(j["interactive_elements"])
 

@@ -115,6 +115,7 @@ from dataclasses import replace
 from typing import Any, Mapping
 
 from trajectory_pipeline.common.elements import ELEMENT_VOCAB_ARIA_ROLE
+from trajectory_pipeline.common.field_limits import ELEMENT_COUNT_LIMIT
 from trajectory_pipeline.executor.browser.aria_snapshot import parse_nodes
 from trajectory_pipeline.executor.browser.camofox_session import (
     TRANSIENT_STATUS,
@@ -138,9 +139,9 @@ from trajectory_pipeline.executor.dom import (
     IFRAME_SELECTOR,
     MEDIA_SELECTOR,
     TEXT_CONTENT_EXPR,
-    TRUNCATION_RATIO,
     CleanedLink,
     CleanedSnapshot,
+    budget_truncated,
     clean_body,
     is_mojibake,
     parse_body_text,
@@ -161,7 +162,12 @@ __all__ = [
 
 #: 元素列表的默认上限。与 obscura / camoufox 同一个数（200），
 #: 免得三面的 ``elements_total`` 因为上限不同而不可比。
-DEFAULT_LIMIT = 200
+#:
+#: ⚠️ **数字不在这里定**（H-41）：采集层（此处）/ 落盘层（P1 存档）/
+#: 送模型那一层（感知层）**三层必须同值** ⇒ 唯一真源在
+#: :data:`trajectory_pipeline.common.field_limits.ELEMENT_COUNT_LIMIT`，
+#: 这里只做转发（历史 import 路径不变）。
+DEFAULT_LIMIT = ELEMENT_COUNT_LIMIT
 
 #: 观察**读到一半**时的重来次数（与 camoufox 面同口径）。
 OBSERVE_RETRY = 2
@@ -678,11 +684,14 @@ class CamofoxDriver:
             degraded.append("title_mojibake")
 
         cleaned_body = body or ""
-        if body_source == "snapshot":
-            truncated = (max_chars is not None
-                         and raw_len >= max_chars * TRUNCATION_RATIO)
-        else:
-            truncated = max_chars is not None and len(cleaned_body) >= max_chars
+        # ⚠️ **判据与 obscura 同款**（H-41）：正文来自快照 ⇒ 给
+        # ``source_len``（**工具那一次切确实切到了这份正文** ⇒ 不给就是
+        # 漏报）；正文来自 innerText ⇒ 只看**正文实际长度**。
+        truncated = budget_truncated(
+            body_len=len(cleaned_body),
+            max_chars=max_chars,
+            source_len=raw_len if body_source == "snapshot" else None,
+        )
         return CleanedSnapshot(
             url=url,
             title=title or "",

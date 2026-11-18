@@ -565,24 +565,62 @@ def _observation_empty(obs: Mapping[str, Any]) -> bool:
     return not body and not elements
 
 
+def _truncated_branch(value: Any) -> str:
+    """``truncated`` → **哪一支**判真（``""`` = 没截断）。
+
+    ⚠️ **2 键语义**（H-41 阶段 2 · 方案 26 §6.3 #9）——
+    ``{'source': …, 'view': …}``：``source`` = **上游采集侧**截断、
+    ``view`` = **本层训练态渲染**裁剪。两支都让「引用了观察里的具体
+    内容」无从谈起，但**责任方不同**（上游要去改采集预算，本层是既定
+    口径或模型的选择）。
+
+    ⚠️ **dict 不能直接 ``bool()``**：``{'source': False, 'view': False}``
+    非空 ⇒ 判真 ⇒ **每一条 P2 观察都被误判成「被截断」**。
+
+    ⚠️ **只认这两个键**；不认识的老形状 ⇒ 退回 ``any(values)``，保守判真。
+
+    ⚠️ 非 dict（P1 的 bool）⇒ ``True`` 就是**上游截断**。
+
+    同款口径在 :func:`trajectory_pipeline.rationale.gates._truncated_branch`
+    与三个 scorer 里**各有一份独立实现**（依赖方向不能反）——
+    边界一致性靠 ``tests/contract/test_observation_shortfall_consistency.py``
+    盯着。
+    """
+    if isinstance(value, Mapping):
+        if "source" in value or "view" in value:
+            if value.get("source"):
+                return "source"
+            if value.get("view"):
+                return "view"
+            return ""
+        return "unknown" if any(bool(v) for v in value.values()) else ""
+    return "source" if value else ""
+
+
 def _observation_incomplete(obs: Mapping[str, Any]) -> str:
     """这份观察**不完整**——空串 = 完整。
 
     不完整有三种形态（都从观察自己的字段读，不猜）：
 
     - **正文与元素皆空** ⇒ 采集降级（``degraded`` 里通常记着原因）；
-    - ``truncated`` 为真 ⇒ 正文被 ``max_chars`` 截断——**理由引用的内容
+    - ``truncated`` 判真 ⇒ 观察不完整——**理由引用的内容
       可能压根不在存档里**；
     - ``elements_total`` > 保留的交互元素数 ⇒ 元素被裁——同款。
 
     ⚠️ 这三种都让「引用了观察里的具体内容」**无从谈起** ⇒ ③ 判不合规时
     责任在**采集侧**，不在止损理由上。归因错了，读的人会去改理由，
     而该改的是采集。
+
+    ⚠️ **``truncated`` 是 dict 时不能直接 ``bool()``**（H-41 阶段 2）：
+    ``{'source': False, 'view': False}`` **非空 ⇒ ``bool()`` 为真** ⇒
+    **每一条 P2 观察都被误判成「被截断」** ⇒ 责任被错误地归到采集侧。
+    2 键语义见 :func:`trajectory_pipeline.rationale.gates._truncated_branch`
+    （``source`` = 上游截断 / ``view`` = 本层裁剪）。
     """
     if _observation_empty(obs):
         degraded = obs.get("degraded") or []
         return f"观察是空的（降级：{list(degraded) if degraded else '未记原因'}）"
-    if bool(obs.get("truncated")):
+    if _truncated_branch(obs.get("truncated")):
         return "观察正文被截断（truncated）"
     total = int(obs.get("elements_total") or 0)
     kept = len(obs.get("interactive_elements") or ())

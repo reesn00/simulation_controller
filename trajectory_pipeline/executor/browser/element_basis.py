@@ -72,6 +72,7 @@ __all__ = [
     "SHARED_BASE_STAGES",
     "SHARED_DOM_JS",
     "SHARED_LIMIT",
+    "SHARED_NAME_LIMIT",
     "ElementBasis",
     "filter_ladder",
     "ladder_stages",
@@ -124,6 +125,17 @@ SHARED_BASE_STAGES: tuple[str, ...] = ("candidates", "hidden", "visible")
 #: 因为共享口径要数的是「**这个页面有多少**」，不是「我们留了多少」。
 #: 真实页面的交互候选极少超过 500；超了会在账目里记 ``truncated``，不装作没有。
 SHARED_LIMIT = 500
+
+#: 共享口径的**名字**在落账前的裁剪（120 字）。
+#:
+#: ⚠️ **必须在去重之后**（H-41）：裁过的名字会让两个不同的长名变成
+#: 同一个 ⇒ 「真同名整组」判定把它们**整组丢掉**，而归因记到
+#: ``ambiguous_dropped``（实为截断造成的碰撞）——**归因错误**，且
+#: 查不出来（账面上看就是「这页有重名」）。
+#:
+#: 这份名字只是**诊断用**（调用方只取账目，不取名字），所以裁在这里
+#: 既不伤判定、也不影响任何产物。
+SHARED_NAME_LIMIT = 120
 
 #: **共享口径的 DOM 枚举 JS——唯一真源，两个面跑同一段。**
 #:
@@ -218,7 +230,12 @@ SHARED_DOM_JS = r"""
       return "";
     }
     var text = (el.textContent || "").replace(/\s+/g, " ").trim();
-    if (text) return text.slice(0, 120);
+    // ⚠️ **这里刻意不裁名字**（H-41）：这份名字唯一的用途是
+    // 「真同名整组」判定，而**裁过的名字**会把两个不同的长名变成同一个
+    // ⇒ 整组被误丢，归因还记到 ``ambiguous_dropped``（实为截断造成的
+    // 碰撞）——**归因错误**，且查不出来（账面上看就是「这页有重名」）。
+    // 名字本来就短（按钮文字 / 链接文字 / ARIA 标签），不裁的代价很小。
+    if (text) return text;
     var img = el.querySelector("img[alt]");
     if (img) {
       var alt = (img.getAttribute("alt") || "").trim();
@@ -374,4 +391,9 @@ def parse_shared_basis(raw: Any) -> tuple[list[tuple[str, str]], dict[str, int]]
         "hidden": int(hidden) if isinstance(hidden, int) else 0,
         "visible": len(pairs),
     }
-    return kept, {**base, **ladder}
+    # ⚠️ **名字的裁剪放在去重之后**（H-41）：JS 侧已经不裁了（裁了会
+    # 让两个不同的长名变成同一个 ⇒ 整组误丢且归因错误），但这份名字
+    # 终究是**诊断用**的（调用方只取账目、不取名字）⇒ 在这里裁一刀，
+    # 既不影响判定，也不让 payload 大到没边。
+    trimmed = [(role, name[:SHARED_NAME_LIMIT]) for role, name in kept]
+    return trimmed, {**base, **ladder}

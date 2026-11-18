@@ -58,6 +58,7 @@ from trajectory_pipeline.common.elements import (
     element_json,
     vocabulary_of_archive_elements,
 )
+from trajectory_pipeline.common.field_limits import ELEMENT_NAME_LIMIT
 
 # ─────────────────────────────────────────────────────────────────────
 # L6 派发常量（2026-10-13 增量三十六落地）
@@ -378,7 +379,8 @@ def extract_items(archive: Mapping[str, Any]) -> list[ReviewItem]:
         ]
         vocabulary = vocabulary_of_archive_elements(raw_elements)
         elements = tuple(
-            element_json(e, vocabulary, name_limit=60) for e in raw_elements
+            element_json(e, vocabulary, name_limit=ELEMENT_NAME_LIMIT)
+            for e in raw_elements
         )
         items.append(ReviewItem(
             task_id=task_id,

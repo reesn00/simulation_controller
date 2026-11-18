@@ -293,16 +293,37 @@ class TestConfig:
             == "not-needed"
         )
 
-    def test_默认超时为90(self):
-        """30s 对判断点 ① 不够（实测 5 条里超时 3 条），默认值校准到 90
-        （2026-10-11）。**换机器不设环境变量也不该再踩 30s。**"""
+    def test_默认超时为600(self):
+        """30s 对判断点 ① 不够（实测 5 条里超时 3 条），90s 在
+        **200k 输入 + 128k 输出**之后更不够（2026-11-17 H-41）。
+        **换机器不设环境变量也不该再踩 30s。**"""
         cfg = LLMConfig.from_env(
             env={
                 "TRAJECTORY_LLM_BASE_URL": "http://x",
                 "TRAJECTORY_LLM_MODEL": "m",
             }
         )
-        assert cfg.timeout_s == 90.0
+        assert cfg.timeout_s == 600.0
+
+    def test_预算与超时同批抬(self):
+        """⚠️ **铁律**：只抬预算不抬超时 ⇒ 100% 的请求超时 ⇒ **静默退回
+        规则裁剪**（超时走 ``transport:``，**不走** ``budget:`` ⇒ 精炼层
+        「换大预算重试」根本不触发）。
+
+        ⇒ 两条数**必须一起**变：这里把它们钉在一起，防止将来只改一条。
+        """
+        from trajectory_pipeline.llm.client import (
+            DEFAULT_MAX_TOKENS,
+            DEFAULT_TIMEOUT_S,
+            MAX_OUTPUT_TOKENS,
+        )
+
+        assert DEFAULT_MAX_TOKENS == MAX_OUTPUT_TOKENS
+        assert DEFAULT_MAX_TOKENS == 131072, "= 128k，**不是 200000**（那是输入窗口）"
+        assert DEFAULT_TIMEOUT_S == 600.0
+        assert DEFAULT_TIMEOUT_S > DEFAULT_MAX_TOKENS / 1000, (
+            "128k 输出的请求，90s 超时必然超时"
+        )
 
     def test_超时非法报错(self):
         with pytest.raises(LLMUnavailable, match="不是数字"):
@@ -390,7 +411,7 @@ class TestEscalateConfig:
             "TRAJECTORY_LLM_ESCALATE_BASE_URL": "http://y",
             "TRAJECTORY_LLM_ESCALATE_MODEL": "big",
         })
-        assert cfg is not None and cfg.timeout_s == 90.0
+        assert cfg is not None and cfg.timeout_s == 600.0
 
     def test_repr同样不含key(self):
         """凭据红线对升配后端同等有效——它也会被 log / traceback 带出去。"""
@@ -571,6 +592,56 @@ class TestMaxTokens:
         c = _client(payload)
         assert c.chat("s", "u") is None
         assert "思考过程" not in c.last_error
+
+
+class TestFinishReason进账本:
+    """H-41：``finish_reason`` 必须**进账**。
+
+    此前 :func:`_content_of` 只在**正文为空**时才看 ``finish_reason``
+    ⇒「正文非空但被截断」（请求成功、内容在半截处停了）被当成
+    **干净的成功** ⇒ 截断混进输出而账本上完全看不出来。
+
+    ⚠️ **返回行为一字不动**：``chat()`` 照常返回那半截正文
+    （散文类调用拿到半截也有用）——改的是**可观测性**，不是**语义**。
+    """
+
+    def test_截断但有正文时finish_reason进账(self):
+        c = _client(_ok('{"answer": tr', finish="length"))
+        assert c.chat("s", "u") == '{"answer": tr', "返回行为一字不动"
+        assert c.last_finish_reason == "length"
+
+    def test_正常结束finish_reason是stop(self):
+        c = _client(_ok("hi", finish="stop"))
+        c.chat("s", "u")
+        assert c.last_finish_reason == "stop"
+
+    def test_后端没给finish_reason时是空串(self):
+        payload = {"choices": [{"message": {"content": "hi"}}]}
+        c = _client(payload)
+        c.chat("s", "u")
+        assert c.last_finish_reason == ""
+
+    def test_失败时清空上一次的finish_reason(self):
+        """⚠️ 留着上一次的 ``"length"`` 会把「这一次正常」说成
+        「这一次被截断」——而账本上只有这一个读数。"""
+        c = _client(_ok("hi", finish="length"))
+        c.chat("s", "u")
+        assert c.last_finish_reason == "length"
+        c._client = _BoomTransport(RuntimeError("boom"))
+        assert c.chat("s", "u") is None
+        assert c.last_finish_reason == ""
+
+    def test_预算用尽时finish_reason是length(self):
+        """正文为空的 ``length`` 也要记——它是「为什么空」的证据。"""
+        c = _client(_ok(None, finish="length"))
+        assert c.chat("s", "u") is None
+        assert c.last_finish_reason == "length"
+
+    def test_chatResult带finish_reason(self):
+        c = _client(_ok("hi", finish="length"))
+        r = c.chat_messages([{"role": "user", "content": "u"}])
+        assert r.content == "hi"
+        assert r.finish_reason == "length"
 
 
 class TestChatMessages:

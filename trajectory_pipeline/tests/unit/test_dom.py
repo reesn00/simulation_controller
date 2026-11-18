@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from trajectory_pipeline.executor.dom import (
+    budget_truncated,
     clean_body,
     detect_block,
     looks_like_error,
@@ -132,6 +133,60 @@ class TestParseSnapshot:
         assert snap.body_source == "inner_text"
         # innerText 路径下不拿 snapshot 的 raw_len 算污染率
         assert snap.stripped_ratio == 1.0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 截断判据（H-41 · A2）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class Test截断判据:
+    """「正文不完整」有**两个来源**，各按各的证据判。
+
+    ⚠️ 混在一起判就会同时**误报**与**漏报**——
+    误报的代价是闸门被无谓放宽，漏报的代价是**落在截断外的实体被当成
+    幻觉**（凭空造出负样本）。
+    """
+
+    def test_没有预算就永远不算截断(self):
+        assert budget_truncated(body_len=10**9, max_chars=None) is False
+
+    def test_正文顶到预算就是切过(self):
+        assert budget_truncated(body_len=1000, max_chars=1000) is True
+
+    def test_正文远小于预算不算截断(self):
+        assert budget_truncated(body_len=500, max_chars=1000) is False
+
+    def test_原始长度顶到预算也算切过(self):
+        """工具那一次切 ⇒ 切到的就是这份正文。"""
+        assert budget_truncated(
+            body_len=10, max_chars=1000, source_len=1000,
+        ) is True
+
+    def test_原始长度远小于预算不算切过(self):
+        assert budget_truncated(
+            body_len=10, max_chars=1000, source_len=100,
+        ) is False
+
+    def test_innerText路径不被CSS重的快照误判(self):
+        """⚠️ **A2 的误报**（H-41）：快照 6000 字符**全是 CSS**，而正文走
+        ``innerText``（压根不带 CSS）⇒ 正文完整 ⇒ **不该**报截断。
+
+        此前这里拿 ``raw_len``（整页快照长）去比 body 预算 ⇒ CSS 重的页
+        一律误报「正文被截断」⇒ 闸门被无谓放宽（判据失灵）。
+        """
+        raw = "URL: https://a.test/\nTitle: T\n\n" + "<style>" + "y" * 5000 + "</style>"
+        snap = parse_snapshot(raw, max_chars=5000, body="真实正文")
+        assert snap.truncated is False
+
+    def test_snapshot路径不漏报工具那一次切(self):
+        """⚠️ **A2 的漏报**（H-41）：正文来自快照 ⇒ 工具那一次切**确实切到了
+        这份正文**（CSS 吃掉了预算，真内容在截断外）⇒ **必须**报截断，
+        否则落在截断外的实体会被闸门判成幻觉。
+        """
+        raw = "URL: https://a.test/\nTitle: T\n\n" + "<style>" + "y" * 5000 + "</style>"
+        snap = parse_snapshot(raw, max_chars=5000)
+        assert snap.truncated is True
 
     def test_无_覆盖时标记为_snapshot_源(self):
         snap = parse_snapshot("URL: u\nTitle: T\n\n正文")

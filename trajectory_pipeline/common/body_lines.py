@@ -111,6 +111,35 @@ def candidate_lines(body: str) -> list[str]:
     return out
 
 
+def candidate_lines_with_noise(body: str) -> list[tuple[str, bool]]:
+    """候选行 **+ 「规则判为噪声」的标记**——**给 LLM 用**。
+
+    与 :func:`candidate_lines` 的差别只有一个：**被判为噪声的行也列出来**，
+    标记成「规则判为噪声，**可推翻**」。
+
+    为什么（H-41 阶段 2 · 方案 26 §6.3 #12）：规则剔噪是**启发式**——
+    它会把「正文里恰好出现『广告』两个字」的行丢掉。禁截断**不等于**
+    禁清洗，但清洗**不该是终审**：把噪声行也摆给模型、让它自己判断
+    要不要，才是「保留核心/重要内容」而不是「按规则留核心」。
+
+    ⚠️ **去重仍然生效**（同一行文字在页面上出现三次只列一次）——重复行
+    是纯冗余，摆给模型只会稀释它的注意力。
+
+    ⚠️ **判噪声只看行本身**（:func:`is_noise_line` 是纯函数）⇒ 同一行
+    文字在任何地方都是同一个判定 ⇒ 「先剔噪再去重」与「先去重再标噪声」
+    的结果**逐字一致**，顺序换不换无所谓。
+    """
+    out: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    for raw in (body or "").splitlines():
+        line = raw.strip()
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        out.append((line, is_noise_line(line)))
+    return out
+
+
 def noise_dropped(body: str) -> int:
     """正文里被**噪声规则 + 去重**丢掉的行数。
 
@@ -129,6 +158,7 @@ __all__ = [
     "NOISE_LINE_RE",
     "TASK_KEYWORD_RE",
     "candidate_lines",
+    "candidate_lines_with_noise",
     "is_noise_line",
     "line_score",
     "noise_dropped",

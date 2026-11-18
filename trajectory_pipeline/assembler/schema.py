@@ -828,7 +828,35 @@ class Sample:
     #: 两者混成一个标记，模型会把「点了没反应」学成「页面没内容」。
     step_errors: tuple[str, ...] = ()
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(
+        self,
+        *,
+        observations: Sequence[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """样本 → 可落盘 dict。
+
+        ⚠️ **观察必须显式传进来**（H-41 阶段 2 · 方案 26 §6.3 #10）。
+
+        此前这里直接写 ``self.observations``——那是 **P1 取证态全文**
+        （正文 200000 字符、200 元素、200 链接），而 P2 是**训练态**
+        （正文按模式裁过、10 元素 / 4 链接）。于是**任何直接调本方法的
+        新代码都会绕过装配层**，落出一份「看着像 P2、其实是 P1 全文」的
+        文件。
+
+        为什么这在「禁止截断」这件事上特别危险：**裁剪**（`capped` 模式）
+        与**绕过**（直出全文）在产物上**长得一模一样**——都是「正文比
+        320 长」——但根因完全相反：一个是**规则层裁的**（有 ``limits``
+        留痕），一个是**压根没裁**（无留痕）。排查时无从下手。
+
+        ⇒ 现在：``observations=None``（默认）⇒ **不写观察**（空列表）。
+        P2 落盘**唯一**的路径是
+        :func:`trajectory_pipeline.assembler.builder.build_from_archive`
+        ——它先渲染再传进来（见 :func:`trajectory_pipeline.assembler.
+        builder._sample_to_json`）。
+
+        ⚠️ **六件套的键集合不变**（``observations`` 键仍在，只是可能为空）
+        ——A2 契约钉的是**键**，不是内容。
+        """
         return {
             "sample_id": self.sample_id,
             "task_id": self.task_id,
@@ -842,7 +870,9 @@ class Sample:
                 "user_prompt": self.user_prompt,
                 "provenance": dict(self.provenance),
                 "actions": [a.to_json() for a in self.actions],
-                "observations": [dict(o) for o in self.observations],
+                # ⚠️ **默认空**——见 docstring。取证态观察**不从这条出口
+                # 落盘**：它们进 P1，不进 P2。
+                "observations": [dict(o) for o in (observations or ())],
                 "rationales": [r.to_json() for r in self.rationales],
             },
             "gate": self.gate.to_json(),

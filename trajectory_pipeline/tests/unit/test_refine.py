@@ -169,13 +169,50 @@ class Test精炼入口:
                                          limit=20)
         assert out.source == "failed"
 
-    def test_候选行超上限时只给前N行(self):
+    def test_候选行不再按行数截断(self):
+        """⚠️ H-41：原来有「最多 200 行」的上限 ⇒ 第 201 行之后的候选行
+        模型**根本没看到**，却仍算在 ``dropped`` 里 ⇒ 账上写着「模型丢的」，
+        实际是「我们自己没给它看」。两种结论在同一个数字里分不开。
+
+        现在的口径：**只有字符预算才裁**（字符数才映射 token），
+        而且**分两笔账**：``candidates`` 与 ``candidates_shown``。
+        """
         body = "\n".join([f"第{i}行内容" for i in range(1, 400)])
         client = _FakeClient(reply="1")
         out = refine_refiner.refine_body(client, body, limit=20)
         assert out.source == "llm"
         payload = client.calls[0][1]
-        assert payload.count("\n") <= refine_refiner.MAX_CANDIDATES + 10
+        assert payload.count("\n") >= 399, "399 行候选不该被行数上限砍掉"
+        assert out.candidates == 399
+        assert out.candidates_shown == 399
+
+    def test_字符预算超了才裁且分两笔账(self):
+        """字符预算真的顶到了 ⇒ 裁掉一些，但**账必须分得开**：
+        ``candidates - candidates_shown`` = 「我们没给它看」，
+        ``candidates_shown - len(lines)`` = 「它看了但不要」。"""
+        body = "\n".join([f"第{i}行内容" for i in range(1, 20000)])
+        client = _FakeClient(reply="1")
+        out = refine_refiner.refine_body(client, body, limit=20)
+        assert out.source == "llm"
+        assert out.candidates == 19999
+        assert out.candidates_shown < out.candidates, "该被字符预算裁掉一些"
+        assert out.candidates_shown > 0
+        assert out.dropped == out.candidates - len(out.lines)
+
+    def test_动作目标行永远在候选里(self):
+        """保真底线：动作目标行**无条件**入选候选——没给模型看，
+        模型就不可能选它，整条精炼必然作废（白花一次调用）。"""
+        body = "\n".join([f"第{i}行内容" for i in range(1, 20000)])
+        client = _FakeClient(reply="1")
+        out = refine_refiner.refine_body(client, body, keep=("第19999行内容",),
+                                         limit=20)
+        assert "第19999行内容" in client.calls[0][1], (
+            "保真底线：动作目标行必须无条件进候选"
+        )
+        # 模型没选它 ⇒ 整条作废。**这恰恰证明它被看见了**——
+        # 看不见就无从丢，压根不会有这条错误。
+        assert out.source == "failed"
+        assert "下一步操作目标没保住" in out.error
 
     def test_需不需要精炼的判据与真调用一致(self):
         short = "短正文"
@@ -186,10 +223,11 @@ class Test精炼入口:
 
 class Test旁挂:
     def test_读写往返(self, tmp_path):
-        key = refine_sidecar.body_key("正文")
+        key = refine_sidecar.selection_key("正文")
         payload = refine_sidecar.make_payload(
             "T001__abc.json",
-            {key: {"body_key": key, "source": "llm", "kept": ["正文"],
+            {key: {"selection_key": key, "body_key": refine_sidecar.body_key("正文"),
+                   "source": "llm", "kept": ["正文"],
                    "dropped": 3, "candidates": 4, "error": "", "call": {}}},
             prompt_version=refine_prompt.REFINE_PROMPT_VERSION,
         )
@@ -199,7 +237,9 @@ class Test旁挂:
         assert blob is not None
         assert blob["archive"] == "T001__abc.json"
         assert blob["prompt_version"] == refine_prompt.REFINE_PROMPT_VERSION
-        assert refine_sidecar.index_by_body(blob) == {key: ["正文"]}
+        assert refine_sidecar.index_by_body(blob) == {
+            refine_sidecar.body_key("正文"): ["正文"],
+        }
 
     def test_版本对不上当没有(self, tmp_path):
         path = tmp_path / "x.json"
@@ -218,20 +258,27 @@ class Test旁挂:
 
     def test_空保留行不进索引(self):
         """失败的条目（kept 为空）不进索引——渲染层于是走规则裁剪。"""
-        key = refine_sidecar.body_key("正文")
+        key = refine_sidecar.selection_key("正文")
         blob = {"schema_version": refine_sidecar.SIDECAR_SCHEMA_VERSION,
-                "entries": {key: {"body_key": key, "kept": []}}}
+                "entries": {key: {"selection_key": key,
+                                  "body_key": refine_sidecar.body_key("正文"),
+                                  "kept": []}}}
         assert refine_sidecar.index_by_body(blob) == {}
 
-    def test_索引按正文键定位而不是步号(self):
-        a = refine_sidecar.body_key("甲")
-        b = refine_sidecar.body_key("乙")
+    def test_索引按候选集键定位而不是步号(self):
+        a = refine_sidecar.selection_key("甲")
+        b = refine_sidecar.selection_key("乙")
         assert a != b
         blob = {"schema_version": refine_sidecar.SIDECAR_SCHEMA_VERSION,
-                "entries": {a: {"body_key": a, "kept": ["甲"]},
-                            b: {"body_key": b, "kept": ["乙"]}}}
+                "entries": {a: {"selection_key": a,
+                                "body_key": refine_sidecar.body_key("甲"),
+                                "kept": ["甲"]},
+                            b: {"selection_key": b,
+                                "body_key": refine_sidecar.body_key("乙"),
+                                "kept": ["乙"]}}}
         index = refine_sidecar.index_by_body(blob)
-        assert index[a] == ["甲"] and index[b] == ["乙"]
+        assert index[refine_sidecar.body_key("甲")] == ["甲"]
+        assert index[refine_sidecar.body_key("乙")] == ["乙"]
 
     def test_旁挂不长得像P1存档(self):
         """**实测踩过的坑**：旁挂与 P1 存档同在产物根下。
@@ -422,6 +469,87 @@ class Test预算用尽:
         assert out.source == "failed"
         assert "budget:" in out.error
         assert not out.call.get("retried"), "没发生的重试不许记账"
+
+
+class Test输出被截断:
+    """H-41：``finish_reason="length"`` 且**正文非空**。
+
+    客户端**刻意**不因此作废（散文类调用拿到半截也有用，``chat()``
+    的返回行为一字不动），但**选行类调用**不行：编号表只回了一半 ⇒
+    剩下的行模型**根本没表态** ⇒ 当成「模型只想要第 1 行」就会
+    **静默丢掉**后面所有内容。
+
+    ⇒ 归一成 ``budget:`` 错误 ⇒ 走「换大预算重试一次」那条路。
+    """
+
+    BODY = "\n".join(f"第{i}行内容" for i in range(1, 40))
+
+    def _client(self, *, finishes=("length", "stop"), reply="1,2",
+                max_tokens: int = 8192):
+        class _C:
+            def __init__(self) -> None:
+                self.calls: list[int | None] = []
+                self.cfg = type("Cfg", (), {"model": "fake",
+                                            "max_tokens": max_tokens})()
+                self.last_usage: dict = {}
+                self.last_latency_ms = 1
+                self.last_call_error = ""
+                self.last_finish_reason = ""
+                self._finishes = list(finishes)
+                self._reply = reply
+
+            def chat(self, system, user, *, max_tokens=None):
+                self.calls.append(max_tokens)
+                self.last_call_error = ""
+                self.last_finish_reason = (
+                    self._finishes.pop(0) if self._finishes else "stop"
+                )
+                return self._reply
+
+        return _C()
+
+    def test_第一次截断会换大预算重试(self):
+        client = self._client(finishes=("length", "stop"))
+        out = refine_refiner.refine_body(client, self.BODY, limit=20)
+        assert out.source == "llm"
+        assert len(client.calls) == 2
+        assert client.calls[1] == refine_refiner.RECOMMENDED_MAX_TOKENS
+
+    def test_重试仍截断就整条作废(self):
+        """换预算这条路走到头 ⇒ 整条作废 ⇒ 渲染层走规则裁剪。
+        **绝不「差不多地」用一半**——半个编号表比没有编号表更糟。"""
+        client = self._client(finishes=("length", "length"))
+        out = refine_refiner.refine_body(client, self.BODY, limit=20)
+        assert out.source == "failed"
+        assert out.lines == ()
+        assert "budget:" in out.error
+        assert len(client.calls) == 2
+
+    def test_账本记下finish_reason(self):
+        """账本取**第二次**的 ``finish_reason``（描述最后一次调用）。"""
+        client = self._client(finishes=("length", "stop"))
+        out = refine_refiner.refine_body(client, self.BODY, limit=20)
+        assert out.call["finish_reason"] == "stop"
+
+    def test_已在顶就不重试(self):
+        """预算已经到硬顶 ⇒ 换不出更大的 ⇒ 重发同一个预算结果必然一样
+        ⇒ **不烧钱**，整条直接作废。"""
+        from trajectory_pipeline.llm.client import MAX_OUTPUT_TOKENS
+
+        client = self._client(finishes=("length",), max_tokens=MAX_OUTPUT_TOKENS)
+        out = refine_refiner.refine_body(client, self.BODY, limit=20)
+        assert out.source == "failed"
+        assert "budget:" in out.error
+        assert len(client.calls) == 1, "已经在顶 ⇒ 不该再发一次"
+
+    def test_重试预算要封顶(self):
+        """抬过某些后端的单请求上限 ⇒ 400 ⇒ 4xx 不重试 ⇒ 一次可恢复的
+        失败被变成不可恢复的失败，还会推进熔断计数。"""
+        from trajectory_pipeline.llm.client import MAX_OUTPUT_TOKENS
+
+        client = self._client(finishes=("length", "stop"), max_tokens=100000)
+        refine_refiner.refine_body(client, self.BODY, limit=20)
+        assert client.calls[1] == MAX_OUTPUT_TOKENS
 
 
 class Test模块边界:

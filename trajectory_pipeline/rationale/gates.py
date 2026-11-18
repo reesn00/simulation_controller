@@ -136,13 +136,48 @@ class GateResult:
 # ── 可判定性 ──────────────────────────────────────────────────────
 
 
+def _truncated_branch(value: Any) -> str:
+    """``truncated`` 字段 → **哪一支**判真（``""`` = 没截断）。
+
+    ⚠️ **2 键语义重定义**（H-41 阶段 2 · 方案 26 §6.3 #9）——
+    ``{'source': …, 'view': …}`` 两支**各有各的意思**，不再当
+    「哪个为真算什么」的一锅：
+
+    - ``"source"``：**上游采集侧**截断（取证态正文就不全）⇒
+      实体可能落在截断外；
+    - ``"view"``：**本层训练态渲染**裁剪（视图比取证态少）⇒
+      实体可能落在被裁的那一段。
+
+    ⚠️ **语义模式下 ``view`` 恒 False**（H-41 阶段 2）：那不是截断，
+    是**模型的选择** ⇒ 语义模式的观察**不**因「模型少选了行」被判
+    不可判（fail-closed 的训练信号怎么迁见方案 26 §6.4，阶段 3）。
+
+    ⚠️ **只认这两个键**：将来加第三键时**不会**静默改变这里的含义。
+    两个键都没有的 dict（不认识的老形状）⇒ 退回 ``any(values)``，
+    **保守判真**（宁可说「查不了」，也不把缺件当齐了）。
+
+    ⚠️ 非 dict（P1 的 bool）⇒ ``True`` 就是**上游截断**（``"source"``）：
+    P1 存档里的 ``truncated`` 是**采集侧**那个标志。
+    """
+    if isinstance(value, Mapping):
+        if "source" in value or "view" in value:
+            if value.get("source"):
+                return "source"
+            if value.get("view"):
+                return "view"
+            return ""
+        return "unknown" if any(bool(v) for v in value.values()) else ""
+    return "source" if value else ""
+
+
 def _truncated_flag(value: Any) -> bool:
     """``truncated`` 字段统一判真——兼容 p1 bool 与 p2 dict 两种形态
     （INC42；与 evaluation 侧各实现同款但独立，靠 contract 盯守）。
-    dict（``{'source': False, 'view': False}``）按 ``any(values)`` 判。"""
-    if isinstance(value, Mapping):
-        return any(bool(v) for v in value.values())
-    return bool(value)
+
+    ⚠️ **2 键语义**见 :func:`_truncated_branch`（``source`` = 上游截断 /
+    ``view`` = 本层裁剪）——**不许把两支混成一支**。
+    """
+    return bool(_truncated_branch(value))
 
 
 def observation_shortfall(obs: Mapping[str, Any] | None) -> str:
@@ -156,14 +191,25 @@ def observation_shortfall(obs: Mapping[str, Any] | None) -> str:
     这一层是 §5.5 那条最贵的教训的落点：iqiyi 播放页 ``video=1``
     被判「否」，模型把**采集失败**讲成了通顺的错结论。观察不充分时
     判「查不了」，那条路就堵死了。
+
+    ⚠️ **截断的两支分开说**（H-41 阶段 2 · 方案 26 §6.3 #9）：上游截断
+    与本层裁剪的**责任方不同**——上游截断要去改采集预算，本层裁剪是
+    训练态渲染的既定口径（``capped`` 模式）或模型的选择（``semantic``
+    模式）。混成一句「被截断」，读的人会**去改错的东西**。
     """
     if not obs:
         return "没有观察"
     if list(obs.get("degraded") or ()):
         return f"观察有采集降级项 {list(obs['degraded'])}"
-    if _truncated_flag(obs.get("truncated")):
+    branch = _truncated_branch(obs.get("truncated"))
+    if branch == "source":
         return ("观察被上游 max_chars 截断——实测 CSS 会抢光预算，"
                 "实体可能落在截断外")
+    if branch == "view":
+        return ("观察在训练态渲染时被裁剪（truncated.view）——"
+                "实体可能落在被裁的那一段")
+    if branch == "unknown":
+        return "观察的截断标记形态不认识——实体可能落在看不见的那部分外"
     elements = list(obs.get("interactive_elements") or ())
     total = int(obs.get("elements_total") or 0) or len(elements)
     if total > len(elements):

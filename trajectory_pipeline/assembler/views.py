@@ -122,6 +122,19 @@ from trajectory_pipeline.storage import (
 from trajectory_pipeline.storage.write_p3 import write_views as storage_write_views
 
 
+#: 动作错误正文在**投影**里显示的字数上限（H-41）。
+#:
+#: 全文在 P1 存档里（``steps[i].error`` 原样落盘）⇒ 投影里只放得下一段
+#: ⇒ **裁是必须的**。但**裁必须留痕**（本模块 docstring 第 5 条）：
+#: 此前只腰斩不留标记 ⇒ 模型看到一段**被腰斩**的错误文本，却没有任何
+#: 「这里被截过」的信号——而「动作白做」与「动作失败原因被截断」是
+#: 两件不同的事。
+#:
+#: ⚠️ 与 ``task_view`` 里的同名常量**逐字同款**（O-5：两段投影刻意不互相
+#: import，字面一致靠契约测试盯着）。
+ACTION_ERROR_CHARS = 120
+
+
 def views_dir(root: str | Path | None = None) -> Path:
     """``views/`` 目录的绝对路径。**转发到 storage**——存储布局的权威
     在 :func:`trajectory_pipeline.storage.views_dir`，渲染侧不另定义路径
@@ -223,9 +236,18 @@ def render_observation(obs: Mapping[str, Any]) -> str:
     # 「页面没内容」。错误正文只放前 120 字，全文在 P1 存档里。
     error = str(obs.get("action_error") or "").strip()
     if error:
-        if len(error) > 120:
-            error = error[:119] + "…"
+        error_cut = len(error) > ACTION_ERROR_CHARS
+        if error_cut:
+            error = error[:ACTION_ERROR_CHARS - 1] + "…"
         parts.append(f"[本步动作无效: {error}]")
+        if error_cut:
+            # ⚠️ **裁了就要留痕**（H-41）：此前只腰斩不留标记 ⇒ 模型看到
+            # 一段被腰斩的错误文本，**没有任何「这里被截过」的信号**。
+            # 与正文同款口径（正文有 ``[内容不完整: …]``，这里有本条）。
+            parts.append(
+                f"[动作错误已截断: 只显示前 {ACTION_ERROR_CHARS} 字，"
+                f"全文见 P1 存档]"
+            )
 
     # 如实报账，不静默省略——见模块 docstring 第 5 条与第 2 条。
     degraded = list(obs.get("degraded") or ())
@@ -247,6 +269,10 @@ def render_observation(obs: Mapping[str, Any]) -> str:
         if trunc.get("view"):
             which.append("本次裁剪")
         parts.append(f"[内容不完整: {'、'.join(which)}]")
+    # ⚠️ **语义模式不出现 `[内容不完整: …]`**（H-41 阶段 2 · 方案 26）：
+    # 语义模式下 ``truncated.view`` 恒 false ⇒ 这一支不触发 ⇒「模型挑过的」
+    # 与「被规则裁掉的」在文本上**分得开**。回退时 ``truncated.view``
+    # 被强制为真 ⇒ 回退的那条**会**出现本标记（诚实记账）。
     return "\n\n".join(parts)
 
 

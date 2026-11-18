@@ -221,6 +221,33 @@ def _gate_mark(sample: Any) -> GateMark | None:
 # ── 观察充分性（独立实现） ────────────────────────────────────────
 
 
+def _truncated_branch(value: Any) -> str:
+    """``truncated`` → **哪一支**判真（``""`` = 没截断）。
+
+    ⚠️ **2 键语义重定义**（H-41 阶段 2 · 方案 26 §6.3 #9）——
+    ``{'source': …, 'view': …}`` 两支**各有各的意思**：
+    ``source`` = **上游采集侧**截断（取证态就不全）；``view`` =
+    **本层训练态渲染**裁剪（视图比取证态少）。
+
+    ⚠️ **语义模式下 ``view`` 恒 False**：那不是截断，是**模型的选择**
+    ⇒ 语义模式的观察**不**因「模型少选了行」被判不可判。
+
+    ⚠️ **只认这两个键**；不认识的老形状（两个键都没有）⇒ 退回
+    ``any(values)``，**保守判真**。
+
+    ⚠️ 非 dict（P1 的 bool）⇒ ``True`` 就是**上游截断**。
+    """
+    if isinstance(value, Mapping):
+        if "source" in value or "view" in value:
+            if value.get("source"):
+                return "source"
+            if value.get("view"):
+                return "view"
+            return ""
+        return "unknown" if any(bool(v) for v in value.values()) else ""
+    return "source" if value else ""
+
+
 def _truncated_flag(value: Any) -> bool:
     """``truncated`` 字段的统一判真——兼容两种存档形态（INC42）。
 
@@ -229,11 +256,11 @@ def _truncated_flag(value: Any) -> bool:
 
     INC42 前的 ``if obs.get("truncated")`` 把**非空 dict 一律判真**
     （全 False 也是真）→ E001__57bbf995__site-2 被误标「观察被截断」。
-    dict 形态按 ``any(values)`` 判：任一子观察截断才算截断。
+
+    ⚠️ **2 键语义**见 :func:`_truncated_branch`（``source`` = 上游截断 /
+    ``view`` = 本层裁剪）——**不许把两支混成一支**。
     """
-    if isinstance(value, Mapping):
-        return any(bool(v) for v in value.values())
-    return bool(value)
+    return bool(_truncated_branch(value))
 
 
 def _observation_shortfall(obs: Mapping[str, Any] | None) -> str:
@@ -242,13 +269,21 @@ def _observation_shortfall(obs: Mapping[str, Any] | None) -> str:
     同款判据于 :func:`trajectory_pipeline.rationale.gates.observation_shortfall`
     与 :func:`trajectory_pipeline.evaluation.scorers.d3_scorer._observation_shortfall`，
     但**独立实现**——保持 ``evaluation ↔ rationale`` 单向依赖方向。
+
+    ⚠️ **截断的两支分开说**（H-41 阶段 2 · 方案 26 §6.3 #9）：上游截断与
+    本层裁剪的责任方不同，混成一句会让人**去改错的东西**。
     """
     if not obs:
         return "没有观察"
     if list(obs.get("degraded") or ()):
         return f"观察有采集降级项 {list(obs['degraded'])}"
-    if _truncated_flag(obs.get("truncated")):
+    branch = _truncated_branch(obs.get("truncated"))
+    if branch == "source":
         return "观察被上游 max_chars 截断，实体可能落在截断外"
+    if branch == "view":
+        return "观察在训练态渲染时被裁剪（truncated.view），实体可能落在被裁的那一段"
+    if branch == "unknown":
+        return "观察的截断标记形态不认识，实体可能落在看不见的那部分外"
     elements = list(obs.get("interactive_elements") or ())
     total = int(obs.get("elements_total") or 0) or len(elements)
     if total > len(elements):

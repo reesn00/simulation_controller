@@ -59,8 +59,8 @@ json_schema**，模型会漂字段名、套 think、首轮跑偏。``schema_pars
     TRAJECTORY_LLM_BASE_URL      必填，缺失即报错不猜
     TRAJECTORY_LLM_MODEL         必填，同上
     TRAJECTORY_LLM_API_KEY       可选，本机 vLLM 不校验时留空
-    TRAJECTORY_LLM_TIMEOUT_S     可选，默认 90（30s 对判断点 ① 不够，见 ``client.DEFAULT_TIMEOUT_S``）
-    TRAJECTORY_LLM_MAX_TOKENS    可选，默认 8192；**真实采集场景请设 16384**（8192 会被思考吃光→判断点 ① 空回传，见 04-运行手册.md「环境变量」）
+    TRAJECTORY_LLM_TIMEOUT_S     可选，默认 600（30s 对判断点 ① 不够；200k 输入 + 128k 输出后 90s 更不够，见 ``client.DEFAULT_TIMEOUT_S``）
+    TRAJECTORY_LLM_MAX_TOKENS    可选，默认 131072（= 128k，**后端单请求输出上限**；⚠️ **不是 200000** —— 那是输入窗口，写上去会 400 → 连续 3 次 → 熔断整批，见 ``client.DEFAULT_MAX_TOKENS``）
 
 端点与模型名可用 :func:`~trajectory_pipeline.llm.client.probe` 一次性探测——
 **模型名写错时的症状是每道题都返回 None**，看起来像「LLM 判不了」，

@@ -241,17 +241,41 @@ def _render_user(case: D10Case) -> str:
 # ── 判读前的自查 ──────────────────────────────────────────────────
 
 
+def _truncated_branch(value: Any) -> str:
+    """``truncated`` → **哪一支**判真（``""`` = 没截断）。
+
+    ⚠️ **2 键语义重定义**（H-41 阶段 2 · 方案 26 §6.3 #9）——
+    ``{'source': …, 'view': …}`` 两支**各有各的意思**：
+    ``source`` = **上游采集侧**截断（取证态就不全）；``view`` =
+    **本层训练态渲染**裁剪（视图比取证态少）。
+
+    ⚠️ **语义模式下 ``view`` 恒 False**：那不是截断，是**模型的选择**
+    ⇒ 语义模式的观察**不**因「模型少选了行」被判不可用。
+
+    ⚠️ **只认这两个键**；不认识的老形状（两个键都没有）⇒ 退回
+    ``any(values)``，**保守判真**。
+
+    ⚠️ 非 dict（P1 的 bool）⇒ ``True`` 就是**上游截断**。
+    """
+    if isinstance(value, Mapping):
+        if "source" in value or "view" in value:
+            if value.get("source"):
+                return "source"
+            if value.get("view"):
+                return "view"
+            return ""
+        return "unknown" if any(bool(v) for v in value.values()) else ""
+    return "source" if value else ""
+
+
 def _truncated_flag(value: Any) -> bool:
     """``truncated`` 字段统一判真——兼容 p1 bool 与 p2 dict 两种形态
     （INC42；与 d3_scorer._truncated_flag 同款独立实现）。
 
-    dict（``{'source': False, 'view': False}``）按 ``any(values)`` 判；
-    非空 dict 不等于截断——第一版把它一律判真，E001__57bbf995__site-2
-    被误标截断。
+    ⚠️ **2 键语义**见 :func:`_truncated_branch`（``source`` = 上游截断 /
+    ``view`` = 本层裁剪）——**不许把两支混成一支**。
     """
-    if isinstance(value, Mapping):
-        return any(bool(v) for v in value.values())
-    return bool(value)
+    return bool(_truncated_branch(value))
 
 
 def _observation_usable(obs: Mapping[str, Any] | None) -> str:
@@ -267,13 +291,21 @@ def _observation_usable(obs: Mapping[str, Any] | None) -> str:
     拿它当充分证据判「依据引用了观察之外」，就是把采集的缺件算成轨迹的错。
     边界一致性由 ``tests/contract/test_observation_shortfall_consistency.py``
     盯着（d10 是本契约的四处之一；原 code_scorer 那处已于 rubric v1.4 退出）。
+
+    ⚠️ **截断的两支分开说**（H-41 阶段 2 · 方案 26 §6.3 #9）：上游截断与
+    本层裁剪的责任方不同，混成一句会让人**去改错的东西**。
     """
     if not obs:
         return "没有观察存档"
     if list(obs.get("degraded") or ()):
         return f"观察有采集降级项 {list(obs['degraded'])}"
-    if _truncated_flag(obs.get("truncated")):
+    branch = _truncated_branch(obs.get("truncated"))
+    if branch == "source":
         return "观察被上游 max_chars 截断，「依据是否引用观察之外」无从判读"
+    if branch == "view":
+        return "观察在训练态渲染时被裁剪（truncated.view），「依据是否引用观察之外」无从判读"
+    if branch == "unknown":
+        return "观察的截断标记形态不认识，「依据是否引用观察之外」无从判读"
     body = str(obs.get("body_text") or "").strip()
     elements = list(obs.get("interactive_elements") or ())
     total = int(obs.get("elements_total") or 0) or len(elements)

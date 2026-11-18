@@ -50,6 +50,7 @@ from trajectory_pipeline.executor.dom import (
 from trajectory_pipeline.common.elements import (
     ELEMENT_VOCAB_HTML_TAG,
 )
+from trajectory_pipeline.common.field_limits import ELEMENT_COUNT_LIMIT
 from trajectory_pipeline.executor.browser.element_basis import (
     SHARED_DOM_JS,
     parse_shared_basis,
@@ -61,7 +62,14 @@ from trajectory_pipeline.perception.base import (
 )
 
 #: 交互元素与链接的默认取回上限。播放页的候选元素通常远少于 200。
-DEFAULT_LIMIT = 200
+#:
+#: ⚠️ **数字不在这里定**（H-41）：采集层（此处）/ 落盘层（P1 存档）/
+#: 送模型那一层（感知层）**三层必须同值** ⇒ D-2 评分器那个「落盘条数 vs
+#: 采集条数」的差才归零（「目标是不是被裁掉了」从「可能」变成「不可能」）。
+#: ⇒ 唯一真源在 :data:`trajectory_pipeline.common.field_limits.
+#: ELEMENT_COUNT_LIMIT`（链接侧同值，见 ``LINK_COUNT_LIMIT``），
+#: 这里只做转发（历史 import 路径不变）。
+DEFAULT_LIMIT = ELEMENT_COUNT_LIMIT
 
 #: **红线：永久不得包装的 tool**（CLAUDE.md「不保存 Cookie / Authorization
 #: Header 或浏览器 Profile」）。obscura 37 个 tool 里有 5 个能碰这些东西，

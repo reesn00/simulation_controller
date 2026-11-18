@@ -281,7 +281,11 @@ def locate_sample(
             "candidates": [],
         }
 
-    data = samples[0].to_json()
+    # ⚠️ **显式要取证态观察**（H-41 阶段 2 · 方案 26 §6.3 #10）：
+    # :meth:`assembler.schema.Sample.to_json` 现在**默认不写观察**——
+    # 它是 P1 的**取证态全文**，而这里要的正是取证态（校准读数看的是
+    # 「当时到底采到了什么」，不是训练态那 320 字）。
+    data = samples[0].to_json(observations=samples[0].observations)
     site, why = _match_site(data, url)
     return {
         "kind": kind, "path": str(path), "sample": data,
@@ -487,7 +491,9 @@ def locate_trajectory(
             "note": "存档切不出轨迹（搜索阶段被反爬拦或搜索页采集失败）",
             "candidates": [],
         }
-    data = samples[0].to_json()
+    # ⚠️ **显式要取证态观察**（同 :func:`row_digest`）——校准读数看的是
+    # 取证态全文。
+    data = samples[0].to_json(observations=samples[0].observations)
     return {
         "path": str(path), "sample": data, "found": True,
         "note": f"轨迹样本 {data.get('sample_id')}",

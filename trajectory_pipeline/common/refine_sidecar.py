@@ -34,17 +34,37 @@ P1 是**取证态**：它是证据链的起点，正文落全文、不落摘要
 
 键怎么选
 --------
-旁挂按**正文内容哈希**索引，不按步号索引：
+旁挂按**候选集的哈希**索引，不按步号索引：
 
 - P2 与 T 是**两份独立渲染**（P2 读 P1 切条、T 读 P1 直接渲），
   它们的步号坐标系不同（per-unit vs per-Run），按步号索引要维护
   两套映射，映射错了就是「A 步的精炼贴到 B 步」——静默的语料污染；
-- 内容哈希两边算出来一样，且**天然幂等**：同一份正文精炼一次，
+- 哈希两边算出来一样，且**天然幂等**：同一份候选集精炼一次，
   换步号、换渲染口径都不用重算。
 
+⚠️ **键覆盖的是「这条记录选过的那几维」**（:func:`selection_key`）：
+
+- **老协议（``select.v1``，只选正文）** ⇒ 键只看正文；
+- **三段协议（``select.v2``，正文 + 元素 + 链接）** ⇒ 键看
+  **正文 + 元素候选 + 链接候选**。
+
+⚠️ **为什么三段协议的键不能只看正文**（2026-11-18 实测，H-41 阶段 3）：
+**同一份正文**在一条轨迹里可能被看到**多次**，而那几次的
+**元素 / 链接集合可以不同**（动态页面、镜像站：正文文字一样，
+链接指向不同的站）。实测（E005 存档）：同一份正文出现 8 次，
+其中 5 次的链接集合与第 1 次不同 ⇒ 用正文哈希当键 ⇒
+**第 1 次的选择被贴到了第 3 次上** ⇒ 渲染层逐字核对「模型选的
+那个链接」⇒ 对不上 ⇒ **整条回退规则裁剪**。
+⇒ 实测 **13 条回退里 12 条是这一条**（Tier B 达标率 87.7%，
+判据要求 ≥95%）。
+
+⇒ 所以键必须是**候选集**的哈希：模型的判断只对它**当时看到的那份
+候选清单**成立。
+
 ⚠️ 哈希只用于**定位**，不用于判真伪：渲染侧仍要逐行核对「保留的行
-确实还在这份正文里」（:func:`trajectory_pipeline.assembler.
-observation_view.render` 的 ``refined`` 分支），对不上就回退到规则裁剪。
+确实还在这份正文里」「模型选的元素 / 链接确实在这一份的候选集里」
+（:func:`trajectory_pipeline.assembler.observation_view.render` 的
+``refined`` 分支），对不上就回退到规则裁剪。
 """
 
 from __future__ import annotations
@@ -53,18 +73,54 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 #: 旁挂格式版本。**只在破坏性变更时升**——加可选字段不动它
 #: （同 ``P1-observation.md`` 的版本纪律）。
 #:
-#: ⚠️ **2026-11-13：``refine.v1`` → ``refine.v2``**（破坏性变更）：
-#: 顶层键 ``steps`` 改名 ``entries``、文件后缀加 ``.refined``。
-#: 升版本是**故意的**：旧档（v1）读侧**显式作废**（``read_sidecar`` 认版本）
-#: ⇒ 那些档案走规则裁剪，**与没精炼时逐字一致**；
-#: 不升版本的话，旧档会被**认出来但读不出内容**（键名对不上 ⇒ 索引为空）
-#: ⇒ **静默当没精炼**，而人会以为「精炼过了但效果不好」。
-SIDECAR_SCHEMA_VERSION = "refine.v2"
+#: ⚠️ **2026-11-17（H-41 阶段 2）：``refine.v2`` → ``refine.v3``**（破坏性变更）：
+#: 条目新增 ``elements`` / ``links``（**模型选的元素 / 链接**）与
+#: ``protocol``（这条记录是**哪一版选择协议**产出的）。
+#:
+#: 为什么要升版：``refine.v2`` 的条目只有 ``kept``（正文行），而阶段 2 的
+#: 「语义渲染」需要**元素与链接也由模型选**。不升版本的话，旧档会被
+#: **认出来但读不出内容**（没有元素 / 链接选择）⇒ **静默当没精炼**，
+#: 而人会以为「精炼过了但效果不好」——那正是本模块 docstring 里
+#: 「宁可少一次精炼，也不要一次崩掉整批渲染」要防的那类静默退化。
+#:
+#: 旧档（``refine.v2``）**读侧显式作废**（:func:`read_sidecar` 认版本）
+#: ⇒ 那些档案走规则裁剪，**与没精炼时逐字一致**（零回归）。
+#:
+#: ⚠️ **2026-11-18（H-41 阶段 3）：``refine.v3`` → ``refine.v4``**
+#: （破坏性变更）：**条目的键**从「正文哈希」改成「**候选集哈希**」
+#: （:func:`selection_key`）。
+#:
+#: 为什么必须升版：``refine.v3`` 的条目键是**正文哈希**，而三段协议
+#: （``select.v2``）选的是**正文 + 元素 + 链接** ⇒ 同一份正文在不同
+#: 步上的元素 / 链接集合可以不同 ⇒ 用正文哈希当键 ⇒ **A 步的选择被
+#: 贴到 B 步上** ⇒ 渲染层逐字核对不过 ⇒ **整条回退规则裁剪**
+#: （实测：13 条回退里 12 条是这一条，Tier B 达标率 87.7% < 95%）。
+#:
+#: 不升版本的后果：**旧档被认出来但查不到**（键对不上）⇒ 静默当没
+#: 精炼 ⇒ 而人会以为「精炼过了但效果不好」——那正是本模块 docstring
+#: 里「宁可少一次精炼，也不要一次崩掉整批渲染」要防的那类静默退化。
+SIDECAR_SCHEMA_VERSION = "refine.v4"
+
+#: **条目协议版本**——「这一条的选择是按哪一版协议做的」。
+#:
+#: 为什么要**逐条**记（而不是只记在旁挂顶层）：渲染层的「语义模式」
+#: 需要知道**这条**的模型选择覆盖了哪些维度（正文 / 元素 / 链接）。
+#: 老协议只选正文 ⇒ 语义模式不能用它选元素 ⇒ **整条回退规则裁剪**
+#: （而不是「正文用模型的、元素用规则的」那种半吊子——两套口径混在
+#: 一条观察里，读的人分不清哪部分是模型说的）。
+ENTRY_PROTOCOL = "select.v2"
+
+#: **旧的选择协议**（只选正文，方案 25）——留痕用。
+#:
+#: 语义渲染**只认** :data:`ENTRY_PROTOCOL`：老协议产出的条目只有正文
+#: 一个维度，元素 / 链接**没被选过** ⇒ 拿它渲染语义模式会造出
+#: 「正文是模型选的、元素是规则选的」那种混口径观察。
+ENTRY_PROTOCOL_LEGACY = "select.v1"
 
 #: 正文键的长度（sha256 前 16 位十六进制 = 64 bit）。
 #:
@@ -79,8 +135,63 @@ def body_key(body: str) -> str:
 
     空正文也有键（``sha256("")``）——「空观察」同样要被定位到，
     否则「这一条没有精炼过」与「这一条精炼成了空」分不开。
+
+    ⚠️ **它只是「候选集键」的一个特例**（:func:`selection_key`，
+    元素与链接都为空时）——**老协议**（只选正文）用它，
+    **三段协议**必须用 :func:`selection_key`。
     """
     return hashlib.sha256((body or "").encode("utf-8")).hexdigest()[:_BODY_KEY_LEN]
+
+
+def _feed(digest: "hashlib._Hash", value: str) -> None:
+    """把一个字段喂进哈希——**长度前缀**，免得拼接出歧义。
+
+    ⚠️ 不用分隔符：正文里什么字符都可能有（分隔符也可能出现）
+    ⇒ 「A + B」和「AB + 空」撞成同一个哈希 ⇒ **A 步的精炼贴到
+    B 步上**——正是本模块要防的那类静默污染。
+    """
+    raw = (value or "").encode("utf-8")
+    digest.update(str(len(raw)).encode("ascii"))
+    digest.update(b":")
+    digest.update(raw)
+
+
+def selection_key(
+    body: str,
+    *,
+    elements: Sequence[tuple[str, str]] = (),
+    links: Sequence[tuple[str, str]] = (),
+) -> str:
+    """**候选集**的稳定键（正文 + 元素候选 + 链接候选）。
+
+    Args:
+        body: **完整正文**（取证态全文）。
+        elements: 元素候选 ``(role, name)``——**摆给模型挑的那一份**
+            （:func:`trajectory_pipeline.common.view_candidates.
+            element_candidates` 的产物，语义口径 ``filter_noise=False``）。
+        links: 链接候选 ``(text, href)``——同上。
+
+    ⚠️ **键必须覆盖「模型当时看到的那份清单」**：模型的判断只对它
+    看到过的东西成立。**同一份正文**在不同步上的元素 / 链接集合可以
+    不同（动态页面、镜像站）⇒ 只按正文哈希定位 ⇒ **A 步的选择被贴
+    到 B 步上** ⇒ 渲染层逐字核对不过 ⇒ 整条回退规则裁剪。
+    实测（2026-11-18 · E005）：13 条回退里 **12 条**是这一条。
+
+    ⚠️ **元素 / 链接的顺序有意义**（页面顺序）⇒ 键按**顺序**算，
+    不排序——排序会把「页面从上到下」这个结构信号从键里抹掉。
+    """
+    digest = hashlib.sha256()
+    digest.update(b"trajectory.selection.v1")
+    _feed(digest, body or "")
+    digest.update(b"|elements|")
+    for role, name in elements or ():
+        _feed(digest, str(role or ""))
+        _feed(digest, str(name or ""))
+    digest.update(b"|links|")
+    for text, href in links or ():
+        _feed(digest, str(text or ""))
+        _feed(digest, str(href or ""))
+    return digest.hexdigest()[:_BODY_KEY_LEN]
 
 
 #: 旁挂文件的后缀。与 P1 的 ``.json`` **刻意不同**——见模块 docstring
@@ -136,18 +247,81 @@ def write_sidecar(path: str | Path, payload: Mapping[str, Any]) -> None:
     os.replace(tmp, p)
 
 
-def index_by_body(payload: Mapping[str, Any] | None) -> dict[str, list[str]]:
-    """旁挂 → ``{正文键: 保留的行}`` 索引。
+def _normalize_entry(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """一条旁挂记录 → **规范形状**（认不出的返回 ``None``）。
 
-    渲染侧唯一要用的读法。**认不出的一律跳过**（缺键 / 类型不对 /
-    保留行不是字符串列表）——索引里的坏条目会被渲染侧逐行核对拦下，
+    规范形状::
+
+        {"selection_key": str, "body_key": str, "source": str, "kept": [str],
+         "elements": [{"role": str, "name": str}],
+         "links": [{"text": str, "href": str}],
+         "dropped": int, "candidates": int, "candidates_shown": int,
+         "error": str, "call": dict, "protocol": str}
+
+    ⚠️ **坏条目一律跳过**——索引里的坏数据会被渲染侧逐项核对拦下，
     这里先滤一道是为了不让坏数据进热路径。
 
+    ⚠️ ``selection_key`` 是**索引键**（候选集哈希，见
+    :func:`selection_key`）；``body_key`` 是**留痕**（正文哈希）——
+    两者**不是一回事**：同一份正文可以有多条记录（元素 / 链接集合
+    不同 ⇒ 候选集不同 ⇒ 键不同）。⚠️ 缺 ``selection_key`` 的条目
+    **一律跳过**——它是定位用的键，缺了这条记录**定位不到**，
+    留着只会让人以为「精炼过了」。
+    """
+    key = str(entry.get("selection_key") or "")
+    kept = entry.get("kept")
+    if not key or not isinstance(kept, list):
+        return None
+    elements: list[dict[str, str]] = []
+    for item in entry.get("elements") or ():
+        if not isinstance(item, Mapping):
+            continue
+        role = str(item.get("role") or "")
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        elements.append({"role": role, "name": name})
+    links: list[dict[str, str]] = []
+    for item in entry.get("links") or ():
+        if not isinstance(item, Mapping):
+            continue
+        text = str(item.get("text") or "")
+        href = str(item.get("href") or "")
+        if not href:
+            continue
+        links.append({"text": text, "href": href})
+    return {
+        "selection_key": key,
+        "body_key": str(entry.get("body_key") or ""),
+        "source": str(entry.get("source") or ""),
+        "kept": [str(x) for x in kept if isinstance(x, str)],
+        "elements": elements,
+        "links": links,
+        "dropped": int(entry.get("dropped") or 0),
+        "candidates": int(entry.get("candidates") or 0),
+        "candidates_shown": int(entry.get("candidates_shown") or 0),
+        "error": str(entry.get("error") or ""),
+        "call": dict(entry.get("call") or {}),
+        "protocol": str(entry.get("protocol") or ""),
+    }
+
+
+def index_entries(payload: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """旁挂 → ``{候选集键: 规范记录}`` 索引。**渲染层的唯一读法**。
+
+    ⚠️ **``kept`` 为空的条目也留在索引里**（H-41 阶段 2）：「模型一行都
+    没选」与「这一条没精炼过」是**两件事**——前者是模型的判断（合法结果），
+    后者是失败。混在一起 ⇒ 语义模式分不出「模型认为这页没有核心内容」
+    与「精炼没跑成」⇒ **静默退回规则裁剪**，而报表上写着「精炼过了」。
+
+    ⇒ 判据交给调用方：看 ``source``（``"llm"`` = 模型选过）与
+    ``kept`` 是否为空。
+
     ⚠️ 顶层键叫 ``entries`` **不是** ``steps``：P1 存档的 ``steps`` 是
-    **列表**，而这里的 ``entries`` 是**映射**（正文键 → 记录）。
+    **列表**，而这里的 ``entries`` 是**映射**（候选集键 → 记录）。
     叫同一个名字会让「按形状筛存档」的扫描器把旁挂收进去（实测踩过）。
     """
-    out: dict[str, list[str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     if not isinstance(payload, Mapping):
         return out
     entries = payload.get("entries")
@@ -156,14 +330,33 @@ def index_by_body(payload: Mapping[str, Any] | None) -> dict[str, list[str]]:
     for entry in entries.values():
         if not isinstance(entry, Mapping):
             continue
-        key = str(entry.get("body_key") or "")
-        kept = entry.get("kept")
-        if not key or not isinstance(kept, list):
+        normalized = _normalize_entry(entry)
+        if normalized is None:
             continue
-        lines = [str(x) for x in kept if isinstance(x, str)]
-        if not lines:
+        out.setdefault(normalized["selection_key"], normalized)
+    return out
+
+
+def index_by_body(payload: Mapping[str, Any] | None) -> dict[str, list[str]]:
+    """旁挂 → ``{正文哈希: 保留的行}`` 索引（**旧形状**，保留兼容）。
+
+    ⚠️ **``kept`` 为空的条目在这里被丢弃**——旧形状只有「行」这一维，
+    分不出「没选」与「没精炼」。要区分请用 :func:`index_entries`。
+
+    新代码**不该**再用这个函数（渲染层要元素 / 链接选择 ⇒ 必须用
+    :func:`index_entries`）。
+
+    ⚠️ **正文哈希不是索引键**（:func:`selection_key`）⇒ 同一份正文
+    可以有多条记录（元素 / 链接集合不同）⇒ 这里**只留第一条**
+    （``setdefault`` 语义）——旧形状本来就没有「多份」的表达能力。
+    """
+    out: dict[str, list[str]] = {}
+    for entry in index_entries(payload).values():
+        lines = entry["kept"]
+        body = entry.get("body_key") or ""
+        if not lines or not body:
             continue
-        out.setdefault(key, lines)
+        out.setdefault(body, list(lines))
     return out
 
 
@@ -175,13 +368,18 @@ def make_payload(
 ) -> dict[str, Any]:
     """拼一份旁挂。
 
-    ``entries`` 是 ``{正文键: 一条记录}``——记录形状见
+    ``entries`` 是 ``{候选集键: 一条记录}``——记录形状见
     :meth:`trajectory_pipeline.refine.refiner.RefineStep.to_json`
-    （保留的行逐字来自 P1 正文 + 丢掉的行数 + 调用账）。
+    （**必须带** ``selection_key``（索引键）与 ``body_key``（留痕）；
+    保留的行逐字来自 P1 正文 + 丢掉的行数 + 调用账）。
 
-    ⚠️ **按正文键去重**：同一份正文在一份存档里可能被看到多次
-    （同一个页面访问两次），而正文一样 ⇒ 精炼结果一样 ⇒ 只存一条、
+    ⚠️ **按候选集键去重**：同一份候选集在一份存档里可能被看到多次
+    （同一个页面访问两次），而候选集一样 ⇒ 精炼结果一样 ⇒ 只存一条、
     只花一次 LLM 调用。
+
+    ⚠️ **正文一样但元素 / 链接不一样 ⇒ 键不一样**（:func:`selection_key`）
+    ⇒ **不合并**——合并就是把 A 步的选择贴到 B 步上（实测踩过：
+    E005 存档 13 条回退里 12 条是这一条）。
 
     ⚠️ 顶层键叫 ``entries``（**不是** ``steps``）——理由见
     :func:`index_by_body` 的警告。
@@ -197,29 +395,38 @@ def make_payload(
 def load_index(
     refined_dir: str | Path | None,
     archive_name: str,
-) -> dict[str, list[str]]:
-    """读一份旁挂 → ``{正文键: 保留的行}`` 索引（渲染侧唯一入口）。
+) -> dict[str, dict[str, Any]]:
+    """读一份旁挂 → ``{候选集键: 规范记录}`` 索引（渲染层唯一入口）。
 
     **读不到就是没有精炼**（旁挂是派生品，坏了就当没有）——渲染层于是走
     规则裁剪，行为与没精炼时**逐字一致**。
 
     ``refined_dir=None`` = 不做精炼（默认）：旁挂目录没给就不去找，
     免得「目录空着」与「目录没配」两件事分不开。
+
+    ⚠️ **旧版本旁挂（``refine.v3`` 及更早）读侧显式作废**
+    （:func:`read_sidecar` 认版本）⇒ 返回 ``{}`` ⇒ 那些档案**整条走规则
+    裁剪**（零回归）。⚠️ 不升版本的后果是「认出来但查不到」⇒ **静默当
+    没精炼** ⇒ 而人会以为「精炼过了但效果不好」。
     """
     if refined_dir is None:
         return {}
     payload = read_sidecar(sidecar_path(refined_dir, archive_name))
-    return index_by_body(payload)
+    return index_entries(payload)
 
 
 __all__ = [
+    "ENTRY_PROTOCOL",
+    "ENTRY_PROTOCOL_LEGACY",
     "SIDECAR_SCHEMA_VERSION",
     "SIDECAR_SUFFIX",
     "body_key",
     "index_by_body",
+    "index_entries",
     "load_index",
     "make_payload",
     "read_sidecar",
+    "selection_key",
     "sidecar_path",
     "write_sidecar",
 ]

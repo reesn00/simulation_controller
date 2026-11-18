@@ -1088,6 +1088,7 @@ class TestRenderObservationSync:
         ("上游截断", {"truncated": {"source": True, "view": False}}),
         ("本层裁剪", {"truncated": {"source": False, "view": True}}),
         ("动作无效", {"action_error": "click 失败: 元素不在页面上"}),
+        ("动作错误超长", {"action_error": "错" * 300}),
         ("精炼过", {"body_refined": True, "body_refined_lines": 3}),
         ("精炼加降级加截断", {
             "body_refined": True, "body_refined_lines": 2,
@@ -1124,6 +1125,25 @@ class TestRenderObservationSync:
         obs = _obs_full()
         assert "内容已精简" not in views.render_observation(obs)
         assert "内容已精简" not in task_view._render_observation_text(obs)
+
+    def test_动作错误被截断时要留痕(self):
+        """⚠️ H-41：**裁了就要留痕**。
+
+        此前只腰斩不留标记 ⇒ 模型看到一段被腰斩的错误文本，却没有任何
+        「这里被截过」的信号——而「动作白做」与「动作失败原因被截断」
+        是两件不同的事。
+        """
+        obs = _obs_full(action_error="错" * 300)
+        for text in (views.render_observation(obs),
+                     task_view._render_observation_text(obs)):
+            assert "[动作错误已截断:" in text
+            assert "全文见 P1 存档" in text
+
+    def test_动作错误没超长时不带截断标记(self):
+        obs = _obs_full(action_error="click 失败: 元素不在页面上")
+        for text in (views.render_observation(obs),
+                     task_view._render_observation_text(obs)):
+            assert "动作错误已截断" not in text
 
     def test_标记排在降级之后截断之前(self):
         """三块回执各说各的：「动作白做」/「信息没采到」/「这份正文被

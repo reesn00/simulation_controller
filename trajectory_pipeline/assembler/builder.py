@@ -12,10 +12,15 @@
    重建一批 P2 必须独立于 executor 的当前版本。由
    ``tests/contract/test_p2_contract.py::TestNoExecutorImport`` 用 AST 强制。
 3. **训练态观察走 :mod:`~trajectory_pipeline.assembler.observation_view`，
-   不重新发明裁剪。** P1 是**取证态**（全文 6000 字符、80 元素、50 链接），
-   P2 是**训练态**（320 字摘要 / 10 元素 / 4 链接，方案 23 R1）。两边各取
+   不重新发明裁剪。** P1 是**取证态**（正文预算 200000 字符、200 元素、
+   200 链接——H-41 阶段 1 抬上来的数），P2 是**训练态**（``capped`` 模式：
+   320 字摘要 / 10 元素 / 4 链接，方案 23 R1；``semantic`` 模式：**模型选**、
+   **不截**，方案 26）。两边各取
    所需，但裁剪规则只在 observation_view 一处。builder 调 ``render()``，
    不调 ``view.limits``。
+   ⚠️ **观察是「渲染完再交给 ``to_json``」的**（方案 26 §6.3 #10）：
+   :meth:`schema.Sample.to_json` 默认**不写观察**——P2 落盘的**唯一**路径
+   就是本模块的 :func:`_sample_to_json`。
 4. **写原子化。** 先写 ``.json.tmp``、``os.replace`` 覆盖目标。
    批次中断不会留下半截 P2 文件——而半截 P2 比缺 P2 更难查（文件名
    存在但读不出 JSON）。
@@ -49,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from trajectory_pipeline.assembler import observation_view, pool
+from trajectory_pipeline.assembler import failclosed, observation_view, pool
 from trajectory_pipeline.assembler.schema import (
     RATIONALE_ERA_POST_HOC,
     RATIONALE_ERA_PRE_ACTION,
@@ -67,6 +72,31 @@ from trajectory_pipeline.common import refine_sidecar
 #: 改 executor 的产物根时**也**要同步改这里——靠人盯。
 DEFAULT_SAMPLES_PARENT = "pipeline"
 DEFAULT_SAMPLES_DIRNAME = "samples"
+
+#: **缺件负样本线**的目录名。落在 ``output/pipeline/`` 下，**与
+#: :data:`DEFAULT_SAMPLES_DIRNAME` 平级但不同名**。
+#:
+#: ⚠️ **必须与主池分开**：这条线里的样本是**故意阉割过的观察**（人造成
+#: 的缺件），混进主池就是在教模型「这个站点没有播放控件」——那是**假
+#: 事实**。主池的读侧（``storage.read_p3`` 之类）**扫不到这个目录**，
+#: 训练方要显式挑才会用到它。
+#:
+#: ⚠️ **目录名带 ``failclosed``** 是为了让「池里多了个目录」这件事在
+#: ``ls`` 下一眼可见——起个像 ``samples2`` 的名字 ⇒ 读的人以为
+#: 「主池分了两批」⇒ 于是把两批混着训练。
+DEFAULT_FAILCLOSED_DIRNAME = "failclosed_samples"
+
+
+def failclosed_dir(root: str | Path | None = None) -> Path:
+    """``failclosed_samples/`` 目录的绝对路径——**缺件负样本线**的落点。
+
+    ⚠️ ``parents[1]`` 的坑同 :func:`samples_dir`（写成 ``parents[2]``
+    会落到仓库根的 ``output/pipeline/``——CLAUDE.md 明令禁止碰的存量
+    产物目录，而且**不报错**）。
+    """
+    if root is None:
+        root = Path(__file__).resolve().parents[1] / "output" / DEFAULT_SAMPLES_PARENT
+    return Path(root) / DEFAULT_FAILCLOSED_DIRNAME
 
 
 def samples_dir(root: str | Path | None = None) -> Path:
@@ -96,6 +126,25 @@ def samples_dir(root: str | Path | None = None) -> Path:
 #: 里已经有含义（**没有可判的 rationale**），拿它同时表示「全部」会让
 #: 两个概念共用同一个字面量，而报表上分不出「筛了但没有」与「没筛」。
 ERA_ALL = "all"
+
+
+@dataclass(frozen=True, slots=True)
+class RenderCounts:
+    """**渲染模式**的记账（报表上必须看得见）。
+
+    ⚠️ **语义模式整批静默回退**是本仓库最贵的那类 bug：回退后的产物与
+    ``capped`` **逐字一致** ⇒ 报表上看不出异常 ⇒ 读的人以为「语义渲染
+    跑过了」，真相是「一条都没走通」。⇒ 回退**必须**单独计数并印出来
+    （方案 26 §6.3 的「报账」纪律）。
+
+    - ``total``：渲染出来的观察条数；
+    - ``semantic``：**真走了语义渲染**的条数（模型选的内容进了语料）；
+    - ``fallback``：**请求了语义模式但回退规则裁剪**的条数。
+    """
+
+    total: int = 0
+    semantic: int = 0
+    fallback: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +182,11 @@ class ArchiveBuildResult:
     #: **跳过**而不是**没产出**——拿「写出的」当名单会把整池都判成残留。
     #: 这份名单是 H-33 清点交付目录的**唯一依据**。
     produced_ids: tuple[str, ...] = ()
+    #: **语义渲染的记账**（H-41 阶段 2）。⚠️ **回退必须单独计数**——
+    #: 回退后的产物与 ``capped`` 逐字一致，混进别的计数里就分不出来
+    #: 「跑过了」与「压根没跑通」。
+    semantic_observations: int = 0
+    semantic_fallbacks: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +211,12 @@ class BuildReport:
     #: 单列一行：它与「切不出轨迹」「被反爬拦」是三件事，
     #: 处置各不相同（修后端重跑 / 补数据 / 换引擎加间隔）。
     total_judgement_untrusted: int = 0
+    #: **语义渲染的观察条数**（H-41 阶段 2）：真走了语义渲染的条数。
+    total_semantic_observations: int = 0
+    #: **语义渲染回退的条数**（H-41 阶段 2）：请求了语义模式但**回退
+    #: 规则裁剪**的条数。⚠️ 独立一行——回退的产物与 ``capped`` 逐字一致，
+    #: 混进别的计数里就分不出「跑过了」与「压根没跑通」。
+    total_semantic_fallbacks: int = 0
     #: **因「不在本轮名单」被移进隔离区**的样本 id（H-33）。
     #: ⚠️ **这是报表上的独立一行**：交付目录里躺着多少「本轮没产出」的旧产物，
     #: **在 build 的输出里必须看得见**——否则读的人只能靠数目录才发现，
@@ -225,7 +285,8 @@ def _observation_keeps(actions: Sequence[ActionView], count: int) -> list[tuple[
 def _sample_to_json(
     sample: Sample,
     *,
-    refined: Mapping[str, Sequence[str]] | None = None,
+    refined: Mapping[str, Any] | None = None,
+    mode: str = observation_view.VIEW_MODE_CAPPED,
 ) -> dict[str, Any]:
     """把 :class:`Sample` 序列化成可落盘 dict。
 
@@ -235,59 +296,95 @@ def _sample_to_json(
     ``observations`` 字段，因为那条会保留 P1 全文——而 P2 是给模型看的，
     不是给门禁看的。
 
+    ⚠️ **观察是「渲染完再交给 to_json」的**（H-41 阶段 2 · 方案 26 §6.3
+    #10）：:meth:`schema.Sample.to_json` 现在**默认不写观察**——P2 落盘
+    的**唯一**路径就是本函数。这样「规则裁过的正文」与「压根没裁过的
+    全文」在产物上**不会长得一样**：前者带 ``limits`` 留痕，后者压根
+    出不来。
+
     三条随样本传下去的口径（方案 23 R1）：
 
     - ``focus``：任务片名——正文摘要优先保留相关行；
     - ``keep``：**下一个可见动作的目标**——限量不许把它裁掉；
     - ``action_error``：本步动作的失败原因——与采集降级分列。
 
-    ``refined`` 是**精炼旁挂索引**（方案 25）：``{正文内容哈希: 保留的行}``。
+    ``refined`` 是**精炼旁挂索引**（方案 25）：按**键**定位（语义模式 = 候选集哈希 / 规则模式 = 正文哈希）。
     有它时正文按模型选出的行重建（保真口径与规则裁剪同款，见
     :func:`trajectory_pipeline.assembler.observation_view.render`）。
+
+    ``mode`` 是**渲染模式**（H-41 阶段 2）：``capped``（默认，规则裁剪）
+    或 ``semantic``（模型选，**不截**）。
     """
-    base = sample.to_json()
-    observations = list(sample.observations)
+    raw_observations = list(sample.observations)
     focus = (sample.title,) if sample.title else ()
-    keeps = _observation_keeps(list(sample.actions), len(observations))
+    keeps = _observation_keeps(list(sample.actions), len(raw_observations))
     errors = [
         sample.step_errors[i] if i < len(sample.step_errors) else ""
-        for i in range(len(observations))
+        for i in range(len(raw_observations))
     ]
-    base["six"]["observations"] = observation_view.render_all(
-        observations,
-        focuses=[focus] * len(observations),
+    rendered = observation_view.render_all(
+        raw_observations,
+        focuses=[focus] * len(raw_observations),
         keeps=keeps,
         action_errors=errors,
         refined=refined,
+        mode=mode,
     )
-    return base
+    return sample.to_json(observations=rendered)
 
 
 # ── 单条样本落盘 ──────────────────────────────────────────────────
+
+
+def _count_render_modes(observations: Any) -> RenderCounts:
+    """数这份样本里**真走了语义渲染**与**回退了规则裁剪**的观察条数。
+
+    ⚠️ **回退必须能被看见**：回退后的观察与 ``capped`` **逐字一致**
+    ⇒ 不单独计数的话，「语义渲染跑过了」与「压根没跑通」在报表上
+    **长得一模一样**（方案 26 §6.3 的「报账」纪律）。
+
+    ⚠️ ``view_mode`` 记的是**请求的模式**，``semantic_fallback`` 记的是
+    **这一条有没有回退**——两个字段一起才说得清「这一条到底是什么」。
+    """
+    total = semantic = fallback = 0
+    for obs in observations or ():
+        if not isinstance(obs, Mapping):
+            continue
+        total += 1
+        if obs.get("view_mode") != observation_view.VIEW_MODE_SEMANTIC:
+            continue
+        if obs.get("semantic_fallback"):
+            fallback += 1
+        else:
+            semantic += 1
+    return RenderCounts(total=total, semantic=semantic, fallback=fallback)
 
 
 def _write_one(
     sample: Sample,
     target_dir: Path,
     *,
-    refined: Mapping[str, Sequence[str]] | None = None,
-) -> tuple[bool, str | None]:
+    refined: Mapping[str, Any] | None = None,
+    mode: str = observation_view.VIEW_MODE_CAPPED,
+) -> tuple[bool, str | None, RenderCounts]:
     """写一条样本到 ``target_dir / <sample_id>.json``。
 
     Returns:
-        ``(ok, skip_reason)``——写成功 ``(True, None)``；
-        失败 ``(False, reason)``，**不抛异常**，让整批不被一条样本卡住。
+        ``(ok, skip_reason, counts)``——写成功 ``(True, None, 计数)``；
+        失败 ``(False, reason, 空计数)``，**不抛异常**，让整批不被一条
+        样本卡住。
     """
     sample_id = sample.sample_id
     target = target_dir / f"{sample_id}.json"
     tmp = target_dir / f"{sample_id}.json.tmp"
     try:
-        blob = json.dumps(
-            _sample_to_json(sample, refined=refined),
-            ensure_ascii=False, allow_nan=False,
+        payload = _sample_to_json(sample, refined=refined, mode=mode)
+        counts = _count_render_modes(
+            (payload.get("six") or {}).get("observations")
         )
+        blob = json.dumps(payload, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
-        return False, f"序列化失败：{type(exc).__name__}: {exc}"
+        return False, f"序列化失败：{type(exc).__name__}: {exc}", RenderCounts()
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         tmp.write_text(blob, encoding="utf-8")
@@ -295,8 +392,8 @@ def _write_one(
     except OSError as exc:
         # 残留的 .tmp 留着无所谓——下次重建会覆盖。**不删**：删错了
         # 等于把唯一能恢复的中间产物一并擦掉。
-        return False, f"写盘失败：{type(exc).__name__}: {exc}"
-    return True, None
+        return False, f"写盘失败：{type(exc).__name__}: {exc}", RenderCounts()
+    return True, None, counts
 
 
 # ── 分支判定 ──────────────────────────────────────────────────────
@@ -399,6 +496,7 @@ def build_from_archive(
     era_filter: str = ERA_ALL,
     include_legacy: bool = False,
     refined_dir: str | Path | None = None,
+    mode: str = observation_view.VIEW_MODE_CAPPED,
 ) -> ArchiveBuildResult:
     """把一份 P1 存档切成 N 条样本并落盘。
 
@@ -421,6 +519,8 @@ def build_from_archive(
             （默认，行为与今天逐字一致）；给了就按**存档名**读旁挂
             （``<refined_dir>/<archive>.json``），读不到 = 这份没精炼过
             ⇒ 这份走规则裁剪。
+        mode: **渲染模式**（H-41 阶段 2）：``capped``（默认，规则裁剪）
+            或 ``semantic``（模型选，**不截**；需要配 ``refined_dir``）。
 
     Returns:
         单份存档的落盘结果。**异常只发生在档本身坏到切不出**（已
@@ -448,6 +548,11 @@ def build_from_archive(
     #: **本轮该产出**的样本 id（H-33 清点用）。见
     #: :attr:`ArchiveBuildResult.produced_ids` 的口径说明。
     produced: list[str] = []
+    #: **语义渲染的记账**（H-41 阶段 2）：真走了语义渲染的条数 与
+    #: **回退了规则裁剪**的条数。⚠️ 分两笔——回退后的产物与 ``capped``
+    #: 逐字一致，混在一起就看不出「语义渲染到底跑没跑通」。
+    semantic_observations = 0
+    semantic_fallbacks = 0
     # 分代账按**切出来的样本**记，不受过滤与 overwrite 影响：
     # 它描述的是「这份存档里有什么」。
     pre_action = sum(1 for s in samples
@@ -478,12 +583,14 @@ def build_from_archive(
             # 「没有真重建」。理由见 overwrite 默认值注释。
             skipped.append(s.sample_id)
             continue
-        ok, reason = _write_one(s, out_dir, refined=refined)
+        ok, reason, counts = _write_one(s, out_dir, refined=refined, mode=mode)
         if not ok:
             assert reason is not None
             skipped.append(f"{s.sample_id} ({reason})")
             continue
         written += 1
+        semantic_observations += counts.semantic
+        semantic_fallbacks += counts.fallback
         if s.degraded_from:
             degraded += 1
         if s.outcome is not None and _is_negative(s.outcome.branch):
@@ -503,6 +610,8 @@ def build_from_archive(
         judgement_untrusted=bool(getattr(split, "judgement_untrusted", False)),
         legacy_skipped=legacy_skipped,
         produced_ids=tuple(produced),
+        semantic_observations=semantic_observations,
+        semantic_fallbacks=semantic_fallbacks,
     )
 
 
@@ -537,6 +646,7 @@ def build_all(
     include_legacy: bool = False,
     prune_stale: bool = False,
     refined_dir: str | Path | None = None,
+    mode: str = observation_view.VIEW_MODE_CAPPED,
 ) -> BuildReport:
     """把一批 P1 存档全切全落。
 
@@ -566,6 +676,7 @@ def build_all(
         refined_dir: **精炼旁挂目录**（方案 25）。``None`` = 不做精炼
             （默认，行为与今天逐字一致）；给了就按**存档名**逐份读旁挂，
             读不到 = 那份没精炼过 ⇒ 那份走规则裁剪。
+        mode: **渲染模式**（H-41 阶段 2）：同 :func:`build_from_archive`。
 
     Returns:
         整批 :class:`BuildReport`。**单份 P1 切不出样本不打断整批**——
@@ -603,6 +714,11 @@ def build_all(
     #: **判分不可信的存档数**（2026-11-11，H-31）。它们**不出样本**，
     #: 但必须**报出来**——静默少产出会被读成「这批素材差」。
     total_judgement_untrusted = 0
+    #: **语义渲染的记账**（H-41 阶段 2）：真走了语义渲染的观察条数 与
+    #: **回退了规则裁剪**的条数。⚠️ 分两笔——回退后的产物与 ``capped``
+    #: 逐字一致，混在一起就看不出「语义渲染到底跑没跑通」。
+    total_semantic_observations = 0
+    total_semantic_fallbacks = 0
 
     for path in sorted(src.glob("*.json")):
         if "__" not in path.stem:
@@ -621,6 +737,7 @@ def build_all(
                 era_filter=era_filter,
                 include_legacy=include_legacy,
                 refined_dir=refined_dir,
+                mode=mode,
             )
         except P1ShapeError as exc:
             # 坏档：算 0 切出 0 写出、全部 skipped，让 :class:`BuildReport`
@@ -647,6 +764,8 @@ def build_all(
         total_excluded_units += res.excluded_units
         total_legacy_skipped += res.legacy_skipped
         total_judgement_untrusted += int(res.judgement_untrusted)
+        total_semantic_observations += res.semantic_observations
+        total_semantic_fallbacks += res.semantic_fallbacks
 
     # ── 按本轮名单清点交付目录（H-33）────────────────────────────────
     # ⚠️ **默认不开**（``prune_stale``）：只有**整批重建**（``--overwrite``
@@ -708,8 +827,166 @@ def build_all(
         total_excluded_units=total_excluded_units,
         total_legacy_skipped=total_legacy_skipped,
         total_judgement_untrusted=total_judgement_untrusted,
+        total_semantic_observations=total_semantic_observations,
+        total_semantic_fallbacks=total_semantic_fallbacks,
         sweep=sweep,
     )
+
+
+# ── 缺件负样本线（fail-closed 第三类信号）──────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class FailClosedBuildResult:
+    """一份 P1 存档的**缺件负样本线**产出账。
+
+    ⚠️ **与 :class:`ArchiveBuildResult` 分开**：那份是「主池」的账。
+    混在一份报表里 ⇒ 读的人以为「这批样本里有 N 条是判不了的」，
+    而真相是「这 N 条是**故意造出来**的」⇒ **假事实进训练集**。
+    """
+
+    archive: str
+    sample_count: int = 0
+    written: int = 0
+    skipped: tuple[str, ...] = ()
+    #: 缺件方式 → 写出的条数（三种方式各多少）。
+    cut_counts: Mapping[str, int] = field(default_factory=dict)
+
+
+def build_failclosed_from_archive(
+    archive_path: str | Path,
+    *,
+    root: str | Path | None = None,
+    overwrite: bool = False,
+    refined_dir: str | Path | None = None,
+    mode: str = observation_view.VIEW_MODE_CAPPED,
+    cut_modes: Sequence[str] = failclosed.CUT_MODES,
+) -> FailClosedBuildResult:
+    """把一份 P1 存档切成**缺件负样本**并落盘。
+
+    ⚠️ **落点与主池分开**（:func:`failclosed_dir`）：这条线里的样本是
+    **故意阉割过的观察**，混进主池就是往训练集里塞假事实。
+
+    Args:
+        archive_path: P1 存档路径。
+        root: 产物根；``None`` 时取包根下的 ``output/pipeline/``。
+        overwrite: 已存在时是否覆盖。**默认 False**（同主池的纪律）。
+        refined_dir: **精炼旁挂目录**（方案 25 / H-41 阶段 2）。给了就按
+            存档名读旁挂 ⇒ 缺件样本的观察与主池**同一套渲染口径**
+            （否则两批语料不可比）。
+        mode: **渲染模式**（H-41 阶段 2）：``capped`` / ``semantic``。
+        cut_modes: 造哪几种缺件（默认三种全造）。
+
+    Returns:
+        :class:`FailClosedBuildResult`。
+    """
+    p = Path(archive_path)
+    refined = refine_sidecar.load_index(refined_dir, p.name)
+    split = _split_one(p)
+    samples = list(split.samples)
+
+    out_dir = failclosed_dir(root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = 0
+    skipped: list[str] = []
+    cut_counts: dict[str, int] = {}
+    for s in samples:
+        try:
+            payload = _sample_to_json(s, refined=refined, mode=mode)
+        except (TypeError, ValueError) as exc:
+            skipped.append(f"{s.sample_id} (序列化失败：{type(exc).__name__}: {exc})")
+            continue
+        observations = (payload.get("six") or {}).get("observations") or []
+        cut_index = failclosed.pick_cut_index(observations)
+        if cut_index < 0:
+            # ⚠️ **没有可缺件的观察**（全是空的）⇒ 这条样本造不出来。
+            # 记进 skipped，**不静默丢**——「造了 0 条」与「造了但没写盘」
+            # 在报表上长得一模一样。
+            skipped.append(f"{s.sample_id} (没有可缺件的观察)")
+            continue
+        for cut_mode in cut_modes:
+            line = failclosed.build_line_payload(
+                payload, cut_mode=cut_mode, cut_index=cut_index,
+            )
+            sample_id = str(line.get("sample_id") or "")
+            target = out_dir / f"{sample_id}.json"
+            tmp = out_dir / f"{sample_id}.json.tmp"
+            if not overwrite and target.exists():
+                skipped.append(sample_id)
+                continue
+            try:
+                blob = json.dumps(line, ensure_ascii=False, allow_nan=False)
+                tmp.write_text(blob, encoding="utf-8")
+                os.replace(tmp, target)
+            except (TypeError, ValueError, OSError) as exc:
+                skipped.append(
+                    f"{sample_id} (写盘失败：{type(exc).__name__}: {exc})"
+                )
+                continue
+            written += 1
+            cut_counts[cut_mode] = cut_counts.get(cut_mode, 0) + 1
+    return FailClosedBuildResult(
+        archive=p.name,
+        sample_count=len(samples),
+        written=written,
+        skipped=tuple(skipped),
+        cut_counts=dict(cut_counts),
+    )
+
+
+def build_failclosed_all(
+    source_root: str | Path | None = None,
+    *,
+    target_root: str | Path | None = None,
+    overwrite: bool = False,
+    archive_filter: Sequence[str] | None = None,
+    refined_dir: str | Path | None = None,
+    mode: str = observation_view.VIEW_MODE_CAPPED,
+    cut_modes: Sequence[str] = failclosed.CUT_MODES,
+) -> tuple[FailClosedBuildResult, ...]:
+    """整批造**缺件负样本**。
+
+    ⚠️ **不写池账**（``pool.record_pool``）：那条账记的是**交付面**的
+    计数，而缺件线**不是交付面**（它不进主池）⇒ 写进去会污染
+    ``pool_meta.json`` 里「交付集还剩多少」这个分母。
+    """
+    from trajectory_pipeline.assembler.schema import P1ShapeError
+
+    if source_root is None:
+        src = Path(__file__).resolve().parents[1] / "output" / DEFAULT_SAMPLES_PARENT
+    else:
+        src = Path(source_root)
+
+    allowed = set(archive_filter) if archive_filter is not None else None
+    out: list[FailClosedBuildResult] = []
+    for path in sorted(src.glob("*.json")):
+        if "__" not in path.stem:
+            continue
+        if allowed is None:
+            if path.name.endswith(".reviewed.json"):
+                continue
+        elif path.name not in allowed:
+            continue
+        try:
+            out.append(
+                build_failclosed_from_archive(
+                    path,
+                    root=target_root or source_root,
+                    overwrite=overwrite,
+                    refined_dir=refined_dir,
+                    mode=mode,
+                    cut_modes=cut_modes,
+                )
+            )
+        except P1ShapeError as exc:
+            out.append(
+                FailClosedBuildResult(
+                    archive=path.name,
+                    skipped=(f"<bad-archive>: {exc}",),
+                )
+            )
+    return tuple(out)
 
 
 # ── 调试 / 校验 ──────────────────────────────────────────────────
@@ -724,12 +1001,18 @@ def load_sample(path: str | Path) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_SAMPLES_DIRNAME",
+    "DEFAULT_FAILCLOSED_DIRNAME",
     "ERA_ALL",
     "samples_dir",
+    "failclosed_dir",
     "ArchiveBuildResult",
     "BuildReport",
+    "RenderCounts",
+    "FailClosedBuildResult",
     "NEGATIVE_SAMPLE_BRANCHES",
     "build_from_archive",
     "build_all",
+    "build_failclosed_from_archive",
+    "build_failclosed_all",
     "load_sample",
 ]

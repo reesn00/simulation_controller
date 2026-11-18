@@ -57,17 +57,33 @@ ENV_ESCALATE_BASE_URL = "TRAJECTORY_LLM_ESCALATE_BASE_URL"
 ENV_ESCALATE_MODEL = "TRAJECTORY_LLM_ESCALATE_MODEL"
 ENV_ESCALATE_API_KEY = "TRAJECTORY_LLM_ESCALATE_API_KEY"
 
-#: 默认超时。**跑批校准值，30 → 90**（2026-10-11）：
+#: 默认超时。**跑批校准值，30 → 90 → 600**（2026-10-11 / 2026-11-17 H-41）：
 #:
 #: 30s 对判断点 ① 不够——① 的请求送进模型的是整个搜索结果链接窗口
 #: （实测 5 条里超时 3 条，见 docs/04-运行手册.md），而 ① 发生在
 #: **搜索阶段**、不受 ``RunConfig.per_site_timeout_s`` 的单站遍历约束，
-#: 给 90s 不会拖垮整批。站点内的 ②③④ 每次只送一个页面，正常远快于
-#: 90s；万一异常拖满，由 ``per_site_timeout_s``（90s，``executor/
-#: orchestrator.py``）整体兜底记 ``unresolved``——止损优先，不猜。
+#: 给 90s 不会拖垮整批。
+#:
+#: ⚠️ **2026-11-17（H-41 · 阶段 1）：90 → 600，与输出预算同 commit**。
+#: 理由是**输入也变大了**：200k 输入 + 128k 输出 ⇒ 延迟必然远超 90 秒。
+#: 只抬预算不抬超时的后果是 **100% 的精炼请求超时**，而且
+#: **静默退回 320 字规则裁剪**——超时走 ``transport:``、**不走**
+#: ``budget:`` ⇒ 精炼层那条「换大预算重试」根本不触发 ⇒ 整条作废，
+#: 报表上只多一行「失败」，看不出「预算变了」这个真正的原因。
+#:
+#: ⚠️ **300~600s 之间取 600** 的代价要说清楚：一次超时的成本是
+#: ``max_retries + 1`` 次尝试 × 600s = **1800s（30 分钟）**。
+#: 这是**最坏情况**（后端完全无响应），而正常路径远快于此。
+#: 要压这个上界只有两条路：把 ``max_retries`` 调小，或把 ``timeout_s``
+#: 用环境变量 ``TRAJECTORY_LLM_TIMEOUT_S`` 调小——**别写死在代码里**。
+#:
+#: ⚠️ **与 ``per_site_timeout_s`` 的关系**：那个是 ``asyncio.wait_for``
+#: 的**站点遍历**预算，而本客户端是**同步**的 ⇒ 同步调用期间事件循环
+#: 被占住 ⇒ ``wait_for`` 的超时回调**跑不到** ⇒ 它拦不住 LLM 调用。
+#: ⇒ **真正兜底的是这里的 ``timeout_s``**，不是 ``per_site_timeout_s``。
 #:
 #: 环境变量 ``TRAJECTORY_LLM_TIMEOUT_S`` 仍可覆盖此默认值。
-DEFAULT_TIMEOUT_S = 90.0
+DEFAULT_TIMEOUT_S = 600.0
 
 #: 本机 vLLM / llama.cpp 不校验 key 时占位用。**不是**真实凭据。
 NO_KEY = "not-needed"
@@ -88,7 +104,40 @@ NO_KEY = "not-needed"
 #: 「后端坏了」，两者要采取的动作完全不同。
 #:
 #: 非推理模型用这个值只是白花点额度，不会有别的坏处。
-DEFAULT_MAX_TOKENS = 8192
+#:
+#: ⚠️ **2026-11-17（H-41 · 阶段 1）：8192 → 131072**。
+#:
+#: ⚠️ **不能设 200000。** 200k 是**输入窗口**；``max_tokens`` 是**输出
+#: 预算**，后端上限 128k。写成 200000 的后果是链式的：
+#:
+#:     resp.status_code >= 400  ⇒ error = "http:400"
+#:     4xx 不重试 + 记一次熔断（:class:`CircuitBreaker`，阈值 3）
+#:     ⇒ 连续 3 次 400 就熔断整批 ⇒ 之后所有调用直接 ``circuit:open``
+#:
+#: ⇒ **症状是「判定全空、报表上像 LLM 判不了」，真相是「参数多写了一个
+#: 零」。** ⇒ 输出预算设 **131072**（= 128k）。
+#:
+#: ⚠️ **与 :data:`DEFAULT_TIMEOUT_S` 同 commit**：只抬预算不抬超时 ⇒
+#: 100% 的请求超时 ⇒ **静默退回规则裁剪**（超时走 ``transport:``，不走
+#: ``budget:`` ⇒ 精炼层「换大预算重试」不触发）。
+#:
+#: ⚠️ 这个值与 :data:`MAX_OUTPUT_TOKENS`（硬顶）**故意相同**：两者都是
+#: 「后端单请求输出上限」这条线，分成两个数就会出现「默认值比硬顶高」
+#: 或「硬顶比默认值高」两种漂移，而两者都会在**某一处**变成 400。
+DEFAULT_MAX_TOKENS = 131072
+
+#: **输出预算的硬顶**（H-41）——不是「推荐值」，是「不许再往上抬」的那条线。
+#:
+#: 为什么要有顶：``max_tokens`` 直接下发后端（:meth:`LLMClient._exchange`），
+#: 抬过某些后端的单请求上限 ⇒ **400** ⇒ 客户端按 4xx **不重试**
+#: （:meth:`_exchange` 里 4xx 直接 return）⇒ 一次就废；
+#: 而连续 4xx 又会**开熔断**（:class:`CircuitBreaker`，阈值 3）⇒
+#: **整批判分不可信**，报表上看起来像「LLM 判不了」。
+#:
+#: ⚠️ 这条线**必须与「换大预算重试」的上界一致**：重试是「换更大的预算
+#: 再发一次」，若没有顶，重试会把预算抬到一个后端根本不接受的数 ⇒
+#: 把一次可恢复的失败变成一次不可恢复的 400。
+MAX_OUTPUT_TOKENS = 131072
 
 
 class LLMUnavailable(RuntimeError):
@@ -136,6 +185,13 @@ class ChatResult:
     #: 与 :attr:`LLMClient.last_error` 同格式（``transport:`` / ``http:`` /
     #: ``shape:`` / ``budget:``）。**空串 = 成功**。
     error: str = ""
+    #: 后端回的 ``finish_reason``（H-41）。**空串 = 没读到**。
+    #:
+    #: ⚠️ **``"length"`` 不是失败，但也不是「完整」**：请求成功、正文非空、
+    #: 只是内容在半截处停了。**选行类调用**（refine 层）必须把它当失败
+    #: 处理——半个编号表比没有编号表更糟（会选出「半截答案」当整份）。
+    #: **散文类调用**（感知层读 JSON、writer 写说明）则可以照常用。
+    finish_reason: str = ""
 
 
 #: **熔断阈值**：连续 N 次「不可重试的 4xx」⇒ 判定「本批 LLM 不可用」。
@@ -437,8 +493,8 @@ class LLMConfig:
         上校准过的输出预算原样带过去。继承的是「已校准值」而不是
         「类默认值」——升配通常是远端大模型，烧的每一 token 都更贵，
         预算被类默认值悄悄放大或缩小的代价都是真金白银。timeout 同理：
-        executor 的 ``per_site_timeout_s`` 是按主后端 90s 校准的链路
-        预算，升配后端不该比它更松。
+        主后端这一侧的超时是**跑批校准值**（H-41 后为 600s），升配后端
+        接的是同一类请求，不该比它更松。
         """
         e = os.environ if env is None else env
         base_url = (e.get(ENV_ESCALATE_BASE_URL) or "").strip()
@@ -507,6 +563,16 @@ class LLMClient:
         #: 最近一次调用的错误码（空串 = 成功）。与 :attr:`last_error` 的
         #: 区别：后者只在失败时写、成功不清空（排障语义），这里每次都写。
         self.last_call_error: str = ""
+        #: 最近一次调用**后端回的** ``finish_reason``（H-41）。
+        #:
+        #: ⚠️ **为什么单开一个字段**：``last_call_error`` 只说「这次失败
+        #: 没有」，而 ``finish_reason == "length"`` 且正文非空是**第三种
+        #: 事实**——请求成功、正文有、但**内容在半截处停了**。此前它
+        #: 被算作「干净的成功」⇒ 截断混进输出而账本上看不出来。
+        #:
+        #: 语义：**每次调用前清空**；只有真的读到响应体才写值
+        #: （传输失败 / 4xx / 熔断 ⇒ 空串）。
+        self.last_finish_reason: str = ""
 
     def __repr__(self) -> str:
         return f"LLMClient({self.cfg!r})"
@@ -609,6 +675,7 @@ class LLMClient:
             usage=usage,
             latency_ms=latency_ms,
             error=error,
+            finish_reason=self.last_finish_reason,
         )
 
     # ── 内部 ──────────────────────────────────────────────────────
@@ -626,6 +693,10 @@ class LLMClient:
         是「某一类失败只在其中一条路径上被正确处理」——这类缺陷要等真实
         后端出状况才暴露，代价是一次批次。
         """
+        # ⚠️ **每次调用前清空**（H-41）：``last_finish_reason`` 描述的是
+        # 「最近一次调用后端回了什么」，而失败路径大多拿不到响应体 ⇒
+        # 留着上一次的 ``"length"`` 会把「这一次正常」说成「这一次被截断」。
+        self.last_finish_reason = ""
         if not messages:
             # 调用方的装配错误，不是后端的问题。发一次 90s 超时只为
             # 换一个 400，不值。
@@ -683,12 +754,15 @@ class LLMClient:
                     try:
                         data = resp.json()
                         usage = _usage_of(data)
-                        content = _content_of(data)
+                        content, finish = _content_of(data)
                     except _BudgetExhausted as exc:
                         # 预算用尽：**换参数就能好**，所以不重试同一请求
                         # （重发一次还是同一个预算、还是空）。给的是能照着
                         # 做的提示，不是异常类名。
                         error = f"budget:{exc}"
+                        # ``finish_reason`` 照样记（响应体确实回了 length），
+                        # 它是「为什么空」的证据，不是一次成功。
+                        self.last_finish_reason = "length"
                         return None, None, error
                     except (ValueError, KeyError, IndexError, TypeError) as exc:
                         # 后端回了 200 但内容结构不对。**不重试**：
@@ -699,6 +773,12 @@ class LLMClient:
                     # ⚠️ **成功 ⇒ 连续失败计数清零**（后端恢复了）。
                     # 放在解析之后：拿到内容才算「这次成功」。
                     self.breaker.record_ok()
+                    # ⚠️ **成功也可能是「被截断的成功」**（H-41）：
+                    # ``finish_reason="length"`` 且正文非空 ⇒ 内容在半截
+                    # 处停了。它**不算失败**（返回行为一字不动），
+                    # 但必须**进账本**——否则「输出被截断」与「输出完整」
+                    # 在报表上长得一模一样。
+                    self.last_finish_reason = finish
                     return content, usage, ""
             if attempt < self.cfg.max_retries:
                 time.sleep(min(2.0 * (attempt + 1), 5.0))
@@ -722,8 +802,8 @@ class LLMClient:
             self._client = None
 
 
-def _content_of(data: Any) -> str:
-    """从 OpenAI 兼容响应里取 ``choices[0].message.content``。
+def _content_of(data: Any) -> tuple[str, str]:
+    """从 OpenAI 兼容响应里取 ``(content, finish_reason)``。
 
     刻意**不兜底到 ``choices[0].text`` 或 ``message.reasoning_content``**：
     后者是要被丢掉的 raw CoT（CLAUDE.md 红线），取它等于把思维链
@@ -733,6 +813,13 @@ def _content_of(data: Any) -> str:
     ``max_tokens`` 吃光（推理模型的思考也走这个预算，见
     :data:`DEFAULT_MAX_TOKENS`），抛 :class:`_BudgetExhausted`；
     其余按结构不对处理。
+
+    ⚠️ **``finish_reason`` 要一起返回**，因为「正文非空但被截断」是
+    **第三种事实**：请求成功、正文有、但**内容在半截处停了**
+    （``finish_reason="length"``）。此前它被当成「干净的成功」⇒
+    截断悄悄混进输出，账本上不出来——**只在正文为空时才看
+    ``finish_reason``** 这个老口径就是它造成的（见 :attr:`LLMClient.
+    last_finish_reason`）。
     """
     choice = data["choices"][0]
     finish = choice.get("finish_reason")
@@ -744,7 +831,7 @@ def _content_of(data: Any) -> str:
                 f"调大 {ENV_MAX_TOKENS}"
             )
         raise ValueError("content 为空")
-    return content
+    return content, str(finish or "")
 
 
 def _usage_of(data: Any) -> dict[str, int] | None:

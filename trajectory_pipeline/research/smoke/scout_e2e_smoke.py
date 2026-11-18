@@ -133,7 +133,13 @@ def _make_p2_root(fixture_dir: Path, dest: Path) -> tuple[int, list[Path]]:
     Copies fixture P1 archives to ``dest/<archive>.json`` and writes
     corresponding P2 samples to ``dest/samples/<sample_id>.json`` by running
     :func:`assembler.schema.split_archive` on each archive.
+
+    ⚠️ **观察必须走训练态渲染**（H-41 阶段 2 · 方案 26 §6.3 #10）：
+    :meth:`assembler.schema.Sample.to_json` 现在**默认不写观察**——
+    直出取证态全文会绕过装配层的全部门禁，而「裁过的正文」与「全文」
+    在产物上分不出来。此处显式渲染后再交进去。
     """
+    from trajectory_pipeline.assembler import observation_view  # local import
     from trajectory_pipeline.assembler.schema import split_archive  # local import
 
     if dest.exists():
@@ -153,8 +159,11 @@ def _make_p2_root(fixture_dir: Path, dest: Path) -> tuple[int, list[Path]]:
             continue
         for s in samples:
             out_p = samples_dir / f"{s.sample_id}.json"
+            rendered = observation_view.render_all(list(s.observations))
             out_p.write_text(
-                json.dumps(s.to_json(), ensure_ascii=False, indent=1) + "\n",
+                json.dumps(
+                    s.to_json(observations=rendered), ensure_ascii=False, indent=1,
+                ) + "\n",
                 encoding="utf-8",
             )
             n_samples += 1

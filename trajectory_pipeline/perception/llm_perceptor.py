@@ -51,6 +51,13 @@ from trajectory_pipeline.perception import questions
 from trajectory_pipeline.common.elements import (
     element_json,
 )
+from trajectory_pipeline.common.field_limits import (
+    BODY_BUDGET_CHARS,
+    ELEMENT_COUNT_LIMIT,
+    ELEMENT_NAME_LIMIT,
+    LINK_COUNT_LIMIT,
+    LINK_TEXT_LIMIT,
+)
 from trajectory_pipeline.perception.base import (
     Decision,
     Observation,
@@ -178,14 +185,32 @@ ACCESS_CONTROL_TYPES: frozenset[str] = frozenset(
 #: paywall_type 合法值集合（仅 preview/trial 走细分；null 兜底）。
 PAY_WALL_TYPES: frozenset[str] = frozenset({"preview", "trial"})
 
-#: 喂给模型的观察裁剪上限。实测：把正文从 1200 降到 600 字符后，
-#: 之前直接返回 ``None`` 的大输入请求恢复正常。裁剪必须与
-#: :class:`trajectory_pipeline.assembler.observation_view` 的
-#: ``VIEW_BODY_CHARS`` 区分开——那是**训练数据**的裁剪，
-#: 这里是**判定输入**的裁剪，作用是延迟与稳定性。
-LLM_BODY_CHARS = 600
-LLM_ELEMENTS = 25
-LLM_LINKS = 20
+#: 喂给模型的观察裁剪上限。**600 / 25 / 20 → 与采集层同值**
+#: （2026-11-17 H-41 阶段 1）。
+#:
+#: ⚠️ **原来为什么是 600**：实测把正文从 1200 降到 600 字符后，之前直接
+#: 返回 ``None`` 的大输入请求恢复正常——**那个「恢复」是超时，不是别的**
+#: （旧口径的超时是 90s，见 :data:`trajectory_pipeline.llm.client.
+#: DEFAULT_TIMEOUT_S`）。现在超时抬到 600s ⇒ **那个理由消解了**。
+#:
+#: ⚠️ **为什么必须与采集层同值**：这一层是**判定输入**——它判出来的结论
+#: （「这站有没有正片」「这页有没有播放控件」）会**落进 P1 存档**并变成
+#: 语料标签。裁掉 80% 的正文 ⇒ 模型在**残骸**上判 ⇒ 标签错 ⇒
+#: 「训练出来的模型说这个站没有正片」，而页面上明明有。
+#: ⇒ owner「让 LLM 做核心内容保留与精简」这条路的**前提是模型看得见**，
+#: 它连输入都不全，谈不上「选」。
+#:
+#: ⚠️ **与训练数据的裁剪区分开**：:class:`trajectory_pipeline.assembler.
+#: observation_view` 的 ``VIEW_BODY_CHARS``（320）是**训练语料**的裁剪，
+#: 那里由「LLM 选行」接管（方案 26 §6）；这里是**判定输入**的裁剪，
+#: 作用是延迟与稳定性——但既然预算已经够用，就**不该在这里裁**。
+#:
+#: ⚠️ **数字不在这里定**（H-41）：采集层 / 落盘层 / 本层**三层同值**
+#: ⇒ 唯一真源在 :mod:`trajectory_pipeline.common.field_limits`
+#: （``BODY_BUDGET_CHARS`` / ``ELEMENT_COUNT_LIMIT`` / ``LINK_COUNT_LIMIT``）。
+LLM_BODY_CHARS = BODY_BUDGET_CHARS
+LLM_ELEMENTS = ELEMENT_COUNT_LIMIT
+LLM_LINKS = LINK_COUNT_LIMIT
 
 #: 路径 B/C 的四道链接选择题（2026-10-16）+ 分类任务①（方案 12 阶段 A1）。
 #: 与 ① 共用编号回指契约，但**无片名判据**——①B 的查询是通用聚合词、
@@ -1536,8 +1561,13 @@ def _render(
         # 键名跟着**方言**走（P4）：obscura 面写 ``tag``/``label``、camoufox 面
         # 写 ``role``/``name``。模型看到的就是这两个词——把 HTML 标签名
         # 叫 ``role`` 会让它在 camoufox 面的任务里按标签名去找 role。
+        # ⚠️ **长度上限与 P1 落盘同款**（H-41）：此前这里裁 60 字、
+        # 落盘裁 120 字 ⇒ **模型看到的名字 ≠ 存档里的名字**。
+        # 元素名是 rationale 引用的主要锚点 ⇒ 训练出来的 rationale
+        # 指向一个存档里查不到的目标，且**不报任何错**。
         "interactive_elements": [
-            element_json(e, obs.element_vocabulary, name_limit=60)
+            element_json(e, obs.element_vocabulary,
+                         name_limit=ELEMENT_NAME_LIMIT)
             for e in obs.interactive_elements[:LLM_ELEMENTS]
         ],
         "elements_total": len(obs.interactive_elements),
@@ -1557,7 +1587,7 @@ def _render(
         # 2026-10-16 路径 B/C：四道新 SELECT_* 同享编号契约
         # （_NUMBERED_LINK_QUESTIONS），与 handler 的 ``i`` 回指同源。
         numbered = question in _NUMBERED_LINK_QUESTIONS
-        links = [{"text": l.text[:60], "href": l.href} for l in window]
+        links = [{"text": l.text[:LINK_TEXT_LIMIT], "href": l.href} for l in window]
         if numbered:
             links = [{"i": n, **row} for n, row in enumerate(links)]
         out["links"] = links
