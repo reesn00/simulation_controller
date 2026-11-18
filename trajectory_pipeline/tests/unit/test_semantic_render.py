@@ -597,6 +597,164 @@ class Test读步:
         ]
 
 
+# ── 读步也能被语义精炼（H-41 阶段 3） ──────────────────────────────
+
+
+class Test读步也能被语义精炼:
+    """⚠️ **读步观察（``read=interactive`` / ``links``）正文天然是空的**——
+    那一块压根没采（方案 23 R4-1）。
+
+    老规矩「正文为空 ⇒ 不进清单」是**规则模式**的规矩（只精炼正文）⇒
+    照搬到语义模式 ⇒ **语义精炼对读步观察完全失效** ⇒ 那一步只能退回
+    规则裁剪（10 / 4 条硬顶）⇒ **正是本方案要禁掉的截断**。
+
+    实测（2026-11-18 · 三档真实存档 · 生产路径）：**19 条真回退里 15 条**
+    是这一条 ⇒ 修好后生产路径回退 **61 → 46**（方案 26 §6.5d-4）。
+    """
+
+    def _archive(self, obs: dict) -> dict:
+        return {
+            "title": "让子弹飞",
+            "steps": [{
+                "action": {"tool": "click", "target": {"name": "立即播放"}},
+                "observation": obs,
+                "error": "",
+            }],
+        }
+
+    def test_精炼侧把读步观察收进清单(self):
+        from trajectory_pipeline.refine import reader as refine_reader
+
+        obs = _obs(read="interactive", body_text="")
+        specs = refine_reader.iter_observations(
+            self._archive(obs), semantic=True,
+        )
+        assert len(specs) == 1
+        assert specs[0].body == ""
+
+    def test_两侧键一致_读步(self):
+        from trajectory_pipeline.executor import cli
+        from trajectory_pipeline.refine import reader as refine_reader
+
+        obs = _obs(read="interactive", body_text="")
+        specs = refine_reader.iter_observations(
+            self._archive(obs), semantic=True,
+        )
+        key_body, _cand, _limit, elem_cands, link_cands = cli._refine_inputs(
+            specs[0], semantic=True,
+        )
+        key = refine_sidecar.selection_key(
+            key_body, elements=elem_cands, links=link_cands,
+        )
+        assert key == _selection_key(obs)
+        # ⚠️ 读步**不摆链接候选**（那一块这次不渲染）⇒ 链接不进键。
+        assert link_cands == []
+
+    def test_按精炼侧的键写旁挂渲染层就走通语义模式(self):
+        from trajectory_pipeline.executor import cli
+        from trajectory_pipeline.refine import reader as refine_reader
+
+        obs = _obs(read="interactive", body_text="")
+        specs = refine_reader.iter_observations(
+            self._archive(obs), semantic=True,
+        )
+        key_body, _cand, _limit, elem_cands, link_cands = cli._refine_inputs(
+            specs[0], semantic=True,
+        )
+        key = refine_sidecar.selection_key(
+            key_body, elements=elem_cands, links=link_cands,
+        )
+        index = {
+            key: {
+                "selection_key": key,
+                "body_key": refine_sidecar.body_key(key_body),
+                # ⚠️ 读步**没摆正文候选**给模型 ⇒ ``kept`` 本来就是空的
+                # （那不是「模型零选正文」，那是没有正文可选）。
+                "kept": [],
+                "elements": [{"role": "button", "name": "立即播放"}],
+                "links": [],
+                "source": "llm",
+                "protocol": refine_sidecar.ENTRY_PROTOCOL,
+            }
+        }
+        out = observation_view.render(
+            obs, refined=index, mode=observation_view.VIEW_MODE_SEMANTIC,
+        )
+        assert out["semantic_fallback"] is False
+        assert out["body_text"] == ""
+        assert [e.get("name") for e in out["interactive_elements"]] == ["立即播放"]
+
+    def test_读步不算正文被精炼过(self):
+        """⚠️ **照实说**（H-41 阶段 3）：读步**压根不渲染正文** ⇒ 那一支
+        精炼的是**元素** ⇒ ``body_refined`` 必须是 False。
+
+        说成 True ⇒ 回执印出「[内容已精简: 保留 0 行]」⇒ **那是谎报**
+        （模型会读成「这页没内容」）⇒ 训出**假 fail-closed 信号**。
+        """
+        from trajectory_pipeline.executor import cli
+        from trajectory_pipeline.refine import reader as refine_reader
+
+        obs = _obs(read="interactive", body_text="")
+        specs = refine_reader.iter_observations(
+            self._archive(obs), semantic=True,
+        )
+        key_body, _cand, _limit, elem_cands, link_cands = cli._refine_inputs(
+            specs[0], semantic=True,
+        )
+        key = refine_sidecar.selection_key(
+            key_body, elements=elem_cands, links=link_cands,
+        )
+        index = {
+            key: {
+                "selection_key": key,
+                "body_key": refine_sidecar.body_key(key_body),
+                "kept": [],
+                "elements": [{"role": "button", "name": "立即播放"}],
+                "links": [],
+                "source": "llm",
+                "protocol": refine_sidecar.ENTRY_PROTOCOL,
+            }
+        }
+        out = observation_view.render(
+            obs, refined=index, mode=observation_view.VIEW_MODE_SEMANTIC,
+        )
+        assert out["semantic_fallback"] is False
+        assert out["body_refined"] is False
+        assert out["body_refined_lines"] == 0
+        # ⚠️ **元素那一支要说破**（它真的被模型选过）。
+        assert out["elements_refined"] is True
+        assert out["elements_refined_count"] == 1
+
+
+class Test正文候选为空的两种情况:
+    """⚠️ **「一行都没选」有两种，处置完全不同**（H-41 阶段 3）：
+
+    - **模型看过了、就是没选** ⇒ 保守口径**整条回退**规则裁剪
+      （混口径比全旧或全新都难查）；
+    - **压根没有候选行**（正文是空的）⇒ 模型**没得选** ⇒ 正文就是空的，
+      **不是失败**（读步观察进精炼之后才有的情形）。
+    """
+
+    def test_模型看了正文候选却零选_整条回退(self):
+        """模型确实看到了候选行，却一行没选 ⇒ 回退。"""
+        index = _semantic_index(kept=[])
+        out = _render(index)
+        assert out["semantic_fallback"] is True
+        assert out["truncated"]["view"] is True
+
+    def test_正文压根没有候选行_不是失败(self):
+        """正文一个候选都没有 ⇒ 模型没得选 ⇒ **不**回退。"""
+        obs = _obs(body_text="")
+        index = _semantic_index(body="", kept=[], obs=obs)
+        out = observation_view.render(
+            obs, refined=index, mode=observation_view.VIEW_MODE_SEMANTIC,
+        )
+        assert out["semantic_fallback"] is False
+        assert out["body_text"] == ""
+        # ⚠️ **没有候选 ⇒ 不算精炼过**（否则回执印「保留 0 行」= 谎报）。
+        assert out["body_refined"] is False
+
+
 # ── 单元：候选集 / 分流 / 校验 ────────────────────────────────────
 
 

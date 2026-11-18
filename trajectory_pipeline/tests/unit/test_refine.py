@@ -309,6 +309,81 @@ class Test读P1:
         archive = {"steps": [{"action": {}, "observation": {"body_text": "  "}}]}
         assert refine_reader.iter_observations(archive) == []
 
+    def test_规则模式下正文为空仍然不进清单(self):
+        """⚠️ **零回归**：规则模式只精炼正文 ⇒ 没正文就没得选。
+        语义模式的判据变了，**这一条一个字没改**。"""
+        archive = {"steps": [{
+            "action": {},
+            "observation": {
+                "read": "interactive",
+                "body_text": "",
+                "interactive_elements": [{"role": "button", "name": "立即播放"}],
+            },
+        }]}
+        assert refine_reader.iter_observations(archive) == []
+
+    def test_语义模式下正文为空但有元素的观察进清单(self):
+        """⚠️ **读步观察**（``read=interactive`` / ``links``）**只采了被读的
+        那一块** ⇒ 正文**天然是空的**。
+
+        按老规矩跳过 ⇒ **语义精炼对读步观察完全失效** ⇒ 那一步只能退回
+        规则裁剪（10 / 4 条硬顶）⇒ 正是本方案要禁掉的截断
+        （H-41 阶段 3 实测：19 条真回退里 **15 条**是这一条）。
+        """
+        archive = {"steps": [{
+            "action": {},
+            "observation": {
+                "read": "interactive",
+                "body_text": "",
+                "interactive_elements": [{"role": "button", "name": "立即播放"}],
+            },
+        }]}
+        specs = refine_reader.iter_observations(archive, semantic=True)
+        assert len(specs) == 1
+        assert specs[0].body == ""
+
+    def test_语义模式下正文为空但有链接的观察进清单(self):
+        archive = {"steps": [{
+            "action": {},
+            "observation": {
+                "read": "links",
+                "body_text": "",
+                "links": [{"text": "正片", "href": "https://x.test/play"}],
+            },
+        }]}
+        specs = refine_reader.iter_observations(archive, semantic=True)
+        assert len(specs) == 1
+
+    def test_语义模式下三块都空的观察不进清单(self):
+        """没有候选 ⇒ 不值得发请求（也不该在旁挂里塞一条「失败」）。"""
+        archive = {"steps": [{
+            "action": {},
+            "observation": {
+                "url": "https://x.test",
+                "read": "interactive",
+                "body_text": "",
+                "interactive_elements": [],
+                "links": [],
+            },
+        }]}
+        assert refine_reader.iter_observations(archive, semantic=True) == []
+
+    def test_语义模式下按渲染层的口径判哪几块可精炼(self):
+        """⚠️ **唯一真源**：``read_blocks`` 说了算——``snapshot`` 只渲染正文
+        ⇒ 它那些元素**不算候选**（渲染层不会渲染它们 ⇒ 模型选了也白选）。
+
+        两边各判一次 ⇒ 漂了 ⇒ 渲染层逐字核对不过 ⇒ 整条回退。
+        """
+        archive = {"steps": [{
+            "action": {},
+            "observation": {
+                "read": "snapshot",
+                "body_text": "",
+                "interactive_elements": [{"role": "button", "name": "立即播放"}],
+            },
+        }]}
+        assert refine_reader.iter_observations(archive, semantic=True) == []
+
     def test_正文按与渲染层同一份挑法取(self):
         """挑错了就是「按 A 的哈希去查 B 的精炼」——查不到，白跑一趟。"""
         archive = {"steps": [{"action": {},

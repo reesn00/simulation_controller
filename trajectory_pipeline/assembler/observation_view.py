@@ -495,13 +495,22 @@ def _rebuild_semantic_body(
         seen.add(line)
         ordered.append(line)
     if not ordered:
-        # ⚠️ **模型一行都没选**也走这条路（⇒ 整条回退规则裁剪）。
-        # 理由（保守口径）：语义模式是「全有或全无」——回退是**整条**回退，
-        # 输出与 ``capped`` 逐字一致，且 ``semantic_fallback`` /
-        # ``truncated.view`` **如实记着**。反过来（正文留空、元素用模型的）
-        # 才是混口径 ⇒ 宁可让这条走规则裁剪，也不要在语义观察里混进
-        # 规则裁的内容。
-        return None
+        # ⚠️ **两种「一行都没选」不是一回事**（H-41 阶段 3）：
+        #
+        # - **模型看过了、就是没选** ⇒ 保守口径**整条回退**规则裁剪。
+        #   理由：语义模式是「全有或全无」——回退是**整条**回退，
+        #   输出与 ``capped`` 逐字一致，且 ``semantic_fallback`` /
+        #   ``truncated.view`` **如实记着**。反过来（正文留空、元素用模型的）
+        #   才是混口径 ⇒ 宁可让这条走规则裁剪，也不要在语义观察里混进
+        #   规则裁的内容。
+        # - **压根没有候选行**（正文是空的 / 全是噪声）⇒ 模型**没得选**
+        #   ⇒ 这不是「模型不想要」⇒ 正文就是空的，**不是失败**。
+        #   ⚠️ 这条是**读步观察**（``read=interactive`` / ``links``，
+        #   正文天然是空的）进精炼之后才有的情形（H-41 阶段 3 缺口 C）。
+        candidates = body_lines.candidate_lines_with_noise(raw_body)
+        if candidates:
+            return None
+        return "", 0, 0
     candidates = body_lines.candidate_lines_with_noise(raw_body)
     for line, _noise in candidates:
         if line in seen:
@@ -803,6 +812,12 @@ class _SemanticParts:
     body_lines: int = 0
     body_dropped: int = 0
     body_lines_dropped: int = 0
+    #: ⚠️ **正文这一块是不是真的被精炼过**（H-41 阶段 3）——
+    #: 读步（正文压根不渲染）**不算**；正文**一个候选都没有**也不算
+    #: （没东西可选 ≠ 模型不想要）⇒ ``body_refined`` 必须照实说，
+    #: 否则回执会印出「[内容已精简: 保留 0 行]」——**那是谎报**
+    #: （模型会读成「这页没内容」）。
+    body_refined: bool = False
     elements: tuple[Mapping[str, Any], ...] = ()
     elements_dropped: int = 0
     links: tuple[Mapping[str, Any], ...] = ()
@@ -852,6 +867,7 @@ def _render_semantic(
     body_lines = 0
     body_dropped = 0
     body_lines_dropped = 0
+    body_refined = False
     if has_body:
         rebuilt = _rebuild_semantic_body(
             raw_body, entry.kept, focus=focus, keep=keep,
@@ -862,6 +878,12 @@ def _render_semantic(
         # ⚠️ **规则层一行都没剔**（噪声行也摆给模型了）⇒ 这笔账是 0。
         # 「模型没选的行数」记在 ``body_refined_dropped``（**另一笔账**）。
         body_lines_dropped = 0
+        # ⚠️ **正文这一块是不是真的被精炼过**（H-41 阶段 3）：正文
+        # **一个候选都没有** ⇒ 模型没得选 ⇒ 那不是「精炼过」
+        # ⇒ ``body_refined`` 照实说 False（否则回执印「保留 0 行」=
+        # **谎报**）。⚠️ 读步（``has_body`` 为假）压根不渲染正文 ⇒ 同样
+        # **不算**精炼过（那一支精炼的是元素 / 链接）。
+        body_refined = bool(body_lines)
 
     picked_elements: tuple[Mapping[str, Any], ...] = ()
     elements_dropped = 0
@@ -888,6 +910,7 @@ def _render_semantic(
         body_lines=body_lines,
         body_dropped=body_dropped,
         body_lines_dropped=body_lines_dropped,
+        body_refined=body_refined,
         elements=picked_elements,
         elements_dropped=elements_dropped,
         links=picked_links,
@@ -1058,7 +1081,11 @@ def render(
         body_lines_dropped = semantic.body_lines_dropped
         #: 语义模式**没有字符硬顶** ⇒ 没有「触顶」这回事。
         body_truncated = False
-        body_refined = True
+        #: ⚠️ **读步（正文不渲染）不算「正文被精炼过」**（H-41 阶段 3）：
+        #: 说成精炼过 ⇒ 回执印「[内容已精简: 保留 0 行]」⇒ **那是谎报**
+        #: （模型会读成「这页没内容」）⇒ 那一支精炼的是**元素 / 链接**
+        #: （``elements_refined`` / ``links_refined`` 各自说破）。
+        body_refined = semantic.body_refined
         body_refined_lines = semantic.body_lines
         body_refined_dropped = semantic.body_dropped
         selected_elements = list(semantic.elements)

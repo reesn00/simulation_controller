@@ -3903,7 +3903,7 @@ def cmd_refine(args: argparse.Namespace) -> int:
         if not isinstance(archive, dict):
             print(f"[skip] {path.name}: 不是 JSON 对象")
             continue
-        specs = refine_reader.iter_observations(archive)
+        specs = refine_reader.iter_observations(archive, semantic=semantic)
         plans.append((path, archive, specs))
         # ⚠️ **按候选集键去重**——真跑的时候同一份**候选集**只发一次请求
         # （候选集一样 ⇒ 精炼结果一样）。计划阶段**必须按同一口径**算：

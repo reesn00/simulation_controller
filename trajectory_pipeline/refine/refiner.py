@@ -674,6 +674,16 @@ def refine_body(
         candidates = body_lines.candidate_lines(body)
         noise_by_line = {}
     if not candidates and not elements and not links:
+        # ⚠️ **「没有候选」不是失败**（H-41 阶段 3）：语义模式下「这条观察
+        # 压根没有可精炼的东西」是**正常状态**（读步只采了一块，正文是空的；
+        # 元素 / 链接也一个都没有）⇒ 记 ``not_needed``。
+        # 记成 ``failed`` 会让报表把「没东西可选」说成「精炼失败」——
+        # 而这两件事的处置完全不同（一个是本来就该走规则裁剪，一个是
+        # 后端出了问题）。
+        if semantic:
+            return RefineOutcome(
+                source="not_needed", error="没有可精炼的候选（正文 / 元素 / 链接都空）",
+            )
         return RefineOutcome(source="failed", error="正文没有候选行")
     budget = sum(len(c) + 1 for c in candidates)
     if not semantic and limit is not None and budget <= limit:

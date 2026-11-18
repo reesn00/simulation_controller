@@ -6,9 +6,13 @@
 T 读 P1 渲染。精炼是**上游**的一步（它产出训练语料要用的东西），
 方向不能反——所以这里按 P1 的**文件格式**读，不 import 装配层的切条逻辑。
 
-⚠️ 也因此这里**不追求与 P2/T 的步号对齐**：旁挂按**正文内容哈希**索引
+⚠️ 也因此这里**不追求与 P2/T 的步号对齐**：旁挂按**候选集哈希**索引
 （:mod:`trajectory_pipeline.common.refine_sidecar`），两份渲染各自按
-自己的坐标系找到同一条观察。正文一样 ⇒ 键一样 ⇒ 精炼结果一样。
+自己的坐标系找到同一条观察。候选集一样 ⇒ 键一样 ⇒ 精炼结果一样。
+
+⚠️ **只 import ``common``**（地基层），**不 import 装配层**——方向不能反。
+``common.view_candidates.read_blocks`` 是「这一条观察渲染哪几块」的
+**唯一真源**，精炼侧与渲染层共用它（两份实现漂了不报错）。
 
 保真口径：``keep`` 取**并集**
 -----------------------------
@@ -25,6 +29,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
+
+from trajectory_pipeline.common import view_candidates
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,11 +132,53 @@ def _units(archive: Mapping[str, Any]) -> list[tuple[str, list[Mapping[str, Any]
     return units
 
 
-def iter_observations(archive: Mapping[str, Any]) -> list[ObservationSpec]:
+def _side_candidates(obs: Mapping[str, Any]) -> bool:
+    """这条观察**除了正文**还有没有可精炼的东西（元素 / 链接）。
+
+    ⚠️ **按渲染层的口径**（:func:`trajectory_pipeline.common.
+    view_candidates.read_blocks`，**唯一真源**）：读步 ``interactive`` 只
+    渲染元素表、``links`` 只渲染链接表 ⇒ **没渲染**的那块不算候选。
+
+    ⚠️ 这条判据只用于**语义模式**：读步观察（``interactive`` / ``links``）
+    **正文本来就是空的**——那一块压根没采（方案 23 R4-1）⇒「正文为空」
+    是**正常状态**，不是「这条观察没东西」。
+    """
+    _has_body, has_elements, has_links = view_candidates.read_blocks(
+        obs.get("read"),
+    )
+    if has_elements and obs.get("interactive_elements"):
+        return True
+    if has_links and obs.get("links"):
+        return True
+    return False
+
+
+def iter_observations(
+    archive: Mapping[str, Any],
+    *,
+    semantic: bool = False,
+) -> list[ObservationSpec]:
     """一份 P1 → 待精炼的观察清单。
 
-    **正文为空的观察不进清单**——没有正文就没有可精炼的东西，
-    进清单只会给旁挂塞一堆空记录。
+    ⚠️ **规则模式**（``semantic=False``）：**正文为空的观察不进清单**
+    ——规则模式只精炼正文，没有正文就没有可精炼的东西，进清单只会给旁挂
+    塞一堆空记录。**这一条是历史行为，一个字没改**（零回归）。
+
+    ⚠️ **语义模式**（``semantic=True``，H-41 阶段 3）：判据**反过来**
+    ——**正文为空但有元素 / 链接的观察照样进清单**。
+
+    为什么（H-41 阶段 3 实测，2026-11-18）：读步观察（``read=interactive``
+    / ``read=links``）**只采了被读的那一块** ⇒ 正文**天然是空的**。
+    而语义模式是**三段协议**（正文 + 元素 + 链接）⇒ 读步观察的**元素 /
+    链接照样该由模型选**。按老规矩把它们整个跳过 ⇒ **语义精炼对读步观察
+    完全失效** ⇒ 那一步只能退回规则裁剪（10 / 4 条硬顶）⇒ **正是本方案
+    要禁掉的截断**。
+
+    实测（三档真实存档 · 生产路径）：**19 条真回退里 15 条是这一条**
+    （``read=interactive`` 14 条 + ``read=links`` 1 条）。⇒ 修好后生产路径
+    回退 **61 → 46**（方案 26 §6.5d-4）。
+
+    ⇒ 只有**三块都没有内容**的观察才不进清单（没有候选 ⇒ 不值得发请求）。
     """
     units = _units(archive)
     out: list[ObservationSpec] = []
@@ -144,7 +192,7 @@ def iter_observations(archive: Mapping[str, Any]) -> list[ObservationSpec]:
             if not isinstance(obs, Mapping):
                 continue
             body = body_of(obs)
-            if not body.strip():
+            if not body.strip() and not (semantic and _side_candidates(obs)):
                 continue
             keep = _next_visible_target(actions, i)
             if next_unit_target:
