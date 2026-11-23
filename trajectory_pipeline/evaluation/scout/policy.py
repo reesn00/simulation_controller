@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from trajectory_pipeline.evaluation._non_sample_branches import is_non_sample_branch
 from trajectory_pipeline.evaluation.scout.types import ScoutRecord
 
 #: 负例分流的分数阈值。任一维 ≤ 该值 → ``negative``,并打
@@ -33,7 +34,8 @@ def classify(rec: ScoutRecord) -> ClassifyResult:
        即使该维 ``score is None``,否决信号也比「缺件」更重。
     4. 任何一维 ``score is None`` → ``quarantine``(兜底:正常路径下不会到这里)
     5. 任何一维 ``score <= 2`` → ``negative``(打 ``d*_failed``)
-    6. 否则 → ``positive``
+    6. outcome 分支 ∈ ``NON_SAMPLE_BRANCHES``(没判出来) → ``quarantine``
+    7. 否则 → ``positive``
     """
     if rec["status"] == "not_run":
         return "skip"
@@ -51,6 +53,13 @@ def classify(rec: ScoutRecord) -> ClassifyResult:
 
     if any(s["score"] <= NEGATIVE_SCORE_THRESHOLD for s in rec["scores"]):
         return "negative"
+
+    # 「没判出来」的结论不能当正样本。四维全 5 可能只是「各维都不管辖」
+    # （D-4/D-5 对 player_unverified 记 N/A=5、D-6 证据项 skipped 仍出 5），
+    # 而不是「验证通过」。真源在执行层 NON_SAMPLE_BRANCHES，经 evaluation
+    # 包内私有镜像引用（scout 不 import executor，契约 test_scout_contract 盯着）。
+    if is_non_sample_branch(rec.get("outcome_branch")):
+        return "quarantine"
 
     return "positive"
 

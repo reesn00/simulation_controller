@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 #: 三态 —— 与 :data:`trajectory_pipeline.rationale.gates.GateStatus` 同款口径。
 #: ``scored`` = 四维都有 ``score: int``;``undetermined`` = 任何一维
@@ -65,11 +65,16 @@ class ScoutRecord(TypedDict):
     #:
     #: ⚠️ **旧产物没有这个键**——读侧用 ``.get("undetermined_cause", "")``。
     undetermined_cause: str
+    #: 本单元 outcome 的分支（``None`` = 记录成功）。**旧产物没有这个键**，
+    #: 读侧用 ``.get("outcome_branch")``。:func:`policy.classify` 用它把
+    #: 「没判出来」的结论（``NON_SAMPLE_BRANCHES``）挡在 positive 之外——
+    #: 四维全 5 可能只是「各维都不管辖」，不是「验证通过」。
+    outcome_branch: NotRequired[str | None]
 
 
 #: 聚合期决策留痕。一行 = 一个决策(打 tag / 选 score / 合并 evidence /
 #: 缺 unit 标记)。给人工复查与回归。
-#: ``unit`` 是做出该决策的 unit sample_id(``-`` 表示任务级、非某 unit)；
+#: ``unit`` 是做出该决策的 unit_id（旧产物回退 sample_id；``-`` 表示任务级、非某 unit）；
 #: ``action`` 是机器可读动作(``"min_score"`` / ``"merge_evidence"`` /
 #: ``"missing_unit"`` / ``"veto"`` 等)；``reason`` 是人类可读解释。
 class AggregationLogEntry(TypedDict, total=False):
@@ -97,7 +102,9 @@ class TrajectoryRecord(TypedDict):
     scores: list[DimensionScore]
     #: 任一 unit 的 tag 并集(``set`` 语义,顺序不保证)。
     tags: list[ScoutTag]
-    #: 各 unit 的 sample_id(per-unit P3 反查入口)。
+    #: 各 unit 的 unit_id（``<task>__<run>__site-N``；旧产物回退 sample_id）。
+    #: per-Run 之后同一 run 的 unit 共享 sample_id，**必须用 unit_id** 才能
+    #: 反查到具体站点。
     unit_outcomes: list[str]
     #: 合并后的 evidence_supplement。键冲突时取第一个非空,决策记
     #: ``aggregation_log``。

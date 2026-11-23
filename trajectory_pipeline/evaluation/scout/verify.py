@@ -67,6 +67,7 @@ IssueCode = Literal[
     "t_view_missing_keys",
     "bad_jsonl_line",
     "extra_t_view",
+    "duplicate_unit_outcomes",
 ]
 
 
@@ -206,6 +207,35 @@ def _check_stats_count(
                 f"stats={stats}"
             ),
         ))
+    return issues
+
+
+def _check_unit_outcomes(
+    records: Iterable[TrajectoryRecord],
+) -> list[VerifyIssue]:
+    """unit_outcomes 里同一轨迹的多个 unit 身份不该全塌成一个字符串。
+
+    per-Run 之后同一 run 的所有 unit **共享一个 sample_id**；聚合若误用
+    sample_id 记账，``unit_outcomes`` 会全是同一个字符串，人工无法反查是
+    哪个站点短路（H-41 之前的实测 bug）。修好后用 unit_id
+    （``<task>__<run>__site-N``），多 unit 时应各不相同。
+
+    ⚠️ **warning 不是 error**：旧产物没有 unit_id 键，回退 sample_id ⇒
+    天然重复，这是已知历史形态，不该让整批 verify fail。报出来让人判。
+    """
+    issues: list[VerifyIssue] = []
+    for rec in records:
+        outcomes = rec.get("unit_outcomes") or []
+        if len(outcomes) > 1 and len(set(outcomes)) == 1:
+            issues.append(VerifyIssue(
+                code="duplicate_unit_outcomes", severity="warning",
+                trajectory_id=str(rec.get("trajectory_id", "")),
+                detail=(
+                    f"{len(outcomes)} 个 unit 的 unit_outcomes 全是 "
+                    f"{outcomes[0]!r}——疑似误用 sample_id 记账，"
+                    f"无法反查具体站点（旧产物无 unit_id 时属已知形态）"
+                ),
+            ))
     return issues
 
 
@@ -350,6 +380,7 @@ def verify_from_dir(
         report.issues.extend(stats_issues)
         report.stats = stats
         report.issues.extend(_check_stats_count(len(records), stats))
+        report.issues.extend(_check_unit_outcomes(records))
         report.issues.extend(_check_task_views(records, task_views_root))
 
     return report

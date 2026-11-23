@@ -71,6 +71,17 @@ DIMENSION_ORDER: tuple[str, ...] = ("d2", "d4", "d5", "d6")
 # ── 纯函数:聚合 ────────────────────────────────────────────────
 
 
+def _unit_key(u: ScoutRecord) -> str:
+    """留痕/反查用的 unit 身份。
+
+    per-Run 之后同一 run 的所有 unit **共享一个 ``sample_id``**，用它记账
+    会让 ``unit_outcomes`` 与 ``aggregation_log`` 全是同一个字符串，人工
+    无法定位是哪个站点短路。优先 ``unit_id``（``<task>__<run>__site-N``），
+    旧产物没有该键时回退 ``sample_id``。
+    """
+    return str(u.get("unit_id") or u["sample_id"])
+
+
 def _min_score(
     units: list[ScoutRecord],
     dimension: str,
@@ -90,16 +101,18 @@ def _min_score(
         - ``is_veto``:任一 unit 该维 ``is_veto=True`` 时为 ``True``(短路);
         - ``reasons``:挑中的最差 unit 的 reasons 列表(只挑一条,
           不合并——与 rubric 「任一 unit 站错整条轨迹站错」一致);
-        - ``picked_unit``:被挑中的最差 unit sample_id;score=None 短路时为
-          ``None``(全 None 没法挑);
+        - ``picked_unit``:被挑中的最差 unit 的 unit_id(旧产物回退 sample_id);
+          score=None 短路时为缺判 unit 的 unit_id;
         - ``cause``:该维的缺判归因(H-36)。**旧产物没有这个键**
           ⇒ 读侧一律 ``d.get("cause", "")``。
     """
     per_dim: list[DimensionScore] = []
+    dim_units: list[ScoutRecord] = []
     for u in units:
         for d in u.get("scores") or ():
             if d.get("dimension") == dimension:
                 per_dim.append(d)
+                dim_units.append(u)
                 break
 
     if not per_dim:
@@ -116,22 +129,24 @@ def _min_score(
     # 短路 1:任一 unit 该维 score=None → 任务级 score=None
     nones = [d for d in per_dim if d.get("score") is None]
     if nones:
-        bad_unit = units[per_dim.index(nones[0])]["sample_id"]
+        bad_unit = _unit_key(dim_units[per_dim.index(nones[0])])
         log_entries.append({
             "unit": bad_unit,
             "action": "quarantine_short_circuit",
             "reason": (f"{dimension}: 任一 unit score=None, "
                        f"任务级 score=None (undetermined)"),
         })
+        # 把缺判 unit 的原因带上——否则任务级 reasons 为空，LS 上只剩
+        # 「该维未判出」，看不到「为什么没判」，人工无法定位根因。
         return (
-            None, False, [], bad_unit,
+            None, False, list(nones[0].get("reasons") or []), bad_unit,
             str(nones[0].get("cause") or CAUSE_DATA),
         )
 
     # 短路 2:任一 unit 该维 is_veto=True → 任务级 is_veto=True
     vetoes = [d for d in per_dim if d.get("is_veto")]
     if vetoes:
-        bad_unit = units[per_dim.index(vetoes[0])]["sample_id"]
+        bad_unit = _unit_key(dim_units[per_dim.index(vetoes[0])])
         log_entries.append({
             "unit": bad_unit,
             "action": "veto",
@@ -147,7 +162,7 @@ def _min_score(
     # 正常:min
     worst = min(per_dim, key=lambda d: int(d["score"]))
     worst_idx = per_dim.index(worst)
-    bad_unit = units[worst_idx]["sample_id"]
+    bad_unit = _unit_key(dim_units[worst_idx])
     log_entries.append({
         "unit": bad_unit,
         "action": "min_score",
@@ -223,7 +238,7 @@ def aggregate_to_trajectory(
     run_id = str(units[0]["run_id"])
     # 一致性检查:同 task_id / run_id 才聚合
     mismatched = [
-        u["sample_id"] for u in units
+        _unit_key(u) for u in units
         if str(u.get("task_id", "")) != task_id
         or str(u.get("run_id", "")) != run_id
     ]
@@ -257,13 +272,13 @@ def aggregate_to_trajectory(
                 seen_tags.add(t)
                 merged_tags.append(t)
                 log_entries.append({
-                    "unit": u["sample_id"],
+                    "unit": _unit_key(u),
                     "action": "tag_merged",
                     "reason": f"tag={t} 并入任务级 tags",
                 })
 
-    # ── 3. unit_outcomes(各 unit 的 sample_id) ──
-    unit_outcomes = [u["sample_id"] for u in units]
+    # ── 3. unit_outcomes(各 unit 的 unit_id;旧产物回退 sample_id) ──
+    unit_outcomes = [_unit_key(u) for u in units]
 
     # ── 4. evidence_supplement 合并(键冲突取第一个非空) ──
     merged_ev: dict[str, Any] = {}
@@ -276,14 +291,14 @@ def aggregate_to_trajectory(
                 if merged_ev[k] not in (None, "", [], {}):
                     # 已有非空值,跳过——决策留痕
                     log_entries.append({
-                        "unit": u["sample_id"],
+                        "unit": _unit_key(u),
                         "action": "evidence_kept_first",
                         "reason": (f"key={k!r} 已被 {unit_outcomes[0]!r} 占,"
                                    f" 跳过该 unit 的值"),
                     })
                     continue
                 log_entries.append({
-                    "unit": u["sample_id"],
+                    "unit": _unit_key(u),
                     "action": "evidence_merged",
                     "reason": f"key={k!r} 首次取到非空值",
                 })
@@ -291,7 +306,7 @@ def aggregate_to_trajectory(
             else:
                 merged_ev[k] = v
                 log_entries.append({
-                    "unit": u["sample_id"],
+                    "unit": _unit_key(u),
                     "action": "evidence_merged",
                     "reason": f"key={k!r} 首次取到非空值",
                 })

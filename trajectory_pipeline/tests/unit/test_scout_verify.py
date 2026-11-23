@@ -22,6 +22,7 @@ from trajectory_pipeline.evaluation.scout.verify import (
     VerifyReport,
     _check_stats_count,
     _check_task_views,
+    _check_unit_outcomes,
     _read_jsonl_records,
     _read_stats,
     format_report,
@@ -176,6 +177,34 @@ class TestCheckStatsCount:
     def test_反例_stats空不报错(self):
         # stats 空 = 上一步 _read_stats 已经记 missing_stats,这里不该重复报
         assert _check_stats_count(5, {}) == []
+
+
+# ── TestCheckUnitOutcomes ────────────────────────────────
+
+
+class TestCheckUnitOutcomes:
+    def test_unit_id各不相同_0_issues(self):
+        rec = _trajectory()
+        rec["unit_outcomes"] = ["T001__r-1__search", "T001__r-1__site-1"]
+        assert _check_unit_outcomes([rec]) == []
+
+    def test_多unit全塌成一个字符串_报warning(self):
+        # 误用共享 sample_id 记账 ⇒ 无法反查具体站点（H-41 之前的实测 bug）
+        rec = _trajectory()
+        rec["unit_outcomes"] = ["T001__r-1"] * 10
+        issues = _check_unit_outcomes([rec])
+        assert len(issues) == 1
+        assert issues[0].code == "duplicate_unit_outcomes"
+        # 旧产物无 unit_id 时天然重复 ⇒ warning 不是 error，不让整批 fail
+        assert issues[0].severity == "warning"
+
+    def test_反例_单unit重复不算塌缩(self):
+        rec = _trajectory()
+        rec["unit_outcomes"] = ["T001__r-1__search"]
+        assert _check_unit_outcomes([rec]) == []
+
+    def test_反例_空unit_outcomes不报(self):
+        assert _check_unit_outcomes([_trajectory()]) == []
 
 
 # ── TestCheckTaskViews ────────────────────────────────

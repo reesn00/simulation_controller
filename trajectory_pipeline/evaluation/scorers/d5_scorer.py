@@ -918,17 +918,33 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
         and (question, branch) not in QUESTIONLESS_PAIRS
         and not question
     ):
-        # 老批次：P1 有 question 但 P2 侧的 OutcomeRef 是补字段之前切的。
-        # 判 3 分会是**拿采集器的缺件当轨迹的错**——与 D-2 的口径一致。
-        return D5Verdict(
-            None,
-            "undetermined",
-            (),
-            (
-                "outcome 缺 question 字段（2026-10-10 之前切的样本）——"
-                "决策树无法核对分支与判断点的配套关系，先重跑 build 再判",
-            ),
+        # question 为空有**三种产地**，处置不同，不能混成一句「老批次」：
+        # 1. P1 压根没有 question 键（2026-10-10 之前切的存档）；
+        # 2. 代码侧收口分支（``unresolved``）本就没有判断点可配对——
+        #    它是 fail-closed 的产物，不是「忘了传 decision」；
+        # 3. 有题分支却空 question ⇒ 记录点可能没传 decision。
+        # 旧实现把 2/3 都报成 1，于是 2026-11-23 的真跑被诊断成
+        # 「2026-10-10 之前切的样本」，把操作员引向「重跑 build」这一错误处置。
+        p1_missing = tuple(
+            str(x) for x in (_of(outcome, "p1_missing_fields", ()) or ())
         )
+        if "question" in p1_missing:
+            why = (
+                "outcome 缺 question 字段（2026-10-10 之前切的样本）——"
+                "决策树无法核对分支与判断点的配套关系，先重跑 build 再判"
+            )
+        elif branch == "unresolved":
+            why = (
+                "unresolved 是代码侧 fail-closed 收口，outcome 的 question 为空"
+                "（本就没有判断点可配对）——D-5 无法核对「该不该放弃」，本维不出分"
+                "（不是老批次缺字段，重跑 build 也消解不了）"
+            )
+        else:
+            why = (
+                f"分支 {branch!r} 的 question 为空且不在无题允许表里——"
+                "记录点可能没传 decision，先核采集口径再判"
+            )
+        return D5Verdict(None, "undetermined", (), (why,))
 
     checks = (
         _check_branch_matches_question(question, branch),

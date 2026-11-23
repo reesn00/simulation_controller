@@ -93,6 +93,30 @@ class TestFailClosedLiteralSync:
         )
 
 
+class TestNonSampleBranchMirror:
+    """positive 守卫用的非样本分支镜像链路（与 fail-closed 同款纪律）。
+
+    真源在 ``executor.branches.NON_SAMPLE_BRANCHES``；scout 不 import
+    executor，经 evaluation 包内 ``_non_sample_branches`` 镜像引用。
+    """
+
+    def test_镜像从真源import且scout从镜像import(self) -> None:
+        mirror = Path("trajectory_pipeline/evaluation/_non_sample_branches.py")
+        mirror_imps = _imports(mirror)
+        assert "trajectory_pipeline.executor.branches" in mirror_imps
+        # 镜像只能 import,不能手抄分支字面量（否则漂成两本规则书）
+        src = mirror.read_text(encoding="utf-8")
+        assert "unresolved" not in src and "player_unverified" not in src
+
+        scout_policy = SCOUT_DIR / "policy.py"
+        scout_imps = _imports(scout_policy)
+        assert "trajectory_pipeline.evaluation._non_sample_branches" in scout_imps
+        assert not any(
+            m.startswith("trajectory_pipeline.executor")
+            for m in scout_imps
+        )
+
+
 # ── A3:scout cli 是独立入口 ──────────────────────────────────────
 
 

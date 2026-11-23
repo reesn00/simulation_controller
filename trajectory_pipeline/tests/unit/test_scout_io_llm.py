@@ -87,6 +87,38 @@ class Test整批透传:
         scout_io.run_scout(tmp_path, tmp_path / "out", llm_client=client)
         assert seen["client"] is client
 
+    def test_没判出来的分支落quarantine且透传outcome_branch(self, tmp_path, monkeypatch):
+        """四维全 5 但 outcome 分支是 player_unverified ⇒ 不能进 positive。
+
+        io 把 outcome.branch 透传进 record.outcome_branch，policy 据此
+        把「没判出来」的结论挡在 positive 之外（实测 site-5 sohu 全 5 误进正桶）。
+        """
+        import json
+
+        sample = _fake_sample()
+        sample.outcome.branch = "player_unverified"
+        monkeypatch.setattr(scout_io, "list_p2_samples",
+                            lambda root: [_p2_row(tmp_path)])
+        monkeypatch.setattr(scout_io, "_resolve_sample",
+                            lambda p2, root: sample)
+        monkeypatch.setattr(
+            scout_io, "_score_one",
+            lambda unit, **kw: [{"dimension": d, "score": 5, "is_veto": False,
+                                 "reasons": []} for d in ("d2", "d4", "d5", "d6")])
+
+        out = tmp_path / "out"
+        scout_io.run_scout(tmp_path, out)
+
+        positive = (out / "positive_candidates.jsonl").read_text(encoding="utf-8").strip()
+        assert positive == "", "player_unverified 不该进 positive"
+        quarantine = [
+            json.loads(line)
+            for line in (out / "quarantine.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(quarantine) == 1
+        assert quarantine[0]["outcome_branch"] == "player_unverified"
+
 
 class TestCLI建客户端:
     def test_dry_run用env客户端(self, tmp_path, monkeypatch):

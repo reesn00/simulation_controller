@@ -470,6 +470,12 @@ def run_scout(
             status = _status_of(scores)
             cause = _unit_cause(scores)
             url = str(getattr(outcome, "url", "") or "")
+            # outcome 分支供 policy 把「没判出来」的结论挡在 positive 之外。
+            # dataclass / P2 字典双取（与 _outcome_of 同款口径）。
+            if isinstance(outcome, Mapping):
+                outcome_branch = outcome.get("branch")
+            else:
+                outcome_branch = getattr(outcome, "branch", None)
             record: dict[str, Any] = {
                 # ``sample_id`` 仍是 **Run 级 id**：P3 视图按它取名
                 # （``<task>__<run>_openai.json``），改掉会让 LS 导出
@@ -486,6 +492,7 @@ def run_scout(
                 "evidence_supplement": {},
                 # H-36：单元级缺判归因（"" = 已判出）。
                 "undetermined_cause": cause,
+                "outcome_branch": outcome_branch,
                 "_url": url,
             }
             if mediabrowse_dir is not None:

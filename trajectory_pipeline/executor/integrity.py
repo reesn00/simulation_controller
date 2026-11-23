@@ -391,26 +391,50 @@ def check_archive(
                 # 不作判据（rule_perceptor.py 里 hao123 15 个 iframe 的教训）。
                 # 所以「判成功 + 观察里 0 个媒体标签」在 rule 版下是自相矛盾，
                 # 在 llm 版下只是值得看一眼——W3 可以有别的判据。
-                sev = Severity.INFO if source == "llm" else Severity.FATAL
+                #
+                # ⚠️ **但 llm 版也不能凭空判成功**：媒体标签 0 个时，若连
+                # ``page_quotes``（页面原文引证）也为空，这条「成功」就没有
+                # 任何存档内的支撑——既无媒体也无原文，人工无从复核。实测
+                # h204.com 盗版 iframe（video=0、page_quotes=[]）被判成功却
+                # 只报 INFO，T 视图 task_gate 照样 passed。这种「缺件」样本
+                # 不能当训练数据 ⇒ 升 DEGRADED（与 success_without_media 的
+                # rule 版 FATAL 区分：llm 版可另有判据，不是自相矛盾，只是缺件）。
+                quotes = outcome.get("page_quotes") or ()
+                has_quotes = bool(quotes)
+                if source == "llm":
+                    sev = Severity.INFO if has_quotes else Severity.DEGRADED
+                    detail = (
+                        f"判成功但观察里 {_MEDIA_KEY}=0"
+                        + ("（llm 版有 page_quotes 原文引证，人工确认即可）"
+                           if has_quotes
+                           else "，且 page_quotes 为空——既无媒体标签也无原文"
+                                "引证，这条成功没有任何存档内支撑，不能当训练数据")
+                    )
+                else:
+                    sev = Severity.FATAL
+                    detail = (
+                        f"判成功但观察里 {_MEDIA_KEY}=0"
+                        "——rule 版的唯一判据就是媒体标签，这条结论没有支撑"
+                    )
                 out.append(Finding(
                     "success_without_media", sev, name,
-                    f"{wv}.player_obs.{_MEDIA_KEY}",
-                    f"判成功但观察里 {_MEDIA_KEY}=0"
-                    + ("（llm 版可另有判据，人工确认即可）" if source == "llm"
-                       else "——rule 版的唯一判据就是媒体标签，这条结论没有支撑"),
+                    f"{wv}.player_obs.{_MEDIA_KEY}", detail,
                 ))
 
     # ── 逐条 outcome：结论必须带证据 ────────────────────────────
     # 独立于 visits 循环：**孤儿 outcome**（没有对应访问点）同样要查——
     # 它会进负样本池并出现在报表上，证据为空就是报表上凭空多出来的数字。
+    # ⚠️ **成功结论（branch=None）也要查**：原来 ``if branch is None: continue``
+    # 把成功跳过，理由是「成功另有 success_without_media 盯」。但那条只盯
+    # **媒体标签**，不盯 evidence 文本——一条判成功却 evidence 为空的 outcome
+    # 同样凭空出现在报表上，人工无从复核。成功与负例一视同仁。
     for j, outcome in enumerate(outcomes):
         branch = outcome.get("branch")
-        if branch is None:
-            continue
         if not str(outcome.get("evidence") or "").strip():
+            label = "成功（branch=None）" if branch is None else f"分支 {branch}"
             out.append(Finding(
                 "evidence_empty", Severity.FATAL, name, f"$.outcomes[{j}].evidence",
-                f"分支 {branch} 有结论但 evidence 为空——报表上这个数字背后什么都没有",
+                f"{label} 有结论但 evidence 为空——报表上这个数字背后什么都没有",
             ))
 
     # ── 并池 ────────────────────────────────────────────────────

@@ -93,6 +93,44 @@ class TestClassifyScored:
         assert classify(rec) == "positive"
 
 
+class TestClassifyNonSampleBranch:
+    """「没判出来」的结论不能当正样本——即便四维全 5（各维都不管辖记 N/A）。
+
+    实测 site-5 sohu ``player_unverified`` 四维全 5 落进 positive，
+    但它根本没有验证通过的结论。真源在执行层 NON_SAMPLE_BRANCHES。
+    """
+
+    def test_player_unverified全5仍quarantine(self) -> None:
+        rec = _rec(scores=[_score(d, 5) for d in ("d2", "d4", "d5", "d6")])
+        rec["outcome_branch"] = "player_unverified"
+        assert classify(rec) == "quarantine"
+
+    def test_每个非样本分支都挡在positive外(self) -> None:
+        from trajectory_pipeline.executor.branches import NON_SAMPLE_BRANCHES
+        for branch in NON_SAMPLE_BRANCHES:
+            rec = _rec(scores=[_score(d, 5) for d in ("d2", "d4", "d5", "d6")])
+            rec["outcome_branch"] = branch
+            assert classify(rec) == "quarantine", branch
+
+    def test_反例_成功分支None仍positive(self) -> None:
+        rec = _rec(scores=[_score(d, 5) for d in ("d2", "d4", "d5", "d6")])
+        rec["outcome_branch"] = None
+        assert classify(rec) == "positive"
+
+    def test_反例_旧产物无outcome_branch键仍positive(self) -> None:
+        # 旧产物没有这个键 ⇒ .get 返 None ⇒ 不挡（向后兼容）
+        rec = _rec(scores=[_score(d, 5) for d in ("d2", "d4", "d5", "d6")])
+        assert "outcome_branch" not in rec
+        assert classify(rec) == "positive"
+
+    def test_负例分支不受影响仍negative(self) -> None:
+        # 分支守卫只在「全高分」路径生效；低分仍先判 negative
+        rec = _rec(scores=[_score("d2", 1), _score("d4", 5),
+                           _score("d5", 5), _score("d6", 5)])
+        rec["outcome_branch"] = "player_unverified"
+        assert classify(rec) == "negative"
+
+
 # ── classify:负例 ───────────────────────────────────────────────
 
 

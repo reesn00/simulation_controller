@@ -150,16 +150,42 @@ class TestEvidenceChain:
         assert "success_without_media" in _codes(r)
         assert not r.ok
 
-    def test_llm版的成功只提示不判死(self, tmp_path):
-        # W3 可以有标签之外的判据，不能拿 W1 的判据去否定它
+    def test_llm版的成功有原文引证只提示不判死(self, tmp_path):
+        # W3 可以有标签之外的判据，不能拿 W1 的判据去否定它——
+        # 但前提是**有 page_quotes 原文引证**让人能复核。
         arc = _arc(visits=[_visit("http://youku.test", success=True,
                                   player_obs=_obs(video_tag_count=0, iframe_count=1))],
                    outcomes=[_outcome("http://youku.test", None, source="llm",
-                                      evidence="播放器已加载")])
+                                      evidence="播放器已加载",
+                                      page_quotes=["<video src=...>"])])
         r = check_archive(_write(tmp_path, arc))
         sev = [f.severity for f in r.findings if f.code == "success_without_media"]
         assert sev == [Severity.INFO]
         assert r.ok
+
+    def test_llm版的成功无媒体也无原文引证判缺件(self, tmp_path):
+        # 媒体标签 0 个 + page_quotes 空 ⇒ 这条「成功」没有任何存档内支撑，
+        # 人工无从复核（实测 h204.com 盗版 iframe 被判成功却只报 INFO）。
+        # 升 DEGRADED：不是自相矛盾（llm 可另有判据），是缺件不能当训练数据。
+        arc = _arc(visits=[_visit("http://h204.test", success=True,
+                                  player_obs=_obs(video_tag_count=0, iframe_count=1))],
+                   outcomes=[_outcome("http://h204.test", None, source="llm",
+                                      evidence="LLM 判 True", page_quotes=[])])
+        r = check_archive(_write(tmp_path, arc))
+        sev = [f.severity for f in r.findings if f.code == "success_without_media"]
+        assert sev == [Severity.DEGRADED]
+        # DEGRADED 不影响整批可用性（只是这条样本降级），仍 ok
+        assert r.ok
+
+    def test_成功结论evidence为空也判FATAL(self, tmp_path):
+        # 原来 evidence_empty 跳过 branch=None（成功），只盯负例。
+        # 成功却 evidence 为空同样凭空出现在报表上，一视同仁。
+        arc = _arc(visits=[_visit("http://a.test", success=True,
+                                  player_obs=_obs(video_tag_count=1))],
+                   outcomes=[_outcome("http://a.test", None, evidence="  ")])
+        r = check_archive(_write(tmp_path, arc))
+        assert "evidence_empty" in _codes(r)
+        assert not r.ok
 
     def test_非UTF8与坏JSON不抛异常(self, tmp_path):
         # 坏档静默变成「零样本」的话，批次看起来只是少了几条，没人会去查

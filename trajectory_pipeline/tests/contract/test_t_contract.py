@@ -595,6 +595,58 @@ class Test形状不变量:
         assert meta["observation_count"] == 3
         assert "new_tab" in meta["infrastructure_actions"]
 
+    def test_meta_missing_observation_count_数原始None(self):
+        """T 读原始 P1，缺步是 ``None``——必须与 P3 数占位 dict 同账。
+
+        实测 bug：P3 经 ``schema._obs_of`` 把 None 换成 ``observation_missing``
+        占位 dict 再数，T 照抄「只数 Mapping 占位」却读的是原始 None ⇒
+        P3 报 10、T 报 0。补上 ``not o`` 一档后两侧对齐。
+        """
+        search_steps = [
+            _step(action=_action("goto"), observation=_obs_full()),
+            _step(action=_action("click"), observation=None),  # 原始缺步
+        ]
+        site_steps = [
+            _step(action=_action("click"), observation=None),  # 原始缺步
+            _step(action=_action("click"),
+                  observation={"degraded": ["observation_missing"]}),  # 占位 dict
+        ]
+        archive = _archive(search_steps=search_steps, visits=[_visit(site_steps)])
+        meta = task_view.to_task_meta(archive)
+        assert meta["step_count"] == 4
+        assert meta["observation_count"] == 4
+        # 2 个原始 None + 1 个占位 dict = 3
+        assert meta["missing_observation_count"] == 3
+
+    def test_meta_missing_observation_count_与P3同账(self):
+        """同一份 P1，T 数的缺步与 P2 切条后的占位数必须相等。
+
+        P3 的 ``missing_observation_count`` 数的就是 ``schema._obs_of``
+        产出的 ``observation_missing`` 占位（None/空 → 占位）。这里直接
+        数切条后 Sample.observations 里的占位，避开 P2 训练态渲染管线。
+        """
+        search_steps = [
+            _step(action=_action("goto"), observation=_obs_full()),
+            _step(action=_action("click"), observation=None),
+        ]
+        site_steps = [
+            _step(action=_action("click"), observation=None),
+        ]
+        archive = _archive(search_steps=search_steps, visits=[_visit(site_steps)])
+        t_missing = task_view.to_task_meta(archive)["missing_observation_count"]
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "T001__b98b3e56.json"
+            p.write_text(json.dumps(archive, ensure_ascii=False), encoding="utf-8")
+            samples = schema.split_archive(p)
+        p3_missing = sum(
+            1
+            for s in samples
+            for o in s.observations
+            if "observation_missing" in (o.get("degraded") or ())
+        )
+        assert t_missing == p3_missing == 2
+
     def test_meta_rationale_steps_global_index(self):
         """rationale_steps.step_index 是**全局**重编，跨 unit 连续。"""
         search_steps = [

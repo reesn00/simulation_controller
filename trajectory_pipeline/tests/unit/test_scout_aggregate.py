@@ -262,6 +262,66 @@ class TestUnitOutcomes:
         assert tr["run_id"] == "r1"
 
 
+class TestUnitId记账:
+    """per-Run 之后同一 run 的 unit **共享 sample_id**，记账必须用 unit_id。
+
+    实测 bug（H-41 之前）：``unit_outcomes`` / ``aggregation_log`` 全用
+    sample_id ⇒ 10 个 unit 塌成同一个字符串，人工无法反查哪个站点短路。
+    """
+
+    @staticmethod
+    def _shared_unit(unit_id: str, **kw) -> ScoutRecord:
+        # 同一 run 的所有 unit 共享 sample_id="T001__r1"，靠 unit_id 区分
+        u = _unit("T001__r1", **kw)
+        u["sample_id"] = "T001__r1"
+        u["unit_id"] = unit_id
+        return u
+
+    def test_unit_outcomes用unit_id而非共享sample_id(self):
+        u1 = self._shared_unit("T001__r1__search")
+        u2 = self._shared_unit("T001__r1__site-1")
+        u3 = self._shared_unit("T001__r1__site-2")
+        tr = aggregate_to_trajectory([u1, u2, u3])
+        assert tr["unit_outcomes"] == [
+            "T001__r1__search", "T001__r1__site-1", "T001__r1__site-2",
+        ]
+        # 反例：不该塌成共享 sample_id
+        assert tr["unit_outcomes"] != ["T001__r1"] * 3
+
+    def test_旧产物无unit_id回退sample_id(self):
+        u1 = _unit("T001__r1__search")
+        u2 = _unit("T001__r1__site-1")
+        # 夹具不写 unit_id ⇒ 回退 sample_id（旧产物形态）
+        tr = aggregate_to_trajectory([u1, u2])
+        assert tr["unit_outcomes"] == ["T001__r1__search", "T001__r1__site-1"]
+
+    def test_留痕unit字段用unit_id(self):
+        u1 = self._shared_unit("T001__r1__search", d2=5)
+        u2 = self._shared_unit("T001__r1__site-1", d2=3)
+        tr = aggregate_to_trajectory([u1, u2])
+        min_entries = [e for e in tr["aggregation_log"]
+                       if e.get("action") == "min_score"]
+        # d2 最差取自 site-1，留痕应定位到 unit_id 而非共享 sample_id
+        assert any(e.get("unit") == "T001__r1__site-1" for e in min_entries)
+
+    def test_None短路把缺判unit的reasons带到任务级(self):
+        u1 = self._shared_unit("T001__r1__search")
+        u2 = self._shared_unit("T001__r1__site-1", none_dims=("d4",))
+        # 给缺判维一个可诊断的理由
+        for s in u2["scores"]:
+            if s["dimension"] == "d4":
+                s["reasons"] = ["player_unverified: 没有可交互播放控件"]
+        tr = aggregate_to_trajectory([u1, u2])
+        d4 = next(s for s in tr["scores"] if s["dimension"] == "d4")
+        assert d4["score"] is None
+        # 任务级 reasons 不为空——带上缺判 unit 的诊断，LS 上才看得到根因
+        assert d4["reasons"] == ["player_unverified: 没有可交互播放控件"]
+        # 短路留痕定位到缺判 unit 的 unit_id
+        sc = [e for e in tr["aggregation_log"]
+              if e.get("action") == "quarantine_short_circuit"]
+        assert any(e.get("unit") == "T001__r1__site-1" for e in sc)
+
+
 # ── 7. status 推导 ──────────────────────────────────────────────
 
 

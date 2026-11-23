@@ -1080,8 +1080,18 @@ def to_task_meta(
     # 缺失观察占位（``observation_view.render`` 把 obs=None 渲染成
     # ``degraded=["observation_missing"]`` 的占位 dict；这里从 obs 形态
     # 直接判——与 P3 `to_meta` 同款口径）。
+    #
+    # ⚠️ **T 读的是原始 P1**（``_flatten_units`` 取 ``s.get("observation")``，
+    # 缺步是 ``None`` / ``{}``），而 P3 读的是 P2 切条后的 Sample——
+    # ``schema._obs_of`` 已把 ``None``/``{}`` 换成 ``MISSING_OBSERVATION``
+    # 占位 dict。所以 P3 那条 ``isinstance(o, Mapping) and observation_missing``
+    # 能数到，T 照抄却数不到（原始 ``None`` 不是 Mapping）⇒ 实测 P3 报 10、
+    # T 报 0。这里补上「原始缺步」一档：``not o``（None/空）与占位 dict 同账，
+    # 两侧口径才真正对齐（``schema._obs_of`` 的 ``if o else`` 同款真值判）。
     for o in all_observations:
-        if isinstance(o, Mapping) and "observation_missing" in (o.get("degraded") or ()):
+        if not o:
+            missing_obs_count += 1
+        elif isinstance(o, Mapping) and "observation_missing" in (o.get("degraded") or ()):
             missing_obs_count += 1
 
     # rationale_missing = 整条任务一条 rationale 都没写成
