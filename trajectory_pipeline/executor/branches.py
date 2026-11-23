@@ -180,6 +180,68 @@ NON_SAMPLE_BRANCHES = frozenset(
 COLLECTION_SIDE_BRANCHES = frozenset({"blocked"})
 
 
+#: **出口阶段词表**——控制流在哪一段停下来（没有判断点作答）。
+#:
+#: 与 ``branch`` 的分工：分支回答「这个站能不能看」，阶段回答「我们走到
+#: 哪一步就停了」。``unresolved`` 是这两件事都答不上来的总称，于是诊断
+#: 「该不该放弃」时看不出「没找到控件」与「预算耗尽」的区别——这一轴就是
+#: 为此加的。
+#:
+#: ⚠️ 只对**过程级出口**填（预算 / 超时 / 后端 / 契约 / 导航 / 快照 /
+#: tab / 拦截 / 降级）。判断点自己作答的记账（``record_from`` 的正常路径、
+#: 成功记录）**本来就有** ``question``，不需要这一轴。
+EXIT_STAGES: frozenset[str] = frozenset(
+    {
+        "visit.navigate",            # 进站导航失败
+        "visit.snapshot",            # 导航成功但取不到快照
+        "visit.tab",                 # 开独立 tab 失败（执行层故障）
+        "visit.no_obs",              # agent 报到达但没有可判观察
+        "agent.intercept",           # 进站 / 动作后被 gatekeeper 收口
+        "agent.dead_loop",           # 原地打转（同一动作反复不前进）
+        "agent.budget",              # 步数 / llm_calls 预算耗尽
+        "agent.backend",             # 后端未作答
+        "agent.contract",            # 动作指令连续解析失败
+        "agent.gave_up",             # 模型自报放弃
+        "player.guard",              # 前置事实核降级
+        "site_search.contract",      # 站内搜索调用方拼装错误
+        "site_search.fill",          # 填词失败
+        "site_search.submit",        # 回车 / 按钮提交失败
+        "site_search.snapshot",      # 提交后取不到结果页
+        "aggregator.navigate",       # 中间页导航失败
+        "aggregator.snapshot",       # 中间页快照失败
+        "orchestrator.timeout",      # 站点遍历超时
+        "orchestrator.exception",    # 站点遍历异常
+        "intermediate.timeout",      # 中间页访问超时
+        "intermediate.exception",    # 中间页访问异常
+    }
+)
+
+#: **出口信号词表**——停下时页面/进度处在什么状态。
+#:
+#: ``exit_stage`` 说的是**原因**（预算 / 超时 / 导航失败），这一轴说的是
+#: **客观进展**：一页上到底有没有可点控件、点完到底换没换页。两者分开才
+#: 能回答用户的问题：「是没找到控件、没换页，还是预算耗尽」——预算耗尽
+#: 是阶段，控件/换页是信号，一次出口可以同时命中（预算耗尽 + 从没换页）。
+EXIT_SIGNALS: frozenset[str] = frozenset(
+    {
+        "no_interactive",   # 整条轨迹没在页面上看到过可交互控件
+        "no_navigation",    # 动过，但 URL 从未变过（没换页）
+        "none",             # 有进展 / 进度不构成结论
+        "navigation",       # 导航本身失败
+        "snapshot",         # 观察取不到
+        "tab",              # 独立 tab 开不出来
+        "timeout",          # 超时
+        "backend",          # 后端没答
+        "contract",         # 输出契约 / 动作指令不可解析
+        "dead_loop",        # 原地打转
+        "intercept",        # 被拦（登录墙 / 付费墙 / 反爬 / 验证码）
+        "precondition",     # 前置事实不成立，负标签降级
+        "action",           # 动作执行失败（驱动报错，页面未动）
+        "exception",        # 未分类异常
+    }
+)
+
+
 class UnknownBranch(KeyError):
     """分支名不在注册表内。控制流写错就当场炸，不静默落盘。"""
 
@@ -213,6 +275,32 @@ class SiteOutcome:
     reached: bool = False  # 是否走到了播放页
     site_url: str = ""
     play_page_url: str = ""
+
+    #: **过程级出口**的三轴留痕（2026-11-23 · fail-closed 出口带上判断点）。
+    #:
+    #: 分支 ``unresolved`` 把「没找到控件」「没换页」「预算耗尽」「后端
+    #: 没答」全收在一支里，诊断时看不出该修哪一处。三轴把它们分开：
+    #:
+    #: - :attr:`exit_stage`：控制流停在哪一段（:data:`EXIT_STAGES`）；
+    #: - :attr:`exit_signal`：停下时的客观进展（:data:`EXIT_SIGNALS`）；
+    #: - :attr:`exit_question`：本该回答、但**没走到**的判断点 id。
+    #:
+    #: ⚠️ ``exit_question`` **不是** ``question``：后者是**真的问过**的
+    #: 判断题（有 ``Decision`` 才有值），前者是「计划中的下一题」，只用于
+    #: 诊断文本。D-5 的分支↔判断点配对**只认** ``question``——把
+    #: ``exit_question`` 填进 ``question`` 会造出「没问过却按问过打分」的
+    #: 假 5 分或假低分，污染校准。
+    #:
+    #: 判断点自己作答的记账（决策型负分支、成功记录）三轴**留空**：
+    #: 那条结论已经有 ``question``，不需要「没走到哪道题」。
+    exit_stage: str = ""
+    exit_signal: str = ""
+    exit_question: str = ""
+    #: 被前置事实核**降级**前的分支（本该贴的那条负标签）。
+    #: 只有 ``[记账降级]`` 那条路径会填；它让读档的人不必再解析
+    #: ``evidence`` 文本（旧口径 :func:`branch_eras.guard_downgrades`
+    #: 就是靠正则捞的，新档直接读字段）。
+    downgraded_from: str = ""
 
     #: 2026-10-12 增量二十：LLM 在 ``page_quotes`` 字段单独回传的"页面
     #: 原文短语"列表（与 ``evidence`` 自述**严格分开**——后者是模型推断）。
@@ -272,6 +360,14 @@ class SiteOutcome:
             "fallback_used": self.fallback_used,
             "reached_play_page": self.reached,
             "is_negative_sample": self.is_negative_sample,
+            # 2026-11-23：过程级出口三轴 + 降级原分支。**空也写出**——
+            # 与 ``question`` 同口径：键在、值为空 = 这条结论有判断点
+            # （或没有过程级出口），与「老存档压根没这个键」不同物
+            # （后者由 P2 的 ``p1_missing_fields`` 区分）。
+            "exit_stage": self.exit_stage,
+            "exit_signal": self.exit_signal,
+            "exit_question": self.exit_question,
+            "downgraded_from": self.downgraded_from,
         }
 
 
@@ -307,6 +403,12 @@ class RunLedger:
         # 显式空元组 ``()`` 等价于"不要 page_quotes"——绝大多数调用点
         # 走默认 ``()`` 走 Decision 透传。
         page_quotes: tuple[str, ...] | None = None,
+        #: 过程级出口留痕（见 :attr:`SiteOutcome.exit_stage`）。判断点
+        #: 自己作答的记账不传；只有「没走到判断点」的收口才传。
+        exit_stage: str = "",
+        exit_signal: str = "",
+        exit_question: str = "",
+        downgraded_from: str = "",
     ) -> SiteOutcome:
         """记一个站点结果并返回它。分支名非法时抛 :class:`UnknownBranch`。"""
         if (
@@ -336,6 +438,10 @@ class RunLedger:
             site_url=site_url,
             play_page_url=play_page_url,
             page_quotes=resolved_quotes,
+            exit_stage=exit_stage,
+            exit_signal=exit_signal,
+            exit_question=exit_question,
+            downgraded_from=downgraded_from,
         )
         self.outcomes.append(outcome)
         return outcome
@@ -419,6 +525,14 @@ class RunLedger:
                     reached=reached,
                     site_url=site_url,
                     play_page_url=play_page_url,
+                    # **不是**「没问过」：decision 在，question 照留（D-5
+                    # 仍按它核配对）；降级只说明「贴标签的前置事实不成立」。
+                    # 阶段写 ``player.guard`` 是因为今天只有环节⑦ 能触发
+                    # 降级（:data:`BRANCH_PRECONDITION` 里的五支都在播放
+                    # 判定链上）；换成别的链路时把 stage 从这里改准。
+                    exit_stage="player.guard",
+                    exit_signal="precondition",
+                    downgraded_from=branch,
                 )
         return self.record(
             url,

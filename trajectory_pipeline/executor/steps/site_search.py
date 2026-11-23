@@ -304,6 +304,9 @@ async def site_search(
             landed, "unresolved",
             "站内搜索收到空片名——不是站点结论，是调用方拼装错误",
             site_url=candidate.url,
+            exit_stage="site_search.contract",
+            exit_signal="contract",
+            exit_question=Q.FIND_SITE_SEARCH,
         )
         result.note("title 为空，未执行搜索")
         bump("site_search_empty_title")
@@ -349,6 +352,9 @@ async def site_search(
         ledger.record(
             landed, "unresolved", f"站内搜索填词失败: {exc}",
             decision=box, site_url=candidate.url,
+            exit_stage="site_search.fill",
+            exit_signal="action",
+            exit_question=Q.SELECT_PLAY_SITES,
         )
         result.note(f"填词失败: {exc}")
         return result
@@ -361,6 +367,9 @@ async def site_search(
         ledger.record(
             landed, "unresolved", f"站内搜索回车失败: {exc}",
             decision=box, site_url=candidate.url,
+            exit_stage="site_search.submit",
+            exit_signal="action",
+            exit_question=Q.SELECT_PLAY_SITES,
         )
         result.note(f"回车失败: {exc}")
         return result
@@ -373,6 +382,9 @@ async def site_search(
             landed, "unresolved",
             "站内搜索提交后取不到结果页快照",
             decision=box, site_url=candidate.url,
+            exit_stage="site_search.snapshot",
+            exit_signal="snapshot",
+            exit_question=Q.SELECT_PLAY_SITES,
         )
         result.note("提交后取不到快照")
         return result
@@ -393,6 +405,9 @@ async def site_search(
                 "站内搜索提交后页面未变化（回车与搜索按钮均未触发跳转）"
                 "——提交失败不是站点结论",
                 decision=box, site_url=candidate.url,
+                exit_stage="site_search.submit",
+                exit_signal="no_navigation",
+                exit_question=Q.SELECT_PLAY_SITES,
             )
             result.note("提交失败：页面未变化")
             bump("site_search_submit_failed")

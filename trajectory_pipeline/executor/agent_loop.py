@@ -111,6 +111,7 @@ from trajectory_pipeline.executor.gatekeeper import (
     intercept,
 )
 from trajectory_pipeline.perception.base import (
+    Q,
     InteractiveElement,
     LinkItem,
     Observation,
@@ -504,6 +505,15 @@ GATEKEEPER_DECIDED_BRANCHES: Final[frozenset[str]] = frozenset(
     b for b in _FALLCLOSED_BRANCH.values() if b != UNRESOLVED
 )
 
+#: 每类任务「**本该回答、但没走到**」的判断点——出口诊断的
+#: ``exit_question``。它**不是** ``question``（后者要有真的 ``Decision``），
+#: 所以只进诊断文本，不进 D-5 的配对核对。
+_EXIT_QUESTION: Final[Mapping[str, str]] = {
+    TASK_PLAY: Q.PLAYER_OK,
+    TASK_ENTRIES: Q.SELECT_SITE_ENTRIES,
+    TASK_REFERRAL: Q.SELECT_REFERRAL_LINKS,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class _Terminal:
@@ -519,6 +529,9 @@ class _Terminal:
     reason: str
     #: **过完前置事实核**的分支（不是 :func:`_branch_of` 的裸折算）。
     branch: str = UNRESOLVED
+    #: 过程级出口留痕（agent 循环这一侧）：被 gatekeeper 收口 / 降级。
+    exit_signal: str = "intercept"
+    downgraded_from: str = ""
 
 
 def _branch_of(verdict: Verdict | None) -> str:
@@ -530,10 +543,11 @@ def _branch_of(verdict: Verdict | None) -> str:
 
 def _guarded_branch(
     verdict: Verdict | None, obs: Observation | None
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """分支折算 + **前置事实核**（agent 路径用）。
 
-    返回 ``(分支, 降级说明)``；说明为空 = 前置事实成立，分支照贴。
+    返回 ``(分支, 降级说明, 降级前分支)``；说明为空 = 前置事实成立，
+    分支照贴（此时第三项也为空）。
 
     ⚠️ **为什么 agent 路径也要核**：:func:`_branch_of` 折的是**拦截口径**
     （gatekeeper 判「这页**像**付费墙吗」），而分支标签是**结论口径**
@@ -561,14 +575,14 @@ def _guarded_branch(
     """
     branch = _branch_of(verdict)
     if branch == UNRESOLVED:
-        return branch, ""
+        return branch, "", ""
     failed = precondition_failed(branch, obs)
     if not failed:
-        return branch, ""
+        return branch, "", ""
     return UNRESOLVED, (
         f"[记账降级] 本该记 {branch}，但{failed}——"
         f"该分支的前置事实不成立，不贴这条负标签"
-    )
+    ), branch
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1060,6 +1074,13 @@ class AgentOutcome:
     #: 快照了——播放器会自转、广告会轮换、倒计时会走，而 D-2/D-5 判的
     #: 正是观察正文。判据与决策依据分叉，是最难查的一类不一致。
     final_obs: Observation | None = None
+    #: **过程级出口**留痕（2026-11-23）。``reached`` 形态恒为空——那一段
+    #: 由调用方的 ``PLAYER_OK`` 决定结论，不属于「没走到判断点」。
+    #: 三轴语义见 :attr:`~trajectory_pipeline.executor.branches.SiteOutcome.exit_stage`。
+    exit_stage: str = ""
+    exit_signal: str = ""
+    exit_question: str = ""
+    downgraded_from: str = ""
 
     @property
     def reached(self) -> bool:
@@ -1091,6 +1112,7 @@ class AgentOutcome:
     def give_up(
         cls, *, why: str, steps: int, calls: int, transcript: tuple,
         obs: Observation | None = None, site_url: str = "",
+        exit_signal: str = "", exit_question: str = "",
     ) -> "AgentOutcome":
         """自报放弃——**默认 unresolved，不入负样本池**（§3.3）。
 
@@ -1110,7 +1132,9 @@ class AgentOutcome:
         branch, why_shape = terminal_shape_branch(obs, site_url=site_url)
         reason = f"{why}（{why_shape}）" if why_shape else why
         return cls(kind="gave_up", reason=reason, branch=branch or UNRESOLVED,
-                   steps_taken=steps, llm_calls=calls, transcript=transcript)
+                   steps_taken=steps, llm_calls=calls, transcript=transcript,
+                   exit_stage="agent.gave_up", exit_signal=exit_signal,
+                   exit_question=exit_question)
 
     @classmethod
     def close(
@@ -1122,6 +1146,10 @@ class AgentOutcome:
         calls: int,
         transcript: tuple,
         branch: str | None = None,
+        exit_stage: str = "",
+        exit_signal: str = "",
+        exit_question: str = "",
+        downgraded_from: str = "",
     ) -> "AgentOutcome":
         """代码收口。有拦截证据查映射表，没有就落 ``unresolved``。
 
@@ -1136,6 +1164,10 @@ class AgentOutcome:
             steps_taken=steps,
             llm_calls=calls,
             transcript=transcript,
+            exit_stage=exit_stage,
+            exit_signal=exit_signal,
+            exit_question=exit_question,
+            downgraded_from=downgraded_from,
         )
 
 
@@ -1252,6 +1284,7 @@ class _Loop:
         "_guidance_hits", "_consecutive_failures", "_steps_taken",
         "_calls_made", "_backend", "_escalated", "_seen_hrefs", "_site_url",
         "_read_elements",
+        "_seen_interactive", "_navigated",
     )
 
     def __init__(
@@ -1312,8 +1345,30 @@ class _Loop:
         #: 并集只在「没有发生导航」的读步上累积；任何一次非读动作后清空
         #: （ref 是会话内句柄）。
         self._read_elements: dict[str, InteractiveElement] = {}
+        #: **客观进展**（出口信号的两条来源）：整条轨迹里有没有见过可交互
+        #: 控件、有没有真的换过页。它们只回答事实，不参与任何判断——
+        #: 出口时用来区分「没找到控件」/「没换页」/「只是预算耗尽」。
+        self._seen_interactive = bool(initial_obs.interactive_elements)
+        self._navigated = False
         self._absorb_links(initial_obs)
         self._seen_hrefs.add(task.url)
+
+    def _progress_signal(self) -> str:
+        """出口时的**客观进展**信号（:data:`~.branches.EXIT_SIGNALS`）。
+
+        - 整条轨迹没在页面上看到过可交互控件 → ``no_interactive``；
+        - 动过、但 URL 从未变过 → ``no_navigation``（点了没换页）；
+        - 其余 → ``none``（有进展；「为什么停」由 ``exit_stage`` 回答）。
+        """
+        if not self._seen_interactive:
+            return "no_interactive"
+        if not self._navigated:
+            return "no_navigation"
+        return "none"
+
+    def _exit_question(self) -> str:
+        """本该回答、但没走到的判断点（见 :data:`_EXIT_QUESTION`）。"""
+        return _EXIT_QUESTION.get(self.task.kind, "")
 
     def _absorb_links(self, obs: Observation) -> None:
         """把一份观察里的链接并进白名单（**累积**，不替换）。"""
@@ -1331,7 +1386,15 @@ class _Loop:
         disp = self._intercept(self.obs)
         if disp is not None:
             return self._close(
-                reason=disp.reason, verdict=disp.verdict, branch=disp.branch
+                reason=disp.reason, verdict=disp.verdict, branch=disp.branch,
+                exit_stage=(
+                    "agent.dead_loop"
+                    if disp.exit_signal == "dead_loop"
+                    else "agent.intercept"
+                ),
+                exit_signal=disp.exit_signal,
+                exit_question=self._exit_question(),
+                downgraded_from=disp.downgraded_from,
             )
         self._pending_obs = self.obs
 
@@ -1346,9 +1409,19 @@ class _Loop:
             #（那批该重跑，M-46），把它们算成页面负样本会让池里混进
             # 「我们坏了」的样本，也会盖掉「该重跑」这个信号 ⇒ 那两处不动。
             if self._steps_taken >= self.budget.max_steps:
-                return self._close_by_page(reason="步数预算耗尽")
+                return self._close_by_page(
+                    reason="步数预算耗尽",
+                    exit_stage="agent.budget",
+                    exit_signal=self._progress_signal(),
+                    exit_question=self._exit_question(),
+                )
             if self._calls_made >= self.budget.max_llm_calls:
-                return self._close_by_page(reason="llm_calls 预算耗尽")
+                return self._close_by_page(
+                    reason="llm_calls 预算耗尽",
+                    exit_stage="agent.budget",
+                    exit_signal=self._progress_signal(),
+                    exit_question=self._exit_question(),
+                )
 
             # ② 决策（内部含一次格式/I6 纠正重试）
             got = await self._decide()
@@ -1373,6 +1446,8 @@ class _Loop:
                     transcript=self._transcript(),
                     obs=self.obs,
                     site_url=self._site_url,
+                    exit_signal=self._progress_signal(),
+                    exit_question=self._exit_question(),
                 )
 
             # ④ 执行 → ⑤ 复观察 → ⑥ 记账 → ⑦ 死循环 + 拦截
@@ -1405,7 +1480,10 @@ class _Loop:
                 # 结果一样；升配更是南辕北辙（更强的模型也连不上）。
                 # 所以直接收口，把错误码留在 reason 里。
                 return self._close(
-                    reason=f"后端未作答（{result.error}）", verdict=None
+                    reason=f"后端未作答（{result.error}）", verdict=None,
+                    exit_stage="agent.backend",
+                    exit_signal="backend",
+                    exit_question=self._exit_question(),
                 )
             # ``kind`` 决定终局的产出形态（链接类必带 selected），
             # **必须传**：不传就是按任务②解析，链接类的「到了」会
@@ -1467,7 +1545,12 @@ class _Loop:
             self.messages.append({"role": "assistant", "content": _canonical(instr)})
             return instr
 
-        return self._close(reason="动作指令连续解析失败", verdict=None)
+        return self._close(
+            reason="动作指令连续解析失败", verdict=None,
+            exit_stage="agent.contract",
+            exit_signal="contract",
+            exit_question=self._exit_question(),
+        )
 
     async def _execute(self, instr: ActionInstruction) -> AgentOutcome | None:
         """执行一步 + 复观察 + 死循环记账 + 拦截。返回非 None = 该收口。
@@ -1529,6 +1612,8 @@ class _Loop:
                 self._read_elements.update(
                     (el.ref, el) for el in read_obs.interactive_elements if el.ref
                 )
+                if read_obs.interactive_elements:
+                    self._seen_interactive = True
             self._steps_taken += 1
             return None
 
@@ -1572,6 +1657,11 @@ class _Loop:
             return None
 
         self.steps.settle(index, obs)
+        # 出口信号的两条客观事实：换没换页、页面上有没有可点控件。
+        if obs.url and obs.url != self.obs.url:
+            self._navigated = True
+        if obs.interactive_elements:
+            self._seen_interactive = True
         self.obs = obs
         self._pending_obs = obs
         self._absorb_links(obs)
@@ -1583,7 +1673,15 @@ class _Loop:
         disp = self._intercept(obs)
         if disp is not None:
             return self._close(
-                reason=disp.reason, verdict=disp.verdict, branch=disp.branch
+                reason=disp.reason, verdict=disp.verdict, branch=disp.branch,
+                exit_stage=(
+                    "agent.dead_loop"
+                    if disp.exit_signal == "dead_loop"
+                    else "agent.intercept"
+                ),
+                exit_signal=disp.exit_signal,
+                exit_question=self._exit_question(),
+                downgraded_from=disp.downgraded_from,
             )
         return None
 
@@ -1825,17 +1923,29 @@ class _Loop:
         记的分支**必须一致**——事件说「收口到 subscription_wall」而
         账本落 unresolved，读账的人会以为两处说的是同一件事。
         """
-        branch, note = _guarded_branch(verdict, obs)
+        branch, note, intended = _guarded_branch(verdict, obs)
         if note:
             reason = f"{reason}\n{note}"
         self._emit(
             FailClosed(reason=reason, branch=branch),
             verdict=verdict,
         )
-        return _Terminal(verdict=verdict, reason=reason, branch=branch)
+        return _Terminal(
+            verdict=verdict,
+            reason=reason,
+            branch=branch,
+            exit_signal=(
+                "dead_loop" if verdict is Verdict.DEAD_LOOP else "intercept"
+            ),
+            downgraded_from=intended,
+        )
 
     def _close(
-        self, *, reason: str, verdict: Verdict | None, branch: str | None = None
+        self, *, reason: str, verdict: Verdict | None, branch: str | None = None,
+        exit_stage: str = "",
+        exit_signal: str = "",
+        exit_question: str = "",
+        downgraded_from: str = "",
     ) -> AgentOutcome:
         return AgentOutcome.close(
             reason=reason,
@@ -1844,9 +1954,18 @@ class _Loop:
             calls=self._calls_made,
             transcript=self._transcript(),
             branch=branch,
+            exit_stage=exit_stage,
+            exit_signal=exit_signal,
+            exit_question=exit_question,
+            downgraded_from=downgraded_from,
         )
 
-    def _close_by_page(self, *, reason: str) -> AgentOutcome:
+    def _close_by_page(
+        self, *, reason: str,
+        exit_stage: str = "",
+        exit_signal: str = "",
+        exit_question: str = "",
+    ) -> AgentOutcome:
         """收口前先看**最后一页的终局形态**（台账 **Q-25 甲** · owner 裁定
         2026-10-28）。
 
@@ -1861,9 +1980,15 @@ class _Loop:
         """
         branch, why = terminal_shape_branch(self.obs, site_url=self._site_url)
         if not why:
-            return self._close(reason=reason, verdict=None)
+            return self._close(
+                reason=reason, verdict=None,
+                exit_stage=exit_stage, exit_signal=exit_signal,
+                exit_question=exit_question,
+            )
         return self._close(
             reason=f"{reason}（{why}）", verdict=None, branch=branch or None,
+            exit_stage=exit_stage, exit_signal=exit_signal,
+            exit_question=exit_question,
         )
 
     def _transcript(self) -> tuple[Mapping[str, str], ...]:

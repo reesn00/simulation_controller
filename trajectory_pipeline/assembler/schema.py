@@ -501,6 +501,15 @@ class OutcomeRef:
     #: 播放页地址。**未走到播放页时为空**，此时 D-6 的该项不适用、不扣分
     #: （rubric v1.1 D-6 边界规则）。
     play_page_url: str = ""
+    #: **过程级出口**三轴 + 降级原分支（2026-11-23）。
+    #: 与 :class:`~trajectory_pipeline.executor.branches.SiteOutcome` 同义；
+    #: 判断点自己作答的记账留空。D-5 用 ``exit_stage`` **有没有值**区分
+    #: 「过程级出口，无决策可判」与「仪表缺口（有题分支漏传 decision）」，
+    #: 但**不用它做分支↔判断点配对**——那一侧只认 ``question``。
+    exit_stage: str = ""
+    exit_signal: str = ""
+    exit_question: str = ""
+    downgraded_from: str = ""
     #: P1 的 outcome 里**压根没有** ``site_url`` / ``play_page_url`` 这两个键
     #: （2026-10-10 之前切的存档）。逐条记，不靠「值为空」推断。
     #:
@@ -527,6 +536,13 @@ class OutcomeRef:
             out["site_url"] = self.site_url
         if "play_page_url" not in self.p1_missing_fields:
             out["play_page_url"] = self.play_page_url
+        # 出口三轴同理：老存档压根没有这些键，就不往 P2 里补假空值——
+        # 「键不在」与「值为空」必须继续可区分。
+        for key in (
+            "exit_stage", "exit_signal", "exit_question", "downgraded_from",
+        ):
+            if key not in self.p1_missing_fields:
+                out[key] = getattr(self, key)
         out["p1_missing_fields"] = list(self.p1_missing_fields)
         return out
 
@@ -1024,12 +1040,18 @@ def _outcome_ref(raw: Mapping[str, Any] | None) -> OutcomeRef | None:
     """一条原始 outcome → :class:`OutcomeRef`。``None`` 进 ``None`` 出。
 
     「键不存在」逐条记，不靠值推断（避坑指南 §2.3）：``site_url`` /
-    ``play_page_url`` 缺了就记进 :attr:`OutcomeRef.p1_missing_fields`，
-    下游据此判**不可判定**。
+    ``play_page_url`` / ``question`` / 出口三轴缺了就记进
+    :attr:`OutcomeRef.p1_missing_fields`，下游据此判**不可判定**。
     """
     if raw is None:
         return None
-    missing = tuple(k for k in ("site_url", "play_page_url") if k not in raw)
+    missing = tuple(
+        k for k in (
+            "site_url", "play_page_url", "question",
+            "exit_stage", "exit_signal", "exit_question", "downgraded_from",
+        )
+        if k not in raw
+    )
     return OutcomeRef(
         url=str(raw.get("url")),
         branch=raw.get("branch"),
@@ -1039,6 +1061,10 @@ def _outcome_ref(raw: Mapping[str, Any] | None) -> OutcomeRef | None:
         reached_play_page=bool(raw.get("reached_play_page")),
         site_url=str(raw.get("site_url") or ""),
         play_page_url=str(raw.get("play_page_url") or ""),
+        exit_stage=str(raw.get("exit_stage") or ""),
+        exit_signal=str(raw.get("exit_signal") or ""),
+        exit_question=str(raw.get("exit_question") or ""),
+        downgraded_from=str(raw.get("downgraded_from") or ""),
         p1_missing_fields=missing,
     )
 

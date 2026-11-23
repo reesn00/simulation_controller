@@ -26,8 +26,10 @@ from trajectory_pipeline.evaluation.scorers.d5_scorer import score_d5
 from trajectory_pipeline.evaluation.scorers.d6_scorer import score_d6
 from trajectory_pipeline.judgement_causes import (
     CAUSE_DATA,
+    CAUSE_INSTRUMENTATION,
     CAUSE_LLM,
     CAUSE_NO_CLIENT,
+    CAUSE_NO_DECISION,
     CAUSE_SCORED,
 )
 from trajectory_pipeline.llm.client import LLMClient
@@ -56,6 +58,16 @@ _SCORERS = {
 #: ``evaluation.cli``（见上），所以这行是 :data:`evaluation.cli.LLM_DIMS`
 #: 在本模块覆盖范围内的**手工投影**；加 LLM 维度时两处一起改。
 _LLM_DIMS: frozenset[str] = frozenset({"d2"})
+
+#: 单元级缺判归因里**原样透传**的具体原因（见 :func:`_unit_cause`）。
+#:
+#: 这两个都指向「下一步该做什么」，压成 ``data`` 就丢了动作指向：
+#: ``no_decision``（决策点从未被问到，是过程级出口——重采口径才分得清）；
+#: ``instrumentation``（字段在但没值——采集点漏传，先核记录口径）。
+#: 其它没列进来的原因（现在只有 ``data``）仍按「存档缺料」统一处置。
+_SPECIFIC_CAUSES: frozenset[str] = frozenset({
+    CAUSE_NO_DECISION, CAUSE_INSTRUMENTATION,
+})
 
 #: **单元计数键**——相加 = 输入 P2 样本数（scout ``run`` 的 ``sum=`` 行
 #: 就是按这几个键加的）。
@@ -253,15 +265,25 @@ def _unit_cause(scores: list[dict[str, Any]]) -> str:
     """单元级缺判归因（**LLM 侧优先**）。
 
     任一维因「后端没答」而缺判 ⇒ 整条记 ``"llm"``（``"no_client"`` 也算
-    LLM 侧——它同样是 LLM 能力缺口，只是没发过请求）。否则有缺判 ⇒
-    ``"data"``。全判出 ⇒ ``""``。
+    LLM 侧——它同样是 LLM 能力缺口，只是没发过请求）。否则：
+    缺判的那几维若**同指一个具体原因**（如 ``no_decision``——决策点从未
+    被问到；``instrumentation``——字段在但没值），原样透传，不再压成
+    ``"data"``：这两者与「存档缺字段」的处置不同，压平就丢掉了动作指向。
+    多个具体原因并存 / 混着 ``data`` ⇒ 压回 ``"data"``（说不清是哪种）。
+    全判出 ⇒ ``CAUSE_SCORED``。
     """
     causes = {str(s.get("cause") or "") for s in scores}
     if causes & {CAUSE_LLM, CAUSE_NO_CLIENT}:
         return CAUSE_LLM
-    if any(s.get("score") is None for s in scores):
-        return CAUSE_DATA
-    return CAUSE_SCORED
+    none_causes = [
+        str(s.get("cause") or "") for s in scores if s.get("score") is None
+    ]
+    if not none_causes:
+        return CAUSE_SCORED
+    specific = {c for c in none_causes if c in _SPECIFIC_CAUSES}
+    if len(specific) == 1 and CAUSE_DATA not in none_causes:
+        return next(iter(specific))
+    return CAUSE_DATA
 
 
 def _status_of(scores: list[dict[str, Any]]) -> str:

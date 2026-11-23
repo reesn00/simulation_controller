@@ -154,6 +154,10 @@ async def _visit(
         outcome.branch or UNRESOLVED,
         outcome.reason,
         site_url=candidate.url,
+        exit_stage=outcome.exit_stage,
+        exit_signal=outcome.exit_signal,
+        exit_question=outcome.exit_question,
+        downgraded_from=outcome.downgraded_from,
     )
     result.note(f"agent 未找到：{outcome.kind}（{outcome.reason}）")
     return result

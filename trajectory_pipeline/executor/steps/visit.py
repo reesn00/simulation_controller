@@ -382,9 +382,19 @@ async def enter_site(
         # 而登记表是给「分支来源唯一」的那几处留的，不该拿来兜这一处。
         result.steps.settle(step_goto, error=reach.reason)
         if reach.proven_unreachable:
-            ledger.record(url, "unreachable_hard", reach.reason, site_url=url)
+            ledger.record(
+                url, "unreachable_hard", reach.reason, site_url=url,
+                exit_stage="visit.navigate",
+                exit_signal="navigation",
+                exit_question=Q.IS_REACHABLE,
+            )
         else:
-            ledger.record(url, "unresolved", reach.reason, site_url=url)
+            ledger.record(
+                url, "unresolved", reach.reason, site_url=url,
+                exit_stage="visit.navigate",
+                exit_signal="navigation",
+                exit_question=Q.IS_REACHABLE,
+            )
         result.note(f"导航失败: {reach.reason}")
         return None
 
@@ -395,8 +405,13 @@ async def enter_site(
         # ⚠️ **导航已经成功了** ⇒ 站点**是通的**（哪怕快照没取到）。
         # 记 ``unreachable_hard`` 等于说「这个站打不开」——那是**错的**：
         # 我们**打开过**它。⇒ 记「没判出来」那一支（**不进池**）。
-        ledger.record(url, "unresolved", f"导航成功但取不到快照: {exc}",
-                      site_url=url)
+        ledger.record(
+            url, "unresolved", f"导航成功但取不到快照: {exc}",
+            site_url=url,
+            exit_stage="visit.snapshot",
+            exit_signal="snapshot",
+            exit_question=Q.IS_REACHABLE,
+        )
         result.note(f"快照失败: {exc}")
         return None
     result.steps.settle(step_goto, obs)

@@ -154,6 +154,11 @@ class Test字段集一致:
             # 的 page_quotes 必填说明，以及增量二十。
             "page_quotes",
             "reached_play_page", "is_negative_sample",
+            # 2026-11-23 出口诊断四列：unresolved 没有 Decision，光凭
+            # question 为空分不出「没找到控件 / 没换页 / 预算耗尽」。
+            # exit_question 是**没走到的判断点**，只作诊断，不参与
+            # D-5 的题-分支配对（配对仍只认 question）。
+            "exit_stage", "exit_signal", "exit_question", "downgraded_from",
         }
         assert actual == expected, (
             f"outcome 字段漂移：多 {actual - expected} / 少 {expected - actual}"
@@ -231,6 +236,7 @@ class Test文档不是摆设:
         "site_url", "play_page_url", "branch", "branch_label", "evidence",
         "question", "source", "fallback_used", "reached_play_page",
         "is_negative_sample",
+        "exit_stage", "exit_signal", "exit_question", "downgraded_from",
     )
 
     @pytest.mark.parametrize("name", NAMED, ids=lambda n: n)

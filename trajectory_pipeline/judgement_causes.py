@@ -40,10 +40,26 @@ CAUSE_LLM = "llm"
 #: **压根没配后端**——没发过请求。它也是「LLM 侧」的缺口，但**不是**
 #: 「后端挂了」：熔断计数不能把它算进去（没发请求，熔断无意义）。
 CAUSE_NO_CLIENT = "no_client"
+#: **过程级出口，没有判断点被问到**——预算耗尽 / 超时 / 后端没答 /
+#: 导航失败 / 页面没换页这类收口，控制流根本**没走到**某道判断题。
+#: 它与 :data:`CAUSE_DATA` 不同：数据不缺，是**决策从未发生**；
+#: 它与「有题分支却空 question」也不同：后者是记账点漏传 decision，
+#: 属 :data:`CAUSE_INSTRUMENTATION`。
+CAUSE_NO_DECISION = "no_decision"
+#: **仪表缺口**——本该带 question 的记账点没带（有题分支 + 空 question，
+#: 或新口径的出口字段键在但值为空）。处置是改采集口径，不是补数据。
+CAUSE_INSTRUMENTATION = "instrumentation"
 
 #: 归因取值全集（读侧校验用）。
 CAUSES: frozenset[str] = frozenset(
-    {CAUSE_SCORED, CAUSE_DATA, CAUSE_LLM, CAUSE_NO_CLIENT}
+    {
+        CAUSE_SCORED,
+        CAUSE_DATA,
+        CAUSE_LLM,
+        CAUSE_NO_CLIENT,
+        CAUSE_NO_DECISION,
+        CAUSE_INSTRUMENTATION,
+    }
 )
 
 
@@ -77,6 +93,8 @@ __all__ = [
     "CAUSE_DATA",
     "CAUSE_LLM",
     "CAUSE_NO_CLIENT",
+    "CAUSE_NO_DECISION",
+    "CAUSE_INSTRUMENTATION",
     "CAUSES",
     "llm_unanswered",
 ]

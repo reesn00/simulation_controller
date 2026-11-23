@@ -2104,6 +2104,9 @@ class Orchestrator:
                 "unresolved",
                 f"站点遍历超时（>{self._cfg.per_site_timeout_s}s）",
                 site_url=candidate.url,
+                exit_stage="orchestrator.timeout",
+                exit_signal="timeout",
+                exit_question=Q.PLAYER_OK,
             )
             result.note("超时")
             record.warnings.append(f"{candidate.url} 超时")
@@ -2140,6 +2143,9 @@ class Orchestrator:
                 "unresolved",
                 f"站点遍历异常: {type(exc).__name__}: {exc}",
                 site_url=candidate.url,
+                exit_stage="orchestrator.exception",
+                exit_signal="exception",
+                exit_question=Q.PLAYER_OK,
             )
             result.note(f"异常: {exc}")
             record.warnings.append(f"{candidate.url} 异常: {exc}")
@@ -2316,6 +2322,13 @@ class Orchestrator:
                 "unresolved",
                 f"中间页访问超时（>{self._cfg.per_site_timeout_s}s）",
                 site_url=candidate.url,
+                exit_stage="intermediate.timeout",
+                exit_signal="timeout",
+                exit_question=(
+                    Q.IS_AGGREGATOR
+                    if role == aggregator_step.ROLE_AGGREGATOR
+                    else Q.SELECT_REFERRAL_LINKS
+                ),
             )
             ir = IntermediateResult(role=role, candidate=candidate)
             ir.note("超时")
@@ -2330,6 +2343,13 @@ class Orchestrator:
                 "unresolved",
                 f"中间页访问异常: {type(exc).__name__}: {exc}",
                 site_url=candidate.url,
+                exit_stage="intermediate.exception",
+                exit_signal="exception",
+                exit_question=(
+                    Q.IS_AGGREGATOR
+                    if role == aggregator_step.ROLE_AGGREGATOR
+                    else Q.SELECT_REFERRAL_LINKS
+                ),
             )
             ir = IntermediateResult(role=role, candidate=candidate)
             ir.note(f"异常: {exc}")

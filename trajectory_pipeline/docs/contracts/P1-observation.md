@@ -219,6 +219,10 @@ rubric v1.1 D-2 的边界规则要求这种情况判「不可判定（存档裁�
 | `fallback_used` | 走了降级路径。⚠️ 存在性判定带这个标记，**成功率高不代表能正常播放** |
 | `reached_play_page` | 是否走到了播放页 |
 | `is_negative_sample` | `branch` 非空且 ∉ `NON_SAMPLE_BRANCHES` |
+| `exit_stage` | 出口停在**哪一段控制流**（`agent.budget` / `agent.backend` / `visit.navigate` / `orchestrator.timeout` …）。空串 = 没记（旧档或决策级结论） |
+| `exit_signal` | 出口时**客观进度的读数**（:data:`EXIT_SIGNALS`）：`no_interactive`（整段没见到可交互元素）/ `no_navigation`（见过元素但一页没换）/ `none`（有进展，不构成结论）/ `navigation` / `snapshot` / `tab` / `timeout` / `backend` / `contract` / `dead_loop` / `intercept` / `precondition` / `action` / `exception` |
+| `exit_question` | **本该问到、但没走到**的判断点 id（诊断用）。⚠️ **不是 `question`**——D-5 的题-分支配对只认 `question`；出口阶段没有 `Decision`，所以这一列不许冒充结论来源 |
+| `downgraded_from` | 前置条件守卫**降级前**那条分支（如 `player_unverified` → `unresolved` 的 `player_unverified`）。取代旧档靠 `evidence` 里的 `[记账降级]` 文本反解 |
 | `branch_before_downgrade` | 人工降级前的分支。**只有被 `cli downgrade` 处置过的记录才有** |
 | `branch_before_relabel` | 人工**改判**前的分支（**最初**那一个，链式改判不覆盖）。**只有被 `cli relabel` 处置过的记录才有** |
 | `success_downgraded_by` | `visits[]` 上的降级留痕，见下 |

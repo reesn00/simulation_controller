@@ -310,6 +310,70 @@ class Test输入形态:
         assert "question" in " ".join(v.reasons)
 
 
+class Test出口归因:
+    """``unresolved`` 没有 ``Decision``，question 为空是**事实**。
+    2026-11-23 起出口三轴（stage / signal / exit_question）把它拆成
+    可分辨的三种「无法核对」——cause 不同，处置就不同。"""
+
+    def test_旧档没有出口字段判数据缺件(self):
+        """2026-11-23 之前的 P1 没记出口阶段：分不出「没找到控件 /
+        没换页 / 预算耗尽」，只能重采——重跑 build 补不出当时没记的字段。"""
+        from trajectory_pipeline.judgement_causes import CAUSE_DATA
+
+        v = score_d5(_dict_sample(_out("unresolved", question="", reached=False)))
+        assert v.score is None and v.cause == CAUSE_DATA
+        assert "重采" in " ".join(v.reasons)
+
+    def test_过程级出口判无决策可核(self):
+        """预算耗尽这类过程级出口：判断点从未被问到，D-5 核不了
+        「该不该放弃」——这不是数据缺件，不该引向重跑 build。"""
+        from trajectory_pipeline.judgement_causes import CAUSE_NO_DECISION
+
+        v = score_d5(
+            _dict_sample(
+                _out(
+                    "unresolved",
+                    question="",
+                    reached=False,
+                    exit_stage="agent.budget",
+                    exit_signal="no_navigation",
+                    exit_question="player.ok",
+                )
+            )
+        )
+        assert v.score is None and v.cause == CAUSE_NO_DECISION
+        why = " ".join(v.reasons)
+        assert "agent.budget" in why and "no_navigation" in why, (
+            f"没把出口阶段/信号抄进理由，读报告的人分不出是哪一种未决：{why}"
+        )
+        assert "player.ok" in why, "没写出「本该走到哪道题」，无法定位断点"
+
+    def test_出口键在但值为空判仪表缺口(self):
+        """键在、值为空 = 新口径的记账点没填——改采集点，不是重采。"""
+        from trajectory_pipeline.judgement_causes import CAUSE_INSTRUMENTATION
+
+        v = score_d5(
+            _dict_sample(
+                _out(
+                    "unresolved", question="", reached=False, exit_stage="",
+                )
+            )
+        )
+        assert v.cause == CAUSE_INSTRUMENTATION
+        assert "仪表缺口" in " ".join(v.reasons)
+
+    def test_有题分支空question判仪表缺口(self):
+        """``unresolved`` 之外的负分支本该有 question——空的是记录点
+        没传 decision（或传了空判断点），不是「本来就没判断点」。"""
+        from trajectory_pipeline.judgement_causes import CAUSE_INSTRUMENTATION
+
+        v = score_d5(
+            _dict_sample(_out("player_unverified", question="", reached=True))
+        )
+        assert v.score is None and v.cause == CAUSE_INSTRUMENTATION
+        assert "decision" in " ".join(v.reasons)
+
+
 # ── 4. 跳步与打分 ─────────────────────────────────────────────────
 
 

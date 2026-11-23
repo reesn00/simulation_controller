@@ -129,6 +129,11 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from trajectory_pipeline.assembler.schema import Sample
+from trajectory_pipeline.judgement_causes import (
+    CAUSE_DATA,
+    CAUSE_INSTRUMENTATION,
+    CAUSE_NO_DECISION,
+)
 
 #: 判断点 → 该判断点在**判 False** 时允许产生的分支。
 #:
@@ -478,6 +483,14 @@ class D5Verdict:
     kind: VerdictKind
     checks: tuple[TreeCheck, ...] = ()
     reasons: tuple[str, ...] = ()
+    #: 缺判归因（H-36 词表）。``""`` = 已判出；``data`` = 素材/旧口径缺件；
+    #: ``no_decision`` = 过程级出口，判断点从未被问到；``instrumentation`` =
+    #: 该带 question 的记账点没带（采集口径问题）。
+    #:
+    #: ⚠️ 它**不改变分数**，只让批次报表把三种「None」分开——
+    #: 「无法核对」与「核对后发现决策错误」是两种结论，前者不该被
+    #: 当成后者去改映射。
+    cause: str = ""
 
     @property
     def wrong_nodes(self) -> tuple[TreeCheck, ...]:
@@ -497,6 +510,7 @@ class D5Verdict:
             "veto": self.is_veto,
             "checks": [c.to_json() for c in self.checks],
             "reasons": list(self.reasons),
+            "cause": self.cause,
         }
 
 
@@ -524,6 +538,21 @@ def _of(obj: Any, key: str, default: Any = "") -> Any:
     if isinstance(obj, Mapping):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _has_key(obj: Any, key: str) -> bool:
+    """字段**键在不在**——区分「老存档压根没这个键」与「键在、值为空」。
+
+    ``_of`` 会把两者都读成空串，而处置完全不同：前者只能重采，后者
+    是仪表缺口（改记账点）。:attr:`OutcomeRef.p1_missing_fields` 只在
+    经 P2 重建的样本上可靠；直接吃旧 P2 字典（evaluation.cli 支持）
+    时还要看键本身在不在。
+    """
+    if obj is None:
+        return False
+    if isinstance(obj, Mapping):
+        return key in obj
+    return hasattr(obj, key)
 
 
 # ── 三处检查 ──────────────────────────────────────────────────────
@@ -900,6 +929,7 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
             "undetermined",
             (),
             ("本条样本没有 outcome（搜索阶段不记站点级结论）——无决策可判",),
+            cause=CAUSE_DATA,
         )
 
     branch = _of(outcome, "branch", None)
@@ -928,23 +958,66 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
         p1_missing = tuple(
             str(x) for x in (_of(outcome, "p1_missing_fields", ()) or ())
         )
-        if "question" in p1_missing:
+        if not _has_key(outcome, "question") or "question" in p1_missing:
             why = (
                 "outcome 缺 question 字段（2026-10-10 之前切的样本）——"
                 "决策树无法核对分支与判断点的配套关系，先重跑 build 再判"
             )
+            cause = CAUSE_DATA
         elif branch == "unresolved":
-            why = (
-                "unresolved 是代码侧 fail-closed 收口，outcome 的 question 为空"
-                "（本就没有判断点可配对）——D-5 无法核对「该不该放弃」，本维不出分"
-                "（不是老批次缺字段，重跑 build 也消解不了）"
-            )
+            # ``unresolved`` 是**过程级出口**：预算 / 超时 / 后端 / 契约 /
+            # 导航 / 快照 / 拦截 / 前置事实降级。判断点**从未被问到**，
+            # 所以 question 为空是事实，不是缺件。出口三轴
+            # （``exit_stage`` / ``exit_signal`` / ``exit_question``）
+            # 就是为区分「没找到控件 / 没换页 / 预算耗尽」而记的——
+            # 2026-11-23 之前的存档没有这三轴，只能判「不可核对」。
+            if (
+                not _has_key(outcome, "exit_stage")
+                or "exit_stage" in p1_missing
+            ):
+                why = (
+                    "unresolved 且 question 为空：这条存档没有出口阶段/信号"
+                    "字段（2026-11-23 之前的采集口径）——分不出「没找到控件 / "
+                    "没换页 / 预算耗尽」，D-5 无法核对「该不该放弃」；"
+                    "重跑 build 补不出当时没记的字段，只能重采"
+                )
+                cause = CAUSE_DATA
+            else:
+                stage = str(_of(outcome, "exit_stage", "") or "")
+                signal = str(_of(outcome, "exit_signal", "") or "") or "none"
+                intended = str(_of(outcome, "exit_question", "") or "")
+                downgraded = str(_of(outcome, "downgraded_from", "") or "")
+                if not stage:
+                    # 键在、值为空 ⇒ 新口径的记账点没填（仪表缺口），
+                    # 不是「没判断点」也不是老批次。
+                    why = (
+                        "unresolved 且 question 为空，出口字段的键在、值为空"
+                        "——这是仪表缺口（该填出口阶段的记账点没填），"
+                        "不是老批次缺字段；先核采集口径再判"
+                    )
+                    cause = CAUSE_INSTRUMENTATION
+                else:
+                    axes = [stage, signal]
+                    if intended:
+                        axes.append(f"未走到 {intended}")
+                    if downgraded:
+                        axes.append(f"负标签降级自 {downgraded}")
+                    why = (
+                        f"unresolved 是过程级出口（{' / '.join(axes)}）——"
+                        "判断点从未被问到，D-5 无法核对「该不该放弃」，"
+                        "本维不出分（不是缺字段：能核的是决策，不是过程）"
+                    )
+                    cause = CAUSE_NO_DECISION
         else:
+            # 有题分支却空 question ⇒ 记录点没传 ``decision``（或传了空
+            # 判断点）。这是**采集口径**问题，不是数据缺失，也不是
+            # 「本来就没判断点」。
             why = (
                 f"分支 {branch!r} 的 question 为空且不在无题允许表里——"
                 "记录点可能没传 decision，先核采集口径再判"
             )
-        return D5Verdict(None, "undetermined", (), (why,))
+            cause = CAUSE_INSTRUMENTATION
+        return D5Verdict(None, "undetermined", (), (why,), cause=cause)
 
     checks = (
         _check_branch_matches_question(question, branch),
@@ -982,7 +1055,7 @@ def score_d5(sample: Sample | Any) -> D5Verdict:
         return D5Verdict(None, "undetermined", checks, tuple(reasons + [
             f"{len(unresolved)}/{len(checks)} 项无法核实——本维不出分"
             f"（补证据或扩词表，不要先扣轨迹的分）",
-        ]))
+        ]), cause=CAUSE_DATA)
     return D5Verdict(5, "scored", checks, tuple(reasons))
 
 

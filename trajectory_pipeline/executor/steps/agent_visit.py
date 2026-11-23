@@ -45,7 +45,7 @@ from trajectory_pipeline.executor.steps.visit import (
     judge_player,
     open_tab,
 )
-from trajectory_pipeline.perception.base import Observation, Perceptor
+from trajectory_pipeline.perception.base import Q, Observation, Perceptor
 
 
 async def agent_visit(
@@ -116,6 +116,9 @@ async def agent_visit(
             result.landed_url or url, UNRESOLVED,
             f"开独立 tab 失败（执行层故障，不是站点打不开）: {url}",
             site_url=url,
+            exit_stage="visit.tab",
+            exit_signal="tab",
+            exit_question=Q.PLAYER_OK,
         )
         result.note("开 tab 失败（执行层故障）")
         return result
@@ -149,6 +152,9 @@ async def agent_visit(
                     result.landed_url or url, UNRESOLVED,
                     f"agent 报到达但没有可判的观察（{outcome.reason}）",
                     site_url=url,
+                    exit_stage="visit.no_obs",
+                    exit_signal="snapshot",
+                    exit_question=Q.PLAYER_OK,
                 )
                 result.note("agent 报到达但没有可判的观察")
                 return result
@@ -164,6 +170,10 @@ async def agent_visit(
             outcome.branch or UNRESOLVED,
             outcome.reason,
             site_url=url,
+            exit_stage=outcome.exit_stage,
+            exit_signal=outcome.exit_signal,
+            exit_question=outcome.exit_question,
+            downgraded_from=outcome.downgraded_from,
         )
         result.note(f"agent 未到达：{outcome.kind}（{outcome.reason}）")
         return result

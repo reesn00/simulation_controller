@@ -129,6 +129,12 @@ async def probe_and_observe(
     candidate = result.candidate
     reach = await reachability.probe(driver, candidate.url)
     step_goto = result.steps.act(actions.goto(candidate.url))
+    # 出口诊断：这条链本该回答的判断点（聚合站页 → IS_AGGREGATOR；
+    # 文章页 → SELECT_REFERRAL_LINKS）。只进诊断，不进 D-5 配对。
+    exit_question = (
+        Q.IS_AGGREGATOR if result.role == ROLE_AGGREGATOR
+        else Q.SELECT_REFERRAL_LINKS
+    )
     if not reach.reachable:
         result.steps.settle(step_goto, error=reach.reason)
         # ⚠️ **口径与 visit 链 ① 同款**（M-44）：只有**机器码证明**的
@@ -141,11 +147,17 @@ async def probe_and_observe(
             ledger.record(
                 candidate.url, "unreachable_hard", reach.reason,
                 site_url=candidate.url,
+                exit_stage="aggregator.navigate",
+                exit_signal="navigation",
+                exit_question=exit_question,
             )
         else:
             ledger.record(
                 candidate.url, "unresolved", reach.reason,
                 site_url=candidate.url,
+                exit_stage="aggregator.navigate",
+                exit_signal="navigation",
+                exit_question=exit_question,
             )
         result.note(f"导航失败: {reach.reason}")
         return None
@@ -158,6 +170,9 @@ async def probe_and_observe(
         ledger.record(
             candidate.url, "unresolved",
             f"导航成功但取不到快照: {exc}", site_url=candidate.url,
+            exit_stage="aggregator.snapshot",
+            exit_signal="snapshot",
+            exit_question=exit_question,
         )
         result.note(f"快照失败: {exc}")
         return None
