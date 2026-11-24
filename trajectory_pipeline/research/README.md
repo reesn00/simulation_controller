@@ -61,6 +61,14 @@ research/
 │  └─ …
 ├─ probes/                     探针与 A/B 分析（INC43–INC46、INC57–INC59）
 │  ├─ inc43_probe_body.py + inc43_probe_bodies.jsonl   18 行失败簇直采正文，验「②③漏付费墙」假设
+│  │
+│  │  ── P0-1 真跑验证（2026-11-24；结论见 docs/14-P0-1真跑验证-20261124.md）──
+│  ├─ p01_live_epoch_check.py   **真实浏览器**对照：用「入口页清单」vs「新页清单」点同一目标
+│  │                            ⇒ 前者 StaleContextError、后者 ok（证明是世代号在拦，不是名字匹配）
+│  ├─ p01_observe_cost.py      S3 代价实测：new_tab 之后那次 observe() 往返中位数
+│  ├─ p01_smoke_check.py       读 P1 存档：new_tab 观察是否非空 + exit_signal 分布 + stale 检索
+│  ├─ p01_smoke_first_step.py  读 P1 存档：首步动作的目标是否落在新页 interactive_elements 里
+│  ├─ p01_smoke_before_after.py  同一存档的「新页 vs 入口页」清单对比（名字层面，**不足以定案**）
 │  ├─ inc43_ab_compare.py      INC42 轮 vs INC43 轮
 │  ├─ inc44_ab_compare.py / inc44_ab_golden_check.py / inc44_check_t011.py
 │  ├─ inc44_unresolved_analysis.py   unresolved 36 行构成分层
