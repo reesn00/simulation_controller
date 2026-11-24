@@ -372,31 +372,43 @@ MUTATIONS = [
         # 2026-10-23（M-27）：点击失败 ⇒ 记 ``unresolved``（采集缺件），
         # 不记 ``component_unverified``（那要求「到了播放页」这个前置事实，
         # 而点击失败时**从未到达**播放页）。⇒ 变异＝把分类改回去。
+        #
+        # ⚠️ 2026-11-24：锚点原为 8 空格缩进的整段，P0-1 把这一支包进 ``try``
+        # 后缩进变 12 空格 ⇒ 变异**不再命中**（静默存活，看着像守卫失效）。
+        # 改成只锚**两行**（``result.landed_url, "unresolved"`` + 带
+        # ``点击 ref=`` 的 f-string），不写前导缩进。
         "点击失败记unresolved",
         "trajectory_pipeline/executor/steps/visit.py",
-        '        ledger.record(\n'
-        '            result.landed_url, "unresolved",\n'
-        '            f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,\n'
-        '        )',
-        '        ledger.record(\n'
-        '            result.landed_url, "component_unverified",\n'
-        '            f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,\n'
-        '        )',
+        'result.landed_url, "unresolved",\n'
+        '                f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,',
+        'result.landed_url, "component_unverified",\n'
+        '                f"点击 ref={ref} 失败: {exc}", decision=control, site_url=url,',
         "trajectory_pipeline/tests/unit/test_visit.py::TestVisitFlow::test_点击失败记unresolved",
     ),
     (
         # 2026-10-23（M-27）：同一族的第二条路——点击**成功**但快照取不到。
+        # ⚠️ 同上：缩进随 P0-1 变动，锚点改为两行、不写前导缩进。
         "点击后取不到快照记unresolved",
         "trajectory_pipeline/executor/steps/visit.py",
-        '        ledger.record(\n'
-        '            result.landed_url, "unresolved",\n'
-        '            f"点击后取不到页面快照: {exc}", decision=control, reached=True,\n'
-        '            site_url=url,',
-        '        ledger.record(\n'
-        '            result.landed_url, "component_unverified",\n'
-        '            f"点击后取不到页面快照: {exc}", decision=control, reached=True,\n'
-        '            site_url=url,',
+        'result.landed_url, "unresolved",\n'
+        '                f"点击后取不到页面快照: {exc}", decision=control, reached=True,',
+        'result.landed_url, "component_unverified",\n'
+        '                f"点击后取不到页面快照: {exc}", decision=control, reached=True,',
         "trajectory_pipeline/tests/unit/test_visit.py::TestVisitFlow::test_点击后取不到快照记unresolved",
+    ),
+    (
+        # 2026-11-24（P0-2）：``answer=True`` 但 ``ref`` 为空 ⇒ 根本没点、没到
+        # 播放页 ⇒ 记 ``unresolved``（采集缺件），不记
+        # ``component_unverified``（那要求「到了播放页」这个前置事实）。
+        # ⇒ 变异＝把分类改回去。
+        "answerTrue无ref记unresolved",
+        "trajectory_pipeline/executor/steps/visit.py",
+        '            result.landed_url, "unresolved",\n'
+        '            f"判定说有播放控件但未回传 ref（违反 I6，未到播放页）: "',
+        '            result.landed_url, "component_unverified",\n'
+        '            f"判定说有播放控件但未回传 ref（违反 I6，未到播放页）: "',
+        "trajectory_pipeline/tests/unit/test_visit.py::TestVisitFlow"
+        "::test_answer_true_但无_ref_记unresolved不进负样本池",
     ),
     (
         # 2026-10-23（L-20 重锚·**新增**）：上一条挪去盯付费墙守卫之后，

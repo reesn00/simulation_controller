@@ -196,6 +196,9 @@ EXIT_STAGES: frozenset[str] = frozenset(
         "visit.snapshot",            # 导航成功但取不到快照
         "visit.tab",                 # 开独立 tab 失败（执行层故障）
         "visit.no_obs",              # agent 报到达但没有可判观察
+        # 找播放控件被判「有」却没回传 ref（P0-2，2026-11-24）：契约违规，
+        # 动作**没有发出去** ⇒ 记 unresolved 而不是 component_unverified。
+        "visit.contract",
         "agent.intercept",           # 进站 / 动作后被 gatekeeper 收口
         "agent.dead_loop",           # 原地打转（同一动作反复不前进）
         "agent.budget",              # 步数 / llm_calls 预算耗尽

@@ -16,7 +16,7 @@ from trajectory_pipeline.common.elements import (
     ELEMENT_VOCAB_ARIA_ROLE,
     ELEMENT_VOCAB_HTML_TAG,
 )
-from trajectory_pipeline.executor import actions
+from trajectory_pipeline.executor import actions, negative_rules
 from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.branches import RunLedger
 from trajectory_pipeline.executor.browser.page_driver import (
@@ -381,8 +381,17 @@ class TestVisitFlow:
         assert ledger.outcomes[0].branch == "trailer_suspect"
         assert d.clicked == []
 
-    async def test_answer_true_但无_ref_按_fail_closed_记账(self):
-        """I6 被违反时不能硬点一个——ref 错会点到别的元素上。"""
+    async def test_answer_true_但无_ref_记unresolved不进负样本池(self):
+        """I6 被违反时不能硬点一个——ref 错会点到别的元素上。
+
+        ⚠️ 而且**不能记 ``component_unverified``**（P0-2，2026-11-24）：
+        那条分支的前置事实是「**到了播放页**」，而这里根本没点、没到播放页
+        ⇒ 前提不成立。记成它就是把模型的契约违规写成「这个站看不了」，
+        而它在负样本池里 ⇒ 训练信号被污染。
+
+        与三条兄弟路径同口径（点击失败 / 点击后快照失败 / 开 tab 失败）：
+        ``unresolved`` 不是负样本，进人工复核队列。
+        """
         d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
         p = ScriptedPerceptor(
             {
@@ -392,8 +401,14 @@ class TestVisitFlow:
         )
         ledger = RunLedger("T001")
         await visit_site(d, p, ledger, CAND)
-        assert ledger.outcomes[0].branch == "component_unverified"
-        assert "I6" in ledger.outcomes[0].evidence
+        out = ledger.outcomes[0]
+        assert out.branch == "unresolved"
+        assert "I6" in out.evidence
+        # ③ 分类改了但**留痕**：本来该记哪一支要能从存档读出来。
+        assert out.downgraded_from == "component_unverified"
+        # ④ 不进负样本池（这才是 P0-2 的危害所在）——用**真实**入池判定，
+        # 不是我自己推断的分类表。
+        assert negative_rules.is_pool_member_branch(out.branch) is False
         assert d.clicked == []
 
     async def test_成功路径记_success(self):

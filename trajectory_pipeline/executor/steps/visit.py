@@ -218,13 +218,37 @@ async def visit_site(
         result.note(f"FIND_PLAY_CONTROL={control.answer}")
         return result
     if not ref:
-        # I6 被违反：answer=True 却没有可点的 ref。fail-closed 而不是硬点一个
+        # I6 被违反：answer=True 却没有可点的 ref。
+        #
+        # ⚠️ **记 ``unresolved``，不记 ``component_unverified``**（P0-2，
+        # 2026-11-24）。``component_unverified`` 的前置事实是「**到了播放页**
+        # 且页面上没有可验证组件」（:data:`branches.BRANCH_PRECONDITION`），
+        # 而这条路上**根本没点、没到播放页** ⇒ 前提不成立。
+        #
+        # 走 ``record`` 会**绕开 ``record_from`` 的前置事实核**，于是直接
+        # 贴出一条负标签；而 ``component_unverified`` 在负样本池里 ⇒
+        # 模型的契约违规被记成「这个站看不了」⇒ 训练信号被污染，且这类
+        # 样本理由通顺、人工也未必看得出。
+        #
+        # 与另三条兄弟路径同口径（点击失败 :273、点击后快照失败 :290、
+        # 开 tab 失败 :239）：**采集缺件 ≠ 业务负样本** ⇒ ``unresolved``
+        # 在 ``NON_SAMPLE_BRANCHES`` 里，不进负样本池、进人工复核队列。
+        # 证据原样留（``I6`` 那句是要复看的现场），只改分类。
+        #
+        # ``decision`` 照传：question 仍是 FIND_PLAY_CONTROL（D-5 按它核
+        # 配对），降级只说明「贴标签的前置事实不成立」。
         ledger.record(
-            result.landed_url, "component_unverified",
-            f"判定说有播放控件但未回传 ref（违反 I6）: {control.evidence}",
+            result.landed_url, "unresolved",
+            f"判定说有播放控件但未回传 ref（违反 I6，未到播放页）: "
+            f"{control.evidence}",
             decision=control, site_url=url,
+            # ``player.guard`` 不合适（那是环节⑦ 播放判定的降级）；
+            # 这里停在「找控件」环节，前置事实是「没点」。
+            exit_stage="visit.contract",
+            exit_signal="contract",
+            downgraded_from="component_unverified",
         )
-        result.note("answer=True 但无 ref——契约违规，按 fail-closed 记账")
+        result.note("answer=True 但无 ref——契约违规，记 unresolved（不进负样本池）")
         return result
 
     # ── ⑤ 点击：每站点一个 tab，隔离会话 ─────────────────────────
