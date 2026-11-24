@@ -130,6 +130,16 @@ class ObscuraDriver:
         #: 是**测量仪器**不是生产链的必需项。开着的时候 :meth:`observe`
         #: 会把两本账落进 :attr:`Observation.element_basis`。
         self._collect_element_basis = collect_element_basis
+        #: 页世代。**obscura 面不靠它拦动作**——它的目标编码是 ``ref``，
+        #: 由上游 tab 自己作废，没有「本地索引指错页」这一层。
+        #: 保留它只为满足 :attr:`PageDriver.page_epoch` 契约
+        #: （README 级用途：取观察时记下、发动作时比对）。
+        self._page_epoch = 0
+
+    @property
+    def page_epoch(self) -> int:
+        """当前页世代号。见 :attr:`PageDriver.page_epoch`。"""
+        return self._page_epoch
 
     # ── 内部：调 tool 并把业务性错误折叠掉 ───────────────────────
 
@@ -190,6 +200,7 @@ class ObscuraDriver:
         if wait_until and wait_until != "load":
             args["waitUntil"] = wait_until
         await self._call("browser_navigate", args, on_error="raise")
+        self._page_epoch += 1
 
     async def snapshot(
         self, *, max_chars: int | None = None, degraded: list[str] | None = None
@@ -382,12 +393,14 @@ class ObscuraDriver:
 
     async def new_tab(self, url: str | None = None) -> str:
         text = await self._call("browser_tab_new", {"url": url} if url else {}, on_error="raise")
+        self._page_epoch += 1
         # 返回形如 tab id；直接给原文，由调用方决定如何解析
         return (text or "").strip()
 
     async def close_tab(self, tab_id: str | None = None) -> None:
         args = {"tab_id": tab_id} if tab_id else {}
         await self._call("browser_tab_close", args, on_error="empty")
+        self._page_epoch += 1
 
     # ── 组合采集 ──────────────────────────────────────────────────
 

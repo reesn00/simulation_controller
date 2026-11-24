@@ -134,6 +134,7 @@ from trajectory_pipeline.executor.browser.page_driver import (
     DriverError,
     DriverSessionError,
     DriverUnreachableError,
+    StaleContextError,
 )
 from trajectory_pipeline.executor.dom import (
     IFRAME_SELECTOR,
@@ -158,6 +159,7 @@ __all__ = [
     "DEGRADED_PRESS_UNSUPPORTED",
     "DROP_REASONS",
     "ROLE_VOCAB",
+    "StaleContextError",
 ]
 
 #: 元素列表的默认上限。与 obscura / camoufox 同一个数（200），
@@ -381,6 +383,25 @@ class CamofoxDriver:
         #: **两套 id 不可互换**（同 camoufox 的纪律）。
         self._tabs: dict[str, str] = {}
         self._tab_seq = 0
+        #: **当前页的世代号**——每一次 :meth:`_reset_page_state` 递增。
+        #:
+        #: ⚠️ **它不是「页数」也不是「快照序号」**，只回答一件事：
+        #: **这份观察的定位词现在还算不算数**。观察在世代 N 取，动作必须
+        #: 在世代 N 发——否则就是「拿上一页的清单点这一页」。
+        #:
+        #: ⚠️ **这就是 P0-1 的机器判据**：``open_tab`` 清空定位表是对的，
+        #: 错的是清空之后**动作不响**（``_locate`` 查不到就 return，
+        #: 调用方把那一步记成成功）。世代号让「清空了」这件事变成
+        #: 一个**可抛的**事实（:class:`StaleContextError`）。
+        self._page_epoch = 0
+        #: 建立 ``_refs`` / ``_target_index`` 时的世代。**动作只在它等于
+        #: 当前世代时才允许发出去**；不等 ⇒ 定位词来自别的页 ⇒ 抛。
+        self._enum_epoch = -1
+
+    @property
+    def page_epoch(self) -> int:
+        """当前页世代号。见 :attr:`PageDriver.page_epoch`。"""
+        return self._page_epoch
 
     # ── 页级状态的失效 ────────────────────────────────────────────
 
@@ -403,7 +424,13 @@ class CamofoxDriver:
 
         ⇒ **这一组状态只能一起清**：漏掉一样就是「上一页的账记到这一页头上」
         （同一族错误，:meth:`observe` 里对 ``last_enumeration`` 已经防过一次）。
+
+        ⚠️ **清空之后必须「响」**（P0-1）：清空本身是对的，错的是**清空
+        之后动作静默 return**——拿旧页的清单点新页，调用方把那一步记成
+        成功，而动作根本没发生。⇒ 清空时**递增世代号**，动作面据此抛
+        :class:`StaleContextError`（见 :meth:`_require_current_epoch`）。
         """
+        self._page_epoch += 1
         self._refs = {}
         self._camo_refs = {}
         self._target_index = {}
@@ -600,6 +627,17 @@ class CamofoxDriver:
 
         ⚠️ **多一次往返，换的是「归因」**：一次建页往返实测 ~1.4 秒，
         而它换来的是「这个站点到底打不打得开」这个事实**站得住**。
+
+        ⚠️ **换页即作废页级状态**（P0-1）：本方法**确实换了一张页**
+        （``new_page`` 之后当前页就是它）⇒ 旧页的 ``ref`` / ``target_index``
+        不能再用于动作。
+
+        ⚠️ **这里刻意不再清一次**：唯一调用方 :meth:`goto` 在**入口**已清
+        （那一步比导航更早发生，连「导航失败要作废」也覆盖到）。
+        在这里再加一次就会让**一次 goto 涨两代**——判据（``!=``）不受影响，
+        但「世代号 ≈ 换页次数」这个心智模型会失真，而读档的人是照着它
+        数「这一页被换过几次」的。⇒ **单一递增点 = ``goto`` 入口**；
+        将来若有别的路径调用本方法，那条路径要自己负责清。
         """
         try:
             tab = await self._session.new_page("")
@@ -816,6 +854,8 @@ class CamofoxDriver:
         self._camo_refs = camo_refs
         self._target_index = target_index
         self._dropped = dropped
+        #: 这份定位词是在哪个世代建立的。动作面拿它比当前世代（P0-1）。
+        self._enum_epoch = self._page_epoch
         self.last_enumeration = {
             "nodes": len(nodes),
             "annotated": annotated,
@@ -1010,6 +1050,10 @@ class CamofoxDriver:
             # 目标变了 ⇒ 缓存里的文本**不适用**。**不猜**——降级。
             self._degrade_press("press", want_role, want_name, "no_cached_text")
             return
+        # 目标来自哪一页？``_fill_cache`` 与 ``_target_index`` 都是**页级**
+        # 状态 ⇒ 世代不同就是「在别的页上填过、在这一页按回车」。
+        # 抛（不是降级）：降级说「本层没这个能力」，而这里是**调用方拼错页**。
+        self._require_current_epoch("press")
         target = self._target_index.get((want_role, want_name))
         if not target or target not in self._camo_refs:
             self._degrade_press("press", want_role, want_name, "not_found")
@@ -1055,6 +1099,10 @@ class CamofoxDriver:
         后者是「**页面**的事实」（元素不在）。
         混起来会把「本面设计上的取舍」记成「名字脆」，
         可移植性的读数于是指错了对象。
+
+        ⚠️ **世代不符时抛** :class:`StaleContextError`（与动作面同一条判据）：
+        「探针在别的页上探」得到的 ``not_found`` 会让可移植性的读数
+        指向一个**根本不存在的问题**——那比不探更坏。
         """
         target = self._locate("resolve", role=role, name=name)
         if target is None:
@@ -1101,7 +1149,20 @@ class CamofoxDriver:
 
         **失败一律抛** :class:`DriverError`——「定位能力不可用」与
         「元素不存在」不能折叠。
+
+        ⚠️ **第四态：目标来自另一页**（P0-1）。定位词是在 :attr:`_enum_epoch`
+        那一刻枚举出来的；若当前世代已经变了（中间导航过 / 换过 tab），
+        这份清单指的**不是这一页上的元素**。此时**抛**
+        :class:`StaleContextError`，不返回 ``None``：
+
+        - 返回 ``None`` 会让调用方把它当成「元素不在页面上」⇒ 可能记成
+          **业务事实**甚至**成功**（``click`` 原来就是直接 return）；
+        - 真相是**我们把两份页级状态拼错了**，页面本身没问题。
+
+        它**先于**下面三态判定：世代不对时，``_target_index`` 是空的或属于
+        别的页，往下查只会得到一个**看着合理但归因错误**的 ``not_found``。
         """
+        self._require_current_epoch(op)
         cross = [k for k, v in (("ref", ref), ("selector", selector)) if v]
         if cross:
             # 跨面调用是接线错误：camofox 的定位词是 role+name。
@@ -1136,6 +1197,35 @@ class CamofoxDriver:
             "op": op, "role": role or "", "name": name or "",
             "outcome": outcome, "reason": reason,
         }
+
+    def _require_current_epoch(self, op: str) -> None:
+        """**定位词的世代与当前页不符 ⇒ 抛**（P0-1 的机器判据）。
+
+        判据是 ``_enum_epoch``（建立 ``_target_index`` 那一刻的世代）与
+        :attr:`_page_epoch`（现在）是否相等。不等意味着**枚举之后换过页**。
+
+        ⚠️ **``_enum_epoch == -1``**（本页从没枚举过）**不在此列**：那说明
+        调用方一次 ``interactive`` 都没做过就来点，往下走会得到正常的
+        ``not_found``——「还没看过这一页」与「看的是别的页」是两件事，
+        后者才是本异常管的。混起来会让「没观察就动作」也变成一个接线错误，
+        而它其实可能是合理的（例如只按 ``role+name`` 猜一个元素）。
+
+        ⚠️ 记进 ``last_action`` 再抛：抛出去之后调用方拿到的只有异常，
+        而报告侧读的是 ``last_action``——不记就是「账上说 ok、实际抛了」。
+        """
+        if self._enum_epoch < 0 or self._enum_epoch == self._page_epoch:
+            return
+        self._miss(
+            op, None, None, "stale_context",
+            f"enum_epoch={self._enum_epoch} current={self._page_epoch}",
+        )
+        raise StaleContextError(
+            f"camofox 面 {op} 的定位词来自另一页"
+            f"（枚举于世代 {self._enum_epoch}，当前世代 {self._page_epoch}）"
+            f"——换页之后必须重新 :meth:`interactive` / :meth:`observe`。",
+            expected=self._enum_epoch,
+            actual=self._page_epoch,
+        )
 
     async def _do(
         self, op: str, fn: Any, *, role: str | None = None, name: str | None = None

@@ -40,6 +40,7 @@ from trajectory_pipeline.executor.browser.page_driver import (
     DriverError,
     DriverSessionError,
     DriverUnreachableError,
+    StaleContextError,
 )
 from trajectory_pipeline.executor.dom import TEXT_CONTENT_EXPR
 
@@ -854,6 +855,171 @@ class TestResolve:
         driver = _driver(session)
         res = await driver.resolve(role="button", name="立即播放")
         assert res["outcome"] == "not_found"
+
+
+# ── 页世代：拿上一页的定位词点这一页 ────────────────────────────
+
+
+class TestStaleContext:
+    """**P0-1 的机器判据**：定位词是页级的，换页之后用它必须响。
+
+    病灶的原始形状：``agent_visit`` 拿**入口页**的观察当 agent 的起点，
+    而 ``open_tab`` 已经清了定位表 ⇒ ``_locate`` 查不到 ⇒ 直接 return
+    ⇒ 上层把那一步记成**成功**，而动作**根本没发生**。
+
+    本组钉的是驱动层那一半：**换页之后用旧清单发动作，必须抛**
+    :class:`StaleContextError`，不许静默返回。
+    """
+
+    async def test_开新页后点旧清单抛_stale(self):
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        await driver.interactive()          # 在**入口页**上枚举
+
+        await driver.new_tab("https://example.com/other")   # 换页 ⇒ 清单作废
+
+        with pytest.raises(StaleContextError) as exc:
+            await driver.click(role="button", name="立即播放")
+        assert exc.value.expected < exc.value.actual
+        # ⚠️ **一次都没点**：抛的是接线错误，不该顺带发出去半个动作。
+        assert session.clicks == []
+
+    async def test_导航后点旧清单抛_stale(self):
+        """``goto`` 同样换页——它和 ``new_tab`` 在判据上没有区别。"""
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        await driver.interactive()
+
+        await driver.goto("https://example.com/other")
+
+        with pytest.raises(StaleContextError):
+            await driver.click(role="button", name="立即播放")
+
+    async def test_填值同样抛_stale(self):
+        """``fill`` 与 ``click`` 共用 ``_locate``——不许只修一条。"""
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        await driver.interactive()
+
+        await driver.new_tab("https://example.com/other")
+
+        with pytest.raises(StaleContextError):
+            await driver.fill(role="textbox", name="站内搜索", text="功夫")
+        assert session.types == []
+
+    async def test_重新枚举之后旧_alias_消失但不再抛(self):
+        """换页 + **重新枚举** ⇒ 清单属于当前页 ⇒ 正常走三态。
+
+        ⚠️ 这条是上一条的**反面**：判据必须是「清单的世代 ≠ 当前世代」，
+        不能退化成「这一页换过就一律抛」——那样每次换页后连正常动作都做不了。
+        """
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        await driver.interactive()
+
+        await driver.new_tab("https://example.com/other")
+        await driver.interactive()          # 在新页上重新枚举
+
+        res = await driver.resolve(role="button", name="立即播放")
+        assert res["outcome"] == "ok"
+
+    async def test_stale_记进_last_action(self):
+        """抛出去之后报告侧读的是 ``last_action`` ⇒ 必须记上，不能空着。"""
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        await driver.interactive()
+
+        await driver.new_tab("https://example.com/other")
+
+        with pytest.raises(StaleContextError):
+            await driver.click(role="button", name="立即播放")
+        assert driver.last_action["outcome"] == "stale_context"
+        assert "enum_epoch" in driver.last_action["reason"]
+
+    async def test_从没枚举过不抛_仍是_not_found(self):
+        """「还没看过这一页」与「看的是别的页」是两件事，本异常只管后者。"""
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        await driver.goto("https://example.com/watch")
+        # **不**枚举
+        await driver.click(role="button", name="立即播放")
+        assert driver.last_action["outcome"] == "not_found"
+
+    async def test_stale_不是会话故障(self):
+        """它是**调用方拼错页**，不该被当成执行层故障中止整条 run。"""
+        assert issubclass(StaleContextError, DriverError)
+        assert not issubclass(StaleContextError, DriverSessionError)
+
+    async def test_世代随换页单调递增(self):
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        before = driver.page_epoch
+        await driver.goto("https://example.com/watch")
+        after_goto = driver.page_epoch
+        tab = await driver.new_tab("https://example.com/other")
+        after_tab = driver.page_epoch
+        await driver.close_tab(tab)
+        after_close = driver.page_epoch
+
+        assert before < after_goto < after_tab < after_close
+
+    async def test_每次换页只递增一次(self):
+        """**单一递增点**：`_reset_page_state`。
+
+        ⚠️ 如果有人将来在 `goto` 里也加一次 `+= 1`，世代会**跳号**——
+        跳号本身不致命（判据是 `!=` 不是 `+1`），但「换一次页涨两代」
+        会让「世代号 ≈ 换页次数」这个心智模型失效，而读档的人正是
+        照着它去数「这一页被换过几次」的。⇒ 钉死它，涨两个就是 bug。
+        """
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+
+        e0 = driver.page_epoch
+        await driver.goto("https://example.com/watch")
+        assert driver.page_epoch == e0 + 1, "goto 应当只递增一次"
+
+        e1 = driver.page_epoch
+        tab = await driver.new_tab("https://example.com/other")
+        assert driver.page_epoch == e1 + 1, "new_tab 应当只递增一次"
+
+        e2 = driver.page_epoch
+        await driver.close_tab(tab)
+        assert driver.page_epoch == e2 + 1, "close_tab 应当只递增一次"
+
+    async def test_没枚举过时_enum_epoch_是负数(self):
+        """``-1`` 是「从没枚举过」的哨兵——它是判据**放行**的那一支。
+
+        ⚠️ 如果哪天把初值改成 ``0`` 而世代又从 ``0`` 起，第一次
+        ``click`` 就会被误判成 stale——**每个新会话的第一个动作都会炸**。
+        这条钉的是那个组合。
+        """
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        driver = _driver(session)
+        assert driver._enum_epoch == -1
+        await driver.goto("https://example.com/watch")
+        assert driver._enum_epoch == -1, "导航不会建立定位域"
+        await driver.interactive()
+        assert driver._enum_epoch == driver.page_epoch, "枚举要把世代带上"
+
+    async def test_空会话首次导航也只涨一代(self):
+        """空栈时 goto 走 ``_open_blank_and_navigate``（**另一条换页路径**）。
+
+        ⚠️ 那条路径自己 `new_page` 换页，而 `goto` 入口也清了状态。
+        两处都递增就会**涨两代** ⇒ 钉住「一次 goto = 一代」在**两条
+        内部路径上都成立**，而不只是在「已有页」那一条上成立。
+        """
+        session = _FakeSession(snapshot_pages=[ANNOTATED_SAMPLE])
+        session.stack.clear()               # 空会话 ⇒ 走建页分支
+        driver = _driver(session)
+        before = driver.page_epoch
+        await driver.goto("https://example.com/watch")
+        assert driver.page_epoch == before + 1
+
 
 
 # ── 观察：读数自检（读到一半） ──────────────────────────────────

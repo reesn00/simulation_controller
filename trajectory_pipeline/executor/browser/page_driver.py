@@ -116,6 +116,10 @@ class PageDriver(Protocol):
 
         元素不存在时**不抛异常**——那是业务事实（该元素不在页面上），
         由上层转成 ``answer=None`` 走 unresolved，而不是让整站作废。
+
+        ⚠️ **但「目标来自另一页」要抛** :class:`StaleContextError`：那是
+        接线错误，不是页面事实。判据是 :attr:`page_epoch`——它随每一次
+        换页递增，动作目标必须取自**当前世代**的那份观察。
         """
         ...
 
@@ -161,6 +165,23 @@ class PageDriver(Protocol):
         """新开标签页，返回 tab id。用于多站点遍历时隔离会话。"""
         ...
 
+    @property
+    def page_epoch(self) -> int:
+        """**当前页的世代号**——每一次换页（导航 / 开 tab / 关 tab）递增。
+
+        它是「这份观察的定位词还管不管用」的唯一判据：观察是在某个世代
+        取到的，动作必须落在**同一个世代**。
+
+        ⚠️ **它存在的理由是一个真实的静默故障**：``{role, name}`` 的定位
+        依赖枚举建的表，而换页会清空它。清空本身是对的——错的是**清空
+        之后动作不响**：拿旧页的清单点新页，``_locate`` 查不到就直接
+        return，上层把那一步记成**成功**（`error` 为空），而动作根本没发生。
+
+        ⚠️ **不保证跨实现可比**：只保证同一次运行里单调递增，不保证等于
+        页数或从 0 起。它的用途只有「取观察时记下、发动作时比对」。
+        """
+        ...
+
     async def close_tab(self, tab_id: str | None = None) -> None:
         """关闭标签页（``None`` = 当前活动页）。"""
         ...
@@ -174,6 +195,10 @@ class PageDriver(Protocol):
         任何一项失败**不让整个 observe 失败**——该项降级为空/0，
         并由 ``Observation`` 的元数据反映；只有 snapshot 本身失败才抛
         ``DriverError``（没有观察就没有判定，I4 fail-closed）。
+
+        ⚠️ **这份观察的定位词只对当时的 :attr:`page_epoch` 有效**。调用方
+        若在取观察之后换过页（开 tab / 导航 / 关 tab），必须重新观察——
+        拿旧观察去发动作会被驱动抛 :class:`StaleContextError`。
         """
         ...
 
@@ -210,6 +235,32 @@ class DriverSessionError(DriverError):
     ⇒ 分支口径：执行层故障**不记** ``unreachable_hard``，
     记「没判出来」那一支（不进池）——**采集失败不是站点结论**。
     """
+
+
+class StaleContextError(DriverError):
+    """**拿上一页的定位域去操作这一页**——页级句柄已经作废。
+
+    定位词（``ref`` / ``{role, name}``）是**页级**的：上游的 ``eN`` 每次
+    快照重新编号，导航 / 换页之后旧编号指向的是**另一个元素**。所以
+    「观察 A 页、动作落 B 页」必须是一个**会响的错误**，不能是空转。
+
+    ⚠️ **它与 :class:`DriverSessionError` 不同源**：那一个说「坏的是我们的
+    浏览器」，这一个说「**调用方把两份页级状态拼错了**」——页面是好的、
+    动作也能发出去，错的是**目标来自另一页**。所以它**不**继承
+    :class:`DriverSessionError`：不该被当成执行层故障中止整条 run。
+
+    ⚠️ **它也不是「元素不存在」**（那是业务事实）：元素这一页上可能真有，
+    只是**我们从上一页的清单里挑的**。混成 ``not_found`` 会让一个接线
+    错误看起来像页面事实——这正是本异常要消灭的那类静默。
+
+    :param expected: 动作目标所属的页世代。
+    :param actual: 当前页的世代。
+    """
+
+    def __init__(self, message: str, *, expected: int, actual: int) -> None:
+        super().__init__(message)
+        self.expected = expected
+        self.actual = actual
 
 
 class DriverUnreachableError(DriverError):
