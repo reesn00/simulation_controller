@@ -15,6 +15,7 @@ observe 返回的是未过滤的原始交互元素。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from trajectory_pipeline.executor.dom import CleanedLink, CleanedSnapshot
@@ -205,6 +206,39 @@ class PageDriver(Protocol):
     async def close(self) -> None:
         """关闭连接。必须可重复调用，且关闭失败不得掩盖主流程异常。"""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class PageContext:
+    """**一份观察 + 它所属的页世代**——绑成同一个不可分开的单元。
+
+    ## 它解的是什么问题
+
+    定位词（``ref`` / ``{role, name}``）是**页级**的：它们由
+    :meth:`PageDriver.interactive` 建立，换页即作废。而「观察」和
+    「定位词」原来是**两个可以分开传的东西**——于是出现了一个说不出
+    哪里错的组合：
+
+        site_obs = await observe()          # 入口页的元素清单
+        await new_tab(url)                  # 换页 ⇒ 清单作废
+        await click(role, name)             # 拿**入口页**的清单点**新页**
+
+    驱动层现在会抛 :class:`StaleContextError`（见 ``page_epoch``），
+    但**最好的错误是不发生的错误**：把两者绑成一个值，代码里就再没有
+    「随便传一份 ``Observation``」的位置。
+
+    ## 用法
+
+    :meth:`~trajectory_pipeline.executor.steps.visit.open_tab` 返回它；
+    agent 循环的起点、scripted 链的点击目标都**只能**从它取。
+
+    ⚠️ **``obs`` 为空只可能是构造时就没观察**（本类不校验）。生产侧
+    「开页后观察失败」在**造这个值之前**就已经被处置掉了——见
+    ``open_tab``：它返回 ``None``，不返回一个「有页没观察」的半成品。
+    """
+
+    tab_id: str
+    obs: Observation
 
 
 class DriverError(RuntimeError):

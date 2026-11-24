@@ -43,6 +43,7 @@ from trajectory_pipeline.executor.actions import StepLog
 from trajectory_pipeline.executor.browser.page_driver import (
     DriverError,
     DriverSessionError,
+    PageContext,
     PageDriver,
 )
 from trajectory_pipeline.executor.branches import RunLedger
@@ -227,17 +228,11 @@ async def visit_site(
         return result
 
     # ── ⑤ 点击：每站点一个 tab，隔离会话 ─────────────────────────
-    # 语义化目标在**点击之前**解析：它来自站点页观察（``site_obs``），
-    # 不是点击后的观察。解析不出来也要照实记 ``target=None`` 并继续点——
-    # 那说明 I6 被违反（ref 溯源不到 interactive_elements），是**要留证的现场**，
-    # 而 fail-closed 在这里的表现是「不编一个目标」，不是「不点」。
-    target = actions.target_of(ref, result.site_obs.interactive_elements)
-    if target is None:
-        result.note(f"ref={ref} 未在 interactive_elements 中找到（I6 存疑），"
-                    f"动作流按 target=None 记录")
-    tab_id = await open_tab(driver, url, result)
-    if not tab_id:
-        # ⚠️ **开页失败 = 执行层故障**（2026-11-11，all80 事故 P0-2）：
+    # 语义化目标在**点击之前**解析。
+    tab = await open_tab(driver, url, result, max_chars=max_chars)
+    if tab is None:
+        # ⚠️ **开页失败 / 开页后读不到 = 执行层故障**（2026-11-11，all80
+        # 事故 P0-2；2026-11-24 P0-1 补第二支）：
         # 退化到当前页会让这一站的观察与动作落在**上一个候选留下的页**上
         # ⇒ 判分是错的。⇒ 中止这一站，记 ``unresolved``
         # （采集缺件 ≠ 业务负样本 ⇒ 不进负样本池，等人看）。
@@ -247,11 +242,23 @@ async def visit_site(
             decision=control, site_url=url,
         )
         return result
+    tab_id = tab.tab_id
+    # ⚠️ **目标必须从新 tab 的观察里解析**（P0-1）：``site_obs`` 的元素表
+    # 属于**入口页**，开 tab 之后当前页换了 ⇒ 拿它点会（在 aria 面上）
+    # 被判成 stale，或在 ref 面上点到别的元素。
+    #
+    # ⚠️ 解析不出来也要照实记 ``target=None`` 并继续点——那说明 I6 被违反
+    # （ref 溯源不到 interactive_elements），是**要留证的现场**，
+    # 而 fail-closed 在这里的表现是「不编一个目标」，不是「不点」。
+    target = actions.target_of(ref, tab.obs.interactive_elements)
+    if target is None:
+        result.note(f"ref={ref} 未在 interactive_elements 中找到（I6 存疑），"
+                    f"动作流按 target=None 记录")
     try:
         step_click = result.steps.act(actions.click(target))
         try:
             await driver.click(**actions.target_params(
-                result.site_obs.element_vocabulary, target, ref=ref))
+                tab.obs.element_vocabulary, target, ref=ref))
         except (DriverError, actions.UnaddressableTarget) as exc:
             result.steps.settle(step_click, error=f"点击失败: {exc}")
             # 2026-10-23（M-27）：点击**失败** ⇒ 从未到达播放页 ⇒
@@ -521,8 +528,11 @@ def _record_challenge(
     return True
 
 
-async def open_tab(driver: PageDriver, url: str, result: VisitResult) -> str:
-    """为该站点开独立 tab。**返回句柄**；空串 = 开页失败（执行层故障）。
+async def open_tab(
+    driver: PageDriver, url: str, result: VisitResult, *,
+    max_chars: int | None = None,
+) -> PageContext | None:
+    """为该站点开独立 tab **并取一份属于它的观察**。``None`` = 开页失败。
 
     独立 tab 的作用是**会话隔离**：站点 A 弹出的登录框 / 提示不影响
     站点 B 的观察。
@@ -531,11 +541,33 @@ async def open_tab(driver: PageDriver, url: str, result: VisitResult) -> str:
     让 agent 在站内走的那几步（搜索 → 详情 → 播放）全程落在自己的
     会话里——站点页留在原 tab，前一个候选的弹窗也跟不进来。
 
-    ⚠️ **失败不再「就在当前页继续」**（2026-11-11，all80 事故 P0-2）：
-    退化到当前页意味着这一站的观察与动作落在**上一个候选留下的页**上
-    ⇒ 判分是错的，而报告上只看得见「这个站 unresolved」，看不出是
-    **执行层坏了**。⇒ 开页失败由调用方**记账并中止这一站**
-    （记 ``unresolved``——采集缺件不是业务负样本，不进负样本池）。
+    ## 为什么返回值里有观察（P0-1 的正面修法）
+
+    定位词是**页级**的。开 tab 之前那份 ``site_obs`` 的 ``ref`` /
+    ``{role, name}`` 属于**入口页**；开 tab 之后当前页换了，那份清单
+    **指的不是这一页上的元素**。而调用方原来拿到的是一个裸 ``tab_id``，
+    它顺手就把 ``site_obs`` 当成了新页的起点：
+
+        site_obs = await enter_site(...)     # 入口页的清单
+        tab_id = await open_tab(...)         # 换页 ⇒ 清单作废
+        agent_loop(initial_obs=site_obs)     # 拿旧清单在新页上选目标
+
+    后果是首步 click/fill **静默空转**：驱动层 ``_locate`` 查不到就
+    return，那一步被记成成功，而动作根本没发生。⇒ **开 tab 之后必须
+    重新观察，并且把「页」和「观察」一起交出去**（:class:`PageContext`）。
+
+    ⚠️ **这里是「重新枚举」的唯一正确位置**，不是「靠第一步动作替它完成」：
+    新页的元素表只有 :meth:`~PageDriver.observe` 会建（它内部调
+    ``interactive``），而模型的第一个决策正是要照着这份表做。
+
+    ## 失败处置（两条，口径与既有分支一致）
+
+    - **建页失败** ⇒ 执行层故障 ⇒ `DriverSessionError` **原样抛**
+      （见下）；
+    - **建页成功但观察失败** ⇒ 返回 ``None``，由调用方记 ``unresolved``
+      并中止这一站。⚠️ 这一支是 S3 新增的：页建出来了但**读不到**，
+      就没有可信的起点——退回去用入口页的清单就是本函数要消灭的那个
+      P0-1 本身。
 
     ⚠️ **执行层故障原样抛，不在这里兜**（2026-11-11，缺口 A）：
     :class:`DriverSessionError`（会话失效 / **上游配额打满**）意味着
@@ -564,9 +596,26 @@ async def open_tab(driver: PageDriver, url: str, result: VisitResult) -> str:
     except Exception as exc:
         result.steps.settle(step, error=f"开 tab 失败: {type(exc).__name__}: {exc}")
         result.note(f"开 tab 失败: {type(exc).__name__}: {exc}")
-        return ""
+        return None
     result.note("已开独立 tab")
-    return tab_id
+
+    # 开页这一步的 settle 记它的**观察**：动作流里「开了张空白页」不是
+    # 证据，新页读到的内容才是（P2 的动作/观察对齐靠它）。
+    try:
+        obs = await driver.observe(max_chars=max_chars)
+    except DriverSessionError as exc:
+        result.steps.settle(step, error=f"开 tab 后观察失败（执行层故障）: {exc}")
+        result.note(f"开 tab 后观察失败（执行层故障）: {exc}")
+        raise
+    except Exception as exc:
+        # ⚠️ **页建出来了、读不到**：没有可信起点 ⇒ 返回 None，让调用方
+        # 记 unresolved 并中止这一站。**绝不**退回入口页的清单——
+        # 那正是 P0-1。
+        result.steps.settle(step, error=f"开 tab 后观察失败: {type(exc).__name__}: {exc}")
+        result.note(f"开 tab 后观察失败: {type(exc).__name__}: {exc}")
+        return None
+    result.steps.settle(step, obs)
+    return PageContext(tab_id=tab_id, obs=obs)
 
 
 async def close_tab(driver: PageDriver, tab_id: str, result: VisitResult) -> None:
@@ -607,5 +656,6 @@ __all__ = [
     "admit_landing_host",
     "judge_player",
     "open_tab",
+    "close_tab",
     "summarize",
 ]

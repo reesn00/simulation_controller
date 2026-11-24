@@ -441,8 +441,10 @@ class TestVisitFlow:
         )
         ledger = RunLedger("T001")
         result = await visit_site(d, p, ledger, CAND)
-        assert d.observe_calls == 2, "站点页 + 播放页各一次"
-        # 第二次观察到的必须是播放页的 URL
+        # 三次：进站页 / **开 tab 之后的新页**（P0-1：观察必须跟着页走）/
+        # 播放页。少一次就说明某一环拿了别的页的清单。
+        assert d.observe_calls == 3, "站点页 + 新 tab 页 + 播放页各一次"
+        # 最后一次观察到的必须是播放页的 URL
         assert result.player_obs.url == "https://x.test/play/e5"
         assert result.player_obs.video_tag_count == 3
 
@@ -495,7 +497,8 @@ class TestVisitFlow:
         class Boom(FakeDriver):
             async def observe(self, *, max_chars=None):
                 self.observe_calls += 1
-                if self.observe_calls >= 2:
+                # 1=进站页 2=开 tab 后的新页 3=点击后的播放页
+                if self.observe_calls >= 3:
                     raise DriverError("快照取不到")
                 return self.current
 

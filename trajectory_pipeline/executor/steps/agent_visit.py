@@ -106,9 +106,10 @@ async def agent_visit(
 
     # 进站后**立刻**开独立 tab（scripted 在点击前才开）：agent 在站内
     # 要走好几步，每一步都该落在它自己的会话里。
-    tab_id = await open_tab(driver, url, result)
-    if not tab_id:
-        # ⚠️ **开页失败 = 执行层故障**（2026-11-11，all80 事故 P0-2）：
+    tab = await open_tab(driver, url, result, max_chars=max_chars)
+    if tab is None:
+        # ⚠️ **开页失败 / 开页后读不到 = 执行层故障**（2026-11-11，all80
+        # 事故 P0-2；2026-11-24 P0-1 补第二支）：
         # 退化到当前页会让这一站的站内动作落在**上一个候选留下的页**上
         # ⇒ 判分是错的。⇒ 中止这一站，记 ``unresolved``
         # （采集缺件 ≠ 业务负样本 ⇒ 不进负样本池，等人看）。
@@ -122,9 +123,14 @@ async def agent_visit(
         )
         result.note("开 tab 失败（执行层故障）")
         return result
+    tab_id = tab.tab_id
     try:
 
         # ── 站内：整个交给循环 ─────────────────────────────────────
+        # ⚠️ **起点必须是新 tab 的观察**（P0-1）：``site_obs`` 的元素表属于
+        # **入口页**，拿它让模型选目标 ⇒ 首步动作指向不存在的元素 ⇒
+        # 静默空转（驱动层现在会抛 stale，但那等于第一步必然失败，
+        # 白白烧掉一次 llm_call）。见 :class:`PageContext`。
         outcome = await agent_loop(
             driver,
             backend.client,
@@ -132,7 +138,7 @@ async def agent_visit(
             AgentTask(title=title, url=url, site_title=candidate.text),
             result.steps,
             backend.budget,
-            initial_obs=site_obs,
+            initial_obs=tab.obs,
             json_of=backend.json_of,
             gatekeeper_events=gatekeeper_events,
             llm_calls=llm_calls,

@@ -130,8 +130,12 @@ class FakeDriver:
         goto_fails: tuple[str, ...] = (),
         goto_unreachable: tuple[str, ...] = (),
         observe_fails: int = 0,
+        tab_pages: dict[str, Observation] | None = None,
     ) -> None:
         self._pages = dict(pages or {})
+        #: **同一个 URL 的另一张页**（独立 tab）。与 ``_pages`` 分开存，
+        #: 因为真实形状下两个 tab 可以停在同一个地址上，而页级状态不同。
+        self._tab_pages = dict(tab_pages or {})
         self._queue = list(after)
         self._goto_fails = set(goto_fails)
         #: 导航失败但**机器码证明**站点不可达（M-44）⇒ 记
@@ -191,7 +195,23 @@ class FakeDriver:
         return self.current
 
     async def new_tab(self, url: str | None = None) -> str:
+        """开新页**并切过去**——新 tab 是**另一张页**，不是同一个视图。
+
+        ⚠️ **这里必须切换 ``current``**（P0-1）：只 append URL 不换页会让
+        「入口页的清单」与「新页的清单」在测试里**恒等** ⇒
+        ``open_tab`` 之后该不该重新观察，测试**结构上测不出来**。
+        ``test_agent_intermediate.FakeDriver`` 一直是对的，这里原来漏了，
+        正是 P0-1 在测试层一直没被挡住的原因。
+
+        页的来源两档：``_tab_pages``（**同一个 URL 的另一张页**——真实形状：
+        ``enter_site`` 与 ``open_tab`` 导航同一个地址，但页级状态不同）
+        优先于 ``_pages``；都没有就保留当前页。
+        """
         self.tabs.append(url or "")
+        if url and url in self._tab_pages:
+            self.current = self._tab_pages[url]
+        elif url and url in self._pages:
+            self.current = self._pages[url]
         return f"tab{len(self.tabs)}"
 
     async def close(self) -> None: ...
@@ -204,14 +224,21 @@ def _driver(
     goto_fails: tuple[str, ...] = (),
     goto_unreachable: tuple[str, ...] = (),
     observe_fails: int = 0,
+    tab_page: Observation | None = None,
 ) -> FakeDriver:
-    """进站页登记在候选 URL 上，``after`` 是点击/按键依次抵达的页面。"""
+    """进站页登记在候选 URL 上，``after`` 是点击/按键依次抵达的页面。
+
+    ``tab_page`` 登记**独立 tab 打开后的那一页**（可以停在同一个 URL 上）；
+    不给就是同一张页。
+    """
+    tab_pages = {CAND_URL: tab_page} if tab_page is not None else None
     return FakeDriver(
         {CAND_URL: entry if entry is not None else _SITE},
         after=after,
         goto_fails=goto_fails,
         goto_unreachable=goto_unreachable,
         observe_fails=observe_fails,
+        tab_pages=tab_pages,
     )
 
 
@@ -376,6 +403,39 @@ class Test进站段:
         assert ctx.result.landed_url == "https://x.test/home"
         assert "被重定向" in ctx.notes
 
+    async def test_循环起点是新_tab_的观察而不是入口页(self):
+        """**P0-1 的回归测试**：首步动作必须照着**新 tab 的元素表**做。
+
+        病灶：``open_tab`` 之前拿的是 ``site_obs``（入口页的清单），而开 tab
+        已经清了页级状态 ⇒ 首步 ``click`` 在驱动层查不到目标 ⇒ 静默空转，
+        那一步还被记成成功。
+
+        ⚠️ **本测试能成立的前提是 ``FakeDriver.new_tab`` 真的换页**——
+        只 append URL 不切 ``current`` 的话，两张页在测试里恒等，
+        这条 bug 结构上测不出来（这正是它一直没被挡住的原因）。
+        """
+        entry = _obs(url=CAND_URL, title="入口页", refs=("e1", "e2"))
+        # 新 tab 那一页的元素表**与入口页完全不同**：只有 t1。
+        # ⚠️ URL 用同一个：``open_tab`` 传的是候选 URL，页是**另一张**，
+        # 这正是真实形状（两次导航，同一个地址，不同的页级状态）。
+        tabbed = _obs(
+            url=CAND_URL, title="站内首页",
+            body="站内首页，只有这一个入口", refs=("t1",),
+        )
+        llm = FakeAgentLLM([{"tool": "click", "ref": "t1"}, _done()])
+        ctx = await _run(llm, _driver(entry, after=(_PLAY,), tab_page=tabbed),
+                         _player(True))
+
+        # ① 模型**看到**的是新页：它的开场上下文里得有 t1，且没有入口页的 e1。
+        prompt = llm.calls[0]
+        assert "t1" in str(prompt)
+        # ② 首步动作落在新页的 ref 上。
+        assert ctx.driver.clicked == ["t1"]
+        # ③ 而 ``site_obs`` **仍是入口页**——它是 ``landed_url`` 的来源，
+        #    复核手册读的就是它；换成新页会悄悄改掉落地地址。
+        assert ctx.result.site_obs is entry
+        assert ctx.result.landed_url == CAND_URL
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # ⑦ 段：PLAYER_OK 与记账（与 scripted 共用）
@@ -393,7 +453,7 @@ class Test播放页判定:
         assert ctx.result.player_obs is _PLAY
         # ⑦ 只判一次，且判的是**循环看到的那一页**——不多取一次快照。
         assert ctx.result.player_obs is ctx.result.steps.steps[-1].observation
-        assert ctx.driver.observe_calls == 2     # 进站 1 + 点击后 1
+        assert ctx.driver.observe_calls == 3     # 进站 1 + 开 tab 后 1 + 点击后 1
 
     async def test_到了但不可用记component_unverified(self):
         ctx = await _run(
