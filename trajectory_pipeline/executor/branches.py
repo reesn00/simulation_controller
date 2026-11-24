@@ -202,6 +202,10 @@ EXIT_STAGES: frozenset[str] = frozenset(
         "agent.backend",             # 后端未作答
         "agent.contract",            # 动作指令连续解析失败
         "agent.gave_up",             # 模型自报放弃
+        # 定位词来自另一页（P0-1 S5）：接线错误收口。
+        # ⚠️ 它**不进** ``agent.*`` 的其余几条：那些是「模型/adapter 的
+        # 行为走到头了」，这一条是**执行链把两份页级状态拼错了**。
+        "agent.stale_context",
         "player.guard",              # 前置事实核降级
         "site_search.contract",      # 站内搜索调用方拼装错误
         "site_search.fill",          # 填词失败
@@ -238,6 +242,11 @@ EXIT_SIGNALS: frozenset[str] = frozenset(
         "precondition",     # 前置事实不成立，负标签降级
         "action",           # 动作执行失败（驱动报错，页面未动）
         "exception",        # 未分类异常
+        # 定位词来自另一页（P0-1 S5）：我们拿旧页的清单点了新页。
+        # ⚠️ **不是站点事实，也不是动作失败**——这一页上有没有那个元素
+        # 根本没被问过。它单列，是因为这类接线 bug 的最大危害是「静默」：
+        # 折进 ``action`` 就会读成「点了很多次点不动」，一条理由通顺的假负样本。
+        "stale_context",
     }
 )
 

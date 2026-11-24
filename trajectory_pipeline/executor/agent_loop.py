@@ -101,6 +101,7 @@ from trajectory_pipeline.executor.branches import (
 from trajectory_pipeline.executor.browser.page_driver import (
     DriverError,
     DriverSessionError,
+    StaleContextError,
 )
 from trajectory_pipeline.executor.gatekeeper import (
     DeadLoopDetector,
@@ -1630,6 +1631,32 @@ class _Loop:
             # 只会产出一份「全是 unresolved、看着像正常轨迹」的档
             # ⇒ 冒到批次层（不落盘 + 退出码非 0）。
             raise
+        except StaleContextError as exc:
+            # ⚠️ **接线错误，不是动作失败**（P0-1 S5）：定位词来自另一页
+            # ⇒ 这一页上有没有那个元素**根本没被问过**。当成动作失败让模型
+            # 换路是错的——它换一百次也还是拿旧清单点新页，而报告上会显示
+            # 「点了很多次都点不动」（一条理由通顺的假负样本）。
+            #
+            # ⇒ 记一步**带专属 error 的失败**（留证）+ 单列出口信号
+            # ``stale_context``，让它在批次读数上**独立可见**。
+            # 不抛：这一条轨迹的其余部分仍可读，且抛出去会变成
+            # 「整批失败」，把一个接线 bug 升级成整批重跑。
+            #
+            # ``verdict=None``：这一页**根本没被问过**（动作没发出去），
+            # 与「后端未作答」「指令解析失败」同族——没有可判的页面事实。
+            self.steps.settle(
+                index,
+                error=(f"{instr.tool} 失败（定位词来自另一页，接线错误）: {exc}"
+                       f" [enum_epoch={exc.expected} current={exc.actual}]"),
+            )
+            return self._close(
+                reason="定位词来自另一页（接线错误，不是站点事实）",
+                verdict=None,
+                branch=UNRESOLVED,
+                exit_stage="agent.stale_context",
+                exit_signal="stale_context",
+                exit_question=self._exit_question(),
+            )
         except (DriverError, actions.UnaddressableTarget) as exc:
             # 动作执行失败**不收口**：让 agent 看着失败原因自己换路。
             # 写进 P1 的是 ``error`` 非空的那一步——「点了但点不动」正是

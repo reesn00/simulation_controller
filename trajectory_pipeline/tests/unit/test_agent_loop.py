@@ -52,7 +52,10 @@ from trajectory_pipeline.executor.agent_loop import (
     parse_instruction,
 )
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
-from trajectory_pipeline.executor.browser.page_driver import DriverError
+from trajectory_pipeline.executor.browser.page_driver import (
+    DriverError,
+    StaleContextError,
+)
 from trajectory_pipeline.executor.dom import CleanedLink, CleanedSnapshot
 from trajectory_pipeline.executor.gatekeeper import DeadLoopDetector, Verdict
 from trajectory_pipeline.llm.schema_parse import extract_json, strip_think
@@ -1156,6 +1159,40 @@ class Test动作流:
         assert ctx.steps.steps[0].error.startswith("click 失败")
         assert ctx.steps.steps[0].observation is None
         assert "请换一个动作" in ctx.text_of("执行失败")
+
+    async def test_定位词来自另一页_收口且单列信号(self):
+        """**接线错误不收口成「换个动作再试」**（P0-1 S5）。
+
+        与上一条形成对照：``DriverError``（元素不存在 / 点不动）是**页面
+        事实**，让 agent 换路；而 :class:`StaleContextError` 是**我们拿旧页
+        的清单点新页**——这一页上有没有那个元素**根本没被问过**，换一百次
+        也还是旧的。
+
+        ⚠️ 为什么要有这条：S3 之后正常链路不再产生它（每一步动作后都
+        ``observe``，定位域必然重建）。真出现 = 链路有 bug，而「静默」正是
+        P0-1 这类 bug 的最大危害 ⇒ 它必须在读数上**独立可见**
+        （``exit_signal="stale_context"``），不能被折进普通失败里。
+        """
+
+        class Stale(FakeDriver):
+            async def click(self, **kw):
+                self.clicked.append(kw.get("ref") or "")
+                raise StaleContextError(
+                    "fake: 定位词来自另一页", expected=1, actual=2)
+
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"},
+                          {"tool": "click", "ref": "e1"}]),
+            Stale(),
+        )
+        assert ctx.outcome.exit_signal == "stale_context"
+        assert ctx.outcome.exit_stage == "agent.stale_context"
+        assert ctx.outcome.branch == "unresolved"
+        # ② 模型**没有被再问一次**：这条路上问它没有意义。
+        assert len(ctx.llm.calls) == 1
+        # ③ 失败那一步要留证，两个世代号都在原文里。
+        err = ctx.steps.steps[0].error
+        assert "另一页" in err and "enum_epoch=1" in err and "current=2" in err
 
     async def test_快照取不到不收口_落error且继续(self):
         """快照取不到是**能力问题**（I4 fail-closed），但不整站收口：
