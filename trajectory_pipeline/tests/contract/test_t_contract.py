@@ -647,6 +647,45 @@ class Test形状不变量:
         )
         assert t_missing == p3_missing == 2
 
+    def test_meta_missing_infra_count_与P3同账(self):
+        """同一份 P1，T 与 P3 的 **infra 来源**计数必须相等。
+
+        ``missing_observation_count`` 那个数要分两段读（infra / 模型步），
+        而两段的判据只有一份（``schema.missing_observation_infra_count``）。
+        这条钉的是**两侧真的用同一份**——各写一份必然漂，而漂了之后两边
+        的同一个键会数出不同的值，可比性就没了。
+
+        形状：``new_tab``（infra）缺观察 + ``click``（模型）缺观察。
+        infra 那一段必须是 1，而不是 2。
+        """
+        search_steps = [
+            _step(action=_action("goto"), observation=_obs_full()),
+            _step(action=_action("new_tab", origin="infrastructure"),
+                  observation=None),          # infra 缺
+        ]
+        site_steps = [
+            _step(action=_action("click"), observation=None),   # 模型步缺
+        ]
+        archive = _archive(search_steps=search_steps, visits=[_visit(site_steps)])
+
+        t_meta = task_view.to_task_meta(archive)
+        assert t_meta["missing_observation_count"] == 2
+        assert t_meta["missing_observation_infra_count"] == 1
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "T001__b98b3e56.json"
+            p.write_text(json.dumps(archive, ensure_ascii=False), encoding="utf-8")
+            samples = schema.split_archive(p)
+        p3 = samples[0].to_json()
+        from trajectory_pipeline.assembler.builder import _sample_to_json
+        p3 = _sample_to_json(samples[0])
+        from trajectory_pipeline.assembler import views
+        p3_meta = views.to_meta(p3)
+        assert p3_meta["missing_observation_infra_count"] == t_meta[
+            "missing_observation_infra_count"
+        ] == 1
+
     def test_meta_rationale_steps_global_index(self):
         """rationale_steps.step_index 是**全局**重编，跨 unit 连续。"""
         search_steps = [

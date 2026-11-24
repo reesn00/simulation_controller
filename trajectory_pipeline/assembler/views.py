@@ -112,7 +112,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from trajectory_pipeline import toolcatalog
-from trajectory_pipeline.assembler import closing, observation_view, pool, screen
+from trajectory_pipeline.assembler import (
+    closing,
+    observation_view,
+    pool,
+    schema,
+    screen,
+)
 from trajectory_pipeline.common.rationale_text import strip_empty_history_lead_in
 from trajectory_pipeline.storage import (
     DEFAULT_VIEWS_DIRNAME,
@@ -362,8 +368,19 @@ def _visible_tools(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-# ── messages 视图（通用形态）──────────────────────────────────────
+def _missing_infra(
+    actions: Sequence[Mapping[str, Any]],
+    observations: Sequence[Any],
+) -> int:
+    """``missing_observation_count`` 里有多少来自 **infrastructure 步**。
 
+    判据只有一份（:func:`~trajectory_pipeline.assembler.schema.missing_observation_infra_count`），
+    本函数只是转发——T 侧读的是同一个数，两份实现必然漂。
+    """
+    return schema.missing_observation_infra_count(actions, observations)
+
+
+# ── messages 视图（通用形态）──────────────────────────────────────
 
 def _visible_steps(
     six: Mapping[str, Any],
@@ -786,6 +803,14 @@ def to_meta(sample: Mapping[str, Any]) -> dict[str, Any]:
         "observation_count": len(observations),
         "missing_observation_count": missing_obs,
         "infrastructure_actions": infra,
+        # **其中多少是 infrastructure 步的占位**（P0-1 S3 起）。
+        # ``missing_observation_count`` 把「infra 步本来就不带观察」与
+        # 「该采却没采到」算成了同一个数；而 infra 步的观察是**可变的**：
+        # 2026-11-24 之前 ``new_tab`` 一律没有观察（实测 1363/1363 占位），
+        # S3 之后它有新页的观察。⇒ 同一批前后 ``missing_observation_count``
+        # 会整体降 1，而那**不是质量变好**。单列这一格，读档的人才能把
+        # 两段数字拆开看（与 H-33「批次边界」同族）。
+        "missing_observation_infra_count": _missing_infra(actions, observations),
         # 工具面（2026-10-20 方案 15 §7 R1）：这份样本的训练动作空间属于
         # 哪个方言。同名工具在两个面里参数不同（click 是 {tag,label} 还是
         # {role,name}），面错了就是**声明与调用对不上**——训出来的模型会发

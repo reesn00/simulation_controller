@@ -69,6 +69,7 @@ from trajectory_pipeline.assembler import (
     excluded,
     observation_view,
     pool,
+    schema,
     screen,
 )
 from trajectory_pipeline.sample_gate import sample_blocked_reason
@@ -1218,6 +1219,14 @@ def to_task_meta(
         "step_count": len(all_actions),
         "observation_count": len(all_observations),
         "missing_observation_count": missing_obs_count,
+        # 其中多少来自 infrastructure 步（判据与 P3 同一个：
+        # ``schema.missing_observation_infra_count``）。单列的**理由**与
+        # P3 同款——P0-1 S3 让 ``new_tab`` 的观察位从占位变成真观察，
+        # 同一批前后 ``missing_observation_count`` 会整体降一截，
+        # 而那**不是质量变好**。
+        "missing_observation_infra_count": schema.missing_observation_infra_count(
+            all_actions, all_observations
+        ),
         "infrastructure_actions": sorted(infra_tools),
         # 能力声明 vs 已验证动作：这条轨迹没用到的模型可见工具
         "tools_declared": visible_tools,

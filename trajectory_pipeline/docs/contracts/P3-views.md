@@ -258,6 +258,7 @@ P2 的一条样本 = **一条轨迹**（一个任务的一次运行），所以�
 | `tools_unused` | `list[str]` | `tools_declared` 里**这条轨迹没用过**的工具名。⚠️ 不显眼时，读样本的人会把**能力声明**当成**已验证的动作**——看到 11 个工具就以为这批数据验证过 11 种能力，而实际只有动作流里出现过的那些被真实运行验证过。逐个列出（不合成计数） |
 | `observation_complete` | `bool` | `observation_count >= step_count`。动作多于观察 ⇒ 末步没取到观察；消息视图显式发占位回执（判断 8），但批次筛选仍要能一眼分出「观察齐全」与「有步没采到」 |
 | `missing_observation_count` | `int` | 缺失观察占位（P2 `MISSING_OBSERVATION`，`degraded` 含 `observation_missing`）的条数。占位多的样本观察面薄，复核优先级该高 |
+| `missing_observation_infra_count` | `int` | 上面那个数里**有多少来自 infrastructure 步**（`origin == "infrastructure"`，如 `goto` / `new_tab`）。⚠️ **两格要一起读**：infra 步本来就不一定带观察，计进同一个数会让**口径变化**看起来像**质量变化**。实测 2026-11-24：336 份 P1 存档里 `new_tab` 的观察位 **1363/1363 是占位**；P0-1 S3 之后它带上新页的观察 ⇒ 同一批前后 `missing_observation_count` 整体降一截（267 个样本实测 1333 → 233，**82.5%** 的 missing 来自 infra），而那**不是观察面变好了**。判据唯一：`schema.missing_observation_infra_count`（P2 / T 共用） |
 | `closing_summary` | `bool` | 是否带收尾答复（判断 7）。false 即「这条一个可见模型动作都没有」 |
 | `deduped_step_count` | `int` | 训练视图里被剔出的**死循环步**条数（判断 9）。口径 = 相邻同动作 + 观察逐字相同 |
 | `deduped_steps` | `list[int]` | 被剔步的**原始步号**（与 `rationale_steps.step_index` 同一坐标系），逐条列出——复核时要能指着某一步问「为什么剔了它」 |

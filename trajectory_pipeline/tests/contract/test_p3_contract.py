@@ -170,6 +170,11 @@ class Test视图名与渲染侧一致:
             "step_count",
             "observation_count",
             "missing_observation_count",
+            # 2026-11-24 P0-1 S3：上面那个数里有多少来自 infrastructure 步。
+            # 分开单列的理由不是「多一个读数」，而是**两段数字必须可比**：
+            # `new_tab` 的观察位从占位变成真观察之后，缺失数会整体降一截，
+            # 不拆开看就是一次「质量变好」的假读数。
+            "missing_observation_infra_count",
             "infrastructure_actions",
             "observation_complete",
             "closing_summary",

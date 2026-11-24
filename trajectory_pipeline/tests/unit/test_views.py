@@ -660,9 +660,46 @@ class TestMeta:
         assert m["missing_observation_count"] == 1
         assert m["observation_complete"] is True  # 逐位对位后不再少观察
 
+    def test_缺失观察按来源拆成两格(self):
+        """``missing`` 里有多少来自 **infrastructure 步**必须单列。
+
+        ⚠️ 这条守的是一个**会被读成质量变化的口径变化**（P0-1 S3）：
+        ``new_tab`` 的观察位在 2026-11-24 之前一律是占位（实测 1363/1363），
+        之后它带上新页的观察 ⇒ 同一批前后 ``missing`` 整体降一截。
+        不拆开看，下一轮审查会读成「观察面变好了」。
+        """
+        s = _sample(six={
+            "actions": [
+                {"tool": "goto", "params": {"url": "a"}, "target": None, "origin": "model"},
+                {"tool": "new_tab", "params": {"url": "b"}, "target": None,
+                 "origin": "infrastructure"},
+                {"tool": "click", "params": {}, "target": {"tag": "c", "label": "d"},
+                 "origin": "model"},
+            ],
+            "observations": [
+                _obs(),
+                {"degraded": ["observation_missing"]},   # infra 步的占位
+                {"degraded": ["observation_missing"]},   # **模型步**的占位
+            ],
+        })
+        m = views.to_meta(s)
+        assert m["missing_observation_count"] == 2
+        assert m["missing_observation_infra_count"] == 1, "只有 new_tab 那条算 infra"
+
+    def test_没有任何占位时来源计数为0(self):
+        """反面：别把「有观察」也算成来源——两个键必须各说各的话。"""
+        s = _sample(six={
+            "actions": [
+                {"tool": "goto", "params": {"url": "a"}, "target": None, "origin": "model"},
+            ],
+            "observations": [_obs()],
+        })
+        m = views.to_meta(s)
+        assert m["missing_observation_count"] == 0
+        assert m["missing_observation_infra_count"] == 0
+
     def test_收尾标记(self):
         assert views.to_meta(_sample())["closing_summary"] is True
-
     def test_rationale_steps按条目自带step_index(self):
         """稀疏序列按列表位置编号会把跳号抹平——「缺中间那步」
         与「缺最后那步」处置不同，编号必须保真。"""

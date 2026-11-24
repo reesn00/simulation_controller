@@ -1147,6 +1147,51 @@ def _obs_of(step: Mapping[str, Any]) -> Mapping[str, Any]:
     return dict(o) if o else dict(MISSING_OBSERVATION)
 
 
+def missing_observation_infra_count(
+    actions: Sequence[Mapping[str, Any]],
+    observations: Sequence[Any],
+) -> int:
+    """`missing` 里有多少来自 **infrastructure 步**——P2 与 T 共用的唯一判据。
+
+    ## 为什么要拆
+
+    ``missing_observation_count`` 的语义是「这一步该有观察却没有」。而
+    infrastructure 步（``goto`` / ``new_tab`` 这类执行器动作）**本来就不一定
+    带观察**——把它们计进同一个数，会让一个**口径变化**看起来像一次
+    **质量变化**。
+
+    实测（2026-11-24，336 份 P1 存档 / 1366 个 visit）：``new_tab`` 的观察位
+    **1363/1363 是占位**；P0-1 S3 之后它带上新页的观察 ⇒ 同一批前后
+    ``missing_observation_count`` 会整体降一截（267 个样本实测：1333 → 233，
+    82.5% 的 missing 来自 infra）。**不拆开看，下一轮审查会读成「观察面
+    明显变好」**——与 H-33「批次边界」同族。
+
+    ## 口径
+
+    按**位置**对齐（``observations[i]`` 属于 ``actions[i]``）——与
+    :func:`~trajectory_pipeline.assembler.views._visible_steps` 同一个
+    位次口径，因为是同一份数据。
+
+    ⚠️ **「缺失」两档都算**：``not o``（原始 ``None`` / ``{}``，T 读 P1
+    时是这种）与占位 dict（``degraded`` 含 ``observation_missing``，
+    P2 读切的 Sample 时是这种）。只认一档会让两侧的**同一个键**数出
+    不同的值——而它存在的意义正是让两段数字可比（见
+    :func:`~trajectory_pipeline.assembler.task_view.to_task_meta` 的同名读数）。
+    """
+    count = 0
+    for i, act in enumerate(actions):
+        if act.get("origin") != "infrastructure":
+            continue
+        if i >= len(observations):
+            continue
+        o = observations[i]
+        if not o:
+            count += 1
+        elif isinstance(o, Mapping) and "observation_missing" in (o.get("degraded") or ()):
+            count += 1
+    return count
+
+
 def _last_reflection_of(units: Sequence[_Unit]) -> Mapping[str, Any] | None:
     """轨迹级反思：**末个单元**写成的那份（真源在 ``closing``）。
 
@@ -1606,6 +1651,7 @@ __all__ = [
     "MISSING_OBSERVATION",
     "RATIONALE_ERA_PRE_ACTION", "RATIONALE_ERA_POST_HOC",
     "rationale_era_of",
+    "missing_observation_infra_count",
     "sample_id",
     "run_id_of",
     "read_archive",
