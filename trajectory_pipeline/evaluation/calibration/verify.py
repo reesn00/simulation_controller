@@ -198,6 +198,56 @@ def index_entries(snapshot: Mapping[str, Any]) -> dict[tuple[str, str], dict[str
     return out
 
 
+def index_triage(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    alias: Mapping[str, str] | None = None,
+) -> dict[tuple[str, str], str]:
+    """分诊行 → ``(行标识, 维度) → 桶``，行标识**折算到快照的配对键**。
+
+    P1-2：此前这里只认 ``golden_id``。快照侧对迁移行折叠到旧 id
+    （:func:`_entry_key`），而卡与分诊表带的是**新 id** ⇒ 迁移过的行在
+    ``bucket_of.get(key)`` 上恒 ``None``：``n_assigned`` 少算，已归桶的行
+    被读成残留分歧。
+
+    ``alias`` 是 ``{新 id: 配对键}``，由 :func:`alias_of` 从快照算出——
+    分诊行**自己不知道**旧 id（它是人按卡填的，卡上只有新 id），所以折算
+    只能来自快照。没给 ``alias`` 时不折算（无迁移行的场景原样可用）。
+    """
+    out: dict[tuple[str, str], str] = {}
+    for row in rows:
+        row_id = str(row["golden_id"])
+        dimension = str(row["dimension"])
+        if alias:
+            row_id = alias.get(row_id, row_id)
+        key = (row_id, dimension)
+        bucket = str(row["bucket"])
+        if key in out and out[key] != bucket:
+            raise VerifyError(
+                f"分诊表里 {key[0]} / {key[1]} 出现两个桶："
+                f"{out[key]!r} 与 {bucket!r}——同一条卡只能有一个归属"
+            )
+        out[key] = bucket
+    return out
+
+
+def alias_of(entries: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """``{新 id: 配对键}``：让分诊行的 ``golden_id`` 能折到 :func:`_entry_key`。
+
+    只收录**两键不同**的行（迁移行）。没迁移的行 ``新 id == 配对键``，不该
+    出现在这张表里——收录它等于把同一件事写两份，而两份迟早会漂。
+    """
+    out: dict[str, str] = {}
+    for entry in entries:
+        new_id = str(entry.get("golden_id") or "")
+        if not new_id:
+            continue
+        key_id = _entry_key(entry)[0]
+        if key_id and key_id != new_id:
+            out[new_id] = key_id
+    return out
+
+
 def _check_comparable(
     baseline: Mapping[str, Any], current: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -818,10 +868,9 @@ def analyze(
             triage_rows = validate_triage_rows(triage)
         except TriageError as exc:
             raise VerifyError(str(exc)) from exc
-        bucket_of: dict[tuple[str, str], str] = {
-            (str(r["golden_id"]), str(r["dimension"])): str(r["bucket"])
-            for r in triage_rows
-        }
+        # 分诊行的 ``golden_id`` 是**新 id**（卡上带的），而 ``c_idx`` 的键对
+        # 迁移行折叠到了旧 id ⇒ 不折算就恒配不上（P1-2）。
+        bucket_of = index_triage(triage_rows, alias=alias_of(c_idx.values()))
         for key, entry in c_idx.items():
             if entry.get("dimension") != HARD_DIM:
                 continue
@@ -1176,8 +1225,10 @@ __all__ = [
     "VERDICT_SIDES",
     "VerifyError",
     "analyze",
+    "alias_of",
     "diff_entries",
     "index_entries",
+    "index_triage",
     "main",
     "render",
 ]

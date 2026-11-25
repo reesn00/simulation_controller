@@ -43,8 +43,9 @@ def _row(
     split: str = "calibration",
     gold_dims: dict | None = None,
     pred_dims: dict | None = None,
+    legacy: str = "",
 ) -> dict:
-    return {
+    row = {
         "golden_id": gid,
         "source_kind": "archive_outcome",
         "task_id": gid.split("__")[0],
@@ -64,6 +65,9 @@ def _row(
             for d, s in (pred_dims or {}).items()
         ],
     }
+    if legacy:
+        row["golden_id_legacy"] = legacy
+    return row
 
 
 def _snap(
@@ -471,6 +475,82 @@ def test_分诊表没覆盖全部分歧_目标桶清零也不可信():
     crit = report["criteria"]["bucket_clear"]
     assert crit["status"] == verify.CRITERION_NOT_EVALUABLE
     assert "缺 20 条" in crit["detail"]
+
+
+# ── 5b. 迁移行（golden_id_legacy）的分诊键 ──────────────────
+
+
+def _migrated_pools(*, fixed: int = 0, n_migrated: int = 3):
+    """**迁移过的行**：``golden_id`` 是新 id、``golden_id_legacy`` 是旧 id。
+
+    真实形态取自 ``golden_refresh_probe/v14``：换键后行留在原地，
+    ``golden_id`` 变 ``...__neg_blocked``，旧 id ``...__neg153`` 落进
+    ``golden_id_legacy``。
+    """
+    base: list[dict] = []
+    curr: list[dict] = []
+    for i in range(n_migrated):
+        new_id = f"P{i:03d}__r1__neg_blocked"
+        old_id = f"P{i:03d}__r1__neg15{i}"
+        base.append(_row(new_id, legacy=old_id, gold=PAYWALL, branch=SUCCESS))
+        curr.append(_row(new_id, legacy=old_id, gold=PAYWALL, branch=SUCCESS))
+    # 再掺一条没收好的行，凑出"本轮仍有分歧"的池
+    for i in range(fixed):
+        gid = f"S{i:03d}__r1__h"
+        base.append(_row(gid, gold=SUCCESS, branch=SUCCESS))
+        curr.append(_row(gid, gold=SUCCESS, branch=SUCCESS))
+    return base, curr
+
+
+def test_迁移行的分诊按新id查得到_旧口径查不到():
+    """P1-2：快照配对键折叠到**旧 id**，而卡与分诊表带的是**新 id**。
+
+    旧实现里 ``bucket_of`` 只认 ``golden_id`` ⇒ 迁移行恒配不上 ⇒
+    ``n_assigned`` 少算，已归桶的行被读成残留分歧，同桶清零永远判不清。
+    """
+    base, curr = _migrated_pools()
+    snap = _snap(curr)
+    migrated = [e for e in snap["entries"] if e.get("golden_id_legacy")]
+    assert migrated, "夹具没造出迁移行"
+    assert all(e["golden_id_legacy"] != e["golden_id"] for e in migrated)
+
+    alias = verify.alias_of(snap["entries"])
+    assert alias == {
+        e["golden_id"]: e["golden_id_legacy"] for e in migrated
+    }
+
+    triage = _triage(curr[:3], bucket="gold_defect")
+    report = verify.analyze(
+        _snap(base), _snap(curr), triage=triage, buckets=["evaluator_logic"]
+    )
+    crit = report["criteria"]["bucket_clear"]
+    # 3 条迁移行全部归桶 ⇒ 目标桶残留 0，判得过（而不是"缺 N 条"判不了）
+    assert crit["status"] == verify.CRITERION_PASS, crit["detail"]
+    assert "残留 0" in crit["detail"]
+
+
+def test_没迁移的行不进alias表():
+    """没收好的行 ``新 id == 配对键``：收录它等于把同一件事写两份。"""
+    base, curr = _h1a_pools(fixed=0, regressed=0)
+    assert verify.alias_of(_snap(base)["entries"]) == {}
+
+
+def test_分诊表同一物理行出现新旧两个id时拒绝():
+    """折算后落到同一个键 ⇒ 两个桶就是二选一，不许「后写的赢」。"""
+    base, curr = _migrated_pools()
+    triage = _triage(curr[:1], bucket="gold_defect") + [
+        {
+            "golden_id": "P000__r1__neg150",
+            "dimension": "d10",
+            "bucket": "evaluator_logic",
+            "triage_by": "owner",
+            "triage_evidence": "同一行被抄了两个 id",
+        }
+    ]
+    with pytest.raises(verify.VerifyError, match="出现两个桶"):
+        verify.analyze(
+            _snap(base), _snap(curr), triage=triage, buckets=["evaluator_logic"]
+        )
 
 
 # ── 6. 类回归容差 ───────────────────────────────────────────
