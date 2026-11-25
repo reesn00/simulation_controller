@@ -572,6 +572,36 @@ class TestMaxTokens:
         assert c.chat("s", "u") is None
         assert c.last_error.startswith("shape:")
 
+    @pytest.mark.parametrize("bad_choice", [["不是映射"], "字符串", 42, None])
+    def test_choices元素不是映射也走shape不击穿fail_closed(self, bad_choice):
+        """P1-3（审查 13 号 Q-B7）：畸形响应**不许**抛 ``AttributeError``。
+
+        ``choice.get("finish_reason")`` 在 ``choices[0]`` 不是 Mapping 时抛的是
+        ``AttributeError``，而解析的 catch 元组里**没有它** ⇒ 异常穿出
+        ``_exchange``，一路冒到 ``_visit_guarded`` / ``decide`` 的宽 except 里
+        ——两层都偏离「失败返回 ``None``」的契约：前者收成站点
+        ``unresolved``（一次后端畸形被记成站点事实），后者被静默兜住。
+
+        ⚠️ 四个形态都要覆盖：``list`` / ``str`` / ``int`` / ``None`` 抛的都是
+        ``AttributeError``（``str`` 与 ``int`` 没有 ``.get``），但只有测了
+        才知道将来换实现时哪一类会先破。
+        """
+        c = _client({"choices": [bad_choice]})
+        assert c.chat("s", "u") is None
+        assert c.last_error == "shape:AttributeError"
+        # 不重试：畸形响应的成因是后端的稳定行为，再问一次还是那样。
+        assert c._client.budgets == [c.cfg.max_tokens]
+
+    def test_choices整个不在时仍走KeyError的shape(self):
+        """上一条的邻居：``choices`` 键缺失抛 ``KeyError``（已在元组里）。
+
+        两条一起钉住「解析失败一律 shape:、一律返回 None」这个出口——
+        只测其中一类时，另一类退化成抛异常不会被发现。
+        """
+        c = _client({"no_choices": True})
+        assert c.chat("s", "u") is None
+        assert c.last_error == "shape:KeyError"
+
     def test_默认不读reasoning_content(self):
         """红线：思考内容是 raw CoT，取它等于把思维链送进训练数据。
 

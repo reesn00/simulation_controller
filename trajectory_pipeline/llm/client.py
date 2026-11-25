@@ -764,7 +764,15 @@ class LLMClient:
                         # 它是「为什么空」的证据，不是一次成功。
                         self.last_finish_reason = "length"
                         return None, None, error
-                    except (ValueError, KeyError, IndexError, TypeError) as exc:
+                    except (
+                        ValueError, KeyError, IndexError, TypeError,
+                        # ``choices[0]`` 不是 Mapping（后端回了 list/str/None）时
+                        # ``choice.get`` 抛的是它——漏了这个类就等于让畸形响应
+                        # **击穿** fail-closed：``_exchange`` 不接住，异常一路冒到
+                        # ``_visit_guarded`` / ``decide`` 的宽 except 里，收成站点
+                        # unresolved，而不是「这次没判出来」。
+                        AttributeError,
+                    ) as exc:
                         # 后端回了 200 但内容结构不对。**不重试**：
                         # 解析失败几乎总是源于模型稳定输出的某种坏格式，
                         # 再问一次它还是那样，重试只是把 30s 超时翻倍。
