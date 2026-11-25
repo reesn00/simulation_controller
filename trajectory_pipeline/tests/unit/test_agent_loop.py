@@ -1160,18 +1160,23 @@ class Test动作流:
         assert ctx.steps.steps[0].observation is None
         assert "请换一个动作" in ctx.text_of("执行失败")
 
-    async def test_定位词来自另一页_收口且单列信号(self):
-        """**接线错误不收口成「换个动作再试」**（P0-1 S5）。
+    async def test_定位词来自另一页_不収口且引导重观察(self):
+        """**接线错误不收口成「换个动作再试」，但也不关掉整个单元**
+        （P0-1 S5 → 2026-11-25 真数据修正）。
 
         与上一条形成对照：``DriverError``（元素不存在 / 点不动）是**页面
         事实**，让 agent 换路；而 :class:`StaleContextError` 是**我们拿旧页
         的清单点新页**——这一页上有没有那个元素**根本没被问过**，换一百次
         也还是旧的。
 
-        ⚠️ 为什么要有这条：S3 之后正常链路不再产生它（每一步动作后都
-        ``observe``，定位域必然重建）。真出现 = 链路有 bug，而「静默」正是
-        P0-1 这类 bug 的最大危害 ⇒ 它必须在读数上**独立可见**
-        （``exit_signal="stale_context"``），不能被折进普通失败里。
+        ⚠️ **为什么从「收口」改成「引导」**：S5 收口的前提是「S3 之后
+        正常链路不再产生它」。真数据推翻了这个前提——``p05_bc_agent_20261125``
+        两份存档 3 次全是「``goto`` 超时后继续用旧清单」（那个 bug 已在
+        ``DriverError`` 分支补清）。但**别的路径仍可能产生**（``observe``
+        自己失败时页面确实换过而我们没看到），收口的代价是**一次可恢复
+        的失败变成这条轨迹的终点**，而 agent 离答案只差一次 observe。
+
+        ⇒ 现在：留证 + 告诉它**先重新观察再动作**，不替它决定。
         """
 
         class Stale(FakeDriver):
@@ -1185,14 +1190,61 @@ class Test动作流:
                           {"tool": "click", "ref": "e1"}]),
             Stale(),
         )
-        assert ctx.outcome.exit_signal == "stale_context"
-        assert ctx.outcome.exit_stage == "agent.stale_context"
-        assert ctx.outcome.branch == "unresolved"
-        # ② 模型**没有被再问一次**：这条路上问它没有意义。
-        assert len(ctx.llm.calls) == 1
-        # ③ 失败那一步要留证，两个世代号都在原文里。
+        # ① 模型**被再问了一次**——它需要看到「先重新观察」这句
+        assert len(ctx.llm.calls) > 1
+        # ② 引导要指向**重新观察**，不能只说「换个动作」——
+        #    换什么动作都还会撞同一堵墙
+        guidance = ctx.text_of("重新观察")
+        assert "别拿旧清单重试" in guidance
+        # ③ 失败那一步要留证，两个世代号都在原文里
         err = ctx.steps.steps[0].error
         assert "另一页" in err and "enum_epoch=1" in err and "current=2" in err
+        # ④ **不再**是「接线错误收口」的出口信号：那让它在批次读数上
+        #    看起来像「我们坏了」，而这次它是一次可恢复的失败
+        assert ctx.outcome.exit_signal != "stale_context"
+
+    async def test_动作失败也清读到的元素(self, monkeypatch):
+        """``goto`` 超时**不等于页面没动**（2026-11-25 真数据反推）。
+
+        ``DriverError`` 分支原来直接 ``return``，**跳过了**
+        ``self._read_elements.clear()`` ⇒ 下一步拿上一代的清单去点 ⇒
+        真实驱动抛 ``stale_context``（定位词世代不符）⇒ 整单元收口。
+        实测 3 次全走这条路。
+
+        ⚠️ **这条只能测「接线」：失败分支必须把读到的元素作废。**
+        ``FakeDriver`` 没有世代号，点任何 ref 都不会抛
+        ``StaleContextError``——写成「点 e1 应该成功」的版本反向验证
+        **存活**（点的是 ``obs`` 白名单里的 e1，根本碰不到这个集合）。
+        真实判据是驱动的 ``_require_current_epoch``，那由驱动自己的测试
+        与 ``p05_bc_agent_20261125`` 的真存档守着。
+        """
+        from trajectory_pipeline.executor import agent_loop as al
+
+        loop_ref: list[Any] = []
+        real_run = al._Loop.run
+
+        async def spy_run(self):
+            loop_ref.append(self)
+            return await real_run(self)
+
+        monkeypatch.setattr(al._Loop, "run", spy_run)
+        ctx = await _run(
+            FakeAgentLLM([
+                {"tool": "interactive"},
+                {"tool": "goto", "params": {"url": "https://x.test/a"}},
+            ]),
+            FakeDriver(
+                (_obs(refs=("e1",)),),
+                sticky=_obs(refs=("e9",)),
+                goto_fails=("https://x.test/a",),
+            ),
+        )
+        assert ctx.steps.steps[1].error.startswith("goto 失败")
+        after_fail = sorted(loop_ref[-1]._read_elements)
+        assert after_fail == [], (
+            f"goto 失败后仍带着上一代的定位词：{after_fail}。"
+            f"真实驱动会在下一步抛 stale_context 并关掉整个单元"
+        )
 
     async def test_快照取不到不收口_落error且继续(self):
         """快照取不到是**能力问题**（I4 fail-closed），但不整站收口：

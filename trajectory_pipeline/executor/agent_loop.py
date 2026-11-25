@@ -628,6 +628,15 @@ _GUIDANCE_READ_FAILED: Final = (
     "（上一步读取 {kind} 失败：{error}）读不到就先别依赖它："
     "换一种读法、换一个动作，或如实报告放弃。"
 )
+#: 定位词来自另一页（2026-11-25）。**要教它下一步做什么**，不能只说
+#: 「失败了换个动作」——它的旧清单已经作废，换什么动作都会撞同一堵墙。
+#: ⇒ 提示必须指向**重新看一眼当前页**，那才是恢复的唯一入口。
+_GUIDANCE_STALE: Final = (
+    "（上一步 {tool} 用的元素来自**上一页**：你枚举它们时是第 {expected} 版，"
+    "而现在页面已经是第 {actual} 版——这中间页面换过，旧清单全部作废。）"
+    "**先重新观察当前页面**（interactive / observe），再按新页面上的元素"
+    "决定动作。别拿旧清单重试：那不会成功，只会白烧预算。"
+)
 #: 终局自报了一条没见过的 URL。与 :data:`_GUIDANCE_BAD_REF` 是**同一条
 #: 纪律的两端**：那个管「点哪个元素」（动作期、可逆性为零），这个管
 #: 「报哪条链接」（终局期、进了 P2 就不可逆）。
@@ -1637,30 +1646,43 @@ class _Loop:
             # 换路是错的——它换一百次也还是拿旧清单点新页，而报告上会显示
             # 「点了很多次都点不动」（一条理由通顺的假负样本）。
             #
-            # ⇒ 记一步**带专属 error 的失败**（留证）+ 单列出口信号
-            # ``stale_context``，让它在批次读数上**独立可见**。
-            # 不抛：这一条轨迹的其余部分仍可读，且抛出去会变成
-            # 「整批失败」，把一个接线 bug 升级成整批重跑。
+            # ⚠️ **但不收口**（2026-11-25，真数据反推）：S5 原本整单元收口，
+            # 前提是「S3 之后正常链路不再产生它」——**实测这个前提不成立**，
+            # ``p05_bc_agent_20261125`` 3 次全是「goto 超时后继续用旧清单」
+            # （已在 ``DriverError`` 分支补清，见上）。**别的路径仍可能产生**
+            # （例如 ``observe`` 自己失败，页面确实换了而我们没看到）。
+            # 收口的代价是：一次**可恢复的**失败变成这条轨迹的终点，而
+            # agent 离答案只差一次 observe。
             #
-            # ``verdict=None``：这一页**根本没被问过**（动作没发出去），
-            # 与「后端未作答」「指令解析失败」同族——没有可判的页面事实。
+            # ⇒ 记一步**带专属 error 的失败**（留证）+ 引导它重新观察，
+            # 与 ``DriverError`` / observe 失败两条分支同款：**不替它决定，
+            # 只告诉它事实**。``_read_elements`` 必须清——不清就是下一条
+            # stale_context。
+            #
+            # ``verdict=None``：这一页**根本没被问过**（动作没发出去）。
+            self._read_elements.clear()
             self.steps.settle(
                 index,
                 error=(f"{instr.tool} 失败（定位词来自另一页，接线错误）: {exc}"
                        f" [enum_epoch={exc.expected} current={exc.actual}]"),
             )
-            return self._close(
-                reason="定位词来自另一页（接线错误，不是站点事实）",
-                verdict=None,
-                branch=UNRESOLVED,
-                exit_stage="agent.stale_context",
-                exit_signal="stale_context",
-                exit_question=self._exit_question(),
-            )
+            self._note(_GUIDANCE_STALE.format(
+                tool=instr.tool, expected=exc.expected, actual=exc.actual,
+            ))
+            return None
         except (DriverError, actions.UnaddressableTarget) as exc:
             # 动作执行失败**不收口**：让 agent 看着失败原因自己换路。
             # 写进 P1 的是 ``error`` 非空的那一步——「点了但点不动」正是
             # 负样本最该留的证据。
+            #
+            # ⚠️ **失败也要清读到的元素**（2026-11-25，真数据反推）：
+            # ``goto`` 超时**不代表页面没动**——超时只说明「没等到 commit」，
+            # 而浏览器可能已经把页面换掉了（或正在换）。留着上一代的清单，
+            # 下一步一点就是 ``stale_context``，而 S5 把它收口成
+            # 「接线错误」并关掉整个单元 ⇒ **一个可恢复的失败被升级成
+            # 这条轨迹的终点**。实测：``p05_bc_agent_20261125`` 两份存档
+            # 3 次 stale_context，全部由「goto 超时后继续用旧清单」触发。
+            self._read_elements.clear()
             self.steps.settle(index, error=f"{instr.tool} 失败: {exc}")
             self._note(
                 _GUIDANCE_ACTION_FAILED.format(tool=instr.tool, error=exc)

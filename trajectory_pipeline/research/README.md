@@ -78,6 +78,7 @@ research/
 │  ├─ p05_intermediate_scale.py  扫存档量规模：多少份带 intermediates、步数多少、按模式分组
 │  ├─ p05_dump_intermediate.py   看形态：某份存档里中间页的步是什么（agent 动作 vs 只有 goto）
 │  └─ p05_reverse_check.py       回退「中间页不进样本」的两条守卫，确认契约测试会红（2/2）
+│  └─ p05a_reverse_check.py      回退 P0-6 的两处修复（失败清元素 / stale 不收口），3/3 杀死
 │  ├─ inc43_ab_compare.py      INC42 轮 vs INC43 轮
 │  ├─ inc44_ab_compare.py / inc44_ab_golden_check.py / inc44_check_t011.py
 │  ├─ inc44_unresolved_analysis.py   unresolved 36 行构成分层
