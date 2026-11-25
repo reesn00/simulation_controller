@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import collections
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Iterable, Mapping
@@ -59,6 +60,7 @@ from trajectory_pipeline.common.elements import (
     vocabulary_of_archive_elements,
 )
 from trajectory_pipeline.common.field_limits import ELEMENT_NAME_LIMIT
+from trajectory_pipeline.common.atomic import write_text_atomic
 
 # ─────────────────────────────────────────────────────────────────────
 # L6 派发常量（2026-10-13 增量三十六落地）
@@ -109,6 +111,12 @@ def auto_queue_path(root: Path | str | None = None) -> Path:
     else:
         base = Path(root)
     return base / AUTO_QUEUE_SUBDIR / AUTO_QUEUE_FILENAME
+
+#: 裁定档后缀（P0-4a）。**队列与裁定分成两个文件**：
+#: ``review_queue.jsonl`` 是派生产物（重跑即重建），``review_queue.verdicts.jsonl``
+#: 是人工制品（只由人写、只由 :func:`write_verdicts` 生成）。
+#: 同一份文件兼任两者时，``write_queue`` 的覆盖写就是一条静默擦除路径。
+VERDICTS_SUFFIX: Final = ".verdicts.jsonl"
 
 #: 人工可给的裁定。**枚举值定死**是因为下游要按它分派，
 #: 自由文本裁定会退化成"复核员写什么算什么"，无法统计也无法回填。
@@ -433,15 +441,101 @@ def write_queue(path: Path | str, items: Iterable[ReviewItem]) -> int:
     """写 jsonl。append 还是覆盖由调用方决定路径，这里**覆盖**——
     复核队列是**派生产物**，重跑就该重建；人工裁定另存到
     ``<name>.verdicts.jsonl``，两者分开才不会互相覆盖。
+
+    ⚠️ **队列档不写裁定栏**（P0-4a，2026-11-25）：覆盖写 + 同一份文件既是
+    队列又是裁定档 ⇒ 重跑一次就把人工裁定擦掉，无提示无备份。实测的成因不是
+    :func:`write_queue` 写错了，而是 **CLI 打印的指引叫人在同一份文件里填**
+    （``--verdicts <write 的同一路径>``）。现在两个文件分开：本函数只出队列，
+    裁定唯一落点是 :func:`write_verdicts` 产出的 ``*.verdicts.jsonl``。
+
+    ⚠️ **旧队列里已填的裁定会被保住**（P0-4a 收口）：覆盖写之前先看一眼目标
+    文件里有没有非空 ``verdict``——有就**先把它抽到裁定档**再覆盖，并打印出来。
+    这一条挡的是「旧口径下填在队列里、还没来得及 ``--settle``」的那批：
+    不保的话，第一次按新流程重跑 `review --write` 就把它们静默擦光——
+    而那正是这个 bug 本身。
     """
     p = Path(path)
+    if p.name.endswith(VERDICTS_SUFFIX):
+        raise ReviewQueueError(
+            f"{p.name} 是**裁定档**（{VERDICTS_SUFFIX}），不得用队列写覆盖它；"
+            f"队列写到别的文件名"
+        )
+    if p.exists():
+        _rescue_verdicts_from_queue(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     n = 0
     with p.open("w", encoding="utf-8") as fh:
         for item in items:
-            fh.write(json.dumps(item.to_json(), ensure_ascii=False) + "\n")
+            row = item.to_json()
+            for k in ("verdict", "reviewed_by", "note"):
+                row.pop(k, None)
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             n += 1
     return n
+
+
+def _rescue_verdicts_from_queue(path: Path) -> int:
+    """覆盖写之前把队列里已填的裁定抽到裁定档，返回抽到的条数。
+
+    **只在裁定档还不存在时才抽**：裁定档存在说明它才是最新的一份
+    （``--settle`` 落过、或人工直接改过它），拿队列里的旧残影去盖它是反向错误。
+    """
+    vpath = verdicts_path_for(path)
+    if vpath.exists():
+        return 0
+    try:
+        rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()
+                if x.strip()]
+    except ValueError:
+        print(f"[warn] {path.name} 读不出来，跳过旧裁定抢救（原文件将被覆盖）；"
+              f"若里面有人工裁定，先备份再重跑", file=sys.stderr)
+        return 0
+    n = write_verdicts(vpath, [r for r in rows if isinstance(r, Mapping)])
+    if n:
+        print(f"[保] 队列里有 {n} 条已填裁定，已先抽到 {vpath} 再覆盖队列")
+    return n
+
+
+def verdicts_path_for(queue_path: Path | str) -> Path:
+    """队列档 → 裁定档路径：``q.jsonl`` ⇒ ``q.verdicts.jsonl``。
+
+    **确定性**（不取时间戳、不取随机名）：复核员找得到、重跑找得到、
+    备份脚本找得到。``review --verdicts`` 缺省就用它。
+    """
+    p = Path(queue_path)
+    if p.name.endswith(VERDICTS_SUFFIX):
+        return p
+    return p.parent / (p.stem + VERDICTS_SUFFIX)
+
+
+def write_verdicts(path: Path | str, rows: Iterable[Mapping[str, Any]]) -> int:
+    """只写**非空裁定**，原子替换，返回条数。
+
+    这是**人工制品**的唯一写入点（P0-4a）。三条纪律：
+
+    1. **只保留裁定三栏 + 站点键**——队列档里的证据摘要（正文预览、元素、
+       截图）会随批次变，混进裁定档只会让 diff 噪声盖住真改动。
+    2. **空裁定不写**——「还没看」不是裁定，写进去会让 ``--apply`` 把它
+       当成一条待应用的值。
+    3. **原子替换**（P0-4b 的同族问题：半截文件比没有文件更坏）——
+       崩了要么是旧内容，要么是新内容，不会是半截。
+    """
+    p = Path(path)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        v = str(row.get("verdict") or "").strip()
+        if not v:
+            continue
+        out.append({
+            "url": str(row.get("url") or ""),
+            "landed_url": str(row.get("landed_url") or ""),
+            "verdict": v,
+            "reviewed_by": str(row.get("reviewed_by") or ""),
+            "note": str(row.get("note") or ""),
+        })
+    payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out)
+    write_text_atomic(p, payload)
+    return len(out)
 
 
 def _sync_visit_success(out: dict[str, Any], urls: set[str]) -> int:

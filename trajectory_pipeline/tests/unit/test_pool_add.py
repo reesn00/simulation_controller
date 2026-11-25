@@ -367,3 +367,46 @@ class Test回填接线:
         # ⚠️ **没点名的复核档原样不动**——上一轮的人裁定不许被冲掉
         assert json.loads(prev.read_text(encoding="utf-8"))["review_note"] \
             == "上一轮裁过"
+
+    def test_坏复核档不复算且退出码非零(self, tmp_path):
+        """P0-4b：复核档读不出来 ⇒ **跳过并报**，不再静默回退原档。
+
+        回退读原档 = 把上一轮人工裁定无声作废，而命令照常成功。
+        人工判读是一次性动作，作废了没人知道。
+        """
+        url = "https://v.youku.com/x.html"
+        _write(tmp_path, _arch(outcomes=[_o(url, "unresolved")]))
+        broken = tmp_path / "T001__r1.reviewed.json"
+        broken.write_text('{"outcomes": [{"url": ', encoding="utf-8")  # 半截
+        vf = tmp_path / "verdicts.jsonl"
+        vf.write_text(json.dumps({"landed_url": url, "verdict": "confirm_paywall",
+                                  "reviewed_by": "reesn", "note": "开通会员"},
+                                 ensure_ascii=False) + "\n", encoding="utf-8")
+
+        rc = cli.cmd_apply_review(argparse.Namespace(
+            out=str(tmp_path), verdicts=str(vf)))
+
+        assert rc == 1, "坏复核档必须体现在退出码上"
+        # 坏档**原样留着**（人修它或删它），没有被原档内容盖掉
+        assert broken.read_text(encoding="utf-8") == '{"outcomes": [{"url": '
+
+    def test_复核档原子写(self, tmp_path, monkeypatch):
+        """P0-4b：(b) 那条路径必须走原子写——否则中途崩了留半截档，
+        下一次读它就是上面那条「不复算」的处境。"""
+        url = "https://v.youku.com/x.html"
+        _write(tmp_path, _arch(outcomes=[_o(url, "unresolved")]))
+        vf = tmp_path / "verdicts.jsonl"
+        vf.write_text(json.dumps({"landed_url": url, "verdict": "confirm_paywall",
+                                  "reviewed_by": "reesn", "note": "开通会员"},
+                                 ensure_ascii=False) + "\n", encoding="utf-8")
+        seen: list[str] = []
+        real = cli.write_json_atomic
+
+        def spy(path, payload, **kw):
+            seen.append(str(path))
+            return real(path, payload, **kw)
+
+        monkeypatch.setattr(cli, "write_json_atomic", spy)
+        cli.cmd_apply_review(argparse.Namespace(
+            out=str(tmp_path), verdicts=str(vf)))
+        assert seen and seen[0].endswith(".reviewed.json")

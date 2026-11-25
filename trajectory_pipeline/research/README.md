@@ -69,6 +69,10 @@ research/
 │  ├─ p01_smoke_check.py       读 P1 存档：new_tab 观察是否非空 + exit_signal 分布 + stale 检索
 │  ├─ p01_smoke_first_step.py  读 P1 存档：首步动作的目标是否落在新页 interactive_elements 里
 │  ├─ p01_smoke_before_after.py  同一存档的「新页 vs 入口页」清单对比（名字层面，**不足以定案**）
+│  │
+│  │  ── P0-4 人工裁定静默丢失（2026-11-25；结论与处置见 docs/13 号 P0-4）──
+│  ├─ p04_cli_e2e.py           跑真 CLI 两条命令：队列/裁定两个文件是否真分开 + 重跑不擦裁定
+│  ├─ p04_reverse_check.py     逐条回退每处修复，确认对应测试会红（当前 6/6 杀死）
 │  ├─ inc43_ab_compare.py      INC42 轮 vs INC43 轮
 │  ├─ inc44_ab_compare.py / inc44_ab_golden_check.py / inc44_check_t011.py
 │  ├─ inc44_unresolved_analysis.py   unresolved 36 行构成分层

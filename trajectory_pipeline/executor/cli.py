@@ -140,6 +140,7 @@ from trajectory_pipeline.executor.review.multim_vlm import (
 )
 from trajectory_pipeline.executor.review_queue import (
     VERDICTS,
+    VERDICTS_SUFFIX,
     ReviewQueueError,
     apply_verdicts,
     auto_queue_path,
@@ -147,7 +148,9 @@ from trajectory_pipeline.executor.review_queue import (
     dispatch_l6,
     prefill as rq_prefill,
     settle_same_site as rq_settle,
+    verdicts_path_for,
     write_queue as write_review_queue,
+    write_verdicts,
 )
 from trajectory_pipeline.executor.steps import search as search_step
 from trajectory_pipeline.executor.steps.visit import visit_site
@@ -163,6 +166,7 @@ from trajectory_pipeline.perception import questions
 from trajectory_pipeline.perception.replay import (
     format_divergences, format_summary, replay_archive, summarize,
 )
+from trajectory_pipeline.common.atomic import write_json_atomic
 from trajectory_pipeline.common.elements import element_name
 from trajectory_pipeline.perception.base import Observation, Q
 from trajectory_pipeline.perception.factory import build_perceptor, describe
@@ -2818,11 +2822,15 @@ def cmd_review(args: argparse.Namespace) -> int:
 
     if args.write:
         n = write_review_queue(args.write, items)
+        vpath = verdicts_path_for(args.write)
         print(f"\n→ 已写 {n} 条到 {args.write}")
-        print(f"  复核员在每行填 verdict（可选：{sorted(VERDICTS)}）")
-        print("  与 reviewed_by，然后：")
+        print(f"  复核员在每行填 verdict（可选：{sorted(VERDICTS)}）"
+              f"与 reviewed_by，然后：")
+        print(f"    python -m trajectory_pipeline.executor.cli review-queue "
+              f"{args.write} --settle")
+        print(f"    # ↑ 把填好的裁定抽到裁定档 {vpath}（队列重跑不再擦它）")
         print(f"    python -m trajectory_pipeline.executor.cli review "
-              f"--out {root} --verdicts {args.write} --apply")
+              f"--out {root} --verdicts {vpath} --apply")
 
     if args.show:
         for it in items[:args.show]:
@@ -3171,6 +3179,16 @@ def cmd_review_queue(args: argparse.Namespace) -> int:
         n = rq_settle(rows)
         print(f"同 URL 裁定收敛：改动 {n} 行"
               f"（「没证据」档让位于结论档）")
+        # ⚠️ **裁定另存成独立文件**（P0-4a）：队列是派生产物、重跑即重建，
+        # 而人填的裁定不可重来。同文件兼任两者 ⇒ 一次 `review --write` 静默擦光。
+        # 只在 ``--settle`` 时抽：``--prefill`` 填的是 ``auto:`` 来源，
+        # 抽进裁定档就等于把自动判定提交成人工结论（见本函数 docstring）。
+        vpath = verdicts_path_for(path)
+        nv = write_verdicts(vpath, rows)
+        print(f"裁定档 {vpath}：{nv} 条非空裁定（队列重跑不再擦它）")
+        if nv == 0:
+            print("  （还没人填 verdict ⇒ 裁定档为空；填完再跑一次 --settle）")
+        print(f"  提交裁定：review --verdicts {vpath} --apply")
 
     # 原子替换。**先写同目录的 .tmp 再 replace**：直接就地改时，
     # 中途崩了会留下半截 JSON，而下次读它的人看不出是崩了还是格式坏了。
@@ -3180,7 +3198,6 @@ def cmd_review_queue(args: argparse.Namespace) -> int:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     os.replace(tmp, path)
     print(f"已写回 {path}")
-    print("  提交裁定：review --verdicts <queue> --apply")
     return 0
 
 
@@ -3232,6 +3249,25 @@ def _load_verdicts(path: str | Path) -> tuple[dict[str, dict[str, Any]],
     return verdicts, conflicts
 
 
+def _resolve_verdicts_path(raw: str | Path) -> Path:
+    """解析 ``--verdicts``：**切成裁定档**，别让人误把队列当裁定读。
+
+    两条判据（P0-4a）：
+
+    - 给的是 ``*.verdicts.jsonl`` ⇒ 就是它。
+    - 给的是队列（``*.jsonl``）⇒ 切到 :func:`verdicts_path_for` 的兄弟文件；
+      **兄弟存在才切**。存在说明这条工作流已经按新口径跑过（``review-queue
+      --settle`` 落过裁定档），此时读队列里的那份会被 `review --write` 覆盖，
+      读它就是读一个随时会变的派生产物。兄弟不存在 ⇒ 按原样读，
+      **兼容旧队列**（旧口径下裁定就填在队列里，硬切会让历史裁定凭空消失）。
+    """
+    p = Path(raw)
+    if p.name.endswith(VERDICTS_SUFFIX):
+        return p
+    v = verdicts_path_for(p)
+    return v if v.exists() else p
+
+
 def cmd_apply_review(args: argparse.Namespace) -> int:
     """把人工裁定回填进 P1 存档。
 
@@ -3250,7 +3286,7 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
     if getattr(args, "only", None):
         only = {n if n.endswith(".json") else f"{n}.json"
                 for n in args.only}
-    verdicts, conflicts = _load_verdicts(args.verdicts)
+    verdicts, conflicts = _load_verdicts(_resolve_verdicts_path(args.verdicts))
     if conflicts:
         print(f"[stop] 同一 URL 出现了**互相冲突**的人工裁定 {len(conflicts)} 处。"
               f"\n       下面这些必须先定成同一个值——一个站点只有一个结论：")
@@ -3264,6 +3300,7 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
                            "trailer", "skipped", "unreviewed", "ignored",
                            "off_question", "branch_written"], 0)
     written = 0
+    broken: list[str] = []
     for path in sorted(root.glob("*.json")):
         if path.name.endswith(REVIEWED_SUFFIX):
             continue
@@ -3285,8 +3322,15 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
         if prev.exists():
             try:
                 data = json.loads(prev.read_text(encoding="utf-8"))
-            except ValueError:
-                data = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                # ⚠️ **坏复核档不再静默回退**（P0-4b）：回退读原档等于把上一轮
+                # 人工裁定无声作废，而命令照常成功——那正是「不可逆资产静默
+                # 丢失」。坏档留给人看，这一份跳过，**退出码体现它**。
+                print(f"[skip] {prev.name} 读不出来（{exc.__class__.__name__}）"
+                      f"——**不复算**，人工裁定可能在这一份里；"
+                      f"修好或删掉它再跑", file=sys.stderr)
+                broken.append(prev.name)
+                continue
             src = prev
             if not isinstance(data, dict) or "outcomes" not in data:
                 continue
@@ -3294,11 +3338,14 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
         for k, v in stats.items():
             total[k] = total.get(k, 0) + v
         dst = path.with_suffix(REVIEWED_SUFFIX)
-        dst.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
-                       encoding="utf-8")
+        write_json_atomic(dst, merged, indent=2)
         written += 1
 
     print(f"回填 {written} 个存档，合计 {dict(total)}")
+    if broken:
+        print(f"[stop] {len(broken)} 份复核档读不出来，**未复算**（人工裁定可能在里面）："
+              f"\n       {', '.join(broken[:5])}{' …' if len(broken) > 5 else ''}"
+              f"\n       修好或删掉它们再跑。", file=sys.stderr)
     if only is not None:
         print(f"  （--only 限定：只回填这 {len(only)} 份里的 "
               f"{written} 份；其余存档的复核档**原样不动**）")
@@ -3343,7 +3390,7 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
     except Exception as exc:                      # noqa: BLE001
         print(f"  [warn] 并池失败（{type(exc).__name__}: {exc}）——"
               f"回填**已经落盘**了，池欠着；跑 cli pool-add 看清单")
-        return 0
+        return 1 if broken else 0
     if pooled["candidates"]:
         print(f"  → 并池：新增 {pooled['added']} 行真负样本"
               f"（回填产生的 + 历史欠账），"
@@ -3353,7 +3400,7 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
                   f"{pool_add_mod.refusal_text(c.refuse)}")
             if c.detail:
                 print(f"            {c.detail}")
-    return 0
+    return 1 if broken else 0
 
 
 def cmd_replay(args: argparse.Namespace) -> int:
@@ -5051,7 +5098,10 @@ def build_parser() -> argparse.ArgumentParser:
     rev = sub.add_parser("review", help="导出人工复核队列（W1 正样本来源）")
     rev.add_argument("--out", default=None, help="P1 存档目录")
     rev.add_argument("--write", default=None, help="复核队列 jsonl 落盘路径")
-    rev.add_argument("--verdicts", default=None, help="人工裁定 jsonl（--apply 时读）")
+    rev.add_argument("--verdicts", default=None,
+                     help="人工裁定 jsonl（--apply 时读）。**读的是裁定档**"
+                          "（`*.verdicts.jsonl`）——给队列路径时，同目录已有"
+                          "裁定档就自动切过去（队列会被 --write 覆盖）")
     rev.add_argument("--apply", action="store_true", help="把裁定回填进 P1")
     rev.add_argument("--only", nargs="+", default=None,
                      help="只回填点名的存档（文件名，可带 .json）——"

@@ -11,20 +11,23 @@ import json
 
 import pytest
 
-from trajectory_pipeline.executor.cli import _load_verdicts
+from trajectory_pipeline.executor.cli import _load_verdicts, _resolve_verdicts_path
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
 from trajectory_pipeline.executor.review_queue import (
     AUTO_BY_INSUFFICIENT,
     AUTO_BY_PORTAL,
     REVIEW_BRANCHES,
     VERDICTS,
+    VERDICTS_SUFFIX,
     ReviewQueueError,
     apply_verdicts,
     collect,
     extract_items,
     prefill,
     settle_same_site,
+    verdicts_path_for,
     write_queue,
+    write_verdicts,
 )
 
 
@@ -653,7 +656,9 @@ class TestIO:
         p = tmp_path / "q.jsonl"
         assert write_queue(p, items) == 1
         row = json.loads(p.read_text(encoding="utf-8").splitlines()[0])
-        assert row["verdict"] == ""
+        # ⚠️ **队列档不带裁定栏**（P0-4a）：它会被 `review --write` 覆盖写，
+        # 裁定在这里就是「迟早被静默擦掉」；裁定唯一落点是 `*.verdicts.jsonl`。
+        assert "verdict" not in row and "reviewed_by" not in row
         assert row["verdict_options"] == dict(VERDICTS)
         assert row["video_tag_count"] == 1
         assert row["media_signal"] == ""
@@ -675,6 +680,133 @@ class TestIO:
     def test_目录不存在显式抛(self, tmp_path):
         with pytest.raises(ReviewQueueError, match="不是目录"):
             collect(tmp_path / "nope")
+
+
+class TestVerdictsFile:
+    """P0-4a：队列与裁定**分成两个文件**。
+
+    实测的丢法不是「代码写错了」，而是 CLI 打印的指引叫人在**同一份文件**
+    里填裁定 —— 而那份文件被 ``review --write`` **覆盖写**。重跑一次，
+    人工判读全没，无提示、无备份。
+    """
+
+    def test_裁定档路径确定(self, tmp_path):
+        q = tmp_path / "review_queue.jsonl"
+        assert verdicts_path_for(q) == tmp_path / "review_queue.verdicts.jsonl"
+        # 幂等：给它裁定档，还给同一份。
+        v = verdicts_path_for(q)
+        assert verdicts_path_for(v) == v
+
+    def test_队列写拒绝对裁定的覆盖(self, tmp_path):
+        """拿裁定档路径当队列写 ⇒ 当场抛，不动文件。
+
+        这是唯一能挡「下一个写错路径的人」的地方：``write_queue`` 是覆盖写，
+        放过一次就把人填的裁定整批变成队列行（裁定栏都没了）。
+        """
+        v = tmp_path / "review_queue.verdicts.jsonl"
+        v.write_text('{"url": "a", "verdict": "confirm_success"}\n',
+                     encoding="utf-8")
+        with pytest.raises(ReviewQueueError, match="裁定档"):
+            write_queue(v, [])
+        assert "confirm_success" in v.read_text(encoding="utf-8")
+
+    def test_只写非空裁定且只带裁定三栏(self, tmp_path):
+        v = tmp_path / "q.verdicts.jsonl"
+        n = write_verdicts(v, [
+            {"url": "u1", "landed_url": "L1", "verdict": "confirm_success",
+             "reviewed_by": "reesn", "note": "看了", "body_preview": "噪声"},
+            {"url": "u2", "landed_url": "L2", "verdict": "",
+             "reviewed_by": "", "note": ""},
+        ])
+        assert n == 1
+        rows = [json.loads(x) for x in v.read_text(encoding="utf-8").splitlines()]
+        assert rows == [{"url": "u1", "landed_url": "L1",
+                         "verdict": "confirm_success",
+                         "reviewed_by": "reesn", "note": "看了"}]
+
+    def test_零裁定也落空档(self, tmp_path):
+        """空档必须真的被写成空——否则上一次的裁定会留在盘上被当成这一次的。"""
+        v = tmp_path / "q.verdicts.jsonl"
+        write_verdicts(v, [{"url": "u", "verdict": "confirm_success"}])
+        assert write_verdicts(v, [{"url": "u", "verdict": ""}]) == 0
+        assert v.read_text(encoding="utf-8") == ""
+
+    def test_队列重跑不擦裁定档(self, tmp_path):
+        """**这条就是 P0-4a 的回归**：填完裁定 → 重跑 --write → 裁定还在。"""
+        q = tmp_path / "review_queue.jsonl"
+        items = extract_items(_archive(
+            [{"url": "a.com", "branch": "unresolved", "evidence": "e"}],
+            [_visit("a.com")]))
+        write_queue(q, items)
+        # 复核员在队列里填了裁定，--settle 抽到裁定档
+        rows = [json.loads(x) for x in q.read_text(encoding="utf-8").splitlines()]
+        rows[0].update(verdict="confirm_success", reviewed_by="reesn")
+        write_verdicts(verdicts_path_for(q), rows)
+        # 下一轮：队列被重建（--write 覆盖写）
+        write_queue(q, items)
+        # 裁定档不受影响
+        v = verdicts_path_for(q)
+        kept = [json.loads(x) for x in v.read_text(encoding="utf-8").splitlines()]
+        assert kept[0]["verdict"] == "confirm_success"
+        # 而队列已经回到「无裁定」
+        fresh = json.loads(q.read_text(encoding="utf-8").splitlines()[0])
+        assert "verdict" not in fresh
+
+    def test_load_verdicts_优先读裁定档(self, tmp_path):
+        """给队列路径、同目录有裁定档 ⇒ 读裁定档。
+
+        队列里的裁定是**上一轮**的残影（下一轮 ``--write`` 会覆盖它），
+        读它就是读一个随时会变的派生产物。
+        """
+        q = tmp_path / "review_queue.jsonl"
+        q.write_text(json.dumps({"url": "u", "verdict": "confirm_paywall"}) + "\n",
+                     encoding="utf-8")
+        write_verdicts(verdicts_path_for(q),
+                       [{"url": "u", "verdict": "confirm_success"}])
+        verdicts, _ = _load_verdicts(_resolve_verdicts_path(q))
+        assert verdicts["u"]["verdict"] == "confirm_success"
+
+    def test_load_verdicts_无裁定档时兼容旧队列(self, tmp_path):
+        """兄弟文件不存在 ⇒ 按原样读队列（旧口径的裁定就填在里面，硬切会凭空消失）。"""
+        q = tmp_path / "review_queue.jsonl"
+        q.write_text(json.dumps({"url": "u", "verdict": "confirm_paywall"}) + "\n",
+                     encoding="utf-8")
+        verdicts, _ = _load_verdicts(_resolve_verdicts_path(q))
+        assert verdicts["u"]["verdict"] == "confirm_paywall"
+
+    def test_旧队列里的裁定在重跑前被抢出来(self, tmp_path):
+        """P0-4a 收口：**第一**次按新流程重跑 `review --write` 也不能擦掉旧裁定。
+
+        旧口径下裁定填在队列里。重跑 `--write` 会覆盖它——所以覆盖前先抽到
+        裁定档。不抽的话，这个 bug 在**修完之后**还会再发生一次。
+        """
+        q = tmp_path / "review_queue.jsonl"
+        q.write_text(json.dumps({"url": "u", "landed_url": "L",
+                                 "verdict": "confirm_blocked",
+                                 "reviewed_by": "reesn"}) + "\n",
+                     encoding="utf-8")
+        items = extract_items(_archive(
+            [{"url": "a.com", "branch": "unresolved", "evidence": "e"}],
+            [_visit("a.com")]))
+        write_queue(q, items)
+        v = verdicts_path_for(q)
+        assert v.exists(), "旧裁定必须被抽到裁定档"
+        kept = [json.loads(x) for x in v.read_text(encoding="utf-8").splitlines()]
+        assert kept[0]["verdict"] == "confirm_blocked"
+
+    def test_已有裁定档时不拿队列残影反盖(self, tmp_path):
+        """裁定档才是最新的那一份——队列里的旧值是残影，不能反向覆盖它。"""
+        q = tmp_path / "review_queue.jsonl"
+        q.write_text(json.dumps({"url": "u", "verdict": "confirm_paywall"}) + "\n",
+                     encoding="utf-8")
+        v = verdicts_path_for(q)
+        write_verdicts(v, [{"url": "u", "verdict": "confirm_success"}])
+        write_queue(q, [])
+        kept = [json.loads(x) for x in v.read_text(encoding="utf-8").splitlines()]
+        assert kept[0]["verdict"] == "confirm_success"
+
+    def test_裁定档后缀是常量(self):
+        assert VERDICTS_SUFFIX == ".verdicts.jsonl"
 
 def _row(url, *, elements=0, verdict="", **over):
     row = {"url": url, "landed_url": url, "elements": elements,
