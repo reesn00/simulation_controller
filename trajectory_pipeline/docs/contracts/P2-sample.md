@@ -29,6 +29,27 @@ P1 的 B/C 中间页（聚合站页 / 文章页，`intermediates[]`）**整段�
 - 中间页的 outcome（`not_aggregator` / `aggregator_no_entries` / `article_no_links`）
   只在 P1 `outcomes[]` 里，**不进 `site_outcomes`**。
 
+⚠️ **`not_aggregator` 有两个产地，别按模式一刀切**（2026-11-25 实测）：
+
+| 产地 | 何时 | agent 模式 |
+|---|---|---|
+| **①B 分类**（`orchestrator._CLASSIFY_DISPATCH`） | 搜索页上判 10 个候选哪些是聚合站，**进站之前** | ✅ 照跑 |
+| **⑤ `IS_AGGREGATOR`** | 进了中间页之后确认 | ❌ 不跑 |
+
+⇒ **agent 批次里 `not_aggregator` 不是 0**（实测每份 2 条）。判据：①B 产的
+`exit_stage` / `exit_signal` **都是空**且**不进 `intermediates`**；⑤ 产的
+（只在 scripted）会带判断题痕迹。
+
+⚠️ **两种 `None` 长得一样、含义相反**：
+
+| 存档 | P1 的 is_intermediate | 含义 |
+|---|---|---|
+| P1 的 executor_mode 为 agent | `None` | **没问过**（⑤ 按设计不跑） |
+| scripted | `None` | 问了，**感知层答不出** |
+
+读档时先看 P1 的 executor_mode 再读这个字段；两批混在一起看 `None` 率会得出
+相反的结论。探针：`research/probes/p07_classify_input.py`（直接打印判读）。
+
 ⚠️ **它与 `orchestrator._rationale_history` 不一致，而这个不一致是有意保留的**：
 写后续站点 rationale 时，agent **看得见**中间页的步（最近 40 步窗口含
 `intermediates[].steps`），而样本里没有那几步。⇒ **两边必须一起改或都不改**：

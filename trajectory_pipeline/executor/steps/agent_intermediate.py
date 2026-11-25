@@ -13,12 +13,22 @@
 
 ``IS_AGGREGATOR`` / ``SELECT_SITE_ENTRIES`` / ``SELECT_REFERRAL_LINKS``
 三道判断题在 agent 模式下**一道都不跑**，它们的语义进任务指令。连带
-的后果是三支负分支在 agent 模式下没有产地（见 :mod:`.agent_loop` 的
-:data:`~.agent_loop._FALLCLOSED_BRANCH` 注释与 ``test_agent_intermediate``
-的 ``Test分支收敛`` 一组）：
+的后果是**这三道题对应的负分支**在 agent 模式下没有产地（见
+:mod:`.agent_loop` 的 :data:`~.agent_loop._FALLCLOSED_BRANCH` 注释与
+``test_agent_intermediate`` 的 ``Test分支收敛`` 一组）：
 
-- ``not_aggregator``：它的前提是「判断题判了 False」这个**真结论**；
-- ``aggregator_no_entries`` / ``article_no_links``：同上。
+- ``aggregator_no_entries`` / ``article_no_links``：前提是 ⑥ 判了 False；
+- ``not_aggregator``：**只取消了 ⑤ 这个产地**。
+
+⚠️ **``not_aggregator`` 还有另一个产地：①B 分类**（:data:`~..orchestrator.
+_CLASSIFY_DISPATCH` 的 ``aggregator`` 项）。①B 问的是「搜索结果里哪些是
+聚合站」，发生在**进站之前**，与中间页探索无关 ⇒ **它在 agent 模式下照跑**。
+实测（``p05_bc_agent_20261125``，agent 模式）：两份存档各有 2 条
+``not_aggregator``，``exit_stage`` / ``exit_signal`` 全空、也不进
+``intermediates``——那就是 ①B 的痕迹，不是 ⑤。
+
+⇒ 所以「agent 模式下 ``not_aggregator`` 应该是 0」是**错的**：它在 ①B 上
+正常产出。**本文件原先写「三支负分支在 agent 模式下没有产地」，把 ①B 漏了**。
 
 agent 说「没找到」一律落 ``unresolved``——与任务②的自报放弃同一条
 口径（§3.3）：**agent 自报的不是负结论**。三支负分支在 A2b 期间由

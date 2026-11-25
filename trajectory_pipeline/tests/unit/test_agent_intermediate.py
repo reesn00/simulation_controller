@@ -663,6 +663,14 @@ class Test分支收敛:
 
         三支本身还在封闭集里（scripted 仍产它们），所以这里断言的是
         **不产**，不是「名字没了」。
+
+        ⚠️ **范围是「这条中间页链」，不是「整个 agent 模式」**
+        （2026-11-25 澄清）：``not_aggregator`` 还有**另一个产地**——
+        ①B 分类（``orchestrator._CLASSIFY_DISPATCH``），问的是「搜索
+        结果里哪些是聚合站」，发生在**进站之前**，agent 模式下照跑。
+        实测 ``p05_bc_agent_20261125`` 每份各有 2 条 ``not_aggregator``
+        就是这个产地。**所以「agent 批次里 not_aggregator 应为 0」是错的**，
+        本测试守的不是那个。
         """
         assert branch in BRANCH_LABELS  # 名字没被删掉
         scenarios = [
