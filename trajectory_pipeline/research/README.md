@@ -82,6 +82,11 @@ research/
 │  │
 │  │  ── P0-7 判断题产地与 None 的两种含义（2026-11-25）──
 │  ├─ p07_classify_input.py     一条存档直读：outcomes 逐条出口 + 中间页三道题跑没跑 + 判读
+│  │
+│  │  ── P0-8 unresolved 构成与 B 路径产出能力（2026-11-25）──
+│  ├─ p08_unresolved_profile.py 按 exit_stage 分桶：unresolved 里多少是「我们坏了」、多少是「站点不给」
+│  ├─ p08_intermediate_detail.py 中间页逐页读数：步数 / 失败步 / 动作构成 / 候选 / 结局
+│  └─ p08_intermediate_rationale.py 逐步动作 + 动机：判「没想到报 links」还是「没步数了」
 │  ├─ inc43_ab_compare.py      INC42 轮 vs INC43 轮
 │  ├─ inc44_ab_compare.py / inc44_ab_golden_check.py / inc44_check_t011.py
 │  ├─ inc44_unresolved_analysis.py   unresolved 36 行构成分层
