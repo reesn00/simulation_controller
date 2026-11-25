@@ -882,27 +882,37 @@ class TestRationale分代:
         assert s.to_json()["rationale_era"] == "pre_action"
 
 
-class Test终局验收读回复:
-    """方案 23 R2-3（owner 裁定 O-2）：**终局验收读最终回复**。
+class Test终局验收读模型自报:
+    """P1-1（2026-11-25）：**终局验收读模型自己的最终自报**。
 
-    判据只有一条：任务库 ``output_contract.min_urls ≥ 1``，而这条样本的
-    收尾答复里没有 URL ⇒ **不许判 ``passed``**。
+    判据只有一条：任务库 ``output_contract.min_urls ≥ 1``，而这条轨迹的
+    ``outcomes[j].report``（模型 ``done=true`` 那一步的终局自报原文）里
+    没有 URL ⇒ 不许判 ``passed``。
 
-    这条闸门**不是** rationale 闸门：它判的是「答复兑现没兑现任务合同」。
-    所以它只降 ``passed``（``failed`` 已经是失败、``not_run`` 是「没判」），
-    且读的文本必须与 P3 渲染的末条 assistant **是同一个函数产出**——
-    分开写的那天，验收读的就不是模型看到的那句了。
+    ⚠️ **旧口径已废**：上一版读 ``closing_text``（代码合成的收尾句）。
+    那句只要 ``play_page_url`` 有值就必然含 URL ⇒ 对成功样本**恒过**。
+    下面 ``test_没有自报时判not_run`` 就是旧口径下「恒过」的那条——现在
+    它必须判 ``not_run``，因为这次压根没问过模型。
     """
+
+    #: 与「显式传 None」区分：不传 = **键不写**（历史存档）。
+    _ABSENT = object()
 
     def _run_sample(
         self, tmp_path, *, branch="no_play_control", play_page_url="",
-        task_id="T001",
+        task_id="T001", report=_ABSENT,
     ):
-        """一条**轨迹**（per-Run 之后一份存档切一条，不再按单元切）。"""
+        """一条**轨迹**（per-Run 之后一份存档切一条，不再按单元切）。
+
+        ``report`` 缺省 = **键不写**（模拟历史存档）；显式传 ``None`` =
+        键在、值为空（模拟 scripted 链）。
+        """
         url = "https://a.test/"
         outcome = dict(
             _outcome(url, branch), site_url=url, play_page_url=play_page_url
         )
+        if report is not self._ABSENT:
+            outcome["report"] = report
         arc = _arc(
             task_id=task_id,
             visits=[
@@ -916,33 +926,72 @@ class Test终局验收读回复:
         )
         return samples[0]
 
-    def test_失败且答复无网址时不许passed(self, tmp_path):
-        """排除站点只写 host（不带协议），所以失败答复里没有 URL。"""
-        s = self._run_sample(tmp_path)
-        assert s.gate.status == "failed"
-        assert any("输出契约" in r for r in s.gate.reasons)
-        # 原有的 rationale 核查理由不丢——两条命运分开记。
-        assert any("逐条核查" in r for r in s.gate.reasons)
+    def test_没有自报时判not_run(self, tmp_path):
+        """旧口径在这里判 ``failed``——它读的是合成文本里的「已排除站点」。
 
-    def test_成功且答复带网址时仍passed(self, tmp_path):
+        新口径：没问过模型「你说到了哪里」，就没有可验收的答复 ⇒
+        判据不适用 ⇒ ``not_run``。**fail-closed：读不到 ≠ 通过。**
+        """
+        s = self._run_sample(tmp_path)
+        assert s.gate.status == "not_run", s.gate.reasons
+        assert any("没有 report 字段" in r for r in s.gate.reasons)
+
+    def test_scripted链的自报是None时也说清原因(self, tmp_path):
+        """键在但 ``None``：这次是 scripted 跑的 ⇒ 同判 ``not_run``，
+        但理由**不是**「缺件」（两种不可判定必须分得开）。"""
+        s = self._run_sample(tmp_path, report=None)
+        assert s.gate.status == "not_run", s.gate.reasons
+        assert any("scripted" in r for r in s.gate.reasons)
+
+    def test_自报里带了网址就passed(self, tmp_path):
         s = self._run_sample(
-            tmp_path, branch=None, play_page_url="https://a.test/play"
+            tmp_path, branch=None, play_page_url="https://a.test/play",
+            report={"reached": True, "why": "已点开播放控件，画面在放正片",
+                    "selected": [{"url": "https://a.test/play", "why": "正片"}]},
         )
         assert s.gate.status == "passed", s.gate.reasons
+
+    def test_自报说到了但没交网址不许passed(self, tmp_path):
+        """**H-23 真正想抓的那条**：模型嘴上说到了，答复里却没有网址。
+
+        旧口径下 ``play_page_url`` 有值 ⇒ 合成文本必然含 URL ⇒ 恒过。
+        """
+        s = self._run_sample(
+            tmp_path, branch=None, play_page_url="https://a.test/play",
+            report={"reached": True, "why": "我觉得找到了", "selected": None},
+        )
+        assert s.gate.status == "failed", s.gate.reasons
+        assert any("只有 0 个" in r for r in s.gate.reasons)
+
+    def test_自报的why里的网址只在reached时算数(self, tmp_path):
+        """任务② 不要求 ``selected``，它的交付只能从 ``why`` 里读。"""
+        s = self._run_sample(
+            tmp_path, branch=None, play_page_url="https://a.test/play",
+            report={"reached": True,
+                    "why": "播放页在这里：https://a.test/play 画面在放",
+                    "selected": None},
+        )
+        assert s.gate.status == "passed", s.gate.reasons
+
+    def test_放弃形态的why里列网址不算兑现(self, tmp_path):
+        """「我看了 A、B，都不是播放页」——那是排除理由，不是交付。"""
+        s = self._run_sample(
+            tmp_path, report={"reached": False,
+                              "why": "https://a.test/ 与 https://b.test/ 都排除了",
+                              "selected": None},
+        )
+        assert s.gate.status == "failed", s.gate.reasons
 
     def test_网址不带协议不算兑现(self, tmp_path):
         """答复说「找到了网址：a.test」——那不是一个能交付的网址。
 
         合同要的是 ``http(s)://``；只有 host 的地址用户点不开。
         """
-        url = "a.test"
-        outcome = dict(_outcome(url, None), site_url=url, play_page_url="")
-        arc = _arc(
-            visits=[dict(_visit(url), steps=[_step("goto", _written("看看这个站"))])],
-            outcomes=[outcome],
+        s = self._run_sample(
+            tmp_path, branch=None,
+            report={"reached": True, "why": "找到了：a.test", "selected": None},
         )
-        s = schema.split_archive(_write(tmp_path, arc))[0]
-        assert s.gate.status == "failed"
+        assert s.gate.status == "failed", s.gate.reasons
         assert any("只有 0 个" in r for r in s.gate.reasons)
 
     def test_要求两个网址只给一个也不许passed(self, tmp_path):
@@ -950,10 +999,19 @@ class Test终局验收读回复:
         s = self._run_sample(
             tmp_path, task_id="T019", branch=None,
             play_page_url="https://a.test/play",
+            report={"reached": True, "why": "找到了",
+                    "selected": [{"url": "https://a.test/play", "why": "正片"}]},
         )
-        assert s.gate.status == "failed"
+        assert s.gate.status == "failed", s.gate.reasons
         assert any("至少 2 个网址" in r and "只有 1 个" in r
                    for r in s.gate.reasons)
+
+    def test_失败轨迹的自报也照样核(self, tmp_path):
+        """放弃形态的 ``report`` 也在——它同样可能兑现合同（列了可用网址）。"""
+        s = self._run_sample(
+            tmp_path, report={"reached": False, "why": "没找到", "selected": None},
+        )
+        assert s.gate.status == "failed", s.gate.reasons
 
     def test_不要求网址的任务不受影响(self, tmp_path):
         """T025 的合同没有 ``min_urls`` ⇒ 这条判据不适用，判定原样。"""
@@ -964,6 +1022,34 @@ class Test终局验收读回复:
         """未知 ``task_id`` ⇒ 读不到合同 ⇒ **不改判定**（fail-closed）。"""
         s = self._run_sample(tmp_path, task_id="ZZZ999")
         assert s.gate.status == "passed", s.gate.reasons
+
+    def test_自报进P2的to_json且可原样重建(self, tmp_path):
+        """P2 是**落盘产物**：消费方读的是 JSON，不是内存对象。
+
+        ``OutcomeRef`` 只存**指针**（evidence 原文不复制，见其 docstring），
+        而 ``report`` 是 P1 里**没有别的副本**的那份原文——P2 不带它，
+        T 侧与复核侧就再也读不到「模型自己说了什么」。
+        """
+        sent = {"reached": True, "why": "点开了播放器",
+                "selected": [{"url": "https://a.test/play", "why": "正片"}]}
+        s = self._run_sample(
+            tmp_path, branch=None, play_page_url="https://a.test/play",
+            report=sent,
+        )
+        blob = s.to_json()
+        assert blob["outcome"]["report"] == sent
+        assert "report" not in blob["outcome"]["p1_missing_fields"]
+
+    def test_历史存档的P2不补假空值(self, tmp_path):
+        """键不在 ⇒ P2 里**不写** ``report``，并记进 ``p1_missing_fields``。
+
+        补一个 ``report: null`` 会让「没有这个字段」与「有字段但为空」在
+        落盘后同形——那正是避坑指南 §2.3 的坑（129 条老存档被误判成齐全）。
+        """
+        s = self._run_sample(tmp_path)
+        blob = s.to_json()
+        assert "report" not in blob["outcome"]
+        assert "report" in blob["outcome"]["p1_missing_fields"]
 
     def test_没有任务级结论时不判(self, tmp_path):
         """一个候选都没访问 ⇒ 没有任务级结论 ⇒ **没有「答复」可读**。

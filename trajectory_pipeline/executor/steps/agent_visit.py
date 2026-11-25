@@ -161,12 +161,13 @@ async def agent_visit(
                     exit_stage="visit.no_obs",
                     exit_signal="snapshot",
                     exit_question=Q.PLAYER_OK,
+                    report=outcome.report,
                 )
                 result.note("agent 报到达但没有可判的观察")
                 return result
             # ── ⑦ 与 scripted 同一段代码 ────────────────────────────
             judge_player(perceptor, ledger, result, outcome.final_obs,
-                         pre_obs=site_obs)
+                         pre_obs=site_obs, report=outcome.report)
             return result
 
         # 放弃 / 被收口。**记哪一支是映射表的事**（§3.3）：agent 只报「没到」，
@@ -180,6 +181,7 @@ async def agent_visit(
             exit_signal=outcome.exit_signal,
             exit_question=outcome.exit_question,
             downgraded_from=outcome.downgraded_from,
+            report=outcome.report,
         )
         result.note(f"agent 未到达：{outcome.kind}（{outcome.reason}）")
         return result

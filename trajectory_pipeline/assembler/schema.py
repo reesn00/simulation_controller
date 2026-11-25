@@ -510,6 +510,20 @@ class OutcomeRef:
     exit_signal: str = ""
     exit_question: str = ""
     downgraded_from: str = ""
+    #: 终局自报**原文**（P1 的 ``outcomes[j].report``，agent 模式才有）。
+    #:
+    #: ``None`` = 没有这份自报。三种成因必须分开读，靠 :attr:`p1_missing_fields`：
+    #:
+    #: - 键**不在** P1 里 ⇒ 历史存档（2026-11-25 之前切的）⇒ 记进
+    #:   ``p1_missing_fields``，下游判**不可判定**，不判通过也不判失败；
+    #: - 键**在**但值是 ``None`` ⇒ 这次是 scripted 跑的，压根没问过模型
+    #:   「你说到了哪里」——同样不可判定，但不是缺件；
+    #: - 键在且有内容 ⇒ 这才是可验收的「模型的最终回复」。
+    #:
+    #: ⚠️ 终局验收（:func:`_apply_output_contract`）只认第三种。此前它读的是
+    #: 代码合成的收尾文本 ⇒ 只要 ``play_page_url`` 有值就必然含 URL ⇒
+    #: 对成功样本**恒过**，验的是渲染器不是模型（审查 13 号 P1-1）。
+    report: Mapping[str, Any] | None = None
     #: P1 的 outcome 里**压根没有** ``site_url`` / ``play_page_url`` 这两个键
     #: （2026-10-10 之前切的存档）。逐条记，不靠「值为空」推断。
     #:
@@ -540,6 +554,7 @@ class OutcomeRef:
         # 「键不在」与「值为空」必须继续可区分。
         for key in (
             "exit_stage", "exit_signal", "exit_question", "downgraded_from",
+            "report",
         ):
             if key not in self.p1_missing_fields:
                 out[key] = getattr(self, key)
@@ -1049,9 +1064,11 @@ def _outcome_ref(raw: Mapping[str, Any] | None) -> OutcomeRef | None:
         k for k in (
             "site_url", "play_page_url", "question",
             "exit_stage", "exit_signal", "exit_question", "downgraded_from",
+            "report",
         )
         if k not in raw
     )
+    raw_report = raw.get("report")
     return OutcomeRef(
         url=str(raw.get("url")),
         branch=raw.get("branch"),
@@ -1065,6 +1082,9 @@ def _outcome_ref(raw: Mapping[str, Any] | None) -> OutcomeRef | None:
         exit_signal=str(raw.get("exit_signal") or ""),
         exit_question=str(raw.get("exit_question") or ""),
         downgraded_from=str(raw.get("downgraded_from") or ""),
+        # 只有 Mapping 才算自报；形状不对与「没有」同处置（下游判不可判定），
+        # **不猜**——补一个空 dict 会让「非空校验」静默通过。
+        report=dict(raw_report) if isinstance(raw_report, Mapping) else None,
         p1_missing_fields=missing,
     )
 
@@ -1214,29 +1234,43 @@ def _apply_output_contract(
     gate: GateMark,
     *,
     task_id: str,
-    title: str,
     outcome: OutcomeRef | None,
-    site_outcomes: Sequence[SiteOutcomeView],
-    reflection: Mapping[str, Any] | None,
     has_visible_action: bool,
 ) -> GateMark:
-    """终局验收读**最终回复**（方案 23 R2-3，owner 裁定 O-2）。
+    """终局验收读**模型自己的最终自报**（P1-1，2026-11-25 修正）。
 
-    判据只有一条：任务库 ``output_contract.min_urls ≥ 1``，而这条样本的
-    收尾答复里**没有 URL** ⇒ **不许判 ``passed``**。
+    判据只有一条：任务库 ``output_contract.min_urls ≥ 1``，而这条轨迹的
+    **模型终局自报**里**没有 URL** ⇒ **不许判 ``passed``**。
 
-    - 只作用于**有任务级结论**的样本（``outcome is not None``）：搜索阶段
-      就被拦 / 一个候选都没访问的 run 没有「答复」可读；
-    - 只降 ``passed``：``failed`` 已经是失败，``not_run`` 是「没判」——
-      两者都不许被这条判据改写（``not_run`` 不是通过，见 :func:`gate_of`）；
-    - 读的文本是 :func:`~trajectory_pipeline.assembler.closing.closing_for_run`
-      的产出，**与 P3 渲染的末条 assistant 是同一句话**——分开写的那天，
-      验收读的就不是模型看到的那句了（事实的算法在
-      :func:`~trajectory_pipeline.assembler.closing.run_closing_outcomes`，
-      三侧共用）；
+    ## 为什么不再读 ``closing_text``（审查 13 号 P1-1）
+
+    上一版读 :func:`~trajectory_pipeline.assembler.closing.closing_for_run`
+    的产出。那段文本是**代码合成的**：只要 ``play_page_url`` 有值，句子
+    就必然含一个 URL（``找到了《片名》的可播放网址：<url>``）⇒
+    ``count_urls`` 必然 ≥ ``min_urls`` ⇒ **对成功样本恒过**。
+    它验的是渲染器，不是模型——H-23 想抓的「最终答复没有 URL」永远抓不到，
+    因为那个 URL 是渲染器写进去的。
+
+    ⇒ 现在读 :attr:`OutcomeRef.report`（模型 ``done=true`` 那一步的终局
+    自报原文，形状钉在 :data:`~trajectory_pipeline.executor.agent_loop.
+    _REPORT_FORMAT`）：成功形态的 ``why`` 与 ``selected[].url`` 才是
+    「模型说了什么」。
+
+    ## 三档处置（缺件不冒充结论）
+
+    - 自报是 ``None`` 且 ``report`` **不在** ``p1_missing_fields`` ⇒ 这次是
+      scripted 跑的，压根没问过模型「你说到了哪里」 ⇒ **``not_run``**
+      （判据不适用，不是通过也不是失败）；
+    - ``report`` 在 ``p1_missing_fields`` ⇒ 历史存档，没有可读的自报 ⇒
+      **``not_run``**，理由写明「存档早于自报字段」；
+    - 自报有内容 ⇒ 按 ``min_urls`` 判，**只降 ``passed``**：
+      ``failed`` 已经是失败，``not_run`` 是「没判」——都不被改写。
+
+    ⚠️ 为什么降成 ``not_run`` 而不是「按渲染文本兜底」：兜底就等于回到旧
+    口径——那份文本对成功样本恒过，而「恒过」与「真过」在报表上长得一样。
+
     - 任务库读不到 / 未知 ``task_id`` / 合同没写 ``min_urls`` ⇒
-      ``None`` ⇒ **不改判定**（fail-closed：判据不适用 ≠ 判通过）。同理，
-      没有可见模型动作就没有收尾文本，也就没有可验收的「最终回复」。
+      ``None`` ⇒ **不改判定**（fail-closed：判据不适用 ≠ 判通过）。
     """
     if outcome is None or not has_visible_action:
         return gate
@@ -1245,13 +1279,14 @@ def _apply_output_contract(
     min_urls = contracts.min_urls_of(task_id)
     if min_urls is None:
         return gate
-    text = _run_closing_text(
-        title=title,
-        outcome=outcome,
-        site_outcomes=site_outcomes,
-        reflection=reflection,
-    )
-    found = closing.count_urls(text)
+    if outcome.report is None:
+        reason = (
+            "终局验收读不到模型自报：这份存档没有 report 字段"
+            if "report" in outcome.p1_missing_fields
+            else "终局验收读不到模型自报：这次执行没有问过模型（scripted 链不产 report）"
+        )
+        return GateMark("not_run", gate.reasons + (reason,))
+    found = count_report_urls(outcome.report)
     if found >= min_urls:
         return gate
     return GateMark(
@@ -1259,40 +1294,38 @@ def _apply_output_contract(
         gate.reasons
         + (
             f"终局答复未兑现输出契约：合同要求至少 {min_urls} 个网址，"
-            f"答复里只有 {found} 个",
+            f"模型自报里只有 {found} 个",
         ),
     )
 
 
-def _run_closing_text(
-    *,
-    title: str,
-    outcome: OutcomeRef | None,
-    site_outcomes: Sequence[SiteOutcomeView],
-    reflection: Mapping[str, Any] | None,
-) -> str:
-    """这条轨迹的收尾答复——**P2 与 P3 读的是同一句**。
+def count_report_urls(report: Mapping[str, Any]) -> int:
+    """模型终局自报里**它自己交出来的**网址条数。
 
-    P3 侧的同一个函数在 :mod:`assembler.views`（``_closing_text``），
-    那边读的是 P2 落盘后的 JSON，这边读的是内存里的对象。事实一样 ⇒
-    文本一样 ⇒ P2 的终局验收判的**就是**模型最后看到的那句。
+    只数两处，且**不数 ``why`` 的自由文本**：
 
-    ⚠️ 事实的算法在 :func:`assembler.closing.run_closing_outcomes`——
-    **不在这里重写一遍**。
+    - ``selected[].url``——链接类任务的正式交付面（契约要求它每条可溯源
+      到见过的链接，见 ``_invented_url`` 的守卫）；
+    - ``reached=true`` 但 ``selected`` 为空时退回数 ``why`` 里的 URL：
+      任务②（找播放器）的契约**不要求 selected**，它的「到了哪一页」
+      只能从 ``why`` 里读到。
+
+    为什么 ``reached=false`` 的 ``why`` 也数：放弃形态里写 URL 是正常表达
+    （「我看了 A 和 B，都不是播放页」），但那是**排除理由**不是交付。
+    所以只在 ``reached is True`` 时才退到 ``why``——放弃形态数它会让
+    「列了一堆没找到的站」看起来像兑现了输出契约。
     """
-    decisive = outcome.to_json() if outcome is not None else None
-    sites = [
-        s.outcome.to_json() if s.outcome is not None else None
-        for s in site_outcomes
-    ]
-    return closing.closing_for_run(
-        title=title,
-        outcomes=closing.run_closing_outcomes(
-            decisive=decisive,
-            site_outcomes=sites,
-        ),
-        conclusion=closing.reflection_conclusion(reflection),
-    )
+    urls: set[str] = set()
+    selected = report.get("selected")
+    if isinstance(selected, Sequence) and not isinstance(selected, (str, bytes)):
+        for row in selected:
+            if isinstance(row, Mapping):
+                url = str(row.get("url") or "").strip()
+                if url:
+                    urls.add(url)
+    if not urls and report.get("reached") is True:
+        return closing.count_urls(str(report.get("why") or ""))
+    return len(urls)
 
 
 def _run_sample(
@@ -1339,16 +1372,13 @@ def _run_sample(
         # 旧口径不按新窗口核（见 :func:`gate_of` 的跨口径注）。
         rationale_era=era,
     )
-    # 终局验收读最终回复（方案 23 R2-3）：闸门只判过 outcome，不读文本，
-    # 于是「回复必须含可播放网址」这条合同从未被执行（审计 G4：44/49 违约
-    # 而 gate 仍 passed）。这里补的是**读回复**，不是第二条 rationale 闸。
+    # 终局验收读**模型自报**（P1-1）：此前读的是代码合成的收尾文本 ⇒ 只要
+    # ``play_page_url`` 有值就必然含 URL ⇒ 对成功样本恒过（审计 G4：44/49
+    # 违约而 gate 仍 passed）。现在读 ``outcome.report``，读不到判 not_run。
     gate = _apply_output_contract(
         gate,
         task_id=task_id,
-        title=str(archive.get("title") or ""),
         outcome=outcome,
-        site_outcomes=site_outcomes,
-        reflection=reflection,
         has_visible_action=any(a.origin != "infrastructure" for a in actions_),
     )
     return Sample(

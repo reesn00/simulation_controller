@@ -1104,6 +1104,18 @@ class AgentOutcome:
     exit_signal: str = ""
     exit_question: str = ""
     downgraded_from: str = ""
+    #: 终局自报**原文**（``done=true`` 那一步的 ``report``）。
+    #:
+    #: ⚠️ 为什么不从 :attr:`reason` 反推：``reason`` 是**代码整理过**的一句话
+    #: （放弃形态拼了 ``why_shape``、收口形态是机械描述），而 P2 的终局验收
+    #: 要判的是「**模型自己**说到了哪里、交了什么链接」。合成文本上判，
+    #: 判的是渲染器，不是模型（审查 13 号 P1-1）。
+    #:
+    #: ⚠️ 它与 raw CoT 的边界：``report`` 是契约里的**结构化终局字段**
+    #: （:data:`_REPORT_FORMAT`），不是思维过程——``think`` 已经单独走
+    #: :attr:`~.actions.ActionStep.rationale`，两者**不合并**。
+    #: ``reached`` 形态以前把它整段丢掉，于是 P1 上只剩一个布尔值。
+    report: Mapping[str, Any] | None = None
 
     @property
     def reached(self) -> bool:
@@ -1127,15 +1139,18 @@ class AgentOutcome:
         transcript: tuple,
         obs: Observation,
         selected: tuple[SelectedRef, ...] = (),
+        report: Mapping[str, Any] | None = None,
     ) -> "AgentOutcome":
         return cls(kind="reached", steps_taken=steps, llm_calls=calls,
-                   transcript=transcript, final_obs=obs, selected=selected)
+                   transcript=transcript, final_obs=obs, selected=selected,
+                   report=report)
 
     @classmethod
     def give_up(
         cls, *, why: str, steps: int, calls: int, transcript: tuple,
         obs: Observation | None = None, site_url: str = "",
         exit_signal: str = "", exit_question: str = "",
+        report: Mapping[str, Any] | None = None,
     ) -> "AgentOutcome":
         """自报放弃——**默认 unresolved，不入负样本池**（§3.3）。
 
@@ -1157,7 +1172,7 @@ class AgentOutcome:
         return cls(kind="gave_up", reason=reason, branch=branch or UNRESOLVED,
                    steps_taken=steps, llm_calls=calls, transcript=transcript,
                    exit_stage="agent.gave_up", exit_signal=exit_signal,
-                   exit_question=exit_question)
+                   exit_question=exit_question, report=report)
 
     @classmethod
     def close(
@@ -1461,6 +1476,7 @@ class _Loop:
                         transcript=self._transcript(),
                         obs=self.obs,
                         selected=instr.selected,
+                        report=instr.report,
                     )
                 return AgentOutcome.give_up(
                     why=instr.why or "（模型未给出放弃原因）",
@@ -1471,6 +1487,7 @@ class _Loop:
                     site_url=self._site_url,
                     exit_signal=self._progress_signal(),
                     exit_question=self._exit_question(),
+                    report=instr.report,
                 )
 
             # ④ 执行 → ⑤ 复观察 → ⑥ 记账 → ⑦ 死循环 + 拦截

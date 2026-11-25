@@ -159,6 +159,11 @@ class Test字段集一致:
             # exit_question 是**没走到的判断点**，只作诊断，不参与
             # D-5 的题-分支配对（配对仍只认 question）。
             "exit_stage", "exit_signal", "exit_question", "downgraded_from",
+            # 2026-11-25 P1-1：模型的终局自报**原文**。此前 ``reached``
+            # 形态把它整段丢掉，P1 上只剩一个布尔值 ⇒ P2 的终局验收只好
+            # 读代码合成的收尾文本，而那份文本对成功样本恒过。
+            # ``None`` = 没有这份自报（scripted / 历史存档）。
+            "report",
         }
         assert actual == expected, (
             f"outcome 字段漂移：多 {actual - expected} / 少 {expected - actual}"

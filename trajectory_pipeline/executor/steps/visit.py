@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from trajectory_pipeline.executor import actions
@@ -462,6 +462,7 @@ def judge_player(
     player_obs: Observation,
     *,
     pre_obs: Observation | None,
+    report: Mapping[str, Any] | None = None,
 ) -> None:
     """⑦ 判断点 ④：播放页是否可用——**并记账**。两条执行链共用。
 
@@ -476,6 +477,14 @@ def judge_player(
     写成「这个站看不了」——负样本池里最贵的一类错。让那批去
     ``unresolved``，人工复核时 transcript 与动作流都还在，丢的是
     一个负样本而不是一条假负样本。
+
+    ``report``（2026-11-25 · P1-1）：agent 那一步的终局自报原文，
+    **只透传不读**——它不参与 ``PLAYER_OK`` 的判定（判定读的是
+    ``player_obs``，那是 agent 据以决策的那一页）。它落 P1，给 P2 的
+    终局验收当「模型的最终回复」读。scripted 链不产它，默认 ``None``。
+
+    ⚠️ ``report`` 只在**到了播放页之后**的记账上带：``reached`` 形态
+    才有自报。放弃形态的自报由 ``agent_visit`` 直接记（不走本函数）。
     """
     result.player_obs = player_obs
     # ── ⑦.0 挑战页同样先于语义判断（2026-10-26 R1）──────────────
@@ -491,7 +500,7 @@ def judge_player(
     if player.answer is True:
         ledger.record(play_url, None, player.evidence, decision=player,
                       reached=True, site_url=result.candidate.url,
-                      play_page_url=play_url)
+                      play_page_url=play_url, report=report)
         result.success = True
         return
 
@@ -505,7 +514,7 @@ def judge_player(
         # 记成 unresolved，而这条恰好是它管不到的情形。
         ledger.record_unresolved_reached(
             play_url, player, site_url=result.candidate.url,
-            play_page_url=play_url,
+            play_page_url=play_url, report=report,
         )
         result.note("PLAYER_OK=None（有播放组件，确认不了能不能用）")
         return
@@ -513,7 +522,7 @@ def judge_player(
     ledger.record_from(play_url, player, reached=True, obs=player_obs,
                        pre_obs=pre_obs,
                        site_url=result.candidate.url,
-                       play_page_url=play_url)
+                       play_page_url=play_url, report=report)
     result.note(f"PLAYER_OK={player.answer}")
 
 

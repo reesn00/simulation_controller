@@ -314,6 +314,17 @@ class SiteOutcome:
     #: 就是靠正则捞的，新档直接读字段）。
     downgraded_from: str = ""
 
+    #: 终局自报的**原文**（agent 模式下 ``done=true`` 那一步的 ``report``）。
+    #: ``None`` = 没这份自报：scripted 路径不产它、历史存档没有这个键。
+    #:
+    #: ⚠️ 与 :attr:`evidence` 的分工：``evidence`` 是**代码整理的**结论叙述
+    #: （放弃形态拼过 ``why_shape``、降级形态拼了「本该记 X」），而这里要的是
+    #: **模型自己说了什么**。P2 的终局验收判「答复有没有兑现输出契约」时
+    #: 必须读这一份——读 ``evidence`` 等于判渲染器（审查 13 号 P1-1）。
+    #: 形状钉在 :data:`~executor.agent_loop._REPORT_FORMAT`：``reached`` 必填
+    #: 布尔、``why`` 必填字符串、链接类任务 ``selected`` 是 ``[{url, why}]``。
+    report: Mapping[str, Any] | None = None
+
     #: 2026-10-12 增量二十：LLM 在 ``page_quotes`` 字段单独回传的"页面
     #: 原文短语"列表（与 ``evidence`` 自述**严格分开**——后者是模型推断）。
     #:
@@ -380,6 +391,10 @@ class SiteOutcome:
             "exit_signal": self.exit_signal,
             "exit_question": self.exit_question,
             "downgraded_from": self.downgraded_from,
+            # 终局自报原文（P1-1）。``None`` 表示**没有这份自报**
+            # （scripted 路径 / 历史存档），与「报了但内容为空」不同物。
+            # 历史存档没有这个键 ⇒ P2 侧记进 ``p1_missing_fields``。
+            "report": dict(self.report) if self.report is not None else None,
         }
 
 
@@ -421,6 +436,7 @@ class RunLedger:
         exit_signal: str = "",
         exit_question: str = "",
         downgraded_from: str = "",
+        report: Mapping[str, Any] | None = None,
     ) -> SiteOutcome:
         """记一个站点结果并返回它。分支名非法时抛 :class:`UnknownBranch`。"""
         if (
@@ -454,6 +470,7 @@ class RunLedger:
             exit_signal=exit_signal,
             exit_question=exit_question,
             downgraded_from=downgraded_from,
+            report=dict(report) if report is not None else None,
         )
         self.outcomes.append(outcome)
         return outcome
@@ -468,6 +485,7 @@ class RunLedger:
         pre_obs: Observation | None = None,
         site_url: str = "",
         play_page_url: str = "",
+        report: Mapping[str, Any] | None = None,
     ) -> SiteOutcome:
         """按 Decision 记账：``answer is None`` → ``unresolved``，
         否则按该题绑定的负分支记。
@@ -545,6 +563,7 @@ class RunLedger:
                     exit_stage="player.guard",
                     exit_signal="precondition",
                     downgraded_from=branch,
+                    report=report,
                 )
         return self.record(
             url,
@@ -554,6 +573,7 @@ class RunLedger:
             reached=reached,
             site_url=site_url,
             play_page_url=play_page_url,
+            report=report,
         )
 
     def record_unresolved_reached(
@@ -563,6 +583,7 @@ class RunLedger:
         *,
         site_url: str = "",
         play_page_url: str = "",
+        report: Mapping[str, Any] | None = None,
     ) -> SiteOutcome:
         """环节⑦：判不出来**且已站在播放页上**时记账，落 ``player_unverified``。
 
@@ -601,6 +622,7 @@ class RunLedger:
             reached=True,
             site_url=site_url,
             play_page_url=play_page_url,
+            report=report,
         )
 
     # ── 报表 ────────────────────────────────────────────────────────
