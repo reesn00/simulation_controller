@@ -20,6 +20,27 @@
 **轨迹内全局序号**，不是「每个单元各自从 0 数起」——后者会让第 5 步的
 rationale 在字典查找里撞上搜索段的第 5 步，**静默丢思考**。
 
+### `intermediates[]` 不进样本（P0-5 · 2026-11-25 · **契约，不是遗漏**）
+
+P1 的 B/C 中间页（聚合站页 / 文章页，`intermediates[]`）**整段不进 P2**，
+因而也不进 P3/T。它缺的是：
+
+- `intermediates[i].steps` **不占 `step_index`**，样本里没有这几步；
+- 中间页的 outcome（`not_aggregator` / `aggregator_no_entries` / `article_no_links`）
+  只在 P1 `outcomes[]` 里，**不进 `site_outcomes`**。
+
+⚠️ **它与 `orchestrator._rationale_history` 不一致，而这个不一致是有意保留的**：
+写后续站点 rationale 时，agent **看得见**中间页的步（最近 40 步窗口含
+`intermediates[].steps`），而样本里没有那几步。⇒ **两边必须一起改或都不改**：
+只删 rationale 的窗口，agent 在 B/C 上会对着空历史写动机（方案 23 §1.3 反对的
+正是这个）；只加 P2 单元，要同时动 P2 切条 / P3 / T 渲染。
+
+⚠️ **实测规模是 0**（2026-11-25 扫 841 份存档）：带 `intermediates` 的只有 2 份
+（同一份的重复拷贝）且都是 **scripted** 模式——中间页的步只有 `goto`，没有 agent
+动作；「agent 模式 + B/C 路径」的真实存档 **0 份**。⇒ 这是**潜在**损失，不是已发生
+的损失。**接入的前置条件是补一批 agent + B/C 的真实存档**，先量清楚丢掉的信息有多重
+（`research/probes/p05_intermediate_scale.py` / `p05_dump_intermediate.py`）。
+
 ## 访问级剔除（方案 23 A10 / R4-2(b)）
 
 任务库（`tasks.yaml`）里的 `excluded_platforms` 在 v1 是**答案级**约束

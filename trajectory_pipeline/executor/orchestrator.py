@@ -897,6 +897,12 @@ def _rationale_history(record: "RunRecord") -> list[ActionStep]:
     搜索单元 → 中间页 → 已完成的站点访问。当前正在写 rationale 的单元
     **不在** ``record.visits`` 里（调用点在 ``append`` 之前），所以不会
     把本单元的步重复喂给 writer。
+
+    ⚠️ **中间页的步在这里、但不在样本里**（P0-5 · 2026-11-25）：P2 的
+    ``_units_of`` 不收 ``intermediates``，所以样本拿不到这几步，而 agent 写
+    后续站点的 rationale 时**看得见**它们。两边不一致是**有意保留**的——只删
+    这里的窗口会让 agent 在 B/C 上对着空历史写动机（方案 23 §1.3 反对的正是
+    这个）。要接中间页就**两边一起改**。
     """
     steps: list[ActionStep] = list(record.steps.steps)
     for ir in record.intermediates:

@@ -1110,7 +1110,15 @@ class _Unit:
 
 
 def _units_of(archive: Mapping[str, Any]) -> tuple[_Unit, ...]:
-    """把一份 P1 拆成决策单元序列：搜索阶段 + 每个访问过的站点。"""
+    """把一份 P1 拆成决策单元序列：搜索阶段 + 每个访问过的站点。
+
+    ⚠️ **``intermediates[]`` 不在这里，这是契约不是遗漏**（P0-5 · 2026-11-25）：
+    B/C 路径的中间页（聚合站页 / 文章页）当前**整段不进训练轨迹**——它的步不占
+    ``step_index``，它的 outcome 也不进 ``site_outcomes``。**加它要同时动 P2 切条、
+    P3/T 渲染与 ``orchestrator._rationale_history``**（后者现在把中间页的步算进
+    agent 的上下文，两边不一致是有意保留的）；接入条件与实测规模见
+    ``docs/03-数据契约.md``「P2 切条的四条口径」末条。
+    """
     units: list[_Unit] = []
 
     search_steps = tuple(archive.get("steps") or ())

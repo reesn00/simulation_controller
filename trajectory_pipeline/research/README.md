@@ -73,6 +73,11 @@ research/
 │  │  ── P0-4 人工裁定静默丢失（2026-11-25；结论与处置见 docs/13 号 P0-4）──
 │  ├─ p04_cli_e2e.py           跑真 CLI 两条命令：队列/裁定两个文件是否真分开 + 重跑不擦裁定
 │  ├─ p04_reverse_check.py     逐条回退每处修复，确认对应测试会红（当前 6/6 杀死）
+│  │
+│  │  ── P0-5 中间页规模盘点（2026-11-25；结论与处置见 docs/13 号 P0-5）──
+│  ├─ p05_intermediate_scale.py  扫存档量规模：多少份带 intermediates、步数多少、按模式分组
+│  ├─ p05_dump_intermediate.py   看形态：某份存档里中间页的步是什么（agent 动作 vs 只有 goto）
+│  └─ p05_reverse_check.py       回退「中间页不进样本」的两条守卫，确认契约测试会红（2/2）
 │  ├─ inc43_ab_compare.py      INC42 轮 vs INC43 轮
 │  ├─ inc44_ab_compare.py / inc44_ab_golden_check.py / inc44_check_t011.py
 │  ├─ inc44_unresolved_analysis.py   unresolved 36 行构成分层

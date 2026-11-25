@@ -925,6 +925,7 @@ class Test契约文档不是摆设:
         assert "对齐" in doc_text
         assert "step_index" in doc_text
 
+
     def test_闸门三档都在文档里(self, doc_text):
         for s in ("passed", "failed", "not_run"):
             assert f"`{s}`" in doc_text, f"闸门状态 {s} 没写进契约"
@@ -939,3 +940,55 @@ class Test契约文档不是摆设:
             assert name in code_text, (
                 f"P2 契约文档提到 {name!r}，但 assembler 源码里找不到它——"
                 f"文档写了实现没有的东西")
+
+
+class Test中间页不进样本契约:
+    """P0-5（2026-11-25）：**``intermediates[]`` 不进 P2 是契约，不是遗漏**。
+
+    它没有字段级痕迹（不进样本就没有键可查），所以靠**两个方向各一条**盯：
+    代码真的不收它（行为），契约文档真的写了它（口径）。缺任何一边，
+    「有意不接」都会被下一个人读成「漏了」——然后被顺手补上，
+    而补的那一下要动 P2/P3/T + rationale 窗口四处。
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def doc_text():
+        assert DOC.exists(), f"{DOC} 不存在"
+        return DOC.read_text(encoding="utf-8")
+
+    def test_代码确实不收中间页(self):
+        from trajectory_pipeline.assembler.schema import _units_of
+
+        archive = {
+            "steps": [{"action": {"tool": "goto", "origin": "model"}}],
+            "search_observation": {"url": "https://s.test/", "body_text": "x"},
+            "intermediates": [
+                {"role": "aggregator", "url": "https://agg.test/",
+                 "steps": [{"action": {"tool": "goto"}},
+                           {"action": {"tool": "click", "target": {"name": "入口"}}}]},
+            ],
+            "visits": [{"url": "https://site.test/", "steps": []}],
+        }
+        names = [u.name for u in _units_of(archive)]
+        assert names == ["search", "site-1"], (
+            f"中间页进了单元表：{names}。**若这是有意的接法**，"
+            f"先把 docs/contracts/P2-sample.md 那条契约改掉，再改这条测试"
+        )
+
+    def test_契约文档写了这条(self, doc_text):
+        """方向二：代码不收它，文档必须说清「为什么不收」。
+
+        ⚠️ **判据要看那句话本身，不能只看有没有这个词**：``intermediates``
+        在文档里还会出现在别处（P1 字段说明），只查它的存在时**删掉整节
+        契约也照样绿**——实测过，这条一开始就是这么写弱的。
+        """
+        assert "`intermediates[]` 不进样本" in doc_text, (
+            "中间页不进样本这件事没写进契约（要的是那一节标题，"
+            "不是这个词出现在别处）")
+        assert "不占 `step_index`" in doc_text, (
+            "契约必须说清它**缺什么**——只写「不进」不写缺哪几样，"
+            "读的人没法判断丢了什么")
+        assert "_rationale_history" in doc_text, (
+            "契约必须点名它与 _rationale_history 的不一致是有意保留的——"
+            "不写，下一个人只会看到其中一半")
