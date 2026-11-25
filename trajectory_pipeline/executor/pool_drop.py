@@ -54,7 +54,12 @@ import pathlib
 from datetime import datetime, timezone
 from typing import Any
 
-from trajectory_pipeline.executor.archive import P1Archive
+from trajectory_pipeline.executor.archive import (
+    P1Archive,
+    CredentialLeak,
+    credential_shapes,
+    scan_credentials,
+)
 
 __all__ = [
     "DROPPED_LOG_NAME",
@@ -133,6 +138,10 @@ def drop_from_root(root: pathlib.Path | str, *,
         return out
 
     # 复用 purge 的删除口径：按**行的内容**配对删，坏行原样保留。
+    # ⚠️ **闸门必须在删之前**（P1-4）：日志是这次撤行的唯一记录，而
+    # ``reason`` 是手输的、``row`` 里带着页面原文——命中凭据时拒绝写日志，
+    # 也就必须拒绝删。先删后写会把「撤不掉但有记录」变成「撤掉了但没记录」。
+    _guard_credentials(selected, reason=reason, path=base / DROPPED_LOG_NAME)
     _arc, deleted = store.apply_purge((), tuple(selected))
     out["dropped"] = deleted
     out["rows"] = list(selected)
@@ -149,3 +158,27 @@ def drop_from_root(root: pathlib.Path | str, *,
                 "row": row,
             }, ensure_ascii=False) + "\n")
     return out
+
+
+def _guard_credentials(
+    rows: list[dict[str, Any]], *, reason: str, path: pathlib.Path,
+) -> None:
+    """凭据闸门：撤池日志会原样写下 ``reason`` 与**整条池行**。
+
+    P1-4：本模块是人工输入落盘的入口之一，此前没有这道闸。日志是
+    append-only 的审计档，凭据一旦进去就留在版本控制历史里。
+
+    材料与落盘形状一致（``reason`` + 每行的 JSON）——只扫 ``reason``
+    会漏掉池行里的页面原文。
+    """
+    blob = json.dumps(
+        {"reason": reason, "rows": rows}, ensure_ascii=False
+    )
+    hits = scan_credentials(blob)
+    if hits:
+        shapes = credential_shapes(blob)[:3]
+        raise CredentialLeak(
+            f"撤池内容命中 {len(hits)} 项凭据特征，已拒绝撤行与写 "
+            f"{path.name}: {hits[:3]}"
+            + (f"｜命中形态: {shapes}" if shapes else "")
+        )

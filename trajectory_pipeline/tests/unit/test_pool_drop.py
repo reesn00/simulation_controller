@@ -129,6 +129,54 @@ class Test撤行:
         assert out["selected"] == [] and out["dropped"] == 0
 
 
+class Test凭据闸门:
+    """P1-4（审查 13 号）：撤池日志会原样写下 ``reason`` 与**整条池行**。
+
+    日志是 append-only 的审计档——凭据一旦进去就留在版本控制历史里。
+    此前 ``pool_drop`` 没有这道闸。
+    """
+
+    SECRET = "https://u:p4ssw0rd@a.test/x"
+
+    def test_理由带凭据时拒绝撤行也拒绝写日志(self, tmp_path):
+        """⚠️ **闸门在删之前**：先删后写会把「撤不掉但有记录」变成
+        「撤掉了但没记录」。"""
+        _write_pool(tmp_path, [_pool_row(url="https://a.com/1")])
+        with pytest.raises(pd.CredentialLeak):
+            pd.drop_from_root(tmp_path, url_fragments=("a.com",),
+                              reason=f"撤销：{self.SECRET}", dry_run=False)
+        assert len(_pool_lines(tmp_path)) == 1, "池行不得被撤掉"
+        assert not (tmp_path / pd.DROPPED_LOG_NAME).exists(), "日志不得落盘"
+
+    def test_池行里本来就有的凭据也拦(self, tmp_path):
+        """闸门材料与落盘形状一致：``reason`` + 每行的 JSON。
+
+        只扫 ``reason`` 会漏掉池行里的页面原文。
+        """
+        _write_pool(tmp_path, [_pool_row(
+            url="https://a.com/1",
+            evidence="页面头里有 Authorization: Bearer sk-abcdefghijklmnopqrst",
+        )])
+        with pytest.raises(pd.CredentialLeak):
+            pd.drop_from_root(tmp_path, url_fragments=("a.com",),
+                              reason="正常理由", dry_run=False)
+        assert len(_pool_lines(tmp_path)) == 1
+
+    def test_dry_run不受影响(self, tmp_path):
+        """dry-run 不删也不写日志 ⇒ 没有可污染的东西。"""
+        _write_pool(tmp_path, [_pool_row(url="https://a.com/1")])
+        out = pd.drop_from_root(tmp_path, url_fragments=("a.com",),
+                                reason=f"撤销：{self.SECRET}", dry_run=True)
+        assert out["dropped"] == 0 and len(out["selected"]) == 1
+
+    def test_干净的撤行照常落盘(self, tmp_path):
+        _write_pool(tmp_path, [_pool_row(url="https://a.com/1")])
+        out = pd.drop_from_root(tmp_path, url_fragments=("a.com",),
+                                reason="正常理由", dry_run=False)
+        assert out["dropped"] == 1
+        assert (tmp_path / pd.DROPPED_LOG_NAME).exists()
+
+
 class Test命令行:
     def test_不给判据就停(self, capsys):
         rc = cli.main(["pool-drop", "--reason", "r"])

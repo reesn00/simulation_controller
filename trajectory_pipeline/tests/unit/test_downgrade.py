@@ -413,3 +413,57 @@ class Test目录遍历:
         after = {r["url"]: r["branch"] for r in _read(p)["outcomes"]}
         assert after["a.com"] == dg.TARGET_BRANCH
         assert after["b.com"] == "no_play_control"      # **没被动**
+
+
+class Test凭据闸门:
+    """P1-4（审查 13 号）：``--reason`` 是人手输的，而它会原样进 ``evidence``。
+
+    此前 ``downgrade`` 没有这道闸（只有 ``relabel`` 与 ``P1Archive.write`` 有）
+    ⇒ 贴一个带 token 的 URL 或 Authorization 头，降级就把它写进存档，
+    而存档随后会被推给 Label Studio。
+    """
+
+    SECRET = "https://u:p4ssw0rd@a.test/x"
+
+    def test_理由带凭据时拒绝写盘且文件不动(self, tmp_path):
+        p = _write(tmp_path, _arch([_o("a.com", "no_play_control")]))
+        before = p.read_bytes()
+        with pytest.raises(dg.CredentialLeak):
+            dg.apply_to_root(
+                tmp_path, select=dg.select_by_url("a.com"),
+                reason=f"撤销：{self.SECRET}", dry_run=False,
+            )
+        assert p.read_bytes() == before, "命中凭据时不得留下任何改动"
+
+    def test_证据里本来就有的凭据也拦(self, tmp_path):
+        """闸门判的是**整份 archive 序列化后的文本**，不是光看 ``reason``。
+
+        处置会把 ``reason`` 拼进 ``evidence``，而 ``evidence`` 里本来就有
+        页面原文——一次降级等于把整份文档重写一遍。
+        """
+        p = _write(tmp_path, _arch([
+            _o("a.com", "no_play_control",
+               evidence="请求头里有 Authorization: Bearer sk-abcdefghijklmnopqrst"),
+        ]))
+        with pytest.raises(dg.CredentialLeak):
+            dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                             reason="正常理由", dry_run=False)
+        assert "Authorization" in p.read_text(encoding="utf-8"), \
+            "拒绝写盘 = 原档一个字节都不动"
+
+    def test_dry_run不受影响(self, tmp_path):
+        """dry-run 不写盘，**没有可污染的东西**——它要能照常出清单。
+
+        在 dry-run 里抛错等于把一个「先看看」的动作变成会失败的动件，
+        而排错时最需要的恰恰是看到清单。
+        """
+        _write(tmp_path, _arch([_o("a.com", "no_play_control")]))
+        out = dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                               reason=f"撤销：{self.SECRET}", dry_run=True)
+        assert out[0]["downgraded"] == 1
+
+    def test_干净的存档照常落盘(self, tmp_path):
+        p = _write(tmp_path, _arch([_o("a.com", "no_play_control")]))
+        dg.apply_to_root(tmp_path, select=dg.select_by_url("a.com"),
+                         reason="正常理由", dry_run=False)
+        assert _read(p)["outcomes"][0]["branch"] == dg.TARGET_BRANCH

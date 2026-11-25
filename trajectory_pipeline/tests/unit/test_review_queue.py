@@ -13,6 +13,7 @@ import pytest
 
 from trajectory_pipeline.executor.cli import _load_verdicts, _resolve_verdicts_path
 from trajectory_pipeline.executor.branches import BRANCH_LABELS
+from trajectory_pipeline.executor.archive import CredentialLeak
 from trajectory_pipeline.executor.review_queue import (
     AUTO_BY_INSUFFICIENT,
     AUTO_BY_PORTAL,
@@ -680,6 +681,71 @@ class TestIO:
     def test_目录不存在显式抛(self, tmp_path):
         with pytest.raises(ReviewQueueError, match="不是目录"):
             collect(tmp_path / "nope")
+
+
+class Test凭据闸门:
+    """P1-4（审查 13 号）：本模块的两个落点都会把**人工输入**写进文件。
+
+    - 队列档：证据摘要（正文预览 / 元素 / 链接）来自 P1，而人工也可能
+      把它当手输入口改过；
+    - 裁定档：``note`` 是复核员手输的。
+
+    两者此前都没有扫描，而红线是「凭据不得提交、打包、复制到测试、文档
+    或日志」——贴一个带 token 的 URL 就进产物，随后被推给 Label Studio。
+    """
+
+    SECRET = "https://u:p4ssw0rd@a.test/x"
+
+    def test_队列档证据带凭据时拒绝写(self, tmp_path):
+        arch = _archive(
+            [{"url": "a.com", "branch": "unresolved", "evidence": "e"}],
+            [_visit("a.com", body_preview=f"页面里有 {self.SECRET}")],
+        )
+        p = tmp_path / "q.jsonl"
+        with pytest.raises(CredentialLeak):
+            write_queue(p, extract_items(arch))
+        assert not p.exists(), "命中凭据时不得留下任何文件"
+
+    def test_裁定档的note带凭据时拒绝写(self, tmp_path):
+        """``note`` 是**人手输的**，而裁定档是人工制品的唯一写入点。"""
+        v = verdicts_path_for(tmp_path / "q.jsonl")
+        with pytest.raises(CredentialLeak):
+            write_verdicts(v, [{
+                "url": "https://a.test/",
+                "verdict": "confirm_success",
+                "reviewed_by": "owner",
+                "note": f"播放器地址要带 {self.SECRET} 才能打开",
+            }])
+        assert not v.exists()
+
+    def test_干净的队列与裁定照常写(self, tmp_path):
+        arch = _archive(
+            [{"url": "a.com", "branch": "unresolved", "evidence": "e"}],
+            [_visit("a.com")],
+        )
+        p = tmp_path / "q.jsonl"
+        assert write_queue(p, extract_items(arch)) == 1
+        v = verdicts_path_for(p)
+        assert write_verdicts(v, [{
+            "url": "https://a.test/", "verdict": "confirm_success",
+            "reviewed_by": "owner", "note": "画面在放正片",
+        }]) == 1
+
+    def test_旧队列里已有的凭据不会炸掉抢救流程(self, tmp_path):
+        """⚠️ **覆盖写前的抢救先于闸门**：旧队列里若已有凭据，
+        ``_rescue_verdicts_from_queue`` → ``write_verdicts`` 会命中闸门。
+
+        这时**拒绝**是对的行为（凭据红线不容商量），但报错要说出
+        是抢救那一步拦的——否则读的人会以为是新队列有问题。
+        """
+        q = tmp_path / "q.jsonl"
+        q.write_text(json.dumps({
+            "url": f"https://a.test/{self.SECRET}",
+            "verdict": "confirm_success",
+            "reviewed_by": "owner",
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+        with pytest.raises(CredentialLeak):
+            write_queue(q, [])
 
 
 class TestVerdictsFile:

@@ -120,7 +120,13 @@ import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from trajectory_pipeline.executor.archive import REVIEWED_SUFFIX, select_archives
+from trajectory_pipeline.executor.archive import (
+    REVIEWED_SUFFIX,
+    CredentialLeak,
+    credential_shapes,
+    scan_credentials,
+    select_archives,
+)
 from trajectory_pipeline.executor.branches import branch_label_of
 
 #: 降级的目标分支。它**不在** ``branches.NON_SAMPLE_BRANCHES`` 里——
@@ -397,9 +403,34 @@ def apply_to_root(root: pathlib.Path, *,
             continue
         summary["layer"] = layer
         if not dry_run:
+            _guard_credentials(archive, path)
             _atomic_write(path, archive)
         out.append(summary)
     return out
+
+
+def _guard_credentials(archive: dict[str, Any], path: pathlib.Path) -> None:
+    """凭据闸门：``--reason`` 是人手输的，而它会原样进 ``evidence``。
+
+    P1-4：本模块是**人工输入落盘的入口**之一（与 ``relabel`` /
+    ``pool_drop`` / ``review_queue`` 同族），此前只有 ``relabel`` 与
+    :meth:`~trajectory_pipeline.executor.archive.P1Archive.write` 有这道闸。
+    贴一个带 token 的 URL 或 Authorization 头，降级就把它写进存档。
+
+    检查的是**整份 archive 序列化后的文本**，不是光看 ``reason``:
+    处置会把 ``reason`` 拼进 ``evidence``，而 ``evidence`` 里本来就有页面
+    原文——一次降级等于把整份文档重写一遍，闸门就该判那一份。
+
+    异常消息里只放脱敏形态（红线：凭据不得复制到日志）。
+    """
+    payload = json.dumps(archive, ensure_ascii=False)
+    hits = scan_credentials(payload)
+    if hits:
+        shapes = credential_shapes(payload)[:3]
+        raise CredentialLeak(
+            f"{path.name} 降级后命中 {len(hits)} 项凭据特征，已拒绝写盘: "
+            f"{hits[:3]}" + (f"｜命中形态: {shapes}" if shapes else "")
+        )
 
 
 def select_by_url(*fragments: str,

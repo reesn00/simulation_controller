@@ -61,6 +61,11 @@ from trajectory_pipeline.common.elements import (
 )
 from trajectory_pipeline.common.field_limits import ELEMENT_NAME_LIMIT
 from trajectory_pipeline.common.atomic import write_text_atomic
+from trajectory_pipeline.executor.archive import (
+    CredentialLeak,
+    credential_shapes,
+    scan_credentials,
+)
 
 # ─────────────────────────────────────────────────────────────────────
 # L6 派发常量（2026-10-13 增量三十六落地）
@@ -463,15 +468,38 @@ def write_queue(path: Path | str, items: Iterable[ReviewItem]) -> int:
     if p.exists():
         _rescue_verdicts_from_queue(p)
     p.parent.mkdir(parents=True, exist_ok=True)
-    n = 0
+    # P1-4：队列档里的证据摘要（正文预览 / 元素 / 链接）来自 P1，而人工
+    # 也可能把它当手输入口改过。写之前整份判一次——它是**派生产物**，
+    # 被污染的那一行会一路进人工判读，而判读的人不会怀疑队列档本身。
+    rows: list[str] = []
+    for item in items:
+        row = item.to_json()
+        for k in ("verdict", "reviewed_by", "note"):
+            row.pop(k, None)
+        rows.append(json.dumps(row, ensure_ascii=False) + "\n")
+    _guard_credentials("".join(rows), p)
     with p.open("w", encoding="utf-8") as fh:
-        for item in items:
-            row = item.to_json()
-            for k in ("verdict", "reviewed_by", "note"):
-                row.pop(k, None)
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-            n += 1
-    return n
+        fh.writelines(rows)
+    return len(rows)
+
+
+def _guard_credentials(payload: str, path: Path) -> None:
+    """凭据闸门：本模块的两个落点都会把**人工输入**写进文件。
+
+    P1-4（审查 13 号）：``write_queue`` 的证据摘要来自 P1，``write_verdicts``
+    的 ``note`` 是复核员手输的——两处此前都没有扫描。与
+    :meth:`~trajectory_pipeline.executor.archive.P1Archive.write` 同一道闸
+    （红线：凭据不得提交、打包、复制到测试、文档或日志）。
+
+    异常消息里只放脱敏形态。
+    """
+    hits = scan_credentials(payload)
+    if hits:
+        shapes = credential_shapes(payload)[:3]
+        raise CredentialLeak(
+            f"{path.name} 命中 {len(hits)} 项凭据特征，已拒绝写盘: {hits[:3]}"
+            + (f"｜命中形态: {shapes}" if shapes else "")
+        )
 
 
 def _rescue_verdicts_from_queue(path: Path) -> int:
@@ -534,6 +562,8 @@ def write_verdicts(path: Path | str, rows: Iterable[Mapping[str, Any]]) -> int:
             "note": str(row.get("note") or ""),
         })
     payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out)
+    # P1-4：``note`` 是**人手输的**，而裁定档是人工制品的唯一写入点。
+    _guard_credentials(payload, p)
     write_text_atomic(p, payload)
     return len(out)
 
