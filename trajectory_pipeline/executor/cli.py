@@ -3388,9 +3388,22 @@ def cmd_apply_review(args: argparse.Namespace) -> int:
     try:
         pooled = pool_add_mod.add_from_root(root, dry_run=False)
     except Exception as exc:                      # noqa: BLE001
-        print(f"  [warn] 并池失败（{type(exc).__name__}: {exc}）——"
+        # ⚠️ **不许静默成功**（H-45 / 审查 13 号 P1-5 的实际形态）。
+        # 回填**已经落盘**，而池欠着——此时退出码 0 会让上游把「改判做完
+        # 但池没并」当成完整成功。而兜底并不能兜住它：门禁的
+        # ``negative_not_pooled`` 是 ``DEGRADED``，``Report.ok`` 只看
+        # ``FATAL``（``check_root`` 默认退 0），要人主动加
+        # ``--fail-on-degraded`` 才看得见。
+        #
+        # ``add_from_root`` 抛异常只有两个来源：``append_pool_rows`` 的
+        # ``CredentialLeak``（P1-4 那道闸）与 ``OSError``。**两者都不是
+        # 「偶发、重跑就好」**——前者是内容命中红线，重跑必然再撞；
+        # 后者是磁盘 I/O，重跑大概率再撞。所以不走「重试」，也不吞。
+        print(f"  [FAIL] 并池失败（{type(exc).__name__}: {exc}）——"
               f"回填**已经落盘**了，池欠着；跑 cli pool-add 看清单")
-        return 1 if broken else 0
+        print(f"         退出码按失败计（回填已落盘但池没并 = 这一轮不完整）",
+              file=sys.stderr)
+        return 1
     if pooled["candidates"]:
         print(f"  → 并池：新增 {pooled['added']} 行真负样本"
               f"（回填产生的 + 历史欠账），"

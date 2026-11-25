@@ -390,6 +390,50 @@ class Test回填接线:
         # 坏档**原样留着**（人修它或删它），没有被原档内容盖掉
         assert broken.read_text(encoding="utf-8") == '{"outcomes": [{"url": '
 
+    def test_并池失败时退出码必须是1(self, tmp_path, monkeypatch):
+        """P1-5（审查 13 号）的**实际形态**：不是「退出码恒 0」，而是
+        「并池失败**不体现在**退出码上」。
+
+        原代码 ``except`` 分支里 ``return 1 if broken else 0``——``broken``
+        只装**坏复核档**，与并池无关 ⇒ 并池失败时它通常为空 ⇒ **返回 0**，
+        上游把这轮当成完整成功。
+
+        而兜底也不兜不住：门禁的 ``negative_not_pooled`` 是 ``DEGRADED``，
+        ``Report.ok`` 只看 ``FATAL`` ⇒ ``check-archives`` 默认退 0。
+        """
+        url = "https://v.youku.com/x.html"
+        _write(tmp_path, _arch(outcomes=[_o(url, "unresolved")]))
+        vf = tmp_path / "verdicts.jsonl"
+        vf.write_text(json.dumps({
+            "landed_url": url, "verdict": "confirm_paywall",
+            "reviewed_by": "reesn", "note": "开通会员看完整视频",
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        def boom(*_a, **_kw):
+            raise OSError("磁盘满")
+
+        monkeypatch.setattr(cli.pool_add_mod, "add_from_root", boom)
+        rc = cli.cmd_apply_review(argparse.Namespace(
+            out=str(tmp_path), verdicts=str(vf), only=None))
+
+        assert rc == 1, "并池失败必须体现在退出码上"
+        # ⚠️ 回填**确实已经落盘**——所以这不是「什么都没做」，
+        # 而是「做了一半」，退出码必须让上游看出来
+        assert (tmp_path / "T001__r1.reviewed.json").exists()
+
+    def test_并池成功时仍然0(self, tmp_path):
+        """对照组：别把「并池失败报 1」做成「永远报 1」。"""
+        url = "https://v.youku.com/x.html"
+        _write(tmp_path, _arch(outcomes=[_o(url, "unresolved")]))
+        vf = tmp_path / "verdicts.jsonl"
+        vf.write_text(json.dumps({
+            "landed_url": url, "verdict": "confirm_paywall",
+            "reviewed_by": "reesn", "note": "开通会员看完整视频",
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+        rc = cli.cmd_apply_review(argparse.Namespace(
+            out=str(tmp_path), verdicts=str(vf), only=None))
+        assert rc == 0
+
     def test_复核档原子写(self, tmp_path, monkeypatch):
         """P0-4b：(b) 那条路径必须走原子写——否则中途崩了留半截档，
         下一次读它就是上面那条「不复算」的处境。"""
