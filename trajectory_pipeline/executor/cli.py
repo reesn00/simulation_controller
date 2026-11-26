@@ -1228,9 +1228,19 @@ def _print_batch_footer(records, failed=None) -> None:
     """
     total = len(records)
     ok = sum(1 for r in records if r.succeeded)
+    # 站点级成功数**另开一列**（13 号 §P0-3）：任务级与站点级是两个口径，
+    # 混成一个数会让「先成功过、最后失败」的轨迹按成功记。
+    site_ok = sum(r.site_success_count for r in records)
+    site_total = sum(
+        len(r.ledger.outcomes) if r.ledger is not None else 0 for r in records
+    )
     blocked = [r for r in records if r.search_blocked]
     failed = list(failed or [])
     print(f"\n共 {total} 个 task，成功 {ok}")
+    if total:
+        print(f"  口径：**任务级 = 末条结论**（裁定 ②，与 P2 任务标签同源）")
+        print(f"  站点级另计：{site_ok}/{site_total} 个站点结论成功"
+              "（**别拿它当任务成功率**：一条轨迹可能中途成功、最后失败）")
     if failed:
         print(f"⚠️ **{len(failed)} 个 task 没跑成**（原因在下面）——"
               "这些**不算素材质量差**，是能力问题；"
@@ -1279,7 +1289,8 @@ def _print_batch_footer(records, failed=None) -> None:
             pid = str(r.provenance.get("persona_id") or "(无 provenance)")
             by_persona.setdefault(pid, []).append(1 if r.succeeded else 0)
         if len(by_persona) > 1:
-            print("按 persona 切片（成功/总数）——注意小样本别下结论：")
+            print("按 persona 切片（成功/总数，**任务级：末条结论**）"
+                  "——注意小样本别下结论：")
             for pid, vals in sorted(by_persona.items()):
                 print(f"  {pid:<32} {sum(vals)}/{len(vals)}")
 
@@ -1312,7 +1323,8 @@ def _print_summary(rec, path: Path) -> None:
           f"{'，已过滤 ' + str(sum(search_filters.values())) if search_filters else ''})")
     for c in rec.candidates[:5]:
         print(f"      #{c.rank} {c.host}  {c.text[:30]}")
-    print(f"  sites      = {s.get('total_sites', 0)}  成功 = {s.get('succeeded', 0)}")
+    print(f"  sites      = {s.get('total_sites', 0)}  "
+          f"站点级成功 = {s.get('succeeded', 0)}（**本 run 的任务级结论见上**）")
     if skipped_host:
         print(f"  跳过       = {skipped_host}（同落地 host 已达上限 "
               f"{rec.run_config.get('max_per_host')}，未遍历）")

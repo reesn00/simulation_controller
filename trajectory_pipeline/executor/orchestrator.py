@@ -31,6 +31,7 @@ from trajectory_pipeline.executor import actions
 from trajectory_pipeline.executor.actions import ActionStep, StepLog
 from trajectory_pipeline.executor.branches import (
     RunLedger,
+    SiteOutcome,
     validate_observation_for_decision,
 )
 # 采集面词表住在 ``executor/browser/``（方案 20 §R3）：面是**驱动实现的属性**，
@@ -555,7 +556,41 @@ class RunRecord:
 
     @property
     def succeeded(self) -> bool:
-        return any(v.success for v in self.visits)
+        """**任务级**成功——取**末条结论**（裁定 ②，2026-11-25 · 13 号 §P0-3）。
+
+        ⚠️ **旧口径是 ``any(v.success for v in self.visits)``**，那是错的：
+        一条「先开到播放页、后来又在站内换页失败」的轨迹会被算作成功，
+        而 P2 的任务级标签（``outcomes[-1]``）是失败 ⇒ **报表结论与训练
+        标签反向**。批次页脚与 persona 切片都读这个属性，所以偏差会
+        一路传进「哪类 persona 表现好」的结论里。
+
+        判定规则（与 P2 的 ``outcomes[-1]`` 同一句话）：``lead_outcome``
+        为 ``None``（一条结论都没产出）⇒ 不成功；否则 ``branch is None``
+        （成功记录）⇒ 成功。
+
+        站点级读数**仍在** :meth:`site_success_count` / ``ledger.summary()``
+        ——两个口径分开，谁也不冒充谁。
+        """
+        last = self.lead_outcome
+        return last is not None and last.branch is None
+
+    @property
+    def lead_outcome(self) -> SiteOutcome | None:
+        """**末条结论**——任务级标签的唯一来源（与 P2 的 ``outcomes[-1]`` 同源）。"""
+        if self.ledger is None or not self.ledger.outcomes:
+            return None
+        return self.ledger.outcomes[-1]
+
+    @property
+    def site_success_count(self) -> int:
+        """**站点级**成功数——``branch is None`` 的结论条数。
+
+        ⚠️ **别拿它当任务成功率**：一条轨迹里开了 3 个站、2 个成功、
+        第 3 个失败，它的值是 2，而任务级结论是**失败**。
+        """
+        if self.ledger is None:
+            return 0
+        return sum(1 for o in self.ledger.outcomes if o.branch is None)
 
     def to_json(self) -> dict[str, Any]:
         """序列化。刻意只保留**可审计**的字段，不留页面句柄。
