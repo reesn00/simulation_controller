@@ -25,6 +25,7 @@ from trajectory_pipeline.executor.gatekeeper import (
     intercept,
 )
 from trajectory_pipeline.perception.base import Observation
+from trajectory_pipeline.perception.rule_perceptor import login_gate_evidence
 
 
 def obs_at(url="https://x.test/", *, title="T", body="正文", degraded=()) -> Observation:
@@ -126,14 +127,103 @@ class TestIntercept:
 
     def test_登录墙优先于付费墙(self):
         """两墙并存报 LOGIN_WALL——付费前提常是登录，登录墙是更上游
-        的拦截面。这个顺序是设计口径，钉住防漂移。"""
-        assert intercept(obs_at(body="请登录，VIP 会员 开通")) is Verdict.LOGIN_WALL
+        的拦截面。这个顺序是设计口径，钉住防漂移。
+
+        ⚠️ **素材必须是真登录门**（2026-11-25 P1-6 强度闸）：原来用
+        ``请登录，VIP 会员 开通``，那是营销文案里提了一句「请登录」，
+        不是登录墙。裸命中的闸拆掉后它就落到 PAYWALL——不是回归，是原来
+        这条测试**借裸命中蒙对了顺序**。
+        """
+        assert intercept(obs_at(
+            body="请登录后继续观看，VIP 会员 开通专享",
+        )) is Verdict.LOGIN_WALL
 
     def test_死循环优先于词表判定(self):
         d = DeadLoopDetector()
         for _ in range(3):
             d.record("https://x.test/", "click(播放)", 500)
         assert intercept(obs_at(body="VIP 会员"), dead_loop=d) is Verdict.DEAD_LOOP
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 登录墙强度闸（P1-6 / 13 号 §P1-6 / 09 号 Q-B9）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class Test登录墙强度闸:
+    """``is_login_wall`` 认的是**条件式语序**，不是词表裸命中。
+
+    ⚠️ **存量实测是这条闸的全部理由**（2026-11-25）：2080 个观察正文里
+    含 ``ACCESS_HINTS.login`` 短语的 22 个，上下文**全部**是导航栏 / 弹幕栏
+    的孤立词（「若您已是会员，请登录观看>」「请先登录或注册 弹幕礼仪」
+    「未登录 会员 点播厅」）。裸命中把它们拦成登录墙 —— 而那几条页面上
+    视频是能看的。
+
+    ⚠️ **「≥2 短语」这条设想被证伪**：见
+    ``test_两个不同短语但只是导航栏不拦`` —— 「未登录」+「会员」正好两个，
+    可那是导航栏。词表同源，凑两个比凑一个难不了多少。
+    """
+
+    @staticmethod
+    def _wall(body: str) -> bool:
+        return gatekeeper.is_login_wall(obs_at(body=body))
+
+    def test_条件式登录门整句成句(self):
+        """``登录后观看`` 自己就是整句，后面跟句号——不必再找后缀。"""
+        assert self._wall("本视频需要登录后观看")
+        assert self._wall("登录后才能继续播放")
+        assert self._wall("登陆后才能播放")
+
+    def test_登录与条件式词素之间可夹行内空白(self):
+        """DOM ``innerText`` 会把 CJK 拆开（实测 youku 现场正文：
+        「由于安全原因，请 登录 后继续观看」）。"""
+        assert self._wall("由于安全原因，请 登录 后继续观看")
+
+    def test_词表里没有对应短语的条件式也算(self):
+        """「先登录之后才能」「登录后方可」——词表是**短语清单**不是词根，
+        这几句在词表里没有对应条目，但它们是货真价实的条件式登录门。"""
+        assert self._wall("您需要先登录之后才能观看")
+        assert self._wall("登录后方可观看完整版")
+
+    def test_登录后再观看也算(self):
+        """「请登录**后**再观看」——实测真实登录墙形态（agent_visit /
+        agent_loop 的登录页测试素材就是这个），``后再`` 必须收。"""
+        assert self._wall("请登录后再观看本片，未登录用户只能试看六分钟")
+        assert self._wall("请登录后再观看，登录后即可播放完整版")
+
+    def test_两个不同短语但只是导航栏不拦(self):
+        """「未登录」+「会员」凑得出两个短语，可这是导航栏。
+
+        这条就是「≥2 短语」被证伪的证据：它不是够用的闸。
+        """
+        assert not self._wall("首页 导航 点播厅 搜索 消息 历史 未登录 会员 让子弹飞")
+
+    def test_孤立导航词不拦(self):
+        assert not self._wall("下载客户端 登录 大会员 消息 动态 收藏 历史")
+        assert not self._wall("0:17 / 27:37 1人正在看 请先登录或注册 弹幕礼仪 发送")
+
+    def test_已是会员的提示不是墙(self):
+        """1905 详情页那句「若您已是会员，请登录观看>」——说话对象是
+        **已登录用户**，页面本身不是墙（而且它后面跟着「让子弹飞 详情>」）。"""
+        assert not self._wall("5电影网VIP影院 导航 若您已是会员，请登录观看> 让子弹飞")
+
+    def test_证据函数与拦截口径是同一份(self):
+        """H-26 缺口②：``precondition_failed`` 贴 ``login_required`` 读的是
+        **同一个** ``login_gate_evidence``——两处各写一份必然漂，漂的表现是
+        「一处拦了、另一处没拦」。这条钉住接线，不钉语义。"""
+        body = "请登录后再观看本片"
+        assert gatekeeper.is_login_wall(obs_at(body=body))
+        assert login_gate_evidence(body) != ""
+
+    def test_观看记录是功能名不是条件句(self):
+        """「登录后观看记录」是导航项（观看记录），不是「登录后才能看」。"""
+        assert not self._wall("登录后观看记录 我的收藏")
+        assert not self._wall("请登录后观看记录")
+
+    def test_不跨段凑墙(self):
+        """页首有登录按钮、页尾有「后才能看」——中间隔着别的段落，
+        不是同一句话。正则要求两者相邻（只隔空白）。"""
+        assert not self._wall("登录 首页 导航 我的 设置\n".ljust(40, " ") + "后才能看到内容")
 
 
 # ═══════════════════════════════════════════════════════════════════════

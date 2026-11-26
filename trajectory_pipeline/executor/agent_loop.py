@@ -79,8 +79,9 @@ agent 包「进站后 → 走到目标 / 报出链接」这一段。它的权力
 
 from __future__ import annotations
 
+import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -110,6 +111,10 @@ from trajectory_pipeline.executor.gatekeeper import (
     InjectGuidance,
     Verdict,
     intercept,
+)
+from trajectory_pipeline.executor.probe.media_probe import (
+    MEDIA_PROBE_JS,
+    PROBE_WAIT_S,
 )
 from trajectory_pipeline.perception.base import (
     Q,
@@ -577,15 +582,30 @@ def _guarded_branch(
     **同一份判据**，不另写一份（各写一份必然漂，而漂移的表现是
     「一处认了、另一处没认」）。
 
-    ⚠️ **今天只有两条分支有「可执行」的前置事实核**：``subscription_wall``
-    （门禁语境 ``paywall_evidence``）与 ``component_unverified``（同页守卫）。
+    ⚠️ **哪些分支有「可执行」的前置事实核**：``subscription_wall``
+    （门禁语境 ``paywall_evidence`` ∪ 判据二）· ``component_unverified``
+    （同页守卫）· ``login_required``（2026-11-26 · H-26 缺口②，
+    条件式语序 ``login_gate_evidence``）· ``broken`` 的错误页形态
+    （2026-11-26 · H-49 邻居项，结构事实 ``error_page_evidence``）。
     :data:`~trajectory_pipeline.executor.branches.BRANCH_PRECONDITION` 里
-    ``login_required`` / ``blocked`` / ``partial_free`` / ``broken``
-    **只有文案、没有可执行核**——这是 2026-10-19 增量六十·方案 X **刻意**的：
-    当时的同页守卫覆盖 5 支，实测 **46** 次触发**全是误伤**（真付费墙 ·
-    真登录墙 · 真阻断 · 真试看）⇒ 守卫窄到只剩 ``component_unverified`` 一支。
-    ⇒ **代价**：``login_required`` 在 agent 路径上**仍是裸折算**（门禁判
-    「像登录墙」就直接贴分支）——这是已知的残留缺口，不在这里假装补上。
+    ``blocked`` / ``partial_free`` **只有文案、没有可执行核**
+    ——这是 2026-10-19 增量六十·方案 X **刻意**的：当时的同页守卫覆盖 5 支，
+    实测 **46** 次触发**全是误伤**（真付费墙 · 真登录墙 · 真阻断 · 真试看）
+    ⇒ 守卫窄到只剩 ``component_unverified`` 一支。后来 ``subscription_wall``
+    （2026-10-21）· ``login_required``（2026-11-26）· ``broken``（同日）
+    各自补上了**判据级**的核（不是同页守卫那种「换没换页」的机械证据），
+    所以它们不再是裸折算。
+    ⚠️ ``partial_free`` 于同日补上**媒体信号**核（H-51）：判据在
+    :func:`~trajectory_pipeline.executor.branches.media_signal_evidence`，
+    信号来自 :meth:`_AgentLoop._sample_media`（同一页上隔
+    ``media_probe.PROBE_WAIT_S`` 的两帧）。本路径**不产** ``partial_free``
+    （门禁折算表 ``_FALLCLOSED_BRANCH`` 里没有它），但 agent 的观测对象与
+    scripted 路径共用，核必须两边同口径。
+    ⚠️ ``blocked`` 仍**没有**标签侧的页级核，但它的池归属已经由
+    :data:`~trajectory_pipeline.executor.branches.COLLECTION_SIDE_BRANCHES`
+    处理（整体出负样本池、进人工复核队列）；「站点侧」判据
+    （:func:`~trajectory_pipeline.perception.rule_perceptor.block_side_evidence`）
+    已抽出单点、评分器已接，标签侧接不接**待 owner 看读数再定**（H-51）。
     """
     branch = _branch_of(verdict)
     if branch == UNRESOLVED:
@@ -1741,6 +1761,9 @@ class _Loop:
             self._navigated = True
         if obs.interactive_elements:
             self._seen_interactive = True
+        # 媒体两帧采样（H-51）：只给 ``partial_free`` 的前置事实核与收口
+        # 形态判据用，不改变 agent 看到的任何东西（它读的是正文/元素）。
+        obs = await self._sample_media(obs)
         self.obs = obs
         self._pending_obs = obs
         self._absorb_links(obs)
@@ -2068,6 +2091,40 @@ class _Loop:
             reason=f"{reason}（{why}）", verdict=None, branch=branch or None,
             exit_stage=exit_stage, exit_signal=exit_signal,
             exit_question=exit_question,
+        )
+
+    async def _sample_media(self, obs: Observation) -> Observation:
+        """给这份观察补**媒体两帧采样**（2026-11-26 · H-51）。
+
+        为什么要两帧：「媒体在真推进」是差分事实。单帧只能回答「播到第几
+        秒」，回答不了「它在往前走吗」——暂停在 0 秒的页与试看页在单帧上
+        完全同形，而 ``partial_free`` 的核判的正是「播了，但只播了这么点」。
+
+        ⚠️ **只在真的换了页时才采**：``body_text`` 非空（同步快照拿到了）
+        **且**带媒体标签。站内导航后每步都跑两次 evaluate + 睡
+        :data:`media_probe.PROBE_WAIT_S`，会把整批的墙钟时间翻一倍，而
+        绝大多数页面上根本没有媒体元素——那笔钱要花在真可能有试看的地方。
+
+        ⚠️ **任何失败都只是「没采到」**（返回原观察，两帧都 ``None``）：
+        采样是**附加证据**，采不到不等于页面不是试看，核在那一边放行
+        （见 ``branches.precondition_failed`` 的 ``partial_free`` 支）。
+        但 ``DriverSessionError`` 例外——会话坏了要冒到批次层（同 ``run``
+        里其它调用点）。
+        """
+        if not (obs.body_text or "").strip() or obs.video_tag_count <= 0:
+            return obs
+        try:
+            first = await self.driver.evaluate(MEDIA_PROBE_JS)
+            await asyncio.sleep(PROBE_WAIT_S)
+            second = await self.driver.evaluate(MEDIA_PROBE_JS)
+        except DriverSessionError:
+            raise
+        except DriverError:
+            return obs
+        return replace(
+            obs,
+            media_sample_first=first if isinstance(first, Mapping) else None,
+            media_sample_second=second if isinstance(second, Mapping) else None,
         )
 
     def _transcript(self) -> tuple[Mapping[str, str], ...]:

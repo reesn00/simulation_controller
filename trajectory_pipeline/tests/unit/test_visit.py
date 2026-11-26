@@ -287,8 +287,14 @@ class TestVisitFlow:
 
     async def test_页面不可达_带细分_payload_仍记真负样本(self):
         """兜底改 unresolved **只影响 payload 缺失那一路**——
-        有 ``access_control_type`` 时照旧落细分分支。"""
-        d = FakeDriver({"https://x.test/movie": obs_at("https://x.test/movie")})
+        有 ``access_control_type`` 时照旧落细分分支。
+
+        ⚠️ 2026-11-26（H-26 缺口②）：``login_required`` 现在要**登录门语境**
+        （条件式语序）。页面正文给真登录门，否则核会把它降成 ``unresolved``
+        ——那测的就不是「兜底只管 payload 缺失那一路」了。
+        """
+        d = FakeDriver({"https://x.test/movie": obs_at(
+            "https://x.test/movie", body="请登录后继续观看")})
         p = ScriptedPerceptor({
             Q.IS_REACHABLE: no(
                 Q.IS_REACHABLE, payload={"access_control_type": "login"})
@@ -532,7 +538,10 @@ class TestVisitFlow:
         assert not out.is_negative_sample, "unresolved 不进负样本池"
 
     async def test_开_tab_失败不阻断(self):
-        pages = {"https://x.test/movie": obs_at("https://x.test/movie")}
+        # 页面正文给真登录门（条件式语序），否则 ``login_required`` 的
+        # 前置事实核会把它降成 ``unresolved``（2026-11-26 · H-26 缺口②）。
+        pages = {"https://x.test/movie": obs_at(
+            "https://x.test/movie", body="请登录后继续观看")}
         d = FakeDriver(pages)
 
         async def boom(url=None):
@@ -697,11 +706,17 @@ class TestPlayerUnverifiedAtStep7:
 
     async def test_前置_false_仍然中断(self):
         """None 不中断 ≠ 所有 None 都放过。**确定判 False 时必须停**——
-        页面明明是登录墙还继续点控件，点出来的结论没有意义。"""
+        页面明明是登录墙还继续点控件，点出来的结论没有意义。
+
+        ⚠️ 2026-11-26（H-26 缺口②）：``login_required`` 现在有可执行前置
+        事实核（条件式语序），所以页面正文必须**明写登录门**——裸页面
+        会被核降成 ``unresolved``，那测的就不是「中断」了。
+        """
         d = FakeDriver(
             {
                 "https://x.test/movie": obs_at(
-                    "https://x.test/movie", elements=(("e1", "a", "播放"),)
+                    "https://x.test/movie", elements=(("e1", "a", "播放"),),
+                    body="请登录后观看本片",
                 )
             }
         )

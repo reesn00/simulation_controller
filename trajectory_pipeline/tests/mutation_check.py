@@ -369,6 +369,58 @@ MUTATIONS = [
         "trajectory_pipeline/tests/unit/test_branches.py::TestBranchPrecondition",
     ),
     (
+        # 2026-11-26（H-49 邻居项）：``broken`` 补上可执行前置事实核
+        # （:func:`branches.error_page_evidence`，结构事实：错误页没有
+        # 可交互元素、没有 video 标签）。变异＝把核关掉 ⇒「正文提到 404
+        # 但页面正常」那类会被照贴 ``broken``（假负样本进池）。
+        "broken守卫·错误页结构前置",
+        "trajectory_pipeline/executor/branches.py",
+        '        if error_page_evidence(obs):\n'
+        '            return ""\n',
+        '        if True:\n'
+        '            return ""\n',
+        "trajectory_pipeline/tests/unit/test_broken_precondition.py::Test分支前置事实核",
+    ),
+    (
+        # 2026-11-26（H-51）：``partial_free`` 补上**媒体信号**前置事实核
+        # （两帧真推进 + currentTime 低于试看上限 + 无 media_error）。
+        # 变异＝判据永远成立 ⇒「正文写着『试看 6 分钟』但媒体根本没动」那类
+        # 会被照贴 ``partial_free``（假负样本进池）。
+        "partial_free守卫·媒体信号前置",
+        "trajectory_pipeline/executor/branches.py",
+        '    if count <= 0:\n'
+        '        return ""\n'
+        '    if sig.media_error is not None and sig.media_error > 0:\n'
+        '        return ""\n'
+        '    if not sig.timeupdate_progress or sig.current_time_sec is None:\n'
+        '        return ""\n'
+        '    if sig.current_time_sec >= PARTIAL_FREE_MAX_CURRENT_TIME_S:\n'
+        '        return ""\n',
+        '    if False:\n'
+        '        return ""\n'
+        '    if False:\n'
+        '        return ""\n'
+        '    if False:\n'
+        '        return ""\n'
+        '    if False:\n'
+        '        return ""\n',
+        "trajectory_pipeline/tests/unit/test_partial_free_precondition.py::Test分支前置事实核",
+    ),
+    (
+        # 2026-11-26（H-51）：``blocked`` 的站点侧判据单点化。
+        # 变异＝去掉「排除边缘挑战模板」那一半 ⇒ CF 中间页会被当成
+        # 「站点自己说不给看」（评分器给分、标签侧照贴）。
+        "blocked守卫·边缘挑战页排除",
+        "trajectory_pipeline/perception/rule_perceptor.py",
+        '    edge = edge_challenge_evidence(title or "", text or "")\n'
+        '    if edge:\n'
+        '        return ""\n',
+        '    edge = ""\n'
+        '    if edge:\n'
+        '        return ""\n',
+        "trajectory_pipeline/tests/unit/test_block_side_precondition.py",
+    ),
+    (
         # 2026-10-23（M-27）：点击失败 ⇒ 记 ``unresolved``（采集缺件），
         # 不记 ``component_unverified``（那要求「到了播放页」这个前置事实，
         # 而点击失败时**从未到达**播放页）。⇒ 变异＝把分类改回去。

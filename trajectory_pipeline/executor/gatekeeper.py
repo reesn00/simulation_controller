@@ -56,8 +56,8 @@ from trajectory_pipeline.perception.base import Observation
 # 词表判定复用感知层既有所有者（executor → perception 单向依赖，与
 # branches.py 引 has_strong_paywall_signal 同款，不破层）。
 from trajectory_pipeline.perception.rule_perceptor import (
-    ACCESS_HINTS,
     has_strong_paywall_signal,
+    login_gate_evidence,
 )
 
 
@@ -207,27 +207,30 @@ def _same_page(a: Observation | None, b: Observation | None) -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _hints_hit(kind: str, text: str) -> bool:
-    """:data:`ACCESS_HINTS` 里某一类的短语是否命中文本。"""
-    for k, phrases in ACCESS_HINTS:
-        if k == kind and any(p in text for p in phrases):
-            return True
-    return False
-
-
 def is_login_wall(obs: Observation) -> bool:
-    """页面是不是登录墙——ACCESS_HINTS 的 login 类短语命中正文。
+    """页面是不是登录墙——**强度闸**（不是裸词表命中）。
 
-    与感知层 fallback（``infer_access_from_evidence``）同源同词表，
-    区别只在用途：那边是②的**细分证据**（login → login_required），
-    这边是拦截口径（要不要把页面拦下来）。两处若口径分叉，先改词表
-    所有者（rule_perceptor），再同步这里——不存在第二份词表。
+    ⚠️ **判据只有一份**：:func:`rule_perceptor.login_gate_evidence`
+    （条件式语序 + 排除已登录提示）。贴 ``login_required`` 标签的
+    ``branches.precondition_failed`` 读的是**同一个函数**——拦页面与
+    贴标签必须同口径，各写一份必然漂（2026-11-26 · H-26 缺口②）。
 
-    ⚠️ 误拦风险已知：导航栏「请登录」按钮与登录墙同词。agent 模式
-    （A2）接线时用实测校准强度闸（比如要求命中 ≥2 短语）；阶段 G
-    只收拢出口，不改判据。
+    ⚠️ **裸命中会误拦，而且实测拦的全是误拦**（2026-11-25 存量扫描）：
+    2080 个观察正文里含登录短语的 22 个**上下文全部是导航栏 / 弹幕栏的
+    孤立词**——「若您已是会员，请登录观看>」（指向的是详情页而不是登录页）、
+    「请先登录或注册 弹幕礼仪」、「未登录 会员 点播厅」。这些页面上
+    视频是能看的，拦下来等于把详情页记成登录墙。
+
+    ⚠️ **「≥2 短语」被实测证伪**：存量里「未登录 会员」正好两个不同短语，
+    可它只是导航栏。词表同源，凑两个比凑一个难不了多少——所以那条闸
+    换成语序闸（原来 docstring 里的设想，2026-11-25 落地）。
+
+    ⚠️ **与存量标签无关**：存量 40 条 ``login_required`` 的标签来自判断点②
+    的 ``access_control_type``，不是这条函数产的。所以收紧它**不会**
+    「掏空存量」——存量一个都不是它记的。这一点实测过：存量 407 个观察
+    正文里含登录短语的 22 个**全部是导航/弹幕语境**，没有一个条件式语序。
     """
-    return _hints_hit("login", obs.body_text or "")
+    return bool(login_gate_evidence(obs.body_text or ""))
 
 
 def is_paywall(obs: Observation) -> bool:

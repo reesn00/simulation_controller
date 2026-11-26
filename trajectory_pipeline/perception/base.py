@@ -161,6 +161,19 @@ class Observation:
     #:   → **开了，但共享口径没测到**（face 账目仍在）。
     element_basis_error: str | None = None
 
+    #: **媒体探针的两帧原始采样**（``MEDIA_PROBE_JS`` 的返回，2026-11-26 · H-51）。
+    #:
+    #: 用途只有一个：``branches.media_signal_evidence``（``partial_free`` 的
+    #: 前置事实核）。两帧都要，因为「真推进」是**差分**——单帧只能回答
+    #: 「现在播到第几秒」，回答不了「它在往前走吗」，而暂停在 0 秒的页
+    #: 与试看页在单帧上完全同形。
+    #:
+    #: ⚠️ ``None`` = **没采**，不是「页面上没有媒体」；「没有媒体」是
+    #: ``count == 0``。调用方用 :func:`media_probe.signal_from_samples`
+    #: 把它们折成信号——那是唯一汇合点，不在这里另算一份。
+    media_sample_first: Mapping[str, Any] | None = None
+    media_sample_second: Mapping[str, Any] | None = None
+
     # ── 截断与污染诊断（元数据，不参与语义判断）─────────────────────
     max_chars: int | None = None
     truncated: bool = False

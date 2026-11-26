@@ -234,6 +234,63 @@ def _combine_progress(s1: MediaSignal, s2: MediaSignal) -> MediaSignal:
     )
 
 
+def signal_from_samples(
+    first: Mapping[str, Any] | None, second: Mapping[str, Any] | None,
+) -> tuple[MediaSignal, int]:
+    """**两次** ``MEDIA_PROBE_JS`` 的原始返回 ⇒ ``(信号, 媒体元素数)``。
+
+    这是探针与**前置事实核**的**唯一**汇合点（2026-11-26 · H-51）：
+    ``probe()`` 走它、``branches.media_signal_evidence`` 也走它，
+    于是「两条路对同一份页面给同一个信号」是**构造保证**，不是巧合。
+
+    ``second`` 缺（只采到一帧）时按 :data:`_parse_media_payload` 的单帧
+    结果返回——``timeupdate_progress`` 恒为 ``False``（**没测过 ≠ 没推进**，
+    这一点由调用方的判据负责表达）。
+    """
+    p1 = _coerce_payload(first)
+    p2 = _coerce_payload(second if second is not None else first)
+    if not p1.get("media") and not p2.get("media"):
+        return (
+            MediaSignal(
+                play_started=False, timeupdate_progress=False,
+                current_time_sec=None, frames_decoded=None,
+                black_screen=False, media_error=None,
+            ),
+            0,
+        )
+    sig = _combine_progress(
+        _parse_media_payload(p1), _parse_media_payload(p2),
+    )
+    count = max(
+        int(p1.get("count") or len(p1.get("media") or [])),
+        int(p2.get("count") or len(p2.get("media") or [])),
+    )
+    return sig, count
+
+
+def _coerce_payload(raw: Any) -> dict[str, Any]:
+    """``driver.evaluate`` 的返回 ⇒ dict。
+
+    三种形态都要接：驱动直接给的 dict、驱动原样返回的
+    ``JSON.stringify`` 字符串（``MEDIA_PROBE_JS`` 就以 ``JSON.stringify``
+    结尾）、以及解析失败 / ``None``。
+
+    ⚠️ **解析失败返回空 dict，不是「没有媒体」**：空 dict 在
+    :func:`signal_from_samples` 里产出 ``count=0``，而 ``count=0`` 在判据
+    侧是**不成立**（不能据此下结论），与「页面上确实没有媒体」在处理上
+    同形——但两者在 ``count`` 上的读法不同，调用方可以区分。
+    """
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        return dict(parsed) if isinstance(parsed, Mapping) else {}
+    return {}
+
+
 def to_branch(result: BrowserProbeResult) -> str | None:
     """L2 探针结果 → 分支映射。
 
@@ -377,15 +434,14 @@ async def probe(
         payload_1 = await asyncio.wait_for(
             driver.evaluate(MEDIA_PROBE_JS), timeout=timeout_s
         )
-        sig_1 = _parse_media_payload(payload_1)
         await asyncio.sleep(wait_s)
         payload_2 = await asyncio.wait_for(
             driver.evaluate(MEDIA_PROBE_JS), timeout=timeout_s
         )
-        sig_2 = _parse_media_payload(payload_2)
-        sig = _combine_progress(sig_1, sig_2)
+        # 与前置事实核**同一个汇合点**（2026-11-26 · H-51）：
+        # ``signal_from_samples`` 是所有「两次采样 → 信号」的必经之路。
+        sig, count_val = signal_from_samples(payload_1, payload_2)
         elapsed = int((time.perf_counter() - started) * 1000)
-        count_val = int(payload_1.get("count", 0))
         return BrowserProbeResult(
             requested_url=url,
             final_url=url,

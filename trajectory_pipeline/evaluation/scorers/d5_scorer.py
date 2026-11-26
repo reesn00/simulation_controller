@@ -134,6 +134,9 @@ from trajectory_pipeline.judgement_causes import (
     CAUSE_INSTRUMENTATION,
     CAUSE_NO_DECISION,
 )
+from trajectory_pipeline.perception.rule_perceptor import (
+    SITE_SELF_REPORT_KINDS as _SITE_SELF_REPORT_KINDS,
+)
 
 #: 判断点 → 该判断点在**判 False** 时允许产生的分支。
 #:
@@ -420,12 +423,14 @@ _NODE_BLOCK_SIDE = "拦截发生在站点侧"
 #: 把前者当前者打 5 分，就是体制化地承认那颗污染——方案 20 §1 第 3 条。
 _BLOCKED_BRANCH = "blocked"
 
-#: 站点**自述**的拦截形态（``infer_access_defect`` 的取值里挑）。
-#: ``not_found`` **不算**：404 页没说「这个地区不给看」；``anti_bot`` 算
-#: （站点自己写「访问过于频繁」），但**CDN 模板文案已在前一步排除**。
-SITE_SELF_REPORT_KINDS: frozenset[str] = frozenset(
-    {"region", "captcha", "anti_bot"}
-)
+#: 站点**自述**的拦截形态——**真源在感知层**
+#: （:data:`trajectory_pipeline.perception.rule_perceptor.SITE_SELF_REPORT_KINDS`，
+#: 2026-11-26 · H-51）。这里只是**再导出**，不定义第二份。
+#:
+#: ⚠️ 曾经这里是**自己一份** ``frozenset({"region", "captcha", "anti_bot"})``，
+#: 而标签侧**根本没有**这道核——评分器说「站点侧不成立」，标签侧照贴
+#: ``blocked``，两边在报表上都看不出异常。判据必须单点。
+SITE_SELF_REPORT_KINDS: frozenset[str] = _SITE_SELF_REPORT_KINDS
 
 #: 检查 4 的两处口径。``final`` = 这条错的是**最终结论本身**
 #: （rubric 锚点 2「最终结论错误，过程部分正确」），不是「走错一步」。
@@ -871,6 +876,7 @@ def _check_block_side(branch: str | None, sample: Any) -> TreeCheck:
             "与「CDN 挑战中间页」，不据此认定站点侧拦截",
         )
     from trajectory_pipeline.perception.rule_perceptor import (
+        block_side_evidence,
         edge_challenge_evidence,
         infer_access_defect,
     )
@@ -885,14 +891,19 @@ def _check_block_side(branch: str | None, sample: Any) -> TreeCheck:
             f"不构成「站点不给看」的结论（A 面）；换一张面可能进得去，"
             f"所以这一维不出分（方案 20 §R3）",
         )
-    kind = infer_access_defect(text)
-    if kind in SITE_SELF_REPORT_KINDS:
+    # ⚠️ **判据只有一份**（2026-11-26 · H-51）：这一半与标签侧读的是
+    # ``rule_perceptor.block_side_evidence``（边缘模板排除 + 站点自述形态）。
+    # 上面那段先判 ``edge`` 只是为了**给出指认到具体模板的说明**——判据
+    # 本体仍是那一个函数，不在这里另写一遍。
+    side = block_side_evidence(_observed_title(sample), text)
+    if side:
         return TreeCheck(
             _NODE_BLOCK_SIDE,
             "ok",
-            f"正文是**站点自己**写的 {kind} 形态（非 CDN 中间页模板）⇒ "
+            f"正文是**站点自己**写的 {side} ⇒ "
             f"「拦截发生在站点侧」这个前置事实成立",
         )
+    kind = infer_access_defect(text)
     return TreeCheck(
         _NODE_BLOCK_SIDE,
         "undetermined",

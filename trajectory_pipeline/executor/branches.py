@@ -43,6 +43,7 @@ from trajectory_pipeline.perception.rule_perceptor import (
     WEAK_PAYWALL_KEYWORDS,
     access_evidence,
     infer_access_defect,
+    login_gate_evidence,
     subscription_wall_evidence,
 )
 # 2026-10-16 方案 12 阶段 G：``_same_page``（同页守卫的三特征比对）所有权
@@ -698,9 +699,11 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
     # partial_free 同样要「确实到了目标页/播放页」，否则导航栏文案会被
     # 当成墙（与 subscription_wall 同款坑，风险 5 明写必须复用同页守卫）。
     "login_required": (
-        "「登录后可免费观看」要求**确实到了目标页**——站点页导航栏里的"
-        "「请登录」不是登录墙。这次点击没有产生新证据，"
-        "就没有依据贴这条标签"
+        "「登录后可免费观看」要求页面**明写**「登录之后才能看」这种条件式"
+        "语序（门禁语境 ``login_gate_evidence``）——站点页导航栏里孤立的"
+        "「请登录」不是登录墙，那是给已登录用户的提示或登录入口按钮。"
+        "（2026-11-26 · H-26 缺口②：这条以前只有文案、没有可执行核，"
+        "agent 路径上按门禁的裸折算直接贴）"
     ),
     "blocked": (
         "「地区限制/验证码/反爬」同样要求**确实到了目标页**——"
@@ -708,20 +711,27 @@ BRANCH_PRECONDITION: Mapping[str, str] = {
         "就没有依据贴这条标签"
     ),
     "partial_free": (
-        "「有免费部分需付费看完整」同样要求**确实到了播放页**——"
-        "站点页上的「会员抢先看」是宣传文案，不是试看付费墙。"
+        "「有免费部分需付费看完整」要求**媒体信号**成立：页面上有媒体元素、"
+        "两次采样的 currentTime **真推进**、且仍低于试看上限"
+        "（``media_signal_evidence``，阈值取探针既有常量）——"
         "**纯续费营销 CTA / 会员到期提醒**是付费墙挽留营销，"
-        "不是「试看 N 分钟 / 前 N 集免费」形态——那种走 subscription_wall。"
-        "这次点击没把页面带进播放页，就没有新证据支撑这条结论"
+        "不是「试看 N 分钟 / 前 N 集免费」形态，那种走 subscription_wall。"
+        "（2026-11-26 · H-51：这条以前只有文案、没有可执行核）"
     ),
-    # ``broken`` 是**条件式**，不进同页守卫集合：404 形态无需「到了
+    # ``broken`` 是**条件式**的，不进同页守卫集合：404 形态无需「到了
     # 播放页」前置（URL 本身就是证据，页面即 404）；媒体损坏形态需要，
-    # 但阶段 1 由 media_signal 暴露给人工复核，不经 decision_branch
-    # 自动产出，这里只登记口径说明供复核参考。
+    # 但由 ``media_signal`` 暴露给人工复核，不经 ``decision_branch``
+    # 自动产出。
+    #
+    # 2026-11-26 · H-49 邻居项：``broken`` 的**错误页形态**补上了可执行核
+    # （:func:`error_page_evidence`，与收口路径 ``terminal_shape_branch``
+    # 同一个函数）；**媒体损坏形态仍无可执行核**——那道核在媒体层
+    # （:func:`media_probe` / :func:`ffprobe.to_branch`），不在页面文本上。
     "broken": (
-        "「内容损坏」分两种：404 形态无需播放页前置（URL 即证据）；"
-        "媒体不可解码/duration=0 形态需要，由 media_signal 暴露、"
-        "人工复核核验"
+        "「内容损坏」分两种：404 形态要求页面**就是**那张错误页"
+        "（结构事实：没有可交互元素、没有 video 标签，"
+        "``error_page_evidence``）——URL 或正文里提到 404 不算；"
+        "媒体不可解码/duration=0 形态由 media_signal 暴露、人工复核核验"
     ),
 }
 
@@ -836,6 +846,19 @@ def precondition_failed(
     """
     if obs is None or branch is None:
         return ""
+    if not (obs.body_text or "").strip():
+        # 「**连正文都没读到**」⇒ 核无从成立，不是核判了不成立（2026-11-26）。
+        #
+        # 前置事实核的前提是「有一份页面原文可读」。正文为空时每一道判据都
+        # 返回空——而「空」同时能读成「这一页确实不是登录墙」与「这一页还
+        # 没读到」。不区分这两种空，等于让**采集缺件**被记成本条分支的
+        # **否定**：负样本掉出池子，理由却听起来处处在理。
+        #
+        # 与 ``obs is None`` 的放行同一条口径：**调用方没给证据，核就不下
+        # 结论**；「忘了传 obs」的错误由调用点的形参文档盯，不在这里猜。
+        # ⚠️ 真正的「空正文页」（站点就返回一张白页）不受影响：它有标题、
+        # 有元素或没有——判据读的是整份观察，不是一行正文。
+        return ""
     if branch == "subscription_wall":
         # 前置事实：付费墙证据在场。输入源两个都是**页面原文**——
         # 采集到的正文（``obs.body_text``）与模型回传的引文
@@ -865,6 +888,69 @@ def precondition_failed(
                 f"（url={obs.url}，元素数 / 正文也全同）——"
                 f"{BRANCH_PRECONDITION[branch]}"
             )
+    if branch == "login_required":
+        # 前置事实：页面**明写**「登录之后才能看」（门禁语境）。
+        #
+        # 2026-11-26 · H-26 缺口②：这条以前**只有文案、没有可执行核**
+        # ⇒ agent 路径上门禁判「像登录墙」就直接贴标签。判据与拦截侧
+        # **同一个函数**（``rule_perceptor.login_gate_evidence``）：
+        # 条件式语序 + 排除「已登录用户」提示。
+        #
+        # ⚠️ **不用 ``login_gate_phrase``**：它只查词表短语的空白容忍版，
+        # 「请登录」单独就命中——2026-11-25 实测存量含登录短语的 22 个
+        # 正文**全是导航/弹幕孤立词**。
+        quotes = decision.payload.get("page_quotes") if decision else None
+        quoted = " ".join(str(q) for q in (quotes or ()))
+        hit = (login_gate_evidence(obs.body_text or "")
+               or login_gate_evidence(quoted))
+        if not hit:
+            return (
+                f"页面里没有登录门语境证据（登录 + 之后/后可/后才能 这类"
+                f"条件式语序）——{BRANCH_PRECONDITION[branch]}"
+            )
+    if branch == "broken":
+        # 前置事实：这一页**就是**错误页（结构事实，不是词表）。
+        #
+        # 2026-11-26 · H-49 邻居项：``broken`` 以前**只有文案、没有可执行核**
+        # ——判据其实一直在（:func:`error_page_evidence`，Q-25 甲那批实测
+        # 1224 个观察、49 条正文命中 ``not_found`` 全是真错误页、假阳 0），
+        # 只是**只挂在收口路径上**（``terminal_shape_branch``），agent 的
+        # 门禁折算（``_FALLCLOSED_BRANCH``）与 ② 的 ``not_found`` 折成分支
+        # 时走不到它。⇒ 这里补上，两处**同一个函数**。
+        #
+        # ⚠️ **404 形态的「URL 即证据」半边不在这里核**：``decision_branch``
+        # 只在页面正文**已命中** ``not_found`` 形态时才折出 ``broken``；
+        # 而「连正文都没读到」的观察在函数入口就放行（那一段的说明见上）
+        # ——两件事都不用再判一遍。
+        #
+        # ⚠️ **归因对象**（「最后一页是不是候选站」）不在这里核：agent 路径
+        # 的收口已经在 :func:`terminal_shape_branch` 里按主机比过。scripted
+        # 路径的 ``obs`` 就是站内那一页（``RunLedger.record_from`` 的调用方
+        # 已把它落在候选站里）。
+        if error_page_evidence(obs):
+            return ""
+        return (
+            f"这一页不是错误页（{_error_page_evidence_miss(obs)}）"
+            f"——{BRANCH_PRECONDITION[branch]}"
+        )
+    if branch == "partial_free":
+        # 前置事实：**媒体信号**在场（owner 裁定 2026-11-26 · H-51）。
+        #
+        # ⚠️ **以前这一支完全没有核**：② / ④ 的 ``paywall_type=preview|trial``
+        # 是模型看页面文本给的，模型说「试看」就贴 ``partial_free`` 进池。
+        # 而试看页与「视频就是短」的页在文本上同形——媒体信号能分开它们。
+        #
+        # ⚠️ **没采到信号时不判**（与正文为空放行同口径）：``media_sample_*``
+        # 都是 ``None`` ⇒ 这一批/这一页没跑媒体采样 ⇒ 核无从成立，
+        # 不能读成「不是试看」。真有信号但**不成立** ⇒ 降级 ``unresolved``。
+        first = getattr(obs, "media_sample_first", None)
+        second = getattr(obs, "media_sample_second", None)
+        if first is None and second is None:
+            return ""
+        if media_signal_evidence(first, second):
+            return ""
+        why = _media_signal_miss(first, second)
+        return f"媒体信号不成立（{why}）——{BRANCH_PRECONDITION[branch]}"
     # 2026-10-19 增量六十·方案 X：同页守卫窄化为只覆盖 component_unverified。
     #
     # 原守卫集合含 5 条分支（component_unverified / subscription_wall /
@@ -935,10 +1021,12 @@ TERMINAL_SHAPE_BRANCHES: frozenset[str] = frozenset(
 )
 
 
-def _page_is_error_page(obs: Observation) -> tuple[bool, str]:
-    """「这一页**就是**那张错误页」——``broken`` 的前置事实核验。
+def error_page_evidence(obs: Observation | None) -> str:
+    """「这一页**就是**那张错误页」的**判据**：成立返回描述，不成立返回空串。
 
-    返回 ``(成立, 不成立时的说明)``。
+    与 :func:`~trajectory_pipeline.perception.rule_perceptor.login_gate_evidence`
+    同款形态——返回**给 evidence 用的描述**不是布尔值：凡是靠它贴分支的
+    地方，理由里必须指认判据，否则半年后没人说得清「凭什么算错误页」。
 
     ⚠️ **为什么需要这道核**：``broken`` **进负样本池**（真负样本）⇒
     判错就是**训练信号被污染**（教「这个站看不了」，其实页面正常）。
@@ -956,14 +1044,138 @@ def _page_is_error_page(obs: Observation) -> tuple[bool, str]:
 
     ⚠️ **刻意不用正文长度当判据**：长度是阈值，而阈值掩盖不了
     「站点只返回了 6 个字」这件事（见 :func:`decision_branch` 的说明）。
+
+    ⚠️ **两处共用这一份**（2026-11-26 · H-49 邻居项）：本函数
+    （:func:`terminal_shape_branch` 的收口路径）与
+    :func:`precondition_failed` 的 ``broken`` 支（贴标签路径）。各写一份
+    必然漂，而漂移的表现是「一处降级了、另一处照贴」。
+    """
+    if obs is None:
+        return ""
+    if obs.degraded:
+        return ""
+    if obs.elements_total:
+        return ""
+    if obs.video_tag_count:
+        return ""
+    return ("错误页结构：没有可交互元素、没有 video 标签"
+            "（``elements_total=0`` / ``video_tag_count=0``）")
+
+
+def _error_page_evidence_miss(obs: Observation) -> str:
+    """``error_page_evidence`` 不成立时的**说明**（降级理由用）。
+
+    与判据函数**同源同序**：先 ``degraded``、再 ``elements_total``、
+    再 ``video_tag_count``——顺序变了理由就指错前置条件。
     """
     if obs.degraded:
-        return False, f"观察有降级项 {list(obs.degraded)}，正文不是完整页面"
+        return f"观察有降级项 {list(obs.degraded)}，正文不是完整页面"
     if obs.elements_total:
-        return False, f"这一页有 {obs.elements_total} 个可交互元素，不是错误页"
+        return f"这一页有 {obs.elements_total} 个可交互元素，不是错误页"
     if obs.video_tag_count:
-        return False, f"这一页有 {obs.video_tag_count} 个 video 标签，不是错误页"
-    return True, ""
+        return f"这一页有 {obs.video_tag_count} 个 video 标签，不是错误页"
+    return ""
+
+
+
+def _page_is_error_page(obs: Observation) -> tuple[bool, str]:
+    """:func:`error_page_evidence` 的 ``(成立, 不成立的说明)`` 形态。
+
+    只为 :func:`terminal_shape_branch` 的既有调用形状保留（它要把
+    「为什么不成立」写进依据文本）；判据本体**只在**
+    :func:`error_page_evidence` 一处。
+    """
+    hit = error_page_evidence(obs)
+    if hit:
+        return True, ""
+    return False, _error_page_evidence_miss(obs)
+
+
+def media_signal_evidence(
+    first: Mapping[str, Any] | None,
+    second: Mapping[str, Any] | None,
+) -> str:
+    """``partial_free`` 的**媒体信号判据**：空串 = 信号不成立（不能据此贴标签）。
+
+    owner 裁定（2026-11-26 · H-51）：「``partial_free`` 的核用 ``media_signal``，
+    要有执行核」。判据是**探针那一句话**，不是另造一条文本词表：
+
+    - 页面上**有**媒体元素（``media_count > 0``）；
+    - 两次采样 ``currentTime`` **真推进**（间隔 :data:`media_probe.PROBE_WAIT_S`，
+      阈值 :data:`media_probe.TIMEUPDATE_PROGRESS_THRESHOLD_S`）；
+    - ``currentTime`` 仍**低于** :data:`media_probe.PARTIAL_FREE_MAX_CURRENT_TIME_S`
+      ——「往前播了，但只播了这么点」就是试看形态；
+    - 没有 ``media_error``（那是 ``broken`` 的形态，不是试看）。
+
+    ⚠️ **两帧都要**：「真推进」是**差分**。暂停在 0 秒的页与试看页在单帧上
+    完全同形——这就是为什么这条核不是单帧可判的。
+
+    ⚠️ **为什么不是「页面上写着『试看 6 分钟』」**：文本判据是**第三份词表**
+    （已有一份 ``PAYWALL_WORDS``、一份 ``PAYWALL_PRICE_*``），而且 ② / ④ 的
+    ``paywall_type=preview`` 本来就是模型看文本说的——拿文本再核一遍文本，
+    核等于没核。媒体信号是**独立于模型自述的页面事实**。
+
+    ⚠️ **阈值是探针既有常量，不是这里新定的**：这是 owner 裁定「用
+    ``media_signal``」的题中之义——判据跟着信号走，阈值只有一个出处。
+
+    Args:
+        first: 第一帧 ``MEDIA_PROBE_JS`` 的原始返回。
+        second: 第二帧（间隔后）的原始返回；缺（只采到一帧）时按单帧处理
+            ⇒ ``timeupdate_progress`` 恒不成立（**没测过 ≠ 没推进**）。
+    """
+    from trajectory_pipeline.executor.probe.media_probe import (  # noqa: PLC0415
+        PARTIAL_FREE_MAX_CURRENT_TIME_S,
+        TIMEUPDATE_PROGRESS_THRESHOLD_S,
+        signal_from_samples,
+    )
+
+    if first is None and second is None:
+        return ""
+    sig, count = signal_from_samples(first, second)
+    if count <= 0:
+        return ""
+    if sig.media_error is not None and sig.media_error > 0:
+        return ""
+    if not sig.timeupdate_progress or sig.current_time_sec is None:
+        return ""
+    if sig.current_time_sec >= PARTIAL_FREE_MAX_CURRENT_TIME_S:
+        return ""
+    return (
+        f"媒体信号：{count} 个媒体元素，currentTime {sig.current_time_sec:.1f}s "
+        f"且真推进（阈值 {TIMEUPDATE_PROGRESS_THRESHOLD_S:.2f}s / 试看上限 "
+        f"{PARTIAL_FREE_MAX_CURRENT_TIME_S:.0f}s）、无 media_error"
+    )
+
+
+def _media_signal_miss(
+    first: Mapping[str, Any] | None,
+    second: Mapping[str, Any] | None,
+) -> str:
+    """:func:`media_signal_evidence` 的「**为什么不成立**」——只给降级文案用。
+
+    ⚠️ 读档的人要分得清「**没有媒体**」「**没播起来**」「**播过去了**」
+    「**坏掉了**」——四条成因的处置完全不同（前一条是页面形态问题，后一条
+    是 ``broken`` 的活）。写成一句笼统的「信号不成立」等于让人无从下手。
+    """
+    from trajectory_pipeline.executor.probe.media_probe import (  # noqa: PLC0415
+        PARTIAL_FREE_MAX_CURRENT_TIME_S,
+        signal_from_samples,
+    )
+
+    if first is None and second is None:
+        return "没采到媒体帧"
+    sig, count = signal_from_samples(first, second)
+    if count <= 0:
+        return "页面上没有媒体元素"
+    if sig.media_error is not None and sig.media_error > 0:
+        return f"媒体元素报错（error.code={sig.media_error}），那是 broken 的形态"
+    if not sig.timeupdate_progress or sig.current_time_sec is None:
+        have = "只有一帧" if second is None else "两帧 currentTime 没推进"
+        return f"{have}——媒体没播起来（暂停 / 未加载 / 后端没给流）"
+    return (
+        f"currentTime 已 {sig.current_time_sec:.1f}s ≥ 试看上限 "
+        f"{PARTIAL_FREE_MAX_CURRENT_TIME_S:.0f}s——那是能看，不是试看"
+    )
 
 
 def terminal_shape_branch(

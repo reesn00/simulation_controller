@@ -619,6 +619,12 @@ class TestBranchPrecondition:
         4 批 300 行核对:守卫触发的 46 行 100% 是 player 落地页形态,
         没有 nav-bar 假登录墙真例。X 改后该守卫不再覆盖 login_required。
         防回潮:nav-bar 形态真例若出现,TestBranchPreconditionNavBar 兜底。
+
+        ⚠️ **2026-11-26（H-26 缺口②）起这条多了一道核**:``login_required``
+        现在认**条件式语序**(``login_gate_evidence``)。所以正文不能再用
+        裸的「请登录」——那是导航栏形态,核会把它降成 ``unresolved``。
+        本测试仍守「同页放行」,**不是**「裸词放行」:正文给真登录门,
+        同页与否不影响结果。
         """
         from trajectory_pipeline.executor.branches import RunLedger
 
@@ -627,8 +633,8 @@ class TestBranchPrecondition:
             "https://x.test/site",
             Decision(Q.IS_REACHABLE, False, 0.8, "需登录", "llm",
                      {"access_control_type": "login"}),
-            obs=self._obs(url="https://x.test/site", body_text="请登录"),
-            pre_obs=self._obs(url="https://x.test/site", body_text="请登录"),
+            obs=self._obs(url="https://x.test/site", body_text="请登录后继续观看"),
+            pre_obs=self._obs(url="https://x.test/site", body_text="请登录后继续观看"),
         )
         assert out.branch == "login_required", "X 改后 login_required 同页应放行"
 
@@ -950,7 +956,11 @@ class TestBranchPrecondition:
         elif branch_factory == "login_required":
             decision = Decision(Q.IS_REACHABLE, False, 0.8, "需登录", "llm",
                                 {"access_control_type": "login"})
-            body = "body"
+            # ⚠️ 2026-11-26（H-26 缺口②）：``login_required`` 现在有**可执行
+            # 前置事实核**（条件式语序）。本测试守的是方案 X 的「同页守卫
+            # 不覆盖这条分支」，所以正文必须给出真登录门——用裸「body」
+            # 会被核降成 ``unresolved``（那是对的，但不测本组关心的事）。
+            body = "本片需登录后观看"
         elif branch_factory == "blocked":
             decision = Decision(Q.IS_REACHABLE, False, 0.8, "地区限制", "llm",
                                 {"access_control_type": "region"})

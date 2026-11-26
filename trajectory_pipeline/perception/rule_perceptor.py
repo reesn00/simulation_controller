@@ -656,6 +656,64 @@ def login_gate_phrase(text: str) -> str:
     return ""
 
 
+#: **条件式登录门**的正则——「登录/登陆/sign in」后接一个条件式词素。
+#:
+#: ⚠️ **为什么不是 :func:`login_gate_phrase`**：那个函数只查词表短语
+#: （``请登录`` / ``未登录`` …）的空白容忍版，**不要求条件式**——
+#: 「请登录」单独出现就命中，于是导航栏到处都是。2026-11-25 实测证实
+#: 这一点（存量 2080 个观察正文，含 login 短语的 22 个**全部**是导航 /
+#: 弹幕孤立词），所以拦页面与贴标签都不能用它当强度闸。
+#:
+#: ⚠️ **不拿词表当骨架**：词表是**短语清单**不是词根清单，用它拼语序会
+#: 漏掉「登录后方可」「先登录之后才能」这类词表里没有对应短语的真登录墙。
+#: 这里认的是**语序本身**：登录（前缀随意） + 条件式词素。
+#:
+#: 容忍行内空白（CJK 会被 ``innerText`` 拆开，实测 youku 现场正文是
+#: 「请 登录 后继续观看」），但**不跨段**——正则要求两者相邻。
+_LOGIN_CONDITIONAL_RE: re.Pattern[str] = re.compile(
+    r"登\s*[录陆]\s*(?:之\s*后|后\s*(?:方可|才|可|继续|即可|解锁|再)|才\s*能)"
+    r"|登\s*[录陆]\s*后\s*观\s*看(?!\s*(?:记录|历史|列表|足迹|排行))"
+    r"|sign\s*in\s*(?:to\s*(?:watch|view|continue))",
+    re.IGNORECASE,
+)
+
+#: 「已是会员 / 已登录」前缀——出现它说明这一句是说给**已登录用户**听的，
+#: 页面不是墙（1905 电影网详情页那句「若您已是会员，请登录观看>」即是）。
+LOGIN_LOGGED_IN_HINTS: tuple[str, ...] = (
+    "若已是会员", "若您已是", "已是会员", "已登录",
+)
+
+
+def login_gate_evidence(text: str) -> str:
+    """``login_required`` 的**门禁语境判据**：页面是否明写「登录之后才能看」。
+
+    空串 = 不是登录门。返回**给 evidence 用的描述**（不是布尔值）——
+    与 :func:`paywall_evidence` 同款：凡是靠它改写分支的地方，evidence
+    必须能指认判据，否则半年后没人说得清「凭什么算登录墙」。
+
+    三条口径：
+
+    1. 必须命中**条件式语序**（:data:`_LOGIN_CONDITIONAL_RE`）——
+       导航栏孤立的「请登录」不算；
+    2. 命中 :data:`LOGIN_LOGGED_IN_HINTS` 前缀 ⇒ 说给已登录用户听，不算；
+    3. 正文与模型引文（``payload["page_quotes"]``）**都可以**作输入——
+       与 ``subscription_wall`` 的核验同款，输入源是页面原文而不是模型自述。
+
+    ⚠️ **两处共用这一份**（2026-11-26 · H-26 缺口②）：
+    ``executor.gatekeeper.is_login_wall``（拦不拦这页）与
+    ``executor.branches.precondition_failed``（贴不贴这条负标签）。
+    各写一份必然漂，而漂移的表现是「一处拦了、另一处没拦」。
+    """
+    if not text:
+        return ""
+    if any(h in text for h in LOGIN_LOGGED_IN_HINTS):
+        return ""
+    m = _LOGIN_CONDITIONAL_RE.search(text)
+    if not m:
+        return ""
+    return f"登录门语序「{m.group(0).strip()}」"
+
+
 def paywall_price_evidence(text: str, *, exclude_login_gate: bool = True) -> str:
     """**判据二**（订阅价目门禁）的读数，空串 = 不成立。
 
@@ -763,6 +821,49 @@ def edge_challenge_evidence(title: str, text: str) -> str:
         if _norm(hint) in haystack:
             return hint
     return ""
+
+
+#: 站点**自述**的拦截形态（:func:`infer_access_defect` 的取值里挑）。
+#: ``not_found`` **不算**：404 页没说「这个地区不给看」；``anti_bot`` 算
+#: （站点自己写「访问过于频繁」），但 **CDN 模板文案已在前一步排除**
+#: （见 :func:`block_side_evidence`）。
+SITE_SELF_REPORT_KINDS: frozenset[str] = frozenset(
+    {"region", "captcha", "anti_bot"}
+)
+
+
+def block_side_evidence(title: str, text: str) -> str:
+    """``blocked`` 的**站点侧判据**：拦截是站点说的，还是我们这张面被拦了。
+
+    空串 = **站点侧前置事实不成立**（不是「没问题」，是**不能据此下结论**）。
+    返回**给 evidence 用的描述**，与 :func:`login_gate_evidence` 同款——
+    读报告的人要看得见「凭什么算站点侧」。
+
+    两半都必须在场（方案 20 §R3）：
+
+    1. **没有命中边缘挑战模板**（:func:`edge_challenge_evidence`）——
+       命中了说明这一页是 CDN / WAF 的中间页，一个字都不是站点说的；
+    2. **有站点自述的形态**（:data:`SITE_SELF_REPORT_KINDS`：地区 / 验证码 /
+       反爬）。
+
+    ⚠️ **只有第一半不够**：词表永远不全（CF 换一版文案就漏），拿「没命中
+    模板」去做**否定性结论**等于把未知当已知。所以第二半是必需的肯定证据。
+
+    ⚠️ **单一真源**（2026-11-26 · H-51）：``evaluation.scorers.d5_scorer``
+    的检查 5「拦截发生在站点侧」与 ``executor.branches`` 的标签侧口径读
+    **本函数**。两处各写一份的后果不是「少记一条」，而是**评分器放行、
+    标签侧照贴**——同一份存档两个结论，报表上两处都看不出异常。
+    """
+    if not (text or "").strip():
+        return ""
+    edge = edge_challenge_evidence(title or "", text or "")
+    if edge:
+        return ""
+    kind = infer_access_defect(text)
+    if kind not in SITE_SELF_REPORT_KINDS:
+        return ""
+    hit = access_evidence(text, kind=kind) or kind
+    return f"站点自述的 {kind} 形态 {hit}（非 CDN/WAF 中间页模板）"
 
 
 def infer_access_from_evidence(evidence: str) -> str:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -58,6 +59,7 @@ from trajectory_pipeline.executor.browser.page_driver import (
 )
 from trajectory_pipeline.executor.dom import CleanedLink, CleanedSnapshot
 from trajectory_pipeline.executor.gatekeeper import DeadLoopDetector, Verdict
+from trajectory_pipeline.executor import gatekeeper
 from trajectory_pipeline.llm.schema_parse import extract_json, strip_think
 from trajectory_pipeline.perception.base import (
     InteractiveElement,
@@ -221,6 +223,26 @@ class FakeDriver:
 
     async def close(self) -> None:
         pass
+
+
+class _MediaDriver(FakeDriver):
+    """带 ``evaluate`` 的 driver——``_sample_media`` 的两帧采样（H-51）用。
+
+    每一帧 ``MEDIA_PROBE_JS`` 的返回依次从 :attr:`frames` 里取，用完后
+    粘在最后一帧（「播到一半停住」正是一条真轨迹的形态，而不是每调一次
+    就换个答案）。
+    """
+
+    def __init__(self, pages: tuple[Observation, ...] = (), *, frames: tuple[dict, ...] = ()) -> None:
+        super().__init__(pages)
+        self.frames = list(frames)
+        self.evaluations = 0
+
+    async def evaluate(self, expression: str):
+        self.evaluations += 1
+        if not self.frames:
+            return None
+        return self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
 
 
 _LOGIN_PAGE = _obs(
@@ -707,15 +729,45 @@ class Test分支前置事实核:
         assert "[记账降级]" in ctx.outcome.reason
         assert "subscription_wall" in ctx.outcome.reason
 
-    async def test_登录墙不受影响(self):
-        """``login_required`` 没有对应判据（感知层无 ``login_evidence``），
-        今天**原样透传**——守卫不该顺手把这条也降掉。"""
+    async def test_真登录门仍贴login_required(self):
+        """真登录门（页面明写「请登录后再观看」）⇒ 原样贴 ``login_required``。
+
+        ⚠️ **2026-11-26 起它过前置事实核了**（H-26 缺口②）：判据是
+        ``rule_perceptor.login_gate_evidence``（条件式语序），与拦截侧
+        ``is_login_wall`` **同一个函数**。这条守住「加了核之后真登录墙
+        仍然进池」。
+        """
         ctx = await _run(
             FakeAgentLLM([{"tool": "click", "ref": "e1"},
                           {"tool": "click", "ref": "e1"}]),
             FakeDriver((_LOGIN_PAGE, _LOGIN_PAGE)),
         )
         assert ctx.outcome.branch == "login_required"
+
+    async def test_只有导航栏登录词的页不贴login_required(self):
+        """**前置事实核单独成闸**：门禁判成登录墙但页面无登录门证据 ⇒
+        ``unresolved``。
+
+        做法：只把 ``gatekeeper.is_login_wall`` 打桩成恒真（模拟旧裸命中
+        口径），**不动** ``rule_perceptor.login_gate_evidence``——于是这条
+        测的正是「贴标签这一道核」（H-26 缺口②），与「门禁会不会误判」
+        （归 ``test_gatekeeper``）分开。
+        """
+        nav_login = _obs(
+            url="https://x.test/play",
+            title="播放页",
+            body="首页 导航 未登录 会员 点播厅 请登录",
+            refs=("e1",),
+        )
+        with mock.patch.object(gatekeeper, "is_login_wall", lambda o: True):
+            ctx = await _run(
+                FakeAgentLLM([{"tool": "click", "ref": "e1"},
+                              {"tool": "click", "ref": "e1"}]),
+                FakeDriver((nav_login, nav_login)),
+            )
+        assert ctx.outcome.branch == "unresolved"
+        assert "[记账降级]" in ctx.outcome.reason
+        assert "login_required" in ctx.outcome.reason
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1272,6 +1324,72 @@ class Test动作流:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 媒体两帧采样（H-51）：``partial_free`` 的核要的信号
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _frame(times: list[float]) -> dict:
+    return {
+        "count": len(times),
+        "media": [
+            {
+                "tag": "video", "currentTime": t, "duration": 3600.0,
+                "paused": False, "readyState": 4, "networkState": 1,
+                "ended": False, "videoWidth": 1280, "videoHeight": 720,
+                "errorCode": 0, "framesDecoded": 120,
+            }
+            for t in times
+        ],
+    }
+
+
+class Test媒体两帧采样:
+    """``_sample_media``：只在**可能真有试看**的页面上花钱。"""
+
+    async def test_有媒体的页面采两帧(self):
+        drv = _MediaDriver(
+            (_obs(url="https://x.test/play", refs=("e1",), video_tag_count=1),),
+            frames=(_frame([1.0]), _frame([3.2])),
+        )
+        ctx = await _run(
+            FakeAgentLLM([{"tool": "click", "ref": "e1"}]), drv,
+        )
+        assert drv.evaluations == 2, "「真推进」是差分事实，一帧判不了"
+        final = ctx.outcome.final_obs
+        assert final is not None
+        assert final.media_sample_first is not None
+        assert final.media_sample_second is not None
+        # 两帧能折成「真推进」——这就是 ``partial_free`` 核要的信号
+        assert final.media_sample_first["media"][0]["currentTime"] == 1.0
+        assert final.media_sample_second["media"][0]["currentTime"] == 3.2
+
+    async def test_没有视频标签的页面不采(self):
+        """站内导航后每步两次 evaluate + 睡 2s，绝大多数页面上没有媒体
+        ——那笔钱要花在真可能有试看的地方。"""
+        drv = _MediaDriver(
+            (_obs(url="https://x.test/play", refs=("e1",)),), frames=(_frame([1.0]),),
+        )
+        await _run(FakeAgentLLM([{"tool": "click", "ref": "e1"}]), drv)
+        assert drv.evaluations == 0
+
+    async def test_采样失败不改变观察也不收口(self):
+        """采样是**附加证据**：采不到 = 核无从成立（放行），不是「不是试看」。"""
+
+        class _Broken(_MediaDriver):
+            async def evaluate(self, expression: str):
+                raise DriverError("fake: evaluate 挂了")
+
+        drv = _Broken(
+            (_obs(url="https://x.test/play", refs=("e1",), video_tag_count=1),),
+        )
+        ctx = await _run(FakeAgentLLM([{"tool": "click", "ref": "e1"}]), drv)
+        assert ctx.outcome.reached is True
+        assert ctx.outcome.final_obs is not None
+        assert ctx.outcome.final_obs.media_sample_first is None
+
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 读原语（方案 23 R4-1）：看什么还给模型
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -1687,6 +1805,50 @@ class Test契约漂移:
         assert not (declared_only & set(actions.TOOLS)), (
             f"能力声明混进了动作流词汇表: {declared_only & set(actions.TOOLS)}"
         )
+
+    def test_多出来的恰好是能力声明族(self):
+        """**owner 裁定（2026-11-25 · 13 号 §P2-1）：能力声明留在训练工具集**。
+
+        裁定之后，两个集合的差集**不再是无约束的**——它必须**恰好等于**
+        ``family="capability"`` 那一族。这条是双向守卫：
+
+        - 来源侧：catalog 里标了 ``capability`` 的，必须真的出现在可见集里
+          （否则「能力声明留在训练工具集」被悄悄收窄）；
+        - 去向侧：可见集与 agent 白名单的差集里，**不许**出现非能力声明族
+          的成员（否则是「多出来的工具没人说清它是什么」——那正是 P2-1
+          报告里 14 ≠ 7 说不清的那个缺口）。
+
+        ⚠️ 它守的不是「相等」：:data:`AGENT_TOOLS` 仍可以小于可见集，
+        这条钉的是**差集的身份**，不是差集的大小。
+        """
+        visible = self._production_visible()
+        declared_only = visible - set(AGENT_TOOLS)
+        capability = set(toolcatalog.capability_names(toolcatalog.SURFACE_CAMOFOX))
+        assert capability <= visible, (
+            f"能力声明被悄收窄了——catalog 里有但可见集里没有: "
+            f"{sorted(capability - visible)}"
+        )
+        assert declared_only <= capability, (
+            f"可见集比 agent 白名单多出来的不该有非能力声明族的成员: "
+            f"{sorted(declared_only - capability)}"
+        )
+        # 反方向：能力声明**不许**进 agent 白名单。只写「差集 ⊆ cap」
+        # 抓不到这一条——把它拉进白名单，差集只是**变小**（仍在 cap 里），
+        # 上面两条都过。判定的实质是「声明与可执行不相交」。
+        assert not (capability & set(AGENT_TOOLS)), (
+            f"能力声明被当成了可执行动作: {sorted(capability & set(AGENT_TOOLS))}"
+        )
+
+    def test_能力声明一个都没被真实调用过(self):
+        """能力声明之所以叫**声明**：控制流发不出它们。
+
+        owner 裁定保留它们之后，这条风险还在——训练出的模型**可能**去调。
+        所以它必须**永远**不在 ``actions.TOOLS`` 里（上面那条只管声明与
+        词汇表不交集，这条管它就是发不出去）。两条合起来才完整。
+        """
+        capability = set(toolcatalog.capability_names(toolcatalog.SURFACE_CAMOFOX))
+        assert capability, "生产面应当有能力声明族（P2-1 的前提）"
+        assert not (capability & set(actions.TOOLS))
 
     def test_agent白名单都在动作流词汇表内(self):
         """A2 不引入任何 P1 未见过的新动作——控制流真会发的原语清单
