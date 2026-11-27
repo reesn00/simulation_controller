@@ -423,6 +423,20 @@ def _budget_from_args(args) -> AgentBudget:
     return AgentBudget(max_steps=steps, max_llm_calls=max(1, int(steps * 1.5)))
 
 
+def _max_steps_from_args(args) -> int | None:
+    """``--max-steps`` 原值（缺省 ``None``）→ ``RunConfig.agent_max_steps``。
+
+    ⚠️ **``None`` 与 8 不是一回事**：``None`` 表示「本批次没指定，用的是
+    :class:`AgentBudget` 的默认值」，而 8 表示「本批次显式要 8」。存档里
+    两者要分得开，否则「默认批次」与「显式 8 步批次」在 `run_config` 上同形。
+
+    ⚠️ 走 ``getattr`` 而不是 ``args.max_steps``：单测里有直接构造
+    ``Namespace`` 调 :func:`cmd_run` 的，缺这个属性时应当**落到默认值**，
+    不该整批崩在 `AttributeError` 上（那是运维事故，不是配置错误）。
+    """
+    return getattr(args, "max_steps", None)
+
+
 def _describe_agent(backend) -> str:
     """把 agent 后端的状态写清楚。**升配配没配都要写在明面上**——
     「未配置」与「已配置」在报表上不写出来，读的人就会默认它是配好的
@@ -800,7 +814,7 @@ async def _run_manual(args: argparse.Namespace) -> int:
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
-        agent_max_steps=args.max_steps,
+        agent_max_steps=_max_steps_from_args(args),
         executor_mode=mode,
         # 单站超时（2026-10-22 起暴露到 CLI）。**不传就用源码默认值**——
         # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。
@@ -1009,7 +1023,7 @@ async def _run_plan(args: argparse.Namespace) -> int:
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
-        agent_max_steps=args.max_steps,
+        agent_max_steps=_max_steps_from_args(args),
         executor_mode=mode,
         # 单站超时（2026-10-22 起暴露到 CLI）。**不传就用源码默认值**——
         # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。

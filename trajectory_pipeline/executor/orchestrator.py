@@ -282,6 +282,23 @@ class RunRecord:
     title: str
     query: str
     search_url: str
+    #: **``query`` 是怎么算出来的**（2026-11-27 · H-54）。空 dict = 旧存档（未记）。
+    #:
+    #: 光有一个检索串，读档人无法判断它是不是这条任务「该搜的」：
+    #: B 路径用的是**与片名无关的聚合词**（`AGGREGATOR_QUERIES[crc32(task_id) % 3]`），
+    #: A/C 用的是「片名 + 后缀」——**两种东西在 ``query`` 字段上长得一模一样**。
+    #: 实测代价：拿 A 路径的 `_search_query()` 去核一条 B 路径的存档，
+    #: 得出「来源不可复核」的结论，而实际上是**问错了路径**。
+    #:
+    #: 形状：``{"rule": "aggregator_query"|"build_query"|"caller_supplied",
+    #: "seed": <task_id|title|None>, "vocab": [...]|None}``。
+    #: 带 ``vocab`` 就表示**能离线复算**（`vocab[crc32(seed) % len(vocab)]`
+    #: 应当等于 ``query``）；不带就是复算不出来，读档人据实知道「不可复算」，
+    #: 而不是误以为验过。
+    #:
+    #: ⚠️ 位置在必填字段之后是有原因的：dataclass 不允许带默认值的字段
+    #: 出现在无默认字段之前，挪上去会在 import 期就 `TypeError`。
+    query_origin: dict[str, Any] = field(default_factory=dict)
     #: **用户实际说的那句话**（persona 渲染后的原文）。空串 = 手工路径，
     #: 与 ``provenance`` 空 dict 同款约定：「不是 taskgen 跑的」。
     #:
@@ -617,6 +634,10 @@ class RunRecord:
             "task_id": self.task_id,
             "title": self.title,
             "query": self.query,
+            # 检索式是怎么算出来的（2026-11-27 · H-54）。**必须显式列**——
+            # `to_json` 是手写白名单，加了 dataclass 字段不等于进了存档，
+            # 而漏掉它的症状正是本条要治的：「有 query、看不出它从哪来」。
+            "query_origin": dict(self.query_origin),
             "user_prompt": self.user_prompt,
             "search_url": self.search_url,
             "perceptor": self.perceptor,
@@ -1296,6 +1317,32 @@ class Orchestrator:
             query = search_query or search_step.build_query(
                 title, persona=persona
             )
+        # ── 检索式来源（2026-11-27 · H-54）────────────────────────
+        # 只为 `query` 存一个字符串是不够的：**同一部片换一条路径就会得到
+        # 完全不同的检索式**（B 用与片名无关的聚合词，A/C 用「片名 + 后缀」），
+        # 而存档上两者长得一模一样。实测代价：拿 `_search_query()`（A 路径）
+        # 去核对一条 B 路径的存档，把「逐条一致」读成了「来源不可复核」。
+        # 所以这里连**怎么算出来的**一起落盘，读档人能离线复算。
+        if self._cfg.discovery_path == "aggregator":
+            query_origin = {
+                "rule": "aggregator_query",
+                "seed": task_id,
+                "vocab": list(search_step.AGGREGATOR_QUERIES),
+            }
+        elif search_query:
+            query_origin = {
+                "rule": "caller_supplied",
+                # fail-closed 纪律：调用方给的检索词**不追认**是 taskgen
+                # 渲染的还是人手写的——那需要一条目前不存在的链路。
+                "seed": None,
+                "vocab": None,
+            }
+        else:
+            query_origin = {
+                "rule": "build_query",
+                "seed": title,
+                "vocab": None,
+            }
         url = search_step.search_url(query, self._cfg.engine)
         log.info("[%s] 发现链启动：path=%s mode=%s query=%r engine=%s",
                  task_id, self._cfg.discovery_path, self._mode, query,
@@ -1305,6 +1352,7 @@ class Orchestrator:
             task_id=task_id,
             title=title,
             query=query,
+            query_origin=query_origin,
             search_url=url,
             user_prompt=user_prompt,
             ledger=ledger,

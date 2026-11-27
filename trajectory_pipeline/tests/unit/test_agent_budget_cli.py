@@ -22,7 +22,10 @@ import argparse
 import pytest
 
 from trajectory_pipeline.executor.agent_loop import AgentBudget
-from trajectory_pipeline.executor.cli import _budget_from_args
+from trajectory_pipeline.executor.cli import (
+    _budget_from_args,
+    _max_steps_from_args,
+)
 from trajectory_pipeline.executor.orchestrator import RunConfig
 
 
@@ -80,3 +83,23 @@ class Test落进run_config:
         import dataclasses
 
         assert dataclasses.asdict(cfg)["agent_max_steps"] == 12
+
+class Test不崩在缺属性上:
+    """⚠️ **回归记录（2026-11-27 当场踩到）**：`cmd_run` 里曾直接写
+    `agent_max_steps=args.max_steps`，而全树有 **21 个单测文件**自己构造
+    `Namespace` 去调它、**里面没有这个字段** ⇒ `AttributeError` 让
+    **25 条**单测失败，症状看起来像「改坏了 cmd_run」而不是「取参数取窄了」。
+
+    ⇒ 取参数一律走 :func:_max_steps_from_args（内部 `getattr`），
+    缺属性**落到默认值 `None`**，不整批崩。
+    """
+
+    def test_Namespace没有max_steps也不崩(self):
+        assert _max_steps_from_args(_args()) is None
+
+    def test_与_budget_from_args_对同一个缺失属性口径一致(self):
+        # 两处取参数若口径不一，就会出现「预算给了 12、run_config 记 None」
+        # ——报告上完全同形，事后查不出这批到底给了几
+        missing = _args()
+        assert _max_steps_from_args(missing) is None
+        assert _budget_from_args(missing) == AgentBudget()
