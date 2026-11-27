@@ -56,7 +56,7 @@ from typing import Any, Callable, Final, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from trajectory_pipeline.executor.actions import is_native_think
-from trajectory_pipeline.executor.agent_loop import AgentBackend
+from trajectory_pipeline.executor.agent_loop import AgentBackend, AgentBudget
 from trajectory_pipeline.executor.archive import (
     DEFAULT_ROOT,
     REVIEWED_SUFFIX,
@@ -351,7 +351,7 @@ def _describe_rationale(writer, why: str) -> str:
     return f"已接上（{writer.model}）"
 
 
-def _make_agent_backend(breaker=None):
+def _make_agent_backend(breaker=None, budget=None):
     """组装 agent 模式的后端四件套。**没有可用后端时返回 ``(None, 原因)``**。
 
     与 :func:`_make_rationale_writer` 同款形状：不说原因的话，报表上只看
@@ -395,9 +395,32 @@ def _make_agent_backend(breaker=None):
                 schema_parse.strip_think(raw)
             ),
             escalate=LLMClient(esc_cfg) if esc_cfg is not None else None,
+            budget=budget if budget is not None else AgentBudget(),
         ),
         "",
     )
+
+
+def _budget_from_args(args) -> AgentBudget:
+    """``--max-steps`` → :class:`AgentBudget`。**缺省即交付默认值，不猜**。
+
+    ``llm_calls`` **跟着 `max_steps` 联动**（× 1.5，取整）：这两个数分开设
+    会长出「步数还有、模型已经调不动了」——它的症状与「步数用完」同形
+    （都是 `agent.budget` 出口），事后从存档上分不出来是哪一层先撞的。
+
+    ⚠️ **不放大默认值**：不给 ``--max-steps`` 时一律 8 / 12。改默认值等于
+    改所有批次的形态，而 8 是按任务②的实测形态定的（见 ``AgentBudget``
+    docstring）；要跑大预算的批次**显式给**，让 ``run_config`` 记下这个数。
+    """
+    steps = getattr(args, "max_steps", None)
+    if steps is None:
+        return AgentBudget()
+    if steps <= 0:
+        raise ValueError(
+            f"--max-steps 必须是正数，收到 {steps!r}。0 或负数会产出"
+            "「一步都没走、看起来正常的空批」"
+        )
+    return AgentBudget(max_steps=steps, max_llm_calls=max(1, int(steps * 1.5)))
 
 
 def _describe_agent(backend) -> str:
@@ -413,7 +436,7 @@ def _describe_agent(backend) -> str:
 
 
 def _resolve_executor(requested: str | None = None,
-                      breaker=None) -> tuple[str, Any, str]:
+                      breaker=None, budget=None) -> tuple[str, Any, str]:
     """构造期解析执行器模式：``(mode, backend, 打印文案)``。
 
     优先级（A3-1 转正）：``--executor-mode``（run 子命令参数）>
@@ -435,7 +458,7 @@ def _resolve_executor(requested: str | None = None,
             f"executor = scripted（经 {via}；agent 模式用 "
             f"--executor-mode agent 切——需配齐 TRAJECTORY_LLM_*）"
         )
-    backend, why = _make_agent_backend(breaker)
+    backend, why = _make_agent_backend(breaker, budget)
     if backend is None:
         return "", None, (
             f"[FAIL] 要 agent 模式（经 {via}），但 agent 后端不可用：{why}。"
@@ -762,7 +785,9 @@ async def _run_manual(args: argparse.Namespace) -> int:
     # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：模式是
     # 批次级属性，不该等跑到某个候选才决定。解析先于 RunConfig 构造——
     # 模式的产地是 RunConfig（A3-1 转正），backend 随模式一起在这里备好。
-    mode, agent_backend, banner = _resolve_executor(args.executor_mode, breaker)
+    mode, agent_backend, banner = _resolve_executor(
+        args.executor_mode, breaker, _budget_from_args(args)
+    )
     if not mode:
         print(banner)
         return 2
@@ -775,6 +800,7 @@ async def _run_manual(args: argparse.Namespace) -> int:
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
+        agent_max_steps=args.max_steps,
         executor_mode=mode,
         # 单站超时（2026-10-22 起暴露到 CLI）。**不传就用源码默认值**——
         # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。
@@ -968,7 +994,9 @@ async def _run_plan(args: argparse.Namespace) -> int:
     # 执行器模式在**构造期**定下（``executor.mode`` 的纪律）：手工路径
     # 与计划路径在这里是同一套，换数据来源不该换执行链。解析先于
     # RunConfig 构造——模式的产地是 RunConfig（A3-1 转正）。
-    mode, agent_backend, banner = _resolve_executor(args.executor_mode, breaker)
+    mode, agent_backend, banner = _resolve_executor(
+        args.executor_mode, breaker, _budget_from_args(args)
+    )
     if not mode:
         print(banner)
         return 2
@@ -981,6 +1009,7 @@ async def _run_plan(args: argparse.Namespace) -> int:
         discovery_path=args.discovery_path,
         max_intermediates=args.max_intermediates,
         max_referral_links=args.max_referral_links,
+        agent_max_steps=args.max_steps,
         executor_mode=mode,
         # 单站超时（2026-10-22 起暴露到 CLI）。**不传就用源码默认值**——
         # 落进 run_config 是 B-4 唯一的时限判据，不落盘等于没有判据。
@@ -5050,6 +5079,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-intermediates", type=int, default=3,
                      help="B/C 路径访问的中间页数上限。截断保序——只记警告不中断，"
                           "是预算控制不是语义筛选")
+    run.add_argument("--max-steps", type=int, default=None,
+                     help="agent 单站点内的动作步数预算。**缺省 = AgentBudget 默认 8**"
+                          "（按任务②的实测形态定：首页 → 搜索/列表 → 详情页 → "
+                          "播放控件，3-5 步够用）。⚠️ **B/C 中间页形态不同**——它要"
+                          "找一串入口链接，实测 5 页全部走满 8 步、3 次 links 都落在"
+                          "第 9 步 ⇒ 8 在「想到报 links」之前就用完。跑 B/C 批次时"
+                          "显式给大值，**且必须与 --per-site-timeout 一起改**："
+                          "步数涨了超时不涨，撞顶会被记成 unreachable_hard（假负样本）"
+                          "。`llm_calls` 按 max_steps × 1.5 联动")
     run.add_argument("--max-referral-links", type=int, default=5,
                      help="每个中间页校验的外链数上限")
     run.add_argument("--driver", choices=SUPPORTED_KINDS, default=DEFAULT_KIND,
