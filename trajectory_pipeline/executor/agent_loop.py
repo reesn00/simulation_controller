@@ -989,25 +989,77 @@ class RejectedReport:
 
     #: 被反驳的 URL 原文（审计用：要能看出它编的是哪一种形态）。
     url: str
+    #: ``"invented"``（真编造）或 ``"seen_but_unverifiable"``（见过、
+    #: 但当前页读不出 —— 2026-11-27 实测逼出来的一类）。**默认
+    #: ``invented``**：这条事件在 A3 幻觉计数里的老口径是「凡是
+    #: RejectedReport 都算编造」，默认取它才不会让存量读法静默变成「都不算」。
+    kind: str = "invented"
 
     def to_event(self) -> dict[str, str]:
         return {"kind": "reject_report", "url": self.url}
 
 
-def _invented_url(selected: tuple[SelectedRef, ...], seen: set[str]) -> str:
-    """第一条没见过的 URL。空串 = 全部见过。
+_UNSEEN: Final = "unseen"      # 没见过：真编造
+_STALE: Final = "stale"        # 记录里见过，但最终这页读不出（只可能过期）
+#: ``RejectedReport.kind`` 的第二个取值（见 :class:`RejectedReport`）。
+PENDING_EVIDENCE: Final = "seen_but_unverifiable"
+
+
+def _url_status(
+    selected: tuple[SelectedRef, ...], seen: set[str], final: Observation | None
+) -> tuple[str, str]:
+    """``(类别, 第一条命中的 URL)``。类别见下面三个常量；全部通过 = ``""``。
+
+    三类不是把阈值调松，而是**它们要给模型的下一步动作不同**：
+
+    - ``unseen``：模型编的 ⇒ 原来的反驳（重试 + 记账）。
+    - ``stale``：它曾在某一页读到过这条链接（``_absorb_links`` 进
+      ``seen``），但**现在站的这一页读不出它** ⇒ 模型没有任何办法自己
+      核实。逼它重试只会让它在放弃与编造之间二选一——而这正是 2026-11-27
+      那批实测里发生的事（见下）。
+    - ``verifiable``：最终这页的 ``links`` 里就有 ⇒ 自证得掉，不该反驳。
+
+    ⚠️ **``verifiable`` 这一类是实测逼出来的**（``p09_bc_agent_20261127``
+    T016 中间页 3）：**观察回执的 links 窗口只有 20 条**
+    （:data:`~.orchestrator.PERCEPTION_LINK_WINDOW` 的口径），而读原语
+    ``links`` 给到 200 条。模型读了一次 ``links``、在 164 条里认出了入口，
+    但那条入口**排在第 20 条之后**，回执投影里根本没有 ⇒ ``seen`` 里没有
+    ⇒ 按老口径判成「编造」。这是**观察窗与自报窗口不一致**，不是幻觉。
+
+    ``final`` 是**最终**那页的观察（不是报出链接时那页）：用当前可读的
+    links 核对，才是「这条 URL 此刻能不能被验证」。
+
+    ⚠️ 传 ``self.obs`` 而不是 ``self._pending_obs``——后者只是**最近一次读**
+    的结果：读 ``links`` 时它的 links 有值，读 ``snapshot`` 时没有，
+    用它会让「能不能自证」取决于模型最后读的是哪一块。
+    """
+    verifiable: set[str] = {
+        link.href for link in (final.links if final is not None else ()) or ()
+        if link.href
+    }
+    for ref in selected:
+        if ref.url in verifiable:
+            continue
+        if ref.url not in seen:
+            return _UNSEEN, ref.url
+        return _STALE, ref.url
+    return "", ""
+
+
+def _invented_url(selected: tuple[SelectedRef, ...], seen: set[str],
+                  final: Observation | None = None) -> str:
+    """第一条**真编造**的 URL。空串 = 没有编造（``stale`` 不算编造）。
 
     与 :func:`_validate_selected` 分开，是因为**反驳要知道是哪一条**
     （落 :class:`RejectedReport` 要带原文），而提示词只需要一句文案。
     """
-    for ref in selected:
-        if ref.url not in seen:
-            return ref.url
-    return ""
+    kind, url = _url_status(selected, seen, final)
+    return url if kind == _UNSEEN else ""
 
 
 def _validate_selected(
-    selected: tuple[SelectedRef, ...], seen: set[str]
+    selected: tuple[SelectedRef, ...], seen: set[str],
+    final: Observation | None = None,
 ) -> str:
     """终局自报的 URL 必须在轨迹里**真的见过**。返回引导文案，空串 = 通过。
 
@@ -1024,10 +1076,13 @@ def _validate_selected(
     ⚠️ 与 A3 的 goto 溯源断言是**两件事**：那边统计的是 goto 的 url
     （循环里有意为之的不拦——编了会走到 404，agent 自己会换路），这边
     拦的是终局产物。A3 的批次级幻觉计数读的就是本函数落的事件。
+
+    ``final`` 是最终那页的观察（2026-11-27）：最终页 ``links`` 里有的 URL
+    **可以自证**，不反驳；见 :func:`_url_status` 的三分类。
     """
-    for ref in selected:
-        if ref.url not in seen:
-            return _GUIDANCE_INVENTED_URL.format(url=ref.url)
+    kind, url = _url_status(selected, seen, final)
+    if kind == _UNSEEN:
+        return _GUIDANCE_INVENTED_URL.format(url=url)
     return ""
 
 
@@ -1407,6 +1462,10 @@ class _Loop:
         #: （:func:`_validate_selected`）——它与 I6 的 ref 白名单是两
         #: 个集合：那个是「最近一页的可交互元素」，这个是「整条轨迹的
         #: 链接」，因为终局可能在好几个页面之后才报。
+        #:
+        #: ⚠️ 2026-11-27 起它**不再是唯一判据**：``links`` 读原语给 200 条、
+        #: 回执只带 20 条，模型读到的入口可能落在回执窗口之外 ⇒ 「见过但
+        #: 现行页读不出」这一类不再判编造（:func:`_url_status`）。
         self._seen_hrefs: set[str] = set()
         #: ``interactive`` 读到的元素（R4-1）。**I6 白名单的第二来源，
         #: 也是目标解析的第二来源**：普通回执只渲染前 50 个元素，而读可以
@@ -1580,8 +1639,20 @@ class _Loop:
                 # done 形态**不校验工具与 ref**：那一轮不执行任何动作，
                 # 工具字段是空壳（契约里它只在 done=false 时有意义）。
                 # 校验它会让「报到了」被自己的工具字段卡住。
-                invented = _invented_url(instr.selected, self._seen_hrefs)
-                if invented:
+                kind, bad_url = _url_status(
+                    instr.selected, self._seen_hrefs, self.obs
+                )
+                if kind == _STALE:
+                    # **不反驳、不拒绝、照常收**（2026-11-27）：它确实见过，
+                    # 只是当前这页读不出。硬拦的后果是「诚实的放弃」与
+                    # 「编一条」二选一，而编造才是我们真正要挡的那个。
+                    # 事实照样留痕（``RejectedReport`` 是 A3 幻觉计数的
+                    # 唯一数据源），只是这一条**不计入编造**。
+                    self._emit(RejectedReport(
+                        url=bad_url, kind=PENDING_EVIDENCE,
+                    ))
+                elif kind == _UNSEEN:
+                    invented = bad_url
                     # 终局报了一条它没见过的链接。**比 I6 编 ref 更该拦**：
                     # 编 ref 点错了还能退回来（页面还在，agent 看得到），
                     # 终局报出来的 URL 会直接过外链校验变成候选进 P2，

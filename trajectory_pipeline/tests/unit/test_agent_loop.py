@@ -43,11 +43,13 @@ from trajectory_pipeline.executor.agent_loop import (
     _canonical,
     _invented_url,
     _system_prompt,
+    _url_status,
     _validate,
     _validate_selected,
     ActionInstruction,
     AgentBudget,
     AgentTask,
+    RejectedReport,
     SelectedRef,
     agent_loop,
     parse_instruction,
@@ -1728,8 +1730,13 @@ class Test任务类型:
             (SelectedRef("https://v1.test/"), SelectedRef("https://v2.test/")),
             seen,
         ) == ""
+        # 编造夹在见过的那几条之间也照样要找到（顺序敏感，见
+        # :class:`Test自报URL三分类`）
         assert _invented_url(
-            (SelectedRef("https://v1.test/"), SelectedRef("https://made.up/")),
+            (
+                SelectedRef("https://made.up/"),
+                SelectedRef("https://v1.test/"),
+            ),
             seen,
         ) == "https://made.up/"
 
@@ -1741,6 +1748,82 @@ class Test任务类型:
         # 与 I6 的 ref 引导同款：说清「从哪儿取」，而不是只说「不行」
         assert "观察里出现过的链接" in text
         assert "如实报告放弃" in text
+
+
+def _fake_final(url: str, hrefs: list[str]):
+    """造一份「最终那页」的观察：只有 ``links`` 有用（:func:`_url_status` 读它）。"""
+    from trajectory_pipeline.perception.base import LinkItem, Observation
+
+    return Observation(
+        url=url,
+        page_title="",
+        body_text="",
+        links=tuple(LinkItem(text="", href=h) for h in hrefs),
+    )
+
+
+class Test自报URL三分类:
+    """2026-11-27 · ``p09_bc_agent_20261127`` T016 中间页 3 实测逼出来的。
+
+    **症状**：``links`` 读原语给 200 条，回执投影只带 20 条
+    （:data:`_LINK_WINDOW`）。模型读了 links、在 164 条里认出了入口，
+    那条排在第 20 条之后 ⇒ ``_seen_hrefs`` 里没有 ⇒ 老口径判「编造」。
+    **那不是幻觉，是观察窗与自报窗不一致。**
+
+    老口径的处置代价更高：反驳之后模型只有两条路——放弃（丢掉真找到的
+    入口）或编一条（**我们本来要挡的正是这个**）。所以多分一类
+    「见过但当前读不出」，它**照收、留痕、不算编造**。
+    """
+
+    def test_当前页links里有就能自证(self):
+        final = _fake_final("/", ["https://entry.test/1"])
+        assert _url_status(
+            (SelectedRef("https://entry.test/1"),), set(), final
+        ) == ("", "")
+
+    def test_当前页读不出的见过的不判编造(self):
+        seen = {"https://entry.test/1"}
+        final = _fake_final("/", ["https://other.test/"])
+        assert _url_status(
+            (SelectedRef("https://entry.test/1"),), seen, final
+        ) == ("stale", "https://entry.test/1")
+
+    def test_没见过的仍是编造(self):
+        """**不能因为放宽 stale 就把编造一起放掉**——两类必须分得开。"""
+        final = _fake_final("/", ["https://other.test/"])
+        assert _url_status(
+            (SelectedRef("https://made.up/"),), set(), final
+        ) == ("unseen", "https://made.up/")
+
+    def test_stale不产出引导文案(self):
+        seen = {"https://entry.test/1"}
+        assert _validate_selected(
+            (SelectedRef("https://entry.test/1"),), seen,
+            _fake_final("/", []),
+        ) == ""
+
+    def test_unseen仍产出引导文案(self):
+        text = _validate_selected(
+            (SelectedRef("https://made.up/"),), set(), _fake_final("/", []),
+        )
+        assert "https://made.up/" in text
+
+    def test_第一条命中即可_不因后面一条自证而豁免(self):
+        """顺序敏感是**故意的**：分类要报的是「第一条有问题的」，
+        否则记账会指到一条没问题的 URL 上。"""
+        final = _fake_final("/", ["https://entry.test/2"])
+        assert _url_status(
+            (
+                SelectedRef("https://made.up/"),
+                SelectedRef("https://entry.test/2"),
+            ),
+            set(), final,
+        ) == ("unseen", "https://made.up/")
+
+    def test_RejectedReport默认仍是编造(self):
+        """A3 幻觉计数读的是 RejectedReport；默认 ``invented`` 才不会让
+        存量读法静默变成「都不算」。"""
+        assert RejectedReport(url="u").kind == "invented"
 
 
 class Test契约漂移:
